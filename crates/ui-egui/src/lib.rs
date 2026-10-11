@@ -61,6 +61,7 @@ pub mod module;
 pub mod panels;
 pub mod pick;
 pub mod plate;
+mod pointer_repair;
 pub mod print_ui;
 pub mod print_view;
 pub mod progress;
@@ -648,6 +649,8 @@ pub struct LccApp {
     /// [`Self::raw_input_hook`] takes their events out of egui's input, so no widget treats them
     /// as a press (a slider would jump to the pointer, issue #3303); the shortcuts read them here.
     pub(crate) nav_buttons: Vec<egui::PointerButton>,
+    /// Puts back mouse-button releases the window integration dropped (see `pointer_repair`).
+    pointer_repair: pointer_repair::PointerRepair,
     styled: bool,
     /// The language the installed fonts were built for: the CJK fallback order follows the UI
     /// language's script, so switching language reinstalls them.
@@ -877,6 +880,7 @@ impl LccApp {
             synthetic_mods: egui::Modifiers::NONE,
             synthetic_mods_release: false,
             nav_buttons: vec![],
+            pointer_repair: pointer_repair::PointerRepair::default(),
             styled: false,
             font_language: i18n::Locale::En,
             chinese_font: None,
@@ -1988,6 +1992,8 @@ impl LccApp {
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
         modern::before_input(self, raw);
         self.synthetic_input(raw);
+        // put back button releases the window integration dropped (OneSlips)
+        self.pointer_repair.repair(raw);
         self.take_nav_buttons(raw);
         modern::after_input(self, raw);
     }
