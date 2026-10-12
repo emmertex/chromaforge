@@ -658,8 +658,11 @@ mod tests {
         let urls = opened.lock().unwrap().clone();
         assert_eq!(urls.len(), 1, "{urls:?}");
         assert!(urls[0].starts_with("file://") && urls[0].ends_with("index.html"));
-        assert!(std::path::Path::new(urls[0].trim_start_matches("file://")).is_file());
-        let _ = std::fs::remove_dir_all(std::path::Path::new(urls[0].trim_start_matches("file://")).parent().unwrap());
+        // `file:///tmp/…` on Unix, `file:///C:/…` on Windows
+        let local = urls[0].trim_start_matches("file://");
+        let local = if cfg!(windows) { local.trim_start_matches('/') } else { local };
+        assert!(std::path::Path::new(local).is_file(), "{local}");
+        let _ = std::fs::remove_dir_all(std::path::Path::new(local).parent().unwrap());
         assert_eq!(h.app.run("webui.reload", json!({})).unwrap()["reload"], true);
         // set-up errors come back at once
         assert!(h.app.run("webui.shareImmich", json!({"ids": [id]})).is_err(), "no Immich account");
