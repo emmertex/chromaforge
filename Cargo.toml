@@ -68,6 +68,7 @@ lcc-heif = { path = "crates/heif" }
 lcc-segment = { path = "crates/segment" }
 lcc-text = { path = "crates/text" }
 lcc-inpaint = { path = "crates/inpaint" }
+lcc-genfill = { path = "crates/genfill", default-features = false }
 lcc-pdf = { path = "crates/pdf" }
 lcc-print = { path = "crates/print" }
 lcc-psd = { path = "crates/psd" }

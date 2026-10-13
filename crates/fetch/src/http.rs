@@ -489,6 +489,22 @@ impl Response {
         }
     }
 
+    /// The whole body, at most `max` bytes (a longer one is an error, not a truncated body).
+    pub fn read_to_end(&mut self, max: usize, limits: &Limits) -> Result<Vec<u8>, HttpError> {
+        let mut out = Vec::new();
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = self.read(&mut buf, limits)?;
+            if n == 0 {
+                return Ok(out);
+            }
+            if out.len().saturating_add(n) > max {
+                return Err(HttpError::Protocol(format!("response over {} MB", max >> 20)));
+            }
+            out.extend_from_slice(buf.get(..n).unwrap_or_default());
+        }
+    }
+
     /// Read body bytes into `out` (0 at the end of the body).
     pub fn read(&mut self, out: &mut [u8], limits: &Limits) -> Result<usize, HttpError> {
         match &mut self.body {
@@ -553,22 +569,49 @@ impl Response {
 
 /// Send `GET url` with extra `headers` and read the status line and headers.
 pub fn get(url: &Url, headers: &[(&str, String)], limits: &Limits) -> Result<Response, HttpError> {
+    request("GET", url, headers, None, limits)
+}
+
+/// Largest request body [`request`] sends (a generative-fill upload is a few MB).
+pub const MAX_BODY: usize = 64 * 1024 * 1024;
+
+/// Send `method url` with extra `headers` and, for `Some(body)`, that body (with its
+/// `Content-Length`; the caller names its `Content-Type` in `headers`), then read the status
+/// line and headers. Header values never appear in errors (they may hold an API key).
+pub fn request(method: &str, url: &Url, headers: &[(&str, String)], body: Option<&[u8]>, limits: &Limits) -> Result<Response, HttpError> {
+    if method.is_empty() || !method.chars().all(|c| c.is_ascii_uppercase()) {
+        return Err(HttpError::BadUrl("bad request method".into()));
+    }
+    if body.is_some_and(|b| b.len() > MAX_BODY) {
+        return Err(HttpError::BadUrl(format!("request body over {} MB", MAX_BODY >> 20)));
+    }
     let mut req = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}/{}\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
+        "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}/{}\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
         url.path,
         url.host_header(),
         lcc_brand::BINARY,
         env!("CARGO_PKG_VERSION")
     );
+    if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("accept")) {
+        req.push_str("Accept: */*\r\n");
+    }
     for (k, v) in headers {
         if v.chars().any(|c| c == '\r' || c == '\n') || k.chars().any(|c| c == '\r' || c == '\n' || c == ':') {
             return Err(HttpError::BadUrl("header with a line break".into()));
         }
         req.push_str(&format!("{k}: {v}\r\n"));
     }
+    if let Some(b) = body {
+        req.push_str(&format!("Content-Length: {}\r\n", b.len()));
+    }
     req.push_str("\r\n");
     let mut stream = Stream::connect(url, limits)?;
     stream.write_all(req.as_bytes(), limits)?;
+    if let Some(b) = body {
+        for chunk in b.chunks(256 * 1024) {
+            stream.write_all(chunk, limits)?;
+        }
+    }
     let mut conn = Conn { stream, buf: Vec::new(), pos: 0 };
     let (status, headers) = loop {
         let status_line = conn.line(MAX_HEAD, limits)?;
@@ -781,5 +824,49 @@ mod tests {
         let plain = Url::parse("http://127.0.0.1:8080/a").unwrap();
         assert!(!plain.join("http://127.0.0.1:9/b").unwrap().tls);
         assert!(plain.join("https://b.example/z").unwrap().tls);
+    }
+
+    /// A POST reaches a local server with its headers and whole body, and the reply is read back.
+    #[test]
+    fn posts_a_body_and_reads_the_reply() {
+        use std::io::{BufRead, BufReader};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://{}/v1/edit", l.local_addr().unwrap())).unwrap();
+        let server = std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut first = String::new();
+            r.read_line(&mut first).unwrap();
+            let (mut len, mut auth) = (0usize, String::new());
+            loop {
+                let mut h = String::new();
+                r.read_line(&mut h).unwrap();
+                if h.trim().is_empty() {
+                    break;
+                }
+                let (k, v) = h.split_once(':').unwrap();
+                if k.eq_ignore_ascii_case("content-length") {
+                    len = v.trim().parse().unwrap();
+                }
+                if k.eq_ignore_ascii_case("authorization") {
+                    auth = v.trim().to_string();
+                }
+            }
+            let mut body = vec![0u8; len];
+            std::io::Read::read_exact(&mut r, &mut body).unwrap();
+            let reply = format!("{{\"method\":\"{}\",\"len\":{len},\"auth\":\"{auth}\"}}", first.split(' ').next().unwrap());
+            let mut s = s;
+            write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}", reply.len()).unwrap();
+        });
+        let cancel = AtomicBool::new(false);
+        let limits = Limits { connect: Duration::from_secs(5), stall: Duration::from_secs(5), cancel: &cancel };
+        let body = vec![7u8; 700_000];
+        let mut r = request("POST", &url, &[("Authorization", "Bearer k".into()), ("Content-Type", "application/json".into())], Some(&body), &limits)
+            .unwrap();
+        assert_eq!(r.status, 200);
+        let got = String::from_utf8(r.read_to_end(1 << 20, &limits).unwrap()).unwrap();
+        assert_eq!(got, "{\"method\":\"POST\",\"len\":700000,\"auth\":\"Bearer k\"}");
+        server.join().unwrap();
+        assert!(request("post", &url, &[], None, &limits).is_err());
     }
 }

@@ -4914,6 +4914,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lcc-genfill"
+version = "26.45.0"
+dependencies = [
+ "lcc-brand",
+ "lcc-color",
+ "lcc-fetch",
+ "lcc-raster",
+ "miniz_oxide 0.8.9",
+ "png 0.18.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lcc-geo"
 version = "26.45.0"
 dependencies = [
