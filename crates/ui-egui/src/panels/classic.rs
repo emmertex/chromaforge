@@ -158,9 +158,10 @@ pub fn reorder(list: &[PanelId], p: PanelId, slot: usize) -> Option<Vec<PanelId>
 
 /// The window edge a side's panels sit on: a module's declared left column (Library's, Develop's)
 /// is drawn on the left, any other group of panels on the right. Callers pass the module's own
-/// declared list, so which list it is tells the two sides apart.
+/// declared list, so which list it is tells the two sides apart (by content: a `const` slice has
+/// no guaranteed single address, so `std::ptr::eq` could miss it).
 fn side_edge(side: &[PanelId]) -> crate::module::Edge {
-    let left = std::ptr::eq(side, crate::module::LIBRARY_LEFT) || std::ptr::eq(side, crate::module::DEVELOP_LEFT);
+    let left = side == crate::module::LIBRARY_LEFT || side == crate::module::DEVELOP_LEFT;
     if left { crate::module::Edge::Left } else { crate::module::Edge::Right }
 }
 
