@@ -53,6 +53,8 @@
   "Trained on: {provenance}": "Trainiert mit: {provenance}",
   "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}. Gespeichert im Ordner „denoise“ der Bibliothek; ist die Obergrenze erreicht, werden zuerst die ältesten Bilder entfernt, die kein Foto mehr verwendet.",
   "{} of {} from {host}": "{} von {} von {host}",
+  "Color space: Rec. 2020 {curve} (HDR AVIF)": "Farbraum: Rec. 2020 {curve} (HDR-AVIF)",
+  "The checked settings of the active photo are copied to {n} other selected photo(s)": "Die markierten Einstellungen des aktiven Fotos werden auf {n} weitere ausgewählte Foto(s) übertragen",
   "{app} {version}": "{app} {version}",
   "{app} {version} is available (Help ▸ Check for Updates…)": "{app} {version} ist verfügbar (Hilfe ▸ Nach Updates suchen…)",
   "Version {version} is available.": "Version {version} ist verfügbar.",

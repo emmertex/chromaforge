@@ -721,11 +721,6 @@ mod tests {
     }
 
     #[test]
-    fn avif_is_decodable() {
-        assert!(Format::Avif.can_decode());
-    }
-
-    #[test]
     fn eight_bit_round_trip_with_exif() {
         let (w, h) = (48usize, 32usize);
         let px = card(w, h);

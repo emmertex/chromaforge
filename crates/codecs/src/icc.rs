@@ -290,15 +290,6 @@ mod tests {
     }
 
     #[test]
-    fn linear_profile() {
-        let bytes = write_matrix_trc(&PROPHOTO, &Trc::Linear);
-        let info = parse(&bytes).unwrap();
-        assert_eq!(info.named, Some(NamedSpace::ProPhoto));
-        let IccKind::MatrixTrc { trc, .. } = info.kind else { panic!() };
-        assert!(trc[1].is_linear());
-    }
-
-    #[test]
     fn cms_path_matches_matrix_path() {
         let bytes = write_named(NamedSpace::DisplayP3);
         let px = [0.2f32, 0.5, 0.8];

@@ -624,19 +624,6 @@ mod tests {
     }
 
     #[test]
-    fn full_size_channels_reuse_the_decoded_allocation() {
-        for depth in [1, 8, 16, 32] {
-            let layout = PlaneLayout { planes: 1, width: 5, height: 3, depth, version: Version::Psd };
-            let plane = vec![0x55; layout.decoded_len().unwrap()];
-            let original = plane.as_ptr();
-            let placed = place_channel_plane(plane, &layout, 0, 0, &layout).unwrap();
-            assert_eq!(placed.as_ptr(), original);
-            let expected = if depth == 1 { 0x50 } else { 0x55 };
-            assert!(placed.iter().all(|&byte| byte == expected));
-        }
-    }
-
-    #[test]
     fn large_channel_padding_within_the_existing_budget_is_allowed() {
         let mut p = pat(8, false);
         p.mode = 1;

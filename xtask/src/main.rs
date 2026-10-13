@@ -12,6 +12,7 @@ mod ico;
 mod immich;
 mod layers;
 mod parity;
+mod quarantine;
 mod rename;
 mod shortcuts;
 mod stats;
@@ -35,6 +36,9 @@ commands:
   bench [FILE] [--strict] [--threshold PCT]
                   run the render benchmark, append to target/bench/history.jsonl, compare CPU time with
                   the previous run (default input: corpus/raw/arw-sony-a7m3-compressed.arw)
+  sil [workflow|raw|monkey] [--seed N] [--steps N]
+                  software-in-the-loop: drive the real app headless through user workflows and a seeded
+                  monkey, checking invariants (docs/testing-sil.md)
   bench-catalog [--photos N,N…] [--backend v3|v4] [--dir DIR]
                   catalog scale benchmark: import throughput, snapshot time, then (in a fresh process)
                   open time, peak RSS and filter latency (default 250000,1000000 photos, backend v4)
@@ -61,6 +65,8 @@ commands:
   parity [--write]
                   check docs/parity-checklist.md (every cmd:/ctl: id and path it cites exists) and print the
                   Lightroom parity summary; --write refreshes the summary table in the document
+  quarantine check|filter|test [--platform linux|macos|windows]
+                  known-flaky tests (ci/quarantine.toml): validate, print the nextest filter, run the CI tests
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates (+ the web app)
   web [--serve [port]] [--dev]
                   build the browser app (apps/web) into <target>/web-site/;
@@ -98,11 +104,13 @@ fn main() -> ExitCode {
         Some("layers") => cmd_layers(),
         Some("assets") => assets::run(&root()),
         Some("bench") => bench::run(&root(), &rest),
+        Some("sil") => cmd_sil(&rest),
         Some("bench-catalog") => cmd_bench_catalog(&rest),
         Some("parity") => parity::run(&root(), rest.contains(&"--write")),
         Some("wasm") => cmd_wasm(),
         Some("web") => web::run(&rest),
         Some("ci") => cmd_ci(rest.contains(&"--fast")),
+        Some("quarantine") => quarantine::run(&root(), &rest),
         Some("corpus") => cmd_corpus(rest.contains(&"--download")),
         Some("upstream-merge") => upstream::merge(&root(), &rest),
         Some("upstream-pr") => upstream::pr(&root(), &rest),
@@ -139,7 +147,7 @@ pub fn cargo() -> Command {
     // Full Windows debuginfo plus one linker per CPU can exhaust RAM before any
     // tests run. Scope these overridable defaults to CI, including parity/WASM
     // subprocesses, without changing ordinary developer builds or GPU coverage.
-    if std::env::args().nth(1).as_deref() == Some("ci") {
+    if matches!(std::env::args().nth(1).as_deref(), Some("ci" | "quarantine")) {
         static JOBS: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
         let (build, threads) = JOBS.get_or_init(|| {
             let ram_mb = available_ram_mb().or_else(|| total_ram_gb().map(|gb| gb.saturating_mul(1024) / 2));
@@ -148,9 +156,12 @@ pub fn cargo() -> Command {
             // wall-clock frame-budget tests flaky on a loaded machine.
             (jobs.to_string(), jobs.min(4).to_string())
         });
-        for (key, value) in
-            [("CARGO_PROFILE_DEV_DEBUG", "line-tables-only"), ("CARGO_BUILD_JOBS", build.as_str()), ("RUST_TEST_THREADS", threads.as_str())]
-        {
+        for (key, value) in [
+            ("CARGO_PROFILE_DEV_DEBUG", "line-tables-only"),
+            ("CARGO_BUILD_JOBS", build.as_str()),
+            ("RUST_TEST_THREADS", threads.as_str()),
+            ("NEXTEST_TEST_THREADS", threads.as_str()),
+        ] {
             if std::env::var_os(key).is_none() {
                 c.env(key, value);
             }
@@ -331,6 +342,7 @@ pub fn cmd_ci(fast: bool) -> Result<(), String> {
             }),
         ),
         ("brand", Box::new(|| brand::check(&root()))),
+        ("quarantine", Box::new(|| quarantine::run(&root(), &["check"]))),
         ("docs", Box::new(|| docs::run(&root(), true))),
         (
             "clippy",
@@ -362,6 +374,11 @@ pub fn cmd_ci(fast: bool) -> Result<(), String> {
         (
             "test",
             Box::new(|| {
+                // on CI (`CI=true`): cargo-nextest with retries and the quarantine (ci/quarantine.toml);
+                // locally: strict `cargo test` unless `XTASK_NEXTEST=1` asks for the CI run
+                if std::env::var("CI").is_ok_and(|v| v == "true") || std::env::var_os("XTASK_NEXTEST").is_some() {
+                    return quarantine::ci_test(&root(), quarantine::host_platform());
+                }
                 let mut c = cargo();
                 c.args(["test", "--workspace"]);
                 run(c, "cargo test --workspace")
@@ -1528,4 +1545,30 @@ mod corpus_tests {
             assert!(sha256.len() == 64 && sha256.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')), "{name}: not a lowercase sha256");
         }
     }
+}
+
+/// `cargo xtask sil`: the SIL harness (`apps/cli/tests/sil.rs`, docs/testing-sil.md).
+fn cmd_sil(args: &[&str]) -> Result<(), String> {
+    let mut c = cargo();
+    c.args(["test", "-p", "lcc-cli", "--test", "sil"]);
+    let mut filter = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "--seed" | "--steps" => {
+                let v = args.get(i + 1).ok_or(format!("{} needs a value", args[i]))?;
+                c.env(if args[i] == "--seed" { "SIL_SEED" } else { "SIL_STEPS" }, v);
+                i += 1;
+            }
+            s if !s.starts_with('-') => filter = Some(format!("sil_{s}")),
+            other => return Err(format!("sil: unknown option `{other}`")),
+        }
+        i += 1;
+    }
+    if let Some(f) = &filter {
+        c.arg(f);
+    }
+    c.args(["--", "--nocapture"]);
+    let status = c.status().map_err(|e| format!("cargo test: {e}"))?;
+    if status.success() { Ok(()) } else { Err("SIL failed (see the report and replay paths above)".into()) }
 }

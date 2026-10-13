@@ -446,7 +446,7 @@ enum HeaderAction {
 fn header_button(section: SidebarSection) -> Option<HeaderButton> {
     match section {
         SidebarSection::Albums => {
-            Some(HeaderButton { id: "albumNew", icon: Icon::Plus, tooltip: "Create Album", action: HeaderAction::Menu(new_album_menu) })
+            Some(HeaderButton { id: "albumNew", icon: Icon::Plus, tooltip: "Create Collection", action: HeaderAction::Menu(new_album_menu) })
         }
         SidebarSection::Keywords => {
             Some(HeaderButton { id: "keywordNew", icon: Icon::Plus, tooltip: "Create Keyword Tag", action: HeaderAction::Run(new_keyword) })
@@ -533,10 +533,10 @@ fn sections_menu(app: &mut LccApp, ui: &mut egui::Ui, on: Option<SidebarSection>
 
 /// The menu of Albums' +: Create Album, Smart Album, Folder…
 fn new_album_menu(app: &mut LccApp, ui: &mut egui::Ui) {
-    if ui.button(crate::i18n::tr("Create Album…")).clicked() {
+    if ui.button(crate::i18n::tr("Create Collection…")).clicked() {
         app.ui.dialog = Some(crate::state::Dialog::NewAlbum { name: String::new(), folder: false, parent: None });
     }
-    if ui.button(crate::i18n::tr("Create Smart Album…")).clicked() {
+    if ui.button(crate::i18n::tr("Create Smart Collection…")).clicked() {
         app.ui.dialog = Some(crate::state::Dialog::SmartRules {
             id: None,
             name: String::new(),
@@ -544,17 +544,17 @@ fn new_album_menu(app: &mut LccApp, ui: &mut egui::Ui) {
             parent: None,
         });
     }
-    if ui.button(crate::i18n::tr("Create Smart Album from Filter…")).clicked() {
+    if ui.button(crate::i18n::tr("Create Smart Collection from Filter…")).clicked() {
         app.ui.dialog = Some(crate::state::Dialog::NewSmartAlbum { name: String::new(), parent: None });
     }
-    if ui.button(crate::i18n::tr("Create Folder…")).clicked() {
+    if ui.button(crate::i18n::tr("Create Collection Set…")).clicked() {
         app.ui.dialog = Some(crate::state::Dialog::NewAlbum { name: String::new(), folder: true, parent: None });
     }
     super::collections::import_item(app, ui, None);
     // only once the albums were put in an order by hand
     if app.session.catalog.album_children_are_ordered(None) {
         ui.separator();
-        if ui.button(crate::i18n::tr("Sort Albums A–Z")).on_hover_text(crate::i18n::tr("Go back to listing them by name")).clicked() {
+        if ui.button(crate::i18n::tr("Sort Collections A–Z")).on_hover_text(crate::i18n::tr("Go back to listing them by name")).clicked() {
             let _ = app.run("album.sort", json!({}));
         }
     }
@@ -1504,10 +1504,10 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
             // the same commands as File ▸ New…, aimed at this folder
             ui.menu_button(crate::i18n::tr("New"), |ui| {
                 for (label, command) in [
-                    ("Create Album…", "dialog.newAlbum"),
-                    ("Create Smart Album…", "dialog.smartAlbum"),
-                    ("Create Smart Album from Filter…", "dialog.newSmartAlbum"),
-                    ("Create Folder…", "dialog.newFolder"),
+                    ("Create Collection…", "dialog.newAlbum"),
+                    ("Create Smart Collection…", "dialog.smartAlbum"),
+                    ("Create Smart Collection from Filter…", "dialog.newSmartAlbum"),
+                    ("Create Collection Set…", "dialog.newFolder"),
                 ] {
                     if ui.button(crate::i18n::tr(label)).clicked() {
                         let _ = app.run(command, json!({"parent": a.id.0}));
@@ -1555,10 +1555,10 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
         }
         if !a.folder && !a.is_smart() {
             let is_target = app.session.target_album == Some(a.id) || (app.session.target_album.is_none() && a.quick);
-            if !is_target && ui.button(crate::i18n::tr("Set as Target Album (B adds to it)")).clicked() {
+            if !is_target && ui.button(crate::i18n::tr("Set as Target Collection (B adds to it)")).clicked() {
                 let _ = app.run("album.setTarget", json!({"id": if a.quick { serde_json::Value::Null } else { json!(a.id.0) }}));
             }
-            if is_target && !a.quick && ui.button(crate::i18n::tr("Stop Using as Target Album")).clicked() {
+            if is_target && !a.quick && ui.button(crate::i18n::tr("Stop Using as Target Collection")).clicked() {
                 let _ = app.run("album.setTarget", json!({"id": null}));
             }
         }

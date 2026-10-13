@@ -114,6 +114,9 @@ fn floating_panel_blocks_photo_album_drop_then_uncovered_target_adds_exact_selec
 #[test]
 fn preset_hover_survives_float_movement_without_mutating_photo() {
     let mut h = app();
+    // (preset groups start folded)
+    let groups: Vec<String> = h.app.session.presets.iter().map(|p| format!("preset:{}", p.group)).collect();
+    h.app.ui.group_open.extend(groups.into_iter().map(|g| (g, true)));
     h.app.run("panel.presets", json!({})).unwrap();
     dock(&mut h, json!({"operation":"float","panel":"presets","rect":[500,100,300,700]}));
     let undo = h.app.session.undo.len();

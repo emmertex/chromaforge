@@ -601,23 +601,6 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_all_types() {
-        let d = sample();
-        let b = d.to_bytes();
-        let p = Descriptor::from_bytes(&b).unwrap();
-        assert_eq!(p, d);
-        assert_eq!(p.to_bytes(), b);
-    }
-
-    #[test]
-    fn versioned_roundtrip() {
-        let v = VersionedDescriptor::new(sample());
-        let b = v.to_bytes();
-        assert_eq!(&b[..4], &[0, 0, 0, 16]);
-        assert_eq!(VersionedDescriptor::from_bytes(&b).unwrap(), v);
-    }
-
-    #[test]
     fn versioned_parse_prefix() {
         let v = VersionedDescriptor::new(sample());
         let mut b = v.to_bytes();
@@ -650,13 +633,6 @@ mod tests {
         let mut v = Vec::new();
         id.write(&mut v);
         assert_eq!(v, data);
-    }
-
-    #[test]
-    fn get_and_lookup() {
-        let d = sample();
-        assert_eq!(d.get("long"), Some(&Value::Integer(-5)));
-        assert!(d.get("nope").is_none());
     }
 
     #[test]

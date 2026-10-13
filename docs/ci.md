@@ -1,6 +1,6 @@
 # CI and landing changes
 
-> **Last updated:** 2026-10-13 · **Change:** major (fast PR gate; full test runs only before a release); major (created: PR-only main, self-hosted runner, local status)
+> **Last updated:** 2026-10-13 · **Change:** minor (test retries, flaky reports and the test quarantine for the full run); major (fast PR gate; full test runs only before a release); major (created: PR-only main, self-hosted runner, local status)
 
 ## How changes reach `main`
 
@@ -56,9 +56,14 @@ The runner runs as a service under NETWORK SERVICE, so Rust is installed machine
 (`RUSTUP_HOME=C:\rust\rustup`, `CARGO_HOME=C:\rust\cargo`, with `C:\rust\cargo\bin` on the machine
 `Path`) and NETWORK SERVICE may modify `C:\rust`. The runner's `.env` file sets those two variables and
 `CARGO_TARGET_DIR=C:\lcc-ci-target` (the persistent build cache); its `.path` file holds the machine
-`Path`. Visual Studio Build Tools (C++) provide the linker. The `.path` file puts
-`C:\Program Files\Git\bin` first, so workflow `bash` steps get Git Bash rather than the WSL launcher in
-`System32` (which fails under the service account).
+`Path`. Visual Studio Build Tools (C++) provide the linker. The runner reads `PATH` from `.env` (its
+`.path` file is not what step shells search), which puts `C:\Program Files\Git\bin` first, so workflow
+`bash` steps get Git Bash rather than the WSL launcher in `System32` (which fails under the service
+account). PowerShell 7 (`pwsh`, machine-wide MSI with "add to PATH") is required: actions such as
+`taiki-e/install-action` run their Windows steps with `shell: pwsh`, which the built-in Windows PowerShell
+5.1 doesn't provide. Windows PowerShell's machine execution policy is `RemoteSigned`, so the runner's
+temporary step scripts (`shell: powershell`) may run. After changing `.env`, restart the service
+(`Restart-Service actions.runner.*`).
 
 ### Setting up the runner machine
 
@@ -72,6 +77,35 @@ The runner runs as a service under NETWORK SERVICE, so Rust is installed machine
    **Require approval for all outside collaborators**.
 
 If the runner is offline, jobs for our own branches wait in the queue; post a local result instead (below).
+
+## Retries, flaky tests and the quarantine
+
+The full pre-release run (`cargo xtask ci` without `--fast`, on a push to `release` or a manual dispatch) runs the tests with [cargo-nextest](https://nexte.st) (installed by `taiki-e/install-action`, into the
+runner's cargo home), profile `ci` in `.config/nextest.toml`:
+
+- **Retries:** a failing test is retried up to 2 times. One that then passes is reported as **FLAKY** in the
+  log and the final summary; the run stays green, but a flaky test is a bug: fix it.
+- **Hangs:** a test is reported slow after 2 minutes and killed after 10, so a hang fails in minutes.
+- **Doctests:** nextest doesn't run them; `cargo test --workspace --doc` runs as a separate step.
+
+On Linux, `cargo xtask ci` uses nextest when `CI=true` (GitHub sets it) or `XTASK_NEXTEST=1` and nextest is
+installed; locally it stays a strict `cargo test --workspace`. In the full run the macOS and Windows jobs run
+`cargo xtask quarantine test`; the fast PR gate runs no tests, so retries and the quarantine don't apply to it. Without nextest both fall back to plain `cargo test --workspace`.
+
+### Quarantine
+
+`ci/quarantine.toml` lists known-flaky tests per platform. On those platforms the gating run excludes them;
+each then runs on its own, and a failure shows as a `Quarantined test failed` warning annotation on the run
+(naming the test, platform, issue and reason) instead of failing the job. Rules:
+
+- **Robustness fixes first.** Quarantine is the last resort for a test that fails for environmental reasons
+  while the fix is underway, never a way to hide a real regression.
+- **Every entry needs a tracking issue (`issue = "#N"`) and an expiry (`until`, at most a few weeks out).** After the
+  expiry the test gates again and every run warns `Quarantine entry expired`; fix it or renew the entry
+  with a reason.
+- The entry comes out in the same PR as the fix, which closes the issue.
+- `cargo xtask quarantine check` (a step of both `cargo xtask ci` and `--fast`) rejects malformed entries; `cargo xtask quarantine
+  filter --platform macos` prints the nextest filter a platform uses.
 
 ## Posting a local result
 

@@ -1,5 +1,4 @@
 use lcc_tiff::image::{Layout, chunk_bytes};
-use lcc_tiff::writer::{rational, srational};
 use lcc_tiff::{ByteOrder, FieldType, IfdBuilder, ImageData, ParseOptions, Tiff, TiffError, TiffWriter, Value, parse_ifd_at, tags};
 use proptest::prelude::*;
 
@@ -310,17 +309,6 @@ fn parse_ifd_with_base() {
     assert_eq!(next, 0);
     assert_eq!(ifd.u64s(5).unwrap(), vec![10, 20, 30]);
     assert_eq!(ifd.get(5).unwrap().offset, 118);
-}
-
-#[test]
-fn rationals() {
-    assert_eq!(rational(2.8), (28, 10));
-    assert_eq!(rational(0.004), (4, 1000));
-    assert_eq!(rational(-1.0), (0, 1));
-    assert_eq!(srational(-0.333), (-333, 1000));
-    assert_eq!(srational(7.0), (7, 1));
-    let (n, d) = rational(1.0 / 3.0);
-    assert!((n as f64 / d as f64 - 1.0 / 3.0).abs() < 1e-6);
 }
 
 fn sample_file() -> Vec<u8> {

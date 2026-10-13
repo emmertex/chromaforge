@@ -4,7 +4,7 @@
 //! <cli> run [--demo | --library DIR | --connect [ADDR]] [--import PATH]… CMD [key=value…]…
 //! <cli> mcp [--connect [ADDR]] [--demo] [--compact] [FILES/FOLDERS…]
 //! <cli> render <in> -o <out> [--set control=value]… [--settings FILE.json] [--preset ID] [--size N] [--quality Q] [--trim IN,OUT]
-//! <cli> snapshot [--library DIR | --demo] [--script FILE.jsonl] [-o OUT.png] [--size WxH] [--scale S] [FILES…]
+//! <cli> snapshot [--library DIR | --demo] [--script FILE.jsonl|-] [-o OUT.png] [--size WxH] [--scale S] [FILES…]
 //! <cli> merge hdr|panorama|hdr-panorama [OPTIONS] FILES…
 //! <cli> synth-merge hdr|panorama -o DIR
 //! <cli> denoise-serve [--model ID] [--models DIR] [--listen ADDR] [--token-env VAR] [--run-on auto|gpu|cpu]
@@ -83,7 +83,8 @@ USAGE:
                           Replies go to stdout. `ui.screenshot` without a path writes -o (then
                           OUT-2.png, OUT-3.png…); `ui.settle {timeoutMs?}` waits for renders.
                           A failed request (\"ok\": false) does not stop the script, but the exit
-                          status is non-zero when any request failed.
+                          status is non-zero when any request failed. `--script -` reads
+                          stdin and answers each line as it arrives (until EOF).
         -o, --output OUT  PNG path (a final screenshot is written here if the script took none)
         --size WxH        window size in points (default 1600x1000)
         --scale S         pixels per point (default 1)
@@ -857,7 +858,8 @@ fn snapshot(args: &[String]) -> Result<(), String> {
                 .with_system_clock()
                 .with_default_connections()
                 .with_default_face_models()
-                .with_default_lens_profiles();
+                .with_default_lens_profiles()
+                .with_default_sam3_model();
             catalog_migrate::migrate_with_progress(dir)?;
             s.open_library(dir, false).map_err(|e| library_error(dir, e))?;
             s
@@ -868,14 +870,16 @@ fn snapshot(args: &[String]) -> Result<(), String> {
             .with_system_clock()
             .with_default_connections()
             .with_default_face_models()
-            .with_default_lens_profiles(),
+            .with_default_lens_profiles()
+            .with_default_sam3_model(),
         None => Session::new()
             .with_fs()
             .with_default_denoise_models()
             .with_system_clock()
             .with_default_connections()
             .with_default_face_models()
-            .with_default_lens_profiles(),
+            .with_default_lens_profiles()
+            .with_default_sam3_model(),
     };
     // Apply compute policy before imports or the first scripted query can discover an adapter.
     session.execute("app.gpu", &json!({"enabled": false})).map_err(|e| e.to_string())?;
@@ -917,9 +921,18 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     // on (like `run --keep-going`), but the exit status reports it — CI judges by exit status.
     let mut failed = 0usize;
     if let Some(script) = &script {
-        let text = std::fs::read_to_string(script).map_err(|e| format!("{script}: {e}"))?;
+        // `--script -` reads stdin a line at a time and answers each request as it arrives (flushed),
+        // so a driver can hold a conversation with a real headless session (the SIL harness,
+        // docs/testing-sil.md); EOF ends the run like the end of a script file.
+        let lines: Box<dyn Iterator<Item = std::io::Result<String>>> = if script == "-" {
+            Box::new(std::io::stdin().lines())
+        } else {
+            let text = std::fs::read_to_string(script).map_err(|e| format!("{script}: {e}"))?;
+            Box::new(text.lines().map(|l| Ok(l.to_string())).collect::<Vec<_>>().into_iter())
+        };
         let mut out = std::io::stdout().lock();
-        for (n, line) in text.lines().enumerate() {
+        for (n, line) in lines.enumerate() {
+            let line = line.map_err(|e| format!("{script}: {e}"))?;
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
                 continue;
@@ -958,6 +971,7 @@ fn snapshot(args: &[String]) -> Result<(), String> {
                 o.insert("t".into(), json!((t0.elapsed().as_secs_f64() * 1e4).round() / 10.0));
             }
             writeln!(out, "{reply}").map_err(|e| e.to_string())?;
+            out.flush().map_err(|e| e.to_string())?;
             if method == "ui.screenshot" {
                 eprintln!("{CLI} snapshot: {} ({:.0} ms)", reply["result"]["path"].as_str().unwrap_or("?"), ts.elapsed().as_secs_f64() * 1000.0);
             }

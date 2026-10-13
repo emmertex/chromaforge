@@ -202,12 +202,12 @@ fn collections_plus(app: &mut LccApp, ui: &mut egui::Ui, ar: Rect, viewport: Rec
             .max_rect(Rect::from_min_max(pos2(plus_right - 50.0, ar.top()), pos2(plus_right, ar.bottom())))
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    let plus = icon_button(&mut hdr, "albumNew", Icon::Plus, vec2(26.0, 26.0), false, true, "Create Album");
+    let plus = icon_button(&mut hdr, "albumNew", Icon::Plus, vec2(26.0, 26.0), false, true, "Create Collection");
     egui::Popup::menu(&plus).show(|ui| {
-        if ui.button(crate::i18n::tr("Create Album…")).clicked() {
+        if ui.button(crate::i18n::tr("Create Collection…")).clicked() {
             app.ui.dialog = Some(crate::state::Dialog::NewAlbum { name: String::new(), folder: false, parent: None });
         }
-        if ui.button(crate::i18n::tr("Create Smart Album…")).clicked() {
+        if ui.button(crate::i18n::tr("Create Smart Collection…")).clicked() {
             app.ui.dialog = Some(crate::state::Dialog::SmartRules {
                 id: None,
                 name: String::new(),
@@ -215,17 +215,17 @@ fn collections_plus(app: &mut LccApp, ui: &mut egui::Ui, ar: Rect, viewport: Rec
                 parent: None,
             });
         }
-        if ui.button(crate::i18n::tr("Create Smart Album from Filter…")).clicked() {
+        if ui.button(crate::i18n::tr("Create Smart Collection from Filter…")).clicked() {
             app.ui.dialog = Some(crate::state::Dialog::NewSmartAlbum { name: String::new(), parent: None });
         }
-        if ui.button(crate::i18n::tr("Create Folder…")).clicked() {
+        if ui.button(crate::i18n::tr("Create Collection Set…")).clicked() {
             app.ui.dialog = Some(crate::state::Dialog::NewAlbum { name: String::new(), folder: true, parent: None });
         }
         crate::panels::collections::import_item(app, ui, None);
         // only once the albums were put in an order by hand
         if app.session.catalog.album_children_are_ordered(None) {
             ui.separator();
-            if ui.button(crate::i18n::tr("Sort Albums A–Z")).on_hover_text(crate::i18n::tr("Go back to listing them by name")).clicked() {
+            if ui.button(crate::i18n::tr("Sort Collections A–Z")).on_hover_text(crate::i18n::tr("Go back to listing them by name")).clicked() {
                 let _ = app.run("album.sort", json!({}));
             }
         }

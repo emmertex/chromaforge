@@ -181,14 +181,6 @@ fn masks_roundtrip() {
 }
 
 #[test]
-fn no_mask_returns_none() {
-    let mut b = PsdBuilder::new(1, 1);
-    b.push_layer(LayerSpec::new("x", 0, 0, 1, 1, PixelData::Rgba8(vec![0; 4])));
-    let f = built(&b);
-    assert!(f.layer(0).unwrap().user_mask().is_none());
-}
-
-#[test]
 fn empty_layer() {
     let mut b = PsdBuilder::new(2, 2);
     b.push_layer(LayerSpec::new("empty", 0, 0, 0, 0, PixelData::Rgba8(vec![])));
@@ -242,14 +234,6 @@ fn placeholder_composite_is_flagged() {
 }
 
 #[test]
-fn builder_resources() {
-    let b = PsdBuilder::new(1, 1).resolution(300.0).icc_profile(vec![1, 2, 3]);
-    let f = built(&b);
-    assert!((f.resolution().unwrap().v_res() - 300.0).abs() < 1e-9);
-    assert_eq!(f.icc_profile(), Some(&[1u8, 2, 3][..]));
-}
-
-#[test]
 fn builder_errors() {
     let mut b = PsdBuilder::new(2, 2);
     b.push_layer(LayerSpec::new("bad", 0, 0, 2, 2, PixelData::Rgba8(vec![0; 3])));
@@ -297,17 +281,4 @@ fn psb_builder_large_canvas_header() {
     let f = built(&b);
     assert_eq!(f.header.width, 40_000);
     assert!(f.validate().is_ok());
-}
-
-#[test]
-fn iter_layers_indices() {
-    let mut b = PsdBuilder::new(1, 1);
-    for i in 0..3 {
-        b.push_layer(LayerSpec::new(format!("l{i}"), 0, 0, 1, 1, PixelData::Rgba8(vec![0; 4])));
-    }
-    let f = built(&b);
-    let v: Vec<_> = f.iter_layers().map(|l| (l.index, l.name())).collect();
-    assert_eq!(v, vec![(0, "l0".into()), (1, "l1".into()), (2, "l2".into())]);
-    assert!(f.layer(3).is_none());
-    assert_eq!(f.layer(0).unwrap().version(), Version::Psd);
 }

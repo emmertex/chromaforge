@@ -376,10 +376,27 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 }
                 wrap(r)
             }
+            // Read / Save Metadata's overwrite question lives with the catalog dialogs: confirm it as its button does
+            #[cfg(not(target_arch = "wasm32"))]
+            None => match app.catalog_ui.dialog.take() {
+                Some(crate::catalog_ui::CatalogDialog::XmpConflict { command, ids, .. }) => {
+                    wrap(app.run(&command, json!({"ids": ids, "confirmed": true})))
+                }
+                other => {
+                    app.catalog_ui.dialog = other;
+                    err("no dialog open")
+                }
+            },
+            // the web build has no Read / Save Metadata overwrite question
+            #[cfg(target_arch = "wasm32")]
             None => err("no dialog open"),
         },
         "ui.dialog.cancel" => {
             app.ui.dialog = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            if matches!(app.catalog_ui.dialog, Some(crate::catalog_ui::CatalogDialog::XmpConflict { .. })) {
+                app.catalog_ui.dialog = None;
+            }
             ok(Value::Null)
         }
         "ui.resize" => {

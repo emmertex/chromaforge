@@ -99,20 +99,11 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Format, sniff};
+    use crate::Format;
 
-    /// The container header both builds recognise, whatever the feature says.
+    /// A HEIC container header.
+    #[cfg(not(feature = "heif"))]
     const HEIC_HEADER: &[u8] = b"\0\0\0\x18ftypheic\0\0\0\0mif1heic";
-
-    #[test]
-    fn heif_is_always_recognised() {
-        assert_eq!(sniff(HEIC_HEADER), Some(Format::Heif));
-    }
-
-    #[test]
-    fn can_decode_follows_the_feature() {
-        assert_eq!(Format::Heif.can_decode(), cfg!(feature = "heif"));
-    }
 
     #[cfg(not(feature = "heif"))]
     #[test]

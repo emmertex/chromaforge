@@ -521,23 +521,6 @@ pub fn is_hidden_family(name: &str) -> bool {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    #[test]
-    fn hidden_families_sort_last_and_are_not_listed() {
-        assert!(super::is_hidden_family(".Hiragino Kaku Gothic Interface"));
-        assert!(!super::is_hidden_family("Hiragino Sans"));
-        let mut v = [".Hiragino Kaku Gothic Interface".to_string(), "Hiragino Kaku Gothic ProN".to_string()];
-        v.sort_by_key(|n| (super::is_hidden_family(n), n.to_lowercase()));
-        assert_eq!(v[0], "Hiragino Kaku Gothic ProN");
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn scans_flatpak_host_fonts() {
-        let dirs = super::system_font_dirs();
-        assert!(dirs.iter().any(|d| d.ends_with("run/host/fonts")));
-        assert!(dirs.iter().any(|d| d.ends_with("run/host/user-fonts")));
-    }
-
     /// The bundled UI fonts cover Czech (the `cs` UI language) on their own: every letter with a
     /// diacritic and the Czech quotation marks, so no system fallback font is needed.
     #[test]

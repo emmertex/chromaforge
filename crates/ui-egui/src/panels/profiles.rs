@@ -76,8 +76,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     for (title, tag, imported, list) in sections {
         // an imported folder named like a built-in group still opens and closes on its own
-        let open_id = egui::Id::new(("profile-group", imported, title));
-        let open: bool = ui.data(|m| m.get_temp(open_id)).unwrap_or(true);
+        let key = if imported { format!("lut:{title}") } else { format!("profile:{title}") };
+        let holds_current = list.iter().any(|p| p.0 == d.profile.id);
+        let open = app.ui.group_is_open(&key, holds_current);
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
         register(ui.ctx(), if imported { format!("profileGroup:lut:{title}") } else { format!("profileGroup:{title}") }, r);
         paint(
@@ -95,7 +96,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         );
         ui.painter().text(pos2(r.right() - 22.0, r.center().y), Align2::RIGHT_CENTER, list.len().to_string(), t.font(12.0), t.text_dim);
         if resp.clicked() {
-            ui.data_mut(|m| m.insert_temp(open_id, !open));
+            app.ui.group_open.insert(key, !open);
         }
         if !open {
             continue;

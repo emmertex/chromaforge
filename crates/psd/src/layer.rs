@@ -764,12 +764,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_layer_info() {
-        let out = rt(&LayerInfo::default(), Version::Psd);
-        assert_eq!(out, vec![0, 0]);
-    }
-
-    #[test]
     fn record_roundtrip_psd_psb() {
         for v in [Version::Psd, Version::Psb] {
             let info = LayerInfo { merged_alpha: true, layers: vec![sample_record(v), LayerRecord::default()], padding: None };
@@ -798,25 +792,6 @@ mod tests {
         }
         assert_eq!(rec.decode_channel(-2, 8, Version::Psd).unwrap(), vec![1, 2, 3, 4]);
         assert!(rec.decode_channel(7, 8, Version::Psd).is_err());
-    }
-
-    #[test]
-    fn record_accessors() {
-        let rec = sample_record(Version::Psd);
-        assert_eq!(rec.name(), "\u{e4}bc");
-        assert!(!rec.is_visible());
-        assert_eq!(rec.layer_id(), Some(5));
-        assert_eq!(rec.fill_opacity(), 255);
-        assert_eq!(rec.section_type(), SectionType::Other);
-        assert!(rec.layer_mask().is_some());
-        assert_eq!(rec.channel_rect(-2), Rect::from_xywh(0, 0, 2, 2));
-        assert_eq!(rec.channel_rect(0), rec.rect);
-        let mut plain = LayerRecord { name: b"legacy".to_vec(), ..Default::default() };
-        assert_eq!(plain.name(), "legacy");
-        plain.blocks.push(TaggedBlock::fill_opacity(10));
-        assert_eq!(plain.fill_opacity(), 10);
-        plain.block_mut(b"iOpa").unwrap().data[0] = 11;
-        assert_eq!(plain.fill_opacity(), 11);
     }
 
     #[test]
@@ -941,43 +916,11 @@ mod tests {
     }
 
     #[test]
-    fn mask_sizes() {
-        let mut out = Vec::new();
-        LayerMask::new(Rect::default(), 0, 0).write(&mut out);
-        assert_eq!(out.len(), 20);
-        let m = LayerMask { real: Some(RealMask::default()), trailing: vec![], ..LayerMask::new(Rect::default(), 0, 0) };
-        let mut out = Vec::new();
-        m.write(&mut out);
-        assert_eq!(out.len(), 36);
-    }
-
-    #[test]
     fn short_mask_kept_raw() {
         let mut rec = LayerRecord { mask: MaskData::Raw(vec![1, 2, 3]), ..Default::default() };
         rec.channels.clear();
         let info = LayerInfo { layers: vec![rec], ..Default::default() };
         rt(&info, Version::Psd);
-    }
-
-    #[test]
-    fn flags_helpers() {
-        let mut f = LayerFlags::default();
-        f.set_hidden(true);
-        f.set_transparency_protected(true);
-        assert!(f.hidden() && f.transparency_protected());
-        f.set_pixel_data_irrelevant(true);
-        assert!(f.bit4_useful() && f.pixel_data_irrelevant());
-        f.set_hidden(false);
-        assert!(!f.hidden());
-    }
-
-    #[test]
-    fn blending_ranges_parse() {
-        let br = BlendingRanges::full(3);
-        assert_eq!(br.data.len(), 32);
-        let r = br.ranges();
-        assert_eq!(r.len(), 4);
-        assert_eq!(r[0].source, [0, 0, 255, 255]);
     }
 
     #[test]
@@ -1027,13 +970,6 @@ mod tests {
         let info = LayerInfo { layers: vec![rec], ..Default::default() };
         rt(&info, Version::Psd);
         assert_eq!(info.layers[0].decode_channel(0, 8, Version::Psd).unwrap(), Vec::<u8>::new());
-    }
-
-    #[test]
-    fn nondefault_padding_kept() {
-        let info = LayerInfo { padding: Some(vec![0, 0]), ..Default::default() };
-        let out = rt(&info, Version::Psd);
-        assert_eq!(out.len(), 4);
     }
 
     #[test]

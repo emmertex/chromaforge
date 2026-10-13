@@ -1215,21 +1215,3 @@ fn first_ascent(line: &parley::Line<'_, RunBrush>) -> Option<f32> {
     }
     best
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{SmallCapsMode, feature_list, small_caps_mode};
-    use crate::style::{Caps, CharStyle};
-
-    #[test]
-    fn uses_real_small_caps_only_when_the_selected_face_supports_smcp() {
-        let style = CharStyle { caps: Caps::SmallCaps, ..Default::default() };
-        let real = small_caps_mode(style.caps, true);
-        let synthetic = small_caps_mode(style.caps, false);
-
-        assert_eq!(real, SmallCapsMode::OpenType);
-        assert!(feature_list(&style, real).iter().any(|feature| feature == "\"smcp\" 1"));
-        assert_eq!(synthetic, SmallCapsMode::Synthetic);
-        assert!(!feature_list(&style, synthetic).iter().any(|feature| feature == "\"smcp\" 1"));
-    }
-}

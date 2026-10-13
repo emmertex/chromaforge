@@ -361,6 +361,8 @@ impl Headless {
             || self.app.import.is_some()
             || self.app.export.is_some()
             || self.app.session.denoise_busy()
+            || self.app.session.segmenter.busy()
+            || self.app.session.segmenter.analyzing()
             || !self.app.tasks.is_empty()
             || !self.app.synthetic.is_empty()
             || !self.events.is_empty()
@@ -464,7 +466,8 @@ mod tests {
     fn detail_offers_ai_denoise_for_raw_photos_and_leads_to_its_settings() {
         use crate::state::Dialog;
         use lcc_catalog::{MediaKind, Op, Photo, PhotoId, Source};
-        let mut h = demo([1400.0, 900.0]);
+        // tall enough that the Detail panel's setup button is on screen above the Sync bar, whatever the panel order
+        let mut h = demo([1400.0, 1600.0]);
         let t = Duration::from_secs(10);
         let dir = std::env::temp_dir().join(format!("lc-ui-denoise-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1516,6 +1519,31 @@ mod tests {
         h.settle(SETTLE);
     }
 
+    /// Profile groups start folded except the one holding the photo's profile; folding or
+    /// unfolding one is kept in the UI state (ui.json), so it survives a restart.
+    #[test]
+    fn profile_groups_start_folded_and_remember_their_state() {
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        h.request("ui.set", json!({"view": "detail"}), t);
+        h.request("engine.execute", json!({"command": "panel.profiles"}), t);
+        h.settle(SETTLE);
+        let current = h.app.session.active().and_then(|id| h.app.session.develop_of(id)).map(|d| d.profile.id.clone()).unwrap();
+        let cells = |h: &Headless| h.app.widgets.iter().filter(|(w, _)| w.starts_with("profileCell:")).map(|(w, _)| w.clone()).collect::<Vec<_>>();
+        let shown = cells(&h);
+        assert!(shown.iter().any(|w| w.ends_with(&current)), "the current profile's group is open: {shown:?}");
+        let groups: Vec<String> = h.app.widgets.iter().filter(|(w, _)| w.starts_with("profileGroup:")).map(|(w, _)| w.clone()).collect();
+        assert!(groups.len() > 1, "{groups:?}");
+        // a folded group opens on a click, and that is remembered
+        let folded = groups.iter().rfind(|g| !g.starts_with("profileGroup:lut:")).cloned().unwrap();
+        let before = cells(&h).len();
+        h.request("ui.clickWidget", json!({"id": folded}), t);
+        h.settle(SETTLE);
+        assert!(cells(&h).len() > before, "{folded} opened");
+        let saved = serde_json::to_value(&h.app.ui).unwrap();
+        assert_eq!(saved["groupOpen"][folded.replacen("profileGroup:", "profile:", 1)], true, "{}", saved["groupOpen"]);
+    }
+
     /// Presets column: resting on a preset previews it in the loupe without a history entry;
     /// thumbnails are variant renders; Create Preset includes only the checked groups.
     #[test]
@@ -1523,6 +1551,9 @@ mod tests {
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
         h.request("ui.set", json!({"view": "detail"}), t);
+        // (preset groups start folded)
+        let groups: Vec<String> = h.app.session.presets.iter().map(|p| format!("preset:{}", p.group)).collect();
+        h.app.ui.group_open.extend(groups.into_iter().map(|g| (g, true)));
         h.request("engine.execute", json!({"command": "panel.presets"}), t);
         h.settle(SETTLE);
         let id = h.app.session.active().unwrap();
@@ -3088,6 +3119,57 @@ mod tests {
         h.settle(SETTLE);
         assert_eq!(h.app.ui.search, "zz-no-such-photo");
         assert!(h.app.session.visible_cloned().is_empty());
+    }
+
+    /// White balance sits at the top of Light, above Exposure (Lightroom Classic's Basic panel), so
+    /// it is on screen with Color folded.
+    #[test]
+    fn white_balance_leads_the_light_section() {
+        let mut h = demo([1400.0, 1000.0]);
+        let t = Duration::from_secs(10);
+        let id = h.app.session.visible_cloned()[0].0;
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [id]}}), t);
+        h.request("engine.execute", json!({"command": "module.develop", "params": {}}), t);
+        h.request("ui.set", json!({"openSections": ["light"]}), t);
+        h.settle(SETTLE);
+        let widgets = h.app.widgets.clone();
+        let top = |id: &str| widgets.iter().find(|(w, _)| w == id).map(|(_, r)| r.top());
+        let (picker, exposure) = (top("icon:wbPicker"), top("slider:light.exposure"));
+        assert!(picker.is_some() && exposure.is_some(), "{picker:?} {exposure:?}");
+        assert!(picker < exposure, "{picker:?} {exposure:?}");
+    }
+
+    /// Develop's Sync… button opens Synchronize Settings; Synchronize carries only the checked
+    /// groups; the switch beside it turns Auto Sync on and off.
+    #[test]
+    fn sync_button_opens_synchronize_settings() {
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+        let exec = |h: &mut Headless, c: &str, p: Value| h.request("engine.execute", json!({"command": c, "params": p}), t);
+        exec(&mut h, "library.select", json!({"ids": [ids[0]]}));
+        exec(&mut h, "develop.set", json!({"values": {"light.exposure": 1.0, "color.vibrance": 30}}));
+        exec(&mut h, "library.select", json!({"ids": ids, "active": ids[0]}));
+        exec(&mut h, "module.develop", json!({}));
+        h.settle(SETTLE);
+        let r = h.request("ui.clickWidget", json!({"id": "button:syncBar"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+        assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::SyncSettings { .. })), "{:?}", h.app.ui.dialog);
+        // Check None, then only Light
+        for w in ["syncGroup:none", "syncGroup:light"] {
+            assert_eq!(h.request("ui.clickWidget", json!({"id": w}), t)["ok"], true, "{w}");
+            h.settle(SETTLE);
+        }
+        assert_eq!(h.request("ui.dialog.confirm", json!({}), t)["ok"], true);
+        for id in &ids[1..] {
+            let d = h.app.session.develop_of(lcc_catalog::PhotoId(*id)).unwrap();
+            assert_eq!((d.light.exposure, d.color.vibrance), (1.0, 0.0));
+        }
+        assert!(!h.app.session.auto_sync);
+        assert_eq!(h.request("ui.clickWidget", json!({"id": "button:autoSyncSwitch"}), t)["ok"], true);
+        h.settle(SETTLE);
+        assert!(h.app.session.auto_sync);
     }
 
     /// Info panel → Edit Capture Time…: a time-zone shift moves the selected photos.

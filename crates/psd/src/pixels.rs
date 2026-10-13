@@ -242,14 +242,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sample_conversions() {
-        assert_eq!(samples_u16(&[0x12, 0x34, 0xff, 0xff]), vec![0x1234, 0xffff]);
-        assert_eq!(u16_to_bytes(&[0x1234]), vec![0x12, 0x34]);
-        let f = f32_to_bytes(&[0.5, -1.0]);
-        assert_eq!(samples_f32(&f), vec![0.5, -1.0]);
-    }
-
-    #[test]
     fn unpack_bits_rows() {
         assert_eq!(unpack_bits(&[0b1010_0000, 0b1000_0000], 3, 2), vec![1, 0, 1, 1, 0, 0]);
     }

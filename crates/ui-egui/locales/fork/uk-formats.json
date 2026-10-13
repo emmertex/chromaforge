@@ -43,6 +43,8 @@
   "Location {n}": "Місце {n}",
   "{n} photos · {frames} frames · {secs} s": "Фото: {n} · кадрів: {frames} · {secs} с",
   "Exported timelapse: {photos} photos, {frames} frames": "Таймлапс експортовано: фото {photos}, кадрів {frames}",
+  "Color space: Rec. 2020 {curve} (HDR AVIF)": "Колірний простір: Rec. 2020 {curve} (HDR AVIF)",
+  "The checked settings of the active photo are copied to {n} other selected photo(s)": "Позначені налаштування активного фото копіюються на інші вибрані фото: {n}",
   "{app} {version}": "{app} {version}",
   "{app} {version} is available (Help ▸ Check for Updates…)": "Доступна версія {app} {version} («Довідка» ▸ «Перевірити оновлення…»)",
   "Version {version} is available.": "Доступна версія {version}.",

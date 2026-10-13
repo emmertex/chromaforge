@@ -183,6 +183,9 @@ pub struct Session {
     /// Auto Sync: edits to the active photo also change the other selected photos (the settings
     /// that changed, nothing else).
     pub auto_sync: bool,
+    /// The values Auto (`develop.auto`) last set on each photo this session: while a photo's tone
+    /// sliders still hold them, Auto is shown as applied ([`Session::auto_is_current`]). Not saved.
+    pub auto_applied: std::collections::HashMap<PhotoId, [f64; 8]>,
     pub catalog: Catalog,
     pub source: LibrarySource,
     pub filter: Filter,
@@ -364,10 +367,24 @@ impl Session {
         self.library_generation
     }
 
+    /// The sliders Auto sets, in [`lcc_pipeline::auto::AutoTone`] order.
+    pub fn auto_values(d: &DevelopSettings) -> [f64; 8] {
+        let (l, c) = (&d.light, &d.color);
+        [l.exposure, l.contrast, l.highlights, l.shadows, l.whites, l.blacks, c.vibrance, c.saturation]
+    }
+
+    /// Whether `id`'s tone sliders still hold what Auto set on it this session (any edit to them
+    /// makes Auto available again).
+    pub fn auto_is_current(&self, id: PhotoId) -> bool {
+        let Some(applied) = self.auto_applied.get(&id) else { return false };
+        self.develop_of(id).is_some_and(|d| Self::auto_values(&d) == *applied)
+    }
+
     pub fn new() -> Session {
         Session {
             library_generation: LIBRARY_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             auto_sync: false,
+            auto_applied: Default::default(),
             catalog: Catalog::new(),
             source: LibrarySource::All,
             filter: Filter::default(),
@@ -681,6 +698,7 @@ impl Session {
                 return Err(err);
             }
         };
+        self.drop_gone_from_selection();
         self.show_undone(&e.op);
         self.pending_log.push(e.op);
         self.redo.push(UndoEntry {
@@ -706,6 +724,7 @@ impl Session {
                 return Err(err);
             }
         };
+        self.drop_gone_from_selection();
         self.show_undone(&e.op);
         self.pending_log.push(e.op);
         self.undo.push(UndoEntry {
@@ -716,6 +735,19 @@ impl Session {
             retry_sidecars: Vec::new(),
         });
         Ok(e.label)
+    }
+
+    /// An undo or redo that removes photos from the library (undoing an import, a virtual copy, a
+    /// duplicate…) takes them out of the selection too: a selection never names photos that don't
+    /// exist (found by the SIL harness, docs/testing-sil.md).
+    fn drop_gone_from_selection(&mut self) {
+        let catalog = &self.catalog;
+        self.selection.ids.retain(|&id| catalog.photo(id).is_some());
+        if self.selection.active.is_some_and(|a| !self.selection.ids.contains(&a)) {
+            self.selection.active = self.selection.ids.first().copied();
+            self.active_mask = None;
+            self.active_spot = None;
+        }
     }
 
     /// After an undo or redo that changed one photo (its edit, rating, flag, label, metadata or

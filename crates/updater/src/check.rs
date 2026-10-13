@@ -160,14 +160,23 @@ fn fetch_feed(opts: &Options, cancel: Option<Arc<AtomicBool>>) -> Result<String,
     }
 }
 
+/// `owner/name` from either `owner/name` or a GitHub URL (`https://github.com/owner/name[.git]`),
+/// which is how `brand.toml` spells the repository.
+fn owner_name(repo: &str) -> &str {
+    let r = repo.trim();
+    let r = ["https://github.com/", "http://github.com/", "github.com/"].iter().find_map(|p| r.strip_prefix(p)).unwrap_or(r);
+    let r = r.trim_matches('/');
+    r.strip_suffix(".git").unwrap_or(r)
+}
+
 /// `https://github.com/<owner>/<repo>/releases/latest/download/latest.json`.
 pub fn manifest_url(repo: &str) -> String {
-    format!("https://github.com/{}/releases/latest/download/latest.json", repo.trim().trim_matches('/'))
+    format!("https://github.com/{}/releases/latest/download/latest.json", owner_name(repo))
 }
 
 /// `https://api.github.com/repos/<owner>/<repo>/releases?per_page=30`.
 pub fn api_url(repo: &str) -> String {
-    format!("https://api.github.com/repos/{}/releases?per_page=30", repo.trim().trim_matches('/'))
+    format!("https://api.github.com/repos/{}/releases?per_page=30", owner_name(repo))
 }
 
 fn client() -> Result<Client, UpdateError> {
@@ -273,6 +282,20 @@ mod tests {
             prerelease: false,
             manifest_url: None,
         }
+    }
+
+    /// The feed URLs point at the repository the app is built from, whether brand.toml spells it
+    /// as a URL (as it does) or as `owner/name` (the bug: a URL gave `github.com/https://…`, a 404).
+    #[test]
+    fn feed_urls_name_the_repository_once() {
+        for repo in [lcc_brand::REPOSITORY, "emmertex/x", "https://github.com/emmertex/x/", "https://github.com/emmertex/x.git"] {
+            for url in [manifest_url(repo), api_url(repo)] {
+                assert_eq!(url.matches("github.com").count(), 1, "{url}");
+                assert!(!url.contains("//github.com/https") && !url.contains("repos/https"), "{url}");
+            }
+        }
+        let own = lcc_brand::REPOSITORY.trim_end_matches('/');
+        assert_eq!(manifest_url(lcc_brand::REPOSITORY), format!("{own}/releases/latest/download/latest.json"));
     }
 
     fn feed(version: &str) -> String {

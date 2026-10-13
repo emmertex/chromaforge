@@ -547,22 +547,4 @@ mod tests {
 /// `GTM_FILE=photo.dng cargo test --release -p lcc-raw gain_throughput -- --ignored --nocapture`:
 /// the cost of [`GainEval::gain`] per pixel on a real file's map.
 #[cfg(test)]
-mod bench {
-    #[test]
-    #[ignore]
-    fn gain_throughput() {
-        let Some(path) = std::env::var_os("GTM_FILE") else { return };
-        let raw = crate::decode(&std::fs::read(path).unwrap()).unwrap();
-        let m = raw.color.profile.gain_table_map.expect("the file has no gain table map");
-        let e = m.evaluator().unwrap();
-        let n = 3_000_000usize;
-        let t = std::time::Instant::now();
-        let mut acc = 0f32;
-        for i in 0..n {
-            let (x, y) = ((i % 2048) as f64 / 2048.0, (i / 2048) as f64 / 1536.0);
-            let v = ((i * 7919) % 1000) as f32 / 1000.0 * 0.5;
-            acc += e.gain([v, v * 0.9, v * 0.8], x, y);
-        }
-        println!("{}×{}×{} map: {:.1} ns/px ({acc})", m.points_v, m.points_h, m.points_n, t.elapsed().as_secs_f64() * 1e9 / n as f64);
-    }
-}
+mod bench {}

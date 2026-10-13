@@ -132,7 +132,6 @@ jobs:
       matrix:
         include:
           - { arch: x64, target: x86_64-pc-windows-msvc }
-          - { arch: x86, target: i686-pc-windows-msvc }
           # Windows on ARM: cross-compiled on the x64 runner, so signing and WiX run as above.
           # .github/workflows/windows-arm64.yml installs and runs it on ARM64 hardware.
           - { arch: arm64, target: aarch64-pc-windows-msvc }
@@ -286,6 +285,8 @@ jobs:
   linux-riscv64:
     name: Linux riscv64
     needs: version
+    # Disabled 2026-10-13 (maintainer): not built for releases. Remove this line to re-enable.
+    if: false
     # Cross-compiled on x86_64 (no hosted RISC-V runners) against the runner's own Ubuntu release
     # from ports.ubuntu.com, so the binaries need that release's glibc (24.04: 2.39). 22.04's
     # riscv64 ports lag its amd64 updates, which breaks the multiarch install. tar.gz only; the
@@ -360,6 +361,8 @@ jobs:
   freebsd:
     name: FreeBSD x86_64
     needs: version
+    # Disabled 2026-10-13 (maintainer): not built for releases. Remove this line to re-enable.
+    if: false
     # GitHub has no FreeBSD runners: build in a FreeBSD 14.3 VM, the same image and packages as
     # .github/workflows/freebsd.yml.
     runs-on: ubuntu-latest
@@ -457,7 +460,7 @@ jobs:
 
   release:
     name: Draft GitHub Release
-    needs: [version, macos, windows, linux, linux-riscv64, flatpak, freebsd, web]
+    needs: [version, macos, windows, linux, flatpak, web]
     # Draft whatever built: a platform that failed is named in the run summary and the draft's notes,
     # so testers get the rest. Cancelling the run, or the version job failing, still stops it.
     if: ${{ !cancelled() && needs.version.result == 'success' }}

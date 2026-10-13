@@ -41,6 +41,10 @@ dhat-heap = ["dep:dhat"]
 # it (HEVC patents); build with `--features heif` to include it.
 heif = ["lcc-codecs/heif"]
 
+[dev-dependencies]
+# the SIL harness (tests/sil.rs) generates its test photos
+lcc-scenes = { workspace = true }
+
 # M14: end-to-end video tests encode a synthetic clip in-test and re-decode the export
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.lcc-video]
 workspace = true

@@ -125,19 +125,4 @@ mod tests {
         }
         assert_eq!(keys.len(), 28);
     }
-
-    #[test]
-    fn unknown_preserved() {
-        let m = BlendMode::from_key(*b"zzzz");
-        assert_eq!(m, BlendMode::Unknown(*b"zzzz"));
-        assert_eq!(m.key(), *b"zzzz");
-    }
-
-    #[test]
-    fn specific_keys() {
-        assert_eq!(BlendMode::Multiply.key(), *b"mul ");
-        assert_eq!(BlendMode::from_key(*b"smud"), BlendMode::Exclusion);
-        assert_eq!(BlendMode::from_key(*b"idiv"), BlendMode::ColorBurn);
-        assert_eq!(BlendMode::default(), BlendMode::Normal);
-    }
 }

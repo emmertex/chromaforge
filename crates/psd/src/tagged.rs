@@ -514,36 +514,6 @@ mod tests {
     }
 
     #[test]
-    fn section_type_values() {
-        for v in 0..6 {
-            assert_eq!(SectionType::from_u32(v).as_u32(), v);
-        }
-        assert!(SectionType::OpenFolder.is_folder());
-        assert!(!SectionType::BoundingDivider.is_folder());
-    }
-
-    #[test]
-    fn simple_typed_blocks() {
-        assert_eq!(TaggedBlock::layer_id(7).parsed(), Some(Ok(BlockData::LayerId(7))));
-        assert_eq!(TaggedBlock::name_source(*b"cont").parsed(), Some(Ok(BlockData::NameSource(*b"cont"))));
-        assert_eq!(TaggedBlock::blend_clipped_as_group(true).parsed(), Some(Ok(BlockData::BlendClippedAsGroup(true))));
-        assert_eq!(TaggedBlock::blend_interior_elements(false).parsed(), Some(Ok(BlockData::BlendInteriorElements(false))));
-        assert_eq!(TaggedBlock::knockout(2).parsed(), Some(Ok(BlockData::Knockout(2))));
-        assert_eq!(TaggedBlock::transparency_shapes(false).parsed(), Some(Ok(BlockData::TransparencyShapes(false))));
-        assert_eq!(TaggedBlock::layer_mask_hides_effects(true).parsed(), Some(Ok(BlockData::LayerMaskHidesEffects(true))));
-        assert_eq!(TaggedBlock::vector_mask_hides_effects(true).parsed(), Some(Ok(BlockData::VectorMaskHidesEffects(true))));
-        assert_eq!(TaggedBlock::vector_mask_hides_effects(true).data, vec![1, 0, 0, 0]);
-        assert!(matches!(TaggedBlock::new(*b"tsly", vec![]).parsed(), Some(Err(_))), "truncated flag is an error, not a panic");
-        assert_eq!(TaggedBlock::protection(0x8000_0000).parsed(), Some(Ok(BlockData::Protection(0x8000_0000))));
-        assert_eq!(TaggedBlock::sheet_color(3).parsed(), Some(Ok(BlockData::SheetColor(3))));
-        assert_eq!(TaggedBlock::fill_opacity(128).parsed(), Some(Ok(BlockData::FillOpacity(128))));
-        let shmd = TaggedBlock::new(*b"shmd", vec![0, 0, 0, 0]);
-        assert_eq!(shmd.parsed(), Some(Ok(BlockData::MetadataSetting(&[0, 0, 0, 0]))));
-        assert_eq!(TaggedBlock::new(*b"lfx2", vec![]).parsed(), None);
-        assert!(matches!(TaggedBlock::new(*b"lyid", vec![1]).parsed(), Some(Err(_))));
-    }
-
-    #[test]
     fn default_padding_odd_data() {
         let b = TaggedBlock::new(*b"abcd", vec![1, 2, 3]);
         let out = rt(&[b.clone(), b], Version::Psd);

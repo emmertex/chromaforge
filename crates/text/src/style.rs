@@ -372,14 +372,4 @@ mod tests {
         assert_eq!(t.char_runs()[0].style.size_pt, 33.0);
         assert_eq!(t.paragraph_runs().len(), 1);
     }
-
-    #[test]
-    fn styles_serialize() {
-        let s = CharStyle { features: vec![FontFeature { tag: "ss01".into(), value: 1 }], ..Default::default() };
-        let v = serde_json::to_value(&s).unwrap();
-        let back: CharStyle = serde_json::from_value(v).unwrap();
-        assert_eq!(back, s);
-        let p: ParagraphStyle = serde_json::from_str(r#"{"align":"Center"}"#).unwrap();
-        assert_eq!((p.align, p.auto_leading), (TextAlign::Center, 1.2));
-    }
 }

@@ -605,6 +605,11 @@ pub struct UiState {
     /// moves those over, so only the `panel:<key>` ids stay (unknown ids are dropped).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub collapsed_sidebar: Vec<String>,
+    /// Preset and profile groups the user folded or unfolded (`preset:<group>`, `profile:<group>`,
+    /// `lut:<group>` → open). A group not listed is folded, unless it holds the current preset or
+    /// profile ([`UiState::group_is_open`]).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub group_open: std::collections::BTreeMap<String, bool>,
     /// A face's name being typed in the loupe.
     #[serde(skip)]
     pub name_edit: Option<NameEdit>,
@@ -1040,6 +1045,11 @@ pub enum Dialog {
     CopySettings {
         groups: Vec<String>,
     },
+    /// Synchronize Settings (Lightroom Classic's Sync…): the groups the active photo's settings
+    /// carry to the other selected photos.
+    SyncSettings {
+        groups: Vec<String>,
+    },
     /// Paste Selected Settings: which of the copied groups to paste.
     PasteSettings {
         groups: Vec<String>,
@@ -1181,6 +1191,7 @@ impl Default for UiState {
             face_boxes: true,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
+            group_open: Default::default(),
             name_edit: None,
             person_page: None,
             person_from: None,
@@ -1320,6 +1331,12 @@ impl UiState {
         }
     }
     /// Whether the sidebar section or panel with this id is folded shut (one never folded: no).
+    /// Whether the preset / profile group `key` is unfolded: as the user left it, else open only
+    /// when it holds the current preset or profile (`holds_current`).
+    pub fn group_is_open(&self, key: &str, holds_current: bool) -> bool {
+        self.group_open.get(key).copied().unwrap_or(holds_current)
+    }
+
     pub fn sidebar_section_collapsed(&self, id: &str) -> bool {
         match crate::sidebar::SidebarSection::from_id(id) {
             Some(s) => self.sidebar.is_collapsed(s),

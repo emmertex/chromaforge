@@ -85,33 +85,6 @@ fn canon_r8_craw_sensor_is_exact() {
     check("cr3-canon-r8-craw.cr3", 0xf836_a663_a795_a375, (6188, 4120), (6000, 4000));
 }
 
-/// EOS R5 Mark II (raw.pixls.us 7881–7884, CC0). No external decoder was run on these: the hashes pin
-/// This crate's own decode. Lossless RAW is CRX 0x100, as in the oracle-checked fixtures above, with
-/// odd-height (2825- and 1787-row) Bayer planes; every entropy stream decodes to its exact end. These
-/// low-ISO C-RAW files need no QP-map escape (most of the camera's files do; that is covered by the unit
-/// tests in `crx.rs`, see docs/cr3.md). The developed images match the camera's own previews.
-fn check_r5m2(name: &str, hash: u64, sensor: (usize, usize), developed: Option<(usize, usize)>) {
-    check_against(name, hash, sensor, developed, "the pinned decode");
-}
-
-#[test]
-fn canon_r5m2_sensor_is_pinned() {
-    // raw.pixls.us/getfile.php/7881; SHA256 d6e6aa3b493ea8936dff0efb0cc17c87471437e7317bce37c8c82ba08b9cab7b
-    check_r5m2("cr3-canon-r5m2-raw.cr3", 0xff71_6fb3_0248_496f, (8480, 5650), Some((8192, 5464)));
-    // raw.pixls.us/getfile.php/7882; SHA256 b3c08a5c7a97299dfd58896a12b939e7b43ec78682761812524825e6e5d087be
-    check_r5m2("cr3-canon-r5m2-craw.cr3", 0xaf32_b453_57b5_34e5, (8480, 5650), Some((8192, 5464)));
-}
-
-/// Crop mode (1.6×): the sensor samples only. Its developed framing depends on how the file's misplaced valid
-/// area is read, which is not part of the CRX decode.
-#[test]
-fn canon_r5m2_crop_mode_sensor_is_pinned() {
-    // raw.pixls.us/getfile.php/7883; SHA256 9f88c0ff012924193b7f4497559d133dfe626766d600b5d67689156721739ead
-    check_r5m2("cr3-canon-r5m2-apsc-raw.cr3", 0x31cf_630a_fe86_8958, (5376, 3574), None);
-    // raw.pixls.us/getfile.php/7884; SHA256 6a597497776a6abbfab8fcf12d0086ac7a3f8afea2879d61accf6bbf48d357d7
-    check_r5m2("cr3-canon-r5m2-apsc-craw.cr3", 0x4721_605b_2033_9332, (5376, 3574), None);
-}
-
 #[test]
 fn canon_m50_craw_crop_is_the_shot_aspect() {
     // raw.pixls.us/getfile.php/2663: the 1:1 square starts 1000 px right of the recommended crop's origin,

@@ -32,22 +32,73 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             super::empty_message(ui, r, "No photo selected", "Select a photo to edit");
             return;
         };
-        egui::ScrollArea::vertical().id_salt("right-scroll").auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            match app.ui.right {
-                RightPanel::Edit => super::edit::show(app, ui, id),
-                RightPanel::Profiles => super::profiles::show(app, ui, id),
-                RightPanel::Crop => crop(app, ui, id),
-                RightPanel::Remove => remove(app, ui, id),
-                RightPanel::Masking => super::masking::show(app, ui, id),
-                RightPanel::RedEye => red_eye(app, ui, id),
-                RightPanel::Info => super::metadata::show(app, ui, id),
-                RightPanel::Keywords => keywords(app, ui, id),
-                RightPanel::Versions => versions(app, ui, id),
-                RightPanel::Activity => activity(app, ui, id),
-                RightPanel::None => {}
-            }
+        // Edit: Lightroom Classic's Previous / Sync… bar under the panels, outside the scrolling
+        let full = ui.available_rect_before_wrap();
+        let footer = (app.ui.right == RightPanel::Edit).then(|| Rect::from_min_max(pos2(full.left(), full.bottom() - SYNC_BAR_H), full.max));
+        let body = footer.map_or(full, |f| Rect::from_min_max(full.min, pos2(full.right(), f.top())));
+        if let Some(f) = footer {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(f), |ui| sync_bar(app, ui, f));
+        }
+        ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+            egui::ScrollArea::vertical().id_salt("right-scroll").auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                match app.ui.right {
+                    RightPanel::Edit => super::edit::show(app, ui, id),
+                    RightPanel::Profiles => super::profiles::show(app, ui, id),
+                    RightPanel::Crop => crop(app, ui, id),
+                    RightPanel::Remove => remove(app, ui, id),
+                    RightPanel::Masking => super::masking::show(app, ui, id),
+                    RightPanel::RedEye => red_eye(app, ui, id),
+                    RightPanel::Info => super::metadata::show(app, ui, id),
+                    RightPanel::Keywords => keywords(app, ui, id),
+                    RightPanel::Versions => versions(app, ui, id),
+                    RightPanel::Activity => activity(app, ui, id),
+                    RightPanel::None => {}
+                }
+            });
         });
+    });
+}
+
+/// Height of the Previous / Sync… bar under the Edit panel.
+const SYNC_BAR_H: f32 = 44.0;
+
+/// Lightroom Classic's bar under the Develop panels: the Auto Sync switch, then Previous (one photo:
+/// paste the previous photo's settings), Sync… (several: Synchronize Settings) or Auto Sync (while
+/// it is on: edits already go to every selected photo; a click turns it off).
+fn sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
+    let t = Tokens::get(ui.ctx());
+    ui.painter().rect_filled(r, 0.0, t.chrome);
+    ui.painter().hline(r.x_range(), r.top() + 0.5, egui::Stroke::new(1.0, t.divider));
+    let auto = app.session.auto_sync;
+    let several = app.session.selection.ids.len() > 1;
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.add_space(16.0);
+        ui.spacing_mut().item_spacing.x = 8.0;
+        // the switch
+        let (sr, resp) = ui.allocate_exact_size(vec2(30.0, 16.0), Sense::click());
+        register(ui.ctx(), "button:autoSyncSwitch", sr);
+        let p = ui.painter();
+        p.rect_filled(sr, 8.0, if auto { t.accent } else { t.divider });
+        let knob = if auto { sr.right() - 8.0 } else { sr.left() + 8.0 };
+        p.circle_filled(pos2(knob, sr.center().y), 6.0, t.text);
+        let tip = crate::i18n::tr(if auto { "Auto Sync is on: edits apply to every selected photo" } else { "Turn on Auto Sync" });
+        if resp.on_hover_text(tip).clicked() {
+            let _ = app.run("develop.autoSync", json!({"on": !auto}));
+        }
+        let (id, label) = match (auto, several) {
+            (true, _) => ("syncBar", "Auto Sync"),
+            (false, true) => ("syncBar", "Sync…"),
+            (false, false) => ("previousBar", "Previous"),
+        };
+        if text_button(ui, id, crate::i18n::tr(label), auto).clicked() {
+            let _ = match (auto, several) {
+                (true, _) => app.run("develop.autoSync", json!({"on": false})),
+                (false, true) => app.run("dialog.syncSettings", json!({})),
+                (false, false) => app.run("develop.pastePrevious", json!({})),
+            };
+        }
     });
 }
 

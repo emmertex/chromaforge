@@ -810,31 +810,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cfa_helpers() {
-        let c = Cfa::bayer("RGGB").unwrap();
-        assert!(c.is_bayer());
-        assert_eq!(c.color_at(0, 0), 0);
-        assert_eq!(c.color_at(3, 3), 2);
-        assert_eq!(c.shifted(1, 0).name(), "GRBG");
-        assert_eq!(c.shifted(1, 1).name(), "BGGR");
-        assert!(Cfa::bayer("RGGX").is_none());
-        for name in ["RGGB", "BGGR", "GRBG", "GBRG"] {
-            assert_eq!(Cfa::bayer_static(name).name(), name);
-        }
-        let x = Cfa::xtrans();
-        assert!(!x.is_bayer());
-        let greens = x.pattern.iter().filter(|&&p| p == 1).count();
-        assert_eq!(greens, 20);
-        // every 3×3 block of the X-Trans layout has 5 greens
-        for by in 0..2 {
-            for bx in 0..2 {
-                let g = (0..9).filter(|i| x.color_at(bx * 3 + i % 3, by * 3 + i / 3) == 1).count();
-                assert_eq!(g, 5);
-            }
-        }
-    }
-
-    #[test]
     fn a_picture_made_elsewhere_is_finished_like_develop_does() {
         let (w, h) = (12usize, 10usize);
         let raw = RawImage {

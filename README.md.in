@@ -61,18 +61,18 @@ back to it as pull requests first.
 | **UI shell** | Single-window layout modelled on the cloud-era Lightroom: grid, detail and edit views, side panels, presets column | Lightroom Classic layout: module picker (top right, `Window → Modules`), Navigator / Catalog / Folders / Collections on the left, Quick Develop / Keywording / Metadata on the right, filmstrip, identity plate, secondary window |
 | **Modules** | Library and editing only | Library, Develop, Map, Book, Slideshow, Print, Web, sharing one catalog |
 | **Map** | No map view | Map module: OpenStreetMap tiles, drag-and-drop geotagging, saved locations, tracklogs, reverse geocoding |
-| **Book / Slideshow / Web** | Not available | Book (auto layout, templates, text cells with pair kerning and opacity, cover; PDF export), Slideshow (play, PDF / JPEG export; music tracks are attached but not played yet), Web (static HTML galleries, live preview, SFTP upload) |
+| **Book / Slideshow / Web** | Not available | Book (auto layout, templates, text cells with pair kerning and opacity, cover; PDF export), Slideshow (play with music, PDF / JPEG / video export), Web (static HTML galleries, live preview, SFTP upload) |
 | **Print** | Contact-sheet PDF (A4/Letter, rows/columns, captions) and soft proofing | Print module: single image / contact sheet, picture and custom packages, rulers, printer ICC profile with rendering intent and black point compensation, Print Adjustment, 16-bit output; print to IPP/CUPS printers (`ipps://` with certificate trust; paper type, tray, quality and two-sided from the driver) or save PDF/JPEG |
 | **Catalog format** | Library folder: JSON snapshot + append-only op log, kept in RAM (format v3) | Catalog v4: redb store + op log, several catalogs (New / Open Catalog), scheduled backups, integrity test, optimize; opens and migrates v3 libraries |
 | **Immich** | None | Connect one or more Immich (v3+) servers (API key in the system keychain); link existing photos, import from Immich, two-way metadata and album sync, People and smart search, Immich as a publish service, Edit In versions stacked on the original ([docs/immich.md](docs/immich.md)) |
 | **Tethering** | None | Studio capture (watched folder) and native PTP tethering over USB or Wi-Fi (PTP/IP) |
 | **Plug-ins** | None | WebAssembly plug-ins in a `wasmi` sandbox: menu commands, export post-processing and export destinations, custom metadata fields (edited across the selection, searchable, written to XMP), metadata suggestions, publish services; hooks run off the UI thread (Lightroom Lua plug-ins do not run) |
 | **Export & output extras** | Export presets, watermarks, HDR export, contact sheets | Everything upstream has, plus publish services (Hard Drive, Immich, plug-ins), Edit In (copy with adjustments, TIFF / layered PSD) and saved Actions |
-| **Lightroom migration** | Reads a Lightroom Classic `.lrcat` | The same importer, landing in a Classic catalog: collections become albums, smart collections smart albums, folder stacks stacks |
+| **Lightroom migration** | Reads a Lightroom Classic `.lrcat` | The same importer, landing in a Classic catalog: collections, smart collections (incl. collection and date rules), folder stacks, History and snapshots (as Versions) |
 | **Keyboard map** | Its own shortcuts (the commands' declared keys) | Classic keymap by default (E loupe, D Develop, C Compare, N Survey, R crop, Shift+W masking, Tab panels, ⌘⌥1–7 modules, ⌘L Enable Filters, F full-screen preview, F11 full screen); upstream's set is kept as the *Alternative* keymap |
 | **Licence** | MIT OR Apache-2.0 (`crates/segment`, `crates/fetch`: Apache-2.0) | MIT (`crates/segment`, `crates/fetch`: Apache-2.0); upstream's copyright notices kept in `LICENSE` and `NOTICE` |
 | **Name and identity** | Upstream's own name, icon and app id | Everything from [`brand.toml`](brand.toml): name, binaries, app id, settings folder, env-var prefix, file extensions; reads upstream's settings, env vars and presets on first start |
-| **Release channel** | Upstream's GitHub Releases | This repository's own `release` workflow: signed installers and archives for Windows, macOS, Linux, FreeBSD and the web, created as draft GitHub Releases of this fork and published after review ([docs/releasing.md](docs/releasing.md)) |
+| **Release channel** | Upstream's GitHub Releases | Built-in auto-updater (checks this fork's release feed, downloads and installs); this repository's own `release` workflow: signed installers and archives for Windows, macOS, Linux and the web, created as draft GitHub Releases of this fork and published after review ([docs/releasing.md](docs/releasing.md)) |
 | **Relationship** | The source | Forked at the `fork-base` tag; upstream is merged in regularly with `cargo xtask upstream-merge`; fork-only paths are listed in `upstream-owned.txt`; changes to shared crates go upstream as pull requests first ([docs/upstream-merge.md](docs/upstream-merge.md)) |
 
 ## Seven modules, one catalog
@@ -313,10 +313,10 @@ The app is young and moving fast. **Where we honestly stand** (details in the [r
   older-Canon raws on one machine.
 - **The biggest gaps:**
   - **camera colour calibration:** Sony, Nikon, Panasonic, Fujifilm and Canon CR3 raws have guarded estimates from their camera JPEGs, with built-in ILCE-7CR, ILCE-7M4, X-H2S and X-T4 profiles; measured calibration is missing, and other raws or rejected fits retain a neutral matrix;
-  - **compressed Olympus raws and unsupported CR3 variants:** these use embedded JPEG previews when present. Fujifilm lossless/lossy compressed RAF now decodes sensor data; [verification and existing-library reload instructions](docs/raf-compression.md);
-  - **AI masks and denoise:** subject and sky selection are classical heuristics;
+  - **per-model raw verification:** ~314 models are verified on real files (compressed ORF / SRW, tiled CR3, MRW, CRW, ERF, MEF now decode); other bodies are unverified, see [docs/raw-parity.md](docs/raw-parity.md);
+  - **AI quality:** Subject / Background (BiRefNet) and Object (SAM 3) masks are optional downloads; sky is still heuristic, denoise quality is unverified;
   - **network libraries:** a preview reads the raw's header and its embedded JPEG only (56.5 MB → 5.9 MB, 10 s → 1 s on the test share), but the *developed* picture still needs the sensor data over the wire; see [docs/raw-preview-reads.md](docs/raw-preview-reads.md);
-  - **on-screen HDR display; video is new** (silent playback, global edits only).
+  - **on-screen HDR display; video is new** (global edits only).
 - **What's next:** see [where we're going](ROADMAP.md#where-were-going).
 
 | Area | Status |
@@ -324,26 +324,27 @@ The app is young and moving fast. **Where we honestly stand** (details in the [r
 | Library: albums, folders, smart albums, stacks (incl. auto-stack), virtual copies, ratings, flags, labels, filter bar, search, sort, grids, filmstrip | ✅ |
 | Culling: Compare (synced zoom) and Survey views, auto-advance, instant previews | ✅ |
 | Light, Color, Effects (vignette styles), Tone Curve (+ refine saturation, targeted adjustment), Color Mixer (+ targeted), Point Color, Color Grading, Calibration, B&W | ✅ |
-| Masking: brush, linear, radial, luminance/colour range, add/subtract/intersect | ✅ (AI subject/sky use classical heuristics for now) |
+| Masking: brush (A/B presets, density), linear, radial, luminance/colour range, per-mask feather, add/subtract/intersect; AI Subject / Background (BiRefNet) and Object (SAM 3), optional downloads | ✅ |
 | Crop, straighten tool + auto straighten, flip, rotate, aspect ratios, overlays | ✅ |
-| Profiles (Color, Neutral, Vivid, Landscape, Portrait, Monochrome: our own looks), presets, versions, history, copy/paste/sync settings | ✅ |
+| Profiles (Color, Neutral, Vivid, Landscape, Portrait, Monochrome: our own looks), presets, versions, history, copy/paste/sync settings and metadata, Auto Sync, per-photo Auto | ✅ |
 | Camera colour: DNG files use their own matrices | ✅ DNG · 🟡 own Sony/Fujifilm profiles; measured calibration database missing |
 | Native macOS menu bar (generated from the command registry), control channel + every widget addressable, headless UI snapshots | ✅ |
-| RAW: DNG, CR2, CR3 (lossless CRX Bayer and version 0x100/0x200 C-RAW), ARW, NEF (uncompressed + lossless/lossy compressed), Fujifilm RAF (uncompressed + lossless/lossy compressed, Bayer + X-Trans), Panasonic RW2 / Leica RWL / Panasonic RAW (every raw format, DMC-LX1 to DC-S1RM2), Pentax PEF, Olympus ORF (uncompressed), Samsung SRW (uncompressed); embedded previews for every format incl. CR3 | 🟡 · CR3, compressed ORF and compressed SRW decode ⬜ |
+| RAW: DNG, CR2, CR3 (lossless CRX Bayer and version 0x100/0x200 C-RAW), ARW, NEF (uncompressed + lossless/lossy compressed), Fujifilm RAF (uncompressed + lossless/lossy compressed, Bayer + X-Trans), Panasonic RW2 / Leica RWL / Panasonic RAW (every raw format, DMC-LX1 to DC-S1RM2), Pentax PEF, Olympus ORF (uncompressed + compressed), Samsung SRW (uncompressed + compressed), CR3 tiled C-RAW, Minolta MRW, Sony ARW v1, packed NEF, SuperCCD RAF, Canon CRW, Epson ERF, Mamiya MEF; AVIF import; embedded previews for every format incl. CR3; ~314 models verified | 🟡 · per-model verification continues |
 | Detail: sharpening, luminance + colour noise reduction | ✅ · AI Denoise, Super Resolution ⬜ |
 | Remove (content-aware fill) / Heal / Clone spots (auto source), Visualize Spots, Red Eye and Pet Eye (auto pupil detection, catchlight) | ✅ · spot pin editing 🚧 |
 | Export: JPEG / PNG / TIFF / WebP / AVIF / DNG / original, sizing, file-size limit, output sharpening, naming templates, batch, metadata policy, text or image watermark | ✅ |
 | HDR: HDR editing with a headroom limit, SDR rendition, Visualize HDR; export as ISO 21496-1 gain map JPEG, PQ or HLG AVIF, or 32-bit float TIFF | ✅ · HDR display ⬜ |
+| Colour-managed display: previews follow the monitor profile on macOS, Linux (X11 / colord) and Windows (WCS) | ✅ |
 | Library persistence (crash-safe op log + snapshots, background compaction, failed saves reported), disk thumbnail cache | ✅ |
 | Import: Add in place / Copy / Move, rename and folder templates, devices, duplicate detection, watched folders; Local folder browsing | ✅ |
-| Output: Print (printer ICC, intent, BPC, Print Adjustment, 16-bit, `ipps://`, driver options), Book (PDF, pair kerning), Slideshow (PDF/JPEG; no sound output yet), Web (HTML galleries, SFTP), publish services with grid sections | ✅ · slideshow sound ⬜ |
+| Output: Print (printer ICC, intent, BPC, Print Adjustment, 16-bit, `ipps://`, driver options), Book (PDF, pair kerning), Slideshow (PDF/JPEG/video with music), Web (HTML galleries, SFTP), publish services with grid sections | ✅ |
 | MCP server (headless or live app, persistent libraries), CLI, control channel | ✅ |
 | XMP sidecars (read/write, auto-write), reading `crs:` develop settings, preset files (`.lcpreset`, XMP presets) | ✅ |
 | Optics (distortion, vignetting, auto + manual CA, defringe, lens corrections embedded in DNG files and Panasonic / Leica RW2 / RWL distortion data), Geometry (transforms, Constrain Crop), Upright (Auto/Level/Vertical/Full/Guided) | ✅ · lensfun-format lens database set up or downloaded from Settings ▸ Lens profiles 🟡 · lens profiles of our own ⬜ |
 | Photo Merge: HDR (auto-align, deghost), Panorama (spherical/cylindrical/perspective, boundary warp, auto crop), HDR Panorama → DNG | ✅ |
 | GPU pipeline (wgpu compute, CPU-exact within 1/255), CPU fallback on device limits / errors | ✅ · WebGPU in the browser 🚧 |
-| Video: MP4/MOV/MKV/WebM/TS/MXF decode (H.264, HEVC, VP9, AV1, ProRes, DNxHR, APV, MPEG-2), playback, trim, poster frame, Capture Frame, global grading, H.264 / ProRes export with audio | 🟡 · sound output, interlaced H.264, local adjustments on video ⬜ |
-| AI: segmentation masks, AI denoise, super resolution, faces | ⬜ (see [roadmap](ROADMAP.md#where-were-going)) |
+| Video: MP4/MOV/MKV/WebM/TS/MXF decode (H.264, HEVC, VP9, AV1, ProRes, DNxHR, APV, MPEG-2), playback, trim, poster frame, Capture Frame, global grading, H.264 / ProRes export with audio | 🟡 · interlaced H.264, local adjustments on video ⬜ |
+| AI: segmentation masks (BiRefNet, SAM 3), Bayer AI denoise, faces | 🟡 · super resolution ⬜ (see [roadmap](ROADMAP.md#where-were-going)) |
 | Web build (same UI in the browser via WASM): persistent library in OPFS/IndexedDB, Web Worker rendering, export downloads | ✅ · WebGPU, Safari/Firefox testing 🚧 |
 
 <sub>✅ works today · 🚧 in progress · ⬜ not started</sub>
@@ -476,7 +477,6 @@ with `cargo xtask package`.
 |---|---|---|
 | x64 (64-bit Intel/AMD) | `<binary>-<ver>-windows-x64.msi` | `<binary>-<ver>-windows-x64-portable.zip` |
 | arm64 (Snapdragon and other ARM PCs) | `<binary>-<ver>-windows-arm64.msi` | `<binary>-<ver>-windows-arm64-portable.zip` |
-| x86 (32-bit) | `<binary>-<ver>-windows-x86.msi` | `<binary>-<ver>-windows-x86-portable.zip` |
 
 Installers and executables are code-signed. The installer asks where to install (`C:\Program Files\<app>` by
 default; upgrades stay in the folder you chose) and ends on a page confirming the app was installed, with an
@@ -498,14 +498,6 @@ option to start it. For unattended installs: `msiexec /i <binary>-<ver>-windows-
 | Debian/Ubuntu | `<binary>-<ver>-linux-x86_64.deb` | `<binary>-<ver>-linux-aarch64.deb` | |
 | Fedora/RHEL/openSUSE | `<binary>-<ver>-linux-x86_64.rpm` | `<binary>-<ver>-linux-aarch64.rpm` | |
 | Tarball | `<binary>-<ver>-linux-x86_64.tar.gz` | `<binary>-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
-
-RISC-V (riscv64): `<binary>-<ver>-linux-riscv64.tar.gz`, a tarball only (glibc 2.39 or newer, e.g. Ubuntu 24.04+).
-
-### FreeBSD
-
-| Build | File |
-|---|---|
-| x86_64 | `<binary>-<ver>-freebsd-x86_64.tar.gz` |
 
 ### Web (WebAssembly)
 

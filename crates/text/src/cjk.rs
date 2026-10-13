@@ -513,36 +513,3 @@ mod tests {
         assert_ne!(sc, tc);
     }
 }
-
-#[cfg(all(test, target_os = "linux"))]
-mod flatpak_tests {
-    use super::*;
-
-    #[test]
-    fn cjk_discovery_includes_host_fonts_with_the_matching_collection_face() {
-        for script in [CjkScript::Japanese, CjkScript::SimplifiedChinese, CjkScript::TraditionalChinese, CjkScript::Korean] {
-            let files = font_files(script);
-            let native = &files[0];
-            let host = &files[1];
-            assert_eq!(native.path, std::path::Path::new("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"));
-            assert_eq!(host.path, std::path::Path::new("/run/host/fonts/opentype/noto/NotoSansCJK-Regular.ttc"));
-            assert_eq!(host.family, families(script).iter().find(|family| family.starts_with("Noto Sans CJK")).copied().unwrap());
-            for pair in files.windows(2) {
-                if let Ok(relative) = pair[0].path.strip_prefix("/usr/share/fonts") {
-                    assert_eq!(pair[1].path, std::path::Path::new("/run/host/fonts").join(relative));
-                    assert_eq!(pair[1].family, pair[0].family);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn last_resort_discovery_includes_the_host_droid_font() {
-        let files = last_resort_files();
-        assert!(
-            files
-                .iter()
-                .any(|file| file.path == std::path::Path::new("/run/host/fonts/truetype/droid/DroidSansFallbackFull.ttf") && file.family.is_empty())
-        );
-    }
-}

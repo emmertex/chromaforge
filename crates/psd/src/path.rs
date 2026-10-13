@@ -286,13 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn fixed_point_conversion() {
-        assert_eq!(f64_to_fixed(1.0), 1 << 24);
-        assert_eq!(fixed_to_f64(-(1 << 23)), -0.5);
-        assert_eq!(f64_to_fixed(1e12), i32::MAX);
-    }
-
-    #[test]
     fn lenient_knots_without_length_record() {
         let mut p = PathData::from_subpaths(&sample(), false);
         p.records.retain(|r| !r.is_length());

@@ -2130,10 +2130,10 @@ fn local_photos_cannot_be_added_to_albums_until_they_join_my_photos() {
         photo
             .iter()
             .find_map(|n| match n {
-                crate::menubar::MenuNode::Submenu { label, children } if label == "Add to Album" => Some(children.clone()),
+                crate::menubar::MenuNode::Submenu { label, children } if label == "Add to Collection" => Some(children.clone()),
                 _ => None,
             })
-            .expect("Add to Album submenu")
+            .expect("Add to Collection submenu")
     };
     let enabled_of = |nodes: &[crate::menubar::MenuNode], id: &str| -> Option<bool> {
         nodes.iter().find_map(|n| match n {

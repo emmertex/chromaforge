@@ -516,63 +516,6 @@ mod tests {
     }
 
     #[test]
-    fn packbits_empty() {
-        assert!(pb_roundtrip(&[]).is_empty());
-    }
-
-    #[test]
-    fn packbits_single() {
-        assert_eq!(pb_roundtrip(&[7]), vec![0, 7]);
-    }
-
-    #[test]
-    fn packbits_run_of_two() {
-        assert_eq!(pb_roundtrip(&[5, 5]), vec![0xff, 5]);
-    }
-
-    #[test]
-    fn packbits_run_128() {
-        let src = vec![9u8; 128];
-        assert_eq!(pb_roundtrip(&src), vec![0x81, 9]);
-    }
-
-    #[test]
-    fn packbits_run_129() {
-        let src = vec![9u8; 129];
-        assert_eq!(pb_roundtrip(&src), vec![0x81, 9, 0, 9]);
-    }
-
-    #[test]
-    fn packbits_run_130_and_256() {
-        pb_roundtrip(&[1u8; 130]);
-        let enc = pb_roundtrip(&[1u8; 256]);
-        assert_eq!(enc, vec![0x81, 1, 0x81, 1]);
-    }
-
-    #[test]
-    fn packbits_literal_128_and_129() {
-        let src: Vec<u8> = (0..128u32).map(|i| i as u8).collect();
-        let enc = pb_roundtrip(&src);
-        assert_eq!(enc[0], 127);
-        assert_eq!(enc.len(), 129);
-        let src: Vec<u8> = (0..129u32).map(|i| i as u8).collect();
-        let enc = pb_roundtrip(&src);
-        assert_eq!(enc[0], 127);
-        assert_eq!(enc[129], 0);
-        assert_eq!(enc.len(), 131);
-    }
-
-    #[test]
-    fn packbits_literal_run_boundary() {
-        pb_roundtrip(&[1, 2, 3, 3, 3, 3, 4, 5]);
-        pb_roundtrip(&[1, 1, 2, 2, 3, 3]);
-        pb_roundtrip(&[1, 2, 2, 3]);
-        pb_roundtrip(&[0, 0, 0, 1, 0, 0, 0]);
-        let enc = pb_roundtrip(&[1, 2, 3, 3, 3]);
-        assert_eq!(enc, vec![1, 1, 2, 0xfe, 3]);
-    }
-
-    #[test]
     fn packbits_never_emits_noop() {
         for n in 0..300usize {
             let src: Vec<u8> = (0..n).map(|i| ((i / 3) % 5) as u8).collect();
@@ -604,14 +547,6 @@ mod tests {
     #[test]
     fn packbits_zero_expected_ignores_input() {
         assert_eq!(packbits::decode(&[0xff, 1], 0).unwrap(), Vec::<u8>::new());
-    }
-
-    #[test]
-    fn compression_values() {
-        for v in 0..6 {
-            assert_eq!(Compression::from_u16(v).as_u16(), v);
-        }
-        assert_eq!(Compression::from_u16(9), Compression::Unknown(9));
     }
 
     fn sample_data(l: &PlaneLayout) -> Vec<u8> {

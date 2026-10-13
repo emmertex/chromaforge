@@ -314,6 +314,16 @@ fn flip(s: &mut Session, p: &Value, horizontal: bool) -> Result<Value> {
     Ok(json!({"changed": n}))
 }
 
+/// The active photo's metadata as `photo.copyMetadata` gives it (and `photo.setMeta` takes it).
+fn active_meta(s: &Session, c: &str) -> Result<Value> {
+    let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+    let m = &s.catalog.photo(id).ok_or_else(|| bad(c, "no photo"))?.meta;
+    Ok(json!({"title": m.title, "caption": m.caption, "altText": m.alt_text, "extendedDescription": m.extended_description,
+        "copyright": m.copyright, "copyrightStatus": m.copyright_status.id(), "usageTerms": m.usage_terms, "copyrightUrl": m.copyright_url,
+        "creator": m.creator, "location": m.location, "city": m.city, "state": m.state, "country": m.country,
+        "keywords": m.keywords}))
+}
+
 /// `library.selectBy`: select the photos in view that match every given criterion.
 fn select_by(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "library.selectBy";
@@ -668,15 +678,37 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(serde_json::to_value(crate::devices::devices_now()).unwrap_or_default())
         }),
         cmd!(query "photo.copyMetadata", "Copy Metadata", ["Photo"], None, "{} — title, caption, copyright (notice, status, usage terms, info URL), creator, location and keywords of the active photo", has_active, |s, _| {
-            let id = s.active().ok_or_else(|| bad("photo.copyMetadata", "no active photo"))?;
-            let m = &s.catalog.photo(id).ok_or_else(|| bad("photo.copyMetadata", "no photo"))?.meta;
-            let v = json!({"title": m.title, "caption": m.caption, "altText": m.alt_text, "extendedDescription": m.extended_description,
-                "copyright": m.copyright, "copyrightStatus": m.copyright_status.id(), "usageTerms": m.usage_terms, "copyrightUrl": m.copyright_url,
-                "creator": m.creator, "location": m.location, "city": m.city, "state": m.state, "country": m.country,
-                "keywords": m.keywords});
+            let v = active_meta(s, "photo.copyMetadata")?;
             s.meta_clipboard = Some(v.clone());
             Ok(v)
         }),
+        cmd!(
+            "photo.syncMetadata",
+            "Sync Metadata",
+            ["Photo"],
+            None,
+            "{fields?: [title|caption|copyright|copyrightStatus|usageTerms|copyrightUrl|creator|location|keywords|…] (default: all)} — copy the active photo's metadata (as photo.copyMetadata) to the other selected photos, one undo step → as photo.setMeta",
+            has_selection,
+            |s, p| {
+                let c = "photo.syncMetadata";
+                let active = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                let others: Vec<u64> = s.selection.ids.iter().filter(|x| **x != active).map(|x| x.0).collect();
+                if others.is_empty() {
+                    return Err(bad(c, "select the photos to sync to as well as the active one"));
+                }
+                let v = active_meta(s, c)?;
+                let fields: Option<Vec<String>> =
+                    p.get("fields").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());
+                let mut params = serde_json::Map::new();
+                for (k, v) in v.as_object().into_iter().flatten() {
+                    if fields.as_ref().is_none_or(|f| f.iter().any(|x| x == k)) {
+                        params.insert(k.clone(), v.clone());
+                    }
+                }
+                params.insert("ids".into(), json!(others));
+                s.execute("photo.setMeta", &Value::Object(params))
+            }
+        ),
         cmd!(
             "photo.pasteMetadata",
             "Paste Metadata",

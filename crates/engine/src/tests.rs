@@ -300,6 +300,24 @@ fn masks_crop_and_render() {
 }
 
 #[test]
+fn auto_stays_applied_until_a_tone_slider_changes() {
+    let mut s = demo();
+    let id = s.active().unwrap();
+    assert!(!s.auto_is_current(id));
+    let r = s.execute("develop.auto", &json!({})).unwrap();
+    assert_eq!(r["current"], true, "{r}");
+    assert!(s.auto_is_current(id));
+    // a change elsewhere keeps it; a tone slider change ends it
+    s.execute("develop.set", &json!({"control": "effects.clarity", "value": 10})).unwrap();
+    assert!(s.auto_is_current(id));
+    s.execute("develop.set", &json!({"control": "light.contrast", "value": 3})).unwrap();
+    assert!(!s.auto_is_current(id));
+    // undoing that change brings the Auto values (and the state) back
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.auto_is_current(id));
+}
+
+#[test]
 fn versions_history_and_reset() {
     let mut s = demo();
     s.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
@@ -651,6 +669,28 @@ fn paste_from_previous_and_copy_paste_metadata() {
     assert_ne!(m.creator, "Me");
     s.execute("photo.pasteMetadata", &json!({"ids": [ids[2].0]})).unwrap();
     assert_eq!(s.catalog.photo(ids[2]).unwrap().meta.creator, "Me");
+}
+
+#[test]
+fn sync_metadata_copies_the_active_photo_to_the_selection() {
+    let mut s = demo();
+    let ids: Vec<_> = s.visible().iter().copied().take(3).collect();
+    s.execute("library.select", &json!({"ids": [ids[0].0]})).unwrap();
+    s.execute("photo.setMeta", &json!({"title": "Dawn", "keywords": ["sky"], "creator": "Me"})).unwrap();
+    // alone it has nothing to sync to
+    assert!(s.execute("photo.syncMetadata", &json!({})).is_err());
+    s.execute("library.select", &json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>(), "active": ids[0].0})).unwrap();
+    s.execute("photo.syncMetadata", &json!({"fields": ["title", "keywords"]})).unwrap();
+    for id in &ids[1..] {
+        let m = &s.catalog.photo(*id).unwrap().meta;
+        assert_eq!((m.title.as_str(), m.keywords.clone()), ("Dawn", vec!["sky".to_string()]));
+        assert_ne!(m.creator, "Me", "only the chosen fields");
+    }
+    s.execute("photo.syncMetadata", &json!({})).unwrap();
+    assert_eq!(s.catalog.photo(ids[2]).unwrap().meta.creator, "Me");
+    // one undo step takes the whole sync back
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_ne!(s.catalog.photo(ids[2]).unwrap().meta.creator, "Me");
 }
 
 #[test]
@@ -1189,6 +1229,18 @@ fn undo_and_redo_show_the_photo_they_change() {
     let before = s.selection.clone();
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.selection, before, "a step over several photos keeps the selection");
+}
+
+/// Undoing a step that created photos (here a virtual copy) never leaves them in the selection.
+#[test]
+fn undo_never_leaves_vanished_photos_selected() {
+    let mut s = demo();
+    let r = s.execute("photo.virtualCopy", &json!({})).unwrap();
+    let copy = r["ids"][0].as_u64().unwrap();
+    s.execute("library.select", &json!({"ids": [copy]})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.selection.ids.iter().all(|&id| s.catalog.photo(id).is_some()), "{:?}", s.selection);
+    assert!(s.selection.active.is_none_or(|a| s.selection.ids.contains(&a)));
 }
 
 #[test]

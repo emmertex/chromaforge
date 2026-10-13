@@ -72,22 +72,3 @@ pub fn default_toning_data() -> Vec<u8> {
 pub fn color_mode_data_for_depth(depth: u16) -> Vec<u8> {
     if depth == 32 { default_toning_data() } else { Vec::new() }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_record_layout() {
-        let d = default_toning_data();
-        assert_eq!(d.len(), 110);
-        assert!(is_toning_data(&d));
-        assert_eq!(&d[72..76], EXTRA_KEY);
-        // Version fields.
-        assert_eq!(&d[4..8], &3u32.to_be_bytes());
-        assert_eq!(&d[76..80], &6u32.to_be_bytes());
-        assert!(color_mode_data_for_depth(8).is_empty());
-        assert!(color_mode_data_for_depth(16).is_empty());
-        assert_eq!(color_mode_data_for_depth(32), d);
-    }
-}

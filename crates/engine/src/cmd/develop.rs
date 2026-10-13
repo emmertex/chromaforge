@@ -390,7 +390,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 d.color.saturation = a.saturation;
                 Ok(())
             })?;
-            Ok(serde_json::to_value(a).unwrap_or_default())
+            if let Some(d) = s.develop_of(id) {
+                let values = Session::auto_values(&d);
+                s.auto_applied.insert(id, values);
+            }
+            let mut r = serde_json::to_value(a).unwrap_or_default();
+            if let Some(o) = r.as_object_mut() {
+                o.insert("current".into(), json!(s.auto_is_current(id)));
+            }
+            Ok(r)
         }),
         cmd!(
             "develop.wb",

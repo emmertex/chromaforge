@@ -224,22 +224,53 @@ pub fn right_column(app: &mut LccApp, ui: &mut egui::Ui) {
     let width = app.ui.right_width;
     let declared = crate::module::get(app.ui.module).right_panels();
     let resized = super::resizable_side(ui, false, "right_panel", frame, width, crate::state::RIGHT_WIDTH, reserve, |ui| {
-        egui::ScrollArea::vertical().id_salt("classic-right-scroll").auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for p in ordered(app, declared) {
-                let (_, open) = header(app, ui, p, declared);
-                if open {
-                    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 12, top: 4, bottom: 10 }).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        body(app, ui, p);
-                    });
+        // Library: Sync Metadata / Sync Settings under the panels, as Lightroom Classic has them
+        let full = ui.available_rect_before_wrap();
+        let bar = egui::Rect::from_min_max(pos2(full.left(), full.bottom() - 44.0), full.max);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| library_sync_bar(app, ui, bar));
+        let rest = egui::Rect::from_min_max(full.min, pos2(full.right(), bar.top()));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| {
+            egui::ScrollArea::vertical().id_salt("classic-right-scroll").auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for p in ordered(app, declared) {
+                    let (_, open) = header(app, ui, p, declared);
+                    if open {
+                        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 12, top: 4, bottom: 10 }).show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            body(app, ui, p);
+                        });
+                    }
                 }
-            }
+            });
         });
     });
     if let Some(w) = resized {
         app.ui.right_width = w;
     }
+}
+
+/// Library's Sync Metadata and Sync Settings buttons, for the active photo and the rest of the
+/// selection (disabled with one photo selected).
+fn library_sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
+    let t = Tokens::get(ui.ctx());
+    ui.painter().rect_filled(r, 0.0, t.chrome);
+    ui.painter().hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, t.divider));
+    let several = app.session.active().is_some() && app.session.selection.ids.len() > 1;
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.add_enabled_ui(several, |ui| {
+            if crate::widgets::text_button(ui, "syncMetadata", crate::i18n::tr("Sync Metadata"), false).clicked()
+                && let Err(e) = app.run("photo.syncMetadata", json!({}))
+            {
+                app.toast(ui.ctx(), e);
+            }
+            if crate::widgets::text_button(ui, "syncSettings", crate::i18n::tr("Sync Settings"), false).clicked() {
+                let _ = app.run("dialog.syncSettings", json!({}));
+            }
+        });
+    });
 }
 
 /// A right-column panel's contents.

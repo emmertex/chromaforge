@@ -69,7 +69,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny,cargo-nextest
+      # full run (CI=true): the test stage runs cargo-nextest with retries and ci/quarantine.toml (docs/ci.md)
       - name: cargo xtask ci (--fast unless a release / manual run)
         shell: bash
         run: |
@@ -110,10 +111,15 @@ jobs:
         with:
           key: ci-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        if: env.FULL_CI == '1'
+        with:
+          tool: cargo-nextest
       - name: build
         run: cargo build --workspace --locked
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # nextest with retries; quarantined tests (ci/quarantine.toml) run apart and only warn (docs/ci.md)
       - name: test
         if: env.FULL_CI == '1'
-        run: cargo test --workspace --locked
+        run: cargo xtask quarantine test

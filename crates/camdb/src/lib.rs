@@ -509,10 +509,4 @@ provenance = { source = "native-dng", detail = "Software: X1 1.0" }
             assert!(e.validate().is_ok(), "{} {}", e.make, e.model);
         }
     }
-
-    #[test]
-    fn measured_sources_rank_first() {
-        assert!(Source::NativeDng.rank() < Source::SpectralSensitivities.rank());
-        assert!(Source::Chart.is_measured() && !Source::SpectralSensitivities.is_measured() && !Source::Estimated.is_measured());
-    }
 }

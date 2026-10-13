@@ -43,6 +43,8 @@
   "Location {n}": "Lieu {n}",
   "{n} photos · {frames} frames · {secs} s": "{n} photos · {frames} images · {secs} s",
   "Exported timelapse: {photos} photos, {frames} frames": "Timelapse exporté : {photos} photos, {frames} images",
+  "Color space: Rec. 2020 {curve} (HDR AVIF)": "Espace colorimétrique : Rec. 2020 {curve} (AVIF HDR)",
+  "The checked settings of the active photo are copied to {n} other selected photo(s)": "Les paramètres cochés de la photo active sont copiés vers {n} autre(s) photo(s) sélectionnée(s)",
   "{app} {version}": "{app} {version}",
   "{app} {version} is available (Help ▸ Check for Updates…)": "{app} {version} est disponible (Aide ▸ Rechercher des mises à jour…)",
   "Version {version} is available.": "La version {version} est disponible.",

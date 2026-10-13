@@ -143,9 +143,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("brush.featherMore", "Increase Brush Feather", Some("Shift+]"), "Window>Tools"),
     // the Masking brush's A / B presets (each keeps its own size, feather, flow and density)
     ("brush.preset", "Switch Brush A / B", None, "Window>Tools"),
-    ("dialog.newAlbum", "New Album…", Some("Cmd+N"), "Library"),
-    ("dialog.newFolder", "New Folder…", Some("Cmd+Shift+N"), "Library"),
-    ("dialog.smartAlbum", "New Smart Album…", None, "Library"),
+    ("dialog.newAlbum", "New Collection…", Some("Cmd+N"), "Library"),
+    ("dialog.newFolder", "New Collection Set…", Some("Cmd+Shift+N"), "Library"),
+    ("dialog.smartAlbum", "New Smart Collection…", None, "Library"),
     ("view.photoCounts", "Show Photo Counts", None, "View"),
     ("view.sidebarSection", "Show Sidebar Section", None, ""),
     ("view.sidebarMoveSection", "Move Sidebar Section", None, ""),
@@ -176,11 +176,12 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.theme", "Theme", None, ""),
     ("dialog.allMetadata", "All Metadata…", None, "Photo"),
     ("dialog.faceModel", "Add Face Model…", None, ""),
-    ("dialog.newSmartAlbum", "New Smart Album from Filter…", Some("Cmd+Alt+N"), "Library"),
+    ("dialog.newSmartAlbum", "New Smart Collection from Filter…", Some("Cmd+Alt+N"), "Library"),
     ("dialog.createPreset", "Create Preset…", Some("Cmd+Shift+P"), "Photo"),
     ("dialog.autoStack", "Auto-Stack by Capture Time…", None, "Photo>Stack"),
     ("dialog.copySettings", "Choose Edit Settings to Copy…", Some("Cmd+Shift+C"), "Edit"),
     ("dialog.pasteSettings", "Paste Selected Settings…", Some("Cmd+Shift+V"), "Edit"),
+    ("dialog.syncSettings", "Synchronize Settings…", None, "Edit"),
     ("view.focusSearch", "Find…", Some("Cmd+F"), "Library"),
     ("dialog.export", "Export…", None, "File"),
     ("dialog.contactSheet", "Contact Sheet PDF…", None, "File"),
@@ -1220,6 +1221,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.focus_search = true;
             Ok(Value::Null)
         }
+        "dialog.syncSettings" => {
+            let groups =
+                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
+            app.ui.dialog = Some(Dialog::SyncSettings { groups });
+            Ok(Value::Null)
+        }
         "dialog.copySettings" => {
             let groups =
                 app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
@@ -1925,6 +1932,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "photo.editInPhotoCraft" | "photo.editInExternal" => app.session.active().is_some() && app.services.open_with.is_some(),
         "app.exportPrevious" => app.session.active().is_some() && app.session.last_export.is_some(),
         "dialog.pasteSettings" => app.session.active().is_some() && app.session.clipboard.is_some(),
+        "dialog.syncSettings" => app.session.active().is_some() && app.session.selection.ids.len() > 1,
         "app.showInFinder" => {
             app.services.reveal.is_some()
                 && app
@@ -2036,6 +2044,11 @@ fn show_in_finder(app: &mut LccApp) -> Result<Value, String> {
 /// file (`format`, `colorSpace`, `bitDepth`) and the editor (`app`). PhotoCraft is checked first,
 /// so a missing editor leaves no copy behind.
 fn edit_in(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -> Result<Value, String> {
+    // every way in (menu, shortcut, context menu, the control channel) says why nothing opened
+    edit_in_inner(app, ctx, p, photocraft).inspect_err(|e| app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)))
+}
+
+fn edit_in_inner(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -> Result<Value, String> {
     let settings = &app.ui.settings;
     let (file, configured) = if photocraft {
         let path = settings.photocraft_path.trim();
@@ -2044,11 +2057,8 @@ fn edit_in(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -
         (settings.external_file, settings.external_editor.clone())
     };
     let editor = p.get("app").and_then(Value::as_str).map_or(configured, str::to_string);
-    if let Some(check) = app.services.check_editor.as_ref()
-        && let Err(e) = check(&editor)
-    {
-        app.toast(ctx, e.clone());
-        return Err(e);
+    if let Some(check) = app.services.check_editor.as_ref() {
+        check(&editor)?;
     }
     let mut params = file.params();
     if let (Some(o), Some(given)) = (params.as_object_mut(), p.as_object()) {
@@ -2071,9 +2081,11 @@ fn edit_in(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -
             failed = Some(e);
         }
     }
-    match (failed, copies.as_slice()) {
-        (Some(e), _) => app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
-        (None, [(path, _)]) => {
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    match copies.as_slice() {
+        [(path, _)] => {
             let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             app.toast(ctx, crate::i18n::tr_format!("{name} opened for editing; it is stacked with the original", name = name));
         }

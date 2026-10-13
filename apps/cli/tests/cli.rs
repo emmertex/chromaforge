@@ -256,6 +256,23 @@ fn snapshot_subcommand_renders_the_ui_headlessly() {
     assert_eq!((d.width, d.height), (640, 480));
 }
 
+/// `snapshot` sessions look for the SAM 3 model where the app does (`<PREFIX>_SAM3_DIR`), so a
+/// scripted Object / Describe mask works headlessly instead of failing with "no folder is set".
+#[test]
+fn snapshot_sessions_get_the_sam3_model_folder() {
+    let script = tmp("snap-sam3.jsonl");
+    let out = tmp("snap-sam3.png");
+    let dir = tmp("snap-sam3-model");
+    std::fs::write(&script, format!("{}\n", json!({"method": "engine.execute", "params": {"command": "segment.model.status"}}))).unwrap();
+    let o = Command::new(BIN)
+        .env(lcc_brand::env_var("SAM3_DIR"), &dir)
+        .args(["snapshot", "--demo", "--script", script.to_str().unwrap(), "-o", out.to_str().unwrap(), "--size", "320x200"])
+        .output()
+        .unwrap();
+    let reply: Value = serde_json::from_str(String::from_utf8_lossy(&o.stdout).lines().next().unwrap()).unwrap();
+    assert_eq!(reply["result"]["dir"].as_str(), dir.to_str(), "{reply}");
+}
+
 /// Issue #166: a scripted request that fails makes `snapshot` exit non-zero. The failed reply is
 /// still printed, the later lines still run, and the final `-o` screenshot is still written.
 #[test]

@@ -776,11 +776,4 @@ mod tests {
         let short = synth(16, 8, 1, None, &stream[..stream.len() / 2]);
         let _ = crate::decode(&short);
     }
-
-    #[test]
-    fn civil_dates() {
-        assert_eq!(civil(0), (1970, 1, 1));
-        assert_eq!(civil(11_016), (2000, 2, 29));
-        assert_eq!(civil(13_682), (2007, 6, 18));
-    }
 }

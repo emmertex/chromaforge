@@ -112,6 +112,7 @@ const LAYOUT: &[(&str, &[&str])] = &[
             "develop.paste",
             "dialog.pasteSettings",
             "develop.sync",
+            "dialog.syncSettings",
             "develop.autoSync",
             "---",
             "library.selectAll",
@@ -196,7 +197,7 @@ const LAYOUT: &[(&str, &[&str])] = &[
     (
         "Photo",
         &[
-            "@Add to Album",
+            "@Add to Collection",
             "---",
             "@Set Rating",
             "@Set Flag",
@@ -220,6 +221,7 @@ const LAYOUT: &[(&str, &[&str])] = &[
             "develop.updateProcess",
             "dialog.createPreset",
             "---",
+            "photo.syncMetadata",
             "photo.saveMetadataToFile",
             "photo.readMetadataFromFile",
             "photo.reload",
@@ -686,7 +688,7 @@ fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             v.push(item("dialog.export", Value::Null, "Custom…", None, sel, None));
             v
         }
-        "Add to Album" => {
+        "Add to Collection" => {
             let targets = app.session.targets(&Value::Null);
             let sel = !targets.is_empty();
             // albums hold library photos (issue #684): a Local-only selection is told what to do first
@@ -703,7 +705,7 @@ fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             if any {
                 v.push(MenuNode::Separator);
             }
-            v.push(item("dialog.newAlbum", Value::Null, "New Album…", None, !local_only, None));
+            v.push(item("dialog.newAlbum", Value::Null, "New Collection…", None, !local_only, None));
             v
         }
         _ => return None,

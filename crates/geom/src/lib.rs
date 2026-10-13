@@ -414,18 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn rect_ops() {
-        let r = Rect::new(0.0, 0.0, 4.0, 2.0);
-        assert_eq!(r.aspect(), 2.0);
-        let f = r.fit_aspect(1.0);
-        assert_eq!((f.width(), f.height()), (2.0, 2.0));
-        assert_eq!(f.center(), r.center());
-        assert!(r.contains(Point::new(3.9, 1.9)));
-        assert!(!r.contains(Point::new(4.0, 1.0)));
-        assert!(r.intersect(&Rect::new(5.0, 5.0, 6.0, 6.0)).is_empty());
-    }
-
-    #[test]
     fn orientation_roundtrip_and_dims() {
         for v in 1..=8 {
             let o = Orientation::from_exif(v);

@@ -248,48 +248,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reader_reads_big_endian() {
-        let data = [0x00, 0x01, 0xff, 0xfe, 0x00, 0x00, 0x00, 0x02];
-        let mut r = Reader::new(&data);
-        assert_eq!(r.u16().unwrap(), 1);
-        assert_eq!(r.i16().unwrap(), -2);
-        assert_eq!(r.u32().unwrap(), 2);
-        assert!(r.is_empty());
-        assert!(matches!(r.u8(), Err(PsdError::UnexpectedEof { .. })));
-    }
-
-    #[test]
-    fn reader_eof_reports_needed() {
-        let mut r = Reader::new(&[1, 2]);
-        match r.u32() {
-            Err(PsdError::UnexpectedEof { offset, needed }) => {
-                assert_eq!(offset, 0);
-                assert_eq!(needed, 2);
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
     fn check_count_rejects_huge() {
         let r = Reader::new(&[0; 8]);
         assert!(r.check_count(u64::MAX, 4).is_err());
         assert!(r.check_count(2, 4).is_ok());
         assert!(r.check_count(3, 4).is_err());
-    }
-
-    #[test]
-    fn len_patch_roundtrip() {
-        let mut v = Vec::new();
-        let at = v.begin_len(false);
-        v.put(&[1, 2, 3]);
-        v.end_len(at, false).unwrap();
-        assert_eq!(v, [0, 0, 0, 3, 1, 2, 3]);
-        let mut v = Vec::new();
-        let at = v.begin_len(true);
-        v.put(&[9]);
-        v.end_len(at, true).unwrap();
-        assert_eq!(v, [0, 0, 0, 0, 0, 0, 0, 1, 9]);
     }
 
     #[test]

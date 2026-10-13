@@ -37,7 +37,7 @@ impl SidebarSection {
     /// The heading, in English (translated where it is shown).
     pub const fn title(self) -> &'static str {
         match self {
-            SidebarSection::Albums => "Albums",
+            SidebarSection::Albums => "Collections",
             SidebarSection::Local => "Local",
             SidebarSection::ByDate => "By Date",
             SidebarSection::Folders => "Folders",
@@ -48,7 +48,7 @@ impl SidebarSection {
     /// What the section says while it has nothing to list, in English.
     pub const fn empty_hint(self) -> &'static str {
         match self {
-            SidebarSection::Albums => "No albums yet",
+            SidebarSection::Albums => "No collections yet",
             SidebarSection::Local => "No folders to browse",
             SidebarSection::ByDate => "No photos yet",
             SidebarSection::Folders => "No imported folders yet",

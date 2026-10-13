@@ -53,6 +53,8 @@
   "Trained on: {provenance}": "学習データ：{provenance}",
   "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}。ライブラリの「denoise」フォルダーに保存されます。上限に達すると、どの写真にも使われていない古いものから削除されます。",
   "{} of {} from {host}": "{host}から {}/{}",
+  "Color space: Rec. 2020 {curve} (HDR AVIF)": "カラースペース：Rec. 2020 {curve}（HDR AVIF）",
+  "The checked settings of the active photo are copied to {n} other selected photo(s)": "アクティブな写真のチェックした設定を、選択中の他の {n} 枚にコピーします",
   "{app} {version}": "{app} {version}",
   "{app} {version} is available (Help ▸ Check for Updates…)": "{app} {version} が利用できます（ヘルプ ▸ 更新を確認…）",
   "Version {version} is available.": "バージョン {version} が利用できます。",

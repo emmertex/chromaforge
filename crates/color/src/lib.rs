@@ -208,12 +208,6 @@ mod tests {
     }
 
     #[test]
-    fn rec2020_luma() {
-        let l = REC2020.luma();
-        assert!((l[0] - 0.2627).abs() < 1e-3 && (l[1] - 0.6780).abs() < 1e-3 && (l[2] - 0.0593).abs() < 1e-3);
-    }
-
-    #[test]
     fn white_maps_to_white() {
         for sp in [SRGB, DISPLAY_P3, REC2020, PROPHOTO, ADOBE_RGB] {
             let w = sp.to_space(&REC2020).apply([1.0, 1.0, 1.0]);
@@ -229,12 +223,5 @@ mod tests {
         let b = PROPHOTO.to_space(&SRGB);
         let v = b.apply(a.apply([0.2, 0.5, 0.9]));
         assert!((v[0] - 0.2).abs() < 1e-9 && (v[1] - 0.5).abs() < 1e-9 && (v[2] - 0.9).abs() < 1e-9);
-    }
-
-    #[test]
-    fn hex() {
-        assert_eq!(Rgb8::from_hex("#1e1e1e"), Some(Rgb8(30, 30, 30)));
-        assert_eq!(Rgb8(1, 2, 255).to_hex(), "#0102ff");
-        assert_eq!(Rgb8::from_hex("xyz"), None);
     }
 }

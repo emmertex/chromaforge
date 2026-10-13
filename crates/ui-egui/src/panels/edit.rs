@@ -103,7 +103,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 8, bottom: 14 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if text_button(ui, "auto", crate::i18n::tr("Auto"), false).clicked() {
+            // greyed out while the tone sliders still hold what Auto set (Lightroom Classic's look);
+            // any change to them makes it available again
+            let applied = app.session.auto_is_current(id);
+            let r = ui.add_enabled_ui(!applied, |ui| text_button(ui, "auto", crate::i18n::tr("Auto"), false)).inner;
+            if r.clicked() {
                 let _ = app.run("develop.auto", json!({}));
                 app.toast(ui.ctx(), crate::i18n::tr("Auto settings applied"));
             }
@@ -182,6 +186,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
 
     let video = crate::video_ui::photo_is_video(app, id);
     section(app, ui, &d, "light", "Light", |app, ui, d| {
+        // Lightroom Classic's Basic panel order: white balance, then tone
+        wb_rows(app, ui, d, raw);
+        sub_title(ui, crate::i18n::tr("Tone"));
         crate::video_ui::video_gate(ui, video, |ui| hdr_row(app, ui, d));
         for c in ["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks"] {
             control(app, ui, d, c, true);
@@ -211,46 +218,6 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         ui.add_space(8.0);
     });
     section(app, ui, &d, "color", "Color", |app, ui, d| {
-        // White balance row
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 2, bottom: 2 }).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(crate::i18n::tr("White Balance")).font(t.font(13.0)).color(t.text_dim));
-                let r = crate::widgets::dropdown(ui, "wbMode", crate::i18n::tr(d.wb.mode.label()), t.font(14.0), t.text_label);
-                egui::Popup::menu(&r).show(|ui| {
-                    for m in WbMode::ALL {
-                        if m == WbMode::Custom {
-                            continue;
-                        }
-                        if ui.selectable_label(d.wb.mode == m, m.label()).clicked() {
-                            let mode = serde_json::to_value(m).unwrap_or_default();
-                            let _ = app.run("develop.wb", json!({"mode": mode}));
-                        }
-                    }
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let active = app.ui.tool == "wbPicker";
-                    if crate::widgets::icon_button(ui, "wbPicker", Icon::Picker, vec2(28.0, 28.0), active, true, "White Balance Selector (W)")
-                        .clicked()
-                    {
-                        if active {
-                            app.ui.tool.clear();
-                        } else if let Err(e) = app.run("tool.wbPicker", json!({})) {
-                            // the same as W: from Compare, Survey or the grid it opens the photo in Detail
-                            app.toast(ui.ctx(), e);
-                        }
-                    }
-                });
-            });
-        });
-        if raw {
-            control(app, ui, d, "wb.temp", true);
-            control(app, ui, d, "wb.tint", true);
-        } else {
-            let out = slider(ui, &REL_TEMP, k_to_rel(d.wb.temp), true, None);
-            apply_slider_out(app, &REL_TEMP, out, |app, v| app.run("develop.set", json!({"control": "wb.temp", "value": rel_to_k(v)})));
-            let out = slider(ui, &REL_TINT, d.wb.tint.clamp(-100.0, 100.0), true, None);
-            apply_slider_out(app, &REL_TINT, out, |app, v| app.run("develop.set", json!({"control": "wb.tint", "value": v})));
-        }
         control(app, ui, d, "color.vibrance", true);
         control(app, ui, d, "color.saturation", true);
         ui.add_space(6.0);
@@ -1201,6 +1168,50 @@ fn point_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 }
 
 // ------------------------------------------------------------------------------ HDR
+
+/// The white balance rows: the preset menu and the selector, then Temp and Tint (Kelvin on raws,
+/// relative elsewhere). At the top of Light, where Lightroom Classic's Basic panel has them.
+fn wb_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, raw: bool) {
+    let t = Tokens::get(ui.ctx());
+    // White balance row
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 2, bottom: 2 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(crate::i18n::tr("White Balance")).font(t.font(13.0)).color(t.text_dim));
+            let r = crate::widgets::dropdown(ui, "wbMode", crate::i18n::tr(d.wb.mode.label()), t.font(14.0), t.text_label);
+            egui::Popup::menu(&r).show(|ui| {
+                for m in WbMode::ALL {
+                    if m == WbMode::Custom {
+                        continue;
+                    }
+                    if ui.selectable_label(d.wb.mode == m, m.label()).clicked() {
+                        let mode = serde_json::to_value(m).unwrap_or_default();
+                        let _ = app.run("develop.wb", json!({"mode": mode}));
+                    }
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let active = app.ui.tool == "wbPicker";
+                if crate::widgets::icon_button(ui, "wbPicker", Icon::Picker, vec2(28.0, 28.0), active, true, "White Balance Selector (W)").clicked() {
+                    if active {
+                        app.ui.tool.clear();
+                    } else if let Err(e) = app.run("tool.wbPicker", json!({})) {
+                        // the same as W: from Compare, Survey or the grid it opens the photo in Detail
+                        app.toast(ui.ctx(), e);
+                    }
+                }
+            });
+        });
+    });
+    if raw {
+        control(app, ui, d, "wb.temp", true);
+        control(app, ui, d, "wb.tint", true);
+    } else {
+        let out = slider(ui, &REL_TEMP, k_to_rel(d.wb.temp), true, None);
+        apply_slider_out(app, &REL_TEMP, out, |app, v| app.run("develop.set", json!({"control": "wb.temp", "value": rel_to_k(v)})));
+        let out = slider(ui, &REL_TINT, d.wb.tint.clamp(-100.0, 100.0), true, None);
+        apply_slider_out(app, &REL_TINT, out, |app, v| app.run("develop.set", json!({"control": "wb.tint", "value": v})));
+    }
+}
 
 /// The Light panel's HDR row: the HDR switch and Visualize HDR, then (HDR on) the headroom limit.
 /// The Light panel's HDR settings while HDR editing is on (the switch itself is the HDR button

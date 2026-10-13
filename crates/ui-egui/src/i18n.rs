@@ -1390,6 +1390,8 @@ mod tests {
         app.ui.presets = true;
         let builtin = app.session.presets.iter().find(|p| p.name == "Warm Glow").unwrap().clone();
         app.session.presets.push(lcc_develop::Preset { id: "user.test".into(), builtin: false, ..builtin });
+        let groups: Vec<String> = app.session.presets.iter().map(|p| format!("preset:{}", p.group)).collect();
+        app.ui.group_open.extend(groups.into_iter().map(|g| (g, true)));
         for (panel, title) in [(crate::state::RightPanel::Activity, "歷史紀錄"), (crate::state::RightPanel::Versions, "版本")] {
             app.ui.right = panel;
             let text = painted_text(&ctx, &mut app, Locale::ZhHant);

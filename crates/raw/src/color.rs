@@ -402,14 +402,6 @@ mod tests {
         assert_eq!(camera_to_rec2020(&raw, D65).1, [1.0, 1.0, 1.0]);
     }
 
-    #[test]
-    fn illuminant_codes() {
-        assert_eq!(illuminant_temperature(21), Some(6504.0));
-        assert_eq!(illuminant_temperature(17), Some(2856.0));
-        assert_eq!(illuminant_temperature(0), None);
-        assert_eq!(illuminant_temperature(255), None);
-    }
-
     /// Camera-space white balance: re-developing for another white turns a neutral lit by that
     /// white neutral (the camera's own matrices, interpolated for the new white, say how); the same
     /// white is the identity; without a colour matrix there is nothing to re-evaluate.

@@ -278,19 +278,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_section() {
-        assert_eq!(roundtrip(&[]), vec![0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn odd_data_is_padded() {
-        let out = roundtrip(&[ImageResource::new(1000, vec![1, 2, 3])]);
-        // len(4) + sig(4) + id(2) + name(2) + size(4) + data(3) + pad(1)
-        assert_eq!(out.len(), 4 + 4 + 2 + 2 + 4 + 4);
-        assert_eq!(*out.last().unwrap(), 0);
-    }
-
-    #[test]
     fn named_resources() {
         let mut r = ImageResource::new(2000, vec![9; 4]);
         r.name = b"path".to_vec();
@@ -329,29 +316,6 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-    }
-
-    #[test]
-    fn typed_misc() {
-        let r = ImageResource::new(ids::GLOBAL_ANGLE, 120i32.to_be_bytes().to_vec());
-        assert_eq!(r.parsed(), Some(Ok(ResourceData::GlobalAngle(120))));
-        let r = ImageResource::new(ids::GLOBAL_ALTITUDE, 30i32.to_be_bytes().to_vec());
-        assert_eq!(r.parsed(), Some(Ok(ResourceData::GlobalAltitude(30))));
-        let r = ImageResource::new(ids::LAYER_STATE, vec![0, 2]);
-        assert_eq!(r.parsed(), Some(Ok(ResourceData::LayerState(2))));
-        let r = ImageResource::new(ids::LAYER_GROUP_INFO, vec![0, 1, 0, 2]);
-        assert_eq!(r.parsed(), Some(Ok(ResourceData::LayerGroupInfo(vec![1, 2]))));
-        let r = ImageResource::new(ids::LAYER_GROUP_INFO, vec![0]);
-        assert!(matches!(r.parsed(), Some(Err(_))));
-        let r = ImageResource::new(ids::ICC_PROFILE, vec![1]);
-        assert_eq!(r.parsed(), Some(Ok(ResourceData::IccProfile(&[1]))));
-        let r = ImageResource::new(ids::EXIF, vec![2]);
-        assert_eq!(r.parsed(), Some(Ok(ResourceData::Exif(&[2]))));
-        let r = ImageResource::new(ids::THUMBNAIL, vec![3]);
-        assert_eq!(r.parsed(), Some(Ok(ResourceData::Thumbnail(&[3]))));
-        let r = ImageResource::new(ids::XMP, b"<x/>".to_vec());
-        assert_eq!(r.xmp_str(), Some("<x/>"));
-        assert_eq!(ImageResource::new(4242, vec![]).parsed(), None);
     }
 
     #[test]

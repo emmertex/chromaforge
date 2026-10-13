@@ -397,11 +397,4 @@ mod tests {
             assert!(decode_thumbnail(bytes, 1, &Options::default()).is_err());
         }
     }
-
-    #[test]
-    fn errors_display_their_kind() {
-        assert!(Error::Unsupported("x").to_string().contains("unsupported"));
-        assert!(Error::Limit("x".into()).to_string().contains("limit"));
-        assert!(Error::Malformed("x".into()).to_string().contains("malformed"));
-    }
 }

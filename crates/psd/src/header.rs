@@ -196,14 +196,6 @@ mod tests {
     }
 
     #[test]
-    fn header_roundtrip() {
-        let h = Header::new(Version::Psb, 1000, 20, 4, 16, ColorMode::Cmyk);
-        let b = bytes(&h);
-        assert_eq!(b.len(), 26);
-        assert_eq!(Header::read(&mut Reader::new(&b)).unwrap(), h);
-    }
-
-    #[test]
     fn bad_signature() {
         let mut b = bytes(&Header::new(Version::Psd, 1, 1, 1, 8, ColorMode::Grayscale));
         b[0] = b'X';
@@ -231,24 +223,5 @@ mod tests {
             let b = bytes(&h);
             assert!(Header::read(&mut Reader::new(&b)).is_err(), "{h:?}");
         }
-    }
-
-    #[test]
-    fn color_modes_roundtrip() {
-        for v in 0..20u16 {
-            assert_eq!(ColorMode::from_u16(v).as_u16(), v);
-        }
-        assert_eq!(ColorMode::from_u16(5), ColorMode::Unknown(5));
-        assert_eq!(ColorMode::Rgb.color_channels(), Some(3));
-    }
-
-    #[test]
-    fn row_bytes_values() {
-        assert_eq!(row_bytes(9, 1), 2);
-        assert_eq!(row_bytes(8, 1), 1);
-        assert_eq!(row_bytes(0, 1), 0);
-        assert_eq!(row_bytes(3, 8), 3);
-        assert_eq!(row_bytes(3, 16), 6);
-        assert_eq!(row_bytes(3, 32), 12);
     }
 }

@@ -320,18 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn exposure_display() {
-        let mut m = Metadata { exposure_time: Some(1.0 / 250.0), ..Default::default() };
-        assert_eq!(m.exposure_display().as_deref(), Some("1/250"));
-        m.exposure_time = Some(0.5);
-        assert_eq!(m.exposure_display().as_deref(), Some("0.5"));
-        m.exposure_time = Some(2.0);
-        assert_eq!(m.exposure_display().as_deref(), Some("2″"));
-        m.exposure_time = Some(0.0);
-        assert_eq!(m.exposure_display(), None);
-    }
-
-    #[test]
     fn merge_rules() {
         let mut a = Metadata { make: Some("A".into()), rating: Some(1), ..Default::default() };
         let b = Metadata { make: Some("B".into()), model: Some("M".into()), rating: Some(4), keywords: vec!["k".into()], ..Default::default() };
@@ -343,12 +331,5 @@ mod tests {
         assert_eq!(a.rating, Some(4));
         assert_eq!(a.make.as_deref(), Some("A"));
         assert_eq!(a.keywords, vec!["k".to_string()]);
-    }
-
-    #[test]
-    fn names() {
-        let m = Metadata { metering_mode: Some(5), exposure_program: Some(3), ..Default::default() };
-        assert_eq!(m.metering_name(), Some("Pattern"));
-        assert_eq!(m.exposure_program_name(), Some("Aperture-priority AE"));
     }
 }

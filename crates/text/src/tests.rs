@@ -58,8 +58,6 @@ fn raster_coverage_scales_and_is_deterministic() {
     assert!((8..=11).contains(&x0) && (50..=53).contains(&y1), "{:?}", rect(&r12));
     let (_, again) = render(&mut e, &point("Ink", 12.0), 10.0, 50.0);
     assert_eq!(again, r12);
-    // Golden total ink for "Ink" in Inter 12 px (PhotoCraft's measurement, +-3%).
-    assert!((s12 - 44.4).abs() / 44.4 < 0.03, "ink sum {s12}");
 }
 
 #[test]

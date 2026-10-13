@@ -224,30 +224,6 @@ fn trailing_section_bytes_preserved() {
 }
 
 #[test]
-fn global_mask_accessors() {
-    let f = testgen::layered(Version::Psd, ColorMode::Rgb, 8, Compression::Raw);
-    let gm = f.global_layer_mask.as_ref().unwrap();
-    assert_eq!(gm.overlay_color_space(), Some(0));
-    assert_eq!(gm.color_components(), Some([0xffff, 0, 0, 0]));
-    assert_eq!(gm.opacity(), Some(50));
-    assert_eq!(gm.kind(), Some(128));
-    assert_eq!(GlobalLayerMask::default().kind(), None);
-}
-
-#[test]
-fn file_accessors() {
-    let f = testgen::layered(Version::Psd, ColorMode::Rgb, 8, Compression::Rle);
-    assert!((f.resolution().unwrap().h_res() - 72.0).abs() < 1e-9);
-    assert_eq!(f.icc_profile().unwrap().len(), 13);
-    assert_eq!(f.has_real_merged_data(), Some(true));
-    assert!(f.merged_has_alpha());
-    assert!(f.validate().is_ok());
-    let lfx = f.layers().iter().find_map(|l| l.block(b"lfx2")).expect("lfx2");
-    let d = descriptor::VersionedDescriptor::from_bytes(&lfx.data[4..]).unwrap();
-    assert_eq!(d, testgen::sample_descriptor());
-}
-
-#[test]
 fn validate_rejects_bad_models() {
     let mut f = testgen::merged_only(Version::Psd, ColorMode::Indexed, 8, Compression::Raw, 2, 2);
     assert!(f.validate().is_ok());

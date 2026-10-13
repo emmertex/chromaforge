@@ -53,6 +53,8 @@
   "Trained on: {provenance}": "训练数据：{provenance}",
   "{} of {} from {host}": "{}/{}，来自 {host}",
   "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}。保存在图库的“denoise”文件夹中；达到上限时，会先删除没有照片使用的最旧结果。",
+  "Color space: Rec. 2020 {curve} (HDR AVIF)": "色彩空间：Rec. 2020 {curve}（HDR AVIF）",
+  "The checked settings of the active photo are copied to {n} other selected photo(s)": "当前照片勾选的设置将复制到其他 {n} 张选中的照片",
   "{app} {version}": "{app} {version}",
   "{app} {version} is available (Help ▸ Check for Updates…)": "{app} {version} 已发布（帮助 ▸ 检查更新…）",
   "Version {version} is available.": "版本 {version} 已发布。",

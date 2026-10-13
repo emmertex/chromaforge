@@ -116,8 +116,9 @@ fn contents(app: &mut LccApp, ui: &mut egui::Ui) {
         // A group holding stock presets is a stock group (shown in the UI language), even
         // when user presets share its name; a group of user presets keeps its name.
         let builtin = items.iter().any(|p| p.builtin);
-        let open_id = egui::Id::new(("preset-group", &g));
-        let open: bool = ui.data(|d| d.get_temp(open_id)).unwrap_or(true);
+        let key = format!("preset:{g}");
+        let holds_current = last.as_ref().is_some_and(|(l, _)| items.iter().any(|p| p.id == *l));
+        let open = app.ui.group_is_open(&key, holds_current);
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
         register(ui.ctx(), format!("presetGroup:{g}"), r);
         paint(
@@ -134,7 +135,7 @@ fn contents(app: &mut LccApp, ui: &mut egui::Ui) {
             t.text_label,
         );
         if resp.clicked() {
-            ui.data_mut(|d| d.insert_temp(open_id, !open));
+            app.ui.group_open.insert(key, !open);
         }
         resp.context_menu(|ui| {
             if ui.button(crate::i18n::tr("Export Group…")).clicked() {

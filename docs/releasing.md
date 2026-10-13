@@ -43,7 +43,7 @@ Prerelease tags get a manifest too (with `prerelease: true`): the app only offer
 
 ## Builds and artifacts
 
-Release jobs build macOS universal, Windows x86/x64/ARM64, Linux x86_64/aarch64/riscv64, FreeBSD x86_64,
+Release jobs build macOS universal, Windows x64/ARM64, Linux x86_64/aarch64,
 and the WASM web app. The platform scripts in [`packaging/`](../packaging/) write their outputs to
 `dist/release/` (the full list of files is the README's Downloads section):
 
@@ -53,7 +53,7 @@ and the WASM web app. The platform scripts in [`packaging/`](../packaging/) writ
   architecture (`packaging/linux/package.sh`). Each AppImage embeds
   `gh-releases-zsync|<owner>|<repo>|latest|<binary>-*-linux-<arch>.AppImage.zsync`, so
   AppImageUpdate fetches only the changed blocks from the latest published (non-pre-) release.
-- Linux riscv64: `.tar.gz` only, cross-compiled on Ubuntu 24.04 against its riscv64 ports
+- Linux riscv64 (job disabled since 0.8.0; `if: false` in `release.yml`): `.tar.gz` only, cross-compiled on Ubuntu 24.04 against its riscv64 ports
   libraries (so glibc 2.39 or newer), with the CLI smoke-tested under QEMU (`CROSS_*` variables
   of `packaging/linux/package.sh`).
 - Flatpak: a single-file `.flatpak` bundle for each architecture, repackaged from that
@@ -61,7 +61,7 @@ and the WASM web app. The platform scripts in [`packaging/`](../packaging/) writ
   `packaging/linux/flatpak/<app_id>.bundle.yml`; no Rust build). The from-source
   manifest `<app_id>.yml` is for Flathub; packaging-lint keeps their runtime and
   `finish-args` identical.
-- FreeBSD: `<binary>-<version>-freebsd-x86_64.tar.gz`, a `/usr/local`-style tree built in a
+- FreeBSD (job disabled since 0.8.0; `if: false` in `release.yml`, and `freebsd.yml` is disabled): `<binary>-<version>-freebsd-x86_64.tar.gz`, a `/usr/local`-style tree built in a
   FreeBSD 14.3 VM (`packaging/freebsd/package.sh`, the same packages as `freebsd.yml`). Install
   with `tar -xzf <file> --strip-components 1 -C /usr/local`.
 - Web: `<binary>-web-<version>.zip`.

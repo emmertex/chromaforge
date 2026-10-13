@@ -143,9 +143,10 @@ still open, and the analysis above runs.
 ### SAM 3 mirror
 
 The mirror mechanism is finished in code: `<PREFIX>_SAM3_MIRRORS`, the `sam3-mirrors.txt`
-file, and the built-in `DEFAULT_MIRRORS`, with SHA-256 pinning. What's missing isn't code but a
+file, and the built-in `DEFAULT_MIRRORS`, with size + SHA-256 pinning of all three files (checked
+against the official checkpoint on 2026-10-13). What's missing isn't code but a
 host. Someone has to redistribute Meta's SAM Materials under the SAM License (with the licence
-next to the files) and add that URL, together with pinned `vocab.json` / `merges.txt` hashes.
+next to the files) and add that URL.
 Only the maintainer can decide that. Hugging Face's `facebook/sam3` is gated and can't be a
 default.
 
@@ -220,10 +221,16 @@ The model is fetched from an ordered list of mirrors: base URLs where `<base>/mo
    (Windows), `~/.config/<settings_dir>/` (Linux);
 3. the built-in list, `DEFAULT_MIRRORS` in `crates/segment/src/fetch/mod.rs`.
 
+A mirror can also be a **local folder** holding the three files: an absolute path or a
+`file://` URL (`<PREFIX>_SAM3_MIRRORS=/data/sam3` or `file:///data/sam3`; on Windows
+`file:///C:/data/sam3`). The files are copied into the model folder with the same checks as a
+download (exact size and SHA-256, `.part` file, progress in the activity stack, cancellable); a
+copy that doesn't match is deleted. Use this when you already have the checkpoint (for example
+from Hugging Face with your own access) and want the app to verify and install it.
+
 > **Maintainers:** the built-in list is **empty** until the app's own CDN locations exist
 > (see the `TODO(maintainer)` there): add them in order of preference, host the three files
-> unchanged, and pin `vocab.json` / `merges.txt` (size + SHA-256) in `SAM3_FILES` at the same
-> time. Until then the in-app download needs a user-configured mirror, and the dialog says so:
+> unchanged (they must match the pins in `SAM3_FILES`). Until then the in-app download needs a user-configured mirror, and the dialog says so:
 > it names the three files to put in the model folder by hand, with a button that shows that folder
 > (created if needed) and a link to this guide.
 

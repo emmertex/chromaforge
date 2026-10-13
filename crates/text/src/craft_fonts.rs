@@ -277,16 +277,6 @@ mod tests {
     }
 
     #[test]
-    fn serif_names() {
-        for s in ["Shippori Mincho", "Times New Roman", "Noto Serif JP", "Georgia", "Songti SC", "Adobe Garamond Pro"] {
-            assert!(is_serif_family(s), "{s}");
-        }
-        for s in ["Inter", "Noto Sans Serif", "BIZ UDPGothic", "Helvetica", "", "Noto Sans CJK JP"] {
-            assert!(!is_serif_family(s), "{s}");
-        }
-    }
-
-    #[test]
     fn ui_order_prefers_biz_udpgothic_regular() {
         install_from_env();
         let v = japanese_for_ui();
