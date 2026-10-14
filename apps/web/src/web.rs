@@ -241,6 +241,8 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
         system_theme: None,
         // video is native-only
         video_gpu: None,
+        // the browser canvas is SDR
+        hdr_output: None,
     }
 }
 
