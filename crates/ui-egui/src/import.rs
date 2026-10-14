@@ -641,6 +641,7 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<
     let (tx, rx) = std::sync::mpsc::channel();
     let p = progress.clone();
     let root = dir_s.clone();
+    let sort = app.session.sort;
     let job = move || {
         let files: Vec<String> = if subfolders {
             lcc_engine::import::expand(&[root], None)
@@ -659,7 +660,14 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<
             v.sort();
             v
         };
-        let _ = tx.send(scan_with(input, &files, &p));
+        // Nothing is read here: the import that follows reads the files and adds them batch by
+        // batch, first screen first, so the view fills while the rest is read (PERF-CULL-1).
+        // Every listed file is a candidate (the ones the library knows as it knows them),
+        // so the folder's known photos still count as listed and aren't forgotten.
+        let candidates = lcc_engine::import::browse_candidates(&input, files, &sort);
+        p.total.store(candidates.len(), Ordering::Relaxed);
+        p.done.store(candidates.len(), Ordering::Relaxed);
+        let _ = tx.send(lcc_engine::import::ScanOutput { candidates, ..Default::default() });
     };
     #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(job);
