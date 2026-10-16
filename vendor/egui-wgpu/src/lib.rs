@@ -306,7 +306,9 @@ impl RenderState {
             .as_ref()
             .map(|c| c.format_capabilities.clone())
             .unwrap_or_default();
+        let display_hdr_info = compatible_surface.map(|s| s.display_hdr_info(&adapter));
         let (target_format, target_color_space) = if config.hdr_output
+            && hdr_surface_wanted(display_hdr_info.as_ref(), cfg!(windows))
             && let Some(hdr) = hdr_surface_format(&offered)
         {
             hdr
@@ -316,7 +318,6 @@ impl RenderState {
                 wgpu::SurfaceColorSpace::Auto,
             )
         };
-        let display_hdr_info = compatible_surface.map(|s| s.display_hdr_info(&adapter));
 
         let renderer = Renderer::new(&device, target_format, options);
 
@@ -512,6 +513,19 @@ pub fn hdr_surface_format(
             wgpu::TextureFormat::Rgba16Float,
             wgpu::SurfaceColorSpace::ExtendedSrgbLinear,
         ))
+}
+
+/// Patch (HDR display output): whether to use the extended-range surface for this display.
+/// On Windows only when the display is in HDR mode (headroom above SDR white): an FP16 scRGB
+/// swapchain on an SDR display makes the DWM present it differently in direct flip than in
+/// composition (the window looks dark and contrasty until part of it is under the taskbar).
+/// Unknown HDR facts mean SDR there. Elsewhere (macOS EDR, Wayland) the surface's offer decides.
+/// Read once at start-up: turning Windows HDR on takes effect at the next start.
+pub fn hdr_surface_wanted(info: Option<&wgpu::DisplayHdrInfo>, windows: bool) -> bool {
+    !windows
+        || info
+            .and_then(wgpu::DisplayHdrInfo::tone_map_headroom)
+            .is_some_and(|h| h.is_finite() && h > 1.0)
 }
 
 /// Find the framebuffer format that egui prefers

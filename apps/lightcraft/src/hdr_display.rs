@@ -272,7 +272,14 @@ pub fn report(state: Option<&RenderState>) -> DisplayOutput {
     let target = (state.target_color_space == ColorSpace::ExtendedSrgbLinear || state.target_format != TextureFormat::Rgba16Float)
         .then_some(state.target_format);
     let out = choose(target, Platform::current(), l.headroom, disabled());
+    let sdr_at_start = Platform::current() == Platform::Windows && !disabled() && !eframe::egui_wgpu::hdr_surface_wanted(info.as_ref(), true);
     match out {
+        DisplayOutput::Sdr { .. } if sdr_at_start => log::info!(
+            "display: SDR (the display was not in HDR mode at start-up, headroom {:?}; turning Windows HDR on takes effect at the next start; surface {:?} {:?})",
+            info.as_ref().and_then(DisplayHdrInfo::tone_map_headroom),
+            state.target_format,
+            state.target_color_space
+        ),
         DisplayOutput::Sdr { reason } => log::info!("display: SDR ({reason}; surface {:?} {:?})", state.target_format, state.target_color_space),
         DisplayOutput::Hdr { format, encoding } => {
             log::info!("display: HDR {encoding:?} ({format:?}), headroom {:?}, SDR white ×{}", l.headroom, l.scale)
@@ -390,6 +397,28 @@ impl Drop for WindowHdr {
 mod tests {
     use super::*;
     use TextureFormat as F;
+
+    #[test]
+    fn windows_uses_the_scrgb_surface_only_when_the_display_is_in_hdr_mode() {
+        use eframe::egui_wgpu::hdr_surface_wanted as wanted;
+        use eframe::wgpu::{DisplayCoarseRange, DisplayLuminance};
+        let sdr = DisplayHdrInfo {
+            coarse: Some(DisplayCoarseRange { high_dynamic_range: Some(false), ..Default::default() }),
+            luminance: Some(DisplayLuminance { max_nits: Some(270.0), sdr_white_nits: Some(80.0), ..Default::default() }),
+            ..Default::default()
+        };
+        let hdr = DisplayHdrInfo {
+            coarse: Some(DisplayCoarseRange { high_dynamic_range: Some(true), ..Default::default() }),
+            luminance: Some(DisplayLuminance { max_nits: Some(1000.0), sdr_white_nits: Some(200.0), ..Default::default() }),
+            ..Default::default()
+        };
+        assert!(!wanted(Some(&sdr), true), "an SDR Windows display gets the SDR surface");
+        assert!(wanted(Some(&hdr), true), "Windows HDR on gets scRGB");
+        assert!(!wanted(Some(&DisplayHdrInfo::default()), true), "unknown facts: SDR on Windows");
+        assert!(!wanted(None, true), "no facts: SDR on Windows");
+        // macOS EDR / Wayland: unchanged, the surface's offer decides.
+        assert!(wanted(None, false) && wanted(Some(&sdr), false));
+    }
 
     #[test]
     fn eight_bit_surfaces_are_sdr() {
