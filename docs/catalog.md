@@ -177,8 +177,9 @@ both). Photos match by file path and virtual-copy name, so a photo whose origina
 - **File ▸ New Catalog… / Open Catalog… / Open Recent Catalog ▸** (UI commands `catalog.new`, `catalog.open`,
   `catalog.openRecent`; `crates/ui-egui/src/catalog_ui.rs`). Open validates the folder or entry point
   (`library::resolve`), so a folder that is no catalog is refused instead of becoming an empty library. The recent
-  list is `<settings_dir>/recent-catalogs.json` (`RecentCatalogs`); its `default` is opened at startup when no
-  `--library` is given.
+  list is `recent-catalogs.json` (`RecentCatalogs`) in the settings folder, beside `ui.json`: `<PREFIX>_CONFIG_DIR`
+  or portable mode move it too, and none is kept when that variable is empty or `<PREFIX>_NO_PREFS` is set. Its
+  `default` is opened at startup when no `--library` is given.
 - **Catalog chooser** (`catalog.chooser`): recent catalogs, New…, Open…, "always show at startup"
   (`catalog.promptAtStartup`). It shows at startup when asked for, or when Alt is held while the window opens. The
   last catalog is opened first and the chooser switches from it (pure Rust has no portable way to read the keyboard

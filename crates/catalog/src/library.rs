@@ -331,9 +331,10 @@ pub struct RecentCatalogs {
 pub const RECENT_MAX: usize = 10;
 
 impl RecentCatalogs {
-    /// `recent-catalogs.json` in the app's settings folder.
-    pub fn default_file() -> Option<PathBuf> {
-        lcc_brand::settings_dir().map(|d| d.join("recent-catalogs.json"))
+    /// `recent-catalogs.json` in the settings folder `config` (the engine's `config::config_dir`,
+    /// which honours `<PREFIX>_CONFIG_DIR` and portable mode, like every other settings file).
+    pub fn file_in(config: &Path) -> PathBuf {
+        config.join("recent-catalogs.json")
     }
     /// The list in `file` (empty if missing or unreadable: never an error).
     pub fn load(file: &Path) -> RecentCatalogs {

@@ -33,10 +33,11 @@ mode ([mcp.md](mcp.md)) is a thin layer over this channel. Implementation:
 
 ## Isolated automation profiles
 
-Set `<PREFIX>_CONFIG_DIR` to a fresh directory to isolate UI preferences, app logs, the emergency
-panic log, the GPU initialization marker, camera profiles and default model folders. The nonempty
-value is used as the complete settings directory. Unset retains the normal platform paths; an explicit
-empty value disables the settings directory, while the emergency panic log retains its system-temp path.
+Set `<PREFIX>_CONFIG_DIR` to a fresh directory to isolate UI preferences, the recent catalogs
+list, app logs, the emergency panic log, the GPU initialization marker, camera profiles and default
+model folders. The nonempty value is used as the complete settings directory. Unset retains the
+normal platform paths; an explicit empty value disables the settings directory, while the emergency
+panic log retains its system-temp path.
 Explicit model-directory environment variables still take precedence over their defaults.
 Also pass `--library DIR` with a separate scratch library: the configuration override does not change
 the default photo-library location. Do not use `--memory` or `<PREFIX>_NO_PREFS` when testing persistence.

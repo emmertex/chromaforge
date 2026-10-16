@@ -12,18 +12,27 @@ pub fn backup_if_due(session: &mut Session) {
     }
 }
 
+/// `recent-catalogs.json` in the settings folder of `config::config_dir` (beside `ui.json`, so
+/// `<PREFIX>_CONFIG_DIR` and portable mode move it too): `None` when no list is kept
+/// (`<PREFIX>_NO_PREFS`, or an empty `<PREFIX>_CONFIG_DIR`).
+pub fn recent_file() -> Option<std::path::PathBuf> {
+    if lcc_brand::env_is_set("NO_PREFS") {
+        return None;
+    }
+    lcc_engine::config::config_dir().map(|d| lcc_engine::catalog::library::RecentCatalogs::file_in(&d))
+}
+
 /// The catalog chosen to open at startup (the chooser's default), if it still exists.
 pub fn startup_catalog() -> Option<std::path::PathBuf> {
-    let file = lcc_engine::catalog::library::RecentCatalogs::default_file()
-        .filter(|_| !lcc_brand::env_is_set("NO_PREFS") && !lcc_brand::env_is_set("LIBRARY"))?;
+    let file = recent_file().filter(|_| !lcc_brand::env_is_set("LIBRARY"))?;
     let d = lcc_engine::catalog::library::RecentCatalogs::load(&file).default?;
     lcc_engine::catalog::library::resolve(&d).ok()
 }
 
 /// File ▸ Open Recent Catalog and the startup chooser (not for throwaway sessions).
 pub fn remember_recent(app: &mut LccApp, in_memory: bool) {
-    if !in_memory && !lcc_brand::env_is_set("NO_PREFS") {
-        app.catalog_ui.recent_file = lcc_engine::catalog::library::RecentCatalogs::default_file();
+    if !in_memory && let Some(file) = recent_file() {
+        app.catalog_ui.recent_file = Some(file);
         if let Some(dir) = app.session.catalog_dir().map(std::path::Path::to_path_buf) {
             app.catalog_ui.touch(&dir);
         }
@@ -149,5 +158,108 @@ mod tests {
         assert_eq!(got, Startup::Welcome { foreign: vec![upstream_lib.clone()] });
         assert_eq!(std::fs::read_dir(&upstream_lib).unwrap().count(), 2, "the upstream library is untouched");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Issue #163: the recent list is a settings file like `ui.json`. It used to live in the
+    /// platform settings folder whatever `<PREFIX>_CONFIG_DIR` said, so a scratch run listed its
+    /// library in the user's real list, and opened the real list's startup catalog. Each case runs
+    /// in a child (this test binary again) with a scratch home, so the platform folder is scratch too.
+    #[test]
+    fn recent_catalogs_follow_the_config_dir() {
+        if let Some(case) = lcc_brand::env("TEST_RECENT_CASE") {
+            recent_catalogs_child(&case);
+            return;
+        }
+        let d = scratch("recent");
+        let a = lcc_engine::catalog::library::create(&d, "A").unwrap();
+        let b = lcc_engine::catalog::library::create(&d, "B").unwrap();
+        // the user's real list (in the platform folder) names A as the startup catalog
+        let home = d.join("home");
+        let mut platform = home.join(".config").join(lcc_brand::settings_dir_name(lcc_brand::SETTINGS_DIR));
+        if cfg!(target_os = "macos") {
+            platform = home.join("Library/Application Support").join(lcc_brand::SETTINGS_DIR);
+        } else if cfg!(windows) {
+            platform = home.join(lcc_brand::SETTINGS_DIR);
+        }
+        let real = lcc_engine::catalog::library::RecentCatalogs { paths: vec![a.clone()], default: Some(a.clone()), prompt_at_startup: false };
+        real.save(&platform.join("recent-catalogs.json")).unwrap();
+        for case in ["set", "empty", "unset"] {
+            let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+            cmd.args(["--exact", "catalog_hooks::tests::recent_catalogs_follow_the_config_dir", "--nocapture"]);
+            for prefix in std::iter::once(lcc_brand::ENV_PREFIX).chain(lcc_brand::LEGACY_ENV_PREFIXES.iter().copied()) {
+                for name in ["CONFIG_DIR", "NO_PREFS", "LIBRARY"] {
+                    cmd.env_remove(format!("{prefix}_{name}"));
+                }
+            }
+            match case {
+                "set" => cmd.env(lcc_brand::env_var("CONFIG_DIR"), d.join("cfg")),
+                "empty" => cmd.env(lcc_brand::env_var("CONFIG_DIR"), ""),
+                _ => &mut cmd,
+            };
+            let out = cmd
+                .env("HOME", &home)
+                .env("APPDATA", &home)
+                .env_remove("XDG_CONFIG_HOME")
+                .env(lcc_brand::env_var("TEST_RECENT_CASE"), case)
+                .env(lcc_brand::env_var("TEST_RECENT_ROOT"), &d)
+                .env(lcc_brand::env_var("TEST_RECENT_B"), &b)
+                .output()
+                .unwrap();
+            let all = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            assert!(out.status.success(), "case {case}: {all}");
+            assert!(all.contains(&format!("recent case {case} ok")), "case {case}: the child didn't run the test: {all}");
+        }
+        assert_eq!(
+            lcc_engine::catalog::library::RecentCatalogs::load(&platform.join("recent-catalogs.json")),
+            real,
+            "no run with its own (or no) settings folder changes the platform folder's list"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// One case of [`recent_catalogs_follow_the_config_dir`], in the child.
+    fn recent_catalogs_child(case: &str) {
+        let root = PathBuf::from(lcc_brand::env_os("TEST_RECENT_ROOT").unwrap());
+        let b = PathBuf::from(lcc_brand::env_os("TEST_RECENT_B").unwrap());
+        let platform = lcc_brand::settings_dir().unwrap();
+        assert!(platform.starts_with(&root), "the platform folder must be scratch here, not {}", platform.display());
+        let a = lcc_engine::catalog::library::RecentCatalogs::load(&platform.join("recent-catalogs.json")).default.unwrap();
+        let a = lcc_engine::catalog::library::resolve(&a).unwrap();
+        let cfg = root.join("cfg");
+        let mut app = {
+            let mut s = Session::new().with_fs();
+            s.open_library(root.join(format!("C-{case}")), false).unwrap();
+            LccApp::new(s, lcc_ui_egui::Services::default())
+        };
+        match case {
+            // AC-1, AC-2: the list lives in the config dir; the platform folder's isn't read
+            "set" => {
+                assert_eq!(recent_file(), Some(cfg.join("recent-catalogs.json")), "the same folder as ui.json");
+                assert_eq!(startup_catalog(), None, "the platform folder's startup catalog is not opened");
+                let own = lcc_engine::catalog::library::RecentCatalogs { paths: vec![b.clone()], default: Some(b.clone()), prompt_at_startup: false };
+                own.save(&cfg.join("recent-catalogs.json")).unwrap();
+                assert_eq!(startup_catalog(), Some(lcc_engine::catalog::library::resolve(&b).unwrap()));
+                remember_recent(&mut app, false);
+                let saved = lcc_engine::catalog::library::RecentCatalogs::load(&cfg.join("recent-catalogs.json"));
+                assert!(saved.paths.first().is_some_and(|p| p.starts_with(root.join("C-set"))), "{saved:?}");
+            }
+            // AC-3: no settings folder, no list
+            "empty" => {
+                assert_eq!(recent_file(), None);
+                assert_eq!(startup_catalog(), None);
+                remember_recent(&mut app, false);
+                assert_eq!(app.catalog_ui.recent_file, None);
+                for list in [cfg.join("recent-catalogs.json"), platform.join("recent-catalogs.json")] {
+                    let r = lcc_engine::catalog::library::RecentCatalogs::load(&list);
+                    assert!(!r.paths.iter().any(|p| p.starts_with(root.join("C-empty"))), "{} lists it: {r:?}", list.display());
+                }
+            }
+            // AC-5: without the override the list stays in the platform folder, and still loads
+            _ => {
+                assert_eq!(recent_file(), Some(platform.join("recent-catalogs.json")));
+                assert_eq!(startup_catalog(), Some(a));
+            }
+        }
+        println!("recent case {case} ok");
     }
 }
