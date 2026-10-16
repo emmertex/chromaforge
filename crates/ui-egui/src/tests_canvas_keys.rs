@@ -12,7 +12,11 @@ use crate::{LccApp, Services, canvas_keys};
 const T: Duration = Duration::from_secs(20);
 
 fn detail(panel: &str) -> Headless {
-    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut session = lcc_engine::Session::with_demo();
+    // newest first, the newest photo open: written around it
+    session.execute("library.sort", &json!({"ascending": false})).unwrap();
+    session.selection = lcc_engine::Selection::single(session.visible_cloned()[0]);
+    let app = LccApp::new(session, Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
     // pins on whatever the pointer does: these tests move handles with the keyboard, and a headless
     // pointer is never over the photo, where the Tool Overlay's default Auto shows them

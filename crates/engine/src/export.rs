@@ -3572,6 +3572,8 @@ mod tests {
     #[test]
     fn side_by_side_batches_match_one_at_a_time() {
         let mut s = crate::Session::with_demo();
+        // the newest demo photos come in different shapes
+        s.execute("library.sort", &json!({"ascending": false})).unwrap();
         let ids: Vec<_> = s.visible().iter().copied().take(5).collect();
         // one name for all: the Unique numbering follows the order the files are placed in
         let o = ExportOptions::from_json(&json!({"format": "png", "width": 40, "naming": "same"}));

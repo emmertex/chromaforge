@@ -4431,7 +4431,11 @@ mod tests {
         for hdr in [true, false] {
             let hdr_output: Option<Box<dyn crate::HdrOutput>> = if hdr { Some(Box::new(Fake)) } else { None };
             let services = crate::Services { png: None, hdr_output, ..Default::default() };
-            let mut app = LccApp::new(lcc_engine::Session::with_demo(), services);
+            let mut session = lcc_engine::Session::with_demo();
+            // newest first, the newest photo open: written around it
+            session.execute("library.sort", &json!({"ascending": false})).unwrap();
+            session.selection = lcc_engine::Selection::single(session.visible_cloned()[0]);
+            let mut app = LccApp::new(session, services);
             app.ui.view = crate::state::ViewMode::PhotoGrid;
             app.renderer.keep_pixels = true;
             let mut h = Headless::new(app, [1000.0, 700.0], 1.0);

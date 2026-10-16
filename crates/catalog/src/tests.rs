@@ -115,7 +115,7 @@ fn filter_search_sort() {
     c.apply(Op::SetMeta { id: a, meta: Box::new(m) }).unwrap();
 
     let all = c.query(&Filter::default(), &Sort::default());
-    assert_eq!(all, vec![a, b, d], "newest first");
+    assert_eq!(all, vec![d, b, a], "oldest first, as in Lightroom Classic");
     let asc = c.query(&Filter::default(), &Sort { key: SortKey::FileName, ascending: true, ..Default::default() });
     assert_eq!(asc, vec![b, a, d]);
     assert_eq!(c.query(&Filter { rating: 4, ..Default::default() }, &Sort::default()), vec![b]);
@@ -743,11 +743,11 @@ fn undated_photos_group_under_unknown_date_and_sort_together() {
     let p_undated1 = add_photo(&mut c, "undated1.jpg", None, "2026-10-05T00:00:00");
     let p_undated2 = add_photo(&mut c, "undated2.jpg", None, "2026-10-02T00:00:00");
 
-    // Descending sort (default, newest first): dated photos first (newest to oldest), undated photos at the end
+    // Descending sort (newest first): dated photos first (newest to oldest), undated photos at the end
     let desc = c.query(&Filter::default(), &Sort { key: SortKey::CaptureDate, ascending: false, ..Default::default() });
     assert_eq!(desc, vec![p_dated2, p_dated1, p_undated1, p_undated2]);
 
-    // Ascending sort (oldest first): undated photos at the beginning, dated photos from oldest to newest
+    // Ascending sort (the default, oldest first): undated photos at the beginning, dated photos from oldest to newest
     let asc = c.query(&Filter::default(), &Sort { key: SortKey::CaptureDate, ascending: true, ..Default::default() });
     assert_eq!(asc, vec![p_undated2, p_undated1, p_dated1, p_dated2]);
 
@@ -895,11 +895,11 @@ fn filter_by_face_count_and_matches_spec() {
 
     // 2+ faces
     let f_two_plus = Filter { faces: Some("2+".into()), ..Default::default() };
-    assert_eq!(q(&f_two_plus), vec![PhotoId(4), PhotoId(3)]);
+    assert_eq!(q(&f_two_plus), vec![PhotoId(3), PhotoId(4)]);
 
     // Range 1-2 faces
     let f_range = Filter { faces: Some("1-2".into()), ..Default::default() };
-    assert_eq!(q(&f_range), vec![PhotoId(3), PhotoId(2)]);
+    assert_eq!(q(&f_range), vec![PhotoId(2), PhotoId(3)]);
 
     // 4. Token search in text: faces:1, faces:3+, faces:none
     let f_tok1 = Filter { text: "faces:1".into(), ..Default::default() };
@@ -909,7 +909,7 @@ fn filter_by_face_count_and_matches_spec() {
     assert_eq!(q(&f_tok_none), vec![PhotoId(1)]);
 
     let f_tok_plus = Filter { text: "faces:>=2".into(), ..Default::default() };
-    assert_eq!(q(&f_tok_plus), vec![PhotoId(4), PhotoId(3)]);
+    assert_eq!(q(&f_tok_plus), vec![PhotoId(3), PhotoId(4)]);
 
     // 5. Describe
     assert_eq!(f_two_plus.describe(), "faces 2+");

@@ -45,8 +45,10 @@ Each release carries a `latest.json` beside its artifacts. It is what Help ▸ C
 (the in-app updater, [`crates/updater`](../crates/updater)): the version, the date, and one entry per
 artifact with its file name, download URL, size and SHA-256. The app reads
 `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` first and falls back to GitHub's
-Releases API, so the check keeps working when the API is rate-limited; `<PREFIX>_UPDATE_URL` points a
-build at another feed (a mirror, a fork, a local file server).
+Releases API, so the check keeps working when the API is rate-limited. Whatever the feed lists, the app
+only takes files from `https://github.com/<owner>/<repo>/releases/download/` (the `repository` in
+`brand.toml`) and only over https; a fork gets its own feed by setting its own `repository`. No command
+or setting points the app at another feed (a test can, through the Rust API).
 
 The `release` job builds the manifest from the draft's asset list (names and sizes) and the checksums the
 platform jobs computed, so only what is actually attached to the release is offered. It is uploaded with the rest of the assets and

@@ -14,21 +14,14 @@ fn status(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(s.updater.status())
 }
 
-/// `update.check [wait, feed]`: start a check (background), or run it here and answer with the
-/// outcome. `feed` reads another URL instead (a mirror, a local feed); it lasts for this session.
+/// `update.check [wait]`: start a check (background), or run it here and answer with the outcome.
+///
+/// The feed is always the release's own. `feed` is refused rather than ignored: a caller that
+/// meant to point the app elsewhere learns that it did not, and nothing changes.
 fn check(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "update.check";
-    if let Some(feed) = p.get("feed") {
-        match feed {
-            Value::Null | Value::String(_) => {
-                let url = feed.as_str().map(str::to_string);
-                if url.as_ref().is_some_and(|u| u.len() > 2_000) {
-                    return Err(bad(C, "feed is at most 2000 characters"));
-                }
-                s.updater.set_manifest_url(url);
-            }
-            _ => return Err(bad(C, "feed must be a URL or null (the project's own feed)")),
-        }
+    if p.get("feed").is_some() {
+        return Err(bad(C, "`feed` is not a parameter: the app reads only its own release feed"));
     }
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
     if wait && !s.updater.checking() {
@@ -158,7 +151,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Status",
             [],
             None,
-            "{} → {version, platform, supported, check: never | running | current | found, download: idle | running | ready | failed | cancelled, checkAtStartup, prerelease, lastChecked, seenVersion, repo, page, staging, available?: {version, current, title, tag, published, notes, file, size, action, verified, kind}, progress?: {bytes, total}, staged?: {version, file, bytes, sha256, path, kind}, installed?: {version, message, exit}, error?} — what the updater knows right now",
+            "{} → {version, platform, supported, check: never | running | current | found, download: idle | running | ready | failed | cancelled, checkAtStartup, prerelease, lastChecked, seenVersion, repo, page, staging, feed? (a feed other than the release's own), available?: {version, current, title, tag, published, notes, file, size, action, verified, kind}, progress?: {bytes, total}, staged?: {version, file, bytes, sha256, path, kind}, installed?: {version, message, exit}, error?} — what the updater knows right now",
             always,
             status
         ),
@@ -167,7 +160,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Check for Updates",
             [],
             None,
-            "{wait?: bool, feed?: url|null} — read the release feed in the background and compare it with this build (one request; a recent answer is reused). `feed` reads another URL instead of the project's own (a mirror, a fork, a local feed) for the rest of the session; null goes back to the default (also `{env}_UPDATE_URL` at start-up). `wait: true` runs it now and answers with the outcome, for one-shot callers → status",
+            "{wait?: bool} — read the project's own release feed in the background and compare it with this build (one request; a recent answer is reused). Only files on the project's GitHub releases, over https, are offered. `wait: true` runs it now and answers with the outcome, for one-shot callers → status",
             always,
             check
         ),
@@ -318,5 +311,43 @@ mod tests {
         assert_eq!(v["file"], "app-1.2.0-windows-x64.msi");
         assert_eq!(v["sha256"], "ab".repeat(32));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_feed_parameter_is_refused_and_changes_nothing() {
+        let mut s = session();
+        let before = s.execute("update.status", &json!({})).expect("status");
+        // port 1: should the check start anyway, it reaches nothing
+        for feed in [json!("http://127.0.0.1:1/latest.json"), json!("https://example.invalid/latest.json"), json!(null)] {
+            let err = s.execute("update.check", &json!({"feed": feed, "wait": true})).expect_err("feed is not a parameter");
+            assert!(err.to_string().contains("feed"), "the error names the parameter: {err}");
+        }
+        assert_eq!(s.updater.manifest_url(), None, "the feed in use is still the release's own");
+        assert!(!s.updater.checking(), "no check was started");
+        let after = s.execute("update.status", &json!({})).expect("status");
+        assert_eq!(before, after, "the status is what it was");
+    }
+
+    /// The test origin is a Rust-only setting: no `update.*` command reaches it, whatever it is
+    /// sent.
+    #[test]
+    fn no_update_command_changes_the_trusted_origins() {
+        let ids: Vec<String> = specs().iter().map(|c| c.id.to_string()).collect();
+        assert!(ids.len() >= 8, "{ids:?}");
+        for start in [None, Some("http://127.0.0.1:1".to_string())] {
+            let mut s = session();
+            s.updater.trust_test_origin(start.clone());
+            let before = s.updater.options();
+            for id in &ids {
+                for key in ["feed", "allow", "origin", "extraOrigin", "extra_origin", "trust", "manifestUrl"] {
+                    // `feed` with every call, so update.check refuses before it could reach the network
+                    let p = json!({"feed": "http://127.0.0.1:1/latest.json", key: "http://127.0.0.1:1"});
+                    let _ = s.execute(id, &p);
+                }
+            }
+            let after = s.updater.options();
+            assert_eq!(after.extra_origin, start, "the trusted origin is what the test set");
+            assert_eq!((after.manifest_url, after.extra_origin), (before.manifest_url, before.extra_origin));
+        }
     }
 }

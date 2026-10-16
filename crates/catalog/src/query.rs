@@ -123,8 +123,9 @@ impl Sort {
 }
 
 impl Default for Sort {
+    /// Capture date, oldest first: Lightroom Classic's default sort.
     fn default() -> Self {
-        Sort { key: SortKey::CaptureDate, ascending: false, group: crate::GroupBy::Auto, seed: 0 }
+        Sort { key: SortKey::CaptureDate, ascending: true, group: crate::GroupBy::Auto, seed: 0 }
     }
 }
 

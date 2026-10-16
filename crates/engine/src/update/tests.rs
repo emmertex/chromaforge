@@ -228,7 +228,11 @@ fn a_check_started_with_no_network_ends_as_a_message() {
     // 127.0.0.1:1 is closed: the check must come back as an error, not a panic or a hang
     let dir = scratch("offline");
     let mut u = Updater::new(Some(dir.clone()));
-    let opts = lcc_updater::Options { manifest_url: Some("http://127.0.0.1:1/latest.json".into()), ..u.options() };
+    let opts = lcc_updater::Options {
+        manifest_url: Some("http://127.0.0.1:1/latest.json".into()),
+        extra_origin: Some("http://127.0.0.1:1".into()),
+        ..u.options()
+    };
     let checked = match lcc_updater::check(&opts, None, None) {
         Ok(_) => lcc_updater::Checked::Current("1.0.0".into()),
         Err(e) => lcc_updater::Checked::Failed(e.to_string()),
@@ -357,8 +361,9 @@ fn a_download_that_cannot_reach_the_server_is_a_message() {
 }
 
 /// A tiny release server: `GET /latest.json` (the manifest this run builds), `GET /sums` (the
-/// release's `SHA256SUMS.txt`) and `GET /app.msi` (the installer). Returns its base URL.
-fn serve_feed(installer: Vec<u8>, sha: String, file: String) -> String {
+/// release's `SHA256SUMS.txt`) and `GET /app.msi` (the installer). Returns its base URL. With
+/// `file_url`, the manifest offers the installer from there instead of from this server.
+fn serve_feed(installer: Vec<u8>, sha: String, file: String, file_url: Option<&str>) -> String {
     use std::io::{BufRead, BufReader, Write};
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = l.local_addr().expect("addr");
@@ -375,7 +380,7 @@ fn serve_feed(installer: Vec<u8>, sha: String, file: String) -> String {
             "date": "2026-10-12",
             "prerelease": false,
             "assets": [
-                {"name": file, "url": format!("{base}/app.msi"), "size": installer.len()},
+                {"name": file, "url": file_url.map_or_else(|| format!("{base}/app.msi"), str::to_string), "size": installer.len()},
                 {"name": "SHA256SUMS.txt", "url": format!("{base}/sums"), "size": 90},
             ],
         }],
@@ -426,11 +431,13 @@ fn the_whole_path_from_a_feed_to_a_staged_file() {
     };
     let target = lcc_updater::Target::current().expect("a platform to update");
     let file = format!("app-9.9.9-{}-{}.msi", target.os.slug(), target.arch);
-    let base = serve_feed(installer.clone(), installer_sha.clone(), file.clone());
+    let base = serve_feed(installer.clone(), installer_sha.clone(), file.clone(), None);
 
     let activity = Activity::default();
     let mut u = Updater::new(Some(dir.clone()));
     u.set_manifest_url(Some(format!("{base}/latest.json")));
+    // the local server stands in for the release: its feed and files are trusted, over http
+    u.trust_test_origin(Some(base.clone()));
     assert_eq!(u.manifest_url(), Some(format!("{base}/latest.json").as_str()));
     // 1. the check reads the feed and picks the file for this platform, with the release's hash
     u.check_now();
@@ -456,5 +463,53 @@ fn the_whole_path_from_a_feed_to_a_staged_file() {
     // 4. a second check finds the same release and keeps the staged file
     u.check_now();
     assert!(u.staged().is_some(), "the same release does not throw its own download away");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_feed_other_than_the_releases_own_shows_in_the_status() {
+    let mut u = Updater::new(None);
+    assert!(u.status().get("feed").is_none(), "the release's own feed is not called out");
+    u.set_manifest_url(Some("https://mirror.example/latest.json".into()));
+    assert_eq!(u.status()["feed"], "https://mirror.example/latest.json");
+    u.set_manifest_url(None);
+    assert!(u.status().get("feed").is_none(), "back to the release's own feed");
+}
+
+/// A feed that offers a file from anywhere but the release's own downloads offers no update, so
+/// there is nothing to download.
+#[test]
+fn a_feed_offering_a_file_from_elsewhere_has_nothing_to_download() {
+    let dir = scratch("elsewhere");
+    let target = lcc_updater::Target::current().expect("a platform to update");
+    let file = format!("app-9.9.9-{}-{}.msi", target.os.slug(), target.arch);
+    let base = serve_feed(b"not ours".to_vec(), "ab".repeat(32), file, Some("https://example.invalid/app.msi"));
+    let mut u = Updater::new(Some(dir.clone()));
+    u.set_manifest_url(Some(format!("{base}/latest.json")));
+    u.trust_test_origin(Some(base.clone()));
+    u.check_now();
+    assert!(u.available().is_none(), "nothing is offered");
+    let error = u.status()["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.contains("no download for this system"), "{error}");
+    let err = u.start_download(&Activity::default()).expect_err("nothing to fetch");
+    assert!(err.contains("no update to download"), "{err}");
+    assert!(!dir.join("updates").exists(), "nothing was staged");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Without the test origin, the same local feed is refused before it is read: http is not enough.
+#[test]
+fn a_local_http_feed_is_refused_without_the_test_origin() {
+    let dir = scratch("untrusted");
+    let target = lcc_updater::Target::current().expect("a platform to update");
+    let file = format!("app-9.9.9-{}-{}.msi", target.os.slug(), target.arch);
+    let base = serve_feed(b"installer".to_vec(), "ab".repeat(32), file, None);
+    let mut u = Updater::new(Some(dir.clone()));
+    u.set_manifest_url(Some(format!("{base}/latest.json")));
+    u.check_now();
+    assert!(u.available().is_none());
+    let error = u.status()["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.contains("the release feed") && error.contains("https is required"), "the feed itself is refused: {error}");
+    assert_eq!(u.status()["feed"], format!("{base}/latest.json"), "the override is shown");
     let _ = std::fs::remove_dir_all(&dir);
 }

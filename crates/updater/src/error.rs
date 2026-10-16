@@ -12,6 +12,8 @@ pub enum UpdateError {
     Http { code: u16, what: String },
     /// The feed is not the JSON we expect.
     Parse(String),
+    /// A feed, file or checksum list that is not `https://` (what, and where).
+    Insecure(String),
     /// The newest release has no file for this platform.
     NoAssetFor { version: String, target: String },
     /// The download did not match its expected size or SHA-256.
@@ -31,6 +33,7 @@ impl std::fmt::Display for UpdateError {
             UpdateError::Net(why) => write!(f, "could not reach the release server: {why}"),
             UpdateError::Http { code, what } => write!(f, "the release server answered {code} ({what})"),
             UpdateError::Parse(why) => write!(f, "the release information could not be read: {why}"),
+            UpdateError::Insecure(what) => write!(f, "refusing {what}: https is required"),
             UpdateError::NoAssetFor { version, target } => {
                 write!(f, "release {version} has no download for this system ({target}); get it from the releases page instead")
             }

@@ -142,7 +142,11 @@ mod in_the_loupe {
 
     fn detail_in(size: [f32; 2]) -> (Headless, usize) {
         let services = Services { png: None, ..Default::default() };
-        let app = LccApp::new(lcc_engine::Session::with_demo(), services);
+        let mut session = lcc_engine::Session::with_demo();
+        // newest first, the newest photo open: written around it
+        session.execute("library.sort", &json!({"ascending": false})).unwrap();
+        session.selection = lcc_engine::Selection::single(session.visible_cloned()[0]);
+        let app = LccApp::new(session, services);
         let mut h = Headless::new(app, size, 1.0);
         let r = h.request("ui.set", json!({"view": "detail", "right": "none", "filmstrip": false}), T);
         assert_eq!(r["ok"], true, "{r}");

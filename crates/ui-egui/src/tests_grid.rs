@@ -25,6 +25,8 @@ fn library() -> Session {
 
 fn library_of(n: u64) -> Session {
     let mut s = Session::new();
+    // newest first: the tests here were written around the newest day heading the grid
+    s.sort.ascending = false;
     for i in 0..n {
         let (w, h) = if i % 5 == 4 { (4000, 6000) } else { (6000, 4000) };
         let path = format!("/app-grid-test/IMG_{i:05}.jpg");

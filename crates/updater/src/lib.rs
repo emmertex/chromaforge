@@ -5,9 +5,10 @@
 //! The pieces, in the order a session uses them:
 //!
 //! 1. [`check`] reads the release feed — the static `latest.json` the release pipeline publishes,
-//!    GitHub's Releases API, or a feed URL the environment points at ([`Options::manifest_url`],
-//!    `<PREFIX>_UPDATE_URL`) — compares the newest release's version with this build ([`version`]),
-//!    and picks the asset that belongs to this platform ([`target`]).
+//!    GitHub's Releases API, or a feed a Rust caller names ([`Options::manifest_url`]: a test or a
+//!    mirror) — compares the newest release's version with this build ([`version`]), and picks the
+//!    asset that belongs to this platform ([`target`]). Only files under this repository's release
+//!    downloads are offered, and only over https.
 //! 2. [`download`] fetches that asset into the cache folder, resuming an interrupted transfer,
 //!    capped, and checked against the size the feed states and the release's `SHA256SUMS.txt`
 //!    ([`checksum`]) before it is renamed into place. A file that fails its check is deleted.
@@ -39,7 +40,9 @@ mod download;
 mod install;
 mod target;
 
-pub use check::{Cache, Checked, MAX_DOWNLOAD_BYTES, Options, REUSE_AFTER, Update, api_url, check, from_release, manifest_url, override_url};
+pub use check::{
+    Cache, Checked, MAX_DOWNLOAD_BYTES, Options, REUSE_AFTER, Update, api_url, check, from_release, manifest_url, release_download_prefix,
+};
 pub use download::{Downloaded, client, download, part_path, stage_dir};
 pub use error::UpdateError;
 pub use install::{Plan, Restart, install, install_with, plan, reveal, runs_from_appimage};

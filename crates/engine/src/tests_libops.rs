@@ -245,9 +245,9 @@ fn capture_time_set_shift_undo_and_replay() {
     // everybody the same time
     s.execute("photo.setCaptureTime", &json!({"time": "2026-10-01T08:00:00", "each": true})).unwrap();
     assert!(ids.iter().all(|i| captured(&s, *i).as_deref() == Some("2026-10-01T08:00:00")));
-    // the grid order (capture date, newest first) follows: they're now the newest photos
+    // the grid order (capture date, oldest first) follows: they're now the newest photos, last
     let vis = s.visible_cloned();
-    assert!(vis[..3].iter().all(|v| ids.contains(&v.0)), "{vis:?}");
+    assert!(vis[vis.len() - 3..].iter().all(|v| ids.contains(&v.0)), "{vis:?}");
     // invalid dates are refused
     assert!(s.execute("photo.setCaptureTime", &json!({"time": "2026-02-30 10:00"})).is_err());
     assert!(s.execute("photo.setCaptureTime", &json!({"time": "yesterday"})).is_err());

@@ -21,8 +21,13 @@ if let Some(update) = lcc_updater::check(&opts, None, None)? {
 
 - **The feed.** `latest.json` on the newest release (`…/releases/latest/download/latest.json`),
   else `GET /repos/{owner}/{repo}/releases` (no token needed for a public repository; a 403 is the
-  rate limit, reported as such), else a URL the caller or `<PREFIX>_UPDATE_URL` names. Both shapes
-  parse into `Release`; the newest **version** wins, not the feed's order.
+  rate limit, reported as such), else a URL a Rust caller names (`Options::manifest_url`: a mirror
+  or a test; no command or setting reaches it). Both shapes parse into `Release`; the newest
+  **version** wins, not the feed's order.
+- **Where files may come from.** Only `https://github.com/<owner>/<repo>/releases/download/…` of the
+  brand's `REPOSITORY` (`release_download_prefix`); a file the feed lists anywhere else is passed
+  over, and a feed, file or checksum list on plain `http://` is refused. Tests trust one local
+  origin through `Options::extra_origin`.
 - **Versions** are SemVer 2.0.0 (`v1.2.3`, `1.2.3-rc.1`); a tag that is not a version (`nightly`) is
   not a release of ours. A prerelease is only offered when asked for, and a release outranks its own
   prereleases.

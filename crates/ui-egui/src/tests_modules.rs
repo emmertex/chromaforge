@@ -16,7 +16,11 @@ const SETTLE: Duration = Duration::from_secs(120);
 
 fn demo() -> Headless {
     let services = Services { png: None, ..Default::default() };
-    let app = LccApp::new(lcc_engine::Session::with_demo(), services);
+    let mut session = lcc_engine::Session::with_demo();
+    // newest first, the newest photo open: written around it
+    session.execute("library.sort", &json!({"ascending": false})).unwrap();
+    session.selection = lcc_engine::Selection::single(session.visible_cloned()[0]);
+    let app = LccApp::new(session, services);
     let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
     h.settle(SETTLE);
     run(&mut h, "module.library", json!({}));

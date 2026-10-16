@@ -7,13 +7,18 @@
 //! Where the feed comes from, in order:
 //! 1. the body the caller already has ([`check`]'s `feed`, which the engine fetches off the UI
 //!    thread and caches);
-//! 2. [`Options::manifest_url`] (the `<PREFIX>_UPDATE_URL` override, or a build that pins one);
+//! 2. [`Options::manifest_url`] (set through the Rust API only: a test or a mirror; no command,
+//!    control request or setting reaches it);
 //! 3. the static `latest.json` published on the newest release;
 //! 4. GitHub's Releases API for the brand's repository ([`lcc_brand::REPOSITORY`]).
 //!
 //! The API needs no token for a public repository, but it is rate-limited per IP; a 403 there is
 //! reported as such, and the static manifest is tried first because it is a plain file on the
 //! release and keeps working when the API is rate-limited.
+//!
+//! Whatever the feed says, the files it offers must be this repository's release downloads
+//! (`https://github.com/<owner>/<repo>/releases/download/…`, [`release_download_prefix`]): a file
+//! anywhere else is passed over, and a feed, file or checksum list on plain `http://` is refused.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -45,9 +50,13 @@ pub struct Options {
     pub target: Option<Target>,
     /// Include prereleases (`-rc.1`) in what counts as newer.
     pub prerelease: bool,
-    /// A feed URL that replaces the GitHub API (the `<PREFIX>_UPDATE_URL` override, or the static
-    /// manifest a build was pointed at).
+    /// A feed URL that replaces the release's own (a mirror, or a test's local feed); it must be
+    /// `https://`. The files it offers still have to be on this repository's releases.
     pub manifest_url: Option<String>,
+    /// Tests only: one more origin (`http://127.0.0.1:<port>`) whose feed and files are trusted
+    /// like the release's own, plain `http` included. The engine sets it only in its own tests;
+    /// no command, control request or MCP tool can.
+    pub extra_origin: Option<String>,
 }
 
 impl Default for Options {
@@ -57,15 +66,10 @@ impl Default for Options {
             current: Version::current(),
             target: Target::current(),
             prerelease: false,
-            manifest_url: override_url(),
+            manifest_url: None,
+            extra_origin: None,
         }
     }
-}
-
-/// `<PREFIX>_UPDATE_URL`: point the updater at another feed (a local server, a mirror, a fork).
-/// Read through the brand, so the legacy prefix still works.
-pub fn override_url() -> Option<String> {
-    lcc_brand::env("UPDATE_URL").map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// A newer release, and the file this machine would install.
@@ -123,6 +127,19 @@ pub fn from_release(opts: &Options, target: Target, release: Release, cancel: Op
     if release.version <= opts.current {
         return Ok(None);
     }
+    // a file or checksum list on plain http is refused outright, not quietly passed over
+    for offered in [release.best_asset(&target), release.checksum_asset()].into_iter().flatten() {
+        release_file(opts, &offered.url)?;
+    }
+    // only this repository's release downloads are offered, whatever else the feed lists
+    let mut release = release;
+    release.assets.retain(|a| match release_file(opts, &a.url) {
+        Ok(true) => true,
+        _ => {
+            log::info!("update: {} is not one of the release's own files; passed over", a.name);
+            false
+        }
+    });
     let Some(asset) = release.best_asset(&target).cloned() else {
         return Err(UpdateError::NoAssetFor { version: release.version.to_text(), target: format!("{}-{}", target.os.slug(), target.arch) });
     };
@@ -150,6 +167,9 @@ pub fn from_release(opts: &Options, target: Target, release: Release, cancel: Op
 /// The feed body: the override URL, else the static manifest on the newest release, else the API.
 fn fetch_feed(opts: &Options, cancel: Option<Arc<AtomicBool>>) -> Result<String, UpdateError> {
     if let Some(url) = &opts.manifest_url {
+        if under_test_origin(opts, url).is_none() {
+            require_https(url, "the release feed")?;
+        }
         return get_text(url, cancel);
     }
     match get_text(&manifest_url(&opts.repo), cancel.clone()) {
@@ -177,6 +197,60 @@ pub fn manifest_url(repo: &str) -> String {
 /// `https://api.github.com/repos/<owner>/<repo>/releases?per_page=30`.
 pub fn api_url(repo: &str) -> String {
     format!("https://api.github.com/repos/{}/releases?per_page=30", owner_name(repo))
+}
+
+/// `https://github.com/<owner>/<repo>/releases/download/`: where every file of the repository's
+/// releases lives, and the only place an update is taken from.
+pub fn release_download_prefix(repo: &str) -> String {
+    format!("https://github.com/{}/releases/download/", owner_name(repo))
+}
+
+/// Whether `url` is one of the release's own files: `Ok(true)` under
+/// [`release_download_prefix`] (or the test origin), `Ok(false)` an https URL anywhere else, and
+/// an error for anything that is not https.
+fn release_file(opts: &Options, url: &str) -> Result<bool, UpdateError> {
+    if let Some(rest) = under_test_origin(opts, url) {
+        return Ok(plain_path(rest));
+    }
+    require_https(url, "the update's file")?;
+    Ok(strip_prefix_ignore_case(url.trim(), &release_download_prefix(&opts.repo)).is_some_and(plain_path))
+}
+
+/// The rest of `url` after the test origin, when it is under it.
+fn under_test_origin<'a>(opts: &Options, url: &'a str) -> Option<&'a str> {
+    let origin = opts.extra_origin.as_deref().map(str::trim).filter(|o| !o.is_empty())?;
+    let origin = origin.trim_end_matches('/');
+    let rest = strip_prefix_ignore_case(url.trim(), origin)?;
+    // `http://127.0.0.1:1` must not cover `http://127.0.0.1:12/…` or `…:1.evil/…`
+    (rest.is_empty() || rest.starts_with('/')).then_some(rest)
+}
+
+/// `text` without `prefix`, compared ignoring ASCII case (scheme and host are case-insensitive,
+/// and GitHub's owner and repository names are too).
+fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    if head.eq_ignore_ascii_case(prefix) { text.get(prefix.len()..) } else { None }
+}
+
+/// A path that stays where it starts: no `.`/`..` segment, no backslash and no encoded dot or
+/// slash, so `…/releases/download/../../../other/repo/…` cannot reach another repository.
+fn plain_path(rest: &str) -> bool {
+    let path = rest.split(['?', '#']).next().unwrap_or("");
+    let lower = path.to_ascii_lowercase();
+    !lower.contains('\\')
+        && !lower.contains("%2e")
+        && !lower.contains("%2f")
+        && !lower.contains("%5c")
+        && !path.split('/').any(|seg| seg == "." || seg == "..")
+}
+
+/// `Err` unless `url` is `https://`.
+fn require_https(url: &str, what: &str) -> Result<(), UpdateError> {
+    if strip_prefix_ignore_case(url.trim(), "https://").is_some() {
+        return Ok(());
+    }
+    let shown: String = url.trim().chars().take(200).collect();
+    Err(UpdateError::Insecure(format!("{what} at {shown}")))
 }
 
 fn client() -> Result<Client, UpdateError> {
@@ -281,6 +355,7 @@ mod tests {
             target: Some(Target { os: Os::Windows, arch: "x64" }),
             prerelease: false,
             manifest_url: None,
+            extra_origin: None,
         }
     }
 
@@ -305,7 +380,7 @@ mod tests {
             "body": "notes",
             "published_at": "2026-10-12T00:00:00Z",
             "assets": [
-                {"name": format!("app-{version}-windows-x64.msi"), "browser_download_url": "https://x/a.msi", "size": 100},
+                {"name": format!("app-{version}-windows-x64.msi"), "browser_download_url": on_release("a.msi"), "size": 100},
             ],
         }])
         .to_string()
@@ -389,14 +464,137 @@ mod tests {
         let body = serde_json::json!([{
             "tag_name": "v1.2.0",
             "assets": [
-                {"name": "app-1.2.0-windows-x64.msi", "browser_download_url": "https://x/a.msi", "size": 100},
+                {"name": "app-1.2.0-windows-x64.msi", "browser_download_url": on_release("app-1.2.0-windows-x64.msi"), "size": 100},
                 {"name": "SHA256SUMS.txt", "browser_download_url": "http://127.0.0.1:1/sums", "size": 40},
             ],
         }])
         .to_string();
-        // the sums file is unreachable here: the update still comes back, without a hash
-        let u = run(&opts(), &body).expect("a check").expect("an update");
+        // the sums file is unreachable here (a test origin, so http is allowed): the update still
+        // comes back, without a hash
+        let o = Options { extra_origin: Some("http://127.0.0.1:1".into()), ..opts() };
+        let u = run(&o, &body).expect("a check").expect("an update");
         assert_eq!(u.sha256, None);
         assert_eq!(u.asset.kind, crate::target::Kind::Msi);
+    }
+
+    /// Where this repository's release files live: the only place an update may come from.
+    fn on_release(file: &str) -> String {
+        format!("{}/releases/download/v1.2.0/{file}", lcc_brand::REPOSITORY.trim_end_matches('/'))
+    }
+
+    fn feed_with(assets: serde_json::Value) -> String {
+        serde_json::json!([{"tag_name": "v1.2.0", "assets": assets}]).to_string()
+    }
+
+    #[test]
+    fn a_file_that_is_not_on_this_repositorys_releases_is_not_offered() {
+        for url in [
+            "https://example.invalid/app-1.2.0-windows-x64.msi".to_string(),
+            "https://github.com/someone-else/fork/releases/download/v1.2.0/app-1.2.0-windows-x64.msi".to_string(),
+            // the repository's prefix, but a sibling of it
+            format!("{}-evil/releases/download/v1.2.0/app-1.2.0-windows-x64.msi", lcc_brand::REPOSITORY.trim_end_matches('/')),
+            // climbing out of the release folder into another repository
+            on_release("../../../../other/repo/releases/download/v1/app-1.2.0-windows-x64.msi"),
+            on_release("%2e%2e/%2e%2e/app-1.2.0-windows-x64.msi"),
+        ] {
+            let body = feed_with(serde_json::json!([{"name": "app-1.2.0-windows-x64.msi", "browser_download_url": url, "size": 100}]));
+            let err = run(&opts(), &body).expect_err("a file from elsewhere is no update");
+            assert!(matches!(err, UpdateError::NoAssetFor { .. }), "{url}: {err}");
+        }
+        // the same file on the release is offered
+        let body = feed_with(
+            serde_json::json!([{"name": "app-1.2.0-windows-x64.msi", "browser_download_url": on_release("app-1.2.0-windows-x64.msi"), "size": 100}]),
+        );
+        assert!(run(&opts(), &body).expect("a check").is_some());
+    }
+
+    #[test]
+    fn a_feed_on_plain_http_is_refused_before_any_request() {
+        // nothing listens on port 1: without the https rule this would be a connection error
+        let o = Options { manifest_url: Some("http://127.0.0.1:1/latest.json".into()), ..opts() };
+        let err = check(&o, None, None).expect_err("http feed");
+        assert!(err.to_string().contains("https is required"), "{err}");
+    }
+
+    #[test]
+    fn a_file_or_checksum_list_on_plain_http_is_refused() {
+        let http_file = feed_with(serde_json::json!([
+            {"name": "app-1.2.0-windows-x64.msi", "browser_download_url": on_release("app-1.2.0-windows-x64.msi").replacen("https://", "http://", 1), "size": 100},
+        ]));
+        let err = run(&opts(), &http_file).expect_err("http asset");
+        assert!(err.to_string().contains("https is required"), "{err}");
+        let http_sums = feed_with(serde_json::json!([
+            {"name": "app-1.2.0-windows-x64.msi", "browser_download_url": on_release("app-1.2.0-windows-x64.msi"), "size": 100},
+            {"name": "SHA256SUMS.txt", "browser_download_url": "http://127.0.0.1:1/SHA256SUMS.txt", "size": 40},
+        ]));
+        let err = run(&opts(), &http_sums).expect_err("http checksum list");
+        assert!(err.to_string().contains("https is required"), "{err}");
+    }
+
+    #[test]
+    fn the_default_options_name_no_feed_of_their_own() {
+        // the feed comes from the brand's repository; nothing in the environment replaces it
+        assert_eq!(Options::default().manifest_url, None);
+    }
+
+    /// The `latest.json` the v0.8.1 release published (notes shortened), with the brand's names.
+    fn release_0_8_1() -> String {
+        let bin = lcc_brand::BINARY;
+        let base = format!("{}/releases/download/v0.8.1", lcc_brand::REPOSITORY.trim_end_matches('/'));
+        let files = [
+            format!("{bin}-0.8.1-linux-aarch64.AppImage"),
+            format!("{bin}-0.8.1-linux-aarch64.AppImage.zsync"),
+            format!("{bin}-0.8.1-linux-aarch64.deb"),
+            format!("{bin}-0.8.1-linux-aarch64.flatpak"),
+            format!("{bin}-0.8.1-linux-aarch64.rpm"),
+            format!("{bin}-0.8.1-linux-aarch64.tar.gz"),
+            format!("{bin}-0.8.1-linux-x86_64.AppImage"),
+            format!("{bin}-0.8.1-linux-x86_64.AppImage.zsync"),
+            format!("{bin}-0.8.1-linux-x86_64.deb"),
+            format!("{bin}-0.8.1-linux-x86_64.flatpak"),
+            format!("{bin}-0.8.1-linux-x86_64.rpm"),
+            format!("{bin}-0.8.1-linux-x86_64.tar.gz"),
+            format!("{bin}-0.8.1-macos-universal.dmg"),
+            format!("{bin}-0.8.1-windows-arm64-portable.zip"),
+            format!("{bin}-0.8.1-windows-arm64.msi"),
+            format!("{bin}-0.8.1-windows-x64-portable.zip"),
+            format!("{bin}-0.8.1-windows-x64.msi"),
+            format!("{bin}-cli-0.8.1-macos-universal.zip"),
+            format!("{bin}-web-0.8.1.zip"),
+        ];
+        let assets: Vec<serde_json::Value> = files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| serde_json::json!({"name": f, "url": format!("{base}/{f}"), "size": 100_000_000 + i, "sha256": format!("{:064x}", i + 1)}))
+            .collect();
+        serde_json::json!({
+            "version": "0.8.1",
+            "name": "App v0.8.1",
+            "pub_date": "2026-10-14T05:03:58Z",
+            "notes": "## What's Changed",
+            "releases": [{"tag": "v0.8.1", "name": "App v0.8.1", "notes": "## What's Changed", "date": "2026-10-14", "prerelease": false, "assets": assets}],
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_genuine_release_feed_offers_each_platform_its_file() {
+        let bin = lcc_brand::BINARY;
+        let older = Options { current: Version::parse("0.8.0").expect("v"), ..opts() };
+        for (os, arch, file) in [
+            (Os::Windows, "x64", format!("{bin}-0.8.1-windows-x64.msi")),
+            (Os::Windows, "arm64", format!("{bin}-0.8.1-windows-arm64.msi")),
+            (Os::Macos, "universal", format!("{bin}-0.8.1-macos-universal.dmg")),
+            (Os::Linux, "x86_64", format!("{bin}-0.8.1-linux-x86_64.AppImage")),
+            (Os::Linux, "aarch64", format!("{bin}-0.8.1-linux-aarch64.AppImage")),
+        ] {
+            let o = Options { target: Some(Target { os, arch }), ..older.clone() };
+            let u = run(&o, &release_0_8_1()).expect("a check").expect("an update");
+            assert_eq!(u.asset.name, file, "{os:?} {arch}");
+            assert!(u.asset.url.ends_with(&format!("/releases/download/v0.8.1/{file}")), "{}", u.asset.url);
+            assert_eq!(u.sha256.as_deref().map(str::len), Some(64), "the feed's own hash pins the download");
+        }
+        let bsd = Options { target: Some(Target { os: Os::Freebsd, arch: "x86_64" }), ..older };
+        assert!(matches!(run(&bsd, &release_0_8_1()), Err(UpdateError::NoAssetFor { .. })), "0.8.1 shipped no FreeBSD file");
     }
 }

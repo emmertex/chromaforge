@@ -243,8 +243,12 @@ pub struct Updater {
     prefs: Prefs,
     /// Where `updates.json` lives (`None`: an in-memory session; the settings are not written).
     dir: Option<PathBuf>,
-    /// A feed URL that replaces the release's own (`<PREFIX>_UPDATE_URL` puts one here).
+    /// A feed URL that replaces the release's own: Rust callers only (a test, a mirror); no
+    /// command sets it, and `update.status` shows it as `feed`.
     manifest_url: Option<String>,
+    /// Tests only: one more origin whose feed and files are trusted, plain `http` included
+    /// ([`lcc_updater::Options::extra_origin`]). Only this crate's tests can set it.
+    extra_origin: Option<String>,
     /// Where downloads are staged.
     stage: PathBuf,
     cache: lcc_updater::Cache,
@@ -282,6 +286,7 @@ impl Updater {
             prefs,
             dir,
             manifest_url: None,
+            extra_origin: None,
             stage,
             cache: lcc_updater::Cache::default(),
             check: Check::Never,
@@ -439,6 +444,10 @@ impl Updater {
             "page": format!("{}/releases", lcc_brand::REPOSITORY),
             "staging": self.stage.to_string_lossy(),
         });
+        // a feed other than the release's own is never silent
+        if let Some(feed) = &self.manifest_url {
+            v["feed"] = json!(feed);
+        }
         if let Check::Found(a) = &self.check {
             v["available"] = available_json(a);
         }
@@ -462,13 +471,27 @@ impl Updater {
     /// The options a check runs with (the user's prerelease choice included, and the feed override
     /// when one is set).
     pub fn options(&self) -> lcc_updater::Options {
-        lcc_updater::Options { prerelease: self.prefs.prerelease, manifest_url: self.manifest_url.clone(), ..Default::default() }
+        lcc_updater::Options {
+            prerelease: self.prefs.prerelease,
+            manifest_url: self.manifest_url.clone(),
+            extra_origin: self.extra_origin.clone(),
+            ..Default::default()
+        }
     }
 
-    /// Read the release feed from `url` instead of the project's (`<PREFIX>_UPDATE_URL` sets this
-    /// at start-up; a mirror, a fork or a test feed). `None` goes back to the default.
+    /// Read the release feed from `url` instead of the project's (a mirror or a test feed; it must
+    /// be `https://`). `None` goes back to the default. Rust API only: no command reaches it, and
+    /// the files the feed offers must still be on this repository's releases.
     pub fn set_manifest_url(&mut self, url: Option<String>) {
         self.manifest_url = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+    }
+
+    /// Tests only: trust `origin` (`http://127.0.0.1:<port>`) for the feed and its files, as a
+    /// local release server needs. Compiled into this crate's tests and nowhere else, so no
+    /// command, control request or MCP tool can reach it.
+    #[cfg(test)]
+    pub(crate) fn trust_test_origin(&mut self, origin: Option<String>) {
+        self.extra_origin = origin.map(|o| o.trim().to_string()).filter(|o| !o.is_empty());
     }
 
     /// The feed URL in use (`None`: the project's own).
