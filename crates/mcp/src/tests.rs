@@ -279,14 +279,17 @@ fn import_tool_moves_with_a_folder_template() {
 fn command_tools_run_commands() {
     let mut b = Headless::demo();
     let first = b.session.visible_cloned()[0];
+    // whichever photo sorts first: the demo seeds some with a rating, so undo is checked against that
+    let before = b.session.catalog.photo(first).unwrap().rating;
+    let rating = if before == 4 { 5 } else { 4 };
     let r = call_tool(&mut b, "cmd_library_select", &json!({"ids": [first.0]}));
     assert!(!r.is_error, "{r:?}");
-    let r = call_tool(&mut b, "cmd_photo_rate", &json!({"rating": 4}));
+    let r = call_tool(&mut b, "cmd_photo_rate", &json!({"rating": rating}));
     assert!(!r.is_error, "{r:?}");
-    assert_eq!(b.session.catalog.photo(first).unwrap().rating, 4);
+    assert_eq!(b.session.catalog.photo(first).unwrap().rating, rating, "the command rates the photo");
     let r = call_tool(&mut b, "cmd_edit_undo", &json!({}));
     assert!(!r.is_error);
-    assert_eq!(b.session.catalog.photo(first).unwrap().rating, 0);
+    assert_eq!(b.session.catalog.photo(first).unwrap().rating, before, "undo puts back the rating it had");
 }
 
 #[test]
