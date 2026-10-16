@@ -721,7 +721,9 @@ pub fn text_button(ui: &mut Ui, id: &str, label: &str, active: bool) -> Response
         t.button
     };
     let p = ui.painter();
-    p.rect(r, CornerRadius::same(4), fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
+    // #122: an "on" choice gets a brighter edge as well as a brighter fill, so it reads as selected.
+    let edge = if active { t.text_dim } else { t.button_border };
+    p.rect(r, CornerRadius::same(4), fill, Stroke::new(1.0, edge), StrokeKind::Inside);
     p.galley(r.center() - galley.size() / 2.0, galley, t.text);
     resp
 }

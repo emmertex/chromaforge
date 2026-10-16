@@ -412,3 +412,60 @@ fn slideshow_playback_settings_persist_with_the_library() {
     drop(s);
     let _ = std::fs::remove_dir_all(&lib);
 }
+
+#[test]
+fn a_photo_makes_its_optics_the_default_for_new_photos() {
+    let before = temp_dir("newdefault-before");
+    let after = temp_dir("newdefault-after");
+    let lib = temp_dir("newdefault-lib").join("lib");
+    dng(&before, "one.dng", "Nikon", "Z 9");
+    dng(&after, "two.dng", "Nikon", "Z 9 II");
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [before.to_string_lossy()]})).unwrap();
+    let id = photo_named(&s, "one.dng").id;
+    // the two Optics checkboxes a person turns on for a batch (issue #148)
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    s.execute("develop.merge", &json!({"settings": {"optics": {"lens_profile": true, "remove_ca": true}}, "label": "Optics"})).unwrap();
+    let r = s.execute("library.setImportDefault", &json!({})).unwrap();
+    let pid = r["id"].as_str().unwrap_or_default().to_string();
+    assert_eq!(r["scope"], "raw", "{r}");
+    assert_eq!(s.import_defaults.raw_preset.as_deref(), Some(pid.as_str()));
+    let saved = s.presets.iter().find(|p| p.id == pid).cloned().unwrap_or_else(|| panic!("the preset was saved: {pid}"));
+    assert_eq!(saved.name, "Optics for new photos");
+    assert_eq!((saved.settings["optics"]["lens_profile"].clone(), saved.settings["optics"]["remove_ca"].clone()), (json!(true), json!(true)));
+    assert!(saved.settings.get("light").is_none(), "a partial: only the group asked for, never the whole edit");
+
+    // a photo imported from now on starts with them, and counts as unedited
+    let r = s.execute("library.import", &json!({"paths": [after.to_string_lossy()]})).unwrap();
+    assert_eq!(r["imported"].as_array().map(Vec::len), Some(1), "{r}");
+    let fresh = photo_named(&s, "two.dng");
+    assert!(fresh.develop.optics.lens_profile && fresh.develop.optics.remove_ca, "the default applied on import");
+    assert!(!fresh.is_edited(), "a default is not an edit");
+
+    // pressing again updates that one preset instead of piling presets up
+    let count = s.presets.len();
+    let again = s.execute("library.setImportDefault", &json!({})).unwrap();
+    assert_eq!(again["id"], pid, "{again}");
+    assert_eq!(s.presets.len(), count, "one preset, not one per press");
+
+    // per-camera defaults on: the photo's own camera gets the entry (the import made the new photo
+    // active, so select the first one again — the panel acts on what is on screen)
+    s.execute("library.preferences", &json!({"import": {"perCamera": true}})).unwrap();
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let r = s.execute("library.setImportDefault", &json!({})).unwrap();
+    assert_eq!((r["scope"].clone(), r["camera"].clone()), (json!("camera"), json!("Nikon Z 9")), "{r}");
+    assert_eq!(s.import_defaults.preset_for(true, "Nikon Z 9"), Some(pid.as_str()));
+    // and what it will not take
+    assert!(s.execute("library.setImportDefault", &json!({"scope": "sideways"})).is_err(), "an unknown scope is refused");
+    assert!(s.execute("library.setImportDefault", &json!({"groups": ["nope"]})).is_err(), "an unknown group is refused");
+
+    // a name of the user's own (Develop ▸ Optics ▸ Save as…): a second preset, and it takes over
+    let named = s.execute("library.setImportDefault", &json!({"name": "Birding optics", "scope": "raw"})).unwrap();
+    assert_eq!(named["name"], "Birding optics", "{named}");
+    assert_eq!(s.import_defaults.raw_preset.as_deref(), named["id"].as_str(), "{named}");
+    assert!(s.presets.iter().any(|p| p.id == pid), "the first one is still there: named defaults live side by side");
+    assert_eq!(s.presets.iter().filter(|p| p.name == "Birding optics").count(), 1, "and saving that name again reuses it");
+    let _ = std::fs::remove_dir_all(&before);
+    let _ = std::fs::remove_dir_all(&after);
+}

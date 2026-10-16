@@ -1326,6 +1326,7 @@
   "Remove from Target Collection": "Quitar de colección de destino",
   "Wheel scroll speed": "Velocidad de desplazamiento de la rueda",
   "Wheel resizes brush instead of zooming": "La rueda del ratón cambia el tamaño del pincel en lugar de hacer zoom",
+  "Double-click opens the photo in Develop": "El doble clic abre la foto en Revelar",
   "Fast": "Rápida",
   "Fastest": "Muy rápida",
   "Run face models on the CPU only": "Ejecutar los modelos de caras solo en la CPU",

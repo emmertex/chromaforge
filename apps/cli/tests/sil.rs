@@ -689,6 +689,10 @@ impl Rng {
     }
 }
 
+/// The monkey stops adding photos (virtual copies) once the library holds this many, so that
+/// long runs keep each step, and the checks after it, inside the per-step timeout.
+const MONKEY_MAX_PHOTOS: usize = 64;
+
 /// One random user action (sometimes with hostile arguments).
 fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: usize) -> (&'static str, Value) {
     let id = if ids.is_empty() || r.chance(5) { json!(r.pick(&[0u64, 999_999, u64::MAX])) } else { json!(r.pick(ids)) };
@@ -729,7 +733,8 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
         14 => ("develop.paste", json!({"ids": some})),
         15 => ("develop.sync", json!({})),
         16 => ("develop.reset", json!({})),
-        17 => ("photo.virtualCopy", json!({})),
+        17 if ids.len() < MONKEY_MAX_PHOTOS => ("photo.virtualCopy", json!({})),
+        17 => ("library.selectAll", json!({})),
         18 => ("history.previous", json!({})),
         19 => ("history.next", json!({})),
         20 => ("edit.undo", json!({})),
@@ -748,6 +753,22 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
         30 => ("ui.dialog.confirm", json!({})),
         31 => ("ui.dialog.cancel", json!({})),
         _ => ("app.export", json!({"format": "jpeg", "longEdge": 200, "ids": [id], "dir": root.join("monkey-export").to_string_lossy()})),
+    }
+}
+
+/// The monkey never asks for a photo-adding action once the library is at its size cap.
+#[test]
+fn sil_monkey_stops_adding_photos_past_the_cap() {
+    let root = std::env::temp_dir();
+    for n in [MONKEY_MAX_PHOTOS - 1, MONKEY_MAX_PHOTOS, MONKEY_MAX_PHOTOS * 4] {
+        let ids: Vec<u64> = (1..=n as u64).collect();
+        let mut r = Rng(0x5eed);
+        let added = (0..5000).filter(|step| random_action(&mut r, &ids, &[], &root, *step).0 == "photo.virtualCopy").count();
+        if n < MONKEY_MAX_PHOTOS {
+            assert!(added > 0, "below the cap the monkey still makes virtual copies");
+        } else {
+            assert_eq!(added, 0, "{n} photos: the monkey added photos past its cap of {MONKEY_MAX_PHOTOS}");
+        }
     }
 }
 

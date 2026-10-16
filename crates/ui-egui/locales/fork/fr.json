@@ -1234,6 +1234,7 @@
   "Remove from Target Collection": "Retirer de la collection cible",
   "Wheel scroll speed": "Vitesse de défilement de la molette",
   "Wheel resizes brush instead of zooming": "La molette redimensionne le pinceau au lieu de zoomer",
+  "Double-click opens the photo in Develop": "Un double-clic ouvre la photo dans Développement",
   "Fast": "Rapide",
   "Fastest": "Très rapide",
   "Run face models on the CPU only": "Exécuter les modèles de visages sur le processeur uniquement",

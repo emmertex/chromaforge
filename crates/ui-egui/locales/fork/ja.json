@@ -1323,6 +1323,7 @@
   "Remove from Target Collection": "ターゲットコレクションから削除",
   "Wheel scroll speed": "ホイールのスクロール速度",
   "Wheel resizes brush instead of zooming": "ホイールでズームの代わりにブラシサイズを変更",
+  "Double-click opens the photo in Develop": "ダブルクリックで写真を現像モジュールで開く",
   "Fast": "速い",
   "Fastest": "最速",
   "Run face models on the CPU only": "顔モデルを CPU だけで実行",

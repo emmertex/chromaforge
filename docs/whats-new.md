@@ -6,6 +6,11 @@
 - Settings → Shortcuts records a new key again. Clicking a shortcut there used to stop listening on the next frame,
   so no key could be set; only Help → Keyboard Shortcuts worked (issue #155).
 
+### The parametric curve shows the Point Curve preset
+- The Tone Curve's parametric graph now draws the Point Curve on top of the region sliders, as the photo is
+  rendered. Choosing Medium Contrast or Strong Contrast bends the line into its S-curve instead of leaving a
+  straight diagonal, and dragging the line still lands where the pointer lets go.
+
 ### Library comes back in the view you left it in
 - Going from Library to Develop and back through the module picker brought Library back in the loupe, whatever view
   it was left in. It now returns to the grid, loupe, Compare or Survey it showed before (issue #144).

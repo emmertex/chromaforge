@@ -1531,6 +1531,7 @@
   "Remove from Target Collection": "Удалить из целевой коллекции",
   "Wheel scroll speed": "Скорость прокрутки колесом",
   "Wheel resizes brush instead of zooming": "Колесо мыши меняет размер кисти вместо масштабирования",
+  "Double-click opens the photo in Develop": "Двойной щелчок открывает фото в модуле обработки",
   "Fast": "Быстрая",
   "Fastest": "Очень быстрая",
   "Run face models on the CPU only": "Запускать модели лиц только на ЦП",

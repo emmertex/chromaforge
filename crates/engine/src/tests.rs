@@ -1770,3 +1770,66 @@ fn malformed_photo_targets_are_refused_not_widened() {
     let preset = s.presets.first().unwrap().id.clone();
     s.execute("preset.apply", &json!({"id": preset})).unwrap();
 }
+
+/// Issue #160: the stack commands are on exactly when a selected photo is stacked, however many
+/// unstacked photos are selected with it.
+#[test]
+fn stack_commands_need_a_stacked_photo_in_the_selection() {
+    let mut s = demo();
+    let on = |s: &Session, id: &str| s.commands().into_iter().find(|c| c.id == id).map(|c| (c.enabled, c.disabled_reason.clone()));
+    let ids: Vec<_> = s.visible().to_vec();
+    assert!(ids.len() >= 4);
+    let select = |s: &mut Session, sel: &[lcc_catalog::PhotoId]| {
+        s.execute("library.select", &json!({"ids": sel.iter().map(|i| i.0).collect::<Vec<_>>(), "active": sel[0].0})).unwrap();
+    };
+    select(&mut s, &ids[..2]);
+    s.execute("stack.group", &json!({"collapsed": false})).unwrap();
+    for id in ["stack.ungroup", "stack.remove", "stack.setTop", "stack.moveUp", "stack.moveDown", "stack.split", "stack.toggle"] {
+        select(&mut s, &ids[2..]);
+        let (enabled, why) = on(&s, id).unwrap();
+        assert!(!enabled && why.as_deref() == Some("no stacked photo selected"), "{id}: {why:?}");
+        // one stacked photo among many unstacked ones turns it on
+        let mut sel = ids[2..].to_vec();
+        sel.push(ids[1]);
+        select(&mut s, &sel);
+        assert!(on(&s, id).unwrap().0, "{id}");
+    }
+}
+
+/// Issue #175 (AC-2 of #160): evaluating the stack commands' `enabled` does work proportional to
+/// the selected and stacked photos, not their product. Counts the photos and stacks the checks
+/// look at (not time): a library four times larger costs less than eight times the work.
+#[test]
+fn stack_command_enabled_work_grows_linearly_with_the_library() {
+    use crate::cmd::STACK_WORK;
+    use lcc_catalog::{Op, Photo, PhotoId, Source};
+    const STACK_CMDS: [&str; 7] = ["stack.ungroup", "stack.remove", "stack.setTop", "stack.moveUp", "stack.moveDown", "stack.split", "stack.toggle"];
+    // `n` photos in stacks of two, all selected; `last_only` stacks just the last pair instead.
+    let work_for = |n: u64, last_only: bool| -> u64 {
+        let mut s = demo();
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let id = s.catalog.alloc_photo_id();
+            let p = Photo::new(id, Source::Demo { scene: 1 }, &format!("s{i}.jpg"), "JPEG", 6, 4, "2026-01-01T00:00:00");
+            s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+            ids.push(id);
+        }
+        let pairs: Vec<&[PhotoId]> = if last_only { vec![&ids[ids.len() - 2..]] } else { ids.chunks(2).collect() };
+        for pair in pairs {
+            let op = s.catalog.group_ops(pair[0], &pair[1..], false).unwrap();
+            s.catalog.apply(op).unwrap();
+        }
+        s.selection = Selection { ids: ids.clone(), active: ids.first().copied() };
+        STACK_WORK.with(|w| w.set(0));
+        let specs = command_specs();
+        for id in STACK_CMDS {
+            let spec = specs.iter().find(|c| c.id == id).unwrap();
+            assert!((spec.enabled)(&s).is_ok(), "{id} is on with stacked photos selected");
+        }
+        STACK_WORK.with(std::cell::Cell::get)
+    };
+    for last_only in [false, true] {
+        let (small, large) = (work_for(1000, last_only), work_for(4000, last_only));
+        assert!(large < small.max(1) * 8, "last_only={last_only}: work {small} -> {large} for 4x the photos");
+    }
+}

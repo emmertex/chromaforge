@@ -819,6 +819,7 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             &mut app.ui.settings.grid_badges,
         );
     });
+    check(ui, "settings.doubleClickDevelop", &mut app.ui.settings.double_click_develop, "Double-click opens the photo in Develop");
     check(ui, "settings.showFilenames", &mut app.ui.show_filenames, "Square Grid: show file names and formats");
     row(ui, t, crate::i18n::tr("Wheel scroll speed"), |ui| {
         choices(ui, "settingsWheelSpeed", &[(1.0, "Normal"), (2.0, "Fast"), (3.0, "Fastest")], &mut app.ui.settings.wheel_scroll_speed);

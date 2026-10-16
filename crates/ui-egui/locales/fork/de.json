@@ -1182,6 +1182,7 @@
   "Remove from Target Collection": "Aus Zielsammlung entfernen",
   "Wheel scroll speed": "Scrollgeschwindigkeit des Mausrads",
   "Wheel resizes brush instead of zooming": "Mausrad ändert die Pinselgröße statt zu zoomen",
+  "Double-click opens the photo in Develop": "Doppelklick öffnet das Foto im Entwickeln-Modul",
   "Fast": "Schnell",
   "Fastest": "Am schnellsten",
   "Run face models on the CPU only": "Gesichtsmodelle nur auf der CPU ausführen",

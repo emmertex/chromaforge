@@ -297,6 +297,10 @@ pub fn has_import_look(p: &Photo) -> bool {
     *p.develop == p.camera_defaults()
 }
 
+/// The name `library.setImportDefault` saves its preset under when the caller doesn't name one
+/// (Develop ▸ Optics ▸ Save as… pre-fills it).
+pub const NEW_PHOTO_DEFAULT: &str = "Optics for new photos";
+
 /// User defaults applied on import (Settings → Import; saved in the library's `prefs.json`).
 /// Presets are referenced by id; a preset that no longer exists is ignored.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

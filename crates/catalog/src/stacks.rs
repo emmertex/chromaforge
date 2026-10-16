@@ -164,14 +164,17 @@ impl Catalog {
 
     /// Ops that dissolve every stack containing one of `photos`.
     pub fn ungroup_ops(&self, photos: &[PhotoId]) -> Vec<Op> {
-        self.stacks.values().filter(|s| s.photos.iter().any(|p| photos.contains(p))).map(|s| Op::RemoveStack { id: s.id }).collect()
+        let ids: HashSet<StackId> = photos.iter().filter_map(|p| self.stack_id_of(*p)).collect();
+        self.stacks.values().filter(|s| ids.contains(&s.id)).map(|s| Op::RemoveStack { id: s.id }).collect()
     }
 
     /// Ops that take `photos` out of their stacks (a stack left with one photo is dissolved).
     pub fn remove_from_stacks_ops(&self, photos: &[PhotoId]) -> Vec<Op> {
+        let ids: HashSet<StackId> = photos.iter().filter_map(|p| self.stack_id_of(*p)).collect();
+        let photos: HashSet<PhotoId> = photos.iter().copied().collect();
         self.stacks
             .values()
-            .filter(|s| s.photos.iter().any(|p| photos.contains(p)))
+            .filter(|s| ids.contains(&s.id))
             .map(|s| {
                 let rest: Vec<PhotoId> = s.photos.iter().copied().filter(|p| !photos.contains(p)).collect();
                 if rest.len() < 2 { Op::RemoveStack { id: s.id } } else { Op::SetStack { id: s.id, photos: rest, collapsed: s.collapsed } }

@@ -117,25 +117,36 @@ fn same_path(a: &Path, b: &Path) -> bool {
 /// other file in the folder (besides `leaving`, the originals going too) shares its stem. Only
 /// existing files are listed.
 pub(crate) fn sidecars_of(original: &Path, leaving: &HashSet<PathBuf>) -> Vec<PathBuf> {
-    const EXTS: [&str; 3] = ["xmp", "XMP", "Xmp"];
-    let mut v: Vec<PathBuf> = Vec::new();
-    for e in EXTS {
-        let p = PathBuf::from(format!("{}.{e}", original.display()));
-        if p.is_file() && !v.iter().any(|x| same_path(x, &p)) {
-            v.push(p);
-        }
-    }
-    let mut stems: Vec<PathBuf> = Vec::new();
-    for e in EXTS {
-        let p = original.with_extension(e);
-        if p.is_file() && !same_path(&p, original) && !stems.iter().any(|x| same_path(x, &p)) {
-            stems.push(p);
-        }
-    }
-    if !stems.is_empty() && !stem_shared(original, leaving) {
-        v.extend(stems);
+    let (Some(name), Some(dir)) = (original.file_name(), original.parent()) else { return Vec::new() };
+    let listing = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    // list the folder rather than probe `.xmp` / `.XMP` / `.Xmp`: on a case-insensitive volume every
+    // probe finds the one file, while the listing names each file once, as it is spelled on disk
+    let Ok(entries) = std::fs::read_dir(listing) else { return Vec::new() };
+    let names: Vec<String> = entries.flatten().filter(|e| e.path().is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let (whole, stem) = sidecar_names(&name.to_string_lossy(), &names);
+    let mut v: Vec<PathBuf> = whole.into_iter().map(|n| dir.join(n)).collect();
+    if !stem.is_empty() && !stem_shared(original, leaving) {
+        v.extend(stem.into_iter().map(|n| dir.join(n)));
     }
     v
+}
+
+/// The entries of `names` (one folder's file names, as listed) that are `original`'s sidecars,
+/// compared without case: `<original>.xmp` and `<stem>.xmp`. Each listed file appears at most once.
+fn sidecar_names<'a>(original: &str, names: &'a [String]) -> (Vec<&'a str>, Vec<&'a str>) {
+    let lower = original.to_lowercase();
+    let whole = format!("{lower}.xmp");
+    let stem = Path::new(original).file_stem().map(|s| format!("{}.xmp", s.to_string_lossy().to_lowercase()));
+    let (mut w, mut st) = (Vec::new(), Vec::new());
+    for n in names {
+        let l = n.to_lowercase();
+        if l == whole {
+            w.push(n.as_str());
+        } else if stem.as_deref() == Some(l.as_str()) && l != lower {
+            st.push(n.as_str());
+        }
+    }
+    (w, st)
 }
 
 /// Another file in `original`'s folder, not a sidecar and not among `leaving`, has the same stem
@@ -355,6 +366,27 @@ mod tests {
         let all_sidecars: Vec<PathBuf> = p_both.groups.iter().flat_map(|g| sidecars_of(&g.original, &originals(&p_both))).collect();
         assert!(all_sidecars.contains(&cr3_xmp));
         assert!(all_sidecars.contains(&stem_xmp));
+    }
+
+    /// Issue #159: a case-insensitive volume lists one sidecar once (probing `.xmp`, `.XMP`,
+    /// `.Xmp` found it three times); a case-sensitive folder holding two spellings lists both.
+    #[test]
+    fn sidecar_names_follow_the_listing() {
+        let one = vec!["test.cr3".to_string(), "test.cr3.XMP".to_string(), "Test.xmp".to_string(), "other.xmp".to_string()];
+        assert_eq!(sidecar_names("test.cr3", &one), (vec!["test.cr3.XMP"], vec!["Test.xmp"]));
+        let two = vec!["a.jpg".to_string(), "a.jpg.xmp".to_string(), "a.jpg.XMP".to_string()];
+        assert_eq!(sidecar_names("a.jpg", &two).0.len(), 2);
+        // an original that is itself an .xmp is never its own sidecar
+        assert_eq!(sidecar_names("x.xmp", &["x.xmp".to_string()]), (vec![], vec![]));
+    }
+
+    #[test]
+    fn sidecars_listed_once_on_disk() {
+        let tmp = TempDir::new("once");
+        let raw = tmp.path.join("img.cr3");
+        std::fs::write(&raw, b"raw").unwrap();
+        std::fs::write(tmp.path.join("img.cr3.xmp"), b"x").unwrap();
+        assert_eq!(sidecars_of(&raw, &HashSet::new()), vec![tmp.path.join("img.cr3.xmp")]);
     }
 
     #[test]

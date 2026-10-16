@@ -44,6 +44,8 @@ mod merge;
 pub mod metadata;
 pub mod missing;
 mod organize;
+#[cfg(test)]
+pub(crate) use organize::STACK_WORK;
 pub(crate) mod plugin_filters;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugins;

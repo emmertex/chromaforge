@@ -217,3 +217,34 @@ fn a_photo_in_two_stacks_read_from_a_file_answers_as_a_scan() {
     assert_eq!(indexed(&c), scanned(&c));
     assert_eq!(c.stack_of(PhotoId(2)).map(|s| s.id), None, "the repair took it out of the second stack");
 }
+
+/// Issue #160: `stack_of` agrees with a scan through the user gestures (group, split, remove from
+/// stack, ungroup) and their undo.
+#[test]
+fn stack_of_follows_group_split_remove_and_ungroup() {
+    let mut c = library();
+    let p: Vec<PhotoId> = (1..=6).map(PhotoId).collect();
+    let mut inverses = Vec::new();
+    let mut step = |c: &mut Catalog, op: Op| {
+        inverses.push(c.apply(op).unwrap());
+        assert_eq!(indexed(c), scanned(c));
+    };
+    let op = c.group_ops(p[0], &p[1..5], false).unwrap();
+    step(&mut c, op);
+    assert_eq!(c.stack_of(p[4]).map(|s| s.photos.len()), Some(5));
+    let op = c.split_stack_ops(p[2]).unwrap();
+    step(&mut c, op);
+    assert_ne!(c.stack_of(p[0]).map(|s| s.id), c.stack_of(p[2]).map(|s| s.id));
+    assert!(c.stack_of(p[2]).is_some() && c.stack_of(p[5]).is_none());
+    let op = Op::Batch { ops: c.remove_from_stacks_ops(&[p[3]]) };
+    step(&mut c, op);
+    assert!(c.stack_of(p[3]).is_none() && c.stack_of(p[4]).is_some());
+    let op = Op::Batch { ops: c.ungroup_ops(&[p[0], p[4]]) };
+    step(&mut c, op);
+    assert!(p.iter().all(|x| c.stack_of(*x).is_none()) && c.stacks().next().is_none());
+    for inv in inverses.into_iter().rev() {
+        c.apply(inv).unwrap();
+        assert_eq!(indexed(&c), scanned(&c));
+    }
+    assert!(c.stacks().next().is_none());
+}

@@ -26,7 +26,7 @@ fn section_param(p: &Value, c: &str) -> Result<Section> {
     serde_json::from_value(v).map_err(|e| bad(c, e.to_string()))
 }
 
-fn groups_param(p: &Value, c: &str) -> Result<Option<Vec<SettingsGroup>>> {
+pub(super) fn groups_param(p: &Value, c: &str) -> Result<Option<Vec<SettingsGroup>>> {
     match p.get("groups") {
         None | Some(Value::Null) => Ok(None),
         Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|e| bad(c, format!("invalid `groups`: {e}"))),

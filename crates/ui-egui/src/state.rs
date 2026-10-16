@@ -368,6 +368,9 @@ pub struct AppSettings {
     /// View ▸ Zoom to Focus Point: Toggle Zoom (Z) centres the zoomed view on the camera's focus point
     /// when the photo has one (`view.zoomToFocus`).
     pub zoom_to_focus: bool,
+    /// Double-clicking a grid photo opens it in Develop instead of the Library loupe (issue #144;
+    /// off by default, as in Lightroom Classic).
+    pub double_click_develop: bool,
 }
 
 impl Default for AppSettings {
@@ -401,6 +404,7 @@ impl Default for AppSettings {
             keyword_chips: KeywordChips::default(),
             focus_point: false,
             zoom_to_focus: true,
+            double_click_develop: false,
         }
     }
 }
@@ -1393,6 +1397,12 @@ pub enum Dialog {
     Shortcuts,
     /// Library ▸ View Options (⌘J): grid cell style, index numbers, badges.
     ViewOptions,
+    /// Develop ▸ Optics ▸ Save as…: name the preset new photos start from.
+    NewPhotoDefault {
+        /// Empty = the engine's own name ([`lcc_engine::import::NEW_PHOTO_DEFAULT`]).
+        #[serde(default)]
+        name: String,
+    },
     /// Edit ▸ Edit Watermarks…
     Watermark {
         wm: lcc_engine::export::Watermark,

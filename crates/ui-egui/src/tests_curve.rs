@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::headless::Headless;
-use crate::panels::edit::ParametricCurve;
+use crate::panels::edit::{ParametricCurve, StackedCurve};
 use crate::{LccApp, Services};
 
 const T: Duration = Duration::from_secs(20);
@@ -286,6 +286,70 @@ fn the_parametric_graph_paints_the_model_the_renderer_uses() {
     assert_eq!(checked, 25);
     // and the shape really does fold back before the monotone pass, so this proves something
     assert!(model.at(0.6) > model.at(0.3), "the region bumps still bend the curve");
+}
+
+/// A Point Curve preset shows in the parametric graph: Medium Contrast bends the line into its
+/// S-curve, which the renderer stacks on top of the region sliders, though the sliders stay at 0.
+#[test]
+fn the_parametric_graph_shows_the_point_curve_preset() {
+    let mut h = curve_open("parametric");
+    let straight = painted_tone(&mut h, 0.25);
+    assert!((straight - 0.25).abs() < 0.02, "a linear curve is the diagonal: {straight}");
+    click_widget(&mut h, "dropdown:curvePreset", 1);
+    click_widget(&mut h, "curvePreset:Medium Contrast", 1);
+    let c = develop(&h).curve;
+    assert_eq!((c.shadows, c.darks, c.lights, c.highlights), (0.0, 0.0, 0.0, 0.0), "the preset leaves the sliders alone");
+    let (dark, light) = (painted_tone(&mut h, 0.25), painted_tone(&mut h, 0.75));
+    assert!(dark < 0.22 && light > 0.78, "the line is the preset's S-curve: {dark} at 0.25, {light} at 0.75");
+    let r = curve_graph_rect(&mut h);
+    let painted = painted_param_curve(&h, r);
+    let model = StackedCurve::new(&c);
+    for i in 0..=24 {
+        let x = i as f64 / 24.0;
+        assert!((painted(x) - model.at(x)).abs() < 0.02, "the painted curve is the stacked one at {x}: {} vs {}", painted(x), model.at(x));
+    }
+}
+
+/// With a Point Curve preset under it, the line still follows the hand: a drag moves the slider of
+/// the region under the pointer, leaves the preset as it was, and the drawn line ends up where the
+/// pointer let go.
+#[test]
+fn dragging_the_curve_over_a_point_curve_preset_moves_the_region_slider() {
+    let mut h = curve_open("parametric");
+    click_widget(&mut h, "dropdown:curvePreset", 1);
+    click_widget(&mut h, "curvePreset:Medium Contrast", 1);
+    h.step();
+    let r = curve_graph_rect(&mut h);
+    let c = develop(&h).curve;
+    let model = StackedCurve::new(&c);
+    let (x, fx) = (r[0] + 0.625 * r[2], 0.625);
+    let y = r[1] + (1.0 - model.at(fx) as f32) * r[3];
+    let to = y - 0.05 * r[3];
+    // one step: the whole move lands on the frame the drag starts, so none of it goes to egui's
+    // drag threshold and the line should end exactly under the pointer
+    let d = h.request("ui.drag", json!({"x": x, "y": y, "toX": x, "toY": to, "steps": 1}), T);
+    assert_eq!(d["ok"], true, "{d}");
+    h.step();
+    let after = develop(&h).curve;
+    assert!(after.lights > 0.0, "the Lights slider follows the line up: {}", after.lights);
+    assert_eq!(after.master, c.master, "the preset is untouched");
+    let want = ((r[1] + r[3] - to) / r[3]) as f64;
+    let got = painted_tone(&mut h, fx);
+    assert!((got - want).abs() < 0.01, "the line is where the pointer let go: {got} vs {want}");
+}
+
+/// The level a drag asks of the region curve is the one the master curve takes to the pointer.
+#[test]
+fn the_stacked_curve_inverts_its_point_curve() {
+    let master = [(0.0, 0.0), (0.25, 0.2), (0.5, 0.5), (0.75, 0.8), (1.0, 1.0)].map(|(x, y)| lcc_geom::Point::new(x, y)).to_vec();
+    let c = lcc_develop::ToneCurve { master, ..Default::default() };
+    let s = StackedCurve::new(&c);
+    for i in 1..20 {
+        let y = i as f64 / 20.0;
+        let back = s.master_at(s.param_level(y));
+        assert!((back - y).abs() < 1e-6, "the master curve takes param_level({y}) back to {y}: {back}");
+    }
+    assert_eq!(StackedCurve::new(&lcc_develop::ToneCurve::default()).param_level(0.3), 0.3, "no point curve, no change");
 }
 
 /// The graph rect as `[left, top, width, height]` plus a reader for the painted curve's height at a

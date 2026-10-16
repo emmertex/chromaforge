@@ -1322,6 +1322,7 @@
   "Remove from Target Collection": "從目標集合中移除",
   "Wheel scroll speed": "滾輪捲動速度",
   "Wheel resizes brush instead of zooming": "滾輪調整筆刷大小而非縮放",
+  "Double-click opens the photo in Develop": "按兩下在編修相片模組中開啟相片",
   "Fast": "快",
   "Fastest": "最快",
   "Run face models on the CPU only": "僅在 CPU 上執行臉孔模型",
