@@ -524,7 +524,7 @@ fn gain_at(points_v: u32, points_h: u32, spacing: [f64; 2], origin: [f64; 2], ma
 }
 
 /// Radius normaliser: distance from the centre to the farthest image corner.
-fn max_radius(cx: f64, cy: f64, w: f64, h: f64) -> f64 {
+pub(crate) fn max_radius(cx: f64, cy: f64, w: f64, h: f64) -> f64 {
     [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].iter().map(|&(x, y)| (x - cx).hypot(y - cy)).fold(0.0, f64::max).max(1e-9)
 }
 

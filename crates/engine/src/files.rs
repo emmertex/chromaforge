@@ -18,7 +18,8 @@ fn meta_of(m: &lightcraft_meta::Metadata) -> (Meta, Option<String>) {
     let camera = [m.make.clone().unwrap_or_default(), m.model.clone().unwrap_or_default()].join(" ").trim().to_string();
     let meta = Meta {
         camera,
-        lens: m.lens_model.clone().unwrap_or_default(),
+        // (a camera that writes no lens name, like Nikon's DSLRs, still says what range the lens covers)
+        lens: m.lens_model.clone().or_else(|| m.lens_spec.and_then(lightcraft_meta::lens_spec_name)).unwrap_or_default(),
         focal_mm: m.focal_length.map(|f| f as f32),
         aperture: m.f_number.map(|f| f as f32),
         shutter,
@@ -40,6 +41,7 @@ fn meta_of(m: &lightcraft_meta::Metadata) -> (Meta, Option<String>) {
         // paths from `lr:hierarchicalSubject`, names from `dc:subject` that aren't their levels
         keywords: lightcraft_catalog::keywords::from_file(&m.keywords, &m.hierarchical_keywords),
         regions: m.regions.clone(),
+        focus: m.focus.clone(),
     };
     (meta, m.capture_time.as_ref().map(|d| d.to_iso()))
 }
@@ -158,10 +160,8 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
             }
             Err(Err(e)) => return Err(e),
         };
-        let (mut w, mut h) = (raw.crop.width.max(1) as u32, raw.crop.height.max(1) as u32);
-        if w <= 1 || h <= 1 {
-            (w, h) = (raw.active_area.width as u32, raw.active_area.height as u32);
-        }
+        let (w, h) = raw.developed_size();
+        let (mut w, mut h) = (w.max(1) as u32, h.max(1) as u32);
         if raw.orientation.swaps_axes() {
             std::mem::swap(&mut w, &mut h);
         }
@@ -266,19 +266,43 @@ impl CameraColourModel<'_> {
     /// White balance, matrix, tables and baseline exposure, in place.
     pub fn apply(&self, img: &mut Rgb32f) {
         let (wb, m, gain) = (self.wb, self.matrix.to_f32(), self.gain);
-        img.map_in_place(|p| {
-            let c = [p[0] * wb[0], p[1] * wb[1], p[2] * wb[2]];
-            let rgb = [
-                m[0][0] * c[0] + m[0][1] * c[1] + m[0][2] * c[2],
-                m[1][0] * c[0] + m[1][1] * c[1] + m[1][2] * c[2],
-                m[2][0] * c[0] + m[2][1] * c[1] + m[2][2] * c[2],
-            ];
-            let rgb = match self.tables {
-                Some(tables) => tables.apply(rgb, gain),
-                None => rgb.map(|v| v * gain),
-            };
-            self.hue_sat.map_or(rgb, |h| h.apply(rgb)).map(|v| v.max(0.0))
-        });
+        if let (None, Some(hue_sat)) = (self.tables, self.hue_sat) {
+            // a fitted camera look: `pixel`, `LANES` pixels at a time so the table step vectorises (same bits)
+            const LANES: usize = 16;
+            lightcraft_raster::par_rows(&mut img.data, img.width, |_, row| {
+                for chunk in row.chunks_mut(LANES) {
+                    let mut rgb = [[0.0f32; LANES]; 3];
+                    for (l, p) in chunk.iter().enumerate() {
+                        let c = [p[0] * wb[0], p[1] * wb[1], p[2] * wb[2]];
+                        for (i, rgb) in rgb.iter_mut().enumerate() {
+                            rgb[l] = (m[i][0] * c[0] + m[i][1] * c[1] + m[i][2] * c[2]) * gain;
+                        }
+                    }
+                    let out = hue_sat.apply_lanes(rgb);
+                    for (l, p) in chunk.iter_mut().enumerate() {
+                        *p = [out[0][l], out[1][l], out[2][l]].map(|v| v.max(0.0));
+                    }
+                }
+            });
+            return;
+        }
+        img.map_in_place(|p| self.pixel(&m, p));
+    }
+
+    /// [`Self::apply`] to one pixel; `m` is the matrix as `f32`.
+    fn pixel(&self, m: &[[f32; 3]; 3], p: [f32; 3]) -> [f32; 3] {
+        let (wb, gain) = (self.wb, self.gain);
+        let c = [p[0] * wb[0], p[1] * wb[1], p[2] * wb[2]];
+        let rgb = [
+            m[0][0] * c[0] + m[0][1] * c[1] + m[0][2] * c[2],
+            m[1][0] * c[0] + m[1][1] * c[1] + m[1][2] * c[2],
+            m[2][0] * c[0] + m[2][1] * c[1] + m[2][2] * c[2],
+        ];
+        let rgb = match self.tables {
+            Some(tables) => tables.apply(rgb, gain),
+            None => rgb.map(|v| v * gain),
+        };
+        self.hue_sat.map_or(rgb, |h| h.apply(rgb)).map(|v| v.max(0.0))
     }
 }
 
@@ -400,12 +424,17 @@ fn load_bytes_now(
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
         let info = raw.info();
         let lens = crate::lens_profiles::for_raw(&info, || lightcraft_meta::extract(&bytes));
+        // (the camera look still pairs the sensor with the camera JPEG through the warp the camera applied to it)
+        let lens_geometry = crate::camera_preview::lens_geometry(&raw.opcodes.list3);
         raw.opcodes.list3.retain(|op| !op.is_lens_correction());
         // Which scale white balance is edited on, and the as-shot white on it, from the file's own colour tags or
         // the camera's measured matrices (`Photo::relative_wb` decides the same from the catalog's camera)
         let scale = WbScaleOf::new(raw.format, &raw.color, raw.wb_multipliers, &raw.metadata);
         // the source's segmentation mattes (DNG semantic masks), read while the starting colour is fitted
-        let ((xy, t, camera_look), mattes) = rayon::join(|| crate::camera_preview::starting_colour(&mut raw, &bytes), || dng_mattes(&bytes, &info));
+        let ((xy, t, camera_look), mattes) = rayon::join(
+            || crate::camera_preview::starting_colour(&mut raw, &bytes, lens_geometry.as_ref(), lens.as_ref()),
+            || dng_mattes(&bytes, &info),
+        );
         drop(bytes);
         // Previews and thumbnails bin the mosaic straight to (about) the size they need; only
         // larger levels (exports, 1:1) demosaic the whole sensor.
@@ -475,10 +504,11 @@ fn load_bytes_now(
         // on top of it). A model's measured matrices never do: they only give the Kelvin scale its numbers, and the
         // picture is adapted from the as-shot white as every fitted look is (so settings from before that scale
         // existed render exactly as they did, `lightcraft_pipeline::local::legacy_white`).
-        let camera_color = (scale.own_matrix && !t.matrix_is_fallback && camera_look.is_none()).then(|| {
-            let tags = lightcraft_raw::ColorData { profile: Default::default(), ..raw.color.clone() };
-            Arc::new(lightcraft_pipeline::CameraColor { tags, developed_for: xy })
-        });
+        let camera_color = (scale.own_matrix && !t.matrix_is_fallback && (camera_look.is_none() || raw.format == lightcraft_raw::RawFormat::Dng))
+            .then(|| {
+                let tags = lightcraft_raw::ColorData { profile: Default::default(), ..raw.color.clone() };
+                Arc::new(lightcraft_pipeline::CameraColor { tags, developed_for: xy })
+            });
         let camera_tone = camera_look.as_ref().map(|p| p.tone).or_else(|| raw.color.profile.tone_curve.as_ref().and_then(dng_tone_curve));
         let local_tone = local_tone(&raw);
         let (temp, tint) = scale.as_shot(xy);
@@ -496,6 +526,8 @@ fn load_bytes_now(
                 camera_tone,
                 mattes,
                 local_tone,
+                // (the catalog knows the original's size: `media::source_info`)
+                native_long: None,
             },
         ));
     }
@@ -514,17 +546,28 @@ fn load_bytes_now(
 /// (`lightcraft_raw::spectral`), else when its camera's white-balance presets give one
 /// (`lightcraft_raw::kelvin_presets`): either turns its as-shot multipliers into Kelvin and tint, nothing else — the
 /// look stays the file's fit. Any other raw is edited relative to its as-shot look (6500 K / 0 means as shot).
-struct WbScaleOf {
+pub(crate) struct WbScaleOf {
     own_matrix: bool,
     relative: bool,
     /// Kelvin through the camera's measured matrices or presets: edited on the relative scale before those were used.
     legacy_relative: bool,
     /// The as-shot white through the measured matrices or the presets, when that is where the scale comes from.
     scale_white: Option<lightcraft_color::Xy>,
+    /// The camera's measured matrices, when they give the scale.
+    camera: Option<&'static lightcraft_raw::spectral::Camera>,
+}
+
+/// The white balance a DNG of a raw's camera RGB (Photo Merge) declares so that it shows as its source does
+/// ([`WbScaleOf::dng_white`]).
+pub(crate) enum DngWhite {
+    /// Colour tags with the camera's measured matrices: the DNG reads every white through them, as the source does.
+    Matrices(Box<lightcraft_raw::ColorData>),
+    /// The white the source's scale shows at As Shot.
+    At(lightcraft_color::Xy),
 }
 
 impl WbScaleOf {
-    fn new(
+    pub(crate) fn new(
         format: lightcraft_raw::RawFormat,
         color: &lightcraft_raw::ColorData,
         wb_multipliers: Option<[f32; 3]>,
@@ -541,7 +584,23 @@ impl WbScaleOf {
             None => None,
         };
         let covered = camera.is_some() || presets;
-        WbScaleOf { own_matrix, relative: fitted && !covered, legacy_relative: fitted && covered, scale_white }
+        WbScaleOf { own_matrix, relative: fitted && !covered, legacy_relative: fitted && covered, scale_white, camera }
+    }
+
+    /// What a DNG of this raw's camera RGB declares so that it shows the white balance as this scale does: the
+    /// camera's measured matrices when they give the scale, else the white the scale shows at As Shot (the presets'
+    /// reading; 6500 K / 0 on the relative scale; else `own`, the white the file's tags give).
+    pub(crate) fn dng_white(&self, color: &lightcraft_raw::ColorData, own: lightcraft_color::Xy) -> DngWhite {
+        if let Some(camera) = self.camera {
+            let mut c = lightcraft_raw::ColorData { profile: Default::default(), kelvin_presets: None, ..color.clone() };
+            if camera.fill(&mut c) {
+                return DngWhite::Matrices(Box::new(c));
+            }
+        }
+        if self.relative {
+            return DngWhite::At(lightcraft_color::cct::temp_tint_to_xy(6500.0, 0.0));
+        }
+        DngWhite::At(self.scale_white.unwrap_or(own))
     }
     /// The as-shot temperature and tint on the file's scale: the relative scale's reference, the white through
     /// the measured matrices or the presets, else `own` (the white the file's own tags give). Whole numbers, as the
@@ -648,8 +707,9 @@ pub(crate) fn decode_raw_preview(
     covering: Option<usize>,
 ) -> Option<lightcraft_codecs::Decoded> {
     let jpeg = stand_in_image(bytes, covering)?;
-    // the colour space is a property of the JPEG; a TIFF stand-in is read by the TIFF reader
-    let is_jpeg = matches!(jpeg, std::borrow::Cow::Owned(_));
+    // the colour space is a property of the JPEG; a TIFF stand-in (the file itself, or a Hasselblad RGB preview
+    // wrapped as a TIFF) and a JPEG XL preview are read by their own decoders
+    let is_jpeg = jpeg.starts_with(&[0xff, 0xd8]);
     match lightcraft_raw::embedded_preview_color_space(bytes).filter(|_| is_jpeg) {
         Some(space) => {
             let space = match space {
@@ -1048,10 +1108,24 @@ impl crate::Session {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     /// Keywords from a file keep their hierarchy: the paths of `lr:hierarchicalSubject`, not the
     /// flat names of `dc:subject` that LightCraft's exports (and Lightroom Classic) write besides
     /// them; an exported `travel|Italy|Rome` comes back as itself.
+    #[test]
+    fn a_lens_without_a_name_is_shown_by_its_range() {
+        // a Nikon DSLR raw: no LensModel, the range from the maker note
+        let m = lightcraft_meta::Metadata { lens_spec: Some([18.0, 135.0, 3.5, 5.6]), ..Default::default() };
+        assert_eq!(super::meta_of(&m).0.lens, "18.0-135.0 mm f/3.5-5.6");
+        let named = lightcraft_meta::Metadata {
+            lens_model: Some("NIKKOR Z 24-70mm f/4 S".into()),
+            lens_spec: Some([24.0, 70.0, 4.0, 4.0]),
+            ..Default::default()
+        };
+        assert_eq!(super::meta_of(&named).0.lens, "NIKKOR Z 24-70mm f/4 S");
+        assert_eq!(super::meta_of(&lightcraft_meta::Metadata::default()).0.lens, "");
+    }
+
     #[test]
     fn imported_keywords_keep_their_hierarchy() {
         let m = lightcraft_meta::Metadata {
@@ -1123,6 +1197,40 @@ mod tests {
         let xy = lightcraft_color::cct::temp_tint_to_xy(4200.0, 12.0);
         assert_eq!(dng.as_shot(xy), (4200.0, 12.0));
         assert!(!lightcraft_catalog::relative_wb_camera("DNG", "SONY ILCE-7M3"));
+    }
+
+    /// A merged DNG (Photo Merge) of a raw without colour matrices shows the As Shot temperature and tint its source
+    /// shows, on every scale: through the measured matrices (ILCE-7M3), through the presets (ILCA-99M2), the relative
+    /// scale's 6500 K / 0 (ILCE-7M2) and a file's own white (an unfitted format). Merges of real ILCE-7M3 brackets
+    /// opened at 6113–7307 K / +115 where the ARWs show 3932–5268 K / +7.
+    #[test]
+    fn a_merged_dng_shows_the_white_balance_its_source_shows() {
+        use lightcraft_raw::{ColorData, RawFormat};
+        let meta = |make: &str, model: &str| lightcraft_meta::Metadata { make: Some(make.into()), model: Some(model.into()), ..Default::default() };
+        let g = |r: f32, b: f32| [r / 1024.0, 1.0, b / 1024.0];
+        let presets = lightcraft_raw::kelvin_presets::KelvinPresets::new([
+            (2500.0, g(1336.0, 3672.0)),
+            (3200.0, g(1720.0, 2620.0)),
+            (4500.0, g(2256.0, 1880.0)),
+            (6000.0, g(2680.0, 1544.0)),
+            (8500.0, g(3136.0, 1300.0)),
+        ]);
+        let with_presets = ColorData { kelvin_presets: presets, ..Default::default() };
+        let cases = [
+            (RawFormat::Arw, ColorData::default(), [2.5039f32, 1.0, 1.5078], meta("SONY", "ILCE-7M3")),
+            (RawFormat::Arw, with_presets, g(2500.0, 1668.0), meta("SONY", "ILCA-99M2")),
+            (RawFormat::Arw, ColorData::default(), [2.2, 1.0, 1.6], meta("SONY", "ILCE-7M2")),
+            (RawFormat::Rw2, ColorData::default(), [2.0, 1.0, 1.4], meta("Panasonic", "DC-G9")),
+        ];
+        for (format, color, mul, meta) in cases {
+            let own = lightcraft_raw::color::as_shot_white_of(&color, Some(mul));
+            let source = WbScaleOf::new(format, &color, Some(mul), &meta);
+            let t = lightcraft_raw::color::camera_transform_of(&color, own);
+            let dng = crate::camera_preview::dng_colour(&color, &source.dng_white(&color, own), &t, None).unwrap();
+            let merged = WbScaleOf::new(RawFormat::Dng, &dng, None, &meta);
+            let shown = source.as_shot(own);
+            assert_eq!(merged.as_shot(lightcraft_raw::color::as_shot_white_of(&dng, None)), shown, "{:?}", meta.model);
+        }
     }
 
     /// A RAF whose preview pointer is in its header, then a large raw tail the reader must not need.
@@ -1562,7 +1670,7 @@ mod tests {
             .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus"))
             .join("raw");
         let Ok(gh1) = std::fs::read(dir.join("rw2-panasonic-gh1.rw2")) else {
-            eprintln!("skip: {} absent", dir.display());
+            lightcraft_testkit::skip!(Corpus, "{} absent", dir.display());
             return;
         };
         assert_eq!(probe_bytes("gh1.rw2", &gh1).unwrap().embedded_lens, None, "correction off: nothing to apply");
@@ -1633,7 +1741,7 @@ mod tests {
     }
 
     /// A CR3-shaped file (not decodable yet) whose only content is a `PRVW` preview box.
-    fn cr3_with_preview(w: u32, h: u32) -> Vec<u8> {
+    pub(crate) fn cr3_with_preview(w: u32, h: u32) -> Vec<u8> {
         let px: Vec<u8> = (0..w * h).flat_map(|i| [(i % 251) as u8, 128, 200]).collect();
         let jpeg = encode_jpeg(&EncodeImage::new(w, h, 3, Samples::U8(&px)), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap();
         let mut b = b"\0\0\0\x18ftypcrx \0\0\0\x01crx isom".to_vec();
@@ -1727,6 +1835,31 @@ mod tests {
     /// own white-balanced neutral comes out yellow (blue 12 % low).
     fn yellowing_look() -> lightcraft_color::Mat3 {
         lightcraft_color::Mat3([[0.42, 0.548, 0.04], [0.246, 0.728, 0.033], [-0.247, 0.679, 0.447]])
+    }
+
+    /// A fitted camera look applied in lanes, on rows that aren't a whole number of them, gives the bits of the
+    /// pixel-by-pixel path, awkward pixels (black, negative, huge, NaN, infinite) included.
+    #[test]
+    fn camera_look_in_lanes_matches_pixel_by_pixel() {
+        let data = (0..72 * 5 * 5).map(|i| [((i * 37) % 61) as f32 - 30.0, 0.6 + ((i * 11) % 13) as f32 / 13.0, 1.0]).collect();
+        let table = lightcraft_raw::profile::HsvTable { hue_divisions: 72, sat_divisions: 5, val_divisions: 5, data, srgb_value: true };
+        let hue_sat = crate::camera_preview::HueSat::new(&table).unwrap();
+        let colour = CameraColourModel { wb: [2.1, 1.0, 1.5], matrix: yellowing_look(), gain: 1.3, tables: None, hue_sat: Some(&hue_sat) };
+        let special = [0.0, -0.0, -0.01, 1e-30, 0.3, 1.0, 5.0, 1e30, f32::INFINITY, f32::NAN];
+        let img = Rgb32f::from_fn(37, 5, |x, y| {
+            let k = y * 37 + x;
+            if k % 5 == 0 {
+                [special[k % 10], special[k / 10 % 10], special[k / 100 % 10]]
+            } else {
+                [(x as f32 * 0.37).sin().abs(), ((x + y) as f32 * 0.11).cos().abs(), y as f32 / 4.0 - 0.05]
+            }
+        });
+        let mut lanes = img.clone();
+        colour.apply(&mut lanes);
+        let m = colour.matrix.to_f32();
+        for (p, got) in img.data.iter().zip(&lanes.data) {
+            assert_eq!(got.map(f32::to_bits), colour.pixel(&m, *p).map(f32::to_bits), "{p:?}");
+        }
     }
 
     #[test]
@@ -1913,7 +2046,7 @@ mod tests {
             .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus"))
             .join("raw");
         let Ok(bytes) = std::fs::read(dir.join("arw-sony-a7rm4-14bit-compressed.arw")) else {
-            eprintln!("skip: {} absent", dir.display());
+            lightcraft_testkit::skip!(Corpus, "{} absent", dir.display());
             return;
         };
         let (img, _) = load_bytes(&bytes, 1600).unwrap();
@@ -2157,10 +2290,13 @@ mod tests {
         let p = s.catalog.photo(id).unwrap().clone();
         let why = p.preview_only.clone().expect("marked preview only");
         assert!(why.to_uppercase().contains("CR3"), "the decoder's reason: {why}");
+        // stamped with the version that decided it, so a later version rechecks it (#662)
+        assert_eq!(p.preview_checked, lightcraft_catalog::APP_VERSION);
+        assert!(!p.preview_only_stale());
         assert_eq!(p.kind, MediaKind::Raw, "still a raw file (filters, Convert to DNG…)");
         assert!(!p.develops_raw());
         // rendered like the JPEG it is: relative white balance, display tone curve, no raw defaults
-        assert_eq!(crate::media::source_info(&p), SourceInfo::default());
+        assert_eq!(SourceInfo { native_long: None, ..crate::media::source_info(&p) }, SourceInfo::default());
         assert_eq!(*p.develop, lightcraft_develop::DevelopSettings::default());
         assert!(s.render_job(id, 48, 48, false, true).unwrap().run().rendered.is_ok());
         // agents see it
@@ -2174,14 +2310,17 @@ mod tests {
         let mut s = crate::Session::new().with_fs();
         s.open_library(&lib, false).unwrap();
         assert_eq!(s.catalog.photo(id).unwrap().preview_only.as_deref(), Some(why.as_str()));
+        assert_eq!(s.catalog.photo(id).unwrap().preview_checked, lightcraft_catalog::APP_VERSION);
         // the file decodes now (here: replaced by a DNG): Reload clears it, undo brings it back
         std::fs::write(&path, crate::tests_xmp::synthetic_dng_with(None, lightcraft_meta::Metadata::default())).unwrap();
         let r = s.execute("photo.reload", &json!({"ids": [id.0]})).unwrap();
         assert_eq!(r["reloaded"], json!([id.0]), "{r}");
         assert!(s.catalog.photo(id).unwrap().develops_raw());
+        assert_eq!(s.catalog.photo(id).unwrap().preview_checked, "", "the stamp goes with the flag");
         assert!(crate::media::source_info(s.catalog.photo(id).unwrap()).raw);
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.catalog.photo(id).unwrap().preview_only.as_deref(), Some(why.as_str()));
+        assert_eq!(s.catalog.photo(id).unwrap().preview_checked, lightcraft_catalog::APP_VERSION);
         // relinking to a file that decodes clears it too
         let dng = files.join("DSC_0001.dng");
         std::fs::write(&dng, crate::tests_xmp::synthetic_dng_with(None, lightcraft_meta::Metadata::default())).unwrap();
@@ -2398,6 +2537,114 @@ mod tests {
         let q = s.quick_thumb_job(&job).unwrap().run();
         assert_eq!((q.quick, q.key), (Some(QuickSource::Small), job.key));
         assert!(q.rendered.is_ok(), "{:?}", q.rendered.err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Sony ARW of `model`: a 64 × 48 uncompressed 14-bit CFA strip in a SubIFD (as `crates/raw/tests/vendor_robust.rs`
+    /// lays it out) whose IFD carries the full-frame 16–35 mm distortion table (tag 0x7037).
+    fn sony_arw(model: &str) -> Vec<u8> {
+        use lightcraft_tiff::tags::{self as t, photometric};
+        use lightcraft_tiff::{ByteOrder, IfdBuilder, ImageData, TiffWriter, Value};
+        // 3:2, the aspect Sony's lens opcodes are limited to
+        let (w, h) = (72u32, 48u32);
+        let mut raw = IfdBuilder::new();
+        raw.set(t::NEW_SUBFILE_TYPE, Value::Long(vec![0]));
+        raw.set(t::IMAGE_WIDTH, Value::Long(vec![w]));
+        raw.set(t::IMAGE_LENGTH, Value::Long(vec![h]));
+        raw.set(t::BITS_PER_SAMPLE, Value::Short(vec![14]));
+        raw.set(t::COMPRESSION, Value::Short(vec![1]));
+        raw.set(t::PHOTOMETRIC, Value::Short(vec![photometric::CFA]));
+        raw.set(t::CFA_REPEAT_PATTERN_DIM, Value::Short(vec![2, 2]));
+        raw.set(t::CFA_PATTERN_EP, Value::Byte(vec![0, 1, 1, 2]));
+        raw.set(0x7037, Value::SShort(vec![16, 0, 2, 7, 16, 28, 43, 61, 83, 109, 139, 175, 217, 267, 325, 395, 479]));
+        raw.set_image(ImageData::Strips { rows_per_strip: h, strips: vec![2000u16.to_le_bytes().repeat((w * h) as usize)] });
+        let mut ifd0 = IfdBuilder::new();
+        ifd0.set(t::MAKE, Value::Ascii("SONY".into()));
+        ifd0.set(t::MODEL, Value::Ascii(model.into()));
+        ifd0.add_sub_ifd(raw);
+        TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap()
+    }
+
+    /// Sony's embedded distortion correction is on by default: an ARW of a verified body imports with "Enable Lens
+    /// Corrections" on and still counts as unedited; another body's tables aren't read, so its correction is off.
+    #[test]
+    fn arw_with_lens_data_imports_with_profile_corrections_on() {
+        let dir = std::env::temp_dir().join(format!("lc-arw-lens-default-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = crate::Session::new().with_fs();
+        for (model, on) in [("ILCE-7RM6", true), ("ILCE-7M4", false)] {
+            let path = dir.join(format!("{model}.arw"));
+            std::fs::write(&path, sony_arw(model)).unwrap();
+            let r = s.execute("library.import", &serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
+            let p = s.catalog.photo(lightcraft_catalog::PhotoId(r["imported"][0].as_u64().unwrap())).unwrap();
+            assert_eq!((p.format.as_str(), p.embedded_lens.is_some(), p.develop.optics.lens_profile), ("ARW", on, on), "{model}");
+            assert!(!p.is_edited(), "{model}: as imported");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RW2 and DNG keep their default: the correction is on when the file carries one (RW2 distortion, a DNG's
+    /// opcodes), off when it doesn't.
+    #[test]
+    fn rw2_and_dng_defaults_unchanged() {
+        use lightcraft_catalog::{Photo, PhotoId, Source};
+        let s = crate::Session::new();
+        let lens = lightcraft_develop::EmbeddedLens { warp: Some(Default::default()), ..Default::default() };
+        for format in ["RW2", "DNG"] {
+            for embedded in [None, Some(lens)] {
+                let name = format!("x.{format}");
+                let mut p = Photo::new(PhotoId(1), Source::File { path: format!("/{name}") }, &name, format, 64, 48, "");
+                p.kind = MediaKind::Raw;
+                p.embedded_lens = embedded;
+                crate::import::apply_import_defaults(&s, &mut p);
+                assert_eq!(p.develop.optics.lens_profile, embedded.is_some(), "{format} {embedded:?}");
+            }
+        }
+    }
+
+    /// Stored settings stay as they are when the library opens again: an ARW catalogued before its lens data was read
+    /// (none, correction off) keeps the correction off and counts as unedited, and one whose user switched the
+    /// correction off keeps it off.
+    #[test]
+    fn existing_photo_settings_are_not_rewritten() {
+        use lightcraft_catalog::{Op, PhotoId};
+        let dir = std::env::temp_dir().join(format!("lc-arw-lens-existing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (lib, files) = (dir.join("lib"), dir.join("files"));
+        std::fs::create_dir_all(&files).unwrap();
+        let mut s = crate::Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let import = |s: &mut crate::Session, name: &str| {
+            let path = files.join(name);
+            // trailing bytes of its own: not a duplicate of the other file
+            std::fs::write(&path, [sony_arw("ILCE-7RM6"), name.as_bytes().to_vec()].concat()).unwrap();
+            let r = s.execute("library.import", &serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
+            PhotoId(r["imported"][0].as_u64().unwrap())
+        };
+        let old = import(&mut s, "old.arw");
+        // as a release that didn't read the Sony tables catalogued it
+        let mut d = (*s.catalog.photo(old).unwrap().develop).clone();
+        d.optics.lens_profile = false;
+        let ops = vec![
+            Op::SetEmbeddedLens { id: old, lens: None },
+            Op::SetDevelop { id: old, settings: std::sync::Arc::new(d), label: "x".into(), edited: None },
+        ];
+        s.commit("x", Op::Batch { ops }).unwrap();
+        let off = import(&mut s, "off.arw");
+        s.execute("develop.merge", &serde_json::json!({"settings": {"optics": {"lens_profile": false}}})).unwrap();
+        let before: Vec<_> = [old, off].iter().map(|id| s.catalog.photo(*id).unwrap().clone()).collect();
+        assert!(before.iter().all(|p| !p.develop.optics.lens_profile));
+        s.persist().unwrap();
+        drop(s);
+        let mut s = crate::Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        for b in &before {
+            let p = s.catalog.photo(b.id).unwrap();
+            assert_eq!((&p.develop, &p.embedded_lens), (&b.develop, &b.embedded_lens), "{}", p.file_name);
+        }
+        assert!(!s.catalog.photo(old).unwrap().is_edited(), "still as imported");
+        drop(s);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -162,3 +162,20 @@ fn new_album_from_selection_keeps_the_shown_order() {
     let got: Vec<u64> = s.catalog.album_photo_order(AlbumId(b)).iter().map(|p| p.0).collect();
     assert_eq!(got, rev);
 }
+
+#[test]
+fn dropping_in_a_descending_custom_order_lands_where_the_grid_shows_it() {
+    let mut s = Session::with_demo();
+    album(&mut s);
+    s.execute("library.sort", &json!({"key": "custom"})).unwrap();
+    let saved = shown(&mut s);
+    s.execute("library.sort", &json!({"key": "custom", "ascending": false})).unwrap();
+    let grid = shown(&mut s);
+    assert_eq!(grid, saved.iter().rev().copied().collect::<Vec<_>>(), "descending shows the saved order reversed");
+    // drag the last photo of the grid onto the left side of the third: it lands just before it on screen
+    let r = s.execute("album.orderPhotos", &json!({"ids": [grid[4]], "before": grid[2]})).unwrap();
+    let want = vec![grid[0], grid[1], grid[4], grid[2], grid[3]];
+    assert_eq!(shown(&mut s), want, "the grid shows the photo before the one it was dropped on");
+    assert_eq!(order(&r), want.iter().rev().copied().collect::<Vec<_>>(), "saved in forward order");
+    assert!(!s.sort.ascending, "the view stays descending");
+}

@@ -51,7 +51,8 @@
 //! | 6 | folder labels | `Op::SetFolderRecord`, `Catalog.folder_records` |
 //! | 7 | Kelvin white balance for raws whose camera has matrices (#730) | `Op::SetAsShotWb`, `WhiteBalance.scale` |
 //! | 8 | History cursor: Go to History Step adds no step | `Op::SetHistoryCursor`, `Photo.history_cursor` |
-//! | 9 | Custom Order of an album's photos | `Op::SetAlbumPhotoOrder`, `Album.photo_order` |
+//! | 9 | preview-only recheck | `Photo.preview_checked`, `Op::SetContent.preview_checked` |
+//! | 10 | Custom Order of an album's photos | `Op::SetAlbumPhotoOrder`, `Album.photo_order` |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a
@@ -76,7 +77,7 @@ pub const LOG: &str = "catalog.log";
 const FORMAT: &str = "lightcraft-catalog";
 /// The catalog format this build writes (and the newest it reads). See the module docs →
 /// *Format versions*; bump it whenever an [`Op`] variant or a serialized field is added.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// When [`Journal::wants_snapshot`] says it's time to compact the log.
 #[derive(Clone, Copy, Debug)]
@@ -271,7 +272,7 @@ fn resync(line: &[u8], last: u64) -> Option<(usize, (u64, Op))> {
     const START: &[u8] = b"{\"seq\":";
     (1..line.len().saturating_sub(START.len() - 1)).filter(|&i| line[i..].starts_with(START)).find_map(|i| {
         let rec = std::str::from_utf8(&line[i..]).ok().map(|l| l.trim_end_matches('\r')).and_then(decode_record)?;
-        (rec.0 <= last + 1).then_some((i, rec))
+        (rec.0 <= last.saturating_add(1)).then_some((i, rec))
     })
 }
 
@@ -297,6 +298,9 @@ fn write_snapshot(store: &mut dyn Store, seq: u64, catalog: &Catalog) -> std::io
     })?;
     Ok(SnapshotTiming { serialize_ms, write_sync_ms: (ms_since(t0) - serialize_ms).max(0.0), bytes, ..Default::default() })
 }
+
+/// The highest `seq` a snapshot may hold; beyond it the counter is treated as corrupt, far from overflow.
+const MAX_SEQ: u64 = u64::MAX / 2;
 
 /// Just the identification of `catalog.snap` (read before the catalog itself).
 #[derive(serde::Deserialize)]
@@ -331,6 +335,10 @@ impl Journal {
                     return Err(newer(format!("{SNAPSHOT} is catalog format v{}", h.version)));
                 }
                 let s: SnapFile = serde_json::from_slice(&bytes).map_err(|e| CatalogError::Corrupt(format!("{SNAPSHOT}: {e}")))?;
+                // a seq this high can't come from real use; the next record's seq would wrap
+                if s.seq > MAX_SEQ {
+                    return Err(CatalogError::Corrupt(format!("{SNAPSHOT}: seq {} is out of range", s.seq)));
+                }
                 let mut catalog = s.catalog;
                 report.repaired = catalog.repair();
                 for r in &report.repaired {
@@ -392,7 +400,7 @@ impl Journal {
                     let _ = op;
                     report.stale += 1;
                 }
-                Some((seq, op)) if seq == j.seq + 1 => {
+                Some((seq, op)) if j.seq.checked_add(1) == Some(seq) => {
                     if catalog.apply(op).is_err() {
                         report.failed += 1;
                     } else {
@@ -476,7 +484,7 @@ impl Journal {
         let mut buf = String::new();
         let mut seq = self.seq;
         for op in ops {
-            seq += 1;
+            seq = seq.checked_add(1).ok_or_else(|| CatalogError::Corrupt(format!("{LOG}: op counter overflow")))?;
             buf.push_str(&encode_record(seq, op));
             buf.push('\n');
         }
@@ -527,7 +535,7 @@ impl Journal {
             log::warn!("catalog: background snapshot failed ({e}); writing one now");
         }
         let t0 = web_time::Instant::now();
-        let seq = self.seq + unlogged;
+        let seq = self.seq.checked_add(unlogged).ok_or_else(|| CatalogError::Corrupt(format!("{SNAPSHOT}: op counter overflow")))?;
         let mut timing = match write_snapshot(self.store.as_mut(), seq, catalog) {
             Ok(t) => t,
             Err(e) => {
