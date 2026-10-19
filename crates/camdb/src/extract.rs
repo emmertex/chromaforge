@@ -123,6 +123,8 @@ mod tests {
             linearized: false,
             opcodes: lightcraft_raw::OpcodeLists::default(),
             metadata: lightcraft_raw::Metadata { make: Some("Example".into()), model: Some("Example X1".into()), ..Default::default() },
+            lens_metadata: Default::default(),
+            pixel_aspect: 1.0,
         };
         lightcraft_raw::write_dng(&raw, &lightcraft_raw::DngWriteOptions::default()).unwrap()
     }

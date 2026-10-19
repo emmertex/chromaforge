@@ -401,6 +401,8 @@ provenance = { source = "native-dng", detail = "Software: X1 1.0" }
             linearized: false,
             opcodes: lightcraft_raw::OpcodeLists::default(),
             metadata: lightcraft_raw::Metadata::default(),
+            lens_metadata: Default::default(),
+            pixel_aspect: 1.0,
         }
     }
 
