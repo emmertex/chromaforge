@@ -113,6 +113,7 @@ mod tests_keyword_sidebar;
 mod tests_keywording;
 #[cfg(test)]
 mod tests_labels;
+#[cfg(test)]
 mod tests_layout_image;
 #[cfg(test)]
 mod tests_lens_db;

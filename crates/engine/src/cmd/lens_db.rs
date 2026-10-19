@@ -67,7 +67,7 @@ fn refresh_active(s: &mut Session) {
 }
 
 fn refresh(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = s.targets(p);
+    let ids = s.targets(p)?;
     let changed = s.refresh_lens_profiles(&ids)?;
     Ok(json!({"changed": changed.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
@@ -109,7 +109,7 @@ pub(crate) fn given_lens(c: &str, p: &Value) -> Result<Option<crate::lens_profil
 fn photo_status(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "lens.db.photo";
     let given = given_lens(C, p)?;
-    let id = s.targets(p).first().copied().or(s.selection.active).ok_or_else(|| bad(C, "no photo"))?;
+    let id = s.targets(p)?.first().copied().or(s.selection.active).ok_or_else(|| bad(C, "no photo"))?;
     let ph = s.catalog.photo(id).ok_or_else(|| bad(C, "no such photo"))?;
     use crate::lens_profiles::Match;
     Ok(match s.lens_match_with(ph, given.as_ref()) {
