@@ -222,7 +222,7 @@ fn face_tiles_never_crash() {
     assert!(job.run().rendered.is_ok());
     let thumbs = s.library.as_ref().unwrap().thumbs_dir();
     drop(s);
-    let entry = thumbs.join(&key[..2]).join(format!("{key}.jpg"));
+    let entry = thumbs.join(&key[..2]).join(format!("{key}.lcthumb"));
     assert!(entry.exists(), "the tile was written to the thumbnail cache");
     std::fs::write(&entry, b"not a jpeg").unwrap();
     let mut s = open(&dir);

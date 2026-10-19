@@ -62,7 +62,7 @@ impl SettingsHashes {
 }
 
 /// Bump when the pipeline's output changes, to invalidate cached thumbnails.
-pub const RENDER_CACHE_VERSION: u64 = 62;
+pub const RENDER_CACHE_VERSION: u64 = 64;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];
@@ -225,9 +225,13 @@ impl DecodedSource {
     }
 
     /// What to render these pixels against: the decoder's facts, else `header` (the catalog's)
-    /// with any stored camera tone curve.
+    /// with any stored camera tone curve. The original's size comes from `header` either way: the
+    /// decoder only sees the level it decoded.
     pub fn info_or(&self, header: SourceInfo) -> SourceInfo {
-        self.info.clone().unwrap_or_else(|| SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header })
+        match &self.info {
+            Some(info) => SourceInfo { native_long: info.native_long.or(header.native_long), ..info.clone() },
+            None => SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header },
+        }
     }
 }
 
@@ -752,6 +756,8 @@ pub struct RenderJob {
     pub view_cache: Option<(Arc<PreviewCache>, Hash128)>,
     /// Render for this monitor profile ([`Self::with_display`]).
     pub display: Option<Arc<crate::display::Display>>,
+    /// Compose the render into a slideshow slide ([`Self::with_slide`]).
+    pub slide: Option<Arc<crate::slide::SlideCompose>>,
     /// A face tile that can be cut from the raw's embedded preview, tried before `source`
     /// ([`crate::Session::face_job`]; `None` for every other job).
     pub preview_cut: Option<crate::face_tiles::PreviewCut>,
@@ -849,7 +855,8 @@ impl RenderJob {
     /// Gets its own result key. Thumbnail jobs (rendered-thumbnail cache) are left as they are:
     /// [`crate::display::present`] converts their sRGB results.
     pub fn with_display(mut self, display: Option<Arc<crate::display::Display>>) -> Self {
-        if self.cache.is_some() || self.request.depth != lightcraft_pipeline::OutputDepth::U8 {
+        // (a slide is composed in sRGB, backdrop colours included; the frontend presents it)
+        if self.cache.is_some() || self.slide.is_some() || self.request.depth != lightcraft_pipeline::OutputDepth::U8 {
             return self;
         }
         let k = |d: &Option<Arc<crate::display::Display>>| d.as_ref().map_or(0, |d| d.id()).wrapping_mul(0xd6e8_feb8_6659_fd93);
@@ -883,7 +890,30 @@ impl RenderJob {
         }
     }
 
+    /// Compose the render into a slideshow slide (layout, options, backdrop): the result is the
+    /// slide, not the photo. Gets its own result key; the photo's cached view preview stays the
+    /// photo. The slide stays sRGB ([`Self::with_display`] leaves it alone).
+    pub fn with_slide(mut self, slide: Arc<crate::slide::SlideCompose>) -> Self {
+        let k = |s: &Option<Arc<crate::slide::SlideCompose>>| s.as_ref().map_or(0, |s| s.key()).wrapping_mul(0xa24b_aed4_963e_e407);
+        self.key ^= k(&self.slide);
+        self.key ^= k(&Some(slide.clone()));
+        self.slide = Some(slide);
+        self
+    }
+
+    /// [`Self::run_photo`], composed into its slide when this is a slide job (inside [`Self::run`]'s guard).
     fn run_unguarded(self) -> RenderResult {
+        let slide = self.slide.clone();
+        let mut r = self.run_photo();
+        if let (Some(slide), Ok(rendered)) = (slide, r.rendered.as_mut()) {
+            rendered.image = slide.compose(&rendered.image);
+            rendered.deep = None;
+        }
+        r
+    }
+
+    /// The photo's render (without slide composition).
+    fn run_photo(self) -> RenderResult {
         if let Some((cache, key)) = &self.cache
             && let Some(img) = cache.get_at(self.cache_generation, *key)
         {
@@ -1131,9 +1161,16 @@ pub fn content_key(p: &Photo) -> String {
 
 pub fn source_info(p: &Photo) -> SourceInfo {
     // Procedural demo scenes are scene-referred HDR (like raw files): use the filmic tone map.
+    // (They are drawn afresh at every size, so they have no original size.)
     if matches!(p.source, Source::Demo { .. }) {
         return SourceInfo { raw: true, ..Default::default() };
     }
+    // the thumbnail and preview levels are smaller copies: noise reduction works in the original's pixels (#960)
+    let native_long = Some(p.width.max(p.height) as usize).filter(|&n| n > 0);
+    SourceInfo { native_long, ..header_info(p) }
+}
+
+fn header_info(p: &Photo) -> SourceInfo {
     // A raw shown from its embedded preview is a rendered (display-referred) JPEG: relative white
     // balance and the display tone curve, like any other rendered file.
     if p.develops_raw() {
@@ -1227,6 +1264,7 @@ impl crate::Session {
             stages: None,
             view_cache: None,
             display: None,
+            slide: None,
             preview_cut: None,
         })
     }
@@ -1279,6 +1317,7 @@ impl crate::Session {
             stages: None,
             view_cache: None,
             display: None,
+            slide: None,
             preview_cut: None,
         })
     }
@@ -1332,6 +1371,7 @@ impl crate::Session {
             stages: None,
             view_cache: None,
             display: None,
+            slide: None,
             preview_cut,
         })
     }
@@ -1525,7 +1565,7 @@ impl crate::Session {
     /// says and what a smart preview renders with. Only for raws edited in Kelvin.
     fn learn_as_shot_wb(&mut self, id: PhotoId, info: &SourceInfo) {
         let Some(p) = self.catalog.photo(id) else { return };
-        if !(info.raw && !info.relative_wb && p.develops_raw() && !p.relative_wb()) {
+        if !info.raw || info.relative_wb || !p.develops_raw() || p.relative_wb() {
             return;
         }
         let read = (info.as_shot_temp, info.as_shot_tint);
@@ -1720,6 +1760,7 @@ mod thumbnail_hash_tests {
                 file_size: 99,
                 content_hash: Some("replacement".into()),
                 preview_only: None,
+                preview_checked: String::new(),
             })
             .unwrap();
         s.media.forget(PhotoId(1));
@@ -1756,6 +1797,21 @@ mod thumbnail_hash_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renders_know_the_original_size_whichever_level_they_come_from() {
+        // issue #960: noise reduction works in the original's pixels, so a grid cell drawn from the
+        // 512-px thumbnail level denoises like a scaled-down export
+        let p = Photo::new(PhotoId(1), Source::File { path: "/photos/a.ARW".into() }, "a.ARW", "ARW", 6000, 4000, "");
+        assert_eq!(source_info(&p).native_long, Some(6000));
+        let decoded = SourceInfo { raw: true, as_shot_temp: 4800.0, ..Default::default() };
+        let thumb = DecodedSource::new(Arc::new(Rgb32f::new(8, 8)), Some(decoded.clone()));
+        let info = thumb.info_or(source_info(&p));
+        assert_eq!(info, SourceInfo { native_long: Some(6000), ..decoded }, "the decoder's facts, the catalog's size");
+        let unknown = Photo::new(PhotoId(2), Source::File { path: "/photos/b.jpg".into() }, "b.jpg", "JPEG", 0, 0, "");
+        assert_eq!(source_info(&unknown).native_long, None);
+        assert_eq!(source_info(&Photo::new(PhotoId(3), Source::Demo { scene: 0 }, "d", "ARW", 600, 400, "")).native_long, None);
+    }
 
     #[test]
     fn denoise_mix_is_reserved_before_the_source_enters_the_cache() {
@@ -2131,6 +2187,40 @@ mod tests {
         assert_eq!((a.width, a.height), (b.width, b.height));
         let mean = |i: &Rgba8| i.data.iter().map(|p| p[1] as f64).sum::<f64>() / i.data.len() as f64;
         assert!(mean(&a) > mean(&b) + 10.0, "two stops brighter after: {} vs {}", mean(&a), mean(&b));
+    }
+
+    // LR-VIEW-ZOOM: what the loupe shows at 1:1 is what an export at full size writes. A window of
+    // the zoomed frame (the photo's own pixels) is pixel-for-pixel the export, at the centre and
+    // at a corner, with tone, colour and detail edits on a camera-sized photo
+    #[test]
+    fn one_to_one_window_pixels_are_export_pixels() {
+        use lightcraft_pipeline::{OutputDepth, OutputSpace, PixelWindow};
+        let mut s = crate::Session::with_demo();
+        let id = s.active().unwrap();
+        let p = s.catalog.photo(id).unwrap().clone();
+        let (w, h) = (p.width as usize, p.height as usize);
+        assert!(w.max(h) > 2560, "larger than the preview cap: {w}×{h}");
+        let mut d = (*s.develop_of(id).unwrap()).clone();
+        d.light.exposure = 0.7;
+        d.light.contrast = 25.0;
+        d.color.saturation = 20.0;
+        s.set_develop(id, d, "Edits").unwrap();
+        let export = s.render_export(id, w, h, OutputSpace::Srgb, OutputDepth::U8).unwrap().image;
+        assert_eq!((export.width, export.height), (w, h), "a full-size export");
+        for win in [PixelWindow { x: w / 2 - 256, y: h / 2 - 256, w: 512, h: 384 }, PixelWindow { x: 0, y: h - 300, w: 400, h: 300 }] {
+            let tile = s.region_job(id, w, h, win, true).unwrap().run().rendered.unwrap().image;
+            assert_eq!((tile.width, tile.height), (win.w, win.h));
+            let mut worst = 0u8;
+            for y in 0..win.h {
+                for x in 0..win.w {
+                    let (a, b) = (tile.data[y * win.w + x], export.data[(win.y + y) * w + win.x + x]);
+                    for k in 0..3 {
+                        worst = worst.max(a[k].abs_diff(b[k]));
+                    }
+                }
+            }
+            assert!(worst <= 1, "window {win:?}: the 1:1 view differs from the export by up to {worst} levels");
+        }
     }
 
     /// The thumbnail of a photo whose preview-level source is decoded is cut from it: the file (here
