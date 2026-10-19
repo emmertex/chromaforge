@@ -1470,3 +1470,29 @@ fn a_failed_auto_write_waits_and_is_written_on_retry() {
     std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
     let _ = std::fs::remove_dir_all(&src);
 }
+
+/// An edit of an edit names its parent by the document id inside the parent's own file. Renaming
+/// the parent leaves that id the only way to find it, so importing the folder into a new library
+/// still stacks the child on it (review of #910).
+#[test]
+fn external_edit_of_an_edit_relinks_after_the_parent_is_renamed() {
+    let dir = temp_dir("extedit-renamed-parent");
+    let src = dir.join("cove.png");
+    write_png(&src, 9);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let orig = s.active().unwrap();
+    let e1 = PhotoId(s.execute("photo.editExternal", &json!({})).unwrap()["id"].as_u64().unwrap());
+    s.selection = crate::Selection::single(e1);
+    s.execute("photo.editExternal", &json!({})).unwrap();
+    assert_eq!(s.catalog.stack_of(orig).unwrap().photos.len(), 3);
+    std::fs::rename(dir.join("cove-Edit.tif"), dir.join("moved-parent.tif")).unwrap();
+
+    let mut t = Session::new().with_fs();
+    t.execute("library.import", &json!({"paths": [dir.to_string_lossy()]})).unwrap();
+    let by_name = |n: &str| t.catalog.photos().find(|p| p.file_name == n).map(|p| p.id).unwrap();
+    let (parent, child) = (by_name("moved-parent.tif"), by_name("cove-Edit-Edit.tif"));
+    let st = t.catalog.stack_of(parent).expect("the child is stacked with its renamed parent");
+    assert!(st.photos.contains(&child), "{:?}", st.photos);
+    let _ = std::fs::remove_dir_all(&dir);
+}
