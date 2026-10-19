@@ -1,7 +1,7 @@
 //! Bounds-checked IFD parsing.
 
 use crate::{ByteOrder, Entry, FieldType, Ifd, Result, Tiff, TiffError, Value, tags};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Limits applied while parsing. The defaults are generous for real files and safe for hostile ones.
 #[derive(Clone, Debug)]
@@ -177,7 +177,9 @@ pub(crate) fn parse(data: &[u8], opts: &ParseOptions) -> Result<Tiff> {
     let mut ctx = Ctx::new(data, order, big, opts);
     let mut ifds = Vec::new();
     let mut off = first;
-    while off != 0 {
+    // the top-level chain stops at an IFD it already holds (a `next` pointer looping back)
+    let mut chain = HashSet::new();
+    while off != 0 && chain.insert(off) {
         match ctx.ifd(off, 0, 0) {
             Ok((ifd, next)) => {
                 ifds.push(ifd);
@@ -210,15 +212,28 @@ struct Ctx<'a> {
     order: ByteOrder,
     big: bool,
     opts: &'a ParseOptions,
-    visited: HashSet<u64>,
+    /// Offsets of the IFDs being parsed (the current path from the root): a child pointing at one of them is a
+    /// cycle.
+    ancestors: Vec<u64>,
+    /// IFDs produced so far, counting every copy of a shared one (bounded by `max_ifds`).
+    visits: usize,
+    /// IFDs already parsed, by (offset, base): a second pointer to one (two `SubIFDs` entries, or an Exif pointer
+    /// shared by two directories) gets a copy instead of being dropped.
+    parsed: HashMap<(u64, u64), (Ifd, u64)>,
     budget: u64,
     entries_total: usize,
+}
+
+/// The number of IFDs in `ifd`'s tree, itself included.
+fn tree_size(ifd: &Ifd) -> usize {
+    let boxed = [&ifd.exif, &ifd.gps, &ifd.interop].into_iter().flatten().map(|b| tree_size(b));
+    ifd.sub_ifds.iter().map(tree_size).chain(boxed).fold(1usize, usize::saturating_add)
 }
 
 impl<'a> Ctx<'a> {
     fn new(data: &'a [u8], order: ByteOrder, big: bool, opts: &'a ParseOptions) -> Self {
         let budget = opts.budget_for(data.len());
-        Self { data, order, big, opts, visited: HashSet::new(), budget, entries_total: 0 }
+        Self { data, order, big, opts, ancestors: Vec::new(), visits: 0, parsed: HashMap::new(), budget, entries_total: 0 }
     }
 
     fn read_off(&self, pos: usize) -> Option<u64> {
@@ -230,12 +245,30 @@ impl<'a> Ctx<'a> {
         if depth > self.opts.max_depth {
             return Err(TiffError::Limit("IFD nesting depth"));
         }
-        if self.visited.len() >= self.opts.max_ifds {
-            return Err(TiffError::Limit("IFD count"));
-        }
-        if !self.visited.insert(offset) {
+        if self.ancestors.contains(&offset) {
             return Err(TiffError::Invalid(format!("IFD loop at {offset}")));
         }
+        if let Some((ifd, next)) = self.parsed.get(&(offset, base)) {
+            let visits = self.visits.saturating_add(tree_size(ifd));
+            if visits > self.opts.max_ifds {
+                return Err(TiffError::Limit("IFD count"));
+            }
+            self.visits = visits;
+            return Ok((ifd.clone(), *next));
+        }
+        if self.visits >= self.opts.max_ifds {
+            return Err(TiffError::Limit("IFD count"));
+        }
+        self.visits = self.visits.saturating_add(1);
+        self.ancestors.push(offset);
+        let r = self.parse_dir(offset, base, depth);
+        self.ancestors.pop();
+        let (ifd, next) = r?;
+        self.parsed.insert((offset, base), (ifd.clone(), next));
+        Ok((ifd, next))
+    }
+
+    fn parse_dir(&mut self, offset: u64, base: u64, depth: usize) -> Result<(Ifd, u64)> {
         let dir = directory_entries(self.data, offset, self.order, self.big, self.opts.max_entries)?;
         // Bound total entries across the whole parse so overlapping IFD tables (SubIFD pointers
         // shifted by one entry) cannot allocate millions of `Entry`s from a small input.
@@ -314,8 +347,10 @@ pub fn decode(o: ByteOrder, typ: FieldType, b: &[u8]) -> Value {
         FieldType::Byte => Value::Byte(b.to_vec()),
         FieldType::Undefined => Value::Undefined(b.to_vec()),
         FieldType::Ascii => {
-            let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
-            Value::Ascii(String::from_utf8_lossy(&b[..end]).into_owned())
+            // every NUL-separated string is kept (TIFF 6.0 allows several in one field); only the
+            // terminating NULs go
+            let end = b.iter().rposition(|&c| c != 0).map_or(0, |i| i.saturating_add(1));
+            Value::Ascii(String::from_utf8_lossy(b.get(..end).unwrap_or_default()).into_owned())
         }
         FieldType::SByte => Value::SByte(b.iter().map(|&x| x as i8).collect()),
         FieldType::Short => Value::Short(b.as_chunks::<2>().0.iter().map(|c| o.u16(arr(c))).collect()),
@@ -379,6 +414,81 @@ mod tests {
         d.resize(80, 0);
         ifd(&mut d, declared, 0x0100, next);
         d
+    }
+
+    /// A classic little-endian TIFF: IFD0 at 8 with `SubIFDs` = [`a`, `b`] and Exif → `exif`; a one-entry IFD
+    /// (tag 0x0101 = its offset) at 38 and at 56; `IFD0`'s next pointer is `next`.
+    fn shared_children(a: u32, b: u32, exif: u32, next: u32) -> Vec<u8> {
+        let o = ByteOrder::Little;
+        let mut d = b"II*\0\x08\0\0\0".to_vec();
+        o.put_u16(&mut d, 2);
+        // SubIFDs: two LONGs (8 bytes) stored out of line at 74
+        o.put_u16(&mut d, 330);
+        o.put_u16(&mut d, 4);
+        d.extend(2u32.to_le_bytes());
+        d.extend(74u32.to_le_bytes());
+        o.put_u16(&mut d, 34665);
+        o.put_u16(&mut d, 4);
+        d.extend(1u32.to_le_bytes());
+        d.extend(exif.to_le_bytes());
+        d.extend(next.to_le_bytes());
+        for at in [38u32, 56] {
+            d.resize(at as usize, 0);
+            o.put_u16(&mut d, 1);
+            o.put_u16(&mut d, 0x0101);
+            o.put_u16(&mut d, 4);
+            d.extend(1u32.to_le_bytes());
+            d.extend(at.to_le_bytes());
+            d.extend(0u32.to_le_bytes());
+        }
+        d.resize(74, 0);
+        d.extend(a.to_le_bytes());
+        d.extend(b.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn a_child_ifd_referenced_twice_is_kept_both_times() {
+        let t = Tiff::parse(&shared_children(38, 38, 38, 0)).unwrap();
+        let ifd = &t.ifds[0];
+        assert_eq!(ifd.sub_ifds.len(), 2, "the second SubIFDs pointer to the same IFD used to be dropped");
+        assert!(ifd.sub_ifds.iter().all(|s| s.u64(0x0101) == Some(38)));
+        assert_eq!(ifd.exif.as_ref().and_then(|e| e.u64(0x0101)), Some(38));
+        // distinct children still parse as before
+        let t = Tiff::parse(&shared_children(38, 56, 56, 0)).unwrap();
+        let subs: Vec<_> = t.ifds[0].sub_ifds.iter().map(|s| s.u64(0x0101)).collect();
+        assert_eq!(subs, vec![Some(38), Some(56)]);
+        // a chain IFD that is also a child is parsed in the chain too
+        let t = Tiff::parse(&shared_children(38, 56, 56, 56)).unwrap();
+        assert_eq!(t.ifds.len(), 2);
+        assert_eq!(t.ifds[1].u64(0x0101), Some(56));
+    }
+
+    #[test]
+    fn a_child_pointing_at_its_parent_is_still_a_loop() {
+        let t = Tiff::parse(&shared_children(8, 38, 8, 8)).unwrap();
+        assert_eq!(t.ifds.len(), 1);
+        assert_eq!(t.ifds[0].sub_ifds.len(), 1);
+        assert!(t.ifds[0].exif.is_none());
+    }
+
+    #[test]
+    fn shared_children_count_against_the_ifd_limit() {
+        let opts = ParseOptions { max_ifds: 2, ..Default::default() };
+        let t = Tiff::parse_with(&shared_children(38, 38, 38, 0), &opts).unwrap();
+        assert_eq!(t.ifds[0].sub_ifds.len(), 1);
+        assert!(t.ifds[0].exif.is_none());
+    }
+
+    #[test]
+    fn ascii_keeps_every_nul_separated_string() {
+        let v = decode(ByteOrder::Little, FieldType::Ascii, b"one\0two\0\0");
+        assert_eq!(v, Value::Ascii("one\0two".into()));
+        assert_eq!(v.as_str().as_deref(), Some("one"));
+        assert_eq!(v.as_strings(), vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(decode(ByteOrder::Little, FieldType::Ascii, b"\0\0"), Value::Ascii(String::new()));
+        assert!(decode(ByteOrder::Little, FieldType::Ascii, b"\0\0").as_strings().is_empty());
+        assert_eq!(decode(ByteOrder::Little, FieldType::Ascii, b"abc").as_str().as_deref(), Some("abc"));
     }
 
     #[test]
