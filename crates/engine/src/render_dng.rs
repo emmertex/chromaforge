@@ -38,7 +38,7 @@ pub struct Rendered {
 
 /// Check `p` (`ids?`, `colorSpace?`, `dir?`) and set up each target photo's render.
 pub fn prepare(s: &mut Session, p: &Value) -> Result<RenderDngJob> {
-    let mut ids = s.targets(p);
+    let mut ids = s.targets(p)?;
     ids.dedup();
     if ids.is_empty() {
         return Err(bad("no active photo"));
@@ -58,6 +58,9 @@ pub fn prepare(s: &mut Session, p: &Value) -> Result<RenderDngJob> {
     let opts = ExportOptions {
         format: ExportFormat::RenderedDng,
         color_space: space,
+        // a photo edited in HDR keeps its highlights above white (the float DNG holds them);
+        // `prepare_export` turns it off again for an SDR edit
+        hdr: true,
         naming: "{name}-Rendered".into(),
         conflict: Conflict::Unique,
         ..Default::default()

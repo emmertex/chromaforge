@@ -23,6 +23,8 @@ pub struct RenderDngTask {
     done: Arc<AtomicUsize>,
     rx: Receiver<(Vec<Rendered>, bool)>,
     guard: TaskGuard,
+    /// The library (`Session::library_generation`) the job started in: the DNGs are only added to that one.
+    library: u64,
 }
 
 /// Start Render to DNG for `p` on a worker → `{background: true, total}`; `None` when this app
@@ -60,7 +62,7 @@ pub fn start(app: &mut LightcraftApp, p: &Value) -> Option<Result<Value, String>
     }
     #[cfg(target_arch = "wasm32")]
     work();
-    app.render_dng = Some(RenderDngTask { total, done, rx, guard });
+    app.render_dng = Some(RenderDngTask { total, done, rx, guard, library: app.session.library_generation() });
     Some(Ok(json!({"background": true, "total": total})))
 }
 
@@ -70,7 +72,14 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
     match task.rx.try_recv() {
         Ok((done, cancelled)) => {
             let total = task.total;
+            let same_library = task.library == app.session.library_generation();
             app.render_dng = None;
+            if !same_library {
+                // another library was opened meanwhile: its photo ids mean other photos, so nothing is
+                // imported or stacked there; the DNGs stay on disk next to their originals
+                app.toast(ctx, crate::i18n::tr("Library changed: the rendered DNGs were written but not added").to_string());
+                return;
+            }
             let msg = match render_dng::finish(&mut app.session, done, cancelled) {
                 Ok(r) => {
                     let ok = r["copies"].as_array().map_or(0, Vec::len);
