@@ -6,6 +6,39 @@ fn demo() -> Session {
     Session::with_demo()
 }
 
+#[test]
+fn nested_catalog_operations_invalidate_sources_after_success_and_on_undo_redo() {
+    use crate::media::SourceLevel;
+    use lightcraft_catalog::{Op, PhotoId};
+    let mut s = demo();
+    let id = s.active().unwrap();
+    let image = std::sync::Arc::new(lightcraft_raster::Rgb32f::new(1, 1));
+    let cache = |s: &mut Session| {
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            s.media.insert(id, level, image.clone());
+        }
+    };
+    cache(&mut s);
+    // An invalid operation must not throw away usable sources.
+    assert!(s.apply_catalog(Op::Batch { ops: vec![Op::RemovePhoto { id }, Op::RemovePhoto { id: PhotoId(u64::MAX) }] }).is_err());
+    assert!(s.catalog.photo(id).is_some(), "the failed batch restores the removed photo");
+    for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+        assert!(s.media.has_source(id, level), "the failed batch keeps usable sources");
+    }
+    s.commit("Remove", Op::Batch { ops: vec![Op::Batch { ops: vec![Op::RemovePhoto { id }] }] }).unwrap();
+    for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+        assert!(!s.media.has_source(id, level));
+    }
+    cache(&mut s);
+    s.undo_step().unwrap();
+    assert!(s.catalog.photo(id).is_some());
+    assert!(!s.media.has_source(id, SourceLevel::Full), "undo AddPhoto must invalidate the source too");
+    cache(&mut s);
+    s.redo_step().unwrap();
+    assert!(s.catalog.photo(id).is_none());
+    assert!(!s.media.has_source(id, SourceLevel::Full));
+}
+
 fn active_dev(s: &Session) -> lightcraft_develop::DevelopSettings {
     (*s.develop_of(s.active().unwrap()).unwrap()).clone()
 }
@@ -280,6 +313,90 @@ fn permanently_deleting_explicit_targets_keeps_the_surviving_selection() {
     assert_eq!(s.catalog.to_snapshot(), snapshot);
 }
 
+/// `mask.brushStroke {connect: true}` (a ⇧-click) starts from the last point of the mask's last stroke: one straight
+/// stroke when the brush is unchanged, pieces whose size, feather and flow step from the last stroke's to the new
+/// values when it changed, and a plain dab when there is nothing to connect to.
+#[test]
+fn connected_brush_strokes_start_where_the_last_one_ended() {
+    use lightcraft_develop::MaskShape;
+    use lightcraft_geom::Point;
+    let mut s = demo();
+    let id = s.active().unwrap();
+    let r = s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.5]], "size": 0.02, "connect": true})).unwrap();
+    assert_eq!(r["connected"], false, "nothing to connect to: a dab");
+    let strokes = |s: &Session| {
+        let d = s.develop_of(id).unwrap();
+        let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };
+        strokes.clone()
+    };
+    assert_eq!(strokes(&s)[0].points.len(), 1);
+    let r = s.execute("mask.brushStroke", &json!({"points": [[0.6, 0.5]], "size": 0.02, "connect": true})).unwrap();
+    assert_eq!(r["connected"], true);
+    let line = strokes(&s);
+    assert_eq!(line.len(), 2);
+    assert_eq!(line[1].points, vec![Point::new(0.2, 0.5), Point::new(0.6, 0.5)]);
+    // a bigger, softer brush: the segment tapers from the last stroke's values to the new ones
+    let r = s.execute("mask.brushStroke", &json!({"points": [[0.6, 0.9]], "size": 0.04, "feather": 80, "connect": true})).unwrap();
+    assert_eq!(r["connected"], true);
+    let all = strokes(&s);
+    let taper = &all[2..];
+    assert!(taper.len() > 4, "{} pieces", taper.len());
+    assert_eq!(taper[0].points[0], Point::new(0.6, 0.5), "from the last stroke's end");
+    assert_eq!(*taper.last().unwrap().points.last().unwrap(), Point::new(0.6, 0.9), "to the click");
+    assert!(taper.windows(2).all(|w| w[1].size >= w[0].size && w[1].feather >= w[0].feather && w[0].points[1] == w[1].points[0]));
+    assert!((taper.last().unwrap().size - 0.04).abs() < 1e-12 && (taper.last().unwrap().feather - 80.0).abs() < 1e-9);
+    assert!(taper[0].size > 0.02 && taper[0].size < 0.04);
+    // all of it is one undo step
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(strokes(&s).len(), 2);
+}
+
+#[test]
+fn brush_strokes_keep_pen_pressure_and_refuse_bad_lists() {
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "brush"})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2], [0.3, 0.3]], "pressure": [0.25, 7.0]})).unwrap();
+    let lightcraft_develop::MaskShape::Brush { strokes } = &active_dev(&s).masks[0].components[0].shape else { panic!("a brush") };
+    assert_eq!(strokes[0].pressure, vec![0.25, 1.0], "kept, clamped to 0..1");
+    for bad in [json!([0.5, 0.5, 0.5]), json!("hard"), json!([0.5, "x"])] {
+        assert!(s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2], [0.3, 0.3]], "pressure": bad})).is_err(), "{bad}");
+    }
+    s.execute("mask.brushStroke", &json!({"points": [[0.4, 0.4]]})).unwrap();
+    let lightcraft_develop::MaskShape::Brush { strokes } = &active_dev(&s).masks[0].components[0].shape else { panic!("a brush") };
+    assert!(strokes[1].pressure.is_empty(), "a mouse stroke has no pressure data");
+    let json = serde_json::to_string(&strokes[1]).unwrap();
+    assert!(!json.contains("pressure"), "and stores none: {json}");
+}
+
+/// A ⇧-click line carries pen pressure: the last dab's at its start and the click's at its end, stepping along a
+/// tapered line; with no pressure on either side there is none.
+#[test]
+fn connected_brush_strokes_carry_pen_pressure() {
+    use lightcraft_develop::MaskShape;
+    let mut s = demo();
+    let id = s.active().unwrap();
+    let strokes = |s: &Session| {
+        let d = s.develop_of(id).unwrap();
+        let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };
+        strokes.clone()
+    };
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.5]], "size": 0.02, "pressure": [0.4]})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.6, 0.5]], "size": 0.02, "pressure": [1.0], "connect": true})).unwrap();
+    assert_eq!(strokes(&s)[1].pressure, vec![0.4, 1.0]);
+    s.execute("mask.brushStroke", &json!({"points": [[0.6, 0.9]], "size": 0.04, "pressure": [0.2], "connect": true})).unwrap();
+    let taper = &strokes(&s)[2..];
+    assert!(taper.iter().all(|t| t.pressure.len() == 2));
+    assert!((taper[0].pressure[0] - 1.0).abs() < 1e-6 && (taper.last().unwrap().pressure[1] - 0.2).abs() < 1e-6);
+    assert!(taper.windows(2).all(|w| w[1].pressure[0] <= w[0].pressure[0]));
+    // a mouse: no pressure anywhere
+    let mut m = demo();
+    m.execute("mask.brushStroke", &json!({"points": [[0.2, 0.5]], "size": 0.02})).unwrap();
+    m.execute("mask.brushStroke", &json!({"points": [[0.6, 0.5]], "size": 0.02, "connect": true})).unwrap();
+    let d = m.develop_of(m.active().unwrap()).unwrap();
+    let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };
+    assert!(strokes[1].pressure.is_empty());
+}
+
 #[test]
 fn masks_crop_and_render() {
     let mut s = demo();
@@ -421,6 +538,32 @@ fn degenerate_crops_render_with_spots_and_masks() {
         let r = s.render_now(id, 700, 450).unwrap();
         assert!(r.image.width >= 1 && r.image.height >= 1, "{rect:?}");
         assert!(t.elapsed().as_secs_f64() < 60.0, "{rect:?}: {:?}", t.elapsed());
+    }
+}
+
+/// `crop.rotateAspect` on a crop of no size took its aspect from 0/0 = NaN and stored a NaN crop
+/// rectangle; it now falls back to the image's own aspect, a finite crop inside the image.
+#[test]
+fn rotate_aspect_of_degenerate_crop_stays_finite() {
+    for rect in [[0.5, 0.5, 0.5, 0.5], [0.2, 0.2, 0.2, 0.8], [0.2, 0.2, 0.8, 0.2]] {
+        let mut s = demo();
+        s.execute("crop.set", &json!({"rect": rect})).unwrap();
+        s.execute("crop.rotateAspect", &json!({})).unwrap();
+        let r = active_dev(&s).crop.geometry.rect;
+        assert!([r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite()), "{rect:?}: {r:?}");
+        assert!(r.width() > 0.0 && r.height() > 0.0, "{rect:?}: {r:?}");
+        assert!(r.x0 >= 0.0 && r.y0 >= 0.0 && r.x1 <= 1.0 && r.y1 <= 1.0, "{rect:?}: {r:?}");
+    }
+}
+
+/// `crop.set` with a huge rect shrank it by a scale of 0 (`inf * 0`) and stored a NaN crop.
+#[test]
+fn crop_set_huge_rect_stays_finite() {
+    for rect in [[0.0, 0.0, 1e308, 1e308], [-1e308, -1e308, 1e308, 1e308]] {
+        let mut s = demo();
+        let _ = s.execute("crop.set", &json!({"rect": rect}));
+        let r = active_dev(&s).crop.geometry.rect;
+        assert!([r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite() && (-1e-6..=1.0 + 1e-6).contains(v)), "{rect:?}: {r:?}");
     }
 }
 
@@ -1485,4 +1628,57 @@ fn oversized_spots_render() {
             assert!(t.elapsed().as_secs_f64() < 60.0, "{size} {mode:?}: {:?}", t.elapsed());
         }
     }
+}
+
+/// Rotate turns the crop with the image: a crop of the left half becomes the top half, and turning back restores it.
+#[test]
+fn rotate_carries_the_crop_with_the_image() {
+    use lightcraft_geom::Rect;
+    let mut s = demo();
+    let id = s.active().unwrap();
+    let mut d = active_dev(&s);
+    let left_half = Rect { x0: 0.0, y0: 0.0, x1: 0.5, y1: 1.0 };
+    d.crop.geometry.rect = left_half;
+    d.crop.aspect = Some((2, 3));
+    s.set_develop(id, d, "Crop").unwrap();
+    s.execute("photo.rotateRight", &json!({})).unwrap();
+    let c = active_dev(&s).crop;
+    assert_eq!(c.geometry.rect, Rect { x0: 0.0, y0: 0.0, x1: 1.0, y1: 0.5 });
+    assert_eq!(c.aspect, Some((3, 2)), "a locked aspect turns too");
+    s.execute("photo.rotateLeft", &json!({})).unwrap();
+    let c = active_dev(&s).crop;
+    assert_eq!(c.geometry.rect, left_half);
+    assert_eq!(c.aspect, Some((2, 3)));
+}
+
+/// A call that names its photos with a malformed `id` or `ids` (a string, a mixed list) is refused and changes
+/// nothing; it used to act on the selection, or on the valid part of the list (issue #1506). Leaving the targets
+/// out still means the selection.
+#[test]
+fn malformed_photo_targets_are_refused_not_widened() {
+    use lightcraft_catalog::PhotoId;
+    let mut s = Session::with_demo();
+    let ids: Vec<u64> = s.catalog.photos().take(3).map(|p| p.id.0).collect();
+    s.execute("library.select", &json!({"ids": [ids[0], ids[1]]})).unwrap();
+    let rating = |s: &Session, i: u64| s.catalog.photo(PhotoId(i)).unwrap().rating;
+    let before: Vec<u8> = ids.iter().map(|i| rating(&s, *i)).collect();
+    for bad in [
+        json!({"rating": 5, "id": "5"}),
+        json!({"rating": 5, "ids": [ids[2], "x"]}),
+        json!({"rating": 5, "ids": ids[2].to_string()}),
+        json!({"rating": 5, "id": -1}),
+    ] {
+        let err = s.execute("photo.rate", &bad).unwrap_err();
+        assert!(matches!(&err, crate::EngineError::BadParams { cmd, .. } if cmd == "photo.rate"), "{bad}: {err}");
+        assert_eq!(ids.iter().map(|i| rating(&s, *i)).collect::<Vec<_>>(), before, "{bad} changed a rating");
+    }
+    let snapshot = s.catalog.to_snapshot();
+    assert!(s.execute("photo.deletePermanently", &json!({"id": "5"})).is_err());
+    assert_eq!(s.catalog.to_snapshot(), snapshot, "nothing deleted");
+    // no targets, or a null one: the selection
+    s.execute("photo.rate", &json!({"rating": 4, "id": null})).unwrap();
+    assert_eq!((rating(&s, ids[0]), rating(&s, ids[1]), rating(&s, ids[2])), (4, 4, before[2]));
+    // a preset's id is not a photo target
+    let preset = s.presets.first().unwrap().id.clone();
+    s.execute("preset.apply", &json!({"id": preset})).unwrap();
 }

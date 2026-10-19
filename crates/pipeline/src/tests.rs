@@ -272,6 +272,61 @@ fn exposure_after_spatial_filters_equals_exposing_the_source() {
     assert!(d <= 2, "max difference {d}");
 }
 
+#[test]
+fn color_range_sampling_respects_disabled_sections() {
+    use crate::{MaskView, Overlay, color_range_sample};
+    let src = Rgb32f::from_fn(32, 24, |_, _| [0.15, 0.25, 0.08]);
+    let info = SourceInfo::default();
+    let req = RenderRequest::fit(32, 24);
+    let point = lightcraft_geom::Point::new(0.5, 0.5);
+    let plain = color_range_sample(&src, &info, &DevelopSettings::default(), &req, point).unwrap();
+    for section in ["light", "color"] {
+        let mut s = DevelopSettings::default();
+        if section == "light" {
+            s.light.exposure = 3.0;
+        } else {
+            s.wb.mode = lightcraft_develop::WbMode::Custom;
+            s.wb.temp = 12000.0;
+            s.wb.tint = 100.0;
+        }
+        assert_ne!(color_range_sample(&src, &info, &s, &req, point).unwrap(), plain, "enabled {section}");
+        s.set_section_enabled(section, false);
+        let sample = color_range_sample(&src, &info, &s, &req, point).unwrap();
+        assert_eq!(sample, plain, "disabled {section} must not change the picked colour");
+        s.masks.push(lightcraft_develop::Mask {
+            id: 1,
+            components: vec![lightcraft_develop::MaskComponent {
+                name: None,
+                op: lightcraft_develop::MaskOp::Add,
+                invert: false,
+                shape: lightcraft_develop::MaskShape::ColorRange { samples: vec![sample], refine: 0.0 },
+            }],
+            ..Default::default()
+        });
+        let overlay = RenderRequest { overlay: Overlay::Mask { id: 1, view: MaskView::WhiteOnBlack, color: [255, 0, 0], opacity: 100 }, ..req };
+        let img = render(&src, &info, &s, &overlay).image;
+        assert_eq!(img.data[12 * 32 + 16], [255; 4], "the sampled colour is selected with {section} off");
+    }
+}
+
+#[test]
+fn color_range_sampling_uses_the_requested_hdr_rendition() {
+    use crate::{OutputDepth, color_range_sample};
+    let src = Rgb32f::from_fn(32, 24, |_, _| [0.15, 0.25, 0.08]);
+    let info = SourceInfo::default();
+    let point = lightcraft_geom::Point::new(0.5, 0.5);
+    let mut s = DevelopSettings::default();
+    s.hdr.enabled = true;
+    s.hdr.sdr_brightness = 100.0;
+    let req = RenderRequest::fit(32, 24);
+    let expected = color_range_sample(&src, &info, &s.sdr_rendition(), &req, point).unwrap();
+    assert_eq!(color_range_sample(&src, &info, &s, &req, point).unwrap(), expected, "SDR preview brightness affects the picked colour");
+    let hdr = RenderRequest { depth: OutputDepth::F32Hdr, ..req };
+    let plain = color_range_sample(&src, &info, &DevelopSettings::default(), &hdr, point).unwrap();
+    assert_eq!(color_range_sample(&src, &info, &s, &hdr, point).unwrap(), plain, "HDR does not use the SDR offset");
+    assert_ne!(plain, expected);
+}
+
 /// A section whose eye is off renders as if it were at its defaults (issue #316): Light, Color
 /// and Detail, which the pipeline doesn't switch off where it applies them.
 #[test]
