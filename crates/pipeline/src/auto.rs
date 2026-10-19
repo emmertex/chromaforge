@@ -259,29 +259,49 @@ mod tests {
     }
 
     #[test]
-    fn darker_scenes_get_more_exposure_within_slider_ranges() {
+    fn exposure_follows_the_log_average_luminance() {
+        let flat = |y: f32| Rgb32f::filled(64, 64, [y; 3]);
         let auto = |img: &Rgb32f| auto_tone(img, &SourceInfo::default(), &DevelopSettings::default());
+        let log_mean = |img: &Rgb32f| scene_log_mean(img, &SourceInfo::default(), &DevelopSettings::default()).unwrap();
+        // a scene at middle grey gets the exposure at grey; each EV darker adds 0.41 EV
+        assert!(log_mean(&flat(0.18)).abs() < 1e-3);
+        assert_eq!(auto(&flat(0.18)).exposure, -0.58);
+        assert!((auto(&flat(0.18 / 8.0)).exposure - (-0.58 + 3.0 * 0.41)).abs() < 1e-9);
+        // darker scenes get more, brighter ones less, within -2..3 EV
         let ramp = |lo: f32, step: f32| Rgb32f::from_fn(64, 64, |x, _| [lo + x as f32 * step; 3]);
         let (dark, grey, bright) = (auto(&ramp(0.01, 0.0003)), auto(&ramp(0.15, 0.001)), auto(&ramp(0.8, 0.01)));
+        assert!(dark.exposure > 0.5 && bright.exposure < -1.0, "{dark:?} {bright:?}");
         assert!(dark.exposure > grey.exposure && grey.exposure > bright.exposure, "{dark:?} {grey:?} {bright:?}");
-        for a in [dark, grey, bright, auto(&Rgb32f::filled(16, 16, [1e-9; 3])), auto(&Rgb32f::filled(16, 16, [1e6; 3]))] {
+        assert_eq!(auto(&flat(1e-9)).exposure, 3.0);
+        assert_eq!(auto(&flat(1e6)).exposure, -2.0);
+        // every setting stays within its slider range
+        for a in [dark, grey, bright, auto(&flat(1e-9)), auto(&flat(1e6))] {
             assert!(in_ranges(&a), "{a:?}");
         }
     }
 
     #[test]
-    fn hostile_pixels_are_left_out_and_never_give_nan() {
+    fn pixels_that_are_not_finite_are_left_out() {
         let auto = |img: &Rgb32f| auto_tone(img, &SourceInfo::default(), &DevelopSettings::default());
-        let clean = auto(&Rgb32f::filled(64, 64, [0.18; 3]));
+        // half middle grey, half NaN (or infinite): the grey half alone decides, as if the rest weren't there
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let half = Rgb32f::from_fn(64, 64, |x, _| if x < 32 { [0.18; 3] } else { [bad; 3] });
+            assert_eq!(auto(&half).exposure, -0.58, "{bad}");
+            // also through the resampling of a source larger than the proxy (proxy pixels on the border mix both halves)
+            let big = Rgb32f::from_fn(1030, 700, |x, _| if x < 515 { [0.045; 3] } else { [bad; 3] });
+            assert!((auto(&big).exposure - (-0.58 + 2.0 * 0.41)).abs() < 1e-9, "{bad}");
             // a few broken pixels scattered over a grey image change nothing
             let speckled = Rgb32f::from_fn(1030, 700, |x, y| if (x * 7 + y * 13) % 97 == 0 { [bad; 3] } else { [0.18; 3] });
-            assert_eq!(auto(&speckled).exposure, clean.exposure, "{bad}");
+            assert_eq!(auto(&speckled).exposure, -0.58, "{bad}");
+            assert!(in_ranges(&auto(&speckled)));
         }
-        // nothing valid, nothing at all, or pure black: still usable values
-        for img in [Rgb32f::filled(8, 8, [f32::NAN; 3]), Rgb32f::new(0, 0), Rgb32f::filled(32, 32, [0.0; 3])] {
-            assert!(in_ranges(&auto(&img)), "{:?}", auto(&img));
+        // with no valid pixel at all (or none at all) there is nothing to measure: Exposure 0, the typical values
+        for img in [Rgb32f::filled(8, 8, [f32::NAN; 3]), Rgb32f::filled(600, 600, [f32::INFINITY; 3]), Rgb32f::new(0, 0)] {
+            let a = auto(&img);
+            assert_eq!((a.exposure, a.contrast, a.vibrance), (0.0, 68.0, 30.0));
         }
+        // pure black still gives usable values
+        assert!(in_ranges(&auto(&Rgb32f::filled(32, 32, [0.0; 3]))));
     }
 
     #[test]
