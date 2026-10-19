@@ -72,6 +72,46 @@ fn number_op(op: &str) -> Option<&'static str> {
     })
 }
 
+/// Lightroom keeps apertures as APEX values (`f = 2^(av / 2)`), native rules compare the f-number.
+/// The catalog's APEX values are rounded, so each bound is widened by 1% (an exact `==` / `!=`
+/// can't be expressed and stays static).
+fn aperture(op: &str, av: f64, av2: Option<f64>) -> Option<Rule> {
+    const TOL: f64 = 0.01;
+    let f = |a: f64| (a / 2.0).exp2();
+    let (lo, hi) = (f(av), av2.map(f));
+    if !lo.is_finite() || hi.is_some_and(|h| !h.is_finite()) {
+        return None;
+    }
+    Some(match op {
+        "==" => field("aperture", "between", json!([lo * (1.0 - TOL), lo * (1.0 + TOL)])),
+        ">=" => field("aperture", "gte", json!(lo * (1.0 - TOL))),
+        ">" => field("aperture", "gt", json!(lo * (1.0 + TOL))),
+        "<=" => field("aperture", "lte", json!(lo * (1.0 + TOL))),
+        "<" => field("aperture", "lt", json!(lo * (1.0 - TOL))),
+        "in" => field("aperture", "between", json!([lo * (1.0 - TOL), hi? * (1.0 + TOL)])),
+        _ => return None,
+    })
+}
+
+/// Lightroom's `fileFormat` names (`RAW` is every proprietary raw, apart from `DNG`) as native rules.
+fn file_format(op: &str, value: &str) -> Option<Rule> {
+    let any = |rules: Vec<Rule>| Rule::Group { group: RuleSet { mode: Match::Any, rules } };
+    let positive = match value.trim().to_ascii_uppercase().as_str() {
+        "RAW" => Rule::Group { group: RuleSet { mode: Match::All, rules: vec![field("kind", "is", json!("raw")), field("format", "isNot", json!("dng"))] } },
+        "DNG" => field("format", "is", json!("dng")),
+        "VIDEO" => field("kind", "is", json!("video")),
+        "JPG" | "JPEG" => any(vec![field("format", "is", json!("jpg")), field("format", "is", json!("jpeg"))]),
+        "TIFF" | "TIF" => any(vec![field("format", "is", json!("tif")), field("format", "is", json!("tiff"))]),
+        "PSD" => field("format", "is", json!("psd")),
+        _ => return None,
+    };
+    match op {
+        "==" | "" => Some(positive),
+        "!=" => Some(Rule::Group { group: RuleSet { mode: Match::None, rules: vec![positive] } }),
+        _ => None,
+    }
+}
+
 fn criterion(c: &Lua) -> Result<Rule, String> {
     let name = c.get("criteria").and_then(Lua::str).unwrap_or_default();
     let op = c.get("operation").and_then(Lua::str).unwrap_or_default();
@@ -86,6 +126,9 @@ fn criterion(c: &Lua) -> Result<Rule, String> {
                 _ => "aperture",
             };
             let n = num(value).ok_or_else(unsupported)?;
+            if name == "aperture" {
+                return aperture(op, n, num(c.get("value2"))).ok_or_else(unsupported);
+            }
             if op == "in" {
                 let hi = num(c.get("value2")).ok_or_else(unsupported)?;
                 return Ok(field(target, "between", json!([n, hi])));
@@ -130,6 +173,7 @@ fn criterion(c: &Lua) -> Result<Rule, String> {
                 _ => Err(unsupported()),
             }
         }
+        "fileFormat" => file_format(op, value.and_then(Lua::str).unwrap_or_default()).ok_or_else(unsupported),
         _ => {
             let target = match name {
                 "keywords" => "keywords",
@@ -145,7 +189,6 @@ fn criterion(c: &Lua) -> Result<Rule, String> {
                 "country" => "country",
                 "location" => "location",
                 "state" => "state",
-                "fileFormat" => "format",
                 _ => return Err(unsupported()),
             };
             text_rule(target, op, value.and_then(Lua::str).unwrap_or_default()).ok_or_else(unsupported)
@@ -160,8 +203,9 @@ fn text_rule(target: &str, op: &str, value: &str) -> Option<Rule> {
         "empty" => field(target, "isEmpty", Value::Null),
         "notEmpty" => field(target, "isNotEmpty", Value::Null),
         _ if words.is_empty() => return None,
-        // Every word must appear: what "contains" already means here.
-        "all" | "words" => field(target, "contains", json!(value)),
+        // Every word must appear, each on its own (separate keywords can carry them).
+        "all" | "words" if words.len() == 1 => field(target, "contains", json!(value)),
+        "all" | "words" => Rule::Group { group: RuleSet { mode: Match::All, rules: words.iter().map(|w| field(target, "contains", json!(w))).collect() } },
         "any" if words.len() == 1 => field(target, "contains", json!(value)),
         "any" => Rule::Group { group: RuleSet { mode: Match::Any, rules: words.iter().map(|w| field(target, "contains", json!(w))).collect() } },
         "noneOf" => {
@@ -219,6 +263,29 @@ mod tests {
         ] {
             assert!(smart_rules(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn rules_whose_values_differ_in_lightroom_are_translated() {
+        let one = |c: &str| smart_rules(&format!("s = {{ {c} }}")).unwrap().rules.remove(0);
+        // every word may sit on a different keyword
+        let Rule::Group { group } = one(r#"{ criteria = "keywords", operation = "all", value = "beach sunset" }"#) else { panic!() };
+        assert_eq!((group.mode, group.rules.len()), (Match::All, 2));
+        // APEX 6 is f/8
+        let Rule::Field { field, op, value } = one(r#"{ criteria = "aperture", operation = "==", value = 6 }"#) else { panic!() };
+        let (lo, hi) = (value[0].as_f64().unwrap(), value[1].as_f64().unwrap());
+        assert_eq!((field.as_str(), op.as_str()), ("aperture", "between"));
+        assert!(lo < 8.0 && 8.0 < hi && hi < 8.2, "{lo} {hi}");
+        let Rule::Field { value, .. } = one(r#"{ criteria = "aperture", operation = "in", value = 4, value2 = 6 }"#) else { panic!() };
+        assert!(value[0].as_f64().unwrap() < 4.0 && value[1].as_f64().unwrap() > 8.0, "{value}");
+        // RAW is the raw kind, not DNG
+        let Rule::Group { group } = one(r#"{ criteria = "fileFormat", operation = "==", value = "RAW" }"#) else { panic!() };
+        assert_eq!(group.rules, vec![field_rule("kind", "is", "raw"), field_rule("format", "isNot", "dng")]);
+        assert!(smart_rules(r#"s = { { criteria = "fileFormat", operation = "==", value = "WEIRD" } }"#).is_err());
+    }
+
+    fn field_rule(f: &str, op: &str, v: &str) -> Rule {
+        field(f, op, json!(v))
     }
 
     #[test]

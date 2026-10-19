@@ -39,7 +39,7 @@ pub const EXTENSIONS: &[&str] = &[
     // Decoded when built with the codecs' `heif` feature; otherwise the import reports them as
     // failed with the reason ("HEIC/HEIF support isn't included in this build").
     "heic", "heif", "avif", // no AV1 decoder yet: reported as failed, like a HEIC without the feature
-    "iiq", "crw", "mrw", "x3f", "kdc", "mos", "erf", "3fr", "fff",
+    "iiq", "crw", "mrw", "x3f", "kdc", "mos", "erf", "3fr", "fff", "mef",
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -310,6 +310,8 @@ pub struct ImportDefaults {
     pub auto_folder: Option<String>,
     pub auto_copy: bool,
     pub auto_album: Option<String>,
+    /// Open the import review when a camera or memory card is connected.
+    pub show_on_card: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -380,6 +382,17 @@ pub fn expand(paths: &[String], skip: Option<&Path>) -> Vec<String> {
 
 /// [`expand`] with the walk bounded by `limits` → (files, whether a walk stopped at a bound).
 pub fn expand_within(paths: &[String], skip: Option<&Path>, limits: crate::walk::Limits) -> (Vec<String>, bool) {
+    expand_noting(paths, skip, limits, None)
+}
+
+/// [`expand_within`], handing the listing of every folder that is walked to `note`
+/// ([`crate::walk::files_in_noting`]).
+pub(crate) fn expand_noting(
+    paths: &[String],
+    skip: Option<&Path>,
+    limits: crate::walk::Limits,
+    mut note: Option<crate::walk::NoteFolder>,
+) -> (Vec<String>, bool) {
     let mut out = Vec::new();
     let mut truncated = false;
     for p in paths {
@@ -388,7 +401,10 @@ pub fn expand_within(paths: &[String], skip: Option<&Path>, limits: crate::walk:
             continue;
         }
         if p.is_dir() {
-            let w = crate::walk::files_in(p, skip, limits, is_supported);
+            let w = match note.as_mut() {
+                Some(note) => crate::walk::files_in_noting(p, skip, limits, is_supported, &mut **note),
+                None => crate::walk::files_in(p, skip, limits, is_supported),
+            };
             if w.truncated {
                 log::warn!(
                     "import: stopped looking in {} after {} entries (limits: {} entries, {} folder levels)",
@@ -468,6 +484,12 @@ pub fn launch_path(arg: &str, cwd: Option<&Path>, home: Option<&Path>, dcim: imp
 pub(crate) fn probe_paths(s: &Session, paths: &[String]) -> Vec<Result<ProbeInfo, String>> {
     let progress = ScanProgress::default();
     probe_all(s.media.file_probe.as_ref(), paths, &progress.done, &progress.cancel)
+}
+
+/// Probe files with `probe` (a clone of the session's file probe), off the session: on a worker thread.
+pub(crate) fn probe_with(probe: &crate::media::FileProbe, paths: &[String]) -> Vec<Result<ProbeInfo, String>> {
+    let progress = ScanProgress::default();
+    probe_all(Some(probe), paths, &progress.done, &progress.cancel)
 }
 
 /// Probe `paths` (several at once), counting each in `done`. Stops before the next file once
@@ -630,6 +652,11 @@ impl ScanInput {
         (input, paths.to_vec())
     }
 
+    /// The folder a scan never enters (the library's own).
+    pub(crate) fn skip(&self) -> Option<&Path> {
+        self.skip.as_deref()
+    }
+
     /// The library as the scan sees it (shared, for [`crate::sync`], which looks at the same one).
     pub(crate) fn library(&self) -> std::sync::Arc<lightcraft_catalog::Catalog> {
         std::sync::Arc::clone(&self.library)
@@ -648,9 +675,14 @@ pub fn scan(s: &mut Session, paths: &[String]) -> Vec<ImportCandidate> {
 
 /// [`scan`] without the session, so it can run on a worker thread. Stops early (returning what it
 /// has) when `progress.cancel` is set.
-pub fn scan_with(mut input: ScanInput, paths: &[String], progress: &ScanProgress) -> ScanOutput {
-    use std::sync::atomic::Ordering::Relaxed;
+pub fn scan_with(input: ScanInput, paths: &[String], progress: &ScanProgress) -> ScanOutput {
     let files = expand(paths, input.skip.as_deref());
+    scan_files(input, files, progress)
+}
+
+/// [`scan_with`] for files that were found already (`paths` expanded, [`expand`]).
+pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &ScanProgress) -> ScanOutput {
+    use std::sync::atomic::Ordering::Relaxed;
     let by_path = library_files(&input.library, &files);
     let todo: Vec<String> = files.iter().filter(|f| !by_path.contains_key(Path::new(f))).cloned().collect();
     progress.total.store(todo.len(), Relaxed);
@@ -1386,7 +1418,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 p.as_shot_wb = info.as_shot_wb;
                 p.content_hash = info.content_hash;
                 p.embedded_lens = info.embedded_lens;
-                p.preview_only = info.preview_only.clone();
+                p.set_preview_only(info.preview_only.clone());
                 apply_import_defaults(s, &mut p);
                 if let Some(sc) = &sidecar {
                     crate::sidecar::merge_into(&mut p, sc, &now);
@@ -1532,6 +1564,7 @@ impl Session {
             stages: None,
             view_cache: None,
             display: None,
+            slide: None,
             preview_cut: None,
         };
         let embedded = match (&self.media.preview_loader, c.kind) {

@@ -338,15 +338,34 @@ pub(crate) fn decode_as(bytes: &[u8], mode: Mode, format: RawFormat) -> Result<R
         color: color_data(ifd0, raw, tiff.order),
         wb_multipliers: None,
         linearized,
+        pixel_aspect: default_scale_aspect(raw.f64s(t::DEFAULT_SCALE).as_deref()),
         opcodes,
         metadata,
+        lens_metadata: Default::default(),
     };
     img.validate_for(mode)?;
     Ok(img)
 }
 
+/// Pixel height over width from `DefaultScale` (horizontal, vertical): only a clear 1.5 to 4 ratio counts (the rows stretch; a wider-than-tall pixel is left alone).
+fn default_scale_aspect(scale: Option<&[f64]>) -> f32 {
+    match scale {
+        Some([h, v]) if *h > 0.0 && *v > 0.0 && (1.5..=4.0).contains(&(v / h)) => (v / h) as f32,
+        _ => 1.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn default_scale_makes_tall_pixels() {
+        assert_eq!(default_scale_aspect(Some(&[1.0, 2.0])), 2.0);
+        assert_eq!(default_scale_aspect(Some(&[1.0, 1.0])), 1.0);
+        assert_eq!(default_scale_aspect(Some(&[2.0, 1.0])), 1.0);
+        assert_eq!(default_scale_aspect(Some(&[1.0, 1.2])), 1.0);
+        assert_eq!(default_scale_aspect(None), 1.0);
+    }
+
     use super::*;
 
     /// Store `image` the way DNG 1.7 interleaves it: row `r` of the image is written to stored row
