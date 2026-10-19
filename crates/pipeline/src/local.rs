@@ -147,7 +147,7 @@ pub fn legacy_to_kelvin(temp: f64, tint: f64, as_shot: (f64, f64)) -> (f64, f64)
 /// edited on a rendered photo or a raw without matrices never pass for Kelvin when pasted onto one that has them.
 pub fn normalize_wb(d: &mut DevelopSettings, info: &SourceInfo) {
     use lightcraft_develop::{WbMode, WbScale};
-    if !(info.raw && !info.relative_wb) {
+    if !info.raw || info.relative_wb {
         d.wb.scale = WbScale::Legacy;
         return;
     }
@@ -306,28 +306,64 @@ pub struct NrColor {
     pub t: f32,
 }
 
-/// Noise-reduction parameters at an output long edge of `out_long` px (see [`denoise`]).
-pub fn nr_params(s: &DevelopSettings, src_long: usize, out_long: usize) -> (Option<NrLum>, Option<NrColor>) {
+/// Output pixels per pixel of the original photo for an output of `px_per_long` pixels per unit
+/// of the long edge of an original `native_long` pixels long, at most 1 ([`crate::Plan::detail_scale`]).
+pub fn detail_scale(px_per_long: f64, native_long: usize) -> f32 {
+    let k = (px_per_long / native_long.max(1) as f64) as f32;
+    if k.is_finite() { k.clamp(0.0, 1.0) } else { 1.0 }
+}
+
+/// Smallest radius (px) noise reduction filters a preview with: [`gaussian`] makes no blur below
+/// about 0.58 px and one 3-px box from there ([`lightcraft_raster::blur::box_sigma`]).
+const NR_MIN_SIGMA: f32 = 1.0;
+
+/// Below this fade a preview's noise reduction is not drawn at all (less than 1 % of a 1-px blur).
+const NR_MIN_BLEND: f32 = 0.01;
+
+/// Radius and blend weight that stand in for a blur of `sigma` px: below [`NR_MIN_SIGMA`] the
+/// smallest blur the filter makes, blended in by the ratio of their variances, which keeps the
+/// smoothing's second moment (how much it softens the finest detail) that of `sigma`.
+fn nr_radius(sigma: f32) -> (f32, f32) {
+    if sigma >= NR_MIN_SIGMA {
+        return (sigma, 1.0);
+    }
+    let made = lightcraft_raster::blur::box_sigma(NR_MIN_SIGMA);
+    (NR_MIN_SIGMA, (sigma / made).powi(2).min(1.0))
+}
+
+/// Noise-reduction parameters at `scale` output pixels per pixel of the original
+/// ([`crate::Plan::detail_scale`]; see [`denoise`]). Noise lives at the original's pixels, so the
+/// radii are the full-size radii times `scale`, and the guided filter's `eps` (the variance it
+/// treats as noise) follows the noise variance, which averaging `1/scale × 1/scale` pixels into one
+/// multiplies by `scale²`. A radius below [`NR_MIN_SIGMA`] fades instead ([`nr_radius`]): previews look like
+/// the full-size render scaled down (issue #960). At `scale` 1 these are the full-size parameters.
+pub fn nr_params(s: &DevelopSettings, scale: f32) -> (Option<NrLum>, Option<NrColor>) {
     let lum = (s.detail.nr_luminance / 100.0) as f32;
     let col = (s.detail.nr_color / 100.0) as f32;
-    let scale = (out_long as f32 / src_long.max(1) as f32).clamp(0.05, 1.0);
-    let l = (lum > 0.0).then(|| {
+    let scale = if scale.is_finite() { scale.clamp(0.0, 1.0) } else { 1.0 };
+    let l = (lum > 0.0).then(|| nr_radius((1.0 + 2.5 * lum) * scale)).filter(|&(_, w)| w >= NR_MIN_BLEND).map(|(sigma, w)| {
         let detail = (s.detail.nr_detail / 100.0) as f32;
-        NrLum { sigma: (1.0 + 2.5 * lum) * scale.max(0.4), eps: 0.002 + lum * lum * 0.25 * (1.0 - 0.7 * detail), k: lum.sqrt() }
+        let eps = ((0.002 + lum * lum * 0.25 * (1.0 - 0.7 * detail)) * scale * scale).max(1e-7);
+        NrLum { sigma, eps, k: lum.sqrt() * w }
     });
-    let c = (col > 0.0).then(|| {
-        let sigma = (1.5 + 6.0 * col) * scale.max(0.35) * (1.0 + (s.detail.nr_color_smoothness / 100.0) as f32);
+    let smooth = 1.0 + (s.detail.nr_color_smoothness / 100.0) as f32;
+    let c = (col > 0.0).then(|| nr_radius((1.5 + 6.0 * col) * scale * smooth)).filter(|&(_, w)| w >= NR_MIN_BLEND).map(|(sigma, w)| {
         let keep = (s.detail.nr_color_detail / 100.0) as f32 * 0.5;
-        NrColor { sigma, t: col * (1.0 - keep) }
+        NrColor { sigma, t: col * (1.0 - keep) * w }
     });
     (l, c)
 }
 
 /// Noise reduction at output resolution: luminance via an edge-aware self-guided filter on
 /// log-luminance, colour by blurring chromaticity (rgb / Y) and re-applying the original luminance.
-/// Radii scale with how much the source was downsampled (preview noise is already averaged out).
-pub fn denoise(img: &mut Rgb32f, s: &DevelopSettings, src_long: usize, out_long: usize) {
-    let (lum, col) = nr_params(s, src_long, out_long);
+/// `scale`: output pixels per pixel of the original ([`nr_params`]).
+pub fn denoise(img: &mut Rgb32f, s: &DevelopSettings, scale: f32) {
+    let (lum, col) = nr_params(s, scale);
+    apply_nr(img, lum, col);
+}
+
+/// Noise reduction with explicit parameters (see [`denoise`]).
+pub fn apply_nr(img: &mut Rgb32f, lum: Option<NrLum>, col: Option<NrColor>) {
     let w = img.width;
     if let Some(nr) = lum {
         let _t = crate::profiling().then(std::time::Instant::now);
@@ -694,7 +730,7 @@ mod nr_tests {
         let (v0, m0) = var(&img);
         let mut s = DevelopSettings::default();
         s.detail.nr_luminance = 80.0;
-        denoise(&mut img, &s, 64, 64);
+        denoise(&mut img, &s, 1.0);
         let (v1, m1) = var(&img);
         assert!(v1 < v0 * 0.5, "{v0} -> {v1}");
         assert!((m1 - m0).abs() < 0.01);
