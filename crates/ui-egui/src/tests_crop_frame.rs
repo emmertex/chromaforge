@@ -115,6 +115,25 @@ fn straightening_keeps_the_box_in_place() {
     h.settle(T);
 }
 
+/// Zooming in the crop tool magnifies the photo (and the box with it), as the loupe does, so a
+/// crop can be placed precisely: the requested zoom and pan are not overwritten by the fit.
+#[test]
+fn the_crop_tool_follows_the_requested_zoom() {
+    let mut h = cropped();
+    let fitted = box_corners(&h);
+    let width = |c: &[egui::Pos2; 4]| c[0].distance(c[1]);
+    let r = h.request("ui.set", json!({"zoom": {"percent": 400}, "pan": [0.5, 0.5]}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(T);
+    let zoomed = box_corners(&h);
+    assert!(upright(&zoomed));
+    assert!(width(&zoomed) > width(&fitted) * 1.5, "the box grew with the zoom: {} -> {}", width(&fitted), width(&zoomed));
+    let r = h.request("ui.set", json!({"zoom": "fit", "pan": [0.5, 0.5]}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(T);
+    assert!(near(box_corners(&h)[0], fitted[0]), "Fit brings it back");
+}
+
 /// Dragging inside the box moves the photo under it: the box stays put and the photo follows the
 /// pointer (the crop moves the other way over the photo).
 #[test]
