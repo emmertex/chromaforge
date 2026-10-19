@@ -65,12 +65,26 @@ fn enc(e: impl std::fmt::Display) -> VideoError {
     VideoError::Encode(e.to_string())
 }
 
-/// `<out>.partial`, next to the output.
-fn partial_path(out: &Path) -> Result<PathBuf> {
+/// `<out>.<pid>.<attempt>.partial`, next to the output: a name no other writer shares.
+fn partial_path(out: &Path, attempt: u32) -> Result<PathBuf> {
     let name = out.file_name().ok_or_else(|| VideoError::BadOptions("the output path has no file name".into()))?;
     let mut n = name.to_os_string();
-    n.push(".partial");
+    n.push(format!(".{}.{attempt}.partial", std::process::id()));
     Ok(out.with_file_name(n))
+}
+
+/// Create a fresh partial file next to `out`. `create_new` never opens, follows or truncates an
+/// existing file or link, so the writer owns exactly the file it removes on failure.
+fn create_partial(out: &Path) -> Result<(PathBuf, File)> {
+    for attempt in 0..64 {
+        let path = partial_path(out, attempt)?;
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io(e)),
+        }
+    }
+    Err(VideoError::BadOptions("could not reserve a temporary file next to the output".into()))
 }
 
 /// Writes frames of one fixed size at a fixed rate to an H.264 MP4 or ProRes MOV (no audio).
@@ -98,13 +112,12 @@ impl SequenceWriter {
         if fps_num == 0 || fps_den == 0 || f64::from(fps_num) / f64::from(fps_den) > 240.0 || f64::from(fps_num) / f64::from(fps_den) < 0.1 {
             return bad(format!("frame rate {fps_num}/{fps_den} is out of range"));
         }
-        let partial = partial_path(out)?;
         let brand = match format {
             VideoFormat::H264Mp4 => Brand::Mp4,
             VideoFormat::ProResMov => Brand::Mov,
         };
         let video = VideoOut::new(format, quality.clamp(1, 100), width, height, fps_num, fps_den)?;
-        let file = File::create(&partial).map_err(io)?;
+        let (partial, file) = create_partial(out)?;
         let made = (|| {
             let mut mux = Mp4Writer::new(BufWriter::new(file), WriterOptions::new(brand)).map_err(enc)?;
             let track = mux.add_track(video.track_config()).map_err(enc)?;
@@ -157,12 +170,12 @@ impl SequenceWriter {
         if self.frames == 0 {
             return Err(VideoError::BadOptions("no frames".into()));
         }
-        let mut mux = self.mux.take().ok_or(VideoError::Internal)?;
-        for p in self.video.flush() {
-            mux.write_sample(self.track, WriteSample { data: &p.data, duration: self.fps_den, composition_offset: p.cto, is_sync: p.key })
-                .map_err(enc)?;
-        }
         let finished = (|| {
+            let mut mux = self.mux.take().ok_or(VideoError::Internal)?;
+            for p in self.video.flush() {
+                mux.write_sample(self.track, WriteSample { data: &p.data, duration: self.fps_den, composition_offset: p.cto, is_sync: p.key })
+                    .map_err(enc)?;
+            }
             let mut out = mux.finish().map_err(enc)?;
             out.flush().map_err(io)?;
             let file = out.into_inner().map_err(|e| io(e.error()))?;
@@ -377,7 +390,7 @@ mod tests {
         let r = w.finish().unwrap();
         assert_eq!((r.frames, r.width, r.height), (5, 32, 16));
         assert!((r.duration - 5.0 / 24.0).abs() < 1e-9);
-        assert!(!dir.join("t.mp4.partial").exists());
+        assert!(no_partials(&dir));
         let ys = h264_lumas(&out);
         assert_eq!(ys.len(), 5);
         assert!(ys.windows(2).all(|w| w[1] > w[0] + 20.0), "brighter each frame: {ys:?}");
@@ -403,11 +416,11 @@ mod tests {
         let mut w = SequenceWriter::create(&out2, VideoFormat::H264Mp4, 50, 32, 16, 25, 1).unwrap();
         w.push_encoded(&Rgb32f::from_fn(32, 16, |_, _| [0.5; 3])).unwrap();
         drop(w);
-        assert!(!out2.exists() && !dir.join("u.mp4.partial").exists());
+        assert!(!out2.exists() && no_partials(&dir));
         // no frames is an error, and also leaves nothing
         let w = SequenceWriter::create(&out2, VideoFormat::H264Mp4, 50, 32, 16, 25, 1).unwrap();
         assert!(w.finish().is_err());
-        assert!(!out2.exists() && !dir.join("u.mp4.partial").exists());
+        assert!(!out2.exists() && no_partials(&dir));
         // hostile values are clamped, not trusted
         let mut w = SequenceWriter::create(&out2, VideoFormat::H264Mp4, 0, 16, 16, 25, 1).unwrap();
         w.push_encoded(&Rgb32f::from_fn(16, 16, |x, _| [f32::NAN, f32::INFINITY, -(x as f32)])).unwrap();
@@ -415,9 +428,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn no_partials(dir: &Path) -> bool {
+        std::fs::read_dir(dir).is_ok_and(|d| d.flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".partial")))
+    }
+
     #[test]
     fn partial_path_sits_next_to_the_output() {
-        assert_eq!(partial_path(Path::new("/a/b.mp4")).unwrap(), PathBuf::from("/a/b.mp4.partial"));
-        assert!(partial_path(Path::new("/")).is_err());
+        let p = partial_path(Path::new("/a/b.mp4"), 3).unwrap();
+        assert_eq!(p.parent(), Some(Path::new("/a")));
+        assert!(p.file_name().unwrap().to_string_lossy().starts_with("b.mp4."));
+        assert!(p.to_string_lossy().ends_with(".3.partial"));
+        assert!(partial_path(Path::new("/"), 0).is_err());
+    }
+
+    #[test]
+    fn partial_file_never_truncates_an_existing_file_or_link() {
+        let dir = std::env::temp_dir().join(format!("lc-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("o.mp4");
+        // an occupied first candidate (a regular file) is left alone and the next name is taken
+        let first = partial_path(&out, 0).unwrap();
+        std::fs::write(&first, b"keep").unwrap();
+        let (second, file) = create_partial(&out).unwrap();
+        drop(file);
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), b"keep");
+        // a link in the way (to a catalogued original) is not followed either
+        #[cfg(unix)]
+        {
+            let original = dir.join("orig.bin");
+            std::fs::write(&original, b"original").unwrap();
+            let third = partial_path(&out, 2).unwrap();
+            let _ = std::fs::remove_file(&second);
+            std::os::unix::fs::symlink(&original, &third).unwrap();
+            let (fourth, _f) = create_partial(&out).unwrap();
+            assert_ne!(third, fourth);
+            assert_eq!(std::fs::read(&original).unwrap(), b"original");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

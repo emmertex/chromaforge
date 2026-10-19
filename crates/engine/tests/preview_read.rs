@@ -13,7 +13,7 @@ use std::time::Instant;
 #[ignore = "needs LC_PREVIEW_RAW pointing at a real raw file"]
 fn a_preview_reads_only_the_header_and_the_preview() {
     let Ok(path) = std::env::var("LC_PREVIEW_RAW") else {
-        eprintln!("skipped: set LC_PREVIEW_RAW=<path to a raw file>");
+        lightcraft_testkit::skip!(Input, "set LC_PREVIEW_RAW=<path to a raw file>");
         return;
     };
     let file_len = std::fs::metadata(&path).expect("the file exists").len();

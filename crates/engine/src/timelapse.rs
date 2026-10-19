@@ -202,7 +202,7 @@ pub fn ordered_targets(s: &mut Session, p: &Value) -> Result<Vec<PhotoId>, Strin
     if p.get("id").is_some_and(|v| v.as_u64().is_none()) {
         return Err("id must be a photo id".into());
     }
-    let mut ids = s.targets(p);
+    let mut ids = s.targets(p).map_err(|e| e.to_string())?;
     if p.get("ids").is_none() && p.get("id").is_none() && ids.len() > 1 {
         let shown: HashMap<PhotoId, usize> = s.visible().iter().enumerate().map(|(i, id)| (*id, i)).collect();
         // stable sort: equal keys (not shown) keep the selection order
