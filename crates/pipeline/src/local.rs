@@ -872,7 +872,7 @@ mod nr_tests {
         let mut img = noisy(3, 2);
         let mut s = DevelopSettings::default();
         s.detail.nr_color = 100.0;
-        denoise(&mut img, &s, 3, 3);
+        denoise(&mut img, &s, 1.0);
         assert!(img.data.iter().all(|p| p.iter().all(|v| v.is_finite())));
         // An empty half plane samples to zero rather than panicking.
         assert_eq!(sample_half(&Rgb32f::new(0, 0), 5, 5), [0.0; 3]);
