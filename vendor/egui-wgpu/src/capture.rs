@@ -82,7 +82,7 @@ impl CaptureState {
             view_formats: &[],
         });
 
-        let padding = BufferPadding::new(surface_texture.width());
+        let padding = BufferPadding::new(surface_texture.width(), surface_texture.format());
 
         let view = texture.create_view(&Default::default());
 
@@ -194,12 +194,14 @@ impl CaptureState {
         let format = self.texture.format();
         let tex_extent = self.texture.size();
         let padding = self.padding;
-        let to_rgba = match format {
-            wgpu::TextureFormat::Rgba8Unorm => [0, 1, 2, 3],
-            wgpu::TextureFormat::Bgra8Unorm => [2, 1, 0, 3],
+        // LightCraft: `None` selects the Rgba16Float (scRGB) path.
+        let to_rgba: Option<[usize; 4]> = match format {
+            wgpu::TextureFormat::Rgba8Unorm => Some([0, 1, 2, 3]),
+            wgpu::TextureFormat::Bgra8Unorm => Some([2, 1, 0, 3]),
+            wgpu::TextureFormat::Rgba16Float => None,
             _ => {
                 log::error!(
-                    "Screen can't be captured unless the surface format is Rgba8Unorm or Bgra8Unorm. Current surface format is {format:?}"
+                    "Screen can't be captured unless the surface format is Rgba8Unorm, Bgra8Unorm or Rgba16Float. Current surface format is {format:?}"
                 );
                 return;
             }
@@ -221,13 +223,30 @@ impl CaptureState {
             };
             for padded_row in mapped_range.chunks(padding.padded_bytes_per_row as usize) {
                 let row = &padded_row[..padding.unpadded_bytes_per_row as usize];
-                for color in row.chunks(4) {
-                    pixels.push(epaint::Color32::from_rgba_premultiplied(
-                        color[to_rgba[0]],
-                        color[to_rgba[1]],
-                        color[to_rgba[2]],
-                        color[to_rgba[3]],
-                    ));
+                match to_rgba {
+                    Some(to_rgba) => {
+                        for color in row.chunks(4) {
+                            pixels.push(epaint::Color32::from_rgba_premultiplied(
+                                color[to_rgba[0]],
+                                color[to_rgba[1]],
+                                color[to_rgba[2]],
+                                color[to_rgba[3]],
+                            ));
+                        }
+                    }
+                    None => {
+                        for texel in row.chunks_exact(8) {
+                            let c = |i: usize| {
+                                f16_bits_to_f32(u16::from_le_bytes([texel[i * 2], texel[i * 2 + 1]]))
+                            };
+                            pixels.push(epaint::Color32::from_rgba_premultiplied(
+                                linear_to_srgb_u8(c(0)),
+                                linear_to_srgb_u8(c(1)),
+                                linear_to_srgb_u8(c(2)),
+                                (c(3).clamp(0.0, 1.0) * 255.0 + 0.5) as u8,
+                            ));
+                        }
+                    }
                 }
             }
             drop(mapped_range);
@@ -254,8 +273,9 @@ struct BufferPadding {
 }
 
 impl BufferPadding {
-    fn new(width: u32) -> Self {
-        let bytes_per_pixel = core::mem::size_of::<u32>() as u32;
+    fn new(width: u32, format: wgpu::TextureFormat) -> Self {
+        // LightCraft: the HDR surface is Rgba16Float (8 bytes per pixel); the row must be sized for it.
+        let bytes_per_pixel = format.block_copy_size(None).unwrap_or(4);
         let unpadded_bytes_per_row = width * bytes_per_pixel;
         let padded_bytes_per_row =
             wgpu::util::align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -263,5 +283,48 @@ impl BufferPadding {
             unpadded_bytes_per_row,
             padded_bytes_per_row,
         }
+    }
+}
+
+/// IEEE half to f32 (the capture texture is `Rgba16Float` on an HDR surface).
+fn f16_bits_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = i32::from((h >> 10) & 0x1f);
+    let frac = f32::from(h & 0x3ff);
+    match exp {
+        0 => sign * frac * 2f32.powi(-24),
+        0x1f if frac == 0.0 => sign * f32::INFINITY,
+        0x1f => f32::NAN,
+        _ => sign * (1.0 + frac / 1024.0) * 2f32.powi(exp - 15),
+    }
+}
+
+/// Linear scRGB value to an 8-bit sRGB-encoded one; values above SDR white clip, as in an SDR screenshot.
+fn linear_to_srgb_u8(v: f32) -> u8 {
+    let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+    let e = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (e * 255.0 + 0.5) as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn float_surface_rows_are_eight_bytes_per_pixel() {
+        let p = BufferPadding::new(1280, wgpu::TextureFormat::Rgba16Float);
+        assert_eq!(p.unpadded_bytes_per_row, 10240);
+        assert_eq!(BufferPadding::new(1280, wgpu::TextureFormat::Bgra8Unorm).unpadded_bytes_per_row, 5120);
+    }
+
+    #[test]
+    fn half_decoding_and_encoding() {
+        assert_eq!(f16_bits_to_f32(0x3c00), 1.0);
+        assert_eq!(f16_bits_to_f32(0x4000), 2.0);
+        assert_eq!(f16_bits_to_f32(0xb800), -0.5);
+        assert_eq!(linear_to_srgb_u8(1.0), 255);
+        assert_eq!(linear_to_srgb_u8(4.0), 255);
+        assert_eq!(linear_to_srgb_u8(0.0), 0);
+        assert!((127..=128).contains(&linear_to_srgb_u8(0.214)));
     }
 }

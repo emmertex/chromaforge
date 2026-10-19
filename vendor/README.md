@@ -27,6 +27,8 @@ each marked `Patch (HDR display output)` in the source:
 - `WgpuConfiguration::{open_device, on_surface_configured}` (`RenderState::on_surface_configured`):
   hooks to create the device (the app adds `VK_EXT_hdr_metadata` through `crates/hdrmeta`) and to
   run after every surface configure (the app sets HDR metadata on the new swapchain).
+- `capture.rs`: screenshot readback handles the `Rgba16Float` surface (8 bytes per pixel; values
+  above SDR white clip to an sRGB-encoded 8-bit image), so `ui.screenshot` works on an HDR window.
 
 To upgrade egui: copy the new egui-wgpu release over `vendor/egui-wgpu` (drop `.cargo-ok`,
 `.cargo_vcs_info.json`, `Cargo.lock`, `Cargo.toml.orig` and the `include` list), re-apply the

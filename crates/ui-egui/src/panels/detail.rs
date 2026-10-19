@@ -591,7 +591,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
             .then(|| app.session.render_job(id, rw.max(8), rh.max(8), false, !crop_tool))
             .flatten()
             .map(|job| {
-                let job = hdr_view_job(job.with_hidden_grading(app.ui.grading_hidden_for(id)));
+                let clip = crate::clip_headroom(app.hdr_headroom.unwrap_or(1.0));
+                let job = hdr_view_job(job.with_hidden_grading(app.ui.grading_hidden_for(id)), clip);
                 let key = job.key;
                 if app.renderer.hdr_view.is_none_or(|v| v.key != key) {
                     app.renderer.request(Slot::HdrView, job, 98);
@@ -697,7 +698,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let p = ui.painter_at(canvas);
     // what a view slot shows: its own render of this photo, else the stand-ins (no blank frame
     // between photos, and the full render replaces them in place)
-    let hdr_view = app.renderer.hdr_view.filter(|v| v.photo == id && Some(v.key) == hdr_key);
+    let hdr_view = app.renderer.hdr_view.filter(|v| v.photo == id && Some(v.key) == hdr_key && !app.drawing_shadow);
     let draw = |slot: Slot, r: Rect, clip: Rect| -> &'static str {
         if slot == Slot::Main
             && let Some(v) = hdr_view
@@ -1368,7 +1369,9 @@ fn targeted_drag(app: &mut LightcraftApp, resp: &egui::Response, map: &CanvasMap
 
 /// The loupe's HDR render for an HDR display: `job` (a whole-frame render of the open photo, no
 /// caches) as linear float with the HDR range ([`Slot::HdrView`]). Its own result key.
-pub(crate) fn hdr_view_job(mut job: lightcraft_engine::media::RenderJob) -> lightcraft_engine::media::RenderJob {
+/// `clip` ([`crate::clip_headroom`]) is part of the key: the texture is clipped to it when uploaded,
+/// so a display with more headroom than before gets a fresh render.
+pub(crate) fn hdr_view_job(mut job: lightcraft_engine::media::RenderJob, clip: f32) -> lightcraft_engine::media::RenderJob {
     job.request.depth = lightcraft_pipeline::OutputDepth::F32Hdr;
     job.request.space = lightcraft_pipeline::OutputSpace::Srgb;
     job.cache = None;
@@ -1376,7 +1379,7 @@ pub(crate) fn hdr_view_job(mut job: lightcraft_engine::media::RenderJob) -> ligh
     job.stages = None;
     job.display = None;
     job.request.display = None;
-    job.key ^= 0x4844_525f_5649_4557;
+    job.key ^= 0x4844_525f_5649_4557 ^ u64::from(clip.to_bits()).rotate_left(29);
     job
 }
 

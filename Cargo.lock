@@ -3328,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-hdrmeta"
-version = "0.7.1"
+version = "0.9.1"
 dependencies = [
  "ash",
  "wgpu",

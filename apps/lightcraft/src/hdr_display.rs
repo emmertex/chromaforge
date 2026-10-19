@@ -346,8 +346,14 @@ impl lightcraft_ui_egui::HdrOutput for WindowHdr {
         if out.is_hdr() { l.headroom } else { None }
     }
 
+    fn compositor_manages_colour(&self) -> bool {
+        self.extended
+    }
+
     fn upload(&mut self, width: usize, height: usize, rgb: &[f32]) -> Result<egui::TextureId, String> {
-        let headroom = self.upload_headroom.or_else(|| self.levels.and_then(|l| l.headroom)).unwrap_or(1.0);
+        // clipped to the headroom bucket the loupe's render key carries, so a display that gains
+        // headroom re-renders instead of keeping highlights clipped to the old range
+        let headroom = self.upload_headroom.unwrap_or_else(|| lightcraft_ui_egui::clip_headroom(self.levels.and_then(|l| l.headroom).unwrap_or(1.0)));
         let texels = encode_rgba16f(rgb, width, height, headroom)?;
         let (device, queue) = (&self.state.device, &self.state.queue);
         let size = [width, height];

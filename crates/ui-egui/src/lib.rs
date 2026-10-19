@@ -234,9 +234,27 @@ pub trait HdrOutput {
     /// The display's peak over SDR white right now when the window shows HDR (`> 1`), else
     /// `None` (an SDR display, HDR switched off in the OS, or unknown). Asked every frame.
     fn headroom(&mut self) -> Option<f32>;
+    /// The window surface is extended-range linear sRGB, which the compositor colour-manages for
+    /// the display itself (macOS EDR, Windows scRGB, Wayland colour management). The app then
+    /// must not convert previews to the screen's profile as well (that would apply it twice).
+    fn compositor_manages_colour(&self) -> bool {
+        false
+    }
     /// Upload a linear-light render (3 floats per pixel, row-major, SDR white = 1, sRGB
-    /// primaries) as the loupe's HDR texture, replacing the previous one.
+    /// primaries) as the loupe's HDR texture, replacing the previous one. Highlights are clipped
+    /// to [`clip_headroom`] of the display's headroom.
     fn upload(&mut self, width: usize, height: usize, rgb: &[f32]) -> Result<egui::TextureId, String>;
+}
+
+/// The headroom an HDR loupe texture is clipped to for a display `headroom`: rounded up to the
+/// next half stop, so the texture is never clipped below what the display can show, and a
+/// display whose headroom wanders a little (macOS EDR follows brightness) doesn't re-render the
+/// loupe each time. A change of bucket re-renders it ([`panels::detail`]).
+pub fn clip_headroom(headroom: f32) -> f32 {
+    if !headroom.is_finite() || headroom <= 1.0 {
+        return 1.0;
+    }
+    2f32.powf(((headroom.log2() * 2.0) - 1e-4).ceil() / 2.0)
 }
 
 /// Platform services injected by the host app (desktop or web).
@@ -482,6 +500,9 @@ pub struct LightcraftApp {
     /// The display's headroom when the window shows HDR now ([`HdrOutput::headroom`]): the loupe
     /// then draws HDR edits from their HDR render ([`render::Slot::HdrView`]).
     pub hdr_headroom: Option<f32>,
+    /// The UI is being drawn into the CPU screenshot's shadow context, which has no access to the
+    /// window's HDR texture: the loupe then draws its 8-bit render.
+    pub drawing_shadow: bool,
     /// The memory budget setting last applied (MB, 0 = automatic).
     memory_applied: Option<u32>,
     /// The display profile setting last applied (`app.displayProfile`).
@@ -570,6 +591,7 @@ impl LightcraftApp {
             gpu_notice: false,
             hdr_display_sdr: false,
             hdr_headroom: None,
+            drawing_shadow: false,
             memory_applied: None,
             display_applied: None,
             display_error: None,
@@ -1021,7 +1043,9 @@ impl LightcraftApp {
         // same scroll offsets, open sections, style… as the window
         let memory = main.memory(|m| m.clone());
         view.ctx.memory_mut(|m| *m = memory);
+        self.drawing_shadow = true;
         view.run(headless::HeadlessView::raw_input(size, ppp, time, vec![]), |ui| self.ui(ui));
+        self.drawing_shadow = false;
         let img = capture.then(|| {
             let mut tex = self.renderer.cpu_textures();
             if let (Some((t, ..)), Some(px)) = (&self.merge.preview, &self.merge.preview_pixels) {
@@ -1331,6 +1355,14 @@ impl LightcraftApp {
 
     /// Read the screen's profile now and show previews through it (sRGB without one).
     pub(crate) fn apply_screen_profile(&mut self) {
+        // an extended-linear sRGB surface: the compositor owns the monitor conversion, previews stay sRGB
+        if self.services.hdr_output.as_ref().is_some_and(|h| h.compositor_manages_colour()) {
+            if self.screen_profile.take().is_some() || self.screen_profile_read.is_none() {
+                self.renderer.set_display(None);
+            }
+            self.screen_profile_read.get_or_insert(f64::INFINITY);
+            return;
+        }
         let Some(read) = self.services.screen_profile.as_mut() else { return };
         let icc = read();
         if icc == self.screen_profile {
