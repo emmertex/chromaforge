@@ -97,7 +97,9 @@ fn aperture(op: &str, av: f64, av2: Option<f64>) -> Option<Rule> {
 fn file_format(op: &str, value: &str) -> Option<Rule> {
     let any = |rules: Vec<Rule>| Rule::Group { group: RuleSet { mode: Match::Any, rules } };
     let positive = match value.trim().to_ascii_uppercase().as_str() {
-        "RAW" => Rule::Group { group: RuleSet { mode: Match::All, rules: vec![field("kind", "is", json!("raw")), field("format", "isNot", json!("dng"))] } },
+        "RAW" => Rule::Group {
+            group: RuleSet { mode: Match::All, rules: vec![field("kind", "is", json!("raw")), field("format", "isNot", json!("dng"))] },
+        },
         "DNG" => field("format", "is", json!("dng")),
         "VIDEO" => field("kind", "is", json!("video")),
         "JPG" | "JPEG" => any(vec![field("format", "is", json!("jpg")), field("format", "is", json!("jpeg"))]),
@@ -205,7 +207,9 @@ fn text_rule(target: &str, op: &str, value: &str) -> Option<Rule> {
         _ if words.is_empty() => return None,
         // Every word must appear, each on its own (separate keywords can carry them).
         "all" | "words" if words.len() == 1 => field(target, "contains", json!(value)),
-        "all" | "words" => Rule::Group { group: RuleSet { mode: Match::All, rules: words.iter().map(|w| field(target, "contains", json!(w))).collect() } },
+        "all" | "words" => {
+            Rule::Group { group: RuleSet { mode: Match::All, rules: words.iter().map(|w| field(target, "contains", json!(w))).collect() } }
+        }
         "any" if words.len() == 1 => field(target, "contains", json!(value)),
         "any" => Rule::Group { group: RuleSet { mode: Match::Any, rules: words.iter().map(|w| field(target, "contains", json!(w))).collect() } },
         "noneOf" => {
