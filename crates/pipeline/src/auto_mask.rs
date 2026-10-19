@@ -118,9 +118,18 @@ fn bilinear(p: &Plane, fx: f32, fy: f32) -> f32 {
     a + (b - a) * ty
 }
 
+/// The uncropped frame the analysis grid is stored in: no crop and no output flips, because
+/// [`sample`] maps the grid through the render frame's own flips (flipping here would apply them twice).
+fn analysis_frame(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> crate::geometry::Frame {
+    let mut frame = crate::frame_for(src, info, s, false);
+    frame.flip_h = false;
+    frame.flip_v = false;
+    frame
+}
+
 /// The whole uncropped, oriented photo at [`EDGE`] px, white-balanced (what the analysis sees).
 pub fn proxy(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Rgb32f {
-    let frame = crate::frame_for(src, info, s, false);
+    let frame = analysis_frame(src, info, s);
     let (w, h) = frame.fit(EDGE, EDGE);
     let mut img = frame.sample(src, w.max(1), h.max(1));
     crate::local::white_balance(&mut img, info, s);
@@ -133,7 +142,7 @@ const CACHE_LEN: usize = 8;
 
 /// [`analyze`] of `src` under `s`, cached: a slider drag or a zoomed window reuses it.
 pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<AutoMasks> {
-    let frame = crate::frame_for(src, info, s, false);
+    let frame = analysis_frame(src, info, s);
     let (t, tint) = crate::local::effective_wb(info, s);
     let mut hs = std::collections::hash_map::DefaultHasher::new();
     (src.width, src.height, format!("{frame:?}"), t.to_bits(), tint.to_bits()).hash(&mut hs);
@@ -485,6 +494,23 @@ fn landscape(lab: &[[f32; 3]], smoothness: &[f32], sky: &Sky, w: usize, h: usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stored grid is in unflipped image coordinates: a crop flip is applied once, by the
+    /// render frame in [`sample`], not also to the analysis proxy.
+    #[test]
+    fn flips_are_applied_once() {
+        let mut s = DevelopSettings::default();
+        s.crop.flip_h = true;
+        s.crop.flip_v = true;
+        let src = Rgb32f::new(8, 8);
+        let a = analysis_frame(&src, &SourceInfo::default(), &s);
+        assert!(!a.flip_h && !a.flip_v);
+        // the grid selects the image's left half; the flipped render shows it on the right
+        let mut grid = Plane::new(8, 8);
+        grid.data.iter_mut().enumerate().for_each(|(i, v)| *v = if i % 8 < 4 { 1.0 } else { 0.0 });
+        let out = sample(&grid, &Frame::new(8, 8, &s, true), 8, 8);
+        assert!(out.get(7, 1) > 0.9 && out.get(0, 1) < 0.1);
+    }
 
     /// Degenerate and hostile proxies (tiny, flat, NaN / infinite pixels) give empty or finite
     /// selections, never a panic.

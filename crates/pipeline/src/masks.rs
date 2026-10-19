@@ -178,21 +178,23 @@ fn for_each_pos(frame: &Frame, w: usize, h: usize, out: &mut Plane, f: impl Fn(P
 /// The alpha plane of one component shape. AI shapes use the source's matching `mattes`, if any.
 #[allow(clippy::too_many_arguments)]
 pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, ev: f32, mattes: Option<&Mattes>) -> Plane {
+    // Background is the complement of Subject, whichever source (embedded matte or automatic grid) Subject uses
+    if matches!(shape, MaskShape::Background) {
+        let mut s = shape_alpha(&MaskShape::Subject, frame, w, h, img, log_l, ev, mattes);
+        s.data.iter_mut().for_each(|v| *v = 1.0 - *v);
+        return s;
+    }
     let fitting = mattes.map(|m| m.for_shape(shape)).unwrap_or_default();
     if !fitting.is_empty() {
         return matte_alpha(&fitting, frame, w, h);
     }
     if let Some(auto) = mattes.and_then(|m| m.auto.as_deref()) {
-        let grid = if matches!(shape, MaskShape::Background) { Some(&auto.subject) } else { auto.for_shape(shape) };
+        let grid = auto.for_shape(shape);
         if let Some(grid) = grid.filter(|_| crate::auto_mask::wants(shape)) {
             let coarse = crate::auto_mask::sample(grid, frame, w, h);
             // snap the coarse grid's edges to the photo's (radius: a grid cell)
             let cell = (frame_px(frame, w) / crate::auto_mask::EDGE as f32).max(1.0);
-            let mut a = guided_cross(log_l, &coarse, 1.5 * cell, 0.01);
-            if matches!(shape, MaskShape::Background) {
-                a.data.iter_mut().for_each(|v| *v = 1.0 - *v);
-            }
-            return a;
+            return guided_cross(log_l, &coarse, 1.5 * cell, 0.01);
         }
     }
     let mut out = Plane::new(w, h);
@@ -414,7 +416,9 @@ fn box_down(m: &Image<u8>, f: usize) -> Plane {
 
 /// Bilinear sample at continuous pixel coordinates (pixel centres at +0.5), edges extended.
 fn bilinear(p: &Plane, x: f32, y: f32) -> f32 {
-    let (fx, fy) = (x - 0.5, y - 0.5);
+    // (held a pixel outside, which reads the same edge: an infinite coordinate reads the edge
+    // instead of a NaN weight and a neighbour index past isize::MAX)
+    let (fx, fy) = (x.clamp(-1.0, p.width as f32 + 1.0) - 0.5, y.clamp(-1.0, p.height as f32 + 1.0) - 0.5);
     let (x0, y0) = (fx.floor(), fy.floor());
     let (tx, ty) = (fx - x0, fy - y0);
     let (x0, y0) = (x0 as isize, y0 as isize);
@@ -454,6 +458,44 @@ pub struct BrushDabs {
     pub erase: bool,
     /// Auto Mask: paint only pixels like the one under each dab, then snap to edges.
     pub auto: bool,
+    /// Pen pressure (0..1) of each dab, parallel to `dabs`; empty when the stroke has no pressure data (full pressure).
+    pub pressure: Vec<f32>,
+}
+
+impl BrushDabs {
+    /// Radius, hard core and flow of dab `i`, pen pressure applied ([`pressure_radius`], [`pressure_flow`]).
+    pub fn dab(&self, i: usize) -> (f64, f64, f32) {
+        match self.pressure.get(i) {
+            Some(&p) => {
+                let r = pressure_radius(self.r, p);
+                (r, if self.r > 0.0 { self.hard * r / self.r } else { self.hard }, pressure_flow(self.flow, p))
+            }
+            None => (self.r, self.hard, self.flow),
+        }
+    }
+}
+
+/// The radius of a dab of a brush of radius `r` (pixels) painted at pen pressure `p` (0..1): from a tenth of the
+/// brush at the lightest touch to the full brush at full pressure, never below half a pixel.
+#[inline]
+pub fn pressure_radius(r: f64, p: f32) -> f64 {
+    let p = if p.is_nan() { 1.0 } else { f64::from(p.clamp(0.0, 1.0)) };
+    (r * (0.1 + 0.9 * p)).max(0.5).min(r.max(0.5))
+}
+
+/// The flow (0..1) of a dab painted at pen pressure `p` (0..1): proportional to the pressure.
+#[inline]
+pub fn pressure_flow(flow: f32, p: f32) -> f32 {
+    let p = if p.is_nan() { 1.0 } else { p.clamp(0.0, 1.0) };
+    flow * p
+}
+
+/// Pressures for the `added` dabs [`push_dabs`] just laid from a sample at pressure `from` to one at `to`: evenly
+/// interpolated, the last one at `to`, as the dabs themselves are placed.
+pub fn push_pressures(pressure: &mut Vec<f32>, added: usize, from: f32, to: f32) {
+    for k in 1..=added {
+        pressure.push(from + (to - from) * k as f32 / added as f32);
+    }
 }
 
 /// Output pixels a brush sample must move from the last dab to count as movement: below this the
@@ -470,11 +512,22 @@ pub fn brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize) -> BrushDa
     // long the button is held: a sample where the pointer hasn't moved (a stationary hold records
     // one per frame) lays no dab, so waiting in place adds nothing (#518).
     let mut dabs: Vec<Point> = Vec::new();
+    let mut pressure: Vec<f32> = Vec::new();
+    let with_pressure = !s.pressure.is_empty();
     let mut prev = None;
-    for p in &s.points {
+    let mut prev_p = 1.0;
+    for (i, p) in s.points.iter().enumerate() {
         let q = to_out.apply(*p);
+        let before = dabs.len();
         if push_dabs(&mut dabs, prev, q, r) {
+            let pq = s.pressure_at(i);
+            if with_pressure {
+                // the first dab of the stroke has nothing to interpolate from
+                let from = if prev.is_some() { prev_p } else { pq };
+                push_pressures(&mut pressure, dabs.len() - before, from, pq);
+            }
             prev = Some(q);
+            prev_p = pq;
         }
     }
     BrushDabs {
@@ -485,6 +538,7 @@ pub fn brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize) -> BrushDa
         density: (s.density / 100.0).clamp(0.0, 1.0) as f32,
         erase: s.erase,
         auto: s.auto_mask,
+        pressure,
     }
 }
 
@@ -610,9 +664,11 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
         return;
     }
     for s in strokes {
-        let BrushDabs { dabs, r, hard, flow, density: dens, erase, auto } = brush_dabs(s, frame, w, h);
+        let bd = brush_dabs(s, frame, w, h);
+        let (dens, erase, auto) = (bd.density, bd.erase, bd.auto);
         let mut stroke_alpha = Plane::new(w, h);
-        for d in &dabs {
+        for (k, d) in bd.dabs.iter().enumerate() {
+            let (r, hard, flow) = bd.dab(k);
             let refc = auto.then(|| {
                 let j = dab_pixel(*d, w, h);
                 (log_l.data[j], chromaticity(img.data[j]))
@@ -637,7 +693,7 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
             }
         }
         if auto {
-            let (sigma, eps) = auto_refine(r);
+            let (sigma, eps) = auto_refine(bd.r);
             let q = guided_cross(log_l, &stroke_alpha, sigma, eps);
             // the refinement fills gaps along edges; it never takes paint away
             stroke_alpha = stroke_alpha.zip_map(&q, f32::max);
@@ -806,6 +862,39 @@ mod tests {
         assert!(!push_dabs(&mut v, None, Point::new(f64::INFINITY, 1.0), r));
         push_dabs(&mut v, Some(Point::new(0.0, 0.0)), Point::new(1e300, 1.0), 0.0);
         assert!(v.len() <= 1_000_002, "{}", v.len());
+    }
+
+    /// Pen pressure scales each dab's radius and flow; a stroke without pressure data paints as before, and hostile
+    /// pressures (NaN, out of range, a short list) neither panic nor paint more than full pressure.
+    #[test]
+    fn pen_pressure_scales_dab_size_and_flow() {
+        let (w, h) = (400, 100);
+        let f = frame(w, h);
+        let img = Rgb32f::new(w, h);
+        let l = Plane::new(w, h);
+        let line = vec![Point::new(0.1, 0.5), Point::new(0.9, 0.5)];
+        let alpha = |pressure: Vec<f32>| {
+            let s = BrushStroke { points: line.clone(), size: 0.05, feather: 0.0, flow: 100.0, pressure, ..Default::default() };
+            shape_alpha(&MaskShape::Brush { strokes: vec![s] }, &f, w, h, &img, &l, 0.0, None)
+        };
+        let full = alpha(vec![]);
+        assert_eq!(full.data, alpha(vec![1.0, 1.0]).data, "full pressure is no pressure");
+        // light at the start, full at the end: thin and faint on the left, as wide as the brush on the right
+        let ramp = alpha(vec![0.1, 1.0]);
+        let width = |a: &Plane, x: usize| (0..h).filter(|y| a.get(x, *y) > 0.01).count();
+        assert!(width(&ramp, 60) < width(&full, 60) / 2, "{} vs {}", width(&ramp, 60), width(&full, 60));
+        assert!(width(&ramp, 350) + 2 >= width(&full, 350));
+        assert!(ramp.get(60, 50) < full.get(60, 50) + 1e-6);
+        let faint = alpha(vec![0.2]);
+        assert!(faint.data.iter().zip(&full.data).all(|(a, b)| *a <= *b + 1e-6), "never more than full pressure");
+        assert!(faint.get(200, 50) > 0.0 && faint.get(200, 50) < full.get(200, 50));
+        for hostile in [vec![f32::NAN, f32::INFINITY], vec![-3.0], vec![0.5; 10_000]] {
+            let a = alpha(hostile);
+            assert!(a.data.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)));
+        }
+        assert_eq!(pressure_radius(10.0, f32::NAN), 10.0);
+        assert_eq!(pressure_radius(10.0, 0.0), 1.0);
+        assert_eq!(pressure_flow(0.8, 2.0), 0.8);
     }
 
     #[test]
@@ -1030,5 +1119,27 @@ mod tests {
         assert!(hair.get(190, 50) > 0.99 && hair.get(10, 50) < 0.01);
         let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()] };
         assert_eq!(eval(&lips), shape_alpha(&lips, &f, w, h, &img, &l, 0.0, None));
+    }
+
+    /// An embedded person matte outranks the automatic grid for Subject, and Background stays its
+    /// complement (not the inverse of the automatic grid).
+    #[test]
+    fn background_follows_the_embedded_matte_over_the_auto_grid() {
+        use crate::auto_mask::AutoMasks;
+        let (w, h) = (40, 20);
+        let img = Rgb32f::filled(w, h, [0.2; 3]);
+        let l = img.map(crate::local::log_lum);
+        let mut mattes = Mattes::default();
+        mattes.push(MatteKind::Person, Image::filled(w, h, 255));
+        mattes.auto = Some(std::sync::Arc::new(AutoMasks {
+            sky: Plane::new(w, h),
+            subject: Plane::new(w, h),
+            water: Plane::new(w, h),
+            vegetation: Plane::new(w, h),
+        }));
+        let f = frame(w, h);
+        let eval = |shape: &MaskShape| shape_alpha(shape, &f, w, h, &img, &l, 0.0, Some(&mattes));
+        assert!(eval(&MaskShape::Subject).get(20, 10) > 0.99);
+        assert!(eval(&MaskShape::Background).get(20, 10) < 0.01);
     }
 }
