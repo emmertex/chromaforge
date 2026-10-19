@@ -131,11 +131,16 @@ pub fn run_and_wait(_: &[String]) -> Result<bool, String> {
 #[derive(Debug, Default)]
 pub struct Watched {
     files: HashMap<PathBuf, Entry>,
+    next_order: u64,
 }
 
 #[derive(Debug)]
 struct Entry {
     ids: Vec<u64>,
+    /// When it was added (the oldest goes first when the table is full).
+    order: u64,
+    /// The editor that had it exited: nothing more to wait for (it goes before any other).
+    retired: bool,
     seen: Option<SystemTime>,
     pending: Option<SystemTime>,
 }
@@ -151,13 +156,34 @@ impl Watched {
     /// Watch `path` for the photos `ids` (the time it has now is the baseline).
     pub fn add(&mut self, path: &Path, ids: &[u64]) {
         if self.files.len() >= MAX_WATCHED && !self.files.contains_key(path) {
-            return;
+            // a long session keeps receiving saves: make room by dropping a file whose editor has
+            // exited, else the one that has been out the longest
+            let victim = self.files.iter().min_by_key(|(_, e)| (!e.retired, e.order)).map(|(p, _)| p.clone());
+            if let Some(v) = victim {
+                self.files.remove(&v);
+            }
         }
-        let e = self.files.entry(path.to_path_buf()).or_insert_with(|| Entry { ids: Vec::new(), seen: mtime(path), pending: None });
+        let order = self.next_order;
+        self.next_order = self.next_order.wrapping_add(1);
+        let e = self.files.entry(path.to_path_buf()).or_insert_with(|| Entry {
+            ids: Vec::new(),
+            order,
+            retired: false,
+            seen: mtime(path),
+            pending: None,
+        });
+        e.retired = false;
         for id in ids {
             if !e.ids.contains(id) {
                 e.ids.push(*id);
             }
+        }
+    }
+    /// The editor that had `path` exited and its save was read: it stays watched (a later save still
+    /// comes back) but is the first to go when the table is full.
+    pub fn retire(&mut self, path: &Path) {
+        if let Some(e) = self.files.get_mut(path) {
+            e.retired = true;
         }
     }
     pub fn remove(&mut self, path: &Path) {
@@ -223,6 +249,26 @@ mod tests {
         assert!(!is_photocraft("gimp"));
         // other apps are never probed
         assert_eq!(capabilities("/usr/bin/gimp"), Caps::default());
+    }
+
+    /// A long editing session: the 257th copy is still watched; a retired file goes first, else the oldest.
+    #[test]
+    fn a_full_table_makes_room_for_new_copies() {
+        let mut w = Watched::default();
+        let p = |i: usize| PathBuf::from(format!("/no/such/dir/{i}.tif"));
+        for i in 0..MAX_WATCHED {
+            w.add(&p(i), &[i as u64]);
+        }
+        w.retire(&p(5));
+        w.add(&p(1000), &[1000]);
+        assert_eq!(w.len(), MAX_WATCHED);
+        assert_eq!(w.ids(&p(1000)), vec![1000], "the new copy is watched");
+        assert!(w.ids(&p(5)).is_empty(), "the retired one made room");
+        assert_eq!(w.ids(&p(0)), vec![0]);
+        w.add(&p(1001), &[1001]);
+        assert!(w.ids(&p(0)).is_empty(), "then the oldest");
+        assert_eq!(w.ids(&p(1001)), vec![1001]);
+        assert_eq!(w.len(), MAX_WATCHED);
     }
 
     #[test]

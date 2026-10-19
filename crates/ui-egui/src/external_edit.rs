@@ -62,31 +62,32 @@ pub(crate) fn watch(app: &mut LightcraftApp, path: &Path, id: u64) {
 /// Open `path` in `editor` (the setting, or the system default when empty). `exe` is the program
 /// file the host located for it (PhotoCraft found where its installers put it); a PhotoCraft
 /// program, located or named, is asked whether it takes `--wait`.
-pub(crate) fn open(app: &mut LightcraftApp, ctx: &egui::Context, path: &Path, editor: &str, exe: Option<&str>) {
+pub(crate) fn open(app: &mut LightcraftApp, path: &Path, editor: &str, exe: Option<&str>) -> Result<(), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let tool = exe.filter(|e| editor::is_photocraft(e)).unwrap_or(editor);
         if editor::is_photocraft(tool) && app.services.open_with.is_some() {
-            start_photocraft(app, tool.to_string(), editor.to_string(), path.to_path_buf());
-            return;
+            return start_photocraft(app, tool.to_string(), editor.to_string(), path.to_path_buf());
         }
     }
     let _ = exe;
-    open_with(app, ctx, path, editor);
+    open_with(path, editor, app.services.open_with.as_mut())
 }
 
-fn open_with(app: &mut LightcraftApp, ctx: &egui::Context, path: &Path, editor: &str) {
-    if let Some(f) = app.services.open_with.as_mut()
-        && let Err(e) = f(&path.to_string_lossy(), editor)
-    {
-        app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
+/// Hand `path` to the host's opener. The copy is LightCraft's own render, but it goes through the
+/// same gate as any other path handed to the system opener (#2135). A host with no opener is not an error.
+fn open_with(path: &Path, editor: &str, opener: Option<&mut crate::OpenWithFn>) -> Result<(), String> {
+    let absolute = lightcraft_engine::open_path::openable(&path.to_string_lossy(), "")?;
+    match opener {
+        Some(f) => f(&absolute, editor),
+        None => Ok(()),
     }
 }
 
 /// Ask PhotoCraft what it supports and run it with `--wait` on a worker thread (an activity row
 /// meanwhile), or hand the file back to [`open_with`] when it can't wait.
 #[cfg(not(target_arch = "wasm32"))]
-fn start_photocraft(app: &mut LightcraftApp, tool: String, editor: String, path: PathBuf) {
+fn start_photocraft(app: &mut LightcraftApp, tool: String, editor: String, path: PathBuf) -> Result<(), String> {
     let tx = ROUND_TRIP.with_borrow(|rt| rt.tx.clone());
     let activity = app.session.activity.clone();
     let spawned = std::thread::Builder::new().name("external-editor".into()).spawn(move || {
@@ -105,9 +106,7 @@ fn start_photocraft(app: &mut LightcraftApp, tool: String, editor: String, path:
             Err(e) => Msg::Error(e),
         });
     });
-    if let Err(e) = spawned {
-        app.ui.status = crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e);
-    }
+    spawned.map(|_| ()).map_err(|e| e.to_string())
 }
 
 fn reload(app: &mut LightcraftApp, ctx: &egui::Context, ids: Vec<u64>) {
@@ -141,11 +140,16 @@ pub(crate) fn pump(app: &mut LightcraftApp, ctx: &egui::Context) {
                 let ids = ROUND_TRIP.with_borrow_mut(|rt| {
                     let ids = rt.watched.ids(&p);
                     rt.watched.mark_seen(&p);
+                    rt.watched.retire(&p);
                     ids
                 });
                 reload(app, ctx, ids);
             }
-            Msg::OpenWith(p, tool) => open_with(app, ctx, &p, &tool),
+            Msg::OpenWith(p, tool) => {
+                if let Err(e) = open_with(&p, &tool, app.services.open_with.as_mut()) {
+                    app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
+                }
+            }
             Msg::Error(e) => app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
         }
     }

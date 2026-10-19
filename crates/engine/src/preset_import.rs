@@ -395,6 +395,20 @@ pub(crate) fn lua_settings_props(settings: &Lua) -> Result<(Props, crate::crs_ma
     let mut values = crate::crs_masks::Values::new();
     for (k, v) in fields {
         let key = format!("crs:{k}");
+        // the profile a preset names: its fields as XMP's struct fields (`crs:Look/crs:Name`…)
+        if k == "Look"
+            && let Lua::Table(_, look) = v
+        {
+            for (f, fv) in look {
+                let val = match fv {
+                    Lua::Num(n) => format!("{n}"),
+                    Lua::Str(s) => delocalize(s),
+                    _ => continue,
+                };
+                props.insert(format!("crs:Look/crs:{f}"), vec![val]);
+            }
+            continue;
+        }
         if crate::crs_masks::CONTAINERS.contains(&key.as_str()) {
             values.insert(key.clone(), crate::crs_masks::from_lua(v));
         }
@@ -496,6 +510,12 @@ pub(crate) fn build(props: &Props, values: &crate::crs_masks::Values, name: Stri
         if o.get("wb").and_then(|w| w.get("mode")).and_then(Value::as_str).is_none_or(|m| m == "custom" || m == "asShot") {
             o.remove("wb");
         }
+    }
+    // the profile it names, resolved against the user's imported profiles by `preset.import`
+    if let Some(look) = crate::profile_refs::look_ref(props)
+        && let Some(o) = settings.as_object_mut()
+    {
+        o.insert("profile".into(), serde_json::json!({"look": look}));
     }
     if settings.as_object().is_none_or(Map::is_empty) {
         return None;
@@ -682,6 +702,17 @@ text]], z = ZSTR "loc" }"#,
         // it parses into real develop settings
         let d = lightcraft_develop::DevelopSettings::default().merged(&p.settings).expect("valid develop settings");
         assert_eq!(d.light.exposure, 0.35);
+    }
+
+    #[test]
+    fn lrtemplate_keeps_the_profile_it_names() {
+        let t = r#"s = { title = "Film", value = { settings = { Exposure2012 = 0.2,
+            Look = { Name = "Portra 400", Amount = 0.5, UUID = "ABCD", Group = "$$$/Pack=Film Pack", Parameters = { Version = "14.0" } } } } }"#;
+        let v = read_presets("Film.lrtemplate", t.as_bytes(), None).unwrap();
+        assert_eq!(
+            v[0].preset.settings["profile"],
+            serde_json::json!({"look": {"name": "Portra 400", "amount": 50.0, "group": "Film Pack", "uuid": "abcd"}})
+        );
     }
 
     #[test]

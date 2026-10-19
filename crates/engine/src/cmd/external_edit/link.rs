@@ -310,6 +310,13 @@ pub fn stack_derived(s: &mut Session, imported: &[PhotoId]) -> Vec<PhotoId> {
             let p = Path::new(path);
             let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
             by_name.entry((dir, ph.file_name.clone())).or_insert(ph.id);
+            // an edit of an edit is named by the id in its own XMP (`source_document_id`), which
+            // survives a rename or a move that the file name does not
+            if is_edit_copy_kind(p)
+                && let Some(d) = file_xmp(p).and_then(|x| read_link(&x).document_id)
+            {
+                by_doc.entry(d).or_insert(ph.id);
+            }
         }
         if let Some(d) = hash_document_id(ph) {
             by_doc.entry(d).or_insert(ph.id);
