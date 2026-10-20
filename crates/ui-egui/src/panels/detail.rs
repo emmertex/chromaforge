@@ -594,7 +594,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                 let clip = crate::clip_headroom(app.hdr_headroom.unwrap_or(1.0));
                 let job = hdr_view_job(job.with_hidden_grading(app.ui.grading_hidden_for(id)), clip);
                 let key = job.key;
-                if app.renderer.hdr_view.is_none_or(|v| v.key != key) {
+                if app.renderer.hdr_view.is_none_or(|v| v.key != key) && app.renderer.hdr_view_tried != Some(key) {
                     app.renderer.request(Slot::HdrView, job, 98);
                 }
                 key
@@ -1390,7 +1390,11 @@ fn upload_hdr_view(app: &mut LightcraftApp) {
     let lightcraft_pipeline::DeepSamples::F32(rgb) = &deep.samples else { return };
     match out.upload(deep.width, deep.height, rgb) {
         Ok(tex) => app.renderer.hdr_view = Some(crate::render::HdrView { photo, key, tex, size: [deep.width, deep.height] }),
-        Err(e) => log::warn!("HDR loupe texture: {e}"),
+        Err(e) => {
+            // don't re-render the same frame every repaint
+            app.renderer.hdr_view_tried = Some(key);
+            log::warn!("HDR loupe texture: {e}");
+        }
     }
 }
 

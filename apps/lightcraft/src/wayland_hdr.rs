@@ -6,7 +6,7 @@
 //! 100 %: eDP-1 at 70 % reports reference 200, target max 281 → 1.4×).
 
 use wayland_client::protocol::{wl_output, wl_registry};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::color_management::v1::client::{
     wp_color_management_output_v1::WpColorManagementOutputV1,
     wp_color_manager_v1::WpColorManagerV1,
@@ -88,7 +88,7 @@ impl Dispatch<WpImageDescriptionInfoV1, usize> for State {
 }
 
 /// Every output's luminances. Errors: no Wayland session, or the compositor has no
-/// colour management (version 2 or later, which allows reading an output's description).
+/// colour management (version 1 or later reads an output's description).
 pub fn read() -> Result<Vec<OutputLuminance>, String> {
     let conn = Connection::connect_to_env().map_err(|e| e.to_string())?;
     let mut queue = conn.new_event_queue();
@@ -97,9 +97,6 @@ pub fn read() -> Result<Vec<OutputLuminance>, String> {
     let mut state = State::default();
     queue.roundtrip(&mut state).map_err(|e| e.to_string())?;
     let manager = state.manager.clone().ok_or("the compositor has no colour management")?;
-    if manager.version() < 2 {
-        return Err("the compositor's colour management can't describe outputs".into());
-    }
     state.found = vec![OutputLuminance::default(); state.outputs.len()];
     let outputs = state.outputs.clone();
     let mut held = Vec::new();

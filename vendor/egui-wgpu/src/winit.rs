@@ -94,6 +94,7 @@ impl Painter {
     }
 
     fn configure_surface(
+        viewport_id: ViewportId,
         surface_state: &SurfaceState,
         render_state: &RenderState,
         config: &SurfaceConfig,
@@ -158,11 +159,15 @@ impl Painter {
             .configure(&render_state.device, &surf_config);
         // Patch (HDR display output): the display may have changed (moved window, OS HDR
         // switch, brightness): re-query its HDR facts.
-        *render_state.display_hdr_info.write() = Some(
-            surface_state
-                .surface
-                .display_hdr_info(&render_state.adapter),
-        );
+        // Only the root window's display feeds the shared slot (the loupe's): a second window on
+        // another display must not change what the root window uses.
+        if viewport_id == ViewportId::ROOT {
+            *render_state.display_hdr_info.write() = Some(
+                surface_state
+                    .surface
+                    .display_hdr_info(&render_state.adapter),
+            );
+        }
         if let Some(hook) = &render_state.on_surface_configured {
             hook(&render_state.device, &surface_state.surface);
         }
@@ -369,7 +374,7 @@ impl Painter {
         surface_state.width = width;
         surface_state.height = height;
 
-        Self::configure_surface(surface_state, render_state, &self.config.surface);
+        Self::configure_surface(viewport_id, surface_state, render_state, &self.config.surface);
 
         if let Some(depth_format) = self.options.depth_stencil_format {
             self.depth_texture_view.insert(
@@ -469,7 +474,7 @@ impl Painter {
                         .lock()
                         .setPresentsWithTransaction(resizing);
 
-                    Self::configure_surface(state, render_state, &self.config.surface);
+                    Self::configure_surface(viewport_id, state, render_state, &self.config.surface);
                 }
             }
         }
@@ -617,7 +622,7 @@ impl Painter {
         };
 
         if surface_state.needs_reconfigure {
-            Self::configure_surface(surface_state, render_state, &self.config.surface);
+            Self::configure_surface(viewport_id, surface_state, render_state, &self.config.surface);
             surface_state.needs_reconfigure = false;
         }
 
@@ -639,7 +644,7 @@ impl Painter {
             other => {
                 match (*self.config.on_surface_status)(&other) {
                     SurfaceErrorAction::Reconfigure => {
-                        Self::configure_surface(surface_state, render_state, &self.config.surface);
+                        Self::configure_surface(viewport_id, surface_state, render_state, &self.config.surface);
                         self.context.request_repaint_of(viewport_id);
                     }
                     SurfaceErrorAction::RecreateSurface => {
@@ -776,6 +781,7 @@ impl Painter {
             }
         }
 
+        let output_scale = render_state.renderer.read().output_scale();
         if let Some(capture_buffer) = capture_buffer
             && let Some(screen_capture_state) = &mut self.screen_capture_state
         {
@@ -785,6 +791,7 @@ impl Painter {
                 capture_data,
                 self.capture_tx.clone(),
                 viewport_id,
+                output_scale,
             );
         }
 

@@ -224,6 +224,8 @@ pub struct Renderer {
     pub hdr_view_result: Option<(PhotoId, u64, lightcraft_pipeline::DeepImage)>,
     /// The loupe's uploaded HDR texture.
     pub hdr_view: Option<HdrView>,
+    /// The key of an HDR render whose upload failed (not asked for again).
+    pub hdr_view_tried: Option<u64>,
     pub last_main_ms: f64,
     /// Jobs finished since start (for inspect/perf).
     pub completed: u64,
@@ -305,6 +307,7 @@ impl Renderer {
             live_hdr_histogram: None,
             hdr_view_result: None,
             hdr_view: None,
+            hdr_view_tried: None,
             last_main_ms: 0.0,
             completed: 0,
             keep_pixels: false,

@@ -186,6 +186,7 @@ impl CaptureState {
         data: Vec<UserData>,
         tx: CaptureSender,
         viewport_id: ViewportId,
+        output_scale: f32,
     ) {
         #[allow(clippy::allow_attributes, clippy::arc_with_non_send_sync)] // For wasm
         let buffer = Arc::new(buffer);
@@ -194,6 +195,7 @@ impl CaptureState {
         let format = self.texture.format();
         let tex_extent = self.texture.size();
         let padding = self.padding;
+        let output_scale = if output_scale.is_finite() && output_scale > 0.0 { output_scale } else { 1.0 };
         // LightCraft: `None` selects the Rgba16Float (scRGB) path.
         let to_rgba: Option<[usize; 4]> = match format {
             wgpu::TextureFormat::Rgba8Unorm => Some([0, 1, 2, 3]),
@@ -240,9 +242,9 @@ impl CaptureState {
                                 f16_bits_to_f32(u16::from_le_bytes([texel[i * 2], texel[i * 2 + 1]]))
                             };
                             pixels.push(epaint::Color32::from_rgba_premultiplied(
-                                linear_to_srgb_u8(c(0)),
-                                linear_to_srgb_u8(c(1)),
-                                linear_to_srgb_u8(c(2)),
+                                linear_to_srgb_u8(c(0) / output_scale),
+                                linear_to_srgb_u8(c(1) / output_scale),
+                                linear_to_srgb_u8(c(2) / output_scale),
                                 (c(3).clamp(0.0, 1.0) * 255.0 + 0.5) as u8,
                             ));
                         }

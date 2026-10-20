@@ -26,7 +26,7 @@ What Lightroom does with the machine's hardware, per platform, and what LightCra
 ## Score
 
 **~40% ready** (estimated): the GPU editing path is real and fast (measured: 24 MP exposure drag
-3.9 ms on GPU vs 22–42 ms CPU; NR drag 18 ms vs 301–471 ms), but HDR display, pen pressure,
+3.9 ms on GPU vs 22–42 ms CPU; NR drag 18 ms vs 301–471 ms), but pen pressure,
 tethering, printing, automatic monitor profiles and neural-engine inference are missing. GPU
 correctness is proven on Apple GPUs and on one AMD GPU on Linux (Radeon 8060S, Vulkan / RADV: the
 equivalence suite passes with the same max 1–2 LSB as on Metal, [gpu-pipeline.md](gpu-pipeline.md#correctness-cpu-oracle-and-equivalence-tests)).
@@ -36,14 +36,14 @@ NVIDIA, Intel and Windows DX12 still rely on user reports.
 
 | Work | Hours | Needs |
 |---|---:|---|
-| HDR display (EDR on macOS, Windows HDR, Linux where possible) | done (2026-10-20) | the vendored egui-wgpu (`vendor/egui-wgpu`, see `vendor/README.md`) configures an `Rgba16Float` surface in extended linear sRGB (scRGB / EDR) where offered, reads the display's headroom and SDR white (`wgpu::DisplayHdrInfo`), and draws the UI at paper white; the loupe shows HDR edits from a float render up to the headroom (whole-frame render; zoomed tiles stay SDR). On Wayland the headroom comes from the compositor's colour-management protocol (`apps/lightcraft/src/wayland_hdr.rs`), the app then runs native Wayland instead of XWayland, and `crates/hdrmeta` sets Vulkan HDR metadata so KWin shows the range; overrides `LIGHTCRAFT_HDR_HEADROOM` / `LIGHTCRAFT_HDR_PAPER_WHITE`. `lightcraft --hdr-probe` reports what a machine offers. Verified on Windows 11 / RTX 4090 (DX12 scRGB, headroom ≈ 12.9×) and KDE Plasma 6.7.5 Wayland (AMD RADV, laptop panel with KWin EDR) and macOS EDR (M1 Max, built-in Liquid Retina XDR) |
+| HDR display (EDR on macOS, Windows HDR, Linux where possible) | done (2026-10-20) | the vendored egui-wgpu (`vendor/egui-wgpu`, see `vendor/README.md`) configures an `Rgba16Float` surface in extended linear sRGB (scRGB / EDR) where offered, reads the display's headroom and SDR white (`wgpu::DisplayHdrInfo`), and draws the UI at paper white; the loupe shows HDR edits from a float render up to the headroom (whole-frame render; zoomed tiles stay SDR). On Wayland the headroom comes from the compositor's colour-management protocol (`apps/lightcraft/src/wayland_hdr.rs`), the app then runs native Wayland instead of XWayland (no file drag-and-drop there; `LIGHTCRAFT_HDR_DISPLAY=0` restores XWayland, SDR), and `crates/hdrmeta` sets Vulkan HDR metadata so KWin shows the range; overrides `LIGHTCRAFT_HDR_HEADROOM` / `LIGHTCRAFT_HDR_PAPER_WHITE`. `lightcraft --hdr-probe` reports what a machine offers. Verified on Windows 11 / RTX 4090 (DX12 scRGB, headroom ≈ 12.9×) and KDE Plasma 6.7.5 Wayland (AMD RADV, laptop panel with KWin EDR) and macOS EDR (M1 Max, built-in Liquid Retina XDR) |
 | OS monitor profile: Windows WCS (an FFI helper crate, like `crates/sysmem`), follow the window across displays on Linux | 4–8 | multi-monitor setup |
 | Pen pressure for brush masks: done where winit reports a touch force; macOS and Linux tablets need winit tablet events (or a pure-Rust tablet layer) | 3–8 | a tablet |
 | Remaining stages on GPU (defringe, spot removal, masks) | 10–20 | |
 | Tethered capture (PTP over USB in pure Rust, Canon / Nikon / Sony first) | 25–45 | cameras (human) |
 | Printing with colour management | 15–25 | printers (human) |
 | Neural-engine / DirectML inference for AI features | 10–20 | depends on the AI model decision |
-| **Total** | **80–150 h** (the core set for beta, HDR display + monitor profile + pen pressure: 20–40 h) | |
+| **Total** | **80–150 h** (the core set for beta, monitor profile + pen pressure: 10–25 h) | |
 
 ## Revision history
 

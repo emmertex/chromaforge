@@ -792,7 +792,9 @@ ENVIRONMENT:
   LIGHTCRAFT_GPU_BACKEND=dx12|vulkan|metal|auto|off   graphics backend (default: DX12 on Windows, Metal on macOS,
                    Vulkan on Linux; off = render on the CPU); else WGPU_BACKEND. LIGHTCRAFT_GPU=0: CPU rendering.
   LIGHTCRAFT_HDR_DISPLAY=0   keep the window SDR. LIGHTCRAFT_HDR_HEADROOM=X / LIGHTCRAFT_HDR_PAPER_WHITE=NITS: the
-                   display's headroom (× SDR white) and SDR white where the system doesn't report them (Wayland)
+                   display's headroom (× SDR white) and SDR white where the system doesn't report them (Wayland).
+                   On Wayland an HDR display keeps the native backend, which has no file drag-and-drop; =0 runs through
+                   XWayland (SDR, drag-and-drop works)
   LIGHTCRAFT_SAM3_DIR=DIR   the SAM 3 model for Object / Describe masks (default: <settings folder>/models/sam3;
                    optional: LightCraft offers to download it when first needed)
   LIGHTCRAFT_SAM3_MIRRORS=URL,…   where to download the SAM 3 model from (base URLs, tried in order)
