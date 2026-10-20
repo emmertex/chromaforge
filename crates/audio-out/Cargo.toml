@@ -3,15 +3,16 @@ name = "lcc-audio-out"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Audio output (L0): the one sound-card path (slideshow music, video playback) and its device clock; PulseAudio / PipeWire on Linux and the BSDs (pure Rust), cpal elsewhere with `audio-out`"
+description = "Audio output (L0): the one sound-card path (slideshow music, video playback) and its device clock; PulseAudio / PipeWire on Linux and the BSDs (pure Rust), cpal (WASAPI) on Windows, cpal elsewhere with `audio-out`"
 
 [lints]
 workspace = true
 
 [features]
 default = []
-# Play through the sound card with cpal (macOS CoreAudio, Windows WASAPI; on Linux cpal links the
-# system ALSA library, a C library, so the feature is off by default). Linux and the BSDs play
+# Play through the sound card with cpal elsewhere (macOS CoreAudio, whose bindings need bindgen and
+# libclang to build; on Linux cpal links the system ALSA library, a C library, so the feature is off
+# by default). Windows always plays through cpal's WASAPI backend (pure Rust, `windows` bindings). Linux and the BSDs play
 # through a PulseAudio / PipeWire server without it (pure Rust, always on).
 audio-out = ["dep:cpal"]
 
@@ -24,6 +25,10 @@ cpal = { version = "0.15", optional = true } # Apache-2.0; links ALSA on Linux
 pulseaudio = "0.3" # MIT
 futures = { version = "0.3", default-features = false, features = ["executor"] } # MIT OR Apache-2.0
 lcc-brand = { workspace = true }
+
+# WASAPI through cpal: pure Rust on Windows, so every Windows build has sound:
+[target.'cfg(windows)'.dependencies]
+cpal = "0.15" # Apache-2.0
 
 [dev-dependencies]
 lcc-testkit = { workspace = true }

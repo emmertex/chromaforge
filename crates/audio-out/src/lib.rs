@@ -3,9 +3,11 @@
 //! clock so pictures stay in step with the sound.
 //!
 //! On Linux and the BSDs sound goes to a PulseAudio server (PulseAudio, or PipeWire through
-//! `pipewire-pulse`) over its native protocol in pure Rust ([`pulse`]), in every build. Elsewhere
-//! the `audio-out` cargo feature plays through cpal (CoreAudio, WASAPI; on Linux it would link the
-//! C library libasound, so there it is only a fallback when no PulseAudio server answers). With
+//! `pipewire-pulse`) over its native protocol in pure Rust ([`pulse`]), in every build. On Windows
+//! every build plays through cpal's WASAPI backend (pure Rust over the `windows` bindings). Elsewhere
+//! the `audio-out` cargo feature plays through cpal (CoreAudio, which needs bindgen and libclang to
+//! build; on Linux it would link the C library libasound, so there it is only a fallback when no
+//! PulseAudio server answers). With
 //! neither, [`CAN_PLAY`] is false and [`Output::start`] returns an error: callers play silently.
 //!
 //! Sources: own design (a sample counter advanced by the device callback).
@@ -19,10 +21,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))]
 pub mod pulse;
 
-/// Whether this build has a sound path (PulseAudio / PipeWire on Linux and the BSDs, cpal with
-/// the `audio-out` feature). Playing still needs a running server or device.
+/// Whether this build has a sound path (PulseAudio / PipeWire on Linux and the BSDs, WASAPI on
+/// Windows, cpal with the `audio-out` feature). Playing still needs a running server or device.
 pub const CAN_PLAY: bool = cfg!(any(
     feature = "audio-out",
+    windows,
     target_os = "linux",
     target_os = "freebsd",
     target_os = "dragonfly",
@@ -72,13 +75,13 @@ pub fn default_rate() -> Option<u32> {
     if let Some(r) = pulse::default_rate() {
         return Some(r);
     }
-    #[cfg(feature = "audio-out")]
+    #[cfg(any(feature = "audio-out", windows))]
     {
         use cpal::traits::{DeviceTrait, HostTrait};
         let d = cpal::default_host().default_output_device()?;
         d.default_output_config().ok().map(|c| c.sample_rate().0)
     }
-    #[cfg(not(feature = "audio-out"))]
+    #[cfg(not(any(feature = "audio-out", windows)))]
     {
         None
     }
@@ -86,7 +89,7 @@ pub fn default_rate() -> Option<u32> {
 
 /// A stream playing on the default output device; dropping it stops the sound.
 pub struct Output {
-    #[cfg(feature = "audio-out")]
+    #[cfg(any(feature = "audio-out", windows))]
     _stream: Option<cpal::Stream>,
     #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))]
     _pulse: Option<pulse::PulseOut>,
@@ -114,7 +117,7 @@ impl Output {
             match pulse::start(rate, channels, relay, clock.clone()) {
                 Ok(p) => {
                     return Ok(Output {
-                        #[cfg(feature = "audio-out")]
+                        #[cfg(any(feature = "audio-out", windows))]
                         _stream: None,
                         _pulse: Some(p),
                         clock,
@@ -130,7 +133,7 @@ impl Output {
                 }
             }
         };
-        #[cfg(feature = "audio-out")]
+        #[cfg(any(feature = "audio-out", windows))]
         {
             use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
             let mut fill = fill;
@@ -158,7 +161,7 @@ impl Output {
                 clock,
             })
         }
-        #[cfg(not(feature = "audio-out"))]
+        #[cfg(not(any(feature = "audio-out", windows)))]
         {
             let _ = (fill, clock);
             if CAN_PLAY {
@@ -197,5 +200,19 @@ mod tests {
             assert!(Output::start(48_000, 2, Box::new(|_| {})).is_err());
             assert_eq!(default_rate(), None);
         }
+    }
+
+    #[test]
+    fn a_machine_with_an_output_device_plays_and_its_clock_moves() {
+        let Some(rate) = default_rate() else {
+            lcc_testkit::skip!(System, "no audio output device");
+            return;
+        };
+        let out = Output::start(rate, 2, Box::new(|_| {})).unwrap();
+        let t = std::time::Instant::now();
+        while out.clock().frames() == 0 && t.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(out.clock().frames() > 0);
     }
 }
