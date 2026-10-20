@@ -601,23 +601,34 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let mut target_rect = fit_rect(main_area, display_aspect, app.ui.zoom, native, ppp, app.ui.pan);
     let mut img_rect = animated_rect(ui.ctx(), &mut app.ui.zoom_anim, target_rect);
     let in_pane = |pane: Rect, image: Rect| image.translate(pane.center() - main_area.center());
-    let mut navigating = false;
-    for &view_area in &areas {
-        let view_img = in_pane(view_area, img_rect);
-        if navigate_gesture(app, ui, &resp, view_area, view_img, native) {
-            navigating = true;
-            target_rect = fit_rect(main_area, display_aspect, app.ui.zoom, native, ppp, app.ui.pan);
-            img_rect = target_rect;
-            break;
-        }
-    }
     // the crop tool: the crop box upright and the photo turned around it, held still while the crop
-    // changes so the photo moves under the box (issue #1643)
+    // changes so the photo moves under the box (issue #1643). Laid out before the zoom gestures,
+    // which act on the turned photo's bounds as the view places them.
     if !crop_tool || app.session.interaction.is_none() {
         app.crop_layout = None;
     }
-    let crop_view =
-        crop_tool.then(|| crop_view(&frame, d.crop.geometry, main_area, app.crop_layout, ViewPort { zoom: app.ui.zoom, pan: app.ui.pan, ppp }));
+    let make_crop_view = |app: &LightcraftApp| {
+        crop_tool.then(|| crop_view(&frame, d.crop.geometry, main_area, app.crop_layout, ViewPort { zoom: app.ui.zoom, pan: app.ui.pan, ppp }))
+    };
+    let mut crop_view = make_crop_view(app);
+    let mut navigating = false;
+    for &view_area in &areas {
+        let (gesture_rect, gesture_px) = match &crop_view {
+            Some(v) => {
+                let b = v.bounds();
+                (b, [(b.width() / v.k).round().max(1.0) as usize, (b.height() / v.k).round().max(1.0) as usize])
+            }
+            None => (img_rect, native),
+        };
+        let view_img = in_pane(view_area, gesture_rect);
+        if navigate_gesture(app, ui, &resp, view_area, view_img, gesture_px) {
+            navigating = true;
+            target_rect = fit_rect(main_area, display_aspect, app.ui.zoom, native, ppp, app.ui.pan);
+            img_rect = target_rect;
+            crop_view = make_crop_view(app);
+            break;
+        }
+    }
     if let Some(v) = &crop_view {
         if app.session.interaction.is_some() && app.crop_layout.is_none() {
             app.crop_layout = Some(CropLayout::Pinned { centre: v.centre, k: v.k });
@@ -1811,7 +1822,9 @@ fn crop_keys(
         // the drag runs in the straightened crop frame, as a pointer drag from the handle would;
         // the arrows follow the screen
         let angle = d.crop.geometry.angle;
-        let to_q = at + vec2(dx as f32 * map.rect.width(), dy as f32 * map.rect.height());
+        // (a step is a fraction of the photo's size on screen: in the crop tool `map.rect` is the crop box)
+        let photo = app.image_rect.map_or(map.rect.size(), |r| r.size());
+        let to_q = at + vec2(dx as f32 * photo.x, dy as f32 * photo.y);
         let (from, to) = (to_straight(map.norm(at), angle, frame), to_straight(map.norm(to_q), angle, frame));
         let started = app.run("develop.beginInteraction", json!({"label": "Crop"})).and_then(|_| app.begin_crop().map(|_| serde_json::Value::Null));
         if let Err(e) = started {
@@ -1907,7 +1920,8 @@ fn angle_readout(ui: &egui::Ui, at: Pos2, angle: f64, bounds: Rect) {
 /// Guided Upright: draw up to four guides along lines that should be vertical or horizontal. Guides are
 /// stored in lens-corrected (pre-perspective) coordinates, so they stay attached to the image as it warps.
 fn guided_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, frame: &Frame, d: &DevelopSettings) {
-    let p = ui.painter_at(map.rect.expand(8.0));
+    // in the crop tool `map.rect` is the crop box: guides on the photo around it must still show
+    let p = ui.painter_at(app.canvas_rect.unwrap_or(map.rect.expand(8.0)));
     let col = Color32::from_rgb(255, 196, 40);
     let draw = |a: Pos2, b: Pos2| {
         p.line_segment([a, b], Stroke::new(3.0, Color32::from_black_alpha(120)));
