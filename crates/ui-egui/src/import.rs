@@ -1018,8 +1018,11 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             ui.label(egui::RichText::new(crate::i18n::tr_format!("· {dups} already in the library", dups = dups)).color(t.text_dim));
         }
         if in_source > 0 {
-            ui.label(egui::RichText::new(crate::i18n::tr_format!("· {in_source} identical copies", in_source = in_source)).color(t.text_dim))
-                .on_hover_text(crate::i18n::tr("Files with the same content as another file in this import: only the first is imported."));
+            let r = ui.label(egui::RichText::new(crate::i18n::tr_format!("· {in_source} identical copies", in_source = in_source)).color(t.text_dim));
+            // (with duplicates enabled the copies can be selected too, so the hint would be wrong)
+            if !d.import_duplicates {
+                r.on_hover_text(crate::i18n::tr("Files with the same content as another file in this import: only the first is imported."));
+            }
         }
         if trashed > 0 {
             ui.label(egui::RichText::new(crate::i18n::tr_format!("· {trashed} in Recently Deleted", trashed = trashed)).color(t.text_dim));
