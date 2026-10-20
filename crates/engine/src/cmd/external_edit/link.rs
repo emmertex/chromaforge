@@ -302,35 +302,41 @@ pub fn stack_derived(s: &mut Session, imported: &[PhotoId]) -> Vec<PhotoId> {
     if wanted.is_empty() {
         return Vec::new();
     }
-    // (folder, file name) and document id → photo, built once
+    // (folder, file name) and hashed document id → photo, built once, without reading any file
     let mut by_name: HashMap<(String, String), PhotoId> = HashMap::new();
     let mut by_doc: HashMap<String, PhotoId> = HashMap::new();
     for ph in s.catalog.photos().filter(|p| !p.deleted && p.copy_of.is_none()) {
         if let Source::File { path } = &ph.source {
-            let p = Path::new(path);
-            let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+            let dir = Path::new(path).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
             by_name.entry((dir, ph.file_name.clone())).or_insert(ph.id);
-            // an edit of an edit is named by the id in its own XMP (`source_document_id`), which
-            // survives a rename or a move that the file name does not
-            if is_edit_copy_kind(p)
-                && let Some(d) = file_xmp(p).and_then(|x| read_link(&x).document_id)
-            {
-                by_doc.entry(d).or_insert(ph.id);
-            }
         }
         if let Some(d) = hash_document_id(ph) {
             by_doc.entry(d).or_insert(ph.id);
         }
     }
-    let mut pairs: Vec<(PhotoId, PhotoId)> = Vec::new();
-    for (id, dir, link) in wanted {
-        let src = link
-            .derived_path
+    let by_file_name = |dir: &str, link: &Link| {
+        link.derived_path
             .as_ref()
             .and_then(|n| Path::new(n).file_name().map(|f| f.to_string_lossy().to_string()))
-            .and_then(|n| by_name.get(&(dir.clone(), n)).copied())
-            .or_else(|| link.derived_document.as_ref().and_then(|d| by_doc.get(d).copied()))
-            .filter(|src| *src != id);
+            .and_then(|n| by_name.get(&(dir.to_string(), n)).copied())
+    };
+    // an edit of an edit is named by the id in its own XMP (`source_document_id`), which survives a rename
+    // or a move that the file name does not: read those files only when some link is still unresolved
+    let needs_embedded =
+        wanted.iter().any(|(_, dir, l)| by_file_name(dir, l).is_none() && l.derived_document.as_ref().is_some_and(|d| !by_doc.contains_key(d)));
+    if needs_embedded {
+        for ph in s.catalog.photos().filter(|p| !p.deleted && p.copy_of.is_none()) {
+            if let Source::File { path } = &ph.source
+                && is_edit_copy_kind(Path::new(path))
+                && let Some(d) = file_xmp(Path::new(path)).and_then(|x| read_link(&x).document_id)
+            {
+                by_doc.entry(d).or_insert(ph.id);
+            }
+        }
+    }
+    let mut pairs: Vec<(PhotoId, PhotoId)> = Vec::new();
+    for (id, dir, link) in wanted {
+        let src = by_file_name(&dir, &link).or_else(|| link.derived_document.as_ref().and_then(|d| by_doc.get(d).copied())).filter(|src| *src != id);
         if let Some(src) = src {
             pairs.push((id, src));
         }

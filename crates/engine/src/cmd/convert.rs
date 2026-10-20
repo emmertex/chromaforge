@@ -159,6 +159,13 @@ fn edit_external(s: &mut Session, p: &Value) -> Result<Value> {
         conflict: crate::export::Conflict::Unique,
         ..Default::default()
     };
+    // refuse before any file is written when the editor can't be waited for
+    if let Some(app) = super::str_param(p, "app").filter(|a| !a.trim().is_empty())
+        && p.get("wait").and_then(Value::as_bool) == Some(true)
+        && !super::external_edit::editor::capabilities(app.trim()).wait
+    {
+        return Err(bad(C, format!("{} can't be waited for (it doesn't take --wait)", app.trim())));
+    }
     let mut copies = Vec::new();
     for id in ids {
         copies.push(edit_copy(s, p, id, &opts)?);

@@ -21,6 +21,14 @@ pub mod link;
 /// Stack the edit copy `new` directly above `on` (see the module docs), expanded so the versions
 /// show.
 pub(crate) fn stack_edit(s: &mut Session, new: PhotoId, on: PhotoId) -> Result<()> {
+    // already directly above `on` in an expanded stack (the import placed it from the DerivedFrom link):
+    // nothing to do, and no no-op undo step
+    if let Some(st) = s.catalog.stack_of(on)
+        && !st.collapsed
+        && st.photos.iter().position(|p| *p == on).is_some_and(|i| i > 0 && st.photos.get(i - 1) == Some(&new))
+    {
+        return Ok(());
+    }
     let master = s.catalog.photo(on).and_then(|p| p.copy_of).filter(|m| s.catalog.photo(*m).is_some());
     let op = match (s.catalog.stack_of(on).is_some(), master) {
         // an unstacked virtual copy: the edit and the copy go directly above the master, in the

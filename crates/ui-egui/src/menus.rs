@@ -2324,7 +2324,11 @@ fn edit_in(app: &mut LightcraftApp, ctx: &egui::Context, p: &Value, photocraft: 
     // the program PhotoCraft runs as, where the host found it: asked for `--wait` support and run
     // with it on a worker thread; anything else (or no program file) opens through `open_with`
     let mut failed: Option<String> = None;
-    let exe = if photocraft { app.services.locate_editor.as_ref().and_then(|f| f(&editor)) } else { None };
+    let exe = if lightcraft_engine::cmd::external_edit::editor::is_photocraft(editor.trim()) {
+        app.services.locate_editor.as_ref().and_then(|f| f(editor.trim()))
+    } else {
+        None
+    };
     for (path, id) in &copies {
         if let Some(id) = id {
             crate::external_edit::watch(app, std::path::Path::new(path), *id);
