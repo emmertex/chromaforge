@@ -1313,7 +1313,13 @@ fn grid_frame_100k() {
     h.request("ui.hoverWidget", json!({"id": thumb}), T);
     let start = h.request("ui.inspect", json!({}), T)["result"]["scroll"]["grid"].clone();
     let scrolling = median(&mut h, 31, &mut |h| {
-        h.request("ui.scroll", json!({"dy": -2000.0}), T);
+        // Queue the wheel event; the timed `step` is the frame that consumes it.
+        h.app.synthetic.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -2000.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
     });
     let end = h.request("ui.inspect", json!({}), T)["result"]["scroll"]["grid"].clone();
     assert_ne!(start, end, "the grid scrolled");
