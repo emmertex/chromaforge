@@ -459,7 +459,8 @@
   bar), then drag photos in the grid; a line shows where they land. Dragging while another sort is on switches to
   Custom Order, as in Lightroom Classic. The order is saved with the album; photos added later go at the end.
   Rename `{seq}` and export number a selection in this order. Agents: `album.orderPhotos`, `album.setPhotoOrder`,
-  `library.sort {"key": "custom"}`. Libraries saved with it can't be opened by older versions (catalog format 10).
+  `library.sort {"key": "custom"}`. Duplicate Album (`album.duplicate`) keeps the order, so the copy can be arranged
+  independently. Libraries saved with it can't be opened by older versions (catalog format 10).
 
 ## 2026-10-11
 

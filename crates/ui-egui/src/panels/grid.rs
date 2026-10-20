@@ -824,7 +824,13 @@ fn reorder_drop(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, r: Rect
         vis.iter().position(|v| *v == id).and_then(|i| vis.get(i + 1).copied())
     };
     app.ui.dragging_photos = None;
-    if let Err(e) = app.run("album.orderPhotos", json!({"album": album.0, "ids": dragged, "before": before.map(|b| b.0)})) {
+    // a stale selection can hold photos that are not in the album; the command rejects those
+    let members: Vec<u64> =
+        app.session.catalog.album(album).map(|a| dragged.iter().copied().filter(|d| a.photos.contains(&PhotoId(*d))).collect()).unwrap_or_default();
+    if members.is_empty() {
+        return;
+    }
+    if let Err(e) = app.run("album.orderPhotos", json!({"album": album.0, "ids": members, "before": before.map(|b| b.0)})) {
         app.toast(ui.ctx(), e);
     }
 }
