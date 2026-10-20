@@ -310,7 +310,13 @@ impl Prepared {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let (w, h) = (o.width as usize, o.height as usize);
+        // `prepare` let a file at the path through only because it is not an original; when there is
+        // none, nothing (an original that shows up while rendering) may be replaced at the end.
+        let free = std::fs::symlink_metadata(&out).is_err();
         let mut writer = SequenceWriter::create(&out, format, o.quality, o.width, o.height, o.fps, 1).map_err(|e| e.to_string())?;
+        if free {
+            writer = writer.keep_existing();
+        }
         let stopped = || cancel.load(Ordering::Relaxed);
         let cancelled = || "Timelapse cancelled".to_string();
         let photos = self.items.len();

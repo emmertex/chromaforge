@@ -87,6 +87,25 @@ fn create_partial(out: &Path) -> Result<(PathBuf, File)> {
     Err(VideoError::BadOptions("could not reserve a temporary file next to the output".into()))
 }
 
+/// Move the finished partial to `out`. With `keep_existing`, a hard link (which fails when `out`
+/// exists, even if it appeared a moment ago) takes the name, so nothing is ever replaced; volumes
+/// without hard links fall back to a rename after an existence check.
+fn move_into_place(partial: &Path, out: &Path, keep_existing: bool) -> Result<()> {
+    if !keep_existing {
+        return std::fs::rename(partial, out).map_err(io);
+    }
+    match std::fs::hard_link(partial, out) {
+        Ok(()) => std::fs::remove_file(partial).map_err(io),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(io(format!("{} already exists", out.display()))),
+        Err(_) => {
+            if std::fs::symlink_metadata(out).is_ok() {
+                return Err(io(format!("{} already exists", out.display())));
+            }
+            std::fs::rename(partial, out).map_err(io)
+        }
+    }
+}
+
 /// Writes frames of one fixed size at a fixed rate to an H.264 MP4 or ProRes MOV (no audio).
 pub struct SequenceWriter {
     mux: Option<Mp4Writer<BufWriter<File>>>,
@@ -94,6 +113,8 @@ pub struct SequenceWriter {
     track: usize,
     partial: PathBuf,
     out: PathBuf,
+    /// Never replace a file at `out`: it did not exist when the caller looked.
+    keep_existing: bool,
     frames: i64,
     width: u32,
     height: u32,
@@ -130,7 +151,15 @@ impl SequenceWriter {
                 return Err(e);
             }
         };
-        Ok(Self { mux: Some(mux), video, track, partial, out: out.to_path_buf(), frames: 0, width, height, fps_num, fps_den })
+        Ok(Self { mux: Some(mux), video, track, partial, out: out.to_path_buf(), keep_existing: false, frames: 0, width, height, fps_num, fps_den })
+    }
+
+    /// Finish without replacing anything: fails with an I/O error when a file (an original that
+    /// appeared since the caller's check, say) is at the output path by then.
+    #[must_use]
+    pub fn keep_existing(mut self) -> Self {
+        self.keep_existing = true;
+        self
     }
 
     /// Frames written so far.
@@ -181,7 +210,7 @@ impl SequenceWriter {
             let file = out.into_inner().map_err(|e| io(e.error()))?;
             file.sync_all().map_err(io)?;
             drop(file);
-            std::fs::rename(&self.partial, &self.out).map_err(io)
+            move_into_place(&self.partial, &self.out, self.keep_existing)
         })();
         if let Err(e) = finished {
             let _ = std::fs::remove_file(&self.partial);
@@ -372,6 +401,19 @@ mod tests {
     /// Mean luma code value of every decoded frame of an H.264 MP4, in presentation order.
     fn h264_lumas(path: &Path) -> Vec<f32> {
         crate::probe::h264_lumas(path).unwrap().iter().map(crate::probe::Luma::mean).collect()
+    }
+
+    #[test]
+    fn keep_existing_never_replaces_a_file_that_appeared_meanwhile() {
+        let dir = scratch("keep");
+        let out = dir.join("t.mp4");
+        let mut w = SequenceWriter::create(&out, VideoFormat::H264Mp4, 80, 32, 16, 24, 1).unwrap().keep_existing();
+        w.push_encoded(&Rgb32f::from_fn(32, 16, |_, _| [0.5; 3])).unwrap();
+        std::fs::write(&out, b"precious").unwrap();
+        assert!(w.finish().is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), b"precious");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "the partial is removed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
