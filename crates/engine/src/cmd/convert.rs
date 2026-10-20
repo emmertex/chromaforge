@@ -396,8 +396,10 @@ fn render_to_dng(s: &mut Session, p: &Value) -> Result<Value> {
         t.progress(i as u64, n as u64);
         !t.is_cancelled()
     });
+    // the row stays up while the copies are imported and stacked
+    let result = crate::render_dng::finish(s, done, cancelled);
     drop(task);
-    crate::render_dng::finish(s, done, cancelled)
+    result
 }
 
 pub fn edit_specs() -> Vec<CommandSpec> {

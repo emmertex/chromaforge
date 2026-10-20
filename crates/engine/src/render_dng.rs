@@ -131,7 +131,7 @@ pub fn finish(s: &mut Session, done: Vec<Rendered>, cancelled: bool) -> Result<V
         let added = r.result.and_then(|path| {
             let imported = s.execute("library.import", &json!({"paths": [path]})).map_err(|e| e.to_string())?;
             let new = imported["imported"].get(0).and_then(Value::as_u64).ok_or("the DNG could not be added")?;
-            let _ = s.execute("stack.group", &json!({"ids": [new, r.original.0], "top": new, "collapsed": false}));
+            s.execute("stack.group", &json!({"ids": [new, r.original.0], "top": new, "collapsed": false})).map_err(|e| e.to_string())?;
             Ok(json!({"path": path, "id": new, "original": r.original.0}))
         });
         match added {

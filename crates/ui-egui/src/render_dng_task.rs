@@ -73,7 +73,8 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
         Ok((done, cancelled)) => {
             let total = task.total;
             let same_library = task.library == app.session.library_generation();
-            app.render_dng = None;
+            // the activity row stays up until the DNGs are added and the outcome reported
+            let _guard = app.render_dng.take();
             if !same_library {
                 // another library was opened meanwhile: its photo ids mean other photos, so nothing is
                 // imported or stacked there; the DNGs stay on disk next to their originals
