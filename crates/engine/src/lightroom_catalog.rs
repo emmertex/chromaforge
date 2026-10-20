@@ -44,11 +44,12 @@ fn source_path(p: &Photo) -> Option<&str> {
     }
 }
 
-struct Reader {
+struct Reader<'a> {
+    cancel: &'a AtomicBool,
     db: Database,
     tables: Vec<LiveTable>,
 }
-impl Reader {
+impl Reader<'_> {
     /// Stream `name`'s rows to `f`, one at a time: the table is never collected whole, so a catalog's large develop,
     /// history and metadata tables cost only what `f` keeps. A missing table yields no rows unless `required`.
     /// `Blob` columns never become JSON; they reach `f` separately, as (column, bytes), and are dropped after it.
@@ -59,6 +60,7 @@ impl Reader {
         let columns = t.column_names.as_ref().ok_or_else(|| format!("cannot read {name} columns"))?;
         self.db
             .for_each_row(t.rootpage, columns.len(), &mut |r| {
+                ensure_read_active(self.cancel)?;
                 let mut row = Row::new();
                 let mut blobs = Vec::new();
                 for (column, value) in columns.iter().zip(r.values) {
@@ -92,6 +94,7 @@ impl Reader {
         match self.table(name, false) {
             Ok(rows) => Ok(rows),
             Err(error) => {
+                ensure_read_active(self.cancel)?; // a cancelled import is not a skipped table
                 warnings.push(format!("skipping optional Lightroom table {name}: {error}"));
                 Ok(Vec::new())
             }
@@ -99,17 +102,25 @@ impl Reader {
     }
 
     /// An optional per-image table (history steps, snapshots), streamed into rows grouped by their `image` column.
-    fn grouped(&self, name: &str, warnings: &mut Vec<String>) -> HashMap<i64, Vec<Row>> {
+    fn grouped(&self, name: &str, warnings: &mut Vec<String>) -> Result<HashMap<i64, Vec<Row>>, String> {
+        // The walker bounds each record, not the table: what is kept is capped here.
+        const MAX_GROUPED_BYTES: usize = 256 * 1024 * 1024;
         let mut out: HashMap<i64, Vec<Row>> = HashMap::new();
+        let mut kept = 0usize;
         let read = self.each_row(name, false, |r, _| {
+            kept = kept.saturating_add(r.iter().map(|(k, v)| k.len().saturating_add(v.as_str().map_or(16, str::len))).sum::<usize>());
+            if kept > MAX_GROUPED_BYTES {
+                return Err("table is larger than the optional-table memory budget".into());
+            }
             out.entry(number(&r, "image")).or_default().push(r);
             Ok(())
         });
         if let Err(error) = read {
+            ensure_read_active(self.cancel)?; // a cancelled import is not a skipped table
             warnings.push(format!("skipping optional Lightroom table {name}: {error}"));
             out.clear();
         }
-        out
+        Ok(out)
     }
 
     /// `Adobe_imageDevelopSettings`, streamed into image id -> settings text. The photos' edits come from here, so a
@@ -446,7 +457,7 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
     if before.len() != after.len() || before.modified().ok() != after.modified().ok() || wal_before != wal_after {
         return Err("catalog changed during reading; close Lightroom and retry".into());
     }
-    let reader = Reader { tables: db.live_tables()?, db };
+    let reader = Reader { cancel, tables: db.live_tables()?, db };
     let mut warnings = Vec::new();
     let table = |name: &str, required: bool| -> Result<Vec<Row>, String> {
         ensure_read_active(cancel)?;
@@ -470,6 +481,7 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
     let (metadata, metadata_warnings) = match reader.xmp_table() {
         Ok(result) => result,
         Err(error) => {
+            ensure_read_active(cancel)?; // a cancelled import is not a skipped table
             warnings.push(format!("skipping optional Lightroom table Adobe_AdditionalMetadata: {error}"));
             (HashMap::new(), Vec::new())
         }
@@ -521,10 +533,10 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
         root_paths.insert(id, resolved);
     }
     ensure_read_active(cancel)?;
-    let mut history = reader.grouped("Adobe_libraryImageDevelopHistoryStep", &mut warnings);
+    let mut history = reader.grouped("Adobe_libraryImageDevelopHistoryStep", &mut warnings)?;
     done.fetch_add(1, Ordering::Relaxed);
     ensure_read_active(cancel)?;
-    let mut snapshots = reader.grouped("Adobe_libraryImageDevelopSnapshot", &mut warnings);
+    let mut snapshots = reader.grouped("Adobe_libraryImageDevelopSnapshot", &mut warnings)?;
     done.fetch_add(1, Ordering::Relaxed);
     let mut out = CatalogImport {
         source: path.to_string_lossy().into(),
@@ -1739,8 +1751,12 @@ mod tests {
         page[8..10].copy_from_slice(&u16::try_from(start).unwrap_or(0).to_be_bytes());
         page[5..7].copy_from_slice(&u16::try_from(start).unwrap_or(0).to_be_bytes());
         let db = Database::open_with_wal(main, &[]).unwrap();
-        let reader =
-            Reader { db, tables: vec![LiveTable { name: "optional_history".into(), rootpage: 2, column_names: Some(vec!["payload".into()]) }] };
+        let cancel = AtomicBool::new(false);
+        let reader = Reader {
+            cancel: &cancel,
+            db,
+            tables: vec![LiveTable { name: "optional_history".into(), rootpage: 2, column_names: Some(vec!["payload".into()]) }],
+        };
         let mut warnings = Vec::new();
         let rows = reader.optional_table("optional_history", &mut warnings).unwrap();
         assert!(rows.is_empty());
