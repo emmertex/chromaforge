@@ -222,7 +222,20 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let lab: Vec<[f32; 3]> = img
         .data
         .iter()
-        .map(|c| lightcraft_color::perceptual::oklab_from_2020(crate::masks::tonemap_for_select(c.map(|v| (v * gain).max(0.0)))))
+        // (non-finite samples made finite first: an infinity would tone-map to NaN and spread through the blurs)
+        .map(|c| {
+            let c = c.map(|v| {
+                let v = v * gain;
+                if v.is_finite() {
+                    v.max(0.0)
+                } else if v > 0.0 {
+                    1e6
+                } else {
+                    0.0
+                }
+            });
+            lightcraft_color::perceptual::oklab_from_2020(crate::masks::tonemap_for_select(c))
+        })
         .collect();
     let l = Plane { width: w, height: h, data: lab.iter().map(|p| p[0]).collect() };
     // texture: deviation from a small blur of lightness
@@ -525,6 +538,9 @@ mod tests {
         img.data[100] = [f32::INFINITY; 3];
         let a = analyze(&img);
         assert_eq!(a.subject.data.len(), 40 * 30);
+        for p in [&a.sky, &a.subject, &a.water, &a.vegetation] {
+            assert!(p.data.iter().all(|v| v.is_finite()));
+        }
         let grid = Plane::new(0, 0);
         let f = Frame::new(10, 10, &DevelopSettings::default(), true);
         assert!(sample(&grid, &f, 10, 10).data.iter().all(|v| *v == 0.0));
