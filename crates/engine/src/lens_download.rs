@@ -306,7 +306,8 @@ fn install(url: &str, settings: &Path, cancel: &AtomicBool, progress: &mut dyn F
             format!("could not save the lens database (is the disk full?): {e}")
         })?;
     }
-    let lenses = crate::lens_profiles::load(&fresh).map(|d| d.lenses.len()).unwrap_or(0);
+    let loaded = crate::lens_profiles::load(&fresh);
+    let lenses = loaded.as_ref().map_or(0, |d| d.lenses.len());
     if lenses == 0 {
         let _ = std::fs::remove_dir_all(&fresh);
         return Err("the download holds no lens profiles: it is not lensfun's database".into());
@@ -327,7 +328,7 @@ fn install(url: &str, settings: &Path, cancel: &AtomicBool, progress: &mut dyn F
     })?;
     let _ = std::fs::remove_dir_all(&old);
     save(Some(settings), Some(&target))?;
-    crate::lens_profiles::set_dir(Some(target));
+    crate::lens_profiles::set_dir_loaded(target, loaded.map(std::sync::Arc::new));
     Ok(lenses)
 }
 

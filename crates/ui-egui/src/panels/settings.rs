@@ -483,14 +483,7 @@ fn lens_profiles(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     });
     match st["download"]["state"].as_str() {
         Some("running") => {
-            let (done, total) = (st["download"]["bytes"].as_u64().unwrap_or(0), st["download"]["total"].as_u64().unwrap_or(0));
-            let mb = |b: u64| format!("{:.1}", b as f64 / 1_048_576.0);
-            let text = if total > 0 {
-                tr("Downloading the lens database… {done} of {total} MB").replace("{done}", &mb(done)).replace("{total}", &mb(total))
-            } else {
-                tr("Downloading the lens database… {done} MB").replace("{done}", &mb(done))
-            };
-            row(ui, t, "", |ui| ui.label(RichText::new(text).color(t.text_label)));
+            // progress and Cancel are in the activity stack; this only repaints so the buttons update when it ends
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
         Some("failed") => {

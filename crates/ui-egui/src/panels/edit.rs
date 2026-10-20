@@ -363,11 +363,12 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // the lens database changed since this photo was looked up: look again (its correction and preview follow),
+    // also while the Optics section is folded
+    if d.optics.lens_profile && app.session.lens_profiles_stale(id) {
+        let _ = app.session.refresh_lens_profiles(&[id]);
+    }
     section(app, ui, &d, "optics", "Optics", |app, ui, d| {
-        // the lens database changed since this photo was looked up: look again (its correction and preview follow)
-        if d.optics.lens_profile && app.session.lens_profiles_stale(id) {
-            let _ = app.session.refresh_lens_profiles(&[id]);
-        }
         let has_lens = app.session.catalog.photo(id).is_some_and(|p| p.embedded_lens.is_some());
         egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 4, bottom: 4 }).show(ui, |ui| {
             let mut ca = d.optics.remove_ca;
@@ -1822,6 +1823,7 @@ fn lens_note(app: &mut LightcraftApp, ui: &mut egui::Ui, id: lightcraft_catalog:
         Match::NoLensName => tr("No lens named in this photo's metadata.").to_string(),
         Match::NotFound(lens) => tr("No profile for {lens} in the lens database.").replace("{lens}", &lens),
         // found: the photo picks it up when it is looked up again
+        Match::NoFocal(lens) => tr("No focal length for {lens}: the photo has none and none was given.").replace("{lens}", &lens),
         Match::Found(_) | Match::Chosen(_) => return,
     };
     let r = ui.label(egui::RichText::new(text).size(11.0).color(t.text_dim));

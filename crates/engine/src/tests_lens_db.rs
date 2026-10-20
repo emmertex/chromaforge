@@ -277,7 +277,8 @@ fn a_chosen_lens_and_the_lens_list() {
     let photo = |s: &mut Session, id: u64, lens: Value| s.execute("lens.db.photo", &json!({"ids": [id], "lens": lens}));
     assert_eq!(photo(&mut s, nameless, Value::Null).unwrap()["state"], "noLensName");
     assert_eq!(photo(&mut s, nameless, chosen.clone()).unwrap(), json!({"state": "chosen", "lens": "Testcam 18-55mm f/3.5-5.6"}));
-    assert_eq!(photo(&mut s, nameless, json!("Testcam 18-55mm f/3.5-5.6")).unwrap()["state"], "chosen");
+    // no focal length from the caller or the photo: no correction could apply, which the status says
+    assert_eq!(photo(&mut s, nameless, json!("Testcam 18-55mm f/3.5-5.6")).unwrap()["state"], "noFocal");
     assert_eq!(photo(&mut s, named, Value::Null).unwrap()["state"], "found");
     assert_eq!(photo(&mut s, named, chosen.clone()).unwrap()["state"], "chosen");
     assert_eq!(photo(&mut s, named, json!({"model": "Nonesuch 1000mm"})).unwrap(), json!({"state": "notFound", "lens": "Nonesuch 1000mm"}));

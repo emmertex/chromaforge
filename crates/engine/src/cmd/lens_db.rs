@@ -105,7 +105,7 @@ pub(crate) fn given_lens(c: &str, p: &Value) -> Result<Option<crate::lens_profil
 
 /// What Develop ▸ Optics says about the photo's lens, in the order corrections apply: `embedded` (the file's own
 /// correction), `chosen` (the `lens` given, found in the database), `found` (matched by the metadata's lens name),
-/// or why there is none: `noDatabase`, `notRaw`, `noLensName`, `notFound` (with the lens name).
+/// or why there is none: `noDatabase`, `notRaw`, `noLensName`, `notFound` (with the lens name), `noFocal` (a lens is given but no focal length is known).
 fn photo_status(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "lens.db.photo";
     let given = given_lens(C, p)?;
@@ -119,6 +119,7 @@ fn photo_status(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Match::NotRaw) => json!({"state": "notRaw"}),
         Some(Match::NotFound(l)) => json!({"state": "notFound", "lens": l}),
         Some(Match::Found(l)) => json!({"state": "found", "lens": l}),
+        Some(Match::NoFocal(l)) => json!({"state": "noFocal", "lens": l}),
         Some(Match::Chosen(l)) => json!({"state": "chosen", "lens": l}),
     })
 }

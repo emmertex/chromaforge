@@ -245,7 +245,12 @@ impl Session {
                 return None;
             }
         }
-        Some(crate::lens_profiles::match_lens_with(None, &p.meta.lens, given))
+        let m = crate::lens_profiles::match_lens_with(None, &p.meta.lens, given);
+        let has_focal = given.and_then(|g| g.focal).or(p.meta.focal_mm.map(f64::from)).is_some_and(|f| f.is_finite() && f > 0.0);
+        match m {
+            Match::Chosen(name) if !has_focal => Some(Match::NoFocal(name)),
+            m => Some(m),
+        }
     }
 
     /// Point AI denoise at `dir` (or at no folder), dropping what was learned about the old one.

@@ -67,6 +67,16 @@ pub fn set_dir(dir: Option<PathBuf>) {
     c.generation = c.generation.wrapping_add(1);
 }
 
+/// [`set_dir`] with the database already read from `dir`, so the next lookup doesn't parse it again.
+pub fn set_dir_loaded(dir: PathBuf, db: Option<Arc<LensDb>>) {
+    let env = env_dir().is_some();
+    let mut c = cache();
+    c.dir = Some(dir);
+    // the environment overrides the folder: its database is loaded on demand as before
+    c.loaded = if env { None } else { Some(db) };
+    c.generation = c.generation.wrapping_add(1);
+}
+
 /// Read the database again (its files changed, e.g. after a download).
 pub fn reload() {
     let mut c = cache();
@@ -124,6 +134,9 @@ pub enum Match {
     Found(String),
     /// The database's profile for the lens given by the caller ([`GivenLens`], its name).
     Chosen(String),
+    /// A profile exists for the given lens (its name), but neither the caller nor the file supplies a focal
+    /// length, so no correction applies.
+    NoFocal(String),
 }
 
 /// Most characters of a given lens name (longer names are refused, never matched).
