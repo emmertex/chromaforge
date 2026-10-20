@@ -59,10 +59,14 @@ enum TextEncoding {
     Utf16Be,
 }
 
-/// Walk state: pages visited (cycle guard) and the consumer each row is handed to as it is decoded, so a table's
-/// memory is what the consumer keeps, not the table's size.
+/// Walk state: pages visited (cycle guard), the payload decoded so far and the consumer each row is handed to as it
+/// is decoded, so a table's memory is what the consumer keeps, not the table's size.
 struct WalkState<'f> {
     seen: HashSet<u32>,
+    /// Payload bytes decoded so far. An honest table's payloads never add up to more than the database itself; a
+    /// hostile one can point many cells at the same overflow chain, so the total is capped at the database's size.
+    payload_total: usize,
+    payload_limit: usize,
     sink: &'f mut dyn FnMut(Record) -> Result<(), String>,
 }
 
@@ -176,7 +180,8 @@ impl Database {
             return Err("table has too many columns".into());
         }
         let alias = self.rowid_aliases.get(&rootpage).copied();
-        let mut state = WalkState { seen: HashSet::new(), sink };
+        let payload_limit = usize::try_from(self.page_count).unwrap_or(usize::MAX).saturating_mul(self.page_size);
+        let mut state = WalkState { seen: HashSet::new(), payload_total: 0, payload_limit, sink };
         self.visit_table(rootpage, ncols, alias, 0, &mut state)
     }
 
@@ -229,6 +234,10 @@ impl Database {
                         return Err("SQLite record payload is too large".into());
                     }
                     let rowid = i64::from_be_bytes(read_varint(content, &mut at)?.to_be_bytes());
+                    state.payload_total = state.payload_total.saturating_add(payload_len);
+                    if state.payload_total > state.payload_limit {
+                        return Err("SQLite table payload is larger than the database".into());
+                    }
                     let payload = self.payload(page, at, payload_len)?;
                     let mut values = decode_record(&payload, ncols, self.encoding)?;
                     if let Some(index) = alias {
@@ -1239,5 +1248,42 @@ mod tests {
             if seen == 10 { Err("enough".into()) } else { Ok(()) }
         });
         assert_eq!((stopped, seen), (Err("enough".to_string()), 10));
+    }
+
+    /// A hostile table whose cells all point at one large record can't make a streaming walk decode more than the
+    /// database holds: the walk stops with an error instead of growing without bound.
+    #[test]
+    fn aliased_cells_cannot_decode_more_than_the_database() {
+        const PAGE: usize = 4096;
+        let mut main = vec![0u8; PAGE * 2];
+        let leaf = &mut main[PAGE..];
+        let mut cell = varint(3003);
+        cell.extend(varint(1));
+        cell.extend([3, 0xAE, 0x7D]); // header: one 3000-byte text value (serial type 6013)
+        cell.extend([b'a'; 3000]);
+        let at = 1000usize;
+        leaf[at..at + cell.len()].copy_from_slice(&cell);
+        leaf[0] = 0x0d;
+        leaf[3..5].copy_from_slice(&100u16.to_be_bytes());
+        leaf[5..7].copy_from_slice(&u16::try_from(at).unwrap().to_be_bytes());
+        for i in 0..100 {
+            leaf[8 + i * 2..10 + i * 2].copy_from_slice(&u16::try_from(at).unwrap().to_be_bytes());
+        }
+        let db = Database {
+            main,
+            overlay: HashMap::new(),
+            page_size: PAGE,
+            reserved: 0,
+            encoding: TextEncoding::Utf8,
+            page_count: 2,
+            tables: Vec::new(),
+            rowid_aliases: HashMap::new(),
+        };
+        let mut rows = 0;
+        let walked = db.for_each_row(2, 1, &mut |_| {
+            rows += 1;
+            Ok(())
+        });
+        assert!(walked.is_err() && rows > 0 && rows < 100, "{walked:?} after {rows} rows");
     }
 }
