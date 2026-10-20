@@ -219,7 +219,8 @@ their place (step 5); level overrides apply in every case.
 Data rules: no Adobe DCP/LCP data, no matrices from Adobe-converted DNGs, no tables from GPL projects (dcraw's
 `adobe_coeff` and its descendants, darktable, RawTherapee). `lightcraft-cli camdb extract NATIVE.dng…` prints entries from DNGs
 a camera wrote itself and refuses DNGs whose `Software` tag names Adobe software (DNG Converter, Lightroom, Camera Raw,
-Photoshop), the app's own DNG export, or is missing. `lightcraft-cli camdb show MAKE MODEL` prints the entry a camera resolves
+Photoshop), a third-party converter (darktable, RawTherapee, dnglab, LibRaw, dcraw, DxO, Capture One, Phase One), the
+app's own DNG export, or is missing; the GPL rule above concerns table sources, this one the converter's DNG. `lightcraft-cli camdb show MAKE MODEL` prints the entry a camera resolves
 to. A native DNG's matrices help that model's other raw format (a Pentax body's PEF files, say), whose files carry
 none. The database has no TOML entries yet.
 
