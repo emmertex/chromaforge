@@ -1,5 +1,11 @@
 # What's new in {app}
 
+## 2026-10-23
+
+### Navigator shows the crop's shape
+- The Navigator draws a cropped photo at its cropped shape (issue #455). It used to stretch the cropped preview back
+  to the original's proportions.
+
 ## 2026-10-21
 
 ### Sharper resampling in HDR and panorama merges
