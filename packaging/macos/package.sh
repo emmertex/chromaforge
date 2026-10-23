@@ -152,7 +152,7 @@ LEGACY_NAMES="$(awk '
     for (i = 2; i <= n; i += 2) print parts[i]
   }' "$BRAND_FILE_PATH")"
 while IFS= read -r legacy; do
-  [ -n "$legacy" ] && [ "$legacy" != "$NAME" ] || continue
+  if [ -z "$legacy" ] || [ "$legacy" = "$NAME" ]; then continue; fi
   echo "==> adding a hidden copy as $legacy.app for installs released under that name"
   ditto "$APP" "$STAGE/$legacy.app"
   chflags hidden "$STAGE/$legacy.app"
