@@ -2,10 +2,6 @@
 
 ## 2026-10-23
 
-### Navigator shows the crop's shape
-- The Navigator draws a cropped photo at its cropped shape (issue #455). It used to stretch the cropped preview back
-  to the original's proportions.
-
 ### Tab leaves the name field in New Album, New Smart Album and the name prompts
 - In New Album, New Smart Album, Save Metadata Preset and the other dialogs with one name field, the field has the
   keyboard focus when the dialog opens, and Tab now moves on to the check box, Cancel and OK (Shift+Tab goes back).
