@@ -1051,7 +1051,7 @@ fn smart_search(s: &mut Session, p: &Value) -> Result<Value> {
     });
     if bool_or(p, "show", false) {
         // an empty result shows an empty grid, not everything
-        s.filter.only = if photos.is_empty() { vec![PhotoId(u64::MAX)] } else { photos.clone() };
+        s.show_only(photos.clone());
         v["shown"] = json!(true);
     }
     if let Some(name) = str_param(p, "saveAs").map(str::trim).filter(|n| !n.is_empty()) {

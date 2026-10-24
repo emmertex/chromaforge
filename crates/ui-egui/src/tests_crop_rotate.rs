@@ -484,3 +484,31 @@ fn transform_is_a_section_of_the_edit_panel() {
     let id = h.app.session.active().expect("a photo");
     assert_eq!(h.app.session.develop_of(id).map(|d| d.geometry.upright), Some(lcc_develop::Upright::Guided));
 }
+
+/// Auto on a photo without a horizon or plumb lines says so, instead of leaving the photo as it is
+/// without a word.
+#[test]
+fn auto_straighten_says_when_it_finds_nothing() {
+    let dir = std::env::temp_dir().join(format!("lc-ui-auto-straighten-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let img = lcc_raster::Rgba8 { width: 64, height: 48, data: vec![[90, 120, 160, 255]; 64 * 48] };
+    let bytes = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
+    let path = dir.join("flat.png");
+    std::fs::write(&path, bytes).unwrap();
+    let mut session = lcc_engine::Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let app = LccApp::new(session, Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
+    for (method, params) in [("ui.set", json!({"view": "detail"})), ("engine.execute", json!({"command": "panel.crop"}))] {
+        let r = h.request(method, params, T);
+        assert_eq!(r["ok"], true, "{r}");
+    }
+    h.settle(SETTLE);
+    let r = h.request("ui.clickWidget", json!({"id": "button:straightenAuto"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(h.app.ui.toast.as_ref().is_some_and(|t| t.0 == "No horizon or vertical lines to level by"), "{:?}", h.app.ui.toast);
+    assert_eq!(angle(&h), 0.0);
+    let _ = std::fs::remove_dir_all(dir);
+}

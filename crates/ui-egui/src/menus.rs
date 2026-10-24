@@ -439,7 +439,7 @@ fn import_into_album(app: &mut LccApp, p: &Value, r: Result<Value, String>) -> R
 pub fn parse_rgb(v: &Value) -> Option<[u8; 3]> {
     if let Some(s) = v.as_str() {
         let h = s.strip_prefix('#').unwrap_or(s);
-        if h.len() != 6 {
+        if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
         let c = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();

@@ -39,18 +39,15 @@ impl std::error::Error for NotFollowed {}
 /// was opened from.
 pub fn resolve(stored: &str, document: Option<&Path>) -> Result<PathBuf, NotFollowed> {
     let document = document.map(|d| if d.is_relative() { std::path::absolute(d).unwrap_or_else(|_| d.to_path_buf()) } else { d.to_path_buf() });
-    let path = match craft_docpath::resolve(stored, document.as_deref()) {
-        Ok(path) => path,
+    match craft_docpath::resolve_absolute(stored, document.as_deref()) {
+        Ok(path) => Ok(path),
         // craft_docpath refuses a share other than the document's own; the fork follows it
-        Err(Refused::Network) => on_a_share(stored)?,
-        Err(why) => return Err(NotFollowed::Refused(why)),
-    };
-    // A path that is still relative would be taken from the working directory, which the
-    // document does not choose.
-    if path.is_relative() {
-        return Err(NotFollowed::NotHere);
+        Err(Refused::Network) => on_a_share(stored).and_then(|path| if path.is_relative() { Err(NotFollowed::NotHere) } else { Ok(path) }),
+        // A usable path that is not absolute here: a Windows path on macOS or Linux, or a
+        // relative path with no document folder to take it from.
+        Err(Refused::Invalid) if craft_docpath::resolve(stored, document.as_deref()).is_ok() => Err(NotFollowed::NotHere),
+        Err(r) => Err(NotFollowed::Refused(r)),
     }
-    Ok(path)
 }
 
 /// `stored`, a network path craft_docpath refused only because the document is not on its share:
@@ -106,5 +103,12 @@ mod tests {
         assert_eq!(resolve(mounted, Some(&doc)), Ok(PathBuf::from(mounted)));
         // still refused: devices
         assert_eq!(resolve(r"\\.\COM1", Some(&doc)), Err(NotFollowed::Refused(Refused::Device)));
+        #[cfg(windows)]
+        assert_eq!(resolve("Photos/2024:05/a.jpg", Some(&doc)), Err(NotFollowed::Refused(Refused::Invalid)));
+        #[cfg(not(windows))]
+        assert_eq!(resolve(r"C:\Photos\a.jpg", Some(&doc)), Err(NotFollowed::NotHere));
+        let gvfs = Path::new("/run/user/1000/gvfs/smb-share:server=tokyo,share=photos/catalog.lrcat");
+        #[cfg(not(windows))]
+        assert_eq!(resolve("a.jpg", Some(gvfs)), Ok(gvfs.with_file_name("a.jpg")));
     }
 }

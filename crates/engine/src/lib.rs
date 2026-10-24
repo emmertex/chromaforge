@@ -236,8 +236,8 @@ pub struct Session {
     pub catalog: Catalog,
     pub source: LibrarySource,
     pub filter: Filter,
-    /// The filter Library ▸ Enable Filters (`filter.toggleEnabled`) switched off, kept to restore.
-    pub filter_suspended: Option<Filter>,
+    /// The filter `library.toggleFilters` put aside (Library > Enable Filters off); not persisted.
+    pub(crate) shelved_filter: Option<Filter>,
     pub sort: Sort,
     pub selection: Selection,
     /// The grid order for the current source/filter/sort (cached by catalog revision).
@@ -516,7 +516,7 @@ impl Session {
             catalog: Catalog::new(),
             source: LibrarySource::All,
             filter: Filter::default(),
-            filter_suspended: None,
+            shelved_filter: None,
             sort: Sort::default(),
             selection: Selection::default(),
             visible: Vec::new().into(),
@@ -1212,6 +1212,19 @@ impl Session {
 
     // ---------------------------------------------------------------- library view
 
+    /// Shows just `photos` in the grid (none for an empty list), as Find Similar does: a filter put
+    /// aside by Enable Filters is forgotten, as for any filter set while it is off.
+    pub fn show_only(&mut self, photos: Vec<lcc_catalog::PhotoId>) {
+        self.shelved_filter = None;
+        self.filter.only_none = photos.is_empty();
+        self.filter.only = photos;
+    }
+
+    /// Library > Enable Filters is off: a filter is put aside (`library.toggleFilters`).
+    pub fn filters_off(&self) -> bool {
+        self.shelved_filter.is_some()
+    }
+
     /// Photos shown in the grid/filmstrip for the current source, filter and sort.
     pub fn visible(&mut self) -> &[PhotoId] {
         let mut key =
@@ -1386,6 +1399,7 @@ impl Session {
         }
         if source == LibrarySource::PreviousExport {
             f.only = self.previous_export_filter();
+            f.only_none = false;
         }
         f
     }
@@ -1447,6 +1461,7 @@ impl Session {
             }
             if self.source == LibrarySource::PreviousExport {
                 f.only = self.previous_export_filter();
+                f.only_none = false;
             }
             let n = self.catalog.query(&f, &self.sort).len();
             self.total = Some((key, n));

@@ -1599,7 +1599,7 @@ pub fn smart_search_box(app: &mut LccApp, ui: &mut egui::Ui) {
                     }
                 }
                 app.immich.smart_note = Some(trf!("{} photos", photos.len()));
-                app.session.filter.only = if photos.is_empty() { vec![lcc_catalog::PhotoId(u64::MAX)] } else { photos };
+                app.session.show_only(photos);
             }
             Err(e) => app.immich.smart_note = Some(e),
         }

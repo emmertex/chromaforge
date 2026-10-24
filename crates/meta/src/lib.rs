@@ -7,7 +7,7 @@
 //! - [`parse_xmp`] / [`write_xmp`] — XMP packets (interchange fields + the opaque `lc:settings` JSON).
 //! - [`parse_iptc`] — IPTC-IIM record 2 datasets.
 //! - [`parse_gpx`] — GPS track logs (GPX) for geotagging by capture time.
-//! - [`extract`] — all of the above for a whole file (JPEG, PNG, WebP, TIFF/DNG/raw, Canon CR3, HEIF/HEIC/AVIF).
+//! - [`extract`] — all of the above for a whole file (JPEG, PNG, WebP, TIFF/DNG/raw, PSD/PSB, Canon CR3, HEIF/HEIC/AVIF).
 //! - [`cr3`] — the Canon CR3 container (metadata blocks, XMP, the JPEG and raw tracks).
 #![forbid(unsafe_code)]
 
@@ -23,6 +23,7 @@ mod heif;
 mod iptc;
 mod legacy;
 pub mod mrw;
+mod psd;
 pub mod tags;
 mod xmp;
 mod xmp_merge;
@@ -379,13 +380,36 @@ pub fn exposure_display_of(t: f64) -> Option<String> {
 /// Precedence: EXIF, then IPTC fills gaps, then XMP overrides user fields and fills the rest.
 pub fn extract(bytes: &[u8]) -> Metadata {
     let e = embedded(bytes);
-    let mut m = e.exif.as_deref().map(read_exif).unwrap_or_default();
+    let exif = e.exif.as_deref().map(read_exif).unwrap_or_default();
+    let xmp = e.xmp.as_deref().and_then(|xmp| parse_xmp(xmp).ok()).map(|xmp| xmp.metadata);
+    extract_embedded(e, exif, xmp)
+}
+
+/// Read metadata while reporting malformed PSD/PSB containers, embedded EXIF, or embedded XMP instead of treating
+/// them as empty. Other container formats retain [`extract`]'s best-effort behavior.
+pub fn try_extract(bytes: &[u8]) -> Result<Metadata, ExtractError> {
+    let e = container::try_embedded(bytes)?;
+    let is_psd = bytes.starts_with(b"8BPS");
+    let exif = match e.exif.as_deref() {
+        Some(exif) if is_psd => try_read_exif(exif).map_err(|_| ExtractError::MalformedPsd)?,
+        Some(exif) => read_exif(exif),
+        None => Metadata::default(),
+    };
+    let xmp = match e.xmp.as_deref() {
+        Some(xmp) if is_psd => Some(parse_xmp(xmp).map_err(|_| ExtractError::MalformedPsd)?.metadata),
+        Some(xmp) => parse_xmp(xmp).ok().map(|xmp| xmp.metadata),
+        None => None,
+    };
+    Ok(extract_embedded(e, exif, xmp))
+}
+
+fn extract_embedded(e: Embedded, mut m: Metadata, xmp: Option<Metadata>) -> Metadata {
     if let Some(i) = e.iptc.as_deref() {
         m.fill_missing(&parse_iptc(i));
     }
-    if let Some(x) = e.xmp.as_deref().and_then(|x| parse_xmp(x).ok()) {
-        m.overlay_user_fields(&x.metadata);
-        m.fill_missing(&x.metadata);
+    if let Some(xmp) = xmp {
+        m.overlay_user_fields(&xmp);
+        m.fill_missing(&xmp);
     }
     if let Some(exif) = e.exif.as_deref() {
         m.fuji_recipe = fuji::recipe_from_exif(exif);
@@ -400,6 +424,23 @@ pub fn extract(bytes: &[u8]) -> Metadata {
 pub fn embeds_location(bytes: &[u8]) -> bool {
     heif::embeds_location(bytes).unwrap_or_else(|| extract(bytes).gps.is_some())
 }
+
+/// A container-level error reported by [`try_extract`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtractError {
+    /// The PSD/PSB header, image-resource section, or embedded EXIF/XMP structure is malformed.
+    MalformedPsd,
+}
+
+impl std::fmt::Display for ExtractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MalformedPsd => f.write_str("malformed PSD/PSB header, image-resource section, or embedded EXIF/XMP structure"),
+        }
+    }
+}
+
+impl std::error::Error for ExtractError {}
 
 /// A lens name from its focal and aperture range (Exif LensSpecification, or a Nikon maker note's Lens), written the
 /// way Lightroom shows a lens it has no name for: `50.0 mm f/1.8`, `18.0-135.0 mm f/3.5-5.6`.
@@ -468,6 +509,17 @@ mod tests {
         for t in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert_eq!(exposure_display_of(t), None, "{t}");
         }
+    }
+
+    #[test]
+    fn try_extract_keeps_non_psd_exif_best_effort() {
+        let payload = b"Exif\0\0not a TIFF stream";
+        let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+        jpeg.extend_from_slice(&u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+        jpeg.extend_from_slice(payload);
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+
+        assert!(matches!(try_extract(&jpeg), Ok(metadata) if metadata == Metadata::default()));
     }
 
     #[test]

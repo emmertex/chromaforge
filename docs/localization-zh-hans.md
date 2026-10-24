@@ -38,5 +38,6 @@
 
 `<PREFIX>_LANGUAGE=zh-hans <cli> snapshot ...` 可以渲染中文界面用于检查。
 
-翻译是否完整、两种目录的键与占位符是否一致、字形是否齐全，都由
+两种目录的占位符是否一致、字形是否齐全，由
 `cargo test -p lcc-ui-egui i18n::tests` 验证（字形检查只在指定 `CRAFT_FONTS_DIR` 时实际执行）。
+缺少的译文显示为英文，由 `i18n::tests::translation_gaps_report` 列出，不会让测试失败。

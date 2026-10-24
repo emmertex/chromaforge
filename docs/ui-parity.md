@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (upstream: diagnostic overlays noted as the zoom row's remainder; brush A / B presets; zoom row: overlays and soft proofing sharp at 1:1; gap closed; canvas tools by keyboard; focus-order test; ~50 unnamed hand-drawn widgets named) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** patch (upstream merge: context menus move instead of flashing, issue #1877); minor (upstream: diagnostic overlays noted as the zoom row's remainder; brush A / B presets; zoom row: overlays and soft proofing sharp at 1:1; gap closed; canvas tools by keyboard; focus-order test; ~50 unnamed hand-drawn widgets named) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 How the app's interaction compares with Lightroom's: views, panels, tools and handles, modifier
 keys, shortcuts, zoom, context menus and feel. Rows for individual menu items and shortcuts live in
@@ -71,7 +71,7 @@ auto-repeat used to flip the zoom back and forth (`crates/ui-egui/src/space_hand
 | Create Version | ⌘⇧S (+ ⇧M) | ⇧M (Windows: Ctrl+⇧S) | — |
 | Select None | ⌘⇧A (+ ⌘D) | ⌘D | — |
 
-**Library culling (KEYC-RATING):** `0–5`, `6–9` and `P/X/U` reach egui on macOS even when displayed in the native menu (adapted from PR #261; issue #283). `Shift+0–9` and `Shift+P/X/U` apply and advance once in every photo view (issue #1707); Presets has no default key. See [library shortcuts](library-shortcuts.md) for the verified Classic mapping and regression coverage. Rating `[` / `]` (grids), \` flag toggle (in the Classic keymap; `photo.cycleFlag` cycles unflagged → pick → reject → unflagged), ⌘↑ / ⌘↓ raising / lowering the flag (the native menu leaves ⌘↑ / ⌘↓ to egui so Compare/Survey act on the active photo), `\` filter bar and ⌘L Library ▸ Filters ▸ Enable Filters (`filter.toggleEnabled`, keeps the filter while off) are bound too (G28).
+**Library culling (KEYC-RATING):** `0–5`, `6–9` and `P/X/U` reach egui on macOS even when displayed in the native menu (adapted from PR #261; issue #283). `Shift+0–9` and `Shift+P/X/U` apply and advance once in every photo view (issue #1707); Presets has no default key. See [library shortcuts](library-shortcuts.md) for the verified Classic mapping and regression coverage. Rating `[` / `]` (grids), \` flag toggle (in the Classic keymap; `photo.cycleFlag` cycles unflagged → pick → reject → unflagged), ⌘↑ / ⌘↓ raising / lowering the flag (the native menu leaves ⌘↑ / ⌘↓ to egui so Compare/Survey act on the active photo), `\` filter bar and ⌘L Library ▸ Filters ▸ Enable Filters (`library.toggleFilters`, keeps the filter while off) are bound too (G28).
 
 **Grid thumbnail size (KEYC-COMPARE):** Classic's `=` and `-` increase and decrease the Grid thumbnail size (same keys on macOS and Windows; `+` also works for the larger size here, as Shift+`=` or the keypad). They step the bottom-bar slider by 30 pt inside its 90–480 pt range, in Photo Grid, Square Grid and People only; Detail, Compare, Survey and Reference ignore them, and ⌘= / ⌘− stay Zoom In / Out. See [library shortcuts](library-shortcuts.md).
 
@@ -85,7 +85,7 @@ auto-repeat used to flip the zoom back and forth (`crates/ui-egui/src/space_hand
 
 ## Accessibility audit
 
-`crates/ui-egui/tests/accessibility.rs` walks the AccessKit tree egui hands to VoiceOver, Narrator and
+`crates/ui-egui/tests/it/accessibility.rs` walks the AccessKit tree egui hands to VoiceOver, Narrator and
 AT-SPI, headless, in Photo Grid, Square Grid, Detail, Compare, Survey and Reference, in each right
 panel (Edit, Profiles, Crop, Remove, Masking, Red Eye, Versions, Activity, Keywords, Info) and in 13
 dialogs (Export, Copy / Paste Settings, Create Preset, Rename, New Album, New Smart Album, Capture
@@ -154,6 +154,7 @@ establish OS keyboard delivery or cross-platform acceptance.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-16 | minor | Shortcuts: Space held over a tool on the photo pans and click-zooms (Lightroom's temporary hand), a tap still toggles, auto-repeat no longer toggles (issue #1895) |
+| 2026-10-15 | patch | Context menus: a right-click elsewhere on the same widget while its menu is open moves the menu to the pointer; before it flashed at the new spot and closed (issue #1877); every site uses `widgets::context_menu`; 70% unchanged |
 | 2026-10-14 | patch | Shortcuts: Visualize HDR loses its default ⇧H, which cycles the Tool Overlay (issue #224); both PRs had claimed it |
 | 2026-10-12 | minor | Accessibility: crop handles, spots, gradient handles and mask pins operable by keyboard with AccessKit names and values; Tab order test for the right panels; hand-drawn icons and rows named; 55% → 75%; UI remaining 34–58 h → 32–54 h |
 | 2026-10-13 | minor | Shortcuts: Tool Overlay modes for spot and mask pins on ⇧H (H stays Remove; issue #224), listed with the deliberate differences; dropped from the missing list |

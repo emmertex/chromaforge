@@ -1428,6 +1428,22 @@ pub(crate) mod tests {
         assert_eq!(shutter(-1.0), "", "no time, no reading");
     }
 
+    #[test]
+    fn psd_probe_reads_embedded_capture_time_gps_and_title() {
+        let capture = lcc_meta::DateTime::parse_iso("2023-05-14T14:40:39").unwrap();
+        let metadata = lcc_meta::Metadata {
+            capture_time: Some(capture),
+            gps: Some(lcc_meta::Gps { latitude: 45.0, longitude: 7.0, altitude: None }),
+            title: Some("PSD metadata".into()),
+            ..Default::default()
+        };
+        let bytes = crate::tests_xmp::synthetic_psd_with_metadata(&metadata);
+        let probe = probe_bytes("metadata.psd", &bytes).unwrap();
+        assert_eq!(probe.captured.as_deref(), Some("2023-05-14T14:40:39"));
+        assert_eq!(probe.meta.gps, Some((45.0, 7.0)));
+        assert_eq!(probe.meta.title, "PSD metadata");
+    }
+
     use super::*;
     use lcc_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
 
@@ -3131,7 +3147,7 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A Sony ARW of `model`: a 64 × 48 uncompressed 14-bit CFA strip in a SubIFD (as `crates/raw/tests/vendor_robust.rs`
+    /// A Sony ARW of `model`: a 64 × 48 uncompressed 14-bit CFA strip in a SubIFD (as `crates/raw/tests/it/vendor_robust.rs`
     /// lays it out) whose IFD carries the full-frame 16–35 mm distortion table (tag 0x7037).
     fn sony_arw(model: &str) -> Vec<u8> {
         use lcc_tiff::tags::{self as t, photometric};

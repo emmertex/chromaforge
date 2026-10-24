@@ -1501,5 +1501,6 @@
   "Hue Low": "Tono bajo",
   "Hue High": "Tono alto",
   "Red/Cyan": "Rojo/cian",
-  "Blue/Yellow": "Azul/amarillo"
+  "Blue/Yellow": "Azul/amarillo",
+  "No horizon or vertical lines to level by": "No hay horizonte ni líneas verticales con que nivelar"
 }

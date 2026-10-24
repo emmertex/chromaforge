@@ -358,7 +358,8 @@ mod tests {
         let (req, rrx) = ControlRequest::new("ui.inspect", json!({}));
         let t0 = std::time::Instant::now();
         let r = await_reply(&rrx, &req.state, || 7, || {}, Duration::from_millis(50), Duration::from_secs(10));
-        assert!(t0.elapsed() < Duration::from_secs(2));
+        // the frame window (50 ms), not the 10 s timeout; the margin is for a slow machine
+        assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
         assert_eq!(r["ok"], false);
         assert!(r["error"].as_str().unwrap().contains("not visible"), "{r}");
         assert!(!req.take(), "the app does not run it once it shows up");

@@ -319,7 +319,7 @@ JSON object into the params. Quote values with brackets or spaces for your shell
 
 ## Tests
 
-- `crates/mcp/tests/e2e.rs` — M0.9 acceptance: over the stdio framing, set exposure and render;
+- `crates/mcp/tests/it/e2e.rs` — M0.9 acceptance: over the stdio framing, set exposure and render;
   checks the decoded PNG gets brighter/darker. Runs headless and through the TCP transport
   (`Remote`) against a stand-in control server; also import → render → JPEG export of a real file.
 - `apps/cli/tests/cli.rs` — spawns `<cli> mcp` with real pipes; `render`;

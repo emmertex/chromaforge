@@ -33,13 +33,23 @@ fn commit_keywords(s: &mut Session, label: &str, op: lcc_catalog::Op, follow: im
     if let Some(k) = s.filter.keyword.clone() {
         s.filter.keyword = follow(&k);
     }
-    let mut kept: Vec<String> = Vec::new();
-    for k in std::mem::take(&mut s.filter.keywords).iter().filter_map(|k| follow(k)) {
-        if !kept.iter().any(|x| x.eq_ignore_ascii_case(&k)) {
-            kept.push(k);
+    let keep_followed = |keywords: &mut Vec<String>| {
+        let mut kept: Vec<String> = Vec::new();
+        for k in std::mem::take(keywords).iter().filter_map(|k| follow(k)) {
+            if !kept.iter().any(|x| x.eq_ignore_ascii_case(&k)) {
+                kept.push(k);
+            }
         }
+        *keywords = kept;
+    };
+    keep_followed(&mut s.filter.keywords);
+    // a filter put aside by Enable Filters follows the keyword too
+    if let Some(f) = s.shelved_filter.as_mut() {
+        if let Some(k) = f.keyword.clone() {
+            f.keyword = follow(&k);
+        }
+        keep_followed(&mut f.keywords);
     }
-    s.filter.keywords = kept;
     Ok(json!({"changed": photos, "listed": listed}))
 }
 

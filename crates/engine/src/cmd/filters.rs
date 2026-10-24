@@ -38,6 +38,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad(C, "missing `name`"))?;
     let f = s.filter_presets.iter().find(|f| f.name.eq_ignore_ascii_case(name)).ok_or_else(|| bad(C, format!("no filter preset `{name}`")))?;
     s.filter = f.filter.clone();
+    s.shelved_filter = None;
     Ok(json!({"photos": s.visible().len()}))
 }
 
@@ -53,16 +54,6 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(list(s))
 }
 
-/// Library ▸ Enable Filters (Classic ⌘L): switches the filter off, keeping its settings, and back on.
-fn toggle_enabled(s: &mut Session) -> Value {
-    match s.filter_suspended.take() {
-        Some(f) if s.filter == Filter::default() => s.filter = f,
-        _ if s.filter != Filter::default() => s.filter_suspended = Some(std::mem::take(&mut s.filter)),
-        _ => {}
-    }
-    json!({"enabled": s.filter_suspended.is_none(), "photos": s.visible().len()})
-}
-
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "filter.presets", "Filter Presets", [], None, "{} → [{name, filter}]", always, |s, _| Ok(list(s))),
@@ -76,15 +67,6 @@ pub fn specs() -> Vec<CommandSpec> {
             save
         ),
         cmd!("filter.applyPreset", "Apply Filter Preset", [], None, "{name} — replaces the current filter → {photos}", always, apply),
-        cmd!(
-            "filter.toggleEnabled",
-            "Enable Filters",
-            ["Library", "Filters"],
-            Some("Cmd+L"),
-            "{} — switches the current filter off (kept) or back on → {enabled, photos}",
-            always,
-            |s, _| Ok(toggle_enabled(s))
-        ),
         cmd!("filter.deletePreset", "Delete Filter Preset", [], None, "{name}", always, delete),
     ]
 }

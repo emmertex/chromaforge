@@ -4,7 +4,8 @@
 //! Every file must be recognised, carry an embedded JPEG preview (optional for DNG, generic CFA TIFF,
 //! older Panasonic RAW and HEVC-preview CR3), and either decode to a valid image or report
 //! `Unsupported` for one of the variants we know we don't decode yet. Prints decode times
-//! (`cargo test -p lcc-raw --release --test corpus -- --nocapture`).
+//! (`cargo test -p lcc-raw --release --test it corpus:: -- --nocapture --skip _corpus::`; the
+//! `--skip` leaves out the other `*_corpus` modules).
 
 use lcc_raw::{RawError, RawFormat, decode, embedded_preview, probe, probe_info};
 use std::path::{Path, PathBuf};
@@ -45,10 +46,12 @@ fn corpus_raw_decodes() {
         let tp = t0.elapsed().as_secs_f64() * 1e3;
         // DNG and generic CFA TIFF previews can be absent or uncompressed RGB; other vendor raws embed a JPEG,
         // except the Panasonic `.RAW` files of 2005–2007, Canon's explicit HEVC preview tracks and Mamiya MEF.
+        // A Hasselblad 3FR / FFF without a JPEG hands its 8-bit RGB image on as a baseline TIFF (`rgb_preview`).
         if let Some(p) = &preview {
             let jpeg = p.starts_with(&[0xff, 0xd8]) && p.ends_with(&[0xff, 0xd9]);
             let jxl = p.starts_with(&[0xff, 0x0a]) || p.starts_with(b"\0\0\0\x0cJXL ");
-            assert!(jpeg || jxl, "{name}: preview is neither a JPEG nor a JPEG XL file");
+            let tiff = fmt == RawFormat::CfaTiff && p.starts_with(b"II*\0");
+            assert!(jpeg || jxl || tiff, "{name}: preview is neither a JPEG, a JPEG XL nor (Hasselblad) a TIFF file");
         } else {
             let hevc_preview = fmt == RawFormat::Cr3
                 && lcc_meta::cr3::parse_cr3(&bytes)
@@ -1088,7 +1091,7 @@ fn corpus_minolta_mrw() {
 #[test]
 fn corpus_fujifilm_compressed_samples() {
     use sha2::{Digest, Sha256};
-    let checksums = include_str!("../../../docs/raf-corpus.sha256");
+    let checksums = include_str!("../../../../docs/raf-corpus.sha256");
     let cases: &[(&str, usize, usize, u64, u64)] = &[
         ("raf-fuji-gfx100-3773.raf", 11808, 8754, 483668733090, 6453395759968151080),
         ("raf-fuji-gfx100-3775.raf", 11808, 8754, 120434414850, 6144091676930008551),

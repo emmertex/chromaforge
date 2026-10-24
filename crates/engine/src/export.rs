@@ -1994,10 +1994,17 @@ impl PreparedExport {
                 };
                 let Some(dng) = dng else {
                     // the file is copied byte for byte: refuse rather than leak a location it embeds
-                    if remove_location && lcc_meta::embeds_location(&bytes) {
-                        // DNG only for what the DNG export below takes
-                        let instead = if lcc_raw::probe(&bytes).is_some() { "JPEG, TIFF or DNG" } else { "JPEG or TIFF" };
-                        return Err(format!("{label}: can't remove the location from an original file that embeds GPS; export as {instead} instead"));
+                    if remove_location {
+                        // fail closed: a PSD whose metadata can't be read might hide a location
+                        let metadata = lcc_meta::try_extract(&bytes)
+                            .map_err(|e| format!("{label}: can't verify location metadata in this original file: {e}"))?;
+                        if metadata.gps.is_some() || lcc_meta::embeds_location(&bytes) {
+                            // DNG only for what the DNG export below takes
+                            let instead = if lcc_raw::probe(&bytes).is_some() { "JPEG, TIFF or DNG" } else { "JPEG or TIFF" };
+                            return Err(format!(
+                                "{label}: can't remove the location from an original file that embeds GPS; export as {instead} instead"
+                            ));
+                        }
                     }
                     return Ok(Exported {
                         file_name,

@@ -495,7 +495,7 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 app.ui.tool = if on { String::new() } else { "straighten".into() };
             }
             if cmd_icon(app, ui, "straightenAuto", Icon::Auto, "Auto Straighten", Some("crop.autoStraighten"), false).clicked() {
-                let _ = app.run("crop.autoStraighten", json!({}));
+                app.auto_straighten(ui.ctx());
             }
         });
     });

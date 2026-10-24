@@ -1706,5 +1706,6 @@
   "Hue Low": "Тон (низ)",
   "Hue High": "Тон (верх)",
   "Red/Cyan": "Красный/голубой",
-  "Blue/Yellow": "Синий/жёлтый"
+  "Blue/Yellow": "Синий/жёлтый",
+  "No horizon or vertical lines to level by": "Нет горизонта или вертикальных линий для выравнивания"
 }

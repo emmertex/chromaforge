@@ -1497,5 +1497,6 @@
   "Hue Low": "色相下限",
   "Hue High": "色相上限",
   "Red/Cyan": "紅／青",
-  "Blue/Yellow": "藍／黃"
+  "Blue/Yellow": "藍／黃",
+  "No horizon or vertical lines to level by": "沒有可用於校平的地平線或垂直線"
 }

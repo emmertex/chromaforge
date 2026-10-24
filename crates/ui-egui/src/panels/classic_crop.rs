@@ -57,7 +57,7 @@ pub(super) fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 app.ui.tool = if on { String::new() } else { "straighten".into() };
             }
             if text_button(ui, "straightenAuto", crate::i18n::tr("Auto"), false).clicked() {
-                let _ = app.run("crop.autoStraighten", json!({}));
+                app.auto_straighten(ui.ctx());
             }
         });
         ui.add_space(4.0);

@@ -1,5 +1,3 @@
-#![cfg(all(feature = "jxl", not(target_arch = "wasm32")))]
-
 use lcc_codecs::exif::minimal_exif;
 use lcc_codecs::*;
 use lcc_raster::Rgba8;

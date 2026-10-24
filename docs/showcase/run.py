@@ -6,6 +6,19 @@ control-token-7980 in its settings folder (docs/control-protocol.md → Authenti
 and the settings folder's name come from brand.toml."""
 import json, os, socket, sys, time, tomllib
 from pathlib import Path
+
+def _jsonl_path(arg):
+    """Resolve the CLI file argument; require an existing readable regular file."""
+    path = Path(arg).resolve()
+    if not path.is_file():
+        sys.exit(f"not a readable file: {arg}")
+    try:
+        with path.open("rb"):
+            pass
+    except OSError:
+        sys.exit(f"not a readable file: {arg}")
+    return path
+
 PORT = 7980
 BRAND = tomllib.loads((Path(__file__).resolve().parents[2] / "brand.toml").read_text(encoding="utf-8"))
 PREFIX = BRAND["product"]["env_prefix"]
@@ -36,7 +49,7 @@ def call(method, params):
     if not auth.get("ok"):
         return auth
     return line(s, {"id": 1, "method": method, "params": params})
-for line in open(sys.argv[1]):
+for line in open(_jsonl_path(sys.argv[1])):
     line = line.strip()
     if not line or line.startswith("#"): continue
     r = json.loads(line)

@@ -201,7 +201,7 @@ private 3:2 & 4:3 examples verified through native rendering & full-resolution 1
 
 CR3 lossless Bayer and version 0x100/0x200 C-RAW sensor decoding is verified pixel-exactly on Canon M50, R100 and R8, and EOS R5 Mark II C-RAW decodes from sensor data (four CC0 files pinned); any other CR3, or one that fails to decode, opens from its embedded JPEG as before. See [`docs/cr3.md`](docs/cr3.md) for coding limits, reference provenance and colour limitations.
 
-Decoded (CC0 corpus from raw.pixls.us, `cargo xtask corpus --download`, `crates/raw/tests/corpus.rs`): DNG (uncompressed,
+Decoded (CC0 corpus from raw.pixls.us, `cargo xtask corpus --download`, `crates/raw/tests/it/corpus.rs`): DNG (uncompressed,
 LJ92, lossy JPEG / Smart Previews, Deflate, float, linear, DNG 1.7 JPEG XL tiles: lossless ones bit-exact on synthetic files,
 lossy ones unclipped in the declared linear primaries, checked on one real file), CR2, ARW (uncompressed, ARW2, LJ92; as-shot white balance and black level of pre-2017 bodies from the encrypted
 `SR2SubIFD`, decrypted with a keystream recovered by black-box analysis, `crates/raw/src/vendor/sr2.rs`, `crates/raw/src/vendor/arw.rs`), NEF/NRW uncompressed and Huffman-compressed (lossless, lossy type 1/2, 12/14-bit), RAF uncompressed and lossless/lossy compressed (Bayer and
@@ -257,7 +257,7 @@ database is read-only; the app owns subsequent edits. See `docs/lightroom-catalo
 - 2026-10-18: Minolta / Konica Minolta MRW decodes from sensor data (12-bit packed and 16-bit words,
   RGGB and GBRG, as-shot WB from `WBG`); DiMAGE 7, 7Hi, A1, A2, A200 and Dynax / Maxxum 7D verified on
   CC0 files. 551 models verified, 201 preview-only; headline numbers unchanged.
-  checked against the camera JPEG (`crates/raw/tests/canon_pentax_corpus.rs`). 334 models verified, ~50% of
+  checked against the camera JPEG (`crates/raw/tests/it/canon_pentax_corpus.rs`). 334 models verified, ~50% of
   photographers on a verified body; headline numbers unchanged.
 - 2026-10-12 (upstream): Mamiya MEF (ZD) decodes from sensor data and is imported; verified on a CC0 file. 241 models
   verified, 35 unsupported; headline numbers unchanged.
@@ -269,7 +269,7 @@ database is read-only; the app owns subsequent edits. See `docs/lightroom-catalo
   decode. The EOS R6 Mark III gets its as-shot white balance (`ColorData` 66). 259 models verified; RAW
   decoding 77% → 83%; mainstream ~49% → ~51%, essentials ~64% → ~65%, full ~61%.
 - 2026-10-12 (upstream): 117 Nikon and Fujifilm bodies verified, one CC0 raw.pixls.us file each pinned and checked
-  against the camera JPEG (`crates/raw/tests/body_corpus.rs`); the sweep found COOLPIX 5700 / 8400 / 8800
+  against the camera JPEG (`crates/raw/tests/it/body_corpus.rs`); the sweep found COOLPIX 5700 / 8400 / 8800
   decoding wrongly. 354 models verified, ~58% of photographers on a verified body; headline numbers unchanged.
 - 2026-10-11 (upstream): Sony ILCA-99M2 (α99 II) camera colour: bundled profile from 144 photos; on 30 withheld photos
   mean ΔE vs the camera JPEG 5.11 → 4.87, 25 of them closer.

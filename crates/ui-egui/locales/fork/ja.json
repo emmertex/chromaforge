@@ -1498,5 +1498,6 @@
   "Hue Low": "色相下限",
   "Hue High": "色相上限",
   "Red/Cyan": "赤／シアン",
-  "Blue/Yellow": "青／黄"
+  "Blue/Yellow": "青／黄",
+  "No horizon or vertical lines to level by": "水平の基準になる地平線や垂直線が見つかりません"
 }

@@ -23,3 +23,4 @@
 
 # aider
 .aider*
+__pycache__/

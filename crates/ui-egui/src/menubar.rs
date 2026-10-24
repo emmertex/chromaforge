@@ -305,7 +305,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
         "More Imports",
         &["dialog.importCatalog", "file.importLightroom", "file.importImmich", "---", "file.importPresets", "file.importKeywords"],
     ),
-    ("Library", "Filters", &["view.filterBar", "filter.toggleEnabled", "library.clearFilter", "---", "library.refresh", "library.holdView"]),
+    ("Library", "Filters", &["view.filterBar", "library.toggleFilters", "library.clearFilter", "---", "library.refresh", "library.holdView"]),
     (
         "View",
         "Before/After",
@@ -498,6 +498,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.beforeAfterSplit" => Some(u.before_after == crate::state::BeforeAfter::Split),
         "view.autoAdvance" => Some(u.auto_advance),
         "view.filterBar" => Some(u.filter_bar),
+        "library.toggleFilters" => Some(!app.session.filters_off()),
         "view.soloSections" => Some(u.single_panel),
         "view.navigator" => Some(u.navigator),
         "view.layoutImage" => Some(u.layout_image.show && !u.layout_image.path.trim().is_empty()),
@@ -1693,6 +1694,24 @@ mod tests {
         let p = app.session.catalog.photo(id).unwrap();
         assert_eq!(p.file_name, "one-renamed.png");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Regression test for #49: the in-window menu headings (File, Edit, ...) sat only egui's default
+    // 8 px apart, too close to read or aim at. (The fork's longer bar narrows the gap down to
+    // MIN_TITLE_GAP when the window is tight, never below.)
+    #[test]
+    fn in_window_menu_headings_are_spaced_apart() {
+        let mut a = app();
+        a.native_menu = false;
+        let mut h = crate::headless::Headless::new(a, [1400.0, 900.0], 1.0);
+        h.step();
+        h.step();
+        let rect = |id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r).unwrap_or_else(|| panic!("{id} is on screen"));
+        let titles: Vec<_> = MENUS.iter().map(|t| rect(&format!("menu:{t}"))).collect();
+        for pair in titles.windows(2) {
+            let gap = pair[1].left() - pair[0].right();
+            assert!(gap >= MIN_TITLE_GAP - 0.5, "headings {:?} and {:?} are only {gap} px apart", pair[0], pair[1]);
+        }
     }
 
     /// A backup the host refuses (changes still unsaved, issue #1508) says why when started from

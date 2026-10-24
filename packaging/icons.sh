@@ -18,9 +18,15 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 if command -v resvg >/dev/null; then
-  render() { resvg -w "$2" -h "$2" "$1" "$3" </dev/null; }
+  render() {
+    local src="$1" size="$2" out="$3"
+    resvg -w "$size" -h "$size" "$src" "$out" </dev/null
+  }
 elif command -v rsvg-convert >/dev/null; then
-  render() { rsvg-convert -w "$2" -h "$2" -o "$3" "$1" </dev/null; }
+  render() {
+    local src="$1" size="$2" out="$3"
+    rsvg-convert -w "$size" -h "$size" -o "$out" "$src" </dev/null
+  }
 else
   echo "error: resvg (or rsvg-convert) not found (brew install resvg)" >&2
   exit 1
@@ -31,7 +37,7 @@ fi
 # widening the viewBox (512 / 0.805 = 636, so 62 units each side).
 MAC="$TMP/macos.svg"
 N="$(sed -n 's/.*viewBox="0 0 \([0-9]*\) \1".*/\1/p' "$SVG" | head -n 1)"
-[ -n "$N" ] || { echo "error: $SVG needs a square viewBox=\"0 0 N N\"" >&2; exit 1; }
+[[ -n "$N" ]] || { echo "error: $SVG needs a square viewBox=\"0 0 N N\"" >&2; exit 1; }
 M=$(((N * 1000 / 805 - N) / 2)) # margin each side
 sed "s/viewBox=\"0 0 $N $N\"/viewBox=\"-$M -$M $((N + 2 * M)) $((N + 2 * M))\"/" "$SVG" >"$MAC"
 

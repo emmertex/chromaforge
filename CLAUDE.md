@@ -173,7 +173,7 @@ of it. Full standard: `../craftrules/standards/never-crash.md`
 - Shared real-file test corpora (Photoshop-authored PSDs, etc.) live in [`storytold/photocraft-corpus`](https://github.com/storytold/photocraft-corpus), explained in [craftrules `standards/test-corpora.md`](https://github.com/storytold/craftrules/blob/main/standards/test-corpora.md). Never commit large binary fixtures to this repo; fetch them pinned by commit and sha256-verified, as PhotoCraft does with `cargo xtask corpus`.
 
 ## Testing & performance (do this often)
-- Unit/property tests next to the code; end-to-end tests drive real binaries (`crates/mcp/tests/e2e.rs`,
+- Unit/property tests next to the code; end-to-end tests drive real binaries (`crates/mcp/tests/it/e2e.rs`,
   `apps/cli/tests/`). Tests check behaviour and invariants, not implementation details: no change-detector tests
   (exact sizes, positions, frame counts, constants, labels) and no golden-output tests for image/decode quality. Crash
   fixes need a hostile-input no-panic check. Prefer the SIL harness (`cargo xtask sil`, `docs/testing-sil.md`) and

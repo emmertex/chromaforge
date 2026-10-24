@@ -47,7 +47,7 @@ Alternative keymap set. Keys that work without a menu item (ratings `0`–`5`, l
 | `Cmd+Alt+N` | New Smart Collection from Filter… |  | `dialog.newSmartAlbum` |
 | `Cmd+F` | Find… |  | `view.focusSearch` |
 | `F2` | Rename Photos… |  | `dialog.rename` |
-| `Cmd+L` | Enable Filters |  | `filter.toggleEnabled` |
+| `Cmd+L` | Enable Filters |  | `library.toggleFilters` |
 
 ## Photo
 
