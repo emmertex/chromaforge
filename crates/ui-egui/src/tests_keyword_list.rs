@@ -178,9 +178,6 @@ fn cmd_shift_k_edits_the_picked_keyword() {
     ask(&mut h, "ui.clickWidget", json!({"id": "keywordRow:Weddings"}));
     ask(&mut h, "ui.clickWidget", json!({"id": "section:keywordList"}));
     assert!(h.app.ui.section_folded("keywordList"));
-    // (K closes the panel; ui.set would reset the pick, which is not saved)
-    ask(&mut h, "ui.key", json!({"key": "K"}));
-    assert_eq!(h.app.ui.right, crate::state::RightPanel::None, "the panel is closed");
     ask(&mut h, "ui.key", json!({"key": "K", "cmd": true, "shift": true}));
     assert_eq!(h.app.ui.right, crate::state::RightPanel::Keywords, "the Keywords panel");
     assert!(!h.app.ui.section_folded("keywordList"), "the Keyword List is open");

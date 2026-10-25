@@ -1410,7 +1410,7 @@ mod tests {
     /// EXIF chunk and a JPEG's first Exif segment, and none for a file that states none.
     #[test]
     fn the_file_orientation_is_found_after_the_image_data() {
-        let dir = std::env::temp_dir().join(format!("lightcraft-file-orientation-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lcc-file-orientation-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let exif = lcc_meta::write_exif(&lcc_meta::Metadata { orientation: Some(lcc_meta::Orientation::Rotate90), ..Default::default() });
