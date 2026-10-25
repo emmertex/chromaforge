@@ -97,6 +97,17 @@ pub struct XmpData {
     pub values: BTreeMap<String, XmpValue>,
 }
 
+impl XmpData {
+    /// The pixel size the packet's regions were drawn on (`mwg-rs:AppliedToDimensions`), unless one of them says how
+    /// the photo was turned (`mwg-rs:Rotation`: Lightroom's boxes, which the reader already turns upright). It tells
+    /// boxes drawn on the photo as stored from boxes drawn on it upright: see [`crate::upright_regions`].
+    pub fn regions_drawn_on(&self) -> Option<(f64, f64)> {
+        let regions = self.values.get("mwg-rs:Regions")?;
+        let turned = regions.field("mwg-rs:RegionList").is_some_and(|l| l.items().iter().any(|r| r.field("mwg-rs:Rotation").is_some()));
+        if turned { None } else { applied_to(regions) }
+    }
+}
+
 /// A structured XMP value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum XmpValue {
@@ -437,15 +448,20 @@ fn parse_gps_coord(s: &str) -> Option<f64> {
 /// Malformed or out-of-range entries are skipped rather than rejecting the whole list: one bad region
 /// (from Lightroom, digiKam, Picasa, or a hand-edited file) shouldn't hide the rest.
 fn parse_regions(regions: &XmpValue) -> Vec<Region> {
-    // `AppliedToDimensions` documents the pixel size regions were authored against. It's only consulted
+    // `AppliedToDimensions` documents the pixel size regions were authored against. Here it's only consulted
     // for the rare region whose own Area is in pixel units instead of MWG's normalized default below.
-    let px_dims = regions.field("mwg-rs:AppliedToDimensions").and_then(|d| {
+    let px_dims = applied_to(regions);
+    let Some(list) = regions.field("mwg-rs:RegionList") else { return Vec::new() };
+    list.items().iter().filter_map(|item| parse_one_region(item, px_dims)).collect()
+}
+
+/// `mwg-rs:AppliedToDimensions` of a `mwg-rs:Regions` struct: (width, height) in pixels, both positive.
+fn applied_to(regions: &XmpValue) -> Option<(f64, f64)> {
+    regions.field("mwg-rs:AppliedToDimensions").and_then(|d| {
         let w = d.field("stDim:w").and_then(XmpValue::text).and_then(parse_number)?;
         let h = d.field("stDim:h").and_then(XmpValue::text).and_then(parse_number)?;
         (w > 0.0 && h > 0.0).then_some((w, h))
-    });
-    let Some(list) = regions.field("mwg-rs:RegionList") else { return Vec::new() };
-    list.items().iter().filter_map(|item| parse_one_region(item, px_dims)).collect()
+    })
 }
 
 fn parse_one_region(item: &XmpValue, px_dims: Option<(f64, f64)>) -> Option<Region> {
@@ -1329,6 +1345,36 @@ mod tests {
         assert!(near(regions[2].rect, [0.2, 0.25, 0.4, 0.55]), "0 is untouched: {:?}", regions[2].rect);
         assert!(near(regions[3].rect, [0.6, 0.45, 0.8, 0.75]), "π (orientation 3): {:?}", regions[3].rect);
         assert!(near(regions[4].rect, [0.6, 0.45, 0.8, 0.75]), "−π (orientation 3): {:?}", regions[4].rect);
+    }
+
+    /// The size a packet's boxes were drawn on is its `AppliedToDimensions`, unless a box says how the photo was turned
+    /// (Lightroom's `mwg-rs:Rotation`: those are upright already) or there is no size to go by.
+    #[test]
+    fn regions_drawn_on_is_the_applied_to_size_unless_a_box_says_how_it_was_turned() {
+        let packet = |dims: &str, rotation: &str| {
+            format!(
+                r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:Description rdf:about="" xmlns:mwg-rs="http://www.metadataworkinggroup.com/schemas/regions/"
+                    xmlns:stArea="http://ns.adobe.com/xmp/sType/Area#" xmlns:stDim="http://ns.adobe.com/xap/1.0/sType/Dimensions#">
+                  <mwg-rs:Regions rdf:parseType="Resource">{dims}
+                    <mwg-rs:RegionList><rdf:Bag>
+                      <rdf:li rdf:parseType="Resource" mwg-rs:Type="Face">
+                        <mwg-rs:Area rdf:parseType="Resource" stArea:x="0.3" stArea:y="0.4" stArea:w="0.2" stArea:h="0.3"/>
+                      </rdf:li>
+                      <rdf:li rdf:parseType="Resource" mwg-rs:Type="Face"{rotation}>
+                        <mwg-rs:Area rdf:parseType="Resource" stArea:x="0.6" stArea:y="0.4" stArea:w="0.2" stArea:h="0.3"/>
+                      </rdf:li>
+                    </rdf:Bag></mwg-rs:RegionList>
+                  </mwg-rs:Regions>
+                </rdf:Description></rdf:RDF>"#
+            )
+        };
+        let dims = r#"<mwg-rs:AppliedToDimensions rdf:parseType="Resource" stDim:w="6000" stDim:h="4000" stDim:unit="pixel"/>"#;
+        let drawn_on = |x: &str| parse_xmp(x).unwrap().regions_drawn_on();
+        assert_eq!(drawn_on(&packet(dims, "")), Some((6000.0, 4000.0)));
+        assert_eq!(drawn_on(&packet(dims, r#" mwg-rs:Rotation="-1.57080""#)), None, "one box turned by Lightroom");
+        assert_eq!(drawn_on(&packet("", "")), None, "no AppliedToDimensions");
+        assert_eq!(drawn_on(r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about=""/></rdf:RDF>"#), None);
     }
 
     /// A second, differently-shaped encoding: each region is its own `rdf:Description` (rather than an

@@ -499,6 +499,97 @@ fn regions_from_sidecar_are_read_on_import() {
     let _ = std::fs::remove_dir_all(&src);
 }
 
+/// MWG regions as an app that draws on the photo as stored writes them for [`write_turned_jpeg`]'s photo: its stored
+/// 32 × 24 as `AppliedToDimensions` and no box saying how the photo was turned (no `mwg-rs:Rotation`). One face, its
+/// box centred at (0.25, 0.4), 0.1 × 0.15 of that size.
+const STORED_FRAME_REGIONS: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:mwg-rs="http://www.metadataworkinggroup.com/schemas/regions/"
+    xmlns:stArea="http://ns.adobe.com/xmp/sType/Area#"
+    xmlns:stDim="http://ns.adobe.com/xap/1.0/sType/Dimensions#">
+   <mwg-rs:Regions rdf:parseType="Resource">
+    <mwg-rs:AppliedToDimensions rdf:parseType="Resource" stDim:w="32" stDim:h="24" stDim:unit="pixel"/>
+    <mwg-rs:RegionList>
+     <rdf:Bag>
+      <rdf:li rdf:parseType="Resource" mwg-rs:Name="Hannah" mwg-rs:Type="Face">
+       <mwg-rs:Area rdf:parseType="Resource" stArea:x="0.25" stArea:y="0.4" stArea:w="0.1" stArea:h="0.15" stArea:unit="normalized"/>
+      </rdf:li>
+     </rdf:Bag>
+    </mwg-rs:RegionList>
+   </mwg-rs:Regions>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>"#;
+
+/// A JPEG of 32 × 24 pixels stored sideways (Exif orientation 6, shown 24 × 32), with `packet` embedded when given.
+fn write_turned_jpeg(path: &Path, packet: Option<&str>) {
+    let img = lcc_raster::Rgba8::from_fn(32, 24, |x, y| [(x * 7) as u8, (y * 9) as u8, 90, 255]);
+    let exif =
+        lcc_meta::write_exif(&lcc_meta::Metadata { orientation: Some(lcc_meta::Orientation::Rotate90), ..Default::default() });
+    let meta = lcc_codecs::EncodeMeta { exif: Some(&exif), xmp: packet, ..Default::default() };
+    let bytes = lcc_codecs::encode_jpeg(&lcc_codecs::EncodeImage::rgba8(&img), 90, Default::default(), &meta).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// Put more than the first MiB of APP15 segments between the JPEG at `path`'s start and its Exif.
+fn pad_before_exif(path: &Path) {
+    let bytes = std::fs::read(path).unwrap();
+    let mut padded = bytes[..2].to_vec();
+    for _ in 0..17 {
+        padded.extend_from_slice(&[0xFF, 0xEF, 0xFF, 0xFF]);
+        padded.extend(std::iter::repeat_n(0, 0xFFFD));
+    }
+    padded.extend_from_slice(&bytes[2..]);
+    std::fs::write(path, padded).unwrap();
+}
+
+/// The face's box from [`STORED_FRAME_REGIONS`] on the upright photo: turned a quarter turn clockwise with it.
+fn assert_on_the_upright_face(s: &Session, id: PhotoId, when: &str) {
+    let p = s.catalog.photo(id).unwrap();
+    assert_eq!((p.width, p.height), (24, 32), "the photo is upright");
+    let r = p.meta.regions.first().map(|r| r.rect).unwrap_or_default();
+    let want = [0.525, 0.2, 0.675, 0.3];
+    let got = [r.x0, r.y0, r.x1, r.y1];
+    assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-9), "{when}: the box is where the photo as stored had the face: {got:?}");
+    assert_eq!(p.meta.regions.len(), 1, "{when}");
+}
+
+/// Issue #2674: face boxes an app drew on a photo as stored (its sideways size as `AppliedToDimensions`, no
+/// `mwg-rs:Rotation`) land on the faces of the photo as the app shows it, upright: when imported, and when the
+/// file's metadata is read again (the packet itself doesn't say how the photo turns; the file's Exif does). The
+/// image's own size decides, not one the XMP states upright, and the Exif is found past the first MiB of the file.
+#[test]
+fn regions_drawn_on_the_photo_as_stored_land_on_the_upright_photo() {
+    let src = temp_dir("regions-stored-frame");
+    let embedded = src.join("embedded.jpg");
+    write_turned_jpeg(&embedded, Some(STORED_FRAME_REGIONS));
+    let beside = src.join("sidecar.jpg");
+    write_turned_jpeg(&beside, None);
+    std::fs::write(src.join("sidecar.xmp"), STORED_FRAME_REGIONS).unwrap();
+    // an Exif without a pixel size, and an XMP size of the upright photo
+    let stated = src.join("stated.jpg");
+    let upright_size = r#"rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:ImageWidth="24" tiff:ImageLength="32""#;
+    write_turned_jpeg(&stated, Some(&STORED_FRAME_REGIONS.replace(r#"rdf:about="""#, upright_size)));
+    let late = src.join("late.jpg");
+    write_turned_jpeg(&late, None);
+    pad_before_exif(&late);
+    std::fs::write(src.join("late.xmp"), STORED_FRAME_REGIONS).unwrap();
+    for (file, what) in [(&embedded, "embedded XMP"), (&beside, "sidecar"), (&stated, "upright size in the XMP"), (&late, "Exif after the first MiB")]
+    {
+        let mut s = Session::new().with_fs();
+        let r = s.execute("library.import", &json!({"paths": [file.to_string_lossy()]})).unwrap();
+        assert_eq!(r["imported"].as_array().map(Vec::len), Some(1), "{r}");
+        let id = only(&s);
+        assert_on_the_upright_face(&s, id, &format!("{what}, imported"));
+        let read = s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+        assert_eq!(read["failed"], json!([]), "{read}");
+        assert_eq!(read["read"].as_array().map(Vec::len), Some(1), "{what}: {read}");
+        assert_on_the_upright_face(&s, id, &format!("{what}, read again"));
+    }
+    let _ = std::fs::remove_dir_all(&src);
+}
+
 /// Removing a face box is a catalog-only, undoable edit: it never rewrites the sidecar (Lightroom's
 /// regions and everything else in it stay byte for byte), even with auto-write on.
 #[test]
