@@ -2825,6 +2825,15 @@ fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, prese
                 &[(Z::None, "None"), (Z::Lzw, "LZW"), (Z::Deflate, "ZIP")],
                 &mut opts.tiff_compression,
             );
+            // upstream #2890 (issue #2882 there): LZW stays as picked, with a note on what it costs
+            if opts.tiff_compression == Z::Lzw {
+                let note = if opts.effective_depth() == lcc_engine::export::OutputDepth::U16 {
+                    "At 16 bit, LZW is often larger than no compression, and larger and slower than ZIP. Use it only if other software needs LZW."
+                } else {
+                    "LZW is usually larger and slower than ZIP, and can be larger than no compression. Use it only if other software needs LZW."
+                };
+                crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(note)).color(t.text_dim));
+            }
         }
         if opts.format == F::Dng {
             use lcc_engine::export::DngCompression as Z;
