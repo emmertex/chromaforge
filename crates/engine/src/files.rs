@@ -322,7 +322,6 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
     }
     // regions another app drew on the photo as stored: `extract` could only tell by the size the metadata states, which
     // can be missing or wrong; the header's is the size as stored, so the boxes as written are turned by it (#2674)
-    let mut meta = meta;
     if o.swaps_axes()
         && !meta.regions.is_empty()
         && let Some(xmp) = lcc_meta::embedded(bytes).xmp.and_then(|x| lcc_meta::parse_xmp(&x).ok())
