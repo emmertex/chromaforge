@@ -176,6 +176,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("panel.info", "Info", Some("I"), "Window>Panels"),
     ("panel.keywords", "Keywords", Some("K"), "Window>Panels"),
     ("panel.versions", "Versions", Some("Shift+V"), "Window>Panels"),
+    // Edit Keyword Tag for the keyword picked in the Keyword List (upstream #2879)
+    ("panel.editKeywords", "Edit Keywords", Some("Cmd+Shift+K"), ""),
     ("panel.activity", "History", None, "Window>Panels"),
     ("panel.close", "Close Panel", None, ""),
     ("panel.collapseRight", "Show/Hide Right Panel", None, "Window>Panels"),
@@ -1469,6 +1471,18 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "panel.versions" => {
             panel(app, &ctx, RightPanel::Versions, "Versions");
+            Ok(Value::Null)
+        }
+        "panel.editKeywords" => {
+            // the Keywords panel with its Keyword List open; the keyword picked there opens in
+            // Edit Keyword Tag (with none picked, no dialog opens)
+            if app.ui.right != RightPanel::Keywords {
+                panel(app, &ctx, RightPanel::Keywords, "Keywords");
+            }
+            app.ui.folded_sections.retain(|s| s != "keywordList");
+            if let Some(k) = app.ui.keyword_list_selected.clone().filter(|k| app.session.catalog.has_keyword(k)) {
+                app.ui.dialog = Some(crate::panels::keyword_list::edit_dialog(app, &k));
+            }
             Ok(Value::Null)
         }
         "panel.activity" => {
