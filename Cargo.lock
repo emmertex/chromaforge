@@ -1927,6 +1927,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-av1"
+version = "0.10.0"
+source = "git+https://github.com/storytold/filmcraft?rev=10715b2465ed63d54a875cd583a95c77675c6470#10715b2465ed63d54a875cd583a95c77675c6470"
+dependencies = [
+ "filmcraft-bitstream",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-bitstream"
+version = "0.10.0"
+source = "git+https://github.com/storytold/filmcraft?rev=10715b2465ed63d54a875cd583a95c77675c6470#10715b2465ed63d54a875cd583a95c77675c6470"
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3342,6 +3357,7 @@ dependencies = [
  "avif-serialize",
  "bytemuck",
  "dhat",
+ "filmcraft-av1",
  "image",
  "image-webp",
  "jixel",
