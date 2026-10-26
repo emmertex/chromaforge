@@ -453,7 +453,7 @@ struct Pic {
     nclx: Nclx,
 }
 
-fn decode_av1(c: &Container, id: u32, max_pixels: u64) -> Result<Pic> {
+fn decode_av1(c: &Container, id: u32) -> Result<Pic> {
     let data = c.data(id)?;
     let mut dec = filmcraft_av1::Decoder::new();
     let e = |e: filmcraft_av1::Error| match e {
@@ -466,13 +466,8 @@ fn decode_av1(c: &Container, id: u32, max_pixels: u64) -> Result<Pic> {
     if let Some(cfg) = config.filter(|o| !o.is_empty()) {
         pics.extend(dec.decode(&cfg).map_err(e)?);
     }
-    // Refuse an oversized frame before the decoder allocates its buffers (the decoder itself stops at
-    // the AV1 level 6.3 size; this applies the caller's smaller limit when av1C carries the header).
-    if let Some(sh) = dec.sequence_header()
-        && u64::from(sh.max_frame_width).saturating_mul(u64::from(sh.max_frame_height)) > max_pixels
-    {
-        return Err(Error::TooLarge(u64::from(sh.max_frame_width), u64::from(sh.max_frame_height)));
-    }
+    // The decoder refuses frames above the AV1 level 6.3 size before allocating; `max_pixels`
+    // applies to the decoded frame (the sequence maximum may exceed the real frame size).
     pics.extend(dec.decode(&data).map_err(e)?);
     pics.extend(dec.flush_result().map_err(e)?);
     let p = pics.into_iter().next().ok_or_else(|| bad("the AV1 data holds no picture"))?;
@@ -649,7 +644,7 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
         let mut out = vec![0f32; gw * gh * 3];
         let (mut tw, mut th, mut bits, mut nclx) = (0usize, 0usize, 8u8, None);
         for (i, &t) in tiles.iter().enumerate() {
-            let p = decode_av1(&c, t, opts.max_pixels)?;
+            let p = decode_av1(&c, t)?;
             check(&p)?;
             if i == 0 {
                 (tw, th, bits) = (p.w, p.h, p.bits);
@@ -678,7 +673,7 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
         let n = nclx.ok_or_else(|| bad("grid without tiles"))?;
         (out, gw, gh, bits, n)
     } else {
-        let p = decode_av1(&c, id, opts.max_pixels)?;
+        let p = decode_av1(&c, id)?;
         check(&p)?;
         let n = file_nclx.unwrap_or(p.nclx);
         (to_rgb(&p, n), p.w, p.h, p.bits, n)
