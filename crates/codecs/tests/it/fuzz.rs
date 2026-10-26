@@ -85,6 +85,22 @@ fn thumbnail_respects_configured_source_pixel_limit() {
     assert_eq!(decode_thumbnail_with(&bytes, &opts).unwrap().image.width, 1);
 }
 
+/// A header claiming zero width or height is an error, never a decoded image with no pixels
+/// (downstream filters index into it).
+#[test]
+fn zero_size_headers_are_refused() {
+    let jpeg = seeds()[0].clone();
+    let sof = jpeg.windows(2).position(|m| m == [0xFF, 0xC0]).unwrap();
+    for at in [sof + 5, sof + 7] {
+        let mut j = jpeg.clone();
+        j[at..at + 2].copy_from_slice(&[0, 0]);
+        assert!(decode_unguarded(&j, Format::Jpeg, &small_opts()).is_err());
+    }
+    let mut png = seeds()[1].clone();
+    png[16..20].copy_from_slice(&[0; 4]);
+    assert!(decode_unguarded(&png, Format::Png, &small_opts()).is_err());
+}
+
 fn seeds() -> &'static Vec<Vec<u8>> {
     static S: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
     S.get_or_init(|| {
