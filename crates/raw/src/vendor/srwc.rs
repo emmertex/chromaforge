@@ -208,8 +208,8 @@ pub(crate) fn decode_v2(src: &[u8], w: usize, h: usize) -> Result<(Vec<u16>, u32
             if opt & 4 == 0 && tab % 64 == 0 {
                 mag = match bits.bits(2)? {
                     0 => mag,
-                    1 => mag - 2,
-                    2 => mag + 2,
+                    1 => mag.saturating_sub(2),
+                    2 => mag.saturating_add(2),
                     _ => bits.bits(12)? as i32,
                 };
             }
@@ -252,8 +252,9 @@ pub(crate) fn decode_v2(src: &[u8], w: usize, h: usize) -> Result<(Vec<u16>, u32
                 };
                 let n = len[c >> 2];
                 let diff = signed(bits.bits(n)?, n);
-                let v = pred + diff * (mag * 2 + 1) + mag;
-                d[row * w + col] = v.clamp(0, max) as u16;
+                let (m, p, dl) = (i64::from(mag), i64::from(pred), i64::from(diff));
+                let v = p.saturating_add(dl.saturating_mul(m.saturating_mul(2).saturating_add(1))).saturating_add(m);
+                d[row * w + col] = v.clamp(0, i64::from(max)) as u16;
             }
         }
         pos = bits.pos;
