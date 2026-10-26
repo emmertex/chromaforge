@@ -90,6 +90,23 @@ pub(crate) fn dynamic_range_optimizer(note: &makernote::MakerNote) -> Option<boo
     }
 }
 
+/// Bodies whose lowest native ISO is 100 and whose extended low ISO (50) was checked against Lightroom's rendering
+/// of the same files: the raw data of an ISO 50 frame is one stop brighter than an ISO 100 frame metered for the same
+/// scene (the sensor runs at ISO 100 and gets twice the light), and the camera's JPEG and Lightroom pull it back down.
+/// Other bodies (the ILCE-7SM3 family's base is ISO 80) stay out until checked.
+const BASE_ISO_100_MODELS: &[&str] = &["ILCE-7CR"];
+
+/// The exposure, in stops, that renders a frame shot at an extended ISO below the body's base as bright as the
+/// camera meant it: `log2(ISO / base)`, so -1 at ISO 50 on a base-100 body. 0 at or above the base, for an unchecked
+/// body, or without an ISO.
+fn extended_iso_exposure(model: &str, iso: Option<u32>) -> f64 {
+    const BASE: u32 = 100;
+    match iso {
+        Some(iso) if iso > 0 && iso < BASE && BASE_ISO_100_MODELS.contains(&model.trim()) => (f64::from(iso) / f64::from(BASE)).log2(),
+        _ => 0.0,
+    }
+}
+
 /// Inverse of Sony's maker-note byte substitution. ExifTool's Sony tag documentation states that the data of
 /// tags `0x2010`, `0x9050` and `0x94xx` "is encrypted by a simple substitution cipher" (no decoder source was
 /// consulted). The substitution, checked black-box on CC0 raw.pixls.us samples: every byte `p < 249` is stored as
@@ -729,6 +746,9 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         }
         32767 if one_byte_per_sample => {
             let src = chunk_bytes(bytes, &chunks[0]).ok_or_else(|| RawError::Corrupt("raw strip outside file".into()))?;
+            if src.len() as u64 != strip_len {
+                return Err(RawError::Corrupt("raw strip shorter than its rows".into()));
+            }
             let curve = code_curve(&raw.u64s(TONE_CURVE).unwrap_or_else(|| vec![8000, 10400, 12900, 14100]));
             let mut data = vec![0u16; samples as usize];
             data.par_chunks_mut(w).enumerate().for_each(|(y, out)| {
@@ -746,6 +766,9 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         }
         32767 if packed12 => {
             let src = chunk_bytes(bytes, &chunks[0]).ok_or_else(|| RawError::Corrupt("raw strip outside file".into()))?;
+            if src.len() as u64 != strip_len {
+                return Err(RawError::Corrupt("raw strip shorter than its rows".into()));
+            }
             let row_bytes = w / 2 * 3;
             let mut data = vec![0u16; samples as usize];
             data.par_chunks_mut(w).enumerate().for_each(|(y, out)| {
@@ -888,7 +911,8 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     let rm6: Vec<crate::Opcode> = if linear_rgb || !super::arw_lens::is_3_2(crop) {
         Vec::new()
     } else {
-        super::arw_lens_rm6::lens_opcodes(raw, &model, Rect::new(0, 0, w, h), reference)
+        let lens = metadata.lens_model.as_deref();
+        super::arw_lens_rm6::lens_opcodes(raw, &model, lens, metadata.focal_length, Rect::new(0, 0, w, h), reference)
     };
     if !rm6.is_empty()
         && let Some(record) = sony_lens.as_mut()
@@ -914,6 +938,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         color: ColorData {
             kelvin_presets: sr2().and_then(sr2_kelvin_presets),
             balanced_as_shot: if linear_rgb { wb } else { None },
+            baseline_exposure: extended_iso_exposure(&model, metadata.iso),
             ..Default::default()
         },
         // Sony's linear YCbCr already carries as-shot WB. Applying the CFA gains again
@@ -1612,6 +1637,41 @@ mod tests {
         assert_eq!(sr2_black_in(&sr2_block(start, 27152, BLACK_LEVEL, 2166, [4; 4], None), start, Little), None);
     }
 
+    /// A small uncompressed Sony CFA file of `model` whose EXIF records `iso`.
+    fn arw_at_iso(model: &str, iso: Option<u16>) -> Vec<u8> {
+        use lcc_tiff::{IfdBuilder, ImageData, TiffWriter, Value};
+        let mut raw = IfdBuilder::new();
+        raw.set(t::MAKE, Value::Ascii("SONY".into()));
+        raw.set(t::MODEL, Value::Ascii(model.into()));
+        raw.set(t::IMAGE_WIDTH, Value::Long(vec![32]));
+        raw.set(t::IMAGE_LENGTH, Value::Long(vec![4]));
+        raw.set(t::SAMPLES_PER_PIXEL, Value::Short(vec![1]));
+        raw.set(t::PHOTOMETRIC, Value::Short(vec![t::photometric::CFA]));
+        raw.set(t::BITS_PER_SAMPLE, Value::Short(vec![16]));
+        raw.set(t::COMPRESSION, Value::Short(vec![1]));
+        raw.set(t::WHITE_LEVEL, Value::Long(vec![16383]));
+        raw.set_image(ImageData::Strips { rows_per_strip: 4, strips: vec![vec![0; 32 * 4 * 2]] });
+        if let Some(iso) = iso {
+            let mut exif = IfdBuilder::new();
+            exif.set(t::ISO_SPEED, Value::Short(vec![iso]));
+            raw.set_child(t::EXIF_IFD, exif);
+        }
+        TiffWriter::default().write(&[raw]).unwrap()
+    }
+
+    #[test]
+    fn extended_low_iso_renders_one_stop_darker_on_checked_bodies() {
+        let exposure = |model: &str, iso| crate::decode(&arw_at_iso(model, iso)).unwrap().color.baseline_exposure;
+        // ISO 50 on a base-100 body is ISO 100 with twice the light: pulled down a stop, as the camera's JPEG is
+        assert_eq!(exposure("ILCE-7CR", Some(50)), -1.0);
+        // at and above the base, without an ISO, and on bodies not checked: unchanged
+        for iso in [Some(100), Some(200), Some(6400), Some(0), None] {
+            assert_eq!(exposure("ILCE-7CR", iso), 0.0, "{iso:?}");
+        }
+        assert_eq!(exposure("ILCE-7SM3", Some(50)), 0.0);
+        assert_eq!(extended_iso_exposure(" ILCE-7CR ", Some(64)), (0.64f64).log2());
+    }
+
     #[test]
     fn word16_byte_order_follows_the_sample_range() {
         use lcc_tiff::ByteOrder::{Big, Little};
@@ -1671,5 +1731,29 @@ mod tests {
         };
         assert!(is_quad_tiled(&file, &info));
         assert_eq!(read_quad_tiles(&file, &info).unwrap(), mosaic);
+    }
+
+    /// #2561: a small file whose one-byte or packed 12-bit strip declares a large frame is refused before the full
+    /// decode allocates the frame.
+    #[test]
+    fn a_strip_cut_short_is_refused_before_allocating() {
+        use lcc_tiff::{IfdBuilder, ImageData, TiffWriter, Value};
+        let (w, h) = (3000u32, 2000u32);
+        for declared in [w * h, w * h / 2 * 3] {
+            let mut raw = IfdBuilder::new();
+            raw.set(t::MAKE, Value::Ascii("SONY".into()));
+            raw.set(t::MODEL, Value::Ascii("DSLR-A100".into()));
+            raw.set(t::IMAGE_WIDTH, Value::Long(vec![w]));
+            raw.set(t::IMAGE_LENGTH, Value::Long(vec![h]));
+            raw.set(t::BITS_PER_SAMPLE, Value::Short(vec![12]));
+            raw.set(t::SAMPLES_PER_PIXEL, Value::Short(vec![1]));
+            raw.set(t::PHOTOMETRIC, Value::Short(vec![photometric::CFA]));
+            raw.set(t::COMPRESSION, Value::Short(vec![32767]));
+            raw.set(TONE_CURVE, Value::Short(vec![8000, 10400, 12900, 14100]));
+            raw.set_image(ImageData::Strips { rows_per_strip: h, strips: vec![vec![0u8; 12]] });
+            let mut f = TiffWriter::default().write(&[raw]).unwrap();
+            crate::vendor::declare_strip_len(&mut f, 12, declared);
+            assert!(matches!(decode(&f, Mode::Full), Err(RawError::Corrupt(_))), "{declared} bytes declared");
+        }
     }
 }

@@ -579,11 +579,12 @@ pub fn apply_list(list: &[Opcode], buf: &mut [f32], w: usize, h: usize, cpp: usi
     for op in list {
         match op {
             Opcode::MapTable { area, table } => {
-                let n = table.len();
+                // `parse_one` refuses an empty table; a list built otherwise (deserialised) leaves the data as it is
+                let Some(last) = table.len().checked_sub(1) else { continue };
                 for (x, y, p) in area_iter(area, w, h, cpp) {
                     let v = &mut buf[(y * w + x) * cpp + p];
-                    let idx = ((*v / scale * 65535.0).round().max(0.0) as usize).min(n - 1);
-                    *v = table[idx] as f32 / 65535.0 * scale;
+                    let idx = ((*v / scale * 65535.0).round().max(0.0) as usize).min(last);
+                    *v = table.get(idx).copied().map_or(*v, |t| t as f32 / 65535.0 * scale);
                 }
             }
             Opcode::MapPolynomial { area, coefficients } => {
@@ -646,6 +647,11 @@ pub fn apply_list(list: &[Opcode], buf: &mut [f32], w: usize, h: usize, cpp: usi
                     points.iter().map(|&(r, c)| (c as usize, r as usize)).filter(|&(x, y)| x < w && y < h).take(MAX_BAD_PIXELS).collect();
                 'rects: for r in rects {
                     let [t, l, b, rr] = r.map(|v| v as usize);
+                    // a rectangle without columns (or rows) in the image marks nothing: not one pass over its rows
+                    // per such rectangle, which the list can hold as many of as its bytes allow (issue #2140)
+                    if l >= rr.min(w) || t >= b.min(h) {
+                        continue;
+                    }
                     for y in t..b.min(h) {
                         for x in l..rr.min(w) {
                             if bad.len() >= MAX_BAD_PIXELS {
@@ -695,18 +701,38 @@ fn fix_pixels(buf: &mut [f32], w: usize, h: usize, cpp: usize, cfa: Option<&Cfa>
     }
 }
 
+/// Most full-image passes of one `OpcodeList3`: every warp record is a full-image allocation and resample
+/// pass and every bad-pixel record a full flatten-and-rebuild, and a hostile record may repeat either
+/// thousands of times. Real DNGs carry at most a couple; passes past the cap are skipped.
+const MAX_LIST3_PASSES: usize = 8;
+
 /// Apply `OpcodeList3` (on the demosaiced RGB image, values normalised to [0, 1]).
 pub fn apply_list3(list: &[Opcode], img: &mut Rgb32f) {
     if list.is_empty() {
         return;
     }
     let (w, h) = (img.width, img.height);
+    let mut passes = 0usize;
     for op in applied_ops(list) {
         match op {
-            Opcode::WarpRectilinear { planes, center } => *img = warp_rectilinear(img, planes, *center),
-            Opcode::WarpRectilinear2 { planes, center, reciprocal, .. } => *img = warp_rectilinear2(img, planes, *center, *reciprocal),
+            Opcode::WarpRectilinear { planes, center } => {
+                if passes < MAX_LIST3_PASSES {
+                    passes += 1;
+                    *img = warp_rectilinear(img, planes, *center);
+                }
+            }
+            Opcode::WarpRectilinear2 { planes, center, reciprocal, .. } => {
+                if passes < MAX_LIST3_PASSES {
+                    passes += 1;
+                    *img = warp_rectilinear2(img, planes, *center, *reciprocal);
+                }
+            }
             Opcode::WarpFisheye { .. } | Opcode::TrimBounds { .. } | Opcode::Unknown { .. } => {}
             other => {
+                if passes >= MAX_LIST3_PASSES {
+                    continue;
+                }
+                passes += 1;
                 let mut flat: Vec<f32> = img.data.iter().flat_map(|p| *p).collect();
                 apply_list(std::slice::from_ref(other), &mut flat, w, h, 3, None, 1.0);
                 for (d, c) in img.data.iter_mut().zip(flat.as_chunks::<3>().0) {
@@ -723,8 +749,10 @@ pub fn warp_rectilinear(img: &Rgb32f, planes: &[[f64; 6]], center: [f64; 2]) -> 
     let (w, h) = (img.width, img.height);
     let (cx, cy) = (center[0] * (w as f64 - 1.0), center[1] * (h as f64 - 1.0));
     let m = max_radius(cx, cy, w as f64 - 1.0, h as f64 - 1.0);
+    // `parse_one` refuses a warp without coefficient sets; one built otherwise leaves the image as it is
+    let Some(last) = planes.len().checked_sub(1) else { return img.clone() };
     let mut out = Rgb32f::new(w, h);
-    let coef = |p: usize| planes[p.min(planes.len() - 1)];
+    let coef = |p: usize| planes.get(p.min(last)).copied().unwrap_or([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     lcc_raster::par_rows(&mut out.data, w, |y, row| {
         for (x, px) in row.iter_mut().enumerate() {
             for (c, v) in px.iter_mut().enumerate() {
@@ -776,6 +804,27 @@ pub fn warp_rectilinear2(img: &Rgb32f, planes: &[[f64; WR2_LEN]], center: [f64; 
 pub(crate) mod tests {
     use super::*;
 
+    /// Opcode lists that `parse_one` would refuse, built directly (as a deserialised list could be),
+    /// leave the image as it is instead of panicking; rectangles with no columns cost nothing
+    /// (issue #2140).
+    #[test]
+    fn degenerate_opcode_lists_are_harmless() {
+        let area = Area { top: 0, left: 0, bottom: 4, right: 4, plane: 0, planes: 1, row_pitch: 1, col_pitch: 1 };
+        let mut buf = vec![0.5f32; 16];
+        apply_list(&[Opcode::MapTable { area, table: vec![] }], &mut buf, 4, 4, 1, None, 1.0);
+        assert!(buf.iter().all(|&v| v == 0.5));
+        let img = Rgb32f::filled(3, 3, [0.25; 3]);
+        assert_eq!(warp_rectilinear(&img, &[], [0.5, 0.5]).data, img.data);
+        // a million rectangles whose column range is empty, on a tall image: nothing marked, quickly
+        let (w, h) = (4, 100_000);
+        let mut tall = vec![0.5f32; w * h];
+        let rects = vec![[0, 3, 100_000, 3]; 1_000_000];
+        let started = std::time::Instant::now();
+        apply_list(&[Opcode::FixBadPixelsList { bayer_phase: 0, points: vec![], rects }], &mut tall, w, h, 1, None, 1.0);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(tall.iter().all(|&v| v == 0.5));
+    }
+
     pub(crate) struct ListWriter(pub Vec<u8>, pub u32);
 
     impl ListWriter {
@@ -802,6 +851,27 @@ pub(crate) mod tests {
     }
     pub(crate) fn area(a: [u32; 8]) -> Vec<u8> {
         a.iter().flat_map(|v| v.to_be_bytes()).collect()
+    }
+
+    /// Warp and bad-pixel records each cost a full-image pass, and a hostile `OpcodeList3` repeats them
+    /// thousands of times ([`MAX_LIST3_PASSES`] bounds the multiplier); identity warps below the cap must
+    /// still apply, exactly, so the same image comes out.
+    #[test]
+    fn list3_pass_cap_skips_repeated_records() {
+        let mut img = Rgb32f::new(8, 6);
+        for (i, px) in img.data.iter_mut().enumerate() {
+            *px = [i as f32 / 2.0, (i % 8) as f32, (i / 8) as f32];
+        }
+        let orig: Vec<[f32; 3]> = img.data.clone();
+        let list: Vec<Opcode> =
+            (0..MAX_LIST3_PASSES * 5).map(|_| Opcode::WarpRectilinear { planes: vec![[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]], center: [0.5, 0.5] }).collect();
+        apply_list3(&list, &mut img);
+        assert_eq!(img.data, orig, "identity warps change nothing, and the cap skips the repeated rest");
+
+        // a real warp below the cap is still applied
+        let one = [Opcode::WarpRectilinear { planes: vec![[2.0, 0.0, 0.0, 0.0, 0.0, 0.0]], center: [0.5, 0.5] }];
+        apply_list3(&one, &mut img);
+        assert_ne!(img.data, orig, "a genuine warp record is not skipped");
     }
 
     #[test]

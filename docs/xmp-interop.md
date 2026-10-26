@@ -38,9 +38,12 @@ namespace (`LC_NS` in `crates/meta/src/legacy.rs`) are still read.
 Reading merges into the catalog with the **sidecar winning** for every field it states; fields it doesn't state are
 kept. That includes **GPS**: a sidecar's `exif:GPSLatitude`/`GPSLongitude` replaces the position the camera embedded in
 the file (the Metadata Working Group's rule: XMP over Exif), so a photo geotagged in another app keeps that place. The
-one exception is the **capture time**: a time embedded in the file (EXIF/IPTC) always wins; when the file
-has none, the sidecar's `exif:DateTimeOriginal`, else `photoshop:DateCreated`, else `xmp:CreateDate` (ISO 8601) is
+one exception is the **capture time**: a valid time embedded in the file (EXIF/IPTC) wins. Invalid EXIF
+clock values (more than three clock components) are skipped, allowing DateTimeDigitized, IFD0 DateTime or embedded XMP
+to supply the time. When the file has no valid capture time, the sidecar's `exif:DateTimeOriginal`, else `photoshop:DateCreated`, else `xmp:CreateDate` (ISO 8601) is
 used — on import (it then also files a copied photo in its date folder) and by `photo.readMetadataFromFile` (undoable).
+An incomplete or malformed XMP timestamp is not projected as a capture time, remains available in the raw property
+map, and does not prevent the next valid capture-time property from being used.
 `xmp:Rating="-1"` (the XMP convention for rejected) sets the reject flag. Develop settings come from
 `lc:settings` when present (exact); otherwise from the `crs:` fields below (approximate).
 

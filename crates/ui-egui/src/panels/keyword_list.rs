@@ -309,7 +309,8 @@ fn row(app: &mut LccApp, ui: &mut egui::Ui, r: &Row, selection: &[PhotoId], tick
     let room = (arrow.left() - 4.0 - (x + 34.0)).max(0.0);
     let font = t.font(13.0);
     let measure = |s: &str| ui.painter().layout_no_wrap(s.to_string(), font.clone(), t.text_label).size().x;
-    let name = if measure(&r.name) <= room { r.name.clone() } else { crate::widgets::elide_head(&r.name, room, measure) };
+    let flat = lcc_catalog::keywords::one_line(&r.name);
+    let name = if measure(&flat) <= room { flat.to_string() } else { crate::widgets::elide_head(&flat, room, measure) };
     let label = ui.painter().text(pos2(x + 34.0, cy), Align2::LEFT_CENTER, name, font.clone(), if picked { t.text } else { t.text_label });
     // where new keywords go (Put New Keywords Inside This Keyword): a dot after the name
     if app.session.catalog.default_keyword_parent().as_deref().is_some_and(|k| same(k, &r.path)) {

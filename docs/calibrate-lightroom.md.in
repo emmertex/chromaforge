@@ -149,6 +149,30 @@ Every example below writes `{{cli_binary}}`: put the path or prefix you used her
    or an issue on the project's repository. `--contributor`
    is optional; leave it out to stay anonymous.
 
+## Other editors: Capture One, darktable, RawTherapee, DxO PhotoLab
+
+The same fit works against another editor's exports, so people moving from it can open their raws in its look:
+
+```
+{{cli_binary}} calibrate-lightroom fit --editor capture-one --raws RAWS --exports EXPORTS
+```
+
+`--editor` takes `capture-one`, `darktable`, `rawtherapee`, `dxo-photolab` or `lightroom` (the default). Prepare
+the exports as for Lightroom: the editor's default rendering of each raw with nothing adjusted, white balance As Shot,
+no crop, no lens correction, sharpening and noise reduction off where the editor allows. Export 16-bit TIFFs in a
+wide colour space with its ICC profile embedded, one folder per look (the folder's name names the look). Those other
+editors write no settings the fit could check, so it can't tell whether an export was adjusted: keep them at their
+defaults.
+
+What differs from a Lightroom calibration:
+
+- The file is `<Make>_<Model>_<editor>.json` and its looks are named after the editor ("Capture One Standard"), so
+  it sits beside a Lightroom calibration of the same camera without replacing it.
+- Only Lightroom gives its temperature and tint in the exports, so the white points come from the camera database's
+  matrices rather than from the editor.
+- Its looks are offered per photo (Profile ▸ Camera profile), never as the camera's default: only a Lightroom
+  calibration's first look starts every photo of the camera.
+
 ## Privacy: what the file holds
 
 Only aggregate numbers: camera make and model, two colour and two forward matrices, optional hue/saturation maps,
@@ -180,7 +204,74 @@ Before committing, try a contribution in a debug build without adding it: point
 `{{env_prefix}}_CAMERA_CALIBRATIONS` at a folder holding the JSON and open that camera's raws. `{{cli_binary}} calibrate-lightroom
 list` prints the calibrations built into a binary, their looks (`cal:<id>`) and their held-out ΔE00.
 
-`{{cli_binary}} calibrate-lightroom verify --catalog X.lrcat --exports DIR` (whole-pipeline error between the app's render of
-an *edited* catalogue and its edited exports) is planned and not available yet.
+### Probe DNGs and slider sweeps: `probe`, `probe-check`
+
+Natural photos rarely show a camera's most saturated colours, which is where profiles differ most. A **probe** fills
+that in, and its **slider sweeps** measure how Lightroom's sliders respond, so the import of Lightroom edits can be
+tuned to match.
+
+```
+{{cli_binary}} calibrate-lightroom probe -o probes --like IMG_0001.ARW
+```
+
+1. **Write the probes.** This writes `probe_base.dng`, a grid of 384 flat colour patches spread through the camera's
+   RGB (a cube, a grey ramp and saturated primaries and secondaries). It also writes one copy per sweep step with a
+   single Lightroom setting embedded in its XMP: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Dehaze,
+   Vibrance, Saturation, and the eight colours' Hue, Saturation and Luminance, at a few values each. The probes
+   carry your camera's make and model (`--like` copies them from one of its raws; else `--make` and `--model`) and a
+   colour matrix from the camera database. They also set `UniqueCameraModel` (override with `--unique-model`), which
+   Lightroom uses to offer its own profiles for the camera.
+2. **Render them in Lightroom.** Import the folder; Lightroom applies each probe's embedded setting on import. If
+   the probes show unedited, select them all and choose Metadata ▸ Read Metadata from Files. Check that the base
+   probe's profile is the one you want calibrated (Adobe Color by default), then export every probe as a 16-bit
+   ProPhoto RGB TIFF, keeping the file names.
+3. **Check them:**
+   ```
+   {{cli_binary}} calibrate-lightroom probe-check --probes probes --exports probe-exports
+   ```
+   It prints the default render's ΔE00 between Lightroom and the app over the patches. For every sweep step it
+   prints the app control the import maps that setting to, the value the import uses, and the app value whose change
+   from the base probe matches Lightroom's change best, each with its error. It compares changes rather than colours,
+   so the difference between the two default looks doesn't bias the slider answer. `--json` and `-o FILE` give the
+   full report.
+4. **Feed the base probe to `fit`.** Add the probe folder to `fit --raws` and the folder holding `probe_base`'s
+   export to `--exports`, next to your own raws and exports. It pairs by name like any raw. The sweep exports aren't
+   at the baseline and are skipped.
+
+The probes are synthetic: they contain no photo of yours and no Adobe data, and Lightroom only renders them.
+
+### Checking edited photos: `verify`
+
+`{{cli_binary}} calibrate-lightroom verify --raws DIR… --exports DIR…` answers "will my edited photos look the same
+after the move?". Export your *edited* photos from Lightroom as 16-bit TIFFs (any profile, crop or slider settings,
+**Include: All Metadata** so the export carries its develop settings). Point `verify` at the raws and at those
+exports. For each pair (matched by camera model and capture time, else by file name) it does three things:
+
+1. Imports the raw as the app would: it reads the raw's XMP sidecar, or, when the export carries its own `crs:`
+   settings, uses those instead, since they are exactly what was exported.
+2. Renders it in the colour space the export was written in (sRGB, Adobe RGB, Display P3, ProPhoto…), so both are
+   clipped to the same gamut.
+3. Measures the render against the export with `compare` (CIEDE2000).
+
+It prints one line per photo, then a table by **group of controls** the edits used: light, tone curve, presence,
+colour mixer, colour grading, white balance, profile, effects, lens, crop, masks, black & white, or default. A group
+whose error stands out is the part of the import to look at. `--report DIR` writes `verify.json` and a ΔE00 map per
+photo; `--json` prints the report; `--max N` checks the first N pairs; `--size N` sets the long edge compared. The
+exports are only read, never changed or sent anywhere.
+
+### Measuring a render against another editor: `compare`
+
+`{{cli_binary}} compare REFERENCE TEST` measures how far one render of a photo is from another, from any editor or
+camera (JPEG, TIFF, PNG, … read through their embedded colour profiles). It lines the two up (scale and shift, so a
+small lens-correction or crop difference is fine), then prints CIEDE2000 mean, median, p95 and p99 overall, by tone
+band (by the reference's L*) and by hue sector, with the test's mean lightness, chroma and hue bias. `--diff MAP.png`
+writes a false-colour ΔE00 map, `--json` the full report, `--size N` sets the long edge compared (default 512) and
+`--no-align` compares pixel for pixel. Use it to check a calibration on photos it did not see, or the app's render of
+an edited photo against the edited export from the editor you are moving from:
+
+```
+{{cli_binary}} render IMG_0001.CR3 -o ours.tif
+{{cli_binary}} compare lightroom/IMG_0001.tif ours.tif --diff map.png
+```
 
 Sources: own design; DNG specification 1.7 chapter 6 (profile model); CIEDE2000 (Sharma, Wu, Dalal 2005).

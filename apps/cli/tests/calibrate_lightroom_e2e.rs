@@ -60,6 +60,7 @@ fn hidden_calibration() -> Calibration {
         make: MAKE.into(),
         model: MODEL.into(),
         aliases: vec![],
+        editor: Default::default(),
         method: calibration::METHOD.into(),
         tool_version: "0".into(),
         contributor: None,
@@ -235,5 +236,38 @@ fn fit_recovers_a_hidden_profile_and_add_files_it() {
     let rows: Vec<&str> = table.lines().filter(|l| l.starts_with(&format!("| `{rel}` |"))).collect();
     assert_eq!(rows.len(), 1, "{table}");
     assert!(rows[0].contains("Test Person") && rows[0].contains(LOOK) && rows[0].contains(calibration::LICENCE), "{}", rows[0]);
+
+    // the same exports as another editor's: a calibration of its own, side by side with Lightroom's
+    let out_c1 = root.join("out-c1");
+    run(Command::new(BIN).env_remove(&env_var).args([
+        "calibrate-lightroom",
+        "fit",
+        "--editor",
+        "capture-one",
+        "--raws",
+        s(&raws),
+        "--exports",
+        s(&exports),
+        "-o",
+        s(&out_c1),
+    ]));
+    let c1_name = format!("{}_capture-one.json", cal.file_name().trim_end_matches(".json"));
+    let c1 = Calibration::parse(&std::fs::read_to_string(out_c1.join(&c1_name)).unwrap()).unwrap();
+    assert_eq!(c1.editor, calibration::Editor::CaptureOne);
+    assert_eq!(c1.method, calibration::Editor::CaptureOne.method());
+    assert_eq!(c1.file_name(), c1_name);
+    assert_eq!(c1.looks.first().map(|l| l.name.as_str()), Some(format!("Capture One {LOOK}").as_str()));
+    assert_eq!(c1.evidence.white_points, 0, "no Lightroom white balance is used");
+    let ev = c1.evidence.looks.first().expect("held-out evidence");
+    assert!(ev.after.median < 2.5 && ev.after.median < ev.before.median, "{ev:?}");
+    run(Command::new(BIN).args(["calibrate-lightroom", "add", s(&out_c1.join(&c1_name)), "--repo", s(&repo)]));
+    assert!(repo.join("crates/camdb/data/calibrations").join(&c1_name).is_file());
+    assert!(repo.join(&rel).is_file(), "Lightroom's calibration stays");
+    let table = std::fs::read_to_string(repo.join("assets/ATTRIBUTION.md")).unwrap();
+    assert!(table.lines().any(|l| l.contains(&c1_name) && l.contains("Capture One")), "{table}");
+    assert!(table.lines().any(|l| l.starts_with(&format!("| `{rel}` |"))), "{table}");
+    let bad =
+        Command::new(BIN).args(["calibrate-lightroom", "fit", "--editor", "paint", "--raws", s(&raws), "--exports", s(&exports)]).output().unwrap();
+    assert!(!bad.status.success() && String::from_utf8_lossy(&bad.stderr).contains("capture-one"));
     let _ = std::fs::remove_dir_all(&root);
 }

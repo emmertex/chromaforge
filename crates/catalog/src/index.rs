@@ -25,6 +25,12 @@ pub(crate) struct Indexes {
     keywords: OnceLock<crate::keywords::KeywordIndex>,
     /// The keyword tree built from it (dropped with it).
     keyword_tree: OnceLock<std::sync::Arc<Vec<crate::keywords::KeywordNode>>>,
+    /// Photo → its lower-cased free-text search fields ([`crate::query::search_fields_of`]), made by
+    /// the first pass over the library that searches text. A photo an op changes is taken out (it is
+    /// read from its own fields until the whole index is made again).
+    search: OnceLock<HashMap<PhotoId, Box<[Box<str>]>>>,
+    /// Photo → the lower-cased text a smart album's Text rule looks through ([`crate::rules::rule_text_of`]).
+    rule_text: OnceLock<HashMap<PhotoId, Box<str>>>,
 }
 
 /// A copy builds its own when asked (copies are made to be saved, not queried).
@@ -50,6 +56,8 @@ impl std::fmt::Debug for Indexes {
             .field("albums", &self.albums.get().map(HashMap::len))
             .field("keywords", &self.keywords.get().is_some())
             .field("keyword_tree", &self.keyword_tree.get().is_some())
+            .field("search", &self.search.get().map(HashMap::len))
+            .field("rule_text", &self.rule_text.get().map(HashMap::len))
             .finish()
     }
 }
@@ -83,6 +91,25 @@ impl Indexes {
         }
     }
 
+    /// An op changes photo `id` (or adds or removes it), of a library of `photos`: its search text
+    /// is made again from the photo when next asked. Once an eighth of the library is not in a
+    /// text index, the index is dropped, to be made whole again by the next pass.
+    pub(crate) fn photo_touched(&mut self, id: PhotoId, photos: usize) {
+        let gone = |len: usize| len.saturating_mul(8) < photos.saturating_mul(7);
+        if let Some(m) = self.search.get_mut() {
+            m.remove(&id);
+            if gone(m.len()) {
+                self.search = OnceLock::new();
+            }
+        }
+        if let Some(m) = self.rule_text.get_mut() {
+            m.remove(&id);
+            if gone(m.len()) {
+                self.rule_text = OnceLock::new();
+            }
+        }
+    }
+
     /// Stack `id` held `old` and holds `new` now (empty: it was added, or is gone).
     pub(crate) fn stack_changed(&mut self, id: StackId, old: &[PhotoId], new: &[PhotoId]) {
         let Some(Some(m)) = self.stacks.get_mut() else { return };
@@ -111,6 +138,36 @@ impl Indexes {
 }
 
 impl Catalog {
+    /// Whether `p` is this catalog's own photo (not a copy with other values tried against it).
+    fn is_own(&self, p: &crate::Photo) -> bool {
+        self.photos.get(&p.id).is_some_and(|own| std::ptr::eq(&**own, p))
+    }
+
+    /// `p`'s lower-cased free-text search fields, when `p` is this catalog's own photo and they are
+    /// kept. `build`: make them for every photo first when they weren't (a pass over the whole
+    /// library does; testing one photo shouldn't make them for 300 000).
+    pub(crate) fn search_fields(&self, p: &crate::Photo, build: bool) -> Option<&[Box<str>]> {
+        if !self.is_own(p) {
+            return None;
+        }
+        let m = if build {
+            self.index.search.get_or_init(|| self.photos.values().map(|p| (p.id, crate::query::search_fields_of(p))).collect())
+        } else {
+            self.index.search.get()?
+        };
+        m.get(&p.id).map(|f| &**f)
+    }
+
+    /// `p`'s lower-cased, trimmed Text-rule text when `p` is this catalog's own photo, kept for
+    /// every photo from the first ask (a smart album's count or view asks photo by photo).
+    pub(crate) fn rule_text(&self, p: &crate::Photo) -> Option<&str> {
+        if !self.is_own(p) {
+            return None;
+        }
+        let m = self.index.rule_text.get_or_init(|| self.photos.values().map(|p| (p.id, crate::rules::rule_text_of(p).into())).collect());
+        m.get(&p.id).map(|t| &**t)
+    }
+
     /// The stack photo `photo` is in, by the index (built on first use).
     pub(crate) fn stack_id_of(&self, photo: PhotoId) -> Option<StackId> {
         let m = self.index.stacks.get_or_init(|| {

@@ -470,6 +470,7 @@ const HIDDEN: &[&str] = &[
     "photo.reject",
     "photo.unflag",
     "photo.label",
+    "photo.clearLabel",
     "library.sort",
     "library.shuffle",
     "album.addPhotos",
@@ -719,7 +720,8 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
                 })
                 .collect();
             v.push(MenuNode::Separator);
-            v.push(item("photo.label", json!({"label": "none"}), "None", None, has, Some(active.as_ref().is_some_and(|p| p.label.is_none()))));
+            let clear_key = crate::shortcuts::shortcut_of(&app.ui.settings.keymap, "photo.clearLabel");
+            v.push(item("photo.clearLabel", Value::Null, "None", clear_key, has, Some(active.as_ref().is_some_and(|p| p.label.is_none()))));
             v.push(MenuNode::Separator);
             // label sets: each a checkable item; Edit… names them
             let sets = lcc_engine::cmd::manage::label_sets_json(&app.session);
@@ -1153,6 +1155,7 @@ pub fn run_item(app: &mut LccApp, id: &str, params: Value) -> Result<Value, Stri
         "photo.rate"
             | "photo.flag"
             | "photo.label"
+            | "photo.clearLabel"
             | "photo.pick"
             | "photo.reject"
             | "photo.unflag"
@@ -1213,11 +1216,45 @@ pub fn shortcut_text(sc: &str, mac: bool) -> String {
     }
 }
 
-/// Horizontal gap between in-window menu titles. The buttons are frameless, and egui gives
-/// frameless buttons no padding, so the gap has to come from the layout's item spacing.
+/// Horizontal gap between in-window menu titles' text. Each title sits in a highlight [`TITLE_PAD`]
+/// wider than its text on both sides; the rest of the gap is the layout's item spacing.
 /// The bar tightens the gap down to [`MIN_TITLE_GAP`] before it collapses into one "Menu" button.
 const TITLE_GAP: f32 = 20.0;
 const MIN_TITLE_GAP: f32 = 10.0;
+/// Room between a title's text and the edge of its hover / open highlight.
+const TITLE_PAD: f32 = 4.0;
+/// Height of a title's highlight; its menu hangs just below it.
+const TITLE_H: f32 = 26.0;
+/// Gap between a title's highlight and the top of its menu.
+const MENU_GAP: f32 = 2.0;
+
+/// A top-level menu title, laid out but not yet drawn: [`paint_title`] draws it once the frame
+/// knows whether its menu is open.
+fn title_button(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: egui::Color32) -> (egui::Response, std::sync::Arc<egui::Galley>) {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
+    let size = egui::vec2(galley.size().x + 2.0 * TITLE_PAD, TITLE_H);
+    let (_, r) = ui.allocate_exact_size(size, egui::Sense::click());
+    crate::widgets::announce(&r, text);
+    (r, galley)
+}
+
+/// Draw a menu title: highlighted while the pointer is on it or its menu is open, darker while
+/// pressed, like the titles of a native menu bar.
+fn paint_title(ui: &egui::Ui, r: &egui::Response, galley: std::sync::Arc<egui::Galley>, open: bool) {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let fill = if r.is_pointer_button_down_on() {
+        Some(t.pressed)
+    } else if open || r.hovered() {
+        Some(t.hover)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter().rect_filled(r.rect, 4.0, fill);
+    }
+    let pos = r.rect.center() - galley.size() / 2.0;
+    ui.painter().galley(pos, galley, t.text_label);
+}
 
 /// Width of the in-window menu bar's titles at their full spacing.
 pub fn bar_width(ui: &egui::Ui) -> f32 {
@@ -1245,18 +1282,21 @@ pub fn show_in_window(app: &mut LccApp, ui: &mut egui::Ui, max_width: f32) -> f3
     let bar_bottom = Some(ui.max_rect().bottom());
     if total <= max_width {
         let saved = ui.spacing().item_spacing.x;
-        ui.spacing_mut().item_spacing.x = gap;
+        ui.spacing_mut().item_spacing.x = (gap - 2.0 * TITLE_PAD).max(0.0);
         // All titles first, then their popups, so a title the pointer moves onto can take over
         // from the open menu before either is drawn (no frame with two menus or none).
-        let titles: Vec<egui::Response> = bar
+        let (titles, galleys): (Vec<egui::Response>, Vec<_>) = bar
             .iter()
             .map(|(title, _)| {
-                let r = ui.add(egui::Button::new(egui::RichText::new(crate::i18n::tr(title)).font(font.clone()).color(t.text_label)).frame(false));
+                let (r, g) = title_button(ui, crate::i18n::tr(title), font.clone(), t.text_label);
                 crate::widgets::register(ui.ctx(), format!("menu:{title}"), r.rect);
-                r
+                (r, g)
             })
-            .collect();
+            .unzip();
         let confirmed = switch_open_title(ui.ctx(), &titles);
+        for (r, g) in titles.iter().zip(galleys) {
+            paint_title(ui, r, g, egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(r)));
+        }
         for ((_, items), r) in bar.iter().zip(&titles) {
             // (opening and closing by click is done in `switch_open_title`)
             // (the click confirming a menu a hover opened must not close it again)
@@ -1266,15 +1306,17 @@ pub fn show_in_window(app: &mut LccApp, ui: &mut egui::Ui, max_width: f32) -> f3
                 egui::PopupCloseBehavior::CloseOnClick
             };
             egui::Popup::menu(r)
+                .gap(MENU_GAP)
                 .close_behavior(close)
                 .open_memory(None)
                 .show(|ui| crate::menu_level::level(ui, 1, bar_bottom, |ui| nodes_ui(ui, items, mac, &mut clicked, 1, bar_bottom)));
         }
         ui.spacing_mut().item_spacing.x = saved;
     } else {
-        let r = ui.add(egui::Button::new(egui::RichText::new(crate::i18n::tr("Menu")).font(font.clone()).color(t.text_label)).frame(false));
+        let (r, g) = title_button(ui, crate::i18n::tr("Menu"), font.clone(), t.text_label);
         crate::widgets::register(ui.ctx(), "menu:all", r.rect);
-        egui::Popup::menu(&r).show(|ui| {
+        paint_title(ui, &r, g, egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&r)));
+        egui::Popup::menu(&r).gap(MENU_GAP).show(|ui| {
             crate::menu_level::level(ui, 1, bar_bottom, |ui| {
                 for (title, items) in &bar {
                     submenu(ui, title, crate::i18n::tr(title).to_string(), 1, bar_bottom, |ui| nodes_ui(ui, items, mac, &mut clicked, 2, bar_bottom));
@@ -1906,7 +1948,8 @@ mod tests {
         let titles: Vec<_> = MENUS.iter().map(|t| rect(&format!("menu:{t}"))).collect();
         for pair in titles.windows(2) {
             let gap = pair[1].left() - pair[0].right();
-            assert!(gap >= MIN_TITLE_GAP - 0.5, "headings {:?} and {:?} are only {gap} px apart", pair[0], pair[1]);
+            // (the registered rects are the titles' highlights, TITLE_PAD wider than the text)
+            assert!(gap >= MIN_TITLE_GAP - 2.0 * TITLE_PAD - 0.5, "headings {:?} and {:?} are only {gap} px apart", pair[0], pair[1]);
         }
     }
 

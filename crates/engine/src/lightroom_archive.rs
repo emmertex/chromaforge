@@ -110,13 +110,17 @@ pub fn store(directory: &Path, data: &CatalogImport) -> Result<PathBuf, String> 
         }
     };
 
-    if let Err(error) = publish_new(&temporary, &destination) {
+    if let Err(error) = lcc_catalog::safe_file::publish_new(&temporary, &destination) {
         rollback_quarantine(&quarantined);
         let _ = remove_managed_file(&temporary);
-        return Err(error.to_string());
+        return Err(format!("cannot atomically publish archive: {error}"));
     }
-    if let Err(error) = remove_managed_file(&temporary) {
-        return Err(format!("archive published but temporary cleanup failed: {error}"));
+    // published by rename (a volume without hard links, issue #2140), the temporary is gone already
+    match remove_managed_file(&temporary) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            return Err(format!("archive published but temporary cleanup failed: {error}"));
+        }
+        _ => {}
     }
     for (old, held) in quarantined {
         if let Err(error) = remove_managed_file(&held) {
@@ -417,13 +421,6 @@ fn quarantine(entries: &[Managed]) -> Result<Vec<(PathBuf, PathBuf)>, String> {
 fn rollback_quarantine(moved: &[(PathBuf, PathBuf)]) {
     for (original, held) in moved.iter().rev() {
         let _ = fs::rename(held, original);
-    }
-}
-
-fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
-    match fs::hard_link(temporary, destination) {
-        Ok(()) => Ok(()),
-        Err(error) => Err(io::Error::new(error.kind(), format!("cannot atomically publish archive: {error}"))),
     }
 }
 

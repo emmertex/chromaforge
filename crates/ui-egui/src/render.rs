@@ -2889,6 +2889,7 @@ mod extended_linear_tests {
                 proof: None,
                 window: None,
                 display: None,
+                downscale: Default::default(),
             },
             key: 0,
             cache: None,

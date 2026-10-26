@@ -21,6 +21,7 @@ pub mod availability;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
 pub mod cmd;
+pub mod colour_export;
 pub mod config;
 pub mod contact_sheet;
 pub mod control_auth;
@@ -322,6 +323,8 @@ pub struct Session {
     pub(crate) lens_seen: std::collections::HashMap<PhotoId, u64>,
     /// Whether each photo looked up this session carries its file\'s own lens correction (not a database profile).
     pub(crate) lens_from_file: std::collections::HashMap<PhotoId, bool>,
+    /// The lens picked for each photo ([`lcc_develop::Optics::lens`]) when its lens data was last looked up.
+    pub(crate) lens_chosen_seen: std::collections::HashMap<PhotoId, Option<lcc_develop::ChosenLens>>,
     /// Reverse geocoding: the parsed place names and their download (`metadata.*PlaceNames`).
     pub place_names: cmd::geocode::PlaceNames,
     /// The user's own list of models to download (`catalog.json` in the models folder), as last read.
@@ -575,6 +578,7 @@ impl Session {
             lens_db: Default::default(),
             lens_seen: Default::default(),
             lens_from_file: Default::default(),
+            lens_chosen_seen: Default::default(),
             place_names: Default::default(),
             face_catalog: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -753,10 +757,12 @@ impl Session {
 
     // ---------------------------------------------------------------- ops, undo
 
-    /// Apply an op as one undoable step.
+    /// Apply an op as one undoable step. A new edit: one that would make a smart album include
+    /// itself is refused here, whichever command, task or caller asked ([`Catalog::apply_new`]);
+    /// undo, redo and opening a library bring back what was and are not held to that.
     pub fn commit(&mut self, label: &str, op: Op) -> Result<()> {
         let fwd = op.clone();
-        let inv = self.apply_catalog(op)?;
+        let inv = self.apply_through(op, Catalog::apply_new)?;
         self.pending_log.push(fwd);
         self.undo.push(UndoEntry { label: label.to_string(), op: inv, folder: None, retry_inverse: Vec::new(), retry_sidecars: Vec::new() });
         self.commits = self.commits.wrapping_add(1);
@@ -770,7 +776,14 @@ impl Session {
         Ok(())
     }
 
+    /// [`Catalog::apply`] for what brings back what was (an undo or a redo).
     fn apply_catalog(&mut self, op: Op) -> Result<Op> {
+        self.apply_through(op, Catalog::apply)
+    }
+
+    /// Apply `op` with `apply` (the catalog's way in for a new edit or for bringing back what
+    /// was), then forget what the session cached of the photos it replaced.
+    fn apply_through(&mut self, op: Op, apply: fn(&mut Catalog, Op) -> std::result::Result<Op, lcc_catalog::CatalogError>) -> Result<Op> {
         // Retain only cache IDs while the catalog consumes the operation. Cloning an import
         // batch here also cloned every photo, although commit already keeps the journal copy.
         let mut invalidated = Vec::new();
@@ -791,7 +804,7 @@ impl Session {
                 _ => {}
             }
         }
-        let inv = self.catalog.apply(op)?;
+        let inv = apply(&mut self.catalog, op)?;
         for id in invalidated {
             self.media.forget(id);
         }
@@ -1645,6 +1658,10 @@ pub fn json_delta(old: &Value, new: &Value) -> Option<Value> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_album_loops;
+#[cfg(test)]
+mod tests_album_missing;
 #[cfg(test)]
 mod tests_album_order;
 #[cfg(test)]

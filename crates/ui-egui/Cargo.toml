@@ -59,8 +59,8 @@ lcc-faces = { workspace = true }
 lcc-merge = { workspace = true }
 # the update tests offer a release the way a check would (native only, like the updater itself)
 lcc-updater = { workspace = true }
-filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
+filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
 wat = "1.228" # G19: a slow export-hook plug-in for the worker test
 
 [build-dependencies]

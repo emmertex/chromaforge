@@ -12,15 +12,15 @@ workspace = true
 lcc-brand = { workspace = true }
 lcc-raster = { workspace = true }
 lcc-video = { workspace = true }
-filmcraft-color = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-aac = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-prores = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
+filmcraft-color = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-aac = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-prores = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
 thiserror = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-filmcraft-matroska = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
+filmcraft-matroska = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
 
 # Never `filmcraft-codecs` / `-media` / `-export`: they pull symphonia (MPL-2.0).
 

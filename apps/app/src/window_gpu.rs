@@ -141,8 +141,13 @@ fn user_notice(failed: Option<WindowRenderer>, forced: Option<WindowRenderer>, p
 }
 
 /// eframe's defaults with the app's backends and DX12 shader compiler (issues #136, #471).
+///
+/// Taken from `NativeOptions::default()`, whose surface is egui-wgpu's `LOW_LATENCY` (one frame in
+/// flight; two drawables on Metal). `WgpuConfiguration::default()` is `HIGH_THROUGHPUT` instead (two
+/// frames queued, three drawables): every drag, slider and crop handle reached the screen a frame
+/// later than eframe's default. Live window resizing still gets three drawables from egui-wgpu.
 pub fn base_options() -> WgpuConfiguration {
-    let mut c = WgpuConfiguration::default();
+    let mut c = eframe::NativeOptions::default().wgpu_options;
     if let WgpuSetup::CreateNew(n) = &mut c.wgpu_setup {
         n.instance_descriptor.backends = backend::window_backends();
         n.instance_descriptor.backend_options = backend::backend_options();
@@ -303,6 +308,23 @@ mod tests {
         assert!(forced.starts_with("The dx12 renderer failed") && forced.contains("now draws its window with vulkan"), "{forced}");
         let died = user_notice(Some(dx), None, &problems, vk).unwrap();
         assert!(died.contains("last time") && !died.contains("Validation Error"), "{died}");
+    }
+
+    /// The window keeps eframe's low-latency surface: one frame queued (two Metal drawables), not
+    /// the high-throughput `WgpuConfiguration::default()`, which held input a frame longer. The
+    /// probed (Windows) and forced-backend configurations are built on the same options.
+    #[test]
+    fn window_surface_keeps_one_frame_in_flight() {
+        let surface = base_options().surface;
+        assert_eq!(surface, eframe::NativeOptions::default().wgpu_options.surface);
+        assert_eq!(surface, eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY);
+        assert_eq!(surface.desired_maximum_frame_latency, Some(1));
+        assert_eq!(surface.present_mode, wgpu::PresentMode::AutoVsync);
+        assert_ne!(surface, WgpuConfiguration::default().surface, "egui-wgpu's own default is the high-throughput one");
+        // what `main` hands eframe (on Windows `choose` probes the adapters first; not here)
+        if !cfg!(windows) {
+            assert_eq!(choose(&Files::new(None), false).wgpu_options.surface, surface);
+        }
     }
 
     /// The crash report: a pipeline that fails validation must come back as an error, never as

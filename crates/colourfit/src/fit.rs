@@ -24,13 +24,13 @@
 use crate::dataset::{DngMatrices, PhotoSamples};
 use crate::deltae;
 use crate::{Error, Result};
-use lcc_camdb::calibration::{Calibration, CameraModel, CctBin, Evidence, LICENCE, Look, LookEvidence, METHOD, VERSION};
+use lcc_camdb::calibration::{Calibration, CameraModel, CctBin, Editor, Evidence, LICENCE, Look, LookEvidence, VERSION};
 use lcc_color::{D50, D65, Mat3, SRGB, Xy};
 use lcc_raw::profile::ToneCurve;
 
 mod linalg;
 mod model;
-mod pipe;
+pub(crate) mod pipe;
 mod real;
 mod table;
 
@@ -40,6 +40,9 @@ use model::{LookModel, Model, PhotoDecode};
 #[derive(Clone, Debug, Default)]
 pub struct FitOptions {
     pub contributor: Option<String>,
+    /// The editor whose exports these are. Only Lightroom's carry a temperature and tint to place the white points
+    /// by; another editor's calibration keeps the prior's white points and names its looks after the editor.
+    pub editor: Editor,
     /// Refinement rounds of the tables on their residuals (default 3 when 0).
     pub rounds: usize,
 }
@@ -457,8 +460,34 @@ struct FittedLook {
 
 /// Fit the calibration from the collected photos (all of one camera model). The result passes
 /// `Calibration::validate` and carries held-out ΔE00 before/after per look in `evidence`.
+/// A look's name for `editor`: Lightroom's profile names as they are; another editor's look (an export folder's
+/// name) led by the editor's name, so "Standard" from Capture One becomes "Capture One Standard" and never takes a
+/// Lightroom look's id.
+pub fn look_name_for(editor: Editor, name: &str) -> String {
+    let name = name.trim();
+    if editor == Editor::Lightroom || name.to_lowercase().starts_with(&editor.name().to_lowercase()) {
+        return name.to_string();
+    }
+    if name.is_empty() { editor.name().to_string() } else { format!("{} {name}", editor.name()) }
+}
+
 pub fn fit(photos: &[PhotoSamples], opts: &FitOptions) -> Result<Calibration> {
-    let first = photos.first().ok_or_else(|| Error("no photos to fit: collect pairs of raws and Lightroom exports first".into()))?;
+    let renamed: Vec<PhotoSamples>;
+    let photos = if opts.editor == Editor::Lightroom {
+        photos
+    } else {
+        renamed = photos
+            .iter()
+            .cloned()
+            .map(|mut p| {
+                p.white.lightroom_temp_tint = None;
+                p.look = look_name_for(opts.editor, &p.look);
+                p
+            })
+            .collect();
+        &renamed
+    };
+    let first = photos.first().ok_or_else(|| Error("no photos to fit: collect pairs of raws and exports first".into()))?;
     let (make, model_name) = (first.make.trim().to_string(), first.model.trim().to_string());
     if photos.iter().any(|p| p.make.trim() != make || p.model.trim() != model_name) {
         return Err(Error("the photos come from more than one camera model: fit one model at a time".into()));
@@ -545,7 +574,7 @@ pub fn fit(photos: &[PhotoSamples], opts: &FitOptions) -> Result<Calibration> {
 
     // 6. closed loop through the real decode
     let prior_fm = prior.fm_target;
-    let who = Who { make: &make, model: &model_name, contributor: opts.contributor.as_deref() };
+    let who = Who { make: &make, model: &model_name, contributor: opts.contributor.as_deref(), editor: opts.editor };
     closed_loop(&mut model, &mut looks, &train, &base, &who, prior_fm);
 
     // 7. evidence and gates
@@ -629,6 +658,7 @@ struct Who<'a> {
     make: &'a str,
     model: &'a str,
     contributor: Option<&'a str>,
+    editor: Editor,
 }
 
 /// The calibration file of a fitted model and looks.
@@ -638,7 +668,8 @@ fn assemble(who: &Who, model: &Model, looks: &[FittedLook], prior_fm: [Mat3; 2],
         make: who.make.to_string(),
         model: who.model.to_string(),
         aliases: Vec::new(),
-        method: METHOD.into(),
+        editor: who.editor,
+        method: who.editor.method(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
         contributor: who.contributor.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
         licence: LICENCE.into(),
@@ -828,3 +859,21 @@ fn hue_coverage(set: &[&PhotoSamples]) -> f32 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+
+    #[test]
+    fn look_names_follow_the_editor() {
+        assert_eq!(look_name_for(Editor::Lightroom, "Adobe Color"), "Adobe Color");
+        assert_eq!(look_name_for(Editor::CaptureOne, "Standard"), "Capture One Standard");
+        assert_eq!(look_name_for(Editor::CaptureOne, "capture one film standard"), "capture one film standard");
+        assert_eq!(look_name_for(Editor::Darktable, "  "), "darktable");
+        assert_ne!(
+            lcc_camdb::calibration::look_id(&look_name_for(Editor::Darktable, "Adobe Color")),
+            lcc_camdb::calibration::look_id("Adobe Color"),
+            "another editor's look never takes a Lightroom look's id"
+        );
+    }
+}

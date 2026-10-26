@@ -17,36 +17,36 @@ thiserror = { workspace = true }
 # the Matroska / MPEG-TS / MXF demuxers and each decoder crate are used directly instead (every one is
 # std-only, MIT OR Apache-2.0, no unsafe).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-filmcraft-color = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-frame = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-time = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-h264 = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-hevc = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-bitstream = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-matroska = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-mpegts = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-mxf = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-vp9 = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-av1 = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-prores = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-mpeg2v = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-apv = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-dnx = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
+filmcraft-color = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-frame = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-time = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-h264 = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-hevc = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-bitstream = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-matroska = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-mpegts = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-mxf = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-vp9 = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-av1 = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-prores = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-mpeg2v = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-apv = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-dnx = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
 # audio (std-only, MIT OR Apache-2.0; puremp3 is MIT OR CC0-1.0, no unsafe)
-filmcraft-aac = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-opus = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
-filmcraft-ac3 = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
+filmcraft-aac = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-opus = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-ac3 = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
 puremp3 = "0.1"
 
 # Dev-only `test_util::write_clip` (synthetic H.264 MP4s for other crates' tests); never on in a product build.
-filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470", optional = true }
+filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106", optional = true }
 
 [features]
 test-util = ["dep:filmcraft-h264enc"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
+filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
 
 [dev-dependencies]
 lcc-testkit = { workspace = true }

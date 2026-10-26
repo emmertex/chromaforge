@@ -190,9 +190,9 @@ pub fn detail_status(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, amount: f
         }
         PhotoState::NoModel => {
             egui::Frame::NONE.inner_margin(pad).show(ui, |ui| {
-                note(ui, "AI Denoise needs a model. Install one in Settings.", t.text_dim);
+                note(ui, "AI Denoise needs a model, and none is installed. Meanwhile, Luminance and Color under Detail reduce noise.", t.text_dim);
                 ui.add_space(2.0);
-                let r = ui.small_button(crate::i18n::tr("Set up AI Denoise…"));
+                let r = ui.small_button(crate::i18n::tr("Why?"));
                 register(ui.ctx(), "denoise:setup", r.rect);
                 if r.clicked() {
                     let _ = app.run("denoise.toggle", json!({"id": id.0, "enabled": true}));
@@ -241,7 +241,10 @@ pub fn detail_status(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, amount: f
 pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let list = models(app, ui.ctx());
     heading(ui, t, "AI Denoise");
-    crate::model_setup::notice(app, ui, "denoise");
+    let none_yet = list["models"].as_array().is_none_or(|m| m.is_empty());
+    if !none_yet {
+        crate::model_setup::notice(app, ui, "denoise");
+    }
     if list["dir"].is_null() {
         hint(ui, t, "This build has nowhere to keep denoise models, so AI Denoise is not available. (The desktop app has.)");
         return;
@@ -262,7 +265,13 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         .execute("denoise.models.downloads", &json!({}))
         .map(|v| v["downloads"].as_array().cloned().unwrap_or_default())
         .unwrap_or_default();
+    if all.is_empty() {
+        no_model_yet(ui, t);
+    }
     heading(ui, t, "Models");
+    if all.is_empty() {
+        hint(ui, t, "Only if you were given a {app} denoise model (a folder with a .onnx file and denoise-model.json):");
+    }
     let installing = downloads.iter().any(|d| d["id"] == "local-install" && d["state"].as_str() == Some("installing"));
     let r = crate::button::Button::new("Install from file…")
         .enabled(runtime && app.services.pick_denoise_model.is_some())
@@ -283,9 +292,6 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if let Some(why) = &app.caches.denoise.rejected {
         hint(ui, t, why);
     }
-    if all.is_empty() {
-        hint(ui, t, "Install your own ONNX model with denoise-model.json beside it. This build offers no model downloads.");
-    }
     if let Some(job) = downloads.iter().find(|d| d["id"] == "local-install") {
         match job["state"].as_str() {
             Some("installing") => hint(ui, t, "Checking and installing the model…"),
@@ -302,6 +308,25 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     hint(ui, t, "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.");
     work_section(app, ui, t, &list);
+}
+
+/// No model is installed and none can be downloaded: say so plainly, and what to use meanwhile, without promising one.
+fn no_model_yet(ui: &mut egui::Ui, t: &Tokens) {
+    ui.add_space(4.0);
+    let r = egui::Frame::NONE.fill(t.inset).corner_radius(6.0).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+        ui.set_max_width(ui.available_width().min(680.0));
+        ui.label(RichText::new(tr("No AI Denoise model is installed")).font(t.semibold(13.0)).color(t.text));
+        ui.add_space(2.0);
+        for line in [
+            "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.",
+            "Meanwhile your raw photos use the standard noise reduction: Luminance and Color under Detail in the Edit panel. It works on every photo.",
+        ] {
+            ui.add(egui::Label::new(RichText::new(tr(line)).size(12.0).color(t.text_label)).wrap());
+            ui.add_space(2.0);
+        }
+    });
+    crate::widgets::register(ui.ctx(), "denoise:noModelYet", r.response.rect);
+    ui.add_space(4.0);
 }
 
 /// What the cache holds, its limit, and what is being made.

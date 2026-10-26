@@ -67,6 +67,17 @@ fn open(bytes: &[u8], opts: &DecodeOptions) -> Result<JxlImage> {
     Ok(img)
 }
 
+/// Dimensions from the codestream (orientation already applied by jxl-oxide, so 1, as a decode
+/// reports it) without rendering a frame: the frames are parsed within the decode's allocation
+/// budget, and a file without a complete first keyframe (truncated) is refused, as a decode would.
+pub(crate) fn header(bytes: &[u8]) -> Result<(u32, u32, u16)> {
+    let img = open(bytes, &DecodeOptions::default())?;
+    if img.num_loaded_keyframes() == 0 {
+        return Err(err("truncated: no complete frame"));
+    }
+    Ok((img.width(), img.height(), 1))
+}
+
 pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
     let mut img = open(bytes, opts)?;
     let (w, h) = (img.width(), img.height());

@@ -8,6 +8,136 @@ use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
+// Most items each list of the settings holds (issue #2121). Every one costs per-pixel work or a
+// full-size plane when a photo renders (a mask keeps a plane; each brush stroke blends one; each
+// colour sample, spot and red eye is visited for every pixel), and settings arrive as JSON from
+// sidecars, presets, `develop.merge`, `render --settings` and the catalog: 2,000 tiny masks in
+// 200 KB of JSON asked 128 GB at 4096². Settings past a limit keep their first items
+// ([`capped`] while reading, [`DevelopSettings::cap_lists`] for settings built in code); the
+// limits are far past what an edit uses.
+/// Masks a photo has.
+pub const MAX_MASKS: usize = 100;
+/// Components (shapes added, subtracted or intersected) of one mask.
+pub const MAX_MASK_COMPONENTS: usize = 64;
+/// Colours sampled by one Color Range component (Lightroom's and the Masking panel's limit).
+pub const MAX_COLOR_SAMPLES: usize = 5;
+/// Brush strokes of one brush component.
+pub const MAX_STROKES: usize = 2_000;
+/// Points (and pressure values) of one brush stroke.
+pub const MAX_STROKE_POINTS: usize = 100_000;
+/// Include or exclude clicks of one Object component.
+pub const MAX_PROMPT_POINTS: usize = 256;
+/// Body parts named by one People component.
+pub const MAX_PEOPLE_PARTS: usize = 32;
+/// Spot removals, heals and clones of a photo.
+pub const MAX_SPOTS: usize = 1_000;
+/// Points of one brushed spot.
+pub const MAX_SPOT_POINTS: usize = 10_000;
+/// Red eye / pet eye corrections of a photo.
+pub const MAX_RED_EYES: usize = 64;
+/// Points of each point curve.
+pub const MAX_CURVE_POINTS: usize = 256;
+/// Guided Upright guides (the tool keeps 4).
+pub const MAX_GUIDES: usize = 16;
+/// Switched-off Edit panel sections.
+pub const MAX_DISABLED_SECTIONS: usize = 64;
+
+/// Read a list keeping its first `N` items: the rest are skipped without being built, so a huge
+/// list in a file costs neither memory nor time past `N` (issue #2121).
+pub(crate) fn capped<'de, const N: usize, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Keep<T, const N: usize>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>, const N: usize> serde::de::Visitor<'de> for Keep<T, N> {
+        type Value = Vec<T>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a list")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
+            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(N).min(1024));
+            while out.len() < N {
+                match seq.next_element()? {
+                    Some(x) => out.push(x),
+                    None => return Ok(out),
+                }
+            }
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(out)
+        }
+    }
+    d.deserialize_seq(Keep::<T, N>(std::marker::PhantomData))
+}
+
+impl DevelopSettings {
+    /// Some list holds more than its limit (`MAX_MASKS` and the rest): settings built in code, or
+    /// stored before the limits existed. The same lists as [`DevelopSettings::cap_lists`].
+    pub fn over_list_limits(&self) -> bool {
+        let over = |n: usize, max: usize| n > max;
+        let c = &self.curve;
+        over(self.point_colors.len(), MAX_POINT_COLORS)
+            || over(self.masks.len(), MAX_MASKS)
+            || over(self.spots.len(), MAX_SPOTS)
+            || over(self.red_eye.len(), MAX_RED_EYES)
+            || over(self.disabled_sections.len(), MAX_DISABLED_SECTIONS)
+            || over(self.geometry.guides.len(), MAX_GUIDES)
+            || [&c.master, &c.red, &c.green, &c.blue].into_iter().any(|v| over(v.len(), MAX_CURVE_POINTS))
+            || self.spots.iter().any(|sp| over(sp.points.len(), MAX_SPOT_POINTS))
+            || self.masks.iter().any(|m| {
+                over(m.components.len(), MAX_MASK_COMPONENTS)
+                    || m.components.iter().any(|comp| match &comp.shape {
+                        MaskShape::Brush { strokes } => {
+                            over(strokes.len(), MAX_STROKES)
+                                || strokes.iter().any(|st| over(st.points.len(), MAX_STROKE_POINTS) || over(st.pressure.len(), MAX_STROKE_POINTS))
+                        }
+                        MaskShape::ColorRange { samples, .. } => over(samples.len(), MAX_COLOR_SAMPLES),
+                        MaskShape::Object { hint, exclude, .. } => over(hint.len(), MAX_PROMPT_POINTS) || over(exclude.len(), MAX_PROMPT_POINTS),
+                        MaskShape::People { parts, .. } => over(parts.len(), MAX_PEOPLE_PARTS),
+                        _ => false,
+                    })
+            })
+    }
+
+    /// Cut every list to its limit, keeping its first items.
+    pub fn cap_lists(&mut self) {
+        self.point_colors.truncate(MAX_POINT_COLORS);
+        self.masks.truncate(MAX_MASKS);
+        self.spots.truncate(MAX_SPOTS);
+        self.red_eye.truncate(MAX_RED_EYES);
+        self.disabled_sections.truncate(MAX_DISABLED_SECTIONS);
+        self.geometry.guides.truncate(MAX_GUIDES);
+        let c = &mut self.curve;
+        for v in [&mut c.master, &mut c.red, &mut c.green, &mut c.blue] {
+            v.truncate(MAX_CURVE_POINTS);
+        }
+        for sp in &mut self.spots {
+            sp.points.truncate(MAX_SPOT_POINTS);
+        }
+        for m in &mut self.masks {
+            m.components.truncate(MAX_MASK_COMPONENTS);
+            for comp in &mut m.components {
+                match &mut comp.shape {
+                    MaskShape::Brush { strokes } => {
+                        strokes.truncate(MAX_STROKES);
+                        for st in strokes {
+                            st.points.truncate(MAX_STROKE_POINTS);
+                            st.pressure.truncate(MAX_STROKE_POINTS);
+                        }
+                    }
+                    MaskShape::ColorRange { samples, .. } => samples.truncate(MAX_COLOR_SAMPLES),
+                    MaskShape::Object { hint, exclude, .. } => {
+                        hint.truncate(MAX_PROMPT_POINTS);
+                        exclude.truncate(MAX_PROMPT_POINTS);
+                    }
+                    MaskShape::People { parts, .. } => parts.truncate(MAX_PEOPLE_PARTS),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// The rendering process a photo's settings are interpreted by (what Lightroom calls the process
 /// version). A change that would alter how existing settings render ships as a new process, so a
 /// photo keeps its look until someone updates it (`develop.updateProcess`). See
@@ -90,12 +220,17 @@ pub enum Process {
     /// Sharpening is an unsharp mask at the Radius (in source pixels) with Detail soft-clipping its
     /// halos, instead of a boost of the Texture band (upstream #757 / #762).
     V4,
+    /// Colours brighter than the output can show keep their hue and saturation: the brightest
+    /// channel is limited to white and the others keep their places between it and the darkest,
+    /// instead of the colour moving toward its luminance (which turned bright saturated reds pink).
+    /// Adapted from upstream #2262.
+    V5,
 }
 
 impl Process {
     /// Every process, oldest first.
-    pub const ALL: [Process; 4] = [Process::V1, Process::V2, Process::V3, Process::V4];
-    pub const LATEST: Process = Process::V4;
+    pub const ALL: [Process; 5] = [Process::V1, Process::V2, Process::V3, Process::V4, Process::V5];
+    pub const LATEST: Process = Process::V5;
 
     pub const fn version(self) -> ProcessVersion {
         match self {
@@ -103,6 +238,7 @@ impl Process {
             Process::V2 => ProcessVersion(2),
             Process::V3 => ProcessVersion(3),
             Process::V4 => ProcessVersion(4),
+            Process::V5 => ProcessVersion(5),
         }
     }
 }
@@ -129,6 +265,7 @@ pub struct DevelopSettings {
     pub color: ColorAdj,
     pub mixer: Mixer,
     /// Point Color: up to [`MAX_POINT_COLORS`] sampled colours, each with its own adjustment.
+    #[serde(deserialize_with = "capped::<MAX_POINT_COLORS, _, _>")]
     pub point_colors: Vec<PointColor>,
     pub bw_mix: BwMix,
     pub grading: ColorGrading,
@@ -140,14 +277,18 @@ pub struct DevelopSettings {
     pub geometry: Geometry,
     pub crop: Crop,
     pub orientation: Orientation,
+    #[serde(deserialize_with = "capped::<MAX_MASKS, _, _>")]
     pub masks: Vec<Mask>,
+    #[serde(deserialize_with = "capped::<MAX_SPOTS, _, _>")]
     pub spots: Vec<Spot>,
+    #[serde(deserialize_with = "capped::<MAX_RED_EYES, _, _>")]
     pub red_eye: Vec<RedEye>,
     pub lens_blur: LensBlur,
     pub enhance: Enhance,
     /// Camera calibration: shadows tint and primary hue/saturation (applied before tone mapping).
     pub calibration: Calibration,
     /// Section on/off toggles (the "eye" buttons on panel headers): section id → enabled.
+    #[serde(deserialize_with = "capped::<MAX_DISABLED_SECTIONS, _, _>")]
     pub disabled_sections: Vec<String>,
     /// Pixel-filter plug-ins applied in order (section id `pluginFilters` for the eye toggle). Not written while
     /// empty, so settings saved before plug-in filters keep their JSON and `hash64`.
@@ -434,9 +575,13 @@ pub struct ToneCurve {
     pub split_mid: f64,
     pub split_highlights: f64,
     /// Point curves in 0..1 (identity = empty or [(0,0),(1,1)]).
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
     pub master: Vec<Point>,
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
     pub red: Vec<Point>,
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
     pub green: Vec<Point>,
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
     pub blue: Vec<Point>,
     /// Refine Saturation 0..100: 100 keeps the saturation a curve produces, lower values pull it
     /// back towards the saturation before the curve (strong contrast curves oversaturate).
@@ -812,7 +957,7 @@ impl Default for Detail {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Optics {
     pub remove_ca: bool,
@@ -832,6 +977,23 @@ pub struct Optics {
     /// automatic estimate when `remove_ca` is on.
     pub ca_red: f64,
     pub ca_blue: f64,
+    /// A lens profile the user picked from the lens database for this photo (an adapted or manual lens, one its
+    /// metadata misnames); `None`: the file's own correction, else the database's match by the lens name. Not
+    /// written to XMP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens: Option<ChosenLens>,
+}
+
+/// A lens picked from the lens database ([`Optics::lens`]): its maker and model as the database names them, and the
+/// focal length to use when the photo records none.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChosenLens {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub make: Option<String>,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focal: Option<f64>,
 }
 
 impl Default for Optics {
@@ -852,6 +1014,7 @@ impl Default for Optics {
             vignetting_midpoint: 50.0,
             ca_red: 0.0,
             ca_blue: 0.0,
+            lens: None,
         }
     }
 }
@@ -932,6 +1095,7 @@ pub struct Geometry {
     pub upright: Upright,
     /// Guided Upright guides, up to 4 line segments, in normalized coordinates of the lens-corrected
     /// (pre-perspective) oriented image.
+    #[serde(deserialize_with = "capped::<MAX_GUIDES, _, _>")]
     pub guides: Vec<(Point, Point)>,
     /// The automatic Upright correction found by analysis for `upright` (Auto/Level/Vertical/Full), as a
     /// homography lens-corrected → transformed in centred coordinates (`(p − centre) / (long edge / 2)`).
@@ -1059,6 +1223,7 @@ pub enum MaskOp {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BrushStroke {
+    #[serde(deserialize_with = "capped::<MAX_STROKE_POINTS, _, _>")]
     pub points: Vec<Point>,
     /// Radius as a fraction of the image's long edge.
     pub size: f64,
@@ -1071,7 +1236,7 @@ pub struct BrushStroke {
     /// Pen pressure (0..1) at each of `points`, recorded when the brush's pressure switch is on: it scales each dab's
     /// radius and flow. Empty (the default, a mouse or the switch off) is full pressure everywhere; a point past the
     /// end of a shorter list takes the last value.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "capped::<MAX_STROKE_POINTS, _, _>")]
     pub pressure: Vec<f32>,
 }
 
@@ -1093,6 +1258,7 @@ impl Default for BrushStroke {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MaskShape {
     Brush {
+        #[serde(deserialize_with = "capped::<MAX_STROKES, _, _>")]
         strokes: Vec<BrushStroke>,
     },
     /// Linear gradient: full effect at `start`, fading to none at `end` (normalized coords).
@@ -1111,6 +1277,7 @@ pub enum MaskShape {
     },
     /// Colour range: sampled OkLab colours with a refine amount 0..100.
     ColorRange {
+        #[serde(deserialize_with = "capped::<MAX_COLOR_SAMPLES, _, _>")]
         samples: Vec<[f64; 3]>,
         refine: f64,
     },
@@ -1133,8 +1300,9 @@ pub enum MaskShape {
     /// One object picked by clicks (SAM 3 point prompts): `hint` holds the clicks that include,
     /// `exclude` the ones that exclude; `seg` the segmentation computed from them.
     Object {
+        #[serde(deserialize_with = "capped::<MAX_PROMPT_POINTS, _, _>")]
         hint: Vec<Point>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "capped::<MAX_PROMPT_POINTS, _, _>")]
         exclude: Vec<Point>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seg: Option<crate::SegMask>,
@@ -1160,6 +1328,7 @@ pub enum MaskShape {
     },
     People {
         person: u32,
+        #[serde(deserialize_with = "capped::<MAX_PEOPLE_PARTS, _, _>")]
         parts: Vec<String>,
     },
     Landscape {
@@ -1186,6 +1355,7 @@ pub struct Mask {
     pub name: String,
     pub visible: bool,
     pub invert: bool,
+    #[serde(deserialize_with = "capped::<MAX_MASK_COMPONENTS, _, _>")]
     pub components: Vec<MaskComponent>,
     pub adjust: LocalAdjustments,
     /// Refine Edges 0..100: the mask's edges snap to the photo's (guided filter).
@@ -1240,6 +1410,7 @@ pub enum SpotMode {
 pub struct Spot {
     pub mode: SpotMode,
     /// Target: a single point (circle spot) or a brushed path. Normalized coords.
+    #[serde(deserialize_with = "capped::<MAX_SPOT_POINTS, _, _>")]
     pub points: Vec<Point>,
     /// Radius as a fraction of the long edge.
     pub size: f64,

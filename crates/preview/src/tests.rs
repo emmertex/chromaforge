@@ -809,3 +809,25 @@ fn deferred_writes_are_bounded_and_drain_to_disk() {
     assert!(keys.iter().all(|k| cache.get(*k).is_some()));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A cached file whose JPEG header claims more than the cache ever writes is refused from the
+/// header, without decoding it, and an image past that size isn't written (issue #2140).
+#[test]
+fn oversized_cached_files_are_refused_from_their_header() {
+    let small = disk::encode_jpeg(&gradient(32, 20, 3)).unwrap();
+    assert!(disk::decode_jpeg(&small).is_some());
+    let sof = small.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+    let mut huge = small.clone();
+    // 9000 × 9000 (height, then width, big-endian)
+    huge[sof + 5..sof + 9].copy_from_slice(&[0x23, 0x28, 0x23, 0x28]);
+    assert!(disk::decode_jpeg(&huge).is_none());
+    assert!(disk::decode_jpeg(b"\xFF\xD8\xFF\xC0 not a jpeg").is_none());
+    let dir = temp_dir("disk-oversized");
+    let d = DiskCache::new(&dir, 1 << 30);
+    let k = hash_bytes(b"wide");
+    d.put(k, &gradient(disk::MAX_EDGE + 1, 2, 1));
+    assert!(d.get(k).is_none());
+    d.put(k, &gradient(disk::MAX_EDGE, 2, 1));
+    assert_eq!(d.get(k).map(|i| i.width), Some(disk::MAX_EDGE));
+    let _ = std::fs::remove_dir_all(&dir);
+}

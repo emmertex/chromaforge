@@ -15,7 +15,7 @@ pub enum RatingOp {
 
 /// What the grid shows. Empty/None fields don't filter.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Filter {
     /// Free-text search (plug-in metadata fields too; `key:value` for one): every token must match filename, title, caption, keywords, camera, lens,
     /// location or format. Tokens like `rating:3`, `flag:pick`, `iso:>800`, `camera:x2` are fielded.
@@ -552,6 +552,8 @@ pub fn immich_state_is(cat: &Catalog, id: PhotoId, want: &str) -> bool {
 pub(crate) struct Prepared {
     root: Option<String>,
     only: Option<std::collections::HashSet<PhotoId>>,
+    /// A pass over many photos: the catalog's kept search text is made when missing.
+    whole: bool,
 }
 
 /// A photo's place in the shuffle for `seed`.
@@ -673,7 +675,7 @@ fn unquote(s: &str) -> &str {
     s.strip_prefix('"').map_or(s, |inner| inner.strip_suffix('"').unwrap_or(inner))
 }
 
-fn token_matches(p: &Photo, tok: &str) -> bool {
+fn token_matches(p: &Photo, tok: &str, kept: Option<&[Box<str>]>) -> bool {
     let t = tok.to_lowercase();
     // a token that starts with a quote is a phrase, even with a colon in it
     if let Some((field, val)) = t.split_once(':').filter(|_| !t.starts_with('"')) {
@@ -725,16 +727,34 @@ fn token_matches(p: &Photo, tok: &str) -> bool {
                 p.plugin_fields.iter().any(|(k, v)| {
                     k.rsplit_once('/').is_some_and(|(_, f)| f.eq_ignore_ascii_case(key))
                         && crate::rules::plugin_value_text(v).to_lowercase().contains(val)
-                }) || text_matches(p, &t)
+                }) || text_matches(p, &t, kept)
             }
         };
     }
-    text_matches(p, unquote(&t))
+    text_matches(p, unquote(&t), kept)
+}
+
+/// The lower-cased fields the free-text search looks through ([`text_matches`]), each on its own.
+pub(crate) fn search_fields_of(p: &Photo) -> Box<[Box<str>]> {
+    let fields = [&p.file_name, &p.meta.title, &p.meta.caption, &p.meta.camera, &p.meta.lens, &p.meta.location, &p.format];
+    fields
+        .into_iter()
+        .map(|f| f.to_lowercase())
+        .chain(p.meta.keywords.iter().map(|k| k.to_lowercase()))
+        .chain(p.people().iter().map(|n| n.to_lowercase()))
+        .chain(p.plugin_fields.values().map(|v| crate::rules::plugin_value_text(v).to_lowercase()))
+        .filter(|f| !f.is_empty())
+        .map(String::into_boxed_str)
+        .collect()
 }
 
 /// Whether the lower-cased word `t` is in the file name, title, caption, camera, lens, location,
-/// format, a keyword, a person's name or a plug-in field value of `p`.
-fn text_matches(p: &Photo, t: &str) -> bool {
+/// format, a keyword, a person's name or a plug-in field value of `p` (`kept`: those fields,
+/// lower-cased already by the catalog).
+fn text_matches(p: &Photo, t: &str, kept: Option<&[Box<str>]>) -> bool {
+    if let Some(fields) = kept {
+        return t.is_empty() || fields.iter().any(|f| f.contains(t));
+    }
     let hay = [&p.file_name, &p.meta.title, &p.meta.caption, &p.meta.camera, &p.meta.lens, &p.meta.location, &p.format];
     hay.iter().any(|h| h.to_lowercase().contains(t))
         || p.meta.keywords.iter().any(|k| k.to_lowercase().contains(t))
@@ -849,13 +869,13 @@ impl Filter {
 
     /// [`Filter::prepare`] for testing one photo (the `only` ids are looked through, not hashed).
     pub(crate) fn prepare_one(&self) -> Prepared {
-        Prepared { root: self.library_root(), only: None }
+        Prepared { root: self.library_root(), only: None, whole: false }
     }
 
     /// What [`Filter::matches_in`] needs worked out once for a pass over many photos rather than
     /// once per photo: the library folder's identity and the `only` ids as a set.
     pub(crate) fn prepare(&self) -> Prepared {
-        Prepared { root: self.library_root(), only: (!self.only.is_empty()).then(|| self.only.iter().copied().collect()) }
+        Prepared { root: self.library_root(), only: (!self.only.is_empty()).then(|| self.only.iter().copied().collect()), whole: true }
     }
 
     /// [`Filter::library_folder`] as a folder identity ([`folder_key`]); `None` without a choice.
@@ -998,7 +1018,12 @@ impl Filter {
         {
             return false;
         }
-        search_tokens(&self.text).all(|tok| token_matches(p, tok))
+        let mut tokens = search_tokens(&self.text).peekable();
+        if tokens.peek().is_none() {
+            return true;
+        }
+        let kept = cat.search_fields(p, prepared.whole);
+        tokens.all(|tok| token_matches(p, tok, kept))
     }
 }
 

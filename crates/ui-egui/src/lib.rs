@@ -327,6 +327,9 @@ pub use control::{ControlRequest, ControlResponse};
 pub use state::UiState;
 
 const TOAST_SECONDS: f64 = 1.4;
+
+/// How long after a mask slider last moved its overlay stays hidden (ms).
+const MASK_ADJUST_HIDE_MS: u64 = 250;
 /// The `path` of a display profile read from the screen rather than chosen as a file.
 pub const SCREEN_PROFILE: &str = "screen";
 
@@ -429,6 +432,9 @@ pub struct Services {
     /// (`pick`; #191). With it, the synchronous pickers below serve only the buttons inside
     /// dialogs; without it (the web, tests) they answer the commands too.
     pub picker: Option<pick::Picker>,
+    /// Failures from legacy path-only dialogs. The UI reports these without replacing the
+    /// current dialog or treating the failure as a new command.
+    pub dialog_errors: Option<Receiver<String>>,
     /// Show an open dialog for photos; returns paths.
     pub pick_files: Option<PickFiles>,
     /// Local ONNX model; a manifest must accompany it.
@@ -462,6 +468,10 @@ pub struct Services {
     pub pick_slideshow_templates: Option<PickFiles>,
     /// Save dialog for an exported slideshow template (`.json`).
     pub save_slideshow_template: Option<SaveFile>,
+    /// Open dialog for print template files (`.lcprint`; File ▸ Print… ▸ Templates ▸ Import…).
+    pub pick_print_templates: Option<PickFiles>,
+    /// Save dialog for an exported print template (`.lcprint`).
+    pub save_print_template: Option<SaveFile>,
     pub write: Option<WriteFn>,
     /// Thread-safe writer: with it, UI-started exports run in the background (desktop only).
     pub write_shared: Option<SharedWrite>,
@@ -756,6 +766,15 @@ pub struct LccApp {
 }
 
 impl LccApp {
+    /// Whether the selected mask has settings (an effect to judge), see [`panels::detail::mask_has_settings`].
+    fn active_mask_has_settings(&self) -> bool {
+        let Some(id) = self.session.active_mask else { return false };
+        self.session
+            .active()
+            .and_then(|p| self.session.develop_of(p))
+            .is_some_and(|d| d.masks.iter().any(|m| m.id == id && panels::detail::mask_has_settings(m)))
+    }
+
     /// How panel sliders are laid out: always pills in the Modern layout, else as Settings say.
     pub(crate) fn slider_layout(&self) -> theme::SliderLayout {
         if self.ui.modern.enabled { theme::SliderLayout::Pill } else { self.ui.settings.slider_layout }
@@ -963,14 +982,16 @@ impl LccApp {
             self.ui.search.clear();
         }
         if r.is_ok() && id == "mask.adjust" {
-            // Judge local adjustments on the photo, without the selection overlay obscuring them.
-            // Keep it hidden after release; O / the overlay eye can show it again.
-            self.ui.mask_overlay = false;
+            // Judge local adjustments on the photo: while a slider is at work nothing covers it, not even
+            // an overlay switched on with O (it comes back when the slider rests); one that showed by
+            // itself goes, as the mask now has settings (upstream PR 2920's overlay rule).
+            self.ui.mask_adjusting_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(MASK_ADJUST_HIDE_MS));
+            self.ui.mask_overlay = self.ui.mask_overlay_pinned;
         }
         if r.is_ok() && matches!(id, "mask.add" | "mask.addComponent" | "mask.duplicate" | "mask.select") {
-            // A new or newly picked mask shows its overlay again, as in Lightroom: hidden by a slider
-            // drag above, it stayed hidden while the Overlay menu still named a mode (issue #1800).
-            self.ui.mask_overlay = true;
+            // A new or picked mask shows its overlay by itself only while it has no settings: one with
+            // settings is judged by its effect (O, the eye or hovering its row shows the overlay).
+            self.ui.mask_overlay = self.ui.mask_overlay_pinned || !self.active_mask_has_settings();
         }
         if r.is_ok() {
             // These commands finish synchronously, so their completion would otherwise
@@ -987,7 +1008,7 @@ impl LccApp {
                 self.ui.toast = Some((message, now + TOAST_SECONDS, None));
             }
         }
-        if r.is_ok() && id == "photo.label" {
+        if r.is_ok() && matches!(id, "photo.label" | "photo.clearLabel") {
             let label = if let Some(applied) = r.as_ref().ok().and_then(|v| v.get("label")).and_then(Value::as_str) {
                 if applied == "none" { None } else { lcc_catalog::ColorLabel::parse(applied) }
             } else {
@@ -1178,8 +1199,8 @@ impl LccApp {
             ctx.request_repaint();
         }
         if let Some(mask) = polled.refine {
-            // a new selection from a click or a description: show it, as `run` does for new masks
-            self.ui.mask_overlay = true;
+            // a new selection from a click or a description: shown by the same rule as a new mask
+            self.ui.mask_overlay = self.ui.mask_overlay_pinned || !self.active_mask_has_settings();
             self.ui.detail_due = Some((now + 0.3, mask));
         }
         if let Some(e) = polled.messages.into_iter().last() {
@@ -1671,7 +1692,9 @@ impl LccApp {
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);
-            let _ = self.session.execute("app.gpu", &serde_json::json!({"enabled": self.ui.settings.gpu}));
+            // not the `app.gpu` command: its answer (`available`, `adapter`) waits for the device, and
+            // compiling the kernels takes seconds on DX12
+            lcc_engine::gpu::set_enabled(self.ui.settings.gpu);
             // GPU device + kernels off the UI thread, once the window is up and only when GPU
             // rendering is on: a broken driver must not keep the window from appearing (issue #136)
             if self.ui.settings.gpu {
@@ -1929,6 +1952,7 @@ impl LccApp {
             panels::dialogs::show(self, &ctx);
             catalog_ui::show(self, &ctx);
             panels::library_problem::show(self, &ctx);
+            pick::poll(self, &ctx);
             panels::toast(self, &ctx);
             drop_overlay::show(self, &ctx);
             self.widgets = widgets::take_registry(&ctx);
@@ -2165,6 +2189,8 @@ pub struct Caches {
     /// The catalog's part of the folder tree (before the disk folders are added), by catalog revision.
     folder_base: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     people: Option<(u64, lcc_catalog::Filter, std::sync::Arc<Vec<lcc_catalog::Person>>)>,
+    /// The ignored faces (`faces.ignore`) as `(photo, index)`, at a catalog revision.
+    ignored_faces: Option<(u64, std::sync::Arc<Vec<(u64, usize)>>)>,
     suggestions: Option<(u64, std::sync::Arc<Vec<String>>)>,
     /// What the Add keyword box offers for the text typed in it, by library revision, the
     /// selection's keywords and that text.
@@ -2172,9 +2198,12 @@ pub struct Caches {
     counts: Option<(u64, LibraryCounts)>,
     date_groups: Option<(u64, std::sync::Arc<Vec<lcc_catalog::DateGroup>>)>,
     filter_values: Option<(u64, std::sync::Arc<FilterValues>)>,
-    /// The albums' counts: the minute they are of (while a smart album asks about "the last N days"), the tally
-    /// that follows edits, and the counts as the panels take them.
-    album_counts: Option<(String, lcc_catalog::tally::AlbumTally, std::sync::Arc<std::collections::HashMap<lcc_catalog::AlbumId, usize>>)>,
+    /// The albums' counts as the sidebar shows them, with the tally that follows edits.
+    album_counts: Option<AlbumCounts>,
+    /// A count of every photo running off the UI thread; the counts above are shown until it is done.
+    album_recount: Option<AlbumRecount>,
+    /// The library, catalog revision and minute a count of every photo failed at: not tried again until one changes.
+    album_recount_failed: Option<(u64, u64, String)>,
     /// How often the album counts were made from every photo (tests check that unchanged frames, and edits to a
     /// photo or a few, don't).
     pub album_count_scans: usize,
@@ -2230,6 +2259,31 @@ pub struct LibraryCounts {
     pub deleted: usize,
 }
 
+/// The albums' counts as the sidebar shows them ([`Caches::album_counts`]).
+struct AlbumCounts {
+    /// The library they are of ([`lcc_engine::Session::library_generation`]).
+    library: u64,
+    /// The minute they are of while a smart album asks about "the last N days" (else empty).
+    minute: String,
+    /// What follows edits to a photo or a few.
+    tally: lcc_catalog::tally::AlbumTally,
+    /// The counts as the panels take them.
+    shown: std::sync::Arc<std::collections::HashMap<lcc_catalog::AlbumId, usize>>,
+}
+
+/// A count of every photo on a worker thread ([`Caches::album_counts`]).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct AlbumRecount {
+    /// The library, minute and catalog revision it counts.
+    library: u64,
+    minute: String,
+    revision: u64,
+    /// The count, sent before the repaint is asked for, so the frame it wakes finds it.
+    done: std::sync::mpsc::Receiver<Result<lcc_catalog::tally::AlbumTally, String>>,
+    /// The thread, until it has let go of its copy of the catalog.
+    worker: std::thread::JoinHandle<()>,
+}
+
 /// The values the filter bar's pickers offer.
 #[derive(Clone, Debug, Default)]
 pub struct FilterValues {
@@ -2262,6 +2316,8 @@ fn still_right(cat: &lcc_catalog::Catalog, revision: u64, reads: lcc_catalog::As
 /// What the tallies below read of a photo, besides whether it is in the library.
 const READS_FILE: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with(lcc_catalog::Aspects::FILE);
 const READS_META: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with(lcc_catalog::Aspects::META);
+/// The keyword tree: the keywords photos carry, and the keyword list's own.
+const READS_KEYWORDS: lcc_catalog::Aspects = READS_META.with(lcc_catalog::Aspects::KEYWORD_LIST);
 const READS_PEOPLE: lcc_catalog::Aspects = READS_META.with(lcc_catalog::Aspects::ANALYSIS);
 const READS_CAPTURED: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with(lcc_catalog::Aspects::CAPTURED);
 const READS_FLAG: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with(lcc_catalog::Aspects::FLAG);
@@ -2296,7 +2352,7 @@ impl Caches {
     }
     /// The library's keyword tree.
     pub fn keyword_tree(&mut self, cat: &lcc_catalog::Catalog) -> std::sync::Arc<Vec<lcc_catalog::KeywordNode>> {
-        let kept = self.keyword_tree.take().filter(|(r, _)| still_right(cat, *r, READS_META)).map(|(_, t)| t);
+        let kept = self.keyword_tree.take().filter(|(r, _)| still_right(cat, *r, READS_KEYWORDS)).map(|(_, t)| t);
         let t = kept.unwrap_or_else(|| cat.keyword_tree_shared());
         self.keyword_tree = Some((cat.revision, t.clone()));
         t
@@ -2395,6 +2451,24 @@ impl Caches {
                 let t = std::sync::Arc::new(cat.people_in(&key));
                 self.people = Some((cat.revision, key, t.clone()));
                 t
+            }
+        }
+    }
+    /// The in-library faces the user ignored, as `(photo, index)` (People offers to restore them).
+    pub fn ignored_faces(&mut self, cat: &lcc_catalog::Catalog) -> std::sync::Arc<Vec<(u64, usize)>> {
+        match &self.ignored_faces {
+            Some((r, v)) if *r == cat.revision => v.clone(),
+            _ => {
+                let v: Vec<(u64, usize)> = cat
+                    .photos()
+                    .filter(|p| p.in_library())
+                    .flat_map(|p| {
+                        p.meta.regions.iter().enumerate().filter(|(_, r)| r.kind == lcc_meta::RegionKind::IgnoredFace).map(move |(i, _)| (p.id.0, i))
+                    })
+                    .collect();
+                let v = std::sync::Arc::new(v);
+                self.ignored_faces = Some((cat.revision, v.clone()));
+                v
             }
         }
     }
@@ -2552,40 +2626,119 @@ impl Caches {
         v
     }
 
-    pub fn album_counts(&mut self, cat: &lcc_catalog::Catalog, now: &str) -> std::sync::Arc<std::collections::HashMap<lcc_catalog::AlbumId, usize>> {
+    /// How many photos each album of the library `library` ([`lcc_engine::Session::library_generation`])
+    /// shows, `now` being the session clock ("in the last…" rules count back from it).
+    ///
+    /// An edit to a photo or a few is followed at once: a smart album asks only those photos again (a keyword
+    /// created and given to them too: the keyword list itself counts in no album). Anything more (an album's rules
+    /// or photos changed, a stack, an edit to many photos such as a keyword renamed across them, a new minute while
+    /// a smart album asks about "the last N days", another library) counts every photo again, seconds in a large
+    /// library. That count runs on a worker thread (natively) while the counts shown before stay (none the first
+    /// time, and none of another library); `ctx` repaints when it is done, and edits made meanwhile are followed
+    /// from it.
+    pub fn album_counts(
+        &mut self,
+        cat: &lcc_catalog::Catalog,
+        library: u64,
+        now: &str,
+        ctx: &egui::Context,
+    ) -> std::sync::Arc<std::collections::HashMap<lcc_catalog::AlbumId, usize>> {
         let relative = cat.albums().any(|a| a.smart.as_ref().is_some_and(|f| f.depends_on_now()));
         let minute = if relative { now.get(..16).unwrap_or(now) } else { "" };
-        // the counts of this minute, if there are any: an edit to a photo or a few is followed from them, a smart
-        // album asking only those photos again; anything more, or a new minute, is counted from every photo
-        let kept = self.album_counts.take().filter(|(of, _, _)| of == minute);
-        if let Some((_, tally, shown)) = &kept
-            && tally.revision() == cat.revision
-        {
-            let shown = shown.clone();
-            self.album_counts = kept;
-            return shown;
+        self.collect_album_recount(library);
+        // (album ids start again in every library: another one's counts would be shown on this one's albums)
+        if self.album_counts.as_ref().is_some_and(|c| c.library != library) {
+            self.album_counts = None;
+        }
+        if let Some(counts) = self.album_counts.as_ref().filter(|c| c.minute == minute && c.tally.revision() == cat.revision) {
+            return counts.shown.clone();
         }
         if relative {
             // "in the last N days" counts back from the session clock, as in the grid. (Within a minute an edit asks
-            // only the photos it touched, at this second; the others were asked earlier in the minute. That is as
             // far out as the counts already were between edits, and the next minute counts them all again.)
             lcc_catalog::rules::set_now(Some(now.to_string()));
         }
-        let tally = match kept {
-            Some((_, mut tally, _)) => {
-                if !tally.update(cat) {
-                    self.album_count_scans += 1;
+        if let Some(counts) = self.album_counts.as_mut().filter(|c| c.minute == minute)
+            && counts.tally.update(cat)
+        {
+            counts.shown = std::sync::Arc::new(counts.tally.counts().clone());
+            return counts.shown.clone();
+        }
+        self.recount_albums(cat, library, minute, now, relative, ctx);
+        self.album_counts.as_ref().map(|c| c.shown.clone()).unwrap_or_default()
+    }
+
+    /// A count of every photo is running ([`Caches::album_counts`]).
+    pub fn album_recount_running(&self) -> bool {
+        self.album_recount.as_ref().is_some_and(|job| !job.worker.is_finished())
+    }
+
+    /// Count every photo for [`Caches::album_counts`]: on a worker thread when one can be started, else here.
+    fn recount_albums(&mut self, cat: &lcc_catalog::Catalog, library: u64, minute: &str, now: &str, relative: bool, ctx: &egui::Context) {
+        // one at a time: what it finds is followed up to the catalog as it is by then, or counted again
+        let failed = self.album_recount_failed.as_ref().is_some_and(|(l, r, m)| *l == library && *r == cat.revision && m == minute);
+        if self.album_recount.is_some() || failed {
+            return;
+        }
+        self.album_count_scans += 1;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // (cheap: the copy shares the photos)
+            let (copy, ctx, now) = (cat.clone(), ctx.clone(), relative.then(|| now.to_string()));
+            let (tx, done) = std::sync::mpsc::channel();
+            let spawned = std::thread::Builder::new().name("lc-album-counts".into()).spawn(move || {
+                let counted = lcc_engine::guard::catch("Counting the albums' photos", || {
+                    lcc_catalog::rules::set_now(now);
+                    lcc_catalog::tally::AlbumTally::of(&copy)
+                });
+                let _ = tx.send(counted);
+                ctx.request_repaint();
+            });
+            match spawned {
+                Ok(worker) => {
+                    self.album_recount = Some(AlbumRecount { library, minute: minute.to_string(), revision: cat.revision, done, worker });
+                    return;
                 }
-                tally
+                Err(e) => log::warn!("album counts: can't start a thread ({e}); counting them here"),
             }
-            None => {
-                self.album_count_scans += 1;
-                lcc_catalog::tally::AlbumTally::of(cat)
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (now, relative, ctx);
+        // (`album_counts` has set the clock on this thread)
+        let counted = lcc_engine::guard::catch("Counting the albums' photos", || lcc_catalog::tally::AlbumTally::of(cat));
+        self.finish_album_recount(library, cat.revision, minute.to_string(), counted);
+    }
+
+    /// Take the worker's count once it is done; a count of another library is let go (its thread ends on its own).
+    fn collect_album_recount(&mut self, library: u64) {
+        let Some(job) = &self.album_recount else { return };
+        if job.library != library {
+            self.album_recount = None;
+            return;
+        }
+        let counted = match job.done.try_recv() {
+            Ok(counted) => counted,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::error!("album counts: the count stopped without an answer");
+                Err("stopped without an answer".to_string())
             }
         };
-        let shown = std::sync::Arc::new(tally.counts().clone());
-        self.album_counts = Some((minute.to_string(), tally, shown.clone()));
-        shown
+        let Some(job) = self.album_recount.take() else { return };
+        self.finish_album_recount(job.library, job.revision, job.minute, counted);
+    }
+
+    /// The counts a count of every photo made are the ones shown. One that failed (already logged) leaves those
+    /// shown before, and isn't tried again for the same library, catalog and minute.
+    fn finish_album_recount(&mut self, library: u64, revision: u64, minute: String, counted: Result<lcc_catalog::tally::AlbumTally, String>) {
+        match counted {
+            Ok(tally) => {
+                self.album_recount_failed = None;
+                let shown = std::sync::Arc::new(tally.counts().clone());
+                self.album_counts = Some(AlbumCounts { library, minute, tally, shown });
+            }
+            Err(_) => self.album_recount_failed = Some((library, revision, minute)),
+        }
     }
 }
 
@@ -2607,6 +2760,27 @@ mod cache_tests {
         Op::AddAlbum { album: a }
     }
 
+    type Counts = std::sync::Arc<std::collections::HashMap<AlbumId, usize>>;
+
+    /// [`super::Caches::album_counts`] of library `library` once a count of every photo it started is done and
+    /// taken.
+    fn counted_in(c: &mut super::Caches, cat: &Catalog, library: u64, now: &str) -> Counts {
+        let ctx = egui::Context::default();
+        let t0 = std::time::Instant::now();
+        loop {
+            let shown = c.album_counts(cat, library, now, &ctx);
+            if c.album_recount.is_none() {
+                return shown;
+            }
+            assert!(t0.elapsed() < std::time::Duration::from_secs(30), "the count is done");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn counted(c: &mut super::Caches, cat: &Catalog, now: &str) -> Counts {
+        counted_in(c, cat, 0, now)
+    }
+
     /// Smart-album counts: unchanged frames reuse them; metadata and rule changes and (for
     /// "in the last…" rules) the clock crossing into a new minute recompute them.
     #[test]
@@ -2619,23 +2793,23 @@ mod cache_tests {
         cat.apply(smart(10, serde_json::json!({"rules": [{"field": "rating", "op": "gte", "value": 3}]}))).unwrap();
         cat.apply(smart(11, serde_json::json!({"rules": [{"field": "captureDate", "op": "inLast", "value": {"n": 1, "unit": "hours"}}]}))).unwrap();
         let now = "2026-09-30T12:00:00";
-        let n = c.album_counts(&cat, now);
+        let n = counted(&mut c, &cat, now);
         assert_eq!((n[&AlbumId(10)], n[&AlbumId(11)]), (1, 1));
         assert_eq!(c.album_count_scans, 1);
         for _ in 0..10 {
-            c.album_counts(&cat, "2026-09-30T12:00:40");
+            counted(&mut c, &cat, "2026-09-30T12:00:40");
         }
         assert_eq!(c.album_count_scans, 1, "unchanged frames in the same minute don't rescan");
         // a photo rated: followed from that photo, not counted from every one
         cat.apply(Op::SetRating { id: PhotoId(2), rating: 4 }).unwrap();
-        assert_eq!(c.album_counts(&cat, now)[&AlbumId(10)], 2);
+        assert_eq!(counted(&mut c, &cat, now)[&AlbumId(10)], 2);
         assert_eq!(c.album_count_scans, 1);
         // rule change
         let rs: RuleSet = serde_json::from_value(serde_json::json!({"rules": [{"field": "rating", "op": "gte", "value": 5}]})).unwrap();
         cat.apply(Op::SetAlbumRules { id: AlbumId(10), rules: Box::new(Filter { rule_set: Some(rs), ..Default::default() }) }).unwrap();
-        assert_eq!(c.album_counts(&cat, now)[&AlbumId(10)], 1);
+        assert_eq!(counted(&mut c, &cat, now)[&AlbumId(10)], 1);
         // an hour later the 11:59:30 photo has left "in the last hour", with no catalog change
-        assert_eq!(c.album_counts(&cat, "2026-09-30T13:00:10")[&AlbumId(11)], 0);
+        assert_eq!(counted(&mut c, &cat, "2026-09-30T13:00:10")[&AlbumId(11)], 0);
         assert_eq!(c.album_count_scans, 3, "new rules and a new minute are counted from every photo; the rating was not");
         lcc_catalog::rules::set_now(None);
     }
@@ -2683,9 +2857,70 @@ mod cache_tests {
         let mut c = super::Caches::default();
         cat.apply(photo(1, "2026-09-30T11:59:30", 5)).unwrap();
         cat.apply(smart(10, serde_json::json!({"rules": [{"field": "rating", "op": "gte", "value": 3}]}))).unwrap();
-        c.album_counts(&cat, "2026-09-30T12:00:00");
-        c.album_counts(&cat, "2027-01-01T00:00:00");
+        counted(&mut c, &cat, "2026-09-30T12:00:00");
+        counted(&mut c, &cat, "2027-01-01T00:00:00");
         assert_eq!(c.album_count_scans, 1);
+    }
+
+    /// Counting every photo again (an album's rules changed, an edit to many photos) takes seconds in a large
+    /// library: it runs off the UI thread, and the sidebar keeps the counts it showed until the new ones are ready.
+    #[test]
+    fn a_count_of_every_photo_runs_in_the_background_and_the_counts_shown_stay_meanwhile() {
+        let mut cat = Catalog::default();
+        let mut c = super::Caches::default();
+        for i in 0..3u64 {
+            cat.apply(photo(i + 1, "2026-09-30T11:00:00", if i == 0 { 5 } else { 1 })).unwrap();
+        }
+        cat.apply(smart(10, serde_json::json!({"rules": [{"field": "rating", "op": "gte", "value": 3}]}))).unwrap();
+        let now = "2026-09-30T12:00:00";
+        assert_eq!(counted(&mut c, &cat, now)[&AlbumId(10)], 1);
+        // new rules: every photo is asked again
+        let rs: RuleSet = serde_json::from_value(serde_json::json!({"rules": [{"field": "rating", "op": "gte", "value": 1}]})).unwrap();
+        cat.apply(Op::SetAlbumRules { id: AlbumId(10), rules: Box::new(Filter { rule_set: Some(rs), ..Default::default() }) }).unwrap();
+        let ctx = egui::Context::default();
+        assert_eq!(c.album_counts(&cat, 0, now, &ctx)[&AlbumId(10)], 1, "the frame after the change shows the counts it had");
+        assert!(c.album_recount.is_some(), "and every photo is counted elsewhere");
+        // done counting is said whether or not a frame has taken the count yet (a folded Albums section takes none)
+        let t0 = std::time::Instant::now();
+        while c.album_recount_running() {
+            assert!(t0.elapsed() < std::time::Duration::from_secs(30), "the count ends");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // a photo rated meanwhile: followed from what the count finds
+        cat.apply(Op::SetRating { id: PhotoId(3), rating: 0 }).unwrap();
+        assert_eq!(counted(&mut c, &cat, now)[&AlbumId(10)], 2, "three photos rated at least 1, then one not");
+        assert_eq!(c.album_count_scans, 2, "counted whole once for the new rules; the rating was followed");
+        // the first time there is nothing to show yet: no count, rather than a wrong one
+        let mut fresh = super::Caches::default();
+        assert!(fresh.album_counts(&cat, 0, now, &ctx).get(&AlbumId(10)).is_none());
+        assert_eq!(counted(&mut fresh, &cat, now)[&AlbumId(10)], 2);
+    }
+
+    /// Album ids start again in every library: once another library is open, the albums of the one before never
+    /// lend it their counts, nor does a count of that library still running when it closed.
+    #[test]
+    fn another_library_never_shows_the_counts_of_the_one_before() {
+        let library = |rated: &[u8]| {
+            let mut cat = Catalog::default();
+            for (i, r) in rated.iter().enumerate() {
+                cat.apply(photo(i as u64 + 1, "2026-09-30T11:00:00", *r)).unwrap();
+            }
+            cat.apply(smart(10, serde_json::json!({"rules": [{"field": "rating", "op": "gte", "value": 3}]}))).unwrap();
+            cat
+        };
+        let (mut first, second) = (library(&[5, 1, 1]), library(&[5, 5, 1]));
+        let (mut c, ctx, now) = (super::Caches::default(), egui::Context::default(), "2026-09-30T12:00:00");
+        assert_eq!(counted_in(&mut c, &first, 1, now)[&AlbumId(10)], 1);
+        assert!(c.album_counts(&second, 2, now, &ctx).get(&AlbumId(10)).is_none(), "nothing until its own are counted");
+        assert_eq!(counted_in(&mut c, &second, 2, now)[&AlbumId(10)], 2);
+        // a count of the first library under way when the second opens is let go
+        let mut c = super::Caches::default();
+        assert_eq!(counted_in(&mut c, &first, 1, now)[&AlbumId(10)], 1);
+        let rs: RuleSet = serde_json::from_value(serde_json::json!({"rules": [{"field": "rating", "op": "gte", "value": 1}]})).unwrap();
+        first.apply(Op::SetAlbumRules { id: AlbumId(10), rules: Box::new(Filter { rule_set: Some(rs), ..Default::default() }) }).unwrap();
+        assert_eq!(c.album_counts(&first, 1, now, &ctx)[&AlbumId(10)], 1);
+        assert!(c.album_recount.is_some(), "the first library is being counted");
+        assert_eq!(counted_in(&mut c, &second, 2, now)[&AlbumId(10)], 2, "the second library's own count");
     }
 }
 

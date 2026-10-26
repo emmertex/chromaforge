@@ -618,3 +618,92 @@ fn rename_person_covers_more_than_the_person_query_and_rejects_bad_input() {
     assert_eq!(s.catalog.photo(a).unwrap().meta.regions[0].name.as_deref(), Some("Bea"));
     assert_eq!(s.catalog.photo(local).unwrap().meta.regions[0].name.as_deref(), Some("Ada"));
 }
+
+/// Ignoring faces is one undo step, checks the whole selection first, survives reopening the library and can be
+/// restored with the face's name and box as they were.
+#[test]
+fn ignored_faces_survive_reopening_and_can_be_restored() {
+    let d = temp("ignore");
+    let lib = d.join("library");
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, true).unwrap();
+    let (a, b) = two_photos(&s);
+    set_regions(&mut s, a, vec![region(0.1, Some("Person"))]);
+    set_regions(&mut s, b, vec![region(0.1, None)]);
+    let rect = region(0.1, None).rect;
+    let faces = json!([{"photo": a.0, "index": 0, "rect": rect}, {"photo": b.0, "index": 0, "rect": rect}]);
+    let before = s.undo.len();
+    let mut stale = faces.clone();
+    stale[1]["rect"] = json!(region(0.3, None).rect);
+    assert!(s.execute("faces.ignore", &json!({"faces": stale})).is_err());
+    assert_eq!(s.undo.len(), before, "a stale selection changes nothing");
+    assert_eq!(s.catalog.photo(a).unwrap().meta.regions[0].kind, RegionKind::Face);
+    s.execute("faces.ignore", &json!({"faces": faces})).unwrap();
+    assert_eq!(s.undo.len(), before + 1);
+    assert!(!s.catalog.people().iter().any(|p| p.name == "Person"), "an ignored face is nobody");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.photo(a).unwrap().meta.regions[0].kind, RegionKind::Face);
+    s.execute("faces.ignore", &json!({"faces": faces})).unwrap();
+    s.close_library().unwrap();
+    drop(s);
+
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    let r = s.execute("faces.ignored", &json!({})).unwrap();
+    assert_eq!(r["total"], 2);
+    assert_eq!(r["faces"][0]["name"], "Person");
+    s.execute("faces.ignore", &json!({"faces": faces, "ignored": false})).unwrap();
+    assert_eq!(s.execute("faces.ignored", &json!({})).unwrap()["total"], 0);
+    let restored = &s.catalog.photo(a).unwrap().meta.regions[0];
+    assert_eq!((restored.kind.clone(), restored.name.as_deref(), restored.rect), (RegionKind::Face, Some("Person"), rect));
+    s.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Bad input is an error that changes nothing, never a panic.
+#[test]
+fn ignore_faces_refuses_bad_input() {
+    let mut s = Session::with_demo();
+    let (a, _) = two_photos(&s);
+    set_regions(&mut s, a, vec![region(0.1, None)]);
+    let before = s.undo.len();
+    for p in [
+        json!({}),
+        json!({"faces": []}),
+        json!({"faces": "x"}),
+        json!({"faces": [{"photo": a.0, "index": 0}], "ignored": "false"}),
+        json!({"faces": [{"photo": a.0}]}),
+        json!({"faces": [{"photo": a.0, "index": -1}]}),
+        json!({"faces": [{"photo": a.0, "index": u64::MAX}]}),
+        json!({"faces": [{"photo": 999_999_999, "index": 0}]}),
+        json!({"faces": [{"photo": a.0, "index": 0, "rect": "nope"}]}),
+        json!({"faces": [{"photo": a.0, "index": 0}], "ignored": false}),
+    ] {
+        assert!(s.execute("faces.ignore", &p).is_err(), "{p}");
+    }
+    for p in [json!({"limit": 0}), json!({"limit": 5001}), json!({"limit": -1}), json!({"offset": -1}), json!({"offset": "a"})] {
+        assert!(s.execute("faces.ignored", &p).is_err(), "{p}");
+    }
+    assert_eq!(s.undo.len(), before);
+    assert!(s.execute("faces.ignored", &json!({"offset": u64::MAX})).unwrap()["faces"].as_array().unwrap().is_empty());
+}
+
+/// An ignored face keeps its person's name through renames and merges, and Detect Faces keeps it (its box stops the
+/// face being found again).
+#[test]
+fn ignored_faces_follow_renames_and_are_kept_by_detection() {
+    let mut s = Session::with_demo();
+    let (a, b) = two_photos(&s);
+    set_regions(&mut s, a, vec![region(0.1, Some("Ann"))]);
+    set_regions(&mut s, b, vec![region(0.5, Some("Bea"))]);
+    let face = json!([{"photo": a.0, "index": 0}]);
+    s.execute("faces.ignore", &json!({"faces": face})).unwrap();
+    let mut ignored = s.catalog.photo(a).unwrap().meta.regions[0].clone();
+    assert!(!crate::cmd::face_detect::is_detected(&ignored));
+    ignored.description = Some(format!("{}x", crate::cmd::face_detect::MARK));
+    assert!(!crate::cmd::face_detect::is_detected(&ignored), "even one Detect Faces found");
+    s.execute("faces.renamePerson", &json!({"from": "Ann", "to": "Bea", "merge": true})).unwrap();
+    assert_eq!(s.catalog.photo(a).unwrap().meta.regions[0].kind, RegionKind::IgnoredFace);
+    s.execute("faces.ignore", &json!({"faces": face, "ignored": false})).unwrap();
+    assert_eq!(s.catalog.photo(a).unwrap().meta.regions[0].name.as_deref(), Some("Bea"));
+}

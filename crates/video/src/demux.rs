@@ -511,7 +511,7 @@ fn mkv_codec(c: &filmcraft_matroska::Codec, private: &[u8]) -> (String, Result<C
 
 /// The track's `Colour` element as H.273 code points (unset fields are "unspecified").
 fn mkv_colr(v: Option<&filmcraft_matroska::VideoInfo>) -> Option<Codes> {
-    let col = v?.colour.as_ref()?;
+    let col = v?.color.as_ref()?;
     let code = |c: Option<u64>| c.and_then(|c| u16::try_from(c).ok()).unwrap_or(2);
     let full_range = match col.range {
         Some(1) => Some(false),

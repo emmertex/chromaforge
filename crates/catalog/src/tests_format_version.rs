@@ -272,8 +272,8 @@ fn op_variants_are_versioned() {
             Op::SetHistoryCursor { .. } => 11,
         }
     }
-    /// v13: `Meta.gps_removed`.
-    const NEWEST_FIELDS: u32 = 13;
+    /// v15: `Analysis.eyes_open` / `aesthetic` / `cull_score`.
+    const NEWEST_FIELDS: u32 = 15;
     let newest = since(&Op::SetHistoryCursor { id: crate::PhotoId(1), cursor: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }
@@ -311,4 +311,39 @@ fn a_cleared_gps_position_is_remembered_and_undone_with_it() {
     let (_, loaded, r) = Journal::open(Box::new(m.clone())).unwrap();
     assert_eq!(loaded.photo(id).unwrap().meta.gps_removed, None);
     assert_eq!((r.upgraded_from, snapshot_version(&m)), (Some(12), u64::from(VERSION)));
+}
+
+/// A format-13 library upgrades with its face regions intact, and an ignored face (format 14) survives reopening.
+#[test]
+fn v13_library_upgrades_and_ignored_faces_round_trip() {
+    let (mut base, _, _) = legacy_parts();
+    let id = base.photos().next().unwrap().id;
+    let mut meta = base.photo(id).unwrap().meta.clone();
+    meta.regions = vec![lcc_meta::Region {
+        rect: lcc_geom::Rect { x0: 0.1, y0: 0.1, x1: 0.4, y1: 0.4 },
+        kind: lcc_meta::RegionKind::Face,
+        name: Some("Person".into()),
+        description: Some("kept".into()),
+    }];
+    base.apply(Op::SetMeta { id, meta: Box::new(meta.clone()) }).unwrap();
+    let m = MemStore::new();
+    m.set(SNAPSHOT, format!("{{\"format\":\"lcc-catalog\",\"version\":13,\"seq\":3,\"catalog\":{}}}\n", base.to_snapshot()).into_bytes());
+    let (mut j, catalog, report) = Journal::open(Box::new(m.clone())).unwrap();
+    assert_eq!(report.upgraded_from, Some(13));
+    assert_eq!(snapshot_version(&m), u64::from(VERSION));
+    assert_eq!(catalog.photo(id).unwrap().meta, meta);
+    meta.regions[0].kind = lcc_meta::RegionKind::IgnoredFace;
+    j.append(&[Op::SetMeta { id, meta: Box::new(meta.clone()) }]).unwrap();
+    drop(j);
+    let (_, reopened, report) = Journal::open(Box::new(m)).unwrap();
+    assert_eq!(report.upgraded_from, None);
+    assert_eq!(reopened.photo(id).unwrap().meta, meta);
+}
+
+/// A format-14 `Analysis` object without the score fields still loads (serde default).
+#[test]
+fn v14_analysis_json_gains_optional_score_fields() {
+    let a: crate::Analysis = serde_json::from_str(r#"{"sharpness":50.0,"clipped":0.01,"group":null,"best":false}"#).unwrap();
+    assert!(a.eyes_open.is_none() && a.aesthetic.is_none() && a.cull_score.is_none());
+    assert_eq!(a.sharpness, 50.0);
 }

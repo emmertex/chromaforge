@@ -73,3 +73,13 @@ sync_github_name = true
 
 [people.Kaan88]
 sync_github_name = true
+
+
+[people.dotCooCoo]
+real_name = "Robert Lee"
+
+[people.samuelili]
+real_name = "Samuel Li"
+
+[people.hayone1]
+sync_github_name = true

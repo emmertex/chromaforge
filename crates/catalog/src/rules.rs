@@ -130,6 +130,10 @@ pub const FIELDS: &[(&str, &str, Kind)] = &[
     // Assisted Culling
     ("sharpness", "Focus (assisted culling)", Kind::Number),
     ("bestOfGroup", "Best of Similar Shots", Kind::Bool),
+    ("clipped", "Clipped (assisted culling)", Kind::Number),
+    ("eyesOpen", "Eyes Open", Kind::Number),
+    ("aesthetic", "Aesthetic", Kind::Number),
+    ("cullScore", "Cull Score", Kind::Number),
 ];
 
 /// The fields the field menu shows at its top level, before the groups.
@@ -147,7 +151,7 @@ pub const FIELD_GROUPS: &[(&str, &[&str])] = &[
     ("Location", &["location", "sublocation", "city", "state", "country", "hasGps"]),
     ("Size", &["longEdge", "shortEdge", "width", "height", "aspect", "megapixels"]),
     ("Develop", &["edited", "cropped", "treatment"]),
-    ("Assisted Culling", &["sharpness", "bestOfGroup"]),
+    ("Assisted Culling", &["sharpness", "bestOfGroup", "clipped", "eyesOpen", "aesthetic", "cullScore"]),
 ];
 
 /// The field-menu group `field` sits in; `None` for a top-level or unknown field.
@@ -780,8 +784,37 @@ fn lower(v: &Value) -> String {
     }
 }
 
+/// The text a Text rule looks through: every searched field of `p`, trimmed and lower-cased.
+pub(crate) fn rule_text_of(p: &Photo) -> String {
+    let m = &p.meta;
+    [
+        p.file_name.as_str(),
+        &m.title,
+        &m.caption,
+        &m.camera,
+        &m.lens,
+        &m.location,
+        &m.city,
+        &m.state,
+        &m.country,
+        &m.alt_text,
+        &p.format,
+        &m.keywords.join(" "),
+        &p.people().join(" "),
+        p.copy_name.as_deref().unwrap_or(""),
+        &p.plugin_fields.values().map(plugin_value_text).collect::<Vec<_>>().join(" "),
+    ]
+    .join(" ")
+    .trim()
+    .to_lowercase()
+}
+
 fn text_op(op: &str, have: &str, want: &str) -> bool {
-    let have = have.trim().to_lowercase();
+    text_op_lowered(op, &have.trim().to_lowercase(), want)
+}
+
+/// [`text_op`] on text trimmed and lower-cased already.
+fn text_op_lowered(op: &str, have: &str, want: &str) -> bool {
     match op {
         "contains" => want.split_whitespace().all(|w| have.contains(w)),
         "notContains" => !want.split_whitespace().any(|w| have.contains(w)),
@@ -993,27 +1026,10 @@ impl Rule {
             "person" => names_op(op, &p.people(), &want),
             "personCount" => num_op(op, Some(p.people().len() as f64), value),
             "faceCount" => num_op(op, Some(p.face_count() as f64), value),
-            "text" => {
-                let all = [
-                    p.file_name.as_str(),
-                    &m.title,
-                    &m.caption,
-                    &m.camera,
-                    &m.lens,
-                    &m.location,
-                    &m.city,
-                    &m.state,
-                    &m.country,
-                    &m.alt_text,
-                    &p.format,
-                    &m.keywords.join(" "),
-                    &p.people().join(" "),
-                    p.copy_name.as_deref().unwrap_or(""),
-                    &p.plugin_fields.values().map(plugin_value_text).collect::<Vec<_>>().join(" "),
-                ]
-                .join(" ");
-                text(&all)
-            }
+            "text" => match cat.rule_text(p) {
+                Some(have) => text_op_lowered(op, have, &want),
+                None => text_op_lowered(op, &rule_text_of(p), &want),
+            },
             "fileName" => text(&p.file_name),
             "extension" => text_op(op, p.extension(), want.trim_start_matches('.')),
             "duration" => num_op(op, p.duration.filter(|d| d.is_finite()), value),
@@ -1084,6 +1100,10 @@ impl Rule {
             }
             "sharpness" => num_op(op, p.analysis.map(|a| a.sharpness as f64), value),
             "bestOfGroup" => yes(p.analysis.is_some_and(|a| a.best || a.group.is_none())),
+            "clipped" => num_op(op, p.analysis.map(|a| a.clipped as f64), value),
+            "eyesOpen" => num_op(op, p.analysis.and_then(|a| a.eyes_open).map(|v| v as f64), value),
+            "aesthetic" => num_op(op, p.analysis.and_then(|a| a.aesthetic).map(|v| v as f64), value),
+            "cullScore" => num_op(op, p.analysis.and_then(|a| a.cull_score).map(|v| v as f64), value),
             "album" => {
                 let id = album_rule_id(value);
                 // a smart album's photos are its matches; one being evaluated (a loop) holds none
@@ -1236,7 +1256,7 @@ impl RuleSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ColorLabel, Flag, PhotoId, Source};
+    use crate::{Analysis, ColorLabel, Flag, PhotoId, Source};
     use serde_json::json;
 
     fn photo(id: u64) -> Photo {
@@ -1972,5 +1992,29 @@ mod tests {
         let mut labels: Vec<&str> = FIELD_GROUPS.iter().map(|g| g.0).collect();
         labels.dedup();
         assert_eq!(labels.len(), FIELD_GROUPS.len(), "group labels are unique");
+    }
+
+    #[test]
+    fn culling_score_fields_match_analysis() {
+        let cat = Catalog::new();
+        let mut p = photo(1);
+        p.analysis = Some(Analysis {
+            sharpness: 70.0,
+            clipped: 0.02,
+            group: None,
+            best: false,
+            eyes_open: Some(0.8),
+            aesthetic: Some(6.5),
+            cull_score: Some(0.7),
+        });
+        let m =
+            |field: &str, op: &str, value: serde_json::Value| rs(json!({"rules": [{"field": field, "op": op, "value": value}]})).matches(&p, &cat);
+        assert!(m("eyesOpen", "gte", json!(0.5)));
+        assert!(m("aesthetic", "gte", json!(6.0)));
+        assert!(m("cullScore", "gte", json!(0.5)));
+        assert!(m("clipped", "lte", json!(0.1)));
+        assert!(!m("eyesOpen", "gte", json!(0.9)));
+        p.analysis = Some(Analysis { sharpness: 10.0, clipped: 0.0, group: None, best: false, ..Analysis::default() });
+        assert!(!rs(json!({"rules": [{"field": "eyesOpen", "op": "gte", "value": 0.0}]})).matches(&p, &cat), "missing eyes-open is not 0");
     }
 }

@@ -1504,5 +1504,7 @@
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "Mantém a mesma qualidade de imagem durante os ajustes. Quando uma edição é lenta demais para isso, a imagem é atualizada mais rápido enquanto um controle deslizante se move e fica nítida assim que ele para.",
   "Preview for SDR Display": "Visualizar para tela SDR",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Mostra a foto como telas SDR e exportações SDR a mostram, para ajustar sua versão SDR",
-  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Estes controles definem a aparência da foto em telas SDR e em exportações SDR. Ative Visualizar para tela SDR para vê-los."
+  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Estes controles definem a aparência da foto em telas SDR e em exportações SDR. Ative Visualizar para tela SDR para vê-los.",
+  "Graphics interface": "Interface gráfica",
+  "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Aplica-se na próxima inicialização. Se o app demorar a iniciar com a GPU ativada, experimente o Vulkan: em alguns computadores ele prepara a GPU muito mais rápido."
 }

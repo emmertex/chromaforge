@@ -320,6 +320,15 @@ same kind of box: the detector's own box once the scan has looked at it (kept be
 from another tool does not make one face look farther away than the next; before the scan has looked at a face it is shown
 by its own box.
 
+### Ignored faces
+
+A face that is a blurry crop or a false detection can be ignored: select it among the unnamed faces and choose
+**Ignore** (`faces.ignore`, one undo step). The face keeps its box and any name in the library as an ignored region
+(`RegionKind::IgnoredFace`, catalog format 14), so Detect Faces and the background scan do not find it again, but it is
+left out of People, a person's page, the unnamed faces and matching. Renaming or merging a person renames their ignored
+faces too. The People header shows **Restore N ignored faces** while there are any; `faces.ignored` lists them a page
+at a time. Like every face region, nothing is written to XMP sidecars or the originals.
+
 ### A person's page
 
 In **People**, a click on a person opens their page: **only cropped faces**, never whole photos. First the faces named

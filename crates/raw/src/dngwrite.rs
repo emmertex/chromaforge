@@ -104,6 +104,17 @@ pub fn is_legacy_software(software: &str) -> bool {
 /// (3.9 s vs 0.55 s on 4 cores) to save 3 % of the file (266 vs 275 MB); 5–12 % on raw and rendered DNGs.
 const DEFLATE_LEVEL: u8 = 1;
 
+/// Largest Deflate tile edge the writer pads to (`tile` is caller-supplied in [`DngCompression::Deflate`]):
+/// square-tile buffers grow with the square, so an unclamped edge lets a request pad a tiny valid image into
+/// a multi-gigabyte buffer and billions of edge-replicate iterations. 2048² samples (≤ 24 MB of f32) is far
+/// above the 256 default and every real tile this writer makes.
+const MAX_DEFLATE_TILE: u32 = 2048;
+
+/// `tile` aligned down to a multiple of 16 and clamped to [`MAX_DEFLATE_TILE`].
+fn deflate_tile(tile: u32) -> usize {
+    (tile.max(16) & !15).min(MAX_DEFLATE_TILE) as usize
+}
+
 /// IEEE 754 binary32 → binary16 (round to nearest even; overflow → ±inf, NaN kept).
 pub fn f32_to_f16(v: f32) -> u16 {
     let b = v.to_bits();
@@ -158,11 +169,14 @@ pub struct DngWriteOptions {
     pub order: ByteOrder,
     /// XMP packet to embed (tag 700); defaults to one generated from the image metadata.
     pub xmp: Option<String>,
+    /// `UniqueCameraModel` to write instead of the one made from Exif make and model (raw converters pick their
+    /// camera profiles by it).
+    pub unique_camera_model: Option<String>,
 }
 
 impl Default for DngWriteOptions {
     fn default() -> Self {
-        Self { compression: DngCompression::Lj92 { tile: 256 }, order: ByteOrder::Little, xmp: None }
+        Self { compression: DngCompression::Lj92 { tile: 256 }, order: ByteOrder::Little, xmp: None, unique_camera_model: None }
     }
 }
 
@@ -213,6 +227,7 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
     } else {
         format!("{make} {model}")
     };
+    let unique = opts.unique_camera_model.as_deref().map(str::trim).filter(|u| !u.is_empty()).map(str::to_owned).unwrap_or(unique);
     ifd.set(t::UNIQUE_CAMERA_MODEL, Value::Ascii(if unique.is_empty() { lcc_brand::DISPLAY_NAME.into() } else { unique }));
     ifd.set(t::ORIENTATION, Value::Short(vec![raw.orientation.to_exif()]));
     ifd.set(t::SOFTWARE, Value::Ascii(software()));
@@ -328,7 +343,7 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
 
     match (&raw.data, opts.compression) {
         (RawData::F32(v), DngCompression::Deflate { tile, half }) => {
-            let tile = (tile.max(16) & !15) as usize;
+            let tile = deflate_tile(tile);
             let bp = if half { 2 } else { 4 };
             ifd.set(t::BITS_PER_SAMPLE, Value::Short(vec![(bp * 8) as u16; cpp]));
             ifd.set(t::SAMPLE_FORMAT, Value::Short(vec![3; cpp]));
@@ -427,7 +442,7 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
                     ifd.set_image(ImageData::Strips { rows_per_strip: rows as u32, strips });
                 }
                 DngCompression::Deflate { tile, .. } => {
-                    let tile = (tile.max(16) & !15) as usize;
+                    let tile = deflate_tile(tile);
                     ifd.set(t::BITS_PER_SAMPLE, Value::Short(vec![16; cpp]));
                     ifd.set(t::COMPRESSION, Value::Short(vec![compression::ADOBE_DEFLATE]));
                     ifd.set(t::PREDICTOR, Value::Short(vec![2]));
@@ -554,5 +569,47 @@ pub fn write_rendered_dng(
         lens_metadata: Default::default(),
     };
     let order = ByteOrder::Little;
-    write_dng(&raw, &DngWriteOptions { compression: DngCompression::Deflate { tile: 256, half: true }, order, xmp })
+    write_dng(&raw, &DngWriteOptions { compression: DngCompression::Deflate { tile: 256, half: true }, order, xmp, unique_camera_model: None })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BlackLevel, OpcodeLists, RawData, RawFormat, RawImage, Rect};
+
+    /// Deflate tiles of `tile × tile` pad into a square buffer that grows with the square: a
+    /// caller-supplied edge of `u32::MAX` would make the writer pad an 8 × 8 image into billions of
+    /// edge-replicate iterations and a multi-gigabyte buffer. The clamp keeps the bounded shape — same
+    /// file as requesting the cap exactly, and a DNG either way.
+    #[test]
+    fn a_hostile_deflate_tile_edge_is_clamped() {
+        let (w, h) = (8usize, 8usize);
+        let full = Rect::new(0, 0, w, h);
+        let raw = RawImage {
+            format: RawFormat::Dng,
+            width: w,
+            height: h,
+            cpp: 1,
+            data: RawData::U16((0..64).map(|i| i as u16 * 129).collect()),
+            cfa: None,
+            bits: 12,
+            black: BlackLevel::uniform(0.0),
+            white: vec![4095.0],
+            active_area: full,
+            crop: full,
+            orientation: lcc_geom::Orientation::Normal,
+            color: crate::ColorData::default(),
+            wb_multipliers: None,
+            linearized: false,
+            pixel_aspect: 1.0,
+            opcodes: OpcodeLists::default(),
+            metadata: Default::default(),
+            lens_metadata: Default::default(),
+        };
+        let opts = |tile: u32| DngWriteOptions { compression: DngCompression::Deflate { tile, half: false }, ..DngWriteOptions::default() };
+        let hostile = write_dng(&raw, &opts(u32::MAX)).expect("the clamped tile writes");
+        assert_eq!(hostile, write_dng(&raw, &opts(2048)).expect("the cap itself writes"), "u32::MAX is clamped to the cap");
+        assert_ne!(hostile, write_dng(&raw, &opts(256)).expect("a normal tile writes"), "the clamp is not a no-op");
+        assert_eq!(crate::probe(&hostile), Some(RawFormat::Dng), "the clamped output is still a DNG");
+    }
 }

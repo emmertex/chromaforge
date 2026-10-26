@@ -9,6 +9,9 @@ use crate::Session;
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("lc-import-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
+    // Tests that take a folder "offline" rename it to this sibling; a left-over one (from a run
+    // whose process id is reused) is non-empty and would make that rename fail.
+    let _ = std::fs::remove_dir_all(d.with_extension("offline"));
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -22,6 +25,34 @@ fn write_png(path: &Path, seed: u8) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
     // undated files take the file's date: the tests' clock time (2026-01-14T05:58:48)
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_768_370_328);
+    std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
+}
+
+fn exif_clock_block(original: Option<&str>, digitized: Option<&str>) -> Vec<u8> {
+    use lcc_tiff::{ByteOrder, IfdBuilder, TiffWriter, Value};
+
+    let mut exif = IfdBuilder::new();
+    if let Some(value) = original {
+        exif.set(0x9003, Value::Ascii(value.into()));
+    }
+    if let Some(value) = digitized {
+        exif.set(0x9004, Value::Ascii(value.into()));
+    }
+    let mut ifd0 = IfdBuilder::new();
+    ifd0.set_child(0x8769, exif);
+    TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap()
+}
+
+fn write_png_with_metadata(path: &Path, seed: u8, exif: Option<&[u8]>, xmp: Option<&str>) {
+    let (w, h) = (48usize, 32usize);
+    let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % w * 5) as u8, (i / w * 7) as u8, seed, 255]).collect();
+    let img = lcc_raster::Rgba8 { width: w, height: h, data };
+    let metadata = lcc_codecs::EncodeMeta { exif, xmp, ..Default::default() };
+    let bytes = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &metadata).unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+    // Keep the same known file-date fallback as write_png, distinct from the regression timestamp.
     let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_768_370_328);
     std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
 }
@@ -127,6 +158,106 @@ fn civil_dates() {
     assert_eq!(crate::import::civil(0), "1970-01-01T00:00:00");
     assert_eq!(crate::import::civil(951_782_400), "2000-02-29T00:00:00");
     assert_eq!(crate::import::civil(1_790_000_000), "2026-09-21T14:13:20");
+}
+
+#[test]
+fn exif_clock_import_uses_valid_fallback_dates_and_keeps_raw_tags() {
+    const INVALID: &str = "2026:01:01 12:34:56:99";
+    const XMP: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:CreateDate="2026-01-05T10:00:00Z"/></rdf:RDF></x:xmpmeta>"#;
+    let dir = temp_dir("exif-clock-fallbacks");
+    let digitized_path = dir.join("digitized.png");
+    let digitized_exif = exif_clock_block(Some(INVALID), Some("2026:01:02 10:00:00"));
+    write_png_with_metadata(&digitized_path, 1, Some(&digitized_exif), None);
+    let xmp_path = dir.join("xmp.png");
+    let malformed_only_exif = exif_clock_block(Some(INVALID), None);
+    write_png_with_metadata(&xmp_path, 2, Some(&malformed_only_exif), Some(XMP));
+
+    let mut s = Session::new().with_fs();
+    let imported = s.execute("library.import", &json!({"paths": [digitized_path.to_string_lossy(), xmp_path.to_string_lossy()]})).unwrap();
+    assert_eq!(ids(&imported, "imported"), 2, "{imported}");
+    let digitized = s.catalog.photos().find(|photo| photo.file_name == "digitized.png").unwrap();
+    let digitized_id = digitized.id.0;
+    assert_eq!(digitized.captured.as_deref(), Some("2026-01-02T10:00:00"));
+    let xmp = s.catalog.photos().find(|photo| photo.file_name == "xmp.png").unwrap();
+    let xmp_id = xmp.id.0;
+    assert_eq!(xmp.captured.as_deref(), Some("2026-01-05T10:00:00+00:00"));
+
+    let all = s.execute("photo.allMetadata", &json!({"id": digitized_id})).unwrap();
+    assert!(all["exif"].as_array().unwrap().iter().any(|row| row["tag"] == json!(0x9003) && row["value"] == INVALID), "{all}");
+    let all = s.execute("photo.allMetadata", &json!({"id": xmp_id})).unwrap();
+    assert!(all["exif"].as_array().unwrap().iter().any(|row| row["tag"] == json!(0x9003) && row["value"] == INVALID), "{all}");
+    assert!(all["xmp"].as_array().unwrap().iter().any(|row| row["name"] == "xmp:CreateDate" && row["value"] == "2026-01-05T10:00:00Z"), "{all}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exif_clock_malformed_capture_cannot_fabricate_tracklog_match() {
+    use lcc_catalog::PhotoId;
+
+    const INVALID: &str = "2026:01:01 12:34:56:99";
+    const GPX: &str = r#"<gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg><trkpt lat="45" lon="7"><time>2026-01-01T12:34:56Z</time></trkpt></trkseg></trk></gpx>"#;
+    let dir = temp_dir("exif-clock-tracklog");
+    let malformed_path = dir.join("malformed.png");
+    let malformed_exif = exif_clock_block(Some(INVALID), None);
+    write_png_with_metadata(&malformed_path, 3, Some(&malformed_exif), None);
+    let valid_path = dir.join("valid.png");
+    let valid_exif = exif_clock_block(Some("2026:01:01 12:34:56"), None);
+    write_png_with_metadata(&valid_path, 4, Some(&valid_exif), None);
+
+    let mut s = Session::new().with_fs();
+    let imported = s.execute("library.import", &json!({"paths": [malformed_path.to_string_lossy()]})).unwrap();
+    assert_eq!(ids(&imported, "imported"), 1, "{imported}");
+    let bad_id = imported["imported"][0].as_u64().unwrap();
+    assert_eq!(
+        s.catalog.photo(PhotoId(bad_id)).unwrap().captured.as_deref(),
+        Some("2026-01-14T05:58:48"),
+        "malformed EXIF must leave the normal file-date fallback in effect"
+    );
+    let all = s.execute("photo.allMetadata", &json!({"id": bad_id})).unwrap();
+    assert!(
+        all["exif"].as_array().unwrap().iter().any(|row| row["tag"] == json!(0x9003) && row["value"] == INVALID),
+        "raw EXIF remains available: {all}"
+    );
+
+    // Leave both undo and redo populated so a no-match call must preserve the existing history branch.
+    s.execute("photo.setMeta", &json!({"ids": [bad_id], "title": "history control"})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("library.select", &json!({"ids": [bad_id]})).unwrap();
+    assert!(!s.undo.is_empty() && !s.redo.is_empty());
+    let state = |session: &Session| {
+        (
+            session.catalog.to_snapshot(),
+            session.catalog.revision,
+            session.selection.clone(),
+            session.commits(),
+            session.undo.iter().map(|entry| (entry.label.clone(), entry.op.clone())).collect::<Vec<_>>(),
+            session.redo.iter().map(|entry| (entry.label.clone(), entry.op.clone())).collect::<Vec<_>>(),
+        )
+    };
+    let before = state(&s);
+    let dry = s.execute("photo.autoTagTracklog", &json!({"gpx": GPX, "ids": [bad_id], "maxGap": 0, "dryRun": true})).unwrap();
+    assert_eq!(dry["tagged"], 0, "{dry}");
+    assert_eq!(dry["skipped"]["outside"], 1, "the file-date fallback is outside the one-point track: {dry}");
+    assert_eq!(state(&s), before, "dry-run changed catalog, selection or history");
+    let actual = s.execute("photo.autoTagTracklog", &json!({"gpx": GPX, "ids": [bad_id], "maxGap": 0})).unwrap();
+    assert_eq!(actual["tagged"], 0, "{actual}");
+    assert_eq!(actual["skipped"]["outside"], 1, "{actual}");
+    assert_eq!(state(&s), before, "unmatched tracklog call changed catalog, selection or history");
+    assert_eq!(s.catalog.photo(PhotoId(bad_id)).unwrap().meta.gps, None);
+
+    let imported = s.execute("library.import", &json!({"paths": [valid_path.to_string_lossy()]})).unwrap();
+    assert_eq!(ids(&imported, "imported"), 1, "{imported}");
+    let valid_id = imported["imported"][0].as_u64().unwrap();
+    assert_eq!(s.catalog.photo(PhotoId(valid_id)).unwrap().captured.as_deref(), Some("2026-01-01T12:34:56"));
+    s.execute("library.select", &json!({"ids": [valid_id]})).unwrap();
+    let undo_before = s.undo.len();
+    let tagged = s.execute("photo.autoTagTracklog", &json!({"gpx": GPX, "ids": [valid_id], "maxGap": 0})).unwrap();
+    assert_eq!(tagged["tagged"], 1, "{tagged}");
+    assert_eq!(s.catalog.photo(PhotoId(valid_id)).unwrap().meta.gps, Some((45.0, 7.0)));
+    assert_eq!(s.undo.len(), undo_before + 1, "valid tagging is one undo step");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.photo(PhotoId(valid_id)).unwrap().meta.gps, None);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -309,6 +440,50 @@ fn find_missing_finds_the_files_of_a_library_made_on_windows() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Issue #2853: virtual copies share their original's file, so Find Missing relinks them to it,
+/// both when the original is found in the same search and when it was relinked before. A file an
+/// unrelated photo uses is still refused.
+#[test]
+fn find_missing_relinks_virtual_copies_to_their_originals_file() {
+    use lcc_catalog::{Op, Photo, PhotoId, Source};
+    let dir = temp_dir("missing-copies");
+    std::fs::create_dir_all(dir.join("new")).unwrap();
+    for name in ["a.jpg", "b.jpg", "c.jpg"] {
+        std::fs::write(dir.join("new").join(name), b"x").unwrap();
+    }
+    let old = |name: &str| dir.join("old").join(name).to_string_lossy().to_string();
+    let new = |name: &str| dir.join("new").join(name).to_string_lossy().to_string();
+    let mut s = Session::new();
+    let mut add = |path: String, copy_of: Option<PhotoId>| {
+        let id = s.catalog.alloc_photo_id();
+        let mut p = Photo::new(id, Source::File { path }, "x.jpg", "JPEG", 60, 40, "2026-01-01T10:00:00");
+        p.file_size = 1;
+        p.copy_of = copy_of;
+        s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        id
+    };
+    // a and its two copies are all missing; b was relinked already, its copy wasn't; c's file
+    // is used by an unrelated photo
+    let a = add(old("a.jpg"), None);
+    let a_copies = [add(old("a.jpg"), Some(a)), add(old("a.jpg"), Some(a))];
+    let b = add(new("b.jpg"), None);
+    let b_copy = add(old("b.jpg"), Some(b));
+    add(new("c.jpg"), None);
+    let stranger = add(old("c.jpg"), None);
+    let path_of = |s: &Session, id: PhotoId| match &s.catalog.photo(id).unwrap().source {
+        Source::File { path } => path.clone(),
+        _ => String::new(),
+    };
+    let r = s.execute("library.findMissing", &json!({"folder": dir.join("new").to_string_lossy()})).unwrap();
+    for id in [a, a_copies[0], a_copies[1]] {
+        assert_eq!(path_of(&s, id), new("a.jpg"), "{r}");
+    }
+    assert_eq!(path_of(&s, b_copy), new("b.jpg"), "{r}");
+    assert_eq!(path_of(&s, stranger), old("c.jpg"), "another photo's file is not taken: {r}");
+    assert_eq!(r["missing"], 1, "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// On macOS and Linux `\` may be part of a file name. Find Missing names the files it finds by
 /// the same rule as the missing photos, so `a\b.jpg` isn't relinked to a `b.jpg` beside it
 /// unasked: the two are reported as look-alikes.
@@ -464,6 +639,210 @@ fn copy_with_destination_organize_rename_and_metadata_preset() {
     for d in [&src, &dest, &dest2] {
         let _ = std::fs::remove_dir_all(d);
     }
+}
+
+#[test]
+fn import_rename_sequence_uses_the_last_value_once() {
+    let base = temp_dir("rename-sequence-last");
+    let (src, dest, lib) = (base.join("source"), base.join("destination"), base.join("library"));
+    write_png(&src.join("one.png"), 1);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+
+    let last = usize::MAX;
+    let r = s
+        .execute(
+            "library.import",
+            &json!({
+                "paths": [src.join("one.png").to_string_lossy()],
+                "mode": "copy", "destination": dest.to_string_lossy(), "organize": "flat",
+                "rename": "Shot-{seq}", "renameStart": last as u64
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(ids(&r, "imported"), 1, "{r}");
+    assert_eq!(r["failed"].as_array().map(Vec::len), Some(0), "{r}");
+    assert!(dest.join(format!("Shot-{last}.png")).is_file());
+    assert_eq!(s.catalog.len(), 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.len(), 0, "the import remains one undo step");
+    assert!(dest.join(format!("Shot-{last}.png")).is_file(), "undo leaves a successful copy on disk");
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn import_rename_sequence_reports_exhaustion_and_keeps_prior_successes() {
+    let base = temp_dir("rename-sequence-exhausted");
+    let (src, dest, lib) = (base.join("source"), base.join("destination"), base.join("library"));
+    let paths: Vec<_> = (1..=3)
+        .map(|i| {
+            let path = src.join(format!("{i:02}.png"));
+            write_png(&path, i as u8);
+            path
+        })
+        .collect();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+
+    let start = usize::MAX - 1;
+    let r = s
+        .execute(
+            "library.import",
+            &json!({
+                "paths": paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+                "mode": "copy", "destination": dest.to_string_lossy(), "organize": "flat",
+                "rename": "Shot-{seq}", "renameStart": start as u64
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(ids(&r, "imported"), 2, "the final two representable values are used: {r}");
+    assert_eq!(r["failed"].as_array().map(Vec::len), Some(1), "{r}");
+    let failure = r["failed"][0][1].as_str().unwrap_or_default();
+    assert!(failure.contains("sequence") && failure.contains("renameStart"), "actionable failure: {failure}");
+    assert_eq!(s.catalog.len(), 2);
+    assert!(dest.join(format!("Shot-{start}.png")).is_file());
+    assert!(dest.join(format!("Shot-{}.png", usize::MAX)).is_file());
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 2, "the exhausted file gets no destination entry");
+    assert!(!paths[2].file_name().is_some_and(|name| dest.join(name).exists()), "the exhausted source gets no copy");
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn import_rename_sequence_keeps_flushed_copy_and_move_results() {
+    for mode in ["copy", "move"] {
+        let base = temp_dir(&format!("rename-sequence-flush-{mode}"));
+        let (src, dest, lib) = (base.join("source"), base.join("destination"), base.join("library"));
+        let paths: Vec<_> = (1..=4)
+            .map(|i| {
+                let path = src.join(format!("{i:02}.png"));
+                write_png(&path, i as u8);
+                path
+            })
+            .collect();
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+
+        let start = usize::MAX - 2;
+        let r = s
+            .execute(
+                "library.import",
+                &json!({
+                    "paths": paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+                    "mode": mode, "destination": dest.to_string_lossy(), "organize": "flat",
+                    "rename": "Holiday", "renameStart": start as u64
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(ids(&r, "imported"), 3, "{mode}: earlier transfers survive sequence exhaustion: {r}");
+        assert_eq!(r["failed"].as_array().map(Vec::len), Some(1), "{mode}: {r}");
+        assert_eq!(s.catalog.len(), 3, "{mode}: all successful transfers are catalogued");
+        let mut output_names: Vec<_> = std::fs::read_dir(&dest)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        output_names.sort();
+        assert_eq!(output_names, ["Holiday-1.png", "Holiday-2.png", "Holiday.png"], "{mode}");
+        match mode {
+            "copy" => assert!(paths.iter().all(|path| path.is_file()), "copy leaves every source in place"),
+            "move" => {
+                assert!(paths.iter().take(3).all(|path| !path.exists()), "successful moves remove sources after cataloguing");
+                assert!(paths[3].is_file(), "the failed source remains in place");
+                assert_eq!(r["moved"].as_array().map(Vec::len), Some(3), "{r}");
+            }
+            _ => unreachable!(),
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+}
+
+#[test]
+fn import_rename_sequence_exhaustion_persists_across_batches() {
+    let base = temp_dir("rename-sequence-batches");
+    let (src, dest, lib) = (base.join("source"), base.join("destination"), base.join("library"));
+    let first = src.join("one.png");
+    let second = src.join("two.png");
+    write_png(&first, 1);
+    write_png(&second, 2);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    let opts = crate::import::ImportOptions {
+        mode: crate::import::ImportMode::Copy,
+        destination: Some(dest.to_string_lossy().into_owned()),
+        organize: crate::import::Organize::Flat,
+        rename: Some("Shot-{seq}".into()),
+        rename_start: usize::MAX,
+        ..Default::default()
+    };
+    let mut job = crate::import::ImportJob::new(&mut s, opts).unwrap();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+
+    let prepared = job.prepare(std::slice::from_ref(&first.to_string_lossy().to_string()), &cancel);
+    let first_result = crate::import::commit_prepared(&mut s, &job.opts, job.now(), prepared).unwrap();
+    assert_eq!(ids(&serde_json::to_value(first_result).unwrap(), "imported"), 1);
+    let prepared = job.prepare(std::slice::from_ref(&second.to_string_lossy().to_string()), &cancel);
+    let second_result = crate::import::commit_prepared(&mut s, &job.opts, job.now(), prepared).unwrap();
+    let second_result = serde_json::to_value(second_result).unwrap();
+
+    assert_eq!(ids(&second_result, "imported"), 0, "the exhausted job does not restart its sequence");
+    assert_eq!(second_result["failed"].as_array().map(Vec::len), Some(1), "{second_result}");
+    assert_eq!(s.catalog.len(), 1);
+    assert!(dest.join(format!("Shot-{}.png", usize::MAX)).is_file());
+    assert!(!dest.join("Shot-1.png").exists(), "no wraparound or reuse");
+    assert_eq!(
+        (job.done.load(std::sync::atomic::Ordering::Relaxed), job.total.load(std::sync::atomic::Ordering::Relaxed)),
+        (2, 2),
+        "both the copied and exhausted files advance import progress"
+    );
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn import_rename_sequence_controls_ignore_the_counter_when_not_renaming() {
+    let base = temp_dir("rename-sequence-controls");
+    let (src, dest, lib) = (base.join("source"), base.join("destination"), base.join("library"));
+    let added = src.join("add.png");
+    let copied = src.join("copy.png");
+    write_png(&added, 1);
+    write_png(&copied, 2);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+
+    let added_report = s
+        .execute(
+            "library.import",
+            &json!({
+                "paths": [added.to_string_lossy()], "mode": "add", "rename": "Ignored-{seq}", "renameStart": usize::MAX as u64
+            }),
+        )
+        .unwrap();
+    let copied_report = s
+        .execute(
+            "library.import",
+            &json!({
+                "paths": [copied.to_string_lossy()], "mode": "copy", "destination": dest.to_string_lossy(), "organize": "flat",
+                "renameStart": usize::MAX as u64
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(ids(&added_report, "imported"), 1, "Add does not use rename numbering: {added_report}");
+    assert_eq!(ids(&copied_report, "imported"), 1, "an empty rename template does not use the counter: {copied_report}");
+    assert!(dest.join("copy.png").is_file());
+    assert_eq!(s.catalog.len(), 2);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[cfg(target_pointer_width = "32")]
+#[test]
+fn import_rename_sequence_rejects_a_start_outside_usize() {
+    let s = Session::new();
+    let too_large = u64::from(u32::MAX) + 1;
+    let parsed = crate::cmd::library::import_params(&s, &json!({"paths": ["unused.png"], "renameStart": too_large}));
+    assert!(parsed.is_err(), "32-bit import parameters must not truncate renameStart");
 }
 
 /// Copy with a custom folder template: `{date:%Y}/{date:%Y%m%d}` files a photo under
@@ -848,6 +1227,72 @@ fn cube_import_without_a_library_leaves_no_temp_copy() {
     let _ = std::fs::remove_dir_all(&src);
 }
 
+/// `prefs.json` records each imported profile's file, but only the library's own copy in
+/// `Profiles/` is read or deleted: a path out through `..`, a path elsewhere, a file past the size
+/// cap or a link is never followed (issue #2123). Delete Imported Profile used to remove whatever
+/// `<lib>/Profiles/../..` named, and opening the library read any file it named, unbounded.
+#[test]
+fn lut_profile_paths_in_prefs_stay_inside_profiles() {
+    let src = temp_dir("cubeprefs-src");
+    let lib = temp_dir("cubeprefs-lib");
+    let outside = temp_dir("cubeprefs-outside");
+    let mut cube = String::from("LUT_3D_SIZE 2\n");
+    for i in 0..8 {
+        cube.push_str(&format!("{} {} {}\n", i & 1, (i >> 1) & 1, (i >> 2) & 1));
+    }
+    for name in ["a", "b", "c"] {
+        std::fs::write(src.join(format!("{name}.cube")), &cube).unwrap();
+    }
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, true).unwrap();
+    let r = s.execute("profile.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let ids: Vec<String> = r["imported"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids.len(), 3, "{r}");
+    drop(s);
+    for id in &ids {
+        lcc_pipeline::lut::unregister(id);
+    }
+
+    // what a crafted prefs.json names: files outside the library, one of them through `..`
+    let victim = outside.join("victim.cube");
+    std::fs::write(&victim, &cube).unwrap();
+    let prefs = lib.join("prefs.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&prefs).unwrap()).unwrap();
+    let traversal = lib.join("Profiles").join("..").join("..").join(outside.file_name().unwrap()).join("victim.cube");
+    let files = [traversal.to_string_lossy().to_string(), victim.to_string_lossy().to_string()];
+    let mut patched = 0;
+    for list in v.as_object_mut().unwrap().values_mut().filter_map(|x| x.as_array_mut()) {
+        for p in list.iter_mut().filter(|p| p.get("file").is_some()) {
+            if let Some(i) = ids.iter().position(|id| p["id"] == id.as_str()).filter(|&i| i < 2) {
+                p["file"] = json!(files[i]);
+                patched += 1;
+            }
+        }
+    }
+    assert_eq!(patched, 2, "{v}");
+    std::fs::write(&prefs, serde_json::to_vec(&v).unwrap()).unwrap();
+    // the third profile's own copy grows past the cap (sparse: no 64 MB written)
+    let third = lib.join("Profiles").join(format!("{}.cube", ids[2].trim_start_matches("lut:")));
+    std::fs::OpenOptions::new().write(true).open(&third).unwrap().set_len((64 << 20) + 1).unwrap();
+
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    assert_eq!(s.lut_profiles.len(), 3, "the list itself is kept");
+    for id in &ids {
+        assert!(lcc_pipeline::lut::get(id).is_none(), "{id}: nothing outside Profiles/ or past the cap is read");
+    }
+    for id in &ids[..2] {
+        s.execute("profile.deleteImported", &json!({"id": id})).unwrap();
+    }
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), cube, "the file outside the library is left alone");
+    // the library's own copy is still deleted
+    s.execute("profile.deleteImported", &json!({"id": ids[2]})).unwrap();
+    assert!(!third.exists());
+    for d in [&src, &lib, &outside] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
 /// Folder rename / move on disk: files and sidecars go along, the photos are relinked and
 /// still render; clashes and moving into itself are refused.
 #[test]
@@ -1027,6 +1472,24 @@ fn assisted_culling_ignores_repeated_ids() {
     assert_eq!(r["photos"].as_array().map(Vec::len), Some(1), "{r}");
     let an = s.catalog.photo(id).unwrap().analysis.unwrap();
     assert!(an.group.is_none() && !an.best, "{an:?}");
+}
+
+/// Classical aesthetic and cullScore persist without optional models; eyes-open is skipped when
+/// no detector and no face regions (not stored as 0).
+#[test]
+fn assisted_culling_persists_aesthetic_and_cull_score() {
+    let mut s = Session::with_demo();
+    let id = s.visible_cloned()[0];
+    let r = s.execute("photo.analyze", &json!({"ids": [id.0]})).unwrap();
+    let row = &r["photos"][0];
+    assert!(row["aesthetic"].as_f64().is_some(), "{r}");
+    assert!(row["cullScore"].as_f64().is_some(), "{r}");
+    let an = s.catalog.photo(id).unwrap().analysis.unwrap();
+    let aesthetic = an.aesthetic.expect("aesthetic");
+    assert!((1.0..=10.0).contains(&aesthetic), "{an:?}");
+    let score = an.cull_score.expect("cull_score");
+    assert!((0.0..=1.0).contains(&score), "{an:?}");
+    assert!(row["eyesOpen"].is_null() || row["eyesOpen"].is_number(), "{r}");
 }
 
 /// Assisted culling: two look-alike shots one second apart across midnight form a burst at the end of
@@ -1226,6 +1689,9 @@ fn smart_previews_folder_is_chosen_per_library() {
     let r = again.execute("library.smartPreviewsLocation", &json!({"reset": true})).unwrap();
     assert_eq!(r["custom"], false, "{r}");
     assert_eq!(r["path"], lib.join("Smart Previews").to_string_lossy().as_ref());
+    for d in [&lib, &away, &src.with_extension("offline")] {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
 
 /// Missing Photos covers library photos only: a small library next to many Local browse

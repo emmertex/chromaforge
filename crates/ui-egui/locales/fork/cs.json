@@ -90,5 +90,7 @@
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "Při úpravách zachovává stejnou kvalitu obrazu. Je-li úprava na to příliš pomalá, obraz se při pohybu posuvníku aktualizuje rychleji a zaostří se, jakmile se zastaví.",
   "Preview for SDR Display": "Náhled pro displej SDR",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Zobrazí fotografii tak, jak ji ukážou displeje SDR a exporty SDR, abyste mohli upravit její verzi SDR",
-  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Tyto posuvníky určují vzhled fotografie na displejích SDR a v exportech SDR. Chcete-li je vidět, zapněte Náhled pro displej SDR."
+  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Tyto posuvníky určují vzhled fotografie na displejích SDR a v exportech SDR. Chcete-li je vidět, zapněte Náhled pro displej SDR.",
+  "Graphics interface": "Grafické rozhraní",
+  "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Platí od dalšího spuštění. Pokud se aplikace se zapnutou GPU spouští pomalu, zkuste Vulkan: na některých počítačích připraví GPU mnohem rychleji."
 }

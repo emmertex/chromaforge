@@ -709,6 +709,12 @@ fn extras(app: &mut LccApp, ui: &mut egui::Ui, p: &Photo) {
         if a.group.is_some() {
             line.push_str(crate::i18n::tr(if a.best { " · best of its burst" } else { " · in a burst" }));
         }
+        if let Some(eyes) = a.eyes_open {
+            line.push_str(&crate::i18n::tr_format!(" · eyes {:.0}%", eyes * 100.0));
+        }
+        if let Some(aest) = a.aesthetic {
+            line.push_str(&crate::i18n::tr_format!(" · aesthetic {:.1}", aest));
+        }
         ui.add_space(4.0);
         ui.label(egui::RichText::new(line).color(t.text_dim));
     }

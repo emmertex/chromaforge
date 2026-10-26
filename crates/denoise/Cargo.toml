@@ -13,6 +13,7 @@ default = []
 runtime = ["dep:faer"]
 # Product-policy switch: absent by default; users may install their own model.
 rawnind-model = ["lcc-denoise-core/rawnind-model"]
+own-model = ["lcc-denoise-core/own-model"]
 
 [dependencies]
 lcc-brand = { workspace = true }

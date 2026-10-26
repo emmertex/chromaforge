@@ -1245,5 +1245,7 @@
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "Зберігає однакову якість зображення під час налаштування. Якщо правка для цього надто повільна, зображення оновлюється швидше, поки повзунок рухається, і стає різким, щойно він зупиняється.",
   "Preview for SDR Display": "Перегляд для SDR-дисплея",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Показує фото так, як його покажуть SDR-дисплеї та SDR-експорт, щоб налаштувати його SDR-версію",
-  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Ці повзунки задають вигляд фото на SDR-дисплеях і в SDR-експорті. Щоб побачити їхню дію, увімкніть «Перегляд для SDR-дисплея»."
+  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Ці повзунки задають вигляд фото на SDR-дисплеях і в SDR-експорті. Щоб побачити їхню дію, увімкніть «Перегляд для SDR-дисплея».",
+  "Graphics interface": "Графічний інтерфейс",
+  "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Застосовується з наступного запуску. Якщо з увімкненим GPU застосунок запускається повільно, спробуйте Vulkan: на деяких комп’ютерах він готує GPU значно швидше."
 }

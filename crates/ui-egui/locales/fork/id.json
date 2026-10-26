@@ -22,5 +22,7 @@
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "Menjaga kualitas gambar tetap sama saat menyesuaikan. Jika suntingan terlalu lambat untuk itu, gambar diperbarui lebih cepat selama penggeser bergerak dan menjadi tajam begitu berhenti.",
   "Preview for SDR Display": "Pratinjau untuk Layar SDR",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Tampilkan foto seperti yang ditampilkan layar SDR dan ekspor SDR, untuk menyesuaikan versi SDR-nya",
-  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Ini mengatur tampilan foto di layar SDR dan dalam ekspor SDR. Aktifkan Pratinjau untuk Layar SDR untuk melihatnya."
+  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Ini mengatur tampilan foto di layar SDR dan dalam ekspor SDR. Aktifkan Pratinjau untuk Layar SDR untuk melihatnya.",
+  "Graphics interface": "Antarmuka grafis",
+  "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Berlaku pada peluncuran berikutnya. Jika aplikasi lambat dimulai dengan GPU aktif, coba Vulkan: di beberapa komputer, Vulkan menyiapkan GPU jauh lebih cepat."
 }

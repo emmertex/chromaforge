@@ -78,6 +78,8 @@ pub(crate) struct Raw {
 #[derive(Default)]
 pub(crate) struct Meta {
     pub icc: Option<Vec<u8>>,
+    /// An ICC profile was declared by the container but its sequence was invalid.
+    pub icc_invalid: bool,
     pub exif: Option<Vec<u8>>,
     pub xmp: Option<String>,
     /// Orientation from the container itself (e.g. TIFF tag); EXIF blob is consulted otherwise.
@@ -86,6 +88,31 @@ pub(crate) struct Meta {
     pub hint: Option<SourceSpace>,
     /// `image` already went through a CMS/transform producing this space (skip interpretation).
     pub already_linear: Option<SourceSpace>,
+}
+
+/// [`check_size`], and the decoder's own sample buffer of `bytes_per_pixel` a pixel against
+/// [`DecodeOptions::max_bytes`].
+pub(crate) fn check_budget(format: Format, w: u64, h: u64, bytes_per_pixel: u64, opts: &DecodeOptions) -> Result<()> {
+    check_size(format, w, h, opts)?;
+    if w.saturating_mul(h).saturating_mul(bytes_per_pixel) > opts.max_bytes {
+        return Err(Error::TooLarge(w, h));
+    }
+    Ok(())
+}
+
+/// `n` copies of `v`, or [`Error::TooLarge`] when the allocation fails: the full-size buffers of a
+/// decode are sized by the file's header, so failing to get one is an error, not an abort.
+pub(crate) fn try_filled<T: Clone>(n: usize, v: T, dims: (usize, usize)) -> Result<Vec<T>> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(n).map_err(|_| Error::TooLarge(dims.0 as u64, dims.1 as u64))?;
+    out.resize(n, v);
+    Ok(out)
+}
+
+/// A zeroed full-size image, allocated fallibly ([`try_filled`]).
+pub(crate) fn try_image<T: Copy + Default>(w: usize, h: usize) -> Result<lcc_raster::Image<T>> {
+    let n = w.checked_mul(h).ok_or(Error::TooLarge(w as u64, h as u64))?;
+    Ok(lcc_raster::Image { width: w, height: h, data: try_filled(n, T::default(), (w, h))? })
 }
 
 pub(crate) fn check_size(format: Format, w: u64, h: u64, opts: &DecodeOptions) -> Result<()> {
@@ -107,21 +134,23 @@ pub(crate) fn finish(format: Format, raw: Raw, meta: Meta, source_dims: (u32, u3
     let float = matches!(raw.buf, Buf::F32(_));
 
     // Alpha plane (straight).
-    let alpha = raw.alpha.then(|| {
-        let mut a = Plane::new(raw.width, raw.height);
+    let alpha = if raw.alpha {
+        let mut a: Plane = try_image(raw.width, raw.height)?;
         for (i, o) in a.data.iter_mut().enumerate() {
             *o = raw.buf.norm(i * ch + ch - 1).clamp(0.0, 1.0);
         }
-        a
-    });
+        Some(a)
+    } else {
+        None
+    };
 
     let parsed_icc = meta.icc.as_deref().and_then(icc::parse);
     let (image, space) = if let Some(space) = meta.already_linear.clone() {
-        (to_rgb_passthrough(&raw, ch), space)
+        (to_rgb_passthrough(&raw, ch)?, space)
     } else if raw.model == Model::Cmyk {
-        cmyk(&raw, ch, meta.icc.as_deref(), parsed_icc.as_ref())
+        cmyk(&raw, ch, meta.icc.as_deref(), parsed_icc.as_ref(), meta.icc_invalid)?
     } else {
-        rgb_or_gray(&raw, ch, &meta, parsed_icc.as_ref(), float)
+        rgb_or_gray(&raw, ch, &meta, parsed_icc.as_ref(), float)?
     };
 
     let mut image = image;
@@ -172,9 +201,9 @@ pub(crate) fn finish(format: Format, raw: Raw, meta: Meta, source_dims: (u32, u3
     })
 }
 
-fn to_rgb_passthrough(raw: &Raw, ch: usize) -> Rgb32f {
+fn to_rgb_passthrough(raw: &Raw, ch: usize) -> Result<Rgb32f> {
     let gray = raw.model == Model::Gray;
-    let mut img = Rgb32f::new(raw.width, raw.height);
+    let mut img: Rgb32f = try_image(raw.width, raw.height)?;
     par_rows(&mut img.data, raw.width, |y, row| {
         for (x, o) in row.iter_mut().enumerate() {
             let i = (y * raw.width + x) * ch;
@@ -186,13 +215,13 @@ fn to_rgb_passthrough(raw: &Raw, ch: usize) -> Rgb32f {
             };
         }
     });
-    img
+    Ok(img)
 }
 
 /// Per-channel linearization via LUTs (8/16-bit) or direct evaluation (float).
-fn linearize(raw: &Raw, ch: usize, trc: &[Trc; 3]) -> Rgb32f {
+fn linearize(raw: &Raw, ch: usize, trc: &[Trc; 3]) -> Result<Rgb32f> {
     let gray = raw.model == Model::Gray;
-    let mut img = Rgb32f::new(raw.width, raw.height);
+    let mut img: Rgb32f = try_image(raw.width, raw.height)?;
     let w = raw.width;
     match &raw.buf {
         Buf::U8(v) => {
@@ -245,68 +274,70 @@ fn linearize(raw: &Raw, ch: usize, trc: &[Trc; 3]) -> Rgb32f {
             });
         }
     }
-    img
+    Ok(img)
 }
 
-fn device_samples(raw: &Raw, ch: usize, n_color: usize) -> Vec<f32> {
+fn device_samples(raw: &Raw, ch: usize, n_color: usize) -> Result<Vec<f32>> {
     let n = raw.width * raw.height;
-    let mut out = Vec::with_capacity(n * n_color);
+    let too_large = || Error::TooLarge(raw.width as u64, raw.height as u64);
+    let mut out = Vec::new();
+    out.try_reserve_exact(n.checked_mul(n_color).ok_or_else(too_large)?).map_err(|_| too_large())?;
     for p in 0..n {
         for c in 0..n_color {
             out.push(raw.buf.norm(p * ch + c).clamp(0.0, 1.0));
         }
     }
-    out
+    Ok(out)
 }
 
 fn from_vec(w: usize, h: usize, data: Vec<[f32; 3]>) -> Rgb32f {
     Rgb32f { width: w, height: h, data }
 }
 
-fn rgb_or_gray(raw: &Raw, ch: usize, meta: &Meta, info: Option<&icc::IccInfo>, float: bool) -> (Rgb32f, SourceSpace) {
+fn rgb_or_gray(raw: &Raw, ch: usize, meta: &Meta, info: Option<&icc::IccInfo>, float: bool) -> Result<(Rgb32f, SourceSpace)> {
     let gray = raw.model == Model::Gray;
     if let (Some(bytes), Some(info)) = (meta.icc.as_deref(), info) {
         match (&info.kind, gray) {
             (IccKind::MatrixTrc { to_xyz_d50, trc }, false) => {
                 let space = SourceSpace { named: info.named, to_xyz_d50: *to_xyz_d50, trc: Some(trc.clone()), origin: SpaceOrigin::IccMatrixTrc };
-                return (linearize(raw, ch, trc), space);
+                return Ok((linearize(raw, ch, trc)?, space));
             }
             (IccKind::MatrixTrc { to_xyz_d50, trc }, true) => {
                 // Gray data with an RGB profile: neutral axis only needs the green curve.
                 let t = [trc[1].clone(), trc[1].clone(), trc[1].clone()];
                 let space = SourceSpace { named: info.named, to_xyz_d50: *to_xyz_d50, trc: Some(t.clone()), origin: SpaceOrigin::IccMatrixTrc };
-                return (linearize(raw, ch, &t), space);
+                return Ok((linearize(raw, ch, &t)?, space));
             }
             (IccKind::Gray { trc }, true) => {
                 let t = [trc.clone(), trc.clone(), trc.clone()];
                 let mut space = SourceSpace::named(NamedSpace::Srgb, SpaceOrigin::IccMatrixTrc);
                 space.trc = Some(t.clone());
-                return (linearize(raw, ch, &t), space);
+                return Ok((linearize(raw, ch, &t)?, space));
             }
             (IccKind::NeedsCms, _) => {
                 let wanted = if gray { IccColorModel::Gray } else { IccColorModel::Rgb };
                 if info.model == wanted {
                     let nc = raw.model.channels();
-                    let samples = device_samples(raw, ch, nc);
+                    let samples = device_samples(raw, ch, nc)?;
                     if let Some(px) = icc::cms_to_linear_rec2020(bytes, &samples, nc) {
                         let mut s = SourceSpace::named(NamedSpace::Rec2020, SpaceOrigin::IccCms);
                         s.trc = None;
-                        return (from_vec(raw.width, raw.height, px), s);
+                        return Ok((from_vec(raw.width, raw.height, px), s));
                     }
                 }
             }
             _ => {}
         }
     }
-    if meta.icc.is_some() {
+    if meta.icc.is_some() || meta.icc_invalid {
         // Present but unusable (malformed, mismatched model, CMS failure): assume sRGB.
         let s = SourceSpace::named(NamedSpace::Srgb, SpaceOrigin::IccUnsupported);
         let t = NamedSpace::Srgb.trc();
-        return (linearize(raw, ch, &[t.clone(), t.clone(), t]), s);
+        return Ok((linearize(raw, ch, &[t.clone(), t.clone(), t])?, s));
     }
     if let Some(h) = &meta.hint {
         let t = h.trc.clone().unwrap_or([Trc::Srgb, Trc::Srgb, Trc::Srgb]);
-        return (linearize(raw, ch, &t), h.clone());
+        return Ok((linearize(raw, ch, &t)?, h.clone()));
     }
     let adobe = meta.exif.as_deref().map(exif::summarize).is_some_and(|s| s.adobe_rgb_hint);
     let mut s = if adobe {
@@ -319,29 +350,25 @@ fn rgb_or_gray(raw: &Raw, ch: usize, meta: &Meta, info: Option<&icc::IccInfo>, f
         s.trc = Some([Trc::Linear, Trc::Linear, Trc::Linear]);
     }
     let t = s.trc.clone().unwrap_or([Trc::Srgb, Trc::Srgb, Trc::Srgb]);
-    (linearize(raw, ch, &t), s)
+    Ok((linearize(raw, ch, &t)?, s))
 }
 
-fn cmyk(raw: &Raw, ch: usize, icc_bytes: Option<&[u8]>, info: Option<&icc::IccInfo>) -> (Rgb32f, SourceSpace) {
-    let samples = device_samples(raw, ch, 4);
+fn cmyk(raw: &Raw, ch: usize, icc_bytes: Option<&[u8]>, info: Option<&icc::IccInfo>, icc_invalid: bool) -> Result<(Rgb32f, SourceSpace)> {
+    let samples = device_samples(raw, ch, 4)?;
     if let (Some(bytes), Some(info)) = (icc_bytes, info)
         && info.model == IccColorModel::Cmyk
         && let Some(px) = icc::cms_to_linear_rec2020(bytes, &samples, 4)
     {
         let mut s = SourceSpace::named(NamedSpace::Rec2020, SpaceOrigin::IccCms);
         s.trc = None;
-        return (from_vec(raw.width, raw.height, px), s);
+        return Ok((from_vec(raw.width, raw.height, px), s));
     }
     // Naive: RGB = (1 - C)(1 - K) … treated as sRGB-encoded.
-    let px = samples
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| {
-            let k = 1.0 - c[3];
-            [(1.0 - c[0]) * k, (1.0 - c[1]) * k, (1.0 - c[2]) * k].map(lcc_color::transfer::srgb_to_linear)
-        })
-        .collect();
-    let origin = if icc_bytes.is_some() { SpaceOrigin::IccUnsupported } else { SpaceOrigin::Naive };
-    (from_vec(raw.width, raw.height, px), SourceSpace::named(NamedSpace::Srgb, origin))
+    let mut px = try_filled(samples.len() / 4, [0.0; 3], (raw.width, raw.height))?;
+    for (o, c) in px.iter_mut().zip(samples.as_chunks::<4>().0) {
+        let k = 1.0 - c[3];
+        *o = [(1.0 - c[0]) * k, (1.0 - c[1]) * k, (1.0 - c[2]) * k].map(lcc_color::transfer::srgb_to_linear);
+    }
+    let origin = if icc_bytes.is_some() || icc_invalid { SpaceOrigin::IccUnsupported } else { SpaceOrigin::Naive };
+    Ok((from_vec(raw.width, raw.height, px), SourceSpace::named(NamedSpace::Srgb, origin)))
 }

@@ -1,8 +1,9 @@
-# Camera calibrations matched to Lightroom
+# Camera calibrations matched to other editors
 
-One JSON file per camera model (`<Make>_<Model>.json`), embedded into the crate at build time by `build.rs`. Each
-holds the camera's colour model and named looks, fitted black-box by `<cli> calibrate-lightroom fit` to Lightroom's
-exports of a contributor's own photos (aggregate statistics only: no image content, file names, dates, serial
+One JSON file per camera model and editor (`<Make>_<Model>.json` for Lightroom, `<Make>_<Model>_<editor>.json` for
+Capture One, darktable, RawTherapee or DxO PhotoLab), embedded into the crate at build time by `build.rs`. Each holds
+the camera's colour model and named looks, fitted black-box by `<cli> calibrate-lightroom fit [--editor ID]` to that
+editor's exports of a contributor's own photos (aggregate statistics only: no image content, file names, dates, serial
 numbers, locations or lenses). The format and its checks are in `src/calibration.rs`; how contributors make one is in
 [`docs/calibrate-lightroom.md`](../../../../docs/calibrate-lightroom.md).
 

@@ -14,3 +14,5 @@ pub const BINARY: &str = "lightcraft";
 pub const MASK_EFFECTS_FORMAT: &str = "lightcraft.maskEffects";
 /// The `format` tag of a slideshow template file (written and read; also in the built-in templates).
 pub const SLIDESHOW_TEMPLATE_FORMAT: &str = "lightcraft.slideshowTemplate";
+/// The `format` tag of an exported print template file (written and read).
+pub const PRINT_TEMPLATE_FORMAT: &str = "lightcraft.printTemplate";

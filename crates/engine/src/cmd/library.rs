@@ -89,6 +89,10 @@ pub fn import_params(s: &Session, p: &Value) -> Result<ImportRequest> {
         }
         None => Default::default(),
     };
+    let rename_start = match p.get("renameStart").and_then(Value::as_u64) {
+        Some(n) => usize::try_from(n).map_err(|_| bad("library.import", "renameStart is too large for this platform"))?,
+        None => 1,
+    };
     let opts = crate::import::ImportOptions {
         on_deleted,
         mode,
@@ -97,7 +101,7 @@ pub fn import_params(s: &Session, p: &Value) -> Result<ImportRequest> {
         destination: str_param(p, "destination").map(str::to_string),
         organize,
         rename: str_param(p, "rename").map(str::to_string),
-        rename_start: p.get("renameStart").and_then(Value::as_u64).unwrap_or(1) as usize,
+        rename_start,
         metadata_preset,
         convert_dng: bool_or(p, "dng", false),
         local: bool_or(p, "local", false),
@@ -206,10 +210,22 @@ fn set_custom_order(s: &mut Session, a: AlbumId, order: Vec<PhotoId>, label: &st
 
 /// The targets an album can hold and how many were browsed (Local) photos, which album views
 /// never show (issue #684): those are skipped, and reported, instead of becoming invisible members.
+/// An id the catalog doesn't have (named outright, or kept selected after an undo took its photo
+/// away) is dropped before anything changes, and isn't counted: `skipped` stays the Local count
+/// the toasts name.
 fn album_targets(s: &Session, targets: Vec<PhotoId>) -> (Vec<PhotoId>, usize) {
-    let before = targets.len();
-    let kept: Vec<PhotoId> = targets.into_iter().filter(|id| s.catalog.photo(*id).is_none_or(|p| !p.local)).collect();
-    let skipped = before - kept.len();
+    let mut skipped = 0;
+    let kept: Vec<PhotoId> = targets
+        .into_iter()
+        .filter(|id| match s.catalog.photo(*id) {
+            None => false,
+            Some(p) if p.local => {
+                skipped += 1;
+                false
+            }
+            Some(_) => true,
+        })
+        .collect();
     (kept, skipped)
 }
 
@@ -238,6 +254,33 @@ fn mark_deleted(s: &mut Session, ids: &[PhotoId], label: &str) -> Result<usize> 
 /// Apply one op per target as a single undo step.
 fn for_targets(s: &mut Session, p: &Value, label: &str, f: impl Fn(PhotoId) -> Option<Op>) -> Result<Value> {
     let targets = s.targets(p)?;
+    apply_each(s, &targets, label, f)
+}
+
+/// Targets of rating, flag and label commands: [`Session::targets`], where a selected photo of a
+/// collapsed stack stands for the whole stack (issue #2232). Explicit `ids` / `id` are kept as given.
+fn mark_targets(s: &Session, p: &Value) -> Result<Vec<PhotoId>> {
+    let targets = s.targets(p)?;
+    let explicit = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
+    if explicit("ids") || explicit("id") {
+        return Ok(targets);
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<PhotoId> = Vec::with_capacity(targets.len());
+    for id in targets {
+        let members = s.catalog.stack_of(id).filter(|st| st.collapsed).map_or_else(|| vec![id], |st| st.photos.clone());
+        out.extend(members.into_iter().filter(|m| seen.insert(*m)));
+    }
+    Ok(out)
+}
+
+/// [`for_targets`] on [`mark_targets`].
+fn for_marks(s: &mut Session, p: &Value, label: &str, f: impl Fn(PhotoId) -> Option<Op>) -> Result<Value> {
+    let targets = mark_targets(s, p)?;
+    apply_each(s, &targets, label, f)
+}
+
+fn apply_each(s: &mut Session, targets: &[PhotoId], label: &str, f: impl Fn(PhotoId) -> Option<Op>) -> Result<Value> {
     let ops: Vec<Op> = targets.iter().filter_map(|id| f(*id)).collect();
     let n = ops.len();
     if n > 0 {
@@ -249,7 +292,7 @@ fn for_targets(s: &mut Session, p: &Value, label: &str, f: impl Fn(PhotoId) -> O
 /// Adjust each target's own rating; unchanged bounds do not create an undo step.
 fn change_rating(s: &mut Session, p: &Value, delta: i8, label: &str) -> Result<Value> {
     let mut ops = Vec::new();
-    for id in s.targets(p)? {
+    for id in mark_targets(s, p)? {
         let old = s.catalog.photo(id).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?.rating;
         let rating = (i16::from(old) + i16::from(delta)).clamp(0, 5) as u8;
         if rating != old {
@@ -267,7 +310,7 @@ fn change_rating(s: &mut Session, p: &Value, delta: i8, label: &str) -> Result<V
 /// raising/lowering clamps on reject < unflagged < pick. Unchanged photos make no history step.
 fn change_flag(s: &mut Session, p: &Value, label: &str, step: impl Fn(Flag) -> Flag) -> Result<Value> {
     let mut ops = Vec::new();
-    for id in s.targets(p)? {
+    for id in mark_targets(s, p)? {
         let old = s.catalog.photo(id).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?.flag;
         let flag = step(old);
         if flag != old {
@@ -778,7 +821,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 s.end_interaction()?;
                 match mode {
                     "replace" => {
-                        s.selection = Selection { ids: ids.clone(), active: active.or(ids.first().copied()) };
+                        // a repeated id is one photo: keep the first of each, in the order given
+                        let mut seen = std::collections::HashSet::with_capacity(ids.len());
+                        let ids: Vec<PhotoId> = ids.into_iter().filter(|id| seen.insert(*id)).collect();
+                        s.selection = Selection { active: active.or(ids.first().copied()), ids };
                     }
                     "add" => {
                         for id in ids {
@@ -810,7 +856,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "library.devices", "Cameras and Cards", [], None, "{} → [{name, path (its DCIM folder), root}] — mounted volumes with a DCIM folder", always, |_, _| {
             Ok(serde_json::to_value(crate::devices::devices_now()).unwrap_or_default())
         }),
-        cmd!(query "photo.copyMetadata", "Copy Metadata", ["Metadata"], None, "{} — title, caption, copyright (notice, status, usage terms, info URL), creator, location and keywords of the active photo", has_active, |s, _| {
+        cmd!(query "photo.copyMetadata", "Copy Metadata", ["Metadata"], Some("Cmd+Alt+Shift+C"), "{} — title, caption, copyright (notice, status, usage terms, info URL), creator, location and keywords of the active photo", has_active, |s, _| {
             let v = active_meta(s, "photo.copyMetadata")?;
             s.meta_clipboard = Some(v.clone());
             Ok(v)
@@ -846,7 +892,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "photo.pasteMetadata",
             "Paste Metadata",
             ["Metadata"],
-            None,
+            Some("Cmd+Alt+Shift+V"),
             "{ids?, fields?: [title|caption|copyright|copyrightStatus|usageTerms|copyrightUrl|creator|location|keywords] (default: all copied)}",
             has_selection,
             |s, p| {
@@ -913,7 +959,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     .ok()
                     .filter(|r| *r <= 5)
                     .ok_or_else(|| bad("photo.rate", "rating must be a whole number 0..5"))?;
-                cull(s, p, |s| for_targets(s, p, "Set Rating", |id| Some(Op::SetRating { id, rating: r as u8 })))
+                cull(s, p, |s| for_marks(s, p, "Set Rating", |id| Some(Op::SetRating { id, rating: r as u8 })))
             }
         ),
         cmd!(
@@ -943,7 +989,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             |s, p| {
                 let f = str_param(p, "flag").and_then(Flag::parse).ok_or_else(|| bad("photo.flag", "flag must be pick|reject|none"))?;
-                cull(s, p, |s| for_targets(s, p, "Set Flag", |id| Some(Op::SetFlag { id, flag: f })))
+                cull(s, p, |s| for_marks(s, p, "Set Flag", |id| Some(Op::SetFlag { id, flag: f })))
             }
         ),
         // Classic: ` cycles the flag; Cmd+Up / Cmd+Down raise / lower it (Ctrl on Windows and Linux)
@@ -989,7 +1035,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Some("P"),
             "{ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
-            |s, p| { cull(s, p, |s| for_targets(s, p, "Flag as Pick", |id| Some(Op::SetFlag { id, flag: Flag::Pick }))) }
+            |s, p| { cull(s, p, |s| for_marks(s, p, "Flag as Pick", |id| Some(Op::SetFlag { id, flag: Flag::Pick }))) }
         ),
         cmd!(
             "photo.reject",
@@ -998,7 +1044,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Some("X"),
             "{ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
-            |s, p| { cull(s, p, |s| for_targets(s, p, "Flag as Reject", |id| Some(Op::SetFlag { id, flag: Flag::Reject }))) }
+            |s, p| { cull(s, p, |s| for_marks(s, p, "Flag as Reject", |id| Some(Op::SetFlag { id, flag: Flag::Reject }))) }
         ),
         cmd!(
             "photo.unflag",
@@ -1007,7 +1053,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Some("U"),
             "{ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
-            |s, p| { cull(s, p, |s| for_targets(s, p, "Unflag", |id| Some(Op::SetFlag { id, flag: Flag::None }))) }
+            |s, p| { cull(s, p, |s| for_marks(s, p, "Unflag", |id| Some(Op::SetFlag { id, flag: Flag::None }))) }
         ),
         cmd!(
             "photo.label",
@@ -1026,7 +1072,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     Some(_) => return Err(bad("photo.label", "label must be red|yellow|green|blue|purple|none")),
                 };
                 cull(s, p, |s| {
-                    let targets = s.targets(p)?;
+                    let targets = mark_targets(s, p)?;
                     if bool_or(p, "toggle", false) && l.is_some() {
                         let all_have = !targets.is_empty() && targets.iter().all(|id| s.catalog.photo(*id).and_then(|ph| ph.label) == l);
                         if all_have {
@@ -1045,6 +1091,16 @@ pub fn specs() -> Vec<CommandSpec> {
                     Ok(json!({"changed": n, "label": label_str}))
                 })
             }
+        ),
+        // `photo.label` takes the colour as a parameter, so a key can't be given to "none" alone
+        cmd!(
+            "photo.clearLabel",
+            "Clear Color Label",
+            ["Photo", "Set Color Label"],
+            None,
+            "{ids?, advance?: bool} — `photo.label` with `none`; without `ids`, the selection moves on when this takes the active photo out of the view",
+            has_selection,
+            |s, p| { cull(s, p, |s| for_targets(s, p, "Set Color Label", |id| Some(Op::SetLabel { id, label: None }))) }
         ),
         // ---- orientation
         cmd!("photo.rotateLeft", "Rotate Left", ["Photo", "Rotate & Flip"], Some("Cmd+["), "{ids?}", has_selection, |s, p| rotate(s, p, false)),
@@ -1570,7 +1626,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add to Album",
             ["Photo"],
             None,
-            "{id: albumId, ids?: [photoIds]} (default: selection) → {added, skipped}; Local photos are skipped (albums hold library photos), only Local ones is an error",
+            "{id: albumId, ids?: [photoIds]} (default: selection) → {added, skipped}; Local photos are skipped (albums hold library photos), only Local ones is an error; ids the library doesn't have are dropped; nothing new to add changes nothing (no undo step)",
             has_library_selection,
             |s, p| {
                 let id = album_param(p, "id", "album.addPhotos")?;
@@ -1590,6 +1646,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                 }
                 let added = photos.len() - before;
+                // all of them were there already (or none was left to add): the album is unchanged,
+                // so no undo step, and redo stays
+                if added == 0 {
+                    return Ok(json!({"added": 0, "skipped": skipped}));
+                }
                 let cover = al.cover.or(photos.first().copied());
                 s.commit("Add to Album", Op::Batch { ops: vec![Op::SetAlbumPhotos { id, photos }, Op::SetAlbumCover { id, cover }] })?;
                 Ok(json!({"added": added, "skipped": skipped}))
@@ -1670,12 +1731,23 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add to Target Album",
             [],
             None,
-            "{ids?} — B: adds the photos to the target album (the Quick Collection unless one is set), or removes them when they're all in it → {album, added, skipped}; Local photos are skipped",
+            "{ids?} — B: adds the photos to the target album (the Quick Collection unless one is set), or removes them when they're all in it → {album, added, toggled, skipped}; Local photos are skipped, ids the library doesn't have are dropped (none left: nothing changes and `added` is null)",
             has_library_selection,
             |s, p| {
                 let targets =
                     album_targets_or_err(s, "album.toggleTarget", super::photo_ids(p, "album.toggleTarget")?.unwrap_or_else(|| s.selected()))?;
                 let (targets, skipped) = targets;
+                // nothing left to toggle (every id named is gone): no album is made or changed
+                if targets.is_empty() {
+                    let existing = s
+                        .target_album
+                        .filter(|a| s.catalog.album(*a).is_some_and(|al| !al.is_smart() && !al.folder))
+                        .or_else(|| s.catalog.quick_collection());
+                    let al = existing.and_then(|a| s.catalog.album(a));
+                    return Ok(
+                        json!({"album": al.map(|a| a.id.0), "name": al.map(|a| a.name.clone()), "added": null, "toggled": 0, "count": al.map_or(0, |a| s.catalog.album_count(a.id)), "skipped": skipped}),
+                    );
+                }
                 let target = s.target_album.filter(|a| s.catalog.album(*a).is_some_and(|al| !al.is_smart() && !al.folder));
                 let id = match target.or_else(|| s.catalog.quick_collection()) {
                     Some(id) => id,
@@ -1689,7 +1761,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let al = s.catalog.album(id).ok_or_else(|| bad("album.toggleTarget", "no target album"))?;
                 // looked up, not searched for: thousands toggled in a big album stay linear
                 let mut held: std::collections::HashSet<PhotoId> = al.photos.iter().copied().collect();
-                let all_in = !targets.is_empty() && targets.iter().all(|t| held.contains(t));
+                let all_in = targets.iter().all(|t| held.contains(t));
                 let photos: Vec<PhotoId> = if all_in {
                     let targets: std::collections::HashSet<PhotoId> = targets.iter().copied().collect();
                     al.photos.iter().copied().filter(|x| !targets.contains(x)).collect()
@@ -1697,12 +1769,14 @@ pub fn specs() -> Vec<CommandSpec> {
                     al.photos.iter().copied().chain(targets.iter().copied().filter(|t| held.insert(*t))).collect()
                 };
                 let name = al.name.clone();
+                // photos that went in or came out: what a toast can say (not the ones that were in already)
+                let toggled = al.photos.len().abs_diff(photos.len());
                 let cover = al.cover.filter(|c| photos.contains(c)).or(photos.first().copied());
                 s.commit(
                     if all_in { "Remove from Target Album" } else { "Add to Target Album" },
                     Op::Batch { ops: vec![Op::SetAlbumPhotos { id, photos }, Op::SetAlbumCover { id, cover }] },
                 )?;
-                Ok(json!({"album": id.0, "name": name, "added": !all_in, "count": s.catalog.album_count(id), "skipped": skipped}))
+                Ok(json!({"album": id.0, "name": name, "added": !all_in, "toggled": toggled, "count": s.catalog.album_count(id), "skipped": skipped}))
             }
         ),
         cmd!("album.setTarget", "Set as Target Album", [], None, "{id: albumId | null} (null = the Quick Collection)", always, |s, p| {
@@ -1937,7 +2011,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Photos",
             ["File"],
             Some("Cmd+Shift+I"),
-            "{paths: [file or folder (recursive)], mode?: add|copy|move (add = reference the files in place; copy = into the library's Originals/YYYY/YYYY-MM-DD/; move = as copy, then each original and its XMP sidecars are removed from the source — only after the copy is verified (a hard link on the same volume, else copied, synced and compared byte for byte) and its catalog record is saved; failed, duplicate and unchecked files keep their sources; a taken name gets -1, -2…; undo removes the photos from the library but leaves the files at the destination), destination?: folder for copies / moves, organize?: date (YYYY/YYYY-MM-DD) | month (YYYY/YYYY-MM) | flat | a folder template, e.g. `{date:%Y}/{date:%Y%m%d}` → 2026/20260114 (the template's `/` make the folders, each level expanded with the rename tokens and made a safe folder name: never outside the destination; must be relative, no `..`; a level with missing metadata is `unknown`) — dated by capture time, else the import time, rename?: file-name template for copies, original extension added (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext}; photo.renameTokens explains each; blank = keep names), renameStart?: 1, metadataPreset?: name, dng?: bool (copy raws as DNG; copy only), local?: bool (browsing: the photos stay out of the library, like library.browse; not with move), album?: albumId, albumName?: new album, preset?: presetId, keywords?: [..], onDeleted?: restore|skip|fresh (a file that is in Recently Deleted: restore (default) = bring the photo back with its edits — relinked to the file when its own is gone, skip = leave it there and say so, fresh = delete the trashed record and import the file as new), importDuplicates?: bool (false by default = Lightroom's Don't Import Suspected Duplicates: a file whose content the library already has is skipped; true imports it as a new photo — a path already in the library, or a photo in Recently Deleted, is still handled as above)} → {imported, duplicates: [{path, existing, reason, existingDeleted?}], restored?: [photoId], failed, warnings?: [{path, code: cameraProfile|uprightGeometry|unmappedXmp, profile?, mode?: off|auto|level|vertical|full|guided|unknown, fields?}], moved?: [{from, to, sidecars?}], kept?: [{path, reason}] (move: sources left in place and why), album?}",
+            "{paths: [file or folder (recursive)], mode?: add|copy|move (add = reference the files in place; copy = into the library's Originals/YYYY/YYYY-MM-DD/; move = as copy, then each original and its XMP sidecars are removed from the source — only after the copy is verified (a hard link on the same volume, else copied, synced and compared byte for byte) and its catalog record is saved; failed, duplicate and unchecked files keep their sources; a taken name gets -1, -2…; undo removes the photos from the library but leaves the files at the destination), destination?: folder for copies / moves, organize?: date (YYYY/YYYY-MM-DD) | month (YYYY/YYYY-MM) | flat | a folder template, e.g. `{date:%Y}/{date:%Y%m%d}` → 2026/20260114 (the template's `/` make the folders, each level expanded with the rename tokens and made a safe folder name: never outside the destination; must be relative, no `..`; a level with missing metadata is `unknown`) — dated by capture time, else the import time, rename?: file-name template for copies, original extension added (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext}; photo.renameTokens explains each; blank = keep names), renameStart?: 1 (must fit this platform; later files are reported failed if the sequence runs out), metadataPreset?: name, dng?: bool (copy raws as DNG; copy only), local?: bool (browsing: the photos stay out of the library, like library.browse; not with move), album?: albumId, albumName?: new album, preset?: presetId, keywords?: [..], onDeleted?: restore|skip|fresh (a file that is in Recently Deleted: restore (default) = bring the photo back with its edits — relinked to the file when its own is gone, skip = leave it there and say so, fresh = delete the trashed record and import the file as new), importDuplicates?: bool (false by default = Lightroom's Don't Import Suspected Duplicates: a file whose content the library already has is skipped; true imports it as a new photo — a path already in the library, or a photo in Recently Deleted, is still handled as above)} → {imported, duplicates: [{path, existing, reason, existingDeleted?}], restored?: [photoId], failed, warnings?: [{path, code: cameraProfile|uprightGeometry|unmappedXmp, profile?, mode?: off|auto|level|vertical|full|guided|unknown, fields?}], moved?: [{from, to, sidecars?}], kept?: [{path, reason}] (move: sources left in place and why), album?}",
             always,
             |s, p| {
                 let req = import_params(s, p)?;
@@ -2123,47 +2197,191 @@ fn has_library(s: &Session) -> std::result::Result<(), String> {
 /// "51°30'26\"N 0°7'39\"W" (degrees, minutes, seconds; N/S/E/W or signs).
 pub(crate) fn parse_gps(t: &str) -> Option<(f64, f64)> {
     // typographic minus signs and dashes mean a negative value, like ASCII '-'
-    let t = t.replace(['\u{2212}', '\u{2012}', '\u{2013}', '\u{FE63}', '\u{FF0D}'], "-");
     let t = t.trim();
-    // split into the two coordinates: at a comma, else after the first N/S hemisphere letter
-    let (a, b) = match t.split_once(',') {
-        Some((a, b)) => (a.trim().to_string(), b.trim().to_string()),
-        None => {
-            let lead = t.starts_with(['N', 'S', 'n', 's']);
-            let i = if lead {
-                // hemisphere letter first: "N 51.5 W 0.1" splits at the E/W letter
-                t.char_indices().skip(1).find(|(_, c)| matches!(c, 'E' | 'W' | 'e' | 'w')).map(|(i, _)| i)
-            } else {
-                t.find(['N', 'S', 'n', 's']).map(|i| i + 1)
-            }
-            .or_else(|| t.find(char::is_whitespace))?;
-            (t[..i].trim().to_string(), t[i..].trim().to_string())
+    if t.is_empty() || t.chars().take(129).count() > 128 {
+        return None;
+    }
+    let normalized = t.replace(['\u{2212}', '\u{2012}', '\u{2013}', '\u{FE63}', '\u{FF0D}'], "-");
+    let t = normalized.as_str();
+
+    if let Some((a, b)) = t.split_once(',') {
+        if b.contains(',') {
+            return None;
         }
+        return parse_gps_pair(a, b);
+    }
+
+    // A suffix N/S marks the end of latitude; a prefix N/S uses the next hemisphere prefix as
+    // the boundary. If only longitude has a hemisphere, the whitespace pass below handles it.
+    let mut parsed: Option<(f64, f64)> = None;
+    let mut latitude_markers = t.char_indices().filter(|(_, c)| matches!(c, 'N' | 'S' | 'n' | 's'));
+    if let Some((first, marker)) = latitude_markers.next() {
+        if first == 0 {
+            if let Some((second, _)) = t.char_indices().skip(1).find(|(_, c)| is_gps_hemisphere(*c))
+                && let Some(pair) = parse_gps_pair(t.get(..second)?, t.get(second..)?)
+            {
+                parsed = Some(pair);
+            }
+        } else {
+            let end = first.checked_add(marker.len_utf8())?;
+            return parse_gps_pair(t.get(..end)?, t.get(end..)?);
+        }
+    }
+
+    // A comma-free pair can be separated by whitespace. Trying each boundary also permits spaces
+    // between DMS components without letting unconsumed text vanish. If multiple boundaries parse,
+    // they must agree so ambiguous text cannot be reinterpreted.
+    for (at, separator) in t.char_indices().filter(|(_, c)| c.is_whitespace()) {
+        let after = at.checked_add(separator.len_utf8())?;
+        if let Some(pair) = parse_gps_pair(t.get(..at)?, t.get(after..)?) {
+            match parsed {
+                Some(previous) if previous != pair => return None,
+                None => parsed = Some(pair),
+                Some(_) => {}
+            }
+        }
+    }
+    parsed
+}
+
+#[derive(Clone, Copy)]
+enum GpsAxis {
+    Latitude,
+    Longitude,
+}
+
+fn is_gps_hemisphere(c: char) -> bool {
+    matches!(c, 'N' | 'S' | 'E' | 'W' | 'n' | 's' | 'e' | 'w')
+}
+
+fn parse_gps_pair(latitude: &str, longitude: &str) -> Option<(f64, f64)> {
+    Some((parse_gps_coordinate(latitude, GpsAxis::Latitude)?, parse_gps_coordinate(longitude, GpsAxis::Longitude)?))
+}
+
+fn parse_gps_coordinate(text: &str, axis: GpsAxis) -> Option<f64> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    let prefix = ['N', 'S', 'E', 'W']
+        .into_iter()
+        .find_map(|h| text.strip_prefix(h).or_else(|| text.strip_prefix(h.to_ascii_lowercase())).map(|rest| (h, rest)));
+    let suffix = ['N', 'S', 'E', 'W']
+        .into_iter()
+        .find_map(|h| text.strip_suffix(h).or_else(|| text.strip_suffix(h.to_ascii_lowercase())).map(|rest| (rest, h)));
+    let (body, hemisphere) = if let Some((h, body)) = prefix {
+        (body, Some(h))
+    } else if let Some((body, h)) = suffix {
+        (body, Some(h))
+    } else {
+        (text, None)
     };
-    let one = |s: &str, pos: char, neg: char| -> Option<f64> {
-        let up = s.to_ascii_uppercase();
-        let sign = if up.contains(neg) || up.trim_start().starts_with('-') { -1.0 } else { 1.0 };
-        let nums: Vec<f64> =
-            up.split(|c: char| !(c.is_ascii_digit() || c == '.')).filter(|x| !x.is_empty()).map(|x| x.parse::<f64>().ok()).collect::<Option<_>>()?;
-        let v = match nums.as_slice() {
-            [d] => *d,
-            [d, m] => d + m / 60.0,
-            [d, m, s] => d + m / 60.0 + s / 3600.0,
+    if body.chars().any(is_gps_hemisphere) {
+        return None;
+    }
+    let body = body.trim();
+    if body.is_empty() {
+        return None;
+    }
+
+    let hemisphere_negative = match (axis, hemisphere) {
+        (_, None) => None,
+        (GpsAxis::Latitude, Some('N')) | (GpsAxis::Longitude, Some('E')) => Some(false),
+        (GpsAxis::Latitude, Some('S')) | (GpsAxis::Longitude, Some('W')) => Some(true),
+        _ => return None,
+    };
+
+    let mut components = Vec::with_capacity(3);
+    let mut token = String::new();
+    let mut explicit_sign = None;
+    let mut degree_mark = false;
+    let mut minute_mark = false;
+    let mut second_mark = false;
+
+    for c in body.chars() {
+        match c {
+            '0'..='9' | '.' => token.push(c),
+            '+' | '-' if components.is_empty() && token.is_empty() => token.push(c),
+            c if c.is_whitespace() => flush_gps_number(&mut token, &mut components, &mut explicit_sign)?,
+            '°' => {
+                flush_gps_number(&mut token, &mut components, &mut explicit_sign)?;
+                if components.len() != 1 || degree_mark || minute_mark || second_mark {
+                    return None;
+                }
+                degree_mark = true;
+            }
+            '\'' | '′' => {
+                flush_gps_number(&mut token, &mut components, &mut explicit_sign)?;
+                if components.len() != 2 || minute_mark || second_mark {
+                    return None;
+                }
+                minute_mark = true;
+            }
+            '"' | '″' => {
+                flush_gps_number(&mut token, &mut components, &mut explicit_sign)?;
+                if components.len() != 3 || !minute_mark || second_mark {
+                    return None;
+                }
+                second_mark = true;
+            }
             _ => return None,
-        };
-        let _ = pos;
-        Some(sign * v)
+        }
+    }
+    flush_gps_number(&mut token, &mut components, &mut explicit_sign)?;
+
+    let [degrees, rest @ ..] = components.as_slice() else { return None };
+    if rest.iter().any(|v| *v < 0.0 || *v >= 60.0) {
+        return None;
+    }
+    let magnitude = degrees.abs() + rest.first().copied().unwrap_or(0.0) / 60.0 + rest.get(1).copied().unwrap_or(0.0) / 3600.0;
+    if !magnitude.is_finite() {
+        return None;
+    }
+
+    let negative = match (hemisphere_negative, explicit_sign) {
+        (Some(hemisphere_negative), Some(explicit_negative)) if hemisphere_negative != explicit_negative => return None,
+        (Some(hemisphere_negative), _) => hemisphere_negative,
+        (None, Some(explicit_negative)) => explicit_negative,
+        (None, None) => false,
     };
-    let (la, lo) = (one(&a, 'N', 'S')?, one(&b, 'E', 'W')?);
-    (la.abs() <= 90.0 && lo.abs() <= 180.0).then_some((la, lo))
+    let value = if negative { -magnitude } else { magnitude };
+    let limit = match axis {
+        GpsAxis::Latitude => 90.0,
+        GpsAxis::Longitude => 180.0,
+    };
+    (value.is_finite() && value.abs() <= limit).then_some(value)
+}
+
+fn flush_gps_number(token: &mut String, components: &mut Vec<f64>, explicit_sign: &mut Option<bool>) -> Option<()> {
+    if token.is_empty() {
+        return Some(());
+    }
+    if components.len() == 3 {
+        return None;
+    }
+    let value = token.parse::<f64>().ok()?;
+    if !value.is_finite() {
+        return None;
+    }
+    if components.is_empty() && (token.starts_with('-') || token.starts_with('+')) {
+        *explicit_sign = Some(token.starts_with('-'));
+    }
+    components.push(value);
+    token.clear();
+    Some(())
 }
 
 #[cfg(test)]
 mod gps_tests {
+    use serde_json::json;
+
     #[test]
     fn coordinates_people_type() {
         let p = super::parse_gps;
         assert_eq!(p("51.5072, -0.1276"), Some((51.5072, -0.1276)));
+        assert_eq!(p("10 20 30"), None);
+        assert_eq!(p("10  20"), Some((10.0, 20.0)));
         let (la, lo) = p("51°30'26\"N 0°7'39\"W").unwrap();
         assert!((la - 51.50722).abs() < 1e-4 && (lo + 0.1275).abs() < 1e-4, "{la} {lo}");
         let (la, lo) = p("33.8688 S, 151.2093 E").unwrap();
@@ -2172,8 +2390,106 @@ mod gps_tests {
         assert_eq!(p("N 51.5072 W 0.1276"), Some((51.5072, -0.1276)));
         assert_eq!(p("S 33.8688 E 151.2093"), Some((-33.8688, 151.2093)));
         assert_eq!(p("\u{2212}33.8688, 151.2093"), Some((-33.8688, 151.2093)));
+        assert_eq!(p("51.5072 -0.1276"), Some((51.5072, -0.1276)));
+        assert_eq!(p("51.5072 0.1276 W"), Some((51.5072, -0.1276)));
+        let (la, lo) = p("51° 30' 26\" 0° 7' 39\"").unwrap();
+        assert!((la - 51.50722).abs() < 1e-4 && (lo - 0.1275).abs() < 1e-4, "{la} {lo}");
         assert_eq!(p("95, 10"), None);
         assert_eq!(p("hello"), None);
+        assert_eq!(p("s 33.8688 e 151.2093"), Some((-33.8688, 151.2093)));
+        assert_eq!(p("0N, 0E"), Some((0.0, 0.0)));
+        assert_eq!(p("90N, 180E"), Some((90.0, 180.0)));
+        assert_eq!(p("90S, 180W"), Some((-90.0, -180.0)));
+    }
+
+    #[test]
+    fn gps_does_not_reinterpret_exponents() {
+        assert_eq!(super::parse_gps("1e-3, 2e-3"), None);
+    }
+
+    #[test]
+    fn gps_rejects_wrong_axis_or_conflicting_hemispheres() {
+        let p = super::parse_gps;
+        assert_eq!(p("45E, 7N"), None);
+        assert_eq!(p("45E 7N"), None);
+        assert_eq!(p("45NS, 7E"), None);
+        assert_eq!(p("-45N, 7E"), None);
+        assert_eq!(p("45N 7NE"), None);
+    }
+
+    #[test]
+    fn gps_tries_whitespace_split_when_prefix_marker_split_fails() {
+        assert_eq!(super::parse_gps("N51 0E"), Some((51.0, 0.0)));
+    }
+
+    #[test]
+    fn gps_rejects_unconsumed_coordinate_text() {
+        assert_eq!(super::parse_gps("garbage45, 7junk"), None);
+    }
+
+    #[test]
+    fn gps_rejects_oversized_coordinate_text() {
+        let input = format!("{}, 0", "0".repeat(129));
+        assert_eq!(super::parse_gps(&input), None);
+    }
+
+    #[test]
+    fn gps_rejects_invalid_dms_components() {
+        let p = super::parse_gps;
+        assert_eq!(p("45°60'0\"N, 7E"), None);
+        assert_eq!(p("45°0'60\"N, 7E"), None);
+        assert_eq!(p("45°-1'0\"N, 7E"), None);
+        assert_eq!(p("45°0'-1\"N, 7E"), None);
+    }
+
+    #[test]
+    fn gps_rejected_text_does_not_change_metadata() {
+        let mut s = crate::Session::with_demo();
+        let ids: Vec<_> = s.catalog.photos().take(2).map(|photo| photo.id).collect();
+        assert_eq!(ids.len(), 2, "demo has two records for the batch check");
+        let id_values: Vec<_> = ids.iter().map(|id| id.0).collect();
+        s.execute("library.select", &json!({"ids": id_values})).unwrap();
+        s.execute("photo.setMeta", &json!({"title": "Before"})).unwrap();
+        s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.25})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(!s.redo.is_empty(), "rejection must preserve a populated redo history");
+
+        let snapshot = s.catalog.to_snapshot();
+        let revision = s.catalog.revision;
+        let selection = s.selection.clone();
+        let commits = s.commits();
+        let undo = format!("{:?}", s.undo);
+        let redo = format!("{:?}", s.redo);
+        let error = s.execute("photo.setMeta", &json!({"gps": "garbage45, 7junk", "title": "After"})).unwrap_err();
+
+        assert!(matches!(error, crate::EngineError::BadParams { ref cmd, .. } if cmd == "photo.setMeta"), "{error}");
+        assert_eq!(s.catalog.to_snapshot(), snapshot, "catalog data is unchanged");
+        assert_eq!(s.catalog.revision, revision, "catalog revision is unchanged");
+        assert_eq!(s.selection, selection, "selection is unchanged");
+        assert_eq!(s.commits(), commits, "commit count is unchanged");
+        assert_eq!(format!("{:?}", s.undo), undo, "undo history is unchanged");
+        assert_eq!(format!("{:?}", s.redo), redo, "redo history is unchanged");
+        for id in ids {
+            assert_eq!(s.catalog.photo(id).map(|photo| photo.meta.title.as_str()), Some("Before"));
+        }
+    }
+
+    #[test]
+    fn gps_valid_edit_is_one_undo_step() {
+        let mut s = crate::Session::with_demo();
+        let id = s.active().or_else(|| s.catalog.photos().next().map(|photo| photo.id)).unwrap();
+        let previous = s.catalog.photo(id).unwrap().meta.clone();
+        let commits = s.commits();
+        s.execute("photo.setMeta", &json!({"gps": "48°51'30\"N 2°17'40\"E", "title": "GPS edited"})).unwrap();
+        let photo = s.catalog.photo(id).unwrap();
+        assert_eq!(photo.meta.title, "GPS edited");
+        assert!(photo.meta.gps.is_some());
+        assert_eq!(s.commits(), commits + 1);
+
+        s.execute("edit.undo", &json!({})).unwrap();
+        let photo = s.catalog.photo(id).unwrap();
+        assert_eq!(photo.meta.title, previous.title);
+        assert_eq!(photo.meta.gps, previous.gps);
     }
 }
 
@@ -2191,6 +2507,10 @@ mod tests_custom_order;
 #[cfg(test)]
 #[path = "library/tests_rated_out.rs"]
 mod rated_out_tests;
+
+#[cfg(test)]
+#[path = "library/tests_clear_label.rs"]
+mod clear_label_tests;
 
 #[cfg(test)]
 #[path = "library/tests_enable_filters.rs"]

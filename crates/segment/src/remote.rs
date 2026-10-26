@@ -1,7 +1,16 @@
 //! Private SAM 3 transport. Bind the worker to loopback and forward it over SSH.
+//!
+//! Both ends know a token ([`TOKEN_ENV`]) and prove it to each other before any pixels move
+//! (issue #2134): the editor sends a random nonce, the worker answers with its own nonce and an
+//! HMAC-SHA256 of both under the token, the editor checks it and answers with its own HMAC. The
+//! token never crosses the socket, so neither a local process that connects to the worker nor one
+//! listening on the editor's port while the tunnel is down learns it, gets the worker's GPU, or
+//! receives the photo.
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::{Click, Encoded, INPUT, MASK_SIDE, Sam3};
@@ -12,6 +21,15 @@ const RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(9 * 60);
 /// Environment variable (name after the app prefix, see `lcc_brand::env`) with the remote worker address.
 pub const ENV: &str = "SAM3_REMOTE";
+/// The token both ends share (the worker prints a new one when it isn't set). Not
+/// `<PREFIX>_SAM3_TOKEN`: that is the bearer token for a gated download mirror.
+pub const TOKEN_ENV: &str = "SAM3_WORKER_TOKEN";
+/// Shortest token accepted.
+pub const MIN_TOKEN: usize = 16;
+/// How long a peer has to complete the handshake.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Handshakes the worker runs at once; connections past that are closed.
+const MAX_HANDSHAKES: usize = 32;
 
 #[derive(Serialize, Deserialize)]
 pub enum Operation {
@@ -56,6 +74,109 @@ pub fn configured() -> Option<String> {
     lcc_brand::env(ENV).filter(|v| !v.trim().is_empty())
 }
 
+/// The shared token from [`TOKEN_ENV`], at least [`MIN_TOKEN`] characters.
+pub fn token() -> Result<String, String> {
+    let t = lcc_brand::env(TOKEN_ENV).unwrap_or_default().trim().to_string();
+    if t.chars().count() < MIN_TOKEN {
+        return Err(format!("set {} to the token the SAM 3 worker printed (at least {MIN_TOKEN} characters)", lcc_brand::env_var(TOKEN_ENV)));
+    }
+    Ok(t)
+}
+
+/// 128 unpredictable bits as hex. Std's `RandomState` is keyed from the operating system's random
+/// source; hashing a counter and the time under fresh keys gives values nobody else can predict,
+/// without a random-number crate.
+pub fn random_hex() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let word = || {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_usize(N.fetch_add(1, Ordering::Relaxed));
+        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        h.finish()
+    };
+    format!("{:016x}{:016x}", word(), word())
+}
+
+/// HMAC-SHA256 (RFC 2104) under `key` of `parts`, each prefixed by its length; as hex.
+fn hmac(key: &str, parts: &[&str]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        k[..32].copy_from_slice(&Sha256::digest(key.as_bytes()));
+    } else {
+        k[..key.len()].copy_from_slice(key.as_bytes());
+    }
+    let pad = |b: u8| k.map(|x| x ^ b);
+    let mut inner = Sha256::new();
+    inner.update(pad(0x36));
+    for p in parts {
+        inner.update((p.len() as u64).to_be_bytes());
+        inner.update(p.as_bytes());
+    }
+    let mut outer = Sha256::new();
+    outer.update(pad(0x5c));
+    outer.update(inner.finalize());
+    outer.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Constant-time comparison (a proof must not leak through timing).
+fn same(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut d = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        d |= (a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0)) as usize;
+    }
+    d == 0
+}
+
+#[derive(Serialize, Deserialize)]
+struct Hello {
+    nonce: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Proof {
+    #[serde(default)]
+    nonce: String,
+    proof: String,
+}
+
+fn send<T: Serialize>(w: &mut impl Write, v: &T) -> Result<(), String> {
+    write_frame(w, &serde_json::to_vec(v).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+fn receive<T: serde::de::DeserializeOwned>(r: &mut impl Read) -> Result<T, String> {
+    let frame = read_frame(r, CONTROL_LIMIT).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&frame).map_err(|_| "unexpected handshake".to_string())
+}
+
+/// The editor's side of the handshake: the worker must prove it knows `token` before any pixels go.
+pub fn client_handshake(stream: &mut (impl Read + Write), token: &str) -> Result<(), String> {
+    let mine = random_hex();
+    send(stream, &Hello { nonce: mine.clone() })?;
+    let reply: Proof = receive(stream)?;
+    if reply.nonce.len() < 32 || !same(&reply.proof, &hmac(token, &["worker", &mine, &reply.nonce])) {
+        return Err("the SAM 3 worker didn't prove it knows the token: is something else listening on that port?".into());
+    }
+    send(stream, &Proof { nonce: String::new(), proof: hmac(token, &["editor", &mine, &reply.nonce]) })
+}
+
+/// The worker's side: the editor must prove it knows `token` before a request is read.
+pub fn server_handshake(stream: &mut (impl Read + Write), token: &str) -> Result<(), String> {
+    let hello: Hello = receive(stream)?;
+    if hello.nonce.len() < 32 {
+        return Err("unexpected handshake".into());
+    }
+    let mine = random_hex();
+    send(stream, &Proof { nonce: mine.clone(), proof: hmac(token, &["worker", &hello.nonce, &mine]) })?;
+    let reply: Proof = receive(stream)?;
+    if !same(&reply.proof, &hmac(token, &["editor", &hello.nonce, &mine])) {
+        return Err("wrong token".into());
+    }
+    Ok(())
+}
+
 pub fn read_frame(reader: &mut impl Read, limit: usize) -> io::Result<Vec<u8>> {
     let mut size = [0; 4];
     reader.read_exact(&mut size)?;
@@ -85,9 +206,12 @@ impl Client {
         if !address.ip().is_loopback() {
             return Err("SAM endpoint must be loopback; use an SSH tunnel for remote access".into());
         }
-        let stream = TcpStream::connect_timeout(&address, Duration::from_secs(5)).map_err(|e| e.to_string())?;
-        stream.set_read_timeout(Some(TIMEOUT)).map_err(|e| e.to_string())?;
+        let token = token()?;
+        let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5)).map_err(|e| e.to_string())?;
+        stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(|e| e.to_string())?;
         stream.set_write_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
+        client_handshake(&mut stream, &token)?;
+        stream.set_read_timeout(Some(TIMEOUT)).map_err(|e| e.to_string())?;
         Ok(Self { stream, key: None })
     }
 
@@ -137,6 +261,44 @@ fn predict(model: &mut Sam3, enc: &mut Encoded, operation: Operation) -> Result<
             Ok(Some(model.segment_clicks(enc, &clicks).map_err(|e| e.to_string())?.logits))
         }
     }
+}
+
+/// Accept connections on `listener` and hand over those that complete the handshake. Handshakes
+/// run on their own threads (at most [`MAX_HANDSHAKES`]) with a short deadline, so a peer without
+/// the token can't hold the worker; the sessions themselves, which share the one model and device,
+/// are served one at a time by the receiver. A failed accept (out of file descriptors, a
+/// connection reset while queued) is logged and the loop goes on (issue #2134).
+pub fn accept_authenticated(listener: TcpListener, token: String) -> std::sync::mpsc::Receiver<TcpStream> {
+    let (authed, sessions) = std::sync::mpsc::channel::<TcpStream>();
+    let pending = Arc::new(AtomicUsize::new(0));
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("SAM3 accept failed: {e}");
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+            };
+            if pending.fetch_add(1, Ordering::SeqCst) >= MAX_HANDSHAKES {
+                pending.fetch_sub(1, Ordering::SeqCst);
+                continue;
+            }
+            let (token, authed, pending) = (token.clone(), authed.clone(), pending.clone());
+            std::thread::spawn(move || {
+                let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+                let ok = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_ok()
+                    && stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).is_ok()
+                    && server_handshake(&mut stream, &token).inspect_err(|e| eprintln!("SAM3 {peer}: {e}")).is_ok();
+                pending.fetch_sub(1, Ordering::SeqCst);
+                if ok {
+                    let _ = authed.send(stream);
+                }
+            });
+        }
+    });
+    sessions
 }
 
 fn serve_client(stream: &mut TcpStream, dir: &Path, device: candle_core::Device) -> Result<(), String> {
@@ -193,10 +355,19 @@ pub fn serve(address: SocketAddr, dir: &Path, device: candle_core::Device) -> Re
     if !crate::is_model_dir(dir) {
         return Err("SAM model files are missing".into());
     }
+    let token = match token() {
+        Ok(t) => t,
+        Err(_) => {
+            let t = random_hex();
+            eprintln!("SAM3 worker: no {} set; this run's token is {t}", lcc_brand::env_var(TOKEN_ENV));
+            eprintln!("  start the app with {}={t} (or set it here too, to keep one token)", lcc_brand::env_var(TOKEN_ENV));
+            t
+        }
+    };
     let listener = TcpListener::bind(address).map_err(|e| e.to_string())?;
     eprintln!("SAM3 worker listening on {address}; device=Metal; idle unload=600s");
-    for stream in listener.incoming() {
-        let mut stream = stream.map_err(|e| e.to_string())?;
+    let sessions = accept_authenticated(listener, token);
+    for mut stream in sessions {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve_client(&mut stream, dir, device.clone())));
         match result {
             Ok(Err(error)) => eprintln!("SAM3 session closed: {error}"),
@@ -205,4 +376,81 @@ pub fn serve(address: SocketAddr, dir: &Path, device: candle_core::Device) -> Re
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOKEN: &str = "a-token-of-thirty-two-characters";
+
+    fn pair() -> (TcpStream, TcpStream) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let c = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (s, _) = l.accept().unwrap();
+        for x in [&c, &s] {
+            x.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        }
+        (c, s)
+    }
+
+    /// Both ends prove the token; a wrong one fails on both sides, and the token itself never
+    /// crosses the socket (issue #2134).
+    #[test]
+    fn the_handshake_proves_the_token_both_ways() {
+        for (client_token, ok) in [(TOKEN, true), ("another-token-of-32-characters!!", false)] {
+            let (mut c, mut s) = pair();
+            let server = std::thread::spawn(move || server_handshake(&mut s, TOKEN));
+            let client = client_handshake(&mut c, client_token);
+            drop(c);
+            assert_eq!((client.is_ok(), server.join().unwrap().is_ok()), (ok, ok), "{client:?}");
+        }
+        // something else listening on the editor's port: it learns nothing, and the editor stops
+        let (mut c, mut s) = pair();
+        let impostor = std::thread::spawn(move || {
+            let hello = read_frame(&mut s, CONTROL_LIMIT).unwrap();
+            send(&mut s, &Proof { nonce: random_hex(), proof: "00".repeat(32) }).unwrap();
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest);
+            (hello, rest)
+        });
+        assert!(client_handshake(&mut c, TOKEN).unwrap_err().contains("didn't prove"));
+        drop(c);
+        let (hello, rest) = impostor.join().unwrap();
+        assert!(!String::from_utf8_lossy(&hello).contains(TOKEN));
+        assert!(rest.is_empty(), "nothing more is sent to a peer that failed the handshake");
+    }
+
+    /// Peers that connect and say nothing don't keep an editor with the token waiting: handshakes
+    /// run side by side, and only completed ones reach the session loop.
+    #[test]
+    fn silent_peers_dont_block_the_editor() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sessions = accept_authenticated(listener, TOKEN.into());
+        let _silent: Vec<TcpStream> = (0..3).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        let started = std::time::Instant::now();
+        let mut editor = TcpStream::connect(addr).unwrap();
+        editor.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client_handshake(&mut editor, TOKEN).unwrap();
+        let served = sessions.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(started.elapsed() < HANDSHAKE_TIMEOUT, "{:?}", started.elapsed());
+        assert_eq!(served.peer_addr().unwrap(), editor.local_addr().unwrap());
+        // a wrong token never reaches the sessions
+        let mut wrong = TcpStream::connect(addr).unwrap();
+        wrong.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        assert!(client_handshake(&mut wrong, "another-token-of-32-characters!!").is_err());
+        assert!(sessions.recv_timeout(Duration::from_millis(500)).is_err());
+    }
+
+    #[test]
+    fn hmac_depends_on_key_and_every_part() {
+        let base = hmac(TOKEN, &["worker", "a", "b"]);
+        assert_eq!(base.len(), 64);
+        assert_eq!(base, hmac(TOKEN, &["worker", "a", "b"]));
+        for other in [hmac("x", &["worker", "a", "b"]), hmac(TOKEN, &["editor", "a", "b"]), hmac(TOKEN, &["worker", "ab", ""])] {
+            assert_ne!(base, other);
+        }
+        assert_ne!(random_hex(), random_hex());
+    }
 }

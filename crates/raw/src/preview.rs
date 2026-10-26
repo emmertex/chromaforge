@@ -16,12 +16,13 @@ pub enum PreviewColorSpace {
 
 /// The colour space the raw says its embedded JPEG is in, for a JPEG that declares none itself (no ICC profile,
 /// no EXIF), first available first: the Nikon maker-note ColorSpace (0x001e: 1 = sRGB, 2 = Adobe RGB, per Nikon
-/// tag documentation); the raw's own EXIF ColorSpace (0xA001: 1 = sRGB), or Uncalibrated (0xFFFF) with the
-/// Interoperability IFD's InteropIndex "R03", the DCF option file for Adobe RGB (as a Sony body shot in Adobe RGB
-/// writes, issue #778; per the Exif and DCF specifications), not for a DNG. This is a fallback only: a JPEG's own ICC/EXIF colour
+/// tag documentation); for a Canon CR2 or CR3, the Canon maker-note ColorSpace (0x00b4: 1 = sRGB, 2 = Adobe RGB);
+/// the raw's own EXIF ColorSpace (0xA001: 1 = sRGB), or Uncalibrated (0xFFFF) with the Interoperability IFD's
+/// InteropIndex "R03", the DCF option file for Adobe RGB (as a Sony body shot in Adobe RGB writes, issue #778; per
+/// the Exif and DCF specifications), not for a DNG. This is a fallback only: a JPEG's own ICC/EXIF colour
 /// declaration takes precedence.
 pub fn embedded_preview_color_space(bytes: &[u8]) -> Option<PreviewColorSpace> {
-    let tiff = Tiff::parse(bytes).ok()?;
+    let Ok(tiff) = Tiff::parse(bytes) else { return cr3_color_space(bytes) };
     let make = tiff.ifds.first()?.string(t::MAKE).unwrap_or_default();
     let exif = tiff.exif()?;
     if make.to_ascii_uppercase().starts_with("NIKON")
@@ -33,9 +34,39 @@ pub fn embedded_preview_color_space(bytes: &[u8]) -> Option<PreviewColorSpace> {
     if tiff.ifds.first()?.contains(t::DNG_VERSION) {
         return None;
     }
+    if make.to_ascii_uppercase().starts_with("CANON")
+        && let Some(e) = exif.get(t::MAKER_NOTE)
+        && let Some(mn) = makernote::parse_makernote(bytes, e.offset, e.count() as u64, tiff.order, &make)
+        && let Some(space) = canon_color_space(&mn.ifd)
+    {
+        return Some(space);
+    }
     match exif.u16(0xA001)? {
         1 => Some(PreviewColorSpace::Srgb),
         0xFFFF if exif.interop.as_deref()?.bytes(0x0001)?.starts_with(b"R03") => Some(PreviewColorSpace::AdobeRgb),
+        _ => None,
+    }
+}
+
+/// A CR3 keeps its EXIF and maker note in `CMT2`/`CMT3` TIFF blocks and its JPEGs carry no EXIF; a body shot in
+/// Adobe RGB writes ColorSpace Uncalibrated (0xFFFF) with no Interoperability IFD (issue #2654), so the Canon
+/// maker note says which, else an EXIF ColorSpace of sRGB is taken.
+fn cr3_color_space(bytes: &[u8]) -> Option<PreviewColorSpace> {
+    let cr3 = lcc_meta::cr3::parse_cr3(bytes)?;
+    let first = |i: usize| cr3.cmt[i].and_then(|b| Tiff::parse(b).ok()).and_then(|t| t.ifds.into_iter().next());
+    if let Some(space) = first(2).and_then(|mn| canon_color_space(&mn)) {
+        return Some(space);
+    }
+    (first(1)?.u16(0xA001)? == 1).then_some(PreviewColorSpace::Srgb)
+}
+
+/// The Canon maker-note ColorSpace (0x00b4: 1 = sRGB, 2 = Adobe RGB, per ExifTool's published Canon tag names).
+/// A Canon body shot in Adobe RGB writes EXIF ColorSpace Uncalibrated (0xFFFF) with InteropIndex "R98" in a CR2
+/// and no Interoperability IFD in a CR3, so the EXIF alone does not say Adobe RGB (issue #2654).
+fn canon_color_space(note: &Ifd) -> Option<PreviewColorSpace> {
+    match note.u16(0x00b4)? {
+        1 => Some(PreviewColorSpace::Srgb),
+        2 => Some(PreviewColorSpace::AdobeRgb),
         _ => None,
     }
 }
@@ -103,8 +134,6 @@ fn jpeg_frame(b: &[u8]) -> Option<(u32, u32, u8)> {
     let be16 = |k: usize| Some(u32::from(u16::from_be_bytes([at(k)?, at(k + 1)?])));
     Some((be16(7)?, be16(5)?, at(9)?))
 }
-
-/// Whether `b` is a JPEG XL file: a bare codestream or the ISO-BMFF container's signature box.
 fn is_jxl(b: &[u8]) -> bool {
     b.starts_with(&[0xff, 0x0a]) || b.starts_with(&[0, 0, 0, 0x0c, b'J', b'X', b'L', b' ', 0x0d, 0x0a, 0x87, 0x0a])
 }
@@ -128,20 +157,17 @@ fn candidates<'a>(data: &'a [u8], ifd: &Ifd, base: u64, out: &mut Vec<&'a [u8]>)
     }
     if matches!(ifd.u16(t::COMPRESSION), Some(6) | Some(7) | Some(34892))
         && let Ok(info) = ifd.image()
+        && let Some(chunk) = info.single_chunk(data.len() as u64)
+        && let Some(s) = chunk_bytes(data, &chunk)
     {
-        let chunks = info.chunks(data.len() as u64);
-        if chunks.len() == 1
-            && let Some(s) = chunk_bytes(data, &chunks[0])
-        {
-            out.push(s);
-        }
+        out.push(s);
     }
     // a rendered (RGB or grey, never CFA/LinearRaw/mask) JPEG XL preview in one chunk
     if ifd.u16(t::COMPRESSION) == Some(t::compression::JPEG_XL)
         && matches!(ifd.u16(t::PHOTOMETRIC), Some(t::photometric::BLACK_IS_ZERO | t::photometric::RGB))
         && let Ok(info) = ifd.image()
-        && let [chunk] = info.chunks(data.len() as u64).as_slice()
-        && let Some(s) = chunk_bytes(data, chunk)
+        && let Some(chunk) = info.single_chunk(data.len() as u64)
+        && let Some(s) = chunk_bytes(data, &chunk)
         && is_jxl(s)
     {
         out.push(s);
@@ -397,8 +423,14 @@ fn cr3_preview(bytes: &[u8]) -> Option<&[u8]> {
 /// Canon CR3 (ISO base media file): the `PRVW` box (Laurent Clévy's CR3 notes; layout confirmed on a CC0
 /// sample) is `u32 size, "PRVW", u32 0, u16 ?, u16 width, u16 height, u16 ?, u32 jpeg length, JPEG`; the smaller
 /// `THMB` box has the same shape. Returns the larger valid one.
+/// Marker-walk budget of the CR3 fallback: candidates can overlap (each claiming the rest of the file) and
+/// [`is_dct_jpeg`] walks each marker by marker, so walking every candidate would be quadratic in file size.
+/// The `THMB`/`PRVW` previews this finds are far below the cap together; once it is spent the scan stops.
+const CR3_MAX_WALK: usize = 8 << 20;
+
 fn cr3_preview_boxes(bytes: &[u8]) -> Option<&[u8]> {
     let mut best: Option<&[u8]> = None;
+    let mut walked = 0usize;
     for tag in [b"PRVW", b"THMB"] {
         let mut from = 0;
         while let Some(i) = bytes.get(from..).and_then(|s| s.windows(4).position(|w| w == tag)).map(|p| p + from) {
@@ -407,10 +439,17 @@ fn cr3_preview_boxes(bytes: &[u8]) -> Option<&[u8]> {
             let be32 = |at: usize| bytes.get(at..at + 4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]) as usize);
             let (Some(size), Some(len)) = (be32(start), be32(start + 20)) else { continue };
             let j = start + 24;
-            if len < 4 || j + len > start + size.max(24) || j + len > bytes.len() {
+            // 32-bit box lengths can wrap `usize` on wasm32: check the sums, then slice with `get`
+            let (Some(end), Some(lim)) = (j.checked_add(len), start.checked_add(size.max(24))) else { continue };
+            if len < 4 || end > lim {
                 continue;
             }
-            let jpeg = &bytes[j..j + len];
+            let Some(jpeg) = bytes.get(j..end) else { continue };
+            // One that doesn't fit the budget left is skipped; a smaller one later may still fit.
+            if walked + jpeg.len() > CR3_MAX_WALK {
+                continue;
+            }
+            walked += jpeg.len();
             if is_dct_jpeg(jpeg) {
                 if best.is_none_or(|b| b.len() < jpeg.len()) {
                     best = Some(jpeg);
@@ -438,6 +477,52 @@ mod tests {
         j.extend(std::iter::repeat_n(0x55u8, n));
         j.extend_from_slice(&[0xff, 0xd9]);
         j
+    }
+
+    /// Preview extraction only serves single-chunk JPEG-compressed IFDs and asks the `single_chunk` first:
+    /// a TIFF whose strip array declares 100 000 one-row strips and no StripByteCounts must not build their
+    /// descriptor vector, and of course finds no preview in it.
+    #[test]
+    fn a_multi_strip_jpeg_ifd_costs_no_descriptor_vector() {
+        let mut ifd = IfdBuilder::new();
+        ifd.set(t::COMPRESSION, Value::Short(vec![7]));
+        ifd.set(t::IMAGE_WIDTH, Value::Long(vec![16]));
+        ifd.set(t::IMAGE_LENGTH, Value::Long(vec![100_000]));
+        ifd.set(t::ROWS_PER_STRIP, Value::Short(vec![1]));
+        ifd.set(t::STRIP_OFFSETS, Value::Byte((0..100_000).map(|i| (i % 255 + 1) as u8).collect()));
+        let file = TiffWriter::default().write(&[ifd]).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(embedded_preview(&file)));
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(2)), Ok(None));
+    }
+
+    /// CR3 candidates claim overlapping extents: each block's first bytes double as a 40-byte jump marker so
+    /// a walk jogs past the next header and reaches the end of the file, making every one of the 9000
+    /// candidates walk its whole suffix before the marker-walk budget — quadratic without it. Nothing here
+    /// is a JPEG (no frame header), so the answer is `None` either way.
+    #[test]
+    fn cr3_preview_boxes_stop_walking_when_the_budget_is_spent() {
+        // one 256-byte block per candidate, all marker-aligned so walks chain through later blocks:
+        // 0..4, size (itself a jump marker of 40 bytes); 4..8, "PRVW"; 20..24, the claimed length
+        // (to the file end); 24..28, an SOI plus a marker jumping to the fill at 40; 64..256, a fill of
+        // 4-byte markers (`ff 01 00 02`).
+        let blocks = 9000usize;
+        let total = blocks * 256;
+        let mut f = Vec::with_capacity(total);
+        for k in 0..blocks {
+            let base = k * 256;
+            f.extend_from_slice(&[0xff, 0x01, 0x00, 0x26, b'P', b'R', b'V', b'W', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            f.extend_from_slice(&u32::try_from(total - base - 24).unwrap().to_be_bytes());
+            f.extend_from_slice(&[0xff, 0xd8, 0x00, 0x24, 0xff, 0x01, 0x00, 0x26, 0, 0, 0, 0, 0, 0, 0, 0]);
+            f.resize(base + 64, 0); // 40..64 filler: walks jump over it, so its bytes are free
+            for _ in 0..48 {
+                f.extend_from_slice(&[0xff, 0x01, 0x00, 0x02]);
+            }
+        }
+        assert_eq!(f.len(), total);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(cr3_preview_boxes(&f).map(|s| s.len())));
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(2)), Ok(None), "no PRVW candidate is a JPEG");
     }
 
     /// A minimal RAF: the fixed header (JPEG offset/length at 84/88), the JPEG, then a raw tail the
@@ -585,6 +670,20 @@ mod tests {
         }
     }
 
+    /// #2569: `PRVW` box and JPEG lengths near `u32::MAX` (which wrap `usize` on wasm32) find no preview, never panic.
+    #[test]
+    fn cr3_preview_box_huge_lengths_are_rejected() {
+        let j = fake_jpeg(300);
+        for (size, len) in [(u32::MAX, u32::MAX), (u32::MAX, u32::MAX - 23), (24 + j.len() as u32, u32::MAX - 3)] {
+            let mut cr3 = b"   ftypcrx    crx isom".to_vec();
+            cr3.extend_from_slice(&size.to_be_bytes());
+            cr3.extend_from_slice(b"PRVW     T8 ");
+            cr3.extend_from_slice(&len.to_be_bytes());
+            cr3.extend_from_slice(&j);
+            assert_eq!(cr3_preview_boxes(&cr3), None, "size {size:#x}, len {len:#x}");
+        }
+    }
+
     /// A JPEG like [`fake_jpeg`] whose frame header says `w` x `h` with `nc` components.
     fn sized_jpeg(w: u16, h: u16, nc: u8, n: usize) -> Vec<u8> {
         let mut j = vec![0xff, 0xd8, 0xff, 0xc0, 0x00, 8 + 3 * nc, 8];
@@ -666,6 +765,74 @@ mod tests {
         // a track pointing past the end falls back to PRVW
         file.truncate(at as usize + 100);
         assert_eq!(embedded_preview(&file).unwrap(), small);
+    }
+
+    /// A minimal CR3 whose Canon box holds `CMT2` (EXIF ColorSpace `exif`) and `CMT3` (maker-note ColorSpace `note`).
+    fn cr3_with_color_space(exif: Option<u16>, note: Option<u16>) -> Vec<u8> {
+        let bx = |kind: &[u8; 4], body: &[u8]| -> Vec<u8> { [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat() };
+        let block = |tag: u16, v: Option<u16>| {
+            let ifd = v.map_or_else(
+                || IfdBuilder::new().with(t::ISO_SPEED, Value::Short(vec![100])),
+                |v| IfdBuilder::new().with(tag, Value::Short(vec![v])),
+            );
+            TiffWriter::new(lcc_tiff::ByteOrder::Little, false).write(&[ifd]).unwrap()
+        };
+        let cmt1 =
+            TiffWriter::new(lcc_tiff::ByteOrder::Little, false).write(&[IfdBuilder::new().with(t::MAKE, Value::Ascii("Canon".into()))]).unwrap();
+        let canon_uuid = [0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a, 0x48];
+        let boxes = [bx(b"CMT1", &cmt1), bx(b"CMT2", &block(0xA001, exif)), bx(b"CMT3", &block(0x00b4, note))].concat();
+        let mut file = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+        file.extend(bx(b"moov", &bx(b"uuid", &[&canon_uuid[..], &boxes].concat())));
+        file
+    }
+
+    /// A CR3 (not TIFF-based) says its preview's colour space in the Canon maker note (`CMT3` 0x00b4), else an
+    /// EXIF ColorSpace of sRGB in `CMT2`: an EOS R shot in Adobe RGB writes Uncalibrated with no interop (issue #2654).
+    #[test]
+    fn cr3_preview_colour_space_comes_from_the_canon_maker_note() {
+        use PreviewColorSpace::{AdobeRgb, Srgb};
+        let space = |exif, note| embedded_preview_color_space(&cr3_with_color_space(exif, note));
+        assert_eq!(space(Some(0xFFFF), Some(2)), Some(AdobeRgb));
+        assert_eq!(space(Some(1), Some(1)), Some(Srgb));
+        assert_eq!(space(Some(1), Some(2)), Some(AdobeRgb), "the maker note wins");
+        assert_eq!(space(Some(1), None), Some(Srgb), "no maker-note value: the EXIF sRGB");
+        assert_eq!(space(Some(0xFFFF), Some(0xFFFF)), None, "neither says");
+        assert_eq!(space(Some(0xFFFF), None), None);
+        assert_eq!(space(None, None), None);
+        let f = cr3_with_color_space(Some(0xFFFF), Some(2));
+        for n in 0..f.len() {
+            let _ = embedded_preview_color_space(&f[..n]);
+        }
+    }
+
+    /// A CR2 shot in Adobe RGB writes EXIF ColorSpace Uncalibrated with InteropIndex "R98", not "R03": the Canon
+    /// maker note (0x00b4) says Adobe RGB (issue #2654). Another make's note is not read for it.
+    #[test]
+    fn cr2_preview_colour_space_comes_from_the_canon_maker_note() {
+        use PreviewColorSpace::{AdobeRgb, Srgb};
+        let cr2 = |make: &str, exif_space: u16, note: Option<u16>| {
+            let mut exif = IfdBuilder::new();
+            exif.set(0xA001, Value::Short(vec![exif_space]));
+            exif.set_child(t::INTEROP_IFD, IfdBuilder::new().with(0x0001, Value::Undefined(b"R98".to_vec())));
+            if let Some(v) = note {
+                // a plain one-entry IFD, its SHORT value inline
+                let mut mn = 1u16.to_le_bytes().to_vec();
+                mn.extend([0x00b4u16.to_le_bytes(), 3u16.to_le_bytes()].concat());
+                mn.extend(1u32.to_le_bytes());
+                mn.extend([v.to_le_bytes(), [0, 0]].concat());
+                mn.extend(0u32.to_le_bytes());
+                exif.set(t::MAKER_NOTE, Value::Undefined(mn));
+            }
+            let mut ifd0 = IfdBuilder::new().with(t::MAKE, Value::Ascii(make.into()));
+            ifd0.set_child(t::EXIF_IFD, exif);
+            TiffWriter::new(lcc_tiff::ByteOrder::Little, false).write(&[ifd0]).unwrap()
+        };
+        assert_eq!(embedded_preview_color_space(&cr2("Canon", 0xFFFF, Some(2))), Some(AdobeRgb));
+        assert_eq!(embedded_preview_color_space(&cr2("Canon", 1, Some(1))), Some(Srgb));
+        assert_eq!(embedded_preview_color_space(&cr2("Canon", 1, None)), Some(Srgb), "no maker note: the EXIF");
+        assert_eq!(embedded_preview_color_space(&cr2("Canon", 0xFFFF, None)), None, "R98 is not Adobe RGB's R03");
+        assert_eq!(embedded_preview_color_space(&cr2("Canon", 0xFFFF, Some(0xFFFF))), None);
+        assert_eq!(embedded_preview_color_space(&cr2("Leica", 0xFFFF, Some(2))), None, "only a Canon note");
     }
 
     /// A structurally complete DCT JPEG (no real image data): `nc` components, `n` entropy bytes.

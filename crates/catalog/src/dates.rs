@@ -49,7 +49,12 @@ pub fn weekday(iso: &str) -> Option<&'static str> {
 pub fn shift_iso(iso: &str, secs: i64) -> Option<String> {
     let iso = iso.trim();
     let tail = iso.get(tail_start(iso)?..)?;
-    let t = iso_seconds(iso)?.checked_add(secs)?;
+    let base = iso_seconds(iso)?;
+    // reject impossible dates that the arithmetic silently rolls over (2026-02-30)
+    if civil(base).get(..10) != iso.get(..10) {
+        return None;
+    }
+    let t = base.checked_add(secs)?;
     let (first, last) = (iso_seconds("0000-01-01T00:00:00")?, iso_seconds("9999-12-31T23:59:59")?);
     if !(first..=last).contains(&t) {
         return None;
@@ -103,6 +108,10 @@ fn tail_start(iso: &str) -> Option<usize> {
 /// Normalize user input to `YYYY-MM-DDTHH:MM:SS` (accepts a space instead of `T`, missing
 /// seconds or time). `None` if it isn't a valid date.
 pub fn normalize_iso(s: &str) -> Option<String> {
+    // longer than the bare date means a full `HH:MM`: a truncated time is not a date (iso_seconds stays lenient)
+    if (11..16).contains(&s.trim().len()) {
+        return None;
+    }
     let t = iso_seconds(s)?;
     let out = civil(t);
     // reject impossible dates that the arithmetic silently rolls over (2026-02-30)
@@ -352,6 +361,23 @@ mod tests {
         assert_eq!(shift_iso("9999-12-31T23:59:58", 1).as_deref(), Some("9999-12-31T23:59:59"));
         assert_eq!(normalize_iso("2026-04-01 10:05").as_deref(), Some("2026-04-01T10:05:00"));
         assert_eq!(normalize_iso("2026-02-30"), None);
+    }
+
+    #[test]
+    fn normalize_iso_rejects_a_truncated_time() {
+        for s in ["2026-04-01 9:30", "2026-04-01T10", "2026-04-01 10:5"] {
+            assert_eq!(normalize_iso(s), None, "{s}");
+        }
+        assert_eq!(normalize_iso("2026-04-01 09:30").as_deref(), Some("2026-04-01T09:30:00"));
+        assert_eq!(normalize_iso("2026-04-01").as_deref(), Some("2026-04-01T00:00:00"));
+    }
+
+    #[test]
+    fn shift_refuses_impossible_dates() {
+        assert_eq!(shift_iso("2026-02-30T10:00:00", 60), None);
+        assert_eq!(shift_iso("2026-02-29T10:00:00", 0), None);
+        assert_eq!(shift_iso("2026-04-31T10:00:00", 0), None);
+        assert_eq!(shift_iso("2024-02-29T10:00:00", 0).as_deref(), Some("2024-02-29T10:00:00"));
     }
 
     #[test]

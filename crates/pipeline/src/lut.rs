@@ -24,7 +24,7 @@ impl Lut3d {
         let mut data = Vec::new();
         let three = |rest: &str| -> Option<[f32; 3]> {
             let v: Vec<f32> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            (v.len() == 3).then(|| [v[0], v[1], v[2]])
+            (v.len() == 3 && v.iter().all(|x| x.is_finite())).then(|| [v[0], v[1], v[2]])
         };
         for line in text.lines() {
             let l = line.trim();
@@ -166,5 +166,20 @@ mod tests {
         let back = Lut3d::parse_cube(&l.to_cube()).unwrap();
         assert_eq!((back.size, back.title.as_deref()), (5, Some("test")));
         assert!(back.data.iter().zip(&l.data).all(|(a, b)| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5)));
+    }
+
+    #[test]
+    fn non_finite_entries_rejected() {
+        let bad_line = |body: &str| {
+            let e = Lut3d::parse_cube(body).expect_err(body);
+            assert!(e.starts_with("bad line"), "{e}");
+        };
+        bad_line(&format!("LUT_3D_SIZE 2\n{}", "-inf inf nan\n".repeat(8)));
+        bad_line(&format!("LUT_3D_SIZE 2\n{}", "1e39 0 0\n".repeat(8)));
+        bad_line(&format!("LUT_3D_SIZE 2\n-inf 0 0\n{}", "0 0 0\n".repeat(7)));
+        let ok = cube(|c| c, 2);
+        assert!(Lut3d::parse_cube(&ok).is_ok());
+        assert!(Lut3d::parse_cube(&format!("DOMAIN_MIN nan 0 0\n{ok}")).is_err());
+        assert!(Lut3d::parse_cube(&format!("DOMAIN_MAX inf 1 1\n{ok}")).is_err());
     }
 }

@@ -1,6 +1,6 @@
 //! PNG decode via the `png` crate (8/16-bit, palette, tRNS, iCCP, eXIf, iTXt XMP, sRGB/cICP/cHRM/gAMA).
 
-use crate::convert::{Buf, Meta, Model, Raw, check_size, finish};
+use crate::convert::{Buf, Meta, Model, Raw, check_size, finish, try_filled};
 use crate::space::{NamedSpace, SourceSpace, SpaceOrigin, Trc};
 use crate::{DecodeOptions, Decoded, Error, Format, Result};
 use lcc_color::{Mat3, RgbSpace, Xy};
@@ -18,7 +18,8 @@ fn err(e: impl std::fmt::Display) -> Error {
 pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
     let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
     dec.set_transformations(png::Transformations::EXPAND);
-    dec.set_limits(png::Limits { bytes: opts.max_pixels.saturating_mul(8).min(usize::MAX as u64) as usize });
+    // the byte budget, not a multiple of the pixel cap (which allowed 8 GiB, issue #2125)
+    dec.set_limits(png::Limits { bytes: opts.max_bytes.min(isize::MAX as u64) as usize });
     let mut reader = dec.read_info().map_err(err)?;
     let (w, h) = {
         let i = reader.info();
@@ -26,7 +27,10 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
     };
     check_size(F, w as u64, h as u64, opts)?;
     let size = reader.output_buffer_size().ok_or_else(|| err("buffer size overflow"))?;
-    let mut buf = vec![0u8; size];
+    if size as u64 > opts.max_bytes {
+        return Err(Error::TooLarge(w.into(), h.into()));
+    }
+    let mut buf = try_filled(size, 0u8, (w as usize, h as usize))?;
     let out = reader.next_frame(&mut buf).map_err(err)?;
     // Text chunks after IDAT land in `info` once the stream is finished; ignore trailing errors.
     let _ = reader.finish();

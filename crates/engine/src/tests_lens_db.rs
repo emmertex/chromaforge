@@ -305,3 +305,91 @@ fn a_chosen_lens_and_the_lens_list() {
     }
     crate::lens_profiles::set_dir(before);
 }
+
+/// A lens picked from the database (`lens.choose`, issue #307) corrects a raw whose metadata names a lens the
+/// database lacks (a manual lens with no focal length): it needs a focal length, applies as one undo step, is
+/// reported as `chosen`, and `null` goes back to the automatic choice.
+#[test]
+fn a_picked_lens_corrects_a_manual_lens() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    if skip_for_env() {
+        return;
+    }
+    let before = crate::lens_profiles::configured_dir();
+    crate::lens_profiles::set_dir(None);
+    let dir = scratch("choose");
+    let m = lcc_meta::Metadata {
+        make: Some("Testcam".into()),
+        model: Some("TC-1".into()),
+        lens_model: Some("Oldglass 50mm".into()),
+        ..Default::default()
+    };
+    let (w, h) = (64usize, 48usize);
+    let data: Vec<u16> = (0..w * h).map(|i| 600 + (i % 977) as u16).collect();
+    let file = dir.join("a.dng");
+    std::fs::write(&file, crate::tests_xmp::synthetic_dng_of(w, h, "RGGB", data, None, m)).unwrap();
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [file.to_string_lossy()]})).unwrap();
+    let id = s.catalog.photos().next().unwrap().id;
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let db = scratch("choose-db");
+    std::fs::write(db.join("lenses.xml"), DB).unwrap();
+    s.lens_db.set_dir(Some(db)).unwrap();
+    let lens = json!({"maker": "Testcam", "model": "Testcam 18-55mm f/3.5-5.6"});
+
+    let st = s.execute("lens.db.photo", &json!({})).unwrap();
+    assert_eq!(st["state"], json!("notFound"), "{st}");
+    // no focal length anywhere: nothing applies yet
+    let st = s.execute("lens.choose", &json!({"lens": lens})).unwrap();
+    assert_eq!(st["state"], json!("noFocal"), "{st}");
+    assert!(s.catalog.photo(id).unwrap().embedded_lens.is_none());
+    let undo = s.undo.len();
+    let mut with_focal = lens.clone();
+    with_focal["focal"] = json!(18.0);
+    let st = s.execute("lens.choose", &json!({"lens": with_focal})).unwrap();
+    assert_eq!(st, json!({"state": "chosen", "lens": "Testcam 18-55mm f/3.5-5.6"}));
+    let p = s.catalog.photo(id).unwrap();
+    assert!(p.embedded_lens.is_some(), "the picked profile corrects the photo");
+    assert!(p.develop.optics.lens_profile, "picking a lens turns lens corrections on");
+    assert_eq!(s.undo.len(), undo + 1, "one undo step");
+    // kept in the catalog, not written to the XMP sidecar
+    let xmp = crate::sidecar::sidecar_packet(p, &s.catalog);
+    assert!(!xmp.contains("Testcam 18-55mm"), "the picked lens is not written to XMP");
+
+    // back to the automatic choice
+    let st = s.execute("lens.choose", &json!({"lens": null})).unwrap();
+    assert_eq!(st["state"], json!("notFound"), "{st}");
+    assert!(s.catalog.photo(id).unwrap().develop.optics.lens.is_none());
+    assert!(s.catalog.photo(id).unwrap().embedded_lens.is_none(), "the picked profile no longer applies");
+    crate::lens_profiles::set_dir(before);
+}
+
+/// Hostile `lens.choose` params are errors, never panics.
+#[test]
+fn lens_choose_refuses_hostile_params() {
+    let mut s = Session::new();
+    assert!(s.execute("lens.choose", &json!({"lens": "Some lens"})).is_err(), "no active photo");
+    let id = s.catalog.alloc_photo_id();
+    let mut p = lcc_catalog::Photo::new(id, lcc_catalog::Source::Demo { scene: 0 }, "A.NEF", "NEF", 30, 20, "2026-01-01T10:00:00");
+    p.kind = lcc_catalog::MediaKind::Raw;
+    s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let long = "x".repeat(100_000);
+    for bad in [
+        json!({}),
+        json!({"lens": 5}),
+        json!({"lens": []}),
+        json!({"lens": ""}),
+        json!({"lens": {"model": ""}}),
+        json!({"lens": {"maker": "A"}}),
+        json!({"lens": {"model": 3}}),
+        json!({"lens": {"model": long}}),
+        json!({"lens": {"model": "L", "maker": long}}),
+        json!({"lens": {"model": "L", "focal": -1}}),
+        json!({"lens": {"model": "L", "focal": 1e300}}),
+        json!({"lens": {"model": "L", "focal": "fifty"}}),
+    ] {
+        assert!(s.execute("lens.choose", &bad).is_err(), "{bad} was accepted");
+    }
+    assert!(s.catalog.photo(id).unwrap().develop.optics.lens.is_none(), "nothing was stored");
+}

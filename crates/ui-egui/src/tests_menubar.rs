@@ -85,6 +85,27 @@ fn a_tall_menu_scrolls_instead_of_growing_past_the_window() {
     assert!(rows.iter().any(|(_, r)| !level.contains_rect(*r)), "every row fits a 420 pt window: {rows:?}");
 }
 
+/// An open menu hangs just below its title's highlight, from its left edge, so the two read as
+/// one control instead of a menu floating mid-bar.
+#[test]
+fn an_open_menu_hangs_from_its_title() {
+    let mut h = app([1280.0, 703.0]);
+    for top in ["File", "Photo", "Help"] {
+        let r = h.request("ui.clickWidget", json!({"id": format!("menu:{top}")}), T);
+        assert_eq!(r["ok"], true, "{top}: {r}");
+        h.settle(SETTLE);
+        let title = widget(&h, &format!("menu:{top}")).unwrap_or_else(|| panic!("{top}: title"));
+        let level = widget(&h, "menu-level:1").unwrap_or_else(|| panic!("{top}: menu"));
+        let gap = level.top() - title.bottom();
+        assert!((0.0..=12.0).contains(&gap), "{top}: menu {level:?} is {gap} pt below its title {title:?}");
+        assert!((level.left() - title.left()).abs() < 12.0, "{top}: menu {level:?} not under its title {title:?}");
+        // close it again before the next title
+        let r = h.request("ui.clickWidget", json!({"id": format!("menu:{top}")}), T);
+        assert_eq!(r["ok"], true, "{top}: {r}");
+        h.settle(SETTLE);
+    }
+}
+
 // ---- top-level menus switch on hover, like native menu bars
 
 /// The title whose menu is open (the open level hangs from its left edge), or none.

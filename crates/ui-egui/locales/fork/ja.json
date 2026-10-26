@@ -1504,5 +1504,7 @@
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "調整中も画質を一定に保ちます。編集が重すぎる場合は、スライダーを動かしている間は高速なプレビューで更新し、止めるとすぐに高画質に戻ります。",
   "Preview for SDR Display": "SDR ディスプレイ用にプレビュー",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "SDR ディスプレイや SDR 書き出しでの見え方で写真を表示し、SDR 版を調整します",
-  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "これらは SDR ディスプレイと SDR 書き出しでの写真の見え方を設定します。確認するには「SDR ディスプレイ用にプレビュー」をオンにしてください。"
+  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "これらは SDR ディスプレイと SDR 書き出しでの写真の見え方を設定します。確認するには「SDR ディスプレイ用にプレビュー」をオンにしてください。",
+  "Graphics interface": "グラフィックスインターフェース",
+  "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "次回起動時に適用されます。GPU をオンにすると起動が遅い場合は Vulkan をお試しください。一部のコンピューターでは GPU の準備がはるかに速くなります。"
 }

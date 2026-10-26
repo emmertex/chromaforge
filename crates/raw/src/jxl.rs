@@ -164,13 +164,15 @@ fn output_for(xyb: bool, encoding: &ColourEncoding, intensity_target: f32, plane
         return Ok(Output::AsCoded);
     }
     let unsupported = |what: &str| RawError::Unsupported(format!("lossy JPEG XL tile with {what}"));
-    if planes != 3 {
-        return Err(unsupported("a single colour plane"));
-    }
     let ColourEncoding::Enum(e) = encoding else {
         return Err(unsupported("an ICC profile instead of a colour encoding"));
     };
-    if e.colour_space != ColourSpace::Rgb {
+    // a single plane is declared grey, three are declared RGB (the header's grey flag is the colour space)
+    let grey = planes == 1;
+    if grey && e.colour_space != ColourSpace::Grey {
+        return Err(unsupported("a single colour plane that is not declared grey"));
+    }
+    if !grey && e.colour_space != ColourSpace::Rgb {
         return Err(unsupported("a declared encoding that is not RGB"));
     }
     let Some(curve) = Curve::of(e.tf) else {
@@ -181,6 +183,13 @@ fn output_for(xyb: bool, encoding: &ColourEncoding, intensity_target: f32, plane
     }
     if intensity_target > 255.0 {
         return Err(unsupported("an intensity target above 255 nits"));
+    }
+    if grey {
+        // A grey (single-plane) lossy tile is still coded as three XYB channels. A grey encoding has no
+        // primaries, only the white point: its single plane is the luminance (CIE Y) of the decoder's
+        // linear sRGB, the row of sRGB → XYZ that gives Y. Only the first row is used for one plane.
+        let y = rgb_to_xyz(SRGB)[1].map(|v| v as f32);
+        return Ok(Output::FromXyb(Some([y; 3]), curve));
     }
     let primaries = match e.primaries {
         Primaries::Srgb => return Ok(Output::FromXyb(None, curve)),
@@ -452,6 +461,61 @@ mod tests {
         0xa5, 0x7f, 0x1f, 0x21, 0xa4, 0x6a, 0x1e, 0xa0, 0x0e,
     ];
 
+    #[test]
+    fn lossy_grey_data_is_the_luminance_in_the_declared_curve() {
+        // Lightroom Classic's merged monochrome LinearRaw DNGs: one plane, declared grey with a linear
+        // (16-bit float) or an sRGB (16-bit integer) curve
+        let grey = |tf| {
+            let mut e = EnumColourEncoding::srgb_linear(RenderingIntent::Perceptual);
+            e.colour_space = ColourSpace::Grey;
+            e.tf = tf;
+            output_for(true, &ColourEncoding::Enum(e), 255.0, 1).unwrap()
+        };
+        let Output::FromXyb(Some(m), Curve::Linear) = grey(TransferFunction::Linear) else { panic!("grey, linear") };
+        // the luminance of linear sRGB (IEC 61966-2-1: 0.2126, 0.7152, 0.0722); white stays white
+        for (v, e) in m[0].iter().zip([0.2126, 0.7152, 0.0722]) {
+            assert!((v - e).abs() < 1e-4, "{m:?}");
+        }
+        assert!((m[0].iter().sum::<f32>() - 1.0).abs() < 1e-5, "{m:?}");
+        assert!(matches!(grey(TransferFunction::Srgb), Output::FromXyb(_, Curve::Srgb)));
+    }
+
+    /// A fixture tile re-declared grey: its colour encoding's colour space goes from RGB to Grey and,
+    /// as a grey encoding has no primaries, the 6-bit BT.2100 primaries field is dropped (ISO/IEC 18181-1
+    /// ColourEncoding; the bits after it move up and the header's zero padding to the frame grows by 6).
+    fn as_grey(tile: &[u8]) -> Vec<u8> {
+        const AT: usize = 42;
+        const FRAME: usize = 8;
+        let mut bits: Vec<u8> = tile.iter().flat_map(|b| (0..8).map(move |i| (b >> i) & 1)).collect();
+        assert_eq!(bits[AT..AT + 10], [0, 0, 1, 0, 0, 1, 1, 1, 1, 0], "the fixture's colour encoding");
+        bits[AT] = 1; // colour space Grey (selector 1)
+        bits.drain(AT + 4..AT + 10);
+        bits.splice(FRAME * 8 - 6..FRAME * 8 - 6, [0; 6]);
+        bits.as_chunks::<8>().0.iter().map(|b| b.iter().enumerate().fold(0, |a, (i, v)| a | v << i)).collect()
+    }
+
+    #[test]
+    fn lossy_grey_tiles_decode_to_the_luminance_of_their_colour() {
+        let srgb_eotf = |v: f32| if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let y = rgb_to_xyz(BT2100)[1].map(|v| v as f32);
+        for (name, tile, curve) in [("linear", LINEAR_TILE, Curve::Linear), ("sRGB", SRGB_TILE, Curve::Srgb)] {
+            let grey = as_grey(tile);
+            let ChunkPx::U16(px) = decode(&grey, 16, 16, 16, 16, 1, 16, false).unwrap() else { panic!("{name}: integer samples") };
+            assert_eq!(px.len(), 256, "{name}: one plane");
+            let (mut sum, mut worst) = (0.0f32, 0.0f32);
+            for (i, got) in px.iter().enumerate() {
+                let rgb = gradient(i % 16, i / 16).map(|v| if curve == Curve::Srgb { srgb_eotf(v / 65535.0) } else { v / 65535.0 });
+                let want = curve.encode(y[0] * rgb[0] + y[1] * rgb[1] + y[2] * rgb[2]) * 65535.0;
+                let err = (f32::from(*got) - want).abs();
+                sum += err;
+                worst = worst.max(err);
+            }
+            let mean = sum / px.len() as f32;
+            assert!(mean < 0.02 * 65535.0, "{name}: mean error {mean}");
+            assert!(worst < 0.1 * 65535.0, "{name}: worst error {worst}");
+        }
+    }
+
     /// The samples the fixture tiles were coded from: `(x, y)` → RGB.
     fn gradient(x: usize, y: usize) -> [f32; 3] {
         let (x, y) = (x as f32, y as f32);
@@ -480,7 +544,15 @@ mod tests {
     #[test]
     fn lossy_data_that_cannot_be_restored_is_unsupported() {
         let bad = |xyb_planes: usize, e: ColourEncoding, it: f32| matches!(output_for(true, &e, it, xyb_planes), Err(RawError::Unsupported(_)));
-        assert!(bad(1, linear(Primaries::Srgb), 255.0), "grey");
+        assert!(bad(1, linear(Primaries::Srgb), 255.0), "one plane declared RGB");
+        let mut g = EnumColourEncoding::srgb_linear(RenderingIntent::Relative);
+        g.colour_space = ColourSpace::Grey;
+        assert!(bad(1, ColourEncoding::Enum(g.clone()), 10_000.0), "grey with an HDR intensity target");
+        g.tf = TransferFunction::Pq;
+        assert!(bad(1, ColourEncoding::Enum(g.clone()), 255.0), "grey with PQ");
+        g.tf = TransferFunction::Linear;
+        g.white_point = WhitePoint::Dci;
+        assert!(bad(1, ColourEncoding::Enum(g), 255.0), "grey with a white point other than D65");
         assert!(bad(3, linear(Primaries::Srgb), 10_000.0), "HDR intensity target would tone-map");
         for tf in [TransferFunction::Pq, TransferFunction::Hlg, TransferFunction::Unknown, TransferFunction::Gamma { g: 0, inverted: true }] {
             let mut e = EnumColourEncoding::srgb_linear(RenderingIntent::Relative);

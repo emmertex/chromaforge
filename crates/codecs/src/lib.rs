@@ -84,13 +84,29 @@ pub struct DecodeOptions {
     /// Fit the result within this box (never upscales). JPEG uses DCT-domain scaling (1/2, 1/4,
     /// 1/8) before a final linear-light resample; other formats decode fully then resample.
     pub max_size: Option<(u32, u32)>,
-    /// Refuse images with more pixels than this (default 1 Gpx).
+    /// Refuse images with more pixels than this (default [`DEFAULT_MAX_PIXELS`], 512 MP).
     pub max_pixels: u64,
+    /// Refuse images whose samples, in the file's own layout (before conversion to float), need more
+    /// bytes than this (default [`DEFAULT_MAX_BYTES`], 4 GiB): the buffer a format decoder allocates
+    /// from the header alone, which a few-KB compressed file can make huge (issues #2116, #2125).
+    #[serde(default = "default_max_bytes")]
+    pub max_bytes: u64,
+}
+
+/// Default [`DecodeOptions::max_pixels`]: 512 MP, the largest image Lightroom Classic opens (65,000 px
+/// a side and 512 megapixels), so every file it reads is in range.
+pub const DEFAULT_MAX_PIXELS: u64 = 512_000_000;
+
+/// Default [`DecodeOptions::max_bytes`]: 4 GiB, a 512 MP image at 8 bytes a pixel (RGBA, 16 bits).
+pub const DEFAULT_MAX_BYTES: u64 = 4 << 30;
+
+fn default_max_bytes() -> u64 {
+    DEFAULT_MAX_BYTES
 }
 
 impl Default for DecodeOptions {
     fn default() -> Self {
-        DecodeOptions { max_size: None, max_pixels: 1 << 30 }
+        DecodeOptions { max_size: None, max_pixels: DEFAULT_MAX_PIXELS, max_bytes: DEFAULT_MAX_BYTES }
     }
 }
 
@@ -191,8 +207,9 @@ pub struct Header {
 
 /// Read the stored dimensions and orientation of any format [`decode`] supports, agreeing with
 /// what a decode reports, without decoding pixels: JPEG, PNG, TIFF, WebP, PSD, HEIF and AVIF are read
-/// from their headers (markers, chunks, IFD, resources, boxes). GIF, BMP and JPEG XL fall back to
-/// a small decode.
+/// from their headers (markers, chunks, IFD, resources, boxes); GIF and BMP from theirs (a small one
+/// also has its pixel data checked); JPEG XL from its codestream, with its frames parsed but never
+/// rendered (upstream #2182).
 ///
 /// The header readers also refuse what a decode would refuse before reaching the pixels (an
 /// unsupported layout, compression or frame type) and files whose image data is cut short
@@ -218,7 +235,10 @@ pub fn read_header_unguarded(bytes: &[u8], format: Format) -> Result<Header> {
         Format::Heif => heif::header(bytes)?,
         #[cfg(not(target_arch = "wasm32"))]
         Format::Avif => avif::header(bytes)?,
-        // rare here (or, for JPEG XL, without a header reader yet): a small decode, as before
+        Format::Gif | Format::Bmp => other::header(bytes, format)?,
+        #[cfg(feature = "jxl")]
+        Format::Jxl => jxl::header(bytes)?,
+        // what a decode refuses outright (not decodable in this build)
         _ => {
             let d = decode_unguarded(bytes, format, &DecodeOptions::fit(64, 64))?;
             (d.source_width, d.source_height, d.orientation)
@@ -226,6 +246,10 @@ pub fn read_header_unguarded(bytes: &[u8], format: Format) -> Result<Header> {
     };
     Ok(Header { format, width, height, orientation })
 }
+
+/// GIF and BMP images up to this many pixels have their pixel data read by [`read_header`] (a 16 MB
+/// scratch buffer at most).
+pub const HEADER_CHECK_PIXELS: u64 = 1 << 22;
 
 /// Decode a JPEG preview with its enclosing container's colour space as a fallback.
 /// A JPEG carrying ICC or EXIF metadata keeps its own interpretation. The fallback is applied
@@ -351,7 +375,7 @@ pub fn decode_thumbnail_with(bytes: &[u8], opts: &ThumbnailOptions) -> Result<Th
     {
         return Ok(t);
     }
-    let d = decode(bytes, DecodeOptions { max_size: Some((max_edge, max_edge)), max_pixels: opts.max_pixels })?;
+    let d = decode(bytes, DecodeOptions { max_size: Some((max_edge, max_edge)), max_pixels: opts.max_pixels, ..Default::default() })?;
     Ok(Thumbnail {
         image: d.to_srgb8(),
         orientation: d.orientation,

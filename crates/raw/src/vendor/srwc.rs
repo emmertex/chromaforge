@@ -280,16 +280,20 @@ pub(crate) fn layout_from_preview(jpeg: &[u8], d: &[u16], w: usize, active: crat
     if jw < GW || jh < GH || px.len() < jw * jh * 3 {
         return None;
     }
-    let lin = |v: u8| {
-        let v = f64::from(v) / 255.0;
+    // (each of the 256 byte values decoded once: a `powf` per channel of a 28 MP preview was most
+    // of a Samsung raw's decode; the same values, summed in the same order)
+    let lin: [f64; 256] = std::array::from_fn(|v| {
+        let v = v as f64 / 255.0;
         if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-    };
+    });
     let mut jc = vec![([0f64; 3], 0f64); GW * GH];
     for y in 0..jh {
-        for x in 0..jw {
-            let cell = &mut jc[(y * GH / jh) * GW + x * GW / jw];
+        let row = &mut jc[(y * GH / jh) * GW..][..GW];
+        let line = px.get(y * jw * 3..(y + 1) * jw * 3)?;
+        for (x, p) in line.as_chunks::<3>().0.iter().enumerate() {
+            let cell = &mut row[x * GW / jw];
             for c in 0..3 {
-                cell.0[c] += lin(px[(y * jw + x) * 3 + c]);
+                cell.0[c] += lin[p[c] as usize];
             }
             cell.1 += 1.0;
         }

@@ -154,7 +154,9 @@ impl Session {
     /// Whether photo `id`'s lens data predates the lens database in use (it changed since the photo was looked up).
     pub fn lens_profiles_stale(&self, id: lcc_catalog::PhotoId) -> bool {
         let g = crate::lens_profiles::generation();
-        g != 0 && self.lens_seen.get(&id) != Some(&g)
+        let picked = self.catalog.photo(id).and_then(|p| p.develop.optics.lens.clone());
+        let picked_changed = self.lens_chosen_seen.get(&id).cloned().unwrap_or_default() != picked;
+        (g != 0 && self.lens_seen.get(&id) != Some(&g)) || picked_changed
     }
 
     /// Look the lenses of raw photos `ids` up again in the lens database in use (after it changed), so their lens
@@ -167,6 +169,7 @@ impl Session {
             .filter_map(|id| {
                 self.lens_seen.insert(*id, g);
                 let p = self.catalog.photo(*id)?;
+                self.lens_chosen_seen.insert(*id, p.develop.optics.lens.clone());
                 match &p.source {
                     lcc_catalog::Source::File { path } if p.develops_raw() => Some((*id, path.clone())),
                     _ => None,
@@ -179,8 +182,18 @@ impl Session {
         let probed = crate::import::probe_paths(self, &files.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>());
         let mut ops = Vec::new();
         let mut changed = Vec::new();
-        for ((id, _), info) in files.into_iter().zip(probed) {
-            let (Ok(info), Some(ph)) = (info, self.catalog.photo(id)) else { continue };
+        for ((id, path), info) in files.into_iter().zip(probed) {
+            let (Ok(mut info), Some(ph)) = (info, self.catalog.photo(id)) else { continue };
+            // a lens the user picked wins over the file's own correction and the match by name
+            if let Some(picked) = ph.develop.optics.lens.as_ref() {
+                let given = crate::lens_profiles::GivenLens::from(picked);
+                let Ok((lens, from_file)) =
+                    std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| crate::files::lens_for_bytes(&b, Some(&given)))
+                else {
+                    continue;
+                };
+                (info.embedded_lens, info.lens_from_file) = (lens, from_file);
+            }
             self.lens_from_file.insert(id, info.lens_from_file);
             let mine = crate::cmd::convert::lens_ops(id, ph, &info);
             if !mine.is_empty() {
@@ -203,14 +216,28 @@ impl Session {
         let g = crate::lens_profiles::generation();
         for id in ids {
             self.lens_seen.insert(*id, g);
+            let picked = self.catalog.photo(*id).and_then(|p| p.develop.optics.lens.clone());
+            self.lens_chosen_seen.insert(*id, picked);
         }
         Ok(Vec::new())
     }
 
     /// What the lens database says about `p`'s lens, for Develop ▸ Optics; `None` when the photo carries a lens
     /// correction already (its own, or one found earlier).
+    /// A lens the user picked for the photo ([`lcc_develop::Optics::lens`]) is looked up in its place, over the file's own.
     pub fn lens_match(&self, p: &lcc_catalog::Photo) -> Option<crate::lens_profiles::Match> {
-        self.lens_match_with(p, None)
+        match p.develop.optics.lens.as_ref() {
+            Some(picked) if p.develops_raw() => {
+                let given = crate::lens_profiles::GivenLens::from(picked);
+                let m = crate::lens_profiles::match_lens_with(None, &p.meta.lens, Some(&given));
+                let has_focal = given.focal.or(p.meta.focal_mm.map(f64::from)).is_some_and(|f| f.is_finite() && f > 0.0);
+                match m {
+                    crate::lens_profiles::Match::Chosen(name) if !has_focal => Some(crate::lens_profiles::Match::NoFocal(name)),
+                    m => Some(m),
+                }
+            }
+            _ => self.lens_match_with(p, None),
+        }
     }
 
     /// [`Session::lens_match`] for a lens given by the caller (a lens picker's choice) instead of the one the

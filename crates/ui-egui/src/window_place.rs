@@ -343,6 +343,110 @@ impl WindowWatch {
     }
 }
 
+/// How long after the window first shows it is maximized (Windows): a frame or two, so that it is on
+/// its screen and the system maximizes it to that screen's work area.
+const MAXIMIZE_AFTER_SECONDS: f64 = 0.1;
+/// How long after asking the window is checked: the system animates a maximize.
+const MAXIMIZE_CHECK_SECONDS: f64 = 0.6;
+/// A maximized window this much of its screen across, and down, fills it (the taskbar, and the
+/// borders Windows keeps off screen, take the rest).
+const MAXIMIZED_ACROSS: f32 = 0.9;
+const MAXIMIZED_DOWN: f32 = 0.75;
+/// A window opened larger than its screen is fitted to this much of it.
+const FIT_TO_SCREEN: f32 = 0.9;
+/// How long after its first frame the window is placed at most: one that stays unseen, full
+/// screen or minimized that long is left as it is.
+const PLACE_WITHIN_SECONDS: f64 = 5.0;
+
+/// The window as it first shows. On Windows a window built maximized could open
+/// covering half the screen while the system took it for maximized: its maximize button then
+/// restored it, smaller. So there it opens at its remembered size and is maximized once it is on its
+/// screen ([`StartPlace::new`] with `maximize_after`); if it then says it is maximized but doesn't
+/// fill its screen, it is restored and maximized again, once. A window remembered larger than the
+/// screen it opens on (a display unplugged, a smaller one, another scale) is fitted to that screen.
+#[derive(Debug)]
+pub struct StartPlace {
+    /// Maximize once the window shows.
+    maximize: bool,
+    /// When it was asked to (seconds), and whether it has been asked again.
+    asked: Option<f64>,
+    retried: bool,
+    /// When the window first showed, and when it was first looked at.
+    shown: Option<f64>,
+    first_step: Option<f64>,
+    done: bool,
+}
+
+impl StartPlace {
+    /// `maximize_after`: the window was built at its size and should be maximized once it shows.
+    pub fn new(maximize_after: bool) -> StartPlace {
+        StartPlace { maximize: maximize_after, asked: None, retried: false, shown: None, first_step: None, done: false }
+    }
+
+    /// Whether there is nothing more to do.
+    pub fn done(&self) -> bool {
+        self.done
+    }
+
+    /// The window is `seen` at time `now` (seconds), with the interface zoomed by `zoom`: what to
+    /// tell it.
+    pub fn step(&mut self, seen: &Seen, now: f64, zoom: f32) -> Vec<egui::ViewportCommand> {
+        if self.done {
+            return Vec::new();
+        }
+        // (not shown yet, its screen unknown, full screen or minimized: wait, but not for ever)
+        let first = *self.first_step.get_or_insert(now);
+        if now - first > PLACE_WITHIN_SECONDS {
+            self.done = true;
+            return Vec::new();
+        }
+        if seen.full_screen || seen.minimized {
+            return Vec::new();
+        }
+        let (Some(size), Some(screen)) = (seen.size, seen.screen) else { return Vec::new() };
+        let shown = *self.shown.get_or_insert(now);
+        if !self.maximize {
+            self.done = true;
+            // remembered larger than this screen: fitted to it
+            if !seen.zoomed && (size[0] > screen[0] + SAME_WITHIN || size[1] > screen[1] + SAME_WITHIN) {
+                let fit = [(screen[0] * FIT_TO_SCREEN).max(MIN_SIZE[0]), (screen[1] * FIT_TO_SCREEN).max(MIN_SIZE[1])];
+                // (`seen` is in the system's points, the command in the interface's)
+                let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
+                return vec![egui::ViewportCommand::InnerSize(egui::vec2(fit[0] / zoom, fit[1] / zoom))];
+            }
+            return Vec::new();
+        }
+        let fills = size[0] >= screen[0] * MAXIMIZED_ACROSS && size[1] >= screen[1] * MAXIMIZED_DOWN;
+        match self.asked {
+            None if now - shown >= MAXIMIZE_AFTER_SECONDS => {
+                self.asked = Some(now);
+                vec![egui::ViewportCommand::Maximized(true)]
+            }
+            None => Vec::new(),
+            Some(at) if now - at < MAXIMIZE_CHECK_SECONDS => Vec::new(),
+            Some(_) if seen.zoomed && fills => {
+                self.done = true;
+                Vec::new()
+            }
+            Some(_) if !self.retried => {
+                // maximized in name only (or not at all): restore it, and maximize it again
+                self.retried = true;
+                self.asked = Some(now);
+                vec![egui::ViewportCommand::Maximized(false), egui::ViewportCommand::Maximized(true)]
+            }
+            Some(_) => {
+                self.done = true;
+                Vec::new()
+            }
+        }
+    }
+
+    /// When to look again while it waits (the app may have nothing else to draw).
+    pub fn waits(&self) -> Option<std::time::Duration> {
+        (!self.done).then(|| std::time::Duration::from_millis(100))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -984,5 +1088,56 @@ mod tests {
         for size in [[f32::NAN, 800.0], [f32::INFINITY, 800.0], [0.5, 800.0]] {
             assert_eq!(place(size, false).checked(), None, "{size:?}");
         }
+    }
+
+    /// On Windows the window opens at its size and is maximized once it shows; a
+    /// window that says it is maximized but covers half its screen is restored and maximized again,
+    /// once; a window remembered larger than its screen is fitted to it.
+    #[test]
+    fn the_window_is_maximized_once_it_shows_and_again_if_it_only_says_so() {
+        use egui::ViewportCommand as C;
+        let mut s = StartPlace::new(true);
+        assert!(s.step(&Seen::default(), 0.0, 1.0).is_empty(), "not shown yet");
+        assert!(s.step(&window([1300.0, 800.0]), 0.0, 1.0).is_empty(), "a frame first");
+        assert_eq!(s.step(&window([1300.0, 800.0]), 0.2, 1.0), vec![C::Maximized(true)]);
+        assert!(s.step(&window([1300.0, 800.0]), 0.3, 1.0).is_empty(), "the system animates");
+        // maximized in name, half the screen: once more
+        let half = Seen { zoomed: true, ..window([1280.0, 1400.0]) };
+        assert_eq!(s.step(&half, 1.0, 1.0), vec![C::Maximized(false), C::Maximized(true)]);
+        let full = Seen { zoomed: true, ..window([2560.0, 1392.0]) };
+        assert!(s.step(&full, 1.2, 1.0).is_empty());
+        assert!(s.step(&full, 1.7, 1.0).is_empty() && s.done());
+        assert_eq!(s.waits(), None);
+        // it filled its screen the first time: nothing more
+        let mut s = StartPlace::new(true);
+        s.step(&window([1300.0, 800.0]), 0.0, 1.0);
+        s.step(&window([1300.0, 800.0]), 0.2, 1.0);
+        assert!(s.step(&full, 1.0, 1.0).is_empty() && s.done());
+        // never more than one retry
+        let mut s = StartPlace::new(true);
+        s.step(&window([1300.0, 800.0]), 0.0, 1.0);
+        s.step(&window([1300.0, 800.0]), 0.2, 1.0);
+        assert_eq!(s.step(&half, 1.0, 1.0).len(), 2);
+        assert!(s.step(&half, 2.0, 1.0).is_empty() && s.done());
+        // not to be maximized: a window larger than its screen is fitted to it
+        let mut s = StartPlace::new(false);
+        let big = Seen { size: Some([3000.0, 2000.0]), screen: Some([1920.0, 1080.0]), ..Default::default() };
+        assert_eq!(s.step(&big, 0.0, 1.0), vec![C::InnerSize(egui::vec2(1728.0, 972.0))]);
+        assert!(s.done() && s.step(&big, 1.0, 1.0).is_empty());
+        let mut s = StartPlace::new(false);
+        assert!(s.step(&window([1300.0, 800.0]), 0.0, 1.0).is_empty() && s.done());
+        // full screen or minimized: left alone
+        let mut s = StartPlace::new(true);
+        assert!(s.step(&Seen { full_screen: true, ..window([2560.0, 1440.0]) }, 1.0, 1.0).is_empty());
+        // ... but not for ever: it stops asking for frames
+        assert!(s.step(&Seen { full_screen: true, ..window([2560.0, 1440.0]) }, 6.5, 1.0).is_empty());
+        assert!(s.done() && s.waits().is_none());
+        // a window that never says its size or screen is given up on too
+        let mut s = StartPlace::new(true);
+        assert!(s.step(&Seen::default(), 0.0, 1.0).is_empty());
+        assert!(s.step(&Seen::default(), 5.5, 1.0).is_empty() && s.done());
+        // the interface zoomed 2×: the fitted size is asked for in its points, half the system's
+        let mut s = StartPlace::new(false);
+        assert_eq!(s.step(&big, 0.0, 2.0), vec![C::InnerSize(egui::vec2(864.0, 486.0))]);
     }
 }

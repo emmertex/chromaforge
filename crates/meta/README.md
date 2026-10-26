@@ -21,6 +21,13 @@ Photo metadata: EXIF, XMP (read + write), IPTC-IIM, and the containers that carr
 35 mm equivalent, flash, exposure bias, program, metering, white balance), orientation, GPS, dimensions and the
 user fields (artist, copyright, title, caption, keywords, hierarchical keywords, rating −1…5, colour label).
 
+JPEG ICC data is exposed only when its APP2 chunks form a complete, consistent, uniquely numbered sequence;
+malformed or truncated ICC sequences leave unrelated readable metadata available and produce no profile.
+
+EXIF capture-time candidates are tried in order: DateTimeOriginal, DateTimeDigitized, then IFD0 DateTime. A clock
+with more than three colon-separated components is rejected as a whole, allowing the next valid candidate or XMP
+fallback to supply the capture time. The original tag remains available in All Metadata.
+
 ## XMP namespaces
 
 Written: `dc`, `xmp`, `photoshop`, `exif`, `exifEX`, `tiff`, `lr` (`hierarchicalSubject`) and ours,
@@ -43,6 +50,10 @@ XMP parser; truncation tests cut a sample JPEG at every byte, and a HEIF file at
 four values). The HEIF reader's boxes, items and gathered bytes are bounded and it walks `iloc` once. PSD/PSB tests exercise truncated headers and
 image-resource records with hostile declared lengths.
 PSD/PSB XMP resources require valid UTF-8; trailing NUL padding is trimmed after validation.
+
+ISO capture-time parsing requires a complete clock and consumes every clock and fractional-second character. Invalid
+XMP capture-time values remain available in the raw property map but are not projected into `Metadata`; a later valid
+capture-time property can still supply the metadata value. Invalid GPX point times are treated as untimed.
 
 ## Sources
 

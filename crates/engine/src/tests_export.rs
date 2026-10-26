@@ -6,6 +6,14 @@ use crate::Session;
 use crate::export::{ExportFormat, ExportOptions, export_photo};
 use crate::tests_xmp::{synthetic_dng_with, synthetic_psd_with_metadata, temp_dir};
 
+fn jpeg_with_xmp(metadata: &lcc_meta::Metadata) -> Vec<u8> {
+    let pixels = [96u8; 12];
+    let image = lcc_codecs::EncodeImage::new(2, 2, 3, lcc_codecs::Samples::U8(&pixels));
+    let xmp = lcc_meta::write_xmp(metadata, None);
+    let encoded = lcc_codecs::EncodeMeta { xmp: Some(&xmp), ..Default::default() };
+    lcc_codecs::encode_jpeg(&image, 90, lcc_codecs::ChromaSubsampling::S444, &encoded).unwrap()
+}
+
 #[test]
 fn full_size_export_of_a_cropped_photo_is_not_upscaled() {
     let mut s = Session::with_demo();
@@ -312,6 +320,8 @@ fn library_with_jpeg(tag: &str) -> (Session, lcc_catalog::PhotoId, std::path::Pa
 
 fn preset_export_preserves_originals(command: &str, selection: serde_json::Value, tag: &str) {
     let (mut s, _, dir, src, original) = library_with_jpeg(tag);
+    // something for mask.exportEffects to write (the other commands ignore it)
+    s.mask_effects.push(crate::cmd::mask_effects::MaskEffect { name: "Glow".into(), ..Default::default() });
     let sidecar = src.with_extension("xmp");
     let appended_sidecar = dir.join("IMG_1.jpg.xmp");
     std::fs::write(&sidecar, b"existing sidecar").unwrap();
@@ -350,6 +360,26 @@ fn curve_preset_export_never_overwrites_originals_or_sidecars() {
     preset_export_preserves_originals("curve.exportPresets", json!({"names": ["Linear"]}), "curve-export-guard");
 }
 
+/// A new file named like a photo's sidecar, in the photo's folder, would be read back as that
+/// photo's edits: refused even though nothing is there yet.
+#[test]
+fn preset_export_never_creates_a_photos_sidecar() {
+    let (mut s, _, dir, _, _) = library_with_jpeg("preset-export-new-sidecar");
+    std::fs::create_dir_all(dir.join("presets")).unwrap();
+    for name in ["IMG_1.xmp", "IMG_1.jpg.xmp", "presets/../IMG_1.xmp"] {
+        let path = dir.join(name);
+        assert!(!path.exists(), "{name} isn't there before the export");
+        let error = s.execute("preset.export", &json!({"ids": ["lc.warm-glow"], "path": path.to_string_lossy()})).unwrap_err().to_string();
+        assert!(error.contains("XMP sidecar of IMG_1.jpg"), "{error}");
+        assert!(!path.exists(), "{name} was not created");
+    }
+    // the same name in another folder is an ordinary preset file
+    let elsewhere = dir.join("presets/IMG_1.xmp");
+    s.execute("preset.export", &json!({"ids": ["lc.warm-glow"], "path": elsewhere.to_string_lossy()})).unwrap();
+    assert!(elsewhere.exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// #1944: Export Keywords went straight to `std::fs::write`, replacing a library original.
 #[test]
 fn keyword_export_never_overwrites_originals_or_sidecars() {
@@ -378,9 +408,12 @@ fn keyword_export_preserves_the_previous_file_on_write_failure() {
 fn preset_exports_preserve_previous_files_on_write_failure() {
     let dir = temp_dir("preset-export-failure");
     let mut s = Session::new();
-    for (command, selection, file) in
-        [("preset.export", json!({"ids": ["lc.warm-glow"]}), "look.lcpreset"), ("curve.exportPresets", json!({"names": ["Linear"]}), "curve.lccurve")]
-    {
+    s.mask_effects.push(crate::cmd::mask_effects::MaskEffect { name: "Glow".into(), ..Default::default() });
+    for (command, selection, file) in [
+        ("preset.export", json!({"ids": ["lc.warm-glow"]}), "look.lcpreset"),
+        ("curve.exportPresets", json!({"names": ["Linear"]}), "curve.lccurve"),
+        ("mask.exportEffects", json!({"names": ["Glow"]}), "effects.lceffect"),
+    ] {
         let path = dir.join(file);
         let mut params = selection;
         params["path"] = json!(path.to_string_lossy());
@@ -393,8 +426,14 @@ fn preset_exports_preserve_previous_files_on_write_failure() {
         assert_eq!(std::fs::read(&path).unwrap(), previous, "{command} preserves the prior export");
         assert_eq!(s.execute(command, &params).unwrap()["count"], 1, "replacement still succeeds");
     }
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "no temporary files remain");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3, "no temporary files remain");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Issue #2564: mask.exportEffects wrote anywhere, over an original or its sidecar too.
+#[test]
+fn mask_effect_export_never_overwrites_originals_or_sidecars() {
+    preset_export_preserves_originals("mask.exportEffects", json!({"names": ["Glow"]}), "effect-export-guard");
 }
 
 fn disk_batch(
@@ -716,6 +755,168 @@ fn remove_location_holds_for_original_and_dng_exports() {
     let err = export_photo(&mut s, jid, &opts("original", true), 1).err().unwrap();
     assert!(err.contains("can't remove the location") && err.contains("export as JPEG"), "{err}");
     assert!(!err.contains("DNG"), "a JPEG can't be exported as DNG: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn remove_location_refuses_original_with_embedded_place_names() {
+    let dir = temp_dir("export-noloc-place-fields");
+    let value = "Embedded Place";
+    let cases = [
+        ("sublocation", lcc_meta::Metadata { sublocation: Some(value.into()), ..Default::default() }),
+        ("city", lcc_meta::Metadata { city: Some(value.into()), ..Default::default() }),
+        ("state", lcc_meta::Metadata { state: Some(value.into()), ..Default::default() }),
+        ("country", lcc_meta::Metadata { country: Some(value.into()), ..Default::default() }),
+    ];
+    let mut paths = Vec::new();
+    for (name, metadata) in &cases {
+        let path = dir.join(format!("{name}.jpg"));
+        std::fs::write(&path, jpeg_with_xmp(metadata)).unwrap();
+        paths.push(path.to_string_lossy().to_string());
+    }
+
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": paths})).unwrap();
+    let options = ExportOptions { format: ExportFormat::Original, remove_location: true, ..Default::default() };
+    for (name, _) in cases {
+        let photo_id = session.catalog.photos().find(|p| p.file_name == format!("{name}.jpg")).unwrap().id;
+        let original = std::fs::read(dir.join(format!("{name}.jpg"))).unwrap();
+        let embedded = lcc_meta::try_extract(&original).unwrap();
+        assert!(embedded.gps.is_none(), "{name} fixture should isolate place names");
+        let place_name = match name {
+            "sublocation" => embedded.sublocation.as_deref(),
+            "city" => embedded.city.as_deref(),
+            "state" => embedded.state.as_deref(),
+            "country" => embedded.country.as_deref(),
+            _ => None,
+        };
+        assert_eq!(place_name, Some(value), "{name} fixture should be parsed");
+        let error = export_photo(&mut session, photo_id, &options, 1).err().expect("embedded place name should refuse Original export");
+        assert!(error.contains("place names") && error.contains("export as JPEG or TIFF"), "{name}: {error}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn remove_location_refuses_original_with_unreadable_non_psd_xmp() {
+    let dir = temp_dir("export-noloc-malformed-xmp");
+    let path = dir.join("Unreadable.jpg");
+    let pixels = [96u8; 12];
+    let image = lcc_codecs::EncodeImage::new(2, 2, 3, lcc_codecs::Samples::U8(&pixels));
+    let xmp = "<x:xmpmeta><broken";
+    let encoded = lcc_codecs::EncodeMeta { xmp: Some(xmp), ..Default::default() };
+    let bytes = lcc_codecs::encode_jpeg(&image, 90, lcc_codecs::ChromaSubsampling::S444, &encoded).unwrap();
+    assert!(lcc_meta::parse_xmp(xmp).is_err(), "fixture XMP should be malformed");
+    let metadata = lcc_meta::try_extract(&bytes).unwrap();
+    assert!(metadata.gps.is_none() && metadata.city.is_none(), "best-effort extraction omits malformed XMP");
+    std::fs::write(&path, bytes).unwrap();
+
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let id = session.catalog.photos().next().unwrap().id;
+    let options = ExportOptions { format: ExportFormat::Original, remove_location: true, ..Default::default() };
+    let error = export_photo(&mut session, id, &options, 1).err().expect("unreadable XMP must not pass location removal");
+    assert!(error.contains("can't verify location metadata") && error.contains("malformed embedded XMP"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn remove_location_original_place_refusal_writes_no_files() {
+    use crate::export::{Destination, prepare_batch, run_batch};
+
+    let dir = temp_dir("export-noloc-place-no-write");
+    let source = dir.join("City.jpg");
+    let original = jpeg_with_xmp(&lcc_meta::Metadata { city: Some("Embedded Place".into()), ..Default::default() });
+    std::fs::write(&source, &original).unwrap();
+    let output = dir.join("out");
+    std::fs::create_dir_all(&output).unwrap();
+
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [source.to_string_lossy()]})).unwrap();
+    let id = session.catalog.photos().next().unwrap().id;
+    let options = ExportOptions { format: ExportFormat::Original, remove_location: true, ..Default::default() };
+    let items = prepare_batch(&mut session, &[id], &options).unwrap();
+    let destination = Destination { dir: output.to_string_lossy().to_string(), exact: None };
+    let mut writes = Vec::new();
+    let mut write = |path: &str, bytes: &[u8]| -> Result<(), String> {
+        writes.push(path.to_string());
+        std::fs::write(path, bytes).map_err(|error| error.to_string())
+    };
+    let exists = |path: &str| std::path::Path::new(path).exists();
+    let result = run_batch(items, &options, &destination, &mut write, &exists, true, &mut |_, _| true);
+
+    let error = result.unwrap_err();
+    assert!(error.contains("place names"), "{error}");
+    assert!(writes.is_empty(), "refused export called the writer: {writes:?}");
+    assert!(!output.join("City.jpg").exists());
+    assert!(!output.join("City.xmp").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn remove_location_checks_embedded_places_after_catalog_clear() {
+    let dir = temp_dir("export-noloc-place-catalog-clear");
+    let source = dir.join("City.jpg");
+    let original = jpeg_with_xmp(&lcc_meta::Metadata { city: Some("Embedded Place".into()), ..Default::default() });
+    std::fs::write(&source, &original).unwrap();
+
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [source.to_string_lossy()]})).unwrap();
+    let id = session.catalog.photos().next().unwrap().id;
+    assert_eq!(session.catalog.photo(id).unwrap().meta.city, "Embedded Place");
+    session.execute("photo.setMeta", &json!({"ids": [id.0], "city": ""})).unwrap();
+    assert!(session.catalog.photo(id).unwrap().meta.city.is_empty());
+    assert_eq!(lcc_meta::try_extract(&std::fs::read(&source).unwrap()).unwrap().city.as_deref(), Some("Embedded Place"));
+
+    let options = ExportOptions { format: ExportFormat::Original, remove_location: true, ..Default::default() };
+    let error = export_photo(&mut session, id, &options, 1).err().expect("embedded place name should refuse Original export");
+    assert!(error.contains("place names"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn remove_location_allows_original_without_embedded_location() {
+    let dir = temp_dir("export-noloc-place-controls");
+    let embedded_path = dir.join("Embedded.jpg");
+    let no_location_path = dir.join("NoLocation.jpg");
+    let blank_path = dir.join("Blank.jpg");
+    let embedded = jpeg_with_xmp(&lcc_meta::Metadata { city: Some("Embedded Place".into()), ..Default::default() });
+    let no_location = jpeg_with_xmp(&Default::default());
+    let blank = jpeg_with_xmp(&lcc_meta::Metadata { city: Some("  \t".into()), ..Default::default() });
+    std::fs::write(&embedded_path, &embedded).unwrap();
+    std::fs::write(&no_location_path, &no_location).unwrap();
+    std::fs::write(&blank_path, &blank).unwrap();
+    assert!(lcc_meta::try_extract(&blank).unwrap().city.is_none(), "whitespace-only XMP place names are blank");
+
+    let mut session = Session::new().with_fs();
+    session
+        .execute(
+            "library.import",
+            &json!({"paths": [embedded_path.to_string_lossy(), no_location_path.to_string_lossy(), blank_path.to_string_lossy()]}),
+        )
+        .unwrap();
+    let photo_id = |name: &str| session.catalog.photos().find(|p| p.file_name == name).unwrap().id;
+    let embedded_id = photo_id("Embedded.jpg");
+    let no_location_id = photo_id("NoLocation.jpg");
+    let blank_id = photo_id("Blank.jpg");
+
+    let keep = ExportOptions { format: ExportFormat::Original, ..Default::default() };
+    let kept = export_photo(&mut session, embedded_id, &keep, 1).unwrap();
+    assert_eq!(kept.bytes, embedded, "removeLocation=false still copies the source byte for byte");
+    assert_eq!(lcc_meta::try_extract(&kept.bytes).unwrap().city.as_deref(), Some("Embedded Place"));
+
+    let remove = ExportOptions { format: ExportFormat::Original, remove_location: true, ..Default::default() };
+    for (id, source) in [(no_location_id, &no_location), (blank_id, &blank)] {
+        let exported = export_photo(&mut session, id, &remove, 1).unwrap();
+        assert_eq!(&exported.bytes, source);
+    }
+
+    session.execute("photo.setMeta", &json!({"ids": [no_location_id.0], "city": "Catalog-only Place"})).unwrap();
+    let catalog_only = export_photo(&mut session, no_location_id, &remove, 1).unwrap();
+    let sidecar = catalog_only.sidecars.first().unwrap().1.as_slice();
+    let packet = std::str::from_utf8(sidecar).unwrap();
+    assert!(lcc_meta::parse_xmp(packet).unwrap().metadata.city.is_none(), "catalog-only place name is removed from the sidecar");
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

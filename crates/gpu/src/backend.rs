@@ -11,7 +11,11 @@
 //! - `{ENV_PREFIX}_GPU_BACKEND` = `dx12` | `vulkan` | `metal` | `gl` (comma lists allowed), `auto`
 //!   (the platform default), or `off` (no GPU compute; the window still needs one backend and
 //!   keeps the platform default);
-//! - else `WGPU_BACKEND` (wgpu's own variable, same names) for both the window and compute.
+//! - else `WGPU_BACKEND` (wgpu's own variable, same names) for both the window and compute;
+//! - else, for compute only, the saved preference ([`set_compute_preference`]: Settings ▸
+//!   Performance ▸ Graphics interface). On Windows, DX12 builds the compute shaders with FXC, which
+//!   can take many seconds at every start on some machines; Vulkan builds them much faster. The
+//!   window keeps the platform default, so a broken Vulkan driver can't stop it from opening.
 //!
 //! Backends this build doesn't contain (e.g. `gl`: the GL backend isn't compiled in) are ignored
 //! with a warning and the platform default is used.
@@ -99,6 +103,31 @@ pub fn resolve(choice: BackendChoice, default: Backends, compiled: Backends) -> 
     }
 }
 
+static COMPUTE_PREFERENCE: std::sync::OnceLock<BackendChoice> = std::sync::OnceLock::new();
+
+/// The saved compute backend preference (`"auto"`, `"dx12"`, `"vulkan"`…), applied when neither
+/// environment variable names one. Call it once at launch, before any compute device is created;
+/// later calls are ignored. `off` and unknown names count as `auto`: turning the GPU off is
+/// [`crate::set_enabled`]'s job.
+pub fn set_compute_preference(name: &str) {
+    let choice = match parse_backends(name) {
+        Some(BackendChoice::Use(b)) => BackendChoice::Use(b),
+        _ => BackendChoice::Auto,
+    };
+    let _ = COMPUTE_PREFERENCE.set(choice);
+}
+
+/// The compute choice: the environment's when it names one, else `preference`.
+pub fn compute_choice(env: BackendChoice, env_set: bool, preference: Option<BackendChoice>) -> BackendChoice {
+    // (an explicit `auto` in the environment also wins: the platform default, whatever the setting)
+    if env_set { env } else { preference.unwrap_or(BackendChoice::Auto) }
+}
+
+fn env_is_set() -> bool {
+    let usable = |v: Option<String>| v.is_some_and(|v| parse_backends(&v).is_some());
+    usable(lcc_brand::env("GPU_BACKEND")) || usable(std::env::var("WGPU_BACKEND").ok())
+}
+
 fn env_choice() -> BackendChoice {
     static C: std::sync::OnceLock<BackendChoice> = std::sync::OnceLock::new();
     *C.get_or_init(|| {
@@ -110,7 +139,8 @@ fn env_choice() -> BackendChoice {
 
 /// The backends of the compute device (`None`: `{ENV_PREFIX}_GPU_BACKEND=off`).
 pub fn compute_backends() -> Option<Backends> {
-    resolve(env_choice(), default_compute_backends(std::env::consts::OS), wgpu::Instance::enabled_backend_features())
+    let choice = compute_choice(env_choice(), env_is_set(), COMPUTE_PREFERENCE.get().copied());
+    resolve(choice, default_compute_backends(std::env::consts::OS), wgpu::Instance::enabled_backend_features())
 }
 
 /// The backends for the desktop window's renderer (eframe/egui-wgpu). The window always needs
@@ -346,6 +376,19 @@ pub fn window_renderer_order(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+
+    /// The environment names a backend: it wins over the saved preference; otherwise the
+    /// preference applies; nothing at all is the platform default.
+    #[test]
+    fn compute_preference_applies_only_without_an_environment_choice() {
+        let vulkan = BackendChoice::Use(Backends::VULKAN);
+        let dx12 = BackendChoice::Use(Backends::DX12);
+        assert_eq!(compute_choice(BackendChoice::Auto, false, Some(vulkan)), vulkan);
+        assert_eq!(compute_choice(dx12, true, Some(vulkan)), dx12);
+        assert_eq!(compute_choice(BackendChoice::Off, true, Some(vulkan)), BackendChoice::Off);
+        assert_eq!(compute_choice(BackendChoice::Auto, true, Some(vulkan)), BackendChoice::Auto);
+        assert_eq!(compute_choice(BackendChoice::Auto, false, None), BackendChoice::Auto);
+    }
 
     /// #250: the indirect-call validation pipeline is off unless asked for; other flags are kept.
     #[test]

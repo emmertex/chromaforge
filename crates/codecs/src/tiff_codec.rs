@@ -2,7 +2,7 @@
 //! alpha (associated or not), ICC (34675), XMP (700), orientation (274). First image only. Palette
 //! (indexed-colour) images are refused by the `tiff` crate itself, on every read path.
 
-use crate::convert::{Buf, Meta, Model, Raw, check_size, finish};
+use crate::convert::{Buf, Meta, Model, Raw, check_budget, check_size, finish};
 use crate::{DecodeOptions, Decoded, Error, Format, Result};
 use tiff::ColorType;
 use tiff::decoder::{Decoder, DecodingResult, Limits};
@@ -29,10 +29,17 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
     let compression = d.get_tag_u32(Tag::Compression).ok();
 
     let (model, n_color, n_samples, bits) = layout(ct, compression, planar)?;
+    check_samples(w, h, n_samples, bits, opts)?;
     let has_alpha = n_samples > n_color && !matches!(ct, ColorType::Palette(_));
     let premultiplied = has_alpha && extra.first() == Some(&1);
 
-    let res = d.read_image().map_err(err)?;
+    // `read_image` reads only the first plane of a planar image (#2462); this reads them all, or
+    // only the first when every plane together would pass the decoding buffer limit.
+    let mut res = DecodingResult::U8(Vec::new());
+    let read = d.read_image_to_buffer(&mut res).map_err(err)?;
+    if res.as_buffer(0).as_bytes().len() < read.complete_len {
+        return Err(Error::Unsupported(F, "planar TIFF too large to decode"));
+    }
     let (wu, hu) = (w as usize, h as usize);
     let n = wu * hu;
     let mut buf = match res {
@@ -92,9 +99,26 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
     finish(F, raw, meta, (w, h), opts)
 }
 
+/// Most bytes of samples a pixel may hold: RGBA at 64 bits a sample. More is a multiband file (up to
+/// 65535 samples a pixel) of which only colour and one alpha are kept, and whose `read_image` result
+/// is allocated whole up front: 4000 samples make a 4 GB buffer from a 1 MP deflate file of a few KB
+/// (upstream #2125).
+const MAX_PIXEL_BYTES: u64 = 32;
+
+/// The `tiff` crate's result buffer, `n_samples` a pixel of `bits` each (packed narrower samples are
+/// counted as bytes, as [`unpack`] spreads them), against [`MAX_PIXEL_BYTES`] and the byte budget.
+fn check_samples(w: u32, h: u32, n_samples: usize, bits: u8, opts: &DecodeOptions) -> Result<()> {
+    let per_pixel = (n_samples as u64).saturating_mul(u64::from(bits).div_ceil(8).max(1));
+    if per_pixel > MAX_PIXEL_BYTES {
+        return Err(Error::Unsupported(F, "more than 32 bytes of samples a pixel"));
+    }
+    check_budget(F, w.into(), h.into(), per_pixel, opts)
+}
+
 fn limits(opts: &DecodeOptions) -> Limits {
     let mut limits = Limits::default();
-    limits.decoding_buffer_size = opts.max_pixels.saturating_mul(4 * 8).min(usize::MAX as u64) as usize;
+    // the byte budget, not a multiple of the pixel cap (which allowed 32 GiB, upstream #2125)
+    limits.decoding_buffer_size = opts.max_bytes.min(isize::MAX as u64) as usize;
     // A strip or tile whose declared byte count exceeds this is refused: the default 128 MiB refuses a
     // single-strip uncompressed 16-bit export of ~22 MP (#1983). Raised to the decoded image's cap
     // (32 bytes per allowed pixel), never lowered: a strip or tile can outgrow the pixels it shows
@@ -137,7 +161,8 @@ pub(crate) fn header(bytes: &[u8]) -> Result<(u32, u32, u16)> {
     let ct = d.colortype().map_err(err)?;
     let compression = d.get_tag_u32(Tag::Compression).ok();
     let planar = d.get_tag_u32(Tag::PlanarConfiguration).ok() == Some(2);
-    layout(ct, compression, planar)?;
+    let (_, _, n_samples, bits) = layout(ct, compression, planar)?;
+    check_samples(w, h, n_samples, bits, &DecodeOptions::default())?;
     // what this build of the `tiff` crate decompresses: none, CCITT G4, LZW, JPEG, Deflate, PackBits
     if !matches!(compression.unwrap_or(1), 1 | 4 | 5 | 7 | 8 | 32773 | 32946) {
         return Err(Error::Unsupported(F, "compression method"));

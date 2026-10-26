@@ -1,8 +1,10 @@
 //! Presets and copy/paste subsets.
 //!
 //! A preset is a *partial* settings object (JSON) — only the groups it includes. Applying merges it
-//! into the photo's settings; `amount` (0..200 %) interpolates numeric values between the current
-//! settings and the preset's. Copy/paste/sync use the same group selection ([`SettingsGroup`]).
+//! into the photo's settings; `amount` (0..200 %) blends between the current settings and the
+//! preset's: sliders and point curves continuously, switches and choices by a fixed rule (the
+//! preset's at any amount above 0, with the strength of a new choice fading in; see
+//! `scale_patch`). Copy/paste/sync use the same group selection ([`SettingsGroup`]).
 //!
 //! The rendering process ([`crate::ProcessVersion`]) is in no group: copy, paste, sync and presets
 //! made from a photo never carry it, so the photos they change keep their own. A partial that names
@@ -170,17 +172,33 @@ pub fn deep_merge(base: &mut Value, patch: &Value) {
 /// Interpolate numbers in `patch` towards/away from `base` by `t` (1 = patch as-is, 0 = base as-is).
 /// Point curves blend point by point. Discrete values (profile id, treatment, switches, seeds) take
 /// the preset's at any amount above 0, so the look fades in from nothing instead of jumping when
-/// they flip half-way (#37).
+/// they flip half-way (#37). When the preset changes a choice (a string) or an object's `enabled`
+/// switch, that object's `amount` blends from 0, not from the photo's (which was the strength of
+/// its own choice), so a new profile or LUT fades in; white balance `temp` / `tint` on another
+/// scale than the photo's can't be blended and are taken whole (upstream #2669 / #2896).
 fn scale_patch(base: &Value, patch: &Value, t: f64) -> Value {
     if t <= 0.0 {
         return if base.is_null() { patch.clone() } else { base.clone() };
     }
     match (base, patch) {
         (Value::Object(b), Value::Object(p)) => {
+            let choice_changed = p.iter().any(|(k, pv)| {
+                let changed = b.get(k).is_none_or(|bv| bv != pv);
+                changed && (pv.is_string() || (k == "enabled" && pv.is_boolean()))
+            });
+            let other_scale = (p.contains_key("temp") || p.contains_key("tint"))
+                && p.get("scale").and_then(Value::as_str).unwrap_or("legacy") != b.get("scale").and_then(Value::as_str).unwrap_or("legacy");
+            let zero = Value::from(0.0);
             let mut out = Map::new();
             for (k, pv) in p {
-                let bv = b.get(k).unwrap_or(&Value::Null);
-                out.insert(k.clone(), scale_patch(bv, pv, t));
+                let bv = match b.get(k) {
+                    Some(Value::Number(_)) if choice_changed && k == "amount" => &zero,
+                    Some(bv) => bv,
+                    None if choice_changed && k == "amount" && pv.is_number() => &zero,
+                    None => &Value::Null,
+                };
+                let v = if other_scale && t > 0.0 && (k == "temp" || k == "tint") { pv.clone() } else { scale_patch(bv, pv, t) };
+                out.insert(k.clone(), v);
             }
             Value::Object(out)
         }
@@ -266,10 +284,25 @@ fn blend_curves(b: &[(f64, f64)], p: &[(f64, f64)], t: f64) -> Value {
     Value::Array(pts)
 }
 
-/// Apply a partial settings object with an amount (1.0 = 100 %). Out-of-range values are clamped
-/// through the control specs, as every merge does ([`DevelopSettings::merged`]).
+/// Apply a partial settings object with an amount (1.0 = 100 %; blending rules: [`scale_patch`]).
+/// Out-of-range values are clamped through the control specs, as every merge does
+/// ([`DevelopSettings::merged`]).
+/// At 0 % nothing changes; at 100 % the partial is merged as it is.
 pub fn apply_partial(s: &DevelopSettings, partial: &Value, amount: f64) -> DevelopSettings {
-    let patch = if (amount - 1.0).abs() < 1e-9 { Cow::Borrowed(partial) } else { Cow::Owned(scale_patch(&s.to_json(), partial, amount)) };
+    if amount <= 0.0 {
+        return s.clone();
+    }
+    let patch = if (amount - 1.0).abs() < 1e-9 {
+        Cow::Borrowed(partial)
+    } else {
+        // the base with every group written out, also the ones serialization leaves out while at
+        // their defaults (HDR), so their numbers blend from the photo's values too
+        let mut base = s.to_json();
+        if let (Some(o), Ok(hdr)) = (base.as_object_mut(), serde_json::to_value(s.hdr)) {
+            o.entry("hdr").or_insert(hdr);
+        }
+        Cow::Owned(scale_patch(&base, partial, amount))
+    };
     // (a white balance without a scale keeps its old meaning: `DevelopSettings::merged`)
     s.merged(&patch).unwrap_or_else(|_| s.clone())
 }
@@ -353,6 +386,7 @@ mod tests {
 
     /// A preset with the Grain group (its seed is an integer) used to do nothing at any amount
     /// other than 100 %: the interpolated seed failed to deserialize and the preset was dropped.
+    /// The seed is discrete: the preset's at any amount above 0 (the grain itself fades in).
     #[test]
     fn amount_keeps_integer_fields_whole() {
         let mut a = DevelopSettings::default();
@@ -392,6 +426,23 @@ mod tests {
             assert!(now.1 >= last.1 - 1e-9 && now.1 - last.1 < 0.011, "{t}: curve mid {now:?} after {last:?}");
             last = now;
         }
+    }
+
+    /// A preset that picks another profile fades its strength in from 0 %, not from the photo's own
+    /// profile amount; white balance on another scale is taken whole.
+    #[test]
+    fn a_new_choice_fades_its_amount_in_from_zero() {
+        let mut a = DevelopSettings::default();
+        a.profile.id = "lc.vivid".into();
+        a.profile.amount = 80.0;
+        let p = Preset::from_settings("p", "P", "User", &a, &SettingsGroup::default_copy());
+        let mut base = DevelopSettings::default();
+        base.profile.amount = 100.0;
+        let half = p.apply(&base, 0.5);
+        assert_eq!(half.profile.id, "lc.vivid");
+        assert!((half.profile.amount - 40.0).abs() < 1e-6, "{}", half.profile.amount);
+        let out = scale_patch(&json!({"temp": 0.1, "tint": 0.0}), &json!({"temp": 5500.0, "tint": 3.0, "scale": "kelvin"}), 0.5);
+        assert_eq!(out["temp"], json!(5500.0));
     }
 
     fn lcc_develop_curve_mid(c: &[lcc_geom::Point]) -> f64 {

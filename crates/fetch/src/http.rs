@@ -519,7 +519,8 @@ impl Response {
                 if *left == 0 {
                     let line = self.conn.line(1024, limits)?;
                     let hex = line.split(';').next().unwrap_or_default().trim();
-                    let size = u64::from_str_radix(hex, 16).map_err(|_| HttpError::Protocol(format!("bad chunk size `{hex}`")))?;
+                    let size = if hex.bytes().all(|b| b.is_ascii_hexdigit()) { u64::from_str_radix(hex, 16).ok() } else { None }
+                        .ok_or_else(|| HttpError::Protocol(format!("bad chunk size `{hex}`")))?;
                     if size == 0 {
                         // trailers, up to the empty line
                         let mut n = 0;

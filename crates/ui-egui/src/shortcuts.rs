@@ -60,13 +60,28 @@ pub fn find_bindable(id: &str) -> Option<&'static Bindable> {
 
 /// The shortcut `id` has now: the user's choice (`""` = none), else the declared one. An entry
 /// that doesn't parse (a hand-edited `ui.json`, a modifier-only key saved by an older build) is
-/// ignored.
+/// ignored. The declared shortcut yields to a saved entry that gives its key to another known
+/// command other than its contextual partner.
 pub fn binding<'a>(keymap: &'a Keymap, id: &str, default: Option<&'a str>) -> Option<&'a str> {
     match keymap.get(id) {
         Some(sc) if sc.is_empty() => None,
         Some(sc) if parse(sc).is_some() => Some(sc.as_str()),
-        _ => default,
+        _ => default.filter(|sc| !assigned_elsewhere(keymap, id, sc)),
     }
+}
+
+/// Whether the keymap gives the key `sc` to a known command other than `id` and its contextual
+/// partner.
+fn assigned_elsewhere(keymap: &Keymap, id: &str, sc: &str) -> bool {
+    let Some(key) = parse(sc) else { return false };
+    saved_keys(keymap)
+        .any(|(other, k)| other != id && k == key && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == other) || (*y == id && *x == other)))
+}
+
+/// The keys the keymap gives to known commands, with each command's id. Entries for commands this
+/// build doesn't know and entries that don't parse are ignored.
+pub(crate) fn saved_keys(keymap: &Keymap) -> impl Iterator<Item = (&str, (Modifiers, Key))> {
+    keymap.iter().filter(|(id, _)| find_bindable(id).is_some()).filter_map(|(id, sc)| Some((id.as_str(), parse(sc)?)))
 }
 
 /// The effective shortcut of command `id` (`None` for unknown commands).
@@ -389,9 +404,9 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     // The grid navigation keys act on the photos in view, so they wait while the full-screen preview
     // covers the grid: a key must not move the selection onto photos nobody can see.
     let grid_navigation = grid && !app.ui.fullscreen;
-    // keys the user gave to a command: the fixed bindings below (aliases, ratings) yield to them;
-    // so do keys the active set gives a command (Classic's ⇧E is the secondary loupe, not export)
-    let taken: Vec<(Modifiers, Key)> = keymap.values().filter_map(|s| parse(s)).chain(classic::taken()).collect();
+    // keys the user gave to a known command: the fixed bindings below (aliases, ratings) yield to
+    // them; so do keys the active set gives a command (Classic's ⇧E is the secondary loupe, not export)
+    let taken: Vec<(Modifiers, Key)> = saved_keys(keymap).map(|(_, k)| k).chain(classic::taken()).collect();
     // an open popup (a menu, a date picker's calendar) closes on Esc itself: Esc's command (Back,
     // which also closes dialogs) waits until nothing is open
     let popup_open = egui::Popup::is_any_open(ctx);
@@ -527,7 +542,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 crate::i18n::tr_format!("Rated {}", "★".repeat(n.parse().unwrap_or(0)))
             };
             app.toast(ctx, label);
-        } else if matches!(f.as_str(), "photo.decreaseRating" | "photo.increaseRating") {
+        } else if matches!(f.as_str(), "photo.decreaseRating" | "photo.increaseRating" | "photo.clearLabel") {
             cull(app, &f, json!({}), false);
         } else if let Some(l) = f.strip_prefix("label:") {
             cull(app, "photo.label", json!({"label": l, "toggle": true}), false);
@@ -633,8 +648,9 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             if f == "album.toggleTarget"
                 || (f == "tool.brush" && matches!(app.ui.view, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid))
             {
-                if let Ok(r) = app.run("album.toggleTarget", json!({})) {
-                    let n = app.session.selected().len();
+                // `added` is null when nothing was left to toggle (the selected photos are gone): nothing to say
+                if let Some(r) = app.run("album.toggleTarget", json!({})).ok().filter(|r| r["added"].is_boolean()) {
+                    let n = r["toggled"].as_u64().unwrap_or(0);
                     let what = crate::i18n::tr_format!("{n} photo{}", if n == 1 { "" } else { "s" }, n = n);
                     let name = r["name"].as_str().unwrap_or("Quick Collection").to_string();
                     app.toast(
@@ -914,6 +930,50 @@ mod tests {
             assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().flag, Flag::None);
             assert_eq!(h.app.session.active(), Some(PhotoId(1)));
         }
+    }
+
+    /// A saved keymap entry that gives a key to one command (kept from before another command
+    /// declared that key) wins: the press runs that command alone, and the other command's declared
+    /// key comes back once the entry is gone.
+    #[test]
+    fn a_saved_key_wins_over_another_commands_declared_key() {
+        use lcc_catalog::{Flag, PhotoId};
+        let mut h = library();
+        h.app.ui.settings.keymap.insert("photo.increaseRating".into(), "P".into());
+        assert_eq!(super::shortcut_of(&h.app.ui.settings.keymap, "photo.pick"), None);
+        assert_eq!(super::conflicts(&h.app.ui.settings.keymap, "view.survey", "P"), vec!["photo.increaseRating"]);
+        key(&mut h, "P", false);
+        let photo = h.app.session.catalog.photo(PhotoId(1)).unwrap();
+        assert_eq!(photo.rating, 1, "the saved key raised the rating");
+        assert_eq!(photo.flag, Flag::None, "Flag as Pick's declared key yielded");
+        // with the entry gone, P picks again
+        h.app.ui.settings.keymap.remove("photo.increaseRating");
+        assert_eq!(super::shortcut_of(&h.app.ui.settings.keymap, "photo.pick"), Some("P"));
+        key(&mut h, "P", false);
+        assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().flag, Flag::Pick);
+        // a contextual partner's saved key does not silence the other side
+        h.app.ui.settings.keymap.insert("crop.rotateAspect".into(), "X".into());
+        assert_eq!(super::shortcut_of(&h.app.ui.settings.keymap, "photo.reject"), Some("X"));
+        // nor does an entry for a command this build doesn't know
+        h.app.ui.settings.keymap.insert("no.suchCommand".into(), "U".into());
+        assert_eq!(super::shortcut_of(&h.app.ui.settings.keymap, "photo.unflag"), Some("U"));
+    }
+
+    /// Keymap entries for commands this build doesn't know take no key: an alias, a rating key and
+    /// a declared shortcut on the same keys keep working.
+    #[test]
+    fn junk_keymap_entries_leave_aliases_ratings_and_declared_keys() {
+        use lcc_catalog::{Flag, PhotoId};
+        let mut h = library();
+        for (id, sc) in [("no.suchCommand", "Shift+X"), ("no.otherCommand", "5"), ("no.thirdCommand", "P")] {
+            h.app.ui.settings.keymap.insert(id.into(), sc.into());
+        }
+        key(&mut h, "5", false);
+        assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().rating, 5, "5 still rates");
+        key(&mut h, "P", false);
+        assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().flag, Flag::Pick, "P still picks");
+        key(&mut h, "X", true);
+        assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().flag, Flag::Reject, "Shift+X still rejects");
     }
 
     #[test]
@@ -1508,6 +1568,10 @@ mod relative_rating_tests;
 #[cfg(test)]
 #[path = "shortcuts/tests_flag_cycle.rs"]
 mod flag_cycle_tests;
+
+#[cfg(test)]
+#[path = "shortcuts/tests_clear_label.rs"]
+mod clear_label_tests;
 
 #[cfg(test)]
 #[path = "shortcuts/tests_enable_filters.rs"]

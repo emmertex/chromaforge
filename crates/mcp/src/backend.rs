@@ -260,7 +260,14 @@ mod tests {
             writer.write_all(&reply).unwrap();
             writer.shutdown(std::net::Shutdown::Write).unwrap();
             let mut extra = String::new();
-            assert_eq!(reader.read_line(&mut extra).unwrap(), 0, "request was resent on the same connection");
+            // the client hanging up: an orderly end, or on Windows a reset when it closes with the reply
+            // unread (WSAECONNRESET); either way nothing more came (issue #2140)
+            match reader.read_line(&mut extra) {
+                Ok(n) => assert_eq!(n, 0, "request was resent on the same connection"),
+                Err(e) => {
+                    assert!(matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted), "{e}")
+                }
+            }
             listener
         });
         let mut remote = Remote::lazy(&addr);
@@ -505,6 +512,8 @@ mod tests {
                         Err(e) => panic!("accept: {e}"),
                     }
                 };
+                // BSD kernels (macOS, FreeBSD) let an accepted socket inherit the listener's non-blocking flag, which makes the reads below fail with WouldBlock.
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut writer = stream;
@@ -528,6 +537,12 @@ mod tests {
         let mut remote = Remote::lazy(&addr);
         assert_eq!(remote.call("engine.execute", json!({"command": "edit.undo"})).unwrap(), json!(1));
         expired.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The server's goodbye line and close reach the client's socket asynchronously; the client only reconnects once it can see them, so wait for that instead of racing it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !remote.conn.as_ref().is_some_and(|(_, writer)| peer_closed(writer)) {
+            assert!(std::time::Instant::now() < deadline, "the idle close never reached the client");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert_eq!(remote.call("engine.execute", json!({"command": "edit.undo"})).unwrap(), json!(2));
         expired.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(server.join().unwrap(), [1, 2], "each command ran once on a separate connection");

@@ -56,6 +56,8 @@
 //! | 11 | History cursor: Go to History Step adds no step | `Op::SetHistoryCursor`, `Photo.history_cursor` |
 //! | 12 | upstream merge: preview-only recheck (upstream's 9, #662), the camera's focus point (#1480) | `Photo.preview_checked`, `Op::SetContent.preview_checked`, `Meta.focus` |
 //! | 13 | a cleared GPS position stays cleared in the sidecar (upstream PR #2088) | `Meta.gps_removed` |
+//! | 14 | persistent Ignore Faces (upstream PR #2416) | `RegionKind::IgnoredFace` |
+//! | 15 | assisted culling scores (upstream PR #2855) | `Analysis.eyes_open` / `aesthetic` / `cull_score` |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a
@@ -85,7 +87,7 @@ pub(crate) const FORMAT: &str = "lcc-catalog";
 pub(crate) const V4_FORMAT: &str = "lcc-catalog-db";
 /// The catalog format this build writes (and the newest it reads). See the module docs →
 /// *Format versions*; bump it whenever an [`Op`] variant or a serialized field is added.
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 15;
 
 /// When [`Journal::wants_snapshot`] says it's time to compact the log.
 #[derive(Clone, Copy, Debug)]
@@ -538,7 +540,14 @@ impl Journal {
         }
 
         if let Some(at) = damaged_at {
-            let name = format!("{LOG}.damaged-{}", j.seq);
+            // a free name: a second damage at the same op must not replace the first copy (issue #2140)
+            let mut name = format!("{LOG}.damaged-{}", j.seq);
+            for k in 1..1000 {
+                if j.store.read(&name).map_err(io)?.is_none() {
+                    break;
+                }
+                name = format!("{LOG}.damaged-{}-{k}", j.seq);
+            }
             j.store.write_atomic(&name, &log).map_err(io)?;
             log::warn!("catalog log damaged at byte {at}; kept as {name}; state recovered up to op {}", j.seq);
             report.damaged = Some(name);
@@ -596,7 +605,14 @@ impl Journal {
             seq = seq
                 .checked_add(1)
                 .ok_or_else(|| CatalogError::Corrupt("the catalog's op sequence is exhausted (restore it from a backup)".into()))?;
-            buf.push_str(&encode_record(seq, op));
+            let record = encode_record(seq, op);
+            // JSON has no NaN or infinity: serde writes them as null, which passes the CRC and then fails
+            // to parse, refusing the library as "newer" on the next open. Such an op is refused here
+            // instead, before the log has it (issue #2140).
+            if decode_record(&record).is_none() {
+                return Err(CatalogError::Invalid("an edit holds a value that can't be saved (not a finite number)".into()));
+            }
+            buf.push_str(&record);
             buf.push('\n');
         }
         if self.tail_dirty {

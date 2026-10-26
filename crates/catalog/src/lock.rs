@@ -17,11 +17,15 @@
 //!   open" for a moment and a re-open would be refused (issue #680). `LOCK_UN` through our
 //!   descriptor frees the lock whatever copies a child still holds.
 //! - Who holds it (process id, computer, program, version) is written to `catalog.lock.owner`, for
-//!   the error message. It's a separate file because a Windows lock also blocks reading the
-//!   locked file. It's only a hint: it may be missing or left over from a crash.
+//!   the error message. Only dropping the [`LibraryLock`] removes it, so a program that ends with
+//!   `std::process::exit` releases the lock first (`Session::release_library_lock`). It's a separate
+//!   file because a Windows lock also blocks reading the locked file. It's only a hint: it may be
+//!   missing or left over from a crash.
 //! - File systems without lock support (some network shares): the library opens unlocked, with a
 //!   warning — refusing it would lock the user out of their own library. Locks over SMB/NFS are
 //!   advisory and depend on the server; the owner file is then the only hint.
+//! - A `catalog.lock` that is a link, or anything else that isn't a regular file, is never created
+//!   or locked through (issue #2552): the library opens unlocked, with a warning, as above.
 //! - Browser storage (OPFS) has no file locks: see the web host for its own guard.
 
 use std::fs::{File, OpenOptions, TryLockError};
@@ -104,14 +108,15 @@ impl LibraryLock {
             log::warn!("library {}: can't lock {LOCK} ({why}); opening it without protection against a second program", dir.display());
             LibraryLock { dir: dir.to_path_buf(), file: None, held: false }
         };
-        let file = match OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(LOCK)) {
-            Ok(f) => f,
+        // never through a link at the name, which would create or lock a file elsewhere (issue #2552)
+        let file = match crate::safe_file::open_or_create_regular(&dir.join(LOCK), OpenOptions::new().read(true).write(true)) {
+            Ok((f, _)) => f,
             Err(e) => return Ok(unlocked(e)),
         };
         match file.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
-                let owner = std::fs::read(dir.join(OWNER)).ok().and_then(|b| serde_json::from_slice::<LockOwner>(&b).ok());
+                let owner = crate::safe_file::read_no_follow(&dir.join(OWNER)).ok().and_then(|b| serde_json::from_slice::<LockOwner>(&b).ok());
                 return Err(LockError::InUse(owner));
             }
             Err(TryLockError::Error(e)) => return Ok(unlocked(e)),

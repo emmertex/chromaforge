@@ -33,6 +33,7 @@ mod editors;
 mod hdr_display;
 mod hdr_probe;
 mod logging;
+mod native_dialog;
 #[cfg(target_os = "macos")]
 mod native_menu;
 #[cfg(any(target_os = "linux", windows))]
@@ -113,6 +114,12 @@ impl eframe::App for App {
         if !self.0.shutdown(EXIT_WAIT) {
             log::warn!("quit: background work was still running after {EXIT_WAIT:?}");
         }
+        // macOS only: the process ends below without running destructors, and only the lock's
+        // `Drop` removes `catalog.lock.owner` (the OS frees the lock, not the note), so let go of
+        // the library's lock here, saved or not (we leave either way). Elsewhere eframe drops the
+        // app after this and the session's last writes (face data) still go out under the lock.
+        #[cfg(target_os = "macos")]
+        self.0.session.release_library_lock();
         // macOS (#1331): end the process here, before eframe tears the window down, as Quit from
         // the menu bar already does (PR #444). AccessKit's macOS adapter subclasses the window's
         // content view and restores its class on teardown; AppKit's Touch Bar support observes
@@ -251,7 +258,15 @@ fn config_dir() -> Option<std::path::PathBuf> {
 /// The window at the size it was last used at, zoomed if it was (`window`), or at the usual size
 /// when nothing is remembered, where it was left if that is known (issue #153). A zoomed window is
 /// given the size and place it goes back to.
-fn as_remembered(builder: egui::ViewportBuilder, window: Option<lcc_ui_egui::window_place::WindowPlace>) -> egui::ViewportBuilder {
+///
+/// Windows: a window built maximized could open covering half the screen while
+/// the system took it for maximized, so there (`maximize_later`) it is built at its size and
+/// maximized once it shows ([`lcc_ui_egui::window_place::StartPlace`]).
+fn as_remembered(
+    builder: egui::ViewportBuilder,
+    window: Option<lcc_ui_egui::window_place::WindowPlace>,
+    maximize_later: bool,
+) -> egui::ViewportBuilder {
     let builder = builder.with_inner_size(window.map_or(lcc_ui_egui::window_place::DEFAULT_SIZE, |w| w.size));
     let builder = match window.and_then(|w| w.position) {
         Some(at) => builder.with_position(at),
@@ -259,8 +274,11 @@ fn as_remembered(builder: egui::ViewportBuilder, window: Option<lcc_ui_egui::win
     };
     // (only ever asked to zoom: asked not to, macOS un-zooms a window whose size fills the screen
     // to a size of its own choosing)
-    if window.is_some_and(|w| w.zoomed) { builder.with_maximized(true) } else { builder }
+    if window.is_some_and(|w| w.zoomed) && !maximize_later { builder.with_maximized(true) } else { builder }
 }
+
+/// Windows maximizes a remembered maximized window once it shows (see [`as_remembered`]).
+const MAXIMIZE_LATER: bool = cfg!(target_os = "windows");
 
 /// `<config>/ui.json`, the saved UI state and app settings — `None` when nothing is read or
 /// written: `<PREFIX>_NO_PREFS` (tests, scripts) or no home folder.
@@ -410,6 +428,9 @@ struct PrefsWriter {
     /// When the window was first looked at: its watch goes by the clock from then on, not by
     /// the interface's time, which stands still while the window is hidden.
     window_since: Option<std::time::Instant>,
+    /// The window as it first shows: maximized then on Windows, fitted to a smaller screen.
+    /// `None` once done, and in tests.
+    start: Option<lcc_ui_egui::window_place::StartPlace>,
 }
 
 impl PrefsWriter {
@@ -461,7 +482,20 @@ impl PrefsWriter {
         // the settings hold is checked first: a script may have set it (`ui.set`)
         let remembered = app.ui.window.and_then(lcc_ui_egui::window_place::WindowPlace::checked);
         let at = self.window_since.get_or_insert_with(std::time::Instant::now).elapsed().as_secs_f64();
-        app.ui.window = self.window.note(remembered, &seen, at);
+        // (while the window is being placed it is not remembered: it may not be as it will be)
+        let placing = self.start.is_some();
+        if let Some(start) = &mut self.start {
+            for command in start.step(&seen, at, zoom) {
+                ctx.send_viewport_cmd(command);
+            }
+            match start.waits() {
+                Some(wait) => ctx.request_repaint_after(wait),
+                None => self.start = None,
+            }
+        }
+        if !placing {
+            app.ui.window = self.window.note(remembered, &seen, at);
+        }
         if let Some(wait) = self.window.waits(at) {
             // (a size is only remembered once the window has rested at it: look again then, though
             // nothing else asks for a frame)
@@ -551,7 +585,23 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
     let ctx = cc.egui_ctx.clone();
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     let _ = DIALOG_PARENT.set(rfd::FileDialog::new().set_parent(cc));
+    let (dialog_errors, dialog_error_rx) = std::sync::mpsc::channel();
+    // The path-only pickers below report a failed dialog through the app's own error toast (#1996).
+    macro_rules! picker {
+        (|| $body:block) => { picker!([] $body) };
+        (|$($arg:ident: $ty:ty),+| $body:block) => { picker!([$($arg: $ty),+] $body) };
+        ([$($arg:ident: $ty:ty),*] $body:block) => {{
+            let errors = dialog_errors.clone();
+            let repaint = cc.egui_ctx.clone();
+            Some(Box::new(move |$($arg: $ty),*| {
+                let answer = native_dialog::legacy(&errors, || $body);
+                repaint.request_repaint();
+                answer
+            }))
+        }};
+    }
     Services {
+        dialog_errors: Some(dialog_error_rx),
         // Commands' file dialogs run on their own thread (#191): a dialog on the UI thread
         // stopped the window answering the compositor, which then reported the app as hung.
         picker: Some(Box::new(move |req: lcc_ui_egui::pick::PickRequest| {
@@ -561,25 +611,27 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
             std::thread::Builder::new()
                 .name("file-dialog".into())
                 .spawn(move || {
-                    let mut d = file_dialog();
-                    if let Some(t) = &req.title {
-                        d = d.set_title(t);
-                    }
-                    if let Some((name, exts)) = &req.filter {
-                        d = d.add_filter_nocase(name.clone(), exts);
-                    }
-                    if let Some(n) = &req.file_name {
-                        d = d.set_file_name(n);
-                    }
-                    let s = |p: std::path::PathBuf| p.to_string_lossy().to_string();
-                    let paths: Vec<String> = match req.kind {
-                        PickKind::Files => d.pick_files().unwrap_or_default().into_iter().map(s).collect(),
-                        PickKind::File => d.pick_file().map(s).into_iter().collect(),
-                        PickKind::Folder => d.pick_folder().map(s).into_iter().collect(),
-                        PickKind::Save => d.save_file().map(s).into_iter().collect(),
-                    };
+                    let result = native_dialog::run(|| {
+                        let mut d = file_dialog();
+                        if let Some(t) = &req.title {
+                            d = d.set_title(t);
+                        }
+                        if let Some((name, exts)) = &req.filter {
+                            d = d.add_filter_nocase(name.clone(), exts);
+                        }
+                        if let Some(n) = &req.file_name {
+                            d = d.set_file_name(n);
+                        }
+                        let s = |p: std::path::PathBuf| p.to_string_lossy().to_string();
+                        match req.kind {
+                            PickKind::Files => d.pick_files().unwrap_or_default().into_iter().map(s).collect(),
+                            PickKind::File => d.pick_file().map(s).into_iter().collect(),
+                            PickKind::Folder => d.pick_folder().map(s).into_iter().collect(),
+                            PickKind::Save => d.save_file().map(s).into_iter().collect(),
+                        }
+                    });
                     // the app may have quit meanwhile: nobody to tell
-                    let _ = tx.send(paths);
+                    let _ = tx.send(result);
                     // on macOS the panel is a window of its own: once it closes, the app's window isn't key again,
                     // so the first click on it (Import in the review that follows) only brought it back to the front
                     #[cfg(target_os = "macos")]
@@ -590,16 +642,16 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
             Ok(rx)
         })),
         log_file: log_file.map(|p| p.display().to_string()),
-        pick_lightroom_catalog: Some(Box::new(|| {
+        pick_lightroom_catalog: picker!(|| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Import Lightroom Catalog"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom Classic Catalog"), &["lrcat"])
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
-        })),
-        pick_folder: Some(Box::new(|| {
+        }),
+        pick_folder: picker!(|| {
             file_dialog().set_title(lcc_ui_egui::i18n::tr("Open Library")).pick_folder().map(|p| p.to_string_lossy().to_string())
-        })),
+        }),
         #[cfg(target_os = "linux")]
         open_model_folder: Some(std::sync::Arc::new(|path: &str| {
             std::process::Command::new("xdg-open")
@@ -639,7 +691,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                 .map_err(|e| e.to_string())
                 .and_then(|s| if s.success() || cfg!(target_os = "windows") { Ok(()) } else { Err(format!("reveal failed: {s}")) })
         })),
-        pick_files: Some(Box::new(|| {
+        pick_files: picker!(|| {
             file_dialog()
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Photos"), lcc_engine::import::EXTENSIONS)
                 .pick_files()
@@ -647,15 +699,15 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                 .into_iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
-        })),
-        pick_denoise_model: Some(Box::new(|| {
+        }),
+        pick_denoise_model: picker!(|| {
             file_dialog()
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("ONNX model"), &["onnx"])
                 .pick_file()
                 .map(|p| vec![p.to_string_lossy().into_owned()])
                 .unwrap_or_default()
-        })),
-        pick_preset_files: Some(Box::new(|| {
+        }),
+        pick_preset_files: picker!(|| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Import Presets"))
                 .add_filter_nocase(
@@ -667,23 +719,23 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                 .into_iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
-        })),
-        pick_model_file: Some(Box::new(|| {
+        }),
+        pick_model_file: picker!(|| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Add a Face Recognition Model"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Face models (ONNX)"), &["onnx"])
                 .pick_file()
                 .map(|p| vec![p.to_string_lossy().to_string()])
                 .unwrap_or_default()
-        })),
-        pick_tracklog: Some(Box::new(|| {
+        }),
+        pick_tracklog: picker!(|| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Auto-Tag from Tracklog"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("GPS Track Log"), &["gpx"])
                 .pick_file()
                 .map(|p| vec![p.to_string_lossy().to_string()])
                 .unwrap_or_default()
-        })),
+        }),
         // macOS, Linux and Windows don't colour-manage the window: previews follow the screen's profile (#787)
         #[cfg(target_os = "macos")]
         screen_profile: Some(Box::new(screen_profile::icc)),
@@ -699,7 +751,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         }),
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         screen_profile: None,
-        pick_display_profile: Some(Box::new(|| {
+        pick_display_profile: picker!(|| {
             let mut d = file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Choose Monitor Profile"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("ICC Profiles"), &["icc", "icm"]);
@@ -707,32 +759,32 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                 d = d.set_directory(dir);
             }
             d.pick_file().map(|p| vec![p.to_string_lossy().to_string()]).unwrap_or_default()
-        })),
-        save_preset_file: Some(Box::new(|name: &str| {
+        }),
+        save_preset_file: picker!(|name: &str| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Export Presets"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("{app} Preset"), &[lcc_brand::PRESET_EXT])
                 .set_file_name(name)
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
-        })),
-        pick_keyword_list: Some(Box::new(|| {
+        }),
+        pick_keyword_list: picker!(|| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Import Keywords"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Keyword Lists"), &["txt", "utf8"])
                 .pick_file()
                 .map(|p| vec![p.to_string_lossy().to_string()])
                 .unwrap_or_default()
-        })),
-        save_keyword_list: Some(Box::new(|name: &str| {
+        }),
+        save_keyword_list: picker!(|name: &str| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Export Keywords"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Keyword Lists"), &["txt"])
                 .set_file_name(name)
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
-        })),
-        pick_curve_preset_files: Some(Box::new(|| {
+        }),
+        pick_curve_preset_files: picker!(|| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Import Point Curve Presets"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Point Curve Presets"), &["lccurve", "json"])
@@ -741,27 +793,27 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                 .into_iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
-        })),
-        save_curve_preset_file: Some(Box::new(|name: &str| {
+        }),
+        save_curve_preset_file: picker!(|name: &str| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Export Point Curve Presets"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Point Curve Presets"), &["lccurve"])
                 .set_file_name(name)
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
-        })),
-        pick_list_file: Some(Box::new(|| {
+        }),
+        pick_list_file: picker!(|| {
             rfd::FileDialog::new()
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Collection definitions and keyword lists"), &["json", "txt"])
                 .pick_file()
                 .map(|p| vec![p.to_string_lossy().to_string()])
                 .unwrap_or_default()
-        })),
-        save_list_file: Some(Box::new(|name: &str| {
+        }),
+        save_list_file: picker!(|name: &str| {
             let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("txt").to_string();
             rfd::FileDialog::new().add_filter_nocase(&ext, &[ext.as_str()]).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
-        })),
-        pick_slideshow_templates: Some(Box::new(|| {
+        }),
+        pick_slideshow_templates: picker!(|| {
             rfd::FileDialog::new()
                 .set_title(lcc_ui_egui::i18n::tr("Import Slideshow Templates"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Slideshow Templates"), &["json"])
@@ -770,15 +822,33 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                 .into_iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
-        })),
-        save_slideshow_template: Some(Box::new(|name: &str| {
+        }),
+        save_slideshow_template: picker!(|name: &str| {
             rfd::FileDialog::new()
                 .set_title(lcc_ui_egui::i18n::tr("Export Slideshow Template"))
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Slideshow Templates"), &["json"])
                 .set_file_name(name)
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
-        })),
+        }),
+        pick_print_templates: picker!(|| {
+            file_dialog()
+                .set_title(lcc_ui_egui::i18n::tr("Import Print Templates"))
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Print Templates"), &[lcc_engine::print::template::FILE_EXT])
+                .pick_files()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect()
+        }),
+        save_print_template: picker!(|name: &str| {
+            file_dialog()
+                .set_title(lcc_ui_egui::i18n::tr("Export Print Template"))
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Print Templates"), &[lcc_engine::print::template::FILE_EXT])
+                .set_file_name(name)
+                .save_file()
+                .map(|p| p.to_string_lossy().to_string())
+        }),
         // atomic (temp file + sync + rename): a failed write never leaves a truncated file
         write_shared: Some(std::sync::Arc::new(lcc_engine::export::write_file)),
         write: Some(Box::new(lcc_engine::export::write_file)),
@@ -867,7 +937,8 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
 const HELP: &str = "\
 {bin} — photo library + raw developer
 
-USAGE: {bin} [OPTIONS] [FILES/FOLDERS…]   (files and folders are imported)
+USAGE: {bin} [OPTIONS] [FILES/FOLDERS…]   (files and folders are imported; a library's catalog.snap or
+                                          folder opens that library)
        {bin} [OPTIONS] {scheme}://sync?path=FOLDER   (open Synchronize Folder for a library folder)
 
 OPTIONS:
@@ -909,17 +980,33 @@ fn help() -> String {
 
 /// The launch arguments' files and folders to import (absolute), and a notice for each one that
 /// is not imported (see [`lcc_engine::import::launch_path`]; issue #374).
-fn launch_imports(args: &[String]) -> (Vec<String>, Vec<String>) {
+fn launch_imports(args: &[String]) -> LaunchArgs {
     let cwd = std::env::current_dir().ok();
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).filter(|h| !h.is_empty()).map(std::path::PathBuf::from);
     launch_imports_in(args, cwd.as_deref(), home.as_deref())
 }
 
-fn launch_imports_in(args: &[String], cwd: Option<&std::path::Path>, home: Option<&std::path::Path>) -> (Vec<String>, Vec<String>) {
+/// What the launch arguments ask for: files and folders to import, a library to open (a library's `catalog.snap`
+/// or folder, double-clicked in the file manager), and a notice for each argument
+/// left alone.
+#[derive(Debug, Default, PartialEq)]
+struct LaunchArgs {
+    files: Vec<String>,
+    library: Option<std::path::PathBuf>,
+    notices: Vec<String>,
+}
+
+fn launch_imports_in(args: &[String], cwd: Option<&std::path::Path>, home: Option<&std::path::Path>) -> LaunchArgs {
     use lcc_engine::import::{LaunchPath, launch_path};
-    let (mut files, mut notices) = (Vec::new(), Vec::new());
+    let (mut files, mut notices, mut library) = (Vec::new(), Vec::new(), None);
     for a in args {
         match launch_path(a, cwd, home, lcc_engine::devices::dcim_in) {
+            Some(LaunchPath::Library(dir)) if library.is_none() => library = Some(std::path::PathBuf::from(dir)),
+            Some(LaunchPath::Library(dir)) => {
+                log::warn!("one library at a time: not opening {dir} given at launch");
+                notices
+                    .push(lcc_brand::fill(&format!("{dir} was not opened: {{app}} opens one library at a time. Open it with File ▸ Open Library…")));
+            }
             Some(LaunchPath::Import(p)) => files.push(p),
             Some(LaunchPath::Refused { path, why }) => {
                 log::warn!("not importing {path} given at launch: {why}");
@@ -929,7 +1016,7 @@ fn launch_imports_in(args: &[String], cwd: Option<&std::path::Path>, home: Optio
             None => {}
         }
     }
-    (files, notices)
+    LaunchArgs { files, library, notices }
 }
 
 /// Where the log files live: `logs` in the settings folder, next to `ui.json` (see `logging`).
@@ -1064,7 +1151,10 @@ fn main() -> eframe::Result {
     }
     // what the arguments name, resolved now: an empty or relative argument never becomes a drive
     // root, and a whole drive or home folder is not walked (issue #374)
-    let (files, launch_notices) = launch_imports(&files);
+    let LaunchArgs { files, library: launch_library, notices: launch_notices } = launch_imports(&files);
+    // a library double-clicked (its catalog.snap or folder) is the one that opens, not the last one used
+    let opened_by_argument = launch_library.is_some() && library_dir.is_none();
+    let library_dir = library_dir.or(launch_library);
     let (prefs, prefs_warning, keep_prefs_file) = load_prefs(in_memory);
     // the saved language from the start, so a failed start is reported in it too
     if let Some(ui) = &prefs {
@@ -1108,6 +1198,9 @@ fn main() -> eframe::Result {
     }
     let gpu_on = prefs.as_ref().is_none_or(|u| u.settings.gpu) && gpu_crash.is_none();
     lcc_engine::gpu::set_enabled(gpu_on);
+    if let Some(u) = &prefs {
+        lcc_engine::gpu::backend::set_compute_preference(u.settings.gpu_backend.name());
+    }
     // the window's renderer: probed (Windows) and with a fallback chain, so a driver that can't
     // build egui's pipeline never kills the start-up
     let compose_window = prefs.as_ref().is_some_and(|ui| ui.settings.compose_window) && std::env::var_os("WGPU_BACKEND").is_none();
@@ -1125,7 +1218,7 @@ fn main() -> eframe::Result {
     let opens_as = prefs.as_ref().and_then(|ui| ui.window).and_then(lcc_ui_egui::window_place::WindowPlace::checked);
     let options = eframe::NativeOptions {
         renderer,
-        viewport: as_remembered(egui::ViewportBuilder::default().with_title(lcc_brand::DISPLAY_NAME), opens_as)
+        viewport: as_remembered(egui::ViewportBuilder::default().with_title(lcc_brand::DISPLAY_NAME), opens_as, MAXIMIZE_LATER)
             .with_min_inner_size(lcc_ui_egui::window_place::MIN_SIZE)
             .with_drag_and_drop(true)
             .with_transparent(window_gpu::composes_window(compose_window, window_renderer))
@@ -1212,8 +1305,23 @@ fn main() -> eframe::Result {
                     written: serde_json::to_vec_pretty(&app.ui).unwrap_or_default(),
                     library: app.ui.settings.library_path.clone(),
                     keep_file: keep_prefs_file,
+                    start: Some(lcc_ui_egui::window_place::StartPlace::new(MAXIMIZE_LATER && opens_as.is_some_and(|w| w.zoomed))),
                     ..Default::default()
                 };
+                // a library opened from its catalog file is the one in use from now on, as Open Library makes it
+                // (after the snapshot above, so the writer saves it)
+                if opened_by_argument
+                    && problem.is_none()
+                    && let Some(dir) = app.session.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy().into_owned())
+                {
+                    let settings = &mut app.ui.settings;
+                    if settings.library_path != dir && !settings.library_path.is_empty() {
+                        let previous = settings.library_path.clone();
+                        lcc_ui_egui::panels::settings::remember_library(&mut settings.recent_libraries, &previous);
+                    }
+                    lcc_ui_egui::panels::settings::remember_library(&mut settings.recent_libraries, &dir);
+                    settings.library_path = dir;
+                }
                 // after the snapshot above, so the writer saves the switched-off preference
                 if let Some(notice) = gpu_crash {
                     app.ui.settings.gpu = false;
@@ -1384,14 +1492,41 @@ mod tests {
         let home = dir("launch");
         std::fs::create_dir_all(home.join("Trip")).unwrap();
         let args: Vec<String> = ["", "  ", ".", "Trip", &home.to_string_lossy()].iter().map(|s| s.to_string()).collect();
-        let (files, notices) = launch_imports_in(&args, Some(&home), Some(&home));
+        let LaunchArgs { files, notices, library } = launch_imports_in(&args, Some(&home), Some(&home));
+        assert_eq!(library, None);
         assert_eq!(files, [home.join("Trip").to_string_lossy().to_string()]);
         assert_eq!(notices.len(), 2, "{notices:?}");
         assert!(notices.iter().all(|n| n.contains("was not imported")), "{notices:?}");
         // the working folder is a drive root (a launcher's choice): `.` is never the whole drive
         let root = home.ancestors().last().unwrap().to_path_buf();
-        let (files, notices) = launch_imports_in(&[".".to_string()], Some(&root), None);
+        let LaunchArgs { files, notices, .. } = launch_imports_in(&[".".to_string()], Some(&root), None);
         assert!(files.iter().all(|f| f.ends_with("DCIM")) && files.len() + notices.len() == 1, "{files:?} {notices:?}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A library's catalog.snap (double-clicked in Explorer) or its folder given at
+    /// launch opens that library and is never imported as photos; a second library is left with a notice.
+    #[test]
+    fn a_librarys_catalog_given_at_launch_opens_that_library() {
+        let home = dir("launch-library");
+        let lib = home.join("Wedding LC");
+        let mut s = lcc_engine::Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        s.close_library().unwrap();
+        let snap = lib.join("catalog.snap");
+        assert!(snap.is_file(), "a library keeps its catalog.snap");
+        let other = home.join("Other LC");
+        let mut s = lcc_engine::Session::new().with_fs();
+        s.open_library(&other, false).unwrap();
+        s.close_library().unwrap();
+        for arg in [snap.to_string_lossy().to_string(), lib.to_string_lossy().to_string(), "Wedding LC/catalog.snap".to_string()] {
+            let got = launch_imports_in(std::slice::from_ref(&arg), Some(&home), Some(&home.join("elsewhere")));
+            assert_eq!(got.library.as_deref(), Some(lib.as_path()), "{arg}");
+            assert!(got.files.is_empty() && got.notices.is_empty(), "{arg}: never imported: {got:?}");
+        }
+        let got = launch_imports_in(&[snap.to_string_lossy().to_string(), other.to_string_lossy().to_string()], Some(&home), None);
+        assert_eq!(got.library.as_deref(), Some(lib.as_path()), "the first one");
+        assert_eq!(got.notices.len(), 1, "{got:?}");
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1767,17 +1902,21 @@ mod tests {
     #[test]
     fn the_window_opens_as_it_was() {
         use lcc_ui_egui::window_place::{DEFAULT_SIZE, WindowPlace};
-        let fresh = as_remembered(egui::ViewportBuilder::default(), None);
+        let fresh = as_remembered(egui::ViewportBuilder::default(), None, false);
         assert_eq!((fresh.inner_size, fresh.position, fresh.maximized), (Some(egui::Vec2::from(DEFAULT_SIZE)), None, None));
-        let b = as_remembered(egui::ViewportBuilder::default(), Some(WindowPlace { size: [1300.0, 800.0], zoomed: true, position: None }));
+        let b = as_remembered(egui::ViewportBuilder::default(), Some(WindowPlace { size: [1300.0, 800.0], zoomed: true, position: None }), false);
         assert_eq!((b.inner_size, b.position, b.maximized), (Some(egui::vec2(1300.0, 800.0)), None, Some(true)));
+        // Windows: built at its size, maximized once it shows
+        let b = as_remembered(egui::ViewportBuilder::default(), Some(WindowPlace { size: [1300.0, 800.0], zoomed: true, position: None }), true);
+        assert_eq!((b.inner_size, b.maximized), (Some(egui::vec2(1300.0, 800.0)), None));
         // (not asked to un-zoom: macOS would then resize a window that fills its screen)
-        let b = as_remembered(egui::ViewportBuilder::default(), Some(WindowPlace { size: [1300.0, 800.0], zoomed: false, position: None }));
+        let b = as_remembered(egui::ViewportBuilder::default(), Some(WindowPlace { size: [1300.0, 800.0], zoomed: false, position: None }), false);
         assert_eq!((b.inner_size, b.position, b.maximized), (Some(egui::vec2(1300.0, 800.0)), None, None));
         // where it was left (issue #153)
         let b = as_remembered(
             egui::ViewportBuilder::default(),
             Some(WindowPlace { size: [1300.0, 800.0], zoomed: false, position: Some([-900.0, 40.0]) }),
+            false,
         );
         assert_eq!((b.inner_size, b.position), (Some(egui::vec2(1300.0, 800.0)), Some(egui::pos2(-900.0, 40.0))));
     }
@@ -1884,6 +2023,41 @@ mod tests {
         assert!(out.status.success(), "{stdout}");
         assert!(stdout.contains("calling on_exit"), "the child didn't run the test: {stdout}");
         assert_eq!(stdout.contains("on_exit returned"), !cfg!(target_os = "macos"), "{stdout}");
+    }
+
+    /// Quitting leaves no `catalog.lock.owner` behind, though the process ends without running
+    /// destructors (macOS): `on_exit` releases the library's lock itself. The child opens a library
+    /// and calls `on_exit` (on macOS that ends it); the parent looks at the folder afterwards. Other
+    /// systems drop the app after `on_exit`, which removes the note anyway.
+    #[test]
+    fn on_exit_removes_the_lock_owner_note() {
+        if let Some(dir) = std::env::var_os(lcc_brand::env_var("TEST_LOCK_DIR")) {
+            let mut session = lcc_engine::Session::new();
+            session.open_library(&dir, false).unwrap();
+            let mut app = App(
+                LccApp::new(session, Services::default()),
+                PrefsWriter::default(),
+                #[cfg(target_os = "macos")]
+                None,
+            );
+            eframe::App::on_exit(&mut app, None);
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("lc-app-lock-owner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::on_exit_removes_the_lock_owner_note", "--nocapture"])
+            .env(lcc_brand::env_var("TEST_LOCK_DIR"), &dir)
+            .env(lcc_brand::env_var("NO_PREFS"), "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{stdout}");
+        assert!(dir.join("catalog.snap").exists(), "the child didn't open and save the library: {stdout}");
+        assert!(!dir.join("catalog.lock.owner").exists(), "the owner note was left behind");
+        assert!(lcc_engine::Session::new().open_library(&dir, false).is_ok(), "the library is still locked");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

@@ -2,15 +2,15 @@
 //!
 //! Sources: own design (pairing by camera model and capture time; registration in [`register`]; sampling in
 //! [`sample`]).
-mod grid;
+pub(crate) mod grid;
 mod pair;
-mod register;
+pub(crate) mod register;
 mod sample;
 
 use crate::{Error, Result};
 use grid::{Grid, fit_long, reduce_rgb};
-pub use pair::baseline_problem;
 use pair::{Export, Pair, RawFile};
+pub use pair::{baseline_problem, edited_groups};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -236,6 +236,28 @@ fn held_out(order: usize, n: usize, share: f64) -> bool {
     }
     let every = ((1.0 / share.min(0.5)).round() as usize).max(2);
     order % every == every - 1
+}
+
+/// Raws paired with exports of them (same camera model and capture time, else file name), without decoding:
+/// `(raw, export)` paths. `baseline` refuses exports that are not at the baseline preset. Errors only when
+/// nothing pairs; the second value lists what was skipped and why.
+pub fn pair_files(raws: &[PathBuf], exports: &[ExportSet], baseline: bool) -> Result<(Vec<(PathBuf, PathBuf)>, Vec<(String, String)>)> {
+    let mut skipped = Vec::new();
+    let raw_files: Vec<RawFile> = pair::raw_files(raws, &mut skipped);
+    if raw_files.is_empty() {
+        return Err(Error("no raw files found".into()));
+    }
+    let export_files: Vec<Export> = pair::export_files_with(exports, baseline, &mut skipped);
+    if export_files.is_empty() {
+        return Err(Error("no usable exports found (TIFF or JPEG)".into()));
+    }
+    let pairs = pair::pair(&raw_files, &export_files, &mut skipped);
+    let out: Vec<(PathBuf, PathBuf)> =
+        pairs.iter().filter_map(|p| Some((raw_files.get(p.raw)?.path.clone(), export_files.get(p.export)?.path.clone()))).collect();
+    if out.is_empty() {
+        return Err(Error("no export could be matched to a raw (same camera model and capture time, or file name)".into()));
+    }
+    Ok((out, skipped))
 }
 
 /// Pair, decode, register and sample. Errors only when nothing usable is found.

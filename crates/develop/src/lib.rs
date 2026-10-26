@@ -39,6 +39,14 @@ impl DevelopSettings {
         serde_json::from_value(v.clone())
     }
 
+    /// [`Self::from_json`] for settings from outside the app, such as a sidecar's `lc:settings`
+    /// (issue #2555): kept in range as [`Self::merged`] keeps them.
+    pub fn from_untrusted_json(v: &Value) -> Result<DevelopSettings, serde_json::Error> {
+        let mut s = DevelopSettings::from_json(v)?;
+        s.keep_in_range(&DevelopSettings::default());
+        Ok(s)
+    }
+
     /// Merge a partial JSON object into these settings (fields not mentioned are kept). A white balance that
     /// names no [`WbScale`] keeps the meaning it always had (`Legacy`), whatever scale these settings were on: a
     /// partial from before the scale existed, or one that never said, must not become Kelvin by landing on
@@ -59,8 +67,9 @@ impl DevelopSettings {
 
     /// What crs XMP import does to the values it reads, for settings that arrive as JSON (presets, `develop.merge`,
     /// `render --settings`; issue #1946): every slider clamped through its control spec, point curves in 0..1, and a
-    /// crop with no area left as it was in `before`. Unrotated, the crop is clipped to the photo first; a turned crop
-    /// may reach past 0..1 and is left to the crop tools, which know the photo's size.
+    /// crop with no area left as it was in `before`. The angle is kept within ±45° (not finite: 0). Unrotated, the crop
+    /// is clipped to the photo first; a turned crop may reach past 0..1 and is bounded where the photo's size is known
+    /// (`CropGeometry::bounded`, applied by the pipeline).
     fn keep_in_range(&mut self, before: &DevelopSettings) {
         for c in controls::CONTROLS {
             if let Some(v) = controls::get(self, c.id) {
@@ -72,6 +81,7 @@ impl DevelopSettings {
             *p = lcc_geom::Point::new(p.x.clamp(0.0, 1.0), p.y.clamp(0.0, 1.0));
         }
         let g = &mut self.crop.geometry;
+        g.angle = if g.angle.is_finite() { g.angle.clamp(-45.0, 45.0) } else { 0.0 };
         if g.angle == 0.0 {
             g.rect = g.rect.intersect(&lcc_geom::Rect::UNIT);
         }
@@ -177,7 +187,8 @@ impl DevelopSettings {
         }
     }
 
-    /// Reset every control in `section` to its default.
+    /// Reset every control in `section` to its default, and the settings of the section that are not
+    /// controls (the creative profile, the curve, the white balance mode).
     pub fn reset_section(&mut self, section: Section) {
         for c in controls::in_section(section) {
             controls::set(self, c.id, c.default);
@@ -189,6 +200,13 @@ impl DevelopSettings {
             }
             Section::Color => self.wb.mode = WbMode::AsShot,
             Section::Detail => self.enhance.denoise_on = None,
+            // the creative profile is not a control: the chosen look goes back to the default one,
+            // and so does the camera's own local tone mapping
+            Section::Profile => {
+                let d = Profile::default();
+                self.profile.id = d.id;
+                self.profile.camera_local_tone = d.camera_local_tone;
+            }
             _ => {}
         }
     }
@@ -204,6 +222,19 @@ mod tests_process;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resetting_the_profile_section_restores_the_default_profile() {
+        // the chosen creative profile is not a control, so resetting the section must restore it too
+        let mut s = super::DevelopSettings::default();
+        s.profile.id = "lc.muted.matte-soft".into();
+        s.profile.amount = 40.0;
+        s.profile.camera_local_tone = !super::Profile::default().camera_local_tone;
+        s.reset_section(super::Section::Profile);
+        assert_eq!(s.profile.id, super::Profile::default().id, "the creative profile survives a Profile reset");
+        assert_eq!(s.profile.amount, super::Profile::default().amount);
+        assert_eq!(s.profile.camera_local_tone, super::Profile::default().camera_local_tone);
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -260,6 +291,75 @@ mod tests {
         // other groups leave it alone
         let light = extract_groups(&auto, &[SettingsGroup::Light]);
         assert_eq!(apply_partial(&colorimetric, &light, 1.0).profile.camera_colour, CameraColour::Colorimetric);
+    }
+
+    /// Lists in settings JSON keep their first items up to their limits, so a sidecar, preset or
+    /// `develop.merge` can't ask for thousands of full-size mask planes or per-pixel loops: 10,000
+    /// masks, 10⁶ colour samples and 10⁶ empty strokes come back within limits (issue #2121).
+    #[test]
+    fn huge_lists_in_settings_json_are_cut_to_their_limits() {
+        let linear = json!({"op": "add", "shape": {"kind": "linear", "start": {"x": 0, "y": 0}, "end": {"x": 1, "y": 1}}});
+        let masks: Vec<Value> = (0..10_000).map(|i| json!({"id": i, "components": [linear.clone()]})).collect();
+        let samples = vec![json!([0.5, 0.0, 0.0]); 1_000_000];
+        let strokes = vec![json!({}); 1_000_000];
+        let bomb = json!({
+            "masks": masks,
+            "spots": vec![json!({}); 5_000],
+            "curve": {"master": vec![json!({"x": 0.5, "y": 0.5}); 10_000]},
+        });
+        let s = DevelopSettings::from_json(&bomb).unwrap();
+        assert_eq!((s.masks.len(), s.spots.len(), s.curve.master.len()), (MAX_MASKS, MAX_SPOTS, MAX_CURVE_POINTS));
+        let inner = json!({"masks": [{"components": [
+            {"shape": {"kind": "colorRange", "samples": samples, "refine": 50}},
+            {"shape": {"kind": "brush", "strokes": strokes}},
+        ]}]});
+        let s = DevelopSettings::default().merged(&inner).unwrap();
+        let shapes: Vec<&MaskShape> = s.masks[0].components.iter().map(|c| &c.shape).collect();
+        assert!(matches!(shapes[0], MaskShape::ColorRange { samples, .. } if samples.len() == MAX_COLOR_SAMPLES));
+        assert!(matches!(shapes[1], MaskShape::Brush { strokes } if strokes.len() == MAX_STROKES));
+        // within the limits, nothing changes
+        let few = json!({"masks": [{"id": 3, "components": [linear.clone(), linear]}], "redEye": []});
+        assert_eq!(DevelopSettings::from_json(&few).unwrap().masks[0].components.len(), 2);
+    }
+
+    /// `over_list_limits` and `cap_lists` cover the same lists: settings built in code past every
+    /// limit are over, and cut back they aren't (each list at its limit).
+    #[test]
+    fn list_limits_are_checked_and_cut_alike() {
+        let p = lcc_geom::Point::new(0.5, 0.5);
+        let mut s = DevelopSettings::default();
+        assert!(!s.over_list_limits());
+        let stroke = BrushStroke { points: vec![p; MAX_STROKE_POINTS + 1], pressure: vec![1.0; MAX_STROKE_POINTS + 1], ..Default::default() };
+        let shapes = [
+            MaskShape::Brush { strokes: vec![stroke; 2] },
+            MaskShape::ColorRange { samples: vec![[0.0; 3]; MAX_COLOR_SAMPLES + 1], refine: 0.0 },
+            MaskShape::Object { hint: vec![p; MAX_PROMPT_POINTS + 1], exclude: vec![p; MAX_PROMPT_POINTS + 1], seg: None, detail: vec![], edge: 0.0 },
+            MaskShape::People { person: 0, parts: vec![String::new(); MAX_PEOPLE_PARTS + 1] },
+        ];
+        // one list over at a time: each is noticed, and cut
+        for (k, shape) in shapes.into_iter().enumerate() {
+            let mut t = DevelopSettings::default();
+            t.masks.push(Mask { components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }], ..Default::default() });
+            assert!(t.over_list_limits(), "shape {k}");
+            t.cap_lists();
+            assert!(!t.over_list_limits(), "shape {k}");
+        }
+        s.masks = vec![Mask::default(); MAX_MASKS + 1];
+        s.masks[0].components =
+            vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Subject }; MAX_MASK_COMPONENTS + 1];
+        s.spots = vec![Spot { points: vec![p; MAX_SPOT_POINTS + 1], ..Default::default() }; MAX_SPOTS + 1];
+        s.red_eye = vec![RedEye::default(); MAX_RED_EYES + 1];
+        s.point_colors = vec![PointColor::default(); MAX_POINT_COLORS + 1];
+        s.curve.blue = vec![p; MAX_CURVE_POINTS + 1];
+        s.geometry.guides = vec![(p, p); MAX_GUIDES + 1];
+        s.disabled_sections = vec![String::new(); MAX_DISABLED_SECTIONS + 1];
+        assert!(s.over_list_limits());
+        s.cap_lists();
+        assert!(!s.over_list_limits());
+        assert_eq!(
+            (s.masks.len(), s.masks[0].components.len(), s.spots.len(), s.spots[0].points.len(), s.red_eye.len(), s.curve.blue.len()),
+            (MAX_MASKS, MAX_MASK_COMPONENTS, MAX_SPOTS, MAX_SPOT_POINTS, MAX_RED_EYES, MAX_CURVE_POINTS)
+        );
     }
 
     #[test]

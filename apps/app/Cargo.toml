@@ -14,9 +14,11 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = ["denoise"]
+# The upstream project's own AI Denoise model (MIT OR Apache-2.0) is offered as a download
+default = ["denoise", "own-model"]
 denoise = ["lcc-engine/denoise"]
 rawnind-model = ["denoise", "lcc-engine/rawnind-model"]
+own-model = ["denoise", "lcc-engine/own-model"]
 # Open HEIC/HEIF photos (the optional lcc-heif crate). Not default so distributors choose
 # it (HEVC patents); build with `--features heif` to include it.
 heif = ["lcc-codecs/heif"]
@@ -77,6 +79,7 @@ muda = { workspace = true }
 objc2 = { workspace = true }
 objc2-app-kit = { workspace = true }
 objc2-foundation = { workspace = true }
+dispatch2 = "0.3.1"
 
 [dev-dependencies]
 # tests record why they skip (`cargo xtask ci` lists the skips)

@@ -119,7 +119,8 @@ fn writer_camera_identity_tags_roundtrip() {
         raw.metadata.make = make.map(str::to_owned);
         raw.metadata.model = model.map(str::to_owned);
         for order in [ByteOrder::Little, ByteOrder::Big] {
-            let bytes = write_dng(&raw, &DngWriteOptions { compression: DngCompression::Uncompressed, order, xmp: None }).unwrap();
+            let bytes =
+                write_dng(&raw, &DngWriteOptions { compression: DngCompression::Uncompressed, order, xmp: None, unique_camera_model: None }).unwrap();
             let tiff = lcc_tiff::Tiff::parse(&bytes).unwrap();
             let ifd = &tiff.ifds[0];
             assert_eq!(ifd.value(t::UNIQUE_CAMERA_MODEL), Some(&Value::Ascii(unique.into())), "{make:?} / {model:?}, {order:?}");
@@ -139,7 +140,7 @@ fn writer_roundtrip_all_layouts() {
             let raw = synthetic(w, h, cfa, cpp);
             for comp in [DngCompression::Uncompressed, DngCompression::Lj92 { tile: 16 }, DngCompression::Lj92 { tile: 256 }] {
                 for order in [ByteOrder::Little, ByteOrder::Big] {
-                    let bytes = write_dng(&raw, &DngWriteOptions { compression: comp, order, xmp: None }).unwrap();
+                    let bytes = write_dng(&raw, &DngWriteOptions { compression: comp, order, xmp: None, unique_camera_model: None }).unwrap();
                     assert_eq!(probe(&bytes), Some(RawFormat::Dng));
                     let back = decode(&bytes).unwrap();
                     assert_same(&raw, &back);
@@ -158,8 +159,11 @@ fn deflate_roundtrips_integer_and_float() {
             let cpp = if cfa.is_some() { 1 } else { 3 };
             let raw = synthetic(w, h, cfa, cpp);
             for order in [ByteOrder::Little, ByteOrder::Big] {
-                let bytes =
-                    write_dng(&raw, &DngWriteOptions { compression: DngCompression::Deflate { tile: 32, half: false }, order, xmp: None }).unwrap();
+                let bytes = write_dng(
+                    &raw,
+                    &DngWriteOptions { compression: DngCompression::Deflate { tile: 32, half: false }, order, xmp: None, unique_camera_model: None },
+                )
+                .unwrap();
                 assert_same(&raw, &decode(&bytes).unwrap());
             }
         }
@@ -1081,9 +1085,14 @@ fn cfa_pattern_is_relative_to_the_active_area() {
         let img = decode(&dng(raw, ByteOrder::Little)).unwrap();
         assert_eq!(img.cfa.as_ref().unwrap().name(), sensor_name, "sensor anchor for area at ({left}, {top})");
         assert_eq!(img.normalized().unwrap().cfa.unwrap().name(), "GRBG", "tag pattern for area at ({left}, {top})");
-        let back =
-            decode(&write_dng(&img, &DngWriteOptions { compression: DngCompression::Uncompressed, order: ByteOrder::Little, xmp: None }).unwrap())
-                .unwrap();
+        let back = decode(
+            &write_dng(
+                &img,
+                &DngWriteOptions { compression: DngCompression::Uncompressed, order: ByteOrder::Little, xmp: None, unique_camera_model: None },
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(back.cfa.as_ref().unwrap().name(), sensor_name);
         assert_eq!(back.normalized().unwrap().cfa.unwrap().name(), "GRBG");
     }

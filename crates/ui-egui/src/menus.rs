@@ -176,6 +176,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("panel.info", "Info", Some("I"), "Window>Panels"),
     ("panel.keywords", "Keywords", Some("K"), "Window>Panels"),
     ("panel.versions", "Versions", Some("Shift+V"), "Window>Panels"),
+    // Edit Keyword Tag for the keyword picked in the Keyword List (upstream #2879)
+    ("panel.editKeywords", "Edit Keywords", Some("Cmd+Shift+K"), ""),
     ("panel.activity", "History", None, "Window>Panels"),
     ("panel.close", "Close Panel", None, ""),
     ("panel.collapseRight", "Show/Hide Right Panel", None, "Window>Panels"),
@@ -855,9 +857,22 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(json!({"infoOverlay": app.ui.info_overlay}))
         }
         "view.viewOptions" => {
-            // `info1` / `info2` set the lines for an agent; without them the window opens
+            // `info1` / `info2` set the lines, `briefly` the Info that Show Briefly When Photo Changes
+            // shows, and `loupeMessages` the loading / rendering message, for an agent; without any of
+            // them the window opens
             let mut info = app.ui.settings.loupe_info;
             let mut set = false;
+            // `loupeMessages` sets Show message when loading or rendering photos
+            let messages = match p.get("loupeMessages") {
+                None => app.ui.settings.loupe_messages,
+                Some(v) => match v.as_bool() {
+                    Some(on) => {
+                        set = true;
+                        on
+                    }
+                    None => return Some(Err("`loupeMessages`: true|false".into())),
+                },
+            };
             for (key, lines) in [("info1", &mut info.info1), ("info2", &mut info.info2)] {
                 let Some(v) = p.get(key) else { continue };
                 match serde_json::from_value(v.clone()) {
@@ -868,12 +883,20 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 }
                 set = true;
             }
+            if let Some(v) = p.get("briefly") {
+                match serde_json::from_value(v.clone()) {
+                    Ok(v) => info.briefly = v,
+                    Err(_) => return Some(Err("`briefly`: off|basic|exposure (neither, Info 1 or Info 2)".into())),
+                }
+                set = true;
+            }
             if set {
                 app.ui.settings.loupe_info = info;
+                app.ui.settings.loupe_messages = messages;
             } else {
                 app.ui.dialog = Some(Dialog::ViewOptions);
             }
-            Ok(json!({"loupeInfo": app.ui.settings.loupe_info}))
+            Ok(json!({"loupeInfo": app.ui.settings.loupe_info, "loupeMessages": app.ui.settings.loupe_messages}))
         }
         "view.chooseLayoutImage" => {
             let path = match p.get("path").and_then(Value::as_str) {
@@ -1245,6 +1268,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "view.maskOverlay" => {
             app.ui.mask_overlay = p.get("show").and_then(Value::as_bool).unwrap_or(!app.ui.mask_overlay);
+            // switched on, it stays on through edits; switched off, it shows by itself again only for a
+            // mask without settings
+            app.ui.mask_overlay_pinned = app.ui.mask_overlay;
             Ok(json!({"maskOverlay": app.ui.mask_overlay}))
         }
         "view.maskOverlayAll" => {
@@ -1448,6 +1474,18 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "panel.versions" => {
             panel(app, &ctx, RightPanel::Versions, "Versions");
+            Ok(Value::Null)
+        }
+        "panel.editKeywords" => {
+            // the Keywords panel with its Keyword List open; the keyword picked there opens in
+            // Edit Keyword Tag (with none picked, no dialog opens)
+            if app.ui.right != RightPanel::Keywords {
+                panel(app, &ctx, RightPanel::Keywords, "Keywords");
+            }
+            app.ui.folded_sections.retain(|s| s != "keywordList");
+            if let Some(k) = app.ui.keyword_list_selected.clone().filter(|k| app.session.catalog.has_keyword(k)) {
+                app.ui.dialog = Some(crate::panels::keyword_list::edit_dialog(app, &k));
+            }
             Ok(Value::Null)
         }
         "panel.activity" => {

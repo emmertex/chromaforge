@@ -1503,5 +1503,7 @@
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "調整時保持一致的影像品質。如果編輯太慢無法做到，拖曳滑桿時影像會以更快的方式更新，停下後立即恢復清晰。",
   "Preview for SDR Display": "SDR 顯示預覽",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "依 SDR 顯示器和 SDR 輸出的效果顯示相片，以便調整其 SDR 版本",
-  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "這些設定相片在 SDR 顯示器和 SDR 輸出中的外觀。開啟「SDR 顯示預覽」即可看到效果。"
+  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "這些設定相片在 SDR 顯示器和 SDR 輸出中的外觀。開啟「SDR 顯示預覽」即可看到效果。",
+  "Graphics interface": "圖形介面",
+  "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "下次啟動時生效。如果啟用 GPU 後應用程式啟動緩慢，請嘗試 Vulkan：在某些電腦上它準備 GPU 的速度快得多。"
 }

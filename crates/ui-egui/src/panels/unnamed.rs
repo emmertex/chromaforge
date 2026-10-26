@@ -127,6 +127,7 @@ pub fn naming_bar(app: &mut LccApp, ui: &mut egui::Ui) {
     };
     let mut submit: Option<String> = None;
     let mut clear = false;
+    let mut ignore = false;
     ui.horizontal(|ui| {
         ui.add_space(super::people::PAD - 4.0);
         let n = selected.len();
@@ -148,6 +149,9 @@ pub fn naming_bar(app: &mut LccApp, ui: &mut egui::Ui) {
         if b.clicked() {
             submit = Some(chosen);
         }
+        let ig = ui.button(crate::i18n::tr("Ignore")).on_hover_text(crate::i18n::tr("Leave these faces out of People; they are not found again"));
+        register(ui.ctx(), "unnamed:ignore", ig.rect);
+        ignore = ig.clicked();
         let c = ui.button(crate::i18n::tr("Clear"));
         register(ui.ctx(), "unnamed:clear", c.rect);
         clear = c.clicked() || field.cancelled();
@@ -172,6 +176,12 @@ pub fn naming_bar(app: &mut LccApp, ui: &mut egui::Ui) {
     }
     if let Some(who) = submit {
         name(app, &selected, &who);
+        app.ui.unnamed_selected.clear();
+        app.ui.unnamed_name.clear();
+        app.ui.unnamed_anchor = None;
+    } else if ignore {
+        let list: Vec<Value> = selected.iter().map(|(photo, index)| json!({"photo": photo, "index": index})).collect();
+        let _ = app.run("faces.ignore", json!({"faces": list}));
         app.ui.unnamed_selected.clear();
         app.ui.unnamed_name.clear();
         app.ui.unnamed_anchor = None;

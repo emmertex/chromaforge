@@ -73,6 +73,17 @@ fn tag_text() -> String {
     )
 }
 
+/// Write `bytes` as a new file at `path`: whatever is at that name already (a leftover, or a
+/// link) is removed first, the link itself and never what it points to, and the file is then
+/// created exclusively, so a write never follows a link planted in the cache folder (issue #2122).
+fn write_fresh(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if std::fs::symlink_metadata(path).is_ok() {
+        std::fs::remove_file(path)?;
+    }
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)?.write_all(bytes)
+}
+
 pub struct DiskCache {
     dir: PathBuf,
     /// Bytes the cache may hold (changed in place by [`DiskCache::set_budget`]).
@@ -179,6 +190,10 @@ impl DiskCache {
     }
 
     pub fn put(&self, key: Hash128, img: &Rgba8) {
+        // what `get` would refuse to read back isn't written
+        if img.width.max(img.height) > MAX_EDGE {
+            return;
+        }
         let Some(bytes) = encode_jpeg(img) else { return };
         let p = self.path(key);
         let Some(parent) = p.parent() else { return };
@@ -189,7 +204,7 @@ impl DiskCache {
             return;
         }
         if made {
-            let _ = std::fs::write(self.dir.join(TAG), tag_text());
+            let _ = write_fresh(&self.dir.join(TAG), tag_text().as_bytes());
         }
         // Serialize the file replacement and its size accounting. A repeated render of
         // the same key replaces its JPEG; it must not count as another cache entry.
@@ -197,7 +212,7 @@ impl DiskCache {
         let used = total.get_or_insert_with(|| self.scan().iter().map(|f| f.1).sum());
         let old_len = std::fs::metadata(&p).map_or(0, |m| m.len());
         let tmp = p.with_extension(format!("tmp{:?}", std::thread::current().id()).replace(['(', ')'], ""));
-        if std::fs::write(&tmp, &bytes).is_err() || std::fs::rename(&tmp, &p).is_err() {
+        if write_fresh(&tmp, &bytes).is_err() || std::fs::rename(&tmp, &p).is_err() {
             let _ = std::fs::remove_file(&tmp);
             return;
         }
@@ -300,9 +315,9 @@ impl DiskCache {
         // done, also when the folder holds other things; not when something could not be taken
         // over (a folder that can't be written: it is tried again at the next open)
         if !blocked {
-            let _ = std::fs::write(self.dir.join(TIDIED), b"");
+            let _ = write_fresh(&self.dir.join(TIDIED), b"");
             if self.holds_only_the_cache() {
-                let _ = std::fs::write(self.dir.join(TAG), tag_text());
+                let _ = write_fresh(&self.dir.join(TAG), tag_text().as_bytes());
             }
         }
         taken
@@ -453,15 +468,29 @@ pub fn encode_jpeg(img: &Rgba8) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Decode a cached thumbnail (see [`encode_jpeg`]).
+/// Longest side of an image the cache keeps: the loupe's largest render (`LOUPE_EDGE_CEILING`).
+/// [`decode_jpeg`] refuses larger ones from their header, so a file planted in the cache folder
+/// costs at most 200 MB to read, not the decoder's default 16384² (issue #2140).
+pub const MAX_EDGE: usize = 8192;
+
+/// Decode a cached thumbnail (see [`encode_jpeg`]): `None` for anything else, larger than
+/// [`MAX_EDGE`] (from the header, before its pixels are allocated), or that panics the decoder.
 pub fn decode_jpeg(bytes: &[u8]) -> Option<Rgba8> {
+    std::panic::catch_unwind(|| decode_jpeg_unguarded(bytes)).ok().flatten()
+}
+
+fn decode_jpeg_unguarded(bytes: &[u8]) -> Option<Rgba8> {
     use zune_core::bytestream::ZCursor;
     use zune_core::colorspace::ColorSpace;
     use zune_core::options::DecoderOptions;
-    let opts = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGB);
+    let opts = DecoderOptions::default().set_max_width(MAX_EDGE).set_max_height(MAX_EDGE).jpeg_set_out_colorspace(ColorSpace::RGB);
     let mut d = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), opts);
-    let px = d.decode().ok()?;
+    d.decode_headers().ok()?;
     let info = d.info()?;
+    if usize::from(info.width).max(usize::from(info.height)) > MAX_EDGE {
+        return None;
+    }
+    let px = d.decode().ok()?;
     let (w, h) = (info.width as usize, info.height as usize);
     if px.len() < w * h * 3 {
         return None;

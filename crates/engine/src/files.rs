@@ -17,9 +17,12 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
     // the camera's own wording, to the tenth of a second: `1/250`, `0.4`, `1.3″` (issue #1619: rounding
     // `1/0.4` to `1/2` both showed and exported the wrong time)
     let shutter = m.exposure_time.and_then(lcc_meta::exposure_display_of).unwrap_or_default();
-    let camera = [m.make.clone().unwrap_or_default(), m.model.clone().unwrap_or_default()].join(" ").trim().to_string();
+    let camera_make = m.make.clone().unwrap_or_default();
+    let camera_model = m.model.clone().unwrap_or_default();
     let meta = Meta {
-        camera,
+        camera: lcc_catalog::camera_label(&camera_make, &camera_model),
+        camera_make,
+        camera_model,
         // (a camera that writes no lens name, like Nikon's DSLRs, still says what range the lens covers)
         lens: m.lens_model.clone().or_else(|| m.lens_spec.and_then(lcc_meta::lens_spec_name)).unwrap_or_default(),
         focal_mm: m.focal_length.map(|f| f as f32),
@@ -207,6 +210,20 @@ fn ext_upper(name: &str) -> String {
     std::path::Path::new(name).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default()
 }
 
+/// The lens correction for a raw file's bytes with the lens the user `picked` ([`crate::lens_profiles::resolve_picked`])
+/// → (the correction, whether it is the file's own). Not a raw: an error.
+pub fn lens_for_bytes(bytes: &[u8], picked: Option<&crate::lens_profiles::GivenLens>) -> Result<(Option<lcc_develop::EmbeddedLens>, bool), String> {
+    if lcc_raw::probe(bytes).is_none() {
+        return Err("not a raw file".into());
+    }
+    let raw = lcc_raw::probe_info(bytes).map_err(|e| e.to_string())?;
+    let mut m = lcc_meta::extract(bytes);
+    m.fill_missing(&raw.metadata);
+    let resolved = crate::lens_profiles::resolve_picked(&raw, || m.clone(), picked);
+    let from_file = matches!(resolved, Some((_, crate::lens_profiles::Applied::Embedded)));
+    Ok((resolved.map(|(l, _)| l), from_file))
+}
+
 /// Probe a file's bytes: kind, dimensions (oriented), metadata. No pixel data is decompressed:
 /// raws are described from their headers ([`lcc_raw::probe_info`]), other images too
 /// ([`lcc_codecs::read_header`], which refuses truncated files but can't see damage inside
@@ -258,6 +275,7 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
                     as_shot_wb: None,
                     content_hash,
                     xmp: lcc_meta::embedded(bytes).xmp,
+                    orientation: m.orientation,
                     preview_only: Some(why),
                     sha1,
                     ..Default::default()
@@ -300,6 +318,7 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
             as_shot_wb,
             content_hash,
             xmp: lcc_meta::embedded(bytes).xmp,
+            orientation: Some(raw.orientation),
             preview_only: None,
             sha1,
             video: None,
@@ -317,6 +336,17 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
     let (mut w, mut h) = (header.width, header.height);
     if o.swaps_axes() {
         std::mem::swap(&mut w, &mut h);
+    }
+    // regions another app drew on the photo as stored: `extract` could only tell by the size the metadata states, which
+    // can be missing or wrong; the header's is the size as stored, so the boxes as written are turned by it (#2674)
+    if o.swaps_axes()
+        && !meta.regions.is_empty()
+        && let Some(xmp) = lcc_meta::embedded(bytes).xmp.and_then(|x| lcc_meta::parse_xmp(&x).ok())
+        && let Some(drawn_on) = xmp.regions_drawn_on()
+        && !xmp.metadata.regions.is_empty()
+    {
+        meta.regions = xmp.metadata.regions;
+        lcc_meta::upright_regions(&mut meta.regions, drawn_on, o, (header.width, header.height));
     }
     let format = match ext_upper(name).as_str() {
         "JPG" | "JPEG" => "JPEG".to_string(),
@@ -342,6 +372,7 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
         embedded_lens: None,
         lens_from_file: false,
         xmp: None,
+        orientation: m.orientation,
         preview_only: None,
         sha1,
         video: None,
@@ -752,7 +783,8 @@ fn load_bytes_now(
 /// A file with colour matrices of its own (DNG) has an absolute scale from its tags. A file without
 /// (`camera_preview::file_local_look`) has one when its camera's matrices are measured
 /// (`lcc_raw::spectral`), else when its camera's white-balance presets give one
-/// (`lcc_raw::kelvin_presets`): either turns its as-shot multipliers into Kelvin and tint, nothing else — the
+/// (`lcc_raw::kelvin_presets`), else when the camera database has matrices for it (`lcc_camdb`, dcraw's table):
+/// each turns its as-shot multipliers into Kelvin and tint, nothing else — the
 /// look stays the file's fit. Any other raw is edited relative to its as-shot look (6500 K / 0 means as shot).
 pub(crate) struct WbScaleOf {
     own_matrix: bool,
@@ -763,6 +795,8 @@ pub(crate) struct WbScaleOf {
     scale_white: Option<lcc_color::Xy>,
     /// The camera's measured matrices, when they give the scale.
     camera: Option<&'static lcc_raw::spectral::Camera>,
+    /// The camera database entry whose matrices give the scale, when neither the spectral table nor presets do.
+    db: Option<lcc_camdb::Entry>,
 }
 
 /// The white balance a DNG of a raw's camera RGB (Photo Merge) declares so that it shows as its source does
@@ -788,8 +822,14 @@ impl WbScaleOf {
             None if presets => lcc_raw::kelvin_presets::as_shot_white(color, shot),
             None => None,
         };
-        let covered = camera.is_some() || presets;
-        WbScaleOf { own_matrix, relative: fitted && !covered, legacy_relative: fitted && covered, scale_white, camera }
+        // else the camera database's matrices (dcraw's table, …), the last way to a Kelvin reading
+        let db = (camera.is_none() && !presets)
+            .then(|| model.and_then(|model| lcc_camdb::find(meta.make.as_deref(), model)))
+            .flatten()
+            .filter(|e| lcc_raw::color::has_matrix(&e.color_data()));
+        let scale_white = scale_white.or_else(|| db.as_ref().and_then(|e| e.as_shot_white_through(color, shot)));
+        let covered = camera.is_some() || presets || db.is_some();
+        WbScaleOf { own_matrix, relative: fitted && !covered, legacy_relative: fitted && covered, scale_white, camera, db }
     }
 
     /// What a DNG of this raw's camera RGB declares so that it shows the white balance as this scale does: the
@@ -799,6 +839,12 @@ impl WbScaleOf {
         if let Some(camera) = self.camera {
             let mut c = lcc_raw::ColorData { profile: Default::default(), kelvin_presets: None, ..color.clone() };
             if camera.fill(&mut c) {
+                return DngWhite::Matrices(Box::new(c));
+            }
+        }
+        if let Some(e) = &self.db {
+            let mut c = lcc_raw::ColorData { profile: Default::default(), kelvin_presets: None, ..color.clone() };
+            if e.fill(&mut c) {
                 return DngWhite::Matrices(Box::new(c));
             }
         }
@@ -1342,6 +1388,17 @@ impl crate::Session {
 pub(crate) mod tests {
     /// A raw cut short (still being copied) and a temporary name are refused by the file probe as
     /// still being written (issue #123), which the scans and imports skip.
+    /// Make and Model are kept separately for exports; the label drops a repeated maker (upstream #1618).
+    #[test]
+    fn imported_camera_keeps_make_and_model() {
+        let m = lcc_meta::Metadata { make: Some("Canon".into()), model: Some("Canon IXUS 185".into()), ..Default::default() };
+        let (meta, _) = super::meta_of(&m);
+        assert_eq!((meta.camera_make.as_str(), meta.camera_model.as_str()), ("Canon", "Canon IXUS 185"));
+        assert_eq!(meta.camera, "Canon IXUS 185");
+        let m = lcc_meta::Metadata { make: Some("Sony".into()), model: Some("A7 IV".into()), ..Default::default() };
+        assert_eq!(super::meta_of(&m).0.camera, "Sony A7 IV");
+    }
+
     #[test]
     fn files_still_being_copied_are_left_for_a_later_scan() {
         let dir = std::env::temp_dir().join(format!("copy-skip-{}", std::process::id()));
@@ -1470,11 +1527,19 @@ pub(crate) mod tests {
             let (t, tint) = xy_to_temp_tint(d65);
             (t.round(), tint.round())
         });
-        // a camera without measured matrices or presets (the DSLR-A100 predates them): relative, whatever the multipliers
+        // a camera with neither measured matrices nor presets but a row of dcraw's matrix table (the DSLR-A100):
+        // Kelvin through that matrix, edits from before marked legacy, a daylight-ish reading of daylight multipliers
         let a100 = WbScaleOf::new(RawFormat::Arw, &ColorData::default(), mul, &meta("SONY", "DSLR-A100"));
-        assert!(a100.relative && !a100.legacy_relative && a100.scale_white.is_none());
-        assert_eq!(a100.as_shot(d65), (6500.0, 0.0));
-        assert!(lcc_catalog::relative_wb_camera("ARW", "SONY DSLR-A100"));
+        assert!(!a100.relative && a100.legacy_relative && a100.scale_white.is_some());
+        let (t, _) = a100.as_shot(d65);
+        assert!((3000.0..9000.0).contains(&t), "{t}");
+        assert!(!lcc_catalog::relative_wb_camera("ARW", "SONY DSLR-A100"));
+        assert!(matches!(a100.dng_white(&ColorData::default(), d65), DngWhite::Matrices(_)));
+        // a camera no table covers: relative, whatever the multipliers
+        let none = WbScaleOf::new(RawFormat::Arw, &ColorData::default(), mul, &meta("HASSELBLAD", "Lunar"));
+        assert!(none.relative && !none.legacy_relative && none.scale_white.is_none());
+        assert_eq!(none.as_shot(d65), (6500.0, 0.0));
+        assert!(lcc_catalog::relative_wb_camera("ARW", "HASSELBLAD Lunar"));
         // a camera without matrices whose presets give the scale: Kelvin through them, Sony's daylight preset as
         // 5500 K or so; without presets in the file the scale is Kelvin still, the white the tags' (D65)
         let g = |r: f32, b: f32| [r / 1024.0, 1.0, b / 1024.0];
@@ -3052,15 +3117,15 @@ pub(crate) mod tests {
         assert_eq!((plain.kind, plain.preview_only, plain.width, plain.height), (MediaKind::Image, None, 16, 12));
     }
 
-    /// A GoPro GPR (DNG with VC-5 coded data, no preview anywhere) still imports, described from its
-    /// headers; loading it says what is wrong instead of naming a bare TIFF compression number.
+    /// A GoPro GPR (DNG with VC-5 coded data, no preview anywhere) imports, described from its headers, and
+    /// develops from its sensor data.
     #[test]
-    fn gopro_vc5_dng_imports_and_fails_to_load_with_a_clear_reason() {
+    fn gopro_vc5_dng_imports_and_loads() {
         use lcc_tiff::{IfdBuilder, ImageData, TiffWriter, Value, tags as t};
         let mut ifd = IfdBuilder::new();
         ifd.set(t::NEW_SUBFILE_TYPE, Value::Long(vec![0]));
-        ifd.set(t::IMAGE_WIDTH, Value::Long(vec![32]));
-        ifd.set(t::IMAGE_LENGTH, Value::Long(vec![16]));
+        ifd.set(t::IMAGE_WIDTH, Value::Long(vec![64]));
+        ifd.set(t::IMAGE_LENGTH, Value::Long(vec![48]));
         ifd.set(t::BITS_PER_SAMPLE, Value::Short(vec![16]));
         ifd.set(t::SAMPLES_PER_PIXEL, Value::Short(vec![1]));
         ifd.set(t::PHOTOMETRIC, Value::Short(vec![32803]));
@@ -3068,12 +3133,15 @@ pub(crate) mod tests {
         ifd.set(t::DNG_VERSION, Value::Byte(vec![1, 4, 0, 0]));
         ifd.set(t::CFA_REPEAT_PATTERN_DIM, Value::Short(vec![2, 2]));
         ifd.set(t::CFA_PATTERN_EP, Value::Byte(vec![0, 1, 1, 2]));
-        ifd.set_image(ImageData::Tiles { tile_width: 32, tile_height: 16, tiles: vec![vec![0x5au8; 400]] });
+        ifd.set(t::WHITE_LEVEL, Value::Short(vec![16383]));
+        let tile = lcc_raw::testdata::vc5_stream(64, 48, [4000, 8192, 8192, 8192], 0);
+        ifd.set_image(ImageData::Tiles { tile_width: 64, tile_height: 48, tiles: vec![tile] });
         let f = TiffWriter::default().write(&[ifd]).unwrap();
+        assert!(crate::import::EXTENSIONS.contains(&"gpr"), "folder imports find .GPR files");
         let p = probe_bytes("GOPR0001.GPR", &f).unwrap();
-        assert_eq!((p.kind, p.preview_only, p.width, p.height), (MediaKind::Raw, None, 32, 16));
-        let e = load_bytes(&f, 16).unwrap_err();
-        assert!(e.contains("GoPro VC-5") && e.contains("not decoded yet"), "{e}");
+        assert_eq!((p.kind, p.preview_only, p.width, p.height), (MediaKind::Raw, None, 64, 48));
+        let (img, src) = load_bytes(&f, 64).unwrap();
+        assert_eq!((img.width, img.height, src.raw), (64, 48, true));
     }
 
     /// Any failure of a recognised raw (not only an unsupported variant) can fall back to its preview;
@@ -3253,5 +3321,41 @@ pub(crate) mod tests {
         assert!(!s.catalog.photo(old).unwrap().is_edited(), "still as imported");
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An ILCE-7CR frame at ISO 50 (the sensor at ISO 100 with a stop more light) develops at half the level of the
+    /// same sensor data at ISO 100: the decoder's baseline exposure reaches the render.
+    #[test]
+    fn a7cr_iso_50_develops_a_stop_darker_than_iso_100() {
+        use lcc_tiff::{IfdBuilder, ImageData, TiffWriter, Value, tags as t};
+        let arw = |iso: u16| {
+            let (w, h) = (64u32, 48u32);
+            let mut raw = IfdBuilder::new();
+            raw.set(t::MAKE, Value::Ascii("SONY".into()));
+            raw.set(t::MODEL, Value::Ascii("ILCE-7CR".into()));
+            raw.set(t::IMAGE_WIDTH, Value::Long(vec![w]));
+            raw.set(t::IMAGE_LENGTH, Value::Long(vec![h]));
+            raw.set(t::SAMPLES_PER_PIXEL, Value::Short(vec![1]));
+            raw.set(t::PHOTOMETRIC, Value::Short(vec![t::photometric::CFA]));
+            raw.set(t::BITS_PER_SAMPLE, Value::Short(vec![16]));
+            raw.set(t::COMPRESSION, Value::Short(vec![1]));
+            raw.set(t::WHITE_LEVEL, Value::Long(vec![16383]));
+            // a mid grey, far from clipping at either exposure
+            let samples: Vec<u8> = (0..w * h).flat_map(|_| 3000u16.to_le_bytes()).collect();
+            raw.set_image(ImageData::Strips { rows_per_strip: h, strips: vec![samples] });
+            let mut exif = IfdBuilder::new();
+            exif.set(t::ISO_SPEED, Value::Short(vec![iso]));
+            raw.set_child(t::EXIF_IFD, exif);
+            TiffWriter::default().write(&[raw]).expect("the fixture writes")
+        };
+        let mean = |iso| {
+            let (img, _) = load_bytes(&arw(iso), 64).expect("the fixture develops");
+            let sum: f64 = img.data.iter().map(|p| p.iter().map(|v| f64::from(*v)).sum::<f64>()).sum();
+            sum / (img.data.len() * 3) as f64
+        };
+        let (at_50, at_100) = (mean(50), mean(100));
+        assert!(at_100 > 0.01, "the fixture develops to a visible level: {at_100}");
+        let ratio = at_50 / at_100;
+        assert!((ratio - 0.5).abs() < 0.01, "ISO 50 / ISO 100 = {ratio}");
     }
 }

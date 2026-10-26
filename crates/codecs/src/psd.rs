@@ -512,12 +512,16 @@ mod tests {
         b
     }
 
+    /// The 1 Gpx cap these tests were written against (the default is now 512 MP, which refuses
+    /// their images before the checks they test).
+    const GPX: DecodeOptions = DecodeOptions { max_size: None, max_pixels: 1 << 30, max_bytes: crate::DEFAULT_MAX_BYTES };
+
     #[test]
     fn huge_rle_with_truncated_count_table_is_rejected_before_allocating() {
         // 1 × 2^30 px, 56 channels: the row table alone would be 56 Gi entries; the file has 4 bytes.
         let mut b = header(56, 1, 1 << 30, 32, 3, 1);
         b.extend_from_slice(&[0, 0, 0, 0]);
-        let e = decode(&b, &DecodeOptions::default()).unwrap_err();
+        let e = decode(&b, &GPX).unwrap_err();
         assert!(matches!(e, Error::Malformed(_, ref m) if m == "truncated"), "{e:?}");
     }
 
@@ -526,12 +530,12 @@ mod tests {
         // 2^30 × 1 px RGB at 32 bits: every row count is 0, which used to zero-pad 3 × 4 GiB.
         let mut b = header(3, 1 << 30, 1, 32, 3, 1);
         b.extend_from_slice(&[0; 6]);
-        let e = decode(&b, &DecodeOptions::default()).unwrap_err();
+        let e = decode(&b, &GPX).unwrap_err();
         assert!(matches!(e, Error::Malformed(_, ref m) if m.contains("too short")), "{e:?}");
         // 1 Gpx RGB 8-bit whose (plausible) row counts claim more data than the file holds.
         let mut b = header(3, 1 << 20, 1 << 10, 8, 3, 1);
         b.extend_from_slice(&[0xFF; 3 * 1024 * 2]);
-        let e = decode(&b, &DecodeOptions::default()).unwrap_err();
+        let e = decode(&b, &GPX).unwrap_err();
         assert!(matches!(e, Error::Malformed(_, ref m) if m == "truncated"), "{e:?}");
     }
 

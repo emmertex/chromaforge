@@ -214,9 +214,8 @@ impl Index {
             for (k, e) in &self.entries {
                 buf.extend(self.record(k, e));
             }
-            let part = path.with_extension("part");
-            std::fs::write(&part, &buf)?;
-            std::fs::rename(&part, &path)?;
+            // a fresh temp file renamed over the index: never written through a link (issue #2122)
+            lcc_catalog::safe_file::write_atomic_nosync(&path, &buf)?;
             self.file_matches = true;
             self.rewrite = false;
         }
@@ -234,7 +233,8 @@ impl Drop for Index {
 /// Append `buf` to the file at `path`. When the write fails (a full disk), the file is cut back to its old length so
 /// the part that got in does not shift what is appended later.
 fn append(path: &Path, buf: &[u8]) -> std::io::Result<()> {
-    let mut f = std::fs::OpenOptions::new().append(true).open(path)?;
+    // not through a link at the name (issue #2122)
+    let mut f = lcc_catalog::safe_file::open_existing(path, std::fs::OpenOptions::new().append(true))?;
     let old_len = f.metadata()?.len();
     let written = f.write_all(buf);
     if written.is_err() {
@@ -367,9 +367,8 @@ impl Scanned {
         } else {
             let mut buf = self.header();
             buf.extend(self.set.iter().flat_map(|id| id.to_le_bytes()));
-            let part = path.with_extension("part");
-            std::fs::write(&part, &buf)?;
-            std::fs::rename(&part, &path)?;
+            // a fresh temp file renamed over the index: never written through a link (issue #2122)
+            lcc_catalog::safe_file::write_atomic_nosync(&path, &buf)?;
             self.file_matches = true;
             self.rewrite = false;
         }

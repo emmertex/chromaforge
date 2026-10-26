@@ -9,7 +9,7 @@ use std::sync::Arc;
 use lcc_engine::Session;
 use lcc_engine::catalog::Source;
 use lcc_engine::library::LibraryStores;
-use lcc_ui_egui::{LccApp, Services, UiState};
+use lcc_ui_egui::{ControlRequest, LccApp, Services, UiState};
 use serde_json::json;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -173,6 +173,7 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
     let restore_backend = backend.clone();
     Services {
         picker: None,
+        dialog_errors: None,
         pick_display_profile: None,
         screen_profile: None,
         backup_library: Some(Box::new(move |session: &mut Session| {
@@ -230,6 +231,8 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
         save_list_file: None,
         pick_slideshow_templates: None,
         save_slideshow_template: None,
+        pick_print_templates: None,
+        save_print_template: None,
         write: Some(Box::new(download)),
         // downloads happen on the main thread: exports run in the foreground on the web
         write_shared: None,
@@ -477,6 +480,10 @@ impl WebApp {
         let frozen = Rc::new(Cell::new(read_failed));
         let mut app = LccApp::new(session, services(originals.clone(), backend.clone(), files.clone(), frozen.clone(), cc.egui_ctx.clone()))
             .with_chinese_font(chinese_font);
+        // The page's control channel ([`request`]).
+        let (control_tx, control_rx) = std::sync::mpsc::channel();
+        CONTROL.with(|c| *c.borrow_mut() = Some(control_tx));
+        app = app.with_control(control_rx);
         let ui_written = files.get("ui.json").unwrap_or_default();
         if let Ok(ui) = serde_json::from_slice::<UiState>(&ui_written) {
             app.ui = ui;
@@ -636,6 +643,9 @@ thread_local! {
     /// Commands from JavaScript ([`command`]), run on the next frame.
     static INBOX: std::cell::RefCell<Vec<(String, String, Reply)>> = const { std::cell::RefCell::new(Vec::new()) };
     static CTX: std::cell::RefCell<Option<egui::Context>> = const { std::cell::RefCell::new(None) };
+    /// The control channel for [`request`], and the replies its callers still wait for.
+    static CONTROL: std::cell::RefCell<Option<std::sync::mpsc::Sender<ControlRequest>>> = const { std::cell::RefCell::new(None) };
+    static WAITING: std::cell::RefCell<Vec<(std::sync::mpsc::Receiver<serde_json::Value>, Reply)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Run a command by id from JavaScript (automation, tests): `await command("library.info", "{}")`
@@ -647,6 +657,64 @@ pub fn command(id: String, params: String) -> js_sys::Promise {
         INBOX.with(|q| q.borrow_mut().push((id.clone(), params.clone(), (resolve, reject))));
         CTX.with(|c| c.borrow().as_ref().map(|c| c.request_repaint()));
     })
+}
+
+/// Call a control method from JavaScript (`docs/control-protocol.md`, the methods the desktop control
+/// server and MCP use): `await request("ui.inspect", {})` resolves to the method's `result` and
+/// rejects with an `Error` carrying its message. `params` is an object, or JSON text as for
+/// [`command`]; anything else rejects and runs nothing. VectorCraft's and PhotoCraft's pages take the
+/// same calls, so one agent or host app can drive them all.
+#[wasm_bindgen]
+pub fn request(method: String, params: JsValue) -> js_sys::Promise {
+    // Params that have no JSON (a cyclic object, a function, a throwing `toJSON`) reject: as `{}` they
+    // would run the method with its defaults.
+    let text = if params.is_undefined() || params.is_null() {
+        Ok(String::new())
+    } else if let Some(s) = params.as_string() {
+        Ok(s)
+    } else {
+        js_sys::JSON::stringify(&params)
+            .ok()
+            .and_then(|s| s.as_string())
+            .ok_or_else(|| "params are not JSON (a cyclic object or a function?)".to_string())
+    };
+    js_sys::Promise::new(&mut |resolve, reject| {
+        let sent = text.clone().and_then(|text| crate::automation::params(&text)).map_err(|e| format!("{method}: {e}")).and_then(|params| {
+            let (req, rx) = ControlRequest::new(method.clone(), params);
+            let sent = CONTROL.with(|c| c.borrow().as_ref().is_some_and(|tx| tx.send(req).is_ok()));
+            if sent { Ok(rx) } else { Err("the app is not running yet".to_string()) }
+        });
+        match sent {
+            Ok(rx) => WAITING.with(|w| w.borrow_mut().push((rx, (resolve, reject)))),
+            Err(e) => {
+                let _ = reject.call1(&JsValue::NULL, &js_sys::Error::new(&e));
+            }
+        }
+        CTX.with(|c| c.borrow().as_ref().map(|c| c.request_repaint()));
+    })
+}
+
+/// Settle the promises of [`request`]s the app has answered (every frame).
+fn settle_requests() {
+    WAITING.with(|w| {
+        w.borrow_mut().retain(|(rx, (resolve, reject))| match rx.try_recv() {
+            Ok(v) => {
+                if v.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+                    let result = v.get("result").map_or(JsValue::NULL, |r| js_sys::JSON::parse(&r.to_string()).unwrap_or(JsValue::NULL));
+                    let _ = resolve.call1(&JsValue::NULL, &result);
+                } else {
+                    let msg = v.get("error").and_then(serde_json::Value::as_str).unwrap_or("error");
+                    let _ = reject.call1(&JsValue::NULL, &js_sys::Error::new(msg));
+                }
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                let _ = reject.call1(&JsValue::NULL, &js_sys::Error::new("request dropped"));
+                false
+            }
+        });
+    });
 }
 
 impl WebApp {
@@ -691,6 +759,7 @@ impl eframe::App for WebApp {
             self.app.ui.toast = Some((text, now + NOTICE_SECS, None));
         }
         self.run_inbox();
+        settle_requests();
         self.import_dropped(ctx);
         self.load_originals(ctx);
         if let Some(w) = &self.workers {
@@ -699,6 +768,8 @@ impl eframe::App for WebApp {
             w.set_budget(self.app.session.cache_bytes());
         }
         self.app.logic(ctx);
+        // Replies the app sent just now (its control requests run in `logic`).
+        settle_requests();
         self.save();
         if let Some(b) = self.bench.as_mut()
             && let Some(report) = b.step(&mut self.app)

@@ -260,12 +260,31 @@ impl LoupeInfoField {
 }
 
 /// The three lines each mode of the info overlay shows: Info 1 ([`InfoOverlay::Basic`]) and
-/// Info 2 ([`InfoOverlay::Exposure`]).
+/// Info 2 ([`InfoOverlay::Exposure`]), and which of them Show Briefly When Photo Changes shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LoupeInfo {
     pub info1: [LoupeInfoField; 3],
     pub info2: [LoupeInfoField; 3],
+    /// Show Briefly When Photo Changes: while the info overlay is off, this Info shows for
+    /// [`BRIEF_INFO_SECS`] each time the loupe changes to another photo ([`InfoOverlay::Off`]:
+    /// neither).
+    pub briefly: InfoOverlay,
+}
+
+/// How long Show Briefly When Photo Changes shows the info overlay (seconds).
+pub const BRIEF_INFO_SECS: f64 = 3.0;
+
+/// When the loupe last changed photo, for Show Briefly When Photo Changes
+/// ([`LoupeInfo::briefly`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BriefInfo {
+    /// The photo the loupe showed last.
+    pub photo: Option<lcc_catalog::PhotoId>,
+    /// When the loupe changed to it (seconds on egui's clock).
+    pub since: f64,
+    /// The brief info overlay shows this frame.
+    pub shown: bool,
 }
 
 impl LoupeInfo {
@@ -277,7 +296,7 @@ impl LoupeInfo {
 
 impl Default for LoupeInfo {
     fn default() -> Self {
-        LoupeInfo { info1: LoupeInfo::INFO1, info2: LoupeInfo::INFO2 }
+        LoupeInfo { info1: LoupeInfo::INFO1, info2: LoupeInfo::INFO2, briefly: InfoOverlay::Off }
     }
 }
 
@@ -410,6 +429,9 @@ pub struct AppSettings {
     pub close_dialogs_outside: bool,
     /// GPU rendering allowed (`app.gpu`).
     pub gpu: bool,
+    /// The graphics interface GPU rendering uses (Settings ▸ Performance; applies at next launch).
+    /// The window keeps the platform's own; `<PREFIX>_GPU_BACKEND` / `WGPU_BACKEND` win over it.
+    pub gpu_backend: GpuBackend,
     /// Windows DirectComposition to prevent VRR flicker; opt-in, applies at next launch.
     pub compose_window: bool,
     /// An HDR (extended-range) window where the display offers one; off: always an SDR window.
@@ -448,6 +470,9 @@ pub struct AppSettings {
     pub wheel_scroll_speed: f32,
     /// When a brush tool is active, the mouse wheel changes its size instead of zooming.
     pub wheel_resizes_brush: bool,
+    /// View ▸ View Options ▸ Show message when loading or rendering photos: the loupe says
+    /// "Rendering…" while the photo it shows is not the finished render.
+    pub loupe_messages: bool,
     /// Shortcuts the user changed (Help ▸ Keyboard Shortcuts): command id → shortcut, `""` = none.
     pub keymap: crate::shortcuts::Keymap,
     /// The keymap set the user's changes apply over (Classic by default).
@@ -508,6 +533,30 @@ pub enum LightroomImport {
     AlwaysMerge,
 }
 
+/// The graphics interface for GPU rendering (`AppSettings::gpu_backend`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuBackend {
+    /// The platform default (DirectX 12 on Windows, Metal on macOS, Vulkan elsewhere).
+    #[default]
+    Auto,
+    /// DirectX 12 (Windows).
+    Dx12,
+    /// Vulkan: on Windows it builds the GPU's shaders much faster than DirectX 12 on some machines.
+    Vulkan,
+}
+
+impl GpuBackend {
+    /// The name `lcc_gpu::backend::set_compute_preference` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            GpuBackend::Auto => "auto",
+            GpuBackend::Dx12 => "dx12",
+            GpuBackend::Vulkan => "vulkan",
+        }
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         AppSettings {
@@ -520,6 +569,7 @@ impl Default for AppSettings {
             ask_before_move: true,
             close_dialogs_outside: false,
             gpu: true,
+            gpu_backend: GpuBackend::Auto,
             compose_window: false,
             hdr_display: true,
             preview_limit: 0,
@@ -535,6 +585,7 @@ impl Default for AppSettings {
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
             wheel_resizes_brush: true,
+            loupe_messages: true,
             keymap: Default::default(),
             keymap_set: Default::default(),
             appearance_mode: AppearanceMode::Dark,
@@ -930,6 +981,18 @@ pub struct UiState {
     /// The overlay (on, mode) to go back to when Show Luminance Map is turned off.
     #[serde(skip)]
     pub luminance_map_restore: Option<(bool, String)>,
+    /// The mask overlay was switched on with O or the eye by the Masks title: it stays on through
+    /// edits (it only hides while a slider is at work). Off, the overlay shows by itself only for a
+    /// mask without settings ([`crate::panels::detail::mask_has_settings`]).
+    #[serde(skip)]
+    pub mask_overlay_pinned: bool,
+    /// A mask slider is at work until then: no mask overlay covers the photo.
+    #[serde(skip)]
+    pub mask_adjusting_until: Option<std::time::Instant>,
+    /// The mask whose row in the Masks list is under the pointer: its overlay shows while nothing is
+    /// being adjusted.
+    #[serde(skip)]
+    pub mask_hover: Option<u32>,
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
@@ -1207,6 +1270,9 @@ pub struct UiState {
     pub slides: crate::slideshow_ui::SlideshowState,
     /// Info overlay on the loupe.
     pub info_overlay: InfoOverlay,
+    /// When the loupe last changed photo (View Options' Show Briefly When Photo Changes).
+    #[serde(skip)]
+    pub brief_info: BriefInfo,
     /// The loupe's layout image overlay (View ▸ Loupe Overlay).
     pub layout_image: LayoutImage,
     /// Navigator mini map in the loupe while zoomed in.
@@ -1246,6 +1312,9 @@ pub struct UiState {
     /// A Settings section to bring into view once (`app.settings {section}`), e.g. `lensProfiles`.
     #[serde(skip)]
     pub settings_section: Option<String>,
+    /// Develop ▸ Lens Corrections: the lens maker picked in the lens picker before a model (issue #307).
+    #[serde(skip)]
+    pub lens_pick_make: Option<String>,
     /// The start-up update check has run (once per session; Help ▸ Check for Updates… is manual).
     #[serde(skip)]
     pub update_checked_at_startup: bool,
@@ -1712,6 +1781,9 @@ impl Default for UiState {
             unsaved_seen: false,
             frame_rate: lcc_brand::env("FPS").is_some_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes")),
             luminance_map_restore: None,
+            mask_overlay_pinned: false,
+            mask_adjusting_until: None,
+            mask_hover: None,
             view: ViewMode::Detail,
             modern: crate::modern::ModernUi::default(),
             left_panel: false,
@@ -1861,6 +1933,7 @@ impl Default for UiState {
             dragging_preset: None,
             dragging_preset_group: None,
             info_overlay: InfoOverlay::Off,
+            brief_info: BriefInfo::default(),
             layout_image: LayoutImage::default(),
             navigator: true,
             settings: AppSettings::default(),
@@ -1881,6 +1954,7 @@ impl Default for UiState {
             status: String::new(),
             dialog: None,
             settings_section: None,
+            lens_pick_make: None,
             update_checked_at_startup: false,
             update_checked_at: 0.0,
             update_pending: None,
@@ -2077,16 +2151,36 @@ mod loupe_info_tests {
     fn view_options_lines_are_saved_with_the_settings() {
         let mut settings = AppSettings::default();
         settings.loupe_info.info2 = [LoupeInfoField::Lens, LoupeInfoField::None, LoupeInfoField::FileName];
+        settings.loupe_info.briefly = InfoOverlay::Exposure;
         let saved = serde_json::to_value(&settings).unwrap();
         assert_eq!(saved["loupeInfo"]["info2"], serde_json::json!(["lens", "none", "fileName"]));
+        assert_eq!(saved["loupeInfo"]["briefly"], "exposure");
         let read: AppSettings = serde_json::from_value(saved).unwrap();
         assert_eq!(read.loupe_info, settings.loupe_info);
 
         let old: AppSettings = serde_json::from_value(serde_json::json!({"filmNames": false})).unwrap();
         assert_eq!(old.loupe_info, LoupeInfo::default());
+        // lines saved before Show Briefly When Photo Changes existed are kept, with it off
+        let lines: AppSettings = serde_json::from_value(serde_json::json!({"loupeInfo": {"info2": ["lens", "none", "fileName"]}})).unwrap();
+        assert_eq!(lines.loupe_info.info2, settings.loupe_info.info2);
+        assert_eq!(lines.loupe_info.briefly, InfoOverlay::Off);
         let newer: AppSettings =
             serde_json::from_value(serde_json::json!({"filmNames": false, "loupeInfo": {"info1": ["rating", "fileName", "none"]}})).unwrap();
         assert_eq!(newer.loupe_info, LoupeInfo::default());
         assert!(!newer.film_names, "the rest of the settings are still read");
+    }
+
+    /// Show message when loading or rendering photos is on until it is turned off, and is saved
+    /// with the app's settings.
+    #[test]
+    fn the_loading_message_choice_is_saved_with_the_settings() {
+        assert!(AppSettings::default().loupe_messages);
+        let old: AppSettings = serde_json::from_value(serde_json::json!({"filmNames": false})).unwrap();
+        assert!(old.loupe_messages, "a settings file from before the choice existed keeps the message");
+        let settings = AppSettings { loupe_messages: false, ..AppSettings::default() };
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(saved["loupeMessages"], false);
+        let read: AppSettings = serde_json::from_value(saved).unwrap();
+        assert!(!read.loupe_messages);
     }
 }

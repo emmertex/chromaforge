@@ -121,10 +121,19 @@ pub fn parse_gpx(s: &str) -> Result<Tracklog, GpxError> {
                     b"trkpt" if parent == Some(b"trkseg") => {
                         let mut p = Pending::default();
                         for a in e.attributes().with_checks(false).flatten() {
-                            let v = String::from_utf8_lossy(&a.value);
                             match local(a.key.as_ref()) {
-                                b"lat" => p.lat = v.trim().parse().ok(),
-                                b"lon" => p.lon = v.trim().parse().ok(),
+                                b"lat" => {
+                                    let v = a
+                                        .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, reader.decoder())
+                                        .map_err(|e| GpxError::Xml(e.to_string()))?;
+                                    p.lat = v.trim().parse().ok();
+                                }
+                                b"lon" => {
+                                    let v = a
+                                        .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, reader.decoder())
+                                        .map_err(|e| GpxError::Xml(e.to_string()))?;
+                                    p.lon = v.trim().parse().ok();
+                                }
                                 _ => {}
                             }
                         }
@@ -144,6 +153,16 @@ pub fn parse_gpx(s: &str) -> Result<Tracklog, GpxError> {
             }
             Event::Text(t) => text.push_str(&t.decode().map_err(|e| GpxError::Xml(e.to_string()))?),
             Event::CData(t) => text.push_str(&String::from_utf8_lossy(&t)),
+            Event::GeneralRef(r) => {
+                if let Some(c) = r.resolve_char_ref().map_err(|e| GpxError::Xml(e.to_string()))? {
+                    text.push(c);
+                } else {
+                    let name = r.decode().map_err(|e| GpxError::Xml(e.to_string()))?;
+                    let entity = format!("&{name};");
+                    let value = quick_xml::escape::unescape(&entity).map_err(|e| GpxError::Xml(e.to_string()))?;
+                    text.push_str(value.as_ref());
+                }
+            }
             Event::End(_) => {
                 let Some(name) = path.pop() else { continue };
                 let parent = path.last().map(Vec::as_slice);
@@ -307,6 +326,19 @@ mod tests {
     }
 
     #[test]
+    fn malformed_iso_time_is_untimed_and_cannot_match_midnight() {
+        let source = r#"<gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>
+            <trkpt lat="45" lon="7"><time>2026-01-01T</time></trkpt>
+            <trkpt lat="46" lon="8"><time>2026-01-01T01:00:00Z</time></trkpt>
+        </trkseg></trk></gpx>"#;
+        let log = parse_gpx(source).unwrap();
+        assert_eq!(log.untimed, 1);
+        assert_eq!(log.points.len(), 1);
+        assert_eq!((log.points[0].latitude, log.points[0].longitude), (46.0, 8.0));
+        assert!(log.locate(t("2026-01-01T00:00:00Z"), 0.0).is_none());
+    }
+
+    #[test]
     fn interpolates_within_a_segment() {
         let log = parse_gpx(LOG).unwrap();
         let (g, m) = log.locate(t("2026-05-01T10:00:30Z"), 300.0).unwrap();
@@ -352,6 +384,60 @@ mod tests {
         assert_eq!(log.points.len(), 2);
         // +11:00 is converted to UTC; no zone = UTC
         assert_eq!(log.points[1].time - log.points[0].time, 60.0);
+    }
+
+    fn point_document(lat: &str, lon: &str, ele: &str, time: &str) -> String {
+        format!(
+            r#"<gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg><trkpt lat="{lat}" lon="{lon}"><ele>{ele}</ele><time>{time}</time></trkpt></trkseg></trk></gpx>"#
+        )
+    }
+
+    #[test]
+    fn character_reference_elevation_is_not_truncated() {
+        let log = parse_gpx(&point_document("45", "7", "1&#50;3", "2026-01-01T00:00:00Z")).unwrap();
+        assert_eq!(log.points.first().and_then(|p| p.elevation), Some(123.0));
+    }
+
+    #[test]
+    fn character_reference_latitude_is_not_dropped() {
+        let log = parse_gpx(&point_document("4&#53;", "7&#x2E;5", "123", "2026-01-01T00:00:00Z")).unwrap();
+        let point = log.points.first().copied();
+        assert_eq!(log.points.len(), 1);
+        assert_eq!(point.map(|p| (p.latitude, p.longitude)), Some((45.0, 7.5)));
+    }
+
+    #[test]
+    fn character_reference_time_is_not_shifted() {
+        let encoded = parse_gpx(&point_document("45", "7", "123", "2026-01-01T00:00:&#51;0Z")).unwrap();
+        let plain = parse_gpx(&point_document("45", "7", "123", "2026-01-01T00:00:30Z")).unwrap();
+        assert_eq!(encoded.points.first().map(|p| p.time), plain.points.first().map(|p| p.time));
+        assert_eq!(encoded.points.first().map(|p| p.time), Some(1_767_225_630.0));
+    }
+
+    #[test]
+    fn predefined_entities_are_decoded_once_and_cdata_stays_literal() {
+        let with_predefined_entity = point_document("45", "7", "1&amp;23", "2026-01-01T00:00:00Z");
+        let log = parse_gpx(&with_predefined_entity).unwrap();
+        assert_eq!(log.points.first().and_then(|p| p.elevation), None);
+
+        let cdata = point_document("45", "7", "<![CDATA[1&#50;3]]>", "2026-01-01T00:00:00Z");
+        let log = parse_gpx(&cdata).unwrap();
+        assert_eq!(log.points.first().and_then(|p| p.elevation), None);
+    }
+
+    #[test]
+    fn unknown_and_malformed_character_references_are_rejected() {
+        let unknown = point_document("45", "7", "&undeclared;", "2026-01-01T00:00:00Z");
+        assert!(matches!(parse_gpx(&unknown), Err(GpxError::Xml(_))));
+
+        let malformed = point_document("45", "7", "&#xZZ;", "2026-01-01T00:00:00Z");
+        assert!(matches!(parse_gpx(&malformed), Err(GpxError::Xml(_))));
+
+        let unknown_attribute = point_document("4&undeclared;", "7", "123", "2026-01-01T00:00:00Z");
+        assert!(matches!(parse_gpx(&unknown_attribute), Err(GpxError::Xml(_))));
+
+        let malformed_attribute = point_document("&#xZZ;", "7", "123", "2026-01-01T00:00:00Z");
+        assert!(matches!(parse_gpx(&malformed_attribute), Err(GpxError::Xml(_))));
     }
 
     #[test]

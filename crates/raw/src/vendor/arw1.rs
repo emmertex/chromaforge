@@ -1,8 +1,8 @@
 //! Sony ARW version 1: the 12-bit Huffman-coded strip of the DSLR-A100 and of the DSLR-A200, A230, A290, A300, A330,
 //! A350, A380 and A390 (compression 32767 with a strip that is neither one byte nor 1.5 bytes per pixel).
 //!
-//! Sources: the format as described by dcraw's `sony_arw_load_raw` (read to understand the layout, per the fork's
-//! raw-decoder reference policy; no code copied: this is our own implementation, fork-only), checked on CC0
+//! Sources: the format as described by dcraw's `sony_arw_load_raw` (read as a reference under the dcraw reference
+//! policy; our own implementation, fork-only), checked on CC0
 //! raw.pixls.us samples (DSLR-A200 `DSC00108.ARW`):
 //!
 //! - One MSB-first bit stream for the whole strip, no byte stuffing.

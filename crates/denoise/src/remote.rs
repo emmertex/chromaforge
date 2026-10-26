@@ -19,12 +19,18 @@
 //! A connection serves any number of requests. The server refuses a wrong token, another model than its own, tiles of
 //! another size, oversized headers and payloads (also ones that inflate past their tile), and caps concurrent
 //! connections; the client gives up on a server that keeps failing, so the computer's own runner does the rest.
+//!
+//! Before its token is accepted a connection has [`AUTH_TIMEOUT`] in all to send its first line, however slowly the
+//! bytes come (the per-read `timeout` applies only after), and an address that sent a bad token is turned away for a
+//! while, doubling with each one (issue #2133): peers without the token can neither hold the connection slots nor
+//! guess tokens at line rate.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -39,6 +45,64 @@ const MAX_LINE: usize = 4096;
 pub const MAX_TILE: usize = 1024;
 /// Shortest token a server accepts.
 pub const MIN_TOKEN: usize = 16;
+/// How long a connection has, in all, to send a first line with a good token.
+pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long an address is turned away after its first bad token; it doubles with each further one, up to
+/// [`MAX_BACKOFF`], and a good token clears it.
+const FIRST_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(300);
+/// Addresses remembered for back-off (expired ones are dropped first).
+const MAX_BACKOFF_ENTRIES: usize = 4096;
+
+/// Addresses that sent a bad token: how many in a row, and until when they are turned away.
+#[derive(Default)]
+struct Backoff(Mutex<HashMap<IpAddr, (u32, Instant)>>);
+
+impl Backoff {
+    fn blocked(&self, ip: IpAddr) -> bool {
+        let m = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        m.get(&ip).is_some_and(|&(_, until)| Instant::now() < until)
+    }
+
+    fn bad_token(&self, ip: IpAddr) {
+        let mut m = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        if m.len() >= MAX_BACKOFF_ENTRIES {
+            m.retain(|_, (_, until)| *until > now);
+            if m.len() >= MAX_BACKOFF_ENTRIES {
+                m.clear();
+            }
+        }
+        let e = m.entry(ip).or_insert((0, now));
+        e.0 = e.0.saturating_add(1);
+        let wait = FIRST_BACKOFF.saturating_mul(1u32 << (e.0 - 1).min(16)).min(MAX_BACKOFF);
+        e.1 = now + wait;
+    }
+
+    fn good_token(&self, ip: IpAddr) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).remove(&ip);
+    }
+}
+
+/// A stream whose reads, while `until` is set, together end at that instant: each read waits only for what is left,
+/// so trickling a byte at a time doesn't buy a peer more time.
+struct Deadline {
+    stream: TcpStream,
+    until: Option<Instant>,
+}
+
+impl Read for Deadline {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(until) = self.until {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no good token in time"));
+            }
+            self.stream.set_read_timeout(Some(left))?;
+        }
+        self.stream.read(buf)
+    }
+}
 
 /// Which model a server runs: both ends must agree before tiles cross.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -127,13 +191,15 @@ pub struct ServerOptions {
     /// Shared secret every request must carry (at least [`MIN_TOKEN`] characters).
     pub token: String,
     pub max_connections: usize,
-    /// Idle and transfer limit per connection.
+    /// Idle and transfer limit per connection, once its token is accepted.
     pub timeout: Duration,
+    /// How long a connection has, in all, to send a first line with a good token ([`AUTH_TIMEOUT`]).
+    pub auth_timeout: Duration,
 }
 
 impl Default for ServerOptions {
     fn default() -> Self {
-        ServerOptions { token: String::new(), max_connections: 8, timeout: Duration::from_secs(120) }
+        ServerOptions { token: String::new(), max_connections: 8, timeout: Duration::from_secs(120), auth_timeout: AUTH_TIMEOUT }
     }
 }
 
@@ -155,9 +221,15 @@ pub fn serve(
     }
     let active = Arc::new(AtomicUsize::new(0));
     let shared = Arc::new((model, device));
+    let backoff = Arc::new(Backoff::default());
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "?".into());
+        if stream.peer_addr().is_ok_and(|a| backoff.blocked(a.ip())) {
+            let mut s = stream;
+            let _ = writeln!(s, "{}", json!({"ok": false, "error": "too many bad tokens from this address; try again later"}));
+            continue;
+        }
         if active.load(Ordering::SeqCst) >= opts.max_connections.max(1) {
             let mut s = stream;
             let _ = writeln!(s, "{}", json!({"ok": false, "error": "server busy"}));
@@ -165,9 +237,9 @@ pub fn serve(
             continue;
         }
         active.fetch_add(1, Ordering::SeqCst);
-        let (sh, r, o, l, n) = (shared.clone(), run.clone(), opts.clone(), log.clone(), active.clone());
+        let (sh, r, o, l, n, b) = (shared.clone(), run.clone(), opts.clone(), log.clone(), active.clone(), backoff.clone());
         let spawned = std::thread::Builder::new().name(format!("denoise {peer}")).spawn(move || {
-            if let Err(e) = handle(stream, &sh.0, tile, &sh.1, &*r, &o, &*l) {
+            if let Err(e) = handle(stream, &sh.0, tile, &sh.1, &*r, &o, &*l, &b) {
                 l(&format!("{peer}: {e}"));
             }
             n.fetch_sub(1, Ordering::SeqCst);
@@ -180,6 +252,7 @@ pub fn serve(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle(
     stream: TcpStream,
     model: &ModelId,
@@ -188,12 +261,15 @@ fn handle(
     run: &dyn Fn(&[f32]) -> Result<Vec<f32>, Error>,
     opts: &ServerOptions,
     log: &dyn Fn(&str),
+    backoff: &Backoff,
 ) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(opts.timeout))?;
+    stream.set_read_timeout(Some(opts.timeout.min(opts.auth_timeout)))?;
     stream.set_write_timeout(Some(opts.timeout))?;
     stream.set_nodelay(true)?;
     let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
-    let mut r = BufReader::new(stream.try_clone()?);
+    let ip = stream.peer_addr().ok().map(|a| a.ip());
+    // the first line, with its token, must arrive within the auth timeout in all
+    let mut r = BufReader::new(Deadline { stream: stream.try_clone()?, until: Some(Instant::now() + opts.auth_timeout) });
     let mut w = stream;
     let mut tiles = 0usize;
     let fail = |w: &mut TcpStream, msg: &str| writeln!(w, "{}", json!({"ok": false, "error": msg}));
@@ -207,9 +283,19 @@ fn handle(
             break;
         }
         if !same(req.get("token").and_then(Value::as_str).unwrap_or(""), &opts.token) {
+            if let Some(ip) = ip {
+                backoff.bad_token(ip);
+            }
             fail(&mut w, "bad token")?;
             log(&format!("{peer}: bad token"));
             break;
+        }
+        if r.get_ref().until.is_some() {
+            r.get_mut().until = None;
+            r.get_ref().stream.set_read_timeout(Some(opts.timeout))?;
+            if let Some(ip) = ip {
+                backoff.good_token(ip);
+            }
         }
         match req.get("op").and_then(Value::as_str) {
             Some("hello") => writeln!(w, "{}", json!({"ok": true, "v": PROTOCOL, "device": device, "model": model, "tile": tile}))?,
@@ -552,6 +638,63 @@ mod tests {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let opts = ServerOptions { token: "short".into(), ..Default::default() };
         assert!(serve(l, id("aa11"), T, "x".into(), model(1.0), opts, Arc::new(|_| {})).is_err());
+    }
+
+    /// A peer without the token can't keep a slot by trickling its first line: the auth deadline counts all its reads
+    /// together, not each one (issue #2133).
+    #[test]
+    fn a_trickling_peer_is_cut_off_at_the_auth_deadline() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let opts = ServerOptions { token: TOKEN.into(), auth_timeout: Duration::from_millis(600), ..Default::default() };
+        std::thread::spawn(move || serve(l, id("aa11"), T, "x".into(), model(1.0), opts, Arc::new(|_| {})));
+        let mut s = TcpStream::connect(addr).unwrap();
+        let started = Instant::now();
+        let mut writer = s.try_clone().unwrap();
+        std::thread::spawn(move || {
+            // one byte every 100 ms: each read is quick, the line never ends
+            while writer.write_all(b"{").is_ok() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut rest = Vec::new();
+        let _ = s.read_to_end(&mut rest);
+        assert!(started.elapsed() < Duration::from_secs(5), "closed after {:?}", started.elapsed());
+        // a client with the token is unaffected, and keeps its connection past the auth deadline
+        let r = Remote::new(&addr.to_string(), TOKEN, "aa11", T);
+        assert!(r.hello().is_ok());
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(r.try_run(&tile_input(0.0)).unwrap().is_ok());
+    }
+
+    /// After a bad token, the address is turned away for a while (doubling with each bad token), even with the right
+    /// token; a good token afterwards clears it (issue #2133).
+    #[test]
+    fn bad_tokens_back_off_the_address() {
+        let addr = start("aa11", model(1.0));
+        let wrong = || Remote::new(&addr, "wrong-token-0000000", "aa11", T).hello().unwrap_err().to_string();
+        let right = || Remote::new(&addr, TOKEN, "aa11", T).hello();
+        assert!(wrong().contains("bad token"));
+        let refused = right();
+        // refused at the accept (the message, or on Windows a reset: the hello is still unread when it closes)
+        assert!(refused.is_err(), "turned away even with the token: {refused:?}");
+        std::thread::sleep(FIRST_BACKOFF + Duration::from_millis(200));
+        assert!(right().is_ok(), "the first back-off is over");
+        // cleared by the good token: the next bad one waits the first back-off again, not twice it
+        assert!(wrong().contains("bad token"));
+        std::thread::sleep(FIRST_BACKOFF + Duration::from_millis(200));
+        assert!(right().is_ok());
+        // the waits double, up to the cap
+        let b = Backoff::default();
+        let ip: IpAddr = [10, 0, 0, 1].into();
+        for _ in 0..40 {
+            b.bad_token(ip);
+        }
+        let until = b.0.lock().unwrap()[&ip].1;
+        assert!(until <= Instant::now() + MAX_BACKOFF && until > Instant::now() + MAX_BACKOFF - Duration::from_secs(5));
+        b.good_token(ip);
+        assert!(!b.blocked(ip));
     }
 
     #[test]

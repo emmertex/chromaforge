@@ -30,8 +30,11 @@
 //!   and PEN-F files were only checked for smoothness, not for CFA anchoring or black level.
 //! - Olympus's compressed ORF (most bodies since ~2008): IFD0 says uncompressed, 12 bits, one strip, but the strip
 //!   holds fewer than 12 bits per sample. See [`decode_compressed`]: a per-sample adaptive Golomb-style code with a
-//!   median-edge predictor over same-colour neighbours (the method of Olympus patents US7333035B2 / US7715639B2;
-//!   constants and bit layout established with existing open decoders read as a reference, no code copied).
+//!   median-edge predictor over same-colour neighbours (the method of Olympus patents US7333035B2 / US7715639B2).
+//!   Sources: translated from dcraw's `olympus_load_raw` (revision 1.478, outside its RESTRICTED block) under the
+//!   dcraw reference policy; the bit reader and the bounds checks are our own. rawspeed's `OlympusDecompressor`
+//!   was also read when this was written, before the policy; a side-by-side audit (2026-10-24) found the code
+//!   follows dcraw's structure (its predictor test and `(ushort)` bit-count loop), not rawspeed's.
 //! - The colour-filter layout is the file's Exif `CFAPattern`: GRBG on the E-1 and E-400, RGGB on the XZ-2, where
 //!   the colours of the decoded mosaic follow the embedded JPEG best with exactly that layout
 //!   (`corpus_orf_cfa_patterns`). The samples' active areas start at even offsets, so they can't tell whether the
@@ -232,6 +235,9 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         (RawData::U16(d), 12)
     } else if total * 8 >= (n as u64) * 12 && total * 8 < (n as u64) * 13 && chunks.len() == 1 {
         let src = chunk_bytes(bytes, &chunks[0]).ok_or_else(|| RawError::Corrupt("ORF strip outside file".into()))?;
+        if (src.len() as u64) * 8 < (n as u64) * 12 {
+            return Err(RawError::Corrupt("ORF strip shorter than its rows".into()));
+        }
         // the depth is fixed here, so a header-only probe needs the samples only when the file doesn't state its
         // colour-filter layout
         let d = if mode == Mode::Full || stated.is_none() {
@@ -693,6 +699,30 @@ mod tests {
             assert_eq!((r.bits, r.data.len()), (12, w * h));
             assert_eq!(r.cfa.as_ref().unwrap().name(), if tag.is_some() { "BGGR" } else { "RGGB" });
             assert_eq!(crate::probe_info(&bytes).unwrap(), r.info());
+        }
+    }
+
+    /// Points IFD0's single strip offset at `at` (little-endian file, LONG value held in the entry).
+    fn move_strip(bytes: &mut [u8], at: u32) {
+        let ifd = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let count = u16::from_le_bytes([bytes[ifd], bytes[ifd + 1]]) as usize;
+        let entry = (0..count).map(|i| ifd + 2 + i * 12).find(|&e| bytes[e..e + 2] == t::STRIP_OFFSETS.to_le_bytes()).unwrap();
+        bytes[entry + 8..entry + 12].copy_from_slice(&at.to_le_bytes());
+    }
+
+    #[test]
+    fn packed_12_bit_strip_running_past_the_file_is_refused() {
+        let (w, h) = (16usize, 4usize);
+        let strip = vec![0x5au8; w * h * 3 / 2];
+        for tag in [Some(BGGR), None] {
+            let mut bytes = orf_with(w as u32, h as u32, 12, strip.clone(), tag);
+            // the declared 96-byte strip now starts 24 bytes before the end of the file
+            let at = bytes.len() as u32 - 24;
+            move_strip(&mut bytes, at);
+            assert!(crate::decode(&bytes).is_err(), "{tag:?}");
+            if tag.is_none() {
+                assert!(crate::probe_info(&bytes).is_err());
+            }
         }
     }
 

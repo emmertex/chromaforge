@@ -317,6 +317,80 @@ fn a_crs_change_after_a_read_is_taken_with_auto_write_on() {
     let _ = std::fs::remove_dir_all(&src);
 }
 
+/// A sidecar with keywords as Lightroom Classic and darktable write them: names in `dc:subject`,
+/// paths in `lr:hierarchicalSubject`.
+const KEYWORDED: &str = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:lr="http://ns.adobe.com/lightroom/1.0/"
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+    xmp:Rating="0" crs:Exposure2012="+0.40">
+   <dc:subject><rdf:Bag><rdf:li>Places</rdf:li><rdf:li>Italy</rdf:li><rdf:li>Rome</rdf:li><rdf:li>sunset</rdf:li></rdf:Bag></dc:subject>
+   <lr:hierarchicalSubject><rdf:Bag><rdf:li>Places|Italy|Rome</rdf:li><rdf:li>sunset</rdf:li></rdf:Bag></lr:hierarchicalSubject>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#;
+
+/// Saving a sidecar keeps keywords where other applications look for them: names in `dc:subject`
+/// and paths in `lr:hierarchicalSubject`, each property once. older versions wrote the paths into
+/// `dc:subject` (`Places|Italy|Rome`), so after any change, even a rating, a search for "Rome" in
+/// another DAM no longer found the photo. A sidecar written that way is put right on the next save,
+/// and keywords added here keep their hierarchy when the sidecar is read back.
+#[test]
+fn saving_a_sidecar_writes_keyword_names_flat_and_paths_hierarchical() {
+    let src = temp_dir("keywords-flat");
+    write_png(&src.join("rome.png"), 8);
+    let sidecar = src.join("rome.xmp");
+    std::fs::write(&sidecar, KEYWORDED).unwrap();
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let id = only(&s);
+    assert_eq!(s.catalog.photo(id).unwrap().meta.keywords, ["Places|Italy|Rome", "sunset"]);
+    s.execute("library.xmpPreferences", &json!({"autoWrite": true})).unwrap();
+    s.execute("photo.rate", &json!({"ids": [id.0], "rating": 3})).unwrap();
+
+    let lists = |text: &str| {
+        let x = lcc_meta::parse_xmp(text).unwrap();
+        (x.metadata.keywords, x.metadata.hierarchical_keywords)
+    };
+    let text = std::fs::read_to_string(&sidecar).unwrap();
+    let (flat, hierarchical) = lists(&text);
+    assert_eq!(flat, ["Places", "Italy", "Rome", "sunset"], "names, not paths, in dc:subject:\n{text}");
+    assert_eq!(hierarchical, ["Places|Italy|Rome", "sunset"], "{text}");
+    assert_eq!(text.matches("<dc:subject>").count(), 1, "{text}");
+    assert_eq!(text.matches("lr:hierarchicalSubject>").count(), 2, "one lr:hierarchicalSubject, opened and closed:\n{text}");
+    assert!(text.contains("<xmp:Rating>3</xmp:Rating>") && text.contains(r#"crs:Exposure2012="+0.40""#), "{text}");
+
+    // a keyword added here keeps its hierarchy through the file
+    s.execute("photo.setMeta", &json!({"ids": [id.0], "keywords": ["Places|Italy|Rome", "sunset", "people|Ada"]})).unwrap();
+    let (flat, hierarchical) = lists(&std::fs::read_to_string(&sidecar).unwrap());
+    assert_eq!(flat, ["Places", "Italy", "Rome", "sunset", "people", "Ada"]);
+    assert_eq!(hierarchical, ["Places|Italy|Rome", "sunset", "people|Ada"]);
+    s.execute("photo.setMeta", &json!({"ids": [id.0], "keywords": []})).unwrap();
+    let text = std::fs::read_to_string(&sidecar).unwrap();
+    assert!(!text.contains("dc:subject") && !text.contains("lr:hierarchicalSubject"), "clearing keywords clears both lists:\n{text}");
+    s.execute("edit.undo", &json!({})).unwrap(); // undo rewrites the sidecar with the three keywords
+    s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+    assert_eq!(s.catalog.photo(id).unwrap().meta.keywords, ["Places|Italy|Rome", "sunset", "people|Ada"], "read back as written");
+
+    // a sidecar from an older version (paths in dc:subject) reads as paths and is written properly
+    let old = KEYWORDED
+        .replace("<rdf:li>Places</rdf:li><rdf:li>Italy</rdf:li><rdf:li>Rome</rdf:li>", "<rdf:li>Places|Italy|Rome</rdf:li>")
+        .replace("<lr:hierarchicalSubject><rdf:Bag><rdf:li>Places|Italy|Rome</rdf:li><rdf:li>sunset</rdf:li></rdf:Bag></lr:hierarchicalSubject>", "");
+    std::fs::write(&sidecar, old).unwrap();
+    s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+    assert_eq!(s.catalog.photo(id).unwrap().meta.keywords, ["Places|Italy|Rome", "sunset"]);
+    s.execute("photo.rate", &json!({"ids": [id.0], "rating": 4})).unwrap();
+    let (flat, hierarchical) = lists(&std::fs::read_to_string(&sidecar).unwrap());
+    assert_eq!(flat, ["Places", "Italy", "Rome", "sunset"]);
+    assert_eq!(hierarchical, ["Places|Italy|Rome", "sunset"]);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
 /// Lightroom's default profiles (`Adobe Standard`, `Adobe Color`) are named by nearly every sidecar
 /// and our own starting look stands in for them: importing one gives no camera-profile warning.
 #[test]
@@ -496,6 +570,96 @@ fn regions_from_sidecar_are_read_on_import() {
     assert_eq!(region.name.as_deref(), Some("Jane Doe"));
     assert_eq!(region.kind, lcc_meta::RegionKind::Face);
     assert!((region.rect.width() - 0.3).abs() < 1e-9, "{:?}", region.rect);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// MWG regions as an app that draws on the photo as stored writes them for [`write_turned_jpeg`]'s photo: its stored
+/// 32 × 24 as `AppliedToDimensions` and no box saying how the photo was turned (no `mwg-rs:Rotation`). One face, its
+/// box centred at (0.25, 0.4), 0.1 × 0.15 of that size.
+const STORED_FRAME_REGIONS: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:mwg-rs="http://www.metadataworkinggroup.com/schemas/regions/"
+    xmlns:stArea="http://ns.adobe.com/xmp/sType/Area#"
+    xmlns:stDim="http://ns.adobe.com/xap/1.0/sType/Dimensions#">
+   <mwg-rs:Regions rdf:parseType="Resource">
+    <mwg-rs:AppliedToDimensions rdf:parseType="Resource" stDim:w="32" stDim:h="24" stDim:unit="pixel"/>
+    <mwg-rs:RegionList>
+     <rdf:Bag>
+      <rdf:li rdf:parseType="Resource" mwg-rs:Name="Hannah" mwg-rs:Type="Face">
+       <mwg-rs:Area rdf:parseType="Resource" stArea:x="0.25" stArea:y="0.4" stArea:w="0.1" stArea:h="0.15" stArea:unit="normalized"/>
+      </rdf:li>
+     </rdf:Bag>
+    </mwg-rs:RegionList>
+   </mwg-rs:Regions>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>"#;
+
+/// A JPEG of 32 × 24 pixels stored sideways (Exif orientation 6, shown 24 × 32), with `packet` embedded when given.
+fn write_turned_jpeg(path: &Path, packet: Option<&str>) {
+    let img = lcc_raster::Rgba8::from_fn(32, 24, |x, y| [(x * 7) as u8, (y * 9) as u8, 90, 255]);
+    let exif = lcc_meta::write_exif(&lcc_meta::Metadata { orientation: Some(lcc_meta::Orientation::Rotate90), ..Default::default() });
+    let meta = lcc_codecs::EncodeMeta { exif: Some(&exif), xmp: packet, ..Default::default() };
+    let bytes = lcc_codecs::encode_jpeg(&lcc_codecs::EncodeImage::rgba8(&img), 90, Default::default(), &meta).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// Put more than the first MiB of APP15 segments between the JPEG at `path`'s start and its Exif.
+fn pad_before_exif(path: &Path) {
+    let bytes = std::fs::read(path).unwrap();
+    let mut padded = bytes[..2].to_vec();
+    for _ in 0..17 {
+        padded.extend_from_slice(&[0xFF, 0xEF, 0xFF, 0xFF]);
+        padded.extend(std::iter::repeat_n(0, 0xFFFD));
+    }
+    padded.extend_from_slice(&bytes[2..]);
+    std::fs::write(path, padded).unwrap();
+}
+
+/// The face's box from [`STORED_FRAME_REGIONS`] on the upright photo: turned a quarter turn clockwise with it.
+fn assert_on_the_upright_face(s: &Session, id: PhotoId, when: &str) {
+    let p = s.catalog.photo(id).unwrap();
+    assert_eq!((p.width, p.height), (24, 32), "the photo is upright");
+    let r = p.meta.regions.first().map(|r| r.rect).unwrap_or_default();
+    let want = [0.525, 0.2, 0.675, 0.3];
+    let got = [r.x0, r.y0, r.x1, r.y1];
+    assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-9), "{when}: the box is where the photo as stored had the face: {got:?}");
+    assert_eq!(p.meta.regions.len(), 1, "{when}");
+}
+
+/// Issue #2674: face boxes an app drew on a photo as stored (its sideways size as `AppliedToDimensions`, no
+/// `mwg-rs:Rotation`) land on the faces of the photo as the app shows it, upright: when imported, and when the
+/// file's metadata is read again (the packet itself doesn't say how the photo turns; the file's Exif does). The
+/// image's own size decides, not one the XMP states upright, and the Exif is found past the first MiB of the file.
+#[test]
+fn regions_drawn_on_the_photo_as_stored_land_on_the_upright_photo() {
+    let src = temp_dir("regions-stored-frame");
+    let embedded = src.join("embedded.jpg");
+    write_turned_jpeg(&embedded, Some(STORED_FRAME_REGIONS));
+    let beside = src.join("sidecar.jpg");
+    write_turned_jpeg(&beside, None);
+    std::fs::write(src.join("sidecar.xmp"), STORED_FRAME_REGIONS).unwrap();
+    // an Exif without a pixel size, and an XMP size of the upright photo
+    let stated = src.join("stated.jpg");
+    let upright_size = r#"rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:ImageWidth="24" tiff:ImageLength="32""#;
+    write_turned_jpeg(&stated, Some(&STORED_FRAME_REGIONS.replace(r#"rdf:about="""#, upright_size)));
+    let late = src.join("late.jpg");
+    write_turned_jpeg(&late, None);
+    pad_before_exif(&late);
+    std::fs::write(src.join("late.xmp"), STORED_FRAME_REGIONS).unwrap();
+    for (file, what) in [(&embedded, "embedded XMP"), (&beside, "sidecar"), (&stated, "upright size in the XMP"), (&late, "Exif after the first MiB")]
+    {
+        let mut s = Session::new().with_fs();
+        let r = s.execute("library.import", &json!({"paths": [file.to_string_lossy()]})).unwrap();
+        assert_eq!(r["imported"].as_array().map(Vec::len), Some(1), "{r}");
+        let id = only(&s);
+        assert_on_the_upright_face(&s, id, &format!("{what}, imported"));
+        let read = s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+        assert_eq!(read["failed"], json!([]), "{read}");
+        assert_eq!(read["read"].as_array().map(Vec::len), Some(1), "{what}: {read}");
+        assert_on_the_upright_face(&s, id, &format!("{what}, read again"));
+    }
     let _ = std::fs::remove_dir_all(&src);
 }
 

@@ -33,6 +33,11 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ("NIKON D750", include_str!("../../../assets/camera-profiles/NIKON_D750.json")),
     ("NIKON D780", include_str!("../../../assets/camera-profiles/NIKON_D780.json")),
     ("NIKON D90", include_str!("../../../assets/camera-profiles/NIKON_D90.json")),
+    ("NIKON D70", include_str!("../../../assets/camera-profiles/NIKON_D70.json")),
+    ("NIKON D700", include_str!("../../../assets/camera-profiles/NIKON_D700.json")),
+    ("X-T1", include_str!("../../../assets/camera-profiles/X-T1.json")),
+    ("X100T", include_str!("../../../assets/camera-profiles/X100T.json")),
+    ("X20", include_str!("../../../assets/camera-profiles/X20.json")),
     ("NIKON Z 6_2", include_str!("../../../assets/camera-profiles/NIKON_Z_6_2.json")),
     ("NIKON Z 8", include_str!("../../../assets/camera-profiles/NIKON_Z_8.json")),
     ("X-H2S", include_str!("../../../assets/camera-profiles/X-H2S.json")),
@@ -329,8 +334,9 @@ fn merge_calibrations(
     mut list: Vec<lcc_camdb::calibration::Calibration>,
     dev: Vec<lcc_camdb::calibration::Calibration>,
 ) -> Vec<lcc_camdb::calibration::Calibration> {
+    // a development calibration replaces the bundled one for the same camera and editor; other editors' stay
     for c in dev {
-        list.retain(|b| !b.matches(Some(&c.make), &c.model));
+        list.retain(|b| !(b.editor == c.editor && b.matches(Some(&c.make), &c.model)));
         list.push(c);
     }
     list
@@ -440,6 +446,7 @@ mod tests {
             make: "TESTMAKE".into(),
             model: model.into(),
             aliases: vec![],
+            editor: c::Editor::Lightroom,
             method: c::METHOD.into(),
             tool_version: "1".into(),
             contributor: None,

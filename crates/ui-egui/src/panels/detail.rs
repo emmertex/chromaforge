@@ -488,6 +488,25 @@ fn animated_rect(ctx: &egui::Context, anim: &mut bool, target: Rect) -> Rect {
     r
 }
 
+/// View Options' Show Briefly When Photo Changes: note when the loupe changes to photo `id`, and
+/// whether the brief info overlay shows this frame (until [`BRIEF_INFO_SECS`] have passed; a
+/// repaint is asked for then, so it hides without input).
+///
+/// [`BRIEF_INFO_SECS`]: crate::state::BRIEF_INFO_SECS
+fn brief_info(app: &mut LccApp, ctx: &egui::Context, id: PhotoId) {
+    let now = ctx.input(|i| i.time);
+    let brief = &mut app.ui.brief_info;
+    if brief.photo != Some(id) {
+        brief.photo = Some(id);
+        brief.since = now;
+    }
+    let left = crate::state::BRIEF_INFO_SECS - (now - brief.since);
+    brief.shown = app.ui.settings.loupe_info.briefly != crate::state::InfoOverlay::Off && left > 0.0;
+    if brief.shown {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+    }
+}
+
 /// What the tiles of a zoomed view (the loupe, a Compare / Reference photo) need to know about
 /// the view they belong to.
 pub(crate) struct WindowCtx {
@@ -738,6 +757,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         return;
     };
     let Some(photo) = app.session.catalog.photo(id).cloned() else { return };
+    brief_info(app, ui.ctx(), id);
     let d = (*photo.develop).clone();
     // the full-screen preview shows the photo only: no tool overlays
     let right = if fullscreen { RightPanel::None } else { app.ui.right };
@@ -837,6 +857,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     // (a drag that fell back is one drag for `DragScale` across its pauses, so its draft size holds)
     let draft_drag = interacting && (!hq || app.hq_drag.fell_back());
     let overlay = view_overlay(app, &d, ui.input(|i| i.modifiers.alt));
+    // an overlay hidden while a mask slider worked comes back once it rests, input or not
+    if let Some(left) = app.ui.mask_adjusting_until.map(|t| t.saturating_duration_since(std::time::Instant::now())).filter(|d| !d.is_zero()) {
+        ui.ctx().request_repaint_after(left);
+    }
     // a drag drafts at full size where the GPU draws the view (by the GPU's own rule, `handles`;
     // `ready` first: `available` would wait for a device still being created)
     let gpu = draft_drag
@@ -1202,9 +1226,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     );
                     p.text(canvas.center() + vec2(0.0, 12.0), Align2::CENTER_CENTER, e, t.font(12.0), t.text_dim);
                 }
-                None => {
+                None if app.ui.settings.loupe_messages => {
                     p.text(canvas.center(), Align2::CENTER_CENTER, crate::i18n::tr("Rendering…"), t.font(13.0), t.text_dim);
                 }
+                None => {}
             }
         }
     }
@@ -1377,9 +1402,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         let over = if over.is_positive() { over } else { canvas };
         match failed {
             Some(e) => failed_pill(ui, app, &photo, canvas, over, nav, "loupe:renderFailed", e),
-            None => {
+            // View Options' Show message when loading or rendering photos
+            None if app.ui.settings.loupe_messages => {
                 loupe_pill(ui, canvas, over, nav, "loupe:rendering", crate::i18n::tr("Rendering…"), false);
             }
+            None => {}
         }
     }
     if let Some(why) = photo.preview_only.as_deref().filter(|_| !fullscreen) {
@@ -1475,7 +1502,10 @@ fn info_overlay_top(app: &LccApp, t: &Tokens) -> f32 {
 /// The info overlay's lines for `photo`, or `None` when it is off.
 fn info_overlay_lines(app: &LccApp, photo: &lcc_catalog::Photo) -> Option<Vec<String>> {
     use crate::state::InfoOverlay;
-    let fields = match app.ui.info_overlay {
+    // with the overlay off, Show Briefly When Photo Changes shows its Info for a moment
+    let brief = app.ui.info_overlay == InfoOverlay::Off && app.ui.brief_info.shown;
+    let mode = if brief { app.ui.settings.loupe_info.briefly } else { app.ui.info_overlay };
+    let fields = match mode {
         InfoOverlay::Off => return None,
         InfoOverlay::Basic => &app.ui.settings.loupe_info.info1,
         InfoOverlay::Exposure => &app.ui.settings.loupe_info.info2,
@@ -2117,15 +2147,37 @@ pub(crate) fn hdr_window(app: &mut LccApp, c: &WindowCtx, v: &WindowView, full: 
 /// The diagnostic overlay the loupe shows (the selected mask, Point Color's visualized range,
 /// Visualize Spots, Visualize HDR, and the clipping overlay: J's per-pixel red/blue tint, or the
 /// black/white clipping mask while ⌥/Alt-dragging a global tone slider).
+/// Whether a mask has settings: an effect on the photo to judge. A mask without any shows its
+/// overlay by itself, so what it selects can be seen (upstream PR 2920's overlay rule).
+pub(crate) fn mask_has_settings(m: &lcc_develop::Mask) -> bool {
+    m.adjust != lcc_develop::LocalAdjustments::default() || !m.curve.is_identity()
+}
+
 pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) -> lcc_pipeline::Overlay {
     use lcc_pipeline::{MaskView, Overlay};
     if app.ui.fullscreen {
+        return Overlay::None;
+    }
+    // While a mask slider is at work nothing covers the photo: its effect is what is being judged.
+    if app.ui.right == RightPanel::Masking && app.ui.mask_adjusting_until.is_some_and(|t| std::time::Instant::now() < t) {
         return Overlay::None;
     }
     // Show every visible mask's region at once (Ctrl+Shift+O / Cmd+Shift+O), ahead of the selected-mask overlay
     // so the shortcut is not shadowed by the always-on single-mask overlay.
     if app.ui.right == RightPanel::Masking && app.ui.mask_overlay_all && d.masks.iter().any(|m| m.visible && !m.components.is_empty()) {
         return Overlay::AllMasks {
+            view: MaskView::parse(&app.ui.mask_overlay_mode).unwrap_or_default(),
+            color: app.ui.mask_overlay_color,
+            opacity: app.ui.mask_overlay_opacity.clamp(0.0, 100.0).round() as u8,
+        };
+    }
+    // the pointer on a mask's row in the list shows what that mask selects
+    if app.ui.right == RightPanel::Masking
+        && let Some(m) = app.ui.mask_hover.and_then(|id| d.masks.iter().find(|m| m.id == id))
+        && !m.components.is_empty()
+    {
+        return Overlay::Mask {
+            id: m.id.min(u16::MAX as u32) as u16,
             view: MaskView::parse(&app.ui.mask_overlay_mode).unwrap_or_default(),
             color: app.ui.mask_overlay_color,
             opacity: app.ui.mask_overlay_opacity.clamp(0.0, 100.0).round() as u8,
@@ -4596,6 +4648,7 @@ mod tests {
                 proof: None,
                 window: None,
                 display: None,
+                downscale: Default::default(),
             },
             key: 0,
             cache: None,
@@ -4765,6 +4818,38 @@ mod info_overlay_tests {
         assert_eq!(copies.len(), 2, "the file name and its shadow: {copies:?}");
         assert_eq!(copies[1], Color32::WHITE, "the text on top");
         assert!(copies[0].r() < 64 && copies[0].a() > 0, "the shadow under it is dark: {:?}", copies[0]);
+    }
+
+    /// View Options' Show Briefly When Photo Changes: with the overlay off, the chosen Info shows
+    /// for `BRIEF_INFO_SECS` after the loupe changes photo, then hides; an overlay that is on stays.
+    #[test]
+    fn show_briefly_shows_the_info_after_the_photo_changes() {
+        use crate::state::{BRIEF_INFO_SECS, InfoOverlay};
+        let mut app = LccApp::new(lcc_engine::Session::with_demo(), crate::Services { png: None, ..Default::default() });
+        let photos: Vec<lcc_catalog::Photo> = app.session.catalog.photos().take(2).map(|p| (**p).clone()).collect();
+        assert_eq!(photos.len(), 2, "the demo catalog has two photos");
+        let ctx = egui::Context::default();
+        // the loupe shows photo `i` at `time`: the lines the overlay paints then
+        let at = |app: &mut LccApp, i: usize, time: f64| {
+            let raw = crate::headless::HeadlessView::raw_input(vec2(1000.0, 700.0), 1.0, time, vec![]);
+            let mut out = ctx.run_ui(raw, |ui| brief_info(app, ui.ctx(), photos[i].id));
+            out.textures_delta.clear();
+            painted_lines(app, &photos[i])
+        };
+        let name = |i: usize| photos[i].file_name.clone();
+        assert!(at(&mut app, 0, 1.0).is_empty(), "off by default");
+        app.ui.settings.loupe_info.briefly = InfoOverlay::Exposure;
+        let info2 = at(&mut app, 1, 2.0);
+        assert_eq!(info2.first(), Some(&name(1)), "Info 2 shows when the photo changes: {info2:?}");
+        assert!(!at(&mut app, 1, 2.0 + BRIEF_INFO_SECS - 0.5).is_empty(), "still up");
+        assert!(at(&mut app, 1, 2.0 + BRIEF_INFO_SECS + 0.1).is_empty(), "then hidden");
+        assert_eq!(at(&mut app, 0, 10.0).first(), Some(&name(0)), "and shown again for the next photo");
+        app.ui.settings.loupe_info.briefly = InfoOverlay::Basic;
+        let info1 = at(&mut app, 1, 20.0);
+        assert_eq!(info1.len(), 3, "Info 1's three lines: {info1:?}");
+        assert_ne!(info1, info2, "Info 1, not Info 2");
+        app.ui.info_overlay = InfoOverlay::Exposure;
+        assert_eq!(at(&mut app, 1, 30.0), info2, "an overlay that is on shows its own Info, and stays");
     }
 
     /// Issue #266: when filters are active in the loupe, the filter pill and the info overlay

@@ -34,7 +34,7 @@ jxl-oxide = { workspace = true, optional = true }
 # AVIF decode: clean-room pure-Rust AV1 decoder (no unsafe), the same pin as lcc-video. Native
 # only: it indexes its buffers directly, and on wasm32 (panic = abort) a malformed file could
 # take the page down instead of becoming an error, so the web build refuses AVIF.
-filmcraft-av1 = { git = "https://github.com/emmertex/filmcraft", rev = "10715b2465ed63d54a875cd583a95c77675c6470" }
+filmcraft-av1 = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
 ravif = { workspace = true, optional = true }
 rav1e = { workspace = true, optional = true }
 avif-serialize = { workspace = true, optional = true }
@@ -59,6 +59,7 @@ lcc-testkit = { workspace = true }
 # JPEG XL tests read encoded samples without our colour conversion
 jxl-oxide = { workspace = true }
 proptest = { workspace = true }
+serde_json = { workspace = true }
 # Lossless synthetic HEIC files for the `heif` feature's tests.
 lcc-heif = { workspace = true, features = ["testdata"] }
 

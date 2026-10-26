@@ -175,12 +175,17 @@ pub fn evaluate_one(m: &Mask, frame: &Frame, w: usize, h: usize, img: &Rgb32f, l
             first = false;
             continue;
         }
+        // an inverted mask is inverted at the end, so combine on its visible (inverted) side:
+        // [+] adds to what the mask shows and [-] removes from it
+        let inv = m.invert;
         for (a, c) in alpha.data.iter_mut().zip(&c.data) {
-            *a = match comp.op {
-                MaskOp::Add => a.max(*c),
-                MaskOp::Subtract => *a * (1.0 - c),
-                MaskOp::Intersect => *a * c,
+            let v = if inv { 1.0 - *a } else { *a };
+            let v = match comp.op {
+                MaskOp::Add => v.max(*c),
+                MaskOp::Subtract => v * (1.0 - c),
+                MaskOp::Intersect => v * c,
             };
+            *a = if inv { 1.0 - v } else { v };
         }
         first = false;
     }
@@ -557,6 +562,19 @@ pub const MAX_STROKE_DABS: usize = 2_000_000;
 
 /// The dabs of stroke `s` in a `w × h` output.
 pub fn brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize) -> BrushDabs {
+    brush_dabs_within(s, frame, w, h, MAX_STROKE_DABS)
+}
+
+/// [`brush_dabs`] stopping at `max` dabs instead of [`MAX_STROKE_DABS`].
+///
+/// For a caller that discards a stroke past a threshold of its own: it builds to that threshold
+/// rather than to the stroke budget and throws the difference away. The GPU path rejects a brush
+/// mask past 4096 dabs in total and the Auto Mask spot window past 200,000, both far below the
+/// two million a single stroke may otherwise construct first (#1520).
+///
+/// Ask for one more than the threshold to tell "at it" from "past it": a result shorter than
+/// `max` is the whole stroke.
+pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max: usize) -> BrushDabs {
     let to_out = frame.norm_to_out(w, h);
     let ppl = frame.px_per_long(w);
     let r = (s.size * ppl).max(0.5);
@@ -569,10 +587,14 @@ pub fn brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize) -> BrushDa
     let with_pressure = !s.pressure.is_empty();
     let mut prev = None;
     let mut prev_p = 1.0;
+    let mut emitted = 0usize;
     for (i, p) in s.points.iter().enumerate() {
+        if emitted >= max {
+            break;
+        }
         let q = to_out.apply(*p);
         let before = dabs.len();
-        if push_dabs(&mut dabs, prev, q, r) {
+        if push_dabs_within(&mut dabs, &mut emitted, prev, q, r, max) {
             let pq = s.pressure_at(i);
             if with_pressure {
                 // the first dab of the stroke has nothing to interpolate from
@@ -618,7 +640,16 @@ pub fn push_dabs(dabs: &mut Vec<Point>, prev: Option<Point>, q: Point, r: f64) -
 /// dabs no longer held in `dabs`. Incremental callers retain `emitted` when clearing their buffer;
 /// it advances only by the number actually appended. Acceptance and spacing match [`push_dabs`].
 pub fn push_dabs_counted(dabs: &mut Vec<Point>, emitted: &mut usize, prev: Option<Point>, q: Point, r: f64) -> bool {
-    let room = MAX_STROKE_DABS.saturating_sub(*emitted);
+    push_dabs_within(dabs, emitted, prev, q, r, MAX_STROKE_DABS)
+}
+
+/// [`push_dabs_counted`] against a caller's own budget rather than [`MAX_STROKE_DABS`].
+///
+/// A caller that will not look at more than `max` dabs should build no more than `max`: a length
+/// check after the vector exists bounds nothing, it only throws away what was already paid for
+/// (#1520).
+pub fn push_dabs_within(dabs: &mut Vec<Point>, emitted: &mut usize, prev: Option<Point>, q: Point, r: f64, max: usize) -> bool {
+    let room = max.min(MAX_STROKE_DABS).saturating_sub(*emitted);
     if room == 0 || !(q.x.is_finite() && q.y.is_finite()) {
         return false;
     }
@@ -898,6 +929,30 @@ mod tests {
         }
     }
 
+    /// Issue #2677: on an inverted mask, [+] adds to and [-] removes from the visible area.
+    #[test]
+    fn inverted_mask_add_and_subtract_act_on_the_visible_area() {
+        let f = frame(100, 100);
+        let img = Rgb32f::new(100, 100);
+        let l = Plane::new(100, 100);
+        let radial = |x: f64| MaskShape::Radial { center: Point::new(x, 0.5), rx: 0.1, ry: 0.1, angle: 0.0, feather: 20.0, invert: false };
+        let comp = |op, x| MaskComponent { name: None, op, invert: false, shape: radial(x) };
+        let at = |ops: Vec<MaskComponent>, x, y| {
+            let m = Mask { components: ops, invert: true, ..Default::default() };
+            evaluate(&[m], &f, 100, 100, &img, &l, 0.0, None)[0].alpha.get(x, y)
+        };
+        let base = || comp(MaskOp::Add, 0.2);
+        // the inverted base shows everything but the first spot
+        assert!(at(vec![base()], 80, 50) > 0.99 && at(vec![base()], 20, 50) < 0.01);
+        // [+] at the first spot makes it visible
+        assert!(at(vec![base(), comp(MaskOp::Add, 0.2)], 20, 50) > 0.99);
+        // [-] at the other spot hides it
+        assert!(at(vec![base(), comp(MaskOp::Subtract, 0.8)], 80, 50) < 0.01);
+        // [∩] keeps only the visible part inside the shape
+        let both = vec![base(), comp(MaskOp::Intersect, 0.8)];
+        assert!(at(both.clone(), 80, 50) > 0.99 && at(both, 20, 50) < 0.01);
+    }
+
     #[test]
     fn radial_inside_and_invert() {
         let f = frame(100, 100);
@@ -909,6 +964,52 @@ mod tests {
         let m = Mask { components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: true, shape }], ..Default::default() };
         let e = evaluate(&[m], &f, 100, 100, &img, &l, 0.0, None);
         assert!(e[0].alpha.get(50, 50) < 0.01);
+    }
+
+    /// #1520: a caller that will not look past its own threshold builds to that threshold, not to
+    /// the stroke budget. Each segment here is admissible on its own and together they want far
+    /// more than any threshold the callers apply, which is the aggregate the issue describes
+    /// rather than one hostile segment.
+    #[test]
+    fn a_stroke_is_built_only_as_far_as_the_caller_will_look() {
+        let f = frame(4000, 4000);
+        // Twenty long sweeps across the output: tens of thousands of dabs between them.
+        let points: Vec<Point> =
+            (0..20).map(|i| if i % 2 == 0 { Point::new(0.02, 0.02 + i as f64 * 0.04) } else { Point::new(0.98, 0.02 + i as f64 * 0.04) }).collect();
+        let s = BrushStroke { points, size: 0.002, feather: 50.0, flow: 100.0, density: 100.0, ..Default::default() };
+
+        let whole = brush_dabs(&s, &f, 4000, 4000);
+        assert!(whole.dabs.len() > 20_000, "the stroke really is large: {}", whole.dabs.len());
+        assert!(whole.dabs.len() <= MAX_STROKE_DABS);
+
+        // Each caller gets what it asked for and no more, however large the stroke is. 4097 and
+        // 200_001 are what the GPU path and the Auto Mask spot window now ask for.
+        for max in [1usize, 2, 4097, 200_001] {
+            let got = brush_dabs_within(&s, &f, 4000, 4000, max);
+            assert!(got.dabs.len() <= max, "asked for at most {max}, built {}", got.dabs.len());
+            assert_eq!(got.r, whole.r, "the brush itself is unchanged");
+        }
+
+        // A budget the stroke never reaches changes nothing: it only ever truncates.
+        let generous = brush_dabs_within(&s, &f, 4000, 4000, whole.dabs.len() + 1000);
+        assert_eq!(generous.dabs, whole.dabs, "an unreached budget leaves the stroke alone");
+
+        // The guarantee the callers rely on: a result short of the budget was never truncated,
+        // so it is the stroke itself. Both callers ask for one more than they will accept, so
+        // anything they keep is identical to what they drew before this change, and anything
+        // truncated is something they were going to reject anyway.
+        //
+        // A truncated one is not a prefix: running out of room makes a segment lay its remaining
+        // dabs further apart rather than stop mid-segment, which is how `push_dabs_counted`
+        // already behaved at MAX_STROKE_DABS. That only ever reaches a caller that rejects it.
+        let cut = brush_dabs_within(&s, &f, 4000, 4000, 500);
+        assert_eq!(cut.dabs.len(), 500, "a stroke past the budget fills it exactly");
+        for max in [700usize, 5_000, whole.dabs.len()] {
+            let got = brush_dabs_within(&s, &f, 4000, 4000, max);
+            if got.dabs.len() < max {
+                assert_eq!(got.dabs, whole.dabs, "a result short of its budget is the whole stroke");
+            }
+        }
     }
 
     /// Issue #517: dabs along a long segment (a fast stroke: two pointer samples far apart) are at

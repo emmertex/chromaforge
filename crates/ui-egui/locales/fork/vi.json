@@ -23,5 +23,7 @@
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "Giữ chất lượng ảnh nhất quán khi điều chỉnh. Nếu một chỉnh sửa quá chậm để làm vậy, ảnh sẽ cập nhật nhanh hơn khi thanh trượt đang di chuyển và sắc nét lại ngay khi dừng.",
   "Preview for SDR Display": "Xem trước cho màn hình SDR",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Hiển thị ảnh như màn hình SDR và bản xuất SDR hiển thị, để điều chỉnh phiên bản SDR của ảnh",
-  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Các thanh này đặt cách ảnh hiển thị trên màn hình SDR và trong bản xuất SDR. Bật Xem trước cho màn hình SDR để xem chúng."
+  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Các thanh này đặt cách ảnh hiển thị trên màn hình SDR và trong bản xuất SDR. Bật Xem trước cho màn hình SDR để xem chúng.",
+  "Graphics interface": "Giao diện đồ họa",
+  "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Áp dụng từ lần khởi động sau. Nếu ứng dụng khởi động chậm khi bật GPU, hãy thử Vulkan: trên một số máy tính, nó chuẩn bị GPU nhanh hơn nhiều."
 }

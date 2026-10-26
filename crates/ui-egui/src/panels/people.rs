@@ -79,7 +79,21 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             let _ = app.run("view.person", json!({"name": last}));
         }
     }
-    ui.painter().text(pos2(head.right() - PAD, head.center().y), Align2::RIGHT_CENTER, people.len().to_string(), t.font(13.0), t.text_dim);
+    let count =
+        ui.painter().text(pos2(head.right() - PAD, head.center().y), Align2::RIGHT_CENTER, people.len().to_string(), t.font(13.0), t.text_dim);
+    // faces the user ignored: one click brings them all back (one undo step)
+    let ignored = app.caches.ignored_faces(&app.session.catalog);
+    if !ignored.is_empty() {
+        let label = if ignored.len() == 1 { "Restore 1 ignored face".to_string() } else { format!("Restore {} ignored faces", ignored.len()) };
+        let w = ui.painter().layout_no_wrap(label.clone(), t.font(12.5), Color32::WHITE).size().x + 20.0;
+        let r = Rect::from_min_size(pos2(count.left() - 16.0 - w, head.center().y - 12.0), vec2(w, 24.0));
+        let b = ui.put(r, egui::Button::new(RichText::new(label).font(t.font(12.5))));
+        register(ui.ctx(), "people:restoreIgnored", b.rect);
+        if b.clicked() {
+            let list: Vec<serde_json::Value> = ignored.iter().map(|(photo, index)| json!({"photo": photo, "index": index})).collect();
+            let _ = app.run("faces.ignore", json!({"faces": list, "ignored": false}));
+        }
+    }
     // until face recognition is set up: what it takes, and a button that does the next step
     super::faces::setup_banner(app, ui);
     // the filters narrowing the list (a date, a keyword…), removable here

@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 lcc-brand = { workspace = true }
+lcc-camdb = { workspace = true }
 lcc-develop = { workspace = true }
 lcc-raw = { workspace = true }
 lcc-meta = { workspace = true }

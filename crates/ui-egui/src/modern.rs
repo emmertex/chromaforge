@@ -865,12 +865,11 @@ fn histogram(app: &mut LccApp, ui: &egui::Ui, area: Rect) {
         return;
     }
     let Some(id) = app.session.active() else { return };
-    // the same type and scale as Classic's panel (View ▸ Histogram Mode); the waveforms need a
-    // small render of their own, as the panel's do
+    // the same type, scale and histogram as Classic's panel (View ▸ Histogram Mode): the waveforms'
+    // small render of their own, a drag's live HDR histogram
     let scale = crate::panels::histogram::scale_of(app);
     let mode = crate::panels::histogram::mode_of(app);
-    let preview = crate::panels::edit::preview_histogram(app, id);
-    let hist = crate::panels::edit::panel_render_histogram(app, id, mode, preview);
+    let hist = crate::panels::edit::shown_histogram(app, ui.ctx(), id, mode);
     let t = Tokens::get(ui.ctx());
     let phone = Form::of(ui.ctx().content_rect().size()).phone();
     let large = place == HistogramPlace::Large;

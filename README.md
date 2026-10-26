@@ -497,8 +497,10 @@ egui frontend is one swappable crate; nothing below it knows a UI exists. `mcp` 
 
 Humans and agents follow the same rules, so read [AGENTS.md](AGENTS.md) first. The short version:
 
-- **Clean-room.** Never read Adobe binaries or GPL raw/photo code (darktable, RawTherapee, LibRaw, rawspeed, dcraw…);
-  work from public specs and black-box observation.
+- **Clean-room.** Never read Adobe binaries or GPL / LGPL raw and photo code (darktable, RawTherapee, LibRaw,
+  rawspeed…); work from public specs and black-box observation. One exception: dcraw's functions outside its
+  RESTRICTED (Foveon) block, which its author releases free for all uses, may serve as a reference under the dcraw
+  reference policy in [AGENTS.md](AGENTS.md#clean-room-sources-in-addition-to-the-non-negotiables).
 - **No Adobe assets, ever:** no icons, screenshots, presets, profiles, LUTs or fonts from Adobe products. Every
   image, icon and font in the repo is original, public domain, Creative Commons, OFL or permissively licensed, and has
   an entry in [assets/ATTRIBUTION.md](assets/ATTRIBUTION.md) added in the same commit. New fonts go to

@@ -25,10 +25,42 @@ fn profiles_dir(s: &Session) -> Option<PathBuf> {
     s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join("Profiles"))
 }
 
-/// Register every imported profile's LUT with the pipeline (missing files are skipped).
-pub fn register_all(s: &Session) {
+/// Largest `.cube` file read back from a library: a 129³ LUT, the largest size in common use, is
+/// about 60 MB of text.
+const MAX_CUBE_BYTES: u64 = 64 << 20;
+
+/// The library's own copy of `p`: `<library>/Profiles/<its file name>`, a `.cube` that is a regular
+/// file (not a link, a FIFO or a device). `prefs.json` is a file anyone with the library folder can
+/// edit, so the path it records is never followed as written: not `..` out of `Profiles/`, an
+/// absolute path elsewhere, `/dev/zero` or a network share (issue #2123). Only the name counts, so
+/// a library moved since keeps its profiles.
+fn own_copy(profiles: &Path, p: &LutProfile) -> Option<PathBuf> {
+    let name = Path::new(&p.file).file_name()?;
+    if !Path::new(name).extension().is_some_and(|x| x.eq_ignore_ascii_case("cube")) {
+        return None;
+    }
+    let f = profiles.join(name);
+    std::fs::symlink_metadata(&f).ok().filter(std::fs::Metadata::is_file).map(|_| f)
+}
+
+/// `f` as text, when it is at most [`MAX_CUBE_BYTES`].
+fn read_cube(f: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut b = Vec::new();
+    std::fs::File::open(f).ok()?.take(MAX_CUBE_BYTES + 1).read_to_end(&mut b).ok()?;
+    if b.len() as u64 > MAX_CUBE_BYTES {
+        return None;
+    }
+    String::from_utf8(b).ok()
+}
+
+/// Register every imported profile's LUT with the pipeline, from the copies in `profiles` (the
+/// `Profiles/` folder of the library being opened, which isn't `s.library` yet; `None` when it
+/// isn't on disk) ([`own_copy`]); missing, oversized or unreadable files are skipped.
+pub fn register_all(s: &Session, profiles: Option<&Path>) {
+    let Some(profiles) = profiles else { return };
     for p in &s.lut_profiles {
-        if let Some(l) = std::fs::read_to_string(&p.file).ok().and_then(|t| lcc_pipeline::lut::Lut3d::parse_cube(&t).ok()) {
+        if let Some(l) = own_copy(profiles, p).and_then(|f| read_cube(&f)).and_then(|t| lcc_pipeline::lut::Lut3d::parse_cube(&t).ok()) {
             lcc_pipeline::lut::register(&p.id, l);
         }
     }
@@ -137,7 +169,8 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         let file = match &dir {
             Some(d) => {
                 let f = d.join(format!("{}.cube", id.trim_start_matches("lut:")));
-                std::fs::write(&f, &text).map_err(|e| bad(C, format!("{}: {e}", f.display())))?;
+                // replaced, never written through a link at the name (issue #2122)
+                lcc_catalog::safe_file::write_atomic(&f, text.as_bytes()).map_err(|e| bad(C, format!("{}: {e}", f.display())))?;
                 f.to_string_lossy().to_string()
             }
             // no library on disk: the registered LUT is all this session needs (a copy would only
@@ -171,8 +204,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 return Err(bad("profile.deleteImported", format!("no imported profile `{id}`")));
             };
             let gone = s.lut_profiles.remove(i);
-            if profiles_dir(s).is_some_and(|d| Path::new(&gone.file).starts_with(d)) {
-                let _ = std::fs::remove_file(&gone.file);
+            // only the library's own copy, and only when no other profile is read from it
+            if let Some(dir) = profiles_dir(s)
+                && let Some(f) = own_copy(&dir, &gone)
+                && !s.lut_profiles.iter().any(|q| own_copy(&dir, q).as_ref() == Some(&f))
+            {
+                let _ = std::fs::remove_file(&f);
             }
             lcc_pipeline::lut::unregister(&id);
             s.save_prefs()?;

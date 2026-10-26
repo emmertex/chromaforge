@@ -1,4 +1,5 @@
-//! `<cli> calibrate-lightroom`: fit a camera's colour model and named looks to Lightroom's exports of the
+//! `<cli> calibrate-lightroom`: fit a camera's colour model and named looks to Lightroom's (or, with `--editor`,
+//! Capture One's, darktable's, RawTherapee's or DxO PhotoLab's) exports of the
 //! contributor's own raws (`lcc_colourfit`), and the developer step that adds a contributed file to the repository.
 //!
 //! - `preset -o FILE`: the baseline Lightroom preset contributors apply before exporting.
@@ -7,7 +8,10 @@
 //! - `add FILE [--repo DIR] [--contributor NAME]`: validate a contribution and commit-ready write it into
 //!   `crates/camdb/data/calibrations/` with its `assets/ATTRIBUTION.md` row.
 //! - `list`: the calibrations built into this binary.
-//! - `verify`: whole-pipeline check against an edited catalogue (not available yet).
+//! - `probe -o DIR (--like RAW | --make M --model M)`: synthetic probe DNGs and slider sweeps for Lightroom to render;
+//!   `probe-check --probes DIR --exports DIR`: read them back (`lcc_colourfit::probe`).
+//! - `verify --raws DIR… --exports DIR… [--report DIR] [--json] [--size N] [--max N]`: the app's render of edited
+//!   photos against their edited exports, ΔE00 per photo and per group of controls used (`lcc_colourfit::verify`).
 //!
 //! Sources: own design; DNG specification 1.7 chapter 6 (camera profile tags) for the `.dcp` writer.
 
@@ -17,9 +21,6 @@ use lcc_camdb::calibration::{self, Calibration};
 use lcc_colourfit::dataset::{self, CollectOptions, ExportSet};
 use lcc_colourfit::fit::{self, FitOptions};
 use lcc_raw::ColorData;
-use lcc_raw::profile::HsvTable;
-
-const CLI: &str = lcc_brand::CLI_BINARY;
 
 /// Where `add` writes calibrations, relative to the repository root.
 const DATA_DIR: &str = "crates/camdb/data/calibrations";
@@ -31,16 +32,164 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Some("fit") => fit_cmd(rest),
         Some("add") => add(rest),
         Some("list") => list(),
-        Some("verify") => Err(format!(
-            "calibrate-lightroom verify is not available yet: render your edited catalogue with `{CLI} run --library DIR library.importLightroom …` and compare by eye meanwhile"
-        )),
-        _ => Err("calibrate-lightroom needs `preset`, `fit`, `add`, `list` or `verify` (see --help)".into()),
+        Some("verify") => verify_cmd(rest),
+        Some("probe") => probe_cmd(rest),
+        Some("probe-check") => probe_check_cmd(rest),
+        _ => Err("calibrate-lightroom needs `preset`, `fit`, `add`, `list`, `verify`, `probe` or `probe-check` (see --help)".into()),
     }
 }
 
 fn take<'a>(args: &'a [String], i: &mut usize, flag: &str) -> Result<&'a str, String> {
     *i += 1;
     args.get(*i).map(String::as_str).ok_or_else(|| format!("{flag} needs a value"))
+}
+
+fn verify_cmd(args: &[String]) -> Result<(), String> {
+    use lcc_colourfit::verify::{self, VerifyOptions};
+    let (mut raw_dirs, mut export_dirs) = (Vec::new(), Vec::new());
+    let mut report_dir: Option<PathBuf> = None;
+    let mut json = false;
+    let mut opts = VerifyOptions::default();
+    let mut list: Option<bool> = None; // Some(true) = raws, Some(false) = exports
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--raws" => list = Some(true),
+            "--exports" => list = Some(false),
+            "--report" => report_dir = Some(take(args, &mut i, "--report")?.into()),
+            "--json" => json = true,
+            "--size" => {
+                let v = take(args, &mut i, "--size")?;
+                opts.compare.long_edge = v.parse().map_err(|_| format!("--size: `{v}` is not a number of pixels"))?;
+            }
+            "--max" => {
+                let v = take(args, &mut i, "--max")?;
+                opts.max_photos = v.parse().map_err(|_| format!("--max: `{v}` is not a number of photos"))?;
+            }
+            a if a.starts_with('-') => return Err(format!("unknown option `{a}`")),
+            a => match list {
+                Some(true) => raw_dirs.push(PathBuf::from(a)),
+                Some(false) => export_dirs.push(PathBuf::from(a)),
+                None => return Err(format!("`{a}`: put folders after --raws or --exports")),
+            },
+        }
+        i += 1;
+    }
+    if raw_dirs.is_empty() || export_dirs.is_empty() {
+        return Err("verify needs --raws DIR… and --exports DIR… (the edited exports, searched with their subfolders)".into());
+    }
+    let mut raws = Vec::new();
+    for d in &raw_dirs {
+        raws_in(d, &mut raws, 0);
+    }
+    raws.sort();
+    raws.dedup();
+    if raws.is_empty() {
+        return Err("no raw files found in the --raws folders".into());
+    }
+    let exports: Vec<ExportSet> = export_dirs.iter().map(|d| ExportSet { dir: d.clone() }).collect();
+    let mut progress = |done: usize, total: usize, name: &str| {
+        if done < total {
+            eprintln!("calibrate-lightroom verify: {}/{total} {name}", done + 1);
+        }
+    };
+    let report = verify::verify(&raws, &exports, &opts, &mut progress).map_err(|e| e.to_string())?;
+    if let Some(dir) = &report_dir {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for p in &report.photos {
+            let Some(rep) = &p.report else { continue };
+            let rgb = lcc_colourfit::compare::map_rgb8(rep);
+            let (Ok(w), Ok(h)) = (u32::try_from(rep.width), u32::try_from(rep.height)) else { continue };
+            let img = lcc_codecs::EncodeImage::new(w, h, 3, lcc_codecs::Samples::U8(&rgb));
+            let png = lcc_codecs::encode_png(&img, &lcc_codecs::EncodeMeta::default()).map_err(|e| e.to_string())?;
+            let stem = Path::new(&p.raw).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.raw.clone());
+            let out = dir.join(format!("{stem}.de00.png"));
+            std::fs::write(&out, png).map_err(|e| format!("{}: {e}", out.display()))?;
+        }
+        let out = dir.join("verify.json");
+        let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        std::fs::write(&out, text).map_err(|e| format!("{}: {e}", out.display()))?;
+        eprintln!("calibrate-lightroom verify: wrote {} (and a ΔE00 map per photo)", out.display());
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+    } else {
+        print!("{}", verify::text(&report));
+    }
+    Ok(())
+}
+
+fn probe_cmd(args: &[String]) -> Result<(), String> {
+    let (mut out, mut make, mut model, mut like, mut unique) = (None, None, None, None, None);
+    let mut sweeps = true;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--out" => out = Some(PathBuf::from(take(args, &mut i, "-o")?)),
+            "--make" => make = Some(take(args, &mut i, "--make")?.to_string()),
+            "--model" => model = Some(take(args, &mut i, "--model")?.to_string()),
+            "--like" => like = Some(PathBuf::from(take(args, &mut i, "--like")?)),
+            "--unique-model" => unique = Some(take(args, &mut i, "--unique-model")?.to_string()),
+            "--base-only" => sweeps = false,
+            a => return Err(format!("unknown argument `{a}`")),
+        }
+        i += 1;
+    }
+    let out = out.ok_or("probe needs -o DIR")?;
+    if let Some(raw) = &like {
+        let (mk, md) = lcc_colourfit::probe::camera_of(raw).map_err(|e| e.to_string())?;
+        make = make.or(mk);
+        model = model.or(md);
+    }
+    let (Some(make), Some(model)) = (make, model) else {
+        return Err("probe needs the camera: --like ONE_OF_ITS_RAWS, or --make MAKE --model MODEL as its raws name it".into());
+    };
+    let m = lcc_colourfit::probe::write(&out, &make, &model, unique.as_deref(), sweeps).map_err(|e| e.to_string())?;
+    eprintln!(
+        "calibrate-lightroom probe: wrote {} probe DNG(s) for {} {} (UniqueCameraModel \"{}\") and {} to {}",
+        m.files.len(),
+        m.make,
+        m.model,
+        m.unique_camera_model,
+        lcc_colourfit::probe::MANIFEST,
+        out.display()
+    );
+    eprintln!(
+        "next: import the folder into Lightroom, export every probe as a 16-bit ProPhoto TIFF keeping its file name, then run `calibrate-lightroom probe-check --probes {} --exports EXPORTS`",
+        out.display()
+    );
+    Ok(())
+}
+
+fn probe_check_cmd(args: &[String]) -> Result<(), String> {
+    let (mut probes, mut exports, mut out) = (None, None, None);
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--probes" => probes = Some(PathBuf::from(take(args, &mut i, "--probes")?)),
+            "--exports" => exports = Some(PathBuf::from(take(args, &mut i, "--exports")?)),
+            "-o" | "--out" => out = Some(PathBuf::from(take(args, &mut i, "-o")?)),
+            "--json" => json = true,
+            a => return Err(format!("unknown argument `{a}`")),
+        }
+        i += 1;
+    }
+    let (Some(probes), Some(exports)) = (probes, exports) else {
+        return Err("probe-check needs --probes DIR (from `probe`) and --exports DIR (Lightroom's exports of them)".into());
+    };
+    let report = lcc_colourfit::probe::check(&probes, &exports).map_err(|e| e.to_string())?;
+    if let Some(path) = &out {
+        let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        eprintln!("calibrate-lightroom probe-check: wrote {}", path.display());
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+    } else {
+        print!("{}", lcc_colourfit::probe::text(&report));
+    }
+    Ok(())
 }
 
 fn preset(args: &[String]) -> Result<(), String> {
@@ -97,6 +246,7 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
     let mut out = PathBuf::from(".");
     let mut contributor = None;
     let mut dry_run = false;
+    let mut editor = calibration::Editor::Lightroom;
     // `--raws A B --exports C D`: plain arguments go to the list the last flag opened
     let mut list: Option<bool> = None; // Some(true) = raws, Some(false) = exports
     let mut i = 0;
@@ -107,6 +257,13 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
             "-o" | "--out" => out = take(args, &mut i, "-o")?.into(),
             "--contributor" => contributor = Some(take(args, &mut i, "--contributor")?.to_string()),
             "--dry-run" => dry_run = true,
+            "--editor" => {
+                let v = take(args, &mut i, "--editor")?;
+                editor = calibration::Editor::parse(v).ok_or_else(|| {
+                    let ids: Vec<&str> = calibration::Editor::ALL.iter().map(|e| e.id()).collect();
+                    format!("--editor: `{v}` is not one of {}", ids.join(", "))
+                })?;
+            }
             a if a.starts_with('-') => return Err(format!("unknown option `{a}`")),
             a => match list {
                 Some(true) => raw_dirs.push(PathBuf::from(a)),
@@ -117,7 +274,7 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
         i += 1;
     }
     if raw_dirs.is_empty() || export_dirs.is_empty() {
-        return Err("fit needs --raws DIR… and --exports DIR… (folders of Lightroom exports, searched with their subfolders)".into());
+        return Err(format!("fit needs --raws DIR… and --exports DIR… (folders of {} exports, searched with their subfolders)", editor.name()));
     }
     let mut raws = Vec::new();
     for d in &raw_dirs {
@@ -142,16 +299,19 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
             eprintln!("  narrow white-balance range: add tungsten-lit (indoor) and daylight photos for a better fit");
         }
     }
-    let mut looks: Vec<&str> = photos.iter().map(|p| p.look.as_str()).collect();
+    if editor != calibration::Editor::Lightroom && !ccts.is_empty() {
+        eprintln!("  (the exports carry Lightroom white-balance values; fitting to {} ignores them)", editor.name());
+    }
+    let mut looks: Vec<String> = photos.iter().map(|p| fit::look_name_for(editor, &p.look)).collect();
     looks.sort_unstable();
     looks.dedup();
-    eprintln!("calibrate-lightroom: looks: {}", looks.join(", "));
+    eprintln!("calibrate-lightroom: fitting to {} exports; looks: {}", editor.name(), looks.join(", "));
     if dry_run {
         eprintln!("calibrate-lightroom: dry run, nothing fitted or written");
         return Ok(());
     }
     eprintln!("calibrate-lightroom: fitting (this can take a few minutes)…");
-    let mut cal = fit::fit(&photos, &FitOptions { contributor, rounds: 0 }).map_err(|e| e.to_string())?;
+    let mut cal = fit::fit(&photos, &FitOptions { contributor, editor, rounds: 0 }).map_err(|e| e.to_string())?;
     cal.tool_version = env!("CARGO_PKG_VERSION").to_string();
     cal.validate().map_err(|e| format!("the fit produced an invalid calibration: {e}"))?;
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -191,7 +351,7 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
 
 /// Everything a calibration file holds, in words.
 fn print_contents(c: &Calibration) {
-    println!("{} {} — calibration matched to Lightroom", c.make, c.model);
+    println!("{} {} — calibration matched to {}", c.make, c.model, c.editor.name());
     if !c.aliases.is_empty() {
         println!("  also sold as: {}", c.aliases.join(", "));
     }
@@ -234,7 +394,7 @@ fn list() -> Result<(), String> {
     for c in all {
         let looks: Vec<String> =
             c.looks.iter().map(|l| format!("{} ({}{})", l.name, calibration::LOOK_PREFIX, calibration::look_id(&l.name))).collect();
-        println!("{} {}: {} photos; looks: {}", c.make, c.model, c.evidence.photos, looks.join(", "));
+        println!("{} {} ({}): {} photos; looks: {}", c.make, c.model, c.editor.name(), c.evidence.photos, looks.join(", "));
         for l in &c.evidence.looks {
             println!("  ΔE00 {}: median {:.2} → {:.2}, p95 {:.2} → {:.2}", l.name, l.before.median, l.after.median, l.before.p95, l.after.p95);
         }
@@ -291,7 +451,8 @@ fn with_attribution_row(table: &str, path: &str, c: &Calibration, today: &str) -
     let looks: Vec<&str> = c.looks.iter().map(|l| l.name.as_str()).collect();
     let by = c.contributor.as_deref().map(|n| format!(" by {}", n.replace('|', "/"))).unwrap_or_default();
     let row = format!(
-        "| `{path}` | {make} {model} camera calibration matched to Lightroom (colour model + looks: {looks}), built into the app | {who} | original work: black-box fit by `<cli> calibrate-lightroom` to {n} photos and their Lightroom exports{by}; aggregate statistics only, no image content; no Adobe profile data | {lic} | {today} | none |",
+        "| `{path}` | {make} {model} camera calibration matched to {editor} (colour model + looks: {looks}), built into the app | {who} | original work: black-box fit by `<cli> calibrate-lightroom` to {n} photos and their {editor} exports{by}; aggregate statistics only, no image content; no profile data of the editor's | {lic} | {today} | none |",
+        editor = c.editor.name(),
         make = c.make.replace('|', "/"),
         model = c.model.replace('|', "/"),
         looks = looks.join(", ").replace('|', "/"),
@@ -321,125 +482,7 @@ fn with_attribution_row(table: &str, path: &str, c: &Calibration, today: &str) -
 
 /// A little-endian DNG camera profile (`.dcp`) of `color`'s profile tags, readable by `lcc_raw::dcp::parse`.
 pub fn write_dcp(model: &str, name: &str, copyright: &str, color: &ColorData) -> Result<Vec<u8>, String> {
-    enum V {
-        Ascii(String),
-        Short(u16),
-        Long(Vec<u32>),
-        SRational(Vec<f64>),
-        Float(Vec<f32>),
-    }
-    let mut tags: Vec<(u16, V)> = vec![(50708, V::Ascii(model.into()))];
-    let mat = |m: &lcc_raw::Mat3| V::SRational(m.0.iter().flatten().copied().collect());
-    for (k, tag) in [(0usize, 50721u16), (1, 50722)] {
-        if let Some(Some(m)) = color.color_matrix.get(k) {
-            tags.push((tag, mat(m)));
-        }
-    }
-    for (k, tag) in [(0usize, 50778u16), (1, 50779)] {
-        if let Some(&code) = color.illuminant.get(k)
-            && code != 0
-        {
-            tags.push((tag, V::Short(code)));
-        }
-    }
-    if !name.is_empty() {
-        tags.push((50936, V::Ascii(name.into())));
-    }
-    let table_data = |t: &HsvTable| V::Float(t.data.iter().flatten().copied().collect());
-    let dims = |t: &HsvTable| -> Result<V, String> {
-        let d = [t.hue_divisions, t.sat_divisions, t.val_divisions].map(u32::try_from);
-        match d {
-            [Ok(h), Ok(s), Ok(v)] => Ok(V::Long(vec![h, s, v])),
-            _ => Err("table too large for a camera profile".into()),
-        }
-    };
-    let p = &color.profile;
-    if let [Some(a), Some(b)] = &p.hue_sat_map {
-        if (a.hue_divisions, a.sat_divisions, a.val_divisions) == (b.hue_divisions, b.sat_divisions, b.val_divisions) {
-            tags.push((50937, dims(a)?));
-            tags.push((50938, table_data(a)));
-            tags.push((50939, table_data(b)));
-            tags.push((51107, V::Long(vec![u32::from(a.srgb_value)])));
-        }
-    } else if let Some(a) = p.hue_sat_map.iter().flatten().next() {
-        tags.push((50937, dims(a)?));
-        tags.push((50938, table_data(a)));
-        tags.push((51107, V::Long(vec![u32::from(a.srgb_value)])));
-    }
-    if let Some(curve) = &p.tone_curve {
-        tags.push((50940, V::Float(curve.points.iter().flatten().copied().collect())));
-    }
-    tags.push((50941, V::Long(vec![3]))); // ProfileEmbedPolicy: no restrictions
-    if !copyright.is_empty() {
-        tags.push((50942, V::Ascii(copyright.into())));
-    }
-    for (k, tag) in [(0usize, 50964u16), (1, 50965)] {
-        if let Some(Some(m)) = color.forward_matrix.get(k) {
-            tags.push((tag, mat(m)));
-        }
-    }
-    if let Some(t) = &p.look_table {
-        tags.push((50981, dims(t)?));
-        tags.push((50982, table_data(t)));
-        tags.push((51108, V::Long(vec![u32::from(t.srgb_value)])));
-    }
-    if color.baseline_exposure != 0.0 && color.baseline_exposure.is_finite() {
-        tags.push((51109, V::SRational(vec![color.baseline_exposure])));
-    }
-    tags.sort_by_key(|(t, _)| *t);
-
-    let to_u32 = |n: usize| u32::try_from(n).map_err(|_| "camera profile too large".to_string());
-    let encode = |v: &V| -> (u16, usize, Vec<u8>) {
-        match v {
-            V::Ascii(s) => {
-                let mut b: Vec<u8> = s.bytes().filter(|&c| c != 0).collect();
-                b.push(0);
-                (2, b.len(), b)
-            }
-            V::Short(x) => (3, 1, x.to_le_bytes().to_vec()),
-            V::Long(xs) => (4, xs.len(), xs.iter().flat_map(|x| x.to_le_bytes()).collect()),
-            V::SRational(xs) => (
-                10,
-                xs.len(),
-                xs.iter()
-                    .flat_map(|x| {
-                        let n = (x * 10000.0).round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-                        n.to_le_bytes().into_iter().chain(10000i32.to_le_bytes())
-                    })
-                    .collect(),
-            ),
-            V::Float(xs) => (11, xs.len(), xs.iter().flat_map(|x| x.to_le_bytes()).collect()),
-        }
-    };
-    let n = tags.len();
-    let ifd_len = 2 + 12 * n + 4;
-    let mut head = b"IIRC".to_vec();
-    head.extend_from_slice(&8u32.to_le_bytes());
-    head.extend_from_slice(&u16::try_from(n).map_err(|_| "too many tags".to_string())?.to_le_bytes());
-    let mut data = Vec::new();
-    let data_at = 8 + ifd_len;
-    for (tag, v) in &tags {
-        let (ty, count, bytes) = encode(v);
-        head.extend_from_slice(&tag.to_le_bytes());
-        head.extend_from_slice(&ty.to_le_bytes());
-        head.extend_from_slice(&to_u32(count)?.to_le_bytes());
-        if bytes.len() <= 4 {
-            let mut inline = [0u8; 4];
-            for (d, s) in inline.iter_mut().zip(&bytes) {
-                *d = *s;
-            }
-            head.extend_from_slice(&inline);
-        } else {
-            if data.len() % 2 == 1 {
-                data.push(0); // TIFF values start on a word boundary
-            }
-            head.extend_from_slice(&to_u32(data_at + data.len())?.to_le_bytes());
-            data.extend_from_slice(&bytes);
-        }
-    }
-    head.extend_from_slice(&0u32.to_le_bytes());
-    head.extend_from_slice(&data);
-    Ok(head)
+    lcc_raw::dcp::write(&lcc_raw::dcp::Dcp { model: model.into(), name: name.into(), copyright: copyright.into(), color: color.clone() })
 }
 
 #[cfg(test)]
@@ -456,7 +499,8 @@ mod tests {
         color.color_matrix = [Some(cm), Some(cm)];
         color.forward_matrix = [Some(fm), Some(fm)];
         color.baseline_exposure = 0.35;
-        let table = HsvTable { hue_divisions: 6, sat_divisions: 2, val_divisions: 1, data: vec![[2.0, 1.1, 0.9]; 12], srgb_value: false };
+        let table =
+            lcc_raw::profile::HsvTable { hue_divisions: 6, sat_divisions: 2, val_divisions: 1, data: vec![[2.0, 1.1, 0.9]; 12], srgb_value: false };
         color.profile.hue_sat_map = [Some(table.clone()), Some(table.clone())];
         color.profile.look_table = Some(table);
         color.profile.tone_curve = Some(ToneCurve { points: vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]] });
@@ -494,6 +538,7 @@ mod tests {
             make: "SONY".into(),
             model: "ILCE-7M4".into(),
             aliases: vec![],
+            editor: Default::default(),
             method: calibration::METHOD.into(),
             tool_version: "0".into(),
             contributor: Some("A Contributor".into()),

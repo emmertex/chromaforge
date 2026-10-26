@@ -108,6 +108,27 @@ fn a_key_given_to_a_command_overrides_a_fixed_key() {
     assert_eq!(before, after, "the rating key must not fire too");
 }
 
+/// A declared key that yields to another command's saved key can be taken back with ↺.
+#[test]
+fn restore_takes_back_a_declared_key_another_command_holds() {
+    use crate::shortcuts::shortcut_of;
+    let mut h = demo();
+    h.app.ui.settings.keymap.insert("photo.increaseRating".into(), "P".into());
+    assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "photo.pick"), None);
+    h.app.run("app.shortcuts", json!({})).unwrap();
+    h.step();
+    h.step();
+    click(&mut h, "check:shortcuts.showAll");
+    click(&mut h, "field:shortcutsSearch");
+    assert_eq!(h.request("ui.text", json!({"text": "flag as pick"}), T)["ok"], true);
+    h.step();
+    h.step();
+    click(&mut h, "button:shortcutReset-photo.pick");
+    assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "photo.pick"), Some("P"));
+    assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "photo.increaseRating"), None);
+    assert!(h.app.ui.settings.keymap.is_empty(), "{:?}", h.app.ui.settings.keymap);
+}
+
 /// Open the editor, filtered to `search`, and start recording for `id`.
 fn record(h: &mut Headless, search: &str, id: &str) {
     if h.app.ui.dialog.is_none() {
@@ -371,6 +392,51 @@ fn shift_insert_pastes_plainly() {
     h.settle(SETTLE);
     assert_eq!(h.app.ui.dialog, None, "no Paste Selected Settings");
     assert_eq!(h.app.session.undo.len(), undo + 1, "the settings were pasted");
+}
+
+/// ⌘⌥⇧C / ⌘⌥⇧V (Ctrl+Alt+Shift+C / V) copy and paste metadata, as in Lightroom Classic's Library,
+/// both as key presses and as the clipboard events Windows and Linux turn them into; the edit
+/// settings clipboard is left alone.
+#[test]
+fn cmd_alt_shift_c_and_v_copy_and_paste_metadata() {
+    let mut h = demo();
+    let ids: Vec<_> = h.app.session.visible().iter().copied().take(2).collect();
+    let (a, b) = (ids[0], ids[1]);
+    let title = |h: &Headless, id| h.app.session.catalog.photo(id).unwrap().meta.title.clone();
+    h.app.run("library.select", json!({"ids": [a.0]})).unwrap();
+    h.app.run("photo.setMeta", json!({"title": "Dawn", "creator": "Me"})).unwrap();
+    h.app.run("library.select", json!({"ids": [b.0]})).unwrap();
+    h.app.run("photo.setMeta", json!({"title": "Other"})).unwrap();
+    let chord = json!({"cmd": true, "alt": true, "shift": true});
+    let press = |h: &mut Headless, k: &str| {
+        let mut p = chord.clone();
+        p["key"] = json!(k);
+        let r = h.request("ui.key", p, T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+    };
+
+    h.app.run("library.select", json!({"ids": [a.0]})).unwrap();
+    press(&mut h, "C");
+    assert_eq!(h.app.session.meta_clipboard.as_ref().map(|m| m["title"].clone()), Some(json!("Dawn")), "the key copied the metadata");
+    h.app.run("library.select", json!({"ids": [b.0]})).unwrap();
+    press(&mut h, "V");
+    assert_eq!(title(&h, b), "Dawn", "the key pasted the metadata");
+    assert_eq!(h.app.session.catalog.photo(b).unwrap().meta.creator, "Me");
+
+    h.app.session.meta_clipboard = None;
+    h.app.run("photo.setMeta", json!({"title": "Other"})).unwrap();
+    let all = egui::Modifiers::COMMAND | egui::Modifiers::ALT | egui::Modifiers::SHIFT;
+    h.app.run("library.select", json!({"ids": [a.0]})).unwrap();
+    h.events.extend([egui::Event::ModifiersChanged(all), egui::Event::Copy]);
+    h.settle(SETTLE);
+    assert!(h.app.session.meta_clipboard.is_some(), "the Copy event with ⌥⇧ held copied the metadata");
+    h.app.run("library.select", json!({"ids": [b.0]})).unwrap();
+    h.events.extend([egui::Event::ModifiersChanged(all), egui::Event::Paste("text".into())]);
+    h.settle(SETTLE);
+    assert_eq!(title(&h, b), "Dawn", "the Paste event with ⌥⇧ held pasted the metadata");
+    assert!(h.app.session.clipboard.is_none(), "no edit settings were copied");
+    assert_eq!(h.app.ui.dialog, None, "no Paste Selected Settings");
 }
 /// The opening release can carry both physical shortcut keys and the replacement text.
 #[test]

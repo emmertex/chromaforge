@@ -27,6 +27,81 @@ fn name_param(p: &Value, c: &str) -> Result<Option<String>> {
     Ok(name)
 }
 
+/// `faces.ignore`: ignore faces (or restore them, `ignored: false`) in one undo step. Every face is checked before
+/// anything changes, so a stale selection changes nothing.
+fn ignore_faces(s: &mut Session, p: &Value) -> Result<Value> {
+    use lcc_meta::RegionKind;
+    const C: &str = "faces.ignore";
+    let ignored = match p.get("ignored") {
+        None => true,
+        Some(v) => v.as_bool().ok_or_else(|| bad(C, "`ignored` must be true or false"))?,
+    };
+    let faces = p.get("faces").and_then(Value::as_array).ok_or_else(|| bad(C, "missing `faces`"))?;
+    if faces.is_empty() || faces.len() > 100_000 {
+        return Err(bad(C, "select between 1 and 100000 faces"));
+    }
+    let mut edits: std::collections::BTreeMap<lcc_catalog::PhotoId, lcc_catalog::Meta> = Default::default();
+    let mut seen = std::collections::HashSet::new();
+    for face in faces {
+        let id = lcc_catalog::PhotoId(face.get("photo").and_then(Value::as_u64).ok_or_else(|| bad(C, "missing `photo`"))?);
+        let index = face.get("index").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(C, "invalid face `index`"))?;
+        if !seen.insert((id, index)) {
+            continue;
+        }
+        let photo = s.catalog.photo(id).filter(|p| p.in_library()).ok_or_else(|| bad(C, "photo is no longer in the library"))?;
+        let region = photo.meta.regions.get(index).ok_or_else(|| bad(C, "face no longer exists"))?;
+        let expected = if ignored { RegionKind::Face } else { RegionKind::IgnoredFace };
+        if region.kind != expected {
+            return Err(bad(C, "a selected face changed; reload the faces and try again"));
+        }
+        if let Some(rect) = face.get("rect") {
+            let rect: lcc_geom::Rect = serde_json::from_value(rect.clone()).map_err(|_| bad(C, "invalid `rect`"))?;
+            if rect != region.rect {
+                return Err(bad(C, "a selected face changed; reload the faces and try again"));
+            }
+        }
+        let meta = edits.entry(id).or_insert_with(|| photo.meta.clone());
+        if let Some(region) = meta.regions.get_mut(index) {
+            region.kind = if ignored { RegionKind::IgnoredFace } else { RegionKind::Face };
+        }
+    }
+    let count = seen.len();
+    s.commit(
+        if ignored { "Ignore Faces" } else { "Restore Ignored Faces" },
+        Op::Batch { ops: edits.into_iter().map(|(id, meta)| Op::SetMeta { id, meta: Box::new(meta) }).collect() },
+    )?;
+    // regions are not written to XMP, so a sidecar must not be rewritten for this
+    s.skip_auto_write = true;
+    Ok(json!({"changed": count, "ignored": ignored}))
+}
+
+/// `faces.ignored`: one page of the ignored faces, in catalog order (needs no recognition model).
+fn ignored_faces(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "faces.ignored";
+    let offset = match p.get("offset") {
+        None => 0,
+        Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(C, "`offset` must be a non-negative index"))?,
+    };
+    let limit = match p.get("limit") {
+        None => 1000,
+        Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(C, "`limit` must be between 1 and 5000"))?,
+    };
+    if !(1..=5000).contains(&limit) {
+        return Err(bad(C, "`limit` must be between 1 and 5000"));
+    }
+    let mut faces = Vec::new();
+    let mut total = 0usize;
+    for photo in s.catalog.photos().filter(|p| p.in_library()) {
+        for (index, region) in photo.meta.regions.iter().enumerate().filter(|(_, r)| r.kind == lcc_meta::RegionKind::IgnoredFace) {
+            if total >= offset && faces.len() < limit {
+                faces.push(json!({"photo": photo.id.0, "index": index, "rect": region.rect, "name": region.name, "view": s.face_view(photo.id, region.rect)}));
+            }
+            total = total.saturating_add(1);
+        }
+    }
+    Ok(json!({"total": total, "offset": offset, "faces": faces}))
+}
+
 /// Give a face region its name. Naming makes the face yours: a later "Detect Faces" run no longer replaces it.
 fn apply_name(region: &mut lcc_meta::Region, name: &Option<String>) {
     region.name = name.clone();
@@ -135,7 +210,7 @@ fn rename_person(s: &mut Session, p: &Value) -> Result<Value> {
         let Some(ph) = s.catalog.photo(id) else { continue };
         let mut indexes = Vec::new();
         for (i, r) in ph.meta.regions.iter().enumerate() {
-            if r.kind != lcc_meta::RegionKind::Face {
+            if !matches!(r.kind, lcc_meta::RegionKind::Face | lcc_meta::RegionKind::IgnoredFace) {
                 continue;
             }
             let Some(n) = r.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else { continue };
@@ -349,7 +424,7 @@ mod imp {
     /// (nothing from XMP, nothing drawn or named, no earlier detection) and has not been searched yet.
     fn needs_search(s: &Session, photo: &Photo) -> bool {
         photo.in_library()
-            && !photo.meta.regions.iter().any(|r| r.kind == RegionKind::Face)
+            && !photo.meta.regions.iter().any(|r| matches!(r.kind, RegionKind::Face | RegionKind::IgnoredFace))
             && !s.faces.scanned.contains(photo.id.0)
             && !s.faces.scan_failed.contains(&photo.id.0)
     }
@@ -380,7 +455,7 @@ mod imp {
         }
         let Some(photo) = s.catalog.photo(id) else { return };
         // the user (or an import) got there first: leave their faces alone
-        if photo.meta.regions.iter().any(|r| r.kind == RegionKind::Face) {
+        if photo.meta.regions.iter().any(|r| matches!(r.kind, RegionKind::Face | RegionKind::IgnoredFace)) {
             return;
         }
         let mut meta = photo.meta.clone();
@@ -1110,6 +1185,17 @@ mod imp {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            "faces.ignore",
+            "Ignore Faces",
+            [],
+            None,
+            "{faces: [{photo, index, rect?}], ignored?: true} — ignore blurry or false faces (kept, never detected again, left out of People), or restore them with ignored: false; one undo step; catalog only",
+            super::always,
+            ignore_faces
+        ),
+        cmd!(query "faces.ignored", "Ignored Faces", [], None,
+            "{offset?: 0, limit?: 1000} → {total, offset, faces: [{photo, index, rect, name, view}]} — the ignored faces in catalog order; limit 1..5000", super::always, ignored_faces),
         cmd!(
             "faces.index",
             "Index Faces",

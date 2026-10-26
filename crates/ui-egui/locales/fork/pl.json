@@ -91,5 +91,7 @@
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "Utrzymuje stałą jakość obrazu podczas regulacji. Gdy edycja jest na to zbyt wolna, obraz odświeża się szybciej, gdy suwak się porusza, i wyostrza się, gdy tylko się zatrzyma.",
   "Preview for SDR Display": "Podgląd dla ekranu SDR",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Pokazuje zdjęcie tak, jak pokażą je ekrany SDR i eksporty SDR, aby dostosować jego wersję SDR",
-  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Te suwaki określają wygląd zdjęcia na ekranach SDR i w eksportach SDR. Włącz Podgląd dla ekranu SDR, aby je zobaczyć."
+  "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Te suwaki określają wygląd zdjęcia na ekranach SDR i w eksportach SDR. Włącz Podgląd dla ekranu SDR, aby je zobaczyć.",
+  "Graphics interface": "Interfejs graficzny",
+  "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Obowiązuje od następnego uruchomienia. Jeśli aplikacja z włączonym GPU uruchamia się wolno, spróbuj Vulkan: na niektórych komputerach przygotowuje GPU znacznie szybciej."
 }

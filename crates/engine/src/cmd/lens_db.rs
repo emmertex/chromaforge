@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use super::{CommandSpec, always, bad, cmd};
+use super::{CommandSpec, always, bad, cmd, has_active};
 use crate::{Result, Session};
 
 fn status(s: &mut Session, _: &Value) -> Result<Value> {
@@ -112,7 +112,12 @@ fn photo_status(s: &mut Session, p: &Value) -> Result<Value> {
     let id = s.targets(p)?.first().copied().or(s.selection.active).ok_or_else(|| bad(C, "no photo"))?;
     let ph = s.catalog.photo(id).ok_or_else(|| bad(C, "no such photo"))?;
     use crate::lens_profiles::Match;
-    Ok(match s.lens_match_with(ph, given.as_ref()) {
+    // without a `lens` param: the lens picked for the photo, if any (`lens.choose`)
+    let m = match given.as_ref() {
+        Some(g) => s.lens_match_with(ph, Some(g)),
+        None => s.lens_match(ph),
+    };
+    Ok(match m {
         None => json!({"state": "embedded"}),
         Some(Match::NoDatabase) => json!({"state": "noDatabase"}),
         Some(Match::NoLensName) => json!({"state": "noLensName"}),
@@ -122,6 +127,35 @@ fn photo_status(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Match::NoFocal(l)) => json!({"state": "noFocal", "lens": l}),
         Some(Match::Chosen(l)) => json!({"state": "chosen", "lens": l}),
     })
+}
+
+/// Pick the lens whose database profile corrects the active raw (`lens: {maker?, model, focal?}`), or go back to the
+/// automatic choice (`lens: null`): the file's own correction, else the match by the metadata's lens name. A picked
+/// lens wins over the file's own correction; `focal` stands in for a photo that records none (a manual lens). One
+/// undo step; kept in the catalog, not written to XMP. → what applies now, as `lens.db.photo` reports it.
+fn choose(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "lens.choose";
+    if p.get("lens").is_none() {
+        return Err(bad(C, "missing lens ({maker?, model, focal?}, or null for the automatic choice)"));
+    }
+    let picked = given_lens(C, p)?.map(|g| lcc_develop::ChosenLens { make: g.maker, model: g.model.trim().to_string(), focal: g.focal });
+    let id = s.selection.active.ok_or_else(|| bad(C, "no active photo"))?;
+    let ph = s.catalog.photo(id).ok_or_else(|| bad(C, "no such photo"))?;
+    if picked.is_some() && !ph.develops_raw() {
+        return Err(bad(C, "lens profiles apply to raw photos only"));
+    }
+    let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
+    if d.optics.lens != picked {
+        if picked.is_some() {
+            d.optics.lens_profile = true;
+        }
+        d.optics.lens = picked;
+        s.set_develop(id, d, "Lens Profile")?;
+    }
+    if s.lens_profiles_stale(id) {
+        let _ = s.refresh_lens_profiles(&[id]);
+    }
+    photo_status(s, &json!({"ids": [id.0]}))
 }
 
 /// Most lenses one `lens.db.list` returns (`limit`); the default is [`LIST_DEFAULT`].
@@ -179,6 +213,15 @@ pub fn specs() -> Vec<CommandSpec> {
             refresh
         ),
         cmd!(query "lens.db.photo", "Lens Profile for Photo", [], None, "{id?, lens?: {maker?, model, focal?, aperture?} | model} → {state: embedded | chosen | found | noDatabase | notRaw | noLensName | notFound, lens} — which correction applies, in order: the file's own, the given lens, the match by the metadata's lens name", always, photo_status),
+        cmd!(
+            "lens.choose",
+            "Choose Lens Profile",
+            [],
+            None,
+            "{lens: {maker?, model, focal?} | model | null} — the lens whose database profile corrects the active raw (over the file's own correction; `focal` for a photo without one), or null for the automatic choice; one undo step, not written to XMP → as lens.db.photo",
+            has_active,
+            choose
+        ),
         cmd!(query "lens.db.list", "List Lens Profiles", [], None, "{mount?, crop?, query?, limit? (default 100, at most 500), offset?} → {total, offset, more, database, lenses: [{maker, model, models, mounts, cropFactor, focal: [min, max], distortion, vignetting, tca}]} — the database's lenses for a camera's mount and crop factor (a lens calibrated on a larger frame fits a smaller one), sorted by maker and name; pass `model` back as lens.db.photo's lens", always, list),
     ]
 }

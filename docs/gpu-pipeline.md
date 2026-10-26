@@ -116,6 +116,15 @@ renderer last. `<PREFIX>_GPU_BACKEND=dx12 | vulkan | gl | glow` (or `WGPU_BACKEN
 first because a broken Vulkan driver can crash the process uncatchably (#136). Compute keeps its own
 device and falls back to the CPU as before.
 
+**The window's surface: one frame in flight.** The window's wgpu options start from eframe's defaults
+(`NativeOptions::default().wgpu_options`, `window_gpu::base_options`), whose surface is egui-wgpu's
+`SurfaceConfig::LOW_LATENCY`: vsync, at most one frame queued ahead of the display (two drawables on
+Metal). egui-wgpu's bare `WgpuConfiguration::default()` is `HIGH_THROUGHPUT` (two frames queued, three
+drawables), and the window used it from #136 until this change, so a drag reached the screen one frame
+(8.3 ms at 120 Hz, 16.7 ms at 60 Hz) later. The window's own GPU work is small (egui's meshes and
+texture uploads; renders run on the compute device), which is what `LOW_LATENCY` is meant for.
+During a live window resize egui-wgpu still uses three drawables on macOS.
+
 **Troubleshooting a crash at startup (Windows).** Start the app from a `.cmd` file or a terminal
 with `set <PREFIX>_GPU_BACKEND=dx12` (the default since #136), or `=off` to keep the GPU out of
 rendering; `set VK_LOADER_DRIVERS_DISABLE=*igvk64*` (Vulkan loader) hides a specific Vulkan driver
@@ -329,6 +338,14 @@ average ≈ 105 on 32 threads, so compare the ratio, not the absolute numbers: 1
 6000×4000 670 → 336 ms (σ 6.8, best of 5). Full-resolution colour NR on the CPU is still over the
 16 ms slider budget at loupe size; the GPU path (unchanged, full-resolution blur, 10–18 ms for the
 whole NR drag) is the one that meets it.
+
+On Windows / DX12 the kernels cost more: FXC compiles each pipeline single-threaded inside
+`create_compute_pipeline` (issue #471). Built one after another, the 27 took ~2.2 s on an Intel Core
+Ultra 7 165U iGPU (`app.gpu` 2.4 s median, up to 7 s on the first run after an install), so
+`ctx::build_kernels` shares them out to worker threads (issue #2936): ~1.05 s there (`app.gpu` 1.2 s),
+most likely the largest kernel (`finish.wgsl`) alone (not timed per kernel). wgpu's error scopes are per thread, so every worker
+opens its own; a refused kernel still means no GPU. The `gpu:` info log line gives the kernel count
+and build time.
 
 ## Opening a photo (M5.4)
 - The loupe shows a stand-in at once (`media::QuickJob`): the photo's cached view render for its

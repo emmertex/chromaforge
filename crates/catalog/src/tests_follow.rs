@@ -114,7 +114,10 @@ proptest! {
                 lists[i] = whole;
                 held[i] = whole_held;
             }
-            tally.update(&c);
+            // what the tally can't follow, its owner counts whole
+            if !tally.update(&c) {
+                tally = AlbumTally::of(&c);
+            }
             let fresh = AlbumTally::of(&c);
             prop_assert_eq!(tally.counts(), fresh.counts());
             revision = c.revision;

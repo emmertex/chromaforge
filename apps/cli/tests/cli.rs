@@ -981,6 +981,20 @@ fn run_cli(args: &[&str], stdin: Option<&str>) -> (bool, Vec<Value>, String) {
     (o.status.success(), lines, String::from_utf8_lossy(&o.stderr).to_string())
 }
 
+/// Windows PowerShell 5.1 writes a UTF-8 BOM; `--script` (file and stdin) must accept it.
+#[test]
+fn run_script_accepts_a_utf8_bom() {
+    let text = "\u{feff}{\"command\": \"library.info\", \"params\": {}}\n";
+    let script = tmp("bom-steps.jsonl");
+    std::fs::write(&script, text).unwrap();
+    let (ok, lines, err) = run_cli(&["--demo", "--script", script.to_str().unwrap()], None);
+    assert!(ok, "file: {err}");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let (ok, lines, err) = run_cli(&["--demo", "--script", "-"], Some(text));
+    assert!(ok, "stdin: {err}");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+}
+
 #[test]
 fn run_subcommand_chains_commands_and_persists_a_library() {
     let input = tmp("run-in.png");

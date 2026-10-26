@@ -19,12 +19,36 @@ An active slider gesture finishes before the pending action resumes.
 
 **No model weights are bundled.** Models live in the per-user `denoise-models` folder
 (override with `<PREFIX>_DENOISE_MODELS`). Settings provides **Install from file…**
-for a user-supplied ONNX file with a `denoise-model.json` beside it. The default build
-offers no model downloads. The separate `rawnind-model` Cargo feature enables the
+for a user-supplied ONNX file with a `denoise-model.json` beside it. The default library build
+offers no model downloads (see the upstream project's own model below). The separate `rawnind-model` Cargo feature enables the
 pinned RawNIND offer only when a release's model policy permits it.
 Terms must be acknowledged before installation or
 download. Downloads use the shared pure-Rust `lcc-fetch` client, with resume,
 progress, cancellation, size limits and SHA-256 verification.
+
+### The upstream project's own model
+
+The upstream project's **Denoise (Bayer) 0.1.0** is a U-Net (7.8 M weights, 31 MB `.onnx`) trained by its
+contributors with the open tools in `tools/denoise-train` on 705 clean low-ISO raws from raw.pixls.us, each CC0, with
+synthetic sensor noise calibrated on real cameras (numbers only). Its weights are licensed **MIT OR Apache-2.0**, so
+any use, commercial work included, is allowed. The `own-model` Cargo feature offers it as a download (Settings ▸ AI
+Denoise); the desktop app turns that feature on. Its addresses are built from `[upstream]` in `brand.toml`
+(`crates/denoise-core/src/known.rs`).
+
+It is downloaded from two sources, tried in order:
+
+1. the upstream project's release asset, `<upstream repository>/releases/download/denoise-model-0.1.0/<name>-bayer-0.1.0.onnx`
+   (until its maintainers upload the file there, this source fails and the next one is used);
+2. `https://radfilms.com.au/<name>/models/<name>-bayer-0.1.0.onnx`, the trainer's site, with the same file.
+
+A source that can't be reached, refuses, or sends a file of another size or SHA-256 is passed over for the next; a
+wrong file is never kept, whichever source sent it, and with both failing the message names each. The pinned size
+(31,091,398 bytes) and SHA-256 (`abd3c4cd…3247dea9`) are checked wherever the file comes from. There is no third
+source: `<PREFIX>_DENOISE_MODEL_URL` (an `https://` address) replaces both with that one address, for maintainers who
+host the same file themselves.
+
+Measured upstream on held-out pictures (PSNR in tone space): ISO 800 43.4 dB, ISO 3200 42.4 dB, ISO 12800 40.6 dB, a
+dark ISO 25600 36.4 dB (demosaicing without noise reduction: 38.1 / 36.9 / 33.1 / 22.8 dB).
 
 RawNIND's optional ONNX weights are **GPL-3.0**, as recorded in the pinned model catalog.
 They are downloaded separately after consent and read by our own Rust executor.
@@ -156,7 +180,10 @@ device and whether it is used, or why not.
 **The protocol is not encrypted.** Listen on a VPN address (Tailscale, WireGuard) or a LAN, or bind every interface
 behind a firewall rule that admits only the VPN; never expose the port to the internet. Requests carry the shared
 token (compared in constant time); the server refuses other models, other tile sizes, oversized headers and payloads
-(also ones that inflate past their tile) and caps concurrent connections (`--max-connections`, default 8).
+(also ones that inflate past their tile) and caps concurrent connections (`--max-connections`, default 8). A
+connection has 10 seconds in all to send its first line with the right token, however slowly it sends it; after a
+bad token its address is turned away for a second, doubling with each further bad token up to five minutes, until
+it sends the right one.
 
 Protocol version 1 (`crates/denoise/src/remote.rs`): one JSON line per message, then a payload of `bytes` bytes —
 the tile's samples as little-endian half floats, byte-shuffled (low bytes, then high bytes) and deflated:

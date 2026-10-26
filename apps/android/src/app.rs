@@ -163,7 +163,18 @@ fn services(cc: &eframe::CreationContext<'_>, host: Option<Arc<Host>>) -> Servic
                     Ui::Save => PickKind::Save,
                 };
                 let mime_types = req.filter.as_ref().map(|(_, exts)| PickRequest::mime_types_for(exts)).unwrap_or_default();
-                h.pick(&PickRequest { kind, mime_types, file_name: req.file_name.clone() }).map_err(|e| e.to_string())
+                let paths = h.pick(&PickRequest { kind, mime_types, file_name: req.file_name.clone() }).map_err(|e| e.to_string())?;
+                // the UI's channel also carries dialog failures; the activity answers with paths only
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::Builder::new()
+                    .name("pick-answer".into())
+                    .spawn(move || {
+                        if let Ok(p) = paths.recv() {
+                            let _ = tx.send(Ok(p));
+                        }
+                    })
+                    .map_err(|e| format!("could not wait for the picker: {e}"))?;
+                Ok(rx)
             })
         }),
         // "All files access", so folders on the device are read in place (Settings ▸ Folders)

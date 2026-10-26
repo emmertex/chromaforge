@@ -46,7 +46,9 @@ use lcc_raw::{
 /// 16: tone curves of low-contrast scenes (range limit 1.2, with the bright-area check for curves under 1.5, upstream
 /// #699); a tone-only fallback for near-black scenes with too few colour pairs (upstream #1587); Sony DRO tone.
 /// 17: fitted tone curves are smoothed, and a DRO-lowered one follows Sony's curve between knots (upstream #2188).
-pub const LOOK_VERSION: u32 = 17;
+/// 18: ISO 50 on the ILCE-7CR fits and renders one stop darker (`vendor::arw::extended_iso_exposure`, upstream #2854).
+/// 19: the Canon CR3/CR2 camera JPEG read in the colour space of the Canon maker note (upstream #2664).
+pub const LOOK_VERSION: u32 = 19;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CameraLook {
@@ -257,14 +259,20 @@ fn is_spectral(e: &lcc_camdb::Entry) -> bool {
     e.provenance.source == lcc_camdb::Source::SpectralSensitivities
 }
 
+/// Whether a camera database entry gives model-wide colorimetric matrices the Colorimetric camera colour can start
+/// from: measured spectral sensitivities, else dcraw's table (`lcc_camdb::find` ranks the spectral ones first).
+fn is_colorimetric(e: &lcc_camdb::Entry) -> bool {
+    is_spectral(e) || e.provenance.source == lcc_camdb::Source::Dcraw
+}
+
 /// The camera database entry for the raw's model, when it has no colour matrices of its own, its starting look is
-/// otherwise fitted to its JPEG ([`file_local_look`]) and the entry comes from measured spectral sensitivities: what
-/// [`CameraColour::Colorimetric`] starts from.
+/// otherwise fitted to its JPEG ([`file_local_look`]) and the entry gives colorimetric matrices (measured spectral
+/// sensitivities, else dcraw's table): what [`CameraColour::Colorimetric`] starts from.
 pub(crate) fn colorimetric_camera(raw: &RawImage) -> Option<lcc_camdb::Entry> {
     if lcc_raw::color::has_matrix(&raw.color) || !file_local_look(raw.format) {
         return None;
     }
-    lcc_camdb::find(raw.metadata.make.as_deref(), raw.metadata.model.as_deref()?).filter(is_spectral)
+    lcc_camdb::find(raw.metadata.make.as_deref(), raw.metadata.model.as_deref()?).filter(is_colorimetric)
 }
 
 /// [`starting_colour`] with the JPEG fit (the look, and whether the JPEG is black and white) and the black-and-white
@@ -325,14 +333,14 @@ fn starting_colour_traced_from(
         };
         return (xy, t, None);
     }
-    // Colorimetric: the spectral matrices, never the JPEG (a model without them starts as Auto does)
+    // Colorimetric: the spectral (else dcraw's) matrices, never the JPEG (a model without them starts as Auto does)
     if colour == CameraColour::Colorimetric
         && file_local_look(raw.format)
-        && let Some(e) = entry.as_ref().filter(|e| is_spectral(e))
+        && let Some(e) = entry.as_ref().filter(|e| is_colorimetric(e))
         && e.apply(raw).matrix
     {
         if lcc_pipeline::profiling() {
-            eprintln!("[profile] {:?} camera colour from spectral sensitivities (Colorimetric): {} {}", raw.format, e.make, e.model);
+            eprintln!("[profile] {:?} camera colour from {:?} (Colorimetric): {} {}", raw.format, e.provenance.source, e.make, e.model);
         }
         let (make, model, provenance) = named(e);
         trace.colour = ColourSource::Database { make, model, provenance };
@@ -1121,7 +1129,7 @@ fn proxies(
     let edge = (2 * size).max(384) as u32;
     let decoded = crate::files::decode_raw_preview(
         bytes,
-        lcc_codecs::DecodeOptions { max_size: Some((edge, edge)), max_pixels: FIT_PREVIEW_MAX_PIXELS },
+        lcc_codecs::DecodeOptions { max_size: Some((edge, edge)), max_pixels: FIT_PREVIEW_MAX_PIXELS, ..Default::default() },
         None,
     )?;
     let (a, crop) = (raw.active_area, raw.crop.clipped(raw.active_area.width, raw.active_area.height));
@@ -3500,8 +3508,15 @@ mod tests {
         );
         assert!(asked, "Auto fits the JPEG before the spectral colour");
 
-        // no spectral colour for the model: Colorimetric is Auto
+        // no spectral colour, but a dcraw row: Colorimetric starts from it without the JPEG
         let mut raw = raw_of(RawFormat::Nef, "NIKON CORPORATION", "NIKON D3", Default::default());
+        assert_eq!(colorimetric_camera(&raw).map(|e| e.provenance.source), Some(lcc_camdb::Source::Dcraw));
+        let (_, t, look) =
+            starting_colour_with(&mut raw, CameraColour::Colorimetric, |_, _| panic!("Colorimetric never fits the JPEG"), |_, _| None, |_, _| None);
+        assert!(!t.matrix_is_fallback && look.is_none(), "dcraw's matrix gives the colour");
+
+        // no colorimetric matrices at all for the model: Colorimetric is Auto
+        let mut raw = raw_of(RawFormat::Nef, "NIKON CORPORATION", "NIKON Z 99", Default::default());
         assert!(colorimetric_camera(&raw).is_none());
         let mut asked = false;
         let (_, t, _) = starting_colour_with(
@@ -3548,7 +3563,7 @@ mod tests {
         assert!(!t.matrix_is_fallback);
         assert_eq!(xy, lcc_raw::color::as_shot_white_xy(&raw));
 
-        let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 7D", Default::default());
+        let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 7Z", Default::default());
         let (_, t, look) = starting_colour_with(
             &mut raw,
             CameraColour::Auto,
@@ -3605,10 +3620,19 @@ mod tests {
         assert_eq!(traced(&mut raw, None, None, false, None), StartTrace { colour: ColourSource::NeutralFallback, tone: ToneSource::None });
     }
 
-    /// Step 5: a camera outside the table whose fit fails keeps the neutral fallback.
+    /// Step 5: a camera outside every table whose fit fails keeps the neutral fallback; one in dcraw's table takes its
+    /// matrix.
     #[test]
     fn a_camera_outside_the_table_keeps_the_fallback() {
+        // a model only dcraw's table covers takes its matrix after the failed fit, not the fallback
         let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 7D", Default::default());
+        let mut trace = StartTrace::default();
+        let entry = lcc_camdb::find(Some("Canon"), "Canon EOS 7D");
+        assert_eq!(entry.as_ref().map(|e| e.provenance.source), Some(lcc_camdb::Source::Dcraw));
+        let (_, t, _) = starting_colour_traced_from(&mut raw, entry, CameraColour::Auto, |_, _| (None, false), |_, _| None, |_, _| None, &mut trace);
+        assert!(!t.matrix_is_fallback, "dcraw's matrix, not the neutral fallback");
+        assert!(matches!(&trace.colour, ColourSource::Database { provenance, .. } if provenance.contains("Dcraw")), "{trace:?}");
+        let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 7Z", Default::default());
         let (_, t, look) = starting_colour(&mut raw, &[], None, None, CameraColour::Auto, false);
         assert!(look.is_none() && t.matrix_is_fallback);
         assert_eq!(raw.color, lcc_raw::ColorData::default());
@@ -3654,7 +3678,7 @@ mod tests {
         assert_eq!(lcc_raw::spectral::find(Some("SONY"), "ILCE-1M2"), None);
         assert_eq!(lcc_catalog::relative_wb_camera("ARW", "SONY ILCE-1M2"), !lcc_raw::kelvin_presets::covers(Some("SONY"), "ILCE-1M2"));
         // the same failure outside ARW keeps the neutral fallback
-        let mut raw = raw_of(RawFormat::Nef, "NIKON CORPORATION", "NIKON D3", Default::default());
+        let mut raw = raw_of(RawFormat::Nef, "NIKON CORPORATION", "NIKON D3Z", Default::default());
         let (_, t, _) = starting_colour_with(&mut raw, CameraColour::Auto, |_, _| (None, false), |_, _| None, |_, _| None);
         assert!(t.matrix_is_fallback);
         assert_eq!(raw.color, lcc_raw::ColorData::default());
@@ -5274,7 +5298,7 @@ mod tests {
         assert!(tone(RawFormat::Cr3, "Canon EOS R5 Mark II", &[], true, &None).is_none());
         let fitted = dro_test_look(&std::array::from_fn(|i| 0.006 * 1.13f32.powi(i as i32)), &|x| x.sqrt());
         assert!(tone(RawFormat::Cr3, "Canon EOS R5 Mark II", &[], false, &Some(fitted)).is_none());
-        assert!(tone(RawFormat::Cr3, "Canon EOS 7D", &[], false, &None).is_none());
+        assert!(tone(RawFormat::Cr3, "Canon EOS 7Z", &[], false, &None).is_none());
         assert!(tone(RawFormat::Cr2, "Canon EOS 600D", &[], false, &None).is_none());
     }
 

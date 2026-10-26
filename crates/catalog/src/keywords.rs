@@ -60,18 +60,67 @@ pub fn reparent(k: &str, from: &str, to: &str) -> String {
     std::iter::once(to).filter(|t| !t.is_empty()).chain(rest).collect::<Vec<_>>().join("|")
 }
 
+/// A photo's keywords as a sidecar writes them: the two lists [`to_file`] fills.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileKeywords {
+    /// For `dc:subject`: every level of every keyword, each once.
+    pub flat: Vec<String>,
+    /// For `lr:hierarchicalSubject`: every keyword as its path, when any keyword has levels;
+    /// empty otherwise, so a library without hierarchy doesn't gain the property.
+    pub hierarchical: Vec<String>,
+}
+
+/// A photo's keywords as a sidecar writes them, the inverse of [`from_file`]. `dc:subject` is the
+/// flat list other applications search, so it gets names (`travel`, `Italy`, `Rome`), never paths,
+/// as Lightroom Classic and darktable write it; the paths go to `lr:hierarchicalSubject`. Unlike
+/// [`Catalog::export_keywords`] it applies no export options (a sidecar is the photo's own record,
+/// not an export): no keyword is left out and no synonym added, so [`from_file`] reads the pair
+/// back as the same keywords. When any keyword has levels, every keyword is listed in
+/// `hierarchical`, the flat ones too: a flat `Rome` beside `travel|Italy|Rome` would otherwise be
+/// taken for a level of the path on the way back.
+pub fn to_file(keywords: &[String]) -> FileKeywords {
+    let mut paths: Vec<String> = keywords.iter().map(|k| clean(k)).collect();
+    dedupe(&mut paths);
+    let mut flat: Vec<String> = paths.iter().flat_map(|p| p.split(SEP).map(str::to_string)).collect();
+    dedupe(&mut flat);
+    let hierarchical = if paths.iter().any(|p| p.contains(SEP)) { paths } else { Vec::new() };
+    FileKeywords { flat, hierarchical }
+}
+
 /// A file's keywords as a photo carries them: the paths of `lr:hierarchicalSubject`, then the
 /// names of `dc:subject` that aren't levels of those paths (Lightroom Classic writes each keyword's
 /// name, its parents' and synonyms flat besides its path). Each once, cleaned.
+///
+/// An entry holding several lines is several keywords: some cameras' metadata presets write the
+/// whole list as one `dc:subject` item, a keyword a line ("Beautiful Bride&#xD;&#xA; Bride and
+/// Groom…"). Read as one, it would be a single keyword many lines tall.
 pub fn from_file(flat: &[String], hierarchical: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = hierarchical.iter().map(|k| clean(k)).collect();
+    let lines = |v: &[String]| -> Vec<String> { v.iter().flat_map(|k| split_lines(k)).collect() };
+    let (flat, hierarchical) = (lines(flat), lines(hierarchical));
+    let mut out: Vec<String> = hierarchical.iter().map(|k| clean(k)).filter(|k| !k.is_empty()).collect();
     // One lowered set of every hierarchical level, not a search of `hierarchical` for each flat
     // keyword: disjoint lists from sidecars made the old approach quadratic in both (CWE-407), and
     // `same` allocates two lower-cased strings per comparison.
     let levels: std::collections::HashSet<String> = hierarchical.iter().flat_map(|h| h.split(SEP).map(|l| l.trim().to_lowercase())).collect();
-    out.extend(flat.iter().map(|k| clean(k)).filter(|k| !levels.contains(&k.to_lowercase())));
+    out.extend(flat.iter().map(|k| clean(k)).filter(|k| !k.is_empty()).filter(|k| !levels.contains(&k.to_lowercase())));
     dedupe(&mut out);
     out
+}
+
+/// The keywords of one metadata entry: one a line (any of `\r`, `\n`, the Unicode line and
+/// paragraph separators), blank lines dropped.
+pub fn split_lines(k: &str) -> Vec<String> {
+    k.split(['\r', '\n', '\u{2028}', '\u{2029}']).map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+}
+
+/// `text` on one line: line breaks become spaces (a name drawn in a row must never spill over
+/// the rows around it).
+pub fn one_line(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains(['\r', '\n', '\u{2028}', '\u{2029}']) {
+        std::borrow::Cow::Owned(split_lines(text).join(" "))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
 }
 
 /// The deepest a keyword list file may nest keywords: a file is input, so its nesting is bounded.
@@ -749,6 +798,18 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A camera preset's keyword list written as one `dc:subject` item, a keyword a line, is one
+    /// keyword a line; names stay one line wherever they are drawn.
+    #[test]
+    fn a_list_in_one_entry_is_a_keyword_a_line() {
+        let flat = vec!["Beautiful Bride\r\n Bride and Groom\r\n\r\n Happy Couple".to_string(), "Solo".to_string()];
+        assert_eq!(from_file(&flat, &[]), vec!["Beautiful Bride", "Bride and Groom", "Happy Couple", "Solo"]);
+        assert_eq!(from_file(&["a\nb".to_string()], &["x|a".to_string()]), vec!["x|a", "b"], "a level of a path isn't listed twice");
+        assert_eq!(one_line("a\r\n b"), "a b");
+        assert!(matches!(one_line("plain"), std::borrow::Cow::Borrowed(_)));
+        assert!(split_lines("\r\n").is_empty());
+    }
     use crate::{Filter, Photo, PhotoId, Source};
 
     fn lib(kws: &[&[&str]]) -> (Catalog, Vec<PhotoId>) {
@@ -1377,7 +1438,38 @@ mod tests {
         assert_eq!(from_file(&v(&["Rome", "Italy", "travel", "beach"]), &v(&["travel|Italy|Rome"])), ["travel|Italy|Rome", "beach"]);
         assert_eq!(from_file(&v(&["ROME"]), &v(&["travel|Rome", " travel | rome "])), ["travel|Rome"], "each once, cleaned");
         assert_eq!(from_file(&v(&["beach", " sea "]), &[]), ["beach", "sea"]);
-        assert_eq!(from_file(&v(&["a|b"]), &[]), ["a|b"], "the app's own sidecars write paths flat");
+        assert_eq!(from_file(&v(&["a|b"]), &[]), ["a|b"], "older sidecars wrote paths flat");
+    }
+
+    /// A sidecar's keywords: names in `dc:subject`, never paths, and the paths in
+    /// `lr:hierarchicalSubject`; read back, the same keywords, however they were spelt or nested.
+    #[test]
+    fn a_sidecar_writes_names_flat_and_paths_hierarchical() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let f = to_file(&v(&["Places|Italy|Rome", "sunset"]));
+        assert_eq!(f.flat, ["Places", "Italy", "Rome", "sunset"]);
+        assert_eq!(f.hierarchical, ["Places|Italy|Rome", "sunset"]);
+        assert!(f.flat.iter().all(|k| !k.contains(SEP)), "no path in dc:subject");
+
+        let f = to_file(&v(&["beach", " sea ", "Beach"]));
+        assert_eq!((f.flat, f.hierarchical), (v(&["beach", "sea"]), v(&[])), "no hierarchy: no lr:hierarchicalSubject");
+        assert_eq!(to_file(&[]), FileKeywords::default());
+
+        for keywords in [
+            v(&["Places|Italy|Rome", "sunset"]),
+            v(&["travel|Italy|Rome", "Rome"]),
+            v(&["travel|Italy", "travel|France", "Italy"]),
+            v(&["beach", "sea"]),
+            v(&[" a | b ", "A|B|c"]),
+        ] {
+            let f = to_file(&keywords);
+            let mut back = from_file(&f.flat, &f.hierarchical);
+            let mut want: Vec<String> = keywords.iter().map(|k| clean(k)).collect();
+            dedupe(&mut want);
+            back.sort_by_key(|k| k.to_lowercase());
+            want.sort_by_key(|k| k.to_lowercase());
+            assert_eq!(back, want, "round trip of {keywords:?}");
+        }
     }
 
     /// A new keyword inside one the library has takes the library's spelling of it: creating

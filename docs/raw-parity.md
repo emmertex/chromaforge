@@ -1,6 +1,6 @@
 # RAW parity: cameras, formats, demosaic, colour and lens profiles
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (Kelvin white balance for Canon ColorData presets and the Nikon Z5II; upstream: integration batch 36 and the camera-coverage sweep #1327, 545 models verified upstream; re-measured after the merge: 596 verified; Canon EOS R6 verified: 315 verified, use-weighted ~90%; Canon CRW decoded, 15 bodies verified; Epson ERF and Mamiya MEF decoded, 4 bodies verified: 314 verified, use-weighted ~90%; compressed ORF decoded: E-M1 and E-M10 Mark III verified; use-weighted 85% → 87%; compressed Samsung SRW 32770 / 32772 / 32773 decoded, 7 bodies checked; Minolta MRW decoded, 6 bodies verified; ARW version 1 and the Z 6II's packed NEF decode, 31 popular bodies verified: use-weighted 87% → 89%, 57% on verified bodies; Z 8 and Z 9 lossless verified: 280 verified, 59% on verified bodies; pre-X FinePix SuperCCD RAF decoded (`raf_superccd.rs`), 15 FinePix bodies verified: 295 verified, Fujifilm 93% → 99%, 60% on verified bodies); upstream: lossy JPEG XL DNG tiles with a non-linear declared transfer curve decode; X-Trans CMOS 4 bodies take the X-T3's spectral matrices · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6 (Camera Raw 18.7)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (upstream #2926: X-Trans demosaic, classified LMMSE green + residual interpolation); minor (Kelvin white balance for Canon ColorData presets and the Nikon Z5II; upstream: integration batch 36 and the camera-coverage sweep #1327, 545 models verified upstream; re-measured after the merge: 596 verified; Canon EOS R6 verified: 315 verified, use-weighted ~90%; Canon CRW decoded, 15 bodies verified; Epson ERF and Mamiya MEF decoded, 4 bodies verified: 314 verified, use-weighted ~90%; compressed ORF decoded: E-M1 and E-M10 Mark III verified; use-weighted 85% → 87%; compressed Samsung SRW 32770 / 32772 / 32773 decoded, 7 bodies checked; Minolta MRW decoded, 6 bodies verified; ARW version 1 and the Z 6II's packed NEF decode, 31 popular bodies verified: use-weighted 87% → 89%, 57% on verified bodies; Z 8 and Z 9 lossless verified: 280 verified, 59% on verified bodies; pre-X FinePix SuperCCD RAF decoded (`raf_superccd.rs`), 15 FinePix bodies verified: 295 verified, Fujifilm 93% → 99%, 60% on verified bodies); upstream: lossy JPEG XL DNG tiles with a non-linear declared transfer curve decode; X-Trans CMOS 4 bodies take the X-T3's spectral matrices · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6 (Camera Raw 18.7)
 
 Raw processing is the deepest single dimension of Lightroom parity: a photographer whose camera
 does not decode, or decodes with the wrong colour, cannot switch. This document measures it model by
@@ -180,8 +180,9 @@ largest gap left.
 
 ### Compressed ORF: a clean-room starting point
 
-Decoded since 2026-10-13 (`decode_compressed` in `crates/raw/src/vendor/orf.rs`, Chromaforge-only under the decoder
-reference policy); kept for the method's background.
+Decoded since 2026-10-13 (`decode_compressed` in `crates/raw/src/vendor/orf.rs`, Chromaforge-only): translated from
+dcraw's `olympus_load_raw` under the dcraw reference policy (`AGENTS.md`, Clean-room sources), not derived from the
+patents below; kept for the method's background.
 
 Two Olympus patents by Takashi Ishikawa describe the *method* of lossless RAW compression in prose; neither names ORF
 and neither gives the file layout. See the closed #240 and the open #360 for why a decoder has to be derived from the
@@ -201,7 +202,7 @@ sample files. A pointer for contributors, not legal advice.
 | Stage | Target | The app | Status |
 |---|---|---|---|
 | Bayer demosaic | Adobe's own, plus AI "Raw Details" | AHD (default), PPG, bilinear (`crates/raw/src/demosaic`) | 🟡 quality unmeasured against Lightroom; no Raw Details |
-| X-Trans demosaic | ✅ | in-house edge-weighted directional | 🟡 unmeasured |
+| X-Trans demosaic | ✅ | classified LMMSE green + residual-interpolated red/blue on the white-balanced mosaic, trained on CC0 X-Trans raws (`crates/raw/src/demosaic/xtrans_ri.rs`, [xtrans-demosaic.md](xtrans-demosaic.md)) | 🟡 +4.8 dB CPSNR and 40 % less false colour than the previous directional method on held-out real X-Trans scenes; not measured against Lightroom |
 | Foveon | ✅ (older bodies) | — | ⬜ |
 | Monochrome / LinearRaw | ✅ | handled, no demosaic | ✅ |
 | Pixel shift (Sony ARQ, Pentax, OM high-res, Nikon) | ✅ (Sony, Pentax, Nikon) | — | ⬜ |
@@ -299,6 +300,7 @@ Beyond decoding:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | X-Trans demosaic replaced: on the white-balanced mosaic, a 7 × 7 linear green filter per pattern position and structure-tensor class (72), least-squares fitted on 25 CC0 X-Trans scenes, then red and blue by residual interpolation. On 13 held-out real scenes 38.9 dB CPSNR / 4.0 chroma RMSE against 34.2 / 6.6 before; about 3× the time (0.55 s for 40 MP on 20 threads). Method and numbers: [xtrans-demosaic.md](xtrans-demosaic.md) |
 | 2026-10-16 | minor | Kelvin white balance from Canon CR2 `ColorData` presets (PowerShot G1 X Mark III) and a built-in preset table for the Nikon Z5II |
 | 2026-10-15 | minor | Upstream batch 40 merged: action 3 (verify popular Nikon, Fujifilm, Canon CR2 and Pentax bodies) was already done here and the fork's tables stay ahead; `coverage.py --check` passes, numbers unchanged (596 verified, use-weighted ~98%, 87% on verified bodies) |
 | 2026-10-15 | minor | Upstream merge: both sides' evidence combined and re-measured with `docs/raw/coverage.py`: 596 verified, 724 unverified, 89 preview, 37 unsupported; use-weighted ~98% (87% on verified bodies); decoding 88%, RAW readiness ~63% |

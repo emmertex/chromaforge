@@ -209,6 +209,12 @@ pub fn baseline_problem(props: &BTreeMap<String, Vec<String>>) -> Option<String>
 
 /// Every export in the sets, with its look name, Lightroom temperature / tint and capture metadata.
 pub fn export_files(sets: &[ExportSet], skipped: &mut Vec<(String, String)>) -> Vec<Export> {
+    export_files_with(sets, true, skipped)
+}
+
+/// [`export_files`]; `baseline` refuses exports that are not at the baseline preset (a fit needs them, a
+/// verification of edits does not).
+pub fn export_files_with(sets: &[ExportSet], baseline: bool, skipped: &mut Vec<(String, String)>) -> Vec<Export> {
     let mut out = Vec::new();
     // every export under each folder, its subfolders included; a file reached through two folders counts once
     let mut files: Vec<PathBuf> = Vec::new();
@@ -236,7 +242,7 @@ pub fn export_files(sets: &[ExportSet], skipped: &mut Vec<(String, String)>) -> 
             }
             let meta = lcc_meta::extract(&bytes);
             let props = lcc_meta::embedded(&bytes).xmp.and_then(|x| lcc_meta::parse_xmp(&x).ok()).map(|d| d.properties).unwrap_or_default();
-            if let Some(why) = baseline_problem(&props) {
+            if let Some(why) = baseline_problem(&props).filter(|_| baseline) {
                 skipped.push((file_name(&path), why));
                 continue;
             }
@@ -255,6 +261,79 @@ pub fn export_files(sets: &[ExportSet], skipped: &mut Vec<(String, String)>) -> 
         }
     }
     out
+}
+
+/// The groups of Lightroom controls an edit uses (`crs:` properties of its XMP), for grouping verification
+/// results; `default` when it uses none of them.
+pub fn edited_groups(props: &BTreeMap<String, Vec<String>>) -> Vec<&'static str> {
+    let nonzero = |k: &str| num(props, &format!("crs:{k}")).is_some_and(|v| v.abs() > 1e-6);
+    let any = |ks: &[&str]| ks.iter().any(|k| nonzero(k));
+    let yes = |k: &str| first(props, &format!("crs:{k}")).is_some_and(|s| s.eq_ignore_ascii_case("true"));
+    let has_prefix = |prefixes: &[&str]| {
+        props.keys().any(|k| {
+            k.strip_prefix("crs:").is_some_and(|n| prefixes.iter().any(|p| n.starts_with(p))) && num(props, k).is_some_and(|v| v.abs() > 1e-6)
+        })
+    };
+    let mut g = Vec::new();
+    if first(props, "crs:WhiteBalance").is_some_and(|wb| !wb.eq_ignore_ascii_case("As Shot")) {
+        g.push("white balance");
+    }
+    if any(&["Exposure2012", "Contrast2012", "Highlights2012", "Shadows2012", "Whites2012", "Blacks2012"]) {
+        g.push("light");
+    }
+    let curve_bent = ["crs:ToneCurvePV2012", "crs:ToneCurvePV2012Red", "crs:ToneCurvePV2012Green", "crs:ToneCurvePV2012Blue"].iter().any(|k| {
+        props.get(*k).is_some_and(|items| {
+            !items.iter().all(|it| {
+                it.split_once(',')
+                    .is_some_and(|(x, y)| matches!((x.trim().parse::<f64>(), y.trim().parse::<f64>()), (Ok(x), Ok(y)) if (x - y).abs() < 0.5))
+            })
+        })
+    });
+    if curve_bent || any(&["ParametricShadows", "ParametricDarks", "ParametricLights", "ParametricHighlights"]) {
+        g.push("tone curve");
+    }
+    if any(&["Texture", "Clarity2012", "Dehaze", "Vibrance", "Saturation"]) {
+        g.push("presence");
+    }
+    if has_prefix(HSL_PREFIX) {
+        g.push("colour mixer");
+    }
+    if any(&[
+        "SplitToningShadowSaturation",
+        "SplitToningHighlightSaturation",
+        "ColorGradeMidtoneSat",
+        "ColorGradeShadowSat",
+        "ColorGradeHighlightSat",
+        "ColorGradeGlobalSat",
+    ]) {
+        g.push("colour grading");
+    }
+    if any(&["ShadowTint", "RedHue", "RedSaturation", "GreenHue", "GreenSaturation", "BlueHue", "BlueSaturation"]) {
+        g.push("calibration");
+    }
+    if look_name(props).is_some_and(|n| !matches!(n.trim(), "Adobe Standard" | "Adobe Color")) {
+        g.push("profile");
+    }
+    if yes("ConvertToGrayscale") {
+        g.push("black & white");
+    }
+    if any(&["VignetteAmount", "PostCropVignetteAmount", "GrainAmount"]) {
+        g.push("effects");
+    }
+    if yes("LensProfileEnable") || nonzero("LensProfileEnable") || nonzero("LensManualDistortionAmount") {
+        g.push("lens");
+    }
+    if yes("HasCrop") {
+        g.push("crop");
+    }
+    const MASKS: &[&str] = &["MaskGroupBasedCorrections", "GradientBasedCorrections", "CircularGradientBasedCorrections", "PaintBasedCorrections"];
+    if props.keys().any(|k| MASKS.iter().any(|m| k.starts_with(&format!("crs:{m}")))) {
+        g.push("masks");
+    }
+    if g.is_empty() {
+        g.push("default");
+    }
+    g
 }
 
 fn same_model(a: &str, b: &str) -> bool {
@@ -350,6 +429,21 @@ mod tests {
 
     fn props(kv: &[(&str, &str)]) -> BTreeMap<String, Vec<String>> {
         kv.iter().map(|(k, v)| (format!("crs:{k}"), vec![v.to_string()])).collect()
+    }
+
+    #[test]
+    fn edits_are_grouped_by_the_controls_they_use() {
+        assert_eq!(edited_groups(&props(&[("Exposure2012", "0"), ("WhiteBalance", "As Shot")])), vec!["default"]);
+        let g = edited_groups(&props(&[("Exposure2012", "+0.5"), ("HueAdjustmentRed", "-10"), ("WhiteBalance", "Custom"), ("HasCrop", "True")]));
+        for want in ["light", "colour mixer", "white balance", "crop"] {
+            assert!(g.contains(&want), "{want} in {g:?}");
+        }
+        assert!(!g.contains(&"default"));
+        let mut p = props(&[]);
+        p.insert("crs:ToneCurvePV2012".into(), vec!["0, 0".into(), "128, 150".into(), "255, 255".into()]);
+        assert_eq!(edited_groups(&p), vec!["tone curve"]);
+        // junk values are not edits
+        assert_eq!(edited_groups(&props(&[("Contrast2012", "NaN"), ("Texture", "abc")])), vec!["default"]);
     }
 
     #[test]

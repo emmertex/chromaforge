@@ -18,6 +18,8 @@
 //! 7. Optionally apply a preset and add keywords (the import dialog's options).
 //! 8. Commit all new photos as one undoable op. (Undoing a move removes the catalog records;
 //!    the files stay at the destination — undo never moves files back over a card.)
+//! 9. Copy and Move rename sequences use checked platform-sized numbers: the last number is usable once, and any
+//!    further renamed files are reported as failed without losing earlier completed transfers.
 //!
 //! The import dialog first calls [`scan`] (`library.importPreview`): the same expansion, probing
 //! and duplicate detection without adding anything, so the user can review the candidates. The
@@ -40,7 +42,7 @@ pub const EXTENSIONS: &[&str] = &[
     // Decoded when built with the codecs' `heif` feature; otherwise the import reports them as
     // failed with the reason ("HEIC/HEIF support isn't included in this build").
     "heic", "heif", "avif", // a HEIC without the `heif` feature is reported as failed
-    "iiq", "crw", "mrw", "x3f", "kdc", "mos", "erf", "3fr", "fff", "mef", // video clips (MediaKind::Video; see VIDEO_EXTENSIONS)
+    "iiq", "crw", "mrw", "x3f", "kdc", "mos", "erf", "3fr", "fff", "mef", "gpr", // video clips (MediaKind::Video; see VIDEO_EXTENSIONS)
     "mp4", "m4v", "mov", "mkv", "webm", "mts", "m2ts", "3gp", "mxf",
 ];
 
@@ -491,6 +493,23 @@ pub enum LaunchPath {
     /// Not imported: `path` (absolute) is a whole drive or the whole home folder, which is never
     /// walked without being chosen in the app (issue #374).
     Refused { path: String, why: String },
+    /// Open this (absolute) library folder: the argument was a library's `catalog.snap` or its folder, as a
+    /// double-click on a catalog in the file manager gives. Never imported.
+    Library(String),
+}
+
+/// The library folder `path` names: a library's catalog file (`catalog.snap`, or the v4 store's `catalog.redb`; its
+/// folder), or a folder holding one. `None` for anything else (photos, folders of photos).
+pub fn library_dir_of(path: &Path) -> Option<PathBuf> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let names = [lcc_catalog::journal::SNAPSHOT, lcc_catalog::db::DB_FILE];
+    #[cfg(target_arch = "wasm32")]
+    let names = [lcc_catalog::journal::SNAPSHOT];
+    let named = path.file_name().is_some_and(|n| names.iter().any(|c| n.to_string_lossy().eq_ignore_ascii_case(c)));
+    if named && path.is_file() {
+        return path.parent().map(Path::to_path_buf);
+    }
+    (path.is_dir() && names.iter().any(|c| path.join(c).is_file())).then(|| path.to_path_buf())
 }
 
 /// Resolve a launch argument for importing (issue #374). An empty argument is ignored (`None`);
@@ -533,6 +552,9 @@ pub fn launch_path(arg: &str, cwd: Option<&Path>, home: Option<&Path>, dcim: imp
     let key = lcc_catalog::query::folder_key;
     if home.is_some_and(|h| key(&h.to_string_lossy()) == key(&shown)) {
         return Some(LaunchPath::Refused { path: shown, why: "the whole home folder".into() });
+    }
+    if let Some(dir) = library_dir_of(&abs) {
+        return Some(LaunchPath::Library(dir.to_string_lossy().to_string()));
     }
     Some(LaunchPath::Import(shown))
 }
@@ -855,7 +877,8 @@ pub struct ImportJob {
     cache: HashMap<String, ProbeInfo>,
     naming: crate::sidecar::SidecarNaming,
     now: String,
-    seq: usize,
+    /// Next rename number; `None` once the final representable value has been reserved.
+    seq: Option<usize>,
     /// Files found so far (folders expanded) and handled so far, for progress.
     pub total: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub done: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -988,7 +1011,7 @@ impl ImportJob {
         }
         let fresh = opts.on_deleted == OnDeleted::Fresh;
         Ok(ImportJob {
-            seq: opts.rename_start.max(1),
+            seq: Some(opts.rename_start.max(1)),
             opts,
             mode,
             lib_dir,
@@ -1109,6 +1132,8 @@ impl ImportJob {
         // copies or moves — the slow part, reading and writing every byte and verifying it — are
         // collected and run on several threads (issue #367), then their outcomes take their places.
         let mut plan = Plan::default();
+        // sidecar names are answered from one listing per folder (round trips cost on a network share)
+        let mut listing = crate::sidecar::FolderListing::default();
         for (path, info) in todo.into_iter().zip(probed) {
             if cancel.load(Relaxed) {
                 break;
@@ -1149,7 +1174,7 @@ impl ImportJob {
             // the XMP sidecar (or a raw's embedded XMP), read before copying: its capture time files
             // and names the copy when the file itself has none
             let raw = info.kind == MediaKind::Raw;
-            let packet = crate::sidecar::find_sidecar_for_import(&stems, self.naming, &path)
+            let packet = crate::sidecar::find_sidecar_for_import(&stems, self.naming, &path, &mut listing)
                 .and_then(|f| std::fs::read_to_string(f).ok())
                 .or_else(|| info.xmp.clone().filter(|_| raw));
             let target = crate::crs::Target::for_file(info.kind, &info.format, info.preview_only.is_some(), &info.meta.camera);
@@ -1185,11 +1210,20 @@ impl ImportJob {
                     if let Some(sc) = &sidecar {
                         crate::sidecar::merge_into(&mut q, sc, &self.now);
                     }
-                    let name = opts.rename.as_deref().filter(|t| !t.trim().is_empty()).map(|t| {
-                        let n = crate::rename::expand(t, &q, self.seq);
-                        self.seq += 1;
-                        n
-                    });
+                    let name = if let Some(template) = opts.rename.as_deref().filter(|t| !t.trim().is_empty()) {
+                        let Some(seq) = self.seq else {
+                            self.done.fetch_add(1, Relaxed);
+                            plan.slots.push(Slot::Item(PreparedItem::Failed(
+                                path,
+                                "rename sequence exhausted; choose a lower renameStart or leave rename blank".into(),
+                            )));
+                            continue;
+                        };
+                        self.seq = seq.checked_add(1);
+                        Some(crate::rename::expand(template, &q, seq))
+                    } else {
+                        None
+                    };
                     let folders = opts.organize.folders(&q);
                     let dir = folders.iter().fold(root.to_path_buf(), |d, f| d.join(f));
                     // the name this file gets depends on what a pending transfer of a like-named file
@@ -1514,6 +1548,8 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                     }
                 }
                 let sidecar = sidecar.map(|sc| sc.resolve_label(&s.catalog)).filter(|sc| *sc != crate::sidecar::SidecarData::default());
+                // the photo is upright as the file's own orientation turns it, when the file states one
+                let sidecar = sidecar.map(|sc| crate::sidecar::SidecarData { orientation: info.orientation.or(sc.orientation), ..sc });
                 // a copy is catalogued under its new name
                 let name = Path::new(&stored).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
                 let mut p = Photo::new(id, Source::File { path: stored }, &name, &info.format, info.width, info.height, &now);

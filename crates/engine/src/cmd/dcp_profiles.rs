@@ -172,6 +172,62 @@ fn remove_dcp(_s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"model": model, "restart": true}))
 }
 
+/// The one photo a command acts on (`ids` with one id, else the active photo), with its original's bytes.
+fn one_photo(s: &Session, p: &Value, c: &str) -> Result<(lcc_catalog::PhotoId, Vec<u8>)> {
+    let ids = s.targets(p)?;
+    let id = match ids.as_slice() {
+        [] => s.selection.active.ok_or_else(|| bad(c, "no photo"))?,
+        [id] => *id,
+        _ => return Err(bad(c, "one photo at a time")),
+    };
+    let ph = s.catalog.photo(id).ok_or_else(|| bad(c, format!("no photo {}", id.0)))?;
+    let lcc_catalog::Source::File { path } = &ph.source else { return Err(bad(c, "a demo photo has no original file")) };
+    let bytes = match &s.media.file_bytes {
+        Some(read) => read(path).map_err(|e| bad(c, e))?,
+        None => std::fs::read(path).map_err(|e| bad(c, format!("{path}: {e}")))?,
+    };
+    Ok((id, bytes))
+}
+
+/// Write `bytes` to the command's `path`, never over a photo's original.
+fn write_out(s: &Session, c: &str, path: &str, bytes: &[u8]) -> Result<()> {
+    if path.trim().is_empty() {
+        return Err(bad(c, "needs `path`"));
+    }
+    s.original_guard().check(Path::new(path)).map_err(|e| bad(c, e.to_string()))?;
+    crate::export::write_file(path, bytes).map_err(|e| bad(c, e))
+}
+
+fn export_dcp(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "camera.exportDcp";
+    let path = str_param(p, "path").ok_or_else(|| bad(C, "needs `path` (the .dcp to write)"))?.to_string();
+    let (id, bytes) = one_photo(s, p, C)?;
+    let choice = s.develop_of(id).map(|d| d.profile.camera.clone()).unwrap_or_default();
+    let dcp =
+        crate::colour_export::photo_dcp(&bytes, &choice, str_param(p, "name").unwrap_or_default(), str_param(p, "camera")).map_err(|e| bad(C, e))?;
+    let parsed = lcc_raw::dcp::parse(&dcp).map_err(|e| bad(C, format!("the profile written doesn't read back: {e}")))?;
+    write_out(s, C, &path, &dcp)?;
+    Ok(json!({"path": path, "model": parsed.model, "name": parsed.name}))
+}
+
+fn export_lut(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "develop.exportLut";
+    let path = str_param(p, "path").ok_or_else(|| bad(C, "needs `path` (the .cube to write)"))?.to_string();
+    let ids = s.targets(p)?;
+    let id = match ids.as_slice() {
+        [] => s.selection.active.ok_or_else(|| bad(C, "no photo"))?,
+        [id] => *id,
+        _ => return Err(bad(C, "one photo at a time")),
+    };
+    let settings = s.develop_of(id).ok_or_else(|| bad(C, format!("no photo {}", id.0)))?;
+    let title = str_param(p, "title")
+        .map(str::to_string)
+        .unwrap_or_else(|| s.catalog.photo(id).map(|ph| format!("{} look: {}", lcc_brand::DISPLAY_NAME, ph.file_name)).unwrap_or_default());
+    let cube = crate::colour_export::look_cube(&settings, &title).map_err(|e| bad(C, e))?;
+    write_out(s, C, &path, cube.as_bytes())?;
+    Ok(json!({"path": path, "size": crate::colour_export::CUBE_SIZE}))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -201,6 +257,24 @@ pub fn specs() -> Vec<CommandSpec> {
             "{model} — the model's raws go back to the app's own colour from the next start",
             always,
             remove_dcp
+        ),
+        cmd!(
+            "camera.exportDcp",
+            "Export Camera Profile (.dcp)",
+            [],
+            None,
+            "{path, ids? (one; default: the active photo), name?, camera? (UniqueCameraModel; default: the camera's usual profile name)} — the camera colour this raw renders with (its chosen .dcp or calibration look, the file's matrices and profile tables, or the colour the app fits) as a DNG camera profile for Lightroom, Camera Raw or RawTherapee → {path, model, name}",
+            always,
+            export_dcp
+        ),
+        cmd!(
+            "develop.exportLut",
+            "Export Look as LUT (.cube)",
+            [],
+            None,
+            "{path, ids? (one; default: the active photo), title?} — the photo's global look (Light, tone curve, colour, mixer, colour grading, profile look; not white balance, local edits, effects or detail) as a 33³ sRGB-to-sRGB .cube LUT for Capture One, darktable, Photoshop or video tools → {path, size}",
+            always,
+            export_lut
         ),
     ]
 }

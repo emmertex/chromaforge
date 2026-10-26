@@ -14,6 +14,7 @@
 //! <cli> controls [--json]
 //! <cli> calibrate [--max N] [--out DIR] FOLDERS/FILES…
 //! <cli> calibrate-lightroom preset|fit|add|list|verify …
+//! <cli> compare REFERENCE TEST [--size N] [--no-align] [--diff OUT.png] [--json]
 //! <cli> camdb extract [--contributor NAME] NATIVE.dng…
 //! <cli> camdb show MAKE MODEL
 //! ```
@@ -23,6 +24,7 @@
 mod alloc_release;
 mod calibrate_lightroom;
 mod catalog_migrate;
+mod compare;
 mod run_action;
 mod sync_folder;
 
@@ -143,8 +145,22 @@ USAGE:
       assets/ATTRIBUTION.md row (DIR: the repository root, default .).
   {cli} calibrate-lightroom list
       The calibrations built into this binary, with their looks and held-out colour error.
-  {cli} calibrate-lightroom verify --catalog X.lrcat --exports DIR
-      Whole-pipeline check against an edited catalogue (not available yet).
+  {cli} calibrate-lightroom verify --raws DIR… --exports DIR… [--report DIR] [--json] [--size N] [--max N]
+      Moving from another editor: render your edited raws the way {app} imports them (their XMP sidecars, or the
+      settings Lightroom embeds in its exports) and measure each against its edited export (CIEDE2000), per photo
+      and per group of controls the edits used. --report writes verify.json and a ΔE00 map per photo.
+  {cli} compare REFERENCE TEST [--size N] [--no-align] [--diff OUT.png] [--json]
+      How far TEST is from REFERENCE: two renders of the same photo from any editor or camera (JPEG, TIFF, PNG,
+      …, read through their embedded colour profiles). Lines them up, then prints CIEDE2000 (mean, median, p95,
+      p99) overall, by tone band and by hue, with the lightness, saturation and hue bias. --size: long edge
+      compared (default 512); --no-align: compare pixel for pixel; --diff: write a false-colour ΔE00 map.
+  {cli} calibrate-lightroom probe -o DIR (--like RAW | --make MAKE --model MODEL) [--unique-model NAME] [--base-only]
+      Write synthetic probe DNGs for a camera: colour patches spread through camera RGB, and one copy per
+      slider-sweep step with that Lightroom setting embedded (applied when Lightroom imports it). Export them all
+      from Lightroom as 16-bit ProPhoto TIFFs; probe_base's export can also go into `fit` with your raws.
+  {cli} calibrate-lightroom probe-check --probes DIR --exports DIR [--json] [-o FILE]
+      Read Lightroom's probe exports back by position: the default render's ΔE00 against {app}'s, and for each
+      slider step the {app} value whose change matches Lightroom's best, next to the value the import uses.
   {cli} camdb extract [--contributor NAME] NATIVE.dng…
       Print camera database entries (TOML, for data/cameras/<maker>.toml in the camdb crate) from DNGs the
       camera wrote itself. DNGs written by Adobe software or by {app}'s own export are refused.
@@ -234,6 +250,7 @@ fn main() -> ExitCode {
         Some("calibrate") => calibrate(&args[1..]),
         Some("camdb") => camdb(&args[1..]),
         Some("calibrate-lightroom") => calibrate_lightroom::run(&args[1..]),
+        Some("compare") => compare::run(&args[1..]),
         Some("--version" | "-V" | "version") => {
             println!("{CLI} {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -675,6 +692,8 @@ fn run(args: &[String]) -> Result<(), String> {
         } else {
             std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?
         };
+        // Windows PowerShell 5.1 writes a UTF-8 BOM; it is not part of the first JSON line.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {
             let v: Value = serde_json::from_str(line).map_err(|e| format!("{path}:{}: {e}", n + 1))?;
             // `{"command": id, "params": …}` or a control request `{"method": m, "params": …}`
@@ -1028,6 +1047,8 @@ fn snapshot(args: &[String]) -> Result<(), String> {
             Box::new(std::io::stdin().lines())
         } else {
             let text = std::fs::read_to_string(script).map_err(|e| format!("{script}: {e}"))?;
+            // Windows PowerShell 5.1 writes a UTF-8 BOM; it is not part of the first JSON line.
+            let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
             Box::new(text.lines().map(|l| Ok(l.to_string())).collect::<Vec<_>>().into_iter())
         };
         let mut out = std::io::stdout().lock();

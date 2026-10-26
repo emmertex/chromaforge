@@ -141,34 +141,52 @@ fn new_brush_starts_a_separate_mask_in_paint_mode() {
     h.settle(SETTLE);
 }
 
-/// A slider hides the overlay; a new mask, an added part, a duplicate or picking a mask in
-/// the list shows it again, so the Overlay menu's mode is what the photo shows (issue #1800).
+/// One rule for the mask overlay (upstream PR 2920, adapted): a mask shows its overlay by itself only
+/// while it has no settings; one with settings is judged by its effect when picked, added to or
+/// duplicated. O (or the eye) shows it to stay, hovering its row shows it, and while a slider is at
+/// work nothing covers the photo. Replaces issue #1800's re-show on every pick.
 #[test]
-fn a_new_or_picked_mask_shows_the_overlay_hidden_by_a_slider() {
+fn a_mask_shows_its_overlay_by_itself_only_without_settings() {
     use lcc_pipeline::Overlay;
     let mut h = detail("panel.masking");
+    let shown = |h: &Headless| matches!(crate::panels::detail::view_overlay(&h.app, &develop(h), false), Overlay::Mask { .. });
+    let rest = |h: &mut Headless| h.app.ui.mask_adjusting_until = None;
     exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.2], "end": [0.5, 0.7]}));
     let first = h.app.session.active_mask.unwrap();
-    let hide = |h: &mut Headless| {
-        exec(h, "mask.adjust", json!({"values": {"exposure": 0.5}}));
-        assert!(!h.app.ui.mask_overlay);
-    };
-    let shown = |h: &Headless| matches!(crate::panels::detail::view_overlay(&h.app, &develop(h), false), Overlay::Mask { .. });
-    hide(&mut h);
+    assert!(shown(&h), "a new mask without settings shows what it selects");
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.5}}));
+    assert!(!shown(&h), "nothing covers the photo while a slider works");
+    rest(&mut h);
+    assert!(!shown(&h), "a mask with settings shows its effect");
     exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.4, 0.5], "rx": 0.2, "ry": 0.2}));
-    assert!(shown(&h), "a new mask shows its overlay");
-    hide(&mut h);
+    assert!(shown(&h), "another new mask shows its overlay");
     let r = h.request("ui.clickWidget", json!({"id": format!("mask:{first}")}), T);
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.session.active_mask, Some(first));
-    assert!(shown(&h), "picking a mask in the list shows its overlay");
+    assert!(shown(&h), "the pointer on the picked row shows what it selects");
+    pointer(&mut h, json!([{"kind": "move", "x": 0.1, "y": 0.9}])); // the pointer leaves the list
+    assert_eq!(h.app.ui.mask_hover, None);
+    rest(&mut h);
+    assert!(!shown(&h), "picking a mask with settings shows its effect");
     for (cmd, params) in
         [("mask.addComponent", json!({"kind": "radial", "op": "add", "center": [0.6, 0.5], "rx": 0.1, "ry": 0.1})), ("mask.duplicate", json!({}))]
     {
-        hide(&mut h);
         exec(&mut h, cmd, params);
-        assert!(shown(&h), "{cmd} shows the overlay");
+        assert!(!shown(&h), "{cmd} on a mask with settings shows its effect");
     }
+    // hovering a mask's row shows it
+    h.app.ui.mask_hover = Some(first);
+    assert!(shown(&h), "hovering the row shows the overlay");
+    h.app.ui.mask_hover = None;
+    // O shows it to stay, through edits; a slider at work still hides it
+    exec(&mut h, "view.maskOverlay", json!({"show": true}));
+    assert!(shown(&h));
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.7}}));
+    assert!(!shown(&h), "hidden while the slider works");
+    rest(&mut h);
+    assert!(shown(&h), "back when it rests: O keeps it on");
+    exec(&mut h, "mask.select", json!({"id": first}));
+    assert!(shown(&h), "O keeps it on for a picked mask too");
     h.settle(SETTLE);
 }
 

@@ -32,6 +32,8 @@ const FIELDS: &[(&str, usize)] = &[
     ("DEHAZE", 1),
     ("DEHAZE_V3", 1),
     ("SHARPEN_V4", 1),
+    // process V5: over-range colours keep hue and saturation (`lcc_pipeline::finish::hue_clip`)
+    ("HUE_CLIP", 1),
     ("SHARPEN", 1),
     ("SHARPEN_MASK", 1),
     ("SHARPEN_LIMIT", 1),
@@ -218,6 +220,7 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     p.f("DEHAZE", fp.dehaze);
     p.b("DEHAZE_V3", fp.dehaze_v3);
     p.b("SHARPEN_V4", fp.sharpen_v4);
+    p.b("HUE_CLIP", fp.hue_clip);
     p.f("SHARPEN", fp.sharpen);
     p.f("SHARPEN_MASK", fp.sharpen_mask);
     p.f("SHARPEN_LIMIT", fp.sharpen_limit);

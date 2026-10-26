@@ -450,7 +450,7 @@ fn quitting_from_the_welcome_dialog_saves_nothing() {
 }
 
 /// The answers to the folder dialogs a host shows elsewhere, in the order they were asked for.
-type Answers = std::sync::Arc<std::sync::Mutex<Vec<std::sync::mpsc::Sender<Vec<String>>>>>;
+type Answers = std::sync::Arc<std::sync::Mutex<Vec<std::sync::mpsc::Sender<crate::pick::PickResult>>>>;
 
 /// Give the app the desktop's kind of folder dialog: shown elsewhere, answered frames later (the
 /// synchronous one is never asked).
@@ -474,7 +474,7 @@ fn tick_open_and_cancel(h: &mut Headless, answers: &Answers) {
     ask(h, "ui.clickWidget", json!({"id": "button:welcomeOpen"}));
     h.step();
     assert_eq!(answers.lock().unwrap().len(), 1, "the folder dialog is up");
-    answers.lock().unwrap()[0].send(Vec::new()).unwrap();
+    answers.lock().unwrap()[0].send(Ok(Vec::new())).unwrap();
     run_without_a_check(h, 3);
     assert!(h.app.session.library.is_none(), "cancelled: no catalog");
 }
@@ -490,7 +490,7 @@ fn cancelling_open_catalog_returns_to_the_welcome_dialog() {
     let answers = background_dialogs(&mut h);
     ask(&mut h, "ui.clickWidget", json!({"id": "button:welcomeOpen"}));
     h.step();
-    answers.lock().unwrap()[0].send(Vec::new()).unwrap();
+    answers.lock().unwrap()[0].send(Ok(Vec::new())).unwrap();
     run_without_a_check(&mut h, 3);
     assert!(h.app.session.library.is_none(), "cancelled: no catalog");
     assert!(welcome_is_up(&h), "cancelling the folder dialog leaves the welcome dialog up");
@@ -513,7 +513,7 @@ fn the_welcome_dialog_waits_while_its_folder_dialog_is_up() {
     assert!(welcome_is_up(&h), "the welcome dialog is still there, waiting");
     assert_eq!(saved_check_at_startup(&dir), None, "nothing saved");
     // the folder dialog is cancelled: back to the welcome dialog, nothing open
-    answers.lock().unwrap()[0].send(Vec::new()).unwrap();
+    answers.lock().unwrap()[0].send(Ok(Vec::new())).unwrap();
     run_without_a_check(&mut h, 3);
     assert!(h.app.session.library.is_none(), "cancelled: no catalog");
     assert!(welcome_is_up(&h), "back to the welcome dialog");
@@ -536,7 +536,7 @@ fn another_open_while_the_welcome_folder_dialog_is_up_does_not_take_its_choice()
     assert!(h.app.session.library.is_some(), "the agent's catalog is open");
     assert_ne!(saved_check_at_startup(&dir), Some(true), "the welcome's choice is not the agent's open");
     // and the welcome's folder dialog is cancelled
-    answers.lock().unwrap()[0].send(Vec::new()).unwrap();
+    answers.lock().unwrap()[0].send(Ok(Vec::new())).unwrap();
     run_without_a_check(&mut h, 3);
     assert_ne!(saved_check_at_startup(&dir), Some(true), "nothing saved");
     h.app.session.close_library().unwrap();
@@ -573,7 +573,7 @@ fn a_cancelled_open_forgets_the_box_before_a_later_open_catalog() {
     ask(&mut h, "ui.menu.invoke", json!({"id": "catalog.open"}));
     h.step();
     assert_eq!(answers.lock().unwrap().len(), 2, "the folder dialog is up again");
-    answers.lock().unwrap()[1].send(vec![entry.to_string_lossy().into_owned()]).unwrap();
+    answers.lock().unwrap()[1].send(Ok(vec![entry.to_string_lossy().into_owned()])).unwrap();
     run_without_a_check(&mut h, 3);
     assert!(h.app.session.library.is_some(), "the chosen catalog is open");
     assert_ne!(saved_check_at_startup(&dir), Some(true), "the cancelled welcome choice is not saved");
@@ -597,7 +597,7 @@ fn a_ticked_welcome_box_survives_a_file_dialog_that_answers_later() {
     assert!(h.app.session.library.is_none(), "no catalog chosen yet");
     assert_eq!(saved_check_at_startup(&dir), None, "nothing is saved before a catalog is open");
     // the dialog closes with the catalog chosen
-    answers.lock().unwrap()[0].send(vec![entry.to_string_lossy().into_owned()]).unwrap();
+    answers.lock().unwrap()[0].send(Ok(vec![entry.to_string_lossy().into_owned()])).unwrap();
     run_without_a_check(&mut h, 3);
     assert!(h.app.session.library.is_some(), "the chosen catalog is open");
     assert_eq!(saved_check_at_startup(&dir), Some(true), "and the ticked box is saved");

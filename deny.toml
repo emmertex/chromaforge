@@ -37,6 +37,33 @@ ignore = false
 multiple-versions = "allow"
 
 [advisories]
+# Advisories no lockfile bump can clear yet. Each entry names the only path that pulls the crate in and why
+# the issue does not reach the app; revisit when the upstream crate moves (`cargo deny check advisories`).
+ignore = [
+    # rustls-rustcrypto 0.0.2-alpha (lcc-fetch, lcc-net: pure-Rust TLS) pins crypto-bigint 0.5, rsa 0.9 and
+    # rustls-webpki 0.102 and has no newer release. The app is a TLS *client* only: no RSA private-key
+    # operations (Marvin), and constant-time issues need an attacker timing our own secret-key operations.
+    # The webpki CRL / name-constraint issues need a malicious CA in the trusted chain; we use no CRLs.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via rustls-rustcrypto (no update); client-side TLS only" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa: no fixed release exists; only public-key verification (TLS client, russh client auth uses user keys locally)" },
+    { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto; no CRLs are used" },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto; needs a malicious constrained CA" },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto; needs a malicious constrained CA" },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto; CRL parsing is never used" },
+    { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto (0.103 path is updated); needs a distrusted intermediate" },
+    # zip 7 via candle-core =0.9.2 (pinned: later candle pulls a C library). candle only reads model archives;
+    # the advisories concern ZipArchive::extract to disk, which nothing calls.
+    { id = "RUSTSEC-2026-0367", reason = "zip via candle 0.9.2: extract() is never called" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via candle 0.9.2: extract() is never called" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via candle 0.9.2: extract() is never called" },
+    # Unmaintained (no fix to take): paste (faer/gemm proc-macro), ttf-parser (ab_glyph via egui), zbus_names /
+    # zvariant (accesskit's AT-SPI on Linux).
+    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained proc-macro used at build time by faer/gemm" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained, via egui's ab_glyph; fonts are bundled" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained, via accesskit (Linux accessibility)" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained, via accesskit (Linux accessibility)" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained, via accesskit (Linux accessibility)" },
+]
 
 [sources]
 unknown-registry = "deny"

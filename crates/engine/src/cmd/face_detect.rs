@@ -232,8 +232,10 @@ fn overlaps_existing(f: &Face, regions: &[Region]) -> bool {
     })
 }
 
+/// A region Detect Faces may replace: one it found earlier and the user has not ignored (an ignored face is kept,
+/// and its box stops the same face being found again).
 pub(crate) fn is_detected(r: &Region) -> bool {
-    r.description.as_deref().is_some_and(|d| d.starts_with(MARK))
+    r.kind != RegionKind::IgnoredFace && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))
 }
 
 /// The photo as the faces see it: upright, uncropped, default settings, as 8-bit RGB with its size, its long edge at

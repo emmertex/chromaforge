@@ -425,7 +425,7 @@ fn merge_with(s: &mut Session, peer: &lcc_peer::Peer, library: &std::path::Path,
             }),
             Action::Copy(r) => {
                 let name = format!("{} edit", peer.name);
-                crate::cmd::organize::virtual_copy(s, *id, Some(&name))
+                crate::cmd::organize::virtual_copy(s, *id, &name)
                     .and_then(|copy| match copy {
                         Some(copy) => apply(s, copy, &r, &label).map(|()| copies += 1),
                         None => Ok(()),

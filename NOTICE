@@ -19,6 +19,11 @@ Third-party material
 This product bundles third-party material under its own licenses, listed below. The per-file
 list (author, source, license) is in assets/ATTRIBUTION.md.
 
+Some raw decoders in crates/raw were translated from, or written with reference to, functions of
+dcraw.c (https://www.dechifro.org/dcraw/), Copyright 1997-2018 by Dave Coffin, outside its
+RESTRICTED (Foveon) block, which its header releases "free for all uses". Each such module names
+the dcraw revision and functions in its documentation.
+
 vendor/egui-wgpu is egui-wgpu 0.36.2 (https://github.com/emilk/egui), Copyright (c) 2018-2021
 Emil Ernerfeldt and the egui contributors, licensed under the MIT License or the Apache License,
 Version 2.0 (vendor/egui-wgpu/LICENSE-MIT, vendor/egui-wgpu/LICENSE-APACHE), with local changes
@@ -59,10 +64,17 @@ poisson.rs), Copyright the PhotoCraft contributors, licensed under the MIT Licen
 License 2.0, at your option. The port was modified by the LightCraft contributors (2026); each
 ported file says so.
 
+crates/raw/src/vc5.rs (lcc-raw) ports the VC-5 decoder of GoPro's GPR SDK
+(https://github.com/gopro/gpr, source/lib/vc5_common and source/lib/vc5_decoder, including its codebook 17
+table), Copyright 2018 GoPro Inc., licensed under the Apache License 2.0 or the MIT License, at your
+option. The port was modified by the upstream contributors (2026): translated from C to Rust and
+restructured; the file says so. crates/raw/tests/data/gpr-table17.inc is a verbatim, unmodified copy of the SDK's
+source/lib/vc5_common/table17.inc (same copyright and licence), used by a test to check the port's codebook.
+
 crates/segment (lightcraft-segment) ports the SAM 3 model code of Hugging Face Transformers
 (https://github.com/huggingface/transformers, src/transformers/models/sam3 and sam3_tracker),
 Copyright The HuggingFace Team and Meta Platforms, Inc., licensed under the Apache License 2.0.
-The port was modified by the LightCraft contributors (2026): translated from Python/PyTorch to
+The port was modified by the upstream contributors (2026): translated from Python/PyTorch to
 Rust on candle and restructured; each ported file says so. Because of this, crates/segment is
 licensed under the Apache License 2.0 only (crates/segment/LICENSE-APACHE), not under MIT.
 crates/fetch is likewise licensed under the Apache License 2.0 only (crates/fetch/LICENSE-APACHE).

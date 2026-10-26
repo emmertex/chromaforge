@@ -270,6 +270,29 @@ fn set_names_match_whatever_their_case() {
     assert!(set_named(&mut s, "ÉTÉ").is_null(), "deleted");
 }
 
+/// Next / Previous Keyword Set (⌥0 / ⌥⇧0) step through the sets in the Keyword Set menu's order,
+/// Recent Keywords first, and wrap around at either end; with no saved sets they stay on Recent
+/// Keywords.
+#[test]
+fn next_and_previous_keyword_set_wrap_around_the_sets() {
+    let mut s = Session::with_demo();
+    let current = |r: serde_json::Value| r["current"].as_str().unwrap_or_default().to_string();
+    assert_eq!(current(s.execute("keyword.nextSet", &json!({})).unwrap()), "Recent Keywords", "no sets: nothing to go to");
+    assert_eq!(current(s.execute("keyword.previousSet", &json!({})).unwrap()), "Recent Keywords");
+    s.execute("keyword.saveSet", &json!({"name": "Weddings", "keywords": ["ceremony"]})).unwrap();
+    s.execute("keyword.saveSet", &json!({"name": "Travel", "keywords": ["harbor"]})).unwrap();
+    s.execute("keyword.useSet", &json!({"name": "Recent Keywords"})).unwrap();
+    let forward: Vec<String> = (0..3).map(|_| current(s.execute("keyword.nextSet", &json!({})).unwrap())).collect();
+    assert_eq!(forward, ["Weddings", "Travel", "Recent Keywords"]);
+    let back: Vec<String> = (0..3).map(|_| current(s.execute("keyword.previousSet", &json!({})).unwrap())).collect();
+    assert_eq!(back, ["Travel", "Weddings", "Recent Keywords"]);
+    let r = s.execute("keyword.nextSet", &json!({})).unwrap();
+    assert_eq!(r["keywords"], json!(["ceremony"]), "⌥1–⌥9 now apply the set's keywords");
+    // a current set that is no longer there counts as Recent Keywords
+    s.keyword_set = Some("Gone".into());
+    assert_eq!(current(s.execute("keyword.nextSet", &json!({})).unwrap()), "Weddings");
+}
+
 /// Export Keywords writes the keyword list file, and names the keywords Capture One's importer
 /// refuses (it allows none of ; , < > in a list); without a path it gives the text.
 #[test]
@@ -345,4 +368,18 @@ fn importing_keywords_reads_a_list() {
     assert!(s.execute("keyword.import", &json!({"path": dir.join("bad.txt").to_string_lossy()})).is_err(), "not UTF-8: refused");
     assert!(s.execute("keyword.import", &json!({})).is_err(), "a path or text");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A library whose photos got a whole keyword list as one keyword (line breaks inside) is
+/// repaired when it opens: one keyword a line, journaled.
+#[test]
+fn line_separated_keywords_are_split_when_the_library_opens() {
+    let mut s = Session::with_demo();
+    let id = s.visible_cloned()[0];
+    let mut meta = s.catalog.photo(id).unwrap().meta.clone();
+    meta.keywords = vec!["Bride\r\n Groom\r\n Happy Couple".into()];
+    s.catalog.apply(lcc_catalog::Op::SetMeta { id, meta: Box::new(meta) }).unwrap();
+    assert_eq!(s.split_multiline_keywords(), 1);
+    assert_eq!(s.catalog.photo(id).unwrap().meta.keywords, vec!["Bride", "Groom", "Happy Couple"]);
+    assert_eq!(s.split_multiline_keywords(), 0, "nothing left to split");
 }

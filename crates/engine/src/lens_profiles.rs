@@ -157,6 +157,12 @@ pub struct GivenLens {
     pub aperture: Option<f64>,
 }
 
+impl From<&lcc_develop::ChosenLens> for GivenLens {
+    fn from(c: &lcc_develop::ChosenLens) -> Self {
+        GivenLens { maker: c.make.clone(), model: c.model.clone(), focal: c.focal, aperture: None }
+    }
+}
+
 impl GivenLens {
     /// Check a lens given from outside (a command or agent): a nonempty name of at most [`MAX_NAME`] characters,
     /// a finite focal length in 0–10000 mm and an f-number in 0.5–256.
@@ -277,7 +283,7 @@ pub fn lookup_with(
     };
     let aperture = aperture.filter(|a| valid(*a));
     // the crop factor: the camera's, else what the 35 mm equivalent focal length implies
-    let crop = frame_crop_factor(camera.map(|c| c.crop_factor), focal, m.focal_length_35mm);
+    let crop = frame_crop_factor(camera.and_then(|c| c.crop_factor), focal, m.focal_length_35mm);
     let shot = Shot { focal, aperture, distance: None, crop_factor: crop, width: w, height: h };
     let corr = lens.correction(&shot)?;
     Some((lcc_pipeline::optics::reorient_lens(&corr, orientation, w, h), applied))
@@ -311,6 +317,24 @@ pub fn resolve_raw(raw: &lcc_raw::RawInfo, meta: impl FnOnce() -> lcc_meta::Meta
     })
 }
 
+/// The lens correction for a raw when the user may have picked a lens (`picked`, [`lcc_develop::Optics::lens`]): a
+/// picked lens's database profile, even over the file's own correction (an explicit choice wins); else
+/// [`resolve_raw`] without a given lens. A picked lens the database lacks (or without a focal length) gives none.
+pub fn resolve_picked(
+    raw: &lcc_raw::RawInfo,
+    meta: impl FnOnce() -> lcc_meta::Metadata,
+    picked: Option<&GivenLens>,
+) -> Option<(EmbeddedLens, Applied)> {
+    match picked {
+        Some(g) => {
+            let db = database()?;
+            let (w, h) = raw.developed_size();
+            lookup_with(&db, &meta(), Some(g), w as f64, h as f64, raw.orientation)
+        }
+        None => resolve_raw(raw, meta, None),
+    }
+}
+
 /// The order itself: the file's own correction (`file`) wins; else the database's (`database`, which applies a
 /// given lens before the name match).
 pub fn resolve(file: Option<EmbeddedLens>, database: impl FnOnce() -> Option<(EmbeddedLens, Applied)>) -> Option<(EmbeddedLens, Applied)> {
@@ -330,7 +354,7 @@ pub struct ListedLens {
     /// Every name the lens goes by.
     pub models: Vec<String>,
     pub mounts: Vec<String>,
-    pub crop_factor: f64,
+    pub crop_factor: Option<f64>,
     /// Calibrated focal lengths, mm (`[min, max]`; none when the profile has no calibration points).
     pub focal: Option<[f64; 2]>,
     pub distortion: bool,
@@ -360,7 +384,7 @@ pub fn list(db: &LensDb, filter: &ListFilter, offset: usize, limit: usize) -> (u
         .lenses
         .iter()
         .filter(|l| mount.is_none_or(|m| l.mounts.is_empty() || l.mounts.iter().any(|x| x.trim().eq_ignore_ascii_case(m))))
-        .filter(|l| crop.is_none_or(|c| !l.crop_factor.is_finite() || l.crop_factor <= 0.0 || l.crop_factor <= c * 1.02))
+        .filter(|l| crop.is_none_or(|c| l.crop_factor.is_none_or(|f| !f.is_finite() || f <= 0.0 || f <= c * 1.02)))
         .filter(|l| {
             let hay = format!("{} {}", l.maker, l.models.join(" ")).to_lowercase();
             words.iter().all(|w| hay.contains(w.as_str()))
@@ -611,6 +635,32 @@ mod tests {
         }
         assert_eq!(frame_crop_factor(None, 70.0, Some(105.0)), Some(1.5), "no body in the database: the 35 mm equivalent's");
         assert_eq!(frame_crop_factor(Some(1.0), 0.0, Some(105.0)), Some(1.0), "a hostile focal length is ignored");
+    }
+
+    #[test]
+    fn unknown_camera_crop_uses_exif_equivalent_without_full_frame_assumption() {
+        for crop in [
+            "",
+            "<cropfactor/>",
+            "<cropfactor>bad</cropfactor>",
+            "<cropfactor>NaN</cropfactor>",
+            "<cropfactor>inf</cropfactor>",
+            "<cropfactor>0.049</cropfactor>",
+            "<cropfactor>21</cropfactor>",
+        ] {
+            let xml = DB.replacen("<cropfactor>1.5</cropfactor>", crop, 1).replace("-0.03", "-0.003").replace("-0.4", "-0.04");
+            let db = LensDb::parse(&xml).unwrap();
+            // A below-1 crop exposes the old synthetic 1.0 body: the 10% crop-mode policy would keep it.
+            let m = lcc_meta::Metadata { focal_length_35mm: Some(17.1), ..meta() };
+            let expected = db.lenses[0]
+                .correction(&Shot { focal: 18.0, aperture: Some(3.5), distance: None, crop_factor: Some(17.1 / 18.0), width: 6000.0, height: 4000.0 })
+                .unwrap();
+            assert_eq!(lookup(&db, &m, 6000.0, 4000.0, Orientation::Normal).unwrap(), expected, "{crop}");
+            let fallback = db.lenses[0]
+                .correction(&Shot { focal: 18.0, aperture: Some(3.5), distance: None, crop_factor: None, width: 6000.0, height: 4000.0 })
+                .unwrap();
+            assert_eq!(lookup(&db, &meta(), 6000.0, 4000.0, Orientation::Normal).unwrap(), fallback, "no equivalent: {crop}");
+        }
     }
 
     /// A synthetic grid recorded through the profile's barrel distortion comes out of the pipeline's geometry

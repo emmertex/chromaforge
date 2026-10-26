@@ -597,9 +597,32 @@ pub fn try_render(
     }
 }
 
+/// Tests: parse and validate a WGSL module with naga, as wgpu does before it hands a shader to the driver. Needs no
+/// GPU, so kernels that don't build (a duplicate definition after a merge, a type error) fail every test run, not only
+/// the GPU ones.
+#[cfg(test)]
+pub(crate) fn validate_wgsl(name: &str, src: &str) -> Result<(), String> {
+    use wgpu::naga;
+    let module = naga::front::wgsl::parse_str(src).map_err(|e| format!("{name}: {}", e.emit_to_string(src)))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .map(|_| ())
+        .map_err(|e| format!("{name}: {}", e.emit_to_string(src)))
+}
+
 #[cfg(test)]
 mod tests {
     use lcc_pipeline::{OutputDepth, Overlay};
+
+    /// The helper refuses what a driver would: a function defined twice (what an automatic merge of two branches
+    /// touching the same kernel can leave).
+    #[test]
+    fn wgsl_validation_catches_a_duplicate_definition() {
+        let ok = "fn f() -> f32 { return 1.0; }\n@compute @workgroup_size(1) fn main() { _ = f(); }\n";
+        assert_eq!(super::validate_wgsl("ok", ok), Ok(()));
+        let twice = format!("fn f() -> f32 {{ return 2.0; }}\n{ok}");
+        assert!(super::validate_wgsl("twice", &twice).is_err());
+    }
 
     // Given a request the kernel can't draw (16-bit or SDR float, a soft proof, Visualize HDR),
     // the GPU doesn't take it; the loupe, HDR renders and diagnostic overlays stay on the GPU

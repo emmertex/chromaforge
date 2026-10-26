@@ -78,7 +78,7 @@ fn fit_recovers_a_known_profile() {
     let lut = lut_for(&tone).unwrap();
     eprintln!("zero-slider render per-pixel: {}", lut.per_pixel);
     let photos = synthetic(&model, &lut);
-    let cal = fit(&photos, &FitOptions { contributor: Some("Test".into()), rounds: 3 }).unwrap();
+    let cal = fit(&photos, &FitOptions { contributor: Some("Test".into()), rounds: 3, ..Default::default() }).unwrap();
     cal.validate().unwrap();
     let e = &cal.evidence.looks[0];
     eprintln!("held-out ΔE00 before {:?} after {:?}; white points {}", e.before, e.after, cal.evidence.white_points);

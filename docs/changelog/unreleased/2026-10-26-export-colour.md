@@ -1,0 +1,3 @@
+## Colour
+
+- **Export colour for other editors:** `camera.exportDcp {path}` writes the camera colour a raw renders with (its chosen `.dcp` or calibration look, the file's own matrices and profile tables, or the colour the app fits) as a DNG camera profile named as raw converters name the camera; `develop.exportLut {path}` writes a photo's global look (Light, tone curve, colour, mixer, grading, profile look; not white balance or local edits) as a 33³ sRGB-to-sRGB `.cube`. Export as DNG now embeds the photo's chosen profile instead of only filling in colour for raws without matrices. The `.dcp` writer moved from the CLI into `lcc-raw` (`lcc_raw::dcp::write`). (no PR)

@@ -137,7 +137,9 @@ fn color_ops(rgb: vec3<f32>, local_sat: f32, local_hue: f32) -> vec3<f32> {
     let lab0 = oklab(rgb);
     var l = lab0.x;
     var c = sqrt(lab0.y * lab0.y + lab0.z * lab0.z);
-    var h = atan2(lab0.z, lab0.y);
+    // a neutral (black or grey) pixel has no hue: atan2(0, 0) is undefined in WGSL (NaN on some
+    // GPUs, which a later lightening such as the vignette then shows); the CPU's atan2 gives 0
+    var h = select(atan2(lab0.z, lab0.y), 0.0, c == 0.0);
     if (pu(F_MIXER) != 0u) {
         let w = band_weights(h);
         var dh = 0.0;
@@ -523,7 +525,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let mx = max(d.x, max(d.y, d.z));
     if (mx > peak) {
         let t = clamp((mx - peak) / max(mx - o, 1e-6), 0.0, 1.0);
-        d = d + (o - d) * t;
+        let grey = d + (o - d) * t;
+        if (pu(F_HUE_CLIP) != 0u) {
+            let kept = hue_clip(d, peak);
+            d = kept + (grey - kept) * hue_fade(o, mx, peak);
+        } else {
+            d = grey;
+        }
     }
 
     // --- colour
@@ -584,7 +592,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (pu(F_PROOF_DEST_WARN) != 0u && out_of_gamut(q0, tq)) {
             warn = 1u;
         }
-        r = mul3(mat_at(F_PROOF_OUT), gamut_apply(q0, vec3<f32>(pf(F_PROOF_Y), pf(F_PROOF_Y + 1u), pf(F_PROOF_Y + 2u)), tq, 1.0));
+        let py = vec3<f32>(pf(F_PROOF_Y), pf(F_PROOF_Y + 1u), pf(F_PROOF_Y + 2u));
+        r = mul3(mat_at(F_PROOF_OUT), keep_hue_in_gamut(q0, gamut_apply(q0, py, tq, 1.0), py, 1.0));
     } else {
         r = mul3(mat_at(F_OUT_M), d);
     }
@@ -593,7 +602,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (pu(F_PROOF) != 0u && pu(F_PROOF_DISP_WARN) != 0u && warn == 0u && out_of_gamut(r, tg)) {
         warn = 2u;
     }
-    r = gamut_apply(r, oy, tg, peak);
+    r = keep_hue_in_gamut(r, gamut_apply(r, oy, tg, peak), oy, peak);
 
     // --- encode, curves, grain
     var e: vec3<f32>;
@@ -664,4 +673,49 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     e = vec3<f32>(out_encode(e.x), out_encode(e.y), out_encode(e.z));
     out[i] = enc8(e.x) | (enc8(e.y) << 8u) | (enc8(e.z) << 16u) | (255u << 24u);
+}
+
+// `finish::hue_clip` (process V5): the brightest channel limited to `peak`, the darkest kept (all three `peak` when it
+// is above too), the middle one in its place between them
+fn hue_clip(c: vec3<f32>, peak: f32) -> vec3<f32> {
+    let hi = max(c.x, max(c.y, c.z));
+    if (!(hi > peak)) {
+        return c;
+    }
+    let lo = min(c.x, min(c.y, c.z));
+    if (lo >= peak) {
+        return vec3<f32>(peak);
+    }
+    return vec3<f32>(lo) + (c - vec3<f32>(lo)) * ((peak - lo) / (hi - lo));
+}
+
+// `finish::HUE_FADE_FROM` and `HUE_FADE_EV` (keep in step)
+const HUE_FADE_FROM: f32 = 0.35;
+const HUE_FADE_EV: f32 = 2.0;
+
+// `finish::hue_fade`
+fn hue_fade(y: f32, hi: f32, peak: f32) -> f32 {
+    let over = select(0.0, log2(hi / peak), hi > peak && peak > 0.0);
+    return max(sstep(HUE_FADE_FROM * peak, peak, y), sstep(0.0, HUE_FADE_EV, over));
+}
+
+// `finish::keep_hue_in_gamut`, or `mapped` itself before process V5
+fn keep_hue_in_gamut(r: vec3<f32>, mapped: vec3<f32>, luma: vec3<f32>, peak: f32) -> vec3<f32> {
+    if (pu(F_HUE_CLIP) == 0u) {
+        return mapped;
+    }
+    let c = hue_clip(r, peak);
+    // `finish::lift_negatives`
+    let yy = clamp(dot(luma, c), 0.0, peak);
+    var t = 1.0;
+    for (var k = 0u; k < 3u; k++) {
+        if (c[k] < 0.0) {
+            t = min(t, yy / max(yy - c[k], 1e-9));
+        }
+    }
+    var kept = c;
+    if (t < 1.0) {
+        kept = yy + (c - yy) * t;
+    }
+    return kept + (mapped - kept) * hue_fade(dot(luma, r), max(r.x, max(r.y, r.z)), peak);
 }

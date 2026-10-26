@@ -144,7 +144,7 @@ opcodes keep their binned proxy.
 
 One photo can show too little of a colour for its own fit to learn it: in a second shot of the lime shirt only a few dozen proxy pixels show it, next to a hillside of foliage at the same hue that the camera renders differently, and the shirt stayed yellow (hue 68° against the JPEG's 82°; a 192-pixel proxy only reached 74°). `<cli> calibrate [--max N] [--out DIR] FOLDERS…` therefore pools the colour pairs of many ARWs, NEFs or RAFs per camera model — each against its own embedded JPEG, at a 192-pixel proxy, at most 4000 pairs per photo, files spread evenly over the folders — and fits one matrix (from white-balanced camera RGB, so no single photo's white point is baked in) and one hue/saturation/value table. Models need at least 5 usable photos.
 
-Profiles are JSON files `<model>.json` in `$<PREFIX>_CAMERA_PROFILES`, else `<config>/camera-profiles` (macOS `~/Library/Application Support/<settings_dir>/camera-profiles`); a local profile replaces a built-in one. Built-in profiles live in `assets/camera-profiles/` (listed in `assets/ATTRIBUTION.md`) and are compiled in, so the app, CLI and web build share them: ILCE-7M4, fitted to 597 photos (2.2 million colour pairs) shot in 2026, mostly with the Standard creative style and DRO Auto; ILCE-7CR, 125 photos, and ILCA-99M2, 144 photos (both below); X-H2S, 201 photos; X-T4, 545 photos; NIKON Z 6_2, 296 photos; NIKON Z 8, 261 photos; NIKON D5300, 264 photos, NIKON D780, 255 photos, NIKON D750, 276 photos, and NIKON D90, 289 photos (all below). They hold aggregate colour statistics only. A photo of a profiled model takes its colour from the profile and fits only its own tone and chroma curves (picture styles vary per shot; with Sony's DRO on, that tone curve is then lowered as described below); the acceptance gates still apply. A rejected profile fit retries the photo's own colour and tone fit; when no look fits at all, the photo keeps the profile's colour (below). Files are read once per process and validated (version, bounded invertible matrix, table shape and finite data); a damaged file is ignored with a warning. The profiles folder's contents are part of the render cache keys, so thumbnails rendered before a profile existed are redone; smart previews built before keep their colour until rebuilt.
+Profiles are JSON files `<model>.json` in `$<PREFIX>_CAMERA_PROFILES`, else `<config>/camera-profiles` (macOS `~/Library/Application Support/<settings_dir>/camera-profiles`); a local profile replaces a built-in one. Built-in profiles live in `assets/camera-profiles/` (listed in `assets/ATTRIBUTION.md`) and are compiled in, so the app, CLI and web build share them: ILCE-7M4, fitted to 597 photos (2.2 million colour pairs) shot in 2026, mostly with the Standard creative style and DRO Auto; ILCE-7CR, 125 photos, and ILCA-99M2, 144 photos (both below); X-H2S, 201 photos; X-T4, 545 photos; NIKON Z 6_2, 296 photos; NIKON Z 8, 261 photos; NIKON D5300, 264 photos, NIKON D780, 255 photos, NIKON D750, 276 photos, NIKON D90, 289 photos (all below); NIKON D700, 394 photos; NIKON D70, 379 photos; and the Fujifilm X-T1, 217 photos, X100T, 32 photos, and X20, 396 photos, all shot with the PROVIA film simulation. They hold aggregate colour statistics only. A photo of a profiled model takes its colour from the profile and fits only its own tone and chroma curves (picture styles vary per shot; with Sony's DRO on, that tone curve is then lowered as described below); the acceptance gates still apply. A rejected profile fit retries the photo's own colour and tone fit; when no look fits at all, the photo keeps the profile's colour (below). Files are read once per process and validated (version, bounded invertible matrix, table shape and finite data); a damaged file is ignored with a warning. The profiles folder's contents are part of the render cache keys, so thumbnails rendered before a profile existed are redone; smart previews built before keep their colour until rebuilt.
 
 
 ### Sony ILCE-7CR
@@ -269,20 +269,36 @@ is recorded here yet. Whether they should come before the file-local fit for the
 
 `crates/camdb` (`lcc-camdb`) gathers per-model camera data with its provenance: two-illuminant colour matrices
 (and forward matrices when known), white-balance presets, black/white level overrides, and a `provenance` naming the
-source (`native-dng`, `chart`, `manufacturer-doc`, `maker-note`, `spectral-sensitivities`, `estimated`), its detail
-and contributor. Entries live in human-editable TOML, one file per maker in `crates/camdb/data/cameras/`, embedded at
-build time; the 52 spectral rows above are exposed through it with `spectral-sensitivities` provenance rather than
-copied. `camdb::find` prefers TOML entries by source rank, then the spectral table. The raw's matrices are written
+source (`native-dng`, `chart`, `manufacturer-doc`, `maker-note`, `spectral-sensitivities`, `dcraw`, `estimated`), its
+detail and contributor. Entries live in human-editable TOML, one file per maker in `crates/camdb/data/cameras/`,
+embedded at build time; the 52 spectral rows above are exposed through it with `spectral-sensitivities` provenance
+rather than copied. `camdb::find` ranks TOML entries and the spectral table together by source, so measured data
+comes first, then the spectral matrices, then dcraw's table. The raw's matrices are written
 into its DNG colour data, so the input transform interpolates them by the inverse CCT of the white, as for a DNG.
-Measured entries (`native-dng`, `chart`, `manufacturer-doc`) come before the JPEG fit (step 2); spectral ones keep
-their place (step 5); level overrides apply in every case.
+Measured entries (`native-dng`, `chart`, `manufacturer-doc`) come before the JPEG fit (step 2); spectral and dcraw
+ones keep the spectral place (step 5), after a failed or missing JPEG fit; level overrides apply in every case.
 
-Data rules: no Adobe DCP/LCP data, no matrices from Adobe-converted DNGs, no Adobe-rendered pixels, no tables from GPL projects (dcraw's
-`adobe_coeff` and its descendants, darktable, RawTherapee). `<cli> camdb extract NATIVE.dng…` prints entries from DNGs
+**dcraw's table** (`crates/camdb/data/cameras/dcraw.toml`, 611 rows for about 550 models up to mid-2018) is generated
+by `tools/dcraw_adobe_coeff.py` from dcraw.c 9.28 (Debian's `dcraw_9.28.orig.tar.gz`). dcraw.c says its non-Foveon
+code is "free for all uses", and its `adobe_coeff` table is not Foveon code. Each row is one XYZ (D65) → camera
+matrix. Most were read from Adobe DNG Converter, and the rows marked DJC were measured by Dave Coffin; the provenance
+detail says which. dcraw's black and white levels are left out. The table gives colorimetric colour, not a camera's
+or Lightroom's look. It replaces the neutral fallback when a JPEG fit fails or a raw has no usable JPEG, and the
+Colorimetric camera colour starts from it for models without spectral data (maintainer decision 2026-10-26). dcraw
+matched names by prefix; the database matches exact models, so a body dcraw only covered through a shorter name (its
+"Minolta DYNAX 5" row for the DYNAX 5D, say) isn't matched. White balance on these models is edited in Kelvin: the as-shot multipliers are
+read through dcraw's matrix, as through the spectral matrices, after the spectral table and the camera's own Kelvin
+presets (those come first where they exist). White balances edited before on the relative scale are read as
+`legacy` and render as they did until the next edit converts them (`lcc_pipeline::local::normalize_wb`). One D65
+matrix reads tungsten-lit multipliers less exactly than a two-illuminant pair would.
+
+Data rules: what ships must be legal to redistribute, with its source named. No Adobe DCP/LCP files, no matrices
+harvested from Adobe-converted DNGs, no Adobe-rendered pixels, and no tables from GPL or other copyleft projects
+(darktable, RawTherapee, LibRaw's updated copies of dcraw's table). `<cli> camdb extract NATIVE.dng…` prints entries from DNGs
 a camera wrote itself and refuses DNGs whose `Software` tag names Adobe software (DNG Converter, Lightroom, Camera Raw,
 Photoshop), the app's own DNG export, or is missing. `<cli> camdb show MAKE MODEL` prints the entry a camera resolves
 to. A native DNG's matrices help that model's other raw format (a Pentax body's PEF files, say), whose files carry
-none. The database has no TOML entries yet.
+none. Besides dcraw's table, the database has no TOML entries yet.
 
 Calibrations matched to Lightroom (`crates/camdb/data/calibrations/`, maintainer decision 2026-10-25) are the one
 place Lightroom informs the numbers: black-box fits to Lightroom's *output images* of a contributor's own photos,

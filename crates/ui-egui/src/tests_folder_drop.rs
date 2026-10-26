@@ -161,6 +161,21 @@ fn photos_dropped_on_a_folder_move_there_on_disk() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A selection set with a repeated id holds each photo once, so the drag carries it once.
+#[test]
+fn a_drag_after_selecting_with_a_repeated_id_carries_each_photo_once() {
+    let (root, trip, home) = folders("dedupe");
+    let mut h = app(&[(trip.join("beach.png"), false), (home.join("garden.png"), false)]);
+    let (beach, garden) = (id_of(&h, "beach.png"), id_of(&h, "garden.png"));
+    h.app.run("library.select", json!({"ids": [beach, garden, beach], "active": beach})).unwrap();
+    let from = widget(&h, &format!("thumb:{beach}")).unwrap().center();
+    press(&mut h, from);
+    glide(&mut h, from, from + egui::vec2(60.0, 60.0));
+    assert_eq!(h.app.ui.dragging_photos, Some(vec![beach, garden]));
+    release(&mut h, from);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn local_photos_are_refused_with_the_reason() {
     let (root, trip, home) = folders("local");
@@ -341,6 +356,46 @@ fn dont_ask_again_moves_the_next_drop_at_once() {
     drop_beach(&mut h, dunes, target);
     assert!(h.app.ui.dialog.is_none(), "not asked");
     assert!(home.join("dunes.png").is_file(), "moved at once");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn dont_ask_again_is_kept_only_when_the_move_began() {
+    let (root, trip, home) = folders("dont-ask-refused");
+    let mut h = app(&[(trip.join("beach.png"), false), (home.join("garden.png"), false)]);
+    click(&mut h, &format!("libraryFolderToggle:{}", root.display()));
+    let target = folder_row(&h, &home).unwrap();
+    let beach = id_of(&h, "beach.png");
+    // a file of that name is in the folder already (not in the library): the move is refused
+    std::fs::copy(trip.join("beach.png"), home.join("beach.png")).unwrap();
+    drop_beach(&mut h, beach, target);
+    click(&mut h, "check:moveDontAsk");
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::MovePhotos { dont_ask: true, .. })), "ticked");
+    click(&mut h, "button:dialogOk");
+    assert!(h.app.ui.dialog.is_none(), "the refusal closes the question");
+    assert!(trip.join("beach.png").is_file(), "nothing moved");
+    assert!(h.app.ui.settings.ask_before_move, "a refused move leaves the question on");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A confirmation that finds the photos in the folder already (they were moved there while the question was
+/// open, or a folder synchronization relinked them) moves nothing, so it doesn't turn the question off either.
+#[test]
+fn dont_ask_again_is_kept_only_when_a_photo_moved() {
+    let (root, trip, home) = folders("dont-ask-already");
+    let mut h = app(&[(trip.join("beach.png"), false), (home.join("garden.png"), false)]);
+    click(&mut h, &format!("libraryFolderToggle:{}", root.display()));
+    let target = folder_row(&h, &home).unwrap();
+    let beach = id_of(&h, "beach.png");
+    drop_beach(&mut h, beach, target);
+    click(&mut h, "check:moveDontAsk");
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::MovePhotos { dont_ask: true, .. })), "ticked");
+    // the photo gets there some other way while the question is open
+    h.app.run("photo.moveToFolder", json!({"folder": home.to_string_lossy(), "ids": [beach]})).unwrap();
+    assert!(home.join("beach.png").is_file());
+    click(&mut h, "button:dialogOk");
+    assert!(h.app.ui.dialog.is_none());
+    assert!(h.app.ui.settings.ask_before_move, "nothing moved: the question stays on");
     let _ = std::fs::remove_dir_all(&root);
 }
 

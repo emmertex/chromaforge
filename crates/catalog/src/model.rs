@@ -164,11 +164,33 @@ pub fn parse_shutter_seconds(s: &str) -> Option<f64> {
     .filter(|v: &f64| v.is_finite() && *v > 0.0)
 }
 
+/// The library label for a camera: the model alone when it already names the maker ("Canon IXUS
+/// 185"), otherwise "Make Model" ("Sony A7 IV"). Exports keep the two parts as read.
+pub fn camera_label(make: &str, model: &str) -> String {
+    let (make, model) = (make.trim(), model.trim());
+    if make.is_empty() {
+        return model.to_string();
+    }
+    if model.is_empty() {
+        return make.to_string();
+    }
+    match model.get(..make.len()) {
+        Some(head) if head.eq_ignore_ascii_case(make) => model.to_string(),
+        _ => format!("{make} {model}"),
+    }
+}
+
 /// Descriptive + capture metadata.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Meta {
     pub camera: String,
+    /// EXIF Make and Model as read, kept separately for exports (issue #1618); `camera` is the
+    /// display label. Left out of the catalog JSON when empty, so older catalogs read unchanged.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub camera_make: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub camera_model: String,
     pub lens: String,
     pub focal_mm: Option<f32>,
     pub aperture: Option<f32>,
@@ -423,6 +445,7 @@ pub fn validate_poster(duration: f64, time: Option<f64>) -> std::result::Result<
 
 /// What assisted culling measured on a photo.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Analysis {
     /// Focus: 0 (blurred) .. 100 (crisp), from the detail in the photo's sharpest area.
     pub sharpness: f32,
@@ -432,6 +455,15 @@ pub struct Analysis {
     pub group: Option<u32>,
     /// The best photo of its group.
     pub best: bool,
+    /// Eyes-open 0..1 when faces were measured (YuNet landmark heuristic). Absent when no faces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eyes_open: Option<f32>,
+    /// Aesthetic 1..10 (classical heuristic, not a NIMA head).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aesthetic: Option<f32>,
+    /// Combined 0..1 cull score from classical measures.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cull_score: Option<f32>,
 }
 
 /// Raw formats whose files carry vendor white-balance multipliers but no colour matrices: their starting
@@ -451,7 +483,8 @@ pub fn relative_wb_format(format: &str) -> bool {
 /// white-balance presets to read Kelvin from. A camera with matrices in `lcc_raw::spectral` edits in Kelvin:
 /// the matrices turn its as-shot multipliers into a temperature, and the slider back, while its colour look stays
 /// whatever the file's fit gives (upstream #730). A camera in `lcc_raw::kelvin_presets` does the same through
-/// its own presets. The engine's render path (`files.rs`) decides the same way from the file; both must agree.
+/// its own presets, and a camera with matrices in the camera database (`lcc_camdb`: dcraw's table and others)
+/// through those. The engine's render path (`files.rs`) decides the same way from the file; both must agree.
 pub fn relative_wb_camera(format: &str, camera: &str) -> bool {
     relative_wb_camera_as(format, camera, "")
 }
@@ -463,6 +496,7 @@ pub fn relative_wb_camera_as(format: &str, camera: &str, choice: &str) -> bool {
         && lcc_raw::dcp::resolve_camera(choice, camera).is_none()
         && lcc_raw::spectral::find_camera(camera).is_none()
         && !lcc_raw::kelvin_presets::covers_camera(camera)
+        && !lcc_camdb::has_matrices_camera(camera)
 }
 
 /// This build's version: what a photo's [`Photo::preview_checked`] stamp is compared with. Every
@@ -476,6 +510,17 @@ pub fn preview_stamp(preview_only: &Option<String>) -> String {
 }
 
 impl Photo {
+    /// Keep the newest [`HISTORY_LIMIT`](crate::HISTORY_LIMIT) History steps; the cursor moves with
+    /// its step, or to the oldest step kept when its own is dropped. Returns how many were dropped.
+    pub fn trim_history(&mut self) -> usize {
+        let n = self.history.len().saturating_sub(crate::HISTORY_LIMIT);
+        if n > 0 {
+            self.history.drain(..n);
+            self.history_cursor = self.history_cursor.map(|c| c.saturating_sub(n));
+        }
+        n
+    }
+
     /// The History step the settings are at (the cursor, clamped to the list; `None` = no history).
     pub fn history_index(&self) -> Option<usize> {
         let last = self.history.len().checked_sub(1)?;
@@ -727,6 +772,31 @@ impl Album {
 }
 
 #[cfg(test)]
+mod camera_label_tests {
+    use super::camera_label;
+
+    #[test]
+    fn label_drops_a_repeated_maker() {
+        assert_eq!(camera_label("Canon", "Canon IXUS 185"), "Canon IXUS 185");
+        assert_eq!(camera_label("Nothing", "Nothing Phone (3a) Pro"), "Nothing Phone (3a) Pro");
+        assert_eq!(camera_label("SONY", "Sony A7 IV"), "Sony A7 IV");
+    }
+
+    #[test]
+    fn label_joins_distinct_parts() {
+        assert_eq!(camera_label("Sony", "A7 IV"), "Sony A7 IV");
+        assert_eq!(camera_label(" Apple ", " iPhone 15 "), "Apple iPhone 15");
+    }
+
+    #[test]
+    fn label_falls_back_to_the_part_that_exists() {
+        assert_eq!(camera_label("", "Canon IXUS 185"), "Canon IXUS 185");
+        assert_eq!(camera_label("Canon", ""), "Canon");
+        assert_eq!(camera_label("  ", "  "), "");
+    }
+}
+
+#[cfg(test)]
 mod edited_tests {
     use super::*;
     use lcc_develop::WbScale;
@@ -825,11 +895,12 @@ mod edited_tests {
             ("Canon Canon EOS R6m2", "CR3", false),
             ("Canon Canon EOS R6 Mark II", "CR3", false),
             ("Canon Canon EOS R7", "CR3", false),
-            ("Canon Canon EOS 20D", "CR2", true),
+            ("Canon Canon EOS 20D", "CR2", false),
+            ("Canon Canon EOS 2Z", "CR2", true),
             ("Panasonic DMC-GX85", "RW2", false),
             ("LEICA CAMERA AG D-LUX 7", "RWL", false),
             ("RICOH PENTAX K-3 Mark III", "PEF", false),
-            ("SONY DSC-R1", "ARW", true),
+            ("SONY DSC-R1", "ARW", false),
             ("FUJIFILM X-T4", "RAF", false),
             ("ILCE-7M3", "ARW", false),
             ("SONY ILCE-7M2", "ARW", false),
@@ -838,8 +909,10 @@ mod edited_tests {
             ("SONY ILCE-1", "ARW", false),
             ("SONY ILCE-1M2", "ARW", false),
             ("SONY ZV-E10M2", "ARW", false),
-            // the Sony bodies without presets, and a Sony sensor sold under another name
-            ("SONY DSLR-A100", "ARW", true),
+            // a Sony body only dcraw's matrix table covers: Kelvin through it
+            ("SONY DSLR-A100", "ARW", false),
+            ("Canon Canon EOS 350D DIGITAL", "CR2", false),
+            // a body no table covers, and a Sony sensor sold under another name
             ("HASSELBLAD Lunar", "ARW", true),
             ("", "ARW", true),
             ("SONY ILCE-7M3", "DNG", false),

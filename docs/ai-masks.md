@@ -162,14 +162,17 @@ as described below, then run:
 
 ```sh
 cargo build --release --locked -p lcc-segment --bin sam3-worker
+export <PREFIX>_SAM3_WORKER_TOKEN="$(openssl rand -hex 16)"   # or any secret of 16+ characters
 target/release/sam3-worker "$HOME/Library/Application Support/<settings_dir>/models/sam3" 127.0.0.1:8793
 ```
 
-On the editing computer, start an SSH tunnel in one terminal and the app in another:
+Without `<PREFIX>_SAM3_WORKER_TOKEN` the worker makes up a token for the run and prints it. On the
+editing computer, start an SSH tunnel in one terminal and the app in another, with the same
+token:
 
 ```sh
 ssh -N -T -o ExitOnForwardFailure=yes -L 127.0.0.1:8793:127.0.0.1:8793 user@your-mac
-<PREFIX>_SAM3_REMOTE=127.0.0.1:8793 <binary>
+<PREFIX>_SAM3_WORKER_TOKEN=<the token> <PREFIX>_SAM3_REMOTE=127.0.0.1:8793 <binary>
 ```
 
 Object clicks, Describe prompts, and detail refinement use the remote worker. Only the
@@ -179,11 +182,13 @@ stay in the local library, so later adjustments and exports work without the con
 
 The worker requires Metal and accepts one editing connection at a time. It loads weights
 on demand and releases them when the client disconnects or remains idle for ten minutes.
-Both endpoints require loopback addresses: SSH provides authentication and encryption.
-The listener has no independent authentication; do not expose it through a public proxy. Any
-process of any user on the worker Mac can connect to it, and on the editing computer a local
-process listening on the port while the tunnel is down receives the rendered model input, so use
-this only on machines whose local users you trust.
+Both endpoints require loopback addresses: SSH provides encryption and the login. Before any
+pixels move, the editor and the worker prove to each other that they know the token (an
+HMAC-SHA256 challenge-response: the token itself never crosses the socket). Another process on
+the worker Mac can't use the worker without it, and a process listening on the editor's port while
+the tunnel is down learns nothing and receives no photo: the app stops with an error. A peer
+that connects and stays silent is dropped after 10 seconds without holding up the editor. Keep
+the token as private as an SSH key; don't expose the worker through a public proxy.
 
 No local weights are required in remote mode. An unavailable worker produces an explicit
 error, not a silent CPU fallback. Restore the tunnel and retry. Unset

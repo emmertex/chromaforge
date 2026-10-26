@@ -889,9 +889,9 @@ mod tests {
     fn target_follows_the_file() {
         use lcc_catalog::MediaKind;
         assert_eq!(Target::for_file(MediaKind::Raw, "ARW", false, ""), Target::RawRelative);
-        assert_eq!(Target::for_file(MediaKind::Raw, "nef", false, "NIKON CORPORATION NIKON D7500"), Target::RawRelative);
+        assert_eq!(Target::for_file(MediaKind::Raw, "nef", false, "NIKON CORPORATION NIKON Z 99"), Target::RawRelative);
         // Lightroom's `fileFormat` name for proprietary raws
-        assert_eq!(Target::for_file(MediaKind::Raw, "RAW", false, "SONY DSLR-A100"), Target::RawRelative);
+        assert_eq!(Target::for_file(MediaKind::Raw, "RAW", false, "HASSELBLAD Lunar"), Target::RawRelative);
         assert_eq!(Target::for_file(MediaKind::Raw, "DNG", false, ""), Target::RawAbsolute);
         // a raw shown from its embedded preview develops like a rendered file
         assert_eq!(Target::for_file(MediaKind::Raw, "ARW", true, "SONY ILCE-7M3"), Target::Rendered);
@@ -919,7 +919,7 @@ mod tests {
         let p = props(x);
         let a7m3 = Target::for_file(MediaKind::Raw, "ARW", false, "SONY ILCE-7M3");
         assert_eq!(to_partial(&p, a7m3)["wb"], json!({"mode": "custom", "temp": 4650.0, "tint": 3.0, "scale": "kelvin"}));
-        let a100 = Target::for_file(MediaKind::Raw, "ARW", false, "SONY DSLR-A100");
+        let a100 = Target::for_file(MediaKind::Raw, "ARW", false, "HASSELBLAD Lunar");
         let shifted = to_partial(&p, a100);
         assert!(shifted["wb"]["temp"].as_f64().is_some_and(|t| t > 5000.0 && t < 6500.0), "{shifted}");
         assert_eq!(shifted["wb"]["tint"], 4.0);
