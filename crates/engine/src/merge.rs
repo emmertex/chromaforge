@@ -506,6 +506,7 @@ impl Session {
         info["id"] = json!(id.0);
         info["path"] = json!(path);
         info["bytes"] = json!(out.dng.len());
+        info["reused"] = json!(reused);
         Ok(info)
     }
 

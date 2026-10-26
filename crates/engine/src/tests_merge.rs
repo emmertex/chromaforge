@@ -40,6 +40,7 @@ fn hdr_merge_command_creates_and_imports_a_dng() {
     let r = s.execute("merge.hdr", &json!({"ids": ids, "autoSettings": true, "stack": true})).unwrap();
     let path = r["path"].as_str().unwrap();
     assert!(path.ends_with("IMG_0-HDR.dng"), "{path}");
+    assert_eq!(r["reused"].as_bool(), Some(false));
     let id = lightcraft_catalog::PhotoId(r["id"].as_u64().unwrap());
     let p = s.catalog.photo(id).unwrap().clone();
     assert_eq!((p.width, p.height), (480, 320));
@@ -63,6 +64,7 @@ fn hdr_merge_command_creates_and_imports_a_dng() {
     let undo_before = s.undo.len();
     let r2 = s.execute("merge.hdr", &json!({"ids": ids, "autoSettings": true, "stack": true})).unwrap();
     assert_eq!(r2["id"].as_u64(), Some(id.0));
+    assert_eq!(r2["reused"].as_bool(), Some(true));
     assert_eq!(r2["path"].as_str(), Some(path));
     assert!(!dir.join("IMG_0-HDR-2.dng").exists(), "duplicate merge left an orphan");
     assert_eq!(s.catalog.photos().count(), 4);
