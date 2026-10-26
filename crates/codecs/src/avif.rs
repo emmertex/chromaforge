@@ -158,6 +158,8 @@ struct Container<'a> {
     assoc: Vec<(u32, Vec<usize>)>,
     /// (type, from, to…)
     refs: Vec<([u8; 4], u32, Vec<u32>)>,
+    /// `iloc` extents read so far, across all items (capped at [`MAX_ITEMS`]).
+    extents: usize,
 }
 
 fn parse(file: &[u8]) -> Result<Container<'_>> {
@@ -251,6 +253,11 @@ fn parse_iloc(r: &mut Rd, c: &mut Container) -> Result<()> {
             let offset = r.uint(off_size)?;
             let length = r.uint(len_size)?;
             extents.push(Extent { offset, length });
+            // zero-width offset/length fields read no bytes, so the file size alone doesn't bound this
+            c.extents += 1;
+            if c.extents > MAX_ITEMS {
+                return Err(bad("too many item extents"));
+            }
         }
         c.locs.push((id, Loc { method, base, extents }));
         if c.locs.len() > MAX_ITEMS {
@@ -357,7 +364,13 @@ impl Container<'_> {
             } else {
                 usize::try_from(e.length).ok().and_then(|l| start.checked_add(l)).ok_or_else(|| bad("item length overflows"))?
             };
-            out.extend_from_slice(src.get(start..end).ok_or_else(|| bad("item data runs past the end of the file"))?);
+            let chunk = src.get(start..end).ok_or_else(|| bad("item data runs past the end of the file"))?;
+            // Every byte comes from the file, so a real item is never larger than it; repeated or
+            // overlapping extents that add up to more are refused before they allocate.
+            if out.len().saturating_add(chunk.len()) > self.file.len() {
+                return Err(bad("item data is larger than the file"));
+            }
+            out.extend_from_slice(chunk);
         }
         Ok(out)
     }
@@ -440,7 +453,7 @@ struct Pic {
     nclx: Nclx,
 }
 
-fn decode_av1(c: &Container, id: u32) -> Result<Pic> {
+fn decode_av1(c: &Container, id: u32, max_pixels: u64) -> Result<Pic> {
     let data = c.data(id)?;
     let mut dec = filmcraft_av1::Decoder::new();
     let e = |e: filmcraft_av1::Error| match e {
@@ -452,6 +465,13 @@ fn decode_av1(c: &Container, id: u32) -> Result<Pic> {
     let mut pics = Vec::new();
     if let Some(cfg) = config.filter(|o| !o.is_empty()) {
         pics.extend(dec.decode(&cfg).map_err(e)?);
+    }
+    // Refuse an oversized frame before the decoder allocates its buffers (the decoder itself stops at
+    // the AV1 level 6.3 size; this applies the caller's smaller limit when av1C carries the header).
+    if let Some(sh) = dec.sequence_header()
+        && u64::from(sh.max_frame_width).saturating_mul(u64::from(sh.max_frame_height)) > max_pixels
+    {
+        return Err(Error::TooLarge(u64::from(sh.max_frame_width), u64::from(sh.max_frame_height)));
     }
     pics.extend(dec.decode(&data).map_err(e)?);
     pics.extend(dec.flush_result().map_err(e)?);
@@ -629,7 +649,7 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
         let mut out = vec![0f32; gw * gh * 3];
         let (mut tw, mut th, mut bits, mut nclx) = (0usize, 0usize, 8u8, None);
         for (i, &t) in tiles.iter().enumerate() {
-            let p = decode_av1(&c, t)?;
+            let p = decode_av1(&c, t, opts.max_pixels)?;
             check(&p)?;
             if i == 0 {
                 (tw, th, bits) = (p.w, p.h, p.bits);
@@ -658,7 +678,7 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
         let n = nclx.ok_or_else(|| bad("grid without tiles"))?;
         (out, gw, gh, bits, n)
     } else {
-        let p = decode_av1(&c, id)?;
+        let p = decode_av1(&c, id, opts.max_pixels)?;
         check(&p)?;
         let n = file_nclx.unwrap_or(p.nclx);
         (to_rgb(&p, n), p.w, p.h, p.bits, n)
@@ -813,5 +833,48 @@ mod tests {
     fn an_animated_avif_is_unsupported() {
         let b = b"\0\0\0\x14ftypavis\0\0\0\0avis\0\0\0\x08moov";
         assert!(matches!(header(b), Err(Error::Unsupported(Format::Avif, _))));
+    }
+
+    /// A box of type `t` around `body`.
+    fn bx(t: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(t);
+        v.extend_from_slice(body);
+        v
+    }
+
+    #[test]
+    fn zero_width_iloc_extents_are_capped() {
+        // iloc v2 with zero-byte offset/length/base/index fields: each extent costs no input bytes
+        let mut iloc = vec![2, 0, 0, 0, 0, 0];
+        iloc.extend_from_slice(&3u32.to_be_bytes());
+        for id in 1..=3u32 {
+            iloc.extend_from_slice(&id.to_be_bytes());
+            iloc.extend_from_slice(&[0, 0, 0, 0, 0xff, 0xff]); // method, data ref, 65535 extents
+        }
+        let mut meta = vec![0, 0, 0, 0];
+        meta.extend(bx(b"iloc", &iloc));
+        let mut b = bx(b"ftyp", b"avif\0\0\0\0avif");
+        b.extend(bx(b"meta", &meta));
+        assert!(matches!(header(&b), Err(Error::Malformed(Format::Avif, m)) if m.contains("extents")));
+    }
+
+    #[test]
+    fn item_data_larger_than_the_file_is_refused() {
+        // one item whose 1000 extents each repeat the whole file (length 0 = to the end)
+        let mut iloc = vec![1, 0, 0, 0, 0x44, 0];
+        iloc.extend_from_slice(&1u16.to_be_bytes());
+        iloc.extend_from_slice(&[0, 1, 0, 0, 0, 0]); // id 1, method 0, data ref 0
+        iloc.extend_from_slice(&1000u16.to_be_bytes());
+        for _ in 0..1000 {
+            iloc.extend_from_slice(&[0; 8]);
+        }
+        let mut meta = vec![0, 0, 0, 0];
+        meta.extend(bx(b"pitm", &[0, 0, 0, 0, 0, 1]));
+        meta.extend(bx(b"iloc", &iloc));
+        let mut b = bx(b"ftyp", b"avif\0\0\0\0avif");
+        b.extend(bx(b"meta", &meta));
+        let c = parse(&b).unwrap();
+        assert!(matches!(c.data(1), Err(Error::Malformed(Format::Avif, m)) if m.contains("larger than the file")));
     }
 }
