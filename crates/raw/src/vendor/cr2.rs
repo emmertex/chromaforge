@@ -235,7 +235,8 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
             vec![w as usize]
         }
     };
-    let width: usize = widths.iter().sum();
+    // slice widths come from the file: a sum that overflows is a corrupt file, not a wrapped width
+    let width = widths.iter().try_fold(0usize, |acc, &w| acc.checked_add(w)).ok_or_else(|| RawError::Corrupt("CR2 slice widths overflow".into()))?;
     if width == 0 || total % width != 0 {
         return Err(RawError::Corrupt(format!("CR2 slices ({width}) do not divide the frame ({total} samples)")));
     }
@@ -247,7 +248,11 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         let mut x0 = 0;
         for &sw in &widths {
             for y in 0..height {
-                data[y * width + x0..y * width + x0 + sw].copy_from_slice(&frame.data[i..i + sw]);
+                // sums to `width`, so these are in range; `get` keeps a surprise an error, not a panic
+                let (Some(dst), Some(src)) = (data.get_mut(y * width + x0..y * width + x0 + sw), frame.data.get(i..i + sw)) else {
+                    return Err(RawError::Corrupt("CR2 slices outside the frame".into()));
+                };
+                dst.copy_from_slice(src);
                 i += sw;
             }
             x0 += sw;

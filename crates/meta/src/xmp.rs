@@ -234,7 +234,9 @@ pub(crate) fn unescape_attr(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        match rest.find(';').and_then(|j| entity(&rest[1..j]).map(|c| (c, j))) {
+        // the longest reference is `&#x10FFFF;`: search a short window, not the rest of the value per `&`
+        let end = rest.as_bytes().iter().take(12).position(|&b| b == b';');
+        match end.and_then(|j| entity(&rest[1..j]).map(|c| (c, j))) {
             Some((c, j)) => {
                 out.push(c);
                 rest = &rest[j + 1..];
@@ -740,6 +742,20 @@ pub fn write_xmp_lc(meta: &Metadata, lc: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// References resolve, anything else (unknown, unterminated, or a `;` too far away to end one) stays as
+    /// written, and a value that is nothing but `&` is handled in one pass.
+    #[test]
+    fn attribute_references_resolve_and_hostile_ones_stay_verbatim() {
+        assert_eq!(unescape_attr("a&amp;b&#65;&#x42;&lt;&gt;&quot;&apos;"), "a&bAB<>\"'");
+        assert_eq!(unescape_attr("&bogus; & &#xZZ; tail&"), "&bogus; & &#xZZ; tail&");
+        let far = format!("&{};", "x".repeat(40));
+        assert_eq!(unescape_attr(&far), far);
+        let many = "&".repeat(1 << 20);
+        assert_eq!(unescape_attr(&many), many);
+        // multi-byte text around a reference is never cut inside a character
+        assert_eq!(unescape_attr("é&amp;日&é;"), "é&日&é;");
+    }
 
     fn full() -> Metadata {
         Metadata {
