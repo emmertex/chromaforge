@@ -443,3 +443,14 @@ fn copies_from_a_local_folder_mirror_and_checks_the_hash() {
     let (r, _) = run(&[dir_spec], &[format!("file://{}", src.display())], &dst2, &AtomicBool::new(false));
     assert!(r.is_err());
 }
+
+#[test]
+fn file_urls_are_percent_decoded_but_bare_paths_keep_their_percent_signs() {
+    let bare = mirrors(Some("/models/50%20off"), None, &[]);
+    assert_eq!(bare.len(), 1);
+    assert_eq!(local_path(&bare[0]), Some(std::path::PathBuf::from("/models/50%20off")));
+    assert_eq!(local_path("file:///models/my%20sam3"), Some(std::path::PathBuf::from("/models/my sam3")));
+    for hostile in ["file:///x%", "file:///x%2", "file:///x%zz", "file:///x%ff", "file:///x%0a"] {
+        assert_eq!(local_path(hostile), None, "{hostile}");
+    }
+}

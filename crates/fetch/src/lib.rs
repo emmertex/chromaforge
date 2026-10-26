@@ -57,7 +57,7 @@ pub fn mirrors(env: Option<&str>, file: Option<&Path>, defaults: &[&str]) -> Vec
     let mut add = |s: &str| {
         let s = s.trim();
         // a local folder (an absolute path) is the same as its `file://` URL
-        let s = if Path::new(s).is_absolute() { format!("file://{s}") } else { s.to_string() };
+        let s = if Path::new(s).is_absolute() { format!("file://{}", s.replace('%', "%25")) } else { s.to_string() };
         let s = s.trim_end_matches('/');
         let usable = local_path(s).is_some() || Url::parse(s).is_ok();
         if !s.is_empty() && usable && !out.iter().any(|m| m == s) && out.len() < MAX_MIRRORS {
@@ -468,8 +468,27 @@ fn fetch_file(f: &FileSpec<'_>, url: &str, dir: &Path, opts: &Options, cancel: &
 fn local_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file://")?;
     let rest = if rest.get(2..3) == Some(":") { rest.strip_prefix('/').unwrap_or(rest) } else { rest };
-    let p = PathBuf::from(rest);
+    let rest = percent_decode(rest)?;
+    let p = PathBuf::from(&rest);
     if p.is_absolute() && !rest.chars().any(char::is_control) { Some(p) } else { None }
+}
+
+/// Decode `%XX` escapes (a `file://` URL's path); `None` for a broken escape or non-UTF-8 result.
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while let Some(&c) = b.get(i) {
+        if c == b'%' {
+            let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// Copy a file from a local mirror into `part` (from the start; it is checked afterwards like a download).
@@ -494,7 +513,14 @@ fn copy_local(src: &Path, part: &Path, limit: u64, size: Option<u64>, cancel: &A
             let _ = std::fs::remove_file(part);
             return Err(Fail::Cancelled);
         }
-        let n = input.read(&mut buf).map_err(|e| Fail::NextMirror(format!("{}: {e}", src.display())))?;
+        let n = match input.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) => {
+                drop(out);
+                let _ = std::fs::remove_file(part);
+                return Err(Fail::NextMirror(format!("{}: {e}", src.display())));
+            }
+        };
         if n == 0 {
             break;
         }
