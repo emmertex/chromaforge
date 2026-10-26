@@ -87,7 +87,7 @@ impl Frame {
     /// corrections (profile, embedded camera warp, manual distortion, lateral CA) always do this, as
     /// a corrected lens never shows the blank past the photo's edge (issue #2361); perspective only
     /// with "Constrain Crop" (`with_persp`), so a keystone fix can keep its corners.
-    fn constrain_to_image(&mut self, with_persp: bool) {
+    pub(crate) fn constrain_to_image(&mut self, with_persp: bool) {
         let Some(full) = self.warp.as_ref().filter(|w| w.moves_pixels()) else { return };
         let optics;
         let wp = if with_persp || full.persp == Homography::IDENTITY {
