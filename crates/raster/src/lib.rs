@@ -63,12 +63,13 @@ impl std::fmt::Display for AllocError {
 
 impl std::error::Error for AllocError {}
 
-/// The largest single image buffer [`Image::try_new`] allocates (64 GiB).
-pub const MAX_IMAGE_BYTES: usize = 64 << 30;
+/// The largest single image buffer [`Image::try_new`] allocates (64 GiB, or `isize::MAX` bytes on
+/// 32-bit targets such as wasm32, where 64 GiB doesn't fit in `usize`).
+pub const MAX_IMAGE_BYTES: usize = if usize::BITS >= 64 { 1 << 36 } else { isize::MAX as usize };
 
 /// A vector of `n` copies of `v`, or an error when it can't be had (overflow, past [`MAX_IMAGE_BYTES`],
 /// allocator failure) instead of an abort. `width`/`height` only label the error.
-pub fn try_vec<T: Clone>(n: usize, v: T, width: usize, height: usize) -> Result<Vec<T>, AllocError> {
+pub fn try_vec<T: Copy>(n: usize, v: T, width: usize, height: usize) -> Result<Vec<T>, AllocError> {
     let err = AllocError { width, height };
     let bytes = n.checked_mul(std::mem::size_of::<T>().max(1)).ok_or(err)?;
     if bytes > MAX_IMAGE_BYTES {
@@ -209,7 +210,7 @@ impl<T: Copy + Default> Image<T> {
             } else {
                 for (x, (o, s)) in row.iter_mut().zip(a).enumerate() {
                     let t = if x < other.width && y < other.height {
-                        other.data.get(y * other.width + x).copied().unwrap_or_default()
+                        y.checked_mul(other.width).and_then(|i| i.checked_add(x)).and_then(|i| other.data.get(i)).copied().unwrap_or_default()
                     } else {
                         U::default()
                     };
@@ -403,6 +404,12 @@ mod tests {
         assert_eq!((c.width, c.height), (4, 3));
         assert_eq!(c.get(1, 1), 3.0);
         assert_eq!(c.get(3, 2), 1.0);
+        // a hostile `other` whose width times row overflows reads defaults instead of panicking
+        let wide = Plane { width: usize::MAX, height: 3, data: vec![5.0; 2] };
+        let narrow = Plane::filled(1, 3, 1.0);
+        let d = narrow.zip_map(&wide, |x, y| x + y);
+        assert_eq!(d.get(0, 0), 6.0);
+        assert_eq!(d.get(0, 2), 1.0);
         let same = a.zip_map(&a, |x, y| x + y);
         assert!(same.data.iter().all(|&v| v == 2.0));
     }
