@@ -513,6 +513,10 @@ pub(crate) fn move_folder(s: &mut Session, from: &str, to: &str) -> std::result:
     if !src.is_dir() {
         return Err(format!("{from} is not a folder"));
     }
+    // `a/../b` names a folder without spelling it, which the checks below and the relink can't see
+    if src.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("{from}: give the folder's path without '..'"));
+    }
     // the library folder itself, and its own top-level folders (`Originals`, `thumbs`), stay where
     // the library expects them; folders below those (an import's date folders) can be renamed
     if s.library.as_ref().is_some_and(|l| l.dir.starts_with(src) || src.parent() == Some(l.dir.as_path())) {

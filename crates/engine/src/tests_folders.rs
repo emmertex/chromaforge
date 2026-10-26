@@ -724,4 +724,7 @@ fn a_date_folder_inside_the_library_can_be_renamed_but_the_librarys_own_folders_
         assert!(s.execute("folder.rename", &json!({"path": path, "name": "x"})).is_err(), "{own} stays put");
     }
     assert!(s.execute("folder.rename", &json!({"path": lib.to_string_lossy(), "name": "x"})).is_err(), "and so does the library");
+    let alias = lib.join("Originals").join("..").join("Originals").to_string_lossy().to_string();
+    assert!(s.execute("folder.rename", &json!({"path": alias, "name": "x"})).is_err(), "even named through '..'");
+    assert!(lib.join("Originals").is_dir());
 }
