@@ -2490,5 +2490,9 @@
   "No colour picked": "Nie pobrano koloru",
   "Selecting the object…": "Zaznaczam obiekt…",
   "Settings for the next mask": "Ustawienia następnej maski",
-  "Reset settings on new mask": "Zeruj ustawienia dla nowej maski"
+  "Reset settings on new mask": "Zeruj ustawienia dla nowej maski",
+  "Import to This Folder…": "Importuj do tego folderu…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Kopiuje zdjęcia z wybranego folderu do tego folderu; w przeglądzie możesz to zmienić",
+  "Add to My Photos…": "Dodaj do Moich zdjęć…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Pokazuje zdjęcia z tego folderu do przejrzenia, po czym dodaje je do biblioteki tam, gdzie są; żaden plik nie jest ruszany"
 }

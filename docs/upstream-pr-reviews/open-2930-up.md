@@ -28,7 +28,7 @@ the fork's own form (or noted for later), SKIP = not taken. "Stacked" = built on
 | 2935 | LRC-LIB-LIBFOLDERS: a folder's menu has one grouped order in Folders and Local | LEARN | one grouped order for the folder menus | fork #592 |
 | 2956 | LRC-LIB-LIBFOLDERS: a folder can be exported from its menu (stacked on #2935) | LEARN | Export Folder from its menu (stacked on #2935) | pending (stacked on fork #601) |
 | 2959 | LRC-LIB-LIBFOLDERS: every folder menu can copy the folder's path and make a folder on disk (stacked on #2935) | LEARN | Copy Path and New Folder on Disk in every folder menu (stacked on #2935) | fork #601 |
-| 2961 | LRC-LIB-LIBFOLDERS: a folder's menu can bring photos in (stacked on #2935) | LEARN | Import to This Folder from a folder's menu (stacked on #2935) | pending (stacked on fork #601) |
+| 2961 | LRC-LIB-LIBFOLDERS: a folder's menu can bring photos in (stacked on #2935) | LEARN | Import to This Folder from a folder's menu (stacked on #2935) | ported (fork PR PRNUM) |
 | 2981 | Issue #2819: the histogram stays SDR when HDR is switched off | SKIP | already fixed in the fork | — |
 | 2973 | MENU-BAR: clippy passes on macOS again (Quit, About and Settings share one branch) | SKIP | the fork's native_menu differs; its macOS clippy already passes | — |
 | 2954 | LR-IMP-ADD-DIALOG: an import checks its probes and looks up sidecars several at a time | SKIP | the fork already looks up probes and sidecars in parallel | — |
