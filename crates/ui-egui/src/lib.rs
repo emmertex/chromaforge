@@ -51,7 +51,6 @@ pub mod menu_level;
 pub mod menubar;
 pub mod menus;
 pub mod merge;
-mod model_setup;
 pub mod modern;
 mod modern_dock;
 mod modern_input;
@@ -568,7 +567,6 @@ impl QuitPrompt {
 }
 
 pub struct LccApp {
-    pub(crate) model_setup: model_setup::Pending,
     /// Per-catalog-revision caches of library-wide results the panels show every frame
     /// (expensive on big libraries).
     pub caches: Caches,
@@ -911,7 +909,6 @@ impl LccApp {
             alt_asks_for_library: false,
             recent_checks: Default::default(),
             activity_expanded: false,
-            model_setup: Default::default(),
         }
     }
 
@@ -962,9 +959,6 @@ impl LccApp {
     /// (offer a model's download, treat a cancel as one) instead of reading the message.
     pub fn run_typed(&mut self, id: &str, params: Value) -> Result<Value, CommandError> {
         shortcuts::set_active(self.ui.settings.keymap_set);
-        if let Some(result) = model_setup::intercept(self, id, &params) {
-            return result.map_err(CommandError::from);
-        }
         if let Some(r) = edit_in::intercept(self, id, &params) {
             return r.map_err(CommandError::from);
         }
@@ -1742,7 +1736,6 @@ impl LccApp {
         self.session.persist_if_dirty();
         panels::denoise::pump(self, ctx);
         panels::plugin_filters::pump(self, ctx);
-        model_setup::pump(self, ctx);
         panels::faces::pump(self, ctx);
         focus_scan::pump(self, ctx);
         enhance_pump::pump(self, ctx);
@@ -3033,9 +3026,6 @@ mod cache_tests {
         assert_eq!(counted_in(&mut c, &second, 2, now)[&AlbumId(10)], 2, "the second library's own count");
     }
 }
-
-#[cfg(test)]
-mod tests_model_setup;
 
 #[cfg(test)]
 mod tests_docking_acceptance;

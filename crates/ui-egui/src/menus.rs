@@ -77,7 +77,6 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("ui.dock.reset", "Reset Panel Layout", None, "Window>Panels"),
     // re-reads midi.toml, so a controller map can be edited without restarting
     ("midi.reload", "Reload MIDI Map", None, ""),
-    ("modelSetup.cancel", "Cancel Pending Photo Action", None, ""),
     ("view.photoGrid", "Photo Grid", None, "View"),
     ("view.squareGrid", "Square Grid", None, "View>Grid View Style"),
     // G: Photo Grid ↔ Square Grid (from other views: the photo grid)

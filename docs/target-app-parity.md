@@ -1,6 +1,6 @@
 # Target-app parity: the app vs Adobe Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-21 · **Change:** minor (Merge and HDR row: HDR 80% → 85%, HDR renders on the GPU, gap 14 closed; X11 SDR a platform limit); minor (Merge and HDR row: HDR 70% → 80%, HDR display in every view, gap 14); minor (gap 29 narrows to AI Denoise on merged DNGs: JPEG response curves and half-float frames done; numbers unchanged); minor (gaps audit 2026-10-20: lens database and CR3 variants no longer beta blockers, beta ~330–585 → ~280–480 h); minor (upstream batch 40 merged; full / mainstream readiness re-derived from the re-measured RAW share: ~62% / ~52% / ~65%); minor (upstream: RAW: 83% of Adobe's models decode, 38% verified after the camera-coverage sweep #1327); minor (Canon CRW, Epson ERF, Mamiya MEF decoded: models that decode 90% → 91%, use-weighted 89% → 90%, RAW decoding 80% → 81%); minor (views row: LR-VIEW-ZOOM closed, zoom windows with overlays and soft proofing; compressed ORF decoded: RAW decoding 77% → 78%; headline numbers unchanged); minor (ARW version 1, Z 6II packed NEF, 31 bodies verified: RAW decoding 78% → 80%); minor (pre-X FinePix SuperCCD RAF decodes, 295 models verified: 88% → 90% of models decode) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (AI Denoise runs without a model: built-in BM3D denoiser, upstream #2982); minor (Merge and HDR row: HDR 80% → 85%, HDR renders on the GPU, gap 14 closed; X11 SDR a platform limit); minor (Merge and HDR row: HDR 70% → 80%, HDR display in every view, gap 14); minor (gap 29 narrows to AI Denoise on merged DNGs: JPEG response curves and half-float frames done; numbers unchanged); minor (gaps audit 2026-10-20: lens database and CR3 variants no longer beta blockers, beta ~330–585 → ~280–480 h); minor (upstream batch 40 merged; full / mainstream readiness re-derived from the re-measured RAW share: ~62% / ~52% / ~65%); minor (upstream: RAW: 83% of Adobe's models decode, 38% verified after the camera-coverage sweep #1327); minor (Canon CRW, Epson ERF, Mamiya MEF decoded: models that decode 90% → 91%, use-weighted 89% → 90%, RAW decoding 80% → 81%); minor (views row: LR-VIEW-ZOOM closed, zoom windows with overlays and soft proofing; compressed ORF decoded: RAW decoding 77% → 78%; headline numbers unchanged); minor (ARW version 1, Z 6II packed NEF, 31 bodies verified: RAW decoding 78% → 80%); minor (pre-X FinePix SuperCCD RAF decodes, 295 models verified: 88% → 90% of models decode) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
 
 The authoritative assessment of how close the app is to Lightroom. The row-by-row checklist is
 [parity-checklist.md](parity-checklist.md); the ranked work list is [gaps.md](gaps.md); deep areas
@@ -96,7 +96,7 @@ search embeddings; generative remove runs in Adobe's cloud.
 | People (faces, body, hair, skin…) and Landscape masks | — | ⬜ |
 | Object / Describe masks | SAM 3 in pure Rust (Metal / CPU); opt-in 3.4 GB download, no mirror configured | 🟡 |
 | Depth range mask, Lens Blur | — | ⬜ |
-| AI Denoise | Bayer only, pure-Rust CPU / GPU, user-installed weights | 🟡 |
+| AI Denoise | Bayer only, built-in classical denoiser out of the box, optional user-installed weights, pure-Rust CPU / GPU | 🟡 |
 | Raw Details, Super Resolution | — | ⬜ |
 | Generative remove, distractions, reflections | — (generative is out of scope: cloud) | ⬜ |
 | Dust detection | ✅ | ✅ |
@@ -300,6 +300,7 @@ P2 items 12–25 h; look tuning, performance, packaging, hardening 25–45 h.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | AI Denoise runs without a model (built-in BM3D denoiser, upstream #2982); percentages unchanged: it is a classical filter and Bayer-only |
 | 2026-10-21 | minor | Merge and HDR: HDR 80% → 85% (HDR renders on the GPU, CPU oracle; gap 14 closed; X11 / XWayland SDR documented as a platform limit) |
 | 2026-10-20 | minor | Merge and HDR: HDR 70% → 80% (zoomed views, Before/After, Compare and second window in HDR; HDR Preview toggle; gap 14) |
 | 2026-10-20 | minor | Merge and HDR: gap 29 narrows to AI Denoise on merged DNGs (JPEG brackets get a recovered response curve, frames held as half floats); merge stays 88% |
