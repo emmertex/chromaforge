@@ -3497,5 +3497,9 @@
   "AI Denoise needs a model, and none is installed. Meanwhile, Luminance and Color under Detail reduce noise.": "KI-Entrauschen braucht ein Modell, und keins ist installiert. Bis dahin reduzieren Luminanz und Farbe unter Details das Rauschen.",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "Diese Version enthält kein Modell für KI-Entrauschen, und hier lässt sich noch keins herunterladen.",
   "No AI Denoise model is installed": "Kein Modell für KI-Entrauschen installiert",
-  "Keywords and presets apply to new files only, not to photos already in Local": "Stichwörter und Vorgaben gelten nur für neue Dateien, nicht für Fotos, die schon in „Lokal“ sind"
+  "Keywords and presets apply to new files only, not to photos already in Local": "Stichwörter und Vorgaben gelten nur für neue Dateien, nicht für Fotos, die schon in „Lokal“ sind",
+  "No photo in this folder is in the library yet": "Kein Foto in diesem Ordner ist bisher in der Bibliothek",
+  "Select the photos to move in the grid first": "Wähle zuerst im Raster die Fotos aus, die du verschieben willst",
+  "This place is kept in Local already": "Dieser Ort wird bereits in „Lokal“ behalten",
+  "Only a place at the top of Local can be removed from it": "Nur ein Ort ganz oben in „Lokal“ kann daraus entfernt werden"
 }

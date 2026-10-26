@@ -2410,5 +2410,9 @@
   "AI Denoise needs a model, and none is installed. Meanwhile, Luminance and Color under Detail reduce noise.": "AI ノイズ除去にはモデルが必要ですが、インストールされていません。それまでは「ディテール」の「輝度」と「カラー」でノイズを軽減できます。",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "このバージョンには AI ノイズ除去モデルが含まれておらず、まだここからダウンロードすることもできません。",
   "No AI Denoise model is installed": "AI ノイズ除去モデルはインストールされていません",
-  "Keywords and presets apply to new files only, not to photos already in Local": "キーワードとプリセットは新しいファイルにのみ適用され、すでにローカルにある写真には適用されません"
+  "Keywords and presets apply to new files only, not to photos already in Local": "キーワードとプリセットは新しいファイルにのみ適用され、すでにローカルにある写真には適用されません",
+  "No photo in this folder is in the library yet": "このフォルダの写真はまだライブラリにありません",
+  "Select the photos to move in the grid first": "先にグリッドで移動する写真を選択してください",
+  "This place is kept in Local already": "この場所はすでにローカルに残されています",
+  "Only a place at the top of Local can be removed from it": "ローカルから除けるのは、ローカルの最上位にある場所だけです"
 }

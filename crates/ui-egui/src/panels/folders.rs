@@ -78,44 +78,6 @@ fn sync_and_report(app: &mut LccApp, ctx: &egui::Context, path: &str) {
     }
 }
 
-/// A folder row's disk actions, added to its context menu.
-pub fn row_menu_items(app: &mut LccApp, ui: &mut egui::Ui, path: &str) {
-    if ui.button(crate::i18n::tr("Create Folder Inside…")).clicked() {
-        create_prompt(app, path);
-        ui.close();
-    }
-    if ui
-        .button(crate::i18n::tr("Synchronize Folder"))
-        .on_hover_text(crate::i18n::tr("Add new files, find missing ones and read sidecars changed by other programs"))
-        .clicked()
-    {
-        sync_and_report(app, ui.ctx(), path);
-        ui.close();
-    }
-    if app.services.pick_folder.is_some()
-        && ui
-            .button(crate::i18n::tr("Update Folder Location…"))
-            .on_hover_text(crate::i18n::tr("The folder was moved or renamed outside the app: point its photos at the new place"))
-            .clicked()
-    {
-        let picked = app.services.pick_folder.as_mut().and_then(|f| f());
-        if let Some(to) = picked {
-            match app.run("folder.relocate", json!({"path": path, "to": to})) {
-                Ok(r) => app.toast(ui.ctx(), crate::i18n::tr_format!("{n} photos relinked", n = r["relinked"].as_u64().unwrap_or(0))),
-                Err(e) => app.toast(ui.ctx(), e),
-            }
-        }
-        ui.close();
-    }
-    let parent = std::path::Path::new(path).parent().map(|p| p.to_string_lossy().to_string()).filter(|p| !p.is_empty());
-    if let Some(parent) = parent
-        && ui.button(crate::i18n::tr("Show Parent Folder")).clicked()
-    {
-        let _ = app.run("library.source", json!({"kind": "libraryFolder", "path": parent}));
-        ui.close();
-    }
-}
-
 fn human_bytes(b: u64) -> String {
     let gb = b as f64 / 1e9;
     if gb >= 1000.0 {

@@ -2344,5 +2344,9 @@
   "A copy of a photo in Recently Deleted stays out either way.": "Salinan foto di Baru dihapus tetap tidak masuk, apa pun pilihannya.",
   "For scripts and agents: `folder.scanChanges` now returns `duplicates` as a list of those files, each with the photo it matches (`existing`), where it used to return a count; `library.importPreview` still returns a number under `duplicates`, and `folder.synchronize` takes `importDuplicates`.": "Untuk skrip dan agen: `folder.scanChanges` kini mengembalikan `duplicates` sebagai daftar file tersebut, masing-masing dengan foto yang cocok (`existing`), padahal sebelumnya mengembalikan jumlah; `library.importPreview` tetap mengembalikan angka pada `duplicates`, dan `folder.synchronize` menerima `importDuplicates`.",
   "A file with the same content as a photo of the library, under another name or in another folder. Untick to bring such files in as photos of their own. Remembered for the next Synchronize.": "File dengan isi yang sama dengan foto di pustaka, dengan nama lain atau di folder lain. Hapus centang untuk memasukkan file seperti itu sebagai foto tersendiri. Diingat untuk sinkronisasi berikutnya.",
-  "Keywords and presets apply to new files only, not to photos already in Local": "Kata kunci dan prasetel hanya berlaku untuk berkas baru, bukan foto yang sudah ada di Lokal"
+  "Keywords and presets apply to new files only, not to photos already in Local": "Kata kunci dan prasetel hanya berlaku untuk berkas baru, bukan foto yang sudah ada di Lokal",
+  "No photo in this folder is in the library yet": "Belum ada foto dari folder ini di pustaka",
+  "Select the photos to move in the grid first": "Pilih dulu foto yang akan dipindahkan di grid",
+  "This place is kept in Local already": "Tempat ini sudah disimpan di Lokal",
+  "Only a place at the top of Local can be removed from it": "Hanya tempat di tingkat teratas Lokal yang bisa dikeluarkan dari Lokal"
 }

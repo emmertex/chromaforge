@@ -2260,5 +2260,9 @@
   "AI Denoise needs a model, and none is installed. Meanwhile, Luminance and Color under Detail reduce noise.": "AI 降噪需要模型，但尚未安装。在此之前，可用“细节”下的“明亮度”和“颜色”减少杂色。",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "此版本不附带 AI 降噪模型，目前也无法在这里下载。",
   "No AI Denoise model is installed": "未安装 AI 降噪模型",
-  "Keywords and presets apply to new files only, not to photos already in Local": "关键词和预设仅应用于新文件，不适用于已在“本地”中的照片"
+  "Keywords and presets apply to new files only, not to photos already in Local": "关键词和预设仅应用于新文件，不适用于已在“本地”中的照片",
+  "No photo in this folder is in the library yet": "此文件夹中还没有照片在图库中",
+  "Select the photos to move in the grid first": "请先在网格视图中选择要移动的照片",
+  "This place is kept in Local already": "此位置已保留在本地",
+  "Only a place at the top of Local can be removed from it": "只有本地最上层的位置才能从本地移除"
 }

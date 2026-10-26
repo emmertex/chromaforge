@@ -3595,5 +3595,9 @@
   "AI Denoise needs a model, and none is installed. Meanwhile, Luminance and Color under Detail reduce noise.": "Le débruitage IA a besoin d’un modèle, et aucun n’est installé. En attendant, Luminance et Couleur dans Détail réduisent le bruit.",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "Cette version ne contient aucun modèle de débruitage IA, et aucun ne peut encore être téléchargé d’ici.",
   "No AI Denoise model is installed": "Aucun modèle de débruitage IA n’est installé",
-  "Keywords and presets apply to new files only, not to photos already in Local": "Les mots-clés et les préréglages ne s'appliquent qu'aux nouveaux fichiers, pas aux photos déjà dans Local"
+  "Keywords and presets apply to new files only, not to photos already in Local": "Les mots-clés et les préréglages ne s'appliquent qu'aux nouveaux fichiers, pas aux photos déjà dans Local",
+  "No photo in this folder is in the library yet": "Aucune photo de ce dossier n’est encore dans la bibliothèque",
+  "Select the photos to move in the grid first": "Sélectionnez d’abord dans la grille les photos à déplacer",
+  "This place is kept in Local already": "Ce lieu est déjà conservé dans Local",
+  "Only a place at the top of Local can be removed from it": "Seul un lieu tout en haut de Local peut en être retiré"
 }

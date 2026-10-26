@@ -2444,5 +2444,9 @@
   "AI Denoise needs a model, and none is installed. Meanwhile, Luminance and Color under Detail reduce noise.": "AI odšumění potřebuje model a žádný není nainstalován. Mezitím šum omezí Jas a Barva v části Detaily.",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "Tato verze neobsahuje žádný model pro AI odšumění a zatím si ho odsud nelze stáhnout.",
   "No AI Denoise model is installed": "Není nainstalován žádný model pro AI odšumění",
-  "Keywords and presets apply to new files only, not to photos already in Local": "Klíčová slova a předvolby se použijí jen u nových souborů, ne u fotografií, které už jsou v Místních souborech"
+  "Keywords and presets apply to new files only, not to photos already in Local": "Klíčová slova a předvolby se použijí jen u nových souborů, ne u fotografií, které už jsou v Místních souborech",
+  "No photo in this folder is in the library yet": "V této složce zatím není žádná fotografie z knihovny",
+  "Select the photos to move in the grid first": "Nejprve v mřížce vyberte fotografie, které chcete přesunout",
+  "This place is kept in Local already": "Toto místo už je v místních souborech ponecháno",
+  "Only a place at the top of Local can be removed from it": "Z místních souborů lze odebrat jen místo na jejich nejvyšší úrovni"
 }

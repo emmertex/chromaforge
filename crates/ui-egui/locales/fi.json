@@ -2331,5 +2331,9 @@
   "A copy of a photo in Recently Deleted stays out either way.": "Äskettäin poistettujen kuvan kopio jää pois kummassakin tapauksessa.",
   "For scripts and agents: `folder.scanChanges` now returns `duplicates` as a list of those files, each with the photo it matches (`existing`), where it used to return a count; `library.importPreview` still returns a number under `duplicates`, and `folder.synchronize` takes `importDuplicates`.": "Skripteille ja agenteille: `folder.scanChanges` palauttaa nyt `duplicates`-kentän luettelona näistä tiedostoista, kunkin mukana kuva, jota se vastaa (`existing`), kun se ennen palautti lukumäärän; `library.importPreview` palauttaa `duplicates`-kentässä edelleen luvun, ja `folder.synchronize` ottaa parametrin `importDuplicates`.",
   "A file with the same content as a photo of the library, under another name or in another folder. Untick to bring such files in as photos of their own. Remembered for the next Synchronize.": "Tiedosto, jonka sisältö on sama kuin kirjaston kuvalla, toisella nimellä tai toisessa kansiossa. Poista valinta, jos haluat tuoda tällaiset tiedostot omina kuvinaan. Muistetaan seuraavaa synkronointia varten.",
-  "Keywords and presets apply to new files only, not to photos already in Local": "Avainsanat ja esiasetukset koskevat vain uusia tiedostoja, eivät kuvia, jotka ovat jo Paikallisessa"
+  "Keywords and presets apply to new files only, not to photos already in Local": "Avainsanat ja esiasetukset koskevat vain uusia tiedostoja, eivät kuvia, jotka ovat jo Paikallisessa",
+  "No photo in this folder is in the library yet": "Tämän kansion kuvia ei ole vielä kirjastossa",
+  "Select the photos to move in the grid first": "Valitse ensin siirrettävät kuvat ruudukosta",
+  "This place is kept in Local already": "Tämä paikka on jo säilytetty Paikallisessa",
+  "Only a place at the top of Local can be removed from it": "Paikallisesta voi poistaa vain sen ylimmän tason paikan"
 }
