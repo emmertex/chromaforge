@@ -2236,6 +2236,7 @@ pub(crate) enum FolderItem {
     MovePhotosHere,
     ColorLabel,
     Reveal,
+    CopyPath,
     ShowParent,
     KeepInLocal,
     RemoveFromLocal,
@@ -2254,11 +2255,11 @@ pub(crate) fn folder_menu_groups(row: FolderRow) -> &'static [&'static [FolderIt
             &[AddNew, Synchronize, LocateMissing, UpdateLocation],
             &[NewFolder, Rename, Move, MovePhotosHere],
             &[ColorLabel],
-            &[Reveal, ShowParent],
+            &[Reveal, CopyPath, ShowParent],
             &[RemoveFromLibrary],
         ],
-        FolderRow::Disk => &[&[AddNew, Synchronize, LocateMissing], &[ColorLabel], &[RemoveDisk]],
-        FolderRow::Local { .. } => &[&[Synchronize], &[Rename, Move], &[Reveal], &[KeepInLocal, RemoveFromLocal]],
+        FolderRow::Disk => &[&[AddNew, Synchronize, LocateMissing], &[NewFolder], &[ColorLabel], &[Reveal, CopyPath], &[RemoveDisk]],
+        FolderRow::Local { .. } => &[&[Synchronize], &[NewFolder, Rename, Move], &[Reveal, CopyPath], &[KeepInLocal, RemoveFromLocal]],
     }
 }
 
@@ -2305,6 +2306,16 @@ fn folder_item_available(app: &LccApp, item: FolderItem, path: &str, node: Optio
     }
 }
 
+/// `path` as the OS spells it: its separators native (a path may carry `/` on Windows), and a
+/// bare drive (`D:`, a disk's row) as the drive's root.
+pub(crate) fn native_path(path: &str, sep: char) -> String {
+    let mut spelled: String = path.chars().map(|c| if c == '/' { sep } else { c }).collect();
+    if matches!(spelled.as_bytes(), [d, b':'] if d.is_ascii_alphabetic()) {
+        spelled.push(sep);
+    }
+    spelled
+}
+
 /// The folder `path` is in, when it has one.
 fn parent_folder(path: &str) -> Option<String> {
     std::path::Path::new(path).parent().map(|p| p.to_string_lossy().to_string()).filter(|p| !p.is_empty())
@@ -2314,6 +2325,11 @@ fn parent_folder(path: &str) -> Option<String> {
 /// folder's own name on disk, and what dialogs call it.
 fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: FolderItem, path: &str, node: Option<&FolderNode>, names: (&str, &str)) {
     let (name, label) = names;
+    // a disk is called by its own name, as in Synchronize and Remove Disk
+    let label = match (row, node) {
+        (FolderRow::Disk, Some(n)) => n.name.as_str(),
+        _ => label,
+    };
     match item {
         FolderItem::AddNew => {
             if let Some(n) = node {
@@ -2419,6 +2435,15 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
                 if let Some(Err(e)) = app.services.reveal.as_mut().map(|f| f(path)) {
                     app.toast(ui.ctx(), e);
                 }
+                ui.close();
+            }
+        }
+        FolderItem::CopyPath => {
+            let r = ui.button(crate::i18n::tr("Copy Path"));
+            register(ui.ctx(), "folderCopyPath", r.rect);
+            if r.clicked() {
+                ui.ctx().copy_text(native_path(path, std::path::MAIN_SEPARATOR));
+                app.toast(ui.ctx(), crate::i18n::tr("Path copied"));
                 ui.close();
             }
         }
