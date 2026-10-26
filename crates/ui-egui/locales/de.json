@@ -3507,5 +3507,9 @@
   "This place is kept in Local already": "Dieser Ort wird bereits in „Lokal“ behalten",
   "Only a place at the top of Local can be removed from it": "Nur ein Ort ganz oben in „Lokal“ kann daraus entfernt werden",
   "Copy Path": "Pfad kopieren",
-  "Path copied": "Pfad kopiert"
+  "Path copied": "Pfad kopiert",
+  "Import to This Folder…": "In diesen Ordner importieren…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Kopiert die Fotos eines gewählten Ordners in diesen Ordner; in der Überprüfung kannst du das ändern",
+  "Add to My Photos…": "Zu „Meine Fotos“ hinzufügen…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Zeigt die Fotos dieses Ordners zur Überprüfung und fügt sie dann der Bibliothek hinzu, wo sie liegen; keine Datei wird angefasst"
 }

@@ -2287,6 +2287,8 @@ pub(crate) enum FolderRow {
 /// One row of a folder's context menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FolderItem {
+    ImportHere,
+    AddToMyPhotos,
     AddNew,
     Synchronize,
     LocateMissing,
@@ -2315,7 +2317,7 @@ pub(crate) fn folder_menu_groups(row: FolderRow) -> &'static [&'static [FolderIt
     use FolderItem::*;
     match row {
         FolderRow::Library => &[
-            &[AddNew, Synchronize, LocateMissing, UpdateLocation, ExportFolder, ExportFolderWithPreset],
+            &[ImportHere, AddNew, Synchronize, LocateMissing, UpdateLocation, ExportFolder, ExportFolderWithPreset],
             &[NewFolder, Rename, Move, MovePhotosHere],
             &[ColorLabel],
             &[Reveal, CopyPath, ShowParent],
@@ -2328,7 +2330,7 @@ pub(crate) fn folder_menu_groups(row: FolderRow) -> &'static [&'static [FolderIt
             &[Reveal, CopyPath],
             &[RemoveDisk],
         ],
-        FolderRow::Local { .. } => &[&[Synchronize], &[NewFolder, Rename, Move], &[Reveal, CopyPath], &[KeepInLocal, RemoveFromLocal]],
+        FolderRow::Local { .. } => &[&[AddToMyPhotos, Synchronize], &[NewFolder, Rename, Move], &[Reveal, CopyPath], &[KeepInLocal, RemoveFromLocal]],
     }
 }
 
@@ -2365,7 +2367,7 @@ fn disk_folder_menu(app: &mut LccApp, resp: &egui::Response, row: FolderRow, pat
 /// it has none, or one with nothing to offer (no new photos, no parent folder) is left out.
 fn folder_item_available(app: &LccApp, item: FolderItem, path: &str, node: Option<&FolderNode>) -> bool {
     match item {
-        FolderItem::Move => app.services.pick_folder.is_some(),
+        FolderItem::Move | FolderItem::ImportHere => app.services.pick_folder.is_some(),
         FolderItem::UpdateLocation => app.services.pick_folder.is_some() && node.is_some(),
         FolderItem::Reveal => app.services.reveal.is_some(),
         FolderItem::AddNew => node.is_some() && lcc_engine::folder_watch::new_in(&app.session, path).is_some(),
@@ -2405,6 +2407,33 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
         _ => label,
     };
     match item {
+        FolderItem::ImportHere => {
+            let r = ui
+                .add_enabled(crate::import::can_open(app), egui::Button::new(crate::i18n::tr("Import to This Folder…")))
+                .on_hover_text(crate::i18n::tr("Copies the photos of a folder you choose into this folder; the review lets you change that"))
+                .on_disabled_hover_text(crate::i18n::tr("An import is running"));
+            register(ui.ctx(), "folderImportHere", r.rect);
+            if r.clicked() {
+                // the folder picker, then the Import review copying into this folder
+                if let Err(e) = app.run("file.addFolder", json!({"destination": path})) {
+                    app.toast(ui.ctx(), e);
+                }
+                ui.close();
+            }
+        }
+        FolderItem::AddToMyPhotos => {
+            let r = ui
+                .add_enabled(crate::import::can_open(app), egui::Button::new(crate::i18n::tr("Add to My Photos…")))
+                .on_hover_text(crate::i18n::tr("Reviews the photos in this folder, then adds them to the library where they are; no file is touched"))
+                .on_disabled_hover_text(crate::i18n::tr("An import is running"));
+            register(ui.ctx(), "folderAddToMyPhotos", r.rect);
+            if r.clicked() {
+                if let Err(e) = app.run("file.addFolder", json!({"path": path})) {
+                    app.toast(ui.ctx(), e);
+                }
+                ui.close();
+            }
+        }
         FolderItem::AddNew => {
             if let Some(n) = node {
                 add_new_item(app, ui, n, if row == FolderRow::Disk { &n.name } else { label });

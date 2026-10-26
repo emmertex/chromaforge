@@ -2454,5 +2454,9 @@
   "This place is kept in Local already": "Toto místo už je v místních souborech ponecháno",
   "Only a place at the top of Local can be removed from it": "Z místních souborů lze odebrat jen místo na jejich nejvyšší úrovni",
   "Copy Path": "Kopírovat cestu",
-  "Path copied": "Cesta zkopírována"
+  "Path copied": "Cesta zkopírována",
+  "Import to This Folder…": "Importovat do této složky…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Zkopíruje fotografie ze zvolené složky do této složky; v kontrole to můžeš změnit",
+  "Add to My Photos…": "Přidat do mých fotografií…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Prohlédne fotografie v této složce a pak je přidá do knihovny tam, kde jsou; žádný soubor se nemění"
 }

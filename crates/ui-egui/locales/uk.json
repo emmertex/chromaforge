@@ -2420,5 +2420,9 @@
   "This place is kept in Local already": "Це місце вже залишено в локальних",
   "Only a place at the top of Local can be removed from it": "Вилучити з локальних можна лише місце верхнього рівня",
   "Copy Path": "Копіювати шлях",
-  "Path copied": "Шлях скопійовано"
+  "Path copied": "Шлях скопійовано",
+  "Import to This Folder…": "Імпортувати в цю теку…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Копіює фото з обраної теки в цю теку; у перевірці це можна змінити",
+  "Add to My Photos…": "Додати до моїх фото…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Показує фото цієї теки для перевірки, потім додає їх до бібліотеки на місці; жоден файл не змінюється"
 }

@@ -2418,5 +2418,9 @@
   "This place is kept in Local already": "Это место уже оставлено в «Локальном»",
   "Only a place at the top of Local can be removed from it": "Убрать из «Локального» можно только место верхнего уровня",
   "Copy Path": "Копировать путь",
-  "Path copied": "Путь скопирован"
+  "Path copied": "Путь скопирован",
+  "Import to This Folder…": "Импортировать в эту папку…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Копирует фото из выбранной папки в эту папку; в окне проверки это можно изменить",
+  "Add to My Photos…": "Добавить в «Мои фото»…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Показывает фото этой папки для проверки, затем добавляет их в библиотеку на месте; ни один файл не затрагивается"
 }

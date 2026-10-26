@@ -2354,5 +2354,9 @@
   "This place is kept in Local already": "Tempat ini sudah disimpan di Lokal",
   "Only a place at the top of Local can be removed from it": "Hanya tempat di tingkat teratas Lokal yang bisa dikeluarkan dari Lokal",
   "Copy Path": "Salin jalur",
-  "Path copied": "Jalur disalin"
+  "Path copied": "Jalur disalin",
+  "Import to This Folder…": "Impor ke folder ini…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Menyalin foto dari folder yang Anda pilih ke folder ini; di tinjauan Anda bisa mengubahnya",
+  "Add to My Photos…": "Tambahkan ke Foto saya…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Meninjau foto di folder ini, lalu menambahkannya ke pustaka di tempatnya; tidak ada berkas yang disentuh"
 }

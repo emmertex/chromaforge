@@ -2330,5 +2330,9 @@
   "This place is kept in Local already": "To miejsce jest już zachowane w lokalnych",
   "Only a place at the top of Local can be removed from it": "Z lokalnych można usunąć tylko miejsce z ich najwyższego poziomu",
   "Copy Path": "Kopiuj ścieżkę",
-  "Path copied": "Skopiowano ścieżkę"
+  "Path copied": "Skopiowano ścieżkę",
+  "Import to This Folder…": "Importuj do tego folderu…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Kopiuje zdjęcia z wybranego folderu do tego folderu; w przeglądzie możesz to zmienić",
+  "Add to My Photos…": "Dodaj do Moich zdjęć…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Pokazuje zdjęcia z tego folderu do przejrzenia, po czym dodaje je do biblioteki tam, gdzie są; żaden plik nie jest ruszany"
 }

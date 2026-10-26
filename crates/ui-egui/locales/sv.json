@@ -2442,5 +2442,9 @@
   "This place is kept in Local already": "Den här platsen är redan behållen i Lokalt",
   "Only a place at the top of Local can be removed from it": "Bara en plats högst upp i Lokalt kan tas bort därifrån",
   "Copy Path": "Kopiera sökväg",
-  "Path copied": "Sökväg kopierad"
+  "Path copied": "Sökväg kopierad",
+  "Import to This Folder…": "Importera till den här mappen…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Kopierar fotona i en mapp du väljer till den här mappen; i granskningen kan du ändra det",
+  "Add to My Photos…": "Lägg till i Mina foton…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Granskar fotona i den här mappen och lägger sedan till dem i biblioteket där de ligger; ingen fil rörs"
 }

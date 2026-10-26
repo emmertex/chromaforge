@@ -2224,5 +2224,9 @@
   "This place is kept in Local already": "此位置已保留在本機",
   "Only a place at the top of Local can be removed from it": "只有本機最上層的位置才能從本機移除",
   "Copy Path": "複製路徑",
-  "Path copied": "已複製路徑"
+  "Path copied": "已複製路徑",
+  "Import to This Folder…": "匯入到此資料夾…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "將所選資料夾中的照片複製到此資料夾；可在審閱中更改",
+  "Add to My Photos…": "加入我的照片…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "審閱此資料夾中的照片，然後就地加入照片庫；不會更動任何檔案"
 }

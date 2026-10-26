@@ -2424,5 +2424,9 @@
   "This place is kept in Local already": "Este lugar ya se conserva en Local",
   "Only a place at the top of Local can be removed from it": "Solo un lugar del nivel superior de Local se puede quitar de Local",
   "Copy Path": "Copiar ruta",
-  "Path copied": "Ruta copiada"
+  "Path copied": "Ruta copiada",
+  "Import to This Folder…": "Importar a esta carpeta…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Copia las fotos de una carpeta que elijas a esta carpeta; en la revisión puedes cambiarlo",
+  "Add to My Photos…": "Añadir a Mis fotos…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Revisa las fotos de esta carpeta y luego las añade a la biblioteca donde están; no se toca ningún archivo"
 }
