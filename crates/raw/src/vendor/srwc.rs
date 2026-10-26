@@ -517,6 +517,42 @@ mod tests {
         assert_eq!((d, depth), (img, 14));
     }
 
+    /// 32773: a very wide row whose quantizer step keeps growing (`+2` every 64 columns) until
+    /// `diff * (2 * mag + 1)` no longer fits an `i32`, then a full-range difference.
+    #[test]
+    fn growing_quantizer_step_does_not_overflow() {
+        let groups = 33_000usize; // 4095 + 2 * 33000 > 65536
+        let (w, h) = (groups * 64, 1);
+        let mut out = vec![0u8; 16];
+        out[1] = 15; // 16-bit samples
+        let mut b = Writer::default();
+        for tab in (0..w).step_by(16) {
+            if tab == 0 {
+                b.put(3, 2);
+                b.put(4095, 12);
+            } else if tab % 64 == 0 {
+                b.put(2, 2); // mag += 2
+            }
+            b.put(1, 1); // keep pmode 7
+            if tab + 16 < w {
+                b.put(1, 1); // keep the zero lengths
+            } else {
+                b.put(0, 1);
+                for _ in 0..4 {
+                    b.put(3, 2);
+                }
+                for _ in 0..4 {
+                    b.put(15, 4);
+                }
+                for _ in 0..16 {
+                    b.put(0x4000, 15); // -16384
+                }
+            }
+        }
+        out.extend(b.finish());
+        assert!(decode_v2(&out, w, h).is_ok());
+    }
+
     #[test]
     fn hostile_streams_do_not_panic() {
         let (w, h) = (40, 6);
