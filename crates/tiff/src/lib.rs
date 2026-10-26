@@ -330,11 +330,11 @@ impl Value {
         }
     }
 
-    /// Raw bytes for `Byte` / `Undefined` / `SByte` / `Ascii`.
+    /// Raw bytes for `Byte` / `Undefined` / `SByte` / `Ascii` (an ASCII value's first string only).
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
             Value::Byte(b) | Value::Undefined(b) => Some(b),
-            Value::Ascii(s) => Some(s.as_bytes()),
+            Value::Ascii(s) => s.as_bytes().split(|&c| c == 0).next(),
             _ => None,
         }
     }
