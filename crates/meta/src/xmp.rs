@@ -234,8 +234,17 @@ pub(crate) fn unescape_attr(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        // the longest reference is `&#x10FFFF;`: search a short window, not the rest of the value per `&`
-        let end = rest.as_bytes().iter().take(12).position(|&b| b == b';');
+        // the longest reference is `&#x10FFFF;` plus leading zeros: skip the zeros (each byte once, since a
+        // miss resumes after the `&`), then search a short window, not the rest of the value per `&`
+        let b = rest.as_bytes();
+        let digits = match (b.get(1), b.get(2)) {
+            (Some(b'#'), Some(b'x' | b'X')) => 3,
+            (Some(b'#'), _) => 2,
+            _ => 1,
+        };
+        let zeros = b.iter().skip(digits).take_while(|&&c| c == b'0').count();
+        let skip = digits + zeros.saturating_sub(1);
+        let end = b.iter().skip(skip).take(12).position(|&c| c == b';').map(|j| j + skip);
         match end.and_then(|j| entity(&rest[1..j]).map(|c| (c, j))) {
             Some((c, j)) => {
                 out.push(c);
@@ -755,6 +764,10 @@ mod tests {
         assert_eq!(unescape_attr(&many), many);
         // multi-byte text around a reference is never cut inside a character
         assert_eq!(unescape_attr("é&amp;日&é;"), "é&日&é;");
+        // leading zeros are valid in numeric references, however many there are
+        assert_eq!(unescape_attr("&#00000000000000000065;&#x000000000000000042;"), "AB");
+        let zeros = format!("&#{};", "0".repeat(1 << 20));
+        assert_eq!(unescape_attr(&zeros), zeros);
     }
 
     fn full() -> Metadata {

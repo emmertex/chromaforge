@@ -226,13 +226,15 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     let widths: Vec<usize> = match &slices {
         Some(s) => {
             let n = s[0].min(64) as usize;
-            let mut v = vec![s[1] as usize; n];
-            v.push(s[2] as usize);
+            // `as usize` would truncate a 64-bit width on 32-bit targets (wasm32, x86) and hide the overflow
+            let width = |w: u64| usize::try_from(w).map_err(|_| RawError::Corrupt("CR2 slice widths overflow".into()));
+            let mut v = vec![width(s[1])?; n];
+            v.push(width(s[2])?);
             v
         }
         None => {
             let w = (fw as u64).checked_mul(nc as u64).ok_or_else(|| RawError::Corrupt("bad CR2 frame size".into()))?;
-            vec![w as usize]
+            vec![usize::try_from(w).map_err(|_| RawError::Corrupt("bad CR2 frame size".into()))?]
         }
     };
     // slice widths come from the file: a sum that overflows is a corrupt file, not a wrapped width
