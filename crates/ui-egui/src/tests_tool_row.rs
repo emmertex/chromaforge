@@ -36,7 +36,8 @@ fn click(h: &mut Headless, id: &str) {
 fn the_tools_are_a_row_under_the_histogram() {
     let h = develop();
     let histogram = rect(&h, "histogram").expect("the histogram");
-    let tools: Vec<egui::Rect> = ["crop", "remove", "redeye", "masking"].iter().map(|id| rect(&h, &format!("icon:{id}")).expect(id)).collect();
+    let tools: Vec<egui::Rect> =
+        ["edit", "crop", "remove", "redeye", "masking"].iter().map(|id| rect(&h, &format!("icon:{id}")).expect(id)).collect();
     for r in &tools {
         assert!(r.top() >= histogram.bottom(), "under the histogram");
         assert!((r.center().y - tools[0].center().y).abs() < 1.0, "in one row");
@@ -44,10 +45,60 @@ fn the_tools_are_a_row_under_the_histogram() {
     assert!(tools.windows(2).all(|w| w[0].right() <= w[1].left()), "left to right");
     let basic = rect(&h, "section:light").expect("Basic");
     assert!(tools[0].bottom() <= basic.top(), "above the Develop panels");
-    // the right panel folds from the top bar, above the row; Edit is the panels, not a tool
+    // the right panel folds from the top bar, above the row; Edit is in the tool row
     let fold = rect(&h, "icon:collapseRight").expect("the top bar's fold button");
     assert!(fold.bottom() <= histogram.top(), "in the top bar");
-    assert!(rect(&h, "icon:edit").is_none() && rect(&h, "icon:presets").is_none(), "no Edit or Presets button");
+    assert!(rect(&h, "icon:edit").is_some() && rect(&h, "icon:presets").is_none(), "Edit in row, no Presets button");
+}
+
+#[test]
+fn edit_button_returns_to_develop_panels_and_stays_open() {
+    let mut h = develop();
+    // initially on Edit
+    assert_eq!(h.app.ui.right, RightPanel::Edit);
+    // clicking Edit while on Edit keeps Edit open
+    click(&mut h, "icon:edit");
+    assert_eq!(h.app.ui.right, RightPanel::Edit);
+
+    // opening Crop drawer
+    click(&mut h, "icon:crop");
+    assert_eq!(h.app.ui.right, RightPanel::Crop);
+    assert!(rect(&h, "button:cropClose").is_some());
+
+    // clicking Edit returns to the Develop panels
+    click(&mut h, "icon:edit");
+    assert_eq!(h.app.ui.right, RightPanel::Edit);
+    assert!(rect(&h, "button:cropClose").is_none());
+}
+
+#[test]
+fn tool_indicators_show_applied_adjustments() {
+    let mut h = develop();
+    // initially clean demo photo
+    assert!(rect(&h, "dot:crop").is_none(), "crop not applied yet");
+    assert!(rect(&h, "dot:edit").is_none(), "edit not applied yet");
+    assert!(rect(&h, "dot:remove").is_none(), "remove not applied yet");
+    assert!(rect(&h, "dot:masking").is_none(), "masking not applied yet");
+
+    // apply a crop angle
+    let r = h.request("engine.execute", json!({"command": "crop.straighten", "params": {"angle": 5.0}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(rect(&h, "dot:crop").is_some(), "crop indicator appears");
+    assert!(rect(&h, "dot:edit").is_none(), "edit indicator still none");
+
+    // apply an exposure edit
+    let r = h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 1.0}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(rect(&h, "dot:edit").is_some(), "edit indicator appears");
+
+    // reset crop
+    let r = h.request("engine.execute", json!({"command": "crop.reset"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(rect(&h, "dot:crop").is_none(), "crop indicator clears after reset");
+    assert!(rect(&h, "dot:edit").is_some(), "edit indicator remains");
 }
 
 #[test]

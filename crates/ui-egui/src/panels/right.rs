@@ -138,9 +138,11 @@ fn sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     ui.painter().hline(r.x_range(), r.top() + 0.5, egui::Stroke::new(1.0, t.divider));
     let auto = app.session.auto_sync;
     let several = app.session.selection.ids.len() > 1;
-    // after the switch, the two buttons share the rest of the bar (issue #221)
-    let (left, switch_w, gap, right) = (16.0, 30.0, 8.0, 12.0);
-    let w = crate::widgets::shared_width(r.width() - left - switch_w - gap - right, 2, gap);
+    // after the switch on the left, the action buttons are right-aligned with balanced widths (issues #221, #449)
+    let (left, switch_w, gap, right) = (16.0, 30.0, 8.0, 16.0);
+    let max_w = 110.0f32;
+    let full_w = crate::widgets::shared_width(r.width() - left - switch_w - gap * 2.0 - right, 2, gap);
+    let w = full_w.min(max_w).max(75.0);
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.add_space(left);
@@ -156,6 +158,13 @@ fn sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
         let tip = crate::i18n::tr(if auto { "Auto Sync is on: edits apply to every selected photo" } else { "Turn on Auto Sync" });
         if resp.on_hover_text(tip).clicked() {
             let _ = app.run("develop.autoSync", json!({"on": !auto}));
+        }
+        // push action buttons to align with the right margin
+        let buttons_w = 2.0 * w + gap;
+        let target_x = r.right() - right - buttons_w;
+        let current_x = ui.cursor().left();
+        if target_x > current_x {
+            ui.add_space(target_x - current_x);
         }
         let (id, label) = match (auto, several) {
             (true, _) => ("syncBar", "Auto Sync"),
@@ -251,7 +260,7 @@ pub fn label_row(ui: &mut egui::Ui, label: &str, value: &str) {
 }
 
 fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 6 }).show(ui, add);
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 6, bottom: 6 }).show(ui, add);
 }
 
 /// What the aspect button says for the stored lock (`aspect` = width × 100, height × 100):
@@ -541,72 +550,7 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     });
     divider(ui);
     header(ui, "Geometry");
-    // a clip takes the crop, straighten and flips only: Upright and the transform sliders are photo-only
-    let video = crate::video_ui::photo_is_video(app, id);
-    crate::video_ui::video_gate(ui, video, |ui| {
-        padded(ui, |ui| {
-            ui.label(crate::i18n::tr("Upright"));
-            {
-                use lcc_develop::Upright;
-                let modes = [
-                    ("Off", Upright::Off, "off"),
-                    ("Auto", Upright::Auto, "auto"),
-                    ("Guided", Upright::Guided, "guided"),
-                    ("Level", Upright::Level, "level"),
-                    ("Vertical", Upright::Vertical, "vertical"),
-                    ("Full", Upright::Full, "full"),
-                ];
-                let items: Vec<(&str, &str)> = modes.iter().map(|(l, _, k)| (*l, *k)).collect();
-                let active = modes.iter().position(|(_, m, _)| *m == d.geometry.upright);
-                if let Some(i) = crate::widgets::segmented(ui, "upright", &items, active, 3) {
-                    let (_, mode, key) = modes[i];
-                    let r = app.run("geometry.upright", json!({"mode": key}));
-                    upright_note(app, ui.ctx(), r.as_ref().ok());
-                    app.ui.tool = if mode == Upright::Guided { "guidedUpright".into() } else { String::new() };
-                }
-            }
-            let guided = d.geometry.upright == lcc_develop::Upright::Guided;
-            ui.horizontal_wrapped(|ui| {
-                if !guided
-                    && d.geometry.upright != lcc_develop::Upright::Off
-                    && text_button(ui, "uprightUpdate", crate::i18n::tr("Update"), false).clicked()
-                {
-                    let mode = serde_json::to_value(d.geometry.upright).unwrap_or_default();
-                    let r = app.run("geometry.upright", json!({"mode": mode}));
-                    upright_note(app, ui.ctx(), r.as_ref().ok());
-                }
-                if guided {
-                    let drawing = app.ui.tool == "guidedUpright";
-                    if text_button(ui, "uprightDraw", crate::i18n::tr("Draw Guides"), drawing).clicked() {
-                        app.ui.tool = if drawing { String::new() } else { "guidedUpright".into() };
-                    }
-                    if !d.geometry.guides.is_empty() && text_button(ui, "uprightClear", crate::i18n::tr("Clear Guides"), false).clicked() {
-                        let _ = app.run("geometry.guides", json!({"guides": []}));
-                    }
-                }
-            });
-            if guided {
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr_format!(
-                        "{} of 4 guides — drag along lines that should be vertical or horizontal.",
-                        d.geometry.guides.len()
-                    ))
-                    .size(11.0)
-                    .color(Tokens::get(ui.ctx()).text_dim),
-                );
-            }
-            ui.add_space(4.0);
-            let mut c = d.geometry.constrain_crop;
-            if ui.checkbox(&mut c, crate::i18n::tr("Constrain Crop")).changed() {
-                let _ = app.run("develop.merge", json!({"settings": {"geometry": {"constrain_crop": c}}, "label": "Constrain Crop"}));
-            }
-        });
-        for spec in lcc_develop::controls::in_section(lcc_develop::Section::Geometry).filter(|c| c.id != "crop.angle") {
-            let v = lcc_develop::controls::get(&d, spec.id).unwrap_or(spec.default);
-            let out = slider(ui, spec, v, true, None);
-            super::edit::apply_slider_out(app, spec, out, |app, v| app.run("develop.set", json!({"control": spec.id, "value": v})));
-        }
-    });
+    classic_crop::transform_body(app, ui, id);
 }
 
 const REMOVE_MODES: [(Icon, &str, &str, &str); 4] = [
@@ -1431,7 +1375,7 @@ enum HistoryRow {
 }
 
 /// Upright that found nothing to correct says why, as a note over the photo.
-fn upright_note(app: &mut LccApp, ctx: &egui::Context, result: Option<&serde_json::Value>) {
+pub(crate) fn upright_note(app: &mut LccApp, ctx: &egui::Context, result: Option<&serde_json::Value>) {
     if let Some(note) = result.and_then(|r| r.get("note")).and_then(serde_json::Value::as_str) {
         app.toast_for(ctx, note.to_string(), 8.0);
     }

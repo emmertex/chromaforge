@@ -136,20 +136,16 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         soft_proofing(app, ui, id);
     }
     if shows("profile") {
-        // header: Edit (Reset sits in the bar under the panels, issue #116), then Lightroom Classic's Basic button row:
-        // Auto, B&W | HDR (issue #124)
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 14, bottom: 0 }).show(ui, |ui| {
-            ui.label(egui::RichText::new(crate::i18n::tr("Edit")).font(t.semibold(15.0)).color(t.text));
-        });
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 10, bottom: 14 }).show(ui, |ui| {
+        // header: Edit and the Basic button row (Auto, B&W | HDR) on the same line, as in Camera Raw (issues #124, #530)
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 12 }).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(egui::RichText::new(crate::i18n::tr("Edit")).font(t.semibold(15.0)).color(t.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     if text_button(ui, "hdr", crate::i18n::tr("HDR"), d.hdr.enabled).on_hover_text(hdr_button_tip(app.hdr_display_sdr)).clicked() {
                         let _ = app.run("develop.hdr", json!({"enabled": !d.hdr.enabled}));
                     }
-                    // the separator between the treatment and HDR, as in Classic
+                    // the separator between the treatment and HDR, as in Camera Raw / Classic
                     let (sep, _) = ui.allocate_exact_size(vec2(1.0, 18.0), Sense::hover());
                     ui.painter().vline(sep.center().x, sep.y_range(), egui::Stroke::new(1.0, t.button_border));
                     let bw = crate::is_bw(&d);
@@ -167,7 +163,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         });
         if let Some(why) = &preview_only {
             let reload = egui::Frame::NONE
-                .inner_margin(egui::Margin { left: 12, right: 16, top: 0, bottom: 12 })
+                .inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 12 })
                 .show(ui, |ui| crate::widgets::preview_only_notice(ui, "edit", why))
                 .inner;
             if reload {
@@ -179,7 +175,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             quick_develop(app, ui, n);
         }
         if app.session.auto_sync && n > 1 {
-            egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(crate::i18n::tr_format!("Auto Sync: edits apply to {n} photos", n = n)).color(t.accent).size(12.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -192,7 +188,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         divider(ui);
         // profile row
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 12, bottom: 12 }).show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 12 }).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(crate::i18n::tr("Profile")).font(t.font(13.0)).color(t.text_dim));
                 let name = app.session.profile_info(&d.profile.id).map(|(name, _)| name).unwrap_or("Color");
@@ -230,7 +226,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         // a raw carrying its own local tone mapping (Apple ProRAW's gain table map): off renders it as
         // Lightroom Classic does, on as the camera does
         if facts.local_tone {
-            egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
                 let mut on = d.profile.camera_local_tone;
                 let r = ui.checkbox(&mut on, crate::i18n::tr("Camera local tone mapping"));
                 crate::widgets::register(ui.ctx(), "check:profile.cameraLocalTone", r.rect);
@@ -245,7 +241,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         // a raw without colour matrices whose camera model has measured ones: off starts from the look fitted to the
         // camera's JPEG (Auto), on from the measured colour with the app's own tone curve (Colorimetric)
         if facts.colorimetric {
-            egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
                 let mut on = d.profile.camera_colour == lcc_develop::CameraColour::Colorimetric;
                 let r = ui.checkbox(&mut on, crate::i18n::tr("Calibrated camera colour"));
                 crate::widgets::register(ui.ctx(), "check:profile.cameraColour", r.rect);
@@ -293,7 +289,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 // still set them), with the way to see them
                 let sdr_shown = !super::detail::hdr_shown(app);
                 if !sdr_shown {
-                    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }).show(ui, |ui| {
+                    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 2, bottom: 4 }).show(ui, |ui| {
                         let t = Tokens::get(ui.ctx());
                         let r = ui.label(egui::RichText::new(crate::i18n::tr(SDR_SLIDERS_NOTE)).font(t.font(12.0)).color(t.text_dim));
                         register(ui.ctx(), "note:sdrSlidersHidden", r.rect);
@@ -321,7 +317,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         if !crate::is_bw(d) {
             let items = [("Mixer", "mixer"), ("Point Color", "pointColor")];
             let mut chosen = None;
-            egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 6 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 2, bottom: 6 }).show(ui, |ui| {
                 chosen = crate::widgets::segmented(ui, "colorMixerTab", &items, Some(usize::from(point)), 2);
             });
             if chosen.is_some_and(|i| (i == 1) != point) {
@@ -365,7 +361,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         // single outlier photosites, replaced in the raw mosaic (#1345): raws only
         if app.session.catalog.photo(id).is_some_and(|p| p.develops_raw()) {
-            egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 0 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 4, bottom: 0 }).show(ui, |ui| {
                 let mut on = d.detail.nr_outliers;
                 if super::settings::check(ui, "detail.nrOutliers", &mut on, "Remove Hot Pixels") {
                     let _ = app.run("develop.merge", json!({"settings": {"detail": {"nr_outliers": on}}, "label": "Remove Hot Pixels"}));
@@ -381,7 +377,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     section(app, ui, &d, "optics", "Lens Corrections", |app, ui, d| {
         let has_lens = app.session.catalog.photo(id).is_some_and(|p| p.embedded_lens.is_some());
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }).show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 4, bottom: 4 }).show(ui, |ui| {
             let mut ca = d.optics.remove_ca;
             if ui.checkbox(&mut ca, crate::i18n::tr("Remove Chromatic Aberration")).changed() {
                 let _ = app.run("develop.merge", json!({"settings": {"optics": {"remove_ca": ca}}, "label": "Remove CA"}));
@@ -403,7 +399,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         // What photos imported from now on start from, and one action that makes these settings it
         // (issue #148: the two checkboxes above reset on every photo, so a batch wants a default).
         // One quiet line under the lens controls (issue #346: it used to split them from the sliders).
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }).show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 2, bottom: 4 }).show(ui, |ui| {
             let photo_camera = app.session.catalog.photo(id).map(|p| p.meta.camera.trim().to_string()).unwrap_or_default();
             let current = {
                 let defaults = &app.session.import_defaults;
@@ -472,7 +468,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             let items: Vec<(&str, &str)> = styles.iter().map(|(_, l, k)| (*l, *k)).collect();
             let active = styles.iter().position(|(v, _, _)| *v == d.vignette.style);
             let mut chosen = None;
-            egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 2, bottom: 4 }).show(ui, |ui| {
                 chosen = crate::widgets::segmented(ui, "vignetteStyle", &items, active, 3);
             });
             if let Some(i) = chosen {
@@ -623,7 +619,7 @@ fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, b
 pub fn sub_title(ui: &mut egui::Ui, title: &str) {
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    ui.painter().text(pos2(r.left() + 12.0, r.center().y + 2.0), Align2::LEFT_CENTER, crate::i18n::tr(title), t.semibold(11.75), t.text_label);
+    ui.painter().text(pos2(r.left() + 16.0, r.center().y + 2.0), Align2::LEFT_CENTER, crate::i18n::tr(title), t.semibold(11.75), t.text_label);
 }
 
 pub(crate) fn section(
@@ -956,7 +952,7 @@ pub(crate) fn histogram(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     // the plot's own controls, in the strip under it: which distribution it draws and how tall its
     // bins are, the same values `view.histogram.mode` / `view.histogram.scale` select
-    let menu_rect = Rect::from_min_size(pos2(r.left() + 4.0, r.bottom() - 22.0), vec2(72.0, 18.0));
+    let menu_rect = Rect::from_min_size(pos2(r.left() + 16.0, r.bottom() - 22.0), vec2(72.0, 18.0));
     let menu = ui.interact(menu_rect, ui.id().with("histogram-display"), Sense::click());
     menu.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), crate::i18n::tr("Histogram display")));
     register(ui.ctx(), "histogram:display", menu_rect);
@@ -1000,7 +996,7 @@ pub(crate) fn histogram(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     // EXIF strip while either is there (the histogram's own readout comes first: it is what the
     // pointer is on). All three are centred in the room the mode selector leaves, so the two never
     // run into each other in a narrow panel
-    let footer = Rect::from_min_max(pos2(menu_rect.right() + 4.0, r.bottom() - 26.0), pos2(r.right(), r.bottom()));
+    let footer = Rect::from_min_max(pos2(menu_rect.right() + 4.0, r.bottom() - 26.0), pos2(r.right() - 16.0, r.bottom()));
     let footer_x = footer.center().x;
     let pass = ui.ctx().cumulative_pass_nr();
     let hover = app.ui.hover_color.filter(|(at, _)| pass.saturating_sub(*at) <= 1).map(|(_, c)| c);
@@ -1123,7 +1119,7 @@ fn histogram_display_menu(app: &mut LccApp, ui: &mut egui::Ui, mode: HistogramMo
 fn soft_proofing(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     use lcc_engine::pipeline::OutputSpace;
     let t = Tokens::get(ui.ctx());
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 8, bottom: 6 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 8, bottom: 6 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(crate::i18n::tr("Soft Proofing")).color(t.text).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1473,7 +1469,7 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
         target.set_channel(app, "master");
     }
     // channel selector
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 4 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 6, bottom: 4 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             for (ch, c) in [
                 ("parametric", Color32::from_gray(200)),
@@ -1744,7 +1740,7 @@ fn curve_point_fields(ui: &mut egui::Ui, target: CurveTarget, i: usize, pts: &[P
     let t = Tokens::get(ui.ctx());
     let cur = *pts.get(i)?;
     let mut out = None;
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 0, bottom: 2 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 2 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             for (axis, name) in [(0, "Input"), (1, "Output")] {
                 let widget = target.widget(&format!("Point{name}"));
@@ -1793,7 +1789,7 @@ fn curve_point_fields(ui: &mut egui::Ui, target: CurveTarget, i: usize, pts: &[P
 fn curve_footer(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, target: CurveTarget) {
     use lcc_engine::cmd::curves::{all_presets, matching_points_preset};
     let t = Tokens::get(ui.ctx());
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 2, bottom: 4 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(crate::i18n::tr("Point Curve")).font(t.font(12.0)).color(t.text_label));
             let current = matching_points_preset(&app.session, &target.points(d));
@@ -2043,7 +2039,7 @@ fn mixer_by_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     let t = Tokens::get(ui.ctx());
     let bands = lcc_develop::MIXER_BANDS;
     let sel = bands.iter().position(|b| *b == app.ui.mixer_mode).unwrap_or(0);
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 8, bottom: 4 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 8, bottom: 4 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 5.0;
             for (i, b) in bands.iter().enumerate() {
@@ -2062,7 +2058,7 @@ fn mixer_by_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
         });
     });
     // targeted adjustment: pick the attribute, then drag on the photo
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 2 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 2, bottom: 2 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
@@ -2120,7 +2116,7 @@ fn point_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
         app.ui.point_color = n - 1;
     }
     let sel = app.ui.point_color;
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 8, bottom: 4 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 8, bottom: 4 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 5.0;
             let active = app.ui.tool == "pointColor";
@@ -2156,7 +2152,7 @@ fn point_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
         });
     });
     if n == 0 {
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 8 }).show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 2, bottom: 8 }).show(ui, |ui| {
             ui.label(egui::RichText::new(crate::i18n::tr("Pick a colour on the photo with the eyedropper.")).size(12.0).color(t.text_dim));
         });
         return;
@@ -2168,7 +2164,7 @@ fn point_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     for k in ["range", "hueRange", "satRange", "lumRange"] {
         control(app, ui, d, &format!("pointColor.{sel}.{k}"), true);
     }
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 8 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 4, bottom: 8 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             let mut v = app.ui.point_color_visualize;
             if ui.checkbox(&mut v, crate::i18n::tr("Visualize range")).changed() {
@@ -2190,7 +2186,7 @@ fn point_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 fn wb_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, raw: bool) {
     let t = Tokens::get(ui.ctx());
     // White balance row
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 2 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 2, bottom: 2 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             // Lightroom Classic: the selector on the left, then "WB:" and the preset menu
             let active = app.ui.tool == "wbPicker";
@@ -2245,7 +2241,7 @@ fn hdr_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     if !d.hdr.enabled {
         return;
     }
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 4, bottom: 4 }).show(ui, |ui| {
         let mut v = app.ui.hdr_visualize;
         let r = ui.checkbox(&mut v, "Visualize HDR");
         register(ui.ctx(), "check:hdrVisualize", r.rect);
@@ -2286,7 +2282,7 @@ const GRADING_WHEELS: [(&str, &str); 3] = [("shadows", "Shadows"), ("midtones", 
 
 fn grading(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, photo: PhotoId) {
     let mode = GRADING_TABS.iter().find(|(k, ..)| *k == app.ui.grading_mode).map_or("3way", |(k, ..)| *k);
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 6, bottom: 2 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (key, tip, icon) in GRADING_TABS {
@@ -2692,7 +2688,7 @@ pub(crate) fn wheel_mesh(c: Pos2, rad: f32) -> Mesh {
 /// photo from its own value.
 fn quick_develop(app: &mut LccApp, ui: &mut egui::Ui, n: usize) {
     let t = Tokens::get(ui.ctx());
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
         ui.label(egui::RichText::new(crate::i18n::tr_format!("Quick Develop · {n} photos", n = n)).color(t.text_label).size(12.5));
         ui.add_space(4.0);
         let rows: [(&str, &str, f64, f64); 9] = [

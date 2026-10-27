@@ -102,6 +102,8 @@ icons! {
     RotateDrag,
     /// Targeted adjustment: a ring with a centre dot and up/down arrows (drag vertically).
     Target,
+    /// Guided Upright: a bullseye target with a dart in the top right.
+    GuidedUpright,
     /// Community chat : a speech bubble with three dots. Our own
     /// generic drawing, not any service's logo.
     Chat,
@@ -773,6 +775,15 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<
             pen.line(&[(15.5, 3.5), (15.5, 16.5)]);
             pen.line(&[(13.5, 5.5), (15.5, 3.5), (17.5, 5.5)]);
             pen.line(&[(13.5, 14.5), (15.5, 16.5), (17.5, 14.5)]);
+        }
+        GuidedUpright => {
+            // A bullseye target with a dart in the top right
+            pen.circle(9.5, 11.5, 6.5);
+            pen.circle(9.5, 11.5, 3.5);
+            pen.dot(9.5, 11.5, 1.2);
+            pen.line(&[(11.5, 9.5), (16.0, 5.0)]);
+            pen.line(&[(14.0, 4.0), (17.0, 4.0), (17.0, 7.0)]);
+            pen.line(&[(15.5, 2.5), (18.5, 5.5)]);
         }
         Chat => {
             // rounded bubble with a tail at the lower left

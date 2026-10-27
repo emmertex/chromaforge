@@ -275,9 +275,8 @@ pub(crate) fn shown_value(spec: &ControlSpec, v: f64) -> String {
 /// scrub rather than a click that types a value.
 const SCRUB_START: f32 = 3.0;
 
-/// The radius of a slider's thumb: a small solid dot, as in DaVinci Resolve (issue #346: the
-/// larger ring crowded the panel).
-const THUMB_RING: f32 = 4.0;
+/// The radius of a slider's thumb: scaled up for visibility and tactile feel (issues #346, #449).
+const THUMB_RING: f32 = 5.2;
 
 /// Size of a slider's name and value in a panel (issue #346: small enough that names fit).
 const LABEL_FONT: f32 = 10.5;
@@ -981,7 +980,7 @@ struct SliderGeometry {
 }
 
 /// How much taller a two-row slider is than a one-row one.
-const TWO_ROW_EXTRA: f32 = 14.0;
+const TWO_ROW_EXTRA: f32 = 16.0;
 
 /// Height of a two-row slider's name and value line at [`LABEL_FONT`].
 const TWO_ROW_TEXT_H: f32 = 12.0;
@@ -997,12 +996,12 @@ const MAX_LABEL_COL: f32 = 76.0;
 
 impl SliderGeometry {
     fn new(row: Rect, label_col: f32, k: f32) -> Self {
-        let (pad_l, pad_r, gap) = (12.0, 12.0, 8.0);
+        let (pad_l, pad_r, gap) = (16.0, 16.0, 8.0);
         let label = Rect::from_min_size(pos2(row.left() + pad_l, row.top()), vec2(label_col, row.height()));
         let value =
             Rect::from_min_max(pos2((row.right() - pad_r - VALUE_W * k).max(label.right()), row.top()), pos2(row.right() - pad_r, row.bottom()));
-        let track_l = label.right() + gap;
-        let track_r = (value.left() - gap).max(track_l + 1.0);
+        let track_l = label.right() + gap + THUMB_RING;
+        let track_r = (value.left() - gap - THUMB_RING).max(track_l + 1.0);
         let track = Rect::from_min_max(pos2(track_l, row.top()), pos2(track_r, row.bottom()));
         Self { label, track, value }
     }
@@ -1010,10 +1009,10 @@ impl SliderGeometry {
     /// Two rows: the name at the left and the value at the right of the top line, the track the
     /// width of both under them (its thumb at either end just inside the row's padding).
     fn two_rows(row: Rect, k: f32) -> Self {
-        let (pad_l, pad_r) = (12.0, 12.0);
+        let (pad_l, pad_r) = (16.0, 16.0);
         // the name and value sit close over their own track, with the gap above them, so each
-        // slider reads as one unit and the rows stand apart (issue #346)
-        let split = (row.bottom() - 14.0).max(row.top());
+        // slider reads as one unit and the rows stand apart (issues #346, #449)
+        let split = (row.bottom() - 15.0).max(row.top());
         let text_top = (split - TWO_ROW_TEXT_H * k).max(row.top());
         let value = Rect::from_min_max(pos2((row.right() - pad_r - VALUE_W * k).max(row.left() + pad_l), text_top), pos2(row.right() - pad_r, split));
         let label = Rect::from_min_max(pos2(row.left() + pad_l, text_top), pos2((value.left() - 8.0).max(row.left() + pad_l), split));
@@ -1104,9 +1103,9 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
     if ui.rect_contains_pointer(r) {
         p.rect_filled(r, 0.0, t.chrome.gamma_multiply(1.06));
     }
-    let chev = Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(16.0, 16.0));
+    let chev = Rect::from_center_size(pos2(r.left() + 24.0, r.center().y), vec2(16.0, 16.0));
     paint(p, chev, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_label);
-    p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(14.0), t.text);
+    p.text(pos2(r.left() + 38.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(14.0), t.text);
     let mut toggled = None;
     // shown while the pointer is anywhere on the header: `resp.hovered()` turns false as soon as the
     // pointer is over the eye itself (the eye is on top), which hid the eye before it could be
@@ -1114,7 +1113,7 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
     if let Some(on) = enabled
         && (ui.rect_contains_pointer(r) || !on)
     {
-        let eye = Rect::from_center_size(pos2(r.right() - 34.0, r.center().y), vec2(18.0, 18.0));
+        let eye = Rect::from_center_size(pos2(r.right() - 25.0, r.center().y), vec2(18.0, 18.0));
         let er = ui.interact(eye, ui.id().with(("eye", id)), Sense::click());
         crate::widgets::announce_selected(&er, crate::i18n::tr("Show / hide"), on);
         register(ui.ctx(), format!("sectionEye:{id}"), eye);
@@ -1338,6 +1337,64 @@ pub fn segmented(ui: &mut Ui, id: &str, items: &[(&str, &str)], active: Option<u
     clicked
 }
 
+/// A single-row segmented control with pill-shaped active selection, subtle borders and dividers
+/// between adjacent inactive items (Camera Raw / modern UI style).
+pub fn segmented_pill(ui: &mut Ui, id: &str, items: &[(&str, &str)], active: Option<usize>) -> Option<usize> {
+    let t = Tokens::get(ui.ctx());
+    let n = items.len().max(1);
+    let finger = crate::dialog_frame::finger_sized(ui);
+    let (h, font) = if finger { (40.0, t.semibold(14.0)) } else { (25.0, t.semibold(11.5)) };
+    let total_w = ui.available_width();
+    let (rect, _resp) = ui.allocate_exact_size(vec2(total_w, h), Sense::hover());
+    let seg_w = total_w / n as f32;
+
+    let p = ui.painter();
+    // Outer pill container
+    p.rect(rect, CornerRadius::same(6), t.button, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
+
+    let mut clicked = None;
+
+    // Draw active segment background
+    if let Some(act) = active
+        && act < n
+    {
+        let seg_rect = Rect::from_min_size(pos2(rect.left() + act as f32 * seg_w, rect.top()), vec2(seg_w, h));
+        p.rect(seg_rect, CornerRadius::same(5), t.pressed, Stroke::new(1.0, t.chrome.gamma_multiply(1.2)), StrokeKind::Inside);
+    }
+
+    // Draw dividers between adjacent inactive items
+    for i in 0..n.saturating_sub(1) {
+        let neither_active = active != Some(i) && active != Some(i + 1);
+        if neither_active {
+            let x = (rect.left() + (i + 1) as f32 * seg_w).round();
+            p.line_segment([pos2(x, rect.top() + 4.0), pos2(x, rect.bottom() - 4.0)], Stroke::new(1.0, t.button_border));
+        }
+    }
+
+    // Interaction & text for each segment
+    for (i, (label, key)) in items.iter().enumerate() {
+        let seg_rect = Rect::from_min_size(pos2(rect.left() + i as f32 * seg_w, rect.top()), vec2(seg_w, h));
+        let item_resp = ui.interact(seg_rect, ui.id().with((id, key)), Sense::click());
+        let is_active = active == Some(i);
+        crate::widgets::announce_selected(&item_resp, crate::i18n::tr(label).to_string(), is_active);
+        register(ui.ctx(), format!("button:{id}-{key}"), seg_rect);
+
+        if !is_active && item_resp.hovered() {
+            p.rect_filled(seg_rect, CornerRadius::same(5), t.hover);
+        }
+
+        let text_color = if is_active || item_resp.hovered() { t.text } else { t.text_dim };
+
+        p.text(seg_rect.center(), Align2::CENTER_CENTER, crate::i18n::tr(label), font.clone(), text_color);
+
+        if item_resp.clicked() {
+            clicked = Some(i);
+        }
+    }
+
+    clicked
+}
+
 /// [`segmented`] with icons: one row of equal icon segments, each with its label as hover text and
 /// accessible name, addressable as `button:{id}-{key}`. Returns the clicked index.
 pub fn icon_segmented(ui: &mut Ui, id: &str, items: &[(Icon, &str, &str)], active: Option<usize>) -> Option<usize> {
@@ -1421,6 +1478,52 @@ pub fn icon_button_named(ui: &mut Ui, id: &str, icon: Icon, size: egui::Vec2, ac
     };
     let glyph = (size.x.min(size.y) * 0.62).min(22.0);
     paint(p, Rect::from_center_size(r.center(), vec2(glyph, glyph)), icon, c);
+    if !tooltip.is_empty() { resp.on_hover_text(tooltip) } else { resp }
+}
+
+/// An icon-only tool button in the tool strip with an optional indicator dot below the icon
+/// (showing that the tool has edits applied to the current photo).
+#[allow(clippy::too_many_arguments)]
+pub fn tool_button(
+    ui: &mut Ui,
+    id: &str,
+    icon: Icon,
+    size: egui::Vec2,
+    active: bool,
+    enabled: bool,
+    applied: bool,
+    name: &str,
+    tooltip: &str,
+) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, active, name));
+    register(ui.ctx(), format!("icon:{id}"), r);
+    let p = ui.painter();
+    let sq = Rect::from_center_size(r.center(), vec2(32.0f32.min(size.x), 32.0f32.min(size.y)));
+    if active {
+        p.rect_filled(sq, 4.0, t.tool_active);
+    } else if resp.hovered() && enabled {
+        p.rect_filled(sq, 4.0, t.hover.gamma_multiply(0.7));
+    }
+    let c = if !enabled {
+        t.text_disabled
+    } else if active {
+        t.pick
+    } else if resp.hovered() {
+        t.text
+    } else {
+        t.icon
+    };
+    let glyph = (size.x.min(size.y) * 0.58).min(20.0);
+    let icon_center = if applied { pos2(r.center().x, r.center().y - 1.5) } else { r.center() };
+    paint(p, Rect::from_center_size(icon_center, vec2(glyph, glyph)), icon, c);
+    if applied {
+        let dot_color = if active { t.pick } else { t.text_label };
+        let dot_center = pos2(r.center().x, r.bottom() - 4.0);
+        p.circle_filled(dot_center, 1.8, dot_color);
+        register(ui.ctx(), format!("dot:{id}"), Rect::from_center_size(dot_center, vec2(4.0, 4.0)));
+    }
     if !tooltip.is_empty() { resp.on_hover_text(tooltip) } else { resp }
 }
 
