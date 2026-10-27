@@ -77,7 +77,7 @@ pub fn try_vec<T: Copy>(n: usize, v: T, width: usize, height: usize) -> Result<V
     }
     let mut data = Vec::new();
     data.try_reserve_exact(n).map_err(|_| err)?;
-    data.resize(n, v);
+    data.resize_with(n, || v);
     Ok(data)
 }
 
@@ -358,6 +358,24 @@ impl Rgba8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn try_vec_fills_without_calling_clone() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CLONES: AtomicUsize = AtomicUsize::new(0);
+        #[derive(Copy, PartialEq, Debug)]
+        struct Px(u8);
+        #[allow(clippy::non_canonical_clone_impl)]
+        impl Clone for Px {
+            fn clone(&self) -> Self {
+                CLONES.fetch_add(1, Ordering::SeqCst);
+                *self
+            }
+        }
+        let v = super::try_vec(4, Px(7), 2, 2).unwrap();
+        assert!(v.len() == 4 && v.iter().all(|p| p.0 == 7));
+        assert_eq!(CLONES.load(Ordering::SeqCst), 0, "filling must not invoke Clone");
+    }
+
     #[test]
     fn get_clamped_on_empty_image_does_not_panic() {
         for (w, h) in [(0, 0), (0, 5), (5, 0)] {
