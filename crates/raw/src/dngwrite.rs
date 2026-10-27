@@ -256,7 +256,9 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
         ifd.set(t::BLACK_LEVEL_DELTA_V, Value::SRational(b.delta_v.iter().map(|&v| srational(v as f64)).collect()));
     }
     let white: Vec<u32> = (0..cpp).map(|s| raw.white_at(s).round().clamp(0.0, u32::MAX as f32) as u32).collect();
-    if matches!(raw.data, RawData::F32(_)) {
+    // the DNG spec allows only SHORT / LONG; a fractional float white level has no such encoding, so it stays RATIONAL
+    let fractional = (0..cpp).any(|s| raw.white_at(s).fract() != 0.0);
+    if matches!(raw.data, RawData::F32(_)) && fractional {
         ifd.set(t::WHITE_LEVEL, rat_vec(&(0..cpp).map(|s| raw.white_at(s) as f64).collect::<Vec<_>>()));
     } else {
         ifd.set(t::WHITE_LEVEL, Value::Long(white));

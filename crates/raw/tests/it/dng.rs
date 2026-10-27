@@ -189,6 +189,21 @@ fn deflate_roundtrips_integer_and_float() {
     assert_eq!(lcc_raw::dngwrite::f32_to_f16(2f32.powi(-24)), 0x0001);
 }
 
+/// The DNG specification allows `WhiteLevel` only as SHORT or LONG, floating-point data included; strict readers
+/// (libtiff) ignore a RATIONAL one.
+#[test]
+fn float_white_level_is_written_as_long() {
+    let mut raw = synthetic(16, 8, None, 3);
+    raw.data = RawData::F32(vec![0.5; 16 * 8 * 3]);
+    raw.black = BlackLevel::uniform(0.0);
+    raw.white = vec![1.0];
+    let bytes = write_dng(&raw, &DngWriteOptions::default()).unwrap();
+    let tiff = lcc_tiff::Tiff::parse(&bytes).unwrap();
+    let levels: Vec<&Value> = tiff.ifds.iter().flat_map(|i| i.walk()).filter_map(|i| i.value(t::WHITE_LEVEL)).collect();
+    assert_eq!(levels, [&Value::Long(vec![1, 1, 1])]);
+    assert_eq!(decode(&bytes).unwrap().white, vec![1.0; 3]);
+}
+
 #[test]
 fn normalized_and_develop() {
     let mut raw = synthetic(40, 30, Some(Cfa::bayer("RGGB").unwrap()), 1);
