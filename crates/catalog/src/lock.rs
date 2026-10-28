@@ -99,6 +99,8 @@ pub struct LibraryLock {
     /// `None` when the file system can't lock (the library is open unlocked).
     file: Option<File>,
     held: bool,
+    /// The owner note as written, so dropping removes only that note (upstream issue #3240).
+    note: Option<Vec<u8>>,
 }
 
 impl LibraryLock {
@@ -106,7 +108,7 @@ impl LibraryLock {
     pub fn acquire(dir: &Path, program: &str) -> Result<LibraryLock, LockError> {
         let unlocked = |why: io::Error| {
             log::warn!("library {}: can't lock {LOCK} ({why}); opening it without protection against a second program", dir.display());
-            LibraryLock { dir: dir.to_path_buf(), file: None, held: false }
+            LibraryLock { dir: dir.to_path_buf(), file: None, held: false, note: None }
         };
         // never through a link at the name, which would create or lock a file elsewhere (issue #2552)
         let file = match crate::safe_file::open_or_create_regular(&dir.join(LOCK), OpenOptions::new().read(true).write(true)) {
@@ -124,12 +126,16 @@ impl LibraryLock {
         // A new file in place of whatever is at the name: a link planted there in a library folder
         // someone else prepared is removed, never written through (as for the staging files, #1502).
         let owner = LockOwner::this_process(program);
-        if let Ok(json) = serde_json::to_vec_pretty(&owner)
-            && let Err(e) = crate::store::create_staging(&dir.join(OWNER)).and_then(|mut f| f.write_all(&json))
-        {
-            log::warn!("library {}: can't write {OWNER}: {e}", dir.display());
-        }
-        Ok(LibraryLock { dir: dir.to_path_buf(), file: Some(file), held: true })
+        let note = serde_json::to_vec_pretty(&owner).ok().filter(|json| {
+            match crate::store::create_staging(&dir.join(OWNER)).and_then(|mut f| f.write_all(json)) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("library {}: can't write {OWNER}: {e}", dir.display());
+                    false
+                }
+            }
+        });
+        Ok(LibraryLock { dir: dir.to_path_buf(), file: Some(file), held: true, note })
     }
 
     /// The OS lock is held (`false`: the file system can't lock; opened unprotected).
@@ -152,13 +158,18 @@ impl LibraryLock {
 
 impl Drop for LibraryLock {
     /// Remove the owner note while still holding the lock (so it can't delete the next holder's),
-    /// then release the lock explicitly. Closing the handle isn't enough on Unix: `flock` lasts
+    /// and only if it's still the note this lock wrote: the path may now lead to another library
+    /// (a share mounted over the folder, or the folder renamed and replaced, upstream #3240). Then
+    /// release the lock explicitly. Closing the handle isn't enough on Unix: `flock` lasts
     /// while any copy of the descriptor is open, and a process another thread is spawning holds a
     /// copy of every descriptor until it execs (issue #680). If the unlock fails the handle still
     /// closes right after, which releases the lock once every copy is gone, as before.
     fn drop(&mut self) {
         if self.held {
-            let _ = std::fs::remove_file(self.dir.join(OWNER));
+            let path = self.dir.join(OWNER);
+            if self.note.as_ref().is_some_and(|ours| crate::safe_file::read_no_follow(&path).is_ok_and(|now| &now == ours)) {
+                let _ = std::fs::remove_file(path);
+            }
             if let Some(f) = &self.file
                 && let Err(e) = f.unlock()
             {

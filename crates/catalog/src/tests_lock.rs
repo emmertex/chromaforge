@@ -230,3 +230,25 @@ fn a_link_at_the_lock_file_is_never_created_or_locked_through() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// Upstream issue #3240: the library folder is replaced while it's open (a share mounted over it,
+/// or it's renamed and another library moved to its name). Letting go removes only the owner note
+/// this lock wrote, never the other library's.
+#[test]
+fn dropping_the_lock_leaves_another_librarys_owner_note() {
+    let _serial = serial();
+    let root = temp_dir("replaced");
+    let dir = root.join("Library");
+    std::fs::create_dir_all(&dir).unwrap();
+    let lock = LibraryLock::acquire(&dir, lcc_brand::DISPLAY_NAME).unwrap();
+    assert!(lock.held());
+
+    std::fs::rename(&dir, root.join("Library.moved")).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    let other = br#"{"pid":999999,"host":"elsewhere","program":"Other","version":"0.2.0","since":1}"#;
+    std::fs::write(dir.join(OWNER), other).unwrap();
+
+    drop(lock);
+    assert_eq!(std::fs::read(dir.join(OWNER)).unwrap(), other, "another library's owner note was removed");
+    let _ = std::fs::remove_dir_all(&root);
+}
