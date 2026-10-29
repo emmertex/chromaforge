@@ -160,6 +160,92 @@ fn truncation_details() {
     assert!(read_header(&png[..png.len() - 12]).is_err(), "nothing after the image data: truncated");
 }
 
+/// Samsung's SEF trailer: `data` blocks, then a directory (`SEFH`, version, count, 12-byte
+/// entries of type, offset back from `SEFH` and length), its length and `SEFT`.
+fn sef_trailer(blocks: &[&[u8]]) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut entries = Vec::new();
+    for (i, block) in blocks.iter().enumerate() {
+        data.extend_from_slice(block);
+        entries.push((0x08E0u16 + i as u16, data.len(), block.len()));
+    }
+    let mut dir = Vec::new();
+    dir.extend_from_slice(b"SEFH");
+    dir.extend_from_slice(&107u32.to_le_bytes());
+    dir.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    let total = data.len();
+    for (kind, end, len) in entries {
+        dir.extend_from_slice(&[0, 0]);
+        dir.extend_from_slice(&kind.to_le_bytes());
+        dir.extend_from_slice(&((total - end + len) as u32).to_le_bytes());
+        dir.extend_from_slice(&(len as u32).to_le_bytes());
+    }
+    let mut out = data;
+    out.extend_from_slice(&dir);
+    out.extend_from_slice(&(dir.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"SEFT");
+    out
+}
+
+/// A Samsung panorama JPEG runs its scan data straight into the SEF trailer, with no EOI marker
+/// anywhere in the file (upstream issue #3350). The whole image is there, so it reads and decodes;
+/// a trailer that doesn't hold together still means the file was cut short.
+#[test]
+fn samsung_sef_trailer_without_eoi_is_a_whole_image() {
+    let f = fixtures(160, 96);
+    let jpeg = f.iter().find(|x| x.0 == "jpeg 420 o6").map(|x| x.1.clone()).unwrap();
+    assert_eq!(&jpeg[jpeg.len() - 2..], &[0xFF, 0xD9]);
+    let body = &jpeg[..jpeg.len() - 2];
+    let pano = [b"Panorama_Shot_Info".as_slice(), &[7u8; 26]].concat();
+    for blocks in [vec![pano.as_slice()], vec![pano.as_slice(), &[1u8; 300]], vec![]] {
+        let mut file = body.to_vec();
+        file.extend_from_slice(&sef_trailer(&blocks));
+        let h = read_header(&file).unwrap_or_else(|e| panic!("{} blocks: {e}", blocks.len()));
+        assert_eq!((h.width, h.height, h.orientation), (160, 96, 6));
+        assert_eq!(decoded(&file).unwrap(), h, "{} blocks: scaled decode", blocks.len());
+        let full = decode(&file, DecodeOptions::default()).unwrap();
+        let whole = decode(&jpeg, DecodeOptions::default()).unwrap();
+        assert_eq!(full.image.data, whole.image.data, "{} blocks: same pixels as with the EOI", blocks.len());
+    }
+    let mut good = body.to_vec();
+    good.extend_from_slice(&sef_trailer(&[&pano]));
+    let n = good.len();
+    let damaged: Vec<(&str, Vec<u8>)> = vec![
+        ("no SEFT", good[..n - 4].to_vec()),
+        ("cut inside the directory", good[..n - 12].to_vec()),
+        ("directory length past the file start", [&good[..n - 8], &u32::MAX.to_le_bytes(), b"SEFT"].concat()),
+        ("directory length off by one", [&good[..n - 8], &(((n - 8) as u32) + 1).to_le_bytes(), b"SEFT"].concat()),
+        ("SEFH overwritten", {
+            let mut b = good.clone();
+            let dir = n - 8 - 24;
+            b[dir..dir + 4].copy_from_slice(b"XXXX");
+            b
+        }),
+        ("entry offset before the file start", {
+            let mut b = good.clone();
+            let dir = n - 8 - 24;
+            b[dir + 16..dir + 20].copy_from_slice(&u32::MAX.to_le_bytes());
+            b
+        }),
+        ("entry longer than its offset", {
+            let mut b = good.clone();
+            let dir = n - 8 - 24;
+            b[dir + 20..dir + 24].copy_from_slice(&1000u32.to_le_bytes());
+            b
+        }),
+        ("more entries than the directory holds", {
+            let mut b = good.clone();
+            let dir = n - 8 - 24;
+            b[dir + 8..dir + 12].copy_from_slice(&2u32.to_le_bytes());
+            b
+        }),
+    ];
+    for (what, bytes) in damaged {
+        assert!(read_header(&bytes).is_err(), "{what}: accepted");
+    }
+    assert!(read_header(&sef_trailer(&[&pano])).is_err(), "a trailer alone");
+}
+
 /// eXIf after the image data counts, as it does for a decode (which reads the whole file).
 #[test]
 fn png_exif_after_idat() {

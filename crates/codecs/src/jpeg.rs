@@ -178,6 +178,8 @@ const MAX_APP1: u32 = 128;
 /// file is refused, as a decode would refuse it, when it has no frame header, an unsupported frame
 /// type or component count, or when its markers don't run to an end-of-image marker after the
 /// image data (a truncated file). Damage *inside* the entropy-coded data can't be seen this way.
+/// A file whose scan data runs straight into a whole Samsung SEF trailer is complete: the
+/// camera's panorama mode writes no EOI marker before the trailer.
 pub(crate) fn header(bytes: &[u8]) -> Result<(u32, u32, u16)> {
     let m = parse_markers(bytes).ok_or_else(|| Error::Malformed(F, "missing SOI".into()))?;
     if m.components == 0 {
@@ -190,7 +192,7 @@ pub(crate) fn header(bytes: &[u8]) -> Result<(u32, u32, u16)> {
     if !matches!(m.components, 1 | 3 | 4) {
         return Err(Error::Malformed(F, format!("{} colour components", m.components)));
     }
-    if m.first_scan_components == 0 || !reaches_eoi(bytes) {
+    if m.first_scan_components == 0 || !(reaches_eoi(bytes) || sef_trailer_start(bytes).is_some()) {
         return Err(Error::Malformed(F, "truncated: the image data doesn't end with an end-of-image marker".into()));
     }
     let orientation = m.exif.as_deref().map(exif::summarize).unwrap_or_default().orientation.unwrap_or(1);
@@ -225,7 +227,48 @@ fn reaches_eoi(b: &[u8]) -> bool {
     }
 }
 
+/// Where a Samsung SEF trailer that holds together begins, when the file ends with one: `SEFT`
+/// last, before it the little-endian length of a directory that starts with `SEFH`, and every one
+/// of the directory's 12-byte entries (type, offset back from `SEFH`, length) naming a block
+/// inside the file ahead of the directory. The trailer begins at its first block. A trailer cut
+/// anywhere, or one pointing outside the file, doesn't count: the file it ended was cut too.
+fn sef_trailer_start(b: &[u8]) -> Option<usize> {
+    let tail = b.len().checked_sub(8).and_then(|t| b.get(t..))?;
+    if tail.get(4..) != Some(b"SEFT") {
+        return None;
+    }
+    let dir_len = tail.get(..4).map(|l| u32::from_le_bytes([l[0], l[1], l[2], l[3]]) as usize)?;
+    let dir_start = b.len().checked_sub(8)?.checked_sub(dir_len)?;
+    let dir = b.get(dir_start..dir_start.saturating_add(dir_len))?;
+    if dir.get(..4) != Some(b"SEFH") || dir_len < 12 {
+        return None;
+    }
+    let count = dir.get(8..12).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as usize)?;
+    let entries = count.checked_mul(12).and_then(|n| dir.get(12..12usize.saturating_add(n)))?;
+    let mut start = dir_start;
+    for e in entries.as_chunks::<12>().0 {
+        let offset = u32::from_le_bytes([e[4], e[5], e[6], e[7]]) as usize;
+        let len = u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as usize;
+        let block = dir_start.checked_sub(offset).filter(|_| offset >= len && offset <= dir_start.saturating_sub(2))?;
+        start = start.min(block);
+    }
+    Some(start)
+}
+
+/// The image a Samsung panorama holds, as the decoders expect it: the scan data runs straight
+/// into the SEF trailer without an end-of-image marker, which the decoders insist on, so the
+/// trailer is replaced by one. `None` for any other file (an EOI present, no whole trailer): it
+/// decodes as it is.
+fn with_eoi_before_sef_trailer(bytes: &[u8]) -> Option<Vec<u8>> {
+    let start = sef_trailer_start(bytes).filter(|_| !reaches_eoi(bytes))?;
+    let mut fixed = bytes.get(..start)?.to_vec();
+    fixed.extend_from_slice(&[0xFF, 0xD9]);
+    Some(fixed)
+}
+
 pub(crate) fn decode_with_fallback(bytes: &[u8], opts: &DecodeOptions, fallback: Option<crate::NamedSpace>) -> Result<Decoded> {
+    let ended = with_eoi_before_sef_trailer(bytes);
+    let bytes = ended.as_deref().unwrap_or(bytes);
     let m = parse_markers(bytes).ok_or_else(|| Error::Malformed(F, "missing SOI".into()))?;
     if m.components == 0 {
         return Err(Error::Malformed(F, "no frame header".into()));
