@@ -56,6 +56,16 @@ pub fn weekday(iso: &str) -> Option<&'static str> {
     Some(WEEKDAYS[date.weekday().num_days_from_monday() as usize])
 }
 
+/// Days in `month` (1–12) of `year` (Gregorian); 0 for a month that doesn't exist.
+pub fn days_in_month(year: i32, month: u32) -> u32 {
+    let first = chrono::NaiveDate::from_ymd_opt(year, month, 1);
+    let next = first.and_then(|f| f.checked_add_months(chrono::Months::new(1)));
+    match (first, next) {
+        (Some(f), Some(n)) => u32::try_from(n.signed_duration_since(f).num_days()).unwrap_or(0),
+        _ => 0,
+    }
+}
+
 /// Shift an ISO time by `secs`, keeping anything after the seconds (fractions, zone) as it was.
 /// A date without a time gets one. `None` if it doesn't parse, or if the result leaves years
 /// 0000–9999 (an ISO date here has four year digits, so it couldn't be read back); `secs` may be
@@ -517,6 +527,9 @@ mod tests {
         assert_eq!(weekday("2026-09-30"), Some("Wednesday"));
         assert_eq!(weekday("2026-10-01T09:00:00"), Some("Thursday"));
         assert_eq!(weekday("2000-02-29"), Some("Tuesday"));
+        assert_eq!([days_in_month(2026, 2), days_in_month(2028, 2), days_in_month(1900, 2), days_in_month(2000, 2)], [28, 29, 28, 29]);
+        assert_eq!([days_in_month(2026, 4), days_in_month(2026, 12), days_in_month(0, 1)], [30, 31, 31]);
+        assert_eq!([days_in_month(2026, 0), days_in_month(2026, 13), days_in_month(i32::MAX, 12)], [0, 0, 0]);
         assert_eq!(group_label("2026-09-29"), "Tuesday, 29 September 2026");
         assert_eq!(group_label("2026-02"), "February 2026");
         assert_eq!(group_label("2026"), "2026");
