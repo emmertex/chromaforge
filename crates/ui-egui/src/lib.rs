@@ -236,6 +236,8 @@ mod tests_libtools;
 #[cfg(test)]
 mod tests_lightroom_destination;
 #[cfg(test)]
+mod tests_loading_cell;
+#[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
 mod tests_mask_sections;
@@ -253,6 +255,8 @@ mod tests_midi;
 mod tests_module_help;
 #[cfg(test)]
 mod tests_modules;
+#[cfg(test)]
+mod tests_mouse_nav;
 #[cfg(test)]
 mod tests_offline;
 #[cfg(test)]
@@ -305,10 +309,6 @@ mod tests_switch_library;
 mod tests_sync;
 #[cfg(test)]
 mod tests_tallies;
-#[cfg(test)]
-mod tests_loading_cell;
-#[cfg(test)]
-mod tests_mouse_nav;
 #[cfg(test)]
 mod tests_temp_slider;
 #[cfg(test)]

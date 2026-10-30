@@ -3357,11 +3357,8 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         {
             if let Some(mid) = other_pin_at(&grips, app.session.active_mask, q) {
                 let _ = app.run("mask.select", json!({"id": mid}));
-                let has_object = d
-                    .masks
-                    .iter()
-                    .find(|m| m.id == mid)
-                    .is_some_and(|m| m.components.iter().any(|c| matches!(c.shape, MaskShape::Object { .. })));
+                let has_object =
+                    d.masks.iter().find(|m| m.id == mid).is_some_and(|m| m.components.iter().any(|c| matches!(c.shape, MaskShape::Object { .. })));
                 if !has_object {
                     app.ui.tool.clear();
                 }
