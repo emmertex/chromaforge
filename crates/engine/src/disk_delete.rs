@@ -30,6 +30,8 @@
 //! Sources: own design; the behaviour (Delete from Disk next to Remove) follows Lightroom
 //! Classic's delete dialog as observed in the running application.
 
+mod sidecars;
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -57,7 +59,7 @@ pub(crate) struct Group {
 }
 
 /// What Delete from Disk would do with a set of photos, from the catalog alone (no file is
-/// touched: the sidecars are looked up while trashing, see [`sidecars_of`]).
+/// touched: the sidecars are looked up while trashing, see [`sidecars::Folders`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Plan {
     pub groups: Vec<Group>,
@@ -101,69 +103,9 @@ pub(crate) fn plan(cat: &Catalog, targets: &[PhotoId]) -> Plan {
     plan
 }
 
-/// The originals of `plan` that go to the trash (the set [`sidecars_of`] takes).
+/// The originals of `plan` that go to the trash (the set [`sidecars::Folders`] takes).
 fn originals(plan: &Plan) -> HashSet<PathBuf> {
     plan.groups.iter().map(|g| g.original.clone()).collect()
-}
-
-fn same_path(a: &Path, b: &Path) -> bool {
-    // one file under two spellings on a case-insensitive volume (macOS, Windows): `test.xmp`
-    // and `test.XMP` would otherwise be listed, and trashed, as two sidecars
-    use crate::rename::MoveFs;
-    crate::rename::RealFs.same_file(a, b)
-}
-
-/// The XMP sidecars of `original` that go with it: `<file>.xmp` always, `<stem>.xmp` only when no
-/// other file in the folder (besides `leaving`, the originals going too) shares its stem. Only
-/// existing files are listed.
-pub(crate) fn sidecars_of(original: &Path, leaving: &HashSet<PathBuf>) -> Vec<PathBuf> {
-    let (Some(name), Some(dir)) = (original.file_name(), original.parent()) else { return Vec::new() };
-    let listing = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
-    // list the folder rather than probe `.xmp` / `.XMP` / `.Xmp`: on a case-insensitive volume every
-    // probe finds the one file, while the listing names each file once, as it is spelled on disk
-    let Ok(entries) = std::fs::read_dir(listing) else { return Vec::new() };
-    let names: Vec<String> = entries.flatten().filter(|e| e.path().is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    let (whole, stem) = sidecar_names(&name.to_string_lossy(), &names);
-    let mut v: Vec<PathBuf> = whole.into_iter().map(|n| dir.join(n)).collect();
-    if !stem.is_empty() && !stem_shared(original, leaving) {
-        v.extend(stem.into_iter().map(|n| dir.join(n)));
-    }
-    v
-}
-
-/// The entries of `names` (one folder's file names, as listed) that are `original`'s sidecars,
-/// compared without case: `<original>.xmp` and `<stem>.xmp`. Each listed file appears at most once.
-fn sidecar_names<'a>(original: &str, names: &'a [String]) -> (Vec<&'a str>, Vec<&'a str>) {
-    let lower = original.to_lowercase();
-    let whole = format!("{lower}.xmp");
-    let stem = Path::new(original).file_stem().map(|s| format!("{}.xmp", s.to_string_lossy().to_lowercase()));
-    let (mut w, mut st) = (Vec::new(), Vec::new());
-    for n in names {
-        let l = n.to_lowercase();
-        if l == whole {
-            w.push(n.as_str());
-        } else if stem.as_deref() == Some(l.as_str()) && l != lower {
-            st.push(n.as_str());
-        }
-    }
-    (w, st)
-}
-
-/// Another file in `original`'s folder, not a sidecar and not among `leaving`, has the same stem
-/// (compared without case). A folder that can't be listed counts as shared: the sidecar stays.
-fn stem_shared(original: &Path, leaving: &HashSet<PathBuf>) -> bool {
-    let Some(stem) = original.file_stem().map(|s| s.to_string_lossy().to_lowercase()) else { return true };
-    let dir = match original.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d,
-        _ => Path::new("."),
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else { return true };
-    entries.flatten().map(|e| e.path()).any(|p| {
-        !same_path(&p, original)
-            && !leaving.iter().any(|l| same_path(l, &p))
-            && p.file_stem().is_some_and(|s| s.to_string_lossy().to_lowercase() == stem)
-            && !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp"))
-    })
 }
 
 /// `photo.deleteFromDisk`: move the targets' files to the trash and take the photos out of the
@@ -180,7 +122,7 @@ pub(crate) fn delete_from_disk(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(crate::cmd::bad("photo.deleteFromDisk", "no photos to delete"));
     }
     let plan = plan(&s.catalog, &targets);
-    let leaving = originals(&plan);
+    let mut folders = sidecars::Folders::new(originals(&plan));
     let shown = |path: &Path| path.to_string_lossy().to_string();
     let (mut remove, mut trashed, mut kept, mut failed) = (Vec::new(), Vec::new(), Vec::new(), Vec::<(String, String)>::new());
     let task = s.activity.start("deleteFromDisk", "Deleting from disk", crate::activity::Cancel::Yes);
@@ -211,8 +153,8 @@ pub(crate) fn delete_from_disk(s: &mut Session, p: &Value) -> Result<Value> {
             }
             Ok(_) => {}
         }
-        // looked up before the original goes, so the folder still shows which stems are shared
-        let sidecars = sidecars_of(&g.original, &leaving);
+        // each folder is listed once, before any of its files goes (issue #692)
+        let sidecars = folders.sidecars_of(&g.original);
         if let Err(e) = trash(&g.original) {
             failed.push((shown(&g.original), e));
             continue;
@@ -327,7 +269,7 @@ mod tests {
         assert_eq!(p.groups.len(), 1);
         assert_eq!(p.groups[0].photos, vec![id]);
         assert_eq!(p.groups[0].original, file);
-        assert!(sidecars_of(&file, &originals(&p)).is_empty());
+        assert!(sidecars::Folders::new(originals(&p)).sidecars_of(&file).is_empty());
         assert!(p.keep_file.is_empty());
         assert!(p.no_file.is_empty());
 
@@ -351,7 +293,7 @@ mod tests {
 
         // Alone without test.jpg: both test.cr3.xmp and test.xmp are sidecars
         let p = plan(&s.catalog, &[id_cr3]);
-        assert_eq!(sidecars_of(&cr3, &originals(&p)).len(), 2);
+        assert_eq!(sidecars::Folders::new(originals(&p)).sidecars_of(&cr3).len(), 2);
 
         // Now add test.jpg on disk and in catalog
         std::fs::write(&jpg, b"jpeg").unwrap();
@@ -359,34 +301,14 @@ mod tests {
 
         // Only deleting CR3: test.xmp is shared with test.jpg, so only test.cr3.xmp goes
         let p_cr3_only = plan(&s.catalog, &[id_cr3]);
-        assert_eq!(sidecars_of(&cr3, &originals(&p_cr3_only)), vec![cr3_xmp.clone()]);
+        assert_eq!(sidecars::Folders::new(originals(&p_cr3_only)).sidecars_of(&cr3), vec![cr3_xmp.clone()]);
 
         // Deleting both CR3 and JPG: test.xmp is included because all owners leave
         let p_both = plan(&s.catalog, &[id_cr3, id_jpg]);
-        let all_sidecars: Vec<PathBuf> = p_both.groups.iter().flat_map(|g| sidecars_of(&g.original, &originals(&p_both))).collect();
+        let mut folders = sidecars::Folders::new(originals(&p_both));
+        let all_sidecars: Vec<PathBuf> = p_both.groups.iter().flat_map(|g| folders.sidecars_of(&g.original)).collect();
         assert!(all_sidecars.contains(&cr3_xmp));
         assert!(all_sidecars.contains(&stem_xmp));
-    }
-
-    /// Issue #159: a case-insensitive volume lists one sidecar once (probing `.xmp`, `.XMP`,
-    /// `.Xmp` found it three times); a case-sensitive folder holding two spellings lists both.
-    #[test]
-    fn sidecar_names_follow_the_listing() {
-        let one = vec!["test.cr3".to_string(), "test.cr3.XMP".to_string(), "Test.xmp".to_string(), "other.xmp".to_string()];
-        assert_eq!(sidecar_names("test.cr3", &one), (vec!["test.cr3.XMP"], vec!["Test.xmp"]));
-        let two = vec!["a.jpg".to_string(), "a.jpg.xmp".to_string(), "a.jpg.XMP".to_string()];
-        assert_eq!(sidecar_names("a.jpg", &two).0.len(), 2);
-        // an original that is itself an .xmp is never its own sidecar
-        assert_eq!(sidecar_names("x.xmp", &["x.xmp".to_string()]), (vec![], vec![]));
-    }
-
-    #[test]
-    fn sidecars_listed_once_on_disk() {
-        let tmp = TempDir::new("once");
-        let raw = tmp.path.join("img.cr3");
-        std::fs::write(&raw, b"raw").unwrap();
-        std::fs::write(tmp.path.join("img.cr3.xmp"), b"x").unwrap();
-        assert_eq!(sidecars_of(&raw, &HashSet::new()), vec![tmp.path.join("img.cr3.xmp")]);
     }
 
     #[test]
