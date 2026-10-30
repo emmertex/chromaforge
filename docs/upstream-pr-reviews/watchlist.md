@@ -19,11 +19,9 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3279 | LR-EDIT-DETAIL-DENOISE: AI Denoise for finished pictures (JPEG, PNG, TIFF …) with a model of their own | 2026-10-30 | open |
 | 3194 | LR-MASK-BRUSH: preserve Lightroom brush feathering and erasures | 2026-10-30 | open |
 | 3231 | Issue #1337: restart instead of stopping when the window's GPU device is lost | 2026-10-30 | open, draft |
-| 3307 | Contributors: add my entry (Peaperfish) | 2026-10-30 | open |
 | 3308 | LR-BEHAV-TEXTFIELD: a text box's edit is saved to what it was typed for, and a save run at close ends it | 2026-10-30 | open |
 | 3309 | Reject malformed base64 in MCP and segmask decoders | 2026-10-30 | open |
 | 3312 | MCP: render_photo returns the image inline when connected to a remote app | 2026-10-30 | open |
-| 3314 | Issue #3254: README explains how to recover a Windows update that fails with 1612/1714/1603 | 2026-10-30 | open |
 | 3315 | Issue #3249: a face set aside as "not this person" stays set aside | 2026-10-30 | open |
 | 3316 | Issue #2019: Open Photo from a right click on a face tile | 2026-10-30 | open |
 | 3317 | FACES: a person's page is kept until a face changes, jumps to its suggestions, and People keeps its place | 2026-10-30 | open |
@@ -41,7 +39,6 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3331 | LR-VIEW-HISTOGRAM: the histogram's clipping buttons read in every theme | 2026-10-30 | open |
 | 3332 | LR-BEHAV-TITLEBAR: a dialog leaves the macOS title bar undimmed | 2026-10-30 | open |
 | 3335 | MENU-EDIT-SELECTBY: Select by lists each star rating on its own (#3311) | 2026-10-30 | open |
-| 3339 | LR-PROF-CAMERA: fitted looks for the Fujifilm X-T5's film simulations (builds on #2445) | 2026-10-30 | open |
 | 3341 | LR-BEHAV-BG-TASKS: starting a background export no longer freezes the window | 2026-10-30 | open |
 | 3343 | LR-IMP-LOCAL: Choose… and Browse Folder… open their file dialog without freezing the window | 2026-10-30 | open |
 | 3344 | LRC-DEV-VIEWOPTIONS: a render that stays slow says "Rendering…" even with the loading message off | 2026-10-30 | open |
@@ -50,13 +47,9 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3348 | LR-META-XMP: automatic XMP writes waiting for their folder show a row in the activity stack | 2026-10-30 | open |
 | 3351 | LR-BEHAV-BG-TASKS: AI Denoise and Finding faces can be stopped, and Quit names every running job | 2026-10-30 | open |
 | 3352 | Issue #3320: a render size far beyond the photo is held to a 512-megapixel ceiling instead of aborting | 2026-10-30 | open |
-| 3356 | CI: workflows only call craft-common-actions at @main (AGENTS.md; windows-arm64 unpinned) | 2026-10-30 | open |
-| 3358 | deps: bump tar, zip, roxmltree, rustls-webpki and symphonia to latest | 2026-10-30 | open |
 | 3361 | LR-IMP-LOCAL: the print, display, slideshow template and soft proof file dialogs open without freezing the window (stacked on #3343) | 2026-10-30 | open |
-| 3362 | Update prompt shows the app icon instead of a letter | 2026-10-30 | open |
 | 3363 | LRC-LIB-LIBFOLDERS: Synchronize several folders at once, one after another (stacked on #3107 and #1943) | 2026-10-30 | open |
 | 3364 | fix(ui): translate the white balance preset menu | 2026-10-30 | open |
-| 3365 | Fix pretend-version testing for update prompts | 2026-10-30 | open |
 | 3366 | Reject mismatched XML closing tags | 2026-10-30 | open |
 | 3367 | Reject multiple GPX document roots | 2026-10-30 | open |
 | 3369 | Issue #3368: drop_import's launch-list tests wait for the library checks before clicking | 2026-10-30 | open |
