@@ -619,6 +619,10 @@ pub struct LccApp {
     screenshot_token: u64,
     /// Offscreen context for headless screenshots of the windowed app.
     shadow: Option<headless::HeadlessView>,
+    /// Test-only: a delay for the sidebar's Missing Photos count worker (a slow disk). Kept here,
+    /// not in `ui`, because `ui.set` rebuilds `ui` and would drop it.
+    #[cfg(test)]
+    pub(crate) missing_count_test_delay: Option<std::time::Duration>,
     /// True while rendering a headless (CPU) screenshot: don't use GPU-only textures.
     headless_screenshotting: bool,
     /// Synthetic input events (from the control channel) injected one step per frame.
@@ -857,6 +861,8 @@ impl LccApp {
             midi_active: None,
             pending_screenshots: vec![],
             screenshot_token: 0,
+            #[cfg(test)]
+            missing_count_test_delay: None,
             shadow: None,
             headless_screenshotting: false,
             synthetic: vec![],
