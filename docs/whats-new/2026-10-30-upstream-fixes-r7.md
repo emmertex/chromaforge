@@ -1,0 +1,5 @@
+### Samsung panoramas, RAF decoding and download fixes
+- Some panoramas from Samsung phones were refused as truncated, although other apps open them whole: their image data runs straight into the Samsung (SEF) block at the end of the file. When the file ends with a valid SEF block, the image now ends where that block begins, so these photos import and show. A JPEG that is really cut short is still refused.
+- Compressed Fujifilm RAF files decode 13 to 17 % faster.
+- Malformed base64 in segmentation masks and in agent (MCP) image arguments is refused instead of being half-decoded.
+- Downloads of AI models no longer fail when the server sends an interim "103 Early Hints" response first.

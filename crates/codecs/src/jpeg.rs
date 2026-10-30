@@ -179,6 +179,7 @@ const MAX_APP1: u32 = 128;
 /// type or component count, or when its markers don't run to an end-of-image marker after the
 /// image data (a truncated file). Damage *inside* the entropy-coded data can't be seen this way.
 pub(crate) fn header(bytes: &[u8]) -> Result<(u32, u32, u16)> {
+    let bytes = &*without_sef_trailer(bytes);
     let m = parse_markers(bytes).ok_or_else(|| Error::Malformed(F, "missing SOI".into()))?;
     if m.components == 0 {
         return Err(Error::Malformed(F, "no frame header".into()));
@@ -225,7 +226,62 @@ fn reaches_eoi(b: &[u8]) -> bool {
     }
 }
 
+/// A Samsung panorama whose scan runs straight into its SEF trailer, with no EOI marker (issue
+/// #3350), as the file it stands for: the bytes before the trailer's earliest data block plus an
+/// EOI. Every other file, a genuinely truncated one included, is borrowed unchanged.
+fn without_sef_trailer(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    use std::borrow::Cow;
+    // The trailer is checked first: it reads only the file's last bytes, not the scan data.
+    let Some(image) = sef_image_end(bytes).and_then(|end| bytes.get(..end)) else { return Cow::Borrowed(bytes) };
+    // the image before the trailer: an FF D9 inside the SEF data doesn't end the scan
+    if reaches_eoi(image) {
+        return Cow::Borrowed(bytes);
+    }
+    let mut fixed = Vec::with_capacity(image.len().saturating_add(2));
+    fixed.extend_from_slice(image);
+    fixed.extend_from_slice(&[0xFF, 0xD9]);
+    // The cut must leave the scan data, not a segment or anything before the first scan, open.
+    let in_scan = parse_markers(&fixed).is_some_and(|m| m.first_scan_components > 0) && reaches_eoi(&fixed);
+    if in_scan { Cow::Owned(fixed) } else { Cow::Borrowed(bytes) }
+}
+
+/// Where the image ends in a file carrying a Samsung SEF trailer: the start of its earliest data
+/// block. The trailer is the file's last bytes: `SEFH`, a u32 LE version and entry count, 12-byte
+/// entries (u16 padding, u16 type, u32 LE offset of the block back from `SEFH`, u32 LE length),
+/// then the u32 LE length of that directory and `SEFT`. Each block starts with the same padding
+/// and type as its entry. `None` unless every entry's block is nonempty, starts with its entry's
+/// type and lies inside the file, before `SEFH`.
+fn sef_image_end(b: &[u8]) -> Option<usize> {
+    let le32 = |at: usize| b.get(at..at.checked_add(4)?)?.try_into().ok().map(|v| u32::from_le_bytes(v) as usize);
+    let tail = b.len().checked_sub(8)?;
+    if b.get(tail.checked_add(4)?..)? != b"SEFT" {
+        return None;
+    }
+    let dir = tail.checked_sub(le32(tail)?)?;
+    if b.get(dir..dir.checked_add(4)?)? != b"SEFH" {
+        return None;
+    }
+    let count = le32(dir.checked_add(8)?)?;
+    let entries = dir.checked_add(12)?;
+    if count == 0 || count > tail.checked_sub(entries)? / 12 {
+        return None;
+    }
+    let mut start = dir;
+    for i in 0..count {
+        let entry = entries.checked_add(i.checked_mul(12)?)?;
+        let block = dir.checked_sub(le32(entry.checked_add(4)?)?)?;
+        let len = le32(entry.checked_add(8)?)?;
+        let kind = |at: usize| b.get(at.checked_add(2)?..at.checked_add(4)?);
+        if len < 4 || block.checked_add(len)? > dir || kind(block)? != kind(entry)? {
+            return None;
+        }
+        start = start.min(block);
+    }
+    Some(start)
+}
+
 pub(crate) fn decode_with_fallback(bytes: &[u8], opts: &DecodeOptions, fallback: Option<crate::NamedSpace>) -> Result<Decoded> {
+    let bytes = &*without_sef_trailer(bytes);
     let m = parse_markers(bytes).ok_or_else(|| Error::Malformed(F, "missing SOI".into()))?;
     if m.components == 0 {
         return Err(Error::Malformed(F, "no frame header".into()));
