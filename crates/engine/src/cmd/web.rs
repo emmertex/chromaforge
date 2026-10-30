@@ -689,7 +689,10 @@ mod tests {
     #[test]
     fn upload_to_an_unreachable_server_is_an_error() {
         let (mut s, _) = session("upload");
-        let r = s.execute("web.upload", &json!({"server": {"host": "127.0.0.1", "port": 1, "user": "u", "path": "g"}, "password": "x"}));
+        // (one photo: the gallery is rendered before the server is tried)
+        let id = s.catalog.photos().next().unwrap().id.0;
+        let server = json!({"host": "127.0.0.1", "port": 1, "user": "u", "path": "g"});
+        let r = s.execute("web.upload", &json!({"server": server, "password": "x", "ids": [id]}));
         assert!(r.is_err());
         assert!(s.execute("web.upload", &json!({"server": {"host": "127.0.0.1", "user": "u"}})).is_err(), "no password");
     }
