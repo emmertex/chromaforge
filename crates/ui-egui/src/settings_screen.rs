@@ -207,6 +207,10 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
     // (the tab stays as it was asked for, e.g. `denoise`, until another section is picked)
     let picked_any = picked.is_some();
     let picked = picked.filter(|p| *p != open);
+    // a custom thumbnail cache size still being typed is saved on the way out of its section
+    if go_back || picked.is_some() {
+        crate::panels::settings::save_pending_cache_size(app, ctx);
+    }
     if go_back {
         if back(app, ctx).is_none() {
             close(app);

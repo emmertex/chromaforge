@@ -71,7 +71,11 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, tab: &mut String, max_height: f
         ui.vertical(|ui| {
             ui.set_height(height);
             ui.add_space(2.0);
+            let before = tab.clone();
             crate::dialog_frame::sidebar(ui, "settingsTab", TABS, tab, SIDEBAR_W);
+            if before == "performance" && *tab != before {
+                save_pending_cache_size(app, ui.ctx());
+            }
         });
         let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, height), egui::Sense::hover());
         ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.0, t.divider));
@@ -870,6 +874,22 @@ fn gpu_backend_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
 }
 
+/// The largest thumbnail cache Custom… offers (1 TB).
+const MAX_CACHE_GB: u32 = 1024;
+
+/// The custom size being typed or dragged, in GB, until the edit is over (see [`performance_tab`]).
+fn pending_gb_id() -> egui::Id {
+    egui::Id::new("settings-cache-custom-gb")
+}
+
+/// Save a custom size still being typed when the Performance tab (or Settings) is left: its field, which would save
+/// it, is no longer drawn.
+pub(crate) fn save_pending_cache_size(app: &mut LccApp, ctx: &egui::Context) {
+    if let Some(gb) = ctx.data_mut(|d| d.remove_temp::<u32>(pending_gb_id())) {
+        let _ = app.run("library.preferences", json!({"cacheMb": gb.saturating_mul(1024)}));
+    }
+}
+
 fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     use lcc_engine::gpu;
     heading(ui, t, crate::i18n::tr("Rendering"));
@@ -924,13 +944,46 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     });
     heading(ui, t, crate::i18n::tr("Thumbnail cache"));
     let cur = (app.session.cache_bytes() >> 20) as u32;
+    // a size of the user's own, in whole GB: a large library outgrows 8 GB (#3252)
+    let custom_id = egui::Id::new("settings-cache-custom");
+    let mut custom = !CACHE_SIZES.contains(&cur) || ui.data(|d| d.get_temp::<bool>(custom_id)).unwrap_or(false);
     row(ui, t, crate::i18n::tr("Size limit"), |ui| {
         let opts = [(512u32, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")];
-        let mut v = if CACHE_SIZES.contains(&cur) { cur } else { 2048 };
+        // none of the five lit while a custom size is chosen
+        let mut v = if custom { 0 } else { cur };
         if choices(ui, "settingsCache", &opts, &mut v) {
+            custom = false;
+            // a size typed earlier does not come back with Custom…
+            ui.data_mut(|d| d.remove::<u32>(pending_gb_id()));
             let _ = app.run("library.preferences", json!({"cacheMb": v}));
         }
     });
+    // a size of one's own, on its own line: the field keeps its unit beside it, also while it is typed in
+    row(ui, t, "", |ui| {
+        if crate::widgets::text_button(ui, "settingsCacheCustom", crate::i18n::tr("Custom…"), custom).clicked() {
+            custom = true;
+        }
+        if custom {
+            // the size being typed or dragged is held here, and saved once the edit is over: typing 16 must not set
+            // 1 GB on the way
+            let edit_id = pending_gb_id();
+            let mut gb = ui.data(|d| d.get_temp::<u32>(edit_id)).unwrap_or_else(|| cur.div_ceil(1024).clamp(1, MAX_CACHE_GB));
+            let r = crate::widgets::named(ui.add(egui::DragValue::new(&mut gb).range(1..=MAX_CACHE_GB)), crate::i18n::tr("Custom size limit, in GB"));
+            register(ui.ctx(), "drag:settingsCacheCustom", r.rect);
+            ui.label(RichText::new("GB").color(t.text));
+            if r.changed() {
+                ui.data_mut(|d| d.insert_temp(edit_id, gb));
+            }
+            // the focus egui keeps for the field, also while another application is in front (`r.has_focus()` is then
+            // false): switching away mid-edit must not save half a number
+            let editing = ui.memory(|m| m.has_focus(r.id)) || r.dragged();
+            if !editing && ui.data(|d| d.get_temp::<u32>(edit_id)).is_some() {
+                ui.data_mut(|d| d.remove::<u32>(edit_id));
+                let _ = app.run("library.preferences", json!({"cacheMb": gb.saturating_mul(1024)}));
+            }
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(custom_id, custom));
     let used = app.session.media.rendered.disk().map(|d| d.size());
     row(ui, t, crate::i18n::tr("In use"), |ui| {
         ui.label(

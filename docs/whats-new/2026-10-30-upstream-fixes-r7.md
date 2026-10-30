@@ -8,3 +8,4 @@
 - The People cards show the full number of photos on the picture (6110, not 999+); the line under the name that repeated it is gone.
 - Show Pins now draws a pin for Object masks (at the first click) and for Describe masks (on what was found). Clicking one selects its mask, and with the Object tool on, a click on another mask's pin selects that mask instead of adding an Object click to the selected one.
 - The side buttons of a mouse now do what the arrow keys do: Forward shows the next photo and Back the previous one. Like the arrow keys, they do nothing while a dialog or a text field has the keyboard, and pressed over a slider they only change the photo.
+- Settings, Display & Speed: the thumbnail cache size has a Custom option, in whole GB (up to 1 TB), for large libraries that outgrow 8 GB. A size you are still typing is saved when you leave the section or close Settings.

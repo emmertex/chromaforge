@@ -3617,5 +3617,6 @@
   "AI Denoise from": "Débruitage IA à partir de",
   "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).": "Les nouvelles photos raw prises à cet ISO ou au-delà commencent avec le débruitage IA activé, et leurs images débruitées sont créées en arrière-plan après l’importation. Nécessite un modèle de débruitage (Réglages, Débruitage IA).",
   "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.": "Photos et aperçus gardés en mémoire, pour que les photos sur lesquelles vous revenez s’affichent tout de suite. Automatique utilise un quart de la mémoire de cet ordinateur, jusqu’à 16 Go. Choisissez plus pour les grandes séances, mais laissez-en pour les autres apps.",
-  "Finding skin and faces to retouch": "Recherche de la peau et des visages à retoucher"
+  "Finding skin and faces to retouch": "Recherche de la peau et des visages à retoucher",
+  "Custom size limit, in GB": "Taille limite personnalisée, en Go"
 }
