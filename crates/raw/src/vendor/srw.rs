@@ -64,7 +64,7 @@ fn keyed(mn: &Ifd, tag: u16, sign: i64) -> Option<Vec<i64>> {
     let key = mn.u64s(ENCRYPTION_KEY).filter(|k| k.len() == 11)?;
     let vals = mn.f64s(tag)?;
     // 32-bit entries: the stored value wraps modulo 2^32 (a negative number stored as a LONG)
-    Some(vals.iter().enumerate().map(|(i, &v)| i64::from((v as i64).wrapping_add(sign * key[i % 11] as i64) as i32)).collect())
+    Some(vals.iter().enumerate().map(|(i, &v)| i64::from((v as i64).wrapping_add((key[i % 11] as i64).wrapping_mul(sign)) as i32)).collect())
 }
 
 /// The raw image's IFD: the one with a private compression value.
@@ -316,19 +316,25 @@ mod tests {
 
     /// A maker note in the Samsung layout: a big-endian IFD of LONG vectors, offsets relative to the note's start.
     fn note(entries: &[(u16, Vec<u32>)]) -> Vec<u8> {
+        let typed: Vec<_> = entries.iter().map(|(tag, v)| (*tag, 4, v.len() as u32, v.iter().flat_map(|x| x.to_be_bytes()).collect())).collect();
+        note_typed(&typed)
+    }
+
+    /// [`note`] with any entry types: `(tag, type, count, big-endian value bytes)`.
+    fn note_typed(entries: &[(u16, u16, u32, Vec<u8>)]) -> Vec<u8> {
         let mut head = Vec::new();
         let mut tail = Vec::new();
         head.extend_from_slice(&(entries.len() as u16).to_be_bytes());
         let values_at = 2 + 12 * entries.len() + 4;
-        for (tag, v) in entries {
+        for (tag, kind, count, v) in entries {
             head.extend_from_slice(&tag.to_be_bytes());
-            head.extend_from_slice(&4u16.to_be_bytes());
-            head.extend_from_slice(&(v.len() as u32).to_be_bytes());
-            if v.len() == 1 {
-                head.extend_from_slice(&v[0].to_be_bytes());
+            head.extend_from_slice(&kind.to_be_bytes());
+            head.extend_from_slice(&count.to_be_bytes());
+            if v.len() <= 4 {
+                head.extend(v.iter().copied().chain(std::iter::repeat(0)).take(4));
             } else {
                 head.extend_from_slice(&((values_at + tail.len()) as u32).to_be_bytes());
-                tail.extend(v.iter().flat_map(|x| x.to_be_bytes()));
+                tail.extend_from_slice(v);
             }
         }
         head.extend_from_slice(&[0; 4]);
@@ -558,6 +564,27 @@ mod tests {
     fn a_file_without_a_cfa_pattern_is_unsupported() {
         let bytes = srw(Spec { w: 64, h: 32, compression: 32770, strip: pack12(&ramp(64, 32, 4096)), pattern: None, note: None, picture: None });
         assert!(matches!(decode(&bytes), Err(RawError::Unsupported(w)) if w.contains("CFAPattern")));
+    }
+
+    /// An encryption key value past i64::MAX (LONG8) overflowed `-1 * key` in debug builds.
+    #[test]
+    fn a_huge_encryption_key_does_not_panic() {
+        let key: Vec<u8> = std::iter::repeat_n((1u64 << 63).to_be_bytes(), 11).flatten().collect();
+        let note = note_typed(&[(ENCRYPTION_KEY, 16, 11, key), (WB_UNCORRECTED, 4, 4, [0u8; 16].to_vec()), (WB_BLACK, 4, 4, [0u8; 16].to_vec())]);
+        let bytes = srw(Spec {
+            w: 64,
+            h: 32,
+            compression: 32770,
+            strip: pack12(&ramp(64, 32, 4096)),
+            pattern: Some([2, 1, 1, 0]),
+            note: Some(note),
+            picture: None,
+        });
+        let mn = maker_note(&bytes, &Tiff::parse(&bytes).unwrap()).unwrap();
+        assert_eq!(mn.u64s(ENCRYPTION_KEY).map(|k| k[0]), Some(1 << 63), "the key reaches keyed()");
+        assert_eq!(keyed(&mn, WB_BLACK, -1), Some(vec![0; 4]), "(2^63 mod 2^32 is 0)");
+        assert!(decode(&bytes).is_ok());
+        assert!(probe_info(&bytes).is_ok());
     }
 
     /// A framing rectangle outside the array, or reversed, is ignored; truncated files fail without panicking.
