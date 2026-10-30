@@ -55,6 +55,7 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3361 | LR-IMP-LOCAL: the print, display, slideshow template and soft proof file dialogs open without freezing the window (stacked on #3343) | 2026-10-30 | open |
 | 3362 | Update prompt shows the app icon instead of a letter | 2026-10-30 | open |
 | 3363 | LRC-LIB-LIBFOLDERS: Synchronize several folders at once, one after another (stacked on #3107 and #1943) | 2026-10-30 | open |
+| 3364 | fix(ui): translate the white balance preset menu | 2026-10-30 | open |
 
 Check with:
 
