@@ -65,6 +65,9 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3372 | Handle HTTP Early Hints before final responses | 2026-10-30 | open |
 | 3373 | i18n: add Greek (el) interface language | 2026-10-30 | open |
 | 3374 | Core ML runner crate: run compiled models on the CPU, GPU or Neural E… | 2026-10-30 | open |
+| 3375 | LR-IMP-FORMATS: a Samsung panorama JPEG with its SEF trailer imports (#3350) | 2026-10-30 | open |
+| 3376 | LR-BEHAV-TITLEBAR: pressing at the search box's edge no longer moves the window (#2807) | 2026-10-30 | open |
+| 3377 | AI Denoise on the Apple Neural Engine (Speed ▸ Neural Engine) | 2026-10-30 | open |
 
 Check with:
 
