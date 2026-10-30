@@ -712,6 +712,37 @@ mod tests {
         assert!(!seen.iter().any(|e| matches!(e, egui::Event::Paste(_))), "{seen:?}");
     }
 
+    /// A coordinate or delta too large for an `f32` became an infinite or NaN pointer position or
+    /// scroll delta (egui panics on NaN positions in debug builds). Such a gesture is refused and
+    /// queues nothing; ordinary values and over-large `count` / `steps` still work.
+    #[test]
+    fn gestures_refuse_numbers_that_are_not_screen_positions() {
+        let mut app = LccApp::new(lcc_engine::Session::new(), crate::Services::default());
+        app.ui.settings.gpu = false;
+        let mut h = Headless::new(app, [480.0, 320.0], 1.0);
+        let t = Duration::from_secs(5);
+        h.step();
+        let refused = [
+            ("ui.click", json!({"x": 1e308})),
+            ("ui.click", json!({"y": -1e308})),
+            ("ui.move", json!({"x": 1e300, "y": 1.0})),
+            ("ui.drag", json!({"x": 1.0, "toY": 1e308})),
+            ("ui.dragWidget", json!({"id": "any", "dx": -1e308})),
+            ("ui.scroll", json!({"dy": 1e308})),
+            ("ui.pointer", json!({"events": [{"kind": "down", "x": 0.5}, {"kind": "move", "x": 1e308}]})),
+        ];
+        for (method, p) in refused {
+            let r = h.request(method, p.clone(), t);
+            assert_eq!(r["ok"], false, "{method} {p}: {r}");
+            assert!(r["error"].as_str().is_some_and(|e| e.starts_with(method) && e.contains("between")), "{r}");
+        }
+        let r = h.request("ui.click", json!({"x": 10.0, "y": 5.0, "count": u64::MAX}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        let r = h.request("ui.drag", json!({"x": 1.0, "y": 1.0, "toX": 999_999.0, "toY": 1.0, "steps": 1e12}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        h.step();
+    }
+
     #[test]
     fn screenshot_dimensions_are_checked_before_layout() {
         assert_eq!(viewport_pixels([1600.0, 1000.0], 2.0).unwrap(), [3200, 2000]);

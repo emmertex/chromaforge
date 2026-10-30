@@ -214,8 +214,38 @@ fn widget_rect(app: &LccApp, id: &str) -> Option<egui::Rect> {
     app.widgets.iter().rev().find(|(w, _)| w == id).map(|(_, r)| *r)
 }
 
+/// The largest coordinate or offset a gesture takes, in points (far past any screen).
+const MAX_GESTURE_NUMBER: f64 = 1e6;
+
+/// Every number of a gesture's parameters (and of `ui.pointer`'s events) is finite and within
+/// ±[`MAX_GESTURE_NUMBER`]. A larger one turns into an infinite or NaN `f32` position or scroll
+/// delta: egui asserts on NaN positions, and a release build would hand them to every widget.
+/// `count` and `steps` are clamped where they are read instead, and `ui.zoom`'s `factor` (a
+/// multiplier, not a position) is checked by its own branch.
+pub(crate) fn check_gesture_numbers(method: &str, p: &Value) -> Result<(), String> {
+    fn check(method: &str, key: &str, v: &Value) -> Result<(), String> {
+        match v {
+            Value::Number(n) if !matches!(key, "count" | "steps" | "factor") => match n.as_f64() {
+                Some(x) if x.abs() <= MAX_GESTURE_NUMBER => Ok(()),
+                _ => Err(format!("{method}: `{key}` must be a number between -1000000 and 1000000")),
+            },
+            Value::Array(a) => a.iter().try_for_each(|v| check(method, key, v)),
+            Value::Object(o) => o.iter().try_for_each(|(k, v)| check(method, k, v)),
+            _ => Ok(()),
+        }
+    }
+    check(method, "", p)
+}
+
 pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
+    if matches!(
+        req.method.as_str(),
+        "ui.click" | "ui.move" | "ui.drag" | "ui.clickWidget" | "ui.dragWidget" | "ui.hoverWidget" | "ui.pointer" | "ui.scroll"
+    ) && let Err(e) = check_gesture_numbers(&req.method, p)
+    {
+        return err(e);
+    }
     let s = |k: &str| p.get(k).and_then(Value::as_str);
     let f = |k: &str| p.get(k).and_then(Value::as_f64);
     match req.method.as_str() {
