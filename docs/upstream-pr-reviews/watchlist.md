@@ -56,6 +56,11 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3362 | Update prompt shows the app icon instead of a letter | 2026-10-30 | open |
 | 3363 | LRC-LIB-LIBFOLDERS: Synchronize several folders at once, one after another (stacked on #3107 and #1943) | 2026-10-30 | open |
 | 3364 | fix(ui): translate the white balance preset menu | 2026-10-30 | open |
+| 3365 | Fix pretend-version testing for update prompts | 2026-10-30 | open |
+| 3366 | Reject mismatched XML closing tags | 2026-10-30 | open |
+| 3367 | Reject multiple GPX document roots | 2026-10-30 | open |
+| 3369 | Issue #3368: drop_import's launch-list tests wait for the library checks before clicking | 2026-10-30 | open |
+| 3370 | GPU equivalence tests run on a software adapter when asked (lavapipe, WARP), for local runs on every platform | 2026-10-30 | open |
 
 Check with:
 
