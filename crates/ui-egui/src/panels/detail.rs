@@ -1498,7 +1498,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             .any(|s| app.renderer.is_pending(s) && !app.renderer.retrying(s));
     let keys = [Slot::Main, Slot::Before, Slot::Window(crate::render::PANE_AFTER), Slot::Window(crate::render::PANE_BEFORE)]
         .map(|s| app.renderer.textures.get(&s).filter(|t| t.photo == id).map(|t| t.key));
-    let rendering = ui.ctx().data_mut(|d| rendering_overdue(d.get_temp_mut_or(egui::Id::new("loupe-rendering"), None), keys, coming, now));
+    let wait = rendering_wait(app);
+    let rendering =
+        ui.ctx().data_mut(|d| rendering_overdue_for(d.get_temp_mut_or(egui::Id::new("loupe-rendering"), (id, None)), id, keys, coming, now, wait));
     // the render failed while a stand-in is up: what is on screen is all there will be (also while
     // a library change retries it)
     let failed = (!rendering
@@ -1513,11 +1515,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         let over = if over.is_positive() { over } else { canvas };
         match failed {
             Some(e) => failed_pill(ui, app, &photo, canvas, over, nav, "loupe:renderFailed", e),
-            // View Options' Show message when loading or rendering photos
-            None if app.ui.settings.loupe_messages => {
+            // (View Options' Show message when loading or rendering photos sets how long the wait is)
+            None => {
                 loupe_pill(ui, canvas, over, nav, "loupe:rendering", crate::i18n::tr("Rendering…"), false);
             }
-            None => {}
         }
     }
     if let Some(why) = photo.preview_only.as_deref().filter(|_| !fullscreen) {
@@ -1995,17 +1996,22 @@ pub(crate) const WARM_FULL_AFTER_S: f64 = 1.5;
 
 /// How long a render may be on its way, with nothing new on screen, before the loupe says
 /// "Rendering…" (s): as long as the activity stack waits before it shows a task.
-const RENDERING_AFTER_SECS: f64 = 0.5;
+pub(crate) const RENDERING_AFTER_SECS: f64 = 0.5;
+
+/// The same wait while View Options' Show message when loading or rendering photos is off: the
+/// person asked not to be told about ordinary renders, but a photo that is still the old picture
+/// after this long looks like a frozen app, so the loupe says so anyway (s).
+pub(crate) const SLOW_RENDERING_AFTER_SECS: f64 = 3.0;
 
 /// What [`rendering_overdue`] keeps between frames while a render is coming: the texture keys on
 /// screen, since when, and whether the pill is up.
 type RenderingWait = Option<([Option<u64>; 4], f64, bool)>;
 
-/// Whether the loupe says "Rendering…": a render has been `coming` for [`RENDERING_AFTER_SECS`] with
-/// no new texture `keys` on screen. The wait starts when the render starts coming (an idle app draws
-/// no frames, so the last one may be long ago), and once up the pill stays until nothing is coming:
-/// drafts slower than the wait don't make it blink.
-pub(crate) fn rendering_overdue(wait: &mut RenderingWait, keys: [Option<u64>; 4], coming: bool, now: f64) -> bool {
+/// Whether the loupe says "Rendering…": a render has been `coming` for `after` seconds (the
+/// constants above) with no new texture `keys` on screen. The wait starts when the render starts
+/// coming (an idle app draws no frames, so the last one may be long ago), and once up the pill stays
+/// until nothing is coming: drafts slower than the wait don't make it blink.
+pub(crate) fn rendering_overdue(wait: &mut RenderingWait, keys: [Option<u64>; 4], coming: bool, now: f64, after: f64) -> bool {
     if !coming {
         *wait = None;
         return false;
@@ -2014,8 +2020,30 @@ pub(crate) fn rendering_overdue(wait: &mut RenderingWait, keys: [Option<u64>; 4]
     if !*up && *seen != keys {
         (*seen, *since) = (keys, now);
     }
-    *up |= now - *since > RENDERING_AFTER_SECS;
+    *up |= now - *since > after;
     *up
+}
+
+/// [`rendering_overdue`] for a pane that shows one photo at a time: the wait belongs to the photo
+/// in `state`, so one moved in starts its own (the pill of the last photo doesn't carry over).
+pub(crate) fn rendering_overdue_for(
+    state: &mut (PhotoId, RenderingWait),
+    photo: PhotoId,
+    keys: [Option<u64>; 4],
+    coming: bool,
+    now: f64,
+    after: f64,
+) -> bool {
+    if state.0 != photo {
+        *state = (photo, None);
+    }
+    rendering_overdue(&mut state.1, keys, coming, now, after)
+}
+
+/// How long a render may be on its way before the loupe says "Rendering…": View Options' Show message when loading or
+/// rendering photos on, half a second; off, only a render that stays slow says so.
+fn rendering_wait(app: &LccApp) -> f64 {
+    if app.ui.settings.loupe_messages { RENDERING_AFTER_SECS } else { SLOW_RENDERING_AFTER_SECS }
 }
 
 /// A pill over the photo, 12 pt above the bottom of `over` or just above the Navigator when that
@@ -4862,20 +4890,42 @@ mod tests {
     /// a moment with nothing new on screen, and doesn't blink while slow drafts arrive.
     #[test]
     fn the_loupe_says_rendering_when_the_screen_falls_behind() {
-        use super::{RENDERING_AFTER_SECS as WAIT, rendering_overdue};
+        use super::{RENDERING_AFTER_SECS as WAIT, SLOW_RENDERING_AFTER_SECS as SLOW, rendering_overdue};
         let key = |k| [Some(k), None, None, None];
         let mut wait = None;
-        assert!(!rendering_overdue(&mut wait, key(1), false, 0.0), "nothing coming");
+        assert!(!rendering_overdue(&mut wait, key(1), false, 0.0, WAIT), "nothing coming");
         // an edit after an idle spell: the wait starts now, not at the last frame drawn
-        assert!(!rendering_overdue(&mut wait, key(1), true, 30.0), "a render just asked for");
-        assert!(!rendering_overdue(&mut wait, key(1), true, 30.0 + WAIT * 0.8), "a quick render never shows it");
-        assert!(rendering_overdue(&mut wait, key(1), true, 30.0 + WAIT * 1.2), "nothing new for the wait");
-        assert!(rendering_overdue(&mut wait, key(2), true, 31.0 + WAIT), "once up, a slow draft doesn't blink it");
-        assert!(!rendering_overdue(&mut wait, key(3), false, 32.0), "done");
+        assert!(!rendering_overdue(&mut wait, key(1), true, 30.0, WAIT), "a render just asked for");
+        assert!(!rendering_overdue(&mut wait, key(1), true, 30.0 + WAIT * 0.8, WAIT), "a quick render never shows it");
+        assert!(rendering_overdue(&mut wait, key(1), true, 30.0 + WAIT * 1.2, WAIT), "nothing new for the wait");
+        assert!(rendering_overdue(&mut wait, key(2), true, 31.0 + WAIT, WAIT), "once up, a slow draft doesn't blink it");
+        assert!(!rendering_overdue(&mut wait, key(3), false, 32.0, WAIT), "done");
         // a drag whose drafts keep up: always something coming, a new draft every 0.1 s
         for i in 1..30u32 {
-            assert!(!rendering_overdue(&mut wait, key(u64::from(i)), true, 40.0 + f64::from(i) * 0.1), "draft {i}");
+            assert!(!rendering_overdue(&mut wait, key(u64::from(i)), true, 40.0 + f64::from(i) * 0.1, WAIT), "draft {i}");
         }
+        // with the message off the same logic waits for the longer time
+        let mut wait = None;
+        assert!(!rendering_overdue(&mut wait, key(1), true, 50.0, SLOW));
+        assert!(!rendering_overdue(&mut wait, key(1), true, 50.0 + SLOW * 0.8, SLOW), "a render that is only a little slow stays quiet");
+        assert!(rendering_overdue(&mut wait, key(1), true, 50.0 + SLOW * 1.2, SLOW), "one that stays slow says so");
+    }
+
+    /// The wait belongs to the photo on screen: a slow render's pill doesn't stay up for the next
+    /// photo, whose render may well come in under the wait.
+    #[test]
+    fn the_rendering_wait_starts_afresh_for_the_next_photo() {
+        use super::{PhotoId, RENDERING_AFTER_SECS as WAIT, rendering_overdue_for};
+        let key = |k| [Some(k), None, None, None];
+        let mut state = (PhotoId(1), None);
+        assert!(!rendering_overdue_for(&mut state, PhotoId(1), key(1), true, 10.0, WAIT));
+        assert!(rendering_overdue_for(&mut state, PhotoId(1), key(1), true, 10.0 + WAIT * 1.2, WAIT), "a slow render of the first photo");
+        // the next photo's render is pending at once: its own wait just began
+        assert!(
+            !rendering_overdue_for(&mut state, PhotoId(2), key(1), true, 10.0 + WAIT * 1.3, WAIT),
+            "the pill of the last photo does not carry over"
+        );
+        assert!(rendering_overdue_for(&mut state, PhotoId(2), key(1), true, 10.0 + WAIT * 2.6, WAIT), "its own wait can still run out");
     }
 
     /// Issue #652: a native host reports the GPU's texture limit in the first frame's input only.

@@ -10,3 +10,4 @@
 - The side buttons of a mouse now do what the arrow keys do: Forward shows the next photo and Back the previous one. Like the arrow keys, they do nothing while a dialog or a text field has the keyboard, and pressed over a slider they only change the photo.
 - Settings, Display & Speed: the thumbnail cache size has a Custom option, in whole GB (up to 1 TB), for large libraries that outgrow 8 GB. A size you are still typing is saved when you leave the section or close Settings.
 - Edit, Select by now lists each rating on its own (one star only through five stars only) below the "and higher" rows, next to Unrated.
+- With "Show message when loading or rendering photos" off, the loupe still says "Rendering…" when a render stays slow (more than 3 seconds), so the old picture on screen does not look like a frozen app. The wait also starts afresh for each photo you move to.
