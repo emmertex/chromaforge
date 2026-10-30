@@ -330,6 +330,122 @@ fn mask_overlay_keys_and_pins() {
     h.settle(SETTLE);
 }
 
+/// Issue #3049: Show Pins draws a pin for an Object mask (at its first click) and a Describe
+/// mask (on what its segmentation found). Clicking one selects its mask; dragging it leaves the
+/// mask and the History alone, since neither can be moved.
+#[test]
+fn object_and_describe_masks_show_pins_that_select_but_do_not_move() {
+    use lcc_develop::SegMask;
+    use lcc_geom::Point;
+    let mut h = detail("panel.masking");
+    // a 16 × 16 segmentation found in columns 2..=5, rows 10..=13: centred on (0.25, 0.75)
+    let blob: Vec<f32> = (0..16 * 16).map(|i| if (2..=5).contains(&(i % 16)) && (10..=13).contains(&(i / 16)) { 8.0 } else { -8.0 }).collect();
+    let seg = SegMask::from_logits(16, &blob);
+    let object = MaskShape::Object { hint: vec![Point::new(0.6, 0.5)], exclude: vec![], seg: Some(seg.clone()), detail: vec![], edge: 0.0 };
+    let prompt = MaskShape::Prompt { text: "the boat".into(), seg: Some(seg), detail: vec![], edge: 0.0 };
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.1, "ry": 0.1}));
+    exec(&mut h, "mask.update", json!({"id": 1, "shape": object}));
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.1, "ry": 0.1}));
+    exec(&mut h, "mask.update", json!({"id": 2, "shape": prompt}));
+    assert_eq!(h.app.session.active_mask, Some(2));
+    // pins shown without the pointer over the photo
+    exec(&mut h, "view.toolOverlay", json!({"mode": "always"}));
+    h.settle(SETTLE);
+    let pin_at = |h: &Headless, id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| r.center());
+    let (Some(object_pin), Some(prompt_pin)) = (pin_at(&h, "maskPin:1:0"), pin_at(&h, "maskPin:2:0")) else {
+        panic!("both masks have a pin: {:?}", h.app.widgets.iter().filter(|(w, _)| w.starts_with("maskPin:")).collect::<Vec<_>>())
+    };
+    // the Describe pin sits on what was found, right of and below the Object's
+    assert!(prompt_pin.x < object_pin.x && prompt_pin.y > object_pin.y, "{object_pin:?} {prompt_pin:?}");
+    // clicking a pin selects its mask
+    pointer(&mut h, json!([{"kind": "down", "x": 0.6, "y": 0.5}, {"kind": "up", "x": 0.6, "y": 0.5}]));
+    assert_eq!(h.app.session.active_mask, Some(1));
+    pointer(&mut h, json!([{"kind": "down", "x": 0.25, "y": 0.75}, {"kind": "up", "x": 0.25, "y": 0.75}]));
+    assert_eq!(h.app.session.active_mask, Some(2));
+    // dragging one changes nothing and adds no History step
+    let id = h.app.session.active().expect("active photo");
+    let before = h.app.session.catalog.photo(id).expect("photo").clone();
+    pointer(
+        &mut h,
+        json!([{"kind": "down", "x": 0.6, "y": 0.5}, {"kind": "drag", "x": 0.65, "y": 0.55}, {"kind": "drag", "x": 0.8, "y": 0.7}, {"kind": "up", "x": 0.8, "y": 0.7}]),
+    );
+    assert_eq!(h.app.session.active_mask, Some(1), "the press still selects the mask");
+    let after = h.app.session.catalog.photo(id).expect("photo").clone();
+    assert_eq!((after.develop.clone(), after.history.len()), (before.develop.clone(), before.history.len()));
+    h.settle(SETTLE);
+}
+
+/// Issue #3049: with the Object tool on, a click on another mask's pin selects that mask instead
+/// of adding an Object click to the selected one. The tool stays on for an Object mask (its
+/// clicks refine it) and goes off for a mask with no Object selection to refine.
+#[test]
+fn the_object_tool_selects_the_mask_whose_pin_is_clicked() {
+    use lcc_geom::Point;
+    let mut h = detail("panel.masking");
+    // no SAM 3 model here: a stray Object click would offer the download or show an error
+    let dir = std::env::temp_dir().join(format!("lc-ui-pin-object-{}", std::process::id()));
+    h.app.session.segmenter.dir = Some(dir.clone());
+    h.app.session.segmenter.mirrors_file = Some(dir.join("none.txt"));
+    let object = |at: Point| MaskShape::Object { hint: vec![at], exclude: vec![], seg: None, detail: vec![], edge: 0.0 };
+    let radial = json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.1, "ry": 0.1});
+    exec(&mut h, "mask.add", radial.clone());
+    exec(&mut h, "mask.update", json!({"id": 1, "shape": object(Point::new(0.6, 0.5))}));
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.2, 0.8], "rx": 0.05, "ry": 0.05}));
+    exec(&mut h, "mask.add", radial);
+    exec(&mut h, "mask.update", json!({"id": 3, "shape": object(Point::new(0.3, 0.3))}));
+    assert_eq!(h.app.session.active_mask, Some(3));
+    exec(&mut h, "view.toolOverlay", json!({"mode": "always"}));
+    h.app.ui.tool = "object".into();
+    h.settle(SETTLE);
+    let toast = h.app.ui.toast().map(|t| t.0.clone());
+    let before = develop(&h).masks;
+    // the Object mask's pin: it is selected, its clicks and the selected mask's stay as they were
+    pointer(&mut h, json!([{"kind": "down", "x": 0.6, "y": 0.5}, {"kind": "up", "x": 0.6, "y": 0.5}]));
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.active_mask, Some(1), "the pinned mask is selected");
+    assert_eq!(develop(&h).masks, before, "no Object click was added to any mask");
+    assert!(h.app.ui.dialog.is_none(), "no Object click was tried");
+    assert_eq!(h.app.ui.toast().map(|t| t.0.clone()).filter(|t| Some(t) != toast.as_ref()), None, "no error");
+    assert_eq!(h.app.ui.tool, "object", "the tool stays on to refine the Object mask");
+    // the Radial mask's pin: selected, and the Object tool goes off (nothing for it to refine)
+    pointer(&mut h, json!([{"kind": "down", "x": 0.2, "y": 0.8}, {"kind": "up", "x": 0.2, "y": 0.8}]));
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.active_mask, Some(2));
+    assert_eq!(develop(&h).masks, before);
+    assert_eq!(h.app.ui.tool, "", "the Object tool is off");
+    assert!(h.app.ui.dialog.is_none());
+}
+
+/// Issue #3049: with the Object tool on, a click on the selected Object mask's own pin adds no
+/// near-copy of its first click (which would use up one of its limited Object clicks): its
+/// clicks stay as they were, it stays selected and no error is shown.
+#[test]
+fn the_object_tool_adds_no_click_on_the_selected_masks_own_pin() {
+    use lcc_geom::Point;
+    let mut h = detail("panel.masking");
+    // no SAM 3 model here: a stray Object click would offer the download or show an error
+    let dir = std::env::temp_dir().join(format!("lc-ui-own-pin-object-{}", std::process::id()));
+    h.app.session.segmenter.dir = Some(dir.clone());
+    h.app.session.segmenter.mirrors_file = Some(dir.join("none.txt"));
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.1, "ry": 0.1}));
+    let object = MaskShape::Object { hint: vec![Point::new(0.6, 0.5)], exclude: vec![], seg: None, detail: vec![], edge: 0.0 };
+    exec(&mut h, "mask.update", json!({"id": 1, "shape": object}));
+    assert_eq!(h.app.session.active_mask, Some(1));
+    exec(&mut h, "view.toolOverlay", json!({"mode": "always"}));
+    h.app.ui.tool = "object".into();
+    h.settle(SETTLE);
+    let toast = h.app.ui.toast().map(|t| t.0.clone());
+    let before = develop(&h).masks;
+    // a little off the pin's centre, as a hand clicks it
+    pointer(&mut h, json!([{"kind": "down", "x": 0.601, "y": 0.501}, {"kind": "up", "x": 0.601, "y": 0.501}]));
+    h.settle(SETTLE);
+    assert_eq!(develop(&h).masks, before, "no Object click was added");
+    assert_eq!(h.app.session.active_mask, Some(1), "the mask stays selected");
+    assert!(h.app.ui.dialog.is_none(), "no Object click was tried");
+    assert_eq!(h.app.ui.toast().map(|t| t.0.clone()).filter(|t| Some(t) != toast.as_ref()), None, "no error");
+    assert_eq!(h.app.ui.tool, "object", "the tool stays on");
+}
+
 /// #2210: Ctrl+Shift+O (the all-masks overlay) draws the white outline of every visible
 /// Radial/Linear mask, not just the selected one — but only the selected mask registers
 /// `maskHandle:` elements, so nothing else becomes draggable.
@@ -1586,7 +1702,7 @@ fn ai_masks_without_the_model_offer_the_download() {
     assert!(develop(&h).masks.is_empty());
     if !Segmenter::AVAILABLE {
         // a build without AI masks says so (a toast), no dialog
-        assert_eq!(h.app.ui.dialog, None);
+        assert!(h.app.ui.dialog.is_none());
         return;
     }
     assert_eq!(h.app.ui.dialog, Some(Dialog::SamModel { then: Some(("object".into(), "new".into())), error: None }));
@@ -1626,7 +1742,7 @@ fn ai_masks_without_the_model_offer_the_download() {
     h.step();
     let r = h.request("ui.clickWidget", json!({"id": "button:dialogCancel"}), T);
     assert_eq!(r["ok"], true, "{r}");
-    assert_eq!(h.app.ui.dialog, None);
+    assert!(h.app.ui.dialog.is_none());
     // Describe asks too
     let r = h.request("ui.clickWidget", json!({"id": "maskNew:prompt"}), T);
     assert_eq!(r["ok"], true, "{r}");

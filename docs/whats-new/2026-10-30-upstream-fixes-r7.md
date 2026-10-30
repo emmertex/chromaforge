@@ -6,3 +6,4 @@
 - A render request for a size far beyond the photo is held to 512 megapixels instead of aborting the app on allocation.
 - Negative pixel sizes in an XMP sidecar are ignored, a GPX file with more than one root element is refused, and the white balance menu in the Edit panel is translated.
 - The People cards show the full number of photos on the picture (6110, not 999+); the line under the name that repeated it is gone.
+- Show Pins now draws a pin for Object masks (at the first click) and for Describe masks (on what was found). Clicking one selects its mask, and with the Object tool on, a click on another mask's pin selects that mask instead of adding an Object click to the selected one.
