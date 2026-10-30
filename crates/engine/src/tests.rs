@@ -331,6 +331,17 @@ fn permanently_deleting_explicit_targets_keeps_the_surviving_selection() {
     assert_eq!(s.catalog.to_snapshot(), snapshot);
 }
 
+#[test]
+fn a_mask_id_at_the_limit_does_not_overflow_the_next_masks() {
+    let mut s = demo();
+    s.execute("develop.merge", &json!({"settings": {"masks": [{"id": u32::MAX, "name": "Pasted"}]}})).unwrap();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    s.execute("mask.duplicate", &json!({})).unwrap();
+    let ids: Vec<u32> = active_dev(&s).masks.iter().map(|m| m.id).collect();
+    assert_eq!(ids.len(), 3);
+    assert!(ids.iter().enumerate().all(|(i, id)| !ids[..i].contains(id)), "distinct ids: {ids:?}");
+}
+
 /// `mask.brushStroke {connect: true}` (a ⇧-click) starts from the last point of the mask's last stroke: one straight
 /// stroke when the brush is unchanged, pieces whose size, feather and flow step from the last stroke's to the new
 /// values when it changed, and a plain dab when there is nothing to connect to.
