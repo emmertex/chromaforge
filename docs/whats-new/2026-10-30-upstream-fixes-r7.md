@@ -5,3 +5,4 @@
 - Downloads of AI models no longer fail when the server sends an interim "103 Early Hints" response first.
 - A render request for a size far beyond the photo is held to 512 megapixels instead of aborting the app on allocation.
 - Negative pixel sizes in an XMP sidecar are ignored, a GPX file with more than one root element is refused, and the white balance menu in the Edit panel is translated.
+- The People cards show the full number of photos on the picture (6110, not 999+); the line under the name that repeated it is gone.
