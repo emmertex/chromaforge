@@ -773,4 +773,46 @@ pub(crate) mod tests {
         let info = crate::probe_info(&bytes).unwrap();
         assert_eq!(info.metadata.lens_model.as_deref(), Some("EF24-70mm f/2.8L II USM"));
     }
+
+    /// A 68 x 50 sensor whose `SensorInfo` image area is the 64 x 48 (4:3) at (4, 2), with `aspect` as its
+    /// `AspectInfo` (LONG x 5), decoded.
+    fn decode_with_aspect(aspect: Option<[u32; 5]>) -> RawImage {
+        let si: Vec<u8> = [68u16, 50, 0, 0, 0, 4, 2, 67, 49].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut entries = vec![(SENSOR_INFO, 3, si)];
+        if let Some(a) = aspect {
+            entries.push((CANON_ASPECT_INFO, 4, a.iter().flat_map(|v| v.to_le_bytes()).collect()));
+        }
+        decode_sized_with_note(68, 50, &entries)
+    }
+
+    /// Issue #3313: a CR2 shot at 3:2 on a 4:3 sensor (PowerShot G12: `AspectInfo` 3648 x 2432 at top 152 of the
+    /// 3648 x 2736 image area) opens with that rectangle as its crop, as a CR3 does; the active area is unchanged.
+    #[test]
+    fn aspect_info_replaces_the_crop() {
+        let image = decode_with_aspect(Some([0, 64, 42, 0, 3]));
+        assert_eq!(image.active_area, Rect::new(4, 2, 64, 48));
+        assert_eq!(image.crop, Rect::new(0, 3, 64, 42));
+        assert_eq!((image.metadata.width, image.metadata.height), (Some(64), Some(42)));
+        assert_eq!(image.info().developed_size(), (64, 42));
+        // 1:1 with a left offset
+        assert_eq!(decode_with_aspect(Some([1, 48, 48, 8, 0])).crop, Rect::new(8, 0, 48, 48));
+        // the whole image area, as stored for a shot at the sensor's own aspect (G16 at 4:3), or no tag: unchanged
+        for aspect in [Some([2, 64, 48, 0, 0]), None] {
+            let image = decode_with_aspect(aspect);
+            assert_eq!(image.crop, Rect::new(0, 0, 64, 48), "{aspect:?}");
+            assert_eq!((image.metadata.width, image.metadata.height), (Some(64), Some(48)));
+        }
+    }
+
+    /// Rectangles that don't fit the image area leave the crop alone and cannot overflow; without a usable
+    /// `SensorInfo` the origin `AspectInfo` is measured from is unknown, so it isn't applied either.
+    #[test]
+    fn aspect_info_that_does_not_fit_is_ignored() {
+        for bad in [[0, 65, 42, 0, 3], [0, 64, 42, 0, 7], [0, 64, 42, 1, 3], [0, 1, 42, 0, 0], [0, 64, 0, 0, 0], [0, u32::MAX, 42, 0, 0]] {
+            assert_eq!(decode_with_aspect(Some(bad)).crop, Rect::new(0, 0, 64, 48), "{bad:?}");
+        }
+        let aspect = [0u32, 32, 8, 0, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let image = decode_with_note(&[(CANON_ASPECT_INFO, 4, aspect)]);
+        assert_eq!((image.active_area, image.crop), (Rect::new(0, 0, 64, 10), Rect::new(0, 0, 64, 10)));
+    }
 }
