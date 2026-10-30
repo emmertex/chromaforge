@@ -52,6 +52,8 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3352 | Issue #3320: a render size far beyond the photo is held to a 512-megapixel ceiling instead of aborting | 2026-10-30 | open |
 | 3356 | CI: workflows only call craft-common-actions at @main (AGENTS.md; windows-arm64 unpinned) | 2026-10-30 | open |
 | 3358 | deps: bump tar, zip, roxmltree, rustls-webpki and symphonia to latest | 2026-10-30 | open |
+| 3361 | LR-IMP-LOCAL: the print, display, slideshow template and soft proof file dialogs open without freezing the window (stacked on #3343) | 2026-10-30 | open |
+| 3362 | Update prompt shows the app icon instead of a letter | 2026-10-30 | open |
 
 Check with:
 
