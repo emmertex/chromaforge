@@ -21,11 +21,16 @@
 //!   bytes (ColorData versions -3 and -4), which are paired up in the maker note's byte order first.
 //! - The same array lists the levels of the camera's white-balance presets, each with the colour temperature Canon
 //!   gives it ([`kelvin_presets_from_color_data`]): a Kelvin scale for a body without colour matrices.
+//! - `AspectInfo` (maker note `0x009a`, as in CR3: aspect code, width, height, left, top): the in-camera aspect
+//!   ratio (3:2, 4:3, 16:9, 1:1) is not applied to the sensor data, and the rectangle is measured from the top-left
+//!   of the `SensorInfo` image area. It becomes the default crop. Checked on the CC0 PowerShot G12 and S120 files
+//!   shot at 3:2 (3648 x 2432 at top 152 of a 3648 x 2736 area, 4000 x 2664 at top 168 of 4000 x 3000: centred) and
+//!   a G16 shot at 4:3 (the whole area); files shot at the sensor's own aspect store the whole area or no tag.
 //! - sRAW / mRAW (raw IFD tag `0xc6c5` = 4) hold subsampled YCbCr instead of a mosaic: see [`sraw`].
 
 mod sraw;
 
-use super::{active_rows, black_from_columns, white_from_data};
+use super::{active_rows, black_from_columns, canon_aspect_crop, white_from_data};
 use crate::{BlackLevel, Cfa, ColorData, Mode, OpcodeLists, RawData, RawError, RawFormat, RawImage, Rect, Result, ljpeg};
 use lcc_geom::Orientation;
 use lcc_tiff::image::chunk_bytes;
@@ -312,10 +317,14 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     let mn =
         tiff.exif().and_then(|e| e.get(t::MAKER_NOTE)).and_then(|e| makernote::parse_makernote(bytes, e.offset, e.count() as u64, tiff.order, &make));
     let mut active = Rect::new(0, 0, width, height);
+    let mut crop = Rect::new(0, 0, width, height);
     if let Some(si) = mn.as_ref().and_then(|m| m.ifd.u64s(SENSOR_INFO)).filter(|v| v.len() >= 9) {
         let (l, tp, r, b) = (si[5] as usize, si[6] as usize, si[7] as usize, si[8] as usize);
         if r > l && b > tp && r < width && b < height {
             active = Rect::new(l, tp, r - l + 1, b - tp + 1);
+            // `AspectInfo` is measured from the image area's origin, so it only applies when that area is known.
+            crop = Rect::new(0, 0, active.width, active.height);
+            crop = canon_aspect_crop(mn.as_ref().map(|m| &m.ifd), crop).unwrap_or(crop);
         }
     }
     let color_data = mn.as_ref().and_then(|m| m.ifd.value(COLOR_BALANCE).map(|v| words(v, m.order)));
@@ -331,8 +340,8 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     if metadata.lens_model.is_none() {
         metadata.lens_model = mn.as_ref().and_then(|m| m.ifd.string(LENS_MODEL)).filter(|s| !s.is_empty());
     }
-    metadata.width = Some(active.width as u32);
-    metadata.height = Some(active.height as u32);
+    metadata.width = Some(crop.width as u32);
+    metadata.height = Some(crop.height as u32);
     let img = RawImage {
         format: RawFormat::Cr2,
         width,
@@ -344,7 +353,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         black,
         white: vec![white],
         active_area: active,
-        crop: Rect::new(0, 0, active.width, active.height),
+        crop,
         orientation: Orientation::from_exif(ifd0.u16(t::ORIENTATION).unwrap_or(1)),
         color: ColorData { kelvin_presets, ..Default::default() },
         wb_multipliers: wb,
@@ -361,6 +370,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::vendor::CANON_ASPECT_INFO;
     use lcc_tiff::{ByteOrder, IfdBuilder, ImageData, TiffWriter, Value};
 
     /// Build a synthetic CR2: IFD0..IFD2 placeholders + IFD3 holding a sliced 2-component LJ92 frame.
@@ -568,11 +578,20 @@ pub(crate) mod tests {
     /// A maker note of `entries` (tag, TIFF type, value bytes), each value stored after the IFD, decoded; the value
     /// offsets (relative to the TIFF header) are patched once the note's position is known.
     fn decode_with_note(entries: &[(u16, u16, Vec<u8>)]) -> RawImage {
+        decode_sized_with_note(64, 10, entries)
+    }
+
+    /// [`decode_with_note`] with a `w` x `h` sensor.
+    fn decode_sized_with_note(w: usize, h: usize, entries: &[(u16, u16, Vec<u8>)]) -> RawImage {
         let ifd_len = 2 + 12 * entries.len() + 4;
         let (mut note, mut data, mut at) = (Vec::new(), Vec::new(), Vec::new());
         note.extend_from_slice(&(entries.len() as u16).to_le_bytes());
         for (tag, ty, value) in entries {
-            let count = if *ty == 3 { value.len() / 2 } else { value.len() } as u32;
+            let count = match ty {
+                3 => value.len() / 2,
+                4 => value.len() / 4,
+                _ => value.len(),
+            } as u32;
             note.extend_from_slice(&tag.to_le_bytes());
             note.extend_from_slice(&ty.to_le_bytes());
             note.extend_from_slice(&count.to_le_bytes());
@@ -582,7 +601,7 @@ pub(crate) mod tests {
         }
         note.extend_from_slice(&0u32.to_le_bytes());
         note.extend_from_slice(&data);
-        let (mut bytes, _) = synthetic_cr2_note(64, 10, None, Some(note));
+        let (mut bytes, _) = synthetic_cr2_note(w, h, None, Some(note));
         let tiff = Tiff::parse(&bytes).unwrap();
         let off = tiff.exif().unwrap().get(t::MAKER_NOTE).unwrap().offset as usize;
         for (field, value) in at {
