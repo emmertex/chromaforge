@@ -4626,12 +4626,12 @@ mod tests {
         let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[40, 3, 9, 255]; 64] };
         let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
         std::fs::write(src.join("IMG_01.png"), png).unwrap();
-        // undated files are filed by the file's date (2026-01-14T05:58:48)
+        // undated files are filed by the file's date (noon UTC: 14 January in every zone the tests run in)
         std::fs::File::options()
             .write(true)
             .open(src.join("IMG_01.png"))
             .unwrap()
-            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_768_370_328))
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_768_392_000))
             .unwrap();
         let dest_s = dest.to_string_lossy().to_string();
         let services = crate::Services { png: None, pick_folder: Some(Box::new(move || Some(dest_s.clone()))), ..Default::default() };
@@ -4689,7 +4689,7 @@ mod tests {
                 .write(true)
                 .open(src.join(format!("IMG_0{i}.png")))
                 .unwrap()
-                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_768_370_328))
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_768_392_000))
                 .unwrap();
         }
         let dest_s = dest.to_string_lossy().to_string();

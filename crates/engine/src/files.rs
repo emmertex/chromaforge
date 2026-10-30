@@ -1362,12 +1362,12 @@ fn fs_load<T>(path: &str, max_edge: usize, load: impl FnOnce(Vec<u8>) -> Result<
     r
 }
 
-/// `path`'s modification time as ISO 8601 (see [`ProbeInfo::file_modified`]); `None` when the
-/// filesystem doesn't say or the time is before 1970.
+/// `path`'s modification time in this computer's time zone (see [`ProbeInfo::file_modified`]);
+/// `None` when the filesystem doesn't say or the time is outside 1970..=9999.
 fn file_modified(path: &str) -> Option<String> {
     let t = std::fs::metadata(path).ok()?.modified().ok()?;
     let secs = i64::try_from(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs()).ok()?;
-    Some(crate::import::civil(secs))
+    lcc_catalog::dates::local(secs)
 }
 
 impl crate::Session {
@@ -1931,7 +1931,7 @@ pub(crate) mod tests {
         std::fs::write(&path, &jpeg).unwrap();
         let path = path.to_string_lossy().to_string();
         let mtime = std::fs::metadata(&path).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let want = crate::import::civil(mtime as i64);
+        let want = lcc_catalog::dates::local(mtime as i64).unwrap();
         let (_, probe) = fs_hooks();
         let info = probe(&path).unwrap();
         assert_eq!(info.captured, None, "the file itself has no date");

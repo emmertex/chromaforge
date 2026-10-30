@@ -2079,9 +2079,9 @@ pub struct ProbeInfo {
     pub kind: MediaKind,
     pub file_size: u64,
     pub captured: Option<String>,
-    /// The file's modification time (ISO 8601, the clock of [`crate::import::system_clock`]): the
-    /// capture date of a file whose metadata has none, as Lightroom does (exports saved without
-    /// metadata would otherwise all land under "Unknown Date").
+    /// The file's modification time (RFC 3339 in this computer's time zone, the clock time photos
+    /// are sorted by): the capture date of a file whose metadata has none, as Lightroom does
+    /// (exports saved without metadata would otherwise all land under "Unknown Date").
     pub file_modified: Option<String>,
     /// [`ProbeInfo::captured`] is [`ProbeInfo::file_modified`] standing in for a capture time that
     /// neither the file nor its sidecar has (set by the import, which dates such files so).

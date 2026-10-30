@@ -22,8 +22,8 @@ fn write_png(path: &Path, seed: u8) {
     let bytes = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
-    // undated files take the file's date: the tests' clock time (2026-01-14T05:58:48)
-    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_768_370_328);
+    // undated files take the file's date: noon UTC, 14 January in every zone the tests run in
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_768_392_000);
     std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
 }
 

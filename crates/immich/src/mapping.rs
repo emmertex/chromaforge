@@ -63,8 +63,9 @@ pub fn captured(p: &Photo) -> Option<&str> {
     let lcc_catalog::Source::File { path } = &p.source else { return Some(c) };
     let modified = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
     let secs = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).and_then(|d| i64::try_from(d.as_secs()).ok());
+    // (older imports wrote that date in UTC, with no zone)
     match secs {
-        Some(s) if lcc_catalog::dates::civil(s) == c => None,
+        Some(s) if lcc_catalog::dates::local(s).as_deref() == Some(c) || lcc_catalog::dates::civil(s) == c => None,
         _ => Some(c),
     }
 }

@@ -33,6 +33,17 @@ pub fn civil(secs: i64) -> String {
     }
 }
 
+/// Unix seconds → RFC 3339 in this computer's time zone (`2026-10-29T09:00:00+11:00`), the clock
+/// time photos are sorted and grouped by. `None` outside 1970..=9999.
+pub fn local(secs: i64) -> Option<String> {
+    // chrono's local zone lookup can panic far outside the years a file is dated
+    if !(0..=253_402_300_799).contains(&secs) {
+        return None;
+    }
+    let local = chrono::DateTime::from_timestamp(secs, 0)?.with_timezone(&chrono::Local);
+    Some(local.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
+}
+
 /// Weekday name of an ISO date (`None` if it doesn't parse).
 pub fn weekday(iso: &str) -> Option<&'static str> {
     let days = iso_seconds(iso.get(..10)?)?.div_euclid(86_400);
@@ -439,6 +450,15 @@ mod tests {
         assert_eq!(civil(-10_000_000_000_000), "-314918-08-13T06:13:20");
         assert_eq!(civil(i64::MAX), "292277026596-12-04T15:30:07");
         assert_eq!(civil(i64::MIN), "-292277022657-01-27T08:29:52");
+        // the same instant in this computer's zone, with its offset; nothing outside 1970..=9999
+        for secs in [0, 951_782_400, 1_777_630_830, 253_402_300_799] {
+            let d = chrono::DateTime::parse_from_rfc3339(&local(secs).unwrap()).unwrap();
+            assert_eq!(d.timestamp(), secs);
+            assert_eq!(d.offset().local_minus_utc(), d.with_timezone(&chrono::Local).offset().local_minus_utc());
+        }
+        assert_eq!(local(-1), None);
+        assert_eq!(local(253_402_300_800), None);
+        assert_eq!(local(i64::MIN), None);
         assert_eq!(weekday("2026-09-30"), Some("Wednesday"));
         assert_eq!(weekday("2026-10-01T09:00:00"), Some("Thursday"));
         assert_eq!(weekday("2000-02-29"), Some("Tuesday"));

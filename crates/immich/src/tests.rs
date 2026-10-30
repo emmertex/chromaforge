@@ -365,6 +365,25 @@ fn metadata_maps_one_way_on_import() {
     assert_eq!(q.meta.gps, None, "out-of-range coordinates are dropped");
 }
 
+/// A photo dated only by its file's modification time doesn't send that date to Immich, whether
+/// the import wrote it in local time with a zone or, as older imports did, in UTC.
+#[test]
+fn a_file_date_is_not_a_capture_date() {
+    let dir = std::env::temp_dir().join(format!("lcc-immich-file-date-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("x.jpg");
+    std::fs::write(&path, b"x").unwrap();
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let mut p = Photo::new(PhotoId(1), Source::File { path: path.to_string_lossy().to_string() }, "x.jpg", "JPEG", 1, 1, "now");
+    for file_date in [lcc_catalog::dates::local(mtime).unwrap(), lcc_catalog::dates::civil(mtime)] {
+        p.captured = Some(file_date.clone());
+        assert_eq!(mapping::captured(&p), None, "{file_date}");
+    }
+    p.captured = Some("2024-05-06T07:08:09".into());
+    assert_eq!(mapping::captured(&p), Some("2024-05-06T07:08:09"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn external_library_paths_map_both_ways() {
     let maps = vec![

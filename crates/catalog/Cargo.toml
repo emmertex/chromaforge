@@ -21,7 +21,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 crc32fast = { workspace = true }
 log = { workspace = true }
-chrono = { workspace = true }
+chrono = { workspace = true, features = ["clock"] }
 web-time = { workspace = true }
 siphasher = { workspace = true }
 

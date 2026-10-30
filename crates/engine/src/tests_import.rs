@@ -24,8 +24,8 @@ fn write_png(path: &Path, seed: u8) {
     let bytes = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
-    // undated files take the file's date: the tests' clock time (2026-01-14T05:58:48)
-    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_768_370_328);
+    // undated files take the file's date: noon UTC, 14 January in every zone the tests run in
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_768_392_000);
     std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
 }
 
@@ -53,7 +53,7 @@ fn write_png_with_metadata(path: &Path, seed: u8, exif: Option<&[u8]>, xmp: Opti
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
     // Keep the same known file-date fallback as write_png, distinct from the regression timestamp.
-    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_768_370_328);
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_768_392_000);
     std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
 }
 
@@ -585,8 +585,8 @@ fn exif_clock_malformed_capture_cannot_fabricate_tracklog_match() {
     assert_eq!(ids(&imported, "imported"), 1, "{imported}");
     let bad_id = imported["imported"][0].as_u64().unwrap();
     assert_eq!(
-        s.catalog.photo(PhotoId(bad_id)).unwrap().captured.as_deref(),
-        Some("2026-01-14T05:58:48"),
+        s.catalog.photo(PhotoId(bad_id)).unwrap().captured,
+        lcc_catalog::dates::local(1_768_392_000),
         "malformed EXIF must leave the normal file-date fallback in effect"
     );
     let all = s.execute("photo.allMetadata", &json!({"id": bad_id})).unwrap();

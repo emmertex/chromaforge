@@ -324,7 +324,7 @@ the exact sRGB curve unbounded above 1, continues the curves past SDR white with
 reduction (`DeepImage::to_rgba8`), so the histogram is still binned on the GPU. `hdr_renders_match`
 compares the float samples (sRGB-encoded past 1, ×255) with the CPU's: max < 0.01, mean ≤ 0.0001 steps
 on the AMD Radeon 8060S across tone-map arms, light edits, vignette, curves, grain and an HDR request of
-an SDR edit. 16-bit and SDR float exports, soft proofs and Visualize HDR stay on the CPU (`handles`).
+an SDR edit. 16-bit and SDR float exports, soft proofs against an output-device profile and Visualize HDR stay on the CPU (`handles`); matrix soft proofs of HDR renders run on the GPU, mapped to the HDR peak.
 An HDR view on an HDR display that takes texels (`HdrOutput::texel_headroom`) has its
 `Rgba16Float` texture made on the device (`lcc_gpu::try_render_hdr_texels`, `hdr_texels.wgsl`, the
 same transform as `lcc_engine::hdr_texture::encode_pixel`): 8 bytes a pixel come back instead of 12,

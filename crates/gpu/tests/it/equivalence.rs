@@ -1108,8 +1108,13 @@ fn hdr_codes(r: &lcc_pipeline::Rendered) -> Vec<f32> {
 
 fn check_hdr(name: &str, src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, w: usize, h: usize) {
     let req = RenderRequest { depth: lcc_pipeline::OutputDepth::F32Hdr, ..RenderRequest::fit(w, h) };
-    let cpu = render(src, info, s, &req);
-    let gpu = lcc_gpu::try_render(src, info, s, &req, None).expect("the GPU renders HDR requests");
+    check_hdr_req(name, src, info, s, &req);
+}
+
+fn check_hdr_req(name: &str, src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest) {
+    let (w, h) = (req.max_w, req.max_h);
+    let cpu = render(src, info, s, req);
+    let gpu = lcc_gpu::try_render(src, info, s, req, None).expect("the GPU renders HDR requests");
     let (a, b) = (hdr_codes(&cpu), hdr_codes(&gpu));
     assert_eq!(a.len(), b.len(), "{name}: same size");
     let (mut sum, mut max) = (0.0f64, 0.0f32);
@@ -1268,6 +1273,50 @@ fn soft_proofs_match() {
         ..RenderRequest::fit(64, 64)
     };
     assert!(lcc_gpu::render(&src, &raw, &DevelopSettings::default(), &req, None).is_none(), "declined: the CPU renders it");
+}
+
+/// Soft proofing an HDR edit: the proof gamut map limits colours to the HDR peak, not SDR white, on both renderers
+/// (process V5 keeps the hue of over-range colours inside the proof space too).
+#[test]
+fn hdr_soft_proofs_match() {
+    if !gpu() {
+        return;
+    }
+    use lcc_pipeline::{OutputSpace, Proof};
+    let src = scene(0, 320, 240);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    for p in Process::ALL {
+        for (space, warn) in [(OutputSpace::Srgb, false), (OutputSpace::DisplayP3, false), (OutputSpace::Srgb, true)] {
+            let mut s = DevelopSettings { process: p.version(), ..DevelopSettings::default() };
+            saturated(&mut s);
+            s.hdr.enabled = true;
+            s.light.exposure = 2.0;
+            let req = RenderRequest {
+                depth: lcc_pipeline::OutputDepth::F32Hdr,
+                space: OutputSpace::Rec2020,
+                proof: Some(Proof { space, dest_warning: warn, display_warning: warn, profile: 0 }),
+                ..RenderRequest::fit(320, 240)
+            };
+            check_hdr_req(&format!("hdr proof {space:?} warn {warn}, {p:?}"), &src, &raw, &s, &req);
+        }
+    }
+}
+
+/// Non-finite and huge source values (a corrupt raw, an overflowing edit) through process V5's hue clip render as on
+/// the CPU, where the GPU can represent them: the guards for a NaN or infinite brightest or darkest channel match.
+#[test]
+fn non_finite_colours_match_cpu() {
+    if !gpu() {
+        return;
+    }
+    let vals = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1e30, -1e30, 4.0, 0.2];
+    let src = Arc::new(Rgb32f::from_fn(343, 7, |x, _| [vals[x % 7], vals[(x / 7) % 7], vals[(x / 49) % 7]]));
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let mut s = DevelopSettings::default();
+    s.light.exposure = 1.0;
+    check("non-finite, SDR", &src, &info, &s, &RenderRequest::fit(343, 7));
+    s.hdr.enabled = true;
+    check_hdr("non-finite, HDR", &src, &info, &s, 343, 7);
 }
 
 /// Colours pushed past white (process V5 keeps their hue, older processes move them toward their luminance) match
