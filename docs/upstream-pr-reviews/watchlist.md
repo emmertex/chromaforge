@@ -61,6 +61,8 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3367 | Reject multiple GPX document roots | 2026-10-30 | open |
 | 3369 | Issue #3368: drop_import's launch-list tests wait for the library checks before clicking | 2026-10-30 | open |
 | 3370 | GPU equivalence tests run on a software adapter when asked (lavapipe, WARP), for local runs on every platform | 2026-10-30 | open |
+| 3371 | Ignore negative XMP pixel dimensions | 2026-10-30 | open |
+| 3372 | Handle HTTP Early Hints before final responses | 2026-10-30 | open |
 
 Check with:
 
