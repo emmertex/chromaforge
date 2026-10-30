@@ -1,6 +1,6 @@
 //! Masking and Remove (spot) commands on the active photo.
 
-use lcc_develop::{BrushStroke, LocalAdjustments, Mask, MaskComponent, MaskOp, MaskShape, RedEye, Spot, SpotMode};
+use lcc_develop::{BrushStroke, LocalAdjustments, MAX_RED_EYES, Mask, MaskComponent, MaskOp, MaskShape, RedEye, Spot, SpotMode};
 use lcc_geom::Point;
 use serde_json::{Value, json};
 
@@ -1086,6 +1086,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     catchlight: None,
                 };
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                if s.develop_of(id).is_some_and(|d| d.red_eye.len() >= MAX_RED_EYES) {
+                    return Err(bad(c, format!("at most {MAX_RED_EYES} red eye corrections")));
+                }
                 let mut dd = (*s.develop_of(id).unwrap_or_default()).clone();
                 dd.red_eye.push(eye);
                 let n = dd.red_eye.len();

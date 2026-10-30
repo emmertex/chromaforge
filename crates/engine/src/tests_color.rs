@@ -77,6 +77,12 @@ fn red_eye_commands_and_controls() {
     assert_eq!(active_dev(&s).red_eye.len(), 1);
     assert!(s.execute("redeye.delete", &json!({"index": 5})).is_err());
     assert!(s.execute("redeye.add", &json!({"rx": 0.03})).is_err());
+    // at most MAX_RED_EYES: every pixel goes through every eye
+    while active_dev(&s).red_eye.len() < lcc_develop::MAX_RED_EYES {
+        s.execute("redeye.add", &json!({"center": [0.5, 0.5], "rx": 0.01, "ry": 0.01})).unwrap();
+    }
+    assert!(s.execute("redeye.add", &json!({"center": [0.5, 0.5], "rx": 0.01, "ry": 0.01})).is_err());
+    assert_eq!(active_dev(&s).red_eye.len(), lcc_develop::MAX_RED_EYES);
     let d = active_dev(&s);
     assert_eq!(lcc_develop::DevelopSettings::from_json(&d.to_json()).unwrap(), d);
 }
