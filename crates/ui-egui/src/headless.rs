@@ -6194,4 +6194,40 @@ mod tests {
         let r = h.request("ui.screenshot", json!({"headless": true}), SETTLE);
         assert_eq!(r["result"]["width"], 640, "{r}");
     }
+
+    /// A size typed in the Export dialog is the size exported: the pixel fields kept only multiples
+    /// of 16, so 1080 became 1088 and 3000 became 3008.
+    #[test]
+    fn export_sizes_keep_the_pixels_typed() {
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        h.request("engine.execute", json!({"command": "dialog.export", "params": {}}), t);
+        h.settle(SETTLE);
+        let type_value = |h: &mut Headless, id: &str, text: &str| {
+            let r = h.request("ui.clickWidget", json!({"id": id}), t);
+            assert_eq!(r["ok"], true, "{id}: {r}");
+            h.request("ui.text", json!({"text": text}), t);
+            h.request("ui.key", json!({"key": "Enter"}), t);
+            h.settle(SETTLE);
+        };
+        let resize = |h: &Headless| match &h.app.ui.dialog {
+            Some(crate::state::Dialog::Export { resize, .. }) => *resize,
+            _ => panic!("the dialog closed"),
+        };
+        if let Some(crate::state::Dialog::Export { full_size, resize, .. }) = &mut h.app.ui.dialog {
+            *full_size = false;
+            *resize = lcc_engine::export::Resize::long_edge(2048);
+        }
+        h.settle(SETTLE);
+        type_value(&mut h, "sliderValue:export.sizePx", "3000");
+        assert_eq!(resize(&h).value, 3000.0);
+        if let Some(crate::state::Dialog::Export { resize, .. }) = &mut h.app.ui.dialog {
+            resize.mode = lcc_engine::export::ResizeMode::WidthHeight;
+            resize.height = 2048;
+        }
+        h.settle(SETTLE);
+        type_value(&mut h, "sliderValue:export.sizeW", "1080");
+        type_value(&mut h, "sliderValue:export.sizeH", "1350");
+        assert_eq!((resize(&h).value, resize(&h).height), (1080.0, 1350));
+    }
 }
