@@ -593,8 +593,8 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         metering_mode: num("exif:MeteringMode").map(|v| v as u16),
         white_balance: num("exif:WhiteBalance").map(|v| v as u16),
         orientation: num("tiff:Orientation").map(|v| v as u16).filter(|v| (1..=8).contains(v)).map(Orientation::from_exif),
-        width: num("tiff:ImageWidth").or_else(|| num("exif:PixelXDimension")).map(|v| v as u32),
-        height: num("tiff:ImageLength").or_else(|| num("exif:PixelYDimension")).map(|v| v as u32),
+        width: num("tiff:ImageWidth").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelXDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
+        height: num("tiff:ImageLength").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelYDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
         title: first("dc:title"),
         caption: first("dc:description"),
         alt_text: first("Iptc4xmpCore:AltTextAccessibility"),
@@ -1251,6 +1251,22 @@ mod tests {
         let parsed = parse_xmp(packet).unwrap();
         assert_eq!(parsed.metadata.capture_time, None);
         assert_eq!(parsed.properties["exif:DateTimeOriginal"], vec!["2026-01-01T".to_string()]);
+    }
+
+    #[test]
+    fn negative_xmp_pixel_width_is_ignored() {
+        let read = |attrs: &str| {
+            let x = format!(
+                r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:exif="http://ns.adobe.com/exif/1.0/" {attrs}/>
+            </rdf:RDF>"#
+            );
+            parse_xmp(&x).unwrap().metadata.width
+        };
+
+        assert_eq!(read(r#"tiff:ImageWidth="-1""#), None);
+        assert_eq!(read(r#"tiff:ImageWidth="-1" exif:PixelXDimension="640""#), Some(640));
+        assert_eq!(read(r#"exif:PixelXDimension="-1""#), None);
     }
 
     #[test]
