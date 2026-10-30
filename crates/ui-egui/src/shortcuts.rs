@@ -375,6 +375,8 @@ fn keyboard_owned(app: &LccApp, ctx: &egui::Context) -> bool {
 }
 
 pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
+    // the Back / Forward presses were for this pass's shortcuts only, as a key press is
+    let nav_buttons = std::mem::take(&mut app.nav_buttons);
     // Space held over a tool ends when the key is up, whoever has the keyboard by then
     crate::space_hand::tick(app, ctx);
     if !classic::records_shortcuts(app.ui.dialog.as_ref()) {
@@ -416,6 +418,12 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     let popup_open = popup_open || app.ui.dragging_section.is_some();
     let (module_keys, mut consumed) = (classic::module_keys(app.ui.module), Vec::new());
     classic::deferred_tabs(&mut app.deferred_tabs, keymap, &mut fire);
+    // the mouse's Back / Forward buttons: the previous / next photo, as ← / → (issue #3303)
+    // (`raw_input_hook` keeps their presses out of egui, so no widget under the pointer sees them);
+    // one step per press, in the order pressed, however many arrived in one frame
+    for button in &nav_buttons {
+        fire.push(if *button == egui::PointerButton::Extra1 { "library.previous" } else { "library.next" }.to_string());
+    }
     ctx.input(|i| {
         classic::module_key_presses(i, module_keys, keymap, &mut consumed, &mut aliased);
         // Enter opens the active grid photo; widgets, popups and custom bindings keep the key.
