@@ -437,12 +437,144 @@ fn open_mp4(src: FileSource) -> Result<Clip, VideoError> {
     let table = Table::new(pts, key, (1, u64::from(t.timescale)), |_| true);
     let fps = mp4_rate(t);
     let md = &file.metadata;
-    let created = md.get("com.apple.quicktime.creationdate").or_else(|| md.get("©day")).or_else(|| md.get("date")).map(str::to_string);
+    let created = md
+        .get("com.apple.quicktime.creationdate")
+        .or_else(|| md.get("©day"))
+        .or_else(|| md.get("date"))
+        .map(str::to_string)
+        .or_else(|| header_created(&src, file.moov_offset));
     let gps = md.get("com.apple.quicktime.location.ISO6709").or_else(|| md.get("©xyz")).and_then(crate::parse_iso6709);
     let has_audio = file.track_of_kind(TrackKind::Audio).is_some();
     let (codec, unsupported) = split(codec, table.len());
     let info = info(duration, fps, (w, h), rotation, name, has_audio, created, gps, hdr_of(w, h, colr), codec.is_some());
     Ok(Clip { src, container: Container::Mp4 { file: Box::new(file), track }, info, colr, codec, unsupported, table })
+}
+
+/// A box header at `at`: (type, header length, box length); a length of 0 runs to `end`.
+fn box_header(src: &FileSource, at: u64, end: u64) -> Option<([u8; 4], u64, u64)> {
+    let mut h = [0u8; 16];
+    src.read(at, h.get_mut(..8)?).ok()?;
+    let [s0, s1, s2, s3, t0, t1, t2, t3, ..] = h;
+    let kind = [t0, t1, t2, t3];
+    match u32::from_be_bytes([s0, s1, s2, s3]) {
+        0 => Some((kind, 8, end.checked_sub(at)?)),
+        1 => {
+            src.read(at.checked_add(8)?, h.get_mut(8..)?).ok()?;
+            let [_, _, _, _, _, _, _, _, l @ ..] = h;
+            Some((kind, 16, u64::from_be_bytes(l)))
+        }
+        n => Some((kind, 8, u64::from(n))),
+    }
+}
+
+/// The children of the `moov` box at `moov`: (first child, end).
+fn moov_children(src: &FileSource, moov: u64) -> Option<(u64, u64)> {
+    let (kind, head, len) = box_header(src, moov, src.len())?;
+    if &kind != b"moov" {
+        return None;
+    }
+    Some((moov.checked_add(head)?, moov.checked_add(len)?.min(src.len())))
+}
+
+/// The first `want` box among the boxes from `at` to `end`: (its payload, its end). Looks at no
+/// more than 64 boxes; the boxes read here have a handful of children.
+fn child_box(src: &FileSource, mut at: u64, end: u64, want: &[u8; 4]) -> Option<(u64, u64)> {
+    for _ in 0..64 {
+        let (kind, head, len) = box_header(src, at, end)?;
+        let next = at.checked_add(len.max(head))?;
+        if &kind == want {
+            return Some((at.checked_add(head)?, next.min(end)));
+        }
+        at = next;
+        if at >= end {
+            return None;
+        }
+    }
+    None
+}
+
+/// The capture time from the movie's header boxes when it has no date tag: a Nikon body's own
+/// tags, else the movie header's.
+fn header_created(src: &FileSource, moov: u64) -> Option<String> {
+    nikon_created(src, moov).or_else(|| mvhd_created(src, moov))
+}
+
+/// The movie header's creation time (`mvhd`, seconds since 1904 in UTC; what exiftool calls
+/// CreateDate) in this computer's time zone as RFC 3339, the only date many phones' MP4s carry.
+/// `None` when unset (0), unreadable or outside 1970..=9999.
+fn mvhd_created(src: &FileSource, moov: u64) -> Option<String> {
+    let (at, end) = moov_children(src, moov)?;
+    let (payload, _) = child_box(src, at, end, b"mvhd")?;
+    let mut p = [0u8; 12];
+    src.read(payload, p.get_mut(..1)?).ok()?;
+    let wide = p.first() == Some(&1);
+    src.read(payload, p.get_mut(..if wide { 12 } else { 8 })?).ok()?;
+    let [_, _, _, _, a, b, c, d, e, f, g, h] = p;
+    let secs = if wide { u64::from_be_bytes([a, b, c, d, e, f, g, h]) } else { u64::from(u32::from_be_bytes([a, b, c, d])) };
+    if secs == 0 {
+        return None;
+    }
+    let unix = i64::try_from(secs).ok()?.checked_sub(2_082_844_800)?;
+    // chrono's local zone lookup can panic far outside the years a camera writes
+    if !(0..=253_402_300_799).contains(&unix) {
+        return None;
+    }
+    // Phones, Canon and Nikon Z write UTC here, but photos are sorted and grouped by the camera's
+    // clock time, so a UTC time would put the clip hours away from the photos taken with it.
+    // Older Nikon bodies (D750, D5300) write their clock time instead, which is why their own tags
+    // come first; older Sony bodies do too and come out shifted by the zone offset.
+    let local = chrono::DateTime::from_timestamp(unix, 0)?.with_timezone(&chrono::Local);
+    Some(local.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
+}
+
+/// The camera's clock time from a Nikon clip's own tags (`moov/udta/NCDT/NCTG`, CreateDate 0x11)
+/// with its zone, as RFC 3339, or without a zone when the clip has none. Z bodies write the zone
+/// as text (0x19, `-05:00`); older ones only in the World Time maker note (0x2000024: minutes
+/// east of UTC, then 1 when daylight saving time is on).
+fn nikon_created(src: &FileSource, moov: u64) -> Option<String> {
+    use chrono::Datelike;
+    let (at, end) = moov_children(src, moov)?;
+    let (at, end) = child_box(src, at, end, b"udta")?;
+    let (at, end) = child_box(src, at, end, b"NCDT")?;
+    let (at, end) = child_box(src, at, end, b"NCTG")?;
+    // about 1 KB in the clips seen; the dates come first
+    let mut tags = vec![0u8; usize::try_from(end.checked_sub(at)?.min(64 * 1024)).ok()?];
+    src.read(at, &mut tags).ok()?;
+    let (mut created, mut zone, mut world) = (None, None, None);
+    // entries of tag (u32), type (u16), count (u16) and the values, big-endian and unpadded
+    let mut rest = tags.as_slice();
+    while let [t0, t1, t2, t3, y0, y1, n0, n1, data @ ..] = rest {
+        let size = match u16::from_be_bytes([*y0, *y1]) {
+            1 | 2 | 6 | 7 => 1,
+            3 | 8 => 2,
+            4 | 9 | 11 => 4,
+            5 | 10 | 12 => 8,
+            _ => break, // nothing after it can be found
+        };
+        let len = size * usize::from(u16::from_be_bytes([*n0, *n1]));
+        let Some(value) = data.get(..len) else { break };
+        match u32::from_be_bytes([*t0, *t1, *t2, *t3]) {
+            0x11 => created = Some(value),
+            0x19 => zone = Some(value),
+            0x0200_0024 => world = Some(value),
+            _ => {}
+        }
+        rest = data.get(len..).unwrap_or_default();
+    }
+    let text = |v: &[u8]| std::str::from_utf8(v).ok().map(|s| s.trim_end_matches('\0').trim().to_string());
+    let clock = chrono::NaiveDateTime::parse_from_str(&text(created?)?, "%Y:%m:%d %H:%M:%S").ok()?;
+    // the catalog's dates have four-digit years
+    if !(0..=9999).contains(&clock.year()) {
+        return None;
+    }
+    let minutes = zone.and_then(text).and_then(|z| z.parse::<chrono::FixedOffset>().ok()).map(|z| z.local_minus_utc() / 60).or_else(|| {
+        let [a, b, dst, ..] = *world? else { return None };
+        Some(i32::from(i16::from_be_bytes([a, b])) + if dst == 1 { 60 } else { 0 })
+    });
+    match minutes.filter(|m| m.abs() <= 14 * 60).and_then(|m| chrono::FixedOffset::east_opt(m * 60)) {
+        Some(zone) => Some(clock.and_local_timezone(zone).single()?.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)),
+        None => Some(clock.format("%Y-%m-%dT%H:%M:%S").to_string()),
+    }
 }
 
 /// Frame rate from the track timescale and the most common sample duration.
@@ -885,6 +1017,97 @@ mod tests {
         assert_eq!(mkv_date(secs * 1_000_000_000).as_deref(), Some("2024-02-29T12:34:56Z"));
         assert!(mkv_date(i64::MAX).is_some_and(|d| d.starts_with("2293-")));
         assert!(mkv_date(i64::MIN).is_some_and(|d| d.starts_with("1708-")));
+    }
+
+    #[test]
+    fn movie_header_dates_and_hostile_boxes() {
+        let path = std::env::temp_dir().join(format!("lcc-mvhd-{}.mp4", std::process::id()));
+        let created = |bytes: &[u8]| {
+            std::fs::write(&path, bytes).unwrap();
+            mvhd_created(&FileSource::open(&path).unwrap(), 0)
+        };
+        let moov = |children: &[u8]| [&(8 + children.len() as u32).to_be_bytes()[..], b"moov", children].concat();
+        let mvhd = |version: u8, time: &[u8]| [&(12 + time.len() as u32).to_be_bytes()[..], b"mvhd", &[version, 0, 0, 0], time].concat();
+        // the instant written, after checking it is given in this computer's zone
+        let instant = |s: Option<String>| {
+            let d = chrono::DateTime::parse_from_rfc3339(&s.unwrap()).unwrap();
+            assert_eq!(d.offset(), d.with_timezone(&chrono::Local).offset());
+            d.timestamp()
+        };
+        // 2026-05-01T10:20:30Z
+        let may_1 = 1_777_630_830;
+        let v0 = mvhd(0, &3_860_475_630u32.to_be_bytes());
+        assert_eq!(instant(created(&moov(&v0))), may_1);
+        let v1 = mvhd(1, &3_860_475_630u64.to_be_bytes());
+        let skip = [&16u32.to_be_bytes()[..], b"free", &[0; 8]].concat();
+        assert_eq!(instant(created(&moov(&[&skip[..], &v1].concat()))), may_1);
+        // a 64-bit box length
+        let large = [&1u32.to_be_bytes()[..], b"moov", &(16 + v0.len() as u64).to_be_bytes(), &v0].concat();
+        assert_eq!(instant(created(&large)), may_1);
+        // unset, truncated, out of range, zero-length children, a child past the end, no moov
+        assert_eq!(created(&moov(&mvhd(0, &[0; 4]))), None);
+        assert_eq!(created(&moov(&v0)[..18]), None);
+        assert_eq!(created(&moov(&mvhd(0, &2_082_844_799u32.to_be_bytes()))), None);
+        assert_eq!(created(&moov(&mvhd(1, &255_485_145_600u64.to_be_bytes()))), None);
+        assert_eq!(created(&moov(&mvhd(1, &u64::MAX.to_be_bytes()))), None);
+        assert_eq!(created(&moov(&[&0u32.to_be_bytes()[..], b"free"].concat())), None);
+        assert_eq!(created(&moov(&[&u32::MAX.to_be_bytes()[..], b"free"].concat())), None);
+        assert_eq!(created(&[&u64::MAX.to_be_bytes()[..], &v0].concat()), None);
+        assert_eq!(created(b"moov"), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Nikon clips are dated by the camera's own tags, with its zone, before the movie header,
+    /// which D750 and D5300 bodies fill with their clock time as if it were UTC.
+    #[test]
+    fn nikon_tags_date_the_clip_before_the_movie_header() {
+        let path = std::env::temp_dir().join(format!("lcc-nctg-{}.mov", std::process::id()));
+        let created = |bytes: &[u8]| {
+            std::fs::write(&path, bytes).unwrap();
+            header_created(&FileSource::open(&path).unwrap(), 0)
+        };
+        let boxed = |kind: &[u8], children: &[u8]| [&(8 + children.len() as u32).to_be_bytes()[..], kind, children].concat();
+        let tag = |id: u32, kind: u16, count: u16, value: &[u8]| [&id.to_be_bytes()[..], &kind.to_be_bytes(), &count.to_be_bytes(), value].concat();
+        let date = tag(0x11, 2, 20, b"2024:04:18 22:15:27\0");
+        let clip = |tags: &[u8]| {
+            let nctg = boxed(b"NCTG", tags);
+            let ncdt = boxed(b"NCDT", &[&boxed(b"NCHD", &[0; 10])[..], &nctg].concat());
+            // the clock time again in mvhd, read as UTC
+            let mvhd = boxed(b"mvhd", &[&[0u8; 4][..], &3_796_323_327u32.to_be_bytes()].concat());
+            boxed(b"moov", &[&mvhd[..], &boxed(b"trak", &[]), &boxed(b"udta", &ncdt)].concat())
+        };
+        let make = tag(1, 2, 18, b"NIKON CORPORATION\0");
+        let rate = tag(0x16, 5, 1, &[0, 0, 0xea, 0x60, 0, 0, 3, 0xe9]);
+        let world = |minutes: i16, dst: u8| tag(0x0200_0024, 7, 4, &[&minutes.to_be_bytes()[..], &[dst, 0]].concat());
+        // Z 6II: the zone as text, which wins over World Time
+        let z = [&make[..], &date, &tag(0x19, 2, 7, b"-05:00\0"), &world(-420, 0)].concat();
+        assert_eq!(created(&clip(&z)).as_deref(), Some("2024-04-18T22:15:27-05:00"));
+        // D750: World Time only, daylight saving on and off
+        let d750 = |dst| [&make[..], &date, &rate, &world(-360, dst)].concat();
+        assert_eq!(created(&clip(&d750(1))).as_deref(), Some("2024-04-18T22:15:27-05:00"));
+        assert_eq!(created(&clip(&d750(0))).as_deref(), Some("2024-04-18T22:15:27-06:00"));
+        assert_eq!(created(&clip(&[&date[..], &world(330, 0)].concat())).as_deref(), Some("2024-04-18T22:15:27+05:30"));
+        // no zone, or one that can't be: the clock time alone
+        assert_eq!(created(&clip(&date)).as_deref(), Some("2024-04-18T22:15:27"));
+        let odd = [&date[..], &tag(0x19, 2, 5, b"junk\0"), &world(i16::MAX, 0)].concat();
+        assert_eq!(created(&clip(&odd)).as_deref(), Some("2024-04-18T22:15:27"));
+        assert_eq!(created(&clip(&[&date[..], &tag(0x0200_0024, 7, 2, &[0xfe, 0x98])].concat())).as_deref(), Some("2024-04-18T22:15:27"));
+        // no usable date: the movie header's (2024-04-18T22:15:27Z), in this computer's zone
+        let mvhd_only = |tags: &[u8]| {
+            let d = chrono::DateTime::parse_from_rfc3339(&created(&clip(tags)).unwrap()).unwrap();
+            assert_eq!(d.offset(), d.with_timezone(&chrono::Local).offset());
+            d.timestamp()
+        };
+        let mvhd_time = 1_713_478_527;
+        assert_eq!(mvhd_only(&make), mvhd_time);
+        assert_eq!(mvhd_only(&tag(0x11, 2, 20, b"0000:00:00 00:00:00\0")), mvhd_time);
+        assert_eq!(mvhd_only(&tag(0x11, 2, 20, &[0xff; 20])), mvhd_time);
+        // an entry of an unknown type, one cut short, a count past the end
+        assert_eq!(mvhd_only(&[&tag(5, 99, 1, &[0])[..], &date].concat()), mvhd_time);
+        assert_eq!(mvhd_only(&date[..20]), mvhd_time);
+        assert_eq!(mvhd_only(&tag(0x11, 2, u16::MAX, b"2024:04:18 22:15:27\0")), mvhd_time);
+        assert_eq!(mvhd_only(&[0; 7]), mvhd_time);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -9,6 +9,7 @@ description = "Video clips (L3): probe, frame reader and poster frames on FilmCr
 workspace = true
 
 [dependencies]
+chrono = { workspace = true, features = ["clock"] }
 lcc-raster = { workspace = true }
 thiserror = { workspace = true }
 

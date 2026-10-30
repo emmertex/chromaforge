@@ -1324,7 +1324,9 @@ pub fn fs_hooks() -> (FileLoader, FileProbe) {
         }
         // a clip is streamed (hash) and its headers read in place: never all of it in memory
         if crate::import::is_video_name(path) {
-            return probe_video_file(std::path::Path::new(path));
+            let mut info = probe_video_file(std::path::Path::new(path))?;
+            info.file_modified = file_modified(path);
+            return Ok(info);
         }
         let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
         let _permit = crate::memory::work_gate().acquire(len);

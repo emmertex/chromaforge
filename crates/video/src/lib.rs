@@ -86,7 +86,9 @@ pub struct VideoInfo {
     /// the container's name for them (MP4 fourcc, Matroska / TS codec name).
     pub codec: String,
     pub has_audio: bool,
-    /// Creation date as written in the file (QuickTime `creationdate` / `©day`), RFC 3339 when it is.
+    /// Creation date as written in the file (QuickTime `creationdate` / `©day`, else a Nikon
+    /// body's own tags, else the MP4 movie header's in this computer's time zone), RFC 3339 when
+    /// it is.
     pub created: Option<String>,
     /// (latitude, longitude) in degrees, from an ISO 6709 location.
     pub gps: Option<(f64, f64)>,
