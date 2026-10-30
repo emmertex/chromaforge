@@ -161,6 +161,7 @@
   "{year}": "{year}",
   "{{date:…}} directives: {}": "Dyrektywy {{date:…}}: {}",
   "{} and higher": "{} i nowsze",
+  "{} only": "tylko {}",
   "{} contributors · {} commits": "Współtwórcy: {} · zatwierdzenia: {}",
   "{} failed": "{}: niepowodzenie",
   "{} files": "Pliki: {}",

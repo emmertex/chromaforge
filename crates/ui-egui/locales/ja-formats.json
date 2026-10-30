@@ -98,6 +98,7 @@
   "{what} merge added": "{what}合成を追加しました",
   "{what} merge failed: {e}": "{what}合成に失敗：{e}",
   "{} and higher": "{}以上",
+  "{} only": "{}のみ",
   "{} files": "{}個のファイル",
   "{} files and {f} folder{}": "{}個のファイルと{f}個のフォルダ{:.0}",
   "{} of 4 guides — drag along lines that should be vertical or horizontal.": "ガイド4本中{}本：垂直または水平にする線に沿ってドラッグ",

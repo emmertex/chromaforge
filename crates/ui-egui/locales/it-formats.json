@@ -169,6 +169,7 @@
   "{year}": "{year}",
   "{{date:…}} directives: {}": "Direttive {{date:…}}: {}",
   "{} and higher": "{} e superiori",
+  "{} only": "solo {}",
   "{} contributors · {} commits": "Collaboratori: {} · commit: {}",
   "{} failed": "Con errori: {}",
   "{} files": "{} file",

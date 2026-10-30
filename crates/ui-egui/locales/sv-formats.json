@@ -258,6 +258,7 @@
   "{year}": "{year}",
   "{{date:…}} directives: {}": "{{date:…}}-direktiv: {}",
   "{} and higher": "{} och högre",
+  "{} only": "endast {}",
   "{} contributors · {} commits": "{} bidragsgivare · {} commits",
   "{} failed": "{} misslyckades",
   "{} files": "{} filer",

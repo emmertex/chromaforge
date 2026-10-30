@@ -269,6 +269,7 @@
   "{} KB": "{} kt",
   "{} MB": "{} Mt",
   "{} and higher": "{} ja ylöspäin",
+  "{} only": "vain {}",
   "{} contributors · {} commits": "Tekijöitä: {} · committeja: {}",
   "{} failed": "{} epäonnistui",
   "{} files": "Tiedostoja: {}",

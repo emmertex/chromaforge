@@ -125,6 +125,7 @@
   "{what} merge failed: {e}": "{what} falha na mesclagem: {e}",
   "{year}": "{year}",
   "{} and higher": "{} ou superior",
+  "{} only": "somente {}",
   "{} files": "{} arquivos",
   "{} files and {f} folder{}": "{} arquivos e {f} pasta{}",
   "{} of 4 guides — drag along lines that should be vertical or horizontal.": "{} de 4 guias — arraste ao longo das linhas que devem ficar verticais ou horizontais.",

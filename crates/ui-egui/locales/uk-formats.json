@@ -171,6 +171,7 @@
   "{year}": "{year}",
   "{{date:…}} directives: {}": "Директиви {{date:…}}: {}",
   "{} and higher": "{} і вище",
+  "{} only": "лише {}",
   "{} contributors · {} commits": "Учасників: {} · комітів: {}",
   "{} failed": "Помилок: {}",
   "{} files": "Файлів: {}",

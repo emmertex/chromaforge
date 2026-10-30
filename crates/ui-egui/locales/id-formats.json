@@ -105,6 +105,7 @@
   "{what} merge added": "Hasil penggabungan {what} ditambahkan",
   "{what} merge failed: {e}": "Penggabungan {what} gagal: {e}",
   "{} and higher": "{} ke atas",
+  "{} only": "hanya {}",
   "{} files": "{} file",
   "{} files and {f} folder{}": "{} file dan {f} folder{:.0}",
   "{} of 4 guides — drag along lines that should be vertical or horizontal.": "{} dari 4 garis panduan — seret di sepanjang garis yang seharusnya vertikal atau horizontal.",

@@ -609,7 +609,7 @@ visible menu bar yet: the menu model is only exposed through the control channel
 | MENU-EDIT-PASTESELECTED | Paste Selected Settings | P0 | ✅ | `cmd:dialog.pasteSettings`, `cmd:develop.paste` (`groups`) | checklist prefilled with the copied groups; only copied groups can be pasted; Return pastes, Esc cancels |
 | MENU-EDIT-SELECTALL | Select All | P0 | ✅ | `cmd:library.selectAll` | |
 | MENU-EDIT-SELECTNONE | Select None | P0 | ✅ | `cmd:library.selectNone` | |
-| MENU-EDIT-SELECTBY | Select by flag / rating | P1 | ✅ | `cmd:library.selectBy` | Edit → Select by: picks, rejects, unflagged, ★…★★★★★ and higher, unrated, colour labels; `add` extends the selection |
+| MENU-EDIT-SELECTBY | Select by flag / rating | P1 | ✅ | `cmd:library.selectBy` | Edit → Select by: picks, rejects, unflagged, ★…★★★★★ and higher, ★…★★★★★ only (`ratingOp: eq`), unrated, colour labels; `add` extends the selection |
 | MENU-EDIT-FIND | Find… | P0 | ✅ | `cmd:view.focusSearch`, `crates/ui-egui/src/panels/topbar.rs` | Library ▸ Find… (as in Classic); ⌘F focuses the search field |
 | MENU-VIEW-PHOTOGRID | Photo Grid | P0 | ✅ | `cmd:view.photoGrid` | |
 | MENU-VIEW-SQUAREGRID | Square Grid | P0 | ✅ | `cmd:view.squareGrid` | |

@@ -171,6 +171,7 @@
   "{year}": "{year}",
   "{{date:…}} directives: {}": "Directivas de {{date:…}}: {}",
   "{} and higher": "{} o más",
+  "{} only": "solo {}",
   "{} contributors · {} commits": "{} colaboradores · {} commits",
   "{} failed": "Con errores: {}",
   "{} files": "{} archivos",
