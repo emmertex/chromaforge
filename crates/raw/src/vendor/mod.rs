@@ -274,6 +274,40 @@ pub(crate) fn declare_strip_len(file: &mut [u8], len: u32, declared: u32) {
 mod tests {
     use super::*;
 
+    /// `file`, whose image IFD holds one strip, as two strips at the same offset whose StripByteCounts are LONG8 (which
+    /// classic TIFF readers accept) `[u64::MAX, 1]`: their sum is past `u64::MAX`.
+    pub(super) fn huge_strip_counts(mut file: Vec<u8>) -> Vec<u8> {
+        use lcc_tiff::tags as t;
+        let tiff = Tiff::parse(&file).unwrap();
+        let o = tiff.order;
+        let ifd = tiff.all_ifds().into_iter().find(|i| i.contains(t::STRIP_OFFSETS)).unwrap();
+        let (base, rows, offset) = (ifd.offset as usize, ifd.u32(t::IMAGE_LENGTH).unwrap(), ifd.u32(t::STRIP_OFFSETS).unwrap());
+        assert!(rows >= 2);
+        let at = file.len() as u32;
+        // appended: the two strip offsets (LONG), then the two byte counts (LONG8)
+        let mut tail = Vec::new();
+        o.put_u32(&mut tail, offset);
+        o.put_u32(&mut tail, offset);
+        o.put_u64(&mut tail, u64::MAX);
+        o.put_u64(&mut tail, 1);
+        for i in 0..usize::from(o.read_u16(&file, base).unwrap()) {
+            let e = base + 2 + 12 * i;
+            let (ty, count, value) = match o.read_u16(&file, e).unwrap() {
+                t::STRIP_OFFSETS => (4u16, 2u32, at),
+                t::ROWS_PER_STRIP => (4, 1, rows.div_ceil(2)),
+                t::STRIP_BYTE_COUNTS => (16, 2, at + 8),
+                _ => continue,
+            };
+            let mut entry = Vec::new();
+            o.put_u16(&mut entry, ty);
+            o.put_u32(&mut entry, count);
+            o.put_u32(&mut entry, value);
+            file[e + 2..e + 12].copy_from_slice(&entry);
+        }
+        file.extend_from_slice(&tail);
+        file
+    }
+
     #[test]
     fn black_columns_by_parity() {
         // 8 wide, masked columns 0..4, active starts at x=4 (even)

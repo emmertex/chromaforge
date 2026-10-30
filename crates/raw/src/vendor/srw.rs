@@ -108,7 +108,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     let (w, h) = (info.width as usize, info.height as usize);
     let n = w.checked_mul(h).filter(|n| *n > 0 && *n <= crate::MAX_SAMPLES).ok_or(RawError::Limit("image too large"))?;
     let chunks = info.chunks(bytes.len() as u64);
-    let strip: u64 = chunks.iter().map(|c| c.len).sum();
+    let strip = chunks.iter().fold(0u64, |a, c| a.saturating_add(c.len));
     let row_table = raw.u64s(ROW_TABLE).and_then(|v| v.first().copied());
     let Some(coding) = coding(info.compression, w, h, strip, row_table).filter(|_| chunks.len() == 1) else {
         return Err(RawError::Unsupported(format!(
@@ -357,6 +357,23 @@ mod tests {
         pattern: Option<[u8; 4]>,
         note: Option<Vec<u8>>,
         picture: Option<(u32, u32)>,
+    }
+
+    /// Strip byte counts that add up past `u64::MAX` (LONG8 `[u64::MAX, 1]`) are an error or a picture, not an overflow.
+    #[test]
+    fn strip_byte_counts_past_u64_max_do_not_overflow() {
+        let file = crate::vendor::tests::huge_strip_counts(srw(Spec {
+            w: 4,
+            h: 2,
+            compression: 32769,
+            strip: vec![0; 16],
+            pattern: None,
+            note: None,
+            picture: None,
+        }));
+        for mode in [Mode::Header, Mode::Full] {
+            let _ = super::decode(&file, mode);
+        }
     }
 
     fn srw(s: Spec) -> Vec<u8> {
