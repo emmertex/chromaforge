@@ -225,12 +225,26 @@ pub enum Process {
     /// instead of the colour moving toward its luminance (which turned bright saturated reds pink).
     /// Adapted from upstream #2262.
     V5,
+    /// AI Denoise's amount is eased (`1 − (1 − a)³`, [`denoise_weight`]) instead of a straight mix, so
+    /// half-way already removes most of the noise, as Lightroom's slider does (fork issue: grainy at 50).
+    V6,
+}
+
+/// How much of the AI-denoised picture to mix in for a Denoise slider fraction `a` (0 to 1) under
+/// `process`: `a` itself up to V5; from V6 `1 − (1 − a)³`, which leaves an eighth of the noise at 50
+/// (a straight mix leaves half) and still rises over the whole slider. Not-a-number gives 0.
+pub fn denoise_weight(process: Process, a: f32) -> f32 {
+    let a = if a.is_finite() { a.clamp(0.0, 1.0) } else { 0.0 };
+    match process {
+        Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 => a,
+        Process::V6 => 1.0 - (1.0 - a).powi(3),
+    }
 }
 
 impl Process {
     /// Every process, oldest first.
-    pub const ALL: [Process; 5] = [Process::V1, Process::V2, Process::V3, Process::V4, Process::V5];
-    pub const LATEST: Process = Process::V5;
+    pub const ALL: [Process; 6] = [Process::V1, Process::V2, Process::V3, Process::V4, Process::V5, Process::V6];
+    pub const LATEST: Process = Process::V6;
 
     pub const fn version(self) -> ProcessVersion {
         match self {
@@ -239,6 +253,7 @@ impl Process {
             Process::V3 => ProcessVersion(3),
             Process::V4 => ProcessVersion(4),
             Process::V5 => ProcessVersion(5),
+            Process::V6 => ProcessVersion(6),
         }
     }
 }

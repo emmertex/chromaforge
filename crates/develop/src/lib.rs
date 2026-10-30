@@ -174,10 +174,15 @@ impl DevelopSettings {
     }
 
     /// How much of the AI-denoised picture to mix in, 0 (none) to 1 (all of it): the Denoise amount, unless the Detail
-    /// section is switched off or the value is not a number.
+    /// section is switched off or the value is not a number. The process decides the slider's response
+    /// ([`settings::denoise_weight`]): a straight mix up to V5, eased from V6.
     pub fn denoise_amount(&self) -> f32 {
         let a = self.enhance.denoise;
-        if a.is_finite() && self.enhance.denoise_enabled() && self.section_enabled("detail") { (a / 100.0).clamp(0.0, 1.0) as f32 } else { 0.0 }
+        if a.is_finite() && self.enhance.denoise_enabled() && self.section_enabled("detail") {
+            settings::denoise_weight(self.process.process(), (a / 100.0).clamp(0.0, 1.0) as f32)
+        } else {
+            0.0
+        }
     }
 
     pub fn set_section_enabled(&mut self, section: &str, on: bool) {
@@ -543,7 +548,8 @@ mod tests {
 
     #[test]
     fn the_denoise_amount_is_a_slider_and_follows_the_detail_section() {
-        let mut s = DevelopSettings::default();
+        // V5's straight mix (V6's eased response: `tests_process`)
+        let mut s = DevelopSettings { process: Process::V5.version(), ..DevelopSettings::default() };
         assert_eq!(s.denoise_amount(), 0.0);
         assert!(controls::set(&mut s, "enhance.denoise", 60.0));
         assert_eq!(controls::get(&s, "enhance.denoise"), Some(60.0));
