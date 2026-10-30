@@ -11,3 +11,4 @@
 - Settings, Display & Speed: the thumbnail cache size has a Custom option, in whole GB (up to 1 TB), for large libraries that outgrow 8 GB. A size you are still typing is saved when you leave the section or close Settings.
 - Edit, Select by now lists each rating on its own (one star only through five stars only) below the "and higher" rows, next to Unrated.
 - With "Show message when loading or rendering photos" off, the loupe still says "Rendering…" when a render stays slow (more than 3 seconds), so the old picture on screen does not look like a frozen app. The wait also starts afresh for each photo you move to.
+- A grid cell or filmstrip tile whose thumbnail has not arrived yet now shows three small dots on its gray placeholder. One whose file can't be read still shows "!". The dots stand still and are left off tiles too small to hold them.

@@ -306,6 +306,8 @@ mod tests_sync;
 #[cfg(test)]
 mod tests_tallies;
 #[cfg(test)]
+mod tests_loading_cell;
+#[cfg(test)]
 mod tests_mouse_nav;
 #[cfg(test)]
 mod tests_temp_slider;

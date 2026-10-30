@@ -1193,6 +1193,25 @@ impl Renderer {
         self.failed.get(&slot).map(|f| f.0)
     }
 
+    /// Test seam: a failure left by an earlier request of `slot` for `photo` (a key no later job has).
+    #[cfg(test)]
+    pub(crate) fn record_failure_for_test(&mut self, slot: Slot, photo: PhotoId) {
+        self.failed.insert(slot, (0, "an earlier failure".into(), 0, photo));
+    }
+
+    /// Why a photo has no grid thumbnail and won't get one: the thumbnail's own render failed, or the embedded
+    /// preview failed and nothing else is on its way (an unedited raw asks for no other: see `request_thumb`).
+    /// A new request of either kind (another size or look, a relinked file) is on its way too; a retry of
+    /// the very request that failed keeps the failure until it answers.
+    pub fn thumb_failure(&self, id: PhotoId) -> Option<&str> {
+        let (full, quick) = (Slot::Thumb(id), Slot::ThumbQuick(id));
+        if self.is_pending(full) && !self.retrying(full) {
+            return None;
+        }
+        // a full-render failure that stands, else the embedded preview's, unless a new request of it is on its way
+        self.failure(full).or_else(|| if self.is_pending(quick) && !self.retrying(quick) { None } else { self.failure(quick) })
+    }
+
     /// Why the last render of `photo` for `slot` failed: a view slot shows one photo after
     /// another, and another photo's error isn't this one's.
     pub fn failure_of(&self, slot: Slot, photo: PhotoId) -> Option<&str> {
@@ -2687,6 +2706,47 @@ mod thumbnail_tests {
             app.renderer.thumb(PhotoId(1)).unwrap().pixels.as_ref().unwrap().pixels.iter().flat_map(|c| c.to_array()).collect::<Vec<_>>(),
             expected.as_bytes()
         );
+    }
+
+    #[test]
+    fn thumb_failure_reports_only_a_thumbnail_that_will_not_arrive() {
+        let id = PhotoId(5);
+        let mut r = Renderer::default();
+        assert_eq!(r.thumb_failure(id), None, "nothing failed");
+        // An unedited raw asks only for the embedded preview: its failure is final.
+        r.failed.insert(Slot::ThumbQuick(id), (1, "no embedded preview".into(), 0, id));
+        assert_eq!(r.thumb_failure(id), Some("no embedded preview"));
+        // While the full render is still on its way, the cell is loading, not unreadable.
+        r.pending.insert(Slot::Thumb(id), (2, 10));
+        assert_eq!(r.thumb_failure(id), None, "a pending thumbnail may still arrive");
+        r.failed.insert(Slot::Thumb(id), (2, "decode failed".into(), 0, id));
+        assert_eq!(r.thumb_failure(id), Some("decode failed"));
+    }
+
+    #[test]
+    fn thumb_failure_waits_for_a_new_quick_request_but_not_for_a_retry_of_the_failed_one() {
+        let id = PhotoId(6);
+        let mut r = Renderer::default();
+        r.failed.insert(Slot::ThumbQuick(id), (1, "no embedded preview".into(), 0, id));
+        // the size changed: a new embedded-preview request (another key) is on its way, so the cell is loading
+        r.pending.insert(Slot::ThumbQuick(id), (3, 10));
+        assert_eq!(r.thumb_failure(id), None, "a replacement of the failed quick render is pending");
+        // the very request that failed is asked for again (after an eviction): until it answers the failure stands
+        r.pending.insert(Slot::ThumbQuick(id), (1, 10));
+        assert_eq!(r.thumb_failure(id), Some("no embedded preview"));
+    }
+
+    #[test]
+    fn thumb_failure_waits_for_a_new_full_request_but_not_for_a_retry_of_the_failed_one() {
+        let id = PhotoId(7);
+        let mut r = Renderer::default();
+        r.failed.insert(Slot::Thumb(id), (1, "decode failed".into(), 0, id));
+        // the size changed or the file was relinked: a replacement with another key is on its way, so the cell is loading
+        r.pending.insert(Slot::Thumb(id), (3, 10));
+        assert_eq!(r.thumb_failure(id), None, "a replacement of the failed full render is pending");
+        // the very request that failed is asked for again: until it answers the failure stands
+        r.pending.insert(Slot::Thumb(id), (1, 10));
+        assert_eq!(r.thumb_failure(id), Some("decode failed"));
     }
 
     #[test]
