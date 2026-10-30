@@ -261,7 +261,9 @@ the Mozilla root certificates; no OpenSSL, `ring` or `aws-lc`, nothing compiled 
 ### By hand
 
 Put `model.safetensors`, `vocab.json` and `merges.txt` from `facebook/sam3` in the model folder:
-`models/sam3/` in the settings folder above, or the folder `<PREFIX>_SAM3_DIR` names. Developers
+`models/sam3/` in the settings folder above, or the folder `<PREFIX>_SAM3_DIR` names. It must be
+the Hugging Face format (3,439,938,512 bytes): `sam3.safetensors` from community mirrors, renamed, is
+Meta's original checkpoint, and the app says so instead of loading it. Developers
 can use the installer scripts, which download from Hugging Face with your token and verify the
 weights:
 
