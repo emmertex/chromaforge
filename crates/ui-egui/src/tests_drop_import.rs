@@ -396,3 +396,74 @@ fn a_dropped_folder_that_vanished_says_so_and_leaves_nothing_running() {
     assert!(h.app.session.activity.list().is_empty(), "no row left behind: {:?}", h.app.session.activity.list());
     assert!(h.app.ui.toast().is_some(), "the failure is shown");
 }
+
+/// Auto Import's second listing of `watch/w.png` on its worker thread (the first notes the file's size; the
+/// second, size unchanged, imports it).
+fn second_auto_import_listing(h: &mut Headless, dir: &Scratch) {
+    write_png(&dir.path("watch/w.png"), 3);
+    h.app.session.import_defaults.auto_folder = Some(dir.path("watch"));
+    assert!(h.step_until(T, |h| h.app.tasks.is_running("Auto Import")), "the watched folder is listed");
+    assert!(h.step_until(T, |h| !h.app.tasks.is_running("Auto Import")));
+    assert_eq!(photos(h), 0);
+    assert!(h.step_until(T, |h| h.app.tasks.is_running("Auto Import")), "and listed again");
+}
+
+/// Apply Auto Import's listing now, before another frame can change what runs.
+fn apply_auto_import_listing(h: &mut Headless) {
+    let ctx = h.view.ctx.clone();
+    assert!(crate::tasks::wait_for(&mut h.app, &ctx, "Auto Import", T), "the listing ends");
+}
+
+/// An import that starts while Auto Import lists its watched folder: the new photo isn't marked as
+/// tried and skipped, the next listing imports it once the other import is done.
+#[test]
+fn auto_import_waits_for_an_import_that_starts_during_its_listing() {
+    let dir = Scratch::new("auto-race");
+    let mut h = app(&dir);
+    second_auto_import_listing(&mut h, &dir);
+    h.app.import = Some(crate::import::ImportTask::new(vec![dir.path("trip")], json!({"mode": "add"}), 0, false));
+    apply_auto_import_listing(&mut h);
+    assert!(h.step_until(T, |h| photos(h) == 3), "the trip's two photos and the watched one arrive: {}", photos(&h));
+    h.app.session.import_defaults.auto_folder = None;
+}
+
+/// The same with a Local folder browse: a browse that finishes replaces `app.import`, so Auto Import
+/// doesn't start one beside it.
+#[test]
+fn auto_import_waits_for_a_browse_that_starts_during_its_listing() {
+    let dir = Scratch::new("auto-browse");
+    let mut h = app(&dir);
+    second_auto_import_listing(&mut h, &dir);
+    let scan = crate::import::stall_scan_of(&mut h.app, true);
+    apply_auto_import_listing(&mut h);
+    assert!(h.app.import.is_none(), "no Auto Import for the browse to replace");
+    drop(scan);
+    assert!(h.step_until(T, |h| h.app.scan.is_none()), "the browse ends");
+    assert!(h.step_until(T, |h| photos(h) == 1), "and the watched photo arrives: {}", photos(&h));
+    h.app.session.import_defaults.auto_folder = None;
+}
+
+/// A watched folder that can't be listed (removed, unmounted, not allowed) is noted with the reason, for
+/// Settings ▸ Import to show, and the note goes once the folder can be read again.
+#[test]
+fn auto_import_notes_a_watched_folder_it_cannot_read() {
+    let dir = Scratch::new("auto-unreadable");
+    let mut h = app(&dir);
+    let watch = dir.path("watch");
+    h.app.session.import_defaults.auto_folder = Some(watch.clone());
+    assert!(h.step_until(T, |h| h.app.ui.auto_import_error.is_some()), "the missing folder is noted");
+    let (folder, e) = h.app.ui.auto_import_error.clone().unwrap();
+    assert_eq!(folder, watch);
+    assert!(e.starts_with(&watch) && e.len() > watch.len() + 2, "the error says why: {e}");
+    // another folder watched: the note was about the old one, so it goes, and a listing of the old one
+    // still under way doesn't bring it back
+    h.app.session.import_defaults.auto_folder = Some(dir.path("trip"));
+    h.step();
+    assert!(h.app.ui.auto_import_error.is_none(), "{:?}", h.app.ui.auto_import_error);
+    h.app.session.import_defaults.auto_folder = Some(watch.clone());
+    assert!(h.step_until(T, |h| h.app.ui.auto_import_error.is_some()), "back to the missing folder: noted again");
+    write_png(&dir.path("watch/w.png"), 3);
+    assert!(h.step_until(T, |h| h.app.ui.auto_import_error.is_none()), "readable again: the note goes");
+    assert!(h.step_until(T, |h| photos(h) == 1), "and the photo arrives");
+    h.app.session.import_defaults.auto_folder = None;
+}

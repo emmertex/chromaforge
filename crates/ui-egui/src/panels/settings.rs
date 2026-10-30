@@ -694,6 +694,15 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 let _ = app.run("library.autoImport", json!({"folder": null}));
             }
         });
+        // the last listing of the watched folder failed: say why (it reads "path: reason")
+        if let (Some(folder), Some((failed, e))) = (&d.auto_folder, &app.ui.auto_import_error)
+            && folder == failed
+        {
+            let reason = e.strip_prefix(folder.as_str()).and_then(|r| r.strip_prefix(": ")).unwrap_or(e);
+            row(ui, t, "", |ui| {
+                ui.label(RichText::new(crate::i18n::tr_format!("Can't read this folder: {reason}", reason = reason)).size(11.0).color(t.caution));
+            });
+        }
         if d.auto_folder.is_some() {
             row(ui, t, "", |ui| {
                 let mut copy = d.auto_copy;
