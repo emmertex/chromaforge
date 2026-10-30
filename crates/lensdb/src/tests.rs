@@ -82,6 +82,11 @@ fn invalid_entries_are_skipped_and_valid_ones_load() {
 }
 
 #[test]
+fn rejects_mismatched_xml_closing_tags() {
+    assert!(LensDb::parse("<lensdatabase><lens><maker>X</lensdatabase><model>L</model></lens>").is_err());
+}
+
+#[test]
 fn malformed_documents_are_errors_not_panics() {
     assert!(LensDb::parse("").is_err());
     assert!(LensDb::parse("<lensdatabase><lens><maker>").is_ok_and(|d| d.lenses.is_empty()));
