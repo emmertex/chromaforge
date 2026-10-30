@@ -51,6 +51,7 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3351 | LR-BEHAV-BG-TASKS: AI Denoise and Finding faces can be stopped, and Quit names every running job | 2026-10-30 | open |
 | 3352 | Issue #3320: a render size far beyond the photo is held to a 512-megapixel ceiling instead of aborting | 2026-10-30 | open |
 | 3356 | CI: workflows only call craft-common-actions at @main (AGENTS.md; windows-arm64 unpinned) | 2026-10-30 | open |
+| 3358 | deps: bump tar, zip, roxmltree, rustls-webpki and symphonia to latest | 2026-10-30 | open |
 
 Check with:
 
