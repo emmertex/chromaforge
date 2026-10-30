@@ -153,6 +153,13 @@ impl Sam3 {
             return Err(Error::Missing(dir.to_path_buf()));
         }
         let weights = weights::Weights::open(&dir.join(WEIGHTS_FILE))?;
+        if !weights.has_prefix("detector_model.vision_encoder.backbone.") {
+            let layout = if weights.has_prefix("detector.backbone.") { "Meta's original sam3.pt layout" } else { "an unknown layout" };
+            return Err(Error::Model(format!(
+                "{}: {layout}, not the Hugging Face facebook/sam3 checkpoint the app reads (its tensors start with detector_model.)",
+                dir.join(WEIGHTS_FILE).display()
+            )));
+        }
         let backbone = vit::Vit::new(Self::vb(&weights, &device).pp("detector_model.vision_encoder.backbone"))?;
         Ok(Self { dir: dir.to_path_buf(), device, weights, backbone, tracker_neck: None, tracker: None, detector: None, tokenizer: None })
     }

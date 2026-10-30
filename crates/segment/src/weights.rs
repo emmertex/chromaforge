@@ -25,6 +25,8 @@ struct Entry {
 pub struct Weights {
     file: Mutex<File>,
     entries: HashMap<String, Entry>,
+    /// Tensors stored in a dtype the loader doesn't read, by name: their dtype.
+    unsupported: HashMap<String, String>,
     data_start: u64,
 }
 
@@ -43,16 +45,20 @@ impl Weights {
         let header: serde_json::Map<String, serde_json::Value> =
             serde_json::from_slice(&header).map_err(|e| Error::Model(format!("{}: bad header: {e}", path.display())))?;
         let mut entries = HashMap::new();
+        let mut unsupported = HashMap::new();
         for (name, v) in header {
             if name == "__metadata__" {
                 continue;
             }
             let dtype = match v.get("dtype").and_then(|d| d.as_str()) {
                 Some("F32") => DType::F32,
-                // integer buffers (BiRefNet's relative position indices and batch-norm counters)
-                // are recomputed or unused: skipped, never read
-                Some("I64") => continue,
-                other => return Err(Error::Model(format!("{name}: unsupported dtype {other:?} (the checkpoints are F32)"))),
+                // buffers in other dtypes (BiRefNet's I64 position indices and batch-norm counters,
+                // the complex rotary frequencies some SAM 3 mirrors store) are recomputed or unused:
+                // the file still opens, and a module that asks for one is told its dtype
+                other => {
+                    unsupported.insert(name, other.unwrap_or("none").to_string());
+                    continue;
+                }
             };
             let shape: Vec<usize> = v
                 .get("shape")
@@ -72,7 +78,12 @@ impl Weights {
             }
             entries.insert(name, Entry { shape, start, end });
         }
-        Ok(Arc::new(Self { file: Mutex::new(file), entries, data_start: 8 + n }))
+        Ok(Arc::new(Self { file: Mutex::new(file), entries, unsupported, data_start: 8 + n }))
+    }
+
+    /// Whether any tensor's name starts with `prefix` (a checkpoint layout check).
+    pub fn has_prefix(&self, prefix: &str) -> bool {
+        self.entries.keys().chain(self.unsupported.keys()).any(|k| k.starts_with(prefix))
     }
 
     /// The shape of tensor `name`, if the file has it.
@@ -86,7 +97,10 @@ impl Weights {
 
     /// Tensor `name` as stored, on the CPU.
     pub fn read(&self, name: &str) -> Result<Tensor> {
-        let e = self.entries.get(name).ok_or_else(|| Error::Model(format!("missing tensor `{name}`")))?;
+        let e = self.entries.get(name).ok_or_else(|| match self.unsupported.get(name) {
+            Some(dtype) => Error::Model(format!("{name}: unsupported dtype {dtype} (the checkpoints are F32)")),
+            None => Error::Model(format!("missing tensor `{name}`")),
+        })?;
         // checked against the file's length in `open`
         let len = usize::try_from(e.end.saturating_sub(e.start)).map_err(|_| Error::Model(format!("{name}: too large")))?;
         let mut bytes = vec![0u8; len];
@@ -148,6 +162,41 @@ mod tests {
         let err = backend.get(Shape::from((3, 3)), "a", candle_nn::Init::Const(0.0), DType::F32, &Device::Cpu).unwrap_err().to_string();
         assert!(err.contains("shape mismatch"), "{err}");
         let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn a_tensor_in_another_dtype_is_skipped_until_read() {
+        // a mirror's checkpoint stores the rotary frequencies as complex64: the model recomputes
+        // them and never asks, so the file opens, and only reading that tensor fails
+        let p = write(
+            "c64",
+            r#"{"w":{"dtype":"F32","shape":[2,2],"data_offsets":[0,16]},"attn.freqs_cis":{"dtype":"C64","shape":[2],"data_offsets":[16,32]}}"#,
+            32,
+        );
+        let w = Weights::open(&p).unwrap();
+        assert_eq!(w.read("w").unwrap().dims(), &[2, 2]);
+        assert!(!w.contains("attn.freqs_cis"));
+        let err = w.read("attn.freqs_cis").unwrap_err().to_string();
+        assert!(err.contains("unsupported dtype C64"), "{err}");
+        assert!(w.has_prefix("attn."));
+        assert!(!w.has_prefix("detector_model."));
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn a_checkpoint_in_metas_layout_is_named() {
+        let dir = std::env::temp_dir().join(format!("lc-sam3-layout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = r#"{"detector.backbone.vision_backbone.trunk.blocks.0.attn.freqs_cis":{"dtype":"C64","shape":[2],"data_offsets":[0,16]},"detector.backbone.vision_backbone.trunk.pos_embed":{"dtype":"F32","shape":[4],"data_offsets":[16,32]}}"#;
+        let mut b = (header.len() as u64).to_le_bytes().to_vec();
+        b.extend_from_slice(header.as_bytes());
+        b.extend(std::iter::repeat_n(0u8, 32));
+        std::fs::write(dir.join(crate::WEIGHTS_FILE), b).unwrap();
+        std::fs::write(dir.join("vocab.json"), "{}").unwrap();
+        std::fs::write(dir.join("merges.txt"), "").unwrap();
+        let err = crate::Sam3::load_cpu(&dir).err().unwrap().to_string();
+        assert!(err.contains("Meta's original") && err.contains("facebook/sam3"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
