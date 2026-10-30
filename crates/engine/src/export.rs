@@ -120,6 +120,7 @@ impl Default for Resize {
 
 /// The most pixels an export enlarged past its photo's own size can have: 512 megapixels, also
 /// Lightroom's ceiling. A full-size or smaller export is never held to it.
+/// The develop pipeline holds its own renders to the same ceiling (`lcc_pipeline::geometry::MAX_RENDER_PIXELS`).
 pub const MAX_ENLARGED_PIXELS: f64 = 512e6;
 
 impl Resize {

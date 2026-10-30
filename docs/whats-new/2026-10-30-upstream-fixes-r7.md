@@ -3,3 +3,5 @@
 - Compressed Fujifilm RAF files decode 13 to 17 % faster.
 - Malformed base64 in segmentation masks and in agent (MCP) image arguments is refused instead of being half-decoded.
 - Downloads of AI models no longer fail when the server sends an interim "103 Early Hints" response first.
+- A render request for a size far beyond the photo is held to 512 megapixels instead of aborting the app on allocation.
+- Negative pixel sizes in an XMP sidecar are ignored, a GPX file with more than one root element is refused, and the white balance menu in the Edit panel is translated.
