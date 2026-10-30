@@ -102,6 +102,7 @@ pub fn parse_gpx(s: &str) -> Result<Tracklog, GpxError> {
     reader.config_mut().check_end_names = true;
     let mut path: Vec<Vec<u8>> = Vec::new();
     let mut seen_gpx = false;
+    let mut seen_root = false;
     let mut log = Tracklog::default();
     let mut segment: u32 = 0;
     let mut pt: Option<Pending> = None;
@@ -112,6 +113,12 @@ pub fn parse_gpx(s: &str) -> Result<Tracklog, GpxError> {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let name = local(e.name().as_ref()).to_vec();
                 let parent = path.last().map(Vec::as_slice);
+                if path.is_empty() {
+                    if seen_root {
+                        return Err(GpxError::Xml("multiple document elements".into()));
+                    }
+                    seen_root = true;
+                }
                 match name.as_slice() {
                     b"gpx" if path.is_empty() => seen_gpx = true,
                     b"trk" if parent == Some(b"gpx") => log.tracks = log.tracks.saturating_add(1),
@@ -458,6 +465,11 @@ mod tests {
         let b = TrackPoint { time: 10.0, latitude: 0.0, longitude: -179.0, elevation: None, segment: 0 };
         let g = lerp(&a, &b, 0.75);
         assert!((g.longitude - -179.5).abs() < 1e-9, "{g:?}");
+    }
+
+    #[test]
+    fn rejects_multiple_document_roots() {
+        assert!(matches!(parse_gpx("<gpx/><gpx/>"), Err(GpxError::Xml(_))));
     }
 
     #[test]
