@@ -63,6 +63,7 @@ Checked every 15 minutes while a release or merge round is running, otherwise at
 | 3370 | GPU equivalence tests run on a software adapter when asked (lavapipe, WARP), for local runs on every platform | 2026-10-30 | open |
 | 3371 | Ignore negative XMP pixel dimensions | 2026-10-30 | open |
 | 3372 | Handle HTTP Early Hints before final responses | 2026-10-30 | open |
+| 3373 | i18n: add Greek (el) interface language | 2026-10-30 | open |
 
 Check with:
 
