@@ -2222,7 +2222,7 @@ fn wb_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, raw: bool) 
                     if m == WbMode::Custom {
                         continue;
                     }
-                    if ui.selectable_label(d.wb.mode == m, m.label()).clicked() {
+                    if ui.selectable_label(d.wb.mode == m, crate::i18n::tr(m.label())).clicked() {
                         let mode = serde_json::to_value(m).unwrap_or_default();
                         let _ = app.run("develop.wb", json!({"mode": mode}));
                     }
