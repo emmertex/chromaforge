@@ -3302,7 +3302,9 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                 }
                 _ => {}
             }
+            let pin_allowed = sel || app.ui.mask_unselected_pins;
             if app.ui.mask_pins
+                && pin_allowed
                 && mode.shows(sel, live)
                 && let Some(at) = component_pin(&c.shape)
             {
@@ -3436,11 +3438,17 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             let erase = app.ui.brush_erase != alt;
             // a ⇧-click draws a straight line from where the last stroke ended, as in Lightroom
             let connect = shift && resp.clicked() && pts.len() == 1;
-            let _ = app.run(
-                "mask.brushStroke",
-                json!({"points": pts, "size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow,
-                       "density": app.ui.brush_density, "erase": erase, "autoMask": app.ui.brush_auto_mask, "pressure": pressure, "connect": connect}),
-            );
+            let mut params = json!({"points": pts, "size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow,
+                   "density": app.ui.brush_density, "erase": erase, "autoMask": app.ui.brush_auto_mask, "pressure": pressure, "connect": connect});
+            let is_brush = app
+                .ui
+                .active_mask_component
+                .and_then(|ci| d.masks.iter().find(|m| Some(m.id) == app.session.active_mask).and_then(|m| m.components.get(ci)))
+                .is_some_and(|c| matches!(c.shape, MaskShape::Brush { .. }));
+            if is_brush && let Some(ci) = app.ui.active_mask_component {
+                params["component"] = json!(ci);
+            }
+            let _ = app.run("mask.brushStroke", params);
         }
         return;
     }
@@ -3456,10 +3464,12 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     };
     if resp.clicked()
         && let Some(q) = resp.interact_pointer_pos()
-        && let Some((mid, ..)) = hit(q)
-        && Some(mid) != active
+        && let Some((mid, ci, ..)) = hit(q)
     {
-        let _ = app.run("mask.select", json!({"id": mid}));
+        if Some(mid) != active {
+            let _ = app.run("mask.select", json!({"id": mid}));
+        }
+        app.ui.active_mask_component = Some(ci);
     }
     if resp.drag_started()
         && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
@@ -3473,7 +3483,12 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                 return Some((m.id, ci, 0));
             }
             // anywhere on the photo drags the selected linear gradient
-            matches!(m.components.first()?.shape, MaskShape::Linear { .. }).then_some((m.id, 0, 0))
+            let lin_idx = app
+                .ui
+                .active_mask_component
+                .filter(|&ci| m.components.get(ci).is_some_and(|c| matches!(c.shape, MaskShape::Linear { .. })))
+                .or_else(|| m.components.iter().position(|c| matches!(c.shape, MaskShape::Linear { .. })));
+            lin_idx.map(|ci| (m.id, ci, 0))
         });
         if let Some((mask, comp, handle)) = grip
             && let Some(original_shape) = d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(comp)).map(|c| c.shape.clone())
@@ -3481,6 +3496,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             if Some(mask) != active {
                 let _ = app.run("mask.select", json!({"id": mask}));
             }
+            app.ui.active_mask_component = Some(comp);
             let _ = app.run("develop.beginInteraction", json!({"label": "Edit Mask"}));
             app.gesture = Some(Gesture::MaskHandle { mask, comp, handle, original_shape });
         }

@@ -1027,6 +1027,12 @@ pub struct UiState {
     pub mask_overlay_color: [u8; 3],
     pub mask_overlay_opacity: f32,
     pub mask_pins: bool,
+    /// Whether unselected mask pins are shown (Alt+V / Option+V).
+    #[serde(default = "yes")]
+    pub mask_unselected_pins: bool,
+    /// Automatically toggle mask overlay while adjusting or editing.
+    #[serde(default = "yes")]
+    pub mask_overlay_auto: bool,
     /// When the Remove tool's spot pins and the mask pins show (Shift+H cycles). Mask pins also
     /// need [`mask_pins`](Self::mask_pins).
     pub tool_overlay: ToolOverlay,
@@ -1048,6 +1054,12 @@ pub struct UiState {
     /// being adjusted.
     #[serde(skip)]
     pub mask_hover: Option<u32>,
+    /// Active mask component index within the currently selected mask.
+    #[serde(skip)]
+    pub active_mask_component: Option<usize>,
+    /// Mask IDs whose sub-actions are collapsed in the masking panel.
+    #[serde(default)]
+    pub collapsed_masks: std::collections::HashSet<u32>,
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
@@ -1887,6 +1899,8 @@ impl Default for UiState {
             mask_overlay_pinned: false,
             mask_adjusting_until: None,
             mask_hover: None,
+            active_mask_component: None,
+            collapsed_masks: Default::default(),
             view: ViewMode::Detail,
             modern: crate::modern::ModernUi::default(),
             left_panel: false,
@@ -1922,6 +1936,8 @@ impl Default for UiState {
             mask_overlay_color: [230, 30, 40],
             mask_overlay_opacity: 50.0,
             mask_pins: true,
+            mask_unselected_pins: true,
+            mask_overlay_auto: true,
             tool_overlay: ToolOverlay::Auto,
             mask_overlay_all: false,
             crop_overlay: CropOverlay::Thirds,
@@ -2134,6 +2150,20 @@ impl UiState {
             self.folded_sections.retain(|s| s != id);
         } else {
             self.folded_sections.push(id.to_string());
+        }
+    }
+
+    /// Whether a mask's components are collapsed in the Masking panel.
+    pub fn is_mask_collapsed(&self, id: u32) -> bool {
+        self.collapsed_masks.contains(&id)
+    }
+
+    /// Toggle whether a mask's components are collapsed in the Masking panel.
+    pub fn toggle_mask_collapsed(&mut self, id: u32) {
+        if self.collapsed_masks.contains(&id) {
+            self.collapsed_masks.remove(&id);
+        } else {
+            self.collapsed_masks.insert(id);
         }
     }
 

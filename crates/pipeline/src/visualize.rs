@@ -56,6 +56,8 @@ pub enum MaskView {
     Color,
     /// A black-and-white photo with the mask tinted in the overlay colour.
     ColorOnBw,
+    /// The photo where the mask is, black-and-white elsewhere.
+    ImageOnBw,
     /// The photo where the mask is, black elsewhere.
     ImageOnBlack,
     /// The photo where the mask is, white elsewhere.
@@ -65,13 +67,15 @@ pub enum MaskView {
 }
 
 impl MaskView {
-    pub const ALL: [MaskView; 5] = [MaskView::Color, MaskView::ColorOnBw, MaskView::ImageOnBlack, MaskView::ImageOnWhite, MaskView::WhiteOnBlack];
+    pub const ALL: [MaskView; 6] =
+        [MaskView::Color, MaskView::ColorOnBw, MaskView::ImageOnBw, MaskView::ImageOnBlack, MaskView::ImageOnWhite, MaskView::WhiteOnBlack];
 
     /// Stable name (control channel, settings).
     pub fn name(self) -> &'static str {
         match self {
             MaskView::Color => "color",
             MaskView::ColorOnBw => "colorOnBw",
+            MaskView::ImageOnBw => "imageOnBw",
             MaskView::ImageOnBlack => "imageOnBlack",
             MaskView::ImageOnWhite => "imageOnWhite",
             MaskView::WhiteOnBlack => "whiteOnBlack",
@@ -82,6 +86,7 @@ impl MaskView {
         match self {
             MaskView::Color => "Color Overlay",
             MaskView::ColorOnBw => "Color Overlay on B&W",
+            MaskView::ImageOnBw => "Image on B&W",
             MaskView::ImageOnBlack => "Image on Black",
             MaskView::ImageOnWhite => "Image on White",
             MaskView::WhiteOnBlack => "White on Black",
@@ -249,6 +254,7 @@ pub fn mask_view(img: &mut Rgba8, a: &Plane, view: MaskView, color: [u8; 3], opa
             let out: [f32; 3] = match view {
                 MaskView::Color => std::array::from_fn(|c| p[c] + (col[c] - p[c]) * a * op),
                 MaskView::ColorOnBw => std::array::from_fn(|c| grey + (col[c] - grey) * a * op),
+                MaskView::ImageOnBw => std::array::from_fn(|c| grey + (p[c] - grey) * a),
                 MaskView::ImageOnBlack => p.map(|v| v * a),
                 MaskView::ImageOnWhite => p.map(|v| v * a + 255.0 * (1.0 - a)),
                 MaskView::WhiteOnBlack => [255.0 * a; 3],
@@ -434,6 +440,7 @@ mod tests {
         assert_ne!(o.key(), Overlay::Mask { id: 513, view: MaskView::Color, color: [12, 200, 255], opacity: 65 }.key());
         assert_eq!(MaskView::WhiteOnBlack.next(), MaskView::Color);
         assert_eq!(MaskView::parse("colorOnBw"), Some(MaskView::ColorOnBw));
+        assert_eq!(MaskView::parse("imageOnBw"), Some(MaskView::ImageOnBw));
     }
 
     #[test]

@@ -1040,13 +1040,15 @@ impl LccApp {
             // Judge local adjustments on the photo: while a slider is at work nothing covers it, not even
             // an overlay switched on with O (it comes back when the slider rests); one that showed by
             // itself goes, as the mask now has settings (upstream PR 2920's overlay rule).
-            self.ui.mask_adjusting_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(MASK_ADJUST_HIDE_MS));
+            if self.ui.mask_overlay_auto {
+                self.ui.mask_adjusting_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(MASK_ADJUST_HIDE_MS));
+            }
             self.ui.mask_overlay = self.ui.mask_overlay_pinned;
         }
         if r.is_ok() && matches!(id, "mask.add" | "mask.addComponent" | "mask.duplicate" | "mask.select") {
             // A new or picked mask shows its overlay by itself only while it has no settings: one with
             // settings is judged by its effect (O, the eye or hovering its row shows the overlay).
-            self.ui.mask_overlay = self.ui.mask_overlay_pinned || !self.active_mask_has_settings();
+            self.ui.mask_overlay = self.ui.mask_overlay_pinned || (self.ui.mask_overlay_auto && !self.active_mask_has_settings());
         }
         if r.is_ok() {
             // These commands finish synchronously, so their completion would otherwise
@@ -1255,7 +1257,7 @@ impl LccApp {
         }
         if let Some(mask) = polled.refine {
             // a new selection from a click or a description: shown by the same rule as a new mask
-            self.ui.mask_overlay = self.ui.mask_overlay_pinned || !self.active_mask_has_settings();
+            self.ui.mask_overlay = self.ui.mask_overlay_pinned || (self.ui.mask_overlay_auto && !self.active_mask_has_settings());
             self.ui.detail_due = Some((now + 0.3, mask));
         }
         if let Some(e) = polled.messages.into_iter().last() {
