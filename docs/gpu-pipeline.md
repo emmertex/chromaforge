@@ -50,6 +50,14 @@ Overrides (read once at launch):
 - else `WGPU_BACKEND` (wgpu's own variable, same names) — before #136 only the window honoured it,
   the compute device always used Vulkan + DX12 (+ Metal).
 - `<PREFIX>_GPU=0`: GPU rendering off for the process (the window is unaffected).
+- `<PREFIX>_GPU_ADAPTER=<part of a card's name>` (any case, e.g. `4070`, `radeon`, `"rtx 4070 super"`):
+  the graphics card for GPU rendering, AI Denoise and the face models, on a machine with more than one
+  (`backend::pick_adapter`). The first hardware card whose name contains it wins, in wgpu's order;
+  software adapters (WARP, llvmpipe) never. A name that matches no card is logged
+  (`gpu: GPU_ADAPTER=… names none of the graphics cards (…); using the default choice`) and the default
+  high-performance card is used. The window stays on the card that drives the screen. The log's
+  `gpu: GPU_ADAPTER=…: using …` line names the card used. Handy to keep test runs or a long export off
+  the card the screens hang on.
 - Both `<PREFIX>_GPU=0` and `<PREFIX>_GPU_BACKEND=off` also keep AI Denoise, the face models
   and the AI mask model (SAM 3 on Metal) on the CPU.
 - `<PREFIX>_GPU_INIT_TIMEOUT=<seconds>` (whole seconds, 1–3600; default 30): how long creating a
