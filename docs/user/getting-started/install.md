@@ -5,11 +5,11 @@ order: 10
 verified: 0.7.1
 ---
 
-Download the file for your system from the [latest release](https://github.com/emmertex/lightcraft-classic/releases/latest) and install it. In the file names, `<version>` stands for the version number, for example `0.7.1`.
+Download the file for your system from the [latest release](https://github.com/emmertex/chromaforge/releases/latest) and install it. In the file names, `<version>` stands for the version number, for example `0.7.1`.
 
 ## Windows 11
 
-1. Open the [latest release](https://github.com/emmertex/lightcraft-classic/releases/latest).
+1. Open the [latest release](https://github.com/emmertex/chromaforge/releases/latest).
 2. Download `lightcraft-classic-<version>-windows-x64.msi`. It fits most PCs (Intel and AMD, 64-bit).
 3. Run the file. The installer asks where to install. The default is `C:\Program Files\Chromaforge`, and upgrades stay in the folder you chose.
 4. At the end, choose the option to start Chromaforge.
@@ -50,4 +50,4 @@ The release also has `lightcraft-classic-web-<version>.zip`, a static site that 
 
 ## Still stuck?
 
-Open an issue in the [issue tracker](https://github.com/emmertex/lightcraft-classic/issues).
+Open an issue in the [issue tracker](https://github.com/emmertex/chromaforge/issues).

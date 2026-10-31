@@ -237,7 +237,8 @@ fn release_file(opts: &Options, url: &str) -> Result<bool, UpdateError> {
     require_https(url, "the update's file")?;
     // this repository's releases, or (the default repository only) one it was renamed from:
     // a manifest written while the old name is still what older installs accept
-    let legacy: &[&str] = if opts.repo == lcc_brand::REPOSITORY { lcc_brand::LEGACY_REPOSITORIES } else { &[] };
+    let legacy: &[&str] =
+        if owner_name(&opts.repo).eq_ignore_ascii_case(owner_name(lcc_brand::REPOSITORY)) { lcc_brand::LEGACY_REPOSITORIES } else { &[] };
     Ok(std::iter::once(opts.repo.as_str())
         .chain(legacy.iter().copied())
         .any(|repo| strip_prefix_ignore_case(url.trim(), &release_download_prefix(repo)).is_some_and(plain_path)))

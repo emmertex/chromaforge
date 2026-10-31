@@ -15,7 +15,7 @@ Update to the latest Chromaforge, then select the photo and choose **Photo** > *
 
 ## Fix
 
-1. Check your version in **Help** > **About Chromaforge** (on macOS, **Chromaforge** > **About Chromaforge**). If it is older than 0.7.1, install the [latest release](https://github.com/emmertex/lightcraft-classic/releases/latest). See [Install Chromaforge](../getting-started/install.md).
+1. Check your version in **Help** > **About Chromaforge** (on macOS, **Chromaforge** > **About Chromaforge**). If it is older than 0.7.1, install the [latest release](https://github.com/emmertex/chromaforge/releases/latest). See [Install Chromaforge](../getting-started/install.md).
 2. Select the raw photo and choose **Photo** > **Reload from Disk**.
 3. If it still looks dull, adjust it by hand in the **Edit** panel. See [Edit a photo](../guides/edit-a-photo.md).
 4. If you think the starting look is wrong for your camera, report it with the original raw file. See [Get help with a problem](get-help.md).
@@ -37,4 +37,4 @@ If a large raw looks soft right after you zoom in, wait a few seconds. Chromafor
 
 ## Still stuck?
 
-Open an issue in the [issue tracker](https://github.com/emmertex/lightcraft-classic/issues).
+Open an issue in the [issue tracker](https://github.com/emmertex/chromaforge/issues).

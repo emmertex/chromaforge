@@ -169,9 +169,15 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui) {
                     .show(ui, |ui| notes_body(ui, &t, &notes));
             }
         }
-        _ => {
+        "current" => {
             let last = status["lastChecked"].as_str().unwrap_or_default().to_string();
             ui.label(egui::RichText::new(tr("This is the newest version.")).color(t.text_label));
+            if !last.is_empty() {
+                ui.label(egui::RichText::new(tr_format!("Last checked {when}", when = last)).font(t.font(11.5)).color(t.text_dim));
+            }
+        }
+        _ => {
+            let last = status["lastChecked"].as_str().unwrap_or_default().to_string();
             if !last.is_empty() {
                 ui.label(egui::RichText::new(tr_format!("Last checked {when}", when = last)).font(t.font(11.5)).color(t.text_dim));
             }

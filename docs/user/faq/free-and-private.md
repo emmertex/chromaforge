@@ -17,4 +17,4 @@ Chromaforge runs on Windows, macOS and Linux, and in a web browser. See [Install
 
 ## Is it finished?
 
-No. Chromaforge is in alpha. Some things from Adobe Lightroom are not there yet, such as on-screen HDR display, video and the Print, Book and Map modules. The project's [roadmap](https://github.com/emmertex/lightcraft-classic/blob/main/ROADMAP.md) lists what is missing.
+No. Chromaforge is in alpha. Some things from Adobe Lightroom are not there yet, such as on-screen HDR display, video and the Print, Book and Map modules. The project's [roadmap](https://github.com/emmertex/chromaforge/blob/main/ROADMAP.md) lists what is missing.
