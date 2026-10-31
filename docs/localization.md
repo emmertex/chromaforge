@@ -100,6 +100,28 @@ inflect the placeholder, and phrase sentences so the name needs no grammatical c
 | `{cli}` | `cli_binary` | command-line hints |
 | `{env}` | `env_prefix` | environment-variable hints |
 
+## Chromaforge's own messages (`locales/fork/`)
+
+Upstream's catalogs (`locales/<code>.json`, `locales/<code>-formats.json`) stay as upstream wrote them.
+Chromaforge's added and changed messages go in `locales/fork/<code>.json` and `locales/fork/<code>-formats.json`,
+which are merged over them when the app is built.
+
+**The fork catalogs are kept sorted by key**, in Unicode code-point order (what Python's `sorted` and Rust's
+`BTreeMap` give), with a two-space indent, UTF-8 text (no `\u` escapes beyond the control characters JSON
+requires) and a newline at the end. A new key then sits between its neighbours instead of after the last entry, so
+two PRs that add strings conflict only when their keys sort next to each other. To add or change messages:
+
+1. Add the keys anywhere in the fork catalogs (at the end is fine).
+2. Run `cargo xtask i18n --sort`. It rewrites the fork catalogs in order and never adds, drops or changes a key or
+   a value; it changes nothing when a catalog isn't valid JSON or repeats a key, and names the file (and the repeated key, or the line and column of the error).
+3. Commit the result.
+
+`cargo xtask i18n --check`, part of `cargo xtask ci --fast`, fails when a fork catalog is out of order (naming the
+file and the first key out of place) or not in that format. A script that writes a catalog itself can use
+`json.dumps(catalog, indent=2, ensure_ascii=False, sort_keys=True) + "\n"` in Python, which gives the same file.
+Upstream's catalogs are neither checked nor sorted, so upstream changes ported by hand still apply where upstream
+put them.
+
 ## Testing and looking at it
 
 ```sh

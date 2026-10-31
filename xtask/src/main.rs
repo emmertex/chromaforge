@@ -13,6 +13,7 @@ mod ci_quick;
 mod ci_report;
 mod dist;
 mod docs;
+mod i18n;
 mod ico;
 mod immich;
 mod layers;
@@ -57,6 +58,10 @@ commands:
                   docs/changelog/unreleased/ entries and that docs/whats-new.md is upstream's as last recorded;
                   --upstream records it after an upstream merge; --release gathers the changelog entries into
                   docs/changelog/<version>.md and deletes them
+  i18n --check | --sort
+                  the fork's message catalogs (crates/ui-egui/locales/fork/*.json): --check (in ci) fails when
+                  one is out of key order, not in the catalog format, or not a JSON object of strings each key
+                  once; --sort rewrites them in order (docs/localization.md)
   deny            cargo deny check licenses sources (deny.toml), skipped with a message if cargo-deny is missing
   shortcuts       regenerate docs/manual/keyboard-shortcuts.md from the command registry (builds lcc-cli)
   docs [--check]  render README.md.in and docs/**/*.md.in ({{app}}, {{binary}}, … from brand.toml) into
@@ -93,7 +98,7 @@ commands:
                   build the browser app (apps/web) into <target>/web-site/;
                   --serve serves it on http://127.0.0.1:<port> (default 8080)
   ci [--fast] [--hardware] [--summary-md] [--quick [--base REF]]
-                  fmt --check, brand check, docs --check, notes --check, clippy -D warnings, heif, test, GPU probe, parity refs,
+                  fmt --check, brand check, docs --check, notes --check, i18n --check, clippy -D warnings, heif, test, GPU probe, parity refs,
                   layers, assets, deny, wasm (stops at first failure). Tests run under cargo test (cargo nextest
                   with the quarantine on CI or with XTASK_NEXTEST=1), without examples, then doctests with cargo
                   test --doc; after them it prints the translation gaps report (never a failure). Writes
@@ -139,6 +144,7 @@ fn main() -> ExitCode {
         Some("brand") => brand::run(&root(), &rest),
         Some("docs") => docs::run(&root(), rest.contains(&"--check")),
         Some("notes") => notes::run(&root(), &rest),
+        Some("i18n") => i18n::run(&root(), &rest),
         Some("deny") => cmd_deny(),
         Some("run") => dist::cmd_run(&root(), &rest),
         Some("install") => dist::cmd_install(&root(), &rest),
@@ -682,6 +688,7 @@ fn run_ci(opts: &CiOptions, args: &[&str]) -> Result<(), String> {
         ("quarantine", Box::new(|| quarantine::run(&root, &["check"]))),
         ("docs", Box::new(|| docs::run(&root, true))),
         ("notes", Box::new(|| notes::check(&root))),
+        ("i18n", Box::new(|| i18n::check(&root))),
         (
             "clippy",
             Box::new(|| {
