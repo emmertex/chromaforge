@@ -75,5 +75,7 @@
   "Folder “{}”": "Тека «{}»",
   "{f} folder{}": "тек: {f}{:.0}",
   "Module: {size} KB": "Модуль: {size} КБ",
-  "by {author} · {id}": "автор {author} · {id}"
+  "by {author} · {id}": "автор {author} · {id}",
+  "Finish or cancel installing {name} first": "Спочатку завершіть або скасуйте встановлення {name}",
+  "{name} {version} is already installed": "{name} {version} уже встановлено"
 }

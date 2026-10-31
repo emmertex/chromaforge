@@ -78,5 +78,7 @@
   "Folder “{}”": "Mappen ”{}”",
   "{f} folder{}": "{f} mapp{}",
   "Module: {size} KB": "Modul: {size} KB",
-  "by {author} · {id}": "av {author} · {id}"
+  "by {author} · {id}": "av {author} · {id}",
+  "Finish or cancel installing {name} first": "Slutför eller avbryt installationen av {name} först",
+  "{name} {version} is already installed": "{name} {version} är redan installerat"
 }

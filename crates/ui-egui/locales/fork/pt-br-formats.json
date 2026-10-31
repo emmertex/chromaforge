@@ -85,5 +85,7 @@
   "Folder “{}”": "Pasta “{}”",
   "{f} folder{}": "{f} pasta{}",
   "Module: {size} KB": "Módulo: {size} KB",
-  "by {author} · {id}": "por {author} · {id}"
+  "by {author} · {id}": "por {author} · {id}",
+  "Finish or cancel installing {name} first": "Conclua ou cancele primeiro a instalação de {name}",
+  "{name} {version} is already installed": "{name} {version} já está instalado"
 }

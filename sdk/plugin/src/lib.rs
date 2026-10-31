@@ -255,7 +255,7 @@ pub mod host {
         Ok(reply.get_mut("ok").map(Value::take).unwrap_or(Value::Null))
     }
 
-    /// A line in the plug-in's log (Plugin Manager → Log).
+    /// A line in the plug-in's log (Plug-in Manager → Log).
     pub fn log(line: &str) {
         host_log(addr(line.as_bytes()), line.len() as i32);
     }

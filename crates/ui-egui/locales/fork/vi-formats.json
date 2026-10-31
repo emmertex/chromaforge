@@ -78,5 +78,7 @@
   "Folder “{}”": "Thư mục «{}»",
   "{f} folder{}": "{f} thư mục{:.0}",
   "Module: {size} KB": "Mô-đun: {size} KB",
-  "by {author} · {id}": "bởi {author} · {id}"
+  "by {author} · {id}": "bởi {author} · {id}",
+  "Finish or cancel installing {name} first": "Hãy hoàn tất hoặc hủy việc cài đặt {name} trước",
+  "{name} {version} is already installed": "{name} {version} đã được cài đặt"
 }

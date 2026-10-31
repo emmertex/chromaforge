@@ -85,5 +85,7 @@
   "Folder “{}”": "資料夾「{}」",
   "{f} folder{}": "{f} 個資料夾{:.0}",
   "Module: {size} KB": "模組：{size} KB",
-  "by {author} · {id}": "作者 {author} · {id}"
+  "by {author} · {id}": "作者 {author} · {id}",
+  "Finish or cancel installing {name} first": "請先完成或取消安裝 {name}",
+  "{name} {version} is already installed": "{name} {version} 已安裝"
 }

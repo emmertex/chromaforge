@@ -94,7 +94,7 @@ pub(crate) struct CallContext<'a> {
     pub store: &'a mut NamespaceStore,
     /// Lines for the plug-in's log about what the host did for it (a program that didn't start).
     pub notes: Vec<String>,
-    /// The plug-in's settings (shared: the Plugin Manager may read them while a call runs).
+    /// The plug-in's settings (shared: the Plug-in Manager may read them while a call runs).
     pub settings: &'a Mutex<SettingsStore>,
     /// The settings the manifest declares.
     pub fields: &'a [Field],

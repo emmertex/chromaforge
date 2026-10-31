@@ -1,5 +1,5 @@
 //! The SDK example plug-in (`sdk/examples/catalog-tools`), built to wasm32 by this test, installed
-//! in a Plugin Manager and driven through every hook with a fake catalog.
+//! in a [`Manager`] and driven through every hook with a fake catalog.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
