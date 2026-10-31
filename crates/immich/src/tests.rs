@@ -318,6 +318,33 @@ fn assets_link_by_checksum_else_probably_by_name_time_and_size() {
 }
 
 #[test]
+fn a_year_or_month_alone_links_probably_as_the_start_of_its_period() {
+    let asset = |id: &str, local: &str| Asset {
+        id: id.into(),
+        original_file_name: "scan.tif".into(),
+        local_date_time: Some(local.into()),
+        exif_info: Some(ExifInfo { file_size_in_byte: Some(900), ..ExifInfo::default() }),
+        ..Asset::default()
+    };
+    let mut cat = Catalog::default();
+    let month = photo(&mut cat, "scan.tif", None, "1983-04", 900);
+    let year = photo(&mut cat, "SCAN.TIF", None, "1984", 900);
+    let index = Index::new(&cat);
+    let found = |a: &Asset| index.find(a).map(|m| (m.photo, m.kind));
+    assert_eq!(
+        found(&asset("m", "1983-04-01T00:00:00.000Z")),
+        Some((month, MatchKind::Probable)),
+        "a month alone matches the first moment of that month"
+    );
+    assert_eq!(
+        found(&asset("y", "1984-01-01T00:00:00.000Z")),
+        Some((year, MatchKind::Probable)),
+        "a year alone matches the first moment of that year"
+    );
+    assert_eq!(found(&asset("x", "1983-04-02T00:00:00.000Z")), None, "another day of the month is not the same capture time");
+}
+
+#[test]
 fn ambiguous_fallbacks_and_trashed_assets_are_not_linked() {
     let (url, _) = serve(recorded);
     let mut assets = all_assets(&url);

@@ -37,6 +37,8 @@ pub fn opener(s: &mut Session, svc: &ServiceConfig, coll: &CollectionConfig, pho
     for id in photos {
         let Some(p) = s.catalog.photo(*id) else { continue };
         let created = p.captured.clone().unwrap_or_else(|| p.imported.clone());
+        // a year or a month alone (`1983-04`) is sent as the start of its period, a time the server reads
+        let created = lcc_catalog::dates::capture_start(&created).into_owned();
         let created = if created.len() == 19 { format!("{created}.000Z") } else { created };
         let linked = s.catalog.remote_of(*id).find(|r| r.service == SERVICE && r.account_id == settings.account).map(|r| r.remote_id.clone());
         let original = match &p.source {

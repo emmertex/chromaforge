@@ -1843,7 +1843,14 @@ pub(crate) fn candidate_cell(app: &mut LccApp, ui: &mut egui::Ui, d: &mut Import
         c.height,
         c.format,
         c.file_size as f64 / 1e6,
-        c.captured.as_deref().map(|d| format!("\n{}", d.replace('T', " "))).unwrap_or_default()
+        // a year or a month alone shows as such ("1983", "April 1983")
+        c.captured
+            .as_deref()
+            .map(|d| format!(
+                "\n{}",
+                if lcc_catalog::dates::partial_capture(d).is_some() { crate::i18n::display_time(d) } else { d.replace('T', " ") }
+            ))
+            .unwrap_or_default()
     );
     let resp = resp.on_hover_text(tip);
     if resp.clicked() && ok {

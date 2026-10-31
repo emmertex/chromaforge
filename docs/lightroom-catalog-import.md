@@ -120,6 +120,12 @@ failed or changed, which fails the import; required photo tables still report er
 unsupported schemas are ignored. A needed
 WITHOUT ROWID or virtual table produces an explicit error, handled as a warning when optional.
 
+A capture time of a year or a month alone (`1983`, `1983-04`: Lightroom keeps a scanned print's date that way) is
+imported as stated. A capture time that isn't a date (including an impossible one such as 2026-02-30) is left out
+with a warning naming the image, which imports without it; the catalog's value stays in the import archive. A record
+an earlier version stored with such a time keeps it, with a warning, rather than take Lightroom's (undoing the import
+could not restore it), and a new virtual copy of it doesn't inherit it.
+
 Develop settings reuse the existing XMP/preset mapper. Supported sliders, curves and supported
 mask structures remain editable, but this is approximate rendering: Adobe AI
 models, some masking/retouch fields and process-version algorithms are not reproduced. Unmapped

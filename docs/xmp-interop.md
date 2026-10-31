@@ -43,7 +43,8 @@ clock values (more than three clock components) are skipped, allowing DateTimeDi
 to supply the time. When the file has no valid capture time, the sidecar's `exif:DateTimeOriginal`, else `photoshop:DateCreated`, else `xmp:CreateDate` (ISO 8601) is
 used — on import (it then also files a copied photo in its date folder) and by `photo.readMetadataFromFile` (undoable).
 An incomplete or malformed XMP timestamp is not projected as a capture time, remains available in the raw property
-map, and does not prevent the next valid capture-time property from being used.
+map, and does not prevent the next valid capture-time property from being used. A date of a year or a month alone
+(`1983`, `1983-04`, as for a scanned print) is read as stated, not filled in to a day.
 `xmp:Rating="-1"` (the XMP convention for rejected) sets the reject flag. Develop settings come from
 `lc:settings` when present (exact); otherwise from the `crs:` fields below (approximate).
 
@@ -104,7 +105,10 @@ the only copy of those edits outside that application's catalog. Saving never dr
   (clearing a title in the app clears it in the file). All of them are read back on import, so the library starts
   from what the sidecar said.
 - The **capture time** (`exif:DateTimeOriginal`, `photoshop:DateCreated`) and **GPS** (`exif:GPSLatitude`,
-  `exif:GPSLongitude`) are replaced only when the app has a value; otherwise the file's stay. A position the sidecar
+  `exif:GPSLongitude`) are replaced only when the app has a value; otherwise the file's stay. A capture time of a
+  year or a month alone (`1983`, `1983-04`) is written to `photoshop:DateCreated` only, as Lightroom does, since
+  `exif:DateTimeOriginal` can't say it; an `exif:DateTimeOriginal` already in the sidecar is then removed, or it
+  would outrank the date on the next read. A position the sidecar
   already states (to within about a centimetre) is kept as written there, in its own precision: GPS is rewritten only
   when it was changed in the app. A position cleared in the app is removed from the sidecar (latitude, longitude and
   altitude) while the sidecar still states that same position; a different one, written by another application since,
