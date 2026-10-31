@@ -69,5 +69,7 @@
   "Folder “{}”": "Cartella “{}”",
   "{f} folder{}": "cartelle: {f}{:.0}",
   "Module: {size} KB": "Modulo: {size} KB",
-  "by {author} · {id}": "di {author} · {id}"
+  "by {author} · {id}": "di {author} · {id}",
+  "Finish or cancel installing {name} first": "Completa o annulla prima l’installazione di {name}",
+  "{name} {version} is already installed": "{name} {version} è già installato"
 }

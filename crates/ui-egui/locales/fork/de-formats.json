@@ -85,5 +85,7 @@
   "Folder “{}”": "Ordner „{}“",
   "{f} folder{}": "{f} Ordner{:.0}",
   "Module: {size} KB": "Modul: {size} KB",
-  "by {author} · {id}": "von {author} · {id}"
+  "by {author} · {id}": "von {author} · {id}",
+  "Finish or cancel installing {name} first": "Schließen Sie zuerst die Installation von {name} ab oder brechen Sie sie ab",
+  "{name} {version} is already installed": "{name} {version} ist bereits installiert"
 }

@@ -1,4 +1,4 @@
-//! The Plugin Manager: installed plug-ins, their grants, enabled state, logs and data.
+//! [`Manager`]: installed plug-ins, their grants, enabled state, logs and data.
 //!
 //! On disk (a folder, usually `<settings>/plugins`): `<id>.wasm` per plug-in, `plugins.json` with
 //! each plug-in's `{enabled, grant}`, `data/<id>.json`, its metadata namespace (per library), and
@@ -68,6 +68,9 @@ impl Installed {
             "commands": m.commands, "hooks": m.hooks, "publish": m.publish,
             "exportDestinations": m.export_destinations, "metadataFields": m.metadata_fields,
             "settings": m.settings,
+            // a page showing the settings is out of date when either changes (an update, or a
+            // value set by the plug-in or another window)
+            "moduleHash": self.plugin.module_hash(), "settingsRevision": self.settings().revision(),
         })
     }
 
@@ -167,7 +170,7 @@ impl PendingCall {
 fn programs_kept(grant: &Permissions, granted: &Permissions) -> Result<()> {
     match grant.programs.iter().find(|p| !granted.programs.iter().any(|g| p.within(g))) {
         Some(p) => Err(Error::Params(format!(
-            "programs can only be allowed by the user, in the Plugin Manager (File ▸ Plug-ins ▸ Plug-in Manager…); this grant names {:?}, which the user hasn't allowed as it stands",
+            "programs can only be allowed by the user, in the Plug-in Manager (File ▸ Plug-ins ▸ Plug-in Manager…); this grant names {:?}, which the user hasn't allowed as it stands",
             p.id
         ))),
         None => Ok(()),
@@ -413,7 +416,7 @@ impl Manager {
         self.install_checked(bytes, grant, allow_downgrade, false)
     }
 
-    /// [`Manager::install_bytes`] as the user approved it in the Plugin Manager's install dialog:
+    /// [`Manager::install_bytes`] as the user approved it in the Plug-in Manager's install dialog:
     /// the grant may include programs. Never reachable from a command.
     pub fn install_bytes_by_user(&mut self, bytes: &[u8], grant: Option<Permissions>, allow_downgrade: bool) -> Result<&Installed> {
         self.install_checked(bytes, grant, allow_downgrade, true)
@@ -580,7 +583,7 @@ impl Manager {
         self.set_grant_by_user(id, grant)
     }
 
-    /// [`Manager::set_grant`] as the user set it in the Plugin Manager: it may grant programs.
+    /// [`Manager::set_grant`] as the user set it in the Plug-in Manager: it may grant programs.
     /// Never reachable from a command.
     pub fn set_grant_by_user(&mut self, id: &str, grant: Permissions) -> Result<Permissions> {
         let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
@@ -904,12 +907,14 @@ impl Manager {
         let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
         let mut s = p.settings();
         let before: Vec<(String, Option<Value>)> = checked.iter().map(|(k, _)| (k.clone(), s.stored(k))).collect();
+        let revision = s.revision();
         for (k, v) in checked {
             if let Err(e) = s.set(&k, v) {
-                // all or nothing: put back what this call changed
+                // all or nothing: put back what this call changed (and its revision: nothing changed)
                 for (k, v) in before {
                     let _ = s.set(&k, v);
                 }
+                s.rewind(revision);
                 return Err(e);
             }
         }

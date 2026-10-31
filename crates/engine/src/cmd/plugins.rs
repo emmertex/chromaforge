@@ -1,4 +1,4 @@
-//! Plug-in commands (P4.3): the Plugin Manager ([`lcc_plugins::Manager`]) behind engine commands,
+//! Plug-in commands (P4.3): [`lcc_plugins::Manager`] behind engine commands,
 //! so the UI, CLI, control channel and MCP drive plug-ins the same way. See docs/plugins.md.
 //!
 //! The manager is process-wide (plug-ins are installed per user, not per catalog) and lives in
@@ -211,14 +211,14 @@ fn install(s: &mut Session, p: &Value) -> Result<Value> {
     install_as(s, p, false)
 }
 
-/// Installs a plug-in as the user approved it in the Plugin Manager's install dialog (`{path,
+/// Installs a plug-in as the user approved it in the Plug-in Manager's install dialog (`{path,
 /// grant?}`, as `plugin.install`): the grant may include programs, which no command can grant.
 /// The UI's install button only; never registered as a command.
 pub fn install_by_user(s: &mut Session, p: &Value) -> Result<Value> {
     install_as(s, p, true)
 }
 
-/// Sets a plug-in's grant as the user ticked it in the Plugin Manager (`{id, grant}`, as
+/// Sets a plug-in's grant as the user ticked it in the Plug-in Manager (`{id, grant}`, as
 /// `plugin.grant`): it may grant programs. The UI's checkboxes only; never registered as a command.
 pub fn grant_by_user(_: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.grant";
@@ -267,8 +267,10 @@ fn inspect_file(_: &mut Session, p: &Value) -> Result<Value> {
     let bytes = std::fs::read(path).map_err(|e| bad(C, format!("{path}: {e}")))?;
     if lcc_filters::is_filter_module(&bytes) {
         let f = lcc_filters::Filter::load(&bytes, lcc_filters::Limits::default()).map_err(|e| bad(C, e.to_string()))?;
-        let installed =
-            crate::filter_plugins::registry().get(f.id()).map(|i| json!({"version": i.manifest().version, "moduleHash": i.module_hash()}));
+        let installed = crate::filter_plugins::registry().get(f.id()).map(|i| {
+            let same = i.manifest().version == f.manifest().version && i.module_hash() == f.module_hash();
+            json!({"version": i.manifest().version, "moduleHash": i.module_hash(), "same": same})
+        });
         return Ok(json!({"manifest": crate::filter_plugins::info(&f), "installed": installed}));
     }
     let plugin = lcc_plugins::Plugin::load(&bytes, lcc_plugins::Limits::default()).map_err(|e| plugin_err(C, e))?;
@@ -279,7 +281,10 @@ fn inspect_file(_: &mut Session, p: &Value) -> Result<Value> {
         // one that stopped loading counts too: installing over it replaces it
         let installed = m
             .get(plugin.id())
-            .map(|i| json!({"version": i.plugin.manifest().version, "granted": i.effective()}))
+            .map(|i| {
+                let same = i.plugin.manifest().version == plugin.manifest().version && i.plugin.digest() == plugin.digest();
+                json!({"version": i.plugin.manifest().version, "granted": i.effective(), "same": same})
+            })
             .or_else(|| m.unloaded(plugin.id()).map(|(version, grant)| json!({"version": version, "granted": grant, "loaded": false})));
         let (missing, version_error, downgrade) = m.install_check(plugin.manifest());
         Ok(json!({"manifest": manifest, "installed": installed, "missing": missing, "versionError": version_error, "downgrade": downgrade.is_some()}))
@@ -959,12 +964,12 @@ pub(crate) fn sync_fields_with(s: &mut Session, write_sidecars: bool) -> usize {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "plugin.list", "Plug-ins", [], None, "{} → {dir, host: {abi, features}, plugins: [{id, name, version, requires, enabled, requested, granted, commands, hooks, publish}], failed: [{file, error, id?: to remove it with plugin.uninstall, missing?: features this version lacks}]}", always, list),
-        cmd!(query "plugin.inspectFile", "Inspect Plug-in File", [], None, "{path} — loads a .wasm without installing it → {manifest, installed: {version, granted, loaded?: false (it needs features this version lacks)} | null, missing: [features this version lacks], versionError: why `version` isn't semver | null, downgrade: older than the installed version}; plugin.install refuses each of these (a downgrade only without allowDowngrade). The install dialog shows each requested permission for approval", always, inspect_file),
-        cmd!(query "plugin.install", "Install Plug-in", [], None, "{path: .wasm, grant?: {catalog, metadataWrite, network: [hosts], fs: [{path, write}], programs: [entries as plugin.list gives them]}, allowDowngrade?: bool = false} — installs or updates with the permissions the user approved (each one shown first, see plugin.inspectFile); without `grant` nothing new is granted: none on a first install, the previous grant on an update. A grant may repeat or leave out the `programs` the installed version has granted, never add one or widen one: only the user allows those, in the Plugin Manager (an error, nothing installed). A module whose code differs from the installed one keeps none of its programs (its log says so). Refused: features in `requires` this version lacks, a `version` that isn't semver, an older version than the installed one unless allowDowngrade → plugin", always, install),
+        cmd!(query "plugin.list", "Plug-ins", [], None, "{} → {dir, host: {abi, features}, plugins: [{id, name, version, requires, enabled, requested, granted, commands, hooks, publish, moduleHash: sha256 of the module, settingsRevision: changes when a setting does}], failed: [{file, error, id?: to remove it with plugin.uninstall, missing?: features this version lacks}]}", always, list),
+        cmd!(query "plugin.inspectFile", "Inspect Plug-in File", [], None, "{path} — loads a .wasm without installing it → {manifest, installed: {version, granted, same: the installed version and code are this file's (installing it changes nothing), loaded?: false (it needs features this version lacks)} | null, missing: [features this version lacks], versionError: why `version` isn't semver | null, downgrade: older than the installed version}; plugin.install refuses each of these (a downgrade only without allowDowngrade). The install dialog shows each requested permission for approval", always, inspect_file),
+        cmd!(query "plugin.install", "Install Plug-in", [], None, "{path: .wasm, grant?: {catalog, metadataWrite, network: [hosts], fs: [{path, write}], programs: [entries as plugin.list gives them]}, allowDowngrade?: bool = false} — installs or updates with the permissions the user approved (each one shown first, see plugin.inspectFile); without `grant` nothing new is granted: none on a first install, the previous grant on an update. A grant may repeat or leave out the `programs` the installed version has granted, never add one or widen one: only the user allows those, in the Plug-in Manager (an error, nothing installed). A module whose code differs from the installed one keeps none of its programs (its log says so). Refused: features in `requires` this version lacks, a `version` that isn't semver, an older version than the installed one unless allowDowngrade → plugin", always, install),
         cmd!(query "plugin.uninstall", "Remove Plug-in", [], None, "{id} — removes the module and its data; also a plug-in listed under plugin.list → failed (by its id there)", always, uninstall),
         cmd!(query "plugin.enable", "Enable Plug-in", [], None, "{id, enabled?: bool = true}", always, enable),
-        cmd!(query "plugin.grant", "Set Plug-in Permissions", [], None, "{id, grant} — replaces the grant (revokes what it leaves out, programs included; never more than requested). Granted `programs` may be repeated (kept) or left out (revoked), never added or widened: only the user allows those, in the Plugin Manager (an error, nothing changes) → granted", always, set_grant),
+        cmd!(query "plugin.grant", "Set Plug-in Permissions", [], None, "{id, grant} — replaces the grant (revokes what it leaves out, programs included; never more than requested). Granted `programs` may be repeated (kept) or left out (revoked), never added or widened: only the user allows those, in the Plug-in Manager (an error, nothing changes) → granted", always, set_grant),
         cmd!(query "plugin.log", "Plug-in Log", [], None, "{id} → [lines]", always, log),
         cmd!(query "plugin.commands", "Plug-in Commands", [], None, "{} → [{plugin, pluginName, command, label, menu, dialog, prepare, values: what the dialog opens with (the last-run values of fields that remember, else defaults)}] of enabled plug-ins", always, commands),
         cmd!(query "plugin.prepare", "Prepare Plug-in Command", [], None, "{plugin, command, ids?, source?: {kind: album|smartAlbum|folder|allPhotos|other, id?, name?, path?} (default: the Library source shown)} — asks a command with `prepare` how to run on ids / the selection (others: their dialog as declared) → {dialog: [field + value], error: why the plug-in's own options are missing | null} | {run: args} | {message}; runs nothing", always, prepare),
@@ -1387,6 +1392,40 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(needs.parent().unwrap());
     }
 
+    /// The install dialog learns whether a file is exactly what is installed (`installed.same`):
+    /// the same version and code, not a repair (other code) or an update; and `plugin.list` gives
+    /// what a page of the plug-in needs to notice it changed (`moduleHash`, `settingsRevision`).
+    #[test]
+    fn inspect_says_when_a_file_is_what_is_installed() {
+        let _turn = turn();
+        let mut s = Session::with_demo();
+        let settings = json!([{"key": "level", "label": "Level", "type": "number", "min": 0, "max": 10, "default": 1}]);
+        let v1 = module_file("same-v1", &json!({"id": "test.same", "name": "S", "version": "1.0.0", "settings": settings}));
+        let repair = module_file("same-v1b", &json!({"id": "test.same", "name": "S again", "version": "1.0.0", "settings": settings}));
+        let v2 = module_file("same-v2", &json!({"id": "test.same", "name": "S", "version": "2.0.0", "settings": settings}));
+        let same =
+            |s: &mut Session, path: &std::path::Path| s.execute("plugin.inspectFile", &json!({"path": path})).unwrap()["installed"]["same"].clone();
+        assert_eq!(same(&mut s, &v1), Value::Null, "nothing installed yet");
+        s.execute("plugin.install", &json!({"path": v1})).unwrap();
+        assert_eq!(same(&mut s, &v1), true, "the installed module again");
+        assert_eq!(same(&mut s, &repair), false, "the same version with other code is a repair");
+        assert_eq!(same(&mut s, &v2), false, "a newer version is an update");
+
+        let listed = |s: &mut Session| {
+            let l = s.execute("plugin.list", &json!({})).unwrap();
+            l["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.same").cloned().unwrap()
+        };
+        let before = listed(&mut s);
+        assert!(before["moduleHash"].as_str().is_some_and(|h| h.len() == 64), "{before}");
+        s.execute("plugin.setSettings", &json!({"id": "test.same", "values": {"level": 5}})).unwrap();
+        let after = listed(&mut s);
+        assert_ne!(before["settingsRevision"], after["settingsRevision"], "a saved setting changes the revision");
+        s.execute("plugin.install", &json!({"path": v2})).unwrap();
+        assert_ne!(after["moduleHash"], listed(&mut s)["moduleHash"], "an update changes the module hash");
+        s.execute("plugin.uninstall", &json!({"id": "test.same"})).unwrap();
+        let _ = std::fs::remove_dir_all(v1.parent().unwrap());
+    }
+
     /// A module that didn't load is listed with its kind: a pixel filter's module as a filter, anything
     /// else as a plug-in, so the Plug-in Manager shows it in its section.
     #[test]
@@ -1613,8 +1652,8 @@ pub(crate) mod tests {
         let _ = manager().get_or_insert_with(Manager::in_memory).uninstall("test.prog");
         manager().get_or_insert_with(Manager::in_memory).install_bytes(&program_module(), None, false).unwrap();
         let e = s.execute("plugin.grant", &json!({"id": "test.prog", "grant": grant})).unwrap_err().to_string();
-        assert!(e.contains("Plugin Manager"), "{e}");
-        // the Plugin Manager's path grants it
+        assert!(e.contains("Plug-in Manager"), "{e}");
+        // the Plug-in Manager's path grants it
         let g = grant_by_user(&mut s, &json!({"id": "test.prog", "grant": grant})).unwrap();
         assert_eq!(g["granted"]["programs"][0]["id"], "conv", "{g}");
         // an agent may repeat it (kept) or leave it out (revoked)

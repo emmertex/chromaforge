@@ -69,5 +69,7 @@
   "Folder “{}”": "Složka „{}“",
   "{f} folder{}": "složek: {f}{:.0}",
   "Module: {size} KB": "Modul: {size} KB",
-  "by {author} · {id}": "autor: {author} · {id}"
+  "by {author} · {id}": "autor: {author} · {id}",
+  "Finish or cancel installing {name} first": "Nejprve dokončete nebo zrušte instalaci {name}",
+  "{name} {version} is already installed": "{name} {version} už je nainstalováno"
 }

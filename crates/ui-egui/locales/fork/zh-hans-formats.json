@@ -85,5 +85,7 @@
   "Folder “{}”": "文件夹“{0}”",
   "{f} folder{}": "{f} 个文件夹{:.0}",
   "Module: {size} KB": "模块：{size} KB",
-  "by {author} · {id}": "作者 {author} · {id}"
+  "by {author} · {id}": "作者 {author} · {id}",
+  "Finish or cancel installing {name} first": "请先完成或取消安装 {name}",
+  "{name} {version} is already installed": "{name} {version} 已安装"
 }

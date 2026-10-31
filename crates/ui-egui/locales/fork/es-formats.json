@@ -85,5 +85,7 @@
   "Folder “{}”": "Carpeta “{}”",
   "{f} folder{}": "{f} carpeta{}",
   "Module: {size} KB": "Módulo: {size} KB",
-  "by {author} · {id}": "de {author} · {id}"
+  "by {author} · {id}": "de {author} · {id}",
+  "Finish or cancel installing {name} first": "Termina o cancela primero la instalación de {name}",
+  "{name} {version} is already installed": "{name} {version} ya está instalado"
 }

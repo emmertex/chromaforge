@@ -69,5 +69,7 @@
   "Folder “{}”": "საქაღალდე „{}“",
   "{f} folder{}": "საქაღალდე: {f}{:.0}",
   "Module: {size} KB": "მოდული: {size} KB",
-  "by {author} · {id}": "ავტორი: {author} · {id}"
+  "by {author} · {id}": "ავტორი: {author} · {id}",
+  "Finish or cancel installing {name} first": "ჯერ დაასრულეთ ან გააუქმეთ {name}-ის დაყენება",
+  "{name} {version} is already installed": "{name} {version} უკვე დაყენებულია"
 }

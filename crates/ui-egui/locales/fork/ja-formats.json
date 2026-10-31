@@ -85,5 +85,7 @@
   "Folder “{}”": "フォルダ「{}」",
   "{f} folder{}": "{f}個のフォルダ{:.0}",
   "Module: {size} KB": "モジュール: {size} KB",
-  "by {author} · {id}": "作成者 {author} · {id}"
+  "by {author} · {id}": "作成者 {author} · {id}",
+  "Finish or cancel installing {name} first": "先に {name} のインストールを完了するかキャンセルしてください",
+  "{name} {version} is already installed": "{name} {version} はすでにインストールされています"
 }

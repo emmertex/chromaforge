@@ -78,5 +78,7 @@
   "Folder “{}”": "Kansio ”{}”",
   "{f} folder{}": "kansioita: {f}{:.0}",
   "Module: {size} KB": "Moduuli: {size} KB",
-  "by {author} · {id}": "tekijä: {author} · {id}"
+  "by {author} · {id}": "tekijä: {author} · {id}",
+  "Finish or cancel installing {name} first": "Viimeistele tai peru ensin kohteen {name} asennus",
+  "{name} {version} is already installed": "{name} {version} on jo asennettu"
 }

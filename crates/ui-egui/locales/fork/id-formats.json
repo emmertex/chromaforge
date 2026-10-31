@@ -78,5 +78,7 @@
   "Folder “{}”": "Folder “{}”",
   "{f} folder{}": "{f} folder{:.0}",
   "Module: {size} KB": "Modul: {size} KB",
-  "by {author} · {id}": "oleh {author} · {id}"
+  "by {author} · {id}": "oleh {author} · {id}",
+  "Finish or cancel installing {name} first": "Selesaikan atau batalkan dulu pemasangan {name}",
+  "{name} {version} is already installed": "{name} {version} sudah terpasang"
 }

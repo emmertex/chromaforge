@@ -89,5 +89,7 @@
   "Folder “{}”": "Папка «{}»",
   "{f} folder{}": "папок: {f}{:.0}",
   "Module: {size} KB": "Модуль: {size} КБ",
-  "by {author} · {id}": "автор {author} · {id}"
+  "by {author} · {id}": "автор {author} · {id}",
+  "Finish or cancel installing {name} first": "Сначала завершите или отмените установку {name}",
+  "{name} {version} is already installed": "{name} {version} уже установлен"
 }

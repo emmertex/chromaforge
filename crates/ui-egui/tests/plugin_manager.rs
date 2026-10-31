@@ -436,3 +436,210 @@ fn cmd_alt_shift_comma_opens_the_window_and_can_be_rebound() {
     h.app.run("app.resetShortcuts", json!({})).unwrap();
     ui_cmd(&mut h, "plugins.manager", json!({"open": false}));
 }
+
+/// The Plug-in Manager window's rectangle on screen.
+fn window(h: &Headless) -> egui::Rect {
+    h.view.ctx.memory(|m| m.area_rect(egui::Id::new("plugin-manager"))).expect("the Plug-in Manager is on screen")
+}
+
+/// The width the window opens at (the list and a page), and the narrowest it gets.
+const DEFAULT_W: f32 = 250.0 + 560.0;
+const MIN_W: f32 = 250.0 + 360.0;
+/// The window's frame and margins around its content.
+const FRAME: f32 = 60.0;
+
+/// The window opens at its default width whatever its page shows (a filter with many long
+/// parameters, a long description, a long folder), and its edge drags it narrower as well as wider,
+/// down to a width where a page is still usable; *Show Folder* stays in the window.
+#[test]
+fn the_window_keeps_its_width_and_drags_narrower() {
+    let _turn = turn();
+    let mut h = app();
+    let mut params = serde_json::Map::new();
+    for i in 0..30 {
+        params.insert(
+            format!("p{i:02}"),
+            json!({"type": "number", "min": 0, "max": 1, "default": 0, "label": format!("A rather long parameter label {i:02}")}),
+        );
+    }
+    let filter = json!({"id": "test.mgr.wide", "name": "Wide Negative", "version": "0.10.0", "kind": "filter", "stage": "source",
+        "description": "Turns scanned colour negatives into positives. ".repeat(12), "params": params});
+    lcc_engine::filter_plugins::install_in_memory(&filter_module(&filter, false)).unwrap();
+    // a folder whose path is longer than the window
+    let top_dir = folder("long");
+    let dir = (0..6).fold(top_dir.clone(), |d, i| d.join(format!("a-rather-long-folder-name-{i}")));
+    std::fs::create_dir_all(&dir).unwrap();
+    let before = lcc_engine::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&dir).unwrap());
+    ui_cmd(&mut h, "plugins.page", json!({"id": "test.mgr.wide"}));
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(painted(&h, "A rather long parameter label 29"), "the filter's page shows: {:?}", h.painted_text());
+    let opened = window(&h);
+    assert!(opened.width() <= DEFAULT_W + FRAME, "opens at its default width, not its widest line: {opened:?}");
+    let folder_button = widget(&mut h, "button:pluginShowFolder").expect("Show Folder on screen");
+    let right = folder_button[0].as_f64().unwrap() + folder_button[2].as_f64().unwrap();
+    assert!(right <= f64::from(opened.right()), "Show Folder stays in the window: {folder_button} {opened:?}");
+
+    // drawing more frames doesn't widen it
+    for _ in 0..10 {
+        h.step();
+    }
+    assert!((window(&h).width() - opened.width()).abs() < 1.0, "the width holds: {opened:?} → {:?}", window(&h));
+
+    // the right edge drags it narrower, and no narrower than a usable page
+    let drag = |h: &mut Headless, by: f32| {
+        let w = window(h);
+        let (x, y) = (w.right() - 1.0, w.center().y);
+        ask(h, "ui.drag", json!({"x": x, "y": y, "toX": x - by, "toY": y, "steps": 8}));
+        for _ in 0..4 {
+            h.step();
+        }
+        window(h)
+    };
+    let narrower = drag(&mut h, 150.0);
+    assert!(narrower.width() < opened.width() - 100.0, "dragged narrower: {opened:?} → {narrower:?}");
+    assert!(painted(&h, "A rather long parameter label 29"), "the parameters wrap to the new width");
+    let narrowest = drag(&mut h, 600.0);
+    assert!(narrowest.width() >= MIN_W, "stops where a page is still usable: {narrowest:?}");
+    assert!(narrowest.width() <= MIN_W + FRAME, "but gets there: {narrowest:?}");
+    let back = drag(&mut h, -300.0);
+    assert!(back.width() > narrowest.width() + 200.0, "and wider again: {narrowest:?} → {back:?}");
+
+    exec(&mut h, "plugin.uninstall", json!({"id": "test.mgr.wide"}));
+    ui_cmd(&mut h, "plugins.manager", json!({"open": false}));
+    *lcc_engine::cmd::plugins::manager() = before;
+    let _ = std::fs::remove_dir_all(&top_dir);
+}
+
+/// While an install waits for approval, another (`plugins.install`, a drop, *Install from File…*)
+/// leaves it as it is and says to finish it first.
+#[test]
+fn one_install_waits_for_the_other() {
+    let _turn = turn();
+    let dir = folder("one-install");
+    let first = module_file(&dir, "first", &json!({"id": "test.mgr.first", "name": "First", "version": "1.0.0"}));
+    let second = module_file(&dir, "second", &json!({"id": "test.mgr.second", "name": "Second", "version": "1.0.0"}));
+    let mut h = app();
+    ui_cmd(&mut h, "plugins.manager", json!({"open": true}));
+    ui_cmd(&mut h, "plugins.install", json!({"path": first}));
+    assert!(has_widget(&mut h, "button:pluginInstall") && painted(&h, "First 1.0.0"));
+
+    let e = fails(&mut h, "plugins.install", json!({"path": second}));
+    assert!(e.contains("Finish or cancel installing First first"), "{e}");
+    ask(&mut h, "ui.dropFiles", json!({"paths": [second]}));
+    assert!(painted(&h, "Finish or cancel installing First first"), "the drop says why: {:?}", h.painted_text());
+    let picked = std::sync::Arc::new(Mutex::new(false));
+    let p = picked.clone();
+    let path = second.clone();
+    h.app.services.pick_files = Some(Box::new(move || {
+        *p.lock().unwrap() = true;
+        vec![path.clone()]
+    }));
+    click(&mut h, "button:pluginInstallFile");
+    assert!(!*picked.lock().unwrap(), "no file picker while an install waits");
+    assert!(painted(&h, "First 1.0.0") && !painted(&h, "Second 1.0.0"), "the first install still waits: {:?}", h.painted_text());
+
+    // approved, the next one goes ahead
+    click(&mut h, "button:pluginInstall");
+    assert!(listed(&mut h, "test.mgr.first").is_some());
+    ui_cmd(&mut h, "plugins.install", json!({"path": second}));
+    assert!(painted(&h, "Second 1.0.0"), "{:?}", h.painted_text());
+    click(&mut h, "button:pluginInstallCancel");
+
+    exec(&mut h, "plugin.uninstall", json!({"id": "test.mgr.first"}));
+    ui_cmd(&mut h, "plugins.manager", json!({"open": false}));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Installing exactly what is installed (the same id, version and code) asks nothing: the entry
+/// shows, with a note. Other code under the same version (a repair) and a newer version ask.
+#[test]
+fn installing_what_is_installed_asks_nothing() {
+    let _turn = turn();
+    let dir = folder("same");
+    let manifest = json!({"id": "test.mgr.same", "name": "Same", "version": "1.0.0"});
+    let installed = module_file(&dir, "same", &manifest);
+    let repair = module_file(&dir, "repair", &json!({"id": "test.mgr.same", "name": "Same", "version": "1.0.0", "description": "rebuilt"}));
+    let newer = module_file(&dir, "newer", &json!({"id": "test.mgr.same", "name": "Same", "version": "1.1.0"}));
+    let mut h = app();
+    exec(&mut h, "plugin.install", json!({"path": installed}));
+    ui_cmd(&mut h, "plugins.manager", json!({"open": true}));
+
+    let r = ui_cmd(&mut h, "plugins.install", json!({"path": installed}));
+    assert_eq!(r["installed"], "test.mgr.same", "{r}");
+    assert!(!has_widget(&mut h, "button:pluginInstall"), "no approval");
+    assert!(painted(&h, "Same 1.0.0 is already installed"), "{:?}", h.painted_text());
+    assert!(painted(&h, "test.mgr.same"), "its page shows");
+    // a drop too
+    ask(&mut h, "ui.dropFiles", json!({"paths": [installed]}));
+    assert!(!has_widget(&mut h, "button:pluginInstall"), "no approval for a drop");
+
+    for (what, path) in [("a repair", &repair), ("an update", &newer)] {
+        ui_cmd(&mut h, "plugins.install", json!({"path": path}));
+        assert!(has_widget(&mut h, "button:pluginInstall"), "{what} asks");
+        click(&mut h, "button:pluginInstallCancel");
+    }
+
+    // a pixel filter the same way
+    let filter = json!({"id": "test.mgr.samefilter", "name": "Same Filter", "version": "0.2.0", "kind": "filter"});
+    let bytes = filter_module(&filter, false);
+    lcc_engine::filter_plugins::install_in_memory(&bytes).unwrap();
+    let file = dir.join("samefilter.wasm");
+    std::fs::write(&file, &bytes).unwrap();
+    let r = ui_cmd(&mut h, "plugins.install", json!({"path": file}));
+    assert_eq!(r["installed"], "test.mgr.samefilter", "{r}");
+    assert!(!has_widget(&mut h, "button:pluginInstall"), "no approval for the installed filter");
+
+    exec(&mut h, "plugin.uninstall", json!({"id": "test.mgr.samefilter"}));
+    exec(&mut h, "plugin.uninstall", json!({"id": "test.mgr.same"}));
+    ui_cmd(&mut h, "plugins.manager", json!({"open": false}));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An open Settings tab follows its plug-in: an update's new field shows, a value set elsewhere
+/// shows, what the user typed and hasn't saved stays, and Save writes nothing the user didn't see.
+#[test]
+fn an_open_settings_tab_follows_its_plugin() {
+    let _turn = turn();
+    let dir = folder("follow");
+    let field = |key: &str, default: &str| json!({"key": key, "label": key, "type": "text", "default": default});
+    let v1 = module_file(&dir, "v1", &json!({"id": "test.mgr.follow", "name": "Follow", "version": "1.0.0", "settings": [field("a", "a0")]}));
+    let v2 = module_file(
+        &dir,
+        "v2",
+        &json!({"id": "test.mgr.follow", "name": "Follow", "version": "1.1.0",
+        "settings": [field("a", "a0"), field("b", "b0")]}),
+    );
+    let mut h = app();
+    exec(&mut h, "plugin.install", json!({"path": v1}));
+    ui_cmd(&mut h, "plugins.page", json!({"id": "test.mgr.follow"}));
+    // typed, not saved
+    click(&mut h, "pluginText:settings:test.mgr.follow:a");
+    ask(&mut h, "ui.key", json!({"key": "a", "cmd": true}));
+    ask(&mut h, "ui.text", json!({"text": "typed"}));
+
+    // the update adds a field: it shows on the open tab, and the typed value stays
+    exec(&mut h, "plugin.install", json!({"path": v2}));
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(has_widget(&mut h, "pluginText:settings:test.mgr.follow:b"), "the new field shows");
+    assert!(h.painted_text().iter().any(|t| t == "typed"), "the typed value stays: {:?}", h.painted_text());
+
+    // a value set elsewhere (the plug-in, an agent) shows
+    exec(&mut h, "plugin.setSettings", json!({"id": "test.mgr.follow", "values": {"b": "newer"}}));
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(h.painted_text().iter().any(|t| t == "newer"), "the newer value shows: {:?}", h.painted_text());
+    assert!(h.painted_text().iter().any(|t| t == "typed"), "the typed value still stays");
+
+    click(&mut h, "button:pluginSettingsSave");
+    let saved = exec(&mut h, "plugin.settings", json!({"id": "test.mgr.follow"}))["values"].clone();
+    assert_eq!(saved, json!({"a": "typed", "b": "newer"}), "Save keeps the newer value and writes the typed one");
+
+    exec(&mut h, "plugin.uninstall", json!({"id": "test.mgr.follow"}));
+    ui_cmd(&mut h, "plugins.manager", json!({"open": false}));
+    let _ = std::fs::remove_dir_all(&dir);
+}
