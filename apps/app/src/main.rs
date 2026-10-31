@@ -1068,20 +1068,18 @@ fn publish_control_token(port: u16, token: &str, supplied: bool) {
     }
 }
 
-/// An isolated profile keeps the emergency crash log with its other app data. With no
-/// override (or an empty override), retain the historical system-temp location.
-fn panic_log_path_with(env: impl Fn(&str) -> Option<std::ffi::OsString>, temp: std::path::PathBuf) -> std::path::PathBuf {
-    env("CONFIG_DIR")
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or(temp)
-        .join(format!("{}-panics.log", lcc_brand::BINARY))
+/// The emergency crash log, `<binary>-panics.log` beside the other logs in the user's own settings
+/// folder (an isolated profile's with `<PREFIX>_CONFIG_DIR`). Never the shared temp folder, where
+/// another user on the machine could create the file first or point it at one of the user's files.
+/// `None` (standard error only) where no logs are kept.
+fn panic_log_path() -> Option<std::path::PathBuf> {
+    log_dir().map(|d| d.join(format!("{}-panics.log", lcc_brand::BINARY)))
 }
 
 fn main() -> eframe::Result {
     // First, so every start-up record is kept for the log file (`logging`).
     let logger = logging::install();
-    lcc_engine::guard::install_hook(panic_log_path_with(lcc_brand::env_os, std::env::temp_dir()));
+    lcc_engine::guard::install_hook(panic_log_path());
     if let Some(logger) = logger {
         logging::record_panics(logger);
     }
@@ -2100,14 +2098,10 @@ mod tests {
 mod config_path_tests {
     use super::*;
 
+    /// The panic log sits beside the other logs in the settings folder, never in the temp folder.
     #[test]
-    fn config_override_keeps_panic_log_in_isolated_profile() {
-        let temp = std::path::PathBuf::from("temp");
-        assert_eq!(
-            panic_log_path_with(|_| Some("isolated".into()), temp.clone()),
-            std::path::PathBuf::from("isolated").join(format!("{}-panics.log", lcc_brand::BINARY))
-        );
-        assert_eq!(panic_log_path_with(|_| None, temp.clone()), temp.join(format!("{}-panics.log", lcc_brand::BINARY)));
-        assert_eq!(panic_log_path_with(|_| Some("".into()), temp.clone()), temp.join(format!("{}-panics.log", lcc_brand::BINARY)));
+    fn panic_log_stays_in_the_settings_folder() {
+        let name = format!("{}-panics.log", lcc_brand::BINARY);
+        assert_eq!(panic_log_path(), log_dir().map(|d| d.join(name)));
     }
 }
