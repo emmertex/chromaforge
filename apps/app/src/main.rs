@@ -115,6 +115,9 @@ impl eframe::App for App {
         if !self.0.shutdown(EXIT_WAIT) {
             log::warn!("quit: background work was still running after {EXIT_WAIT:?}");
         }
+        // an orderly quit, even one while the GPU device is still being created, is not a crash
+        // inside the driver: the next launch keeps the GPU on
+        lcc_engine::gpu::backend::release_init_marker_on_quit();
         // macOS only: the process ends below without running destructors, and only the lock's
         // `Drop` removes `catalog.lock.owner` (the OS frees the lock, not the note), so let go of
         // the library's lock here, saved or not (we leave either way). Elsewhere eframe drops the
@@ -1766,11 +1769,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// The tests that arm the process-wide GPU crash sentinel, one at a time.
+    static GPU_MARKER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A launch the user quit a few seconds in, while the GPU device was still being created, left
+    /// the marker, and the next launch turned GPU rendering off. The orderly quit now removes it;
+    /// a launch killed inside the driver still leaves it.
+    #[test]
+    fn an_orderly_quit_during_gpu_start_up_is_not_a_crash() {
+        let _one = GPU_MARKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let d = dir("gpu-marker-quit");
+        let m = d.join("gpu-init.marker");
+        assert_eq!(gpu_crash_check_at(Some(m.clone()), false), None);
+        std::fs::write(&m, "GPU device and kernel creation started (unix time 1)\n").unwrap();
+        lcc_engine::gpu::backend::release_init_marker_on_quit();
+        assert!(!m.exists());
+        assert_eq!(gpu_crash_check_at(Some(m.clone()), false), None);
+        // killed inside the driver (no orderly quit): still reported
+        std::fs::write(&m, "GPU device and kernel creation started (unix time 2)\n").unwrap();
+        let notice = gpu_crash_check_at(Some(m.clone()), false).unwrap();
+        assert!(notice.contains("GPU rendering is now off"), "{notice}");
+        lcc_engine::gpu::backend::set_init_marker(None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// Issue #169: a `--memory` session neither arms the GPU crash sentinel (which would create
     /// the settings folder) nor removes a marker a crashed launch left; it still reports it, and
     /// the next ordinary launch finds it, reports it and clears it.
     #[test]
     fn memory_session_leaves_the_gpu_marker_and_folder_alone() {
+        let _one = GPU_MARKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let d = dir("gpu-marker-memory");
         let _ = std::fs::remove_dir_all(&d);
         let m = d.join("gpu-init.marker");

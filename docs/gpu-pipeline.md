@@ -130,7 +130,10 @@ time limit was still inside the driver (above): the driver hung rather than cras
 likely hang again, so the next launch starts on the CPU too. Checking *Use the GPU for rendering* again tries the GPU once more
 (and re-arms the sentinel). Not with `<PREFIX>_NO_PREFS` (tests, scripts), and not in a `--memory` session,
 which writes nothing: it neither arms the sentinel nor removes a marker it finds (it still starts with GPU
-rendering off when one is there, and the next ordinary launch reports and clears it). Killing the app during
+rendering off when one is there, and the next ordinary launch reports and clears it). Quitting the app
+normally removes the marker even when device creation has not returned yet (a launch closed a few
+seconds in, while a large library was still opening): an orderly quit proves the process was not killed
+inside the driver (`backend::release_init_marker_on_quit`, called in `App::on_exit` after the shutdown wait). Killing the app during
 the ~0.3 s of device creation, or two instances starting at the same moment, can trip it falsely —
 harmless: rendering is then on the CPU until the box is checked again. The sentinel covers the compute
 device and every kernel build; a crash while the window's renderer starts is avoided by the backend defaults above

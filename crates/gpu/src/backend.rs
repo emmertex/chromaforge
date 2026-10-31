@@ -223,8 +223,13 @@ fn marker_text(what: &str, secs: u64) -> String {
 }
 
 /// Enter a driver-work scope on `marker`: the first one writes the file.
+#[cfg(test)]
 fn arm(marker: &std::path::Path, active: &Mutex<u32>, what: &str) {
-    let mut n = active.lock().unwrap_or_else(|e| e.into_inner());
+    arm_locked(marker, &mut active.lock().unwrap_or_else(|e| e.into_inner()), what);
+}
+
+/// [`arm`] with the scope counter `n` already locked.
+fn arm_locked(marker: &std::path::Path, n: &mut u32, what: &str) {
     if *n == 0 {
         if let Some(d) = marker.parent() {
             let _ = std::fs::create_dir_all(d);
@@ -259,45 +264,77 @@ impl Drop for Armed<'_> {
 /// removing the init marker (if one is set).
 #[cfg_attr(not(feature = "denoise"), allow(dead_code))] // the denoise network's kernels
 pub(crate) fn with_marker<T>(what: &str, f: impl FnOnce() -> T) -> T {
-    let marker = MARKER.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    with_marker_on(marker, &ACTIVE, what, f)
+    with_marker_in(&MARKER, &ACTIVE, what, f)
 }
 
-/// [`with_marker`] on an explicit marker path and scope counter (the tests use their own, so that
-/// device-creating tests running in parallel cannot join their scopes).
-fn with_marker_on<T>(marker: Option<PathBuf>, active: &Mutex<u32>, what: &str, f: impl FnOnce() -> T) -> T {
-    if let Some(m) = &marker {
-        arm(m, active, what);
-    }
+/// [`with_marker`] on an explicit marker slot and scope counter (the tests use their own, so that
+/// device-creating tests running in parallel cannot join their scopes). The slot is read under the
+/// scope lock (scope lock first, then slot lock, everywhere), so a scope starting while
+/// [`release_on`] runs either is cleared by it or writes nothing.
+fn with_marker_in<T>(slot: &Mutex<Option<PathBuf>>, active: &Mutex<u32>, what: &str, f: impl FnOnce() -> T) -> T {
+    let marker = {
+        let mut n = active.lock().unwrap_or_else(|e| e.into_inner());
+        let marker = slot.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(m) = &marker {
+            arm_locked(m, &mut n, what);
+        }
+        marker
+    };
     let _armed = Armed(marker, active);
     f()
+}
+
+/// The app is quitting in an orderly way: remove the init marker now, even while device creation
+/// (or a kernel build) is still running on another thread, and write none from here on.
+///
+/// A launch that quits a few seconds in, before the driver returned the device (e.g. while a large
+/// library was still opening), used to leave the marker behind, so the next launch said the app had
+/// closed unexpectedly while starting the GPU and turned GPU rendering off. An orderly quit proves
+/// the process was not killed inside the driver; a real crash or kill during device creation never
+/// gets here, so its marker stays for the next launch to report.
+pub fn release_init_marker_on_quit() {
+    release_on(&MARKER, &ACTIVE);
+}
+
+/// [`release_init_marker_on_quit`] on an explicit marker slot and scope counter (for the tests).
+fn release_on(slot: &Mutex<Option<PathBuf>>, active: &Mutex<u32>) {
+    // the scope lock first, as `with_marker_in` / `disarm` take it: no scope writes the file while it goes
+    let _n = active.lock().unwrap_or_else(|e| e.into_inner());
+    let marker = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(m) = marker
+        && let Err(e) = std::fs::remove_file(&m)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        log::warn!("gpu: could not remove {}: {e}", m.display());
+    }
 }
 
 /// The init marker (if one is set) and its scope counter, taken on the thread that asks for a device
 /// and carried to the thread that creates it (`init.rs`, issue #3068): the marker stays while the
 /// driver work really runs, also past the caller's time limit.
 pub(crate) struct InitMarker {
-    path: Option<PathBuf>,
+    slot: &'static Mutex<Option<PathBuf>>,
     active: &'static Mutex<u32>,
 }
 
 impl InitMarker {
     /// The process-wide marker ([`set_init_marker`]).
     pub(crate) fn current() -> InitMarker {
-        InitMarker { path: MARKER.lock().unwrap_or_else(|e| e.into_inner()).clone(), active: &ACTIVE }
+        InitMarker { slot: &MARKER, active: &ACTIVE }
     }
 
     /// A marker at `path` on its own scope counter (tests: other tests create real devices through
     /// the process-wide one).
     #[cfg(test)]
     pub(crate) fn at(path: PathBuf, active: &'static Mutex<u32>) -> InitMarker {
-        InitMarker { path: Some(path), active }
+        // leaked: the slot must live as long as the scope counter, and a test process is short
+        InitMarker { slot: Box::leak(Box::new(Mutex::new(Some(path)))), active }
     }
 
     /// Run device creation (and the kernel build that follows it) `f` on `backends` between writing
     /// and removing the marker.
     pub(crate) fn run<T>(self, backends: Backends, f: impl FnOnce() -> T) -> T {
-        with_marker_on(self.path, self.active, &format!("device and kernel creation (backends {backends:?})"), f)
+        with_marker_in(self.slot, self.active, &format!("device and kernel creation (backends {backends:?})"), f)
     }
 }
 
@@ -472,7 +509,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         // a local scope counter: other tests create real devices through the process-wide one
         let active = Mutex::new(0);
-        let seen = with_marker_on(Some(m.clone()), &active, "device creation", || m.exists());
+        let seen = with_marker_in(&Mutex::new(Some(m.clone())), &active, "device creation", || m.exists());
         assert!(seen, "the marker exists while the device is created");
         assert!(!m.exists(), "and is removed afterwards");
         // a marker left behind by a crashed process is reported once; reading it leaves it in place
@@ -523,6 +560,30 @@ mod tests {
         assert_eq!(window_renderer_order(None, None, None, "macos", all, true), [Wgpu(Backends::METAL), Glow]);
     }
 
+    /// An orderly quit while the device is still being created removes the marker, so the next
+    /// launch reports no crash; the creation finishing afterwards, or a new scope, writes nothing.
+    #[test]
+    fn an_orderly_quit_during_device_creation_removes_the_marker() {
+        let dir = std::env::temp_dir().join(format!("lc-gpu-quit-{}", std::process::id()));
+        let m = dir.join("gpu-init.marker");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (slot, active) = (Mutex::new(Some(m.clone())), Mutex::new(0));
+        let during = with_marker_in(&slot, &active, "device creation", || {
+            assert!(m.exists(), "armed while the device is created");
+            release_on(&slot, &active);
+            m.exists()
+        });
+        assert!(!during, "the orderly quit removed the marker while creation was still running");
+        assert!(!m.exists());
+        assert_eq!(read_init_marker(&m), None, "the next launch finds nothing to report");
+        // driver work starting after the quit writes no marker
+        assert!(!with_marker_in(&slot, &active, "kernel compilation", || m.exists()));
+        assert_eq!(*active.lock().unwrap(), 0);
+        // releasing twice, or with no marker, is harmless
+        release_on(&slot, &active);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn overlapping_scopes_share_one_marker_until_the_last_ends() {
         let dir = std::env::temp_dir().join(format!("lc-gpu-scopes-{}", std::process::id()));
@@ -552,7 +613,7 @@ mod tests {
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
         let active = Mutex::new(0);
-        let r = std::panic::catch_unwind(|| with_marker_on(Some(m.clone()), &active, "kernel compilation", || panic!("compile")));
+        let r = std::panic::catch_unwind(|| with_marker_in(&Mutex::new(Some(m.clone())), &active, "kernel compilation", || panic!("compile")));
         assert!(r.is_err());
         assert!(!m.exists(), "the process survived, so nothing is left to report");
         let _ = std::fs::remove_dir_all(&dir);
