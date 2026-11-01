@@ -537,6 +537,15 @@ fn civil_dates() {
 }
 
 #[test]
+fn the_system_clock_is_local_time_with_its_offset() {
+    let now = crate::import::system_clock();
+    let told = lcc_catalog::dates::instant(&now).unwrap();
+    let real = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    assert!((told - real).abs() <= 5, "{now}");
+    assert!(matches!(now.get(19..20), Some("+" | "-" | "Z")), "{now}");
+}
+
+#[test]
 fn exif_clock_import_uses_valid_fallback_dates_and_keeps_raw_tags() {
     const INVALID: &str = "2026:01:01 12:34:56:99";
     const XMP: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:CreateDate="2026-01-05T10:00:00Z"/></rdf:RDF></x:xmpmeta>"#;

@@ -645,7 +645,7 @@ fn sidecar_has_news(labels: &Catalog, p: &Photo, naming: SidecarNaming, listing:
     }
     let saved = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
     let Some(saved) = saved.and_then(|s| i64::try_from(s).ok()) else { return false };
-    let seen = [Some(p.imported.as_str()), p.edited.as_deref()].into_iter().flatten().filter_map(lcc_catalog::stacks::iso_seconds).max();
+    let seen = [Some(p.imported.as_str()), p.edited.as_deref()].into_iter().flatten().filter_map(lcc_catalog::dates::instant).max();
     if seen.is_some_and(|t| saved <= t) {
         return false;
     }

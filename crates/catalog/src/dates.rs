@@ -49,6 +49,22 @@ pub fn local(secs: i64) -> Option<String> {
     Some(local.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
 }
 
+/// This computer's time now, as [`local`] writes it. Stamps and relative rules read this, so
+/// "today" is the day on the wall and not the UTC day.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn now_local() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    local(secs).unwrap_or_else(|| civil(secs))
+}
+
+/// The moment an ISO time names, as Unix seconds, for comparing it with a file's date: a zone is
+/// read, and no zone is UTC, which is how stamps were written before [`now_local`]. (Not
+/// [`iso_seconds`], which reads the wall clock and ignores the zone.)
+pub fn instant(iso: &str) -> Option<i64> {
+    let iso = iso.trim();
+    chrono::DateTime::parse_from_rfc3339(iso).map(|t| t.timestamp()).ok().or_else(|| iso_seconds(iso))
+}
+
 /// Weekday name of an ISO date (`None` if it doesn't parse).
 pub fn weekday(iso: &str) -> Option<&'static str> {
     let days = iso_seconds(iso.get(..10)?)?.div_euclid(86_400);
@@ -390,6 +406,29 @@ pub fn date_from_filename(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn instant_reads_the_zone_and_no_zone_is_utc() {
+        use super::{instant, iso_seconds};
+        let utc = iso_seconds("2026-04-01T08:00:00");
+        assert!(utc.is_some());
+        assert_eq!(instant("2026-04-01T08:00:00"), utc);
+        assert_eq!(instant("2026-04-01T08:00:00Z"), utc);
+        assert_eq!(instant("2026-04-01T10:00:00+02:00"), utc);
+        assert_eq!(instant(" 2026-04-01T03:00:00.250-05:00 "), utc);
+        assert_eq!(instant("garbage"), None);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn now_local_is_this_moment_with_its_offset() {
+        let before = chrono::Utc::now().timestamp();
+        let now = super::now_local();
+        let at = chrono::DateTime::parse_from_rfc3339(&now).unwrap();
+        assert!((at.timestamp() - before).abs() <= 5, "{now}");
+        assert_eq!(*at.offset(), *at.with_timezone(&chrono::Local).offset(), "{now}");
+        assert_eq!(super::instant(&now), Some(at.timestamp()));
+    }
+
     #[test]
     fn date_from_filename_reads_common_names() {
         use super::date_from_filename as f;
