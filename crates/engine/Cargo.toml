@@ -56,6 +56,8 @@ log = { workspace = true }
 ab_glyph = { workspace = true }
 # Apply the font’s vertical substitutions and origins to Japanese watermarks.
 harfrust = { version = "0.12", default-features = false, features = ["std"] }
+# Compose decomposed (NFD) text before it is laid out, one glyph per character.
+unicode-normalization = "0.1"
 unicode-segmentation = "1.13"
 lcc-segment = { workspace = true, optional = true }
 # video clips: probe and poster frames (every call is `Unsupported` on wasm32)
