@@ -1,6 +1,7 @@
 //! Window regions and panels.
 
 pub mod activity;
+pub mod advanced_search;
 pub mod bottombar;
 pub mod cells;
 pub mod chips;

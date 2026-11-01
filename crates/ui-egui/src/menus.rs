@@ -87,6 +87,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.compare", "Compare", Some("Shift+C"), "View"),
     ("view.survey", "Survey", Some("N"), "View"),
     ("view.people", "People", None, "View"),
+    ("search.advanced", "Advanced Search", Some("Cmd+Shift+F"), "Search>Advanced Search"),
     ("view.person", "Show Person", None, ""),
     ("view.faceBoxes", "Face Boxes", None, "View>Loupe Info"),
     ("view.focusPoint", "Show Focus Point", Some("Alt+F"), "View>Loupe Info"),
@@ -1025,6 +1026,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             let opts = lcc_engine::export::ExportOptions::from_json(&prev);
             let wm = opts.watermark.unwrap_or_default();
             app.ui.dialog = Some(Dialog::Watermark { wm, preset_name: String::new() });
+            Ok(Value::Null)
+        }
+        "search.advanced" => {
+            app.ui.dialog = Some(Dialog::AdvancedSearch { state: Default::default() });
             Ok(Value::Null)
         }
         "app.settings" => {
