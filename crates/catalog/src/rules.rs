@@ -740,15 +740,14 @@ pub fn set_now(iso: Option<String>) {
     NOW.with(|n| *n.borrow_mut() = iso);
 }
 
-/// The current time as ISO 8601: [`set_now`]'s, else the system clock (UTC).
+/// The current time as ISO 8601: [`set_now`]'s, else this computer's local time.
 pub fn now() -> String {
     if let Some(n) = NOW.with(|n| n.borrow().clone()) {
         return n;
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        crate::dates::civil(secs)
+        crate::dates::now_local()
     }
     #[cfg(target_arch = "wasm32")]
     {

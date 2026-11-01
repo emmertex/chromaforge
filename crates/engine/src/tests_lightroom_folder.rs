@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::lightroom_folder::{LightroomPlace, SCAN_LIMIT, lightroom_catalog_at};
+use crate::lightroom_folder::{LightroomPlace, find_lrcat_among, lightroom_catalog_at};
 use crate::{EngineError, Session};
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -138,13 +138,18 @@ fn an_app_library_with_a_catalog_inside_still_opens() {
 #[test]
 fn odd_folders_never_fail_the_check() {
     let root = temp_dir("odd");
-    // the catalog after the scan limit isn't looked for (sorted names put it last on most file systems; either answer is fine, the check returns)
+    // the scan looks at no more than its limit of entries (a small limit here stands for SCAN_LIMIT's 10 000, which
+    // would take ten thousand files to show)
     let big = root.join("big");
     std::fs::create_dir_all(&big).unwrap();
-    for i in 0..SCAN_LIMIT + 10 {
+    for i in 0..60 {
         std::fs::write(big.join(format!("{i:06}.jpg")), b"").unwrap();
     }
-    let _ = lightroom_catalog_at(&big);
+    std::fs::write(big.join("Cat.lrcat"), b"x").unwrap();
+    assert_eq!(find_lrcat_among(&big, 0), None, "nothing looked at");
+    assert_eq!(find_lrcat_among(&big, 61), Some(big.join("Cat.lrcat")));
+    let _ = find_lrcat_among(&big, 30); // (either answer: the folder lists in no set order)
+    assert_eq!(lightroom_catalog_at(&big), Some(LightroomPlace { catalog: Some(big.join("Cat.lrcat")) }));
     assert_eq!(lightroom_catalog_at(&root.join("missing/deeper")), None);
     assert_eq!(lightroom_catalog_at(Path::new("")), None);
     assert_eq!(lightroom_catalog_at(Path::new("/")), None);

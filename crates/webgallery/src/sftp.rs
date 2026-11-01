@@ -128,6 +128,20 @@ pub fn upload(server: &Server, auth: Auth, files: &[(String, Vec<u8>)], progress
     rt.block_on(run(server, auth, files, progress))
 }
 
+/// Logs in to `server` and leaves without touching any file, so a caller about to spend minutes
+/// rendering what it will upload learns first that the server is unreachable, its host key isn't
+/// confirmed, the login is rejected or it has no SFTP. The errors are the upload's own.
+pub fn check(server: &Server, auth: Auth) -> Result<(), String> {
+    if server.host.trim().is_empty() || server.user.trim().is_empty() {
+        return Err("the upload server needs a host and a user name".into());
+    }
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("cannot start the upload: {e}"))?;
+    rt.block_on(async {
+        connect(server, auth).await?.close().await;
+        Ok(())
+    })
+}
+
 /// A logged-in SFTP session.
 struct Conn {
     session: client::Handle<Handler>,
@@ -328,6 +342,22 @@ mod tests {
         let e = upload(&server(port, pin), Auth::Password("secret".into()), &[], &mut |_, _| true).unwrap_err();
         assert!(e.contains("changed") && e.contains(&fp) && e.contains(pin), "{e}");
         assert_eq!(logins.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn check_fails_as_the_upload_would() {
+        let auth = || Auth::Password("secret".into());
+        assert!(check(&Server::default(), auth()).unwrap_err().contains("host"));
+        let logins = Arc::new(AtomicUsize::new(0));
+        let (port, fp) = serve(logins.clone());
+        let e = check(&server(port, ""), auth()).unwrap_err();
+        assert!(e.contains(&fp) && e.contains("not trusted"), "{e}");
+        let e = check(&server(port, "SHA256:AAAA"), auth()).unwrap_err();
+        assert!(e.contains("changed") && e.contains(&fp), "{e}");
+        assert_eq!(logins.load(Ordering::SeqCst), 0, "credentials sent to an unconfirmed host key");
+        let e = check(&server(port, &fp), auth()).unwrap_err();
+        assert!(e.contains("rejected the login") || e.contains("login failed"), "{e}");
+        assert_eq!(logins.load(Ordering::SeqCst), 1);
     }
 
     #[test]
