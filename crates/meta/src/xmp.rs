@@ -592,7 +592,7 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         exposure_program: num("exif:ExposureProgram").map(|v| v as u16),
         metering_mode: num("exif:MeteringMode").map(|v| v as u16),
         white_balance: num("exif:WhiteBalance").map(|v| v as u16),
-        orientation: num("tiff:Orientation").map(|v| v as u16).filter(|v| (1..=8).contains(v)).map(Orientation::from_exif),
+        orientation: num("tiff:Orientation").filter(|v| (1.0..=8.0).contains(v) && v.fract() == 0.0).map(|v| Orientation::from_exif(v as u16)),
         width: num("tiff:ImageWidth").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelXDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
         height: num("tiff:ImageLength").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelYDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
         title: first("dc:title"),
@@ -1253,6 +1253,42 @@ mod tests {
         let parsed = parse_xmp(packet).unwrap();
         assert_eq!(parsed.metadata.capture_time, None);
         assert_eq!(parsed.properties["exif:DateTimeOriginal"], vec!["2026-01-01T".to_string()]);
+    }
+
+    fn orientation_packet(value: &str) -> String {
+        format!(
+            r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="{value}"/></rdf:RDF>"#
+        )
+    }
+
+    #[test]
+    fn xmp_orientation_rejects_fractional_values_and_keeps_raw_properties() {
+        for value in ["6.9", "1.5", "8.9", "13/2"] {
+            let parsed = parse_xmp(&orientation_packet(value)).unwrap();
+            assert_eq!(parsed.metadata.orientation, None, "{value}");
+            assert_eq!(parsed.properties["tiff:Orientation"], vec![value.to_string()], "{value}");
+            assert!(!write_xmp(&parsed.metadata, None).contains("tiff:Orientation"), "rejected {value} must not become a written orientation");
+        }
+    }
+
+    #[test]
+    fn xmp_orientation_integral_forms_keep_their_meaning() {
+        for code in 1..=8 {
+            let parsed = parse_xmp(&orientation_packet(&code.to_string())).unwrap();
+            assert_eq!(parsed.metadata.orientation.map(|orientation| orientation.to_exif()), Some(code));
+        }
+        for value in ["6.0", "6/1", " 6.0 "] {
+            let parsed = parse_xmp(&orientation_packet(value)).unwrap();
+            assert_eq!(parsed.metadata.orientation.map(|orientation| orientation.to_exif()), Some(6), "{value}");
+        }
+    }
+
+    #[test]
+    fn xmp_orientation_rejects_out_of_range_values() {
+        for value in ["0", "9", "-1", "nan", "inf"] {
+            let parsed = parse_xmp(&orientation_packet(value)).unwrap();
+            assert_eq!(parsed.metadata.orientation, None, "{value}");
+        }
     }
 
     #[test]

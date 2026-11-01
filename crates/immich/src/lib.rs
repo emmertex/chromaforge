@@ -13,6 +13,8 @@
 //! - [`extlib`]: path mapping between Immich's container paths and local folders.
 //! - [`share`]: IMM-SHARELINK, upload photos into a new album and create a shared link.
 //! - [`stacks`]: catalog stacks ⇄ Immich stacks, the three-way merge (RT.C3).
+//! - [`sidecars`]: the sidecars Immich stores for its assets (IMM-SIDECARS): the version that
+//!   serves them, the pull's conflict rules and the naming Immich expects.
 //! - [`accounts`]: the connected accounts as kept in settings (never the API key).
 //!
 //! The client is native only; the pure modules build everywhere.
@@ -26,6 +28,7 @@ pub mod extlib;
 pub mod link;
 pub mod mapping;
 pub mod people;
+pub mod sidecars;
 pub mod stacks;
 pub mod sync;
 pub mod types;
@@ -44,7 +47,7 @@ pub use accounts::{Account, Accounts};
 pub use client::{Client, ServerOptions, ServerStatus};
 #[cfg(not(target_arch = "wasm32"))]
 pub use error::ImmichError;
-pub use types::{Asset, MIN_VERSION, ServerVersion};
+pub use types::{Asset, AssetFile, MIN_ASSET_FILES_VERSION, MIN_VERSION, ServerVersion};
 
 #[cfg(test)]
 mod tests;

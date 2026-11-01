@@ -4858,6 +4858,7 @@ dependencies = [
  "tiff",
  "toml",
  "trash",
+ "unicode-normalization",
  "unicode-segmentation",
  "wat",
  "web-time",
@@ -5007,6 +5008,7 @@ name = "lcc-immich"
 version = "26.44.4"
 dependencies = [
  "lcc-catalog",
+ "lcc-codecs",
  "lcc-credentials",
  "lcc-fuzzkit",
  "lcc-geom",
@@ -5014,6 +5016,7 @@ dependencies = [
  "lcc-meta",
  "lcc-net",
  "lcc-publish",
+ "lcc-raster",
  "log",
  "serde",
  "serde_json",

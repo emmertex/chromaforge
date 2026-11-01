@@ -22,6 +22,10 @@ impl std::fmt::Display for ServerVersion {
 /// The oldest server the app talks to (plan/immich.md → Versions).
 pub const MIN_VERSION: ServerVersion = ServerVersion { major: 3, minor: 0, patch: 0 };
 
+/// The oldest server whose public API lists and serves an asset's sidecar files
+/// (`GET /asset-files`, added in v3.2.0; see plan/immich.md → Sidecars).
+pub const MIN_ASSET_FILES_VERSION: ServerVersion = ServerVersion { major: 3, minor: 2, patch: 0 };
+
 /// `GET /users/me`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -180,6 +184,30 @@ impl Asset {
     /// The SHA-1 as lower-case hex, when the checksum is one.
     pub fn sha1_hex(&self) -> Option<String> {
         lcc_hash::Sha1Digest::parse(&self.checksum).map(|d| d.to_hex())
+    }
+}
+
+/// `GET /asset-files` (v3.2.0): one file of an asset — its original, a preview, a thumbnail,
+/// its sidecar or an encoded video. Only the fields the app uses are read.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetFile {
+    pub id: String,
+    /// `fullsize`, `preview`, `thumbnail`, `sidecar` or `encoded_video`.
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    /// The server-side path (its container coordinates, not this machine's).
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+impl AssetFile {
+    pub fn is_sidecar(&self) -> bool {
+        self.kind.eq_ignore_ascii_case("sidecar")
     }
 }
 

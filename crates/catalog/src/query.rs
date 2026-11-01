@@ -737,7 +737,10 @@ fn token_matches(p: &Photo, tok: &str, kept: Option<&[Box<str>]>) -> bool {
             "type" | "kind" => format!("{:?}", p.kind).eq_ignore_ascii_case(val),
             "video" => (val == "true" || val == "yes") == (p.kind == MediaKind::Video),
             "edited" => (val == "true" || val == "yes") == p.is_edited(),
-            "date" => p.captured.as_deref().is_some_and(|c| crate::dates::capture_start(c).starts_with(val)),
+            "date" => p.captured.as_deref().is_some_and(|c| {
+                // the token is lower-cased, the stored time has an upper-case `T`
+                crate::dates::capture_start(c).get(..val.len()).is_some_and(|head| head.eq_ignore_ascii_case(val))
+            }),
             "copy" | "virtual" => (val == "true" || val == "yes") == p.copy_of.is_some(),
             "name" | "file" => p.file_name.to_lowercase().contains(val),
             // a plug-in metadata field by its key (`job:J-77`), whichever plug-in has it; and, as
