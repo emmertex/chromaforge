@@ -10600,6 +10600,7 @@ dependencies = [
  "getrandom 0.3.4",
  "lcc-notes",
  "lcc-sysmem",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "toml",
