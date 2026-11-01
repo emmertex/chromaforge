@@ -1854,11 +1854,11 @@ fn iptc_content_fields_round_trip() {
     // sidecar: the XMP Content fields, read back by a fresh library
     s.execute("photo.saveMetadataToFile", &json!({"ids": [a.0]})).unwrap();
     let xmp = std::fs::read_to_string(src.join("a.xmp")).unwrap();
-    assert!(xmp.contains("<Iptc4xmpCore:Headline>Sunrise over the harbour</Iptc4xmpCore:Headline>"), "{xmp}");
+    assert!(xmp.contains("<photoshop:Headline>Sunrise over the harbour</photoshop:Headline>"), "{xmp}");
     assert!(xmp.contains("<photoshop:CaptionWriter>Jane Doe</photoshop:CaptionWriter>"), "{xmp}");
     assert!(xmp.contains("<photoshop:Category>CAT</photoshop:Category>"), "{xmp}");
     assert!(xmp.contains("<photoshop:SupplementalCategories>"), "{xmp}");
-    assert!(xmp.contains("<Iptc4xmpExt:SubjectCode>"), "{xmp}");
+    assert!(xmp.contains("<Iptc4xmpCore:SubjectCode>"), "{xmp}");
     let expect = meta(&s, a);
     drop(s);
     std::fs::remove_dir_all(&lib).unwrap();

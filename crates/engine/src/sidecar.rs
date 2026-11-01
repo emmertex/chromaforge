@@ -202,7 +202,7 @@ pub struct SidecarData {
     pub category: Option<String>,
     /// The supplemental (other) categories (`photoshop:SupplementalCategories`).
     pub supplemental_categories: Vec<String>,
-    /// The IPTC subject codes (`Iptc4xmpExt:SubjectCode`).
+    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`).
     pub subject_code: Vec<String>,
     /// `exif:GPSLatitude` / `exif:GPSLongitude` (latitude, longitude): wins over a position embedded in the file.
     pub gps: Option<(f64, f64)>,

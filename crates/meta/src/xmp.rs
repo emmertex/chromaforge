@@ -50,8 +50,6 @@ const NAMESPACES: &[(&str, &str)] = &[
     ("aux", "http://ns.adobe.com/exif/1.0/aux/"),
     ("lr", "http://ns.adobe.com/lightroom/1.0/"),
     ("Iptc4xmpCore", "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"),
-    // The IPTC Extension namespace: we write and read only the subject codes (`Iptc4xmpExt:SubjectCode`).
-    ("Iptc4xmpExt", "http://iptc.org/std/IptcExt/1.0/xmlns/"),
     ("lc", LC_NS),
     // Read-only: develop settings written by other raw developers (interchange; see docs/xmp-interop.md).
     ("crs", CRS_NS),
@@ -598,7 +596,7 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         width: num("tiff:ImageWidth").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelXDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
         height: num("tiff:ImageLength").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelYDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
         title: first("dc:title"),
-        headline: first("Iptc4xmpCore:Headline"),
+        headline: first("photoshop:Headline"),
         caption: first("dc:description"),
         description_writer: first("photoshop:CaptionWriter"),
         category: first("photoshop:Category"),
@@ -645,7 +643,7 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
     m.keywords = props.get("dc:subject").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
     m.supplemental_categories =
         props.get("photoshop:SupplementalCategories").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
-    m.subject_code = props.get("Iptc4xmpExt:SubjectCode").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
+    m.subject_code = props.get("Iptc4xmpCore:SubjectCode").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
     m.hierarchical_keywords = props.get("lr:hierarchicalSubject").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
     m.capture_time =
         ["exif:DateTimeOriginal", "photoshop:DateCreated", "xmp:CreateDate"].iter().find_map(|k| first(k).and_then(|s| DateTime::parse_iso(&s)));
@@ -842,7 +840,7 @@ pub fn write_xmp_filters(
     push("exifEX:LensModel", meta.lens_model.clone());
     push("exifEX:LensSerialNumber", meta.lens_serial_number.clone());
     push("Iptc4xmpCore:Location", meta.sublocation.clone());
-    push("Iptc4xmpCore:Headline", meta.headline.clone());
+    push("photoshop:Headline", meta.headline.clone());
     push("photoshop:CaptionWriter", meta.description_writer.clone());
     push("photoshop:Category", meta.category.clone());
     push("photoshop:City", meta.city.clone());
@@ -918,7 +916,7 @@ pub fn write_xmp_filters(
     array(&mut x, "dc:creator", "Seq", &one(&meta.artist), false);
     array(&mut x, "dc:subject", "Bag", &meta.keywords, false);
     array(&mut x, "photoshop:SupplementalCategories", "Bag", &meta.supplemental_categories, false);
-    array(&mut x, "Iptc4xmpExt:SubjectCode", "Bag", &meta.subject_code, false);
+    array(&mut x, "Iptc4xmpCore:SubjectCode", "Bag", &meta.subject_code, false);
     array(&mut x, "lr:hierarchicalSubject", "Bag", &meta.hierarchical_keywords, false);
     array(&mut x, "exif:ISOSpeedRatings", "Seq", &meta.iso.map(|v| vec![v.to_string()]).unwrap_or_default(), false);
     if let Some(s) = meta.lens_spec {
@@ -1188,12 +1186,12 @@ mod tests {
     fn iptc_content_fields_parse_and_roundtrip() {
         let x = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
             <rdf:Description rdf:about="" xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
-               xmlns:Iptc4xmpExt="http://iptc.org/std/IptcExt/1.0/xmlns/" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">
-              <Iptc4xmpCore:Headline>Sunrise over the harbour</Iptc4xmpCore:Headline>
+               xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">
+              <photoshop:Headline>Sunrise over the harbour</photoshop:Headline>
               <photoshop:CaptionWriter>Jane Doe</photoshop:CaptionWriter>
               <photoshop:Category>CAT</photoshop:Category>
               <photoshop:SupplementalCategories><rdf:Bag><rdf:li>Sports</rdf:li><rdf:li>Nature</rdf:li></rdf:Bag></photoshop:SupplementalCategories>
-              <Iptc4xmpExt:SubjectCode><rdf:Bag><rdf:li>01001000</rdf:li><rdf:li>02002000</rdf:li></rdf:Bag></Iptc4xmpExt:SubjectCode>
+              <Iptc4xmpCore:SubjectCode><rdf:Bag><rdf:li>01001000</rdf:li><rdf:li>02002000</rdf:li></rdf:Bag></Iptc4xmpCore:SubjectCode>
             </rdf:Description></rdf:RDF></x:xmpmeta>"#;
         let m = parse_xmp(x).unwrap().metadata;
         assert_eq!(m.headline.as_deref(), Some("Sunrise over the harbour"));

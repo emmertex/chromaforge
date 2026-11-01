@@ -212,7 +212,7 @@ pub struct Meta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gps_removed: Option<(f64, f64)>,
     pub title: String,
-    /// The headline (IPTC Content): a brief publishable synopsis (`Iptc4xmpCore:Headline`).
+    /// The headline (IPTC Content): a brief publishable synopsis (`photoshop:Headline`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub headline: String,
     pub caption: String,
@@ -225,7 +225,7 @@ pub struct Meta {
     /// The supplemental (other) categories (IPTC Content, `photoshop:SupplementalCategories`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supplemental_categories: Vec<String>,
-    /// The IPTC subject codes (`Iptc4xmpExt:SubjectCode`; no legacy IPTC-IIM equivalent).
+    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`; no legacy IPTC-IIM equivalent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subject_code: Vec<String>,
     /// Accessibility text and long description.

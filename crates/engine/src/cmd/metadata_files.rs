@@ -241,12 +241,12 @@ fn from_xmp(file: &str, text: &str) -> Option<std::result::Result<Found, String>
     }
     const MAPPED: &[&str] = &[
         "dc:title",
-        "Iptc4xmpCore:Headline",
+        "photoshop:Headline",
         "dc:description",
         "photoshop:CaptionWriter",
         "photoshop:Category",
         "photoshop:SupplementalCategories",
-        "Iptc4xmpExt:SubjectCode",
+        "Iptc4xmpCore:SubjectCode",
         "dc:rights",
         "dc:creator",
         "dc:subject",

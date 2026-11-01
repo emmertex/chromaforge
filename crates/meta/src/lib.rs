@@ -206,7 +206,7 @@ pub struct Metadata {
     /// Copyright info URL (`xmpRights:WebStatement`).
     pub copyright_url: Option<String>,
     pub title: Option<String>,
-    /// The headline (IPTC Core `Iptc4xmpCore:Headline`, IPTC-IIM 2:105): a brief publishable synopsis.
+    /// The headline (IPTC Core `photoshop:Headline`, IPTC-IIM 2:105): a brief publishable synopsis.
     pub headline: Option<String>,
     pub caption: Option<String>,
     /// Who wrote the caption (`photoshop:CaptionWriter`, IPTC-IIM 2:122).
@@ -230,7 +230,7 @@ pub struct Metadata {
     /// The other (supplemental) categories (`photoshop:SupplementalCategories`, IPTC-IIM 2:20).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supplemental_categories: Vec<String>,
-    /// The IPTC subject codes (`Iptc4xmpExt:SubjectCode`): each a numeric code from the IPTC Subject
+    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`): each a numeric code from the IPTC Subject
     /// Reference System (e.g. `01001000`), with no legacy IPTC-IIM equivalent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subject_code: Vec<String>,
