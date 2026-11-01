@@ -34,8 +34,13 @@ fn b64(bytes: &[u8]) -> String {
     lcc_hash::sha1_bytes(bytes).to_base64()
 }
 
+#[derive(Default)]
 struct Fake {
     assets: Vec<(Value, Vec<u8>)>,
+    /// Asset id → the XMP sidecar the server holds for it.
+    sidecars: std::collections::HashMap<String, Vec<u8>>,
+    /// The version `/server/version` answers (`None`: v3.3.1).
+    version: Option<Value>,
 }
 
 fn read_req(s: impl Read) -> Option<(String, String, Option<String>, Vec<u8>)> {
@@ -77,14 +82,22 @@ fn serve(fake: Fake) -> (String, Arc<Mutex<Vec<String>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen2 = seen.clone();
     std::thread::spawn(move || {
+        let mut fake = fake;
         for s in listener.incoming() {
             let Ok(mut s) = s else { return };
             let Some((m, t, key, body)) = read_req(&mut s) else { continue };
             seen2.lock().unwrap().push(format!("{m} {t}"));
             let path = t.split('?').next().unwrap_or_default().to_string();
+            let query = t.split_once('?').map(|(_, q)| q).unwrap_or_default();
+            let param = |name: &str| {
+                query.split('&').find_map(|kv| {
+                    let (k, v) = kv.split_once('=')?;
+                    (k == name).then(|| v.to_string())
+                })
+            };
             let json = |v: Value| resp("200 OK", "application/json", v.to_string().as_bytes());
             let out = if path == "/api/server/version" {
-                json(json!({"major": 3, "minor": 3, "patch": 1}))
+                json(fake.version.clone().unwrap_or(json!({"major": 3, "minor": 3, "patch": 1})))
             } else if key.as_deref() != Some(KEY) {
                 resp("401 Unauthorized", "application/json", br#"{"message":"Invalid API key"}"#)
             } else if path == "/api/users/me" {
@@ -96,16 +109,60 @@ fn serve(fake: Fake) -> (String, Arc<Mutex<Vec<String>>>) {
                 let items: Vec<Value> =
                     if q["page"].as_u64().unwrap_or(1) == 1 { fake.assets.iter().map(|(a, _)| a.clone()).collect() } else { vec![] };
                 json(json!({"assets": {"total": items.len(), "count": items.len(), "items": items, "nextPage": null}}))
+            } else if path == "/api/asset-files" {
+                let asset = param("assetId").unwrap_or_default();
+                let files: Vec<Value> = match fake.sidecars.get(&asset) {
+                    Some(_) => vec![json!({"id": format!("sidecar-{asset}"), "type": "sidecar", "path": format!("/x/{asset}.xmp")})],
+                    None => Vec::new(),
+                };
+                json(Value::Array(files))
+            } else if let Some(id) = path.strip_prefix("/api/asset-files/").and_then(|r| r.strip_suffix("/download")) {
+                match id.strip_prefix("sidecar-").and_then(|a| fake.sidecars.get(a).map(|x| (a, x))) {
+                    Some((_, xml)) => resp("200 OK", "application/xml", xml),
+                    None => resp("404 Not Found", "application/json", b"{}"),
+                }
+            } else if path == "/api/tags" && m == "PUT" {
+                let b: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let tags: Vec<Value> = b["tags"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(|v| json!({"id": format!("tag-{}", v.replace('/', "-")), "value": v}))
+                    .collect();
+                json(Value::Array(tags))
+            } else if path.starts_with("/api/tags/") || path == "/api/jobs/sidecar" || path == "/api/assets/jobs" {
+                resp("200 OK", "application/json", b"{}")
             } else if let Some(rest) = path.strip_prefix("/api/assets/") {
                 let (id, tail) = rest.split_once('/').unwrap_or((rest, ""));
-                match fake.assets.iter().find(|(a, _)| a["id"] == id) {
-                    Some((a, bytes)) => match tail {
-                        "" => json(a.clone()),
-                        "original" => resp("200 OK", "image/png", bytes),
-                        "thumbnail" => resp("200 OK", "image/png", bytes),
-                        _ => resp("404 Not Found", "application/json", b"{}"),
-                    },
-                    None => resp("404 Not Found", "application/json", b"{}"),
+                if m == "PUT" && tail.is_empty() {
+                    let update: Value = serde_json::from_slice(&body).unwrap_or_default();
+                    let Some((a, _)) = fake.assets.iter_mut().find(|(a, _)| a["id"] == id) else {
+                        let _ = s.write_all(&resp("404 Not Found", "application/json", b"{}"));
+                        continue;
+                    };
+                    if !a["exifInfo"].is_object() {
+                        a["exifInfo"] = json!({});
+                    }
+                    for (from, to) in [("rating", "rating"), ("description", "description"), ("latitude", "latitude"), ("longitude", "longitude")] {
+                        if let Some(v) = update.get(from) {
+                            a["exifInfo"][to] = v.clone();
+                        }
+                    }
+                    if let Some(v) = update.get("isFavorite") {
+                        a["isFavorite"] = v.clone();
+                    }
+                    json(a.clone())
+                } else {
+                    match fake.assets.iter().find(|(a, _)| a["id"] == id) {
+                        Some((a, bytes)) => match tail {
+                            "" => json(a.clone()),
+                            "original" => resp("200 OK", "image/png", bytes),
+                            "thumbnail" => resp("200 OK", "image/png", bytes),
+                            _ => resp("404 Not Found", "application/json", b"{}"),
+                        },
+                        None => resp("404 Not Found", "application/json", b"{}"),
+                    }
                 }
             } else {
                 resp("404 Not Found", "application/json", b"{}")
@@ -194,6 +251,7 @@ fn connect_link_and_open_in_immich() {
             // different bytes (edited on the server), same name, time and size: probable
             (asset("bbbb-2", "img_2.png", &two, json!({"exifInfo": {"fileSizeInByte": png(12).len()}})), two.clone()),
         ],
+        ..Fake::default()
     };
     let (url, _) = serve(fake);
     let mut s = session();
@@ -262,6 +320,7 @@ fn import_copies_maps_metadata_and_skips_duplicates() {
             (asset("b-2", "beach.png", &b, json!({})), b.clone()),
             (asset("c-3", "dupe.png", &c, json!({})), c.clone()),
         ],
+        ..Fake::default()
     };
     let (url, _) = serve(fake);
     let mut s = session();
@@ -296,7 +355,7 @@ fn import_copies_maps_metadata_and_skips_duplicates() {
 fn link_only_downloads_the_original_on_demand() {
     let dir = temp_dir("linkonly");
     let a = png(30);
-    let (url, _) = serve(Fake { assets: vec![(asset("l-1", "far.png", &a, json!({})), a.clone())] });
+    let (url, _) = serve(Fake { assets: vec![(asset("l-1", "far.png", &a, json!({})), a.clone())], ..Fake::default() });
     let mut s = session();
     s.remote.cache_dir = Some(dir.join("cache"));
     s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
@@ -340,7 +399,7 @@ fn sidecars_are_written_for_mapped_folders_only() {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, png(n)).unwrap();
     }
-    let (url, _) = serve(Fake { assets: vec![] });
+    let (url, _) = serve(Fake { assets: vec![], ..Fake::default() });
     let mut s = session();
     s.execute("library.import", &json!({"paths": [inside.to_string_lossy(), outside.to_string_lossy()]})).unwrap();
     s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
@@ -350,6 +409,12 @@ fn sidecars_are_written_for_mapped_folders_only() {
     let r = s.execute("immich.writeSidecars", &json!({})).unwrap();
     assert_eq!(r["written"], 1, "{r}");
     assert!(dir.join("Photos/x.xmp").exists() || dir.join("Photos/x.png.xmp").exists());
+    assert!(!dir.join("Other/y.xmp").exists());
+    // the new push writes a mapped photo even before the link pass matched it (the sidecar is a
+    // local file, and writing it is what lets Immich see the metadata)
+    let r = s.execute("immich.pushSidecars", &json!({"externalOnly": true})).unwrap();
+    assert_eq!(r["written"], 1, "{r}");
+    // and it does not touch a photo outside the mapping
     assert!(!dir.join("Other/y.xmp").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -367,7 +432,7 @@ impl RemoteOf for Photo {
 // Feature: Connect and Check run off the UI thread; their results come through `remote.pump`.
 #[test]
 fn background_connect_and_check_report_through_the_pump() {
-    let (url, _) = serve(Fake { assets: vec![] });
+    let (url, _) = serve(Fake { assets: vec![], ..Fake::default() });
     let mut s = session();
     let r = s.execute("immich.connect", &json!({"url": url, "apiKey": "wrong", "background": true})).unwrap();
     assert_eq!(r["started"], true);
@@ -394,7 +459,7 @@ fn background_connect_and_check_report_through_the_pump() {
 // connected again, so the panel kept saying the key was missing.
 #[test]
 fn reconnecting_clears_a_stale_failed_check() {
-    let (url, _) = serve(Fake { assets: vec![] });
+    let (url, _) = serve(Fake { assets: vec![], ..Fake::default() });
     let mut s = session();
     let r = s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
     let account = r["account"].as_str().unwrap().to_string();
@@ -414,7 +479,7 @@ fn reconnecting_clears_a_stale_failed_check() {
 #[test]
 fn encrypted_key_file_is_unlocked_once_and_keeps_keys() {
     let dir = temp_dir("keyfile");
-    let (url, _) = serve(Fake { assets: vec![] });
+    let (url, _) = serve(Fake { assets: vec![], ..Fake::default() });
     let fresh = || {
         let mut s = Session::new().with_fs();
         s.remote.secrets_file = Some(dir.join("credentials.enc"));
@@ -549,6 +614,175 @@ fn live_external_library_links_by_path_and_reads_sidecars() {
     });
     assert_eq!(a.exif_info.and_then(|e| e.rating), Some(4));
     cleanup(&c);
+}
+
+// IMM-SIDECARS: the XMP Immich stores for an asset is read back into the catalog (and written
+// beside the original), so a library that published with its sidecar can be rebuilt elsewhere.
+#[test]
+fn pull_sidecars_applies_what_immich_stored_and_writes_the_local_sidecar() {
+    let dir = temp_dir("pull-sidecars");
+    let bytes = png(30);
+    let f = dir.join("shot.png");
+    std::fs::write(&f, &bytes).unwrap();
+    // what another instance sent with its upload: metadata and `crs:` develop settings
+    let xmp = r#"<?xpacket begin='' id='W5M0MpCehiHzreSzNTczkc9d'?>
+<x:xmpmeta xmlns:x='adobe:ns:meta/'>
+ <rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+  <rdf:Description rdf:about='' xmlns:dc='http://purl.org/dc/elements/1.1/' xmlns:xmp='http://ns.adobe.com/xap/1.0/'
+   xmlns:crs='http://ns.adobe.com/camera-raw-settings/1.0/' crs:Version="15.0" crs:Exposure2012="+1.25">
+   <dc:description><rdf:Alt><rdf:li xml:lang='x-default'>From Immich</rdf:li></rdf:Alt></dc:description>
+   <dc:subject><rdf:Bag><rdf:li>sea</rdf:li></rdf:Bag></dc:subject>
+   <xmp:Rating>4</xmp:Rating>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end='w'?>"#;
+    let mut fake = Fake {
+        assets: vec![(asset("asset-pull", "shot.png", &bytes, json!({"updatedAt": "2026-10-01T00:00:00.000Z"})), bytes.clone())],
+        ..Fake::default()
+    };
+    fake.sidecars.insert("asset-pull".into(), xmp.as_bytes().to_vec());
+    let (url, _) = serve(fake);
+    let mut s = session();
+    s.execute("library.import", &json!({"paths": [f.to_string_lossy()]})).unwrap();
+    let id = s.catalog.photos().next().unwrap().id;
+    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
+    s.execute("immich.link", &json!({})).unwrap();
+    pump_until(&mut s, |_, v| v["links"].as_object().is_some_and(|m| m.values().all(|l| l["active"] == false)));
+    assert_eq!(lcc_immich::link::link_state(&s.catalog, id), "linked");
+
+    let r = s.execute("immich.pullSidecars", &json!({"ids": [id.0]})).unwrap();
+    assert_eq!(r["pulled"], 1, "{r}");
+    assert_eq!(r["applied"], 1, "{r}");
+    assert_eq!(r["written"], 1, "{r}");
+    assert_eq!(r["failed"].as_array().map(Vec::len), Some(0), "{r}");
+    let p = s.catalog.photo(id).unwrap();
+    assert_eq!(p.rating, 4);
+    assert_eq!(p.meta.caption, "From Immich");
+    assert!(p.meta.keywords.iter().any(|k| k == "sea"), "{:?}", p.meta.keywords);
+    assert!((p.develop.light.exposure - 1.25).abs() < 1e-6, "the develop settings came back: {}", p.develop.light.exposure);
+    // the local sidecar was written too, now carrying the app's own settings
+    let local = dir.join("shot.xmp");
+    let written = std::fs::read_to_string(&local).or_else(|_| std::fs::read_to_string(dir.join("shot.png.xmp"))).unwrap();
+    assert!(written.contains("lc:settings"), "{written}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pull_sidecars_leaves_a_newer_local_edit_alone_unless_overwritten() {
+    let dir = temp_dir("pull-sidecars-edit");
+    let bytes = png(32);
+    let f = dir.join("shot.png");
+    std::fs::write(&f, &bytes).unwrap();
+    let xmp = r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:xmp='http://ns.adobe.com/xap/1.0/' xmlns:dc='http://purl.org/dc/elements/1.1/'>
+<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>Remote caption</rdf:li></rdf:Alt></dc:description><xmp:Rating>5</xmp:Rating></rdf:Description>
+</rdf:RDF></x:xmpmeta>"#;
+    let mut fake = Fake {
+        assets: vec![(asset("asset-edit", "shot.png", &bytes, json!({"updatedAt": "2026-10-01T00:00:00.000Z"})), bytes.clone())],
+        ..Fake::default()
+    };
+    fake.sidecars.insert("asset-edit".into(), xmp.as_bytes().to_vec());
+    let (url, _) = serve(fake);
+    let mut s = session();
+    s.execute("library.import", &json!({"paths": [f.to_string_lossy()]})).unwrap();
+    let id = s.catalog.photos().next().unwrap().id;
+    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
+    s.execute("immich.link", &json!({})).unwrap();
+    pump_until(&mut s, |_, v| v["links"].as_object().is_some_and(|m| m.values().all(|l| l["active"] == false)));
+    // an edit made here, later than the asset's own change
+    let mut edited = (**s.catalog.photo(id).unwrap()).clone();
+    edited.meta.caption = "Local caption".into();
+    s.catalog
+        .apply(Op::SetDevelop { id, settings: edited.develop.clone(), label: "Local edit".into(), edited: Some("2999-01-01T00:00:00".into()) })
+        .unwrap();
+    s.catalog.apply(Op::SetMeta { id, meta: Box::new(edited.meta) }).unwrap();
+
+    let r = s.execute("immich.pullSidecars", &json!({"ids": [id.0]})).unwrap();
+    assert_eq!(r["applied"], 0, "{r}");
+    assert_eq!(r["skipped"][0]["reason"], "editedLocally", "{r}");
+    assert_eq!(s.catalog.photo(id).unwrap().meta.caption, "Local caption");
+
+    let r = s.execute("immich.pullSidecars", &json!({"ids": [id.0], "overwrite": true})).unwrap();
+    assert_eq!(r["applied"], 1, "{r}");
+    assert_eq!(s.catalog.photo(id).unwrap().meta.caption, "Remote caption");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// Feature: the panel starts the pull on a worker; `remote.pump` takes the result in and the
+// account card's status line reads it from there.
+#[test]
+fn a_background_pull_applies_through_the_pump() {
+    let dir = temp_dir("pull-sidecars-bg");
+    let bytes = png(34);
+    let f = dir.join("shot.png");
+    std::fs::write(&f, &bytes).unwrap();
+    let xmp = r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:xmp='http://ns.adobe.com/xap/1.0/'><xmp:Rating>2</xmp:Rating></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+    let mut fake = Fake {
+        assets: vec![(asset("asset-bg", "shot.png", &bytes, json!({"updatedAt": "2026-10-01T00:00:00.000Z"})), bytes.clone())],
+        ..Fake::default()
+    };
+    fake.sidecars.insert("asset-bg".into(), xmp.as_bytes().to_vec());
+    let (url, _) = serve(fake);
+    let mut s = session();
+    s.execute("library.import", &json!({"paths": [f.to_string_lossy()]})).unwrap();
+    let id = s.catalog.photos().next().unwrap().id;
+    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
+    s.execute("immich.link", &json!({})).unwrap();
+    pump_until(&mut s, |_, v| v["links"].as_object().is_some_and(|m| m.values().all(|l| l["active"] == false)));
+    let r = s.execute("immich.pullSidecars", &json!({"ids": [id.0], "background": true})).unwrap();
+    assert_eq!(r["started"], true, "{r}");
+    let v = pump_until(&mut s, |_, v| v["sidecars"]["active"] == false && v["sidecars"]["last"].is_object());
+    assert_eq!(v["sidecars"]["direction"], "pull", "{v}");
+    assert_eq!(v["sidecars"]["last"]["applied"], 1, "{v}");
+    assert_eq!(s.catalog.photo(id).unwrap().rating, 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn push_sidecars_sends_the_fields_immich_keeps_in_its_sidecar() {
+    let dir = temp_dir("push-sidecars");
+    let bytes = png(33);
+    let f = dir.join("shot.png");
+    std::fs::write(&f, &bytes).unwrap();
+    let fake = Fake {
+        assets: vec![(asset("asset-push", "shot.png", &bytes, json!({"updatedAt": "2026-10-01T00:00:00.000Z"})), bytes.clone())],
+        ..Fake::default()
+    };
+    let (url, seen) = serve(fake);
+    let mut s = session();
+    s.execute("library.import", &json!({"paths": [f.to_string_lossy()]})).unwrap();
+    let id = s.catalog.photos().next().unwrap().id;
+    s.execute("photo.rate", &json!({"ids": [id.0], "rating": 3})).unwrap();
+    s.execute("photo.setMeta", &json!({"ids": [id.0], "caption": "Pushed caption", "keywords": ["trips/sea"]})).unwrap();
+    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
+    s.execute("immich.link", &json!({})).unwrap();
+    pump_until(&mut s, |_, v| v["links"].as_object().is_some_and(|m| m.values().all(|l| l["active"] == false)));
+    assert_eq!(lcc_immich::link::link_state(&s.catalog, id), "linked");
+
+    let r = s.execute("immich.pushSidecars", &json!({"ids": [id.0]})).unwrap();
+    assert_eq!(r["pushed"], 1, "{r}");
+    // the server applied the metadata, and got the tag (a managed asset keeps its sidecar)
+    let c = lcc_immich::Client::new(&url, lcc_credentials::Secret::new(KEY), &lcc_immich::ServerOptions::standard()).unwrap();
+    let a = c.asset("asset-push").unwrap();
+    let e = a.exif_info.unwrap_or_default();
+    assert_eq!(e.rating, Some(3));
+    assert_eq!(e.description.as_deref(), Some("Pushed caption"));
+    let requests = seen.lock().unwrap();
+    assert!(requests.iter().any(|x| x == "PUT /api/assets/asset-push"), "{requests:?}");
+    assert!(requests.iter().any(|x| x == "PUT /api/tags"), "{requests:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pulling_sidecars_needs_a_server_that_lists_them() {
+    let (url, _) = serve(Fake { version: Some(json!({"major": 3, "minor": 1, "patch": 0})), ..Fake::default() });
+    let mut s = session();
+    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
+    let r = s.execute("immich.pullSidecars", &json!({})).unwrap();
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["error"]["kind"], "tooOld", "{r}");
 }
 
 #[path = "tests_immich_sync.rs"]

@@ -785,6 +785,22 @@ pub const OWNED: &[&str] = &[
 /// writes (`xmp:CreatorTool`) goes only into new sidecars.
 pub const OWNED_IF_STATED: &[&str] = &["exif:DateTimeOriginal", "photoshop:DateCreated", "exif:GPSLatitude", "exif:GPSLongitude"];
 
+/// Merge the app's fresh packet (`fresh`) into an XMP packet another writer produced (`existing`)
+/// the way a sidecar save does: the app's properties ([`OWNED`], [`OWNED_IF_STATED`]) replace
+/// theirs, everything else — another editor's `crs:` settings, history, unknown namespaces — is
+/// kept. An empty `existing` takes `fresh`; an unreadable one is an error, never a silent
+/// replacement (the caller leaves the other side as it is).
+///
+/// Used by IMM-SIDECARS to fill Immich's sidecar with the app's metadata and develop settings
+/// without dropping what Immich or another writer already had.
+pub fn merge_packet(existing: &str, fresh: &str) -> std::result::Result<String, String> {
+    if existing.trim().is_empty() {
+        return Ok(fresh.to_string());
+    }
+    let rules = lcc_meta::MergeRules { owned: OWNED, owned_if_present: OWNED_IF_STATED };
+    lcc_meta::merge_xmp(existing, fresh, rules).map_err(|e| e.to_string())
+}
+
 /// Write `data` to `path` atomically: a temp file next to it, synced, then renamed over it.
 fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     lcc_catalog::safe_file::write_atomic(path, data)
@@ -2465,5 +2481,34 @@ mod jpeg_header_tests {
         let mut ids = Vec::new();
         ops.iter().for_each(|o| op_photos(o, &mut ids));
         assert_eq!(ids, vec![a, b, c]);
+    }
+
+    /// IMM-SIDECARS: filling Immich's sidecar keeps what another writer put there, while the
+    /// app's properties and develop settings replace theirs.
+    #[test]
+    fn merge_packet_keeps_foreign_xmp_and_takes_ours() {
+        let existing = r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:dc='http://purl.org/dc/elements/1.1/' xmlns:xmp='http://ns.adobe.com/xap/1.0/'
+ xmlns:crs='http://ns.adobe.com/camera-raw-settings/1.0/' xmlns:other='http://example.invalid/ns/'>
+<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>Immich copy</rdf:li></rdf:Alt></dc:description>
+<xmp:Rating>2</xmp:Rating><crs:Exposure2012='+0.60' other:Secret='keep me'/></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+        let fresh = format!(
+            r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:dc='http://purl.org/dc/elements/1.1/' xmlns:xmp='http://ns.adobe.com/xap/1.0/'
+ xmlns:lc='{}'>
+<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>From the catalog</rdf:li></rdf:Alt></dc:description>
+<xmp:Rating>5</xmp:Rating><lc:settings>{{"version":1}}</lc:settings></rdf:Description></rdf:RDF></x:xmpmeta>"#,
+            lcc_meta::LC_NS
+        );
+        let out = super::merge_packet(existing, &fresh).unwrap();
+        let d = lcc_meta::parse_xmp(&out).unwrap();
+        assert_eq!(d.metadata.rating, Some(5), "ours replaces theirs");
+        assert_eq!(d.metadata.caption.as_deref(), Some("From the catalog"));
+        assert!(out.contains("crs:Exposure2012='+0.60'"), "another app's settings stay:\n{out}");
+        assert!(out.contains("other:Secret='keep me'"), "unknown namespaces stay:\n{out}");
+        assert!(d.lc_settings.is_some(), "the develop settings are there");
+        // an empty sidecar takes the fresh packet; an unreadable one is refused, not replaced
+        assert_eq!(super::merge_packet("", &fresh).unwrap(), fresh);
+        assert!(super::merge_packet("<not xmp", &fresh).is_err());
     }
 }

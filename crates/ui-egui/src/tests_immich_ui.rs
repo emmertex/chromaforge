@@ -164,6 +164,19 @@ fn immich_card_is_compact() {
     crate::settings_screen::reveal(&mut h, "button:immichSyncPanel-0");
     click(&mut h, "button:immichSyncPanel-0");
     assert!(has(&h, "label:immichSyncStatus-0"));
+    // IMM-SIDECARS: the account card opens the sidecar push/pull section
+    crate::settings_screen::reveal(&mut h, "button:immichSidecars-0");
+    click(&mut h, "button:immichSidecars-0");
+    assert!(has(&h, "button:immichPushXmp-0") && has(&h, "button:immichPullXmp-0"), "push and pull are offered");
+    if let Some(p) = lcc_brand::env_os("TEST_SHOTS") {
+        h.app.services.png = Some(Box::new(|img: &lcc_raster::Rgba8| {
+            lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(img), &lcc_codecs::EncodeMeta::default()).unwrap_or_default()
+        }));
+        h.app.services.write = Some(Box::new(|p: &str, b: &[u8]| std::fs::write(p, b).map_err(|e| e.to_string())));
+        let r =
+            h.request("ui.screenshot", json!({"path": std::path::Path::new(&p).join("immich-sidecars.png").to_string_lossy(), "headless": true}), T);
+        assert_eq!(r["ok"], true, "{r}");
+    }
     // (further down the Sync section: scrolled to, as a person would)
     let mut text = h.painted_text().join("\n");
     for _ in 0..12 {
