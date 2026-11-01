@@ -409,6 +409,69 @@ mod tests {
         j
     }
 
+    fn jpeg_with_orientation(exif_orientation: Option<crate::Orientation>, xmp_orientation: &str) -> Vec<u8> {
+        let mut jpeg = vec![0xff, 0xd8];
+        if let Some(orientation) = exif_orientation {
+            let mut exif = b"Exif\0\0".to_vec();
+            exif.extend(crate::exif::write_exif(&crate::Metadata { orientation: Some(orientation), ..Default::default() }));
+            jpeg.extend(seg(0xe1, &exif));
+        }
+        let packet = format!(
+            r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="{xmp_orientation}"/></rdf:RDF>"#
+        );
+        let mut xmp = XMP_SIG.to_vec();
+        xmp.extend_from_slice(packet.as_bytes());
+        jpeg.extend(seg(0xe1, &xmp));
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+        jpeg
+    }
+
+    #[test]
+    fn embedded_xmp_orientation_requires_integral_value_and_respects_exif() {
+        let malformed = crate::extract(&jpeg_with_orientation(None, "6.9"));
+        assert_eq!(malformed.orientation, None);
+
+        let valid_xmp = crate::extract(&jpeg_with_orientation(None, "6"));
+        assert_eq!(valid_xmp.orientation.map(|orientation| orientation.to_exif()), Some(6));
+
+        let valid_exif = crate::extract(&jpeg_with_orientation(Some(crate::Orientation::Rotate180), "6"));
+        assert_eq!(valid_exif.orientation.map(|orientation| orientation.to_exif()), Some(3));
+    }
+
+    #[test]
+    fn jpeg_invalid_iptc_time_created_allows_xmp_fallback() {
+        let mut data = Vec::new();
+        for (dataset, value) in [(55, &b"20260101"[..]), (60, b"121314+01"), (5, b"retained title")] {
+            data.extend_from_slice(&[0x1c, 2, dataset]);
+            data.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            data.extend_from_slice(value);
+        }
+        let xmp = crate::write_xmp(
+            &crate::Metadata {
+                capture_time: Some(crate::DateTime { year: 2026, month: 1, day: 2, hour: 10, offset_minutes: Some(0), ..Default::default() }),
+                ..Default::default()
+            },
+            None,
+        );
+        let mut jpeg = vec![0xff, 0xd8];
+        let mut payload = XMP_SIG.to_vec();
+        payload.extend_from_slice(xmp.as_bytes());
+        jpeg.extend_from_slice(&seg(0xe1, &payload));
+        let mut resource = b"Photoshop 3.0 ".to_vec();
+        resource.extend_from_slice(b"8BIM  ");
+        resource.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        resource.extend_from_slice(&data);
+        if data.len() % 2 == 1 {
+            resource.push(0);
+        }
+        jpeg.extend_from_slice(&seg(0xed, &resource));
+        jpeg.extend_from_slice(&[0xff, 0xda, 0, 2]);
+        assert!(embedded(&jpeg).iptc.is_some(), "raw IIM remains available");
+        let m = crate::extract(&jpeg);
+        assert_eq!(m.capture_time.map(|time| time.to_iso()).as_deref(), Some("2026-01-02T10:00:00+00:00"));
+        assert_eq!(m.title.as_deref(), Some("retained title"));
+    }
+
     #[test]
     fn jpeg_extended_xmp() {
         let j = jpeg_with_extended(Some(GUID), &[(GUID, 10, 5, b"world"), (GUID, 10, 0, b"hello")]);
