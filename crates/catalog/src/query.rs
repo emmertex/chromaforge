@@ -13,6 +13,17 @@ pub enum RatingOp {
     AtMost,
 }
 
+/// How a metadata filter's multi-select (the filter bar's pickers, the Metadata columns) combines its values
+/// (issue #683): `Any` matches photos with at least one of them (OR, the default), `All` only photos with
+/// every one of them (AND).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MatchOp {
+    #[default]
+    Any,
+    All,
+}
+
 /// What the grid shows. Empty/None fields don't filter.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
@@ -65,6 +76,14 @@ pub struct Filter {
     /// Any of these lenses, each matched as [`Filter::lens`]; empty = no constraint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lenses: Vec<String>,
+    /// How [`Filter::keywords`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
+    pub keyword_op: MatchOp,
+    /// How [`Filter::people`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
+    pub person_op: MatchOp,
+    /// How [`Filter::cameras`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
+    pub camera_op: MatchOp,
+    /// How [`Filter::lenses`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
+    pub lens_op: MatchOp,
     /// Capture date range, inclusive: `dateFrom` is compared as a lower bound (`2026-04-01`),
     /// `dateTo` as a prefix upper bound (`2026-04` includes all of April).
     pub date_from: Option<String>,
@@ -834,9 +853,14 @@ impl Filter {
                 v.push(format!("{name} {x}"));
             }
         }
-        for (name, list) in [("keyword", &self.keywords), ("person", &self.people), ("camera", &self.cameras), ("lens", &self.lenses)] {
+        for (name, list, op) in [
+            ("keyword", &self.keywords, self.keyword_op),
+            ("person", &self.people, self.person_op),
+            ("camera", &self.cameras, self.camera_op),
+            ("lens", &self.lenses, self.lens_op),
+        ] {
             if !list.is_empty() {
-                v.push(format!("{name} {}", list.join(" or ")));
+                v.push(format!("{name} {}", list.join(if op == MatchOp::All { " and " } else { " or " })));
             }
         }
         match (&self.date_from, &self.date_to) {
@@ -1016,12 +1040,19 @@ impl Filter {
         {
             return false;
         }
-        // the multi-selects: any value of each list, every list
-        let any = |list: &[String], one: &dyn Fn(&str) -> bool| list.is_empty() || list.iter().any(|v| one(v));
-        if !any(&self.keywords, &|k| p.meta.keywords.iter().any(|x| crate::keywords::is_under(x, k)))
-            || !any(&self.people, &|n| has_person(p, n))
-            || !any(&self.cameras, &|c| p.meta.camera.eq_ignore_ascii_case(c))
-            || !any(&self.lenses, &|l| p.meta.lens.to_lowercase().contains(&l.to_lowercase()))
+        // the multi-selects: each list's values combine by its operator (any = OR, all = AND, issue #683), and
+        // every list must let the photo through
+        let list_matches = |list: &[String], op: MatchOp, one: &dyn Fn(&str) -> bool| {
+            list.is_empty()
+                || match op {
+                    MatchOp::Any => list.iter().any(|v| one(v)),
+                    MatchOp::All => list.iter().all(|v| one(v)),
+                }
+        };
+        if !list_matches(&self.keywords, self.keyword_op, &|k| p.meta.keywords.iter().any(|x| crate::keywords::is_under(x, k)))
+            || !list_matches(&self.people, self.person_op, &|n| has_person(p, n))
+            || !list_matches(&self.cameras, self.camera_op, &|c| p.meta.camera.eq_ignore_ascii_case(c))
+            || !list_matches(&self.lenses, self.lens_op, &|l| p.meta.lens.to_lowercase().contains(&l.to_lowercase()))
         {
             return false;
         }
