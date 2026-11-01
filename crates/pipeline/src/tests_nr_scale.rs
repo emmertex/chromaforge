@@ -114,8 +114,10 @@ fn colour_nr_preview_matches_full_size_scaled_down() {
     for (k, err, off) in preview_error(&s, &SCALES, rms_chroma) {
         let ratio = err / off;
         eprintln!("colour NR, preview at {k}: {err:.6} from the full-size render scaled down ({ratio:.2} of NR off)");
-        // before #960: 0.00020 (0.31 of NR off) at 0.167, 0.00022 (0.75) at 0.1
-        assert!(err <= 1.2e-4, "preview at {k} is {err} off");
+        // before #960: 0.00020 (0.31 of NR off) at 0.167, 0.00022 (0.75) at 0.1. The speckle
+        // pull-in of #679 decides per pixel on a 3 × 3 median, which a resampled preview sees a
+        // little differently, so the bound rose from 1.2e-4 (still 0.02 of NR off at worst).
+        assert!(err <= 1.6e-4, "preview at {k} is {err} off");
         if k >= 0.1 {
             assert!(ratio <= 0.4, "preview at {k}: {ratio}");
         }
@@ -219,4 +221,73 @@ fn colour_nr_keeps_neutral_pixels_next_to_noisy_black_neutral() {
             }
         }
     }
+}
+
+/// The chromaticity excess of `p` over neutral grey at the same luminance (how far from grey its
+/// colour is, in rgb / Y units).
+fn chroma_excess(p: [f32; 3]) -> f32 {
+    let y = (p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722).max(1e-6);
+    let c = p.map(|v| v / y);
+    (c[0] - 1.0).abs().max((c[1] - 1.0).abs()).max((c[2] - 1.0).abs())
+}
+
+/// Coloured single-pixel speckle on a neutral field — the green and magenta dots of a high-ISO raw
+/// (issue #679) — must be pulled in far harder than the base colour-NR mix would, while untouched
+/// pixels keep their colour (the speckle test must not become a global colour softening).
+#[test]
+fn colour_nr_pulls_in_chroma_speckle() {
+    let (w, h) = (96, 64);
+    // speckles on a sparse grid, no two within the 3 × 3 window or the blur radius of each other
+    let speck = |x: usize, y: usize| x % 16 == 7 && y % 16 == 11;
+    let near_speck = |x: usize, y: usize| {
+        (-1..=1isize).any(|dy| {
+            (-1..=1isize).any(|dx| {
+                let (qx, qy) = (x as isize + dx, y as isize + dy);
+                qx >= 0 && qy >= 0 && (qx as usize) < w && (qy as usize) < h && speck(qx as usize, qy as usize)
+            })
+        })
+    };
+    let mut img = Rgb32f::from_fn(w, h, |x, y| if speck(x, y) { [0.10, 0.34, 0.10] } else { [0.18; 3] });
+    let mut s = DevelopSettings::default();
+    s.detail.nr_color = 25.0; // the raw default
+    s.detail.nr_luminance = 0.0;
+    crate::local::denoise_with(&mut img, &s, 1.0, false);
+    let mut speck_worst = 0.0f32;
+    let mut plain_worst = 0.0f32;
+    for y in 0..h {
+        for x in 0..w {
+            let e = chroma_excess(img.get(x, y));
+            if speck(x, y) {
+                speck_worst = speck_worst.max(e);
+            } else if x % 8 == 0 && y % 8 == 0 && !near_speck(x, y) {
+                plain_worst = plain_worst.max(e);
+            }
+        }
+    }
+    eprintln!("colour NR speckle: worst speck chroma {speck_worst:.3}, worst kept-pixel chroma {plain_worst:.3}");
+    // the base mix alone would leave most of a speck's chromaticity excess in place
+    assert!(speck_worst < 0.05, "speckle survives colour NR: {speck_worst}");
+    assert!(plain_worst < 0.02, "flat pixels were coloured by the NR: {plain_worst}");
+}
+
+/// A straight hue edge must survive the speckle pull-in: the median follows the pixel's own side of
+/// the edge, so the transition stays where the base blur mix puts it instead of the two sides
+/// collapsing into each other.
+#[test]
+fn colour_nr_speckle_pull_keeps_a_hue_edge() {
+    let (w, h) = (96, 64);
+    let mut img = Rgb32f::from_fn(w, h, |x, _| if x < w / 2 { [0.30, 0.09, 0.09] } else { [0.18; 3] });
+    let mut s = DevelopSettings::default();
+    s.detail.nr_color = 25.0;
+    s.detail.nr_luminance = 0.0;
+    crate::local::denoise_with(&mut img, &s, 1.0, false);
+    let red_excess = |x: usize, y: usize| {
+        let p = img.get(x, y);
+        let yl = (p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722).max(1e-6);
+        p[0] / yl - 1.0
+    };
+    let near = (red_excess(w / 2 - 2, h / 2) - red_excess(w / 2 + 2, h / 2)).abs();
+    let far = (red_excess(w / 2 - 8, h / 2) - red_excess(w / 2 + 8, h / 2)).abs();
+    eprintln!("colour NR hue edge: step near {near:.3}, far {far:.3}");
+    assert!(near > 0.5 * far, "the hue edge bleeds: near {near} vs far {far}");
 }

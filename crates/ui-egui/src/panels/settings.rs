@@ -563,6 +563,70 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
     }
+    // the default camera profile (issue #723): what photos start from when no camera profile is
+    // set on them, per camera or for every camera
+    heading(ui, t, crate::i18n::tr("Camera profile"));
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "The camera profile photos start from when none is set on them. Without a choice, a camera's own imported profile stays the default; Built-in colour keeps photos on {app}'s own colour even with imported profiles installed.",
+        ),
+    );
+    let defaults = app.session.camera_profile_defaults.clone();
+    let profile_options = |camera: &str| -> Vec<(String, String)> {
+        let mut out = vec![("lc".to_string(), crate::i18n::tr("Built-in colour").to_string())];
+        for (pid, p) in lcc_raw::dcp::library() {
+            if camera.is_empty() || lcc_raw::dcp::covers_model(&p.model, camera) {
+                let name = if p.name.is_empty() { pid.trim_start_matches("dcp:").to_string() } else { p.name.clone() };
+                out.push((pid, name));
+            }
+        }
+        if let Some(cal) = if camera.is_empty() { None } else { lcc_raw::dcp::calibrated_for_camera(camera) } {
+            out.extend(cal.looks.iter().map(|(pid, p)| (pid.clone(), p.name.clone())));
+        }
+        out
+    };
+    let camera_default_combo = |ui: &mut egui::Ui, id: String, camera: String, current: Option<&String>| -> Option<Option<String>> {
+        let none_label = crate::i18n::tr("Camera default (imported profile)").to_string();
+        let shown = match current {
+            None => none_label.clone(),
+            Some(c) if c == "lc" => crate::i18n::tr("Built-in colour").to_string(),
+            Some(c) => profile_options(&camera).iter().find(|(o, _)| o == c).map(|(_, n)| n.clone()).unwrap_or_else(|| c.clone()),
+        };
+        let mut pick: Option<Option<String>> = None;
+        let r = crate::widgets::combo_box(&id).width(240.0).selected_text(shown).show_ui(ui, |ui| {
+            if ui.selectable_label(current.is_none(), &none_label).clicked() {
+                pick = Some(None);
+            }
+            for (pid, name) in profile_options(&camera) {
+                if ui.selectable_label(current == Some(&pid), &name).clicked() {
+                    pick = Some(Some(pid));
+                }
+            }
+        });
+        register(ui.ctx(), format!("combo:{id}"), r.response.rect);
+        pick
+    };
+    row(ui, t, crate::i18n::tr("All cameras"), |ui| {
+        let current = defaults.get("");
+        if let Some(pick) = camera_default_combo(ui, "settingsCameraDefaultGlobal".into(), String::new(), current) {
+            let _ = app.run("library.preferences", json!({"cameraDefault": {"camera": "*", "profile": pick}}));
+        }
+    });
+    let cams = cameras(app);
+    if !cams.is_empty() {
+        egui::ScrollArea::vertical().max_height(150.0).id_salt("settingsCameraProfiles").show(ui, |ui| {
+            for (i, cam) in cams.iter().enumerate() {
+                let current = defaults.iter().find(|(k, _)| !k.is_empty() && lcc_raw::dcp::covers_model(k, cam)).map(|(_, v)| v);
+                row(ui, t, cam, |ui| {
+                    if let Some(pick) = camera_default_combo(ui, format!("settingsCameraDefault-{i}"), cam.clone(), current) {
+                        let _ = app.run("library.preferences", json!({"cameraDefault": {"camera": cam, "profile": pick}}));
+                    }
+                });
+            }
+        });
+    }
     heading(ui, t, crate::i18n::tr("Other images (JPEG, PNG, TIFF, HEIC…)"));
     row(ui, t, crate::i18n::tr("Non-raw photos"), |ui| {
         if let Some(v) = preset_combo(app, ui, "settingsOtherPreset", d.other_preset.as_deref(), "None") {

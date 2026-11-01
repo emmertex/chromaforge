@@ -596,7 +596,10 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         width: num("tiff:ImageWidth").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelXDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
         height: num("tiff:ImageLength").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelYDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
         title: first("dc:title"),
+        headline: first("photoshop:Headline"),
         caption: first("dc:description"),
+        description_writer: first("photoshop:CaptionWriter"),
+        category: first("photoshop:Category"),
         alt_text: first("Iptc4xmpCore:AltTextAccessibility"),
         extended_description: first("Iptc4xmpCore:ExtDescrAccessibility"),
         sublocation: first("Iptc4xmpCore:Location"),
@@ -638,6 +641,9 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         website: ci("CiUrlWork"),
     };
     m.keywords = props.get("dc:subject").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
+    m.supplemental_categories =
+        props.get("photoshop:SupplementalCategories").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
+    m.subject_code = props.get("Iptc4xmpCore:SubjectCode").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
     m.hierarchical_keywords = props.get("lr:hierarchicalSubject").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
     m.capture_time =
         ["exif:DateTimeOriginal", "photoshop:DateCreated", "xmp:CreateDate"].iter().find_map(|k| first(k).and_then(|s| DateTime::parse_iso(&s)));
@@ -834,6 +840,9 @@ pub fn write_xmp_filters(
     push("exifEX:LensModel", meta.lens_model.clone());
     push("exifEX:LensSerialNumber", meta.lens_serial_number.clone());
     push("Iptc4xmpCore:Location", meta.sublocation.clone());
+    push("photoshop:Headline", meta.headline.clone());
+    push("photoshop:CaptionWriter", meta.description_writer.clone());
+    push("photoshop:Category", meta.category.clone());
     push("photoshop:City", meta.city.clone());
     push("photoshop:State", meta.state.clone());
     push("photoshop:Country", meta.country.clone());
@@ -906,6 +915,8 @@ pub fn write_xmp_filters(
     array(&mut x, "xmpRights:UsageTerms", "Alt", &one(&meta.usage_terms), true);
     array(&mut x, "dc:creator", "Seq", &one(&meta.artist), false);
     array(&mut x, "dc:subject", "Bag", &meta.keywords, false);
+    array(&mut x, "photoshop:SupplementalCategories", "Bag", &meta.supplemental_categories, false);
+    array(&mut x, "Iptc4xmpCore:SubjectCode", "Bag", &meta.subject_code, false);
     array(&mut x, "lr:hierarchicalSubject", "Bag", &meta.hierarchical_keywords, false);
     array(&mut x, "exif:ISOSpeedRatings", "Seq", &meta.iso.map(|v| vec![v.to_string()]).unwrap_or_default(), false);
     if let Some(s) = meta.lens_spec {
@@ -1051,7 +1062,12 @@ mod tests {
             usage_terms: Some("Editorial use only; no <resale>".into()),
             copyright_url: Some("https://example.com/licence?a=1&b=2".into()),
             title: Some("Tïtle".into()),
+            headline: Some("A headline".into()),
             caption: Some("Line one\nline two".into()),
+            description_writer: Some("Jane Doe".into()),
+            category: Some("CAT".into()),
+            supplemental_categories: vec!["Sports".into(), "Nature".into()],
+            subject_code: vec!["01001000".into(), "02002000".into()],
             alt_text: Some("A tree by the sea".into()),
             extended_description: Some("Long <description>".into()),
             sublocation: Some("Champ de Mars".into()),
@@ -1161,6 +1177,37 @@ mod tests {
         assert!((g.latitude - 10.5).abs() < 1e-9);
         assert!((g.longitude + 20.26).abs() < 1e-9);
         assert_eq!(d.properties["dc:title"], vec!["Title & more é".to_string(), "Titel".to_string()]);
+    }
+
+    /// The IPTC Content fields as Lightroom Classic and DxO PhotoLab write them (issue #687):
+    /// headline, caption writer, legacy category and supplemental categories, and the IPTC
+    /// Extension subject codes.
+    #[test]
+    fn iptc_content_fields_parse_and_roundtrip() {
+        let x = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about="" xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+               xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">
+              <photoshop:Headline>Sunrise over the harbour</photoshop:Headline>
+              <photoshop:CaptionWriter>Jane Doe</photoshop:CaptionWriter>
+              <photoshop:Category>CAT</photoshop:Category>
+              <photoshop:SupplementalCategories><rdf:Bag><rdf:li>Sports</rdf:li><rdf:li>Nature</rdf:li></rdf:Bag></photoshop:SupplementalCategories>
+              <Iptc4xmpCore:SubjectCode><rdf:Bag><rdf:li>01001000</rdf:li><rdf:li>02002000</rdf:li></rdf:Bag></Iptc4xmpCore:SubjectCode>
+            </rdf:Description></rdf:RDF></x:xmpmeta>"#;
+        let m = parse_xmp(x).unwrap().metadata;
+        assert_eq!(m.headline.as_deref(), Some("Sunrise over the harbour"));
+        assert_eq!(m.description_writer.as_deref(), Some("Jane Doe"));
+        assert_eq!(m.category.as_deref(), Some("CAT"));
+        assert_eq!(m.supplemental_categories, vec!["Sports".to_string(), "Nature".to_string()]);
+        assert_eq!(m.subject_code, vec!["01001000".to_string(), "02002000".to_string()]);
+        // a packet without them keeps them empty
+        assert_eq!(parse_xmp(&write_xmp(&Metadata::default(), None)).unwrap().metadata.supplemental_categories, Vec::<String>::new());
+        // written back into another packet and read again
+        let back = parse_xmp(&write_xmp(&m, None)).unwrap().metadata;
+        assert_eq!(back.headline, m.headline);
+        assert_eq!(back.description_writer, m.description_writer);
+        assert_eq!(back.category, m.category);
+        assert_eq!(back.supplemental_categories, m.supplemental_categories);
+        assert_eq!(back.subject_code, m.subject_code);
     }
 
     /// The creator's contact details travel as IPTC Core `CreatorContactInfo` (a struct) and the

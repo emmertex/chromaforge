@@ -757,4 +757,40 @@ mod tests {
             );
         }
     }
+
+    /// Issue #451 (Sony a1, in-camera tungsten white balance): the shipped a1 calibration carries
+    /// both illuminants of its dual-illuminant pair, and an extreme (tungsten) as-shot white
+    /// balance read through it — the ARW `WB_RGGBLevels` gains and the camera neutral they name —
+    /// renders that neutral neutral and uses the tungsten-side (illuminant A) matrices, as an ARW
+    /// of the a1 does at decode ([`lcc_raw::dcp::Dcp::apply`] writes the calibration's colour into
+    /// the raw before the as-shot white is read).
+    #[test]
+    fn the_a1_calibration_balances_an_extreme_as_shot_white() {
+        let Some(cal) = embedded().iter().find(|c| c.model == "ILCE-1") else {
+            panic!("the Sony a1 calibration is embedded");
+        };
+        assert_eq!(cal.camera.illuminants, [17, 21], "the calibration must cover tungsten (A) and daylight (D65)");
+        let color = cal.color_data(cal.default_look().expect("the a1 calibration ships a default look"));
+        // gains `[R/G, 1, B/G]` of a neutral surface, as an ARW records them at each preset
+        for kelvin in [3000.0_f64, 3200.0, 5600.0] {
+            let gains = lcc_raw::color::wb_multipliers(&color, lcc_color::cct::temp_tint_to_xy(kelvin, 0.0));
+            let xy = lcc_raw::color::as_shot_white_of(&color, Some(gains.map(|v| v as f32)));
+            let (t, _) = lcc_color::cct::xy_to_temp_tint(xy);
+            assert!((t - kelvin).abs() < 30.0, "{kelvin} K reads {t:.0} K");
+            let tr = lcc_raw::color::camera_transform_of(&color, xy);
+            let neutral = lcc_raw::color::camera_neutral(&color, xy);
+            let pixel = tr.matrix.apply(std::array::from_fn(|i| neutral[i] * f64::from(tr.wb[i])));
+            let ok = (0..3).all(|i| (pixel[i] - 1.0).abs() < 1e-6);
+            assert!(ok, "{kelvin} K: {pixel:?}");
+            // the picker / auto white balance read the same white back off the developed pixel
+            let seen = lcc_raw::color::neutral_white(&color, xy, pixel).unwrap();
+            assert!((seen.x - xy.x).abs() < 1e-6 && (seen.y - xy.y).abs() < 1e-6, "{kelvin} K: {seen:?} vs {xy:?}");
+        }
+        // the tungsten white sits on the calibration's illuminant-A side, not D65's
+        let tungsten = lcc_raw::color::as_shot_white_of(
+            &color,
+            Some(lcc_raw::color::wb_multipliers(&color, lcc_color::cct::temp_tint_to_xy(2856.0, 0.0)).map(|v| v as f32)),
+        );
+        assert!(lcc_raw::color::illuminant_weight(&color, tungsten) > 0.99, "{}", lcc_raw::color::illuminant_weight(&color, tungsten));
+    }
 }
