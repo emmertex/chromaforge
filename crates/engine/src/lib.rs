@@ -486,6 +486,10 @@ pub struct Session {
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
     /// Develop defaults applied on import (persisted in prefs.json).
     pub import_defaults: import::ImportDefaults,
+    /// The default camera profile per camera model (`""` = every camera; persisted in prefs.json,
+    /// issue #723): the `profile.camera` choice photos of that camera start from when they choose
+    /// none. `lc` = the app's own colour, `dcp:<id>` an imported profile, `cal:<id>` a look.
+    pub camera_profile_defaults: std::collections::BTreeMap<String, String>,
     /// Disk budget of the library's thumbnail cache in MB (0 = default; persisted in prefs.json).
     pub cache_mb: u32,
     /// Slideshow playback settings (`slideshow.playback`; persisted in prefs.json).
@@ -672,6 +676,7 @@ impl Session {
             preview_build: None,
             slideshow_export: None,
             import_defaults: import::ImportDefaults::default(),
+            camera_profile_defaults: Default::default(),
             cache_mb: 0,
             slideshow: slideshow::PlaybackSettings::default(),
             slide_layout: slide::SlideSettings::default(),
@@ -1729,6 +1734,8 @@ mod tests_album_order;
 mod tests_album_remove;
 #[cfg(test)]
 mod tests_albums_local;
+#[cfg(test)]
+mod tests_camera_profile_defaults;
 #[cfg(test)]
 mod tests_catalog_cmds;
 #[cfg(test)]
