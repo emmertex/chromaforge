@@ -89,7 +89,7 @@ impl PreparedPhotos {
             lcc_print::PrintMedia::Matte => SharpenFor::Matte,
         };
         for img in self.images.values_mut() {
-            crate::export::output_sharpen(img, target, amount);
+            crate::export::output_sharpen(img, lcc_pipeline::OutputSpace::Srgb, target, amount);
         }
         for d in self.deep.values_mut() {
             let mut img = lcc_pipeline::DeepImage {

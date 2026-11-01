@@ -34,7 +34,7 @@ pub fn service_name(prefix: &str) -> String {
 }
 
 /// `_<svc>._tcp.local` for this app: `<svc>` follows the Android package's last segment
-/// (`android_package` in brand.toml, e.g. `com.example.ChromaForge` → `chromaforge`), so the
+/// (`android_package` in brand.toml, e.g. a `com.example.SomeApp` package → `someapp`), so the
 /// app has one network identity on every platform. Devices only find each other when they
 /// advertise the same type, so a renamed package needs every device on the new version.
 pub fn service_type() -> String {
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn the_service_follows_the_android_package() {
-        assert_eq!(service_name(package_segment("com.example.ChromaForge")), "chromaforge");
+        assert_eq!(service_name(package_segment("com.example.SomeApp")), "someapp");
         assert_eq!(service_name(package_segment("Plain")), "plain");
         let t = service_type();
         assert!(t.starts_with('_') && t.ends_with("._tcp.local"), "{t}");

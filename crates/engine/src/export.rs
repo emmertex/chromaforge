@@ -1449,13 +1449,13 @@ pub(crate) fn portable_stem(name: &str) -> String {
     s
 }
 
-/// Output sharpening of an 8-bit image: an unsharp mask on its luma ([`unsharp`]).
-pub fn output_sharpen(img: &mut Rgba8, target: SharpenFor, amount: SharpenAmount) {
+/// Output sharpening of an 8-bit image encoded in `space`: an unsharp mask on its luma ([`unsharp`]).
+pub fn output_sharpen(img: &mut Rgba8, space: OutputSpace, target: SharpenFor, amount: SharpenAmount) {
     if !sharpens(img.width, img.height, target) {
         return;
     }
     let src: Vec<[f32; 3]> = img.data.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
-    if let Some(out) = unsharp(img.width, img.height, &src, target, amount) {
+    if let Some(out) = unsharp(img.width, img.height, &src, space.luma(), target, amount) {
         for (p, v) in img.data.iter_mut().zip(out) {
             for c in 0..3 {
                 p[c] = v[c].round().clamp(0.0, 255.0) as u8;
@@ -1464,16 +1464,19 @@ pub fn output_sharpen(img: &mut Rgba8, target: SharpenFor, amount: SharpenAmount
     }
 }
 
-/// [`output_sharpen`] on a high-bit-depth image (float images are sharpened in linear light).
+/// [`output_sharpen`] on a high-bit-depth image. Float images hold scene-linear values; they are
+/// sharpened on the sRGB curve's (perceptual) axis, extended past 1.0, so a float export gets the
+/// same sharpening as an 8- or 16-bit one rather than more in the shadows and less in the highlights.
 pub fn output_sharpen_deep(img: &mut DeepImage, target: SharpenFor, amount: SharpenAmount) {
     let (w, h) = (img.width, img.height);
+    let weights = img.space.luma();
     if !sharpens(w, h, target) {
         return;
     }
     match &mut img.samples {
         DeepSamples::U16(v) => {
             let src: Vec<[f32; 3]> = v.as_chunks::<3>().0.iter().map(|c| [c[0] as f32, c[1] as f32, c[2] as f32]).collect();
-            if let Some(out) = unsharp(w, h, &src, target, amount) {
+            if let Some(out) = unsharp(w, h, &src, weights, target, amount) {
                 for (d, s) in v.iter_mut().zip(out.as_flattened()) {
                     *d = s.round().clamp(0.0, 65535.0) as u16;
                 }
@@ -1481,10 +1484,11 @@ pub fn output_sharpen_deep(img: &mut DeepImage, target: SharpenFor, amount: Shar
         }
         DeepSamples::F32(v) => {
             // A NaN or infinite sample would poison its neighbours' blur and local range; treat it as black.
-            let src: Vec<[f32; 3]> = v.as_chunks::<3>().0.iter().map(|c| [c[0], c[1], c[2]].map(|x| if x.is_finite() { x } else { 0.0 })).collect();
-            if let Some(out) = unsharp(w, h, &src, target, amount) {
+            let encode = |x: f32| if x.is_finite() { lcc_color::transfer::linear_to_srgb(x.max(0.0)) } else { 0.0 };
+            let src: Vec<[f32; 3]> = v.as_chunks::<3>().0.iter().map(|c| [c[0], c[1], c[2]].map(encode)).collect();
+            if let Some(out) = unsharp(w, h, &src, weights, target, amount) {
                 for (d, s) in v.iter_mut().zip(out.as_flattened()) {
-                    *d = s.max(0.0);
+                    *d = lcc_color::transfer::srgb_to_linear(s.max(0.0));
                 }
             }
         }
@@ -1505,8 +1509,9 @@ const SHARPEN_OVERSHOOT: f32 = 0.1;
 /// The sharpened values of `src` (`w × h`), or `None` when nothing is to be done: an unsharp mask
 /// at the output's own pixel scale (a Gaussian of radius `sigma` output pixels), on luma only (no
 /// colour fringes), with its overshoot past the local range limited ([`SHARPEN_OVERSHOOT`]). Print
-/// media blur more than a screen and get a wider, stronger mask. The values may be on any scale.
-fn unsharp(w: usize, h: usize, src: &[[f32; 3]], target: SharpenFor, amount: SharpenAmount) -> Option<Vec<[f32; 3]>> {
+/// media blur more than a screen and get a wider, stronger mask. The values may be on any scale;
+/// `weights` are the luminance weights of their RGB primaries.
+fn unsharp(w: usize, h: usize, src: &[[f32; 3]], weights: [f32; 3], target: SharpenFor, amount: SharpenAmount) -> Option<Vec<[f32; 3]>> {
     let (sigma, base) = match target {
         SharpenFor::None => return None,
         SharpenFor::Screen => (0.7f32, 0.65f32),
@@ -1522,7 +1527,7 @@ fn unsharp(w: usize, h: usize, src: &[[f32; 3]], target: SharpenFor, amount: Sha
     if w < 3 || h < 3 {
         return None;
     }
-    let luma: Vec<f32> = src.iter().map(|p| 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]).collect();
+    let luma: Vec<f32> = src.iter().map(|p| weights[0] * p[0] + weights[1] * p[1] + weights[2] * p[2]).collect();
     let r = (3.0 * sigma).ceil() as isize;
     let taps: Vec<f32> = (-r..=r).map(|d| (-((d * d) as f32) / (2.0 * sigma * sigma)).exp()).collect();
     let norm: f32 = taps.iter().sum();
@@ -1635,8 +1640,8 @@ fn finish_8bit<'a>(img: &'a Rgba8, o: &ExportOptions) -> std::borrow::Cow<'a, Rg
         return std::borrow::Cow::Borrowed(img);
     }
     let mut img = img.clone();
-    output_sharpen(&mut img, o.sharpen, o.sharpen_amount);
     let space = o.effective_space();
+    output_sharpen(&mut img, space, o.sharpen, o.sharpen_amount);
     if let Some(wm) = &o.watermark {
         let wm = Watermark { color: srgb8_in(space, wm.color), target: Some(space), ..wm.clone() };
         draw_watermark(&mut img, &wm);
@@ -1844,7 +1849,12 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
     }
     out.contact = m.contact.clone();
     out.title = text(&m.title);
+    out.headline = text(&m.headline);
     out.caption = text(&m.caption);
+    out.description_writer = text(&m.description_writer);
+    out.category = text(&m.category);
+    out.supplemental_categories = m.supplemental_categories.clone();
+    out.subject_code = m.subject_code.clone();
     out.alt_text = text(&m.alt_text);
     out.extended_description = text(&m.extended_description);
     let remove_location = removes_location(photo, catalog, o);
@@ -2994,7 +3004,7 @@ mod tests {
         let plain = ExportOptions { sharpen: SharpenFor::None, watermark: None, ..ExportOptions::default() };
         assert!(matches!(finish_8bit(&img, &plain), std::borrow::Cow::Borrowed(_)));
         let mut same = test_image();
-        output_sharpen(&mut same, SharpenFor::None, SharpenAmount::High);
+        output_sharpen(&mut same, OutputSpace::Srgb, SharpenFor::None, SharpenAmount::High);
         assert_eq!(same.data, img.data);
         let sharpened = ExportOptions { sharpen: SharpenFor::Screen, ..plain };
         assert!(matches!(finish_8bit(&img, &sharpened), std::borrow::Cow::Owned(_)));
@@ -3007,7 +3017,7 @@ mod tests {
             let v = if i % 8 < 4 { 80 } else { 170 };
             *p = [v, v, v, 255];
         }
-        output_sharpen(&mut img, SharpenFor::Matte, SharpenAmount::High);
+        output_sharpen(&mut img, OutputSpace::Srgb, SharpenFor::Matte, SharpenAmount::High);
         assert!(img.data[3][0] < 80 && img.data[4][0] > 170);
     }
 
@@ -3027,7 +3037,7 @@ mod tests {
         let mut last = 0u8;
         for amount in [SharpenAmount::Low, SharpenAmount::Standard, SharpenAmount::High] {
             let mut img = edge();
-            output_sharpen(&mut img, SharpenFor::Screen, amount);
+            output_sharpen(&mut img, OutputSpace::Srgb, SharpenFor::Screen, amount);
             let (dark, light) = (img.data[15], img.data[16]);
             let spread = (40 - dark[0]).max(light[0] - 220);
             assert!(spread >= last && spread > 0, "{amount:?}: {dark:?} {light:?}");
@@ -3037,8 +3047,33 @@ mod tests {
             last = spread;
         }
         let mut none = edge();
-        output_sharpen(&mut none, SharpenFor::None, SharpenAmount::High);
+        output_sharpen(&mut none, OutputSpace::Srgb, SharpenFor::None, SharpenAmount::High);
         assert_eq!(none.data, edge().data);
+    }
+
+    /// A float export (scene-linear values) of an edge gets about the same sharpening as an 8-bit
+    /// one, measured on the encoded (sRGB) axis: it used to be sharpened in linear light.
+    #[test]
+    fn float_and_8bit_exports_sharpen_alike() {
+        let (dark, light) = (60u8, 200u8);
+        let mut img8 = Rgba8::new(32, 8);
+        for (i, p) in img8.data.iter_mut().enumerate() {
+            let v = if i % 32 < 16 { dark } else { light };
+            *p = [v, v, v, 255];
+        }
+        let lin = |v: u8| lcc_color::transfer::srgb_to_linear(v as f32 / 255.0);
+        let samples: Vec<f32> = img8.data.iter().flat_map(|p| [lin(p[0]); 3]).collect();
+        let mut deep = DeepImage { width: 32, height: 8, space: OutputSpace::Srgb, samples: DeepSamples::F32(samples) };
+        output_sharpen(&mut img8, OutputSpace::Srgb, SharpenFor::Screen, SharpenAmount::High);
+        output_sharpen_deep(&mut deep, SharpenFor::Screen, SharpenAmount::High);
+        let DeepSamples::F32(out) = &deep.samples else { unreachable!() };
+        for x in [15usize, 16] {
+            let base = if x < 16 { dark } else { light } as f32;
+            let d8 = img8.data[x][0] as f32 - base;
+            let df = lcc_color::transfer::linear_to_srgb(out[x * 3]) * 255.0 - base;
+            assert!(d8.abs() > 2.0, "the edge is sharpened: {d8}");
+            assert!((d8 - df).abs() <= 1.5, "x={x}: 8-bit {d8}, float {df}");
+        }
     }
 
     /// Output sharpening of a float image with NaN and infinite samples does not panic (#2970 review):
@@ -3077,6 +3112,27 @@ mod tests {
         let jpg = encode_with_metadata(&test_image(), &ExportOptions::default(), Some(&m)).unwrap();
         let back = lcc_meta::extract(&jpg);
         assert_eq!((back.keywords, back.hierarchical_keywords), (m.keywords.clone(), m.hierarchical_keywords.clone()));
+    }
+
+    /// A year or a month alone (`1983-04`, a scanned print's date) is exported in the XMP's
+    /// `photoshop:DateCreated` as stated, and in neither Exif date nor `exif:DateTimeOriginal`, whose
+    /// form can't say it; a full time still goes in all of them.
+    #[test]
+    fn a_partial_capture_time_is_exported_as_stated() {
+        use lcc_catalog::{Catalog, Photo, PhotoId, Source};
+        let mut p = Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpeg", 10, 10, "2026-09-30T00:00:00");
+        for (captured, full) in [("1983", false), ("1983-04", false), ("2024-01-16T12:34:56", true)] {
+            p.captured = Some(captured.into());
+            let m = export_metadata(&p, &Catalog::new(), &ExportOptions::default()).unwrap();
+            let xmp = lcc_meta::write_xmp(&m, None);
+            let props = lcc_meta::parse_xmp(&xmp).unwrap().properties;
+            assert_eq!(props.get("photoshop:DateCreated"), Some(&vec![captured.to_string()]), "{xmp}");
+            assert_eq!(props.contains_key("exif:DateTimeOriginal"), full, "{xmp}");
+            let exif = lcc_meta::read_exif(&lcc_meta::write_exif(&m));
+            assert_eq!(exif.capture_time.is_some(), full, "{captured}: Exif dates");
+            let jpg = encode_with_metadata(&test_image(), &ExportOptions::default(), Some(&m)).unwrap();
+            assert_eq!(lcc_meta::extract(&jpg).capture_time.map(|d| d.to_iso()).as_deref(), Some(captured), "the exported file reads back as stated");
+        }
     }
 
     #[test]

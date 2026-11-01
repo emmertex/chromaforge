@@ -563,6 +563,70 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
     }
+    // the default camera profile (issue #723): what photos start from when no camera profile is
+    // set on them, per camera or for every camera
+    heading(ui, t, crate::i18n::tr("Camera profile"));
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "The camera profile photos start from when none is set on them. Without a choice, a camera's own imported profile stays the default; Built-in colour keeps photos on {app}'s own colour even with imported profiles installed.",
+        ),
+    );
+    let defaults = app.session.camera_profile_defaults.clone();
+    let profile_options = |camera: &str| -> Vec<(String, String)> {
+        let mut out = vec![("lc".to_string(), crate::i18n::tr("Built-in colour").to_string())];
+        for (pid, p) in lcc_raw::dcp::library() {
+            if camera.is_empty() || lcc_raw::dcp::covers_model(&p.model, camera) {
+                let name = if p.name.is_empty() { pid.trim_start_matches("dcp:").to_string() } else { p.name.clone() };
+                out.push((pid, name));
+            }
+        }
+        if let Some(cal) = if camera.is_empty() { None } else { lcc_raw::dcp::calibrated_for_camera(camera) } {
+            out.extend(cal.looks.iter().map(|(pid, p)| (pid.clone(), p.name.clone())));
+        }
+        out
+    };
+    let camera_default_combo = |ui: &mut egui::Ui, id: String, camera: String, current: Option<&String>| -> Option<Option<String>> {
+        let none_label = crate::i18n::tr("Camera default (imported profile)").to_string();
+        let shown = match current {
+            None => none_label.clone(),
+            Some(c) if c == "lc" => crate::i18n::tr("Built-in colour").to_string(),
+            Some(c) => profile_options(&camera).iter().find(|(o, _)| o == c).map(|(_, n)| n.clone()).unwrap_or_else(|| c.clone()),
+        };
+        let mut pick: Option<Option<String>> = None;
+        let r = crate::widgets::combo_box(&id).width(240.0).selected_text(shown).show_ui(ui, |ui| {
+            if ui.selectable_label(current.is_none(), &none_label).clicked() {
+                pick = Some(None);
+            }
+            for (pid, name) in profile_options(&camera) {
+                if ui.selectable_label(current == Some(&pid), &name).clicked() {
+                    pick = Some(Some(pid));
+                }
+            }
+        });
+        register(ui.ctx(), format!("combo:{id}"), r.response.rect);
+        pick
+    };
+    row(ui, t, crate::i18n::tr("All cameras"), |ui| {
+        let current = defaults.get("");
+        if let Some(pick) = camera_default_combo(ui, "settingsCameraDefaultGlobal".into(), String::new(), current) {
+            let _ = app.run("library.preferences", json!({"cameraDefault": {"camera": "*", "profile": pick}}));
+        }
+    });
+    let cams = cameras(app);
+    if !cams.is_empty() {
+        egui::ScrollArea::vertical().max_height(150.0).id_salt("settingsCameraProfiles").show(ui, |ui| {
+            for (i, cam) in cams.iter().enumerate() {
+                let current = defaults.iter().find(|(k, _)| !k.is_empty() && lcc_raw::dcp::covers_model(k, cam)).map(|(_, v)| v);
+                row(ui, t, cam, |ui| {
+                    if let Some(pick) = camera_default_combo(ui, format!("settingsCameraDefault-{i}"), cam.clone(), current) {
+                        let _ = app.run("library.preferences", json!({"cameraDefault": {"camera": cam, "profile": pick}}));
+                    }
+                });
+            }
+        });
+    }
     heading(ui, t, crate::i18n::tr("Other images (JPEG, PNG, TIFF, HEIC…)"));
     row(ui, t, crate::i18n::tr("Non-raw photos"), |ui| {
         if let Some(v) = preset_combo(app, ui, "settingsOtherPreset", d.other_preset.as_deref(), "None") {
@@ -694,6 +758,15 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 let _ = app.run("library.autoImport", json!({"folder": null}));
             }
         });
+        // the last listing of the watched folder failed: say why (it reads "path: reason")
+        if let (Some(folder), Some((failed, e))) = (&d.auto_folder, &app.ui.auto_import_error)
+            && folder == failed
+        {
+            let reason = e.strip_prefix(folder.as_str()).and_then(|r| r.strip_prefix(": ")).unwrap_or(e);
+            row(ui, t, "", |ui| {
+                ui.label(RichText::new(crate::i18n::tr_format!("Can't read this folder: {reason}", reason = reason)).size(11.0).color(t.caution));
+            });
+        }
         if d.auto_folder.is_some() {
             row(ui, t, "", |ui| {
                 let mut copy = d.auto_copy;
@@ -984,12 +1057,18 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         }
     });
     ui.data_mut(|d| d.insert_temp(custom_id, custom));
-    let used = app.session.media.rendered.disk().map(|d| d.size());
+    // (never counted here: the first count walks the whole folder, on a thread of its own that holds a row of the
+    // activity stack, and a write in progress holds the size; this dialog draws it every frame)
+    let rendered = &app.session.media.rendered;
+    let activity = &app.session.activity;
+    let used = rendered
+        .disk()
+        .map(|_| rendered.disk_size_now_with(|| activity.start("cache", "Counting the preview cache", lcc_engine::activity::Cancel::No)));
+    if matches!(used, Some(None)) {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
     row(ui, t, crate::i18n::tr("In use"), |ui| {
-        ui.label(
-            RichText::new(used.map(|b| format!("{:.1} MB", b as f64 / 1048576.0)).unwrap_or_else(|| crate::i18n::tr("memory only").to_string()))
-                .color(t.text),
-        );
+        ui.label(RichText::new(in_use_text(used)).color(t.text));
         let r = ui.button(crate::i18n::tr("Clear Cache"));
         register(ui.ctx(), "button:settingsClearCache", r.rect);
         if r.clicked() {
@@ -1978,10 +2057,28 @@ pub fn display_profile(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     })
 }
 
+/// The disk cache's "In use": its size once counted, "counting…" while the first count of the folder runs on a
+/// thread of its own (`PreviewCache::disk_size_now_with` is `Some(None)` meanwhile), "memory only" without a disk
+/// cache.
+fn in_use_text(used: Option<Option<u64>>) -> String {
+    match used {
+        Some(Some(b)) => format!("{:.1} MB", b as f64 / 1048576.0),
+        Some(None) => crate::i18n::tr("counting…").to_string(),
+        None => crate::i18n::tr("memory only").to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn in_use_reads_counting_until_the_size_is_known() {
+        assert_eq!(in_use_text(Some(None)), "counting…");
+        assert_eq!(in_use_text(Some(Some(3 * 1048576 / 2))), "1.5 MB");
+        assert_eq!(in_use_text(None), "memory only");
+    }
 
     fn app_with_import() -> LccApp {
         let mut app = LccApp::new(lcc_engine::Session::with_demo(), crate::Services::default());

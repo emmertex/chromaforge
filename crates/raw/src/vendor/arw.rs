@@ -732,7 +732,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     let bits = info.bits() as u32;
     let linear_rgb = info.compression == 7 && info.photometric == photometric::YCBCR;
     let chunks = info.chunks(bytes.len() as u64);
-    let strip_len: u64 = chunks.iter().map(|c| c.len).sum();
+    let strip_len = chunks.iter().fold(0u64, |a, c| a.saturating_add(c.len));
     // The row-per-w-bytes (ARW2) layout stores exactly one byte per pixel in a single strip; all 108 such files in the test
     // archive measure exactly width x height. A200/A230/A350 files carry a strip 4-23 % larger than that (and A290/A390 one
     // smaller), which is a different packing, so they are refused rather than read with the wrong layout.
@@ -1018,6 +1018,15 @@ mod tests {
         // centred (packed 12-bit DSLR-A900: 6048 x 4032 in the middle of 6080 x 4048)
         assert_eq!(recorded_size_crop((6048, 4032), Some((6048, 4032)), 6080, 4048, true), Some(Rect::new(16, 8, 6048, 4032)));
         assert_eq!(recorded_size_crop((6046, 4030), None, 6080, 4048, true), Some(Rect::new(16, 8, 6046, 4030)));
+    }
+
+    /// Strip byte counts that add up past `u64::MAX` (LONG8 `[u64::MAX, 1]`) are an error or a picture, not an overflow.
+    #[test]
+    fn strip_byte_counts_past_u64_max_do_not_overflow() {
+        let file = crate::vendor::tests::huge_strip_counts(arw_with_strip(32 * 4));
+        for mode in [Mode::Header, Mode::Full] {
+            let _ = super::decode(&file, mode);
+        }
     }
 
     /// A 32767-compressed ARW whose single strip is `strip` bytes for a 32 x 4 image.

@@ -199,3 +199,47 @@ fn live_album_create_rename_delete_keeps_assets() {
     assert!(!c.albums().unwrap().iter().any(|x| x.id == a.id));
     assert!(c.asset(&some[0]).is_ok(), "the album's assets stay");
 }
+
+/// IMM-SIDECARS: an upload's XMP sidecar is served back as stored (`GET /asset-files`), with
+/// namespaces Immich does not itself write (the app's `lc:settings`) intact.
+#[test]
+#[ignore = "needs `cargo xtask immich up` and `seed` (nightly)"]
+fn live_asset_sidecar_round_trip() {
+    use lcc_immich::client::{NewAsset, UploadData};
+    let Some((url, key)) = server() else { panic!("no target/immich/api-key: run `cargo xtask immich seed`") };
+    let c = Client::new(&url, key, &ServerOptions::standard()).unwrap();
+    // the version matrix runs `min` (v3.0.0) too, which has no `/asset-files`
+    if c.version().unwrap() < lcc_immich::MIN_ASSET_FILES_VERSION {
+        eprintln!("skipping: /asset-files needs Immich {}", lcc_immich::MIN_ASSET_FILES_VERSION);
+        return;
+    }
+    let (w, h) = (16usize, 16usize);
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % w) as u8 ^ stamp as u8, (i / w) as u8 ^ (stamp >> 8) as u8, 7, 255]).collect();
+    let img = lcc_raster::Rgba8 { width: w, height: h, data };
+    let bytes = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
+    let xmp = r#"<?xpacket begin='' id='W5M0MpCehiHzreSzNTczkc9d'?>
+<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:xmp='http://ns.adobe.com/xap/1.0/' xmlns:lc='http://ns.example.invalid/lc/1.0/'>
+<xmp:Rating>4</xmp:Rating><lc:settings>{"version":1,"light":{"exposure":1.25}}</lc:settings></rdf:Description>
+</rdf:RDF></x:xmpmeta><?xpacket end='w'?>"#;
+    let (id, duplicate) = c
+        .upload(&NewAsset {
+            data: UploadData::Bytes(&bytes),
+            file_name: "sidecar-live.png",
+            mime: "image/png",
+            device_asset_id: &format!("sidecar-live-{stamp}"),
+            device_id: "live",
+            created: "2024-01-01T12:00:00.000Z",
+            favorite: false,
+            sidecar: Some(xmp.as_bytes()),
+        })
+        .unwrap();
+    assert!(!duplicate, "the stamp makes the bytes unique");
+    let f = c.asset_sidecar(&id).unwrap().expect("the upload's sidecar is listed");
+    let got = String::from_utf8(c.download_asset_file(&f.id).unwrap()).unwrap();
+    assert!(got.contains("<xmp:Rating>4</xmp:Rating>"), "{got}");
+    assert!(got.contains("<lc:settings>"), "the app's own namespace survives: {got}");
+    assert!(c.asset_files(&id, Some("preview")).unwrap().iter().all(|f| !f.is_sidecar()));
+    c.trash_assets(std::slice::from_ref(&id)).unwrap();
+}

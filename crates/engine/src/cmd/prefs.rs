@@ -15,6 +15,7 @@ fn current(s: &Session) -> Value {
     json!({
         "xmp": s.xmp,
         "import": s.import_defaults,
+        "cameraDefaults": s.camera_profile_defaults,
         "cacheMb": if s.cache_mb == 0 { s.cache_bytes() >> 20 } else { u64::from(s.cache_mb) },
         "forgetLocalDays": s.forget_local_days,
         "persistent": s.library.is_some(),
@@ -29,6 +30,60 @@ fn preset_ref(s: &Session, v: &Value) -> Result<Option<String>> {
         Value::String(x) if s.presets.iter().any(|p| p.id == *x) => Ok(Some(x.clone())),
         Value::String(x) => Err(bad(ID, format!("unknown preset `{x}` (see preset.list)"))),
         other => Err(bad(ID, format!("preset must be a preset id or \"default\", not {other}"))),
+    }
+}
+
+/// The default camera profile (issue #723): `{camera: "Make Model" | "*" , profile?: choice}`,
+/// `profile` null / `""` / `"default"` = remove the entry. The choice is a `develop.cameraProfile`
+/// value: `lc` (the app's own colour), an imported profile `dcp:<id>` (camera.listDcp) or a
+/// calibrated look `cal:<id>`; it must exist now, so a typo can't silently drop photos to a plain
+/// colour. Photos of the camera start from it when they choose none, ahead of the camera's active
+/// `.dcp` and its calibration's default look.
+fn camera_default(s: &mut Session, v: &Value) -> Result<()> {
+    let raw_camera = v.get("camera").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+    if raw_camera.is_empty() {
+        return Err(bad(ID, "`cameraDefault.camera` is required (\"Make Model\", or \"*\" for every camera)"));
+    }
+    // `*` is the global entry; the map (and lcc_raw::dcp) write it as an empty camera
+    let camera = if raw_camera == "*" { String::new() } else { raw_camera.clone() };
+    let remove = match v.get("profile") {
+        None => false,
+        Some(Value::Null) => true,
+        Some(Value::String(x)) if x.is_empty() || x == "default" => true,
+        Some(Value::String(x)) => {
+            let choice = x.trim();
+            if choice == "lc" {
+                // the app's own colour: nothing to check
+            } else if let Some(id) = choice.strip_prefix("dcp:") {
+                if !lcc_raw::dcp::library().iter().any(|(i, _)| i.trim_start_matches("dcp:") == id) {
+                    return Err(bad(ID, format!("unknown camera profile `{x}` (see camera.listDcp)")));
+                }
+            } else if let Some(id) = choice.strip_prefix("cal:") {
+                if !lcc_raw::dcp::calibrated_look_exists(id) {
+                    return Err(bad(ID, format!("unknown camera look `{x}` (see camera.listDcp)")));
+                }
+            } else {
+                return Err(bad(ID, format!("profile must be `lc`, a `dcp:` id from camera.listDcp, a `cal:` id, or null, not `{x}`")));
+            }
+            s.camera_profile_defaults.insert(camera, choice.to_string());
+            install_camera_defaults(s);
+            return Ok(());
+        }
+        Some(other) => return Err(bad(ID, format!("profile must be a camera-profile choice or null, not {other}"))),
+    };
+    if remove {
+        s.camera_profile_defaults.remove(&camera);
+        install_camera_defaults(s);
+    }
+    Ok(())
+}
+
+/// Hand the library's default choices to the decoder (it decides through
+/// `lcc_raw::dcp::resolve`), then save.
+fn install_camera_defaults(s: &mut Session) {
+    lcc_raw::dcp::install_user_defaults(s.camera_profile_defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+    if let Err(e) = s.save_prefs() {
+        log::warn!("prefs: {e}");
     }
 }
 
@@ -107,6 +162,11 @@ fn prefs(s: &mut Session, p: &Value) -> Result<Value> {
         changed = true;
     }
     s.import_defaults = d;
+    // the default camera profile per model (issue #723): saves on its own (the decoder reads it
+    // straight away, photos need no restart)
+    if let Some(c) = p.get("cameraDefault") {
+        camera_default(s, c)?;
+    }
     if let Some(v) = p.get("forgetLocalDays") {
         let days = v.as_u64().ok_or_else(|| bad(ID, "forgetLocalDays must be a whole number of days (0 = never)"))?;
         s.forget_local_days = days.min(36_500) as u32;
@@ -194,7 +254,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Library Preferences",
             [],
             None,
-            "{import?: {rawPreset?: presetId|\"default\", otherPreset?: presetId|\"default\", perCamera?: bool, cameras?: [{camera: \"Make Model\", preset: presetId|null}], copyright?: text, creator?: text (given to imported photos without one), showOnCard?: bool (open the import review when a camera or card is connected), denoiseAboveIso?: ISO | 0 | null (AI Denoise on for new raw photos shot at this ISO or above, their pictures made in the background; 0 / null = off), importDuplicates?: bool (Synchronize Folder brings in files whose content a photo already has, as photos of their own: \"Don't import files already in the library\" unticked, as the dialog last left it; off by default; `folder.synchronize` takes it unless given `importDuplicates`)}, camera?: {camera, preset?, remove?: bool}, cacheMb?: n (0 = default), forgetLocalDays?: n (forget untouched Local photos of folders not browsed for n days; 0 = never)} — develop defaults applied on import (raws / other images / per camera) and the thumbnail cache size, saved with the library → {xmp, import, cacheMb, forgetLocalDays, persistent}",
+            "{import?: {rawPreset?: presetId|\"default\", otherPreset?: presetId|\"default\", perCamera?: bool, cameras?: [{camera: \"Make Model\", preset: presetId|null}], copyright?: text, creator?: text (given to imported photos without one), showOnCard?: bool (open the import review when a camera or card is connected), denoiseAboveIso?: ISO | 0 | null (AI Denoise on for new raw photos shot at this ISO or above, their pictures made in the background; 0 / null = off), importDuplicates?: bool (Synchronize Folder brings in files whose content a photo already has, as photos of their own: \"Don't import files already in the library\" unticked, as the dialog last left it; off by default; `folder.synchronize` takes it unless given `importDuplicates`)}, camera?: {camera, preset?, remove?: bool}, cameraDefault?: {camera: \"Make Model\"|\"*\" (the default camera profile photos of that camera start from when they choose none, ahead of the camera's active imported profile and its calibration's default look; \"*\" = every camera), profile?: \"lc\" (the app's own colour) | dcpId (camera.listDcp) | calId | null (remove the entry)}, cacheMb?: n (0 = default), forgetLocalDays?: n (forget untouched Local photos of folders not browsed for n days; 0 = never)} — develop defaults applied on import (raws / other images / per camera), the default camera profile per camera model and the thumbnail cache size, saved with the library → {xmp, import, cameraDefaults, cacheMb, forgetLocalDays, persistent}",
             always,
             prefs
         ),

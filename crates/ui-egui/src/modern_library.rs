@@ -261,6 +261,8 @@ fn read_only(ui: &mut egui::Ui, photos: &[Arc<Photo>], key: &str, label: &str) {
         let (text, color) = match v.as_deref() {
             None => (MIXED.to_string(), t.text_dim),
             Some("") => ("—".to_string(), t.text_dim),
+            // a capture time of a year or a month alone shows as such ("1983", "April 1983")
+            Some(s) if key == "captured" && lcc_catalog::dates::partial_capture(s).is_some() => (crate::i18n::display_time(s), t.text_label),
             Some(s) => (s.to_string(), t.text_label),
         };
         ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).truncate());

@@ -35,7 +35,7 @@ pub mod srw;
 mod srwc;
 
 use crate::{BlackLevel, Cfa, Rect};
-use lcc_tiff::Tiff;
+use lcc_tiff::{Ifd, Tiff};
 use std::ops::Range;
 
 /// Exif `CFAPattern`.
@@ -54,6 +54,23 @@ pub(crate) fn cfa_from_exif(tiff: &Tiff) -> Option<Cfa> {
         _ => return None,
     };
     (two(c0, c1) && two(r0, r1)).then(|| Cfa::bayer_static(name))
+}
+
+/// Canon maker-note `AspectInfo` (CR2 and CR3; ExifTool names `AspectRatio`, `CroppedImageWidth`,
+/// `CroppedImageHeight`, `CroppedImageLeft`, `CroppedImageTop`): the in-camera aspect ratio's rectangle.
+pub(crate) const CANON_ASPECT_INFO: u16 = 0x009a;
+
+/// The shot's aspect-ratio rectangle from a Canon maker note's [`CANON_ASPECT_INFO`] (aspect code, width, height,
+/// left, top), placed inside `image` (the Canon image the rectangle is measured from). `None` when the tag is
+/// absent or malformed, or its rectangle doesn't fit inside `image`.
+pub(crate) fn canon_aspect_crop(maker: Option<&Ifd>, image: Rect) -> Option<Rect> {
+    let data = maker?.u64s(CANON_ASPECT_INFO)?;
+    let [width, height, left, top] = [1usize, 2, 3, 4].map(|i| data.get(i).and_then(|&v| usize::try_from(v).ok()));
+    let (width, height, left, top) = (width?, height?, left?, top?);
+    if width < 2 || height < 2 || left.checked_add(width)? > image.width || top.checked_add(height)? > image.height {
+        return None;
+    }
+    Some(Rect::new(image.x.checked_add(left)?, image.y.checked_add(top)?, width, height))
 }
 
 /// Black level per 2×2 CFA position (anchored at the active area origin) from masked sensor columns `cols` over
@@ -256,6 +273,40 @@ pub(crate) fn declare_strip_len(file: &mut [u8], len: u32, declared: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `file`, whose image IFD holds one strip, as two strips at the same offset whose StripByteCounts are LONG8 (which
+    /// classic TIFF readers accept) `[u64::MAX, 1]`: their sum is past `u64::MAX`.
+    pub(super) fn huge_strip_counts(mut file: Vec<u8>) -> Vec<u8> {
+        use lcc_tiff::tags as t;
+        let tiff = Tiff::parse(&file).unwrap();
+        let o = tiff.order;
+        let ifd = tiff.all_ifds().into_iter().find(|i| i.contains(t::STRIP_OFFSETS)).unwrap();
+        let (base, rows, offset) = (ifd.offset as usize, ifd.u32(t::IMAGE_LENGTH).unwrap(), ifd.u32(t::STRIP_OFFSETS).unwrap());
+        assert!(rows >= 2);
+        let at = file.len() as u32;
+        // appended: the two strip offsets (LONG), then the two byte counts (LONG8)
+        let mut tail = Vec::new();
+        o.put_u32(&mut tail, offset);
+        o.put_u32(&mut tail, offset);
+        o.put_u64(&mut tail, u64::MAX);
+        o.put_u64(&mut tail, 1);
+        for i in 0..usize::from(o.read_u16(&file, base).unwrap()) {
+            let e = base + 2 + 12 * i;
+            let (ty, count, value) = match o.read_u16(&file, e).unwrap() {
+                t::STRIP_OFFSETS => (4u16, 2u32, at),
+                t::ROWS_PER_STRIP => (4, 1, rows.div_ceil(2)),
+                t::STRIP_BYTE_COUNTS => (16, 2, at + 8),
+                _ => continue,
+            };
+            let mut entry = Vec::new();
+            o.put_u16(&mut entry, ty);
+            o.put_u32(&mut entry, count);
+            o.put_u32(&mut entry, value);
+            file[e + 2..e + 12].copy_from_slice(&entry);
+        }
+        file.extend_from_slice(&tail);
+        file
+    }
 
     #[test]
     fn black_columns_by_parity() {

@@ -312,6 +312,10 @@ const HQ_GIVE_UP_FACTOR: f64 = 3.0;
 /// The full-quality updates (after the first) a drag times before the median decides.
 const HQ_GIVE_UP_AFTER: usize = 2;
 
+/// A drag whose first this-many full-quality updates are all over [`HQ_BUDGET_MS`] falls back
+/// without waiting for the median.
+const HQ_PROBE_TICKS: usize = 2;
+
 /// How long (s) a slider that fell back must hold still before the full-quality render: a little
 /// longer than a frame at the drafts' pace, so a slow, steady drag keeps drafting.
 pub const HQ_SETTLE_S: f64 = 0.2;
@@ -402,7 +406,9 @@ impl HqDrag {
         if !same {
             self.finish(now);
             let key = (photo, control.to_string());
-            self.fallback = self.verdicts.iter().any(|(k, until, _)| *k == key && now < *until);
+            // (a photo slow at full quality under one slider is as slow under the next: any of its
+            // standing verdicts starts the drag in the fallback instead of re-probing at full cost)
+            self.fallback = self.verdicts.iter().any(|(k, until, _)| k.0 == photo && now < *until);
             self.inherited = self.fallback;
             self.current = Some(key);
         }
@@ -454,7 +460,9 @@ impl HqDrag {
             }
             let far_over = self.samples.len() > 1 && took > HQ_BUDGET_MS * HQ_GIVE_UP_FACTOR;
             let over = self.samples.len() > HQ_GIVE_UP_AFTER && median_after_first(&self.samples).is_some_and(|m| m > HQ_BUDGET_MS);
-            if far_over || over {
+            // (the probe is capped: the first two updates both over budget end it)
+            let probe_over = self.samples.len() >= HQ_PROBE_TICKS && self.samples.iter().take(HQ_PROBE_TICKS).all(|&t| t > HQ_BUDGET_MS);
+            if far_over || over || probe_over {
                 self.fallback = true;
                 return;
             }
@@ -1727,6 +1735,25 @@ mod tests {
         assert_eq!(d.frame(Some(drag), 12, now + HQ_SETTLE_S + 0.02).0, AdjustQuality::Draft, "moving again drafts again");
     }
 
+    // Given a heavy photo whose first two full-quality updates are both over the budget (but not
+    // far over), the probe gives up there instead of waiting for a median of more frozen updates
+    #[test]
+    fn the_full_quality_probe_is_capped() {
+        use lcc_catalog::PhotoId;
+        let mut d = HqDrag::default();
+        let drag = (PhotoId(1), "Exposure");
+        let mut timed = 0;
+        for key in 1..20u64 {
+            if d.frame(Some(drag), key, key as f64 * 0.02).0 != AdjustQuality::Full {
+                break;
+            }
+            d.observe(key, HQ_BUDGET_MS * 1.2, None);
+            timed += 1;
+        }
+        assert!(d.fell_back());
+        assert!(timed <= HQ_PROBE_TICKS + 1, "{timed} full-quality updates before the fallback");
+    }
+
     // Given one full-quality update far over the budget (a 1 s AI denoise update), the drag falls
     // back at once instead of waiting for a median of frozen updates; the first update (it may
     // rebuild the stage caches) does not count
@@ -1757,7 +1784,8 @@ mod tests {
 
     // Given a slider that fell back, its next drags on that photo start in the fallback (no frozen
     // updates to find out again) for a while, then retry full quality; a fast retry forgets the
-    // verdict. Other controls and photos are timed afresh
+    // verdict. Other controls of that photo start from its remembered cost (in the fallback);
+    // other photos are timed afresh
     #[test]
     fn a_fallback_is_remembered_per_photo_and_control_then_retried() {
         use lcc_catalog::PhotoId;
@@ -1770,7 +1798,7 @@ mod tests {
         assert!(!d.fell_back(), "no drag, no fallback");
         assert_eq!(d.frame(Some(drag), 100, now + 1.0).0, AdjustQuality::Draft, "the next drag starts in the fallback");
         d.frame(None, 0, now + 1.0);
-        assert_eq!(d.frame(Some((PhotoId(1), "Contrast")), 100, now + 1.0).0, AdjustQuality::Full);
+        assert_eq!(d.frame(Some((PhotoId(1), "Contrast")), 100, now + 1.0).0, AdjustQuality::Draft, "the photo is known to be slow");
         d.frame(None, 0, now + 1.0);
         assert_eq!(d.frame(Some((PhotoId(2), "Exposure")), 100, now + 1.0).0, AdjustQuality::Full);
         d.frame(None, 0, now + 1.0);

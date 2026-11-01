@@ -11,7 +11,10 @@ use crate::{Result, Session};
 /// The fields a metadata preset can hold (photo.setMeta names).
 pub const FIELDS: &[&str] = &[
     "title",
+    "headline",
     "caption",
+    "descriptionWriter",
+    "category",
     "copyright",
     "copyrightStatus",
     "usageTerms",
@@ -43,7 +46,10 @@ pub struct MetadataPreset {
 fn text_field<'a>(m: &'a mut Meta, k: &str) -> Option<&'a mut String> {
     Some(match k {
         "title" => &mut m.title,
+        "headline" => &mut m.headline,
         "caption" => &mut m.caption,
+        "descriptionWriter" => &mut m.description_writer,
+        "category" => &mut m.category,
         "copyright" => &mut m.copyright,
         "usageTerms" => &mut m.usage_terms,
         "copyrightUrl" => &mut m.copyright_url,
@@ -176,7 +182,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Metadata Preset",
             [],
             None,
-            "{name, fields?: {copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, title?, caption?, location?, city?, state?, country?, keywords?: [..]}, only?: [field] (from the active photo when `fields` is absent; default the copyright fields, creator and contact, place)} — adds or replaces",
+            "{name, fields?: {copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, title?, headline?, caption?, descriptionWriter?, category?, location?, city?, state?, country?, keywords?: [..]}, only?: [field] (from the active photo when `fields` is absent; default the copyright fields, creator and contact, place)} — adds or replaces",
             always,
             save
         ),

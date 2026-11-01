@@ -657,7 +657,11 @@ mod tests {
         s.crop.geometry.angle = 5.0;
         let f = Frame::new(8, 4, &s, true);
         let (w, h) = f.fit(200_000, 100_000);
-        assert!((w as i64 - 32_000).abs() <= 1 && (h as i64 - 16_000).abs() <= 1, "{w}×{h}");
+        // `Frame::new` bounds the turned crop to the photo first, so its aspect is the bounded
+        // crop's, not the 2:1 of the photo; the fit keeps that aspect and lands on the ceiling
+        let got = w as f64 / h as f64;
+        assert!((got - f.aspect()).abs() / f.aspect() < 1e-3, "{w}×{h} vs aspect {}", f.aspect());
+        assert!((w * h) as f64 >= MAX_RENDER_PIXELS * 0.99, "{} px: held below the ceiling", w * h);
         assert!((w * h) as f64 <= MAX_RENDER_PIXELS * 1.001, "{} px", w * h);
     }
 

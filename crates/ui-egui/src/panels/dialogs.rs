@@ -605,7 +605,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     let params = match mode.as_str() {
                         "set" => {
                             field(ui, "New time", |ui| {
-                                let r = ui.add(egui::TextEdit::singleline(time).hint_text("2026-09-30 14:05:00").desired_width(f32::INFINITY));
+                                let r = ui.add(egui::TextEdit::singleline(time).hint_text("2026-09-30 14:05:00 · 1983-04 · 1983").desired_width(f32::INFINITY));
                                 crate::widgets::register(ui.ctx(), "field:captureTime", r.rect);
                             });
                             json!({"time": time})
@@ -650,24 +650,34 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         // the photo's own time is the problem (a Lightroom catalog's capture time
                         // is copied verbatim), not what was typed
                         let unreadable = lcc_catalog::dates::shift_iso(&cur, 0).is_none();
+                        // a year or a month alone (`1983`, `1983-04`) is kept as typed, by every selected photo
+                        let partial = |d: &str| lcc_catalog::dates::partial_capture(d.trim()).is_some();
                         let after = match (mode.as_str(), unreadable && n == 1) {
                             ("name", _) => lcc_catalog::dates::date_from_filename(&name),
+                            ("set", _) if partial(time) => Some(time.trim().to_string()),
                             // alone, it simply gets the time typed (photo.setCaptureTime repairs it)
                             ("set", true) => lcc_catalog::dates::normalize_iso(time),
                             _ => delta.and_then(|d| lcc_catalog::dates::shift_iso(&cur, d)),
                         };
+                        let show = |d: &str| if partial(d) { crate::i18n::display_time(d.trim()) } else { d.replace('T', " ") };
                         ui.label(
                             egui::RichText::new(match after {
-                                Some(a) => format!("{name}: {} → {}", cur.replace('T', " "), a.replace('T', " ")),
+                                Some(a) => format!("{name}: {} → {}", show(&cur), show(&a)),
                                 None if mode == "file" => String::new(),
                                 None if mode == "name" => crate::i18n::tr("No date in the active photo's file name").to_string(),
+                                // it reads, but has no time of day to shift or to move the others by
+                                None if partial(&cur) && !(mode == "set" && n == 1) => {
+                                    crate::i18n::tr("The active photo's capture time is a year or month alone, with no time to shift").to_string()
+                                }
                                 None if unreadable && !(mode == "set" && n == 1) => crate::i18n::tr("The active photo's capture time can't be read").to_string(),
-                                None => "Enter a date as YYYY-MM-DD HH:MM:SS".into(),
+                                None => "Enter a date as YYYY-MM-DD HH:MM:SS, YYYY-MM or YYYY".into(),
                             })
                             .color(t.text_label),
                         );
                     }
-                    if n > 1 && !matches!(mode.as_str(), "file" | "name") {
+                    if n > 1 && mode == "set" && lcc_catalog::dates::partial_capture(time.trim()).is_some() {
+                        crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr_format!("All {n} selected photos get this date.", n = n)).color(t.text_dim));
+                    } else if n > 1 && !matches!(mode.as_str(), "file" | "name") {
                         crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr_format!("All {n} selected photos move by the same amount.", n = n)).color(t.text_dim));
                     }
                 }
@@ -1572,6 +1582,16 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 app.toast(ctx, e);
                 close = true;
             }
+            // photos dated to a year or a month alone have no time to shift: say so (and, in the same
+            // toast, about any whose time can't be read)
+            Ok(r) if matches!(dlg, Dialog::CaptureTime { .. }) && r["noTime"].as_u64().is_some_and(|n| n > 0) => {
+                let mut text = crate::i18n::tr("Photos dated to a year or month alone have no time to shift and were left as they were").to_string();
+                if r["unreadable"].as_u64().is_some_and(|n| n > 0) {
+                    text = format!("{text}. {}", crate::i18n::tr("Photos whose capture time can't be read were left as they were"));
+                }
+                app.toast(ctx, text);
+                close = true;
+            }
             // photos whose capture time doesn't read are left as they were: say so
             Ok(r) if matches!(dlg, Dialog::CaptureTime { .. }) && r["unreadable"].as_u64().is_some_and(|n| n > 0) => {
                 app.toast(ctx, crate::i18n::tr("Photos whose capture time can't be read were left as they were"));
@@ -1927,6 +1947,8 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::CaptureTime { mode, time, days, hours, minutes, zone } => app.run(
             "photo.setCaptureTime",
             match mode.as_str() {
+                // a year or a month alone has no time to move the others by: every photo gets it
+                "set" if lcc_catalog::dates::partial_capture(time.trim()).is_some() => json!({"time": time, "each": true}),
                 "set" => json!({"time": time}),
                 "shift" => json!({"shift": *days as i64 * 86_400 + *hours as i64 * 3600 + *minutes as i64 * 60}),
                 "file" => json!({"fromFile": true}),
@@ -3287,9 +3309,9 @@ const QUALITY: ControlSpec = spec("export.quality", "Quality", 1.0, 100.0, 90.0,
 const VIDEO_QUALITY: ControlSpec = spec("export.videoQuality", "Video quality", 1.0, 100.0, 80.0, 1.0);
 const VIDEO_MAX_SIDE: ControlSpec = spec("export.videoMaxSide", "Video long edge (px, 0 = full)", 0.0, 8192.0, 0.0, 16.0);
 const LIMIT_KB: ControlSpec = spec("export.limitKb", "Limit file size (KB, 0 = off)", 0.0, 20_000.0, 0.0, 10.0);
-const SIZE_PX: ControlSpec = spec("export.sizePx", "Pixels", 16.0, 20_000.0, 2048.0, 16.0);
-const SIZE_W: ControlSpec = spec("export.sizeW", "Width (px)", 16.0, 20_000.0, 2048.0, 16.0);
-const SIZE_H: ControlSpec = spec("export.sizeH", "Height (px)", 16.0, 20_000.0, 2048.0, 16.0);
+const SIZE_PX: ControlSpec = spec("export.sizePx", "Pixels", 16.0, 20_000.0, 2048.0, 1.0);
+const SIZE_W: ControlSpec = spec("export.sizeW", "Width (px)", 16.0, 20_000.0, 2048.0, 1.0);
+const SIZE_H: ControlSpec = spec("export.sizeH", "Height (px)", 16.0, 20_000.0, 2048.0, 1.0);
 const SIZE_MP: ControlSpec = ControlSpec { decimals: 1, ..spec("export.sizeMp", "Megapixels", 0.1, 100.0, 12.0, 0.1) };
 const SIZE_PCT: ControlSpec = spec("export.sizePercent", "Percent", 1.0, 400.0, 50.0, 1.0);
 const START_NUMBER: ControlSpec = spec("export.startNumber", "Start number", 1.0, 9999.0, 1.0, 1.0);

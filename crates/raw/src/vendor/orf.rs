@@ -211,7 +211,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     let (w, h) = (info.width as usize, info.height as usize);
     let n = w.checked_mul(h).filter(|n| *n > 0 && *n <= crate::MAX_SAMPLES).ok_or(RawError::Limit("image too large"))?;
     let chunks = info.chunks(bytes.len() as u64);
-    let total: u64 = chunks.iter().map(|c| c.len).sum();
+    let total = chunks.iter().fold(0u64, |a, c| a.saturating_add(c.len));
     let stated = cfa_from_exif(&tiff);
     let mut two_field = false;
     let (mut data, bits) = if info.compression != 1 {
@@ -504,6 +504,15 @@ mod tests {
     use super::*;
     use crate::vendor::EXIF_CFA_PATTERN;
     use lcc_tiff::{ByteOrder, IfdBuilder, ImageData, TiffWriter};
+
+    /// Strip byte counts that add up past `u64::MAX` (LONG8 `[u64::MAX, 1]`) are an error or a picture, not an overflow.
+    #[test]
+    fn strip_byte_counts_past_u64_max_do_not_overflow() {
+        let file = crate::vendor::tests::huge_strip_counts(orf(4, 2, 16, vec![0; 16]));
+        for mode in [Mode::Header, Mode::Full] {
+            let _ = super::decode(&file, mode);
+        }
+    }
 
     fn orf(w: u32, h: u32, bits: u16, strip: Vec<u8>) -> Vec<u8> {
         orf_with(w, h, bits, strip, None)

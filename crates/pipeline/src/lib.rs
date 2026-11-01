@@ -149,14 +149,26 @@ pub enum Downscale {
     /// Lanczos-3: keeps the detail a smaller output can hold, as a dedicated downscale does
     /// (exports, #2970). Its slight overshoot at hard edges stays below the output sharpening's.
     Sharp,
+    /// Interactive previews: [`Sharp`](Self::Sharp) for a full-quality render that shrinks its
+    /// source at least [`SHARP_PREVIEW_SHRINK`]×, so sharpening judged in the loupe looks as it will
+    /// export; [`Smooth`](Self::Smooth) otherwise (drafts keep their budget, and a near-1:1 view
+    /// gains nothing from the wider filter).
+    Preview,
 }
 
+/// How much a full-quality preview must shrink its source before it uses the export's filter
+/// ([`Downscale::Preview`]).
+pub const SHARP_PREVIEW_SHRINK: f64 = 2.0;
+
 impl Downscale {
-    pub fn filter(self) -> lcc_raster::resample::Filter {
-        match self {
-            Downscale::Smooth => lcc_raster::resample::Filter::Mitchell,
-            Downscale::Sharp => lcc_raster::resample::Filter::Lanczos3,
-        }
+    /// The filter of a render of `quality` that shrinks its source `shrink`× (output px per source px, inverted).
+    pub fn filter_for(self, quality: Quality, shrink: f64) -> lcc_raster::resample::Filter {
+        let sharp = match self {
+            Downscale::Smooth => false,
+            Downscale::Sharp => true,
+            Downscale::Preview => quality == Quality::Full && shrink >= SHARP_PREVIEW_SHRINK,
+        };
+        if sharp { lcc_raster::resample::Filter::Lanczos3 } else { lcc_raster::resample::Filter::Mitchell }
     }
 }
 
@@ -509,9 +521,10 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     }
     let s = &*settings;
     let mut frame = frame_for(src, info, s, req.apply_crop);
-    frame.downscale = req.downscale.filter();
-    let whole_frame = frame.clone();
     let (full_w, full_h) = frame.fit(req.max_w, req.max_h);
+    let shrink = frame.crop.rect_px(frame.ow, frame.oh).width() / full_w.max(1) as f64;
+    frame.downscale = req.downscale.filter_for(req.quality, shrink);
+    let whole_frame = frame.clone();
     // sizes and scale are those of the whole output; a window only narrows what is drawn
     let px_per_long = frame.px_per_long(full_w);
     let mut fixed_air = None;
@@ -647,8 +660,11 @@ pub fn hdr_histogram_cached(src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSet
 }
 
 fn hdr_histogram_with(s: &DevelopSettings, req: &RenderRequest, render: impl FnOnce(&RenderRequest) -> Rendered) -> Option<Histogram> {
-    // a drag's drafts keep their own histogram: a second render per tick would slow them down
-    if !s.hdr.enabled || req.depth != OutputDepth::U8 || req.window.is_some() || req.proof.is_some() || req.quality == Quality::Draft {
+    // a drag's loupe-sized drafts keep their own histogram (a second render per tick would slow
+    // them down); a small draft (the drag's own histogram request, `HDR_HISTOGRAM_DRAG_EDGE`) gets
+    // a draft-grade HDR pass of its size
+    let small = req.max_w.max(req.max_h) <= HDR_HISTOGRAM_DRAG_EDGE;
+    if !s.hdr.enabled || req.depth != OutputDepth::U8 || req.window.is_some() || req.proof.is_some() || (req.quality == Quality::Draft && !small) {
         return None;
     }
     let k = (HDR_HISTOGRAM_EDGE as f64 / req.max_w.max(req.max_h).max(1) as f64).min(1.0);

@@ -158,7 +158,7 @@ See [docs/video.md](docs/video.md).
 | | |
 |---|---|
 | **Catalog** | Catalog v4: a redb store plus an operation log, several catalogs (New / Open Catalog), scheduled backups, integrity test, optimize; opens and migrates older library folders. |
-| **Immich** | Connect one or more Immich (v3+) servers (API key in the system keychain); link existing photos, import from Immich, two-way metadata and album sync, People and smart search, Immich as a publish service ([docs/immich.md](docs/immich.md)). |
+| **Immich** | Connect one or more Immich (v3+) servers (API key in the system keychain); link existing photos, import from Immich, two-way metadata and album sync, XMP sidecars both ways, People and smart search, Immich as a publish service ([docs/immich.md](docs/immich.md)). |
 | **Lightroom migration** | Imports a Lightroom Classic `.lrcat`: collections, smart collections, folder stacks, History and snapshots (as Versions). |
 | **Network drives** | Catalogs and photos on mapped drives, `\\server\share` UNC paths and SMB/NFS mounts load and import on every OS. |
 | **Tethering** | Studio capture (watched folder) and native PTP tethering over USB or Wi-Fi (PTP/IP). |
@@ -305,7 +305,7 @@ at `warn`. `<PREFIX>_LOG=info` or `debug` works as before (that level for the ap
 errors from the rest; any other value: warnings and errors only) and wins over `RUST_LOG`, which otherwise replaces
 the default with env_logger-style directives such as `RUST_LOG=debug` or `RUST_LOG=warn,lcc_pipeline=trace` (a
 directive ending in `*` covers every target starting with it, as in `lcc*=debug`). Panics are recorded there
-too, and still in `<binary>-panics.log` in the temp folder. The logger is `apps/app/src/logging.rs`.
+too, and in `<binary>-panics.log` beside the log files. The logger is `apps/app/src/logging.rs`.
 
 The web build needs the `wasm32-unknown-unknown` target and the matching `wasm-bindgen` CLI
 (`cargo xtask web` prints the exact install command); see [docs/web.md](docs/web.md).

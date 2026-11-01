@@ -812,7 +812,8 @@ pub(crate) fn shown_histogram(app: &mut LccApp, ctx: &egui::Context, id: PhotoId
     // gives one (at its own pace: the drafts don't wait for it)
     if app.session.interaction.is_some() && hdr_edit && (super::detail::adjust_drafts(app) || super::detail::hdr_shown(app)) {
         let edge = lcc_pipeline::HDR_HISTOGRAM_DRAG_EDGE;
-        if let Some(job) = app.session.render_job(id, edge, edge, false, app.ui.right != RightPanel::Crop)
+        // (draft grade, like the drafts it stands beside: a full-quality pass would compete with them)
+        if let Some(job) = app.session.render_job(id, edge, edge, false, app.ui.right != RightPanel::Crop).map(|j| j.draft())
             && app.renderer.live_hdr_histogram.as_ref().is_none_or(|l| l.1 != job.key)
         {
             app.renderer.request(Slot::HdrHistogram, job, 95);

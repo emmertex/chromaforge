@@ -4,14 +4,18 @@
 use lcc_develop::DevelopSettings;
 use lcc_raster::{Rgb32f, Rgba8};
 
-use crate::{RenderRequest, SourceInfo, render};
+use crate::{Downscale, Quality, RenderRequest, SourceInfo, render};
 
 fn info() -> SourceInfo {
     SourceInfo { raw: true, ..Default::default() }
 }
 
 fn render_at(src: &Rgb32f, s: &DevelopSettings, w: usize) -> Rgba8 {
-    render(src, &info(), s, &RenderRequest::fit(w, w)).image
+    render_with(src, s, w, Downscale::Smooth)
+}
+
+fn render_with(src: &Rgb32f, s: &DevelopSettings, w: usize, downscale: Downscale) -> Rgba8 {
+    render(src, &info(), s, &RenderRequest { downscale, ..RenderRequest::fit(w, w) }).image
 }
 
 /// RMS difference of the green channel.
@@ -124,13 +128,30 @@ fn sharpening_is_the_same_at_every_size() {
     let norm = |v: &[f64]| (v.iter().map(|x| x * x).sum::<f64>() / v.len() as f64).sqrt();
     let (s, off) = (sharp(60.0, 2.0, 25.0, 0.0), sharp(0.0, 2.0, 25.0, 0.0));
     let full = added(&shrink(&render_at(&src, &s, 512)), &shrink(&render_at(&src, &off, 512)));
-    let half_on = render_at(&src, &s, 256);
-    let half_off = render_at(&src, &off, 256);
-    let half: Vec<f64> = half_on.data.iter().zip(&half_off.data).map(|(p, q)| p[1] as f64 - q[1] as f64).collect();
-    let miss = norm(&added(&full, &half));
-    eprintln!("size invariance: effect {} (half) {} (full, shrunk), disagreement {miss}", norm(&half), norm(&full));
-    assert!(norm(&half) > 0.5, "the sharpening shows at half size");
-    assert!(miss < 0.6 * norm(&half), "preview and export disagree: {miss} vs an effect of {}", norm(&half));
+    // previews shrink with Mitchell or (full quality) Lanczos-3 as exports do: both agree
+    for down in [Downscale::Smooth, Downscale::Sharp] {
+        let half_on = render_with(&src, &s, 256, down);
+        let half_off = render_with(&src, &off, 256, down);
+        let half: Vec<f64> = half_on.data.iter().zip(&half_off.data).map(|(p, q)| p[1] as f64 - q[1] as f64).collect();
+        let miss = norm(&added(&full, &half));
+        eprintln!("size invariance {down:?}: effect {} (half) {} (full, shrunk), disagreement {miss}", norm(&half), norm(&full));
+        assert!(norm(&half) > 0.5, "{down:?}: the sharpening shows at half size");
+        assert!(miss < 0.6 * norm(&half), "{down:?}: preview and export disagree: {miss} vs an effect of {}", norm(&half));
+    }
+}
+
+#[test]
+fn a_full_preview_shrinks_like_an_export_once_it_shrinks_a_lot() {
+    // a full-quality preview at a quarter of the photo renders as the export's filter does; a draft
+    // and a near-1:1 preview keep the soft one
+    let src = scene(512);
+    let s = sharp(60.0, 1.0, 25.0, 0.0);
+    let at = |w: usize, quality: Quality, down: Downscale| {
+        render(&src, &info(), &s, &RenderRequest { downscale: down, quality, ..RenderRequest::fit(w, w) }).image.data
+    };
+    assert_eq!(at(128, Quality::Full, Downscale::Preview), at(128, Quality::Full, Downscale::Sharp));
+    assert_eq!(at(128, Quality::Draft, Downscale::Preview), at(128, Quality::Draft, Downscale::Smooth));
+    assert_eq!(at(384, Quality::Full, Downscale::Preview), at(384, Quality::Full, Downscale::Smooth));
 }
 
 #[test]

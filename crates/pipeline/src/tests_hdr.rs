@@ -144,3 +144,17 @@ fn a_cached_hdr_histogram_is_the_uncached_one_through_a_drag() {
         );
     }
 }
+
+// Given an HDR edit dragged with its histogram asked for at draft grade at the drag histogram's
+// size, it gets an HDR histogram; a loupe-sized draft (the drag's own update) still does not
+#[test]
+fn a_small_draft_hdr_histogram_request_returns_one() {
+    let src = lcc_scenes::demo_library()[1].render(480, 320);
+    let s = hdr_on(3.0);
+    let edge = crate::HDR_HISTOGRAM_DRAG_EDGE;
+    let small = RenderRequest { quality: crate::Quality::Draft, ..RenderRequest::fit(edge, edge) };
+    let h = crate::hdr_histogram(&src, &raw(), &s, &small).expect("a draft drag histogram");
+    assert!(h.hdr.is_some());
+    let loupe = RenderRequest { quality: crate::Quality::Draft, ..RenderRequest::fit(1600, 1600) };
+    assert!(crate::hdr_histogram(&src, &raw(), &s, &loupe).is_none(), "loupe drafts keep their own histogram");
+}

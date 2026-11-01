@@ -82,6 +82,11 @@ fn invalid_entries_are_skipped_and_valid_ones_load() {
 }
 
 #[test]
+fn rejects_mismatched_xml_closing_tags() {
+    assert!(LensDb::parse("<lensdatabase><lens><maker>X</lensdatabase><model>L</model></lens>").is_err());
+}
+
+#[test]
 fn malformed_documents_are_errors_not_panics() {
     assert!(LensDb::parse("").is_err());
     assert!(LensDb::parse("<lensdatabase><lens><maker>").is_ok_and(|d| d.lenses.is_empty()));
@@ -109,6 +114,49 @@ fn finds_lenses_by_exif_model_with_or_without_the_maker() {
     assert!(db.find_lens(None, "24-105mm F4", cam).is_none(), "focal lengths must agree");
     assert!(db.find_lens(Some("Otherco"), "24-70mm f/2.8 Zoom", cam).is_none(), "lens maker must agree");
     assert!(db.find_lens(None, "", cam).is_none());
+}
+
+#[test]
+fn lens_names_with_maker_designation_codes_match_exif_names_without_them() {
+    // Issue #671: lensfun names Tamron's 16-300mm "… Macro B016"; Sony A77 II EXIF reports the name
+    // without the maker's code. Its digits ("016" of "B016") must not fail the number match, and the
+    // long qualifier tail must not push the score below the match threshold.
+    let xml = r#"<lensdatabase>
+  <camera><maker>Sony</maker><model>ILCA-77M2</model><mount>Sony Alpha</mount><cropfactor>1.534</cropfactor></camera>
+  <lens><maker>Tamron</maker><model>Tamron 16-300mm f/3.5-6.3 Di II VC PZD Macro B016</model>
+    <mount>Sony Alpha</mount><cropfactor>1.534</cropfactor>
+    <calibration><distortion model="ptlens" focal="16" a="0.02" b="-0.07" c="0.03"/><distortion model="ptlens" focal="300" a="0" b="0.006" c="0"/></calibration></lens>
+</lensdatabase>"#;
+    let db = LensDb::parse(xml).unwrap();
+    let cam = db.find_camera("SONY", "ILCA-77M2");
+    let found = |mk: Option<&str>, lm: &str| db.find_lens(mk, lm, cam).map(|l| l.maker.clone());
+    assert_eq!(found(None, "16-300mm F3.5-6.3").as_deref(), Some("Tamron"), "short Sony A-mount name");
+    assert_eq!(found(None, "16-300mm F3.5-6.3 Di II VC PZD").as_deref(), Some("Tamron"), "without the code");
+    assert_eq!(found(Some("TAMRON"), "16-300mm F3.5-6.3 Di II VC PZD").as_deref(), Some("Tamron"));
+    assert_eq!(found(None, "Tamron 16-300mm f/3.5-6.3 Di II VC PZD Macro B016").as_deref(), Some("Tamron"), "the full name");
+    assert!(found(None, "16-300mm F4-5.6").is_none(), "apertures must agree");
+    assert!(found(None, "17-300mm F3.5-6.3").is_none(), "focal lengths must agree");
+}
+
+#[test]
+fn a_compacts_built_in_lens_wins_over_a_same_numbers_name_match_off_its_mount() {
+    // Issue #671: the Sony RX100 VII's lensfun profile is named "fixed lens"; EXIF reports only
+    // "9.0-72.0 mm f/2.8-4.5". A same-maker lens on another mount that shares the EXIF numbers ("72mm
+    // f/2.8") must not win the name match over the camera's own built-in lens.
+    let xml = r#"<lensdatabase>
+  <camera><maker>Sony</maker><model>DSC-RX100M7</model><mount>sonyRX100VI</mount><cropfactor>2.66</cropfactor></camera>
+  <lens><maker>Sony</maker><model>DSC-RX100 VI &amp; compatibles</model><model lang="en">fixed lens</model>
+    <mount>sonyRX100VI</mount><cropfactor>2.66</cropfactor>
+    <calibration><distortion model="ptlens" focal="9.0" a="0.037" b="-0.131" c="-0.005"/><distortion model="ptlens" focal="72.0" a="0" b="0.005" c="0"/></calibration></lens>
+  <lens><maker>Sony</maker><model>Sony 72mm f/2.8</model><mount>Sony E</mount>
+    <calibration><distortion model="poly3" focal="72" k1="0.01"/></calibration></lens>
+</lensdatabase>"#;
+    let db = LensDb::parse(xml).unwrap();
+    let cam = db.find_camera("SONY", "DSC-RX100M7");
+    let l = db.find_lens(Some("SONY"), "9.0-72.0 mm f/2.8-4.5", cam).unwrap();
+    assert_eq!(l.mounts, ["sonyRX100VI"]);
+    // without the camera the name match finds nothing (no profile is named like the spec)
+    assert!(db.find_lens(Some("SONY"), "9.0-72.0 mm f/2.8-4.5", None).is_none());
 }
 
 #[test]

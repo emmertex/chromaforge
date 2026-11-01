@@ -51,12 +51,26 @@ fn lab(p: [f32; 3]) -> [f32; 3] {
     let x = (0.4124 * p[0] + 0.3576 * p[1] + 0.1805 * p[2]) / 0.95047;
     let y = 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
     let z = (0.0193 * p[0] + 0.1192 * p[1] + 0.9505 * p[2]) / 1.08883;
-    #[inline]
-    fn f(t: f32) -> f32 {
-        if t > 0.008856 { t.cbrt() } else { 7.787 * t + 16.0 / 116.0 }
-    }
-    let (fx, fy, fz) = (f(x), f(y), f(z));
+    // all three without a branch, so they run side by side (a value past 1e30 has no meaning here)
+    let [fx, fy, fz] = [x, y, z].map(|t| {
+        let root = cube_root(t.clamp(0.008856, 1.0e30));
+        if t > 0.008856 { root } else { 7.787 * t + 16.0 / 116.0 }
+    });
     [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+}
+
+/// The cube root of a positive, finite `t`, within three units in the last place: a third of its exponent read
+/// straight from its bits (`bits(1.0)` keeps 1 at 1), then two of Halley's steps, each of which cubes the relative
+/// error. The library `cbrt` was the most expensive call of the whole demosaic.
+#[inline]
+fn cube_root(t: f32) -> f32 {
+    const ONE_THIRD_BIAS: u32 = 0x3f80_0000 / 3 * 2;
+    let mut y = f32::from_bits(t.to_bits() / 3 + ONE_THIRD_BIAS);
+    for _ in 0..2 {
+        let y3 = y * y * y;
+        y *= (y3 + 2.0 * t) / (2.0 * y3 + t);
+    }
+    y
 }
 
 fn tile(m: &Mosaic, x0: usize, y0: usize, tw: usize, th: usize) -> Vec<[f32; 3]> {
@@ -161,4 +175,26 @@ fn tile(m: &Mosaic, x0: usize, y0: usize, tw: usize, th: usize) -> Vec<[f32; 3]>
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cube_root;
+
+    /// Within three units in the last place of the true cube root, over the whole range the Lab conversion uses
+    /// it for (every 997th float from its threshold up to 1e30).
+    #[test]
+    fn cube_root_is_float_precise() {
+        let (lo, hi) = (0.008856f32.to_bits(), 1.0e30f32.to_bits());
+        for bits in (lo..hi).step_by(997) {
+            let t = f32::from_bits(bits);
+            let want = f64::from(t).cbrt();
+            let got = f64::from(cube_root(t));
+            let near = want as f32;
+            let ulp = f64::from(f32::from_bits(near.to_bits() + 1)) - f64::from(near);
+            assert!((got - want).abs() <= 3.0 * ulp, "{t}: {got} vs {want}");
+        }
+        assert_eq!(cube_root(1.0), 1.0);
+        assert_eq!(cube_root(8.0), 2.0);
+    }
 }

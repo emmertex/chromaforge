@@ -728,12 +728,12 @@ fn nan_min(a: f32, b: f32) -> f32 {
 
 // `finish::HUE_FADE_FROM` and `HUE_FADE_EV` (keep in step)
 const HUE_FADE_FROM: f32 = 0.35;
-const HUE_FADE_EV: f32 = 2.0;
+const HUE_FADE_EV: f32 = 0.5;
 
 // `finish::hue_fade`
 fn hue_fade(y: f32, hi: f32, peak: f32) -> f32 {
     let over = select(0.0, log2(hi / peak), hi > peak && peak > 0.0);
-    return max(sstep(HUE_FADE_FROM * peak, peak, y), sstep(0.0, HUE_FADE_EV, over));
+    return max(sstep(0.0, HUE_FADE_EV, over), sstep(HUE_FADE_FROM * peak, peak, y));
 }
 
 // `finish::keep_hue_in_gamut`, or `mapped` itself before process V5

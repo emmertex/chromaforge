@@ -62,7 +62,7 @@ impl SettingsHashes {
 }
 
 /// Bump when the pipeline's output changes, to invalidate cached thumbnails.
-pub const RENDER_CACHE_VERSION: u64 = 75;
+pub const RENDER_CACHE_VERSION: u64 = 76;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];
@@ -1571,7 +1571,10 @@ impl crate::Session {
             source_edge_needed(&p, &settings, apply_crop, max_w.max(max_h))
         });
         let source = self.media.source_ref(&p, level);
-        let request = RenderRequest { apply_crop, ..RenderRequest::fit(max_w, max_h) };
+        // previews shrink as exports do once they shrink a lot (full quality only): sharpening tuned in the
+        // loupe then matches the export's Lanczos-3 downscale; grid thumbnails stay soft
+        let downscale = if thumb_bucket.is_none() { lcc_pipeline::Downscale::Preview } else { lcc_pipeline::Downscale::Smooth };
+        let request = RenderRequest { apply_crop, downscale, ..RenderRequest::fit(max_w, max_h) };
         // the photo id is part of the key: two photos with the same settings and size must not
         // share a result (a view slot showing photo A would otherwise look current for photo B)
         // …and so is the file's content: a file changed on disk (Reload) renders afresh

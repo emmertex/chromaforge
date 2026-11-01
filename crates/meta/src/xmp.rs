@@ -592,11 +592,14 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         exposure_program: num("exif:ExposureProgram").map(|v| v as u16),
         metering_mode: num("exif:MeteringMode").map(|v| v as u16),
         white_balance: num("exif:WhiteBalance").map(|v| v as u16),
-        orientation: num("tiff:Orientation").map(|v| v as u16).filter(|v| (1..=8).contains(v)).map(Orientation::from_exif),
+        orientation: num("tiff:Orientation").filter(|v| (1.0..=8.0).contains(v) && v.fract() == 0.0).map(|v| Orientation::from_exif(v as u16)),
         width: num("tiff:ImageWidth").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelXDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
         height: num("tiff:ImageLength").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelYDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
         title: first("dc:title"),
+        headline: first("photoshop:Headline"),
         caption: first("dc:description"),
+        description_writer: first("photoshop:CaptionWriter"),
+        category: first("photoshop:Category"),
         alt_text: first("Iptc4xmpCore:AltTextAccessibility"),
         extended_description: first("Iptc4xmpCore:ExtDescrAccessibility"),
         sublocation: first("Iptc4xmpCore:Location"),
@@ -638,6 +641,9 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         website: ci("CiUrlWork"),
     };
     m.keywords = props.get("dc:subject").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
+    m.supplemental_categories =
+        props.get("photoshop:SupplementalCategories").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
+    m.subject_code = props.get("Iptc4xmpCore:SubjectCode").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
     m.hierarchical_keywords = props.get("lr:hierarchicalSubject").cloned().unwrap_or_default().into_iter().filter(|k| !k.is_empty()).collect();
     m.capture_time =
         ["exif:DateTimeOriginal", "photoshop:DateCreated", "xmp:CreateDate"].iter().find_map(|k| first(k).and_then(|s| DateTime::parse_iso(&s)));
@@ -817,7 +823,9 @@ pub fn write_xmp_filters(
     push("xmp:CreatorTool", meta.software.clone());
     push("xmp:Rating", meta.rating.map(|v| v.to_string()));
     push("xmp:Label", meta.label.clone());
-    push("exif:DateTimeOriginal", meta.capture_time.map(|d| d.to_iso()));
+    // a year or a month alone goes in `photoshop:DateCreated` only, as Lightroom writes it: Exif's
+    // date can't say it
+    push("exif:DateTimeOriginal", meta.capture_time.filter(DateTime::is_full).map(|d| d.to_iso()));
     push("photoshop:DateCreated", meta.capture_time.map(|d| d.to_iso()));
     push("exif:ExposureTime", meta.exposure_time.map(frac));
     push("exif:FNumber", meta.f_number.map(frac));
@@ -832,6 +840,9 @@ pub fn write_xmp_filters(
     push("exifEX:LensModel", meta.lens_model.clone());
     push("exifEX:LensSerialNumber", meta.lens_serial_number.clone());
     push("Iptc4xmpCore:Location", meta.sublocation.clone());
+    push("photoshop:Headline", meta.headline.clone());
+    push("photoshop:CaptionWriter", meta.description_writer.clone());
+    push("photoshop:Category", meta.category.clone());
     push("photoshop:City", meta.city.clone());
     push("photoshop:State", meta.state.clone());
     push("photoshop:Country", meta.country.clone());
@@ -904,6 +915,8 @@ pub fn write_xmp_filters(
     array(&mut x, "xmpRights:UsageTerms", "Alt", &one(&meta.usage_terms), true);
     array(&mut x, "dc:creator", "Seq", &one(&meta.artist), false);
     array(&mut x, "dc:subject", "Bag", &meta.keywords, false);
+    array(&mut x, "photoshop:SupplementalCategories", "Bag", &meta.supplemental_categories, false);
+    array(&mut x, "Iptc4xmpCore:SubjectCode", "Bag", &meta.subject_code, false);
     array(&mut x, "lr:hierarchicalSubject", "Bag", &meta.hierarchical_keywords, false);
     array(&mut x, "exif:ISOSpeedRatings", "Seq", &meta.iso.map(|v| vec![v.to_string()]).unwrap_or_default(), false);
     if let Some(s) = meta.lens_spec {
@@ -1049,7 +1062,12 @@ mod tests {
             usage_terms: Some("Editorial use only; no <resale>".into()),
             copyright_url: Some("https://example.com/licence?a=1&b=2".into()),
             title: Some("Tïtle".into()),
+            headline: Some("A headline".into()),
             caption: Some("Line one\nline two".into()),
+            description_writer: Some("Jane Doe".into()),
+            category: Some("CAT".into()),
+            supplemental_categories: vec!["Sports".into(), "Nature".into()],
+            subject_code: vec!["01001000".into(), "02002000".into()],
             alt_text: Some("A tree by the sea".into()),
             extended_description: Some("Long <description>".into()),
             sublocation: Some("Champ de Mars".into()),
@@ -1161,6 +1179,37 @@ mod tests {
         assert_eq!(d.properties["dc:title"], vec!["Title & more é".to_string(), "Titel".to_string()]);
     }
 
+    /// The IPTC Content fields as Lightroom Classic and DxO PhotoLab write them (issue #687):
+    /// headline, caption writer, legacy category and supplemental categories, and the IPTC
+    /// Extension subject codes.
+    #[test]
+    fn iptc_content_fields_parse_and_roundtrip() {
+        let x = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about="" xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+               xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">
+              <photoshop:Headline>Sunrise over the harbour</photoshop:Headline>
+              <photoshop:CaptionWriter>Jane Doe</photoshop:CaptionWriter>
+              <photoshop:Category>CAT</photoshop:Category>
+              <photoshop:SupplementalCategories><rdf:Bag><rdf:li>Sports</rdf:li><rdf:li>Nature</rdf:li></rdf:Bag></photoshop:SupplementalCategories>
+              <Iptc4xmpCore:SubjectCode><rdf:Bag><rdf:li>01001000</rdf:li><rdf:li>02002000</rdf:li></rdf:Bag></Iptc4xmpCore:SubjectCode>
+            </rdf:Description></rdf:RDF></x:xmpmeta>"#;
+        let m = parse_xmp(x).unwrap().metadata;
+        assert_eq!(m.headline.as_deref(), Some("Sunrise over the harbour"));
+        assert_eq!(m.description_writer.as_deref(), Some("Jane Doe"));
+        assert_eq!(m.category.as_deref(), Some("CAT"));
+        assert_eq!(m.supplemental_categories, vec!["Sports".to_string(), "Nature".to_string()]);
+        assert_eq!(m.subject_code, vec!["01001000".to_string(), "02002000".to_string()]);
+        // a packet without them keeps them empty
+        assert_eq!(parse_xmp(&write_xmp(&Metadata::default(), None)).unwrap().metadata.supplemental_categories, Vec::<String>::new());
+        // written back into another packet and read again
+        let back = parse_xmp(&write_xmp(&m, None)).unwrap().metadata;
+        assert_eq!(back.headline, m.headline);
+        assert_eq!(back.description_writer, m.description_writer);
+        assert_eq!(back.category, m.category);
+        assert_eq!(back.supplemental_categories, m.supplemental_categories);
+        assert_eq!(back.subject_code, m.subject_code);
+    }
+
     /// The creator's contact details travel as IPTC Core `CreatorContactInfo` (a struct) and the
     /// job title as `photoshop:AuthorsPosition`, and read back, also from a nested-Description form.
     #[test]
@@ -1251,6 +1300,42 @@ mod tests {
         let parsed = parse_xmp(packet).unwrap();
         assert_eq!(parsed.metadata.capture_time, None);
         assert_eq!(parsed.properties["exif:DateTimeOriginal"], vec!["2026-01-01T".to_string()]);
+    }
+
+    fn orientation_packet(value: &str) -> String {
+        format!(
+            r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="{value}"/></rdf:RDF>"#
+        )
+    }
+
+    #[test]
+    fn xmp_orientation_rejects_fractional_values_and_keeps_raw_properties() {
+        for value in ["6.9", "1.5", "8.9", "13/2"] {
+            let parsed = parse_xmp(&orientation_packet(value)).unwrap();
+            assert_eq!(parsed.metadata.orientation, None, "{value}");
+            assert_eq!(parsed.properties["tiff:Orientation"], vec![value.to_string()], "{value}");
+            assert!(!write_xmp(&parsed.metadata, None).contains("tiff:Orientation"), "rejected {value} must not become a written orientation");
+        }
+    }
+
+    #[test]
+    fn xmp_orientation_integral_forms_keep_their_meaning() {
+        for code in 1..=8 {
+            let parsed = parse_xmp(&orientation_packet(&code.to_string())).unwrap();
+            assert_eq!(parsed.metadata.orientation.map(|orientation| orientation.to_exif()), Some(code));
+        }
+        for value in ["6.0", "6/1", " 6.0 "] {
+            let parsed = parse_xmp(&orientation_packet(value)).unwrap();
+            assert_eq!(parsed.metadata.orientation.map(|orientation| orientation.to_exif()), Some(6), "{value}");
+        }
+    }
+
+    #[test]
+    fn xmp_orientation_rejects_out_of_range_values() {
+        for value in ["0", "9", "-1", "nan", "inf"] {
+            let parsed = parse_xmp(&orientation_packet(value)).unwrap();
+            assert_eq!(parsed.metadata.orientation, None, "{value}");
+        }
     }
 
     #[test]

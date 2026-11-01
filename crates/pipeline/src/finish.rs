@@ -949,17 +949,20 @@ pub fn gamut_map_to(r: [f32; 3], luma: [f32; 3], peak: f32) -> ([f32; 3], f32) {
 /// ([`hue_clip`]) to moving toward its luminance as before V5, reached at the peak: a colour that is
 /// nearly white overall (a blown sky) still goes white, as a camera's per-channel curve takes it.
 pub const HUE_FADE_FROM: f32 = 0.35;
-/// Stops by which the brightest channel exceeds the peak over which an over-range colour also fades
-/// toward its luminance: a colour just over white keeps its hue, one far over goes white gradually
-/// (no hard edge along an exposure ramp of a saturated colour).
-pub const HUE_FADE_EV: f32 = 2.0;
+/// Stops by which the brightest channel exceeds the peak over which an over-range colour fades
+/// toward its luminance whatever its hue: a colour just over white keeps its hue, one half a stop
+/// over has gone white, gradually (no hard edge along an exposure ramp of a saturated colour). This
+/// brightest-channel key does most of the fading: the luminance one alone left dark-luminance hues
+/// (blue, violet, magenta) purple up to two stops over while warm hues of the same brightest channel
+/// had gone white.
+pub const HUE_FADE_EV: f32 = 0.5;
 
-/// How far an over-range colour of luminance `y` whose brightest channel is `hi` has faded from
+/// How far an over-range colour whose brightest channel is `hi` (and luminance `y`) has faded from
 /// [`hue_clip`] to the pre-V5 mapping (0 = hue kept, 1 = moved toward its luminance).
 #[inline]
 fn hue_fade(y: f32, hi: f32, peak: f32) -> f32 {
     let over = if hi > peak && peak > 0.0 { (hi / peak).log2() } else { 0.0 };
-    smooth(HUE_FADE_FROM * peak, peak, y).max(smooth(0.0, HUE_FADE_EV, over))
+    smooth(0.0, HUE_FADE_EV, over).max(smooth(HUE_FADE_FROM * peak, peak, y))
 }
 
 /// Process V5's over-range colour after the tone map: `hue_clip(d)` for a colour of luminance `o`
@@ -1111,8 +1114,32 @@ mod tests {
         let (red, o) = ([1.05, 0.05, 0.05], 0.3);
         let (got, kept) = (keep_hue(red, grey_of(red, o), o, 1.0), hue_clip(red, 1.0));
         assert!((0..3).all(|c| (got[c] - kept[c]).abs() < 1e-3), "{got:?} vs {kept:?}");
+        let (blue, o) = ([0.05, 0.1, 1.02], 0.12);
+        let (got, kept) = (keep_hue(blue, grey_of(blue, o), o, 1.0), hue_clip(blue, 1.0));
+        assert!((0..3).all(|c| (got[c] - kept[c]).abs() < 1e-2), "{got:?} vs {kept:?}");
         let (sky, o) = ([0.85, 1.0, 1.4], 1.0);
         assert_eq!(keep_hue(sky, grey_of(sky, o), o, 1.0), grey_of(sky, o));
+    }
+
+    /// Over-range colours of every hue fade from keeping their hue to the V4 mapping alike: a saturated blue (low
+    /// luminance) and a saturated orange (high luminance) whose brightest channel is equally far over white have
+    /// gone the same way from one to the other, and both have (nearly) arrived a third of a stop over.
+    #[test]
+    fn saturated_blue_and_orange_of_equal_brightest_channel_fade_alike() {
+        let dist = |a: [f32; 3], b: [f32; 3]| (0..3).map(|c| (a[c] - b[c]).powi(2)).sum::<f32>().sqrt();
+        for mx in [1.3f32, 1.6, 2.0, 2.5] {
+            let fade = |c: [f32; 3]| {
+                let d = c.map(|v| v * mx);
+                let o = luminance_2020(d).min(1.0);
+                let t = ((mx - 1.0) / (mx - o).max(1e-6)).clamp(0.0, 1.0);
+                let grey = d.map(|v| v + (o - v) * t);
+                let kept = hue_clip(d, 1.0);
+                dist(keep_hue(d, grey, o, 1.0), kept) / dist(grey, kept).max(1e-6)
+            };
+            let (blue, orange) = (fade([0.05, 0.1, 1.0]), fade([1.0, 0.45, 0.05]));
+            assert!((blue - orange).abs() < 0.05, "{mx}: blue faded {blue}, orange {orange}");
+            assert!(blue > 0.8, "{mx}: a blue {mx}x over white has (nearly) faded ({blue})");
+        }
     }
 
     /// An exposure ramp of a saturated colour reaches white without a step.

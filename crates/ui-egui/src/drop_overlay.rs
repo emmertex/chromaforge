@@ -26,7 +26,13 @@ pub fn classify(paths: Vec<String>) -> Sorted {
 
 /// The lines the card shows for files hovering over the window (`unknown`: how many have no path
 /// to look at, as on some platforms and in browsers), for the current settings.
-fn lines(app: &LccApp, paths: Vec<String>, unknown: bool) -> Vec<String> {
+fn lines(app: &LccApp, ctx: &Context, paths: Vec<String>, unknown: bool) -> Vec<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::panels::plugins::would_take_drop(ctx, &paths) {
+        return vec![crate::i18n::tr("Drop to install the plug-in").to_string()];
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = ctx;
     if app.ui.dialog.is_some() {
         return vec![crate::i18n::tr("Close the open dialog to drop files here").to_string()];
     }
@@ -77,7 +83,7 @@ pub fn show(app: &LccApp, ctx: &Context) {
     let known: Vec<String> = ctx.input(|i| {
         i.raw.hovered_files.iter().filter_map(|f| f.path.as_ref()).map(|p| p.to_string_lossy().to_string()).filter(|p| !p.is_empty()).collect()
     });
-    let lines = lines(app, known.clone(), known.len() < count);
+    let lines = lines(app, ctx, known.clone(), known.len() < count);
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
     let painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, egui::Id::new("drop-overlay")));

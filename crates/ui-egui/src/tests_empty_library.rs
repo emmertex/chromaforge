@@ -117,7 +117,9 @@ fn the_top_bar_imports_in_every_library() {
     let asked = counting_picker(&mut h);
     assert_eq!(h.request("ui.clickWidget", json!({"id": "icon:import"}), T)["ok"], true);
     h.step();
-    assert_eq!(asked.get(), 1);
+    // the button opens the Import dialog, where files, folders and subfolders are picked
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::Import { .. })), "the Import dialog opens");
+    assert_eq!(asked.get(), 0, "the file picker waits for the dialog's own buttons");
 }
 
 #[test]

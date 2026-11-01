@@ -29,7 +29,7 @@ mod xmp;
 mod xmp_merge;
 
 pub use container::{Embedded, embedded, jpeg_segments, png_chunks, webp_chunks};
-pub use datetime::DateTime;
+pub use datetime::{DatePrecision, DateTime};
 pub use exif::{from_tiff, read_exif, strip_exif_header, try_read_exif, try_read_exif_with, write_exif};
 pub use focus::FocusPoint;
 pub use fuji::{FujiRecipe, FujiRow, read_recipe_file, recipe_from_bytes, recipe_from_exif};
@@ -206,7 +206,13 @@ pub struct Metadata {
     /// Copyright info URL (`xmpRights:WebStatement`).
     pub copyright_url: Option<String>,
     pub title: Option<String>,
+    /// The headline (IPTC Core `photoshop:Headline`, IPTC-IIM 2:105): a brief publishable synopsis.
+    pub headline: Option<String>,
     pub caption: Option<String>,
+    /// Who wrote the caption (`photoshop:CaptionWriter`, IPTC-IIM 2:122).
+    pub description_writer: Option<String>,
+    /// The legacy category code (`photoshop:Category`, IPTC-IIM 2:15; at most three characters).
+    pub category: Option<String>,
     /// Accessibility text (`Iptc4xmpCore:AltTextAccessibility`).
     pub alt_text: Option<String>,
     /// Long accessibility description (`Iptc4xmpCore:ExtDescrAccessibility`).
@@ -221,6 +227,13 @@ pub struct Metadata {
     #[serde(default, skip_serializing_if = "CreatorContact::is_empty")]
     pub contact: CreatorContact,
     pub keywords: Vec<String>,
+    /// The other (supplemental) categories (`photoshop:SupplementalCategories`, IPTC-IIM 2:20).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supplemental_categories: Vec<String>,
+    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`): each a numeric code from the IPTC Subject
+    /// Reference System (e.g. `01001000`), with no legacy IPTC-IIM equivalent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_code: Vec<String>,
     /// Hierarchical keywords, `|`-separated paths (`lr:hierarchicalSubject` convention).
     pub hierarchical_keywords: Vec<String>,
     /// -1 = rejected, 0 = unrated, 1..=5 stars.
@@ -279,7 +292,10 @@ impl Metadata {
             usage_terms,
             copyright_url,
             title,
+            headline,
             caption,
+            description_writer,
+            category,
             alt_text,
             extended_description,
             sublocation,
@@ -291,6 +307,12 @@ impl Metadata {
         );
         if self.keywords.is_empty() {
             self.keywords = other.keywords.clone();
+        }
+        if self.supplemental_categories.is_empty() {
+            self.supplemental_categories = other.supplemental_categories.clone();
+        }
+        if self.subject_code.is_empty() {
+            self.subject_code = other.subject_code.clone();
         }
         if self.contact.is_empty() {
             self.contact.clone_from(&other.contact);
@@ -312,9 +334,31 @@ impl Metadata {
     /// Replace the user-editable fields (rating, label, title, caption, artist, copyright, keywords, GPS) with
     /// `other`'s where `other` has them — the XMP-over-EXIF precedence rule.
     pub fn overlay_user_fields(&mut self, other: &Metadata) {
-        overlay!(self, other, rating, label, title, caption, artist, copyright, copyright_marked, usage_terms, copyright_url, gps);
+        overlay!(
+            self,
+            other,
+            rating,
+            label,
+            title,
+            headline,
+            caption,
+            description_writer,
+            category,
+            artist,
+            copyright,
+            copyright_marked,
+            usage_terms,
+            copyright_url,
+            gps
+        );
         if !other.keywords.is_empty() {
             self.keywords = other.keywords.clone();
+        }
+        if !other.supplemental_categories.is_empty() {
+            self.supplemental_categories = other.supplemental_categories.clone();
+        }
+        if !other.subject_code.is_empty() {
+            self.subject_code = other.subject_code.clone();
         }
         if !other.contact.is_empty() {
             self.contact.clone_from(&other.contact);

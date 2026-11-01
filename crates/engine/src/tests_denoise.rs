@@ -952,8 +952,10 @@ fn a_cancelled_batch_does_not_come_back_while_its_job_winds_down() {
     let mut x = setup("cancelrunning", true);
     // a model that does not load until let go: the job is running all that while
     let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-    let (g, runs) = (gate.clone(), x.runs.clone());
+    let loading = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (g, runs, l) = (gate.clone(), x.runs.clone(), loading.clone());
     x.s.denoise.loader = Arc::new(move |_, _| {
+        l.store(true, Ordering::SeqCst);
         let (open, wake) = &*g;
         let mut open = open.lock().unwrap();
         while !*open {
@@ -961,11 +963,19 @@ fn a_cancelled_batch_does_not_come_back_while_its_job_winds_down() {
         }
         Ok(Arc::new(Dim { runs: runs.clone() }) as Arc<dyn Model>)
     });
+    // the installation keeps the model it tested: without forgetting it the job never asks this loader
+    *x.s.denoise.active.as_ref().unwrap().model.lock().unwrap() = None;
     x.s.execute("denoise.settings", &json!({"auto": true})).unwrap();
     set_amount(&mut x.s, 100.0);
     x.s.execute("denoise.pump", &json!({"pace": "full"})).unwrap();
     let batches = |s: &Session| s.activity.list().into_iter().filter(|t| t.kind == "denoise" && t.batch).count();
     let batch = x.s.activity.list().into_iter().find(|t| t.kind == "denoise" && t.batch).expect("a batch row");
+    // cancel once the job waits for its model (a job told to stop before that, while it reads the file, ends at once)
+    let began = std::time::Instant::now();
+    while !loading.load(Ordering::SeqCst) {
+        assert!(began.elapsed() < std::time::Duration::from_secs(30), "the job never asked for its model");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     x.s.activity.cancel(batch.id).unwrap();
     for _ in 0..3 {
         x.s.execute("denoise.pump", &json!({"pace": "full"})).unwrap();
