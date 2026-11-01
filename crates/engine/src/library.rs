@@ -113,6 +113,9 @@ pub struct Library {
     /// cached in `thumbs/`.
     pub on_disk: bool,
     journal: Journal,
+    /// The activity-stack row of the background compaction in flight (issue #448): held exactly
+    /// while [`Journal::snapshot_running`], by [`Session::sync_compaction_row`].
+    compaction_row: Option<crate::activity::TaskGuard>,
     /// presets.json, view.json, prefs.json.
     files: Box<dyn Store>,
     /// What happened when the catalog was loaded.
@@ -715,6 +718,7 @@ impl Session {
             dir,
             on_disk,
             journal,
+            compaction_row: None,
             files,
             report,
             last_error: None,
@@ -818,6 +822,7 @@ impl Session {
             log::error!("library: compaction: {e}");
             lib.last_error = Some(format!("compaction: {e}"));
         }
+        self.sync_compaction_row();
         let due = self.library.as_ref().is_some_and(|l| l.presets_saved.differs(self) && !l.blocked.contains(&"presets.json"));
         if !due {
             return Ok(());
@@ -853,6 +858,18 @@ impl Session {
             let _ = self.persist();
         } else if let Some(lib) = self.library.as_mut() {
             poll_compaction(lib);
+        }
+        self.sync_compaction_row();
+    }
+
+    /// Show a background compaction in the activity stack while it runs, and drop the row when
+    /// it has landed (or failed). The snapshot itself is written on a worker thread.
+    fn sync_compaction_row(&mut self) {
+        let Some(lib) = self.library.as_mut() else { return };
+        if !lib.journal.snapshot_running() {
+            lib.compaction_row = None;
+        } else if lib.compaction_row.is_none() {
+            lib.compaction_row = Some(self.activity.start("compaction", "Optimizing the library", crate::activity::Cancel::No));
         }
     }
 
@@ -1049,17 +1066,26 @@ impl Session {
             log::error!("library: compaction: {e}");
             lib.last_error = Some(format!("compaction: {e}"));
         }
+        self.sync_compaction_row();
     }
 
-    /// Compact the log into a snapshot now.
+    /// Compact the log into a snapshot now. Natively the snapshot is written on a worker thread
+    /// (as the automatic compaction is): serialising a large catalog on the calling thread — the
+    /// UI's — froze the window for tens of seconds on a 28 000-photo library (issue #448). The
+    /// compaction finishes through the frame loop's [`Session::persist_if_dirty`]; a failure
+    /// loses nothing (the log is kept whole) and is retried once the log has grown again.
     pub fn compact_library(&mut self) -> Result<()> {
         self.persist()?;
         if self.interaction.is_some() {
             return Err(EngineError::Other("can't compact during an interaction".into()));
         }
-        if let Some(lib) = self.library.as_mut() {
-            lib.journal.snapshot(&self.catalog)?;
+        if let Some(lib) = self.library.as_mut()
+            && let Err(e) = lib.journal.snapshot_in_background(&self.catalog)
+        {
+            log::error!("library: compaction: {e}");
+            lib.last_error = Some(format!("compaction: {e}"));
         }
+        self.sync_compaction_row();
         Ok(())
     }
 }

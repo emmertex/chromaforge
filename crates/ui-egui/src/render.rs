@@ -113,6 +113,11 @@ const HDR_WINDOW_RING: u8 = 8;
 /// back: shown at once), within [`HDR_WINDOWS_BYTES`] together.
 const HDR_WINDOWS_KEPT: usize = 4;
 const HDR_WINDOWS_BYTES: usize = 256 << 20;
+
+/// The most thumbnail decode failures remembered ([`Renderer::thumb_failures`]): a library of
+/// nothing but unreadable files cannot grow the map forever; once full, it is cleared and the
+/// next visit of a cell retries (and re-records) its file once.
+const THUMB_FAILURES_MAX: usize = 16_384;
 /// Zoomed panes that can show at once (Before / After, the two Compare panes).
 const HDR_ZOOMED_PANES: u64 = 2;
 /// The kept windows may take no more than this share of the GPU's memory (1 / n): the rest is
@@ -427,6 +432,13 @@ pub struct Renderer {
     /// the photo: not requested again until the key changes (an edit, another size) — the grid
     /// asks every frame.
     failed: HashMap<Slot, (u64, String, u64, PhotoId)>,
+    /// Thumbnail decode failures, by (photo, quick?) and job key, with the error (issue #448):
+    /// an unsupported or malformed file is not decoded again on every visit. `failed` (above)
+    /// stops counting once the catalog's revision moves on — which background thumbnail writes
+    /// do all the time — so without this the same broken file was re-read, re-decoded and
+    /// re-logged at every cell it appears in. A changed file (or edit) renders under another job
+    /// key, which this never held, and so is tried again.
+    thumb_failures: HashMap<(PhotoId, bool), (u64, String)>,
     /// The catalog revision seen at the last poll: a failure is retried once the catalog changes
     /// (a relinked or re-imported file).
     catalog_rev: u64,
@@ -531,6 +543,7 @@ impl Renderer {
             window_shown: HashMap::new(),
             quick_tried: HashMap::new(),
             failed: HashMap::new(),
+            thumb_failures: HashMap::new(),
             catalog_rev: 0,
             prefetched: HashMap::new(),
             ready_views: HashMap::new(),
@@ -757,6 +770,14 @@ impl Renderer {
         if self.textures.get(&slot).is_some_and(|t| t.key == key) || self.failed.get(&slot).is_some_and(|f| f.0 == key && f.2 == self.catalog_rev) {
             return false;
         }
+        // A thumbnail whose decode already failed for this very key (issue #448) is not asked
+        // for again: the failure survives the slot's eviction and the catalog revision moving
+        // on, which would otherwise re-request the same broken file every visit.
+        if let Slot::Thumb(id) | Slot::ThumbQuick(id) = slot
+            && self.thumb_failures.get(&(id, matches!(slot, Slot::ThumbQuick(_)))).is_some_and(|(k, _)| *k == key)
+        {
+            return false;
+        }
         true
     }
     /// Free a view slot's texture and stage cache (the view is no longer shown).
@@ -956,6 +977,13 @@ impl Renderer {
             }
             return;
         }
+        // A stand-in whose decode already failed for this key (issue #448) is not tried again
+        // after `quick_tried` lost the attempt (the cell was scrolled away and back).
+        if let Slot::ThumbQuick(id) = slot
+            && self.thumb_failures.get(&(id, true)).is_some_and(|(k, _)| *k == job.key)
+        {
+            return;
+        }
         self.quick_tried.insert(slot, job.key);
         self.pending.insert(slot, (job.key, priority));
         job.request_id = lcc_preview::next_tick();
@@ -1041,6 +1069,7 @@ impl Renderer {
         self.stages.clear();
         self.quick_tried.clear();
         self.failed.clear();
+        self.thumb_failures.clear();
         self.prefetched.clear();
         self.ready_views.clear();
         self.adopted.clear();
@@ -1209,7 +1238,16 @@ impl Renderer {
             return None;
         }
         // a full-render failure that stands, else the embedded preview's, unless a new request of it is on its way
-        self.failure(full).or_else(|| if self.is_pending(quick) && !self.retrying(quick) { None } else { self.failure(quick) })
+        if let Some(e) = self.failure(full) {
+            return Some(e);
+        }
+        if let Some((_, e)) = self.thumb_failures.get(&(id, false)) {
+            return Some(e);
+        }
+        if self.is_pending(quick) && !self.retrying(quick) {
+            return None;
+        }
+        self.failure(quick).or_else(|| self.thumb_failures.get(&(id, true)).map(|(_, e)| e.as_str()))
     }
 
     /// Why the last render of `photo` for `slot` failed: a view slot shows one photo after
@@ -1423,6 +1461,11 @@ impl Renderer {
             let rendered = match r.rendered {
                 Ok(x) => {
                     self.failed.remove(&slot);
+                    // a decode that now succeeds lifts its photo's failure (the file was fixed
+                    // under the same key, or the earlier failure was transient)
+                    if let Slot::Thumb(_) | Slot::ThumbQuick(_) = slot {
+                        self.thumb_failures.remove(&(r.photo, matches!(slot, Slot::ThumbQuick(_))));
+                    }
                     x
                 }
                 Err(e) => {
@@ -1431,7 +1474,16 @@ impl Renderer {
                         #[cfg(test)]
                         self.failure_messages.push(message.clone());
                         log::warn!("{message}");
-                        self.failed.insert(slot, (r.key, e, self.catalog_rev, r.photo));
+                        self.failed.insert(slot, (r.key, e.clone(), self.catalog_rev, r.photo));
+                        // Remember the decode failure past the slot's eviction and the catalog
+                        // revision moving on (issue #448): the file is not decoded again at this
+                        // key. A bounded map: a library of unreadable files cannot grow it forever.
+                        if let Slot::Thumb(_) | Slot::ThumbQuick(_) = slot {
+                            if self.thumb_failures.len() >= THUMB_FAILURES_MAX {
+                                self.thumb_failures.clear();
+                            }
+                            self.thumb_failures.insert((r.photo, matches!(slot, Slot::ThumbQuick(_))), (r.key, e));
+                        }
                     }
                     // (an HDR view's older frame no longer shows what is asked for)
                     if let Slot::HdrView(view) = slot {
@@ -2747,6 +2799,65 @@ mod thumbnail_tests {
         // the very request that failed is asked for again: until it answers the failure stands
         r.pending.insert(Slot::Thumb(id), (1, 10));
         assert_eq!(r.thumb_failure(id), Some("decode failed"));
+    }
+
+    /// An unsupported or malformed file must not be decoded again at every visit (issue #448):
+    /// the failure stands across the slot's eviction and the catalog revision moving on (which
+    /// background thumbnail writes do all the time), until the photo renders under another key.
+    #[test]
+    fn a_failed_thumbnail_is_not_decoded_again_after_the_catalog_moves_on() {
+        let id = PhotoId(1);
+        let (mut app, work, ctx) = fixture();
+        app.session.media.file_loader = Some(Arc::new(|_, _, _| Err("unsupported raw (DNG compression 9)".into())));
+        crate::panels::grid::request_thumb(&mut app, id, 256, 10);
+        let (slot, job) = take_job(&work);
+        assert_eq!(slot, Slot::Thumb(id));
+        let result = job.run();
+        assert!(result.rendered.is_err());
+        finish(&mut app, &work, &ctx, slot, result);
+        assert_eq!(app.renderer.thumb_failure(id), Some("unsupported raw (DNG compression 9)"));
+        // the catalog moves on (an edit, a background write), the cell scrolls out and back
+        app.session.catalog.revision += 1;
+        app.renderer.evict_thumbs(&Default::default(), 600);
+        crate::panels::grid::request_thumb(&mut app, id, 256, 10);
+        assert!(work.borrow().jobs.is_empty(), "the same broken file must not be decoded again");
+        assert!(!app.renderer.is_pending(Slot::Thumb(id)));
+        assert_eq!(app.renderer.thumb_failure(id), Some("unsupported raw (DNG compression 9)"), "the cell still says why it has no picture");
+
+        // a changed photo renders under another job key: that is tried again
+        let mut settings = (*app.session.catalog.photo(id).unwrap().develop).clone();
+        settings.light.exposure += 0.5;
+        app.session.catalog.apply(Op::SetDevelop { id, settings: Arc::new(settings), label: "test".into(), edited: None }).unwrap();
+        crate::panels::grid::request_thumb(&mut app, id, 256, 10);
+        assert_eq!(work.borrow().jobs.len(), 1, "an edited photo is decoded again");
+        let (slot, _) = take_job(&work);
+        assert_eq!(slot, Slot::Thumb(id));
+    }
+
+    /// A stand-in whose decode failed is not re-requested after `quick_tried` lost the attempt
+    /// (the cell scrolled away and back), which read and decoded the file yet again (issue #448).
+    #[test]
+    fn a_failed_thumbnail_standin_is_not_requested_again_after_an_eviction() {
+        let id = PhotoId(2);
+        let mut r = Renderer { pool: JobPool::new(0), ..Default::default() };
+        let ctx = egui::Context::default();
+        let mut s = Session::new();
+        let job = || QuickJob { request_id: 0, photo: id, key: 42, cached: vec![], embedded: None, small: None };
+
+        r.request_quick(Slot::ThumbQuick(id), job(), 5);
+        r.pool.run_inline(1);
+        r.poll(&ctx, &mut s);
+        assert_eq!(r.thumb_failure(id), Some("no quick preview"));
+
+        // the eviction dropped `quick_tried` with the cell: still not decoded again
+        r.quick_tried.clear();
+        r.request_quick(Slot::ThumbQuick(id), job(), 5);
+        assert_eq!(r.pool.queued(), 0, "the failed stand-in is not requested again");
+        assert!(!r.is_pending(Slot::ThumbQuick(id)));
+        assert_eq!(r.thumb_failure(id), Some("no quick preview"));
+        // another key (a new look or size) is on its way, so the cell is loading again
+        r.pending.insert(Slot::ThumbQuick(id), (43, 6));
+        assert_eq!(r.thumb_failure(id), None);
     }
 
     #[test]
