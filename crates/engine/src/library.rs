@@ -320,6 +320,8 @@ struct PrefsFile {
     keyword_shortcuts: Vec<String>,
     /// Develop defaults for imported photos.
     import: crate::import::ImportDefaults,
+    /// The default camera profile per camera model (`""` = every camera; issue #723).
+    camera_profile_defaults: std::collections::BTreeMap<String, String>,
     /// Thumbnail disk cache budget (MB, 0 = default).
     cache_mb: u32,
     /// Folder for smart previews (default: `Smart Previews` in the library).
@@ -621,6 +623,9 @@ impl Session {
         self.keyword_shortcut =
             if prefs.keyword_shortcuts.is_empty() { prefs.keyword_shortcut.into_iter().collect() } else { prefs.keyword_shortcuts };
         self.import_defaults = prefs.import;
+        self.camera_profile_defaults = prefs.camera_profile_defaults;
+        // photos with no camera-profile choice of their own start from these (issue #723)
+        lcc_raw::dcp::install_user_defaults(self.camera_profile_defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         self.cache_mb = prefs.cache_mb;
         self.preview_prefs = prefs.previews;
         #[cfg(not(target_arch = "wasm32"))]
@@ -970,6 +975,7 @@ impl Session {
             keyword_shortcut: None,
             keyword_shortcuts: self.keyword_shortcut.clone(),
             import: self.import_defaults.clone(),
+            camera_profile_defaults: self.camera_profile_defaults.clone(),
             cache_mb: self.cache_mb,
             smart_previews_dir: self.smart_previews_dir.as_ref().map(|d| d.to_string_lossy().to_string()),
             forget_local_days: Some(self.forget_local_days),

@@ -87,15 +87,23 @@ fn import(_s: &mut Session, p: &Value) -> Result<Value> {
     let (active_dir, library) = dirs(C)?;
     let (files, mut failed) = dcp_files(&paths);
     let mut imported = Vec::new();
-    let mut defaults_changed = false;
+    let mut parsed: Vec<(String, lcc_raw::dcp::Dcp, Vec<u8>)> = Vec::new();
     for (name, bytes) in files {
-        let dcp = match lcc_raw::dcp::parse(&bytes) {
-            Ok(d) => d,
-            Err(e) => {
-                failed.push(json!([name, e]));
-                continue;
-            }
-        };
+        match lcc_raw::dcp::parse(&bytes) {
+            Ok(d) => parsed.push((name, d, bytes)),
+            Err(e) => failed.push(json!([name, e])),
+        }
+    }
+    // profiles per camera model in this import: a batch that brings several for one camera (e.g.
+    // Adobe's whole profile set, in file order) must not make its alphabetically first one the
+    // camera's default (issue #723) — only a lone profile for a camera does, and only when the
+    // camera has none yet
+    let mut counts: std::collections::BTreeMap<String, u32> = Default::default();
+    for (_, d, _) in &parsed {
+        *counts.entry(crate::presets::slug(&d.model)).or_default() += 1;
+    }
+    let mut defaults_changed = false;
+    for (name, dcp, bytes) in parsed {
         let label = if dcp.name.is_empty() { name.trim_end_matches(".dcp").to_string() } else { dcp.name.clone() };
         let slug = crate::presets::slug(&format!("{}-{label}", dcp.model));
         let file = library.join(format!("{slug}.dcp"));
@@ -103,7 +111,8 @@ fn import(_s: &mut Session, p: &Value) -> Result<Value> {
         std::fs::write(&tmp, &bytes).map_err(|e| bad(C, format!("{}: {e}", tmp.display())))?;
         std::fs::rename(&tmp, &file).map_err(|e| bad(C, format!("{}: {e}", file.display())))?;
         // the first profile for a camera becomes its default; the others are chosen per photo
-        let make_default = activate_new.unwrap_or_else(|| !active_dir.join(cp::dcp_file_name(&dcp.model)).is_file());
+        let lone = counts.get(&crate::presets::slug(&dcp.model)).copied().unwrap_or(0) == 1;
+        let make_default = activate_new.unwrap_or_else(|| lone && !active_dir.join(cp::dcp_file_name(&dcp.model)).is_file());
         if make_default {
             activate(C, &active_dir, &file)?;
         }
@@ -235,7 +244,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Camera Profiles (.dcp)",
             [],
             None,
-            "{paths: [.dcp file, folder or .zip], activate?: bool} — DNG camera profiles you own, chosen per photo (develop.cameraProfile); the first for a camera model (or each, with activate: true) also becomes that camera's default from the next start → {imported: [{id, model, name, file, active}], failed, restart}",
+            "{paths: [.dcp file, folder or .zip], activate?: bool} — DNG camera profiles you own, chosen per photo (develop.cameraProfile); a lone profile for a camera model (every one of the import, with activate: true) becomes that camera's default from the next start, a batch for one camera leaves the default as it is (the default is set per model with library.preferences `cameraDefault`) → {imported: [{id, model, name, file, active}], failed, restart}",
             always,
             import
         ),
