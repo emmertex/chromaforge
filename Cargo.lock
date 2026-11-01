@@ -5007,6 +5007,7 @@ dependencies = [
 name = "lcc-immich"
 version = "26.44.4"
 dependencies = [
+ "chrono",
  "lcc-catalog",
  "lcc-codecs",
  "lcc-credentials",
@@ -5275,6 +5276,7 @@ dependencies = [
 name = "lcc-raw"
 version = "26.44.4"
 dependencies = [
+ "chrono",
  "dhat",
  "jpeg-encoder",
  "jxl-oxide",
