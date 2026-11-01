@@ -4858,6 +4858,7 @@ dependencies = [
  "tiff",
  "toml",
  "trash",
+ "unicode-normalization",
  "unicode-segmentation",
  "wat",
  "web-time",

@@ -1057,12 +1057,18 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         }
     });
     ui.data_mut(|d| d.insert_temp(custom_id, custom));
-    let used = app.session.media.rendered.disk().map(|d| d.size());
+    // (never counted here: the first count walks the whole folder, on a thread of its own that holds a row of the
+    // activity stack, and a write in progress holds the size; this dialog draws it every frame)
+    let rendered = &app.session.media.rendered;
+    let activity = &app.session.activity;
+    let used = rendered
+        .disk()
+        .map(|_| rendered.disk_size_now_with(|| activity.start("cache", "Counting the preview cache", lcc_engine::activity::Cancel::No)));
+    if matches!(used, Some(None)) {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
     row(ui, t, crate::i18n::tr("In use"), |ui| {
-        ui.label(
-            RichText::new(used.map(|b| format!("{:.1} MB", b as f64 / 1048576.0)).unwrap_or_else(|| crate::i18n::tr("memory only").to_string()))
-                .color(t.text),
-        );
+        ui.label(RichText::new(in_use_text(used)).color(t.text));
         let r = ui.button(crate::i18n::tr("Clear Cache"));
         register(ui.ctx(), "button:settingsClearCache", r.rect);
         if r.clicked() {
@@ -2051,10 +2057,28 @@ pub fn display_profile(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     })
 }
 
+/// The disk cache's "In use": its size once counted, "counting…" while the first count of the folder runs on a
+/// thread of its own (`PreviewCache::disk_size_now_with` is `Some(None)` meanwhile), "memory only" without a disk
+/// cache.
+fn in_use_text(used: Option<Option<u64>>) -> String {
+    match used {
+        Some(Some(b)) => format!("{:.1} MB", b as f64 / 1048576.0),
+        Some(None) => crate::i18n::tr("counting…").to_string(),
+        None => crate::i18n::tr("memory only").to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn in_use_reads_counting_until_the_size_is_known() {
+        assert_eq!(in_use_text(Some(None)), "counting…");
+        assert_eq!(in_use_text(Some(Some(3 * 1048576 / 2))), "1.5 MB");
+        assert_eq!(in_use_text(None), "memory only");
+    }
 
     fn app_with_import() -> LccApp {
         let mut app = LccApp::new(lcc_engine::Session::with_demo(), crate::Services::default());
