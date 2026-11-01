@@ -62,10 +62,49 @@ the link pass links them **by path**: the asset's `originalPath`, translated by 
 photo's file. Settings → Connections → *External Libraries…* (`immich.libraries`) lists the server's libraries and
 a path mapping table (`immich.setPathMaps`) between Immich's container paths and local folders (a suggestion is made
 from matching folder names), and shows which catalog folders each library covers. *Write XMP Sidecars*
-(`immich.writeSidecars`) writes sidecars for the photos in mapped folders so Immich reads ratings, descriptions and
-keywords, then asks Immich to re-read them: the sidecar discovery job finds new sidecars (admin key) and
-`refresh-metadata` re-reads the linked assets, because a library scan skips files that did not change. *Rescan in
-Immich* (`immich.scanLibraries`) starts a scan of the libraries covering mapped folders (new files).
+(`immich.writeSidecars`, and *Push* below with `externalOnly`) writes sidecars for the photos in mapped folders so
+Immich reads ratings, descriptions and keywords, then asks Immich to re-read them: the sidecar discovery job finds
+new sidecars (admin key) and `refresh-metadata` re-reads the linked assets, because a library scan skips files that
+did not change. *Rescan in Immich* (`immich.scanLibraries`) starts a scan of the libraries covering mapped folders
+(new files).
+
+## XMP sidecars (IMM-SIDECARS)
+
+Immich keeps an `.xmp` sidecar beside every asset it stores (and, for an external library, beside the original on
+disk), and serves it through `GET /asset-files` (v3.2.0). The app uses that as a bridge between libraries:
+
+- **Pull** (`immich.pullSidecars {account?, ids?, all?, overwrite?, writeFiles?, dryRun?, background?}`) downloads
+  each linked asset's sidecar, applies it to the catalog as one undo step (metadata, GPS, keywords and the
+  `lc:settings` develop settings another instance published) and writes it beside the original. A photo edited here
+  after the asset changed is skipped (`skipped[].reason`: `changedInCatalog`, `conflict`, `editedLocally`) unless
+  `overwrite`; `writeFiles` defaults to true. With no `ids`/`all` it covers the selection, or every linked photo when
+  nothing is selected (at most 5000 per run, reported as `truncated`; pull again to continue). Needs the key's
+  `assetFile.read` permission and a server ≥ 3.2.0 (older servers say so and pushing still works).
+- **Push** (`immich.pushSidecars {account?, ids?, externalOnly?, full?, refresh?, dryRun?, background?}`) writes
+  the whole XMP sidecar for photos in mapped external-library folders (then asks Immich to read it back) and sends
+  the fields Immich keeps in its own sidecar for managed assets: rating, description, capture time, location and
+  tags (it only adds tags, never removes one). Immich merges those into the sidecar it holds. `full` replaces a
+  managed asset's whole sidecar instead: Immich's current sidecar is read, the app's packet merged into it (our
+  properties replace, everything else — another app's `crs:` settings, unknown namespaces — stays), the merged XMP
+  uploaded on a tiny temporary asset, copied onto the real asset (`PUT /assets/copy`), and the temporary asset
+  removed. This is the only way to add develop settings to an asset uploaded without a sidecar: Immich has no
+  direct write endpoint, so `full` needs `assetFile.read`, `asset.upload`, `asset.copy`, `asset.delete` and
+  `job.create`, and creates and removes one tiny asset per photo. The original is never deleted or re-uploaded.
+  *Write XMP Sidecars* in the external-library helper is the `externalOnly` form.
+
+  Publishing an original (`send: original|both`) also sends its whole XMP with the upload, so another library can
+  pull it back.
+
+Both run on a worker (`background: true`) with an activity row, and their result comes back through `remote.pump`
+(`sidecars`); the account card's **XMP Sidecars** section has **Push** and **Pull** buttons and the last run's
+counts. Two libraries can therefore share one Immich server: one publishes (or writes the external-library files),
+the other pulls the sidecars.
+
+Tests: `cargo test -p lcc-immich sidecar` (the client, the version gate, the copy call and the pull's conflict
+rules), the engine's in-process server tests (`pull_sidecars_*`, `push_sidecars_*`,
+`full_sidecar_push_merges_immichs_sidecar_and_copies_it_back`,
+`pulling_sidecars_needs_a_server_that_lists_them`), and the live `live_asset_sidecar_round_trip` (an upload's
+sidecar, `lc:settings` included, is served back).
 
 ## Tests
 
@@ -130,7 +169,9 @@ photos; `show` makes them a temporary collection, `saveAs` an album.
 An Immich publish service (`publish.createService {kind: "immich", settings: {account, send: rendered|original|both,
 deleteRemoved}}`) publishes each collection to the Immich album of the same name (created when missing). Every
 upload is checked by SHA-1 first, so Immich never stores a duplicate; an original already linked to an Immich asset
-(including external-library files) is never uploaded. `both` stacks the render on top of the original. Re-publishing
+(including external-library files) is never uploaded. An uploaded original carries the photo's whole XMP sidecar
+(metadata and develop settings), so another library can pull it back (IMM-SIDECARS). `both` stacks the render on top
+of the original. Re-publishing
 uploads the new render, moves album membership and sends the old render to Immich's trash; removing a photo from the
 collection takes it out of the album (its render goes to the trash only with `deleteRemoved`).
 

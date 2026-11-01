@@ -1,6 +1,7 @@
 //! The typed client: one method per endpoint the app calls (plan/immich.md → Endpoints we need).
 //! Blocking, like `lcc-net`: run it on a worker thread.
 
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -246,6 +247,44 @@ impl Client {
         Ok(d.bytes)
     }
 
+    /// `GET /asset-files` (v3.2.0): an asset's files, optionally only one `kind` (`sidecar`,
+    /// `fullsize`, `preview`, `thumbnail`, `encoded_video`). Needs `assetFile.read`.
+    pub fn asset_files(&self, asset: &str, kind: Option<&str>) -> Result<Vec<AssetFile>, ImmichError> {
+        let mut path = format!("/asset-files?assetId={}", path_id(asset)?);
+        if let Some(kind) = kind {
+            // (a fixed set of words: nothing user-supplied goes into the query)
+            let kind = match kind {
+                "sidecar" | "fullsize" | "preview" | "thumbnail" | "encoded_video" => kind,
+                other => return Err(ImmichError::Protocol(format!("not an asset file kind: {other:?}"))),
+            };
+            path.push_str("&type=");
+            path.push_str(kind);
+        }
+        self.get(&path, true)
+    }
+
+    /// The asset's sidecar file (`GET /asset-files?type=sidecar`), when the server has one.
+    pub fn asset_sidecar(&self, asset: &str) -> Result<Option<AssetFile>, ImmichError> {
+        Ok(self.asset_files(asset, Some("sidecar"))?.into_iter().find(AssetFile::is_sidecar))
+    }
+
+    /// `GET /asset-files/{id}/download`: the file's bytes. At most
+    /// [`crate::sidecars::MAX_SIDECAR_BYTES`] are read (a sidecar is metadata, not pixels).
+    pub fn download_asset_file(&self, id: &str) -> Result<Vec<u8>, ImmichError> {
+        use crate::sidecars::MAX_SIDECAR_BYTES;
+        let mut r = self.send(Method::Get, &format!("/asset-files/{}/download", path_id(id)?), None, true)?;
+        let too_big = || ImmichError::Protocol(format!("the sidecar is larger than {MAX_SIDECAR_BYTES} bytes"));
+        if r.header("content-length").and_then(|v| v.trim().parse::<u64>().ok()).is_some_and(|n| n > MAX_SIDECAR_BYTES) {
+            return Err(too_big());
+        }
+        let mut out = Vec::new();
+        (&mut r).take(MAX_SIDECAR_BYTES.saturating_add(1)).read_to_end(&mut out).map_err(|e| ImmichError::Io(e.to_string()))?;
+        if out.len() as u64 > MAX_SIDECAR_BYTES {
+            return Err(too_big());
+        }
+        Ok(out)
+    }
+
     /// `POST /assets/bulk-upload-check`: which checksums the server already has.
     pub fn upload_check(&self, items: &[UploadCheck]) -> Result<Vec<UploadCheckResult>, ImmichError> {
         let r: UploadCheckResponse = self.post("/assets/bulk-upload-check", &serde_json::json!({ "assets": items }))?;
@@ -350,13 +389,35 @@ impl Client {
     }
 
     pub fn trash_assets(&self, ids: &[String]) -> Result<(), ImmichError> {
+        self.delete_assets(ids, false)
+    }
+
+    /// `DELETE /assets`: `force: false` sends the assets to Immich's trash; `force: true` removes
+    /// them at once. The app only forces the temporary assets it created for a sidecar copy.
+    pub fn delete_assets(&self, ids: &[String], force: bool) -> Result<(), ImmichError> {
         for chunk in ids.chunks(500) {
             for id in chunk {
                 path_id(id)?;
             }
-            self.send(Method::Delete, "/assets", Some(&serde_json::json!({ "ids": chunk, "force": false })), true)?;
+            self.send(Method::Delete, "/assets", Some(&serde_json::json!({ "ids": chunk, "force": force })), true)?;
         }
         Ok(())
+    }
+
+    /// `PUT /assets/copy` (IMM-SIDECARS): copy a source asset's sidecar onto `target`. The other
+    /// copy flags (albums, favourite, shared links, stack) are always off: only the sidecar moves.
+    /// Needs `asset.copy`.
+    pub fn copy_sidecar(&self, source: &str, target: &str) -> Result<(), ImmichError> {
+        let body = serde_json::json!({
+            "sourceId": path_id(source)?,
+            "targetId": path_id(target)?,
+            "sidecar": true,
+            "albums": false,
+            "favorite": false,
+            "sharedLinks": false,
+            "stack": false,
+        });
+        self.send(Method::Put, "/assets/copy", Some(&body), true).map(|_| ())
     }
 
     // ---- publish (IMM-PUBLISH)
@@ -365,20 +426,23 @@ impl Client {
     /// the app's stable id for it. Needs `asset.upload`. Not retried (not idempotent by itself;
     /// callers check checksums first).
     pub fn upload(&self, up: &NewAsset<'_>) -> Result<(String, bool), ImmichError> {
-        let mut form = lcc_net::Multipart::new()
+        // The file parts come first: Immich reads the sidecar's target type from the multipart
+        // file's position, and with a text `filename` field before `assetData` it rejects an
+        // upload that carries a sidecar ("Unsupported file type <name>"; verified on v3.3.1).
+        let mut form = match up.data {
+            UploadData::Bytes(b) => lcc_net::Multipart::new().bytes("assetData", up.file_name, up.mime, b.to_vec()),
+            UploadData::File(p) => lcc_net::Multipart::new().file("assetData", up.file_name, up.mime, p)?,
+        };
+        if let Some(x) = up.sidecar {
+            form = form.bytes("sidecarData", &format!("{}.xmp", up.file_name), "application/xml", x.to_vec());
+        }
+        form = form
             .text("deviceAssetId", up.device_asset_id)
             .text("deviceId", up.device_id)
             .text("fileCreatedAt", up.created)
             .text("fileModifiedAt", up.created)
             .text("filename", up.file_name)
             .text("isFavorite", if up.favorite { "true" } else { "false" });
-        form = match up.data {
-            UploadData::Bytes(b) => form.bytes("assetData", up.file_name, up.mime, b.to_vec()),
-            UploadData::File(p) => form.file("assetData", up.file_name, up.mime, p)?,
-        };
-        if let Some(x) = up.sidecar {
-            form = form.bytes("sidecarData", &format!("{}.xmp", up.file_name), "application/xml", x.to_vec());
-        }
         #[derive(serde::Deserialize)]
         struct Created {
             id: String,
@@ -394,7 +458,17 @@ impl Client {
             .send()
             .map_err(ImmichError::from)?;
         if !r.is_success() {
-            return Err(status(r.status, "/assets"));
+            // the server says why (a missing field, an unsupported image); keep it for the user
+            let code = r.status;
+            let why: String = r.text().unwrap_or_default().chars().take(300).collect();
+            if (500..=599).contains(&code) {
+                // 5xx stays retryable (the publish retries it); the body is for the log
+                if !why.is_empty() {
+                    log::warn!("immich POST /assets: {code}: {why}");
+                }
+                return Err(ImmichError::Server(code));
+            }
+            return Err(ImmichError::Status(code, if why.is_empty() { "/assets".into() } else { format!("/assets: {why}") }));
         }
         let c: Created = r.json().map_err(|e| ImmichError::Protocol(format!("/assets: {e}")))?;
         path_id(&c.id)?;
@@ -610,6 +684,10 @@ pub const FEATURE_PERMISSIONS: &[(&str, &[&str])] = &[
     ("stacks", &["stack.read", "stack.create", "stack.delete"]),
     ("editVersions", &["asset.upload", "stack.create", "album.read"]),
     ("albumSync", &["album.read", "album.create", "album.update", "album.delete", "albumAsset.create", "albumAsset.delete"]),
+    (
+        "sidecars",
+        &["asset.read", "assetFile.read", "asset.update", "tag.create", "tag.asset", "asset.upload", "asset.copy", "asset.delete", "job.create"],
+    ),
 ];
 
 /// The features a key with `perms` can't use, with the permissions each lacks.
