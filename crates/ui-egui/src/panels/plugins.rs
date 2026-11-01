@@ -10,6 +10,8 @@
 //!   the window is open installs too ([`take_drop`]). The module is inspected first and every
 //!   permission it asks for is listed with a checkbox, unchecked unless an installed version
 //!   already has it. Only what the user ticks is granted; an update shows what it newly asks for.
+//!   One install waits at a time, and a module that is exactly what is installed selects its entry
+//!   instead of asking again.
 //! - Per plug-in: enable/disable, toggle (revoke) each requested permission, remove, read the log,
 //!   edit its settings, run its commands (with their declarative dialogs, opening with the values
 //!   they last ran with, or as the plug-in's `prepare` step says).
@@ -99,6 +101,11 @@ struct Page {
     values: Value,
     /// The plug-in couldn't fill its own options, or saving failed.
     error: Option<String>,
+    /// The module and settings it was read from ([`revision`]): when either changes (an update, a
+    /// value set by the plug-in), the page is read again.
+    revision: Value,
+    /// The fields the user changed and hasn't saved: kept when the page is read again.
+    edited: std::collections::BTreeSet<String>,
 }
 
 #[derive(Clone, Default)]
@@ -138,7 +145,7 @@ fn app_ctx(app: &LccApp) -> egui::Context {
 
 /// UI commands: `plugins.manager {open?}` opens / closes the window; `plugins.install {path?}`
 /// inspects a module and opens the approval dialog (without `path`, the file picker asks for
-/// one); `plugins.runItem {plugin, command}` runs a plug-in command from the menu (asking its
+/// one; refused while another waits, and a module that is already installed selects its entry); `plugins.runItem {plugin, command}` runs a plug-in command from the menu (asking its
 /// dialog first, if it has one); `plugins.page {id, tab?, open?}` opens the window on a plug-in's
 /// page (`tab`: settings, permissions, about or log; `open: false` closes the window if it shows
 /// that page); `plugins.showFolder` opens the plug-ins folder in the system file manager.
@@ -153,10 +160,10 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
         "plugins.install" => match p.get("path") {
             Some(path) => {
                 let path = path.as_str().unwrap_or("").trim().to_string();
-                begin_install(app, &mut s, &path).map(|_| json!({"pending": path}))
+                begin_install(app, &mut s, &path)
             }
-            None => match pick_module(app, p) {
-                Ok(Some(path)) => begin_install(app, &mut s, &path).map(|_| json!({"pending": path})),
+            None => match one_install_at_a_time(&s).and_then(|()| pick_module(app, p)) {
+                Ok(Some(path)) => begin_install(app, &mut s, &path),
                 // cancelled, or the picker answers later (the command comes back with `path`)
                 Ok(None) => Ok(Value::Null),
                 Err(e) => Err(e),
@@ -234,8 +241,9 @@ pub fn take_drop(app: &mut LccApp, ctx: &egui::Context, paths: &[String]) -> boo
     }
     let path = paths.first().cloned().unwrap_or_default();
     s.message.clear();
-    if let Err(e) = begin_install(app, &mut s, &path) {
-        s.message = e;
+    match begin_install(app, &mut s, &path) {
+        Ok(v) => s.message = v["message"].as_str().unwrap_or_default().to_string(),
+        Err(e) => s.message = e,
     }
     set_state(ctx, s);
     ctx.request_repaint();
@@ -253,13 +261,37 @@ fn takes_drop(s: &State, paths: &[String]) -> bool {
     s.open && std::path::Path::new(path).extension().is_some_and(|x| x.eq_ignore_ascii_case("wasm"))
 }
 
+/// An install waits for the user's approval: another one would replace it, so it's refused.
+fn one_install_at_a_time(s: &State) -> Result<(), String> {
+    let Some(p) = &s.pending else { return Ok(()) };
+    let m = &p.info["manifest"];
+    let name = m["name"].as_str().filter(|n| !n.is_empty()).or(m["id"].as_str()).unwrap_or_default();
+    Err(tr_format!("Finish or cancel installing {name} first", name = name))
+}
+
 /// Inspects `path` and opens the approval dialog with everything unticked but what an installed
-/// version already holds.
-fn begin_install(app: &mut LccApp, s: &mut State, path: &str) -> Result<(), String> {
+/// version already holds: `{pending: path}`. A module that is exactly what is installed (the same
+/// version and code) opens no approval: its page shows instead, `{installed: id, message}`.
+fn begin_install(app: &mut LccApp, s: &mut State, path: &str) -> Result<Value, String> {
+    one_install_at_a_time(s)?;
     if path.is_empty() {
         return Err(tr("Choose a plug-in module (.wasm) first").to_string());
     }
     let info = app.session.execute("plugin.inspectFile", &json!({"path": path})).map_err(|e| e.to_string())?;
+    if info["installed"]["same"] == true {
+        let m = &info["manifest"];
+        let id = m["id"].as_str().unwrap_or_default();
+        let name = m["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(id);
+        let message = tr_format!("{name} {version} is already installed", name = name, version = m["version"].as_str().unwrap_or_default());
+        // the entry on screen keeps its page, and the values typed in it
+        if s.selected.as_deref() == Some(id) {
+            s.open = true;
+        } else {
+            select(app, s, id, None)?;
+        }
+        s.message.clone_from(&message);
+        return Ok(json!({"installed": id, "message": message}));
+    }
     let grant = info["installed"]["granted"].clone();
     let grant = if grant.is_object() {
         grant
@@ -268,7 +300,7 @@ fn begin_install(app: &mut LccApp, s: &mut State, path: &str) -> Result<(), Stri
     };
     s.pending = Some(Pending { path: path.to_string(), info, grant });
     s.open = true;
-    Ok(())
+    Ok(json!({"pending": path}))
 }
 
 /// Runs a command right away, or opens its dialog. `Value::Null` when the dialog opened. A command
@@ -311,7 +343,78 @@ fn settings_page(app: &mut LccApp, id: &str) -> Result<Option<Page>, String> {
     if fields.is_empty() {
         return Ok(None);
     }
-    Ok(Some(Page { id: id.to_string(), fields, values: v["values"].clone(), error: v["error"].as_str().map(str::to_string) }))
+    // read after the settings: a value the plug-in sets while preparing them is on the page already
+    let list = app.session.execute("plugin.list", &json!({})).map_err(|e| e.to_string())?;
+    let revision = entries(&list).iter().find(|e| e.id == id).map_or(Value::Null, revision);
+    Ok(Some(Page {
+        id: id.to_string(),
+        fields,
+        values: v["values"].clone(),
+        error: v["error"].as_str().map(str::to_string),
+        revision,
+        edited: Default::default(),
+    }))
+}
+
+/// Whether a value typed into field `was` still fits the field as it is `now`: the same type and,
+/// for a choice, still one of its options (an update may have changed either).
+fn still_fits(was: &Value, now: &Value, value: &Value) -> bool {
+    let options = now["options"].as_array();
+    was["type"] == now["type"] && (now["type"] != "choice" || options.is_none_or(|o| o.is_empty() || o.contains(value)))
+}
+
+/// What a plug-in's settings page was read from: its module and its settings' revision.
+fn revision(e: &Entry) -> Value {
+    json!([e.info["moduleHash"], e.info["settingsRevision"]])
+}
+
+/// Entry `e`'s Settings page: `None` for a filter, a module that didn't load and a plug-in that
+/// declares no settings. One whose settings can't be read shows them (their defaults) and why.
+fn build_page(app: &mut LccApp, e: &Entry) -> Option<Page> {
+    let declared = e.info["settings"].as_array().cloned().unwrap_or_default();
+    if e.filter || e.mark == Mark::Failed || declared.is_empty() {
+        return None;
+    }
+    settings_page(app, &e.id).unwrap_or_else(|err| {
+        let values: serde_json::Map<String, Value> =
+            declared.iter().filter_map(|f| Some((f["key"].as_str()?.to_string(), f["default"].clone()))).collect();
+        Some(Page {
+            id: e.id.clone(),
+            fields: declared.clone(),
+            values: Value::Object(values),
+            error: Some(err),
+            revision: revision(e),
+            edited: Default::default(),
+        })
+    })
+}
+
+/// Reads the selected plug-in's page again when its module or settings changed since it was read
+/// (an update or reinstall, a value the plug-in set): the current fields and values, with what the
+/// user typed and hasn't saved kept in the fields that still exist.
+fn refresh_page(app: &mut LccApp, s: &mut State, e: &Entry) {
+    let declared = e.info["settings"].as_array().is_some_and(|a| !a.is_empty());
+    let stale = match &s.page {
+        Some(pg) => pg.id != e.id || pg.revision != revision(e),
+        None => declared && !e.filter && e.mark != Mark::Failed,
+    };
+    if !stale {
+        return;
+    }
+    let old = s.page.take();
+    let mut page = build_page(app, e);
+    if let (Some(new), Some(old)) = (page.as_mut(), old.filter(|o| o.id == e.id)) {
+        for k in old.edited {
+            let field = |fields: &[Value]| fields.iter().find(|f| f["key"] == k.as_str()).cloned();
+            let (Some(was), Some(now)) = (field(&old.fields), field(&new.fields)) else { continue };
+            let value = old.values.get(&k).cloned().unwrap_or(Value::Null);
+            if still_fits(&was, &now, &value) {
+                new.values[&k] = value;
+                new.edited.insert(k);
+            }
+        }
+    }
+    s.page = page;
 }
 
 /// One row of the window's list.
@@ -367,17 +470,7 @@ fn entries(list: &Value) -> Vec<Entry> {
 fn select(app: &mut LccApp, s: &mut State, id: &str, tab: Option<Tab>) -> Result<(), String> {
     let list = app.session.execute("plugin.list", &json!({})).map_err(|e| e.to_string())?;
     let entry = entries(&list).into_iter().find(|e| e.id == id).ok_or_else(|| format!("{id}: {}", tr("no such plug-in is installed")))?;
-    let declared = entry.info["settings"].as_array().cloned().unwrap_or_default();
-    let page = if entry.filter || entry.mark == Mark::Failed || declared.is_empty() {
-        None
-    } else {
-        // a plug-in whose settings can't be read still shows them (their defaults) and why
-        settings_page(app, id).unwrap_or_else(|e| {
-            let values: serde_json::Map<String, Value> =
-                declared.iter().filter_map(|f| Some((f["key"].as_str()?.to_string(), f["default"].clone()))).collect();
-            Some(Page { id: id.to_string(), fields: declared.clone(), values: Value::Object(values), error: Some(e) })
-        })
-    };
+    let page = build_page(app, &entry);
     let tab = match tab {
         Some(t) if entry.filter || entry.mark == Mark::Failed => {
             return Err(format!("{id}: {} ({})", tr("this page has no tabs"), t.key()));
@@ -717,6 +810,8 @@ fn exec(app: &mut LccApp, id: &str, p: Value, msg: &mut String) -> Option<Value>
 /// The list's width and the height of the list and the page.
 const LIST_W: f32 = 250.0;
 const BODY_H: f32 = 400.0;
+/// The narrowest a page gets (the window's edge stops there).
+const MIN_PAGE_W: f32 = 360.0;
 
 pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let mut s = state(ctx);
@@ -743,6 +838,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             }
         }
         let selected = entries.iter().find(|e| s.selected.as_deref() == Some(e.id.as_str()));
+        if let Some(e) = selected {
+            refresh_page(app, &mut s, e);
+        }
         let open = !crate::dialog_frame::esc_closes(app.ui.dialog.is_some(), ctx);
         let mut closed = false;
         egui::Window::new(tr("Plug-in Manager"))
@@ -751,6 +849,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             .frame(crate::dialog_frame::card_frame(ctx))
             .collapsible(false)
             .default_width(LIST_W + 560.0)
+            // nothing on a page sets the window's width: its text wraps instead
+            .min_width(LIST_W + MIN_PAGE_W)
             .show(ctx, |ui| {
                 use crate::button::{Button, Kind};
                 if crate::dialog_frame::card_header(ui, tr("Plug-in Manager"), Some("plugin-manager:close")) {
@@ -785,9 +885,12 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     // a line as tall as the list (a separator here would take the screen's height)
                     let (line, _) = ui.allocate_exact_size(egui::vec2(9.0, BODY_H), egui::Sense::hover());
                     ui.painter().vline(line.center().x, line.y_range(), ui.visuals().widgets.noninteractive.bg_stroke);
-                    let w = ui.available_width().max(400.0);
+                    // the page takes the width the window has and never asks for more (a minimum
+                    // width here would hold the window at its widest)
+                    let w = ui.available_width();
                     ui.allocate_ui_with_layout(egui::vec2(w, BODY_H), egui::Layout::top_down(egui::Align::Min), |ui| {
-                        ui.set_min_size(egui::vec2(w, BODY_H));
+                        ui.set_min_height(BODY_H);
+                        ui.set_max_width(w);
                         if let Some(e) = selected {
                             egui::ScrollArea::vertical().id_salt("plugin-page").auto_shrink([false, false]).max_height(BODY_H).show(ui, |ui| {
                                 page_ui(ui, e, &mut s.tab, s.page.as_mut(), &installs, &mut actions);
@@ -798,11 +901,15 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 ui.separator();
                 ui.weak(tr("Supports {app} plug-ins and PhotoCraft pixel filters (.wasm)."));
                 if let Some(dir) = list["dir"].as_str() {
-                    ui.horizontal(|ui| {
-                        ui.weak(format!("{} {dir}", tr("Installed in")));
+                    // the button first, on the right: a long folder is shortened (whole on hover), never wider than the window
+                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 24.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if Button::new("Show Folder").small().widget("button:pluginShowFolder").show(ui).clicked() {
                             actions.push(("plugins.showFolder", Value::Null));
                         }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let text = egui::RichText::new(format!("{} {dir}", tr("Installed in"))).weak();
+                            ui.add(egui::Label::new(text).truncate()).on_hover_text(dir);
+                        });
                     });
                 }
             });
@@ -813,12 +920,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     for (id, p) in actions {
         s.message.clear();
         match id {
-            "plugins.pick" => match pick_module(app, &json!({})) {
-                Ok(Some(path)) => {
-                    if let Err(e) = begin_install(app, &mut s, &path) {
-                        s.message = e;
-                    }
-                }
+            "plugins.pick" => match one_install_at_a_time(&s).and_then(|()| pick_module(app, &json!({}))) {
+                Ok(Some(path)) => match begin_install(app, &mut s, &path) {
+                    Ok(v) => s.message = v["message"].as_str().unwrap_or_default().to_string(),
+                    Err(e) => s.message = e,
+                },
                 Ok(None) => {}
                 Err(e) => s.message = e,
             },
@@ -1223,7 +1329,7 @@ fn page_ui(ui: &mut egui::Ui, e: &Entry, tab: &mut Tab, page: Option<&mut Page>,
     ui.horizontal(|ui| {
         super::plugin_icon::show(ui, &e.id, 52.0);
         ui.vertical(|ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(&e.name).font(t.semibold(16.0)).color(t.text));
                 if !e.version.is_empty() {
                     ui.weak(&e.version);
@@ -1290,12 +1396,19 @@ fn settings_tab(ui: &mut egui::Ui, page: Option<&mut Page>, actions: &mut Vec<(&
     }
     let scope = format!("settings:{}", pg.id);
     for f in &pg.fields {
-        field_ui(ui, &scope, f, &mut pg.values);
+        if field_ui(ui, &scope, f, &mut pg.values)
+            && let Some(k) = f["key"].as_str()
+        {
+            pg.edited.insert(k.to_string());
+        }
     }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if Button::new("Save").kind(Kind::Primary).widget("button:pluginSettingsSave").show(ui).clicked() {
-            actions.push(("plugin.setSettings", json!({"id": pg.id, "values": pg.values})));
+            // only what the user changed: a value set meanwhile by the plug-in stays
+            let changed: serde_json::Map<String, Value> =
+                pg.edited.iter().map(|k| (k.clone(), pg.values.get(k).cloned().unwrap_or(Value::Null))).collect();
+            actions.push(("plugin.setSettings", json!({"id": pg.id, "values": changed})));
         }
         if Button::new("Revert").widget("button:pluginSettingsRevert").show(ui).clicked() {
             actions.push(("plugins.revertSettings", json!({"id": pg.id})));
@@ -1384,31 +1497,35 @@ fn filter_page(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Va
         .map(|k| p["params"][k]["label"].as_str().unwrap_or(k).to_string())
         .collect();
     let hash = p["moduleHash"].as_str().unwrap_or("");
-    egui::Grid::new(("plugin-filter", &e.id)).num_columns(2).spacing([14.0, 4.0]).show(ui, |ui| {
-        ui.weak(tr("Stage"));
-        ui.label(if p["stage"] == "source" {
-            tr("Source: on the raw, before the develop adjustments")
-        } else {
-            tr("Display: after the develop adjustments")
+    let stage =
+        if p["stage"] == "source" { tr("Source: on the raw, before the develop adjustments") } else { tr("Display: after the develop adjustments") };
+    fact_row(ui, tr("Stage"), stage);
+    let measures = match (p["analyze"].as_bool() == Some(true), p["analyzeArea"] == "crop") {
+        (false, _) => tr("No"),
+        (true, true) => tr("Yes: the cropped photo"),
+        (true, false) => tr("Yes: the whole photo"),
+    };
+    fact_row(ui, tr("Measures"), measures);
+    fact_row(ui, tr("Base tone"), if p["baseTone"] == "neutral" { tr("Neutral (its own rendering)") } else { tr("The camera's") });
+    fact_row(ui, tr("Parameters"), &if params.is_empty() { "—".to_string() } else { params.join(", ") });
+    let module = format!("{} KB · sha256 {}…", kilobytes(p), hash.get(..12).unwrap_or(hash));
+    fact_row(ui, tr("Module"), &module).on_hover_text(format!("sha256 {hash}"));
+}
+
+/// The width of a filter fact's name.
+const FACT_W: f32 = 90.0;
+
+/// One of a filter's facts: its name, and beside it the value, wrapped to the page's width (a
+/// grid's cells don't wrap: a long parameter list would widen the window).
+fn fact_row(ui: &mut egui::Ui, name: &str, value: &str) -> egui::Response {
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(egui::vec2(FACT_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_width(FACT_W);
+            ui.weak(name);
         });
-        ui.end_row();
-        ui.weak(tr("Measures"));
-        ui.label(match (p["analyze"].as_bool() == Some(true), p["analyzeArea"] == "crop") {
-            (false, _) => tr("No"),
-            (true, true) => tr("Yes: the cropped photo"),
-            (true, false) => tr("Yes: the whole photo"),
-        });
-        ui.end_row();
-        ui.weak(tr("Base tone"));
-        ui.label(if p["baseTone"] == "neutral" { tr("Neutral (its own rendering)") } else { tr("The camera's") });
-        ui.end_row();
-        ui.weak(tr("Parameters"));
-        ui.label(if params.is_empty() { "—".to_string() } else { params.join(", ") });
-        ui.end_row();
-        ui.weak(tr("Module"));
-        ui.label(format!("{} KB · sha256 {}…", kilobytes(p), hash.get(..12).unwrap_or(hash))).on_hover_text(format!("sha256 {hash}"));
-        ui.end_row();
-    });
+        ui.add(egui::Label::new(value).wrap())
+    })
+    .inner
 }
 
 /// A module that didn't load: why, and Remove.
@@ -1459,9 +1576,10 @@ fn contributions(p: &Value) -> Vec<String> {
     v
 }
 
-/// One dialog or settings field; `scope` (the plug-in and its dialog) keeps widget ids apart.
-fn field_ui(ui: &mut egui::Ui, scope: &str, f: &Value, values: &mut Value) {
-    let Some(k) = f["key"].as_str() else { return };
+/// One dialog or settings field; `scope` (the plug-in and its dialog) keeps widget ids apart. True
+/// when the user changed it.
+fn field_ui(ui: &mut egui::Ui, scope: &str, f: &Value, values: &mut Value) -> bool {
+    let Some(k) = f["key"].as_str() else { return false };
     let label = f["label"].as_str().unwrap_or(k);
     let v = &mut values[k];
     ui.horizontal(|ui| {
@@ -1473,15 +1591,18 @@ fn field_ui(ui: &mut egui::Ui, scope: &str, f: &Value, values: &mut Value) {
                 let r = ui.add(egui::Slider::new(&mut x, min..=max));
                 crate::access::label(&r, label);
                 *v = json!(x);
+                r.changed()
             }
             Some("bool") => {
                 let mut b = v.as_bool().unwrap_or(false);
                 let r = ui.checkbox(&mut b, "");
                 crate::access::label(&r, label);
                 *v = json!(b);
+                r.changed()
             }
             Some("choice") => {
-                let mut cur = v.as_str().unwrap_or("").to_string();
+                let was = v.as_str().unwrap_or("").to_string();
+                let mut cur = was.clone();
                 let r = egui::ComboBox::from_id_salt(("plugin-field", scope, k)).selected_text(cur.clone()).show_ui(ui, |ui| {
                     for o in f["options"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                         ui.selectable_value(&mut cur, o.to_string(), o);
@@ -1490,16 +1611,20 @@ fn field_ui(ui: &mut egui::Ui, scope: &str, f: &Value, values: &mut Value) {
                 crate::widgets::register(ui.ctx(), format!("pluginChoice:{scope}:{k}"), r.response.rect);
                 crate::access::label(&r.response, label);
                 *v = json!(cur);
+                cur != was
             }
             _ => {
-                let mut t = v.as_str().unwrap_or("").to_string();
+                let was = v.as_str().unwrap_or("").to_string();
+                let mut t = was.clone();
                 let widget = format!("pluginText:{scope}:{k}");
-                let r = crate::text_field::TextField::singleline(&widget, &mut t).width(240.0).show(ui);
+                let r = crate::text_field::TextField::singleline(&widget, &mut t).width(ui.available_width().min(240.0)).show(ui);
                 crate::access::label(&r.response, label);
                 *v = json!(t);
+                t != was
             }
         }
-    });
+    })
+    .inner
 }
 
 #[cfg(test)]

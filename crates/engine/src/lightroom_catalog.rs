@@ -1161,6 +1161,11 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     refuse_non_media(&mut data);
     validate(&data).map_err(error)?;
     let mut warnings = data.warnings.clone();
+    // Records this import has just added, or promoted from Local untouched since browsing, hold
+    // no edits of the library's own, even when adding or browsing read develop settings from the
+    // file's XMP: the catalog's settings apply to them.
+    let changed: HashSet<_> = files.promoted_changed.iter().collect();
+    let added: HashSet<_> = files.imported.iter().filter(|id| !changed.contains(id)).copied().map(PhotoId).collect();
     let duplicates: HashMap<_, _> = files.duplicates.iter().filter_map(|d| d.existing.map(|id| (key(&d.path), PhotoId(id)))).collect();
     let mut by_path: HashMap<_, _> =
         s.catalog.photos().filter(|p| p.copy_of.is_none()).filter_map(|p| source_path(p).map(|path| (key(path), p.id))).collect();
@@ -1242,10 +1247,32 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         }
         ids.insert(src.source_id, p.id);
         index.photos.insert(identity(&data, src), p.id.0);
-        let keep_develop = existing_id.is_some() && p.edited.is_some() && !update_existing;
+        // A record this import added, or a Local one untouched since browsing (an offline original
+        // never reaches the add step, so it is judged here), holds no edits of the library's own.
+        let fresh = existing_id.is_some_and(|id| added.contains(&id) || s.catalog.photo(id).is_some_and(|q| q.untouched_local()));
+        let keep_develop = existing_id.is_some() && !fresh && p.edited.is_some() && !update_existing;
         let previous_develop = (p.develop.clone(), p.edited.clone());
         if keep_develop {
             preserved += 1;
+        }
+        let orientation = lightroom_orientation(text(&src.image, "orientation")).unwrap_or_default();
+        let stored_aspect = number(&src.image, "fileWidth") as f64 / number(&src.image, "fileHeight") as f64;
+        // Lightroom leaves some settings at zero (Clarity, Texture) out of its develop text, so the
+        // catalog's settings start from the camera's defaults, not from what the file's XMP (or a
+        // default import preset) gave the photo. With no develop text, or one that can't be read,
+        // there is nothing to replace them with.
+        if fresh
+            && !src.settings.is_empty()
+            && mapped_settings(
+                &src.settings,
+                crate::crs::Target::for_photo(&p),
+                p.width.max(1) as f64 / p.height.max(1) as f64,
+                orientation,
+                stored_aspect,
+            )
+            .is_ok()
+        {
+            p.develop = Arc::new(p.camera_defaults());
         }
         if !src.xmp.is_empty() {
             match crate::sidecar::parse_sidecar(&src.xmp, crate::crs::Target::for_photo(&p)) {
@@ -1272,8 +1299,6 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             p.meta.keywords = src.keywords.clone();
         }
         if !src.settings.is_empty() && !keep_develop {
-            let orientation = lightroom_orientation(text(&src.image, "orientation")).unwrap_or_default();
-            let stored_aspect = number(&src.image, "fileWidth") as f64 / number(&src.image, "fileHeight") as f64;
             let target = crate::crs::Target::for_photo(&p);
             let aspect = p.width.max(1) as f64 / p.height.max(1) as f64;
             let base = p.develop.clone();
@@ -3580,5 +3605,185 @@ mod tests {
         let error = read(&path).unwrap_err();
         assert!(error.contains("develop settings could not be read"), "{error}");
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// Settings read from a file's XMP while this import adds it are not edits the library had: the
+    /// catalog's settings and history win, for embedded XMP and sidecars alike, without
+    /// `updateExisting`, and a setting the catalog leaves out (Lightroom omits those at zero) is
+    /// taken neither from the file nor from a default import preset.
+    #[test]
+    fn a_photo_this_import_adds_takes_the_catalogs_settings_over_its_files_xmp() {
+        let dir = crate::tests_xmp::temp_dir("lightroom-embedded-edits");
+        let saved = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="+1.00" crs:Dehaze="0" crs:Clarity2012="+20"/></rdf:RDF></x:xmpmeta>"#;
+        let dng = dir.join("embedded.dng");
+        std::fs::write(&dng, crate::tests_xmp::synthetic_dng_with(Some(saved), Default::default())).unwrap();
+        let raw = dir.join("sidecar.dng");
+        std::fs::write(&raw, crate::tests_xmp::synthetic_dng_with(None, Default::default())).unwrap();
+        std::fs::write(dir.join("sidecar.xmp"), saved).unwrap();
+        let photo = |id: i64, path: &Path| CatalogPhoto {
+            source_id: id,
+            uuid: format!("photo-{id}"),
+            path: path.to_string_lossy().into(),
+            image: row(json!({"id_local":id,"fileFormat":"DNG","fileWidth":32,"fileHeight":24})),
+            settings: "s = { Exposure2012 = 1, Dehaze = -50 }".into(),
+            xmp: String::new(),
+            keywords: Vec::new(),
+            history: vec![
+                row(json!({"id_local":id * 10,"dateCreated":1.0,"name":"Exposure","text":"s = { Exposure2012 = 1 }"})),
+                row(json!({"id_local":id * 10 + 1,"dateCreated":2.0,"name":"Dehaze","text":"s = { Exposure2012 = 1, Dehaze = -50 }"})),
+            ],
+            snapshots: Vec::new(),
+            original: Original::Local,
+        };
+        let data = CatalogImport {
+            source: "test.lrcat".into(),
+            photos: vec![photo(1, &dng), photo(2, &raw)],
+            collections: Vec::new(),
+            members: Vec::new(),
+            collection_content: Vec::new(),
+            stacks: Vec::new(),
+            warnings: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let mut s = crate::Session::new().with_fs();
+        // a default import preset sets a value the catalog leaves out too
+        let added = s.add_presets(vec![lcc_develop::Preset {
+            id: "look".into(),
+            name: "Look".into(),
+            group: "g".into(),
+            settings: json!({"effects": {"texture": 12.0}}),
+            favorite: false,
+            builtin: false,
+        }]);
+        s.import_defaults.raw_preset = added.first().cloned();
+        let r = apply(&mut s, data, false).unwrap();
+        assert_eq!(r["imported"], 2, "{r}");
+        assert_eq!(r["preservedExistingEdits"], 0, "the library held nothing before the import: {r}");
+        assert_eq!(r["historySteps"], 4, "each photo's two Lightroom steps are imported: {r}");
+        for p in s.catalog.photos() {
+            assert_eq!(p.develop.light.exposure, 1.0, "{}: the file's saved exposure and the catalog's agree", p.file_name);
+            assert_eq!(p.develop.effects.dehaze, -50.0, "{}: the catalog's later edit is kept, not the file's", p.file_name);
+            assert_eq!(p.develop.effects.clarity, 0.0, "{}: a setting the catalog leaves out is not taken from the file", p.file_name);
+            assert_eq!(p.develop.effects.texture, 0.0, "{}: nor from a default import preset", p.file_name);
+            let labels: Vec<_> = p.history.iter().map(|h| h.label.as_str()).collect();
+            assert_eq!(labels, ["Exposure", "Dehaze"], "{}: the photo's Lightroom history is imported", p.file_name);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A catalog row whose develop text can't be read leaves a new photo with what its file's XMP and
+    /// the default import preset gave it, not the camera's defaults (and shows that both reach it).
+    #[test]
+    fn unreadable_catalog_settings_leave_a_new_photos_file_settings() {
+        let dir = crate::tests_xmp::temp_dir("lightroom-unreadable-settings");
+        let saved = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Clarity2012="+20"/></rdf:RDF></x:xmpmeta>"#;
+        let dng = dir.join("embedded.dng");
+        std::fs::write(&dng, crate::tests_xmp::synthetic_dng_with(Some(saved), Default::default())).unwrap();
+        let data = CatalogImport {
+            source: "test.lrcat".into(),
+            photos: vec![CatalogPhoto {
+                source_id: 1,
+                uuid: "photo-1".into(),
+                path: dng.to_string_lossy().into(),
+                image: row(json!({"id_local":1,"fileFormat":"DNG","fileWidth":32,"fileHeight":24})),
+                settings: format!("s = {}0{}", "{".repeat(1000), "}".repeat(1000)),
+                xmp: String::new(),
+                keywords: Vec::new(),
+                history: Vec::new(),
+                snapshots: Vec::new(),
+                original: Original::Local,
+            }],
+            collections: Vec::new(),
+            members: Vec::new(),
+            collection_content: Vec::new(),
+            stacks: Vec::new(),
+            warnings: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let mut s = crate::Session::new().with_fs();
+        let added = s.add_presets(vec![lcc_develop::Preset {
+            id: "look".into(),
+            name: "Look".into(),
+            group: "g".into(),
+            settings: json!({"effects": {"texture": 12.0}}),
+            favorite: false,
+            builtin: false,
+        }]);
+        s.import_defaults.raw_preset = added.first().cloned();
+        let r = apply(&mut s, data, false).unwrap();
+        assert_eq!(r["imported"], 1, "{r}");
+        assert!(
+            r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.contains("settings"))),
+            "the unreadable settings are reported: {r}"
+        );
+        let p = s.catalog.photos().next().unwrap();
+        assert_eq!(p.develop.effects.clarity, 20.0, "the file's XMP is kept when the catalog's settings can't be read");
+        assert_eq!(p.develop.effects.texture, 12.0, "and so is the default import preset");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A browsed (Local) photo joins the library through the import's add step, or, when its original
+    /// is offline, through the catalog import alone. Settings browsing read from its file are not the
+    /// library's edits and give way to the catalog's settings and history; a change made after
+    /// browsing is kept, as for any other existing record.
+    #[test]
+    fn a_browsed_photo_keeps_only_edits_made_after_browsing() {
+        use crate::lightroom_fixture::{self as fixture, Table};
+        for (changed, offline) in [(true, false), (false, false), (true, true), (false, true)] {
+            let dir = fixture::dir(&format!("browsed-edits-{changed}-{offline}"));
+            let originals = dir.join("originals");
+            std::fs::create_dir_all(originals.join("Photos")).unwrap();
+            let original = originals.join("Photos/test.ARW");
+            if !offline {
+                std::fs::write(&original, b"original").unwrap();
+            }
+            let mut tables = fixture::one_photo(&originals, "s = { Dehaze = -50 }");
+            tables.push(Table {
+                name: "Adobe_libraryImageDevelopHistoryStep",
+                columns: fixture::HISTORY_COLUMNS,
+                rows: vec![fixture::history_step(2, 1, 10.0, "Dehaze", fixture::text("s = { Dehaze = -50 }"))],
+            });
+            let source = dir.join("source.lrcat");
+            fixture::write(&source, &tables);
+            let mut s = crate::Session::new();
+            s.media.file_probe =
+                Some(Arc::new(|_| Ok(crate::media::ProbeInfo { format: "ARW".into(), width: 20, height: 10, ..Default::default() })));
+            let id = s.catalog.alloc_photo_id();
+            let mut browsed = Photo::new(id, Source::File { path: original.to_string_lossy().into() }, "test.ARW", "ARW", 20, 10, "before");
+            browsed.local = true;
+            // as browsing a raw whose file's XMP holds develop settings leaves it
+            let mut from_file = (*browsed.develop).clone();
+            from_file.effects.dehaze = 10.0;
+            // a setting the catalog's develop text leaves out (Lightroom omits those at zero)
+            from_file.effects.clarity = 15.0;
+            browsed.develop = Arc::new(from_file);
+            browsed.edited = Some("before".into());
+            browsed.set_local_baseline();
+            s.commit("Browse folder", Op::AddPhoto { photo: Box::new(browsed) }).unwrap();
+            if changed {
+                let mut edit = (*s.catalog.photo(id).unwrap().develop).clone();
+                edit.effects.dehaze = 25.0;
+                s.set_develop(id, edit, "Personal edit").unwrap();
+            }
+            let mut job = crate::lightroom_job::LightroomJob::new(&mut s, source, false).unwrap();
+            let prepared = job.prepare(&AtomicBool::new(false)).unwrap();
+            let report = crate::lightroom_job::commit_prepared(&mut s, prepared).unwrap().report;
+            assert_eq!(report["imported"], 1, "the browsed photo joins the library (offline: {offline}): {report}");
+            let photo = s.catalog.photo(id).unwrap();
+            assert!(!photo.local);
+            let catalog_step = photo.history.iter().any(|h| h.label == "Dehaze");
+            if changed {
+                assert_eq!(report["preservedExistingEdits"], 1, "the edit came before the import (offline: {offline}): {report}");
+                assert_eq!(photo.develop.effects.dehaze, 25.0, "the library's edit is kept (offline: {offline})");
+                assert_eq!(photo.develop.effects.clarity, 15.0, "the kept settings are kept whole (offline: {offline})");
+                assert!(!catalog_step, "the library's history is kept too (offline: {offline}): {:?}", photo.history);
+            } else {
+                assert_eq!(report["preservedExistingEdits"], 0, "browsing read the file, nobody edited it (offline: {offline}): {report}");
+                assert_eq!(photo.develop.effects.dehaze, -50.0, "the catalog's settings replace the file's (offline: {offline})");
+                assert_eq!(photo.develop.effects.clarity, 0.0, "a setting the catalog leaves out is not the file's (offline: {offline})");
+                assert!(catalog_step, "the catalog's history is imported (offline: {offline}): {:?}", photo.history);
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }

@@ -224,6 +224,10 @@ pub struct Duplicate {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ImportReport {
     pub imported: Vec<u64>,
+    /// Local (browsed) records among `imported` that were changed after browsing: those edits are
+    /// the library's own, unlike settings browsing read from the file.
+    #[serde(skip)]
+    pub promoted_changed: Vec<u64>,
     pub duplicates: Vec<Duplicate>,
     /// [`OnDeleted::Restore`]: photos brought back from Recently Deleted instead of imported.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1698,6 +1702,9 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                     purge.push(*old);
                 }
                 report.imported.push(id.0);
+                if s.catalog.photo(id).is_some_and(|p| !p.untouched_local()) {
+                    report.promoted_changed.push(id.0);
+                }
             }
             PreparedItem::Duplicate { path, existing, reason, hash } => {
                 let existing = existing.or_else(|| {
