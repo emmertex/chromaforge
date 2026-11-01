@@ -24,4 +24,6 @@ lcc-credentials = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+lcc-codecs = { workspace = true }
 lcc-fuzzkit = { workspace = true }
+lcc-raster = { workspace = true }
