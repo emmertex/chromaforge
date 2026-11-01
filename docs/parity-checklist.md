@@ -936,6 +936,7 @@ We only talk to Immich over its HTTP API with our own client; concepts, endpoint
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-01 | patch | LR-META-EXIF-FULL, LR-META-XMP, LR-EXP-WATERMARK, LR-IMP-FORMATS: upstream full-scan fixes ported by hand (#3467, #3523, #3441, #3521, #3442, #3445, #3448, #3464, #3465, #3515, #3518, #3495, #3497, #3489, #3488, #3473, #3475): malformed capture times and IPTC Time Created are refused, a RW2 reads missing Exif from its JpgFromRaw, a fractional XMP orientation is refused, decomposed Korean / Vietnamese watermark text is composed first; status unchanged |
 | 2026-10-30 | minor | LR-IMP-FORMATS: a CR2 shot at an in-camera aspect ratio opens with the maker note's `AspectInfo` rectangle as its default crop, as a CR3 does (upstream #3380, #3313); status unchanged (🟡) |
 | 2026-10-26 | minor | LRC-SHELL-PLUGINS (G19): plug-ins start programs installed on the computer (`programs` permission only the user grants, run folder, `program.end`, activity row), program-tools SDK example; status unchanged (🟡) |
 | 2026-10-26 | patch | LR-IMP-FORMATS: hot-pixel suppression takes each noise bin's median by selection instead of a sort (bit-identical medians; 10–15 % of that step); status unchanged |
