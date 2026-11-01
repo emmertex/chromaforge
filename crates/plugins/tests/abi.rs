@@ -248,13 +248,13 @@ fn programs_are_granted_only_by_the_user() {
     let bytes = forward_programs(&json!({"method": "program.list", "params": {}}));
     let mut m = Manager::in_memory();
     let e = m.install_bytes(&bytes, Some(programs_grant(&["conv"])), false).unwrap_err().to_string();
-    assert!(e.contains("Plugin Manager"), "an install that grants a program points to the Plugin Manager: {e}");
+    assert!(e.contains("Plug-in Manager"), "an install that grants a program points to the Plug-in Manager: {e}");
     assert!(m.get("test.plugin").is_none(), "nothing is installed");
     m.install_bytes(&bytes, Some(all()), false).unwrap();
     let e = m.set_grant("test.plugin", programs_grant(&["conv"])).unwrap_err().to_string();
-    assert!(e.contains("Plugin Manager"), "{e}");
+    assert!(e.contains("Plug-in Manager"), "{e}");
     assert_eq!(m.get("test.plugin").unwrap().effective(), Permissions { catalog: true, ..Default::default() }, "the other permissions are unchanged");
-    // the Plugin Manager's own paths can
+    // the Plug-in Manager's own paths can
     let g = m.set_grant_by_user("test.plugin", programs_grant(&["conv"])).unwrap();
     assert_eq!(g.programs.len(), 1);
     // a command may repeat what the user granted, and leave it out to revoke it, never add or widen
@@ -264,7 +264,7 @@ fn programs_are_granted_only_by_the_user() {
     assert_eq!(m.get("test.plugin").unwrap().effective(), granted);
     let mut wider = granted.clone();
     wider.programs[0].mac_bundle_ids.push("com.example.other".into());
-    assert!(m.set_grant("test.plugin", wider.clone()).unwrap_err().to_string().contains("Plugin Manager"), "a wider entry is refused");
+    assert!(m.set_grant("test.plugin", wider.clone()).unwrap_err().to_string().contains("Plug-in Manager"), "a wider entry is refused");
     assert!(m.install_bytes(&bytes, Some(wider), false).is_err());
     assert!(m.set_grant("test.plugin", programs_grant(&["conv", "other"])).is_err(), "another program is refused");
     assert_eq!(m.get("test.plugin").unwrap().effective(), granted, "a refused grant changes nothing");
@@ -511,7 +511,7 @@ fn an_update_from_a_command_keeps_programs_only_for_the_same_code() {
     m.install_bytes_by_user(&version("(i64.const 0)"), Some(programs_grant(&["conv"])), false).unwrap();
     let kept = m.get("test.plugin").unwrap().effective();
     let e = m.install_bytes(&version("(nop) (i64.const 0)"), Some(kept), false).unwrap_err().to_string();
-    assert!(e.contains("Plugin Manager"), "{e}");
+    assert!(e.contains("Plug-in Manager"), "{e}");
     assert_eq!(granted(&m), 1, "a refused install changes nothing");
     // the user may install other code and keep them
     m.install_bytes_by_user(&version("(nop) (i64.const 0)"), None, false).unwrap();

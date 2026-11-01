@@ -49,6 +49,8 @@ pub(crate) enum Msg {
     Synced(Box<crate::cmd::immich::sync::SyncDone>),
     /// `immich.syncAlbums {background}`: an album run finished.
     AlbumsSynced(Box<crate::cmd::immich::publish::AlbumsDone>),
+    /// `immich.pullSidecars` / `immich.pushSidecars` {background}: a sidecar run finished.
+    Sidecars(Box<SidecarsDone>),
     /// `credentials.unlock {background}`: the encrypted file opened (or not).
     FileUnlocked(Result<lcc_credentials::FileStore, CredError>),
     /// `credentials.unlockSystem`: the keychain's own unlock prompt was answered.
@@ -61,6 +63,139 @@ pub(crate) struct Probed {
     pub status: lcc_immich::ServerStatus,
     pub pinned: Option<String>,
     pub key: lcc_credentials::Secret,
+}
+
+/// Which way a sidecar run goes (IMM-SIDECARS).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SidecarDirection {
+    /// Immich → catalog (and optionally the local sidecar files).
+    Pull,
+    /// Catalog → Immich (external-library files, and the supported metadata of managed assets).
+    Push,
+}
+
+impl SidecarDirection {
+    pub fn name(self) -> &'static str {
+        match self {
+            SidecarDirection::Pull => "pull",
+            SidecarDirection::Push => "push",
+        }
+    }
+}
+
+/// One photo's part of a sidecar run.
+#[derive(Clone, Debug)]
+pub(crate) struct SidecarItem {
+    pub photo: PhotoId,
+    pub asset: String,
+    pub file_name: String,
+    /// Pull: the asset's `updatedAt`, for the local-edit check.
+    pub updated_at: Option<String>,
+    /// Pull: the sidecar's XMP as the server served it.
+    pub xmp: Option<String>,
+    /// Push: a metadata or tag change was sent to Immich.
+    pub pushed: bool,
+    pub error: Option<String>,
+    /// A failure that ends the run (offline, bad key, TLS): the rest would fail the same way.
+    pub fatal: Option<ImmichError>,
+    /// Why the photo was left alone (`noSidecar`, `locked`, `trashed`, …).
+    pub skipped: Option<&'static str>,
+}
+
+impl Default for SidecarItem {
+    fn default() -> Self {
+        SidecarItem {
+            photo: PhotoId(0),
+            asset: String::new(),
+            file_name: String::new(),
+            updated_at: None,
+            xmp: None,
+            pushed: false,
+            error: None,
+            fatal: None,
+            skipped: None,
+        }
+    }
+}
+
+/// What a sidecar worker brings back. The pull's catalog changes are made on the session thread
+/// (`sidecars::finish`); the push's Immich writes already happened on the worker.
+pub(crate) struct SidecarsDone {
+    pub direction: SidecarDirection,
+    pub items: Vec<SidecarItem>,
+    pub errors: Vec<String>,
+    pub fatal: Option<ImmichError>,
+    pub dry_run: bool,
+    /// Pull: write the sidecars next to the originals too.
+    pub write_files: bool,
+    /// Push: external-library assets whose sidecar files the app just wrote (Immich re-reads them).
+    pub refresh: Vec<String>,
+    /// Pull: a photo edited here wins unless `overwrite`.
+    pub overwrite: bool,
+    /// Pull: there were more linked photos than one run covers (the cap is reported, not hidden).
+    pub truncated: bool,
+    /// Push: the external-library files written (and the local failures / skips) on the session
+    /// thread before the worker started.
+    pub local_written: Vec<String>,
+    pub local_failed: Vec<serde_json::Value>,
+    pub local_skipped: Vec<serde_json::Value>,
+}
+
+/// One photo's sidecar push work (the session builds it from the catalog; the worker sends it).
+#[derive(Clone, Debug)]
+pub(crate) struct SidecarPush {
+    pub photo: PhotoId,
+    pub asset: String,
+    pub update: lcc_immich::types::AssetUpdate,
+    /// The asset tags the catalog wants (`parent/child`).
+    pub tags: Vec<String>,
+    /// The catalog capture time, to which the worker adds the asset's own zone.
+    pub captured: Option<String>,
+    /// `full`: replace the whole sidecar through a temporary asset (IMM-SIDECARS).
+    pub full: Option<FullSidecar>,
+}
+
+/// A full sidecar replacement for a managed asset: the app's packet, and a tiny unique placeholder
+/// image to upload with it (Immich's API has no way to write an existing asset's sidecar; a
+/// source asset's sidecar can be copied onto it, then the source is removed).
+#[derive(Clone, Debug)]
+pub(crate) struct FullSidecar {
+    /// The app's XMP packet for the photo.
+    pub packet: Vec<u8>,
+    /// A unique placeholder image (never a user photo; deleted after the copy).
+    pub placeholder: Vec<u8>,
+    pub file_name: String,
+    pub device_asset_id: String,
+    /// ISO 8601 capture/import time for the placeholder's `fileCreatedAt`.
+    pub created: String,
+}
+
+/// One photo's sidecar pull work.
+#[derive(Clone, Debug)]
+pub(crate) struct SidecarPull {
+    pub photo: PhotoId,
+    pub asset: String,
+    pub file_name: String,
+}
+
+/// `immich.pullSidecars` / `immich.pushSidecars`: the run in flight and the last run's summary.
+#[derive(Default)]
+pub(crate) struct SidecarProgress {
+    pub active: bool,
+    /// `pull`, `push` or empty.
+    pub direction: &'static str,
+    /// Counts and the first errors of the last finished run (never every item).
+    pub last: Option<serde_json::Value>,
+}
+
+impl SidecarProgress {
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "active": self.active,
+            "direction": self.direction,
+            "last": self.last,
+        })
+    }
 }
 
 /// What an import download job brings back.
@@ -140,6 +275,8 @@ pub struct State {
     pub(crate) checks: HashMap<String, serde_json::Value>,
     /// IMM-SYNC per account: state between runs, the running flag, the schedule.
     pub(crate) sync: HashMap<String, crate::cmd::immich::sync::AccountSync>,
+    /// IMM-SIDECARS: the sidecar pull/push in flight and the last run's summary.
+    pub(crate) sidecars: SidecarProgress,
     /// Finished Edit In version uploads not yet shown (`immich.versionResults`).
     pub(crate) versions: Vec<serde_json::Value>,
 }
@@ -173,6 +310,7 @@ impl Default for State {
             checking: HashSet::new(),
             checks: HashMap::new(),
             sync: HashMap::new(),
+            sidecars: SidecarProgress::default(),
             versions: Vec::new(),
         }
     }

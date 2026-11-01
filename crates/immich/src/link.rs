@@ -80,6 +80,8 @@ impl Index {
             if let Some(t) = &p.captured
                 && p.file_size > 0
             {
+                // a year or month alone compares as the start of its period, as sync sends it to Immich
+                let t = lcc_catalog::dates::capture_start(t);
                 by_name.entry((p.file_name.to_lowercase(), t.chars().take(19).collect(), p.file_size)).or_default().push(p.id);
             }
         }

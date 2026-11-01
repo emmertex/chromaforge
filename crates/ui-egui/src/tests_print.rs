@@ -418,6 +418,9 @@ fn the_print_preview_does_not_rebuild_thumbnails_every_frame() {
             h.step();
         }
         assert_eq!(h.app.renderer.thumb_jobs_built, built, "{style}: no thumbnail is rebuilt while nothing changes");
+        // (a job still running on a slow machine is the one already counted in `built`, finishing;
+        // wait for it instead of reading the worker's progress mid-flight)
+        assert!(h.settle(Duration::from_secs(5)), "{style}: nothing is left running");
         assert_eq!(h.app.renderer.in_flight(), 0, "{style}");
     }
     assert!(h.app.renderer.thumb_jobs_built - before < 50, "{} jobs", h.app.renderer.thumb_jobs_built - before);

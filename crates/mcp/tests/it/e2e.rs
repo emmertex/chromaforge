@@ -106,7 +106,7 @@ fn file_writers_advertise_destructive_effects() {
 }
 
 /// A plug-in's settings are reachable over MCP: `plugin.settings` and `plugin.setSettings` are
-/// tools, and they reach the Plugin Manager (here: no such plug-in).
+/// tools, and they reach the Plug-in Manager (here: no such plug-in).
 #[test]
 fn plugin_settings_are_mcp_tools() {
     // never the real user's plug-in folder

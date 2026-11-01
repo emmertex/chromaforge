@@ -278,6 +278,8 @@ fn prepare_site(s: &mut Session, g: &GallerySettings, ids: &[PhotoId], c: &str) 
         let o = image_options(g, r.long_edge, r.large);
         let work = crate::export::prepare_export(s, id, &o, seq).map_err(|e| bad(c, format!("{}: {e}", r.path)))?;
         let created = s.catalog.photo(id).map(|p| p.captured.clone().unwrap_or_else(|| p.imported.clone())).unwrap_or_default();
+        // a year or a month alone (`1983-04`) is sent as the start of its period, a time the server reads
+        let created = lcc_catalog::dates::capture_start(&created).into_owned();
         let created = if created.len() == 19 { format!("{created}.000Z") } else { created };
         images.push(ImageJob { path: r.path.clone(), large: r.large, created, work });
     }

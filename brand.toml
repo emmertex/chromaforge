@@ -4,8 +4,8 @@ display_name   = "Chromaforge"                    # window title, menus, About, 
 short_name     = "Chromaforge"                    # macOS menu bar, taskbar, notifications
 tagline        = "Photo library and raw development"
 vendor         = "Chromaforge contributors"
-homepage       = "https://github.com/emmertex/lightcraft-classic"
-repository     = "https://github.com/emmertex/lightcraft-classic"
+homepage       = "https://github.com/emmertex/chromaforge"
+repository     = "https://github.com/emmertex/chromaforge"
 # The repository the release manifest (latest.json) names its files under. Installed builds only
 # download files under their own `repository` or a [legacy] `repositories` entry, and GitHub
 # redirects a renamed repository's old URLs: so after a rename this stays the OLD repository
@@ -14,11 +14,11 @@ release_repository = "https://github.com/emmertex/lightcraft-classic"
 discord        = "https://discord.gg/c3dfYATzsQ"  # community chat (Help menu, About); leave out for none
 calibration_discord = "https://discord.gg/Vvqg2QhQXk" # where contributors send camera calibrations; leave out for the repository
 calibration_thread  = "Chromaforge-colour"            # the Discord thread for them
-developer_id   = "com.emmertex.lightcraftclassic" # AppStream <developer id>: lowercase reverse-DNS of whoever ships it
-binary         = "lightcraft-classic"            # desktop executable name in packages
-cli_binary     = "lightcraft-classic-cli"
-env_prefix     = "LIGHTCRAFT_CLASSIC"            # <PREFIX>_LOG, <PREFIX>_GPU, …
-mcp_server     = "lightcraft-classic"            # MCP server id shown to agents
+developer_id   = "com.emmertex.chromaforge"      # AppStream <developer id>: lowercase reverse-DNS of whoever ships it
+binary         = "chromaforge"                   # desktop executable name in packages
+cli_binary     = "chromaforge-cli"
+env_prefix     = "CHROMAFORGE"                   # <PREFIX>_LOG, <PREFIX>_GPU, …
+mcp_server     = "chromaforge"                   # MCP server id shown to agents
 icon_svg       = "brand/icon.svg"       # source for every generated icon
 logo_svg       = "brand/logo.svg"       # identity plate default, About box
 
@@ -27,11 +27,11 @@ logo_svg       = "brand/logo.svg"       # identity plate default, About box
 [identity]
 app_id          = "com.emmertex.chromaforge"         # reverse-DNS: bundle id, Flatpak id, MIME/desktop ids
 android_package = "com.emmertex.chromaforge"        # Android / Play Store package: permanent once on the Play Store
-settings_dir    = "LightCraft Classic"               # ~/.config/<x>, ~/Library/Application Support/<x>, %APPDATA%\<x>
-library_default = "LightCraft Classic Library"       # default catalog folder name under Pictures
-catalog_ext     = "lccat"
-preset_ext      = "lccpreset"
-url_scheme      = "lightcraft-classic"               # <scheme>:// deep links, OAuth redirects
+settings_dir    = "Chromaforge"                      # ~/.config/<x>, ~/Library/Application Support/<x>, %APPDATA%\<x>
+library_default = "Chromaforge Library"              # default catalog folder name under Pictures
+catalog_ext     = "chromacat"
+preset_ext      = "chromapreset"
+url_scheme      = "chromaforge"                      # <scheme>:// deep links, OAuth redirects
 
 # Never derived from the product name: these stay valid across renames forever.
 [stable]
@@ -48,10 +48,10 @@ public_keys = ["PtE/NoJCHCje8yQ9XftBT1GN6aT/5TSu6URW9Vp1aaI="]
 
 # Previous identities, read on startup for migration (settings, catalogs, presets, env vars).
 [legacy]
-settings_dirs = ["NoNameYet", "LightCraft"]
-env_prefixes  = ["NONAMEYET", "LIGHTCRAFT"]
-preset_exts   = ["nnypreset", "lcpreset"]
-catalog_exts  = ["nnycat"]
+settings_dirs = ["NoNameYet", "LightCraft", "LightCraft Classic"]
+env_prefixes  = ["NONAMEYET", "LIGHTCRAFT", "LIGHTCRAFT_CLASSIC"]
+preset_exts   = ["nnypreset", "lcpreset", "lccpreset"]
+catalog_exts  = ["nnycat", "lccat"]
 # Repositories this app was released from before: their release files are still accepted as
 # updates (a renamed repository's URLs keep working through GitHub's redirect).
 repositories  = ["https://github.com/emmertex/lightcraft-classic"]

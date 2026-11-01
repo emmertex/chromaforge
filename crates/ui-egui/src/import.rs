@@ -726,13 +726,19 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
         return;
     }
     let dialog_was_import = matches!(app.ui.dialog, Some(crate::state::Dialog::Import { .. }));
-    let mut d = if let Some(crate::state::Dialog::Import { opts }) = app.ui.dialog.take() {
-        let mut d = *opts;
-        d.candidates = out.candidates;
-        d.checked = (0..d.candidates.len()).map(|i| d.checked_by_default(i)).collect();
-        d
-    } else {
-        ImportDialog::new(out.candidates)
+    // (only the Import dialog is taken: any other dialog the person has open stays, and the review
+    // waits behind it)
+    let mut d = match app.ui.dialog.take() {
+        Some(crate::state::Dialog::Import { opts }) => {
+            let mut d = *opts;
+            d.candidates = out.candidates;
+            d.checked = (0..d.candidates.len()).map(|i| d.checked_by_default(i)).collect();
+            d
+        }
+        other => {
+            app.ui.dialog = other;
+            ImportDialog::new(out.candidates)
+        }
     };
     (d.scan_limited, d.unreadable, d.unsupported) = (out.truncated, out.unreadable, out.unsupported);
     let trashed = d
@@ -1837,7 +1843,14 @@ pub(crate) fn candidate_cell(app: &mut LccApp, ui: &mut egui::Ui, d: &mut Import
         c.height,
         c.format,
         c.file_size as f64 / 1e6,
-        c.captured.as_deref().map(|d| format!("\n{}", d.replace('T', " "))).unwrap_or_default()
+        // a year or a month alone shows as such ("1983", "April 1983")
+        c.captured
+            .as_deref()
+            .map(|d| format!(
+                "\n{}",
+                if lcc_catalog::dates::partial_capture(d).is_some() { crate::i18n::display_time(d) } else { d.replace('T', " ") }
+            ))
+            .unwrap_or_default()
     );
     let resp = resp.on_hover_text(tip);
     if resp.clicked() && ok {

@@ -1036,6 +1036,16 @@ impl LccApp {
             // menu), it must not keep a search that no longer applies (issue #1648)
             self.ui.search.clear();
         }
+        if r.is_ok() && id == "mask.addComponent" && matches!(self.ui.tool.as_str(), "colorRange" | "brush" | "object") {
+            // The eyedropper, the brush and the object tool take every press on the photo, so the handles of a
+            // gradient (or any other shape) added meanwhile would be dead: disarm them. A component of the
+            // tool's own kind keeps it (Pick, another colour range; Brush, Brush; Object, another object). An
+            // omitted kind is a brush, as in the engine.
+            let kind = params.get("kind").and_then(Value::as_str).unwrap_or("brush");
+            if kind != self.ui.tool {
+                self.ui.tool.clear();
+            }
+        }
         if r.is_ok() && id == "mask.adjust" {
             // Judge local adjustments on the photo: while a slider is at work nothing covers it, not even
             // an overlay switched on with O (it comes back when the slider rests); one that showed by
@@ -1687,23 +1697,54 @@ impl LccApp {
         self.ui.was_focused = focused;
         // auto import: list the watched folder every few seconds (on a worker thread: it may be on
         // a network share), then import what's new like any import (also on a worker thread)
+        // a folder that couldn't be read stops being one once another is watched (or none)
+        if self.ui.auto_import_error.as_ref().is_some_and(|(f, _)| self.session.import_defaults.auto_folder.as_ref() != Some(f)) {
+            self.ui.auto_import_error = None;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(folder) = self.session.import_defaults.auto_folder.clone() {
             const LABEL: &str = "Auto Import";
             let now = ctx.input(|i| i.time);
             if now - self.ui.auto_import_at >= 3.0
-                && self.import.is_none()
+                && !import::running(self)
                 && self.sync_run.is_none()
                 && self.lightroom.is_none()
                 && !self.tasks.is_running(LABEL)
             {
                 self.ui.auto_import_at = now;
-                let work = move || lcc_engine::cmd::library::list_auto_import_folder(&folder);
-                let done = |app: &mut LccApp, _ctx: &egui::Context, listing: Result<Vec<(String, u64)>, String>| {
+                let listed = folder.clone();
+                let work = move || lcc_engine::cmd::library::list_auto_import_folder(&listed);
+                let done = move |app: &mut LccApp, _ctx: &egui::Context, listing: Result<Vec<(String, u64)>, String>| {
+                    // the watched folder changed while this one was listed: its result is for nothing on screen
+                    if app.session.import_defaults.auto_folder.as_ref() != Some(&folder) {
+                        return;
+                    }
                     let listing = match listing {
-                        Ok(l) => l,
-                        Err(e) => return log::debug!("auto import: {e}"),
+                        Ok(l) => {
+                            if app.ui.auto_import_error.as_ref().is_some_and(|(f, _)| *f == folder) {
+                                app.ui.auto_import_error = None;
+                                log::info!("auto import: the watched folder can be read again: {folder}");
+                            }
+                            l
+                        }
+                        // removed, renamed, unmounted or not allowed: said once, not every few seconds
+                        Err(e) => {
+                            let error = Some((folder, e));
+                            if app.ui.auto_import_error != error {
+                                if let Some((_, e)) = &error {
+                                    log::warn!("auto import: can't read the watched folder {e}");
+                                }
+                                app.ui.auto_import_error = error;
+                            }
+                            return;
+                        }
                     };
+                    // an import, a scan (a finished Local browse replaces `app.import`), a sync or a Lightroom
+                    // migration that started while the folder was listed: scanning now would mark the new files as
+                    // tried without importing them; the next listing picks them up
+                    if import::running(app) || app.sync_run.is_some() || app.lightroom.is_some() {
+                        return;
+                    }
                     let p = serde_json::json!({"listing": listing, "start": false});
                     let Ok(r) = app.session.execute("library.autoImportScan", &p) else { return };
                     let Some(mut params) = r.get("import").cloned().filter(|_| app.import.is_none()) else { return };
@@ -1789,6 +1830,10 @@ impl LccApp {
         let dropped: Vec<String> =
             ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).collect());
         if dropped.is_empty() {
+            return;
+        }
+        // a plug-in module dropped while the Plug-in Manager is open installs, not imports
+        if panels::plugins::take_drop(self, ctx, &dropped) {
             return;
         }
         // a dialog is on screen: the review would replace it, losing what it holds

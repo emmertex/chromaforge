@@ -19,7 +19,8 @@ const SAME: f64 = 0.93;
 const MAX_GAP: f64 = 86_400.0;
 
 fn secs(iso: &str) -> Option<i64> {
-    let d = lcc_meta::DateTime::parse_iso(iso)?;
+    // a year or a month alone has no time to find a burst by
+    let d = lcc_meta::DateTime::parse_iso(iso).filter(lcc_meta::DateTime::is_full)?;
     Some(d.unix_seconds())
 }
 
@@ -216,4 +217,15 @@ pub fn specs() -> Vec<CommandSpec> {
             analyze
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    /// A year or a month alone has no time to find a burst by; a full time does.
+    #[test]
+    fn a_year_or_month_alone_has_no_burst_time() {
+        assert_eq!(super::secs("1983"), None);
+        assert_eq!(super::secs("1983-04"), None);
+        assert_eq!(super::secs("1983-04-01T00:00:00"), Some(418_003_200));
+    }
 }

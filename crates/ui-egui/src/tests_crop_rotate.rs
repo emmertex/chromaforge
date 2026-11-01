@@ -400,23 +400,22 @@ fn the_angle_field_writes_the_angle_like_the_readout() {
 }
 
 /// The crop tool is Lightroom Classic's Crop & Straighten drawer: Aspect and its lock, Angle with
-/// the straighten tool and Auto, Constrain to Image, Reset and Close. Rotate, flip, Rotate Crop
-/// Aspect and the guide overlays stay reachable by their commands and shortcuts (the Photo and
-/// View menus), as in Lightroom Classic.
+/// the straighten tool and Auto, Constrain to Image, Reset and Close, plus rotate and flip buttons
+/// (issue #705; also in the Photo menu). The guide overlays stay in the View menu.
 #[test]
 fn the_crop_tool_is_lightroom_classics_drawer() {
     let mut h = crop_tool();
-    for id in ["cropLock", "straightenTool", "straightenAuto", "cropReset", "cropClose"] {
+    for id in ["cropLock", "straightenTool", "straightenAuto", "cropReset", "cropClose", "cropRotateLeft", "cropFlipV"] {
         assert!(has(&h, &format!("button:{id}")), "{id} is in the drawer");
     }
-    assert!(!has(&h, "button:cropFlipH") && !has(&h, "button:cropOverlay-grid"), "no icon rows of the cloud app's panel");
+    assert!(!has(&h, "button:cropOverlay-grid"), "the overlays stay in the View menu");
     let id = h.app.session.active().expect("a photo");
     let flipped = |h: &Headless| h.app.session.catalog.photo(id).map(|p| p.develop.crop.flip_h);
     let before = flipped(&h);
-    let r = h.request("engine.execute", json!({"command": "photo.flipHorizontal"}), T);
+    let r = h.request("ui.clickWidget", json!({"id": "button:cropFlipH"}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
-    assert_ne!(flipped(&h), before, "Flip Horizontal is still a command");
+    assert_ne!(flipped(&h), before, "the drawer's Flip Horizontal flips the photo");
     let r = h.request("engine.execute", json!({"command": "view.cropOverlay"}), T);
     assert_eq!(r["ok"], true, "{r}");
     // Close leaves the crop tool for the Edit panel

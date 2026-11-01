@@ -173,6 +173,27 @@ fn local_snapshot_and_ops_round_trip() {
     assert_eq!(sync::local(q, &cfg, &private), t);
 }
 
+/// A capture date of a year or a month alone (`1983-04`, a scanned print's) is the start of its period to Immich: a
+/// first sync with Immich at that time changes nothing, and a catalog change to one is sent, not read as no date
+/// (which would let Immich's time replace it).
+#[test]
+fn a_year_or_month_alone_syncs_as_the_start_of_its_period() {
+    let cfg = SyncConfig::default();
+    let mut p = photo_with(0, Flag::None, "", &[]);
+    p.captured = Some("1983-04".into());
+    let local = sync::local(&p, &cfg, &|_| false);
+    assert_eq!(local.captured.as_deref(), Some("1983-04-01T00:00:00"));
+    let immich = Snapshot { captured: Some("1983-04-01T00:00:00".into()), ..Snapshot::default() };
+    let o = run(None, &local, &immich, &cfg);
+    assert!(!o.to_local.contains(&Field::Captured) && !o.to_remote.contains(&Field::Captured), "{o:?}");
+    // changed in the catalog since the last sync: Immich gets the start of the year
+    p.captured = Some("1983".into());
+    let base = Snapshot { captured: Some("2024-05-06T07:08:09".into()), ..Snapshot::default() };
+    let o = run(Some(&base), &sync::local(&p, &cfg, &|_| false), &base, &cfg);
+    assert_eq!(o.to_remote, [Field::Captured].into(), "{o:?}");
+    assert_eq!(o.target.captured.as_deref(), Some("1983-01-01T00:00:00"));
+}
+
 #[test]
 fn favourite_as_five_stars() {
     let cfg = SyncConfig { favorite: FavoriteMap::FiveStars, ..SyncConfig::default() };

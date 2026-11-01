@@ -371,7 +371,15 @@ pub fn rule_date(s: &str) -> Result<String, Issue> {
         let zone = after_fraction.as_bytes();
         match zone {
             [] | [b'Z' | b'z'] => true,
-            [b'+' | b'-', h1, h2, b':', m1, m2] => [h1, h2, m1, m2].iter().all(|c| c.is_ascii_digit()),
+            [b'+' | b'-', h1, h2, b':', m1, m2] => {
+                if ![h1, h2, m1, m2].iter().all(|c| c.is_ascii_digit()) {
+                    return false;
+                }
+                let hours = (*h1 - b'0') * 10 + (*h2 - b'0');
+                let minutes = (*m1 - b'0') * 10 + (*m2 - b'0');
+                // a real UTC offset: at most +-18:00, minutes below 60
+                minutes < 60 && (hours < 18 || hours == 18 && minutes == 0)
+            }
             _ => false,
         }
     };
@@ -1084,7 +1092,8 @@ impl Rule {
                 let want = crate::CopyrightStatus::parse(&want);
                 (want == Some(m.copyright_status)) == (op == "is")
             }
-            "captureDate" => date_op(op, p.captured.as_deref(), value),
+            // a partial capture time (`1983-04`) stands for the start of its period
+            "captureDate" => date_op(op, p.captured.as_deref().map(crate::dates::capture_start).as_deref(), value),
             "importDate" => date_op(op, Some(&p.imported), value),
             "editDate" => date_op(op, p.edited.as_deref(), value),
             "shutterSpeed" => num_op(op, crate::parse_shutter_seconds(&m.shutter), &shutter_value(value)),
@@ -1578,7 +1587,7 @@ mod tests {
         ] {
             assert_eq!(crate::parse_shutter_seconds(s), want, "{s}");
         }
-        for s in ["", "1/0", "0", "-1/250", "fast", "inf", "NaN", "1/x"] {
+        for s in ["", "1/0", "0", "-1/250", "-1/-250", "1/-250", "0/250", "fast", "inf", "NaN", "1/x"] {
             assert_eq!(crate::parse_shutter_seconds(s), None, "{s}");
         }
     }
@@ -2057,12 +2066,18 @@ mod tests {
             "2026-08-14 10:00-05:00",
             "2026-08-14T10:00:00.",
             "2026-08-14T10:00:00+2",
+            "2026-08-14T10:00:00+99:99",
+            "2026-08-14T10:00:00+18:01",
+            "2026-08-14T10:00:00+05:60",
         ] {
             let p = rule("is", json!(v)).check(&cat);
             assert_eq!(p.first().map(|p| p.issue), Some(Issue::NeedsDate), "{v}");
         }
         assert_eq!(rule_date("2026-10-01 10:00"), Ok("2026-10-01T10:00".to_string()));
         assert_eq!(rule_date("2026"), Ok("2026".to_string()));
+        for v in ["2026-08-14T10:00:00+18:00", "2026-08-14T10:00:00-05:30", "2026-08-14T10:00:00+05:45"] {
+            assert!(rule("is", json!(v)).check(&cat).is_empty(), "{v}");
+        }
     }
 
     /// The field menu shows every rule field once: at the top level or in exactly one group,

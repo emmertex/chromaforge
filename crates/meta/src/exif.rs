@@ -35,6 +35,7 @@ pub fn try_read_exif_with(bytes: &[u8], opts: &ParseOptions) -> Result<Metadata,
     if m.lens_model.is_none() {
         m.lens_model = panasonic_maker_note_lens(data, &tiff).or_else(|| canon_maker_note_lens(data, &tiff));
     }
+    fill_from_panasonic_jpg_from_raw(&mut m, &tiff);
     // the maker note's values are offsets into the stream, which `from_tiff` doesn't have
     m.focus = crate::focus::read(data, &tiff, m.make.as_deref(), m.model.as_deref(), m.orientation);
     Ok(m)
@@ -197,6 +198,29 @@ fn panasonic_lens(data: &[u8], tiff: &Tiff) -> Option<String> {
     let make = tiff.ifds.first().and_then(|i| i.string(t::MAKE)).unwrap_or_default();
     let mn = lcc_tiff::makernote::parse_makernote(data, e.offset, e.count() as u64, tiff.order, &make)?;
     text(Some(&mn.ifd), PANASONIC_LENS_TYPE)
+}
+
+/// RW2/RWL IFD0 tags `0x0017` (ISO, int16u) and `0x0037` (the int32u ISO of newer bodies).
+const PANASONIC_ISO: u16 = 0x0017;
+const PANASONIC_ISO_32: u16 = 0x0037;
+
+/// A RW2's own Exif IFD is a short subset (older bodies leave out ISOSpeedRatings and more). The full Exif is in
+/// the APP1 of its JpgFromRaw: fill what the raw stream lacks from there, then fall back to the ISO in the
+/// Panasonic raw IFD0. The raw's own values and dimensions stay; the preview's would be smaller. A truncated or
+/// garbage embedded JPEG / TIFF fills nothing.
+fn fill_from_panasonic_jpg_from_raw(m: &mut Metadata, tiff: &Tiff) {
+    let Some(ifd0) = tiff.ifds.first() else { return };
+    let Some(jpg) = ifd0.bytes(PANASONIC_JPG_FROM_RAW) else { return };
+    if let Some(exif) = crate::jpeg_segments(jpg).exif
+        && let Ok(inner) = Tiff::parse(strip_exif_header(&exif))
+    {
+        let mut full = from_tiff(&inner);
+        (full.width, full.height) = (None, None);
+        m.fill_missing(&full);
+    }
+    if m.iso.is_none() {
+        m.iso = ifd0.u32(PANASONIC_ISO).or_else(|| ifd0.u32(PANASONIC_ISO_32)).filter(|&v| v > 0 && v < u32::MAX);
+    }
 }
 
 /// The lens name from the Exif of a RW2's (or Leica RWL's) embedded JpgFromRaw.
@@ -366,6 +390,80 @@ pub(crate) mod tests {
         assert_eq!(m.lens_model.as_deref(), Some("LUMIX S 85/F1.8"));
         assert_eq!(m.focal_length, Some(85.0));
         assert_eq!(crate::extract(&rw2).lens_model.as_deref(), Some("LUMIX S 85/F1.8"));
+    }
+
+    /// A RW2 whose own short Exif IFD lacks ISO, with `inner` as the Exif of its JpgFromRaw and `raw_iso` in
+    /// the Panasonic IFD0 tag 0x0017.
+    fn rw2_with(inner: Option<IfdBuilder>, raw_iso: Option<u16>) -> Vec<u8> {
+        let mut jpg = vec![0xff, 0xd8];
+        if let Some(e) = inner {
+            let mut i0 = IfdBuilder::new();
+            i0.set(t::MAKE, Value::Ascii("Panasonic".into()));
+            i0.set_child(t::EXIF_IFD, e);
+            let mut app1 = b"Exif\0\0".to_vec();
+            app1.extend(TiffWriter::new(ByteOrder::Little, false).write(&[i0]).unwrap());
+            jpg.extend_from_slice(&[0xff, 0xe1]);
+            jpg.extend_from_slice(&((app1.len() + 2) as u16).to_be_bytes());
+            jpg.extend(app1);
+        }
+        jpg.extend_from_slice(&[0xff, 0xda, 0, 2, 0xff, 0xd9]);
+        rw2_around(jpg, raw_iso)
+    }
+
+    fn rw2_around(jpg: Vec<u8>, raw_iso: Option<u16>) -> Vec<u8> {
+        let mut exif = IfdBuilder::new();
+        exif.set(t::EXPOSURE_TIME, Value::Rational(vec![(8, 1)]));
+        let mut ifd0 = IfdBuilder::new();
+        ifd0.set(t::MAKE, Value::Ascii("Panasonic".into()));
+        ifd0.set(t::IMAGE_WIDTH, Value::Long(vec![4816]));
+        if let Some(v) = raw_iso {
+            ifd0.set(PANASONIC_ISO, Value::Short(vec![v]));
+        }
+        ifd0.set(PANASONIC_JPG_FROM_RAW, Value::Undefined(jpg));
+        ifd0.set_child(t::EXIF_IFD, exif);
+        TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap()
+    }
+
+    #[test]
+    fn rw2_fills_missing_exif_from_its_jpg_from_raw() {
+        let mut inner = IfdBuilder::new();
+        inner.set(t::ISO_SPEED, Value::Short(vec![160]));
+        inner.set(t::EXPOSURE_TIME, Value::Rational(vec![(1, 60)]));
+        inner.set(t::PIXEL_X_DIMENSION, Value::Long(vec![1920]));
+        let m = read_exif(&rw2_with(Some(inner), Some(200)));
+        assert_eq!(m.iso, Some(160), "the JpgFromRaw's ISOSpeedRatings");
+        assert_eq!(m.exposure_time, Some(8.0), "the raw's own Exif wins");
+        assert_eq!(m.width, Some(4816), "the raw's size, not the preview's");
+    }
+
+    #[test]
+    fn rw2_falls_back_to_the_panasonic_raw_iso() {
+        assert_eq!(read_exif(&rw2_with(None, Some(200))).iso, Some(200));
+        assert_eq!(read_exif(&rw2_with(Some(IfdBuilder::new()), Some(200))).iso, Some(200));
+        assert_eq!(read_exif(&rw2_with(None, None)).iso, None);
+    }
+
+    #[test]
+    fn rw2_with_a_hostile_jpg_from_raw_keeps_its_own_values() {
+        let mut half = TiffWriter::new(ByteOrder::Little, false).write(&[IfdBuilder::new()]).unwrap();
+        half.truncate(5);
+        let mut truncated = vec![0xff, 0xd8, 0xff, 0xe1, 0x7f, 0xff];
+        truncated.extend_from_slice(b"Exif\0\0");
+        truncated.extend_from_slice(&half);
+        let bad_tiff = {
+            let mut app1 = b"Exif\0\0II*\0".to_vec();
+            app1.extend_from_slice(&[0xff; 12]);
+            let mut jpg = vec![0xff, 0xd8, 0xff, 0xe1];
+            jpg.extend_from_slice(&((app1.len() + 2) as u16).to_be_bytes());
+            jpg.extend(app1);
+            jpg
+        };
+        for jpg in [Vec::new(), vec![0xff, 0xd8], truncated, vec![0xffu8; 64], bad_tiff] {
+            let m = read_exif(&rw2_around(jpg, Some(200)));
+            assert_eq!(m.iso, Some(200));
+            assert_eq!(m.exposure_time, Some(8.0));
+            assert_eq!(m.width, Some(4816));
+        }
     }
 
     /// Canon maker note tags: `0x0095` holds the lens name as ASCII; `0x0001` is CameraSettings, a table of
@@ -620,7 +718,8 @@ pub fn write_exif(meta: &Metadata) -> Vec<u8> {
         (t::ARTIST, ascii(&meta.artist)),
         (t::COPYRIGHT, ascii(&meta.copyright)),
         (t::IMAGE_DESCRIPTION, ascii(&meta.caption)),
-        (t::DATE_TIME, meta.capture_time.map(|d| Value::Ascii(d.to_exif()))),
+        // Exif's date can't say a year or a month alone (an XMP date can)
+        (t::DATE_TIME, meta.capture_time.filter(DateTime::is_full).map(|d| Value::Ascii(d.to_exif()))),
         (t::ORIENTATION, meta.orientation.map(|o| Value::Short(vec![o.to_exif()]))),
     ] {
         if let Some(v) = v {
@@ -631,7 +730,7 @@ pub fn write_exif(meta: &Metadata) -> Vec<u8> {
     ex.set(t::EXIF_VERSION, Value::Undefined(b"0232".to_vec()));
     let r = |v: Option<f64>| v.filter(|v| v.is_finite() && *v > 0.0).map(|v| Value::Rational(vec![rational(v)]));
     for (tag, v) in [
-        (t::DATE_TIME_ORIGINAL, meta.capture_time.map(|d| Value::Ascii(d.to_exif()))),
+        (t::DATE_TIME_ORIGINAL, meta.capture_time.filter(DateTime::is_full).map(|d| Value::Ascii(d.to_exif()))),
         (t::EXPOSURE_TIME, reciprocal(meta.exposure_time).or_else(|| r(meta.exposure_time))),
         (t::F_NUMBER, r(meta.f_number)),
         (t::FOCAL_LENGTH, r(meta.focal_length)),

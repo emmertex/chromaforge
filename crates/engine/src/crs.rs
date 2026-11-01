@@ -492,7 +492,12 @@ pub fn to_partial(props: &Props, target: Target) -> Value {
     }
 
     // ---- Crop (normalized edges of the unrotated image + straighten angle)
-    match boolean(props, "crs:HasCrop") {
+    // Catalogs and some sidecars omit HasCrop: any crop edge or angle still supplies a crop. Presets
+    // (`Target::Any`) keep requiring HasCrop, so a preset without it never sets or resets a photo's crop.
+    // The full-frame rectangle with angle zero is already our identity (no crop).
+    const CROP: [&str; 5] = ["crs:CropLeft", "crs:CropTop", "crs:CropRight", "crs:CropBottom", "crs:CropAngle"];
+    let implied = target != Target::Any && CROP.iter().any(|k| props.contains_key(*k));
+    match boolean(props, "crs:HasCrop").or(implied.then_some(true)) {
         Some(true) => {
             let e = |k: &str, d: f64| num(props, &format!("crs:Crop{k}")).unwrap_or(d).clamp(0.0, 1.0);
             let (l, t, r, b) = (e("Left", 0.0), e("Top", 0.0), e("Right", 1.0), e("Bottom", 1.0));
@@ -698,6 +703,37 @@ mod tests {
 
     fn props(x: &str) -> Props {
         lcc_meta::parse_xmp(x).unwrap().properties
+    }
+
+    #[test]
+    fn identity_crop_without_has_crop_is_read() {
+        let x = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description
+            xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+            crs:CropLeft="0" crs:CropTop="0" crs:CropRight="1" crs:CropBottom="1" crs:CropAngle="0"/></rdf:RDF>"#;
+        let (partial, skipped) = to_partial_report(&props(x), None, Target::RawAbsolute, 1.5);
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let s = apply_partial(&DevelopSettings::default(), &partial, 1.0);
+        assert_eq!(s.crop.geometry, lcc_geom::CropGeometry::default());
+    }
+
+    #[test]
+    fn nontrivial_crop_without_has_crop_is_imported() {
+        let x = SIDECAR.replace("crs:HasCrop=\"True\"", "");
+        let (partial, skipped) = to_partial_report(&props(&x), None, Target::RawAbsolute, 1.5);
+        let s = apply_partial(&DevelopSettings::for_raw(5000.0, 0.0), &partial, 1.0);
+        let c = s.crop.geometry;
+        assert_eq!((c.rect.x0, c.rect.y0, c.rect.x1, c.rect.y1, c.angle), (0.05, 0.1, 0.8, 0.9, 1.5));
+        assert!(!skipped.iter().any(|k| k.starts_with("Crop")), "{skipped:?}");
+    }
+
+    #[test]
+    fn a_preset_without_has_crop_leaves_the_crop_alone() {
+        let x = SIDECAR.replace("crs:HasCrop=\"True\"", "");
+        let (partial, _) = to_partial_report(&props(&x), None, Target::Any, 1.5);
+        let mut before = DevelopSettings::default();
+        before.crop.geometry.angle = 2.0;
+        let s = apply_partial(&before, &partial, 1.0);
+        assert_eq!(s.crop.geometry, before.crop.geometry, "a preset never sets or resets the crop without HasCrop");
     }
 
     #[test]

@@ -41,6 +41,11 @@ pub fn local(secs: i64) -> Option<String> {
         return None;
     }
     let local = chrono::DateTime::from_timestamp(secs, 0)?.with_timezone(&chrono::Local);
+    // the last day of 9999 lands in year 10000 in a zone east of UTC; a five-digit year is not an
+    // ISO date this module reads back
+    if chrono::Datelike::year(&local) > 9999 {
+        return None;
+    }
     Some(local.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
 }
 
@@ -116,6 +121,37 @@ fn tail_start(iso: &str) -> Option<usize> {
     ok.then_some(start)
 }
 
+/// A capture time stated only to the year (`1983`) or the month (`1983-04`): the reduced ISO 8601
+/// dates XMP allows, as for a scanned print whose day isn't known. `Some((year, month))` for exactly
+/// those two forms, a year 0001–9999 and a month 01–12; `None` for anything else, a full date included.
+pub fn partial_capture(s: &str) -> Option<(u16, Option<u8>)> {
+    let digits = |x: &str| x.bytes().all(|c| c.is_ascii_digit());
+    let year = s.get(..4).filter(|y| digits(y)).and_then(|y| y.parse::<u16>().ok()).filter(|y| *y > 0)?;
+    match s.get(4..)? {
+        "" => Some((year, None)),
+        rest => {
+            let month = rest.strip_prefix('-').filter(|m| m.len() == 2 && digits(m))?.parse::<u8>().ok()?;
+            (1..=12).contains(&month).then_some((year, Some(month)))
+        }
+    }
+}
+
+/// What a capture time stands for when the library sorts, groups, filters or compares it: a
+/// [`partial_capture`] is the start of its period (`1983` → `1983-01-01T00:00:00`, `1983-04` →
+/// `1983-04-01T00:00:00`); any other time is itself.
+pub fn capture_start(c: &str) -> std::borrow::Cow<'_, str> {
+    match partial_capture(c) {
+        Some((y, m)) => format!("{y:04}-{:02}-01T00:00:00", m.unwrap_or(1)).into(),
+        None => c.into(),
+    }
+}
+
+/// Whether the library can hold `c` as a capture time: a time [`iso_seconds`] reads, or a
+/// [`partial_capture`]. (`Op::SetCaptured` refuses anything else.)
+pub fn is_capture_time(c: &str) -> bool {
+    iso_seconds(&capture_start(c)).is_some()
+}
+
 /// Normalize user input to `YYYY-MM-DDTHH:MM:SS` (accepts a space instead of `T`, missing
 /// seconds or time). `None` if it isn't a valid date.
 pub fn normalize_iso(s: &str) -> Option<String> {
@@ -179,13 +215,20 @@ pub struct DateRun {
 }
 
 /// A capture time for display: `2022-03-30T22:11:11` → "March 30, 2022 at 10:11:11 PM" (the
-/// date alone when there is no time; the input unchanged when it doesn't parse).
+/// date alone when there is no time, "April 1983" / "1983" for a [`partial_capture`]; the input
+/// unchanged when it doesn't parse).
 pub fn display_time(iso: &str) -> String {
+    // a year or a month alone shows as such: "1983", "April 1983"
+    if partial_capture(iso).is_some() {
+        return group_label(iso);
+    }
     let num = |r: std::ops::Range<usize>| iso.get(r).and_then(|v| v.parse::<u32>().ok());
     let (Some(y), Some(mo), Some(d)) = (num(0..4), num(5..7), num(8..10)) else { return iso.to_string() };
     let Some(month) = MONTHS.get((mo as usize).wrapping_sub(1)) else { return iso.to_string() };
     let date = format!("{month} {d}, {y}");
-    match (num(11..13), num(14..16), num(17..19)) {
+    // seconds only after a `:` (not the hours of a `+02:00` zone that follows the minutes)
+    let secs = if iso.get(16..17) == Some(":") { num(17..19) } else { None };
+    match (num(11..13), num(14..16), secs) {
         (Some(h), Some(mi), s) => {
             let (h12, ampm) = match h {
                 0 => (12, "AM"),
@@ -238,7 +281,9 @@ impl Catalog {
             SortKey::EditDate => p.edited.as_deref(),
             _ => None,
         };
-        d.filter(|d| iso_seconds(d.get(..10).unwrap_or("")).is_some()).and_then(|d| d.get(..by.prefix())).unwrap_or("").to_string()
+        // a partial capture time (`1983-04`) groups at the start of its period
+        let d = d.map(capture_start);
+        d.as_deref().filter(|d| iso_seconds(d.get(..10).unwrap_or("")).is_some()).and_then(|d| d.get(..by.prefix())).unwrap_or("").to_string()
     }
 }
 
@@ -439,6 +484,14 @@ mod tests {
     }
 
     #[test]
+    fn display_time_ignores_zone_offset_without_seconds() {
+        assert_eq!(display_time("2022-03-30T22:11+02:00"), "March 30, 2022 at 10:11:00 PM");
+        assert_eq!(display_time("2022-03-30T22:11-05:00"), "March 30, 2022 at 10:11:00 PM");
+        assert_eq!(display_time("2022-03-30T22:11Z"), "March 30, 2022 at 10:11:00 PM");
+        assert_eq!(display_time("2022-03-30T22:11:11"), "March 30, 2022 at 10:11:11 PM");
+    }
+
+    #[test]
     fn calendar() {
         assert_eq!(civil(0), "1970-01-01T00:00:00");
         assert_eq!(civil(951_782_400), "2000-02-29T00:00:00");
@@ -451,7 +504,9 @@ mod tests {
         assert_eq!(civil(i64::MAX), "292277026596-12-04T15:30:07");
         assert_eq!(civil(i64::MIN), "-292277022657-01-27T08:29:52");
         // the same instant in this computer's zone, with its offset; nothing outside 1970..=9999
-        for secs in [0, 951_782_400, 1_777_630_830, 253_402_300_799] {
+        // (a day in from both ends: the first and last instants fall outside 1970..=9999 in a zone
+        // west or east of UTC)
+        for secs in [86_400, 951_782_400, 1_777_630_830, 253_402_300_799 - 86_400] {
             let d = chrono::DateTime::parse_from_rfc3339(&local(secs).unwrap()).unwrap();
             assert_eq!(d.timestamp(), secs);
             assert_eq!(d.offset().local_minus_utc(), d.with_timezone(&chrono::Local).offset().local_minus_utc());
@@ -584,5 +639,158 @@ mod tests {
             shape(&c.date_runs(&arranged, SortKey::CaptureDate, GroupBy::Day))[..2],
             [("2026-09-30".into(), 0, 3), ("2026-08-01".into(), 3, 1)]
         );
+    }
+
+    /// A year or a month alone (`1983`, `1983-04`: a scanned print's date) and nothing else.
+    #[test]
+    fn a_partial_capture_time_is_a_year_or_a_month_alone() {
+        assert_eq!(partial_capture("1983"), Some((1983, None)));
+        assert_eq!(partial_capture("1983-04"), Some((1983, Some(4))));
+        for not in [
+            "",
+            "0000",
+            "0000-00",
+            "1983-00",
+            "1983-13",
+            "1983-4",
+            "1983-04-",
+            "198",
+            "19830",
+            " 1983",
+            "1983 ",
+            "1983-04-12",
+            "１９８３",
+            "1983-０4",
+            "198０",
+            "garbage",
+        ] {
+            assert_eq!(partial_capture(not), None, "{not}");
+        }
+        assert_eq!(capture_start("1983"), "1983-01-01T00:00:00");
+        assert_eq!(capture_start("1983-04"), "1983-04-01T00:00:00");
+        assert_eq!(capture_start("2024-01-16T12:34:56Z"), "2024-01-16T12:34:56Z");
+        assert_eq!(display_time("1983"), "1983");
+        assert_eq!(display_time("1983-04"), "April 1983");
+    }
+
+    /// A catalog with one photo per `(capture time, import time)`, each stored through `SetCaptured`.
+    fn dated(times: &[(&str, &str)]) -> (Catalog, Vec<PhotoId>) {
+        let mut c = Catalog::new();
+        let mut ids = Vec::new();
+        for (captured, imported) in times {
+            let id = c.alloc_photo_id();
+            let p = Photo::new(id, Source::Demo { scene: 1 }, "a.jpg", "JPEG", 3, 2, imported);
+            c.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+            c.apply(Op::SetCaptured { id, captured: Some((*captured).into()) }).unwrap();
+            ids.push(id);
+        }
+        (c, ids)
+    }
+
+    const PERIODS: [(&str, &str); 6] = [
+        ("1983-04-01T00:00:01", "2026-10-01T00:00:00"),
+        ("1983-04", "2026-10-01T00:00:00"),
+        ("1983-03-31T23:59:59", "2026-10-01T00:00:00"),
+        ("1983", "2026-10-01T00:00:00"),
+        ("1982-12-31T23:59:59", "2026-10-01T00:00:00"),
+        ("1984-01", "2026-10-01T00:00:00"),
+    ];
+
+    /// The library holds a partial capture time as stated, and still refuses what isn't a date.
+    #[test]
+    fn a_partial_capture_time_is_held_as_stated() {
+        let (mut c, ids) = dated(&PERIODS);
+        assert_eq!(c.photo(ids[1]).unwrap().captured.as_deref(), Some("1983-04"));
+        for bad in ["1983-13", "0000-00", "0000", "text", "１９８３"] {
+            assert!(c.apply(Op::SetCaptured { id: ids[0], captured: Some(bad.into()) }).is_err(), "{bad}");
+        }
+    }
+
+    /// Sorted by capture date, a partial time is the start of its period, ahead of every time in it
+    /// (as a day alone, `1983-04-01`, comes before its times): even one imported later than a photo
+    /// taken at midnight on the 1st.
+    #[test]
+    fn a_partial_capture_time_sorts_as_the_start_of_its_period() {
+        let mut times = PERIODS.to_vec();
+        times[1].1 = "2026-10-02T00:00:00";
+        times.push(("1983-04-01T00:00:00", "2026-10-01T00:00:00"));
+        let (c, _) = dated(&times);
+        for ascending in [true, false] {
+            let sort = crate::Sort { key: SortKey::CaptureDate, ascending, ..Default::default() };
+            let mut order: Vec<_> =
+                c.query(&crate::Filter::default(), &sort).iter().map(|id| c.photo(*id).unwrap().captured.clone().unwrap()).collect();
+            if !ascending {
+                order.reverse();
+            }
+            assert_eq!(
+                order,
+                ["1982-12-31T23:59:59", "1983", "1983-03-31T23:59:59", "1983-04", "1983-04-01T00:00:00", "1983-04-01T00:00:01", "1984-01"]
+            );
+            let mut by_order: Vec<_> = c.photos().collect();
+            by_order.sort_by(|a, b| sort.order(a, b));
+            let by_order: Vec<_> = by_order.iter().map(|p| p.id).collect();
+            assert_eq!(by_order, c.query(&crate::Filter::default(), &sort), "Sort::order agrees with the query");
+        }
+    }
+
+    /// Date headers and the By Date section put a partial time at the start of its period.
+    #[test]
+    fn a_partial_capture_time_groups_at_the_start_of_its_period() {
+        let (c, ids) = dated(&PERIODS);
+        let group = |id, by| c.date_group(id, SortKey::CaptureDate, by);
+        assert_eq!(
+            (group(ids[1], GroupBy::Year), group(ids[1], GroupBy::Month), group(ids[1], GroupBy::Day)),
+            ("1983".into(), "1983-04".into(), "1983-04-01".into())
+        );
+        assert_eq!((group(ids[3], GroupBy::Month), group(ids[3], GroupBy::Day)), ("1983-01".into(), "1983-01-01".into()));
+        let by_date = c.date_groups();
+        let y1983 = by_date.iter().find(|g| g.year == "1983").unwrap();
+        assert_eq!(y1983.count, 4, "{by_date:?}");
+        assert!(y1983.months.contains(&("1983-04".into(), 2)), "{by_date:?}");
+        assert!(y1983.months.contains(&("1983-01".into(), 1)), "{by_date:?}");
+    }
+
+    /// Date filters and smart-collection rules read a partial time as the start of its period.
+    #[test]
+    fn a_partial_capture_time_meets_filters_and_rules_as_the_start_of_its_period() {
+        let (c, ids) = dated(&PERIODS);
+        let sort = crate::Sort { key: SortKey::CaptureDate, ascending: true, ..Default::default() };
+        let matching = |f: crate::Filter| {
+            let mut found: Vec<_> = c.query(&f, &sort).iter().map(|id| c.photo(*id).unwrap().captured.clone().unwrap()).collect();
+            found.sort();
+            found
+        };
+        assert_eq!(matching(crate::Filter { date: Some("1983-04-01".into()), ..Default::default() }), ["1983-04", "1983-04-01T00:00:01"]);
+        assert_eq!(
+            matching(crate::Filter { date_from: Some("1983-04-01".into()), date_to: Some("1983-04-30".into()), ..Default::default() }),
+            ["1983-04", "1983-04-01T00:00:01"]
+        );
+        assert_eq!(matching(crate::Filter { text: "date:1983-01".into(), ..Default::default() }), ["1983"]);
+        let rule = |op: &str, value: serde_json::Value| {
+            let set: crate::RuleSet =
+                serde_json::from_value(serde_json::json!({"match": "all", "rules": [{"field": "captureDate", "op": op, "value": value}]})).unwrap();
+            set.matches(c.photo(ids[1]).unwrap(), &c)
+        };
+        assert!(rule("is", "1983-04".into()));
+        assert!(rule("is", "1983".into()));
+        assert!(rule("is", "1983-04-01".into()));
+        assert!(!rule("is", "1983-03".into()));
+        assert!(rule("between", serde_json::json!(["1983-04-01", "1983-04-30"])));
+        assert!(!rule("after", "1983-04-01T00:00:01".into()));
+    }
+
+    /// A year or a month alone has no time of day, so photos dated to the same one are not a burst.
+    #[test]
+    fn partial_capture_times_are_not_stacked_by_time() {
+        let mut c = Catalog::new();
+        let mut ids = Vec::new();
+        for (i, t) in ["1983", "1983", "1983-04", "1983-04"].iter().enumerate() {
+            let id = c.alloc_photo_id();
+            let mut p = Photo::new(id, Source::Demo { scene: 1 }, &format!("{i}.jpg"), "JPEG", 3, 2, "2026-10-01T00:00:00");
+            p.captured = Some((*t).into());
+            c.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+            ids.push(id);
+        }
+        assert!(c.auto_stack_groups(&ids, 60.0).is_empty());
     }
 }

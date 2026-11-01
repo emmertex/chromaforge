@@ -40,10 +40,12 @@ const EDIT_SECTIONS: &[UiCommand] = &[
 /// P4.3: the Plug-in Manager (`crate::panels::plugins`); native only, so the web build lists none.
 #[cfg(not(target_arch = "wasm32"))]
 const PLUGIN_COMMANDS: &[UiCommand] = &[
-    ("plugins.manager", "Plug-in Manager…", None, "File>Plug-ins"),
+    // Lightroom Classic's key for its Plug-in Manager (Ctrl+Alt+Shift+, on Windows and Linux)
+    ("plugins.manager", "Plug-in Manager…", Some("Cmd+Alt+Shift+,"), "File>Plug-ins"),
     ("plugins.install", "Install Plug-in…", None, ""),
     ("plugins.runItem", "Run Plug-in Command", None, ""),
     ("plugins.page", "Plug-in Settings", None, ""),
+    ("plugins.showFolder", "Show Plug-ins Folder", None, ""),
 ];
 #[cfg(target_arch = "wasm32")]
 const PLUGIN_COMMANDS: &[UiCommand] = &[];
