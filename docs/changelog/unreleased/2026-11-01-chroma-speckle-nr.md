@@ -1,0 +1,3 @@
+## Develop and masking
+
+- **Cleaner colour at high ISO:** Colour Noise Reduction now detects chroma speckle — the isolated green and magenta single-pixel dots a noisy high-ISO raw shows (most visible in skin tones) — by testing each pixel's chromaticity against the median of its 3 × 3 neighbourhood, and pulls speckle fully in at the slider's existing settings, where the plain blur mix left most of it visible. Ordinary colour texture and straight hue edges pass the median test and keep the gentle mix, so low-ISO photos are unchanged. Both the processor and the graphics-card pipeline. Fork #679. (no PR)
