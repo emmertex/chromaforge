@@ -852,7 +852,9 @@ impl Packets {
     }
 }
 
-/// [`sidecar_contents`] from the photo's packets already made.
+/// [`sidecar_contents`] from the photo's packets already made. A capture time of a year or a month alone is stated
+/// in `photoshop:DateCreated` only, so an `exif:DateTimeOriginal` already there (an earlier full time) is removed
+/// rather than left to outrank it on the next read.
 fn merged_contents(path: &Path, p: &Photo, packets: &Packets, stamp: &str) -> std::io::Result<(String, bool, Option<PathBuf>)> {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -865,7 +867,8 @@ fn merged_contents(path: &Path, p: &Photo, packets: &Packets, stamp: &str) -> st
     }
     match std::str::from_utf8(&bytes).map_err(|e| e.to_string()).and_then(|old| {
         let gps = GpsOnSave::of(p, old);
-        let owned: Vec<&str> = OWNED.iter().chain(gps.owned_tags()).copied().collect();
+        let partial_capture = p.captured.as_deref().and_then(lcc_catalog::dates::partial_capture).is_some();
+        let owned: Vec<&str> = OWNED.iter().chain(gps.owned_tags()).copied().chain(partial_capture.then_some("exif:DateTimeOriginal")).collect();
         let rules = lcc_meta::MergeRules { owned: &owned, owned_if_present: OWNED_IF_STATED };
         let fresh = if gps.write() { &packets.with_gps } else { &packets.without_gps };
         lcc_meta::merge_xmp(old, fresh, rules).map_err(|e| e.to_string())

@@ -220,6 +220,10 @@ fn track_offset(s: &mut crate::Session, p: &Value) -> Result<Value> {
         _ => ph.meta.gps.map(|(a, b)| LatLon::new(a, b)).ok_or_else(|| bad(C, "give `lat` and `lon` (or geotag the photo first)"))?,
     };
     let dt = ph.captured.as_deref().and_then(lcc_meta::DateTime::parse_iso).ok_or_else(|| bad(C, "the photo has no capture time"))?;
+    // a year or a month alone has no time of day to compare with the track
+    if !dt.is_full() {
+        return Err(bad(C, "the photo's capture time is a year or month alone, with no time of day to compare with the track"));
+    }
     let nearest = log
         .points
         .iter()
@@ -457,6 +461,10 @@ mod tests {
         s.commit("t", Op::SetCaptured { id: ids[0], captured: Some("2024-05-01T13:00:00".into()) }).unwrap();
         let r = s.execute("map.trackOffset", &json!({"gpx": gpx, "id": ids[0].0, "lat": 48.1, "lon": 11.1})).unwrap();
         assert_eq!(r["offset"], "+02:00");
+        // a year or a month alone has no time of day: an error that says so, not an offset from midnight on the 1st
+        s.commit("t", Op::SetCaptured { id: ids[0], captured: Some("2024-05".into()) }).unwrap();
+        let e = s.execute("map.trackOffset", &json!({"gpx": gpx, "id": ids[0].0, "lat": 48.1, "lon": 11.1})).unwrap_err();
+        assert!(e.to_string().contains("year or month alone"), "{e}");
         let t = s.execute("map.track", &json!({"text": gpx})).unwrap();
         assert_eq!((t["points"].as_u64(), t["timed"].as_bool()), (Some(2), Some(true)));
         assert!(s.execute("map.track", &json!({"text": "nope"})).is_err());

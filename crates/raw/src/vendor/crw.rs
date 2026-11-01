@@ -448,6 +448,7 @@ fn metadata(c: &Ciff) -> Metadata {
             second: (s % 60) as u8,
             millis: 0,
             offset_minutes: None,
+            ..Default::default()
         });
     }
     let w = |i: usize| c.shot.get(i).copied();
