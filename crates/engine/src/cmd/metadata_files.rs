@@ -214,6 +214,10 @@ fn from_xmp(file: &str, text: &str) -> Option<std::result::Result<Found, String>
     put("title", m.title.as_ref());
     put("caption", m.caption.as_ref());
     put("copyright", m.copyright.as_ref());
+    put("headline", m.headline.as_ref());
+    put("caption", m.caption.as_ref());
+    put("descriptionWriter", m.description_writer.as_ref());
+    put("category", m.category.as_ref());
     put("usageTerms", m.usage_terms.as_ref());
     put("copyrightUrl", m.copyright_url.as_ref());
     put("creator", m.artist.as_ref());
@@ -230,9 +234,20 @@ fn from_xmp(file: &str, text: &str) -> Option<std::result::Result<Found, String>
     if !m.keywords.is_empty() {
         fields.insert("keywords".into(), json!(m.keywords));
     }
+    if !m.supplemental_categories.is_empty() {
+        fields.insert("supplementalCategories".into(), json!(m.supplemental_categories));
+    }
+    if !m.subject_code.is_empty() {
+        fields.insert("subjectCode".into(), json!(m.subject_code));
+    }
     const MAPPED: &[&str] = &[
         "dc:title",
+        "Iptc4xmpCore:Headline",
         "dc:description",
+        "photoshop:CaptionWriter",
+        "photoshop:Category",
+        "photoshop:SupplementalCategories",
+        "Iptc4xmpExt:SubjectCode",
         "dc:rights",
         "dc:creator",
         "dc:subject",

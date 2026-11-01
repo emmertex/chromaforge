@@ -196,6 +196,14 @@ pub struct SidecarData {
     pub country: Option<String>,
     pub alt_text: Option<String>,
     pub extended_description: Option<String>,
+    /// The IPTC Content fields other editors write (headline, description writer, legacy category).
+    pub headline: Option<String>,
+    pub description_writer: Option<String>,
+    pub category: Option<String>,
+    /// The supplemental (other) categories (`photoshop:SupplementalCategories`).
+    pub supplemental_categories: Vec<String>,
+    /// The IPTC subject codes (`Iptc4xmpExt:SubjectCode`).
+    pub subject_code: Vec<String>,
     /// `exif:GPSLatitude` / `exif:GPSLongitude` (latitude, longitude): wins over a position embedded in the file.
     pub gps: Option<(f64, f64)>,
     pub keywords: Option<Vec<String>>,
@@ -259,6 +267,11 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         country: m.country.clone(),
         alt_text: m.alt_text.clone(),
         extended_description: m.extended_description.clone(),
+        headline: m.headline.clone(),
+        description_writer: m.description_writer.clone(),
+        category: m.category.clone(),
+        supplemental_categories: m.supplemental_categories.clone(),
+        subject_code: m.subject_code.clone(),
         gps: m.gps.map(|g| (g.latitude, g.longitude)),
         keywords: (!m.keywords.is_empty() || !m.hierarchical_keywords.is_empty())
             .then(|| lcc_catalog::keywords::from_file(&m.keywords, &m.hierarchical_keywords)),
@@ -424,10 +437,19 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
         (&sc.country, &mut m.country),
         (&sc.alt_text, &mut m.alt_text),
         (&sc.extended_description, &mut m.extended_description),
+        (&sc.headline, &mut m.headline),
+        (&sc.description_writer, &mut m.description_writer),
+        (&sc.category, &mut m.category),
     ] {
         if let Some(v) = src {
             *dst = v.clone();
         }
+    }
+    if !sc.supplemental_categories.is_empty() {
+        m.supplemental_categories = sc.supplemental_categories.clone();
+    }
+    if !sc.subject_code.is_empty() {
+        m.subject_code = sc.subject_code.clone();
     }
     if let Some(gps) = sc.gps {
         m.gps = Some(gps);
@@ -684,7 +706,12 @@ fn packet(p: &Photo, cat: &lcc_catalog::Catalog, remove_location: bool, gps: boo
     let meta = lcc_meta::Metadata {
         software: Some(lcc_brand::DISPLAY_NAME.into()),
         title: nz(&p.meta.title),
+        headline: nz(&p.meta.headline),
         caption: nz(&p.meta.caption),
+        description_writer: nz(&p.meta.description_writer),
+        category: nz(&p.meta.category),
+        supplemental_categories: p.meta.supplemental_categories.clone(),
+        subject_code: p.meta.subject_code.clone(),
         alt_text: nz(&p.meta.alt_text),
         extended_description: nz(&p.meta.extended_description),
         sublocation: nz(&p.meta.location),

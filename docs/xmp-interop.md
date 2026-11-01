@@ -103,8 +103,9 @@ A sidecar may already hold another application's data — e.g. its `crs:` develo
 the only copy of those edits outside that application's catalog. Saving never drops it:
 
 - The app **owns** the properties in the table above: `xmp:Rating`, `xmp:Label`, `dc:title`, `dc:description`,
-  `dc:rights`, `dc:creator`, `dc:subject`, `Iptc4xmpCore:Location`, `Iptc4xmpCore:AltTextAccessibility`,
-  `Iptc4xmpCore:ExtDescrAccessibility`, `photoshop:City`/`State`/`Country`, `xmpRights:Marked`/`UsageTerms`/
+  `dc:rights`, `dc:creator`, `dc:subject`, `Iptc4xmpCore:Headline`, `Iptc4xmpCore:Location`, `Iptc4xmpCore:AltTextAccessibility`,
+  `Iptc4xmpCore:ExtDescrAccessibility`, `photoshop:CaptionWriter`/`Category`/`SupplementalCategories`,
+  `Iptc4xmpExt:SubjectCode`, `photoshop:City`/`State`/`Country`, `xmpRights:Marked`/`UsageTerms`/
   `WebStatement` and everything in `lc:`. They are replaced on every save, and removed when the app has no value
   (clearing a title in the app clears it in the file). All of them are read back on import, so the library starts
   from what the sidecar said.

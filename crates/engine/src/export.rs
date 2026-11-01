@@ -1849,7 +1849,12 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
     }
     out.contact = m.contact.clone();
     out.title = text(&m.title);
+    out.headline = text(&m.headline);
     out.caption = text(&m.caption);
+    out.description_writer = text(&m.description_writer);
+    out.category = text(&m.category);
+    out.supplemental_categories = m.supplemental_categories.clone();
+    out.subject_code = m.subject_code.clone();
     out.alt_text = text(&m.alt_text);
     out.extended_description = text(&m.extended_description);
     let remove_location = removes_location(photo, catalog, o);
