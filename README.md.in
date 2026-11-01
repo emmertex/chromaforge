@@ -305,7 +305,7 @@ at `warn`. `<PREFIX>_LOG=info` or `debug` works as before (that level for the ap
 errors from the rest; any other value: warnings and errors only) and wins over `RUST_LOG`, which otherwise replaces
 the default with env_logger-style directives such as `RUST_LOG=debug` or `RUST_LOG=warn,lcc_pipeline=trace` (a
 directive ending in `*` covers every target starting with it, as in `lcc*=debug`). Panics are recorded there
-too, and still in `<binary>-panics.log` in the temp folder. The logger is `apps/app/src/logging.rs`.
+too, and in `<binary>-panics.log` beside the log files. The logger is `apps/app/src/logging.rs`.
 
 The web build needs the `wasm32-unknown-unknown` target and the matching `wasm-bindgen` CLI
 (`cargo xtask web` prints the exact install command); see [docs/web.md](docs/web.md).

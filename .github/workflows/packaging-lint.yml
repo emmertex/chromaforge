@@ -84,6 +84,8 @@ jobs:
           bundle = yaml.safe_load(open(f"{out}/linux/flatpak/{app_id}.bundle.yml"))
           for m in (src, bundle):
               assert m["id"] == app_id and m["command"] == binary, m["id"]
+              # Without this talk-name the sandbox hides the accessibility bus and Orca cannot see the app.
+              assert "--talk-name=org.a11y.Bus" in m["finish-args"], f"{m['id']} lost --talk-name=org.a11y.Bus"
           for key in ("runtime", "runtime-version", "sdk", "finish-args"):
               assert src[key] == bundle[key], f"Flatpak manifests disagree on {key}: {src[key]} vs {bundle[key]}"
           print("Flatpak manifests ok")

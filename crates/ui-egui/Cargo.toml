@@ -52,7 +52,8 @@ lcc-testkit = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 lcc-denoise = { workspace = true, features = ["runtime"] }
 # the model-setup tests run denoise models; only the app/CLI enable this in builds. test-support: the
-# update tests stand in a throwaway update key for the brand's
+# update tests stand in a throwaway update key for the brand's, and the Plug-in Manager tests install
+# a pixel filter in memory
 lcc-engine = { workspace = true, features = ["denoise", "test-support"] }
 lcc-codecs = { workspace = true }
 lcc-faces = { workspace = true }

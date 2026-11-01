@@ -712,6 +712,44 @@ mod tests {
         assert!(!seen.iter().any(|e| matches!(e, egui::Event::Paste(_))), "{seen:?}");
     }
 
+    /// A coordinate or delta too large for an `f32` became an infinite or NaN pointer position or
+    /// scroll delta (egui panics on NaN positions in debug builds). Such a gesture is refused and
+    /// queues nothing; ordinary values work, and an over-large `count` / `steps` is refused too
+    /// (`control::bounded_arg`: an error, never a silent clamp or a billion queued events).
+    #[test]
+    fn gestures_refuse_numbers_that_are_not_screen_positions() {
+        let mut app = LccApp::new(lcc_engine::Session::new(), crate::Services::default());
+        app.ui.settings.gpu = false;
+        let mut h = Headless::new(app, [480.0, 320.0], 1.0);
+        let t = Duration::from_secs(5);
+        h.step();
+        let refused = [
+            ("ui.click", json!({"x": 1e308})),
+            ("ui.click", json!({"y": -1e308})),
+            ("ui.move", json!({"x": 1e300, "y": 1.0})),
+            ("ui.drag", json!({"x": 1.0, "toY": 1e308})),
+            ("ui.dragWidget", json!({"id": "any", "dx": -1e308})),
+            ("ui.scroll", json!({"dy": 1e308})),
+            ("ui.pointer", json!({"events": [{"kind": "down", "x": 0.5}, {"kind": "move", "x": 1e308}]})),
+        ];
+        for (method, p) in refused {
+            let r = h.request(method, p.clone(), t);
+            assert_eq!(r["ok"], false, "{method} {p}: {r}");
+            assert!(r["error"].as_str().is_some_and(|e| e.starts_with(method) && e.contains("between")), "{r}");
+        }
+        let r = h.request("ui.click", json!({"x": 10.0, "y": 5.0, "count": 2}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        let r = h.request("ui.drag", json!({"x": 1.0, "y": 1.0, "toX": 999_999.0, "toY": 1.0, "steps": 20}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        let r = h.request("ui.click", json!({"x": 10.0, "y": 5.0, "count": u64::MAX}), t);
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(r["error"].as_str().is_some_and(|e| e.contains("`count`")), "{r}");
+        let r = h.request("ui.drag", json!({"x": 1.0, "y": 1.0, "toX": 999_999.0, "toY": 1.0, "steps": 1e12}), t);
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(r["error"].as_str().is_some_and(|e| e.contains("`steps`")), "{r}");
+        h.step();
+    }
+
     #[test]
     fn screenshot_dimensions_are_checked_before_layout() {
         assert_eq!(viewport_pixels([1600.0, 1000.0], 2.0).unwrap(), [3200, 2000]);
@@ -6193,5 +6231,41 @@ mod tests {
         assert_eq!(r["ok"], true);
         let r = h.request("ui.screenshot", json!({"headless": true}), SETTLE);
         assert_eq!(r["result"]["width"], 640, "{r}");
+    }
+
+    /// A size typed in the Export dialog is the size exported: the pixel fields kept only multiples
+    /// of 16, so 1080 became 1088 and 3000 became 3008.
+    #[test]
+    fn export_sizes_keep_the_pixels_typed() {
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        h.request("engine.execute", json!({"command": "dialog.export", "params": {}}), t);
+        h.settle(SETTLE);
+        let type_value = |h: &mut Headless, id: &str, text: &str| {
+            let r = h.request("ui.clickWidget", json!({"id": id}), t);
+            assert_eq!(r["ok"], true, "{id}: {r}");
+            h.request("ui.text", json!({"text": text}), t);
+            h.request("ui.key", json!({"key": "Enter"}), t);
+            h.settle(SETTLE);
+        };
+        let resize = |h: &Headless| match &h.app.ui.dialog {
+            Some(crate::state::Dialog::Export { resize, .. }) => *resize,
+            _ => panic!("the dialog closed"),
+        };
+        if let Some(crate::state::Dialog::Export { full_size, resize, .. }) = &mut h.app.ui.dialog {
+            *full_size = false;
+            *resize = lcc_engine::export::Resize::long_edge(2048);
+        }
+        h.settle(SETTLE);
+        type_value(&mut h, "sliderValue:export.sizePx", "3000");
+        assert_eq!(resize(&h).value, 3000.0);
+        if let Some(crate::state::Dialog::Export { resize, .. }) = &mut h.app.ui.dialog {
+            resize.mode = lcc_engine::export::ResizeMode::WidthHeight;
+            resize.height = 2048;
+        }
+        h.settle(SETTLE);
+        type_value(&mut h, "sliderValue:export.sizeW", "1080");
+        type_value(&mut h, "sliderValue:export.sizeH", "1350");
+        assert_eq!((resize(&h).value, resize(&h).height), (1080.0, 1350));
     }
 }

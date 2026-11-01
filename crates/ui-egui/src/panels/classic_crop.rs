@@ -1,7 +1,7 @@
 //! The crop tool laid out as Lightroom Classic's Crop & Straighten drawer (fork-owned): Aspect and
 //! its lock, Angle with the straighten tool and Auto, Constrain to Image, and Reset / Close. The
-//! rest of what upstream's Crop panel holds lives where Lightroom Classic keeps it: rotate and flip
-//! in the Photo menu, the guide overlays in View ▸ Tool Overlay (cycled with ⇧O), and Upright with
+//! rotate and flip buttons (also in the Photo menu, issue #705). The rest of what upstream's Crop
+//! panel holds lives where Lightroom Classic keeps it: the guide overlays in View ▸ Tool Overlay (cycled with ⇧O), and Upright with
 //! the transform sliders in the Edit panel's Transform section ([`transform_body`]). A child module
 //! of `right`, so it uses that file's helpers; upstream's `crop` stays as it is for merges.
 
@@ -39,6 +39,23 @@ pub(super) fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             let (icon, label) = if locked { (Icon::Link, "Aspect Locked") } else { (Icon::Unlink, "Lock Aspect") };
             if cmd_icon(app, ui, "cropLock", icon, label, None, locked).clicked() {
                 let _ = app.run("crop.aspect", json!({"aspect": "toggle"}));
+            }
+        });
+        ui.add_space(6.0);
+        // rotate and flip, here as well as in Photo ▸ Rotate & Flip (issue #705)
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let row = [
+                ("cropRotateLeft", Icon::RotateLeft, "Rotate Left", "photo.rotateLeft", false),
+                ("cropRotateRight", Icon::RotateRight, "Rotate Right", "photo.rotateRight", false),
+                ("cropFlipH", Icon::FlipH, "Flip Horizontal", "photo.flipHorizontal", d.crop.flip_h),
+                ("cropFlipV", Icon::FlipV, "Flip Vertical", "photo.flipVertical", d.crop.flip_v),
+                ("cropSwapAspect", Icon::SwapAspect, "Rotate Crop Aspect", "crop.rotateAspect", false),
+            ];
+            for (wid, icon, label, command, on) in row {
+                if cmd_icon(app, ui, wid, icon, label, Some(command), on).clicked() {
+                    let _ = app.run(command, json!({}));
+                }
             }
         });
     });

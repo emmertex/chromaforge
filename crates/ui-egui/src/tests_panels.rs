@@ -1576,6 +1576,11 @@ fn folders_app_with_services(paths: &[&str], size: [f32; 2], services: Services)
 }
 
 fn folders_app_full(paths: &[&str], size: [f32; 2], ui: serde_json::Value, services: Services) -> Headless {
+    folders_app_prepared(paths, size, ui, services, |_| {})
+}
+
+/// [`folders_app_full`], with `prepare` run on the app before its first frame.
+fn folders_app_prepared(paths: &[&str], size: [f32; 2], ui: serde_json::Value, services: Services, prepare: impl FnOnce(&mut LccApp)) -> Headless {
     use lcc_catalog::{Op, Photo, Source};
     let mut session = lcc_engine::Session::new();
     for path in paths {
@@ -1583,7 +1588,8 @@ fn folders_app_full(paths: &[&str], size: [f32; 2], ui: serde_json::Value, servi
         let p = Photo::new(id, Source::File { path: (*path).into() }, "x.jpg", "JPEG", 60, 40, "2026-01-01T10:00:00");
         session.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
     }
-    let app = LccApp::new(session, services);
+    let mut app = LccApp::new(session, services);
+    prepare(&mut app);
     let mut h = Headless::new(app, size, 1.0);
     h.app.ui.toggle_sidebar_section("panel:navigator");
     // (the module bar off: these layouts were sized before it existed)
@@ -3125,4 +3131,29 @@ fn export_folder_is_grayed_out_for_a_row_that_cant_be_shown_or_holds_nothing() {
     assert!(crate::panels::left::folder_export_blocker(&node(false, 3)).is_some());
     assert!(crate::panels::left::folder_export_blocker(&node(true, 0)).is_some());
     assert!(crate::panels::left::folder_export_blocker(&node(true, 3)).is_none());
+}
+
+/// The Missing Photos row appears when the background count of missing files lands, and moves
+/// every row below it down. Settling waits for that count, so a click aimed at a folder row from
+/// the settled layout doesn't land on the row above it.
+#[test]
+fn settling_waits_for_the_missing_photos_count() {
+    // longer than settling takes without the count (a few hundred ms here)
+    let delay = Duration::from_secs(1);
+    let paths = ["/lc-missing-count/other/a.jpg", "/lc-missing-count/trip/b.jpg"];
+    let services = Services { png: None, ..Default::default() };
+    let ui = json!({"view": "photoGrid", "leftPanel": true, "moduleBar": false});
+    let mut h = folders_app_prepared(&paths, [1400.0, 900.0], ui, services, |app| app.missing_count_test_delay = Some(delay));
+    assert!(has(&h, "source:missing"), "the Missing Photos row is on screen once the sidebar settled");
+    click(&mut h, "libraryFolderToggle:/lc-missing-count");
+    let settled = widget(&h, "source:libfolder:/lc-missing-count/trip");
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < delay / 4 {
+        h.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(widget(&h, "source:libfolder:/lc-missing-count/trip"), settled, "nothing moves the folder rows after settling");
+    // the timed refresh of a slow count is not waited for: the fast simulated clock would start
+    // the next one before the last finished, and settling would never end
+    assert!(h.settle(Duration::from_secs(30)), "the sidebar settles while a slow count refreshes");
 }

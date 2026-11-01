@@ -115,6 +115,9 @@ impl eframe::App for App {
         if !self.0.shutdown(EXIT_WAIT) {
             log::warn!("quit: background work was still running after {EXIT_WAIT:?}");
         }
+        // an orderly quit, even one while the GPU device is still being created, is not a crash
+        // inside the driver: the next launch keeps the GPU on
+        lcc_engine::gpu::backend::release_init_marker_on_quit();
         // macOS only: the process ends below without running destructors, and only the lock's
         // `Drop` removes `catalog.lock.owner` (the OS frees the lock, not the note), so let go of
         // the library's lock here, saved or not (we leave either way). Elsewhere eframe drops the
@@ -1068,20 +1071,18 @@ fn publish_control_token(port: u16, token: &str, supplied: bool) {
     }
 }
 
-/// An isolated profile keeps the emergency crash log with its other app data. With no
-/// override (or an empty override), retain the historical system-temp location.
-fn panic_log_path_with(env: impl Fn(&str) -> Option<std::ffi::OsString>, temp: std::path::PathBuf) -> std::path::PathBuf {
-    env("CONFIG_DIR")
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or(temp)
-        .join(format!("{}-panics.log", lcc_brand::BINARY))
+/// The emergency crash log, `<binary>-panics.log` beside the other logs in the user's own settings
+/// folder (an isolated profile's with `<PREFIX>_CONFIG_DIR`). Never the shared temp folder, where
+/// another user on the machine could create the file first or point it at one of the user's files.
+/// `None` (standard error only) where no logs are kept.
+fn panic_log_path() -> Option<std::path::PathBuf> {
+    log_dir().map(|d| d.join(format!("{}-panics.log", lcc_brand::BINARY)))
 }
 
 fn main() -> eframe::Result {
     // First, so every start-up record is kept for the log file (`logging`).
     let logger = logging::install();
-    lcc_engine::guard::install_hook(panic_log_path_with(lcc_brand::env_os, std::env::temp_dir()));
+    lcc_engine::guard::install_hook(panic_log_path());
     if let Some(logger) = logger {
         logging::record_panics(logger);
     }
@@ -1768,11 +1769,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// The tests that arm the process-wide GPU crash sentinel, one at a time.
+    static GPU_MARKER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A launch the user quit a few seconds in, while the GPU device was still being created, left
+    /// the marker, and the next launch turned GPU rendering off. The orderly quit now removes it;
+    /// a launch killed inside the driver still leaves it.
+    #[test]
+    fn an_orderly_quit_during_gpu_start_up_is_not_a_crash() {
+        let _one = GPU_MARKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let d = dir("gpu-marker-quit");
+        let m = d.join("gpu-init.marker");
+        assert_eq!(gpu_crash_check_at(Some(m.clone()), false), None);
+        std::fs::write(&m, "GPU device and kernel creation started (unix time 1)\n").unwrap();
+        lcc_engine::gpu::backend::release_init_marker_on_quit();
+        assert!(!m.exists());
+        assert_eq!(gpu_crash_check_at(Some(m.clone()), false), None);
+        // killed inside the driver (no orderly quit): still reported
+        std::fs::write(&m, "GPU device and kernel creation started (unix time 2)\n").unwrap();
+        let notice = gpu_crash_check_at(Some(m.clone()), false).unwrap();
+        assert!(notice.contains("GPU rendering is now off"), "{notice}");
+        lcc_engine::gpu::backend::set_init_marker(None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// Issue #169: a `--memory` session neither arms the GPU crash sentinel (which would create
     /// the settings folder) nor removes a marker a crashed launch left; it still reports it, and
     /// the next ordinary launch finds it, reports it and clears it.
     #[test]
     fn memory_session_leaves_the_gpu_marker_and_folder_alone() {
+        let _one = GPU_MARKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let d = dir("gpu-marker-memory");
         let _ = std::fs::remove_dir_all(&d);
         let m = d.join("gpu-init.marker");
@@ -2100,14 +2126,10 @@ mod tests {
 mod config_path_tests {
     use super::*;
 
+    /// The panic log sits beside the other logs in the settings folder, never in the temp folder.
     #[test]
-    fn config_override_keeps_panic_log_in_isolated_profile() {
-        let temp = std::path::PathBuf::from("temp");
-        assert_eq!(
-            panic_log_path_with(|_| Some("isolated".into()), temp.clone()),
-            std::path::PathBuf::from("isolated").join(format!("{}-panics.log", lcc_brand::BINARY))
-        );
-        assert_eq!(panic_log_path_with(|_| None, temp.clone()), temp.join(format!("{}-panics.log", lcc_brand::BINARY)));
-        assert_eq!(panic_log_path_with(|_| Some("".into()), temp.clone()), temp.join(format!("{}-panics.log", lcc_brand::BINARY)));
+    fn panic_log_stays_in_the_settings_folder() {
+        let name = format!("{}-panics.log", lcc_brand::BINARY);
+        assert_eq!(panic_log_path(), log_dir().map(|d| d.join(name)));
     }
 }

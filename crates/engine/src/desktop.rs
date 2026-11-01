@@ -174,7 +174,7 @@ impl Running for Recorded {
 mod programs {
     use super::*;
 
-    /// How long a lookup is reused: the Plugin Manager asks every frame it's open.
+    /// How long a lookup is reused: the Plug-in Manager asks every frame it's open.
     const CACHE_FOR: std::time::Duration = std::time::Duration::from_secs(10);
     /// Longest a lookup command may take before it's stopped (and finds nothing).
     #[cfg(any(target_os = "macos", windows, test))]

@@ -101,8 +101,9 @@ denoise = ["dep:lcc-denoise", "lcc-denoise/runtime", "lcc-gpu/denoise"]
 rawnind-model = ["denoise", "lcc-denoise/rawnind-model", "lcc-denoise-core/rawnind-model"]
 # The upstream project's own denoise model offered as a download (MIT OR Apache-2.0 weights, CC0 training data).
 own-model = ["denoise", "lcc-denoise/own-model", "lcc-denoise-core/own-model"]
-# Tests of other crates only (the UI's update dialog): `Updater::trust_test_key`, so they can stand in
-# a throwaway update key for the brand's. Never enabled by an app build.
+# Tests of other crates only: `Updater::trust_test_key` (the UI's update dialog), so they can stand in
+# a throwaway update key for the brand's; `filter_plugins::install_in_memory` (the Plug-in Manager), so
+# they install a pixel filter without a file in the plug-ins folder. Never enabled by an app build.
 test-support = []
 
 [dev-dependencies]

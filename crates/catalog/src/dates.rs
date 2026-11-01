@@ -41,6 +41,11 @@ pub fn local(secs: i64) -> Option<String> {
         return None;
     }
     let local = chrono::DateTime::from_timestamp(secs, 0)?.with_timezone(&chrono::Local);
+    // the last day of 9999 lands in year 10000 in a zone east of UTC; a five-digit year is not an
+    // ISO date this module reads back
+    if chrono::Datelike::year(&local) > 9999 {
+        return None;
+    }
     Some(local.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
 }
 
@@ -451,7 +456,9 @@ mod tests {
         assert_eq!(civil(i64::MAX), "292277026596-12-04T15:30:07");
         assert_eq!(civil(i64::MIN), "-292277022657-01-27T08:29:52");
         // the same instant in this computer's zone, with its offset; nothing outside 1970..=9999
-        for secs in [0, 951_782_400, 1_777_630_830, 253_402_300_799] {
+        // (a day in from both ends: the first and last instants fall outside 1970..=9999 in a zone
+        // west or east of UTC)
+        for secs in [86_400, 951_782_400, 1_777_630_830, 253_402_300_799 - 86_400] {
             let d = chrono::DateTime::parse_from_rfc3339(&local(secs).unwrap()).unwrap();
             assert_eq!(d.timestamp(), secs);
             assert_eq!(d.offset().local_minus_utc(), d.with_timezone(&chrono::Local).offset().local_minus_utc());

@@ -39,6 +39,9 @@ pub struct SettingsStore {
     /// The file couldn't be read: moved aside before the first save.
     damaged: bool,
     dirty: bool,
+    /// Counts changes to the settings (not the dialogs' values), so a page showing them can tell
+    /// it's out of date.
+    revision: u64,
 }
 
 /// Where a dialog's remembered values are kept: `command/<id>`.
@@ -101,13 +104,24 @@ impl SettingsStore {
             .collect()
     }
 
+    /// Goes up with every change to the settings: [`SettingsStore::set`], and an update dropping one.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Setting `key` as stored (`None`: never set, or back to its default).
     pub fn stored(&self, key: &str) -> Option<Value> {
         self.settings.get(key).cloned()
     }
 
+    /// Puts the revision back (a change undone as a whole, see [`crate::Manager::set_settings`]).
+    pub(crate) fn rewind(&mut self, revision: u64) {
+        self.revision = revision;
+    }
+
     /// Sets setting `key` to `value`, already checked against its field (`None`: back to its default).
     pub fn set(&mut self, key: &str, value: Option<Value>) -> Result<()> {
+        let same = self.settings.get(key) == value.as_ref();
         let old = match value {
             Some(v) => self.settings.insert(key.to_string(), v),
             None => self.settings.remove(key),
@@ -120,6 +134,9 @@ impl SettingsStore {
             return Err(Error::Params(format!("settings would exceed {MAX_SETTINGS_BYTES} bytes")));
         }
         self.dirty = true;
+        if !same {
+            self.revision = self.revision.wrapping_add(1);
+        }
         Ok(())
     }
 
@@ -160,6 +177,9 @@ impl SettingsStore {
     pub fn prune(&mut self, manifest: &Manifest) -> bool {
         let before = (self.settings.len(), self.dialogs.values().map(Map::len).sum::<usize>(), self.dialogs.len());
         self.settings.retain(|k, _| manifest.setting(k).is_some());
+        if self.settings.len() != before.0 {
+            self.revision = self.revision.wrapping_add(1);
+        }
         self.dialogs.retain(|scope, values| {
             let fields = match scope.split_once('/') {
                 Some(("command", id)) => manifest.command(id).map(|c| &c.dialog),

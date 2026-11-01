@@ -726,13 +726,19 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
         return;
     }
     let dialog_was_import = matches!(app.ui.dialog, Some(crate::state::Dialog::Import { .. }));
-    let mut d = if let Some(crate::state::Dialog::Import { opts }) = app.ui.dialog.take() {
-        let mut d = *opts;
-        d.candidates = out.candidates;
-        d.checked = (0..d.candidates.len()).map(|i| d.checked_by_default(i)).collect();
-        d
-    } else {
-        ImportDialog::new(out.candidates)
+    // (only the Import dialog is taken: any other dialog the person has open stays, and the review
+    // waits behind it)
+    let mut d = match app.ui.dialog.take() {
+        Some(crate::state::Dialog::Import { opts }) => {
+            let mut d = *opts;
+            d.candidates = out.candidates;
+            d.checked = (0..d.candidates.len()).map(|i| d.checked_by_default(i)).collect();
+            d
+        }
+        other => {
+            app.ui.dialog = other;
+            ImportDialog::new(out.candidates)
+        }
     };
     (d.scan_limited, d.unreadable, d.unsupported) = (out.truncated, out.unreadable, out.unsupported);
     let trashed = d

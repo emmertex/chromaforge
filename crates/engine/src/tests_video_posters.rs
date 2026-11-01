@@ -153,11 +153,13 @@ fn undated_clips_take_the_movie_header_or_the_file_date() {
     assert!(d.offset_minutes.is_some(), "{captured}");
     assert_eq!(d.unix_seconds(), 1_777_630_830, "{captured}");
 
+    // a clip with no movie header is dated by its file time in this computer's zone, like every
+    // other undated file (the zone-less UTC string it used to get sorted hours off among photos)
     let bare = dir.join("bare.mp4");
     write_clip(&bare, 64, 48, 10, |_| 100, &[]);
     let mtime = std::fs::metadata(&bare).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let mut s = Session::new().with_fs();
     let id = import_one(&mut s, &bare);
-    assert_eq!(s.catalog.photo(id).unwrap().captured.as_deref(), Some(crate::import::civil(mtime as i64).as_str()));
+    assert_eq!(s.catalog.photo(id).unwrap().captured.as_deref(), Some(lcc_catalog::dates::local(mtime as i64).unwrap().as_str()));
     let _ = std::fs::remove_dir_all(&dir);
 }
