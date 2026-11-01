@@ -1,4 +1,4 @@
-# Plug-ins (SDK, ABI v1)
+# Plug-ins (plugins): SDK, ABI v1
 
 The app runs plug-ins as WebAssembly modules in a sandbox: `wasmi`, a pure-Rust interpreter (crate
 `crates/plugins`, `lcc-plugins`). A plug-in can only do what the user grants it. Lightroom Lua
@@ -78,7 +78,7 @@ A plug-in gets nothing it did not ask for in `permissions`, and nothing the user
 Installing shows every requested permission with a checkbox, unticked, and grants only the ones the
 user ticks; an update shows what it newly asks for and keeps nothing beyond the previous grant
 unless approved. Through the engine, `plugin.install` without `grant` grants nothing new, and
-`plugin.install` and `plugin.grant` never add `programs` (below). The Plugin Manager can revoke a permission at any
+`plugin.install` and `plugin.grant` never add `programs` (below). The Plug-in Manager can revoke a permission at any
 time, and the change applies from the next call. In every call, the plug-in's effective rights
 are the granted permissions intersected with the requested ones.
 
@@ -89,7 +89,7 @@ are the granted permissions intersected with the requested ones.
 | `libraryAdd: true` | `library.add {path, from, stack?, album?}`: adds a file a tool made from a photo to the library, from that photo's folder only (see [Adding files to the library](#adding-files-to-the-library)). Requires `libraryAdd`. |
 | `network: ["api.example.com", "*.example.org"]` | `http.request` to those hosts only. Redirects are not followed: the plug-in has to request the new URL itself, and that request is checked again. A binary body goes as `bodyBase64` (with `contentType`) instead of `body`. |
 | `fs: [{path: "/abs/dir", write?}]` | `fs.readText`, `fs.readBytes`, `fs.list`, `fs.exists` below each root, and `fs.writeText`, `fs.writeBytes`, `fs.remove` (files only) below writable roots. Bytes travel as base64 (`{path}` → base64 text; `{path, base64}`). `..` is rejected, and symbolic links are resolved so a link cannot lead out of a root. Files lent to a call (an export hook's or destination's exported files, a publish upload's rendered file) can be read and rewritten without any root, never removed. A program run's folder is lent to its `program.end` call for reading. |
-| `programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `program.start` of those programs, with the arguments the plug-in chooses on each run (see [Programs](#programs)); `program.list` needs nothing. Only the user grants one, by ticking it in the install dialog or the Plugin Manager. `plugin.install` with `grant` and `plugin.grant`, whoever calls them (MCP, the control channel, an action, the command line), may repeat the programs already granted (they stay granted) or leave them out (revoked), and refuse a grant that names any other program or a wider entry than the granted one, changing nothing. The control channel's input requests (`ui.pointer`, `ui.clickWidget`, `ui.key`) work the dialog as the user's mouse and keyboard would, so a row ticked through them counts as the user's: give the control port only to agents you would let tick it. |
+| `programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `program.start` of those programs, with the arguments the plug-in chooses on each run (see [Programs](#programs)); `program.list` needs nothing. Only the user grants one, by ticking it in the install dialog or the Plug-in Manager. `plugin.install` with `grant` and `plugin.grant`, whoever calls them (MCP, the control channel, an action, the command line), may repeat the programs already granted (they stay granted) or leave them out (revoked), and refuse a grant that names any other program or a wider entry than the granted one, changing nothing. The control channel's input requests (`ui.pointer`, `ui.clickWidget`, `ui.key`) work the dialog as the user's mouse and keyboard would, so a row ticked through them counts as the user's: give the control port only to agents you would let tick it. |
 
 Every plug-in can always use its own **metadata namespace** (`ns.get {photo}`,
 `ns.set {photo, key, value}`, `ns.photos`). The namespace is stored next to the module, never in
@@ -107,7 +107,7 @@ pick up what it made when it ends. It requires the host feature `programs` (`"re
 | Field | |
 |---|---|
 | `id` | the program's id in this plug-in (1–64 of `A-Z a-z 0-9 . _ -`) |
-| `name` | shown to the user (install dialog, Plugin Manager, activity stack) |
+| `name` | shown to the user (install dialog, Plug-in Manager, activity stack) |
 | `macBundleIds` | macOS: the app's bundle ids, newest version first (at most 8); each is a version the user may have installed |
 | `windowsExe` | Windows: the executable's file name, looked up under `App Paths` in the registry (per user, per machine, then the machine's 32-bit view), then in the absolute folders on `PATH` |
 | `linuxExe` | Linux and the BSDs: the executable's file name, looked up in the absolute folders on `PATH` |
@@ -120,7 +120,7 @@ When Spotlight knows several copies, the one in `/Applications` or `~/Applicatio
 one elsewhere on the startup disk, then one on another volume (a mounted disk image, an external
 drive); a copy in the Trash never is. A
 lookup that takes more than 3 seconds is stopped and finds nothing. The install dialog and the
-Plugin Manager show each entry as a permission row with what it names on this system (the bundle
+Plug-in Manager show each entry as a permission row with what it names on this system (the bundle
 ids, or the executable) and where it is installed ("not installed" if nowhere, "checking…" while
 the app looks; the dialog never waits for a lookup). An update that widens a granted entry shows it
 unticked and marked new. An update keeps a granted entry when
@@ -300,7 +300,7 @@ Imports (module `host`):
 - `call(ptr, len) -> i32`: sends `{"method", "params"}` and returns the length of the reply,
   which is `{"ok": value}` or `{"error": "message"}`;
 - `response(ptr)`: copies that reply into a buffer of that length;
-- `log(ptr, len)`: adds one line to the plug-in's log, shown in the Plugin Manager.
+- `log(ptr, len)`: adds one line to the plug-in's log, shown in the Plug-in Manager.
 
 ## Writing one in Rust
 
@@ -464,12 +464,13 @@ The manifest fields:
 `plugin.metadataFields {id?}`, `plugin.setField {plugin, field, value, id?}`.
 
 `plugin.list` gives `{dir, host, plugins, failed}`: `dir` is the plug-ins folder (`null`
-when plug-ins are kept in memory), and each `failed` row has `file`, `error`, `kind` (`plugin` or
+when plug-ins are kept in memory), each plug-in has its module's `moduleHash` (sha256) and a
+`settingsRevision` that changes when one of its settings does, and each `failed` row has `file`, `error`, `kind` (`plugin` or
 `filter`) and, when the module named one, `id`. A pixel filter module the filter loader refuses
 gives the loader's error, not the plug-in host's. `plugin.enable` refuses a pixel filter: filters can't be turned off,
 only removed.
 
-### The Plug-in Manager
+### The Plug-in Manager (Plugin Manager)
 
 File ▸ Plug-ins ▸ Plug-in Manager… (Cmd+Alt+Shift+, on macOS, Ctrl+Alt+Shift+, elsewhere; it can
 be rebound in Keyboard Shortcuts) lists the plug-ins on the left, in two sections, Plug-ins and
@@ -487,11 +488,19 @@ right:
 
 *Install from File…* opens the file picker for a `.wasm` module, and dropping one `.wasm` file on
 the app while the window is open installs it too; either way the install dialog asks for the
-permissions first. The footer names the plug-ins folder, with *Show Folder* to open it.
+permissions first. One install at a time: while the dialog waits, another module is refused with a
+note to finish or cancel the first. A module that is exactly what is installed (the same id,
+version and code) opens no dialog: its entry is selected, with a note that it is already
+installed. Other code under the installed version (a repair) and a newer version open the dialog.
+An open Settings tab follows its plug-in: after an update, or a value the plug-in or an agent set,
+it shows the current fields and values, keeping what the user typed and hasn't saved. The window
+can be dragged narrower or wider; a page's text wraps to it. The footer names the plug-ins folder,
+with *Show Folder* to open it.
 
 The window's own commands, for the control channel and `<cli> mcp --connect` (they exist only
 while the app runs): `plugins.manager {open?}` (toggles the window), `plugins.install {path?}` (the
-install dialog for `path`, or the file picker without one), `plugins.page {id, tab?, open?}` (the
+install dialog for `path`, or the file picker without one: `{pending: path}`, or `{installed: id,
+message}` when that module is already installed; an error while another install waits), `plugins.page {id, tab?, open?}` (the
 window with that entry selected, on `tab`: `settings`, `permissions`, `about` or `log`; it fails
 for a tab the entry doesn't have), `plugins.showFolder` (the folder in the system file manager) and
 `plugins.runItem {plugin, command}`.
@@ -506,7 +515,7 @@ worker thread once the files are written, with a row in the activity stack ("Run
 export hooks", kind `plugins`; detail: the plug-in in progress), so a long upload doesn't hold
 the window. ✕ stops before the next plug-in: a call that has started (a plug-in's code) runs to
 its end or its time limit. A plug-in's catalog reads and metadata writes are answered on the UI
-thread, with the same permission checks. The Plugin Manager stays usable meanwhile; a plug-in that
+thread, with the same permission checks. The Plug-in Manager stays usable meanwhile; a plug-in that
 is still busy with the export refuses other calls until it's done ("busy"). The results go to the
 toast and to `ui.inspect` → `export.last.plugins` when they finish. An export run synchronously
 (`app.export` without `background`, the CLI, MCP) runs them before it returns, as before.

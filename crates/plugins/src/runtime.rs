@@ -228,6 +228,10 @@ impl Plugin {
     pub fn digest(&self) -> &[u8; 32] {
         &self.digest
     }
+    /// [`Plugin::digest`] as lowercase hex, as `plugin.list` gives it (`moduleHash`, like a pixel filter's).
+    pub fn module_hash(&self) -> String {
+        self.digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
 
     fn instantiate(&self) -> Result<Live> {
         let limits =

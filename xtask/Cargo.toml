@@ -9,6 +9,8 @@ publish = false
 workspace = true
 
 [dependencies]
+# `cargo xtask i18n`: reads catalogs in file order, refusing a repeated key
+serde = { workspace = true }
 serde_json = { workspace = true }
 # release notes: `cargo xtask notes`
 lcc-notes = { workspace = true }

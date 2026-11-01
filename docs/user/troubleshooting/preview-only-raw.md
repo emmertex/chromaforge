@@ -18,7 +18,7 @@ Select the photo and choose **Photo** > **Reload from Disk**. If your version ca
 2. Choose **Photo** > **Reload from Disk**. The right-click menu on a photo has the same entry.
 3. Open a photo again. If **Preview only** is gone, the photo is now decoded from the raw data.
 
-If **Preview only** stays, your version still cannot decode that raw variant. Update to the [latest release](https://github.com/emmertex/lightcraft-classic/releases/latest) and try again, or report the file as described in [Get help with a problem](get-help.md).
+If **Preview only** stays, your version still cannot decode that raw variant. Update to the [latest release](https://github.com/emmertex/chromaforge/releases/latest) and try again, or report the file as described in [Get help with a problem](get-help.md).
 
 ## Why this happens
 
@@ -30,4 +30,4 @@ Photos shown from the preview keep the camera's picture style and white balance,
 
 ## Still stuck?
 
-Open an issue in the [issue tracker](https://github.com/emmertex/lightcraft-classic/issues).
+Open an issue in the [issue tracker](https://github.com/emmertex/chromaforge/issues).
