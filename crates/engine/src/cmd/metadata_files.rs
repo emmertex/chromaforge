@@ -215,7 +215,6 @@ fn from_xmp(file: &str, text: &str) -> Option<std::result::Result<Found, String>
     put("caption", m.caption.as_ref());
     put("copyright", m.copyright.as_ref());
     put("headline", m.headline.as_ref());
-    put("caption", m.caption.as_ref());
     put("descriptionWriter", m.description_writer.as_ref());
     put("category", m.category.as_ref());
     put("usageTerms", m.usage_terms.as_ref());
