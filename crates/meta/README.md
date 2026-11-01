@@ -24,6 +24,11 @@ user fields (artist, copyright, title, caption, keywords, hierarchical keywords,
 JPEG ICC data is exposed only when its APP2 chunks form a complete, consistent, uniquely numbered sequence;
 malformed or truncated ICC sequences leave unrelated readable metadata available and produce no profile.
 
+IPTC `Date Created` / `Time Created` is projected only when the entire decoded time is valid: a blank or absent time
+keeps date-only behavior, six ASCII digits remain a supported local clock, and the complete eleven-character
+`HHMMSS+HHMM` form carries an offset. Partial offsets, extra digits and trailing text are ignored as capture-time
+candidates, so they cannot block valid XMP or the import file-date fallback; other IPTC fields remain available.
+
 EXIF capture-time candidates are tried in order: DateTimeOriginal, DateTimeDigitized, then IFD0 DateTime. A clock
 with more than three colon-separated components is rejected as a whole, allowing the next valid candidate or XMP
 fallback to supply the capture time. The original tag remains available in All Metadata.
@@ -34,7 +39,8 @@ Written: `dc`, `xmp`, `photoshop`, `exif`, `exifEX`, `tiff`, `lr` (`hierarchical
 `lc` = `http://ns.lightcraft.app/lc/1.0/` (`lc:settings`, an opaque JSON string). Reading canonicalises
 prefixes by namespace URI, handles attribute and element forms, `rdf:Seq`/`Bag`/`Alt` (x-default first),
 `rdf:parseType="Resource"` and nested-description structs, predefined and numeric entities. Nesting depth
-and node count are limited.
+and node count are limited. `tiff:Orientation` is projected only for integral codes 1–8; fractional or
+out-of-range values remain raw XMP properties without becoming typed metadata.
 
 An explicitly foreign namespace using a recognized prefix (for example `lc` or `xmp`) cannot supply
 recognized properties. Its keys use `Q{hex-encoded namespace URI}local` in `properties` and `values`;
