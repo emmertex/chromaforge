@@ -7,6 +7,7 @@ description = "Immich client (L3): typed API calls written from the public API d
 
 [dependencies]
 lcc-catalog = { workspace = true }
+chrono = { workspace = true }
 lcc-hash = { workspace = true }
 lcc-geom = { workspace = true }
 lcc-meta = { workspace = true }

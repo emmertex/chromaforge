@@ -64,6 +64,11 @@ fn newest_compares_instants_across_zones() {
     assert_eq!(sync::instant("2026-01-01T00:00:00Z"), sync::instant("2026-01-01T00:00:00.000+00:00"));
     assert!(sync::instant("garbage").is_none());
     assert!(sync::instant("2026-13-01T00:00:00Z").is_none());
+    assert_eq!(sync::instant("1970-01-01T00:00:01.5Z"), Some(1_500));
+    assert_eq!(sync::instant("2000-02-29T00:00:00Z"), Some(951_782_400_000), "a leap day");
+    assert_eq!(sync::instant("1969-12-31T23:59:59Z"), Some(-1_000));
+    assert!(sync::instant("2026-02-29T00:00:00Z").is_none(), "2026 is no leap year");
+    assert!(sync::instant("2026-04-31T00:00:00Z").is_none());
     assert!(sync::instant("").is_none());
 }
 

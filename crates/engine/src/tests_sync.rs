@@ -287,6 +287,33 @@ fn an_old_sidecar_or_one_that_agrees_is_no_update() {
     assert!(paths(&r, "metadata").is_empty(), "{r}");
 }
 
+/// A sidecar's date is compared with the library's stamp as moments, not as wall clocks: the stamp
+/// carries its zone, and the file's date has none.
+#[test]
+fn a_sidecars_date_is_compared_with_the_stamps_zone() {
+    let now = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let stamped = |dir: &Scratch, secs: i64, zone: i64, suffix: &str| {
+        write_png(&dir.path("trip/a.png"), 1);
+        let stamp = format!("{}{suffix}", lcc_catalog::dates::civil(secs + zone * 3600));
+        let mut s = Session::new().with_fs();
+        s.clock = Box::new(move || stamp.clone());
+        s.execute("library.import", &json!({"paths": [dir.path("trip")]})).unwrap();
+        s
+    };
+    // imported just now, far west of UTC: the wall clock reads hours behind the sidecar saved an hour ago
+    let dir = Scratch::new("zone-west");
+    let mut s = stamped(&dir, now, -11, "-11:00");
+    write_sidecar(&dir.path("trip/a.png"), 4, Duration::from_secs(3600));
+    let r = scan(&mut s, &dir.path("trip"));
+    assert!(paths(&r, "metadata").is_empty(), "{r}");
+    // imported two hours ago, far east of UTC: the wall clock reads hours ahead of the sidecar saved since
+    let dir = Scratch::new("zone-east");
+    let mut s = stamped(&dir, now - 7200, 11, "+11:00");
+    write_sidecar(&dir.path("trip/a.png"), 4, Duration::from_secs(3600));
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(paths(&r, "metadata"), vec![dir.path("trip/a.png")], "{r}");
+}
+
 #[test]
 fn synchronizing_imports_new_files_and_leaves_the_rest_unless_asked() {
     let dir = Scratch::new("sync");
