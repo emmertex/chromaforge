@@ -118,7 +118,7 @@ pub fn native_menu_structure(bar: &[(String, Vec<MenuNode>)], keymap: &crate::sh
 }
 
 /// Top-level menus in order (the macOS app menu is added by the host).
-pub const MENUS: &[&str] = &["File", "Edit", "Library", "Photo", "Metadata", "View", "Window", "Help"];
+pub const MENUS: &[&str] = &["File", "Edit", "Library", "Search", "Photo", "Metadata", "View", "Window", "Help"];
 
 /// Order and grouping per menu: command ids, `---` separators and `@Submenu` placeholders.
 /// Entries with a menu path that aren't listed are appended at the end of their menu, before any
@@ -192,6 +192,10 @@ const LAYOUT: &[(&str, &[&str])] = &[
             "---",
             "@Immich",
         ],
+    ),
+    (
+        "Search",
+        &["search.advanced"],
     ),
     (
         "Photo",

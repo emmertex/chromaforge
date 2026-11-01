@@ -268,6 +268,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::Timelapse { .. } => "Timelapse Video",
         Dialog::SlideshowExport { .. } => "Export Slideshow",
         Dialog::Print => "Print",
+        Dialog::AdvancedSearch { .. } => "Advanced Search",
         Dialog::Merge { opts } => opts.title(),
         Dialog::Enhance { .. } => "Enhance Preview",
         Dialog::Settings { .. } => "Settings",
@@ -357,6 +358,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::AllMetadata { .. } => 620.0,
             Dialog::Update => 500.0,
             Dialog::Print => 1100.0,
+            Dialog::AdvancedSearch { .. } => 560.0,
             Dialog::FaceModel { .. } => 460.0,
             Dialog::LightroomCatalog { .. } => 440.0,
             Dialog::LightroomDestination { .. } => 480.0,
@@ -1328,6 +1330,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     });
                 }
                 Dialog::Print => crate::print_view::body(app, ui, &t),
+                Dialog::AdvancedSearch { state } => crate::panels::advanced_search::body(ui, state),
             };
             // the import review and Print size and scroll themselves
             if import || print || export {
@@ -1443,6 +1446,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::CopySettings { .. } => "Copy",
                     Dialog::PasteSettings { .. } => "Paste",
                     Dialog::TextPrompt { command, .. } => prompt_verb(command),
+                    Dialog::AdvancedSearch { .. } => "Search",
                     _ => "OK",
                 };
                 // installing waits for the licence to be accepted
@@ -1921,6 +1925,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
             Ok(serde_json::Value::Null)
         }
+        Dialog::AdvancedSearch { state } => app.run("library.filter", state.to_patch()),
         Dialog::SamModel { then, .. } => {
             if app.session.segmenter.installed() {
                 // installed: start what the user was doing

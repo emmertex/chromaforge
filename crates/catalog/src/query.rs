@@ -85,6 +85,8 @@ pub struct Filter {
     /// maximum ("<=2", "<3"), or range ("1-5", "2..4"). Accepts strings or numbers in JSON.
     #[serde(default, deserialize_with = "deserialize_faces", skip_serializing_if = "Option::is_none")]
     pub faces: Option<String>,
+    /// Location text (country, city, place name): case-insensitive substring of the photo's location.
+    pub location: Option<String>,
     /// Smart-album rules (all / any / none, nested groups; see [`crate::rules`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_set: Option<crate::RuleSet>,
@@ -976,6 +978,11 @@ impl Filter {
         }
         if let Some(l) = &self.lens
             && !p.meta.lens.to_lowercase().contains(&l.to_lowercase())
+        {
+            return false;
+        }
+        if let Some(loc) = &self.location
+            && !p.meta.location.to_lowercase().contains(&loc.to_lowercase())
         {
             return false;
         }

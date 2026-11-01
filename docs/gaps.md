@@ -72,6 +72,7 @@ Beta-blocking gaps (B) total **~170–310 h**; with the stability and platform w
 
 ## Closed recently (kept for calibration)
 
+- 2026-11-01: Advanced Search dialog (Search ▸ Advanced Search, `Cmd+Shift+F`, issue #684 PR 1): one modal with seven collapsible categories (File/Album/Tags, Item Properties, Caption/Comment/Title, Photograph Information, Geographic Position, Face Regions) composing one `library.filter` patch — structured field filters only. The natural-language bar and the CLIP model are PR 2–4. No ranked gap closes; the LR-FILT-SEARCH-ADV parity row is new.
 - 2026-10-22: saving XMP preserves foreign namespaces even when they use `lc:` or `xmp:` prefixes; importing them no longer interprets their properties as native settings or ratings. Parser, merge and save-command regressions cover the correction; no ranked gap or readiness estimate changes.
 
 - 2026-10-22: PSD/PSB imports and metadata readers now expose embedded EXIF resource 1058 and XMP resource 1060 for capture dates, GPS and All Metadata (#2519); imported PSD edit copies retain their capture date, and the `removeLocation` Original-export guard sees embedded PSD/PSB GPS. No ranked gap or headline feature count closes.

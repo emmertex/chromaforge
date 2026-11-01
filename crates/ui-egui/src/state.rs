@@ -1472,6 +1472,8 @@ pub enum Dialog {
     /// File ▸ Print…: the Print module. Its state is the session's (`print.*`); the page on show
     /// and the selected cell are [`UiState::print`].
     Print,
+    /// Search ▸ Advanced Search (issue #684): the modal's structured field filters (`library.filter`).
+    AdvancedSearch { state: crate::panels::advanced_search::AdvancedSearch },
     ContactSheet {
         options: lcc_engine::contact_sheet::Options,
     },
