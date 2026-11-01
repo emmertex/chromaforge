@@ -1909,13 +1909,12 @@ fn finish_moves(s: &mut Session, placed: Vec<crate::import_move::Placed>, log0: 
     }
 }
 
-/// The current local time as ISO 8601 (`YYYY-MM-DDTHH:MM:SS`, UTC on targets without a clock
-/// offset); for [`Session::clock`] on native hosts.
+/// The current local time as RFC 3339 with its offset (`YYYY-MM-DDTHH:MM:SS-05:00`); for
+/// [`Session::clock`] on native hosts.
 pub fn system_clock() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        civil(secs)
+        lcc_catalog::dates::now_local()
     }
     #[cfg(target_arch = "wasm32")]
     {

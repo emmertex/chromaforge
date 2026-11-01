@@ -253,6 +253,8 @@ fn the_platform_and_the_clock_are_worded_for_a_dialog() {
     assert_eq!(iso_from_unix(0), "1970-01-01T00:00:00Z");
     assert_eq!(iso_from_unix(86_399), "1970-01-01T23:59:59Z");
     assert_eq!(iso_from_unix(951_782_400), "2000-02-29T00:00:00Z", "a leap day");
+    assert_eq!(iso_from_unix(4_107_542_400), "2100-03-01T00:00:00Z", "2100 is no leap year");
+    assert_eq!(iso_from_unix(u64::MAX), "292277026596-12-04T15:30:07Z", "far past chrono's years, never a panic");
     let now = iso_now();
     assert_eq!(now.len(), 20, "{now}");
     assert!(now.ends_with('Z'));
