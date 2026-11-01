@@ -179,6 +179,15 @@ fn new_library_without_seed_is_empty_and_compacts() {
     assert!(s.catalog.is_empty());
     s.execute("album.create", &json!({"name": "A"})).unwrap();
     s.execute("library.compact", &json!({})).unwrap();
+    // the compaction is written on a worker (issue #448: a large catalog frozen the UI while it
+    // was serialised): the frame loop's persist finishes it
+    for _ in 0..1000 {
+        s.persist_if_dirty();
+        if s.execute("library.info", &json!({})).unwrap()["logRecords"] == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     let info = s.execute("library.info", &json!({})).unwrap();
     assert_eq!(info["logRecords"], 0);
     assert_eq!(info["snapshotSeq"], info["seq"]);

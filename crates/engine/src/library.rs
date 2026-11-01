@@ -1045,14 +1045,21 @@ impl Session {
         }
     }
 
-    /// Compact the log into a snapshot now.
+    /// Compact the log into a snapshot now. Natively the snapshot is written on a worker thread
+    /// (as the automatic compaction is): serialising a large catalog on the calling thread — the
+    /// UI's — froze the window for tens of seconds on a 28 000-photo library (issue #448). The
+    /// compaction finishes through the frame loop's [`Session::persist_if_dirty`]; a failure
+    /// loses nothing (the log is kept whole) and is retried once the log has grown again.
     pub fn compact_library(&mut self) -> Result<()> {
         self.persist()?;
         if self.interaction.is_some() {
             return Err(EngineError::Other("can't compact during an interaction".into()));
         }
-        if let Some(lib) = self.library.as_mut() {
-            lib.journal.snapshot(&self.catalog)?;
+        if let Some(lib) = self.library.as_mut()
+            && let Err(e) = lib.journal.snapshot_in_background(&self.catalog)
+        {
+            log::error!("library: compaction: {e}");
+            lib.last_error = Some(format!("compaction: {e}"));
         }
         Ok(())
     }
