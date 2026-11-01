@@ -702,8 +702,9 @@ fn settings_ui(app: &mut LccApp, ui: &mut egui::Ui, s: &mut Value, action: &mut 
         s[key] = json!(b);
     }
     if let Some(last) = s["lastBackup"].as_i64() {
-        let when = lcc_catalog::dates::civil(last);
-        ui.label(egui::RichText::new(format!("{} {}", crate::i18n::tr("Last backup:"), when.replace('T', " "))).weak());
+        let when = lcc_catalog::dates::local(last).unwrap_or_else(|| lcc_catalog::dates::civil(last));
+        let when = when.get(..19).unwrap_or(&when).replace('T', " ");
+        ui.label(egui::RichText::new(format!("{} {}", crate::i18n::tr("Last backup:"), when)).weak());
     }
     ui.horizontal(|ui| {
         for (cmd, label) in [("catalog.backup", "Back Up Now"), ("catalog.checkIntegrity", "Test Integrity"), ("catalog.optimize", "Optimise")] {
