@@ -28,6 +28,8 @@ const PAGE_SIZE: u32 = 1000;
 
 #[path = "immich_publish.rs"]
 pub mod publish;
+#[path = "immich_sidecars.rs"]
+pub(crate) mod sidecars;
 #[path = "immich_sync.rs"]
 pub(crate) mod sync;
 #[path = "immich_versions.rs"]
@@ -658,6 +660,9 @@ pub fn pump(s: &mut Session, p: &Value) -> Result<Value> {
             Msg::AlbumsSynced(d) => {
                 publish::finish_albums(s, *d);
             }
+            Msg::Sidecars(d) => {
+                sidecars::finish(s, *d);
+            }
             Msg::Version(d) => {
                 versions::finish(s, *d);
             }
@@ -698,6 +703,7 @@ pub fn pump(s: &mut Session, p: &Value) -> Result<Value> {
         "connecting": s.remote.connecting,
         "checking": s.remote.checking.iter().collect::<Vec<_>>(),
         "unlocking": s.remote.unlocking,
+        "sidecars": s.remote.sidecars.json(),
     }))
 }
 
@@ -949,6 +955,7 @@ pub fn specs() -> Vec<CommandSpec> {
     let mut v = sync::specs();
     v.extend(publish::specs());
     v.extend(versions::specs());
+    v.extend(sidecars::specs());
     v.extend(base_specs());
     v
 }
