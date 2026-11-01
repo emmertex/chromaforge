@@ -208,6 +208,11 @@ fn live_asset_sidecar_round_trip() {
     use lcc_immich::client::{NewAsset, UploadData};
     let Some((url, key)) = server() else { panic!("no target/immich/api-key: run `cargo xtask immich seed`") };
     let c = Client::new(&url, key, &ServerOptions::standard()).unwrap();
+    // the version matrix runs `min` (v3.0.0) too, which has no `/asset-files`
+    if c.version().unwrap() < lcc_immich::MIN_ASSET_FILES_VERSION {
+        eprintln!("skipping: /asset-files needs Immich {}", lcc_immich::MIN_ASSET_FILES_VERSION);
+        return;
+    }
     let (w, h) = (16usize, 16usize);
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % w) as u8 ^ stamp as u8, (i / w) as u8 ^ (stamp >> 8) as u8, 7, 255]).collect();
