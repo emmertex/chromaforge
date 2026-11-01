@@ -5,7 +5,7 @@ order: 30
 verified: 0.7.1
 ---
 
-Open an issue in the [issue tracker](https://github.com/emmertex/lightcraft-classic/issues). Include your version, your system, what you did, and what you expected.
+Open an issue in the [issue tracker](https://github.com/emmertex/chromaforge/issues). Include your version, your system, what you did, and what you expected.
 
 ## What to include
 
@@ -23,4 +23,4 @@ Chromaforge writes its log to `logs/lightcraft-classic.log` in its settings fold
 
 ## Still stuck?
 
-Open an issue in the [issue tracker](https://github.com/emmertex/lightcraft-classic/issues).
+Open an issue in the [issue tracker](https://github.com/emmertex/chromaforge/issues).
