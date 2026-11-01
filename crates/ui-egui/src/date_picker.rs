@@ -114,22 +114,15 @@ impl PickedDate {
 
 /// Days in `month` (1–12) of `year` in the Gregorian calendar; 0 for a month that doesn't exist.
 pub fn days_in_month(year: i32, month: u8) -> u8 {
-    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => 0,
-    }
+    u8::try_from(lcc_catalog::dates::days_in_month(year, u32::from(month))).unwrap_or(0)
 }
 
 /// The days of a month laid out in weeks from Monday: `None` before the 1st and after the last
 /// day, so the length is a multiple of 7.
 pub fn month_grid(year: i32, month: u8) -> Vec<Option<u8>> {
+    use lcc_catalog::dates::{WEEKDAYS, weekday};
     let first = format!("{year:04}-{month:02}-01");
-    // 1970-01-01 was a Thursday: three days after a Monday
-    let lead = lcc_catalog::stacks::iso_seconds(&first).map_or(0, |s| (s.div_euclid(86_400) + 3).rem_euclid(7) as usize);
+    let lead = weekday(&first).and_then(|w| WEEKDAYS.iter().position(|d| *d == w)).unwrap_or(0);
     let mut cells: Vec<Option<u8>> = std::iter::repeat_n(None, lead).chain((1..=days_in_month(year, month)).map(Some)).collect();
     while !cells.len().is_multiple_of(7) {
         cells.push(None);
