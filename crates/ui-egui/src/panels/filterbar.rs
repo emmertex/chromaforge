@@ -107,10 +107,12 @@ fn picker(app: &mut LccApp, ui: &mut egui::Ui, id: &str, current: &str, active: 
             for (n, (label, patch, sel)) in items.iter().enumerate() {
                 // the "Any …" row (a patch that only clears: nulls and empty lists) always stays, and so does the
                 // column's operator toggle (a patch with an `…Op` key)
-                let any = patch.as_object().is_none_or(|o| o.values().all(|v| v.is_null() || v.as_array().is_some_and(Vec::is_empty)));
-                let op_row = patch.as_object().is_some_and(|o| {
-                    o.contains_key("keywordOp") || o.contains_key("cameraOp") || o.contains_key("lensOp") || o.contains_key("personOp")
+                // (its operator, if any, back to OR; a row that only sets the operator is not it)
+                let any = patch.as_object().is_none_or(|o| {
+                    o.keys().any(|k| !k.ends_with("Op"))
+                        && o.iter().all(|(k, v)| v.is_null() || v.as_array().is_some_and(Vec::is_empty) || (k.ends_with("Op") && v == "any"))
                 });
+                let op_row = !any && patch.as_object().is_some_and(|o| o.keys().any(|k| k.ends_with("Op")));
                 if searchable && !any && !op_row && !needle.is_empty() && !label.to_lowercase().contains(&needle) {
                     continue;
                 }
@@ -324,14 +326,22 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
                 "lens" => &values.lenses,
                 _ => &values.keywords,
             };
+            // a photo has one camera, so only lenses and keywords combine with AND (issue #683)
             let op_key = format!("{key}Op");
             let op = match id {
-                "camera" => f.camera_op,
-                "lens" => f.lens_op,
-                _ => f.keyword_op,
+                "camera" => None,
+                "lens" => Some(f.lens_op),
+                _ => Some(f.keyword_op),
             };
             let is_on = |v: &str| chosen.iter().any(|c| c.eq_ignore_ascii_case(v));
-            let mut items = vec![(format!("Any {}", all_label.to_lowercase()), json!({key: Value::Null, list_key: []}), chosen.is_empty())];
+            // "Any …" clears the values and puts the operator back to OR, so the next pick doesn't start in AND
+            let mut clear = json!({key: Value::Null, list_key: []});
+            if op.is_some()
+                && let Some(o) = clear.as_object_mut()
+            {
+                o.insert(op_key.clone(), json!("any"));
+            }
+            let mut items = vec![(format!("Any {}", all_label.to_lowercase()), clear, chosen.is_empty())];
             items.extend(all.iter().map(|v| {
                 let on = is_on(v);
                 let next: Vec<&String> =
@@ -339,8 +349,10 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
                 (v.clone(), json!({key: Value::Null, list_key: next}), on)
             }));
             // the boolean operator (issue #683): OR matches photos with any chosen value, AND only those with all
-            items.push((crate::i18n::tr("Match any (OR)").to_string(), json!({op_key.clone(): "any"}), op == lcc_catalog::MatchOp::Any));
-            items.push((crate::i18n::tr("Match all (AND)").to_string(), json!({op_key: "all"}), op == lcc_catalog::MatchOp::All));
+            if let Some(op) = op {
+                items.push((crate::i18n::tr("Match any (OR)").to_string(), json!({op_key.clone(): "any"}), op == lcc_catalog::MatchOp::Any));
+                items.push((crate::i18n::tr("Match all (AND)").to_string(), json!({op_key: "all"}), op == lcc_catalog::MatchOp::All));
+            }
             items
         };
         picker(app, ui, id, &shown, active, items);
@@ -641,11 +653,12 @@ fn columns(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
             *slot = query.clone();
         }
         // the column's boolean operator for the multi-value fields (issue #683): any chosen value matches (OR) or
-        // all of them must (AND); the single-value fields (label, flag, rating, kind, year) have nothing to combine
-        if matches!(field.as_str(), "camera" | "lens" | "keyword" | "person") {
+        // all of them must (AND); a photo has one camera, and the single-value fields (label, flag, rating, kind,
+        // year) have nothing to combine
+        let has_op = matches!(field.as_str(), "lens" | "keyword" | "person");
+        if has_op {
             let op_key = format!("{field}Op");
             let op = match field.as_str() {
-                "camera" => f.camera_op,
                 "lens" => f.lens_op,
                 "keyword" => f.keyword_op,
                 _ => f.person_op,
@@ -672,6 +685,10 @@ fn columns(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
         let all = format!("{} ({})", crate::i18n::tr("All"), data["distinct"].as_u64().unwrap_or(0));
         if value_row(&mut c, format!("filterValue:{i}:0"), all, data["photos"].as_u64().unwrap_or(0), chosen.is_empty(), true) {
             picked = Some((field.clone(), Value::Null));
+            // clearing the column also puts its operator back to OR, so the next pick doesn't start in AND
+            if has_op {
+                op_pick = Some((format!("{field}Op"), json!("any")));
+            }
         }
         egui::ScrollArea::vertical().id_salt(("filterColumnRows", i)).auto_shrink([false, false]).show(&mut c, |ui| {
             let values = data["values"].as_array().map(Vec::as_slice).unwrap_or(&[]);

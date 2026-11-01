@@ -340,8 +340,7 @@ fn metadata_multi_select_matches_all_values_in_and_mode() {
     // AND on people
     assert_eq!(q(Filter { people: strs(&["amy", "ben"]), person_op: MatchOp::All, ..Default::default() }), vec![both]);
     assert_eq!(q(Filter { people: strs(&["amy", "ben"]), person_op: MatchOp::Any, ..Default::default() }), vec![both, only_kw]);
-    // AND on cameras and lenses; a value no photo combines with the others empties the result
-    assert_eq!(q(Filter { cameras: strs(&["z 8", "d750"]), camera_op: MatchOp::All, ..Default::default() }), Vec::<PhotoId>::new());
+    // AND on lenses; a value no photo combines with the others empties the result
     assert_eq!(q(Filter { lenses: strs(&["24-120", "20mm"]), lens_op: MatchOp::All, ..Default::default() }), Vec::<PhotoId>::new());
     // the operators of different lists apply independently
     assert_eq!(
@@ -362,9 +361,11 @@ fn metadata_multi_select_matches_all_values_in_and_mode() {
     assert_eq!(json.get("keywordOp"), Some(&serde_json::json!("all")));
     let plain = serde_json::to_value(Filter { keywords: strs(&["x"]), ..Default::default() }).unwrap();
     assert_eq!(plain.get("keywordOp"), Some(&serde_json::json!("any")), "{plain}");
-    let back: Filter = serde_json::from_value(serde_json::json!({"people": ["amy"], "personOp": "all", "cameraOp": "any"})).unwrap();
+    let back: Filter = serde_json::from_value(serde_json::json!({"people": ["amy"], "personOp": "all", "lensOp": "any"})).unwrap();
     assert_eq!(back.person_op, MatchOp::All);
-    assert_eq!(back.camera_op, MatchOp::Any);
+    assert_eq!(back.lens_op, MatchOp::Any);
+    // cameras have no operator: a photo has only one camera
+    assert!(serde_json::from_value::<Filter>(serde_json::json!({"cameraOp": "all"})).is_err());
     assert_eq!(back.keyword_op, MatchOp::Any, "an absent operator reads as OR");
 }
 

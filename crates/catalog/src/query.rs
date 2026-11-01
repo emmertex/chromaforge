@@ -80,8 +80,6 @@ pub struct Filter {
     pub keyword_op: MatchOp,
     /// How [`Filter::people`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
     pub person_op: MatchOp,
-    /// How [`Filter::cameras`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
-    pub camera_op: MatchOp,
     /// How [`Filter::lenses`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
     pub lens_op: MatchOp,
     /// Capture date range, inclusive: `dateFrom` is compared as a lower bound (`2026-04-01`),
@@ -859,7 +857,8 @@ impl Filter {
         for (name, list, op) in [
             ("keyword", &self.keywords, self.keyword_op),
             ("person", &self.people, self.person_op),
-            ("camera", &self.cameras, self.camera_op),
+            // a photo has one camera: several of them can only mean any of them
+            ("camera", &self.cameras, MatchOp::Any),
             ("lens", &self.lenses, self.lens_op),
         ] {
             if !list.is_empty() {
@@ -1054,7 +1053,7 @@ impl Filter {
         };
         if !list_matches(&self.keywords, self.keyword_op, &|k| p.meta.keywords.iter().any(|x| crate::keywords::is_under(x, k)))
             || !list_matches(&self.people, self.person_op, &|n| has_person(p, n))
-            || !list_matches(&self.cameras, self.camera_op, &|c| p.meta.camera.eq_ignore_ascii_case(c))
+            || !list_matches(&self.cameras, MatchOp::Any, &|c| p.meta.camera.eq_ignore_ascii_case(c))
             || !list_matches(&self.lenses, self.lens_op, &|l| p.meta.lens.to_lowercase().contains(&l.to_lowercase()))
         {
             return false;

@@ -49,7 +49,11 @@ fn typing_narrows_the_keyword_rows_and_keeps_any() {
     ok(&mut h, "ui.key", json!({"key": "Escape"}));
     ok(&mut h, "ui.clickWidget", json!({"id": "dropdown:filter-camera"}));
     let cameras = h.app.caches.filter_values(&h.app.session.catalog).cameras.len();
-    assert_eq!(rows(&h, "camera").len(), cameras + 3, "the camera picker isn't filtered by the keyword search");
+    assert_eq!(
+        rows(&h, "camera").len(),
+        cameras + 1,
+        "the camera picker (no operator rows: a photo has one camera) isn't filtered by the keyword search"
+    );
 }
 
 /// Issue #213: the keyword picker takes several keywords. It stays open while they are clicked, shows any of them,
@@ -113,6 +117,12 @@ fn the_keyword_picker_toggles_between_or_and_and() {
     let any_row = all_row - 1;
     ok(&mut h, "ui.clickWidget", json!({"id": format!("filterItem:keyword:{any_row}")}));
     assert_eq!(h.app.session.filter.keyword_op, lcc_catalog::MatchOp::Any);
+    // "Any keyword" clears the choice and puts the operator back to OR, so the next pick doesn't start in AND
+    ok(&mut h, "ui.clickWidget", json!({"id": format!("filterItem:keyword:{all_row}")}));
+    assert_eq!(h.app.session.filter.keyword_op, lcc_catalog::MatchOp::All);
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterItem:keyword:0"}));
+    assert!(h.app.session.filter.keywords.is_empty(), "Any keyword clears the values");
+    assert_eq!(h.app.session.filter.keyword_op, lcc_catalog::MatchOp::Any, "and the operator");
 }
 
 /// Issue #218: the filter bar's Metadata columns list each field's values with counts; a click narrows the grid,
