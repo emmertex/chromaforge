@@ -59,9 +59,14 @@ fn is_lrcat_name(name: &str) -> bool {
 /// The first `*.lrcat` file (by name) at the top level of `dir`, looking at no more than
 /// [`SCAN_LIMIT`] entries. Unreadable folders and entries are skipped.
 pub fn find_lrcat(dir: &Path) -> Option<PathBuf> {
+    find_lrcat_among(dir, SCAN_LIMIT)
+}
+
+/// [`find_lrcat`] looking at no more than `limit` entries.
+pub(crate) fn find_lrcat_among(dir: &Path, limit: usize) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut found: Option<PathBuf> = None;
-    for entry in entries.take(SCAN_LIMIT).flatten() {
+    for entry in entries.take(limit).flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         if !is_lrcat_name(name) {
