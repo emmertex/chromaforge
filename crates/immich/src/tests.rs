@@ -134,13 +134,102 @@ fn connect_reads_version_user_and_permissions() {
     assert!(client::missing_permissions(&["all".into()]).is_empty());
     assert_eq!(
         client::missing_permissions(&["asset.read".into()]).len(),
-        7,
-        "import, external libraries, sync, people, stacks, edit versions, album sync"
+        8,
+        "import, external libraries, sync, people, stacks, edit versions, album sync, sidecars"
     );
     // the key goes in its header, never in the URL
     let seen = seen.lock().unwrap();
     assert!(seen.iter().all(|r| !r.target.contains(KEY)));
     assert!(seen.iter().any(|r| r.header("x-api-key") == Some(KEY)));
+}
+
+#[test]
+fn an_upload_with_a_sidecar_sends_the_file_parts_first() {
+    // Immich v3.3.1 rejects a multipart upload whose text fields come before `assetData` when a
+    // `sidecarData` is present ("Unsupported file type <name>"), so the order is part of the API.
+    let (url, seen) = serve(|_| response("200 OK", br#"{"id":"asset-1","status":"created"}"#));
+    let c = client(&url, KEY);
+    c.upload(&crate::client::NewAsset {
+        data: crate::client::UploadData::Bytes(b"png"),
+        file_name: "shot.png",
+        mime: "image/png",
+        device_asset_id: "device-1",
+        device_id: "app",
+        created: "2024-01-01T12:00:00.000Z",
+        favorite: false,
+        sidecar: Some(b"<x:xmpmeta/>"),
+    })
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    let body = String::from_utf8_lossy(&seen[0].body);
+    let asset = body.find("name=\"assetData\"").unwrap_or(usize::MAX);
+    let sidecar = body.find("name=\"sidecarData\"").unwrap_or(usize::MAX);
+    let text = body.find("name=\"deviceAssetId\"").unwrap_or(0);
+    assert!(asset < text, "assetData comes before the text fields:\n{body}");
+    assert!(sidecar < text, "sidecarData comes before the text fields:\n{body}");
+}
+
+#[test]
+fn copying_a_sidecar_sends_only_the_sidecar_flag() {
+    let (url, seen) = serve(|_| response("204 No Content", b""));
+    let c = client(&url, KEY);
+    c.copy_sidecar("source-1", "target-2").unwrap();
+    c.delete_assets(&["temp-3".into()], true).unwrap();
+    let seen = seen.lock().unwrap();
+    let copy = seen.iter().find(|r| r.method == "PUT").unwrap();
+    assert_eq!(copy.target, "/api/assets/copy");
+    let b: serde_json::Value = serde_json::from_slice(&copy.body).unwrap();
+    assert_eq!(b["sourceId"], "source-1");
+    assert_eq!(b["targetId"], "target-2");
+    assert_eq!(b["sidecar"], true);
+    for k in ["albums", "favorite", "sharedLinks", "stack"] {
+        assert_eq!(b[k], false, "only the sidecar is copied ({k})");
+    }
+    let delete = seen.iter().find(|r| r.method == "DELETE").unwrap();
+    let b: serde_json::Value = serde_json::from_slice(&delete.body).unwrap();
+    assert_eq!(b["ids"], serde_json::json!(["temp-3"]));
+    assert_eq!(b["force"], true, "the temporary asset is removed at once");
+}
+
+#[test]
+fn asset_files_list_and_serve_the_sidecar_within_the_cap() {
+    const XML: &[u8] =
+        b"<?xpacket?><x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'/></x:xmpmeta>";
+    let (url, seen) = serve(move |req| {
+        let path = req.target.split('?').next().unwrap_or_default();
+        if req.header("x-api-key") != Some(KEY) {
+            return response("401 Unauthorized", br#"{"message":"Invalid API key"}"#);
+        }
+        match (req.method.as_str(), path) {
+            ("GET", "/api/asset-files") => {
+                response("200 OK", br#"[{"id":"file-1","type":"preview","path":"/p"},{"id":"file-2","type":"sidecar","path":"/x.jpg.xmp"}]"#)
+            }
+            ("GET", "/api/asset-files/file-2/download") => {
+                let mut out =
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/xml\r\nConnection: close\r\n\r\n", XML.len())
+                        .into_bytes();
+                out.extend_from_slice(XML);
+                out
+            }
+            // a sidecar larger than the cap: refused from its Content-Length alone
+            ("GET", "/api/asset-files/big/download") => {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 16777217\r\nContent-Type: application/xml\r\nConnection: close\r\n\r\n".to_vec()
+            }
+            _ => response("404 Not Found", br#"{}"#),
+        }
+    });
+    let c = client(&url, KEY);
+    let files = c.asset_files("aaaa-bbbb", Some("sidecar")).unwrap();
+    assert_eq!(files.len(), 2);
+    assert!(!files[0].is_sidecar());
+    assert_eq!(c.asset_sidecar("aaaa-bbbb").unwrap().map(|f| f.id), Some("file-2".into()));
+    assert_eq!(c.download_asset_file("file-2").unwrap(), XML);
+    assert!(matches!(c.download_asset_file("big"), Err(ImmichError::Protocol(_))), "the cap is enforced");
+    // ids and kinds that could reach another path or query are refused
+    assert!(c.asset_sidecar("../x").is_err());
+    assert!(c.asset_files("aaaa", Some("sidecar&x=1")).is_err());
+    let seen = seen.lock().unwrap();
+    assert!(seen.iter().any(|r| r.target == "/api/asset-files?assetId=aaaa-bbbb&type=sidecar"));
 }
 
 #[test]

@@ -43,9 +43,13 @@ pub fn opener(s: &mut Session, svc: &ServiceConfig, coll: &CollectionConfig, pho
             Source::File { path } if settings.send != SendMode::Rendered => Some(std::path::PathBuf::from(path)),
             _ => None,
         };
+        // the whole XMP goes with an original: the develop settings and metadata another instance
+        // pulls back (IMM-SIDECARS). Immich has no endpoint that updates a managed asset's sidecar
+        // after the upload, so this is where a managed original's sidecar content is set.
+        let xmp = original.as_ref().map(|_| crate::sidecar::Packets::of(p, &s.catalog).with_gps.into_bytes());
         info.insert(
             *id,
-            PhotoInfo { created, favorite: p.flag == lcc_catalog::Flag::Pick, original, original_name: p.file_name.clone(), linked, xmp: None },
+            PhotoInfo { created, favorite: p.flag == lcc_catalog::Flag::Pick, original, original_name: p.file_name.clone(), linked, xmp },
         );
     }
     let name = album_name(&s.catalog, svc, coll);
