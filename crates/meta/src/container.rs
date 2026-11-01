@@ -410,6 +410,40 @@ mod tests {
     }
 
     #[test]
+    fn jpeg_invalid_iptc_time_created_allows_xmp_fallback() {
+        let mut data = Vec::new();
+        for (dataset, value) in [(55, &b"20260101"[..]), (60, b"121314+01"), (5, b"retained title")] {
+            data.extend_from_slice(&[0x1c, 2, dataset]);
+            data.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            data.extend_from_slice(value);
+        }
+        let xmp = crate::write_xmp(
+            &crate::Metadata {
+                capture_time: Some(crate::DateTime { year: 2026, month: 1, day: 2, hour: 10, offset_minutes: Some(0), ..Default::default() }),
+                ..Default::default()
+            },
+            None,
+        );
+        let mut jpeg = vec![0xff, 0xd8];
+        let mut payload = XMP_SIG.to_vec();
+        payload.extend_from_slice(xmp.as_bytes());
+        jpeg.extend_from_slice(&seg(0xe1, &payload));
+        let mut resource = b"Photoshop 3.0 ".to_vec();
+        resource.extend_from_slice(b"8BIM  ");
+        resource.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        resource.extend_from_slice(&data);
+        if data.len() % 2 == 1 {
+            resource.push(0);
+        }
+        jpeg.extend_from_slice(&seg(0xed, &resource));
+        jpeg.extend_from_slice(&[0xff, 0xda, 0, 2]);
+        assert!(embedded(&jpeg).iptc.is_some(), "raw IIM remains available");
+        let m = crate::extract(&jpeg);
+        assert_eq!(m.capture_time.map(|time| time.to_iso()).as_deref(), Some("2026-01-02T10:00:00+00:00"));
+        assert_eq!(m.title.as_deref(), Some("retained title"));
+    }
+
+    #[test]
     fn jpeg_extended_xmp() {
         let j = jpeg_with_extended(Some(GUID), &[(GUID, 10, 5, b"world"), (GUID, 10, 0, b"hello")]);
         assert_eq!(jpeg_segments(&j).xmp_extended.as_deref(), Some("helloworld"));
