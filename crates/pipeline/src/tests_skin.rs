@@ -99,23 +99,32 @@ fn strong_edges_inside_the_skin_stay() {
 
 #[test]
 fn even_tone_and_redness_reduce_blotches() {
-    // a skin with a red blotch of 0.1 d (a pimple's halo, a patch of redness)
+    // a skin with a red blotch of 0.1 d (a pimple's halo, a patch of redness), strong or mild
     let (w, h, d) = (800, 800, 300.0);
     let (cx, cy, r) = (400.0, 400.0, 30.0);
-    let before = Rgb32f::from_fn(w, h, |x, y| {
-        let q = (((x as f64 - cx).powi(2) + (y as f64 - cy).powi(2)).sqrt() / r).min(3.0);
-        let t = (-q * q / 2.0).exp() as f32;
-        [SKIN[0] * (1.0 + 0.25 * t), SKIN[1] * (1.0 - 0.05 * t), SKIN[2]]
-    });
+    let blotch = |red: f32| {
+        Rgb32f::from_fn(w, h, |x, y| {
+            let q = (((x as f64 - cx).powi(2) + (y as f64 - cy).powi(2)).sqrt() / r).min(3.0);
+            let t = (-q * q / 2.0).exp() as f32;
+            [SKIN[0] * (1.0 + red * t), SKIN[1] * (1.0 - red / 5.0 * t), SKIN[2]]
+        })
+    };
     let redness = |img: &Rgb32f| {
         let c = img.data[400 * w + 400];
         let o = img.data[400 * w + 700];
         (c[0] / c[1]).log2() - (o[0] / o[1]).log2()
     };
-    for k in [SkinSmoothing { redness: 100.0, ..Default::default() }, SkinSmoothing { even_tone: 100.0, ..Default::default() }] {
+    // Redness takes any patch redder than the skin around it; Even Tone the mild ones (a strong
+    // colour difference is more likely light, or a feature, than a blotch)
+    for (k, red, most) in [
+        (SkinSmoothing { redness: 100.0, ..Default::default() }, 0.25, 0.5),
+        (SkinSmoothing { redness: 100.0, ..Default::default() }, 0.06, 0.5),
+        (SkinSmoothing { even_tone: 100.0, ..Default::default() }, 0.06, 0.7),
+    ] {
+        let before = blotch(red);
         let mut after = before.clone();
         smooth(&mut after, &settings(k, d / w as f64, |_, _| true));
-        assert!(redness(&after) < 0.5 * redness(&before), "{k:?}: {} vs {}", redness(&after), redness(&before));
+        assert!(redness(&after) < most * redness(&before), "{k:?} {red}: {} vs {}", redness(&after), redness(&before));
         assert!(redness(&after) > 0.0, "{k:?}: towards the skin around it, not past it");
     }
 }

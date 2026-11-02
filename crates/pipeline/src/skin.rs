@@ -407,10 +407,13 @@ fn smooth_bucket(img: &mut Rgb32f, cover: &Plane, origin: (usize, usize), faces:
     let low = crate::timed("skin low band", || Reduced::of(&lab, LOW * d));
     // how strong a swing still counts as small (log2 units): softening fades out above it
     let k_mid = 0.04 + 0.08 * p.amount;
-    let k_low = 0.12;
+    // (blotches are gentle; the light and shape of a face are not: the nose's shading, a warm and
+    // a cool side keep their contrast)
+    let k_low = 0.10;
+    let k_chroma = 0.12;
     let tex = if p.texture < 0.0 { p.texture } else { 0.75 * p.texture };
-    let even = 0.85 * p.even;
-    let even_c = 0.8 * p.even;
+    let even = 0.65 * p.even;
+    let even_c = 0.6 * p.even;
     let rows = img.data.get_mut(ry0 * w..ry1 * w).unwrap_or(&mut []);
     let t = crate::profiling().then(std::time::Instant::now);
     par_rows(rows, w, |y, row| {
@@ -438,8 +441,8 @@ fn smooth_bucket(img: &mut Rgb32f, cover: &Plane, origin: (usize, usize), faces:
             // colour: blotches (middle + low bands) evened, redder patches reduced, the middle band softened
             let (va, vb) = (v1[1] - v3[1], v1[2] - v3[2]);
             let (ma, mb) = (v1[1] - v2[1], v1[2] - v2[2]);
-            let da = -even_c * va - p.red * va.max(0.0) * (1.0 - even_c) - 0.5 * p.amount * ma;
-            let db = -even_c * vb - 0.5 * p.amount * mb;
+            let da = -even_c * va * small(va, k_chroma) - p.red * va.max(0.0) * (1.0 - even_c) - 0.5 * p.amount * ma;
+            let db = -even_c * vb * small(vb, k_chroma) - 0.5 * p.amount * mb;
             let out = shifted(px, dl, da, db);
             if let Some(o) = row.get_mut(gx) {
                 *o = std::array::from_fn(|k| px[k] + m * (out[k] - px[k]));
