@@ -17,6 +17,7 @@
 
 #[cfg(feature = "sam")]
 mod download;
+pub mod models;
 pub mod subject;
 #[cfg(feature = "sam")]
 mod worker;
@@ -129,6 +130,12 @@ pub struct Segmenter {
     pub background: bool,
     /// The Subject / Background model (BiRefNet).
     pub subject: subject::Subject,
+    /// Where the openly licensed models (SAM 2.1, Depth Anything) live; `None`: next to SAM 3's folder.
+    pub models_root: Option<PathBuf>,
+    /// Which model computes Object clicks ([`models::ObjectModel`]).
+    object_model: models::ObjectModel,
+    #[cfg(feature = "sam")]
+    model_downloads: std::collections::HashMap<&'static str, download::Downloader>,
     pending: Option<PendingClicks>,
     messages: Vec<String>,
     #[cfg(feature = "sam")]
@@ -148,6 +155,10 @@ impl Default for Segmenter {
             mirrors_file: None,
             background: false,
             subject: subject::Subject::default(),
+            models_root: None,
+            object_model: models::ObjectModel::default(),
+            #[cfg(feature = "sam")]
+            model_downloads: std::collections::HashMap::new(),
             pending: None,
             messages: Vec::new(),
             #[cfg(feature = "sam")]
@@ -413,7 +424,9 @@ impl Session {
         reply: std::sync::mpsc::Sender<worker::Outcome>,
         region: Option<[f64; 4]>,
     ) -> Result<worker::Job, String> {
-        let dir = self.segmenter.model_dir()?;
+        // Describe (text) needs SAM 3; Object clicks use the model the user chose
+        let text = matches!(&kind, worker::Kind::Text(_) | worker::Kind::Detail { prompt: Prompt::Text(_), .. });
+        let dir = if text { self.segmenter.model_dir()? } else { self.segmenter.object_dir()? };
         let (key, mut d) = self.segment_key(id).ok_or("no such photo")?;
         let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
         let missing = match &p.source {
@@ -464,7 +477,7 @@ impl Session {
     /// Start preparing photo `id` for AI masks (load the model, encode the image), so the first
     /// click is fast. In background mode it returns at once.
     pub fn segment_prepare(&mut self, id: PhotoId) -> Result<(), String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.object_dir()?;
         #[cfg(feature = "sam")]
         {
             if self.segmenter.background {
@@ -479,7 +492,7 @@ impl Session {
 
     /// Segment the object `clicks` pick on photo `id`, waiting for the model.
     pub fn segment_clicks(&mut self, id: PhotoId, clicks: &[Click]) -> Result<SegMask, String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.object_dir()?;
         if !clicks.iter().any(|c| c.include) {
             return Err("click the object to include it first".into());
         }
@@ -516,7 +529,7 @@ impl Session {
     /// Background mode: queue Object clicks for component `comp` of mask `mask`; the result
     /// (clicks and segmentation, one undo step) is applied by [`Session::segment_poll`].
     pub(crate) fn segment_clicks_later(&mut self, id: PhotoId, mask: u32, comp: usize, hint: Vec<Point>, exclude: Vec<Point>) -> Result<(), String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.object_dir()?;
         if hint.is_empty() {
             return Err("click the object to include it first".into());
         }
@@ -561,7 +574,9 @@ impl Session {
     /// otherwise it is applied before this returns. `Ok(false)` when there is nothing to
     /// refine (no selection yet, or it is most of the photo) or a pass is running already.
     pub fn segment_detail(&mut self, id: PhotoId, mask: u32, comp: usize) -> Result<bool, String> {
-        self.segmenter.model_dir()?;
+        if self.segmenter.object_dir().is_err() {
+            self.segmenter.model_dir()?;
+        }
         let d = self.develop_of(id).ok_or("no such photo")?;
         let shape = d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(comp)).map(|c| c.shape.clone()).ok_or("no such mask")?;
         let (seg, prompt) = match &shape {

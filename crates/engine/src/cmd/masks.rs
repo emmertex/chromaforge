@@ -101,18 +101,18 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
     match shape {
         MaskShape::Object { seg: Some(_), .. } | MaskShape::Prompt { seg: Some(_), .. } => {}
         MaskShape::Object { hint, exclude, .. } if !hint.is_empty() && background => {
-            s.segmenter.require_model()?;
+            s.segmenter.require_object_model()?;
             return Ok(Later::Clicks(std::mem::take(hint), std::mem::take(exclude)));
         }
         MaskShape::Object { hint, exclude, seg, .. } if !hint.is_empty() => {
-            *seg = Some(segment(s, |s| s.segment_clicks(id, &clicks_of(hint, exclude)))?);
+            *seg = Some(segment_object(s, |s| s.segment_clicks(id, &clicks_of(hint, exclude)))?);
         }
         MaskShape::Object { .. } => {
             // the clicks come later: refuse an Object mask that could never be computed (no
             // model) rather than leave an empty one; in the app, analyze the photo meanwhile
-            s.segmenter.require_model()?;
+            s.segmenter.require_object_model()?;
             if background {
-                segment(s, |s| s.segment_prepare(id))?;
+                segment_object(s, |s| s.segment_prepare(id))?;
             }
         }
         MaskShape::Prompt { text, .. } if background => {
@@ -135,7 +135,7 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
 fn queue_later(s: &mut Session, later: Later, mask: u32, comp: usize, mut out: Value) -> Result<Value> {
     if let Later::Clicks(hint, exclude) = later {
         let id = s.active().ok_or_else(|| ai_err("no active photo"))?;
-        segment(s, |s| s.segment_clicks_later(id, mask, comp, hint, exclude))?;
+        segment_object(s, |s| s.segment_clicks_later(id, mask, comp, hint, exclude))?;
         out["pending"] = json!(true);
     }
     Ok(out)
@@ -150,6 +150,12 @@ fn ai_err(msg: impl Into<String>) -> crate::EngineError {
 /// (the segmenter's own errors are text).
 fn segment<T>(s: &mut Session, f: impl FnOnce(&mut Session) -> std::result::Result<T, String>) -> Result<T> {
     s.segmenter.require_model()?;
+    f(s).map_err(ai_err)
+}
+
+/// [`segment`] for Object clicks, which use the model the user chose (`ai.models.setObjectModel`).
+fn segment_object<T>(s: &mut Session, f: impl FnOnce(&mut Session) -> std::result::Result<T, String>) -> Result<T> {
+    s.segmenter.require_object_model()?;
     f(s).map_err(ai_err)
 }
 
@@ -493,10 +499,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 if s.segmenter.background && !hint.is_empty() {
                     let out = json!({"include": hint.len(), "exclude": ex.len(), "pending": true});
-                    segment(s, |s| s.segment_clicks_later(id, mid, k, hint, ex))?;
+                    segment_object(s, |s| s.segment_clicks_later(id, mid, k, hint, ex))?;
                     return Ok(out);
                 }
-                let seg = if hint.is_empty() { None } else { Some(segment(s, |s| s.segment_clicks(id, &clicks_of(&hint, &ex)))?) };
+                let seg = if hint.is_empty() { None } else { Some(segment_object(s, |s| s.segment_clicks(id, &clicks_of(&hint, &ex)))?) };
                 let out = json!({"include": hint.len(), "exclude": ex.len()});
                 masks_edit(s, c, "Object Mask", |masks, _| {
                     let i = find(masks, mid, c)?;
@@ -529,7 +535,10 @@ pub fn specs() -> Vec<CommandSpec> {
                         .rposition(|x| matches!(x.shape, MaskShape::Object { .. } | MaskShape::Prompt { .. }))
                         .ok_or_else(|| bad(c, "the mask has no Object or Describe selection"))?,
                 };
-                let started = segment(s, |s| s.segment_detail(id, mid, k))?;
+                if s.segmenter.require_object_model().is_err() {
+                    s.segmenter.require_model()?;
+                }
+                let started = s.segment_detail(id, mid, k).map_err(ai_err)?;
                 Ok(json!({"started": started}))
             }
         ),
@@ -543,7 +552,7 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, _| {
                 let c = "segment.prepare";
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
-                segment(s, |s| s.segment_prepare(id))?;
+                segment_object(s, |s| s.segment_prepare(id))?;
                 Ok(json!({"busy": s.segmenter.busy()}))
             }
         ),
@@ -651,6 +660,80 @@ pub fn specs() -> Vec<CommandSpec> {
             "{} — stop the subject model download (it resumes later) → {cancelled}",
             super::always,
             |s, _| Ok(json!({"cancelled": s.segmenter.subject.cancel_download()}))
+        ),
+        cmd!(
+            query "ai.models.status",
+            "AI Models",
+            [],
+            None,
+            "{} — every AI mask model (SAM 3, the Subject model, SAM 2.1, Depth Anything V2 Small): installed, folder, size, licence, offered in the model dialog, download progress; and which model computes Object clicks → {available, objectModel: auto|sam3|sam2, objectModelInUse: sam3|sam2, models: [{id, title, purpose, installed, dir, sizeBytes, license, licenseUrl, offered, download}]}",
+            super::always,
+            |s, _| {
+                s.segmenter.subject.sync(&s.activity);
+                let g = &s.segmenter;
+                Ok(json!({
+                    "available": crate::segment::Segmenter::AVAILABLE,
+                    "objectModel": g.object_model().key(),
+                    "objectModelInUse": g.object_model_in_use(),
+                    "models": g.model_status(),
+                }))
+            }
+        ),
+        cmd!(
+            query "ai.models.download",
+            "Download AI Model",
+            [],
+            None,
+            "{id: sam3|subject|sam2|depth, acknowledged: true} — download that model in the background (pinned size and SHA-256), only after the user agreed to its size and licence (ai.models.status lists both). Watch ai.models.status; ai.models.cancel stops it (it resumes later) → {started, installed, downloading}",
+            super::always,
+            |s, p| {
+                let c = "ai.models.download";
+                let id = p.get("id").and_then(Value::as_str).ok_or_else(|| bad(c, "which model? `id`"))?.to_string();
+                let st = s.segmenter.model_status().into_iter().find(|m| m.id == id).ok_or_else(|| bad(c, format!("unknown AI model `{id}`")))?;
+                if p.get("acknowledged").and_then(Value::as_bool) != Some(true) {
+                    return Err(bad(
+                        c,
+                        format!(
+                            "{} is a {:.0} MB download under {} ({}): pass `acknowledged: true` once the user has agreed to download it",
+                            st.title,
+                            st.size_bytes as f64 / 1e6,
+                            st.license,
+                            st.license_url
+                        ),
+                    ));
+                }
+                let activity = s.activity.clone();
+                let started = s.segmenter.start_model_download(&id, &activity).map_err(ai_err)?;
+                let now = s.segmenter.model_status().into_iter().find(|m| m.id == id);
+                Ok(json!({"started": started, "installed": now.as_ref().is_some_and(|m| m.installed), "downloading": now.is_some_and(|m| m.download.running)}))
+            }
+        ),
+        cmd!(
+            query "ai.models.cancel",
+            "Cancel AI Model Download",
+            [],
+            None,
+            "{id} — stop that model's download (what has arrived is kept, and a new download resumes from it) → {cancelled}",
+            super::always,
+            |s, p| {
+                let id = p.get("id").and_then(Value::as_str).ok_or_else(|| bad("ai.models.cancel", "which model? `id`"))?;
+                Ok(json!({"cancelled": s.segmenter.cancel_model_download(id)}))
+            }
+        ),
+        cmd!(
+            query "ai.models.setObjectModel",
+            "Set Object Mask Model",
+            [],
+            None,
+            "{model: auto|sam3|sam2} — which model computes Object (click) masks: auto (SAM 3 when installed, else SAM 2.1), SAM 3, or SAM 2.1 (Apache-2.0). Describe always uses SAM 3. Saved for next time → {objectModel, objectModelInUse}",
+            super::always,
+            |s, p| {
+                let c = "ai.models.setObjectModel";
+                let v = p.get("model").and_then(Value::as_str).ok_or_else(|| bad(c, "missing `model` (auto, sam3 or sam2)"))?;
+                let m = crate::segment::models::ObjectModel::parse(v).ok_or_else(|| bad(c, format!("unknown model `{v}` (auto, sam3 or sam2)")))?;
+                s.segmenter.set_object_model(m).map_err(ai_err)?;
+                Ok(json!({"objectModel": m.key(), "objectModelInUse": s.segmenter.object_model_in_use()}))
+            }
         ),
         cmd!(
             "mask.refine",

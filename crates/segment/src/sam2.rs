@@ -86,6 +86,11 @@ impl Sam2 {
         Self::load_on(dir, crate::best_device())
     }
 
+    /// [`Sam2::load`] on the CPU.
+    pub fn load_cpu(dir: &Path) -> Result<Self> {
+        Self::load_on(dir, Device::Cpu)
+    }
+
     pub fn load_on(dir: &Path, device: Device) -> Result<Self> {
         Self::load_inner(dir, device).map_err(sam2_err)
     }
