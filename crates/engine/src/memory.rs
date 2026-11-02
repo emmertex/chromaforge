@@ -19,7 +19,7 @@ use serde::Serialize;
 /// - an eighth for the GPU renderer's pool of recycled buffers (trimmed when the app is idle).
 ///
 /// The rest is headroom for what isn't cached (renders in progress, textures, the UI). An export
-/// batch may, in addition, hold up to twice the budget in photos rendering side by side
+/// batch may, in addition, hold up to twice the budget (or 45 % of the RAM, if more) in photos rendering side by side
 /// ([`export_gate`]): transient memory, given back when the batch ends. Default:
 /// a quarter of the machine's RAM ([`total_ram`]: a container's or cgroup's memory limit when
 /// smaller), at most [`AUTO_MAX`] ([`auto_budget`]; `{ENV_PREFIX}_MEMORY_MB` overrides it, and a
@@ -66,6 +66,13 @@ pub fn max_budget_of(ram: Option<usize>) -> usize {
 /// RAM, held on Linux to the memory limit of the process's cgroup (a container, a Flatpak, a
 /// systemd scope with `MemoryMax`, a CI runner) when that is smaller.
 pub(crate) fn total_ram() -> Option<usize> {
+    // (read once: on macOS, FreeBSD and Windows it is a process to run, and an export asks for
+    // every photo)
+    static RAM: OnceLock<Option<usize>> = OnceLock::new();
+    *RAM.get_or_init(read_total_ram)
+}
+
+fn read_total_ram() -> Option<usize> {
     #[cfg(target_os = "linux")]
     {
         lcc_sysmem::effective_total().map(|b| usize::try_from(b).unwrap_or(usize::MAX))
@@ -80,7 +87,19 @@ pub(crate) fn total_ram() -> Option<usize> {
         let out = std::process::Command::new("/sbin/sysctl").args(["-n", "hw.physmem"]).output().ok()?;
         String::from_utf8_lossy(&out.stdout).trim().parse().ok()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+    #[cfg(windows)]
+    {
+        // (no native call: CIM through PowerShell, once per process)
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: no console flashes up from the desktop app
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd", windows)))]
     {
         None
     }
@@ -222,7 +241,35 @@ pub fn export_gate() -> &'static WorkGate {
 }
 
 fn export_share(budget: usize) -> usize {
-    budget.saturating_mul(2)
+    export_share_of(budget, total_ram())
+}
+
+/// Twice the budget, or (when the computer's memory `ram` is known) [`EXPORT_RAM_PERCENT`] of it
+/// if that is more: the budget is the caches', and an export's photos are transient (a 45 MP gain
+/// map export holds ~4 GB of working memory each).
+fn export_share_of(budget: usize, ram: Option<usize>) -> usize {
+    let by_ram = ram.map_or(0, |r| r / 100 * EXPORT_RAM_PERCENT);
+    budget.saturating_mul(2).max(by_ram)
+}
+
+/// Share of the computer's memory an export batch may hold in photos side by side.
+const EXPORT_RAM_PERCENT: usize = 45;
+
+#[cfg(test)]
+mod export_share_tests {
+    use super::export_share_of;
+
+    /// The export gate follows the computer's memory, not only the caches' budget.
+    #[test]
+    fn exports_may_use_a_share_of_the_ram() {
+        let gb = 1usize << 30;
+        assert_eq!(export_share_of(3 * gb / 2, Some(64 * gb)), 64 * gb / 100 * 45);
+        // a large budget still counts double
+        assert_eq!(export_share_of(20 * gb, Some(64 * gb)), 40 * gb);
+        // memory unknown: twice the budget
+        assert_eq!(export_share_of(gb, None), 2 * gb);
+        assert_eq!(export_share_of(usize::MAX, Some(usize::MAX)), usize::MAX, "no overflow");
+    }
 }
 
 static EXPORT_GATE: OnceLock<WorkGate> = OnceLock::new();
