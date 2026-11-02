@@ -288,6 +288,10 @@ pub struct Session {
     /// place in the order ([`Session::visible`]). It is also what a held view holds ([`Session::hold_view`]).
     /// Another source, filter or sort is another view, and so is a smart album whose rules were changed.
     base: Option<(String, u64, Vec<PhotoId>)>,
+    /// Select All (`library.selectAll`) was the last change to the selection, in the view named here: while the
+    /// selection is still exactly what the view shows, photos that join the view (an import still adding them)
+    /// join the selection too.
+    pub(crate) all_selected: Option<String>,
     /// How many times the view followed an edit from the list it had, and how many times it was worked out from
     /// every photo (`ui.inspect` → `perf`): what tells a slow library from a slow edit.
     pub view_followed: u64,
@@ -584,6 +588,7 @@ impl Session {
             visible_clock_minute: None,
             hold_view: false,
             base: None,
+            all_selected: None,
             view_followed: 0,
             view_worked_out: 0,
             #[cfg(test)]
@@ -1455,6 +1460,13 @@ impl Session {
                     .collect();
                 gone.sort();
                 visible.extend(gone);
+            }
+            if self.all_selected.as_deref() == Some(key.1.as_str()) && self.selection.ids[..] == self.visible[..] && visible[..] != self.visible[..] {
+                // still "every photo of this view": the photos that came in are selected too
+                self.selection.ids = visible.clone();
+                if self.selection.active.is_none_or(|a| !visible.contains(&a)) {
+                    self.selection.active = visible.first().copied();
+                }
             }
             self.visible = visible.into();
             self.visible_gen = VISIBLE_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

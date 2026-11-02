@@ -945,6 +945,21 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
     }
 }
 
+/// The `library.select` mode of a click on a photo cell, as in Lightroom Classic: Shift = range, ⌘/Ctrl = toggle; a
+/// plain click on the picture of a selected photo makes it the active one and keeps the selection, a plain click on
+/// the frame around the picture selects that photo alone.
+pub(crate) fn click_mode(m: egui::Modifiers, on_picture: bool) -> &'static str {
+    if m.shift {
+        "range"
+    } else if m.command {
+        "toggle"
+    } else if on_picture {
+        "click"
+    } else {
+        "replace"
+    }
+}
+
 /// During a slider drag, whether the photo it edits skips asking for a new thumbnail this frame:
 /// under the loupe (`loupe`) while it has one, anywhere while one is being rendered (`pending`);
 /// in a grid it follows the drag.
@@ -1153,14 +1168,9 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     }
     if resp.clicked() {
         let m = ui.input(|i| i.modifiers);
-        let mode = if m.shift {
-            "range"
-        } else if m.command {
-            "toggle"
-        } else {
-            "replace"
-        };
-        let _ = app.run("library.select", json!({"ids": [id.0], "mode": mode}));
+        // on the picture: this photo becomes the active one and a selection stays; on the frame: this photo alone
+        let on_picture = resp.interact_pointer_pos().is_none_or(|at| img_rect.contains(at));
+        let _ = app.run("library.select", json!({"ids": [id.0], "mode": click_mode(m, on_picture)}));
     }
     if resp.double_clicked() {
         open_photo(app, id);

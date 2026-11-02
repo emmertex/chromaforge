@@ -809,7 +809,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Select Photos",
             [],
             None,
-            "{ids: [id], active?: id, mode?: replace|add|toggle|range} — every id must be a photo of the library",
+            "{ids: [id], active?: id, mode?: replace|add|toggle|range|click} — every id must be a photo of the library. toggle (⌘/Ctrl-click) and range (Shift-click, from the active photo) keep the active photo; click (a plain click on a picture) on a photo of a selection of several makes it the active one and keeps the selection, elsewhere it selects that photo alone",
             always,
             |s, p| {
                 let ids = super::photo_ids(p, "library.select")?.unwrap_or_default();
@@ -838,6 +838,11 @@ pub fn specs() -> Vec<CommandSpec> {
                         }
                     }
                     "toggle" => ids.into_iter().for_each(|id| s.selection.toggle(id)),
+                    "click" => {
+                        if let Some(id) = ids.first() {
+                            s.selection.click(*id);
+                        }
+                    }
                     "range" => {
                         let vis = s.visible_cloned();
                         if let Some(id) = ids.first() {
@@ -851,11 +856,20 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"selected": s.selection.ids.len()}))
             }
         ),
-        cmd!("library.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", always, |s, _| {
-            let vis = s.visible_cloned();
-            s.selection = Selection { active: s.selection.active.filter(|a| vis.contains(a)).or(vis.first().copied()), ids: vis };
-            Ok(json!({"selected": s.selection.ids.len()}))
-        }),
+        cmd!(
+            "library.selectAll",
+            "Select All",
+            ["Edit"],
+            Some("Cmd+A"),
+            "{} — every photo of the view; photos that join the view later (an import still running) are selected too, until the selection or the view changes",
+            always,
+            |s, _| {
+                let vis = s.visible_cloned();
+                s.selection = Selection { active: s.selection.active.filter(|a| vis.contains(a)).or(vis.first().copied()), ids: vis };
+                s.all_selected = s.visible_key.as_ref().map(|k| k.1.clone());
+                Ok(json!({"selected": s.selection.ids.len()}))
+            }
+        ),
         cmd!(query "library.devices", "Cameras and Cards", [], None, "{} → [{name, path (its DCIM folder), root}] — mounted volumes with a DCIM folder", always, |_, _| {
             Ok(serde_json::to_value(crate::devices::devices_now()).unwrap_or_default())
         }),
@@ -2585,3 +2599,7 @@ mod enable_filters_tests;
 #[cfg(test)]
 #[path = "library/tests_source_album_filter.rs"]
 mod source_album_filter_tests;
+
+#[cfg(test)]
+#[path = "library/tests_select.rs"]
+mod tests_select;
