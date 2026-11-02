@@ -198,6 +198,8 @@ fn high_quality_adjustment_hdr_jobs_keep_full_quality_and_extended_values() {
 fn high_quality_adjustments_can_switch_during_a_drag_and_ignore_slow_verdicts() {
     let (mut h, work) = detail([1024, 768], 1.0);
     h.app.drag_scale.remember_slow(PhotoId(1), "Exposure");
+    // (the drag's drafts, not the refine of a still photo, are what this test looks at)
+    h.app.still_refine.never = true;
     h.app.session.begin_interaction("Exposure").unwrap();
     for high in [false, true, false, true] {
         let reply = h.request("ui.set", json!({"settings": {"highQualityAdjustmentPreviews": high}}), TIMEOUT);

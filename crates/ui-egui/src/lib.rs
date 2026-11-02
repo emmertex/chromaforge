@@ -720,6 +720,8 @@ pub struct LccApp {
     pub(crate) size_hold: region::SizeHold,
     /// The size of a slider drag's whole-frame drafts (full size where they keep up, issue #330).
     pub(crate) drag_scale: region::DragScale,
+    /// When a drag's drafts give way to the full render in an open interaction.
+    pub(crate) still_refine: region::StillRefine,
     /// High quality adjustment previews: whether a drag keeps full quality or falls back to drafts.
     pub(crate) hq_drag: region::HqDrag,
     /// The photo the loupe shows whole, and since when (host clock, s): after a short look its
@@ -931,6 +933,7 @@ impl LccApp {
             region_before_view: None,
             size_hold: Default::default(),
             drag_scale: Default::default(),
+            still_refine: Default::default(),
             hq_drag: Default::default(),
             whole_since: None,
             window_refused: None,

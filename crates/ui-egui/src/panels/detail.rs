@@ -933,7 +933,14 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if let Some(wait) = settle_in.and_then(|s| std::time::Duration::try_from_secs_f64(s).ok()) {
         ui.ctx().request_repaint_after(wait);
     }
-    let drafting = interacting && (!hq || adjust.drafts());
+    // a still photo in an open interaction (a slider held, a control surface's gesture) refines
+    // to the full render after a moment (`region::StillRefine`)
+    let full_ms = app.renderer.last_full_main_ms;
+    let changing = app.still_refine.drafting(interacting, id, d.hash64(), now, full_ms);
+    if changing && let Some(left) = app.still_refine.refine_in(now, full_ms).and_then(|s| std::time::Duration::try_from_secs_f64(s).ok()) {
+        ui.ctx().request_repaint_after(left);
+    }
+    let drafting = interacting && changing && (!hq || adjust.drafts());
     // (a drag that fell back is one drag for `DragScale` across its pauses, so its draft size holds)
     let draft_drag = interacting && (!hq || app.hq_drag.fell_back());
     let overlay = view_overlay(app, &d, ui.input(|i| i.modifiers.alt));
@@ -1053,6 +1060,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             let budget = wait_budget(ui.input(|i| i.predicted_dt), drafting);
             app.renderer.wait_for_draft(ui.ctx(), &mut app.session, budget);
         }
+        // the renderer polled before this request: a refine asked for when nothing else repaints
+        // (a still photo in an open interaction) gets the frame that collects it
+        app.renderer.keep_polling(ui.ctx());
     }
     // hovering a preset or profile: the photo with that look, shown instead of the loupe render
     // once it is ready (nothing is committed)

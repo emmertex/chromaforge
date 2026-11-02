@@ -31,6 +31,26 @@ fn keep_waveform(slot: Slot, h: lcc_raster::Histogram) -> lcc_raster::Histogram 
     if matches!(slot, Slot::Main | Slot::Preview) { h } else { h.without_waveform() }
 }
 
+/// How many loupe renders [`Renderer::loupe_log`] keeps.
+pub const LOUPE_LOG_LEN: usize = 512;
+
+/// A whole-frame loupe render that replaced what was on screen.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoupeRender {
+    /// When it reached the screen (ms, wall clock: [`crate::now_ms`]).
+    pub at_ms: f64,
+    /// Pixels of the texture.
+    pub width: usize,
+    pub height: usize,
+    /// A drag's draft (else a full-quality render).
+    pub draft: bool,
+    /// Time on the worker.
+    pub render_ms: f64,
+    /// From the request to the screen.
+    pub latency_ms: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Slot {
     Thumb(PhotoId),
@@ -415,6 +435,14 @@ pub struct Renderer {
     kept_views: std::collections::VecDeque<Tex>,
     /// Request ids of the loupe's ([`Slot::Main`]) draft requests still out.
     main_drafts: std::collections::HashSet<u64>,
+    /// When each `Main` request still out was made (request id → ms, [`crate::now_ms`]), for
+    /// [`Self::loupe_log`].
+    main_asked: HashMap<u64, f64>,
+    /// The latest whole-frame loupe renders that reached the screen, oldest first (`ui.inspect` →
+    /// `perf.loupeRenders`): how sharp the view was while a slider dragged and how soon after.
+    pub loupe_log: std::collections::VecDeque<LoupeRender>,
+    /// Render time of the loupe's last full-quality (not draft) whole-frame render.
+    pub last_full_main_ms: f64,
     /// Keys of the full-quality (not draft) whole-frame renders among the textures and `kept_views`.
     full_views: std::collections::HashSet<u64>,
     /// The last [`Slot::HdrHistogram`] result: (photo, job key, histogram).
@@ -549,6 +577,9 @@ impl Renderer {
             textures: HashMap::new(),
             kept_views: std::collections::VecDeque::new(),
             main_drafts: std::collections::HashSet::new(),
+            main_asked: HashMap::new(),
+            loupe_log: std::collections::VecDeque::new(),
+            last_full_main_ms: 0.0,
             full_views: std::collections::HashSet::new(),
             live_hdr_histogram: None,
             panel_histogram: None,
@@ -1000,6 +1031,13 @@ impl Renderer {
             if job.request.quality == lcc_pipeline::Quality::Draft {
                 self.main_drafts.insert(job.request_id);
             }
+            // (requests a drag superseded and that never came back: dropped, the map stays small)
+            if self.main_asked.len() > 256
+                && let Some(o) = self.main_asked.keys().copied().min()
+            {
+                self.main_asked.remove(&o);
+            }
+            self.main_asked.insert(job.request_id, crate::now_ms());
         }
         self.requests.insert(slot, Requested { id: job.request_id, source: Some(job.origin.clone()) });
         // the loupe stepping to a neighbour that was prepared: its render is there already
@@ -1494,6 +1532,15 @@ impl Renderer {
         self.fill_row.is_some()
     }
 
+    /// Ask for the next frame while renders are pending, for requests made after this frame's
+    /// [`Self::poll`] (which asks the same for the ones it saw): the refine of a still photo in an
+    /// open interaction would otherwise sit finished until the next input.
+    pub fn keep_polling(&self, ctx: &egui::Context) {
+        if !self.pending.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+    }
+
     /// In a slider drag, give the loupe's draft (just requested) until `budget` to finish, so that it
     /// is drawn in this frame rather than picked up at the start of the next one. Only when the last
     /// loupe render took well under the budget (a GPU draft takes a few milliseconds; a CPU render
@@ -1719,6 +1766,23 @@ impl Renderer {
             }
             if slot == Slot::Main {
                 self.last_main_ms = ms;
+                if let Some(asked) = self.main_asked.remove(&r.request_id) {
+                    if !main_draft {
+                        self.last_full_main_ms = ms;
+                    }
+                    let now = crate::now_ms();
+                    if self.loupe_log.len() >= LOUPE_LOG_LEN {
+                        self.loupe_log.pop_front();
+                    }
+                    self.loupe_log.push_back(LoupeRender {
+                        at_ms: now,
+                        width: img.width,
+                        height: img.height,
+                        draft: main_draft,
+                        render_ms: ms,
+                        latency_ms: (now - asked).max(0.0),
+                    });
+                }
             }
             changed = true;
         }
@@ -2030,6 +2094,36 @@ mod thumbnail_tests {
         r.wait_for_draft(&ctx, &mut s, budget);
         assert!(!r.is_pending(Slot::Main));
         assert_eq!(r.textures.get(&Slot::Main).map(|t| t.key), want);
+    }
+
+    // Given a loupe render asked for after the frame's poll (the refine of a still photo while an
+    // interaction stays open), the renderer asks for the frame that will collect it; the loupe log
+    // says which renders were drafts and the full one's time is kept for the refine delay
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_late_request_keeps_frames_coming_and_the_loupe_log_tells_drafts_from_full_renders() {
+        let mut s = Session::new();
+        s.media.file_loader = Some(Arc::new(|_, _, _| Ok((lcc_raster::Rgb32f::new(8, 8), Default::default()))));
+        s.catalog.apply(Op::AddPhoto { photo: Box::new((*photo()).clone()) }).unwrap();
+        let mut r = Renderer::with_worker_threads(1);
+        let ctx = egui::Context::default();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        ctx.set_request_repaint_callback(move |i| seen.lock().unwrap().push(i.delay));
+        r.keep_polling(&ctx);
+        assert!(asked.lock().unwrap().is_empty(), "nothing pending: no frames asked for");
+        r.request(Slot::Main, s.render_job(PhotoId(1), 32, 32, false, true).unwrap().draft(), 100);
+        r.keep_polling(&ctx);
+        assert!(asked.lock().unwrap().iter().any(|d| *d <= std::time::Duration::from_millis(16)), "{:?}", asked.lock().unwrap());
+        r.last_main_ms = 1.0;
+        r.wait_for_draft(&ctx, &mut s, std::time::Duration::from_secs(10));
+        assert!(!r.is_pending(Slot::Main), "the draft");
+        r.request(Slot::Main, s.render_job(PhotoId(1), 32, 32, false, true).unwrap(), 100);
+        r.wait_for_draft(&ctx, &mut s, std::time::Duration::from_secs(10));
+        assert!(!r.is_pending(Slot::Main), "the full render");
+        let log: Vec<_> = r.loupe_log.iter().map(|l| l.draft).collect();
+        assert_eq!(log, vec![true, false]);
+        assert!(r.last_full_main_ms >= 0.0 && r.loupe_log.iter().all(|l| l.width > 0 && l.latency_ms >= 0.0));
     }
 
     // Given a 60 Hz display, a high quality adjustment update as fast as the GPU display fit makes
