@@ -743,6 +743,17 @@ pub fn seam_blend(w: usize, h: usize, ch: usize, orig: &[f32], out: &mut [f32], 
     }
     // spread over the hole (the ring is the boundary; outside it there is nothing to correct)
     let field = crate::membrane::membrane_fill(w, h, ch, &fix, hole);
+    // the correction never takes a pixel past the values already there (the photo on the ring, the fill in
+    // the hole), so a large mismatch cannot overshoot into values neither side has
+    let mut range = vec![(f32::MAX, f32::MIN); ch];
+    for i in 0..n {
+        let src = if hole[i] { &*out } else if ring[i] { orig } else { continue };
+        for (c, r) in range.iter_mut().enumerate() {
+            if let Some(v) = src.get(i * ch + c).copied().filter(|v| v.is_finite()) {
+                *r = (r.0.min(v), r.1.max(v));
+            }
+        }
+    }
     for i in 0..n {
         for c in 0..ch {
             let k = i * ch + c;
@@ -750,7 +761,11 @@ pub fn seam_blend(w: usize, h: usize, ch: usize, orig: &[f32], out: &mut [f32], 
                 if let (Some(o), Some(f)) = (out.get_mut(k), field.get(k))
                     && f.is_finite()
                 {
-                    *o += f;
+                    let v = *o + f;
+                    *o = match range.get(c) {
+                        Some(&(lo, hi)) if lo <= hi => v.clamp(lo, hi),
+                        _ => v,
+                    };
                 }
             } else if let (Some(o), Some(v)) = (out.get_mut(k), orig.get(k)) {
                 // the ring (and everything else outside the hole) is the photo again
