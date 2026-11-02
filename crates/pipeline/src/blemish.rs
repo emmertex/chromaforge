@@ -3,7 +3,7 @@
 //! a spot has to stand out from both the surroundings and the local texture, and each candidate
 //! blob must be small and roughly round.
 //!
-//! Where to look comes from the open MediaPipe models (in `lightcraft-segment`, run by the
+//! Where to look comes from the open MediaPipe models (in `lcc-segment`, run by the
 //! engine): the skin they found (a coverage plane: never hair, lips or the background), each
 //! face's outline from its FaceMesh landmarks, and the eyes, brows, nostrils and mouth cut out by
 //! the landmark polygons around them, so lashes, brows, nostril edges and lips are never taken
