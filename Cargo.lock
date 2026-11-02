@@ -5375,6 +5375,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lcc-tflite"
+version = "26.45.0"
+dependencies = [
+ "candle-core",
+ "lcc-brand",
+ "lcc-testkit",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lcc-tiff"
 version = "26.45.0"
 dependencies = [
