@@ -176,6 +176,8 @@ mod tests_filter_search;
 #[cfg(test)]
 mod tests_focus_point;
 #[cfg(test)]
+mod tests_folder_add;
+#[cfg(test)]
 mod tests_folder_drop;
 #[cfg(test)]
 mod tests_folder_poll;
