@@ -4955,6 +4955,7 @@ dependencies = [
  "lcc-develop",
  "lcc-faces",
  "lcc-geom",
+ "lcc-gpumem",
  "lcc-pipeline",
  "lcc-raster",
  "lcc-raw",

@@ -43,6 +43,8 @@ mod exit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod faces;
 #[cfg(not(target_arch = "wasm32"))]
+mod gate;
+#[cfg(not(target_arch = "wasm32"))]
 mod init;
 #[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
 pub mod nn;
@@ -51,28 +53,200 @@ mod params;
 #[cfg(not(target_arch = "wasm32"))]
 mod render;
 #[cfg(not(target_arch = "wasm32"))]
+mod slot;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod video_lut;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use render::GpuStages;
 
-static ENABLED: AtomicBool = AtomicBool::new(true);
-/// Set when a GPU render failed: the process stays on the CPU from then on.
-static BROKEN: AtomicBool = AtomicBool::new(false);
+#[cfg(not(target_arch = "wasm32"))]
+pub use slot::{EventKind, GpuEvent, MAX_RECOVERIES};
 
-/// Why the GPU stopped being used (the first fatal failure).
-static BROKEN_REASON: Mutex<Option<String>> = Mutex::new(None);
+/// Run `f` with this thread's GPU renders counted as batch work (an export's photos): they take
+/// turns at the GPU, behind the window's own renders (see `gate.rs`).
+pub fn as_batch<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        gate::as_batch(f)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        f()
+    }
+}
+
+/// Run `f`, several batch renders of one photo (an export's SDR and HDR renditions, `src_px`
+/// source and `out_px` output pixels), in one turn at the GPU: the stages the first leaves on the
+/// device for the second stay its own. Outside batch work, or without a device, it is just `f`.
+pub fn in_one_turn<R>(src_px: usize, out_px: usize, f: impl FnOnce() -> R) -> R {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(g) = existing_device().filter(|_| enabled()) else { return f() };
+        let vram = g.vram.unwrap_or(g.max_buffer);
+        // (the HDR rendition's float output on top of the renders' own memory)
+        let bytes = gate::job_bytes(src_px, out_px).saturating_add((out_px as u64).saturating_mul(16));
+        gate::in_one_turn(bytes, vram, &shutting_down, f)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (src_px, out_px);
+        f()
+    }
+}
+
+/// A photo's turn at the GPU taken by [`try_batch_turn`], held until dropped.
+pub struct BatchTurn {
+    #[cfg(not(target_arch = "wasm32"))]
+    _turn: Option<gate::Turn>,
+}
+
+/// [`in_one_turn`]'s turn for a photo of `src_px` source and `out_px` output pixels, if it is free
+/// now: its renders then run in it until the result is dropped. `None` when it would have to
+/// wait for other exports: the caller renders the photo on the CPU instead ([`on_cpu`]), so the
+/// processor and the GPU export photos at once. Without a device (or outside batch work) there
+/// is nothing to wait for: always a turn.
+pub fn try_batch_turn(src_px: usize, out_px: usize) -> Option<BatchTurn> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(g) = existing_device().filter(|_| enabled()) else { return Some(BatchTurn { _turn: None }) };
+        let vram = g.vram.unwrap_or(g.max_buffer);
+        let bytes = gate::job_bytes(src_px, out_px).saturating_add((out_px as u64).saturating_mul(16));
+        gate::try_turn(bytes, vram).map(|t| BatchTurn { _turn: Some(t) })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (src_px, out_px);
+        Some(BatchTurn {})
+    }
+}
+
+/// Run `f` with this thread's renders on the CPU ([`try_render`] doesn't try the GPU): a photo
+/// whose turn at a busy GPU isn't free.
+pub fn on_cpu<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        gate::on_cpu(f)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        f()
+    }
+}
+
+/// Batch renders don't start for `d` from now: the window needs the GPU. Renders already running
+/// finish.
+pub fn hold_batch(d: std::time::Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    gate::hold(d);
+    #[cfg(target_arch = "wasm32")]
+    let _ = d;
+}
+
+/// How much batch work may be on the GPU at once: device `bytes` (`None`: a share of the card's
+/// memory) and at most `jobs` renders (`None`: up to 4).
+pub fn set_batch_limits(bytes: Option<u64>, jobs: Option<usize>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    gate::set_limits(bytes, jobs);
+    #[cfg(target_arch = "wasm32")]
+    let _ = (bytes, jobs);
+}
+
+/// Batch work on the GPU now and so far.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatchUsage {
+    /// Batch renders on the GPU now, and the device bytes they hold.
+    pub jobs: usize,
+    pub bytes: u64,
+    /// Batch renders waiting for their turn now.
+    pub waiting: usize,
+    /// The device bytes and renders batch work may use ([`set_batch_limits`]).
+    pub limit_bytes: u64,
+    pub limit_jobs: usize,
+    /// Batch renders that had to wait so far, and their total wait (ms).
+    pub waits: u64,
+    pub waited_ms: u64,
+}
+
+/// See [`BatchUsage`] (zero without a device).
+pub fn batch_usage() -> BatchUsage {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (jobs, bytes, waiting, waits, waited_ms) = gate::usage();
+        let (limit_bytes, limit_jobs) = gate::limits(adapter_memory().unwrap_or(0));
+        BatchUsage { jobs, bytes, waiting, limit_bytes, limit_jobs, waits, waited_ms }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        BatchUsage::default()
+    }
+}
+
+/// The graphics card's memory (bytes) as its backend reports it (`lcc_gpumem`), else the largest
+/// buffer the device allows; `None` before the device exists or without one.
+pub fn adapter_memory() -> Option<u64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        existing_device().map(|g| g.vram.unwrap_or(g.max_buffer))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+}
+
+/// What happened to the GPU in this session after event number `after` (0: everything kept), in
+/// plain words: it stopped responding, it was restarted, the app gave up on it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn events_after(after: u64) -> Vec<GpuEvent> {
+    slot::events_after(after)
+}
+
+/// Lost devices replaced so far in this session.
+pub fn recoveries() -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        slot::recoveries()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
+/// Treat the device in use as lost, as a driver reset would (tests of the recovery): renders go to
+/// the CPU, and a new device replaces it after the pause.
+#[doc(hidden)]
+pub fn simulate_device_loss(reason: &str) {
+    mark_broken(0, reason);
+}
+
+/// Which device renders now (each one created gets the next number); `None` without one.
+#[doc(hidden)]
+pub fn device_generation() -> Option<u64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        slot::current().map(|g| g.generation)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+}
+
+static ENABLED: AtomicBool = AtomicBool::new(true);
 /// The latest render that fell back to the CPU, and why.
 static LAST_FALLBACK: Mutex<Option<String>> = Mutex::new(None);
 
-/// Stop using the GPU for the rest of the process (after a device error).
+/// The device in use failed (a device error, a lost device, a render that panicked): renders go
+/// to the CPU until it is replaced (`slot.rs`: after a short pause, a new device). `generation`
+/// 0: whichever device is in use.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-fn mark_broken(reason: &str) {
-    let mut r = BROKEN_REASON.lock().unwrap_or_else(|e| e.into_inner());
-    if r.is_none() {
-        *r = Some(reason.to_string());
-    }
-    BROKEN.store(true, Ordering::Relaxed);
+fn mark_broken(generation: u64, reason: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    slot::lose(generation, reason);
+    #[cfg(target_arch = "wasm32")]
+    let _ = (generation, reason);
 }
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -93,19 +267,19 @@ pub fn unavailable_reason() -> Option<String> {
     if shutting_down() {
         return Some("the app is closing".into());
     }
-    if BROKEN.load(Ordering::Relaxed) {
-        let r = BROKEN_REASON.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| "device error".into());
-        return Some(format!("stopped after a GPU failure: {r}"));
-    }
     if let Some(r) = broken_here() {
         return Some(format!("stopped after a GPU failure: {r}"));
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        match GPU.get() {
-            Some(Err(e)) => Some(e.clone()),
-            _ => None,
+        if let Some(r) = slot::lost_reason() {
+            return Some(if slot::recoveries() >= slot::MAX_RECOVERIES {
+                format!("stopped after a GPU failure: {r}")
+            } else {
+                format!("paused after a GPU failure, restarting the graphics card: {r}")
+            });
         }
+        slot::creation_error()
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -196,7 +370,8 @@ fn broken_here() -> Option<String> {
 }
 
 /// Use the GPU again on this thread after a simulated failure ([`inject_fault`]; tests). Real
-/// failures are not undone: the process stays on the CPU, and nothing another thread did changes.
+/// failures are not undone here (a new device replaces a lost one: see `slot.rs`), nor anything
+/// another thread did.
 #[doc(hidden)]
 pub fn reset_failures() {
     let _ = BROKEN_HERE.try_with(|b| *b.borrow_mut() = None);
@@ -208,10 +383,28 @@ pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }
 
-/// Whether GPU rendering is allowed (environment, preference, no earlier failure — real, or
-/// simulated on this thread).
+/// Whether GPU rendering is allowed and the device is usable now (environment, preference, no
+/// failure waiting for the device to be replaced, no simulated failure on this thread).
 pub fn enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed) && !BROKEN.load(Ordering::Relaxed) && !env_disabled() && broken_here().is_none()
+    allowed() && lost().is_none()
+}
+
+/// GPU rendering allowed (environment, preference, no simulated failure on this thread), whatever
+/// the device's state (a lost device is replaced by the next [`device`] call after the pause).
+fn allowed() -> bool {
+    ENABLED.load(Ordering::Relaxed) && !env_disabled() && broken_here().is_none()
+}
+
+/// Why the device in use failed, while it waits to be replaced (`None`: it works, or there is none).
+pub fn lost() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        slot::lost_reason()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
 }
 
 /// The process is about to end: no GPU work starts from now on, on any thread. [`render`] returns
@@ -284,39 +477,36 @@ fn env_disabled() -> bool {
     })
 }
 
+/// The render device: created on first use; after a failure, replaced once a short pause is over
+/// (`None` meanwhile, and while GPU rendering is turned off: render on the CPU). See `slot.rs`.
 #[cfg(not(target_arch = "wasm32"))]
-static GPU: std::sync::OnceLock<Result<ctx::Gpu, String>> = std::sync::OnceLock::new();
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn device() -> Option<&'static ctx::Gpu> {
+pub(crate) fn device() -> Option<Arc<ctx::Gpu>> {
     // turned off (preference, environment): don't even load the driver (issue #136)
     if env_disabled() || !ENABLED.load(Ordering::Relaxed) {
-        return existing_device();
+        return slot::current();
     }
-    if let Some(g) = GPU.get() {
-        return g.as_ref().ok();
+    if let Some(g) = slot::current() {
+        return Some(g);
     }
     // creating the device is a long call into the driver: not once the process is ending
     let _work = exit::enter()?;
-    GPU.get_or_init(|| {
-        let Some(backends) = backend::compute_backends() else { return Err(format!("disabled by {}=off", lcc_brand::env_var("GPU_BACKEND"))) };
-        // on a thread of its own (under the crash sentinel, counted as GPU work), waited for at most
-        // `init::limit()`: a driver or display server that never answers leaves the GPU unavailable
-        // instead of every render waiting forever (#3068)
-        let r = init::create(backends, move || ctx::Gpu::new(backends));
-        if let Err(why) = &r {
-            log::warn!("gpu: rendering on the CPU: {why}");
-        }
-        r
-    })
-    .as_ref()
-    .ok()
+    slot::get(new_device)
 }
 
-/// The device if it has been created (never creates it).
+/// A device of our own on the best adapter (see [`ctx::Gpu::new`]): on a thread of its own (under
+/// the crash sentinel, counted as GPU work), waited for at most `init::limit()`: a driver or
+/// display server that never answers leaves the GPU unavailable instead of every render waiting
+/// forever (#3068).
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn existing_device() -> Option<&'static ctx::Gpu> {
-    GPU.get().and_then(|g| g.as_ref().ok())
+fn new_device() -> Result<ctx::Gpu, String> {
+    let Some(backends) = backend::compute_backends() else { return Err(format!("disabled by {}=off", lcc_brand::env_var("GPU_BACKEND"))) };
+    init::create(backends, move || ctx::Gpu::new(backends))
+}
+
+/// The device if it has been created, even one that failed (never creates one).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn existing_device() -> Option<Arc<ctx::Gpu>> {
+    slot::existing()
 }
 
 /// Create the device and compile the kernels on a background thread now (once the window is up),
@@ -324,7 +514,7 @@ pub(crate) fn existing_device() -> Option<&'static ctx::Gpu> {
 /// while GPU rendering is turned off.
 pub fn warm_up() {
     #[cfg(not(target_arch = "wasm32"))]
-    if !env_disabled() && ENABLED.load(Ordering::Relaxed) && GPU.get().is_none() {
+    if !env_disabled() && ENABLED.load(Ordering::Relaxed) && !slot::tried() {
         let _ = std::thread::Builder::new().name("lc-gpu-init".into()).spawn(|| {
             let _ = device();
         });
@@ -335,7 +525,7 @@ pub fn warm_up() {
 pub fn ready() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        env_disabled() || GPU.get().is_some()
+        env_disabled() || slot::tried()
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -348,7 +538,7 @@ pub fn ready() -> bool {
 pub fn available() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        enabled() && device().is_some()
+        allowed() && device().is_some()
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -575,18 +765,37 @@ fn try_render_with(
         let s: &DevelopSettings = &effective;
         let device_proof = req.proof.is_some_and(|p| lcc_pipeline::proof_profile(p.profile).is_some());
         // pixel-filter plug-ins run in the CPU pipeline
-        if !enabled() || !handles(req.depth, device_proof, req.overlay) || lcc_pipeline::plugin_filters::any_active(s) {
+        if !allowed() || gate::cpu_only() || !handles(req.depth, device_proof, req.overlay) || lcc_pipeline::plugin_filters::any_active(s) {
             return Err(Fallback::NotTried);
         }
         let s = &*lcc_pipeline::settings_for(s, req);
         // in flight until this returns; not tried once the process is ending (issue #620)
-        let _work = exit::enter().ok_or(Fallback::NotTried)?;
         let gpu = device().ok_or(Fallback::NotTried)?;
+        // The plan (Upright, the masks' tone ranges, red eye, the settings resolved) is the
+        // CPU's work: made before the turn, so an export waiting for the GPU never holds it with
+        // the processor's part of its render.
+        let plan = lcc_pipeline::plan(src, info, s, req);
+        // An export's turn at the GPU (see `gate.rs`): it waits while other exports use the card's
+        // memory, while a view renders and while the window asked for room. Views never wait.
+        let out_px = match req.window {
+            Some(w) => w.w.saturating_mul(w.h),
+            None => {
+                let (w, h) = lcc_pipeline::output_size(src.width, src.height, s, req);
+                w.saturating_mul(h)
+            }
+        };
+        let vram = gpu.vram.unwrap_or(gpu.max_buffer);
+        let _turn = gate::enter(gate::job_bytes(src.width.saturating_mul(src.height), out_px), vram, &shutting_down).ok_or(Fallback::NotTried)?;
+        let _work = exit::enter().ok_or(Fallback::NotTried)?;
         let ext = stages.map(|c| c.extension::<GpuStages>());
+        // stages cached on a device that was replaced are no use on this one
+        if let Some(e) = &ext {
+            e.adopt_generation(gpu.generation);
+        }
         let mut fault = take_fault();
         // A simulated failure stops GPU use on this thread only (see `BROKEN_HERE`).
         let simulated = fault.is_some();
-        let stop = |reason: &str| if simulated { mark_broken_here(reason) } else { mark_broken(reason) };
+        let stop = |reason: &str| if simulated { mark_broken_here(reason) } else { mark_broken(gpu.generation, reason) };
         // Renders share the device's memory: wait for room instead of running out of it, and after
         // running out anyway (the size is an estimate) try once more with the device to this
         // render alone before the CPU takes over (upstream #1764).
@@ -598,11 +807,11 @@ fn try_render_with(
             let _permit = budget.admit(need, alone, shutting_down).ok_or(Fallback::NotTried)?;
             let _ = ctx::take_failure(); // nothing left over from an earlier render on this thread
             let (r, scoped) = {
-                let _scope = ctx::RenderScope::new(gpu);
-                let errors = ctx::ErrorScopes::push(gpu);
+                let _scope = ctx::RenderScope::new(&gpu);
+                let errors = ctx::ErrorScopes::push(&gpu);
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let fit = fit.as_mut().map(|f| Fit { size: f.size, full: f.full.as_deref_mut() });
-                    render::render(gpu, src, info, s, req, ext.as_deref(), fault, fit, texels.as_mut().map(|(h, t)| (*h, &mut **t)))
+                    render::render(&gpu, &plan, src, info, req, ext.as_deref(), fault, fit, texels.as_mut().map(|(h, t)| (*h, &mut **t)))
                 }));
                 (r, errors.pop())
             };
@@ -614,9 +823,9 @@ fn try_render_with(
             };
             break match (r, failure) {
                 (Err(_), _) => {
-                    log::error!("gpu: render failed; using the CPU pipeline from now on");
+                    log::error!("gpu: render failed; using the CPU pipeline until the device is replaced");
                     stop("a GPU render panicked");
-                    "a GPU render panicked; the GPU is not used again".to_string()
+                    "a GPU render panicked; the device is replaced".to_string()
                 }
                 (Ok(r), Some(f)) => {
                     // the view's cached device stages may hold results of the failed passes
@@ -630,7 +839,7 @@ fn try_render_with(
                     let reason = match f.kind {
                         ctx::FailKind::Fatal => {
                             stop(&f.reason);
-                            format!("{what}: {}; the GPU is not used again", f.reason)
+                            format!("{what}: {}; the device is replaced", f.reason)
                         }
                         ctx::FailKind::OutOfMemory => {
                             gpu.trim(0);
@@ -643,7 +852,7 @@ fn try_render_with(
                             }
                             format!("{what}: {}", f.reason)
                         }
-                        ctx::FailKind::Limit | ctx::FailKind::Blank => format!("{what}: {}", f.reason),
+                        ctx::FailKind::Limit | ctx::FailKind::Blank | ctx::FailKind::Busy => format!("{what}: {}", f.reason),
                     };
                     log::warn!("gpu: rendering on the CPU instead: {reason}");
                     if render::profiling() {
@@ -652,7 +861,7 @@ fn try_render_with(
                     reason
                 }
                 // a device error on another thread or a lost device during the render
-                (Ok(Some(_)), None) if BROKEN.load(Ordering::Relaxed) => {
+                (Ok(Some(_)), None) if lost().is_some() => {
                     format!("device failure during the render: {}", unavailable_reason().unwrap_or_default())
                 }
                 (Ok(Some(r)), None) => {
