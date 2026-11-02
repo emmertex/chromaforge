@@ -29,7 +29,7 @@ its surroundings, coarse to fine:
   full-size export agree.
 - **Never copies from the wrong place.** Other spots' areas and faces (face regions of the photo)
   are excluded as sources at every pyramid level.
-- **A little more than painted.** Fill and Generate grow the painted radius by 5 % + 1 px to take in
+- **A little more than painted.** Fill and Generate grow the painted radius by 12 % + 1 px to take in
   an object's soft edge and the start of its shadow; the completion also covers one extra pixel.
 - **Perceptual matching.** Patches are compared on the square root of the linear values, so
   highlights don't dominate every match.

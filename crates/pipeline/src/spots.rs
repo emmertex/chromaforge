@@ -288,7 +288,7 @@ fn fill_box(src: &mut [[f32; 3]], tgt: &[[f32; 3]], alpha: &[f32], exclude: &[bo
 
 /// How far Fill and Generate grow the painted area by themselves (to take in an object's soft
 /// edge and the start of its shadow): radius `r` becomes `r · GROW + 1` px.
-pub const GROW: f32 = 1.05;
+pub const GROW: f32 = 1.12;
 
 /// Apply all spots to `img` (output resolution). `ppl` = output pixels per long-edge unit.
 pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
@@ -413,6 +413,21 @@ pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64,
                 }
             }
             fill_box(&mut src, &tgt, &alpha, &exclude, bw, bh, seed);
+            // patch voting averages the copied grain away: give the fill the noise of its surroundings
+            let ring: Vec<usize> = alpha.iter().zip(&exclude).enumerate().filter(|(_, (a, e))| **a <= 0.0 && !**e).map(|(i, _)| i).collect();
+            let around = Rgb32f { width: bw, height: bh, data: tgt.clone() };
+            if let Some(photo) = lcc_genfill::noise::estimate(&around, &ring) {
+                let mut filled = Rgb32f { width: bw, height: bh, data: std::mem::take(&mut src) };
+                let inner: Vec<usize> = alpha.iter().enumerate().filter(|(_, a)| **a >= 0.99 * opacity.max(1e-3)).map(|(i, _)| i).collect();
+                let own = lcc_genfill::noise::estimate(&filled, &inner);
+                let changed: Vec<(usize, f32)> = alpha.iter().enumerate().filter(|(_, a)| **a > 0.0).map(|(i, _)| (i, 1.0)).collect();
+                let (vx, vy) = frame.view.map_or((0, 0), |v| (v.x.max(0.0) as u64, v.y.max(0.0) as u64));
+                let noise_seed = spot.stroke_key() ^ k as u64;
+                lcc_genfill::noise::add(&mut filled, &changed, &photo, own.as_ref(), noise_seed, |i| {
+                    ((by0 + i / bw) as u64 + vy) << 32 | ((bx0 + i % bw) as u64 + vx)
+                });
+                src = filled.data;
+            }
         }
         // Clone: Direct 1:1 copy of source patch, feathered and opacity-blended.
         // Heal: Texture transfer from source patch with tone/gradient separation matching target surroundings.

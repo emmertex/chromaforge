@@ -4823,6 +4823,7 @@ dependencies = [
  "lcc-hash",
  "lcc-heif",
  "lcc-immich",
+ "lcc-inpaint",
  "lcc-layout",
  "lcc-lensdb",
  "lcc-merge",

@@ -113,6 +113,8 @@ test-support = []
 [dev-dependencies]
 # tests record why they skip (`cargo xtask ci` lists the skips)
 lcc-testkit = { workspace = true }
+# genfill_check example: the mock provider fills with content-aware fill
+lcc-inpaint = { workspace = true }
 # HDR JPEG XL tests read the file's colour encoding
 jxl-oxide = { workspace = true }
 # the updater's end-to-end test builds a release with a real checksum, signed with a throwaway key
