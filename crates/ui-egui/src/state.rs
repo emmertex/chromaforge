@@ -1095,6 +1095,15 @@ pub struct UiState {
     /// are dropped on load, so a hand-edited file can't keep the other settings from loading.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", deserialize_with = "deserialize_section_open")]
     pub section_open: std::collections::BTreeMap<String, bool>,
+    /// Which rows of the left sidebar's trees are open, as the user left them (`<kind>:<id>` →
+    /// open): the Collections' folders (`collectionFolder:<id>`), Folders' disks and folders
+    /// (`libraryFolder:<path>`), Local's folders (`localFolder:<place>:<path>`), By Date's
+    /// (`date:<key>`) and Keywords' (`keyword:<path>`). A row not listed shows its default (album
+    /// folders and disks open, the rest closed), so the trees come back as they were after a
+    /// restart (issue #774). Entries that aren't `true`/`false` are dropped on load, as for
+    /// `sectionOpen`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", deserialize_with = "deserialize_tree_open")]
+    pub tree_open: std::collections::BTreeMap<String, bool>,
     /// A face's name being typed in the loupe.
     #[serde(skip)]
     pub name_edit: Option<NameEdit>,
@@ -1954,6 +1963,7 @@ impl Default for UiState {
             collapsed_sidebar: Vec::new(),
             group_open: Default::default(),
             section_open: Default::default(),
+            tree_open: Default::default(),
             name_edit: None,
             person_page: None,
             person_from: None,
@@ -2200,6 +2210,18 @@ impl UiState {
         self.group_open.get(key).copied().unwrap_or(holds_current)
     }
 
+    /// Whether the left sidebar's tree row `key` is open: as the user left it, else `default`.
+    /// Every tree row that folds (album folders, Local folders, dates, library folders, keywords)
+    /// keeps its state here, saved with the UI state, so it is the same after a restart (#774).
+    pub fn tree_row_is_open(&self, key: &str, default: bool) -> bool {
+        self.tree_open.get(key).copied().unwrap_or(default)
+    }
+
+    /// Open or close the left sidebar's tree row `key` from now on, saved with the UI state.
+    pub fn set_tree_row_open(&mut self, key: &str, open: bool) {
+        self.tree_open.insert(key.to_string(), open);
+    }
+
     /// Whether the sidebar section or panel with this id is folded shut (one never folded: no).
     pub fn sidebar_section_collapsed(&self, id: &str) -> bool {
         match crate::sidebar::SidebarSection::from_id(id) {
@@ -2289,6 +2311,19 @@ fn deserialize_section_open<'de, D: serde::Deserializer<'de>>(d: D) -> Result<st
     let value = serde_json::Value::deserialize(d)?;
     let Some(map) = value.as_object() else { return Ok(Default::default()) };
     Ok(map.iter().filter_map(|(k, v)| v.as_bool().map(|b| (k.clone(), b))).take(1024).collect())
+}
+
+/// The most tree rows the UI state remembers ([`UiState::tree_open`]). A bigger library keeps the
+/// first ones read and the rest start at their default, so a damaged or hand-edited settings file
+/// can't make loading it slow or take all the memory.
+pub(crate) const MAX_TREE_OPEN: usize = 4096;
+
+/// The `treeOpen` map, keeping only `key: true|false` entries with a non-empty key (anything else
+/// is ignored), at most [`MAX_TREE_OPEN`] of them.
+fn deserialize_tree_open<'de, D: serde::Deserializer<'de>>(d: D) -> Result<std::collections::BTreeMap<String, bool>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    let Some(map) = value.as_object() else { return Ok(Default::default()) };
+    Ok(map.iter().filter(|(k, _)| !k.is_empty()).filter_map(|(k, v)| v.as_bool().map(|b| (k.clone(), b))).take(MAX_TREE_OPEN).collect())
 }
 
 /// A setting read leniently: a value that isn't one of its own (a hand-edited file, a newer
@@ -2384,5 +2419,42 @@ mod toast_tests {
         ui.show_toast(("short".into(), 1.0, None));
         ui.expire_toasts(5.0);
         assert!(ui.toasts.iter().all(|t| t.0 != "short"));
+    }
+}
+
+#[cfg(test)]
+mod tree_open_tests {
+    use super::{MAX_TREE_OPEN, UiState};
+
+    /// A row the user never touched shows its default; a chosen one its choice, also after the
+    /// settings file is written and read again (a restart, issue #774).
+    #[test]
+    fn open_tree_rows_come_back_after_a_restart() {
+        let mut ui = UiState::default();
+        assert!(ui.tree_row_is_open("collectionFolder:7", true), "an album folder starts open");
+        assert!(!ui.tree_row_is_open("libraryFolder:/pics", false), "a folder starts closed");
+        ui.set_tree_row_open("libraryFolder:/pics", true);
+        ui.set_tree_row_open("collectionFolder:7", false);
+        let saved = serde_json::to_string(&ui).unwrap();
+        let back: UiState = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back.tree_open, ui.tree_open);
+        assert!(back.tree_row_is_open("libraryFolder:/pics", false));
+        assert!(!back.tree_row_is_open("collectionFolder:7", true));
+        assert!(back.tree_row_is_open("date:2024", false), "a row not listed keeps its default");
+    }
+
+    /// A damaged or hand-edited `treeOpen` (not a map, values that aren't true / false, an empty
+    /// key, far more entries than a library has rows) never keeps the rest of the settings from
+    /// loading, and what can be read is kept.
+    #[test]
+    fn a_damaged_tree_open_is_read_leniently() {
+        let ui: UiState = serde_json::from_str(r#"{"treeOpen": 3, "search": "kept"}"#).unwrap();
+        assert!(ui.tree_open.is_empty() && ui.search == "kept", "the rest of the settings still loads");
+        let ui: UiState = serde_json::from_str(r#"{"treeOpen": {"libraryFolder:/pics": 1, "": true, "date:2024": false}}"#).unwrap();
+        assert_eq!(ui.tree_open.len(), 1, "only the entry that is true or false is kept");
+        assert!(!ui.tree_row_is_open("date:2024", true));
+        let many: std::collections::BTreeMap<String, bool> = (0..MAX_TREE_OPEN + 10).map(|i| (format!("date:{i}"), true)).collect();
+        let ui: UiState = serde_json::from_value(serde_json::json!({ "treeOpen": many })).unwrap();
+        assert_eq!(ui.tree_open.len(), MAX_TREE_OPEN, "a file with more rows than the cap keeps the cap's worth");
     }
 }

@@ -245,24 +245,32 @@ fn disclosure_chevron(ui: &mut egui::Ui, row: &egui::Response, indent: f32, open
     tr
 }
 
-/// Whether the tree row `key` is open: what the user last chose this session, else `default`.
-fn tree_open(ui: &egui::Ui, key: egui::Id, default: bool) -> bool {
-    ui.data(|d| d.get_temp(key)).unwrap_or(default)
+/// Whether the tree row `key` is open: what the user last chose, else `default`. The choice is
+/// saved with the UI state (`treeOpen` in `ui.json`), so the Folders and Collections trees come
+/// back as they were left after a restart (issue #774).
+fn tree_open(app: &LccApp, key: &str, default: bool) -> bool {
+    app.ui.tree_row_is_open(key, default)
 }
 
 /// Open or close the tree row `key` from now on.
-fn set_tree_open(ui: &egui::Ui, key: egui::Id, open: bool) {
-    ui.data_mut(|d| d.insert_temp(key, open));
+fn set_tree_open(app: &mut LccApp, key: &str, open: bool) {
+    app.ui.set_tree_row_open(key, open);
+}
+
+/// The tree-state key of one of Folders' rows (a disk's bar and the folders below it alike), from
+/// the folder's path as [`lcc_catalog::query::folder_key`] spells it.
+fn library_folder_key(path: &str) -> String {
+    format!("libraryFolder:{}", lcc_catalog::query::folder_key(path))
 }
 
 /// The chevron of a tree row that has rows inside it (Albums' folders, Local, By Date, Folders,
 /// Keywords): a click flips `open` and remembers it under `key`. Returns the chevron's response
 /// (it sits on the row and takes its clicks, so a row's context menu is attached to it too).
-fn tree_toggle(ui: &mut egui::Ui, row: &egui::Response, indent: f32, key: egui::Id, open: &mut bool, widget: String) -> egui::Response {
-    let tri = disclosure_chevron(ui, row, indent, *open, key.with("triangle"), widget);
+fn tree_toggle(ui: &mut egui::Ui, app: &mut LccApp, row: &egui::Response, indent: f32, key: &str, open: &mut bool, widget: String) -> egui::Response {
+    let tri = disclosure_chevron(ui, row, indent, *open, egui::Id::new(("tree-triangle", key)), widget);
     if tri.clicked() {
         *open = !*open;
-        set_tree_open(ui, key, *open);
+        set_tree_open(app, key, *open);
     }
     let label = if *open { crate::i18n::tr("Collapse") } else { crate::i18n::tr("Expand") };
     tri.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
@@ -752,7 +760,7 @@ fn my_photos(app: &mut LccApp, ui: &mut egui::Ui, view_top: f32) {
                 above.push('|');
             }
             above.push_str(name);
-            set_tree_open(ui, egui::Id::new(("kw-open", above.to_lowercase())), true);
+            set_tree_open(app, &format!("keyword:{}", above.to_lowercase()), true);
         }
         // …and the sidebar scrolls to it
         ui.data_mut(|d| d.insert_temp(egui::Id::new(SCROLL_TO_ROW), format!("keyword:{path}").to_lowercase()));
@@ -1192,17 +1200,19 @@ fn folder_tree(
     reveal: bool,
     transient: bool,
 ) {
-    let open_id = egui::Id::new(("folder-open", place.to_string(), path.to_string()));
+    // each row of each tree has a key of its own: the same folder listed in two trees opens and
+    // closes by itself, as its triangle has an id of its own (#1093)
+    let key = format!("localFolder:{place}:{path}");
     let sel = current.is_some_and(|c| same_folder(c, path));
     let on_the_way = !sel && current.is_some_and(|c| lcc_catalog::query::folder_within(c, path));
-    let mut open = tree_open(ui, open_id, false);
+    let mut open = tree_open(app, &key, false);
     if reveal && on_the_way {
         // opened once per browsed folder: collapsing it again afterwards sticks
         let revealed_id = egui::Id::new(("folder-revealed", place.to_string(), path.to_string()));
         let target = current.map(str::to_string);
         if ui.data(|d| d.get_temp::<Option<String>>(revealed_id)) != Some(target.clone()) {
             open = true;
-            set_tree_open(ui, open_id, true);
+            set_tree_open(app, &key, true);
             ui.data_mut(|d| d.insert_temp(revealed_id, target));
         }
     }
@@ -1212,7 +1222,7 @@ fn folder_tree(
     let badged = lcc_engine::folder_watch::new_in(&app.session, path).map(|k| format!("{name} · {k} {}", crate::i18n::tr("new")));
     let shown = badged.as_deref().unwrap_or(name);
     let resp = row(app, ui, &format!("local:{path}"), Icon::Folder, shown, None, sel, indent).on_hover_text(path);
-    let tr = tree_toggle(ui, &resp, indent, open_id, &mut open, format!("folderToggle:{path}"));
+    let tr = tree_toggle(ui, app, &resp, indent, &key, &mut open, format!("folderToggle:{path}"));
     if !tr.clicked()
         && resp.clicked()
         && let Err(e) = app.run("library.browse", json!({"path": path}))
@@ -1229,12 +1239,12 @@ fn folder_tree(
 
 /// One By Date row (`key`: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`); returns whether it is open.
 fn date_row(app: &mut LccApp, ui: &mut egui::Ui, key: &str, label: &str, count: usize, indent: f32) -> bool {
-    let open_id = egui::Id::new(("date-open", key.to_string()));
-    let mut open = tree_open(ui, open_id, false);
+    let tree_key = format!("date:{key}");
+    let mut open = tree_open(app, &tree_key, false);
     let sel = app.session.filter.date.as_deref() == Some(key);
     let resp = row(app, ui, &format!("date:{key}"), Icon::Clock, label, Some(count), sel, indent);
     if key.len() < 10 {
-        tree_toggle(ui, &resp, indent, open_id, &mut open, format!("dateToggle:{key}"));
+        tree_toggle(ui, app, &resp, indent, &tree_key, &mut open, format!("dateToggle:{key}"));
     }
     if resp.clicked() {
         let v = if sel { serde_json::Value::Null } else { json!(key) };
@@ -1265,11 +1275,11 @@ fn albums_tree(app: &mut LccApp, ui: &mut egui::Ui, all: &AlbumKids, parent: Opt
     let Some(kids) = all.get(&parent) else { return };
     for a in kids {
         if a.folder {
-            let open_id = egui::Id::new(("folder-open", a.id.0));
-            let mut open = tree_open(ui, open_id, true);
+            let key = format!("collectionFolder:{}", a.id.0);
+            let mut open = tree_open(app, &key, true);
             if open_to.contains(&a.id) && !open {
                 open = true;
-                set_tree_open(ui, open_id, true);
+                set_tree_open(app, &key, true);
             }
             let resp =
                 row_sensed(app, ui, &format!("folder:{}", a.id.0), Icon::Folder, &a.name, None, None, false, indent, Sense::click_and_drag(), None);
@@ -1279,20 +1289,20 @@ fn albums_tree(app: &mut LccApp, ui: &mut egui::Ui, all: &AlbumKids, parent: Opt
                 app.ui.dragging_album = Some(a.id.0);
             }
             if album_drag_over(app, ui, &resp, a, has_children.then_some(&mut open), indent) {
-                set_tree_open(ui, open_id, true);
+                set_tree_open(app, &key, true);
             }
             // what this frame draws; a click shows from the next one
             let draw_open = open;
             let mut toggled = false;
             if has_children {
-                let tri = tree_toggle(ui, &resp, indent, open_id, &mut open, format!("albumToggle:{}", a.id.0));
+                let tri = tree_toggle(ui, app, &resp, indent, &key, &mut open, format!("albumToggle:{}", a.id.0));
                 toggled = tri.clicked();
                 // the triangle sits on the row and takes its clicks: the menu opens from it too
                 folder_menu(app, &tri, a);
             }
             // one click, one toggle: the triangle's is not the row's as well
             if resp.clicked() && !toggled {
-                set_tree_open(ui, open_id, !open);
+                set_tree_open(app, &key, !open);
             }
             folder_menu(app, &resp, a);
             if draw_open {
@@ -1884,7 +1894,7 @@ fn local_body(app: &mut LccApp, ui: &mut egui::Ui) {
 
 /// Whenever the shown folder changes (a click, an agent, a rename or its undo), open the rows
 /// above it so it is on screen; folding one by hand afterwards sticks until the choice changes.
-fn reveal_chosen(app: &LccApp, ui: &egui::Ui, tree: &[FolderNode]) {
+fn reveal_chosen(app: &mut LccApp, ui: &egui::Ui, tree: &[FolderNode]) {
     let shown = app.session.library_folder.clone().filter(|_| app.session.source == LibrarySource::LibraryFolder);
     let chosen = shown.filter(|c| !lcc_catalog::query::folder_key(c).is_empty());
     let seen = egui::Id::new(LIBFOLDER_REVEALED);
@@ -1894,16 +1904,15 @@ fn reveal_chosen(app: &LccApp, ui: &egui::Ui, tree: &[FolderNode]) {
     }
     ui.data_mut(|d| d.insert_temp(seen, now));
     let Some(chosen) = chosen else { return };
-    fn open_above(ui: &egui::Ui, nodes: &[FolderNode], chosen: &str) {
+    fn open_above(app: &mut LccApp, nodes: &[FolderNode], chosen: &str) {
         for n in nodes {
             if lcc_catalog::query::folder_within(chosen, &n.path) && !same_folder(chosen, &n.path) {
-                let key = lcc_catalog::query::folder_key(&n.path);
-                ui.data_mut(|d| d.insert_temp(egui::Id::new(("libfolder-open", key)), true));
-                open_above(ui, &n.children, chosen);
+                set_tree_open(app, &library_folder_key(&n.path), true);
+                open_above(app, &n.children, chosen);
             }
         }
     }
-    open_above(ui, tree, &chosen);
+    open_above(app, tree, &chosen);
 }
 
 /// The Folders tree as the sidebar shows it: a folder that holds no photo itself, has no colour
@@ -1959,17 +1968,16 @@ pub(crate) fn folder_row_of<'a>(tree: &'a [FolderNode], dir: &str) -> Option<&'a
 
 fn folder_rows(app: &mut LccApp, ui: &mut egui::Ui, nodes: &[FolderNode], indent: f32) {
     for n in nodes {
-        let key = lcc_catalog::query::folder_key(&n.path);
-        let open_id = egui::Id::new(("libfolder-open", key.clone()));
+        let key = library_folder_key(&n.path);
         // a disk starts open, and so does a folder that holds nothing itself and leads to one
         // folder (`Users` → `me`): the first row where the library branches is what you look for
         let leads_on = n.own == 0 && n.children.len() == 1;
-        let mut open = tree_open(ui, open_id, n.volume || leads_on);
+        let mut open = tree_open(app, &key, n.volume || leads_on);
         // a row whose path would cover other disks' photos too only opens and closes
         let name = if n.selectable { n.name.clone() } else { crate::i18n::tr("This Computer").to_string() };
         let id = format!("libfolder:{}", n.path);
         if !out_of_sight(app, ui, &id, &name, Some(n.count), indent, n.label.is_some()) {
-            folder_row(app, ui, n, &id, &name, indent, open_id, &mut open);
+            folder_row(app, ui, n, &id, &name, indent, &key, &mut open);
         }
         if open && !n.children.is_empty() {
             folder_rows(app, ui, &n.children, indent + INDENT_STEP);
@@ -1977,9 +1985,9 @@ fn folder_rows(app: &mut LccApp, ui: &mut egui::Ui, nodes: &[FolderNode], indent
     }
 }
 
-/// One drawn row of [`folder_rows`], shown as `name`; `open_id` and `open` are its triangle's.
+/// One drawn row of [`folder_rows`], shown as `name`; `key` and `open` are its triangle's.
 #[allow(clippy::too_many_arguments)]
-fn folder_row(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode, id: &str, name: &str, indent: f32, open_id: egui::Id, open: &mut bool) {
+fn folder_row(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode, id: &str, name: &str, indent: f32, key: &str, open: &mut bool) {
     let sel = n.selectable
         && app.session.source == LibrarySource::LibraryFolder
         && app.session.library_folder.as_deref().is_some_and(|f| same_folder(f, &n.path));
@@ -1996,10 +2004,10 @@ fn folder_row(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode, id: &str, nam
         None => (name, spoken),
     };
     let resp = row_sensed(app, ui, id, Icon::Folder, name, Some(&spoken), Some(n.count), sel, indent, Sense::click(), mark);
-    folder_drop_target(app, ui, &resp, n, open_id, open);
+    folder_drop_target(app, ui, &resp, n, key, open);
     let mut toggled = false;
     if !n.children.is_empty() {
-        let tr = tree_toggle(ui, &resp, indent, open_id, open, format!("libraryFolderToggle:{}", n.path));
+        let tr = tree_toggle(ui, app, &resp, indent, key, open, format!("libraryFolderToggle:{}", n.path));
         toggled = tr.clicked();
         // the triangle sits on the row and takes its clicks: the menu opens from it too
         row_menu(app, &tr, n);
@@ -2012,7 +2020,7 @@ fn folder_row(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode, id: &str, nam
             let _ = app.run("library.source", json!({"kind": "libraryFolder", "path": n.path}));
         } else {
             *open = !*open;
-            set_tree_open(ui, open_id, *open);
+            set_tree_open(app, key, *open);
         }
     }
     row_menu(app, &resp, n);
@@ -2027,13 +2035,13 @@ const SPRING_OPEN_SECONDS: f64 = 0.7;
 /// they will go, as the same gesture onto an album only adds them to it. Held over a closed row,
 /// it opens. Photos that can't go there leave it dark (a row covering several disks; Local photos,
 /// not in the library) and a release says why; photos already there say so.
-fn folder_drop_target(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, n: &FolderNode, open_id: egui::Id, open: &mut bool) {
+fn folder_drop_target(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, n: &FolderNode, key: &str, open: &mut bool) {
     let Some(ids) = app.ui.dragging_photos.clone() else { return };
     // only where the row can be seen: not scrolled out of the sidebar or beneath the pinned header
     if !pointer_over_row(ui, resp.rect) {
         return;
     }
-    spring_open(ui, n, open_id, open);
+    spring_open(app, ui, n, key, open);
     let name = std::path::Path::new(&n.path).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| n.name.clone());
     let photos: Vec<_> = ids.iter().filter_map(|id| app.session.catalog.photo(lcc_catalog::PhotoId(*id))).collect();
     let refused = if !n.selectable {
@@ -2088,22 +2096,22 @@ fn folder_drop_target(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response
 /// Photos dragged over the closed row `n` for [`SPRING_OPEN_SECONDS`] open it (a row with folders
 /// inside it). Restarts on each row the pointer comes to, and when it comes back to one after
 /// leaving it (or after another drag).
-fn spring_open(ui: &egui::Ui, n: &FolderNode, open_id: egui::Id, open: &mut bool) {
+fn spring_open(app: &mut LccApp, ui: &egui::Ui, n: &FolderNode, key: &str, open: &mut bool) {
     if *open || n.children.is_empty() {
         return;
     }
-    let key = egui::Id::new("folder-spring-open");
+    let spring = egui::Id::new("folder-spring-open");
     let (now, frame) = (ui.input(|i| i.time), ui.ctx().cumulative_frame_nr());
     // held without a break: over this row last frame too
-    let since = match ui.data(|d| d.get_temp::<(String, f64, u64)>(key)) {
+    let since = match ui.data(|d| d.get_temp::<(String, f64, u64)>(spring)) {
         Some((path, since, seen)) if path == n.path && seen.saturating_add(1) >= frame => since,
         _ => now,
     };
-    ui.data_mut(|d| d.insert_temp(key, (n.path.clone(), since, frame)));
+    ui.data_mut(|d| d.insert_temp(spring, (n.path.clone(), since, frame)));
     if now - since >= SPRING_OPEN_SECONDS {
         *open = true;
-        set_tree_open(ui, open_id, true);
-        ui.data_mut(|d| d.remove::<(String, f64, u64)>(key));
+        set_tree_open(app, key, true);
+        ui.data_mut(|d| d.remove::<(String, f64, u64)>(spring));
     } else {
         // keep the clock running while the pointer rests
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
@@ -2633,11 +2641,11 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
 fn keyword_rows(app: &mut LccApp, ui: &mut egui::Ui, nodes: &[KeywordNode], indent: f32) {
     for n in nodes {
         // leaves (most keywords) have no open state to look up
-        let open_id = (!n.children.is_empty()).then(|| egui::Id::new(("kw-open", n.path.to_lowercase())));
-        let mut open = open_id.is_some_and(|k| tree_open(ui, k, false));
+        let open_key = (!n.children.is_empty()).then(|| format!("keyword:{}", n.path.to_lowercase()));
+        let mut open = open_key.as_deref().is_some_and(|k| tree_open(app, k, false));
         let id = format!("keyword:{}", n.path);
         if !out_of_sight(app, ui, &id, &n.name, Some(n.count), indent, false) {
-            keyword_row(app, ui, n, &id, indent, open_id, &mut open);
+            keyword_row(app, ui, n, &id, indent, open_key.as_deref(), &mut open);
         }
         if open {
             keyword_rows(app, ui, &n.children, indent + INDENT_STEP);
@@ -2645,14 +2653,14 @@ fn keyword_rows(app: &mut LccApp, ui: &mut egui::Ui, nodes: &[KeywordNode], inde
     }
 }
 
-/// One drawn row of [`keyword_rows`]; `open_id` and `open` are its triangle's when it has rows inside it.
-fn keyword_row(app: &mut LccApp, ui: &mut egui::Ui, n: &KeywordNode, id: &str, indent: f32, open_id: Option<egui::Id>, open: &mut bool) {
+/// One drawn row of [`keyword_rows`]; `open_key` and `open` are its triangle's when it has rows inside it.
+fn keyword_row(app: &mut LccApp, ui: &mut egui::Ui, n: &KeywordNode, id: &str, indent: f32, open_key: Option<&str>, open: &mut bool) {
     // chosen here or among the filter bar's keywords
     let f = &app.session.filter;
     let sel = f.keyword.iter().chain(&f.keywords).any(|k| k.eq_ignore_ascii_case(&n.path));
     let resp = row(app, ui, id, Icon::Tag, &n.name, Some(n.count), sel, indent);
-    if let Some(k) = open_id {
-        tree_toggle(ui, &resp, indent, k, open, format!("keywordToggle:{}", n.path));
+    if let Some(k) = open_key {
+        tree_toggle(ui, app, &resp, indent, k, open, format!("keywordToggle:{}", n.path));
     }
     let resp = resp.on_hover_text(if n.children.is_empty() { n.path.clone() } else { format!("{} (includes the keywords below it)", n.path) });
     if resp.clicked() {

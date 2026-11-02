@@ -406,13 +406,13 @@ fn folders_body(app: &mut LccApp, ui: &mut egui::Ui) {
             super::folder_rows(app, ui, std::slice::from_ref(n), 0.0);
             continue;
         }
-        let open_id = egui::Id::new(("libfolder-open", lcc_catalog::query::folder_key(&n.path)));
-        let mut open = super::tree_open(ui, open_id, true);
+        let key = super::library_folder_key(&n.path);
+        let mut open = super::tree_open(app, &key, true);
         let bar = crate::panels::folders::volume_bar(ui, n, open);
         super::row_menu(app, &bar, n);
         if bar.clicked() {
             open = !open;
-            super::set_tree_open(ui, open_id, open);
+            super::set_tree_open(app, &key, open);
         }
         if !open {
             continue;

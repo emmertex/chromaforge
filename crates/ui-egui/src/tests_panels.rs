@@ -1102,6 +1102,37 @@ fn album_folders_have_a_disclosure_triangle() {
     assert!(has(&h, &format!("albumToggle:{empty}")), "it gets one with its first child");
 }
 
+/// A folder folded in Collections is still folded after a restart: the choice is kept with the UI
+/// state (`treeOpen` in `ui.json`), as is opening it again (issue #774).
+#[test]
+fn folded_collection_folders_come_back_folded_after_a_restart() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid", "leftPanel": true}));
+    let make = |h: &mut Headless, params: serde_json::Value| h.app.session.execute("album.create", &params).unwrap()["id"].as_u64().unwrap();
+    let trips = make(&mut h, json!({"name": "Trips", "folder": true}));
+    let best = make(&mut h, json!({"name": "Best", "parent": trips}));
+    h.step();
+    h.step();
+    let key = format!("collectionFolder:{trips}");
+    assert!(has(&h, &format!("source:album:{best}")), "a collection folder starts open");
+    let restart = |h: &mut Headless| {
+        // what ui.json keeps, read back at launch
+        let saved = serde_json::to_string(&h.app.ui).unwrap();
+        let restarted: crate::state::UiState = serde_json::from_str(&saved).unwrap();
+        h.app.ui.tree_open = restarted.tree_open;
+        h.step();
+        h.step();
+    };
+    click(&mut h, &format!("albumToggle:{trips}"));
+    assert!(!has(&h, &format!("source:album:{best}")), "the folder is folded");
+    assert_eq!(h.app.ui.tree_row_is_open(&key, true), false);
+    restart(&mut h);
+    assert!(!has(&h, &format!("source:album:{best}")), "the folder comes back folded");
+    click(&mut h, &format!("albumToggle:{trips}"));
+    assert!(has(&h, &format!("source:album:{best}")), "opening it again shows its albums");
+    restart(&mut h);
+    assert!(has(&h, &format!("source:album:{best}")), "and it comes back open");
+}
+
 /// A dialog that cannot do its job (here: the chosen parent is a plain album, as when the folder
 /// was deleted or turned out not to be one) stays open with the error shown, the typed name kept.
 #[test]
@@ -1633,6 +1664,30 @@ fn folders_section_lists_where_photos_were_imported_from_and_fills_the_grid() {
     assert!(!has(&h, "source:libfolder:/pics"), "folded");
     click(&mut h, "classicPanel:folders");
     assert!(has(&h, "source:libfolder:/pics"));
+}
+
+/// A disk or folder folded in Folders comes back folded after a restart (issue #774).
+#[test]
+fn folded_library_folders_come_back_folded_after_a_restart() {
+    let mut h = folders_app(&["/pics/trip/a.jpg", "/pics/home/c.jpg"]);
+    // the top folder is listed; the folders inside it stay folded until it is opened
+    assert!(has(&h, "source:libfolder:/pics"));
+    assert!(!has(&h, "source:libfolder:/pics/trip"));
+    let restart = |h: &mut Headless| {
+        let saved = serde_json::to_string(&h.app.ui).unwrap();
+        let restarted: crate::state::UiState = serde_json::from_str(&saved).unwrap();
+        h.app.ui.tree_open = restarted.tree_open;
+        h.step();
+        h.step();
+    };
+    click(&mut h, "libraryFolderToggle:/pics");
+    assert!(has(&h, "source:libfolder:/pics/trip"));
+    restart(&mut h);
+    assert!(has(&h, "source:libfolder:/pics/trip"), "it is still open");
+    click(&mut h, "libraryFolderToggle:/pics");
+    assert!(!has(&h, "source:libfolder:/pics/trip"), "it is folded");
+    restart(&mut h);
+    assert!(!has(&h, "source:libfolder:/pics/trip"), "it comes back folded");
 }
 
 /// Each disk is a bar heading its folders, as in Lightroom Classic: a click folds and unfolds them and chooses nothing.
