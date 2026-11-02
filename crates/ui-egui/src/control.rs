@@ -279,6 +279,11 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
         "ui.clickWidget" | "ui.dragWidget" | "ui.hoverWidget" => {
             let Some(id) = s("id") else { return err("missing `id`") };
             let Some(r) = widget_rect(app, id) else { return err(format!("no widget `{id}` on screen (see ui.widgets)")) };
+            // a widget laid out past the window's edge (a panel scrolled away from it) can't take a pointer
+            // event: say so instead of answering ok for a click that lands on nothing
+            if !ctx.content_rect().intersects(r) {
+                return err(format!("widget `{id}` is outside the window (scrolled out of view): scroll it into view first (ui.scroll)"));
+            }
             let m = modifiers(p);
             // optional relative position inside the widget (0..1)
             let at = egui::pos2(r.left() + r.width() * f("fx").unwrap_or(0.5) as f32, r.top() + r.height() * f("fy").unwrap_or(0.5) as f32);

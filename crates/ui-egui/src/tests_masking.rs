@@ -2229,3 +2229,31 @@ fn mask_point_color_eyedropper_samples_into_the_mask() {
     assert!(develop(&h).masks[0].point_colors.is_empty());
     h.settle(SETTLE);
 }
+
+/// `ui.clickWidget` on the Point Color flyout's eyedropper arms the tool, as a real click does.
+#[test]
+fn mask_point_color_eyedropper_answers_click_widget() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "linear"}));
+    h.app.ui.toggle_flyout("maskPointColor");
+    h.settle(SETTLE);
+    // laid out below the window's edge here: refused with a reason, not a silent ok
+    let r = h.request("ui.clickWidget", json!({"id": "icon:maskPointColorPicker"}), T);
+    if r["ok"] == false {
+        assert!(r.to_string().contains("outside the window"), "{r}");
+        // scroll the panel until the eyedropper is in view, then click it
+        let flyout = h.request("ui.widgets", json!({"filter": "flyout:maskPointColor"}), T);
+        let x = flyout["result"][0]["rect"][0].as_f64().unwrap_or(1000.0) + 20.0;
+        for _ in 0..20 {
+            h.request("ui.move", json!({"x": x, "y": 400.0}), T);
+            h.request("ui.scroll", json!({"dy": -200.0}), T);
+            h.settle(SETTLE);
+            if h.request("ui.clickWidget", json!({"id": "icon:maskPointColorPicker"}), T)["ok"] == true {
+                break;
+            }
+        }
+    }
+    h.settle(SETTLE);
+    let rect = h.request("ui.widgets", json!({"filter": "maskPointColor"}), T);
+    assert_eq!(h.app.ui.tool, "maskPointColor", "click answered {r}; widgets {rect}");
+}
