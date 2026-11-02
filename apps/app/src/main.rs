@@ -45,10 +45,10 @@ mod screen_profile;
 mod screen_profile_linux;
 #[cfg(any(windows, test))]
 mod screen_profile_windows;
+mod threads;
 mod video_gpu;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod wayland_hdr;
-mod threads;
 mod window_gpu;
 
 use dialog_filter::FileDialogExt as _;
