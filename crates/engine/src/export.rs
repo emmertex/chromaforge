@@ -2655,10 +2655,12 @@ pub(crate) fn export_batch_tuned(
     o: &ExportOptions,
     lanes: usize,
     gpu: bool,
+    mix: bool,
 ) -> Result<Vec<serde_json::Value>, String> {
     let mut items = prepare_batch(session, ids, o)?;
     for it in &mut items {
         it.gpu = gpu;
+        it.mix = gpu && mix;
     }
     let lanes = lanes.clamp(1, MAX_EXPORT_LANES).min(items.len().max(1));
     let to = Destination::default();
@@ -2829,8 +2831,8 @@ fn note_encode() {
     }
 }
 
-/// Exports render on the processor too while the GPU is busy with other photos. Off by default
-/// (OneSlips' "Test my machine" turns it on where it measured it faster; it is not on main yet).
+/// Exports render on the processor too while the GPU is busy with other photos. Off by default;
+/// "Test my machine" turns it on where it measured it faster.
 static EXPORT_MIX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Let photos of an export render on the processor while the GPU renders others ([`export_mix`]).
