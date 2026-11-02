@@ -3957,6 +3957,17 @@ fn pins_live(app: &LccApp, resp: &egui::Response, map: &CanvasMap) -> bool {
         || crate::canvas_keys::has_focus(&resp.ctx)
 }
 
+/// The spot whose painted area or source is under `h` (the last drawn first, as it is on top).
+fn spot_at(d: &DevelopSettings, map: &CanvasMap, long: f64, h: Pos2) -> Option<usize> {
+    d.spots.iter().enumerate().rev().find_map(|(i, s)| {
+        let r = ((s.size * long) as f32).max(4.0);
+        let src = s.source_offset.filter(|_| s.mode != lcc_develop::SpotMode::Fill);
+        let inside = s.points.iter().any(|q| map.screen(*q).distance(h) <= r)
+            || src.is_some_and(|o| s.points.iter().any(|q| map.screen(Point::new(q.x + o.x, q.y + o.y)).distance(h) <= r));
+        inside.then_some(i)
+    })
+}
+
 fn pin(p: &egui::Painter, c: Pos2, sel: bool) {
     p.circle_filled(c, 6.0, if sel { Color32::from_rgb(1, 101, 221) } else { Color32::from_gray(200) });
     p.circle_stroke(c, 6.0, Stroke::new(1.5, Color32::WHITE));
@@ -4298,10 +4309,13 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
     }
     // (spot, is source, screen centre, radius) of everything that can be grabbed
     let mut grips: Vec<(usize, bool, Pos2, f32)> = Vec::new();
+    // the spot under the pointer (its painted area or its source) shows its outline and both pins
+    let hot = resp.hover_pos().filter(|_| !painting && matches!(mode, ToolOverlay::Auto | ToolOverlay::Always)).and_then(|h| spot_at(d, map, long, h));
     for (i, s) in d.spots.iter().enumerate() {
         let r = (s.size * long) as f32;
         let sel = Some(i) == active;
-        if !mode.shows(sel, live) {
+        let hot = hot == Some(i);
+        if !mode.shows(sel, live) && !hot {
             continue;
         }
         let p = &pins;
@@ -4341,7 +4355,7 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
         draw_unified_outline(p, &loops, egui::Vec2::ZERO, sel);
 
         if s.mode != lcc_develop::SpotMode::Fill
-            && let Some(o) = s.source_offset.filter(|_| sel)
+            && let Some(o) = s.source_offset.filter(|_| sel || hot)
         {
             let sq = map.screen(Point::new(target_centroid.x + o.x, target_centroid.y + o.y));
             let offset = sq - tq;
@@ -4485,10 +4499,8 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
         }
     }
     if let Some(Gesture::Spot { points }) = &app.gesture {
+        // the spot being painted: its outline only, so what it covers stays visible
         let screen_pts: Vec<Pos2> = points.iter().map(|q| map.screen(*q)).collect();
-        for q in &screen_pts {
-            p.circle_filled(*q, r, Color32::from_white_alpha(40));
-        }
         let loops = extract_stroke_contour(&screen_pts, r, app.ui.remove_feather as f64);
         draw_unified_outline(&p, &loops, egui::Vec2::ZERO, true);
     }

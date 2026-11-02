@@ -1,4 +1,4 @@
-//! Headless tests of the Colour Range and Luminance Range pickers on the photo.
+//! Headless tests of the mask and Remove tools on the photo: the Colour / Luminance Range pickers, spot outlines and pins.
 
 use std::time::Duration;
 
@@ -119,4 +119,19 @@ fn luminance_range_picks_from_the_photo() {
     assert!(hi2 - lo2 > hi - lo, "the whole photo has more tones than a point: {lo2}..{hi2}");
     let r = exec(&mut h, "mask.sampleLuminance", json!({"x": 0.5, "y": 0.5, "add": true}));
     assert!(r["lo"].as_f64().unwrap() <= lo2 + 1e-9 && r["hi"].as_f64().unwrap() >= hi2 - 1e-9, "⇧ only widens: {r}");
+}
+
+/// A Remove spot under the pointer shows its outline and both pins, so either can be moved.
+#[test]
+fn a_hovered_spot_shows_both_pins() {
+    let mut h = detail("panel.remove");
+    let path: Vec<[f64; 2]> = (0..60).map(|i| [0.2 + i as f64 * 0.005, 0.5]).collect();
+    exec(&mut h, "spot.add", json!({"mode": "heal", "points": path, "size": 0.02}));
+    exec(&mut h, "spot.add", json!({"mode": "heal", "points": [[0.8, 0.2]], "size": 0.02}));
+    // the other spot is selected: only its source shows until the pointer is over the first
+    exec(&mut h, "spot.select", json!({"index": 1}));
+    pointer(&mut h, json!([{"kind": "move", "x": 0.8, "y": 0.2}]));
+    assert!(!widgets(&h, "spotSource:").contains(&"spotSource:0".to_string()));
+    pointer(&mut h, json!([{"kind": "move", "x": 0.3, "y": 0.5}]));
+    assert!(widgets(&h, "spotSource:").contains(&"spotSource:0".to_string()), "the hovered spot's source pin, to move it");
 }
