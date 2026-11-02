@@ -531,6 +531,7 @@ mod tests {
                     opacity: 0.0,
                     source_offset: Some(Point::new(8.0 / 64.0, 0.0)),
                     generated: None,
+                    auto: None,
                 };
                 apply(&mut img, &[spot], &frame, frame.px_per_long(64));
                 for (i, (actual, expected)) in img.data.iter().zip(&original.data).enumerate() {
@@ -554,6 +555,7 @@ mod tests {
                 opacity: 100.0,
                 source_offset: Some(Point::new(0.125, 0.0)),
                 generated: None,
+                auto: None,
             };
             apply(&mut img, &[spot], &frame, frame.px_per_long(w));
             let (x, y) = (cx as usize, cy as usize);
