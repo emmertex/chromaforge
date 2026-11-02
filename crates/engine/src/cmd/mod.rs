@@ -34,6 +34,7 @@ pub mod filters;
 mod focus;
 pub mod folder_metadata;
 pub mod folders;
+mod genfill;
 pub mod geocode;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod immich;
@@ -231,6 +232,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(curves::specs());
         v.extend(crop_aspects::specs());
         v.extend(masks::specs());
+        v.extend(genfill::specs());
         v.extend(organize::specs());
         v.extend(keywords::specs());
         v.extend(manage::specs());

@@ -233,7 +233,11 @@ fn handle(mut s: TcpStream, st: &State) {
                 let data: Vec<Value> = (0..n).map(|v| json!({"b64_json": b64_encode(&fill(sw, sh, &rgb, &m, v))})).collect();
                 reply_json(&mut s, 200, &json!({"created": 1, "data": data}))
             } else {
-                reply_json(&mut s, 200, &json!({"image": b64_encode(&fill(w, h, &rgb, &m, 0)), "finish_reason": "SUCCESS", "seed": 1}))
+                reply_json(
+                    &mut s,
+                    200,
+                    &json!({"image": b64_encode(&fill(w, h, &rgb, &m, get("seed").and_then(|v| String::from_utf8(v).ok()).and_then(|v| v.trim().parse::<u64>().ok()).map_or(0, |s| (s % 3) as u32))), "finish_reason": "SUCCESS", "seed": 1}),
+                )
             }
         }
         ("POST", "/v1/flux-pro-1.0-fill") | ("POST", "/v1/flux-tools/erase-v1") => {
@@ -251,7 +255,10 @@ fn handle(mut s: TcpStream, st: &State) {
             };
             seen.image = Some((w, h));
             record(seen);
-            st.results.lock().unwrap_or_else(PoisonError::into_inner).insert(id.clone(), vec![fill(w, h, &rgb, &m, 0)]);
+            st.results
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(id.clone(), vec![fill(w, h, &rgb, &m, v.get("seed").and_then(Value::as_u64).map_or(0, |s| (s % 3) as u32))]);
             reply_json(&mut s, 200, &json!({"id": id, "polling_url": format!("{}/v1/get_result?id={id}", st.base)}))
         }
         ("GET", "/v1/get_result") => {

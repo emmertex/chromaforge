@@ -1506,6 +1506,21 @@ pub fn content_key(p: &Photo) -> String {
 }
 
 pub fn source_info(p: &Photo) -> SourceInfo {
+    let info = source_info_plain(p);
+    // faces are never a source for content-aware fill
+    let faces: Vec<[f64; 4]> = p
+        .meta
+        .regions
+        .iter()
+        .filter(|r| r.kind == lcc_meta::RegionKind::Face)
+        .map(|r| [r.rect.x0, r.rect.y0, r.rect.x1, r.rect.y1])
+        .filter(|b| b.iter().all(|v| v.is_finite()))
+        .take(256)
+        .collect();
+    SourceInfo { avoid: (!faces.is_empty()).then(|| Arc::new(faces)), ..info }
+}
+
+fn source_info_plain(p: &Photo) -> SourceInfo {
     // Procedural demo scenes are scene-referred HDR (like raw files): use the filmic tone map.
     // (They are drawn afresh at every size, so they have no original size.)
     if matches!(p.source, Source::Demo { .. }) {
@@ -1538,6 +1553,11 @@ fn header_info(p: &Photo) -> SourceInfo {
 }
 
 impl crate::Session {
+    /// What a render of `p` is interpreted against: [`source_info`] and the photo's generated patches.
+    pub fn job_info(&self, p: &Photo) -> SourceInfo {
+        SourceInfo { generated: self.genfill_store(p), ..source_info(p) }
+    }
+
     /// Build a render job for `id` fitting `max_w × max_h`. `before` renders the unedited look.
     pub fn render_job(&mut self, id: PhotoId, max_w: usize, max_h: usize, before: bool, apply_crop: bool) -> Option<RenderJob> {
         self.build_job(id, max_w, max_h, before, apply_crop, None)
@@ -1617,7 +1637,7 @@ impl crate::Session {
             level,
             source,
             origin: p.source.clone(),
-            info: source_info(&p),
+            info: self.job_info(&p),
             settings,
             request,
             key,
@@ -1673,7 +1693,7 @@ impl crate::Session {
             level,
             source,
             origin: p.source.clone(),
-            info: source_info(&p),
+            info: self.job_info(&p),
             settings: Arc::new(settings.clone()),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
             key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),
@@ -1730,7 +1750,7 @@ impl crate::Session {
             level,
             source,
             origin: p.source.clone(),
-            info: source_info(&p),
+            info: self.job_info(&p),
             settings: Arc::new(settings),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
             key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),

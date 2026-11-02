@@ -52,6 +52,7 @@ pub mod filter_plugins;
 mod focus_scan;
 pub mod folder_watch;
 pub mod fonts;
+pub mod genfill;
 pub mod guard;
 pub mod hdr_texture;
 pub mod history_groups;
@@ -488,6 +489,8 @@ pub struct Session {
     pub video: video::VideoState,
     /// The last (or running) slideshow export (`slideshow.export`).
     pub slideshow_export: Option<std::sync::Arc<slideshow_export::ExportRun>>,
+    /// Generative fill: keys, consent, the running generation, the patch cache ([`genfill`]).
+    pub genfill: genfill::GenfillState,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
     /// Develop defaults applied on import (persisted in prefs.json).
@@ -680,6 +683,7 @@ impl Session {
             folder_new: Default::default(),
             activity: Default::default(),
             video: Default::default(),
+            genfill: Default::default(),
             preview_build: None,
             slideshow_export: None,
             import_defaults: import::ImportDefaults::default(),
@@ -1808,6 +1812,8 @@ mod tests_folders;
 mod tests_forget_local;
 #[cfg(test)]
 mod tests_fuji;
+#[cfg(test)]
+mod tests_genfill;
 #[cfg(test)]
 mod tests_history_cursor;
 #[cfg(test)]

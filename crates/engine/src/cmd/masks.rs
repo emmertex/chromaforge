@@ -971,7 +971,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let id = s.active().ok_or_else(|| bad("spot.add", "no active photo"))?;
                 let mut dd = (*s.develop_of(id).unwrap_or_default()).clone();
-                if spot.source_offset.is_none() && spot.mode != SpotMode::Fill {
+                if spot.source_offset.is_none() && !matches!(spot.mode, SpotMode::Fill | SpotMode::Generate) {
                     // resolve the automatic source now: it gets a pin and stays put at every size
                     spot.source_offset = pick_source(s, id, &dd, &spot, None);
                 }
