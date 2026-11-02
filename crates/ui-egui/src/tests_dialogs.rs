@@ -184,3 +184,15 @@ fn delete_rejected_photos_asks_how() {
     crate::menubar::run_item(&mut h.app, "library.deleteRejected", json!({})).unwrap();
     assert!(h.app.ui.dialog.is_none(), "nothing left to delete: no dialog");
 }
+
+/// The filter bar shows live counts after its flag and label toggles.
+#[test]
+fn the_filter_bar_shows_live_counts() {
+    let mut h = demo([1600.0, 900.0], json!({"view": "photoGrid"}));
+    h.app.ui.filter_bar = true;
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "filter:count:pick"), "no pick count drawn");
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "filter:count:red"));
+}

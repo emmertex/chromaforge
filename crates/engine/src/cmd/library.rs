@@ -1239,6 +1239,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(r)
             }
         ),
+        cmd!(query "library.tally", "Culling Counts", [], None, "{} → {total, picks, rejects, unflagged, stars: [0★..5★], labels: [red, yellow, green, blue, purple], unlabeled} — the view's photos by culling mark, counted without the stars / flags / labels filter itself", always, |s, _| {
+            Ok(serde_json::to_value(s.tally()).unwrap_or_default())
+        }),
         cmd!(
             "library.deleteRejected",
             "Delete Rejected Photos",

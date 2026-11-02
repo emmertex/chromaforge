@@ -148,6 +148,29 @@ fn chosen_values(single: Option<&str>, list: &[String]) -> Vec<String> {
     out
 }
 
+/// The view's culling counts ([`lcc_engine::Session::tally`]), kept until the catalog, the source or the filter
+/// changes (a slider drag or a frame with nothing new reuses them).
+fn tally(app: &LccApp, ctx: &egui::Context) -> lcc_catalog::Tally {
+    let key = format!("{}|{:?}|{}", app.session.catalog.revision, app.session.source, serde_json::to_string(&app.session.filter).unwrap_or_default());
+    let id = egui::Id::new("filter-tally");
+    if let Some((k, t)) = ctx.data(|d| d.get_temp::<(String, lcc_catalog::Tally)>(id))
+        && k == key
+    {
+        return t;
+    }
+    let t = app.session.tally();
+    ctx.data_mut(|d| d.insert_temp(id, (key, t.clone())));
+    t
+}
+
+/// A live count after a flag or label toggle, small and dim.
+fn count(ui: &mut egui::Ui, id: &str, n: usize) {
+    let t = Tokens::get(ui.ctx());
+    let r = ui.add(egui::Label::new(egui::RichText::new(super::grid::group_digits(n)).font(t.font(10.5)).color(t.text_dim)).selectable(false));
+    register(ui.ctx(), id, r.rect);
+    ui.add_space(4.0);
+}
+
 pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
     let ui = &mut *outer;
     let t = Tokens::get(ui.ctx());
@@ -172,6 +195,9 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
     let mut row2 = row(ui, 1.0);
     let ui = &mut row1;
 
+    // live counts: the view's photos by mark, without the marks' own filter (worked out when the catalog,
+    // source or filter changes)
+    let tally = tally(app, ui.ctx());
     // rating: operator + stars
     caption(ui, "Rating");
     let op_label = match f.rating_op {
@@ -205,6 +231,7 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
         };
         let icon = if on && flag == Flag::Pick { Icon::FlagPickFilled } else { icon };
         let resp = toggle(ui, id, on, tip, |p, r, c| paint(p, r, icon, if color == Color32::TRANSPARENT { c } else { color }));
+        count(ui, &format!("filter:count:{id}"), tally.flag(flag));
         if resp.clicked() {
             filter(app, json!({"flag": if on { Value::Null } else { json!(id) }}));
         }
@@ -222,6 +249,7 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
         let resp = toggle(ui, &format!("label-{name}"), on, &tip, |p, r, _| {
             p.circle_filled(r.center(), 5.5, label_color(l));
         });
+        count(ui, &format!("filter:count:{name}"), tally.label(l));
         if resp.clicked() {
             let mut next = chosen.clone();
             if on {

@@ -2245,3 +2245,22 @@ fn delete_rejected_photos_takes_the_views_rejects_in_one_step() {
     s.execute("photo.flag", &json!({"ids": all, "flag": "none"})).unwrap();
     assert_eq!(s.execute("library.deleteRejected", &json!({})).unwrap()["deleted"], 0);
 }
+
+/// The filter bar's live counts: the view by mark, counted without the marks' own filter, so the
+/// pick count stays while only picks are shown. Ported from OneSlips' LR-FILTER-BAR (engine).
+#[test]
+fn tally_counts_the_view_without_its_mark_filter() {
+    let mut s = demo();
+    let ids: Vec<u64> = s.visible_cloned().iter().map(|p| p.0).collect();
+    s.execute("photo.flag", &json!({"ids": ids, "flag": "none"})).unwrap();
+    s.execute("photo.flag", &json!({"ids": [ids[0], ids[1]], "flag": "pick"})).unwrap();
+    s.execute("photo.flag", &json!({"ids": [ids[2]], "flag": "reject"})).unwrap();
+    s.execute("photo.label", &json!({"ids": [ids[0]], "label": "red"})).unwrap();
+    let t = s.execute("library.tally", &json!({})).unwrap();
+    assert_eq!((t["picks"].as_u64(), t["rejects"].as_u64(), t["total"].as_u64()), (Some(2), Some(1), Some(ids.len() as u64)), "{t}");
+    assert!(t["labels"][0].as_u64().is_some_and(|n| n >= 1), "{t}");
+    s.execute("library.filter", &json!({"flag": "pick"})).unwrap();
+    assert_eq!(s.visible_cloned().len(), 2);
+    let t = s.tally();
+    assert_eq!((t.picks, t.rejects, t.total), (2, 1, ids.len()), "the flag filter itself isn't counted in");
+}

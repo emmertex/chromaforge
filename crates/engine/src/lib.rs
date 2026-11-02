@@ -1492,6 +1492,12 @@ impl Session {
     }
 
     /// `source` as a filter over `base` (the filter bar's, or none), with the folder it shows.
+    /// The view's photos counted by culling mark (picks, rejects, stars, colour labels): its source and
+    /// filters without the stars / flags / labels filter itself (`library.tally`, the filter bar's counts).
+    pub fn tally(&self) -> lcc_catalog::Tally {
+        self.catalog.tally(&self.view_filter(self.source, &self.filter.without_quick()))
+    }
+
     pub(crate) fn view_filter(&self, source: LibrarySource, base: &Filter) -> Filter {
         let mut f = source.to_filter(base, &self.catalog);
         if source == LibrarySource::Folder {
