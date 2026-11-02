@@ -54,7 +54,7 @@ fn photo(c: &mut Catalog, i: u64) -> Photo {
         let s = Arc::new(d);
         p.develop = s.clone();
         p.edited = Some("2026-01-02T00:00:00".into());
-        p.history = vec![HistoryStep { label: "Exposure".into(), settings: s.clone() }];
+        p.history = vec![HistoryStep { label: "Exposure".into(), settings: s.clone(), batch: None }];
         p.versions = vec![Version { name: "v".into(), created: "2026-01-02T00:00:00".into(), settings: s, auto: false }];
     }
     if i.is_multiple_of(5) {

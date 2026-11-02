@@ -135,7 +135,7 @@ fn id_counters_are_moved_past_the_ids_in_use() {
 fn history_beyond_the_limit_is_trimmed_on_load() {
     let (mut c, ids) = sound();
     let extra = HISTORY_LIMIT * 5;
-    let step = HistoryStep { label: "s0".into(), settings: std::sync::Arc::new(lcc_develop::DevelopSettings::default()) };
+    let step = HistoryStep { label: "s0".into(), settings: std::sync::Arc::new(lcc_develop::DevelopSettings::default()), batch: None };
     c.apply(Op::PushHistory { id: ids[0], step }).unwrap();
     c.apply(Op::SetHistoryCursor { id: ids[0], cursor: Some(extra - 3) }).unwrap();
     let (loaded, report) = load_edited(&c, |v| {

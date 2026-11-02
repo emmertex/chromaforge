@@ -174,7 +174,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
                 && app.run("edit.undo", json!({})).is_ok()
             {
                 // Only replace the most recent preset; never undo intervening edits.
-                if app.run("preset.apply", json!({"id": &last.id, "amount": v})).is_ok() {
+                if app.run("preset.apply", json!({"id": &last.id, "amount": v, "followAutoSync": true})).is_ok() {
                     AppliedByPhoto::remember(ui.ctx(), &app.session, &last.id);
                     ui.data_mut(|d| d.insert_temp(amt_id, AppliedPreset::new(&app.session, last.id, v)));
                 } else {
@@ -454,7 +454,8 @@ fn show_folder_node(
                 ui.data_mut(|d| d.insert_temp(egui::Id::new("last-preset-hover"), (id, pr.clone(), label)));
             }
         }
-        if resp.clicked() && app.run("preset.apply", json!({"id": pid, "amount": 100})).is_ok() {
+        // a click follows Auto Sync, as a slider does; the whole selection on purpose: the menu
+        if resp.clicked() && app.run("preset.apply", json!({"id": pid, "amount": 100, "followAutoSync": true})).is_ok() {
             AppliedByPhoto::remember(ui.ctx(), &app.session, &pid);
             ui.data_mut(|d| d.insert_temp(amt_id, AppliedPreset::new(&app.session, pid.clone(), 100.0)));
             ui.data_mut(|d| d.remove::<(lcc_catalog::PhotoId, Preset, String)>(egui::Id::new("last-preset-hover")));
@@ -462,6 +463,16 @@ fn show_folder_node(
         }
         let (p_builtin, p_group) = (pr.builtin, pr.group.clone());
         crate::widgets::context_menu(&resp, |ui| {
+            let selected = app.session.selection.ids.len();
+            if selected > 1 && !app.session.auto_sync {
+                if ui.button(crate::i18n::tr_format!("Apply to {n} Selected Photos", n = selected)).clicked() {
+                    match app.run("preset.apply", json!({"id": pid, "amount": 100})) {
+                        Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("Preset {name} on {n} photos", name = pname, n = selected)),
+                        Err(e) => app.toast(ui.ctx(), e),
+                    }
+                }
+                ui.separator();
+            }
             if ui.button(crate::i18n::tr(if fav { "Remove from Favorites" } else { "Add to Favorites" })).clicked() {
                 let _ = app.run("preset.favorite", json!({"id": pid}));
             }

@@ -2204,6 +2204,8 @@ impl LccApp {
         self.library_changed(&ctx);
         // (a tool panel opened some other way still remembers the panel it took the place of)
         self.ui.note_right();
+        // Auto Sync is remembered app-wide, however it was switched (menu, switch, console)
+        self.ui.settings.auto_sync = self.session.auto_sync;
         // panels set it again this frame while the pointer rests on a preset or profile
         self.hover_preview = None;
         // …and the histogram sets this while the pointer rests on a clipping indicator

@@ -74,7 +74,7 @@ fn recipe_partial(recipe: &[(String, f64)]) -> Option<Value> {
 /// The longest name or group a saved recipe preset may have (characters).
 const MAX_PRESET_TEXT: usize = 100;
 
-fn crop_dims(s: &Session, id: PhotoId) -> (f64, f64) {
+pub(crate) fn crop_dims(s: &Session, id: PhotoId) -> (f64, f64) {
     let p = s.catalog.photo(id);
     let (w, h) = p.map(|p| (p.width.max(1) as f64, p.height.max(1) as f64)).unwrap_or((3.0, 2.0));
     let o = p.map(|p| p.develop.orientation).unwrap_or_default();
@@ -1222,33 +1222,45 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         // ---- presets
-        cmd!("preset.apply", "Apply Preset", [], None, "{id: presetId, amount?: 0..200 (percent), ids?}", has_selection, |s, p| {
-            let pid = str_param(p, "id").ok_or_else(|| bad("preset.apply", "missing id"))?;
-            let preset = s.presets.iter().find(|x| x.id == pid).cloned().ok_or_else(|| bad("preset.apply", format!("unknown preset `{pid}`")))?;
-            let amount = f64_or(p, "amount", 100.0).clamp(0.0, 200.0) / 100.0;
-            // `id` names the preset here: the photos are `ids`, else the selection
-            let ids = s.targets(&json!({"ids": p.get("ids")}))?;
-            let ops = ids
-                .iter()
-                .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                .filter_map(|(id, d)| {
-                    // a hand-written preset may name one white balance number only, and then it means the same as
-                    // a partial: bring the photo onto that scale first, with its own as-shot white, and put the
-                    // result back on the scale the photo is edited on (issue #2910) — the merge `develop.merge` uses
-                    let info = s.source_info(id);
-                    let prepared = prepare_photo_for_wb_partial(&d, &preset.settings, &info);
-                    let on_kelvin_scale = prepared.is_some() && info.raw && !info.relative_wb;
-                    let base: &DevelopSettings = prepared.as_ref().unwrap_or(&d);
-                    let mut next = preset.apply(base, amount);
-                    if on_kelvin_scale {
-                        lcc_pipeline::local::normalize_wb(&mut next, &info);
-                    }
-                    s.develop_op(id, next, &format!("Preset: {}", preset.name))
-                })
-                .collect::<Vec<_>>();
-            s.commit(&format!("Preset: {}", preset.name), Op::Batch { ops })?;
-            ok()
-        }),
+        cmd!(
+            "preset.apply",
+            "Apply Preset",
+            [],
+            None,
+            "{id: presetId, amount?: 0..200 (percent), ids?, followAutoSync?: bool (true, as Develop's Presets panel: the photos a slider changes, the active photo, or every selected photo with Auto Sync on; default: the selection)}",
+            has_selection,
+            |s, p| {
+                let pid = str_param(p, "id").ok_or_else(|| bad("preset.apply", "missing id"))?;
+                let preset = s.presets.iter().find(|x| x.id == pid).cloned().ok_or_else(|| bad("preset.apply", format!("unknown preset `{pid}`")))?;
+                let amount = f64_or(p, "amount", 100.0).clamp(0.0, 200.0) / 100.0;
+                // `id` names the preset here: the photos are `ids`, else the selection, or (Develop's
+                // Presets panel) the photos a slider would change
+                // (an active photo outside the selection is not edited: the selection then, as before)
+                let follow = bool_or(p, "followAutoSync", false) && s.active().is_some_and(|a| s.selection.ids.contains(&a));
+                let ids =
+                    if p.get("ids").is_none_or(Value::is_null) && follow { s.slider_targets() } else { s.targets(&json!({"ids": p.get("ids")}))? };
+                let ops = ids
+                    .iter()
+                    .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
+                    .filter_map(|(id, d)| {
+                        // a hand-written preset may name one white balance number only, and then it means the same as
+                        // a partial: bring the photo onto that scale first, with its own as-shot white, and put the
+                        // result back on the scale the photo is edited on (issue #2910) — the merge `develop.merge` uses
+                        let info = s.source_info(id);
+                        let prepared = prepare_photo_for_wb_partial(&d, &preset.settings, &info);
+                        let on_kelvin_scale = prepared.is_some() && info.raw && !info.relative_wb;
+                        let base: &DevelopSettings = prepared.as_ref().unwrap_or(&d);
+                        let mut next = preset.apply(base, amount);
+                        if on_kelvin_scale {
+                            lcc_pipeline::local::normalize_wb(&mut next, &info);
+                        }
+                        s.develop_op(id, next, &format!("Preset: {}", preset.name))
+                    })
+                    .collect::<Vec<_>>();
+                s.commit(&format!("Preset: {}", preset.name), Op::Batch { ops })?;
+                ok()
+            }
+        ),
         cmd!("preset.create", "Create Preset", ["Photo"], None, "{name, group?, groups?: [settingsGroup]}", has_active, |s, p| {
             let c = "preset.create";
             let id = active(s, c)?;
@@ -1504,7 +1516,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("history.clear", "Clear History", [], None, "{} — keeps the current settings as the only step", has_active, |s, _| {
             let id = active(s, "history.clear")?;
             let d = s.develop_of(id).unwrap_or_default();
-            let history = vec![lcc_catalog::HistoryStep { label: "Cleared History".into(), settings: d }];
+            let history = vec![lcc_catalog::HistoryStep { label: "Cleared History".into(), settings: d, batch: None }];
             s.commit("Clear History", Op::Batch { ops: vec![Op::SetHistory { id, history }, Op::SetHistoryCursor { id, cursor: None }] })?;
             ok()
         }),

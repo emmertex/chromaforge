@@ -797,6 +797,8 @@ impl Session {
     /// itself is refused here, whichever command, task or caller asked ([`Catalog::apply_new`]);
     /// undo, redo and opening a library bring back what was and are not held to that.
     pub fn commit(&mut self, label: &str, op: Op) -> Result<()> {
+        let mut op = op;
+        self.mark_batch(&mut op);
         let fwd = op.clone();
         let inv = self.apply_through(op, Catalog::apply_new)?;
         self.pending_log.push(fwd);
@@ -1217,6 +1219,10 @@ impl Session {
             }
         }
         let wb_changed = delta.get("wb").is_some();
+        // a crop goes on each photo fitted to its own frame (its tightness and place, in its own
+        // orientation), never the active photo's rectangle on a frame of another shape
+        let crop_changed = old.crop != new.crop;
+        let adims = cmd::develop::crop_dims(self, id);
         let ainfo = self.source_info(id);
         self.selection
             .ids
@@ -1229,6 +1235,9 @@ impl Session {
                     // each photo on its own scale: Kelvin on a raw with one, relative elsewhere
                     lcc_pipeline::local::normalize_wb(&mut synced, &self.source_info(x));
                     sync_same::synced_wb(&ainfo, &old, new, &self.source_info(x), &d, own_auto.get(&x).copied(), &mut synced);
+                }
+                if crop_changed {
+                    synced.crop = sync_same::synced_crop(&new.crop, adims, cmd::develop::crop_dims(self, x));
                 }
                 let synced = self.fit_constrained_crop(x, synced);
                 (synced != *d).then(|| self.develop_op(x, synced, label)).flatten()
@@ -1260,7 +1269,7 @@ impl Session {
         {
             return Some(op);
         }
-        let step = lcc_catalog::HistoryStep { label: label.into(), settings: settings.clone() };
+        let step = lcc_catalog::HistoryStep { label: label.into(), settings: settings.clone(), batch: None };
         Some(Op::Batch {
             ops: vec![Op::SetDevelop { id, settings, label: label.into(), edited: Some((self.clock)()) }, Op::PushHistory { id, step }],
         })
@@ -1754,6 +1763,10 @@ mod tests_album_order;
 mod tests_album_remove;
 #[cfg(test)]
 mod tests_albums_local;
+#[cfg(test)]
+mod tests_autosync_crop;
+#[cfg(test)]
+mod tests_autosync_preset;
 #[cfg(test)]
 mod tests_autosync_wb;
 #[cfg(test)]

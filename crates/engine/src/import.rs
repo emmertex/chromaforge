@@ -1831,7 +1831,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                     let label = format!("Preset: {}", preset.name);
                     p.develop = d.clone();
                     p.edited = Some(now.clone());
-                    p.history.push(lcc_catalog::HistoryStep { label, settings: d });
+                    p.history.push(lcc_catalog::HistoryStep { label, settings: d, batch: None });
                 }
                 // the batch-edit recipe goes on top of everything above (sidecar, camera default,
                 // preset): only the controls it names change, through the same specs the sliders use
@@ -1844,7 +1844,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                     let d = std::sync::Arc::new(d);
                     p.develop = d.clone();
                     p.edited = Some(now.clone());
-                    p.history.push(lcc_catalog::HistoryStep { label: "Import adjustments".into(), settings: d });
+                    p.history.push(lcc_catalog::HistoryStep { label: "Import adjustments".into(), settings: d, batch: None });
                 }
                 report.imported.push(id.0);
                 p.local = opts.local;

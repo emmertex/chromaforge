@@ -497,6 +497,9 @@ pub struct AppSettings {
     /// drawn denser (one-line slider rows, short section headers, sharper corners). Off: Classic
     /// as it always was. The Modern layout overrides it.
     pub compact_layout: bool,
+    /// Auto Sync (Edit ▸ Auto Sync, `develop.autoSync`), remembered app-wide: it stays as left
+    /// whichever library is open and after a restart.
+    pub auto_sync: bool,
     /// Panel slider names and values compact or at the regular text size (Settings ▸ Interface).
     pub slider_text: crate::theme::SliderText,
     /// How dragging a slider and scrubbing its value follow the pointer (Settings ▸ Interface).
@@ -650,6 +653,7 @@ impl Default for AppSettings {
             ui_font_size: UiFontSize::default(),
             slider_layout: Default::default(),
             compact_layout: false,
+            auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
             favorite_themes: Vec::new(),

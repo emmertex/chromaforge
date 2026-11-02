@@ -272,6 +272,12 @@ pub struct HistoryStep {
     pub label: String,
     #[serde(with = "crate::settings_ref")]
     pub settings: Arc<DevelopSettings>,
+    /// The edit this step belongs to when one edit changed several photos (Auto Sync, Sync
+    /// Settings, a preset or Quick Develop on a selection): the same id on each photo's step, so the
+    /// whole selection can go back to it. `None`: one photo's own edit, and every step written
+    /// before this existed (older builds read a step with it, ignoring the field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

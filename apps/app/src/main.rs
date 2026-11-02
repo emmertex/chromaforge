@@ -1311,6 +1311,8 @@ fn main() -> eframe::Result {
                 app.hdr_display_sdr = !display.is_hdr();
                 if let Some(ui) = prefs {
                     app.ui = ui;
+                    // Auto Sync is the app's, remembered across libraries and restarts
+                    app.session.auto_sync = app.ui.settings.auto_sync;
                 }
                 catalog_hooks::remember_recent(&mut app, in_memory);
                 // the recent libraries to choose from (issue #1290), checked on a worker once shown
