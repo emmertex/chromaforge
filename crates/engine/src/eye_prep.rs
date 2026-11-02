@@ -108,7 +108,7 @@ pub fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
                 let job = move || {
                     judge(dir, lane, cancel, false, |_, r, cached| count.add(&r, cached));
                 };
-                match std::thread::Builder::new().name("lightcraft-eye-prep".into()).spawn_scoped(sc, job) {
+                match std::thread::Builder::new().name("eye-prep".into()).spawn_scoped(sc, job) {
                     Ok(h) => handles.push(h),
                     Err(_) => inline.push(lane),
                 }
@@ -133,7 +133,7 @@ pub fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     task.progress(0, run.photos);
     let (flag, finished) = (run.cancel.clone(), run.finished.clone());
     std::thread::Builder::new()
-        .name("lightcraft-eye-prep".into())
+        .name("eye-prep".into())
         .spawn(move || {
             let mut handles = Vec::new();
             let mut inline = Vec::new();
@@ -151,7 +151,7 @@ pub fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
                         });
                     }
                 };
-                match std::thread::Builder::new().name("lightcraft-eye-prep".into()).spawn(job) {
+                match std::thread::Builder::new().name("eye-prep".into()).spawn(job) {
                     Ok(h) => handles.push(h),
                     Err(_) => inline.push(lane),
                 }

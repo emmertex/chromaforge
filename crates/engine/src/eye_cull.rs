@@ -210,7 +210,7 @@ pub fn reject_eyes(s: &mut Session, p: &Value) -> Result<Value> {
     let (tx, rx) = channel();
     let flag = cancel.clone();
     std::thread::Builder::new()
-        .name("lightcraft-eye-cull".into())
+        .name("eye-cull".into())
         .spawn(move || {
             let mut done = 0u64;
             let cancelled = judge(&dir, &jobs, &flag, |id, r| {

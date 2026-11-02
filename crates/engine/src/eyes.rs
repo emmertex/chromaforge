@@ -1215,7 +1215,7 @@ impl crate::Session {
     }
 }
 
-/// Wait while the photo on screen is being made (the foreground goes first). Chromaforge has no
+/// Wait while the photo on screen is being made (the foreground goes first). The app has no
 /// background-preparation scheduler yet, so this only reports whether the run was cancelled.
 pub(crate) fn wait_for_foreground(cancel: &std::sync::atomic::AtomicBool) -> bool {
     cancel.load(std::sync::atomic::Ordering::Relaxed)

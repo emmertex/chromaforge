@@ -44,7 +44,7 @@ pub fn look_first(v: Verdict) -> u8 {
 }
 
 /// The most photos after the one on screen whose eyes are found ahead (fixed:
-/// Chromaforge has no preparation scheduler to set it).
+/// the app has no preparation scheduler to set it).
 pub const AHEAD: usize = 3;
 
 /// What the strip keeps between frames.
@@ -317,6 +317,28 @@ pub fn find_quietly(app: &mut LccApp, id: PhotoId) {
     {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
+}
+
+/// Reject Closed and Blurry Eyes running in the background (`photo.rejectEyes`): when it ends, its
+/// rejects are flagged in one undo step and its summary shown. Cheap every frame.
+pub fn reject_pump(app: &mut LccApp) {
+    let Ok(v) = app.session.execute("photo.rejectEyesPump", &serde_json::json!({})) else { return };
+    if v["done"] != true {
+        return;
+    }
+    let n = |k: &str| v[k].as_u64().unwrap_or(0);
+    let text = if n("rejected") == 0 {
+        crate::i18n::tr("No closed or blurry eyes to reject").to_string()
+    } else {
+        crate::i18n::tr_format!(
+            "Rejected {n}: {closed} with closed eyes, {blurry} with blurry eyes",
+            n = n("rejected"),
+            closed = n("closedEyes"),
+            blurry = n("blurryEyes")
+        )
+    };
+    let now = app.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(app.last_time);
+    app.ui.show_toast((text, now + crate::TOAST_SECONDS, None));
 }
 
 /// The "needs the model" strip, with its button.

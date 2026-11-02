@@ -346,7 +346,7 @@ pub use command_error::CommandError;
 pub use control::{ControlRequest, ControlResponse};
 pub use state::UiState;
 
-const TOAST_SECONDS: f64 = 1.4;
+pub(crate) const TOAST_SECONDS: f64 = 1.4;
 
 /// How long after a mask slider last moved its overlay stays hidden (ms).
 const MASK_ADJUST_HIDE_MS: u64 = 250;
@@ -1863,6 +1863,7 @@ impl LccApp {
         panels::plugin_filters::pump(self, ctx);
         panels::faces::pump(self, ctx);
         focus_scan::pump(self, ctx);
+        eye_strip::reject_pump(self);
         enhance_pump::pump(self, ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
