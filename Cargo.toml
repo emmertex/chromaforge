@@ -36,6 +36,7 @@ lcc-video-export = { path = "crates/video-export" }
 lcc-tiff = { path = "crates/tiff" }
 lcc-raw = { path = "crates/raw" }
 lcc-camdb = { path = "crates/camdb" }
+lcc-camprof = { path = "crates/camprof" }
 lcc-colourfit = { path = "crates/colourfit" }
 lcc-codecs = { path = "crates/codecs" }
 lcc-meta = { path = "crates/meta" }
