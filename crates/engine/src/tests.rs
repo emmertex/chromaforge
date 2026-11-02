@@ -2313,3 +2313,18 @@ fn masks_get_automatic_names_until_renamed() {
     s.execute("mask.brushStroke", &json!({"points": [[0.5, 0.5]]})).unwrap();
     assert_eq!(active_dev(&s).masks[1].name, "Brush");
 }
+
+#[test]
+fn a_renamed_mask_keeps_its_name_in_a_user_preset() {
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    s.execute("mask.add", &json!({"kind": "linear"})).unwrap();
+    s.execute("mask.rename", &json!({"name": "Warmth"})).unwrap();
+    let r = s.execute("preset.create", &json!({"name": "Glow", "groups": ["masks"]})).unwrap();
+    let pid = r["id"].as_str().unwrap().to_string();
+    s.execute("library.next", &json!({})).unwrap();
+    s.execute("preset.apply", &json!({"id": pid})).unwrap();
+    let names: Vec<String> = active_dev(&s).masks.iter().map(|m| m.name.clone()).collect();
+    assert!(names.iter().any(|n| n == "Warmth"), "the given name is kept: {names:?}");
+    assert!(names.iter().any(|n| n.starts_with("Glow")), "the automatic one is named after the preset: {names:?}");
+}

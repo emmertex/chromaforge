@@ -1276,7 +1276,18 @@ pub fn specs() -> Vec<CommandSpec> {
             let name = str_param(p, "name").ok_or_else(|| bad(c, "missing name"))?;
             let group = str_param(p, "group").unwrap_or("User Presets");
             let groups = groups_param(p, c)?.unwrap_or_else(SettingsGroup::default_copy);
-            let d = s.develop_of(id).unwrap_or_default();
+            let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
+            // a mask still under its automatic name ("Radial Gradient", "Groom Jamie - Clothes") is
+            // saved unnamed, so applying the preset names it after the preset; a name the
+            // photographer gave it ("Warmth") is kept
+            for k in 0..d.masks.len() {
+                let Some(m) = d.masks.get(k).cloned() else { continue };
+                if s.auto_mask_name(id, &m) == m.name
+                    && let Some(m) = d.masks.get_mut(k)
+                {
+                    m.name.clear();
+                }
+            }
             let pid = format!("user.{}.{}", s.presets.len(), name.to_lowercase().replace(' ', "-"));
             s.presets.push(Preset::from_settings(&pid, name, group, &d, &groups));
             Ok(json!({"id": pid}))
