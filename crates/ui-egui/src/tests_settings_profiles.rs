@@ -1,9 +1,9 @@
-//! Settings ▸ Profiles, the Profile Manager (ported from OneSlips): every profile has a Hide button and
-//! each camera body of the library a row for its own camera profile.
+//! Settings ▸ Profiles, the Profile Manager (ported from OneSlips): its Hide button takes a profile out of
+//! the menu, and each camera body of the library a row for its own camera profile.
 
 use serde_json::json;
 
-use crate::tests_classic::{demo, has, run};
+use crate::tests_classic::{click, demo, has, run};
 
 #[test]
 fn the_profile_manager_hides_profiles_and_sets_body_profiles() {
@@ -23,7 +23,11 @@ fn the_profile_manager_hides_profiles_and_sets_body_profiles() {
     assert!(has(&h, "combo:bodyProfile:ILCE-9|4012345"), "the body has a row");
 
     assert!(has(&h, &hide), "every profile has a Hide button");
-    run(&mut h, "profile.hide", json!({"id": profile}));
+    // the dialog's content slides into place over its first frames: click once it has settled
+    h.settle(std::time::Duration::from_secs(60));
+    click(&mut h, &hide);
+    h.step();
+    assert_eq!(h.app.session.profile_hidden, [profile.to_string()], "the click hid that profile");
     assert!(has(&h, &hide), "a hidden profile stays in the manager, to show it again");
     assert!(h.app.session.execute("profiles.list", &json!({})).unwrap().as_array().unwrap().iter().all(|p| p["id"] != profile), "out of the list");
 }
