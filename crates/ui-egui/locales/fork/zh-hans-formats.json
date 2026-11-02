@@ -1,11 +1,14 @@
 {
   " · {queued} waiting": " · {queued} 张等待中",
   "Add {n} New Photos…": "添加 {n} 张新照片…",
+  "Apply to {n} Selected Photos": "应用到 {n} 张所选照片",
+  "Built-in presets restored ({n} changes undone)": "已恢复内置预设（撤销了 {n} 项更改）",
   "Collection imported: {n} photos found, {m} not in this library": "已导入收藏夹：找到 {n} 张照片，{m} 张不在此图库中",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "色彩空间：Rec. 2020 {curve}（HDR AVIF）",
   "Create Folder in “{name}”": "在“{name}”中创建文件夹",
   "Delete from Disk moves {n} files to the system trash.": "“从磁盘删除”会将 {n} 个文件移到系统废纸篓。",
   "Delete these {count} photos from disk, or only remove them from the library?": "要从磁盘删除这 {count} 张照片，还是只从图库中移除？",
+  "Delete {n} presets": "删除 {n} 个预设",
   "Denoising {name}: {done} of {total} tiles{}": "正在为 {name} 降噪：第 {done}/{total} 个图块{}",
   "Discard 1:1 Previews ({scope})": "丢弃 1:1 预览（{scope}）",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "已下载 {n} 个地名（GeoNames，CC-BY 4.0）",
@@ -21,6 +24,7 @@
   "Finish or cancel installing {name} first": "请先完成或取消安装 {name}",
   "Folder “{}”": "文件夹“{0}”",
   "Geotagged {n} photo(s)": "已为 {n} 张照片添加地理标记",
+  "Goes into the group “{group}” that exists already.": "将放入已存在的分组“{group}”。",
   "Imported {n} export preset{}": "已导入 {n} 个导出预设{:.0}",
   "Imported {n} metadata preset{}": "已导入 {n} 个元数据预设{:.0}",
   "In line for AI Denoise ({ahead} ahead)…": "正在排队等待 AI 降噪（前面还有 {ahead} 张）…",
@@ -35,6 +39,7 @@
   "Page {n}": "第 {n} 页",
   "Page {n} (blank)": "第 {n} 页（空白）",
   "Page {page} of {pages}": "第 {page} 页，共 {pages} 页",
+  "Preset {name} on {n} photos": "预设 {name} 应用到 {n} 张照片",
   "Printed {n} page(s) to file": "已打印 {n} 页到文件",
   "Remove {what} from the library for good?": "要将{what}从图库中永久移除吗？",
   "Running on the processor: {}.": "在处理器上运行：{}。",
@@ -79,6 +84,8 @@
   "{n} photos relinked": "已重新链接 {n} 张照片",
   "{n} photos shared: {u}": "已共享 {n} 张照片：{u}",
   "{n} photos · {frames} frames · {secs} s": "{n} 张照片 · {frames} 帧 · {secs} 秒",
+  "{n} presets from your other libraries were added.": "已添加来自其他图库的 {n} 个预设。",
+  "{n} presets, {h} hidden": "{n} 个预设，{h} 个已隐藏",
   "{n} printer(s) found": "找到 {n} 台打印机",
   "{n} selected": "已选择 {n} 张",
   "{path} · {count} photos": "{path} · {count} 张照片",
@@ -86,5 +93,7 @@
   "{p} photos, {f} files": "{p} 张照片，{f} 个文件",
   "{} keys": "{} 按键",
   "{} of {} from {host}": "{}/{}，来自 {host}",
-  "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}。保存在图库的“denoise”文件夹中；达到上限时，会先删除没有照片使用的最旧结果。"
+  "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}。保存在图库的“denoise”文件夹中；达到上限时，会先删除没有照片使用的最旧结果。",
+  "“{name}” has its old settings again": "“{name}”已恢复原来的设置",
+  "“{name}” takes the active photo's settings. Its name, group, place and marks stay.": "“{name}”将采用当前照片的设置。名称、分组、位置和标记保持不变。"
 }

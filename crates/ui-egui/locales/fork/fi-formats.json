@@ -1,9 +1,12 @@
 {
   "Add {n} New Photos…": "Add {n} New Photos…",
+  "Apply to {n} Selected Photos": "Käytä {n} valittuun kuvaan",
+  "Built-in presets restored ({n} changes undone)": "Sisäänrakennetut esiasetukset palautettu ({n} muutosta peruttu)",
   "Collection imported: {n} photos found, {m} not in this library": "Collection imported: {n} photos found, {m} not in this library",
   "Create Folder in “{name}”": "Create Folder in “{name}”",
   "Delete from Disk moves {n} files to the system trash.": "Delete from Disk moves {n} files to the system trash.",
   "Delete these {count} photos from disk, or only remove them from the library?": "Delete these {count} photos from disk, or only remove them from the library?",
+  "Delete {n} presets": "Poista {n} esiasetusta",
   "Discard 1:1 Previews ({scope})": "Discard 1:1 Previews ({scope})",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "Downloaded {n} place names (GeoNames, CC-BY 4.0)",
   "Estimated time: {est}": "Estimated time: {est}",
@@ -17,6 +20,7 @@
   "Finish or cancel installing {name} first": "Viimeistele tai peru ensin kohteen {name} asennus",
   "Folder “{}”": "Kansio ”{}”",
   "Geotagged {n} photo(s)": "Geotagged {n} photo(s)",
+  "Goes into the group “{group}” that exists already.": "Menee olemassa olevaan ryhmään ”{group}”.",
   "Imported {n} export preset{}": "Imported {n} export preset{}",
   "Imported {n} metadata preset{}": "Imported {n} metadata preset{}",
   "Installing it will {action}.": "Installing it will {action}.",
@@ -30,6 +34,7 @@
   "Page {n}": "Page {n}",
   "Page {n} (blank)": "Page {n} (blank)",
   "Page {page} of {pages}": "Page {page} of {pages}",
+  "Preset {name} on {n} photos": "Esiasetus {name} {n} kuvaan",
   "Printed {n} page(s) to file": "Printed {n} page(s) to file",
   "Remove {what} from the library for good?": "Remove {what} from the library for good?",
   "Rendered {ok} of {total} to DNG": "Rendered {ok} of {total} to DNG",
@@ -71,6 +76,8 @@
   "{n} photos relinked": "{n} photos relinked",
   "{n} photos shared: {u}": "{n} photos shared: {u}",
   "{n} photos · {frames} frames · {secs} s": "{n} photos · {frames} frames · {secs} s",
+  "{n} presets from your other libraries were added.": "Muista kirjastoistasi lisättiin {n} esiasetusta.",
+  "{n} presets, {h} hidden": "{n} esiasetusta, {h} piilotettu",
   "{n} printer(s) found": "{n} printer(s) found",
   "{n} selected": "{n} selected",
   "{path} · {count} photos": "{path} · {count} photos",
@@ -79,5 +86,7 @@
   "{} keys": "{} keys",
   "{} photos · not aligned": "{} photos · not aligned",
   "{} photos · {} aligned": "{} photos · {} aligned",
-  "{} photos · {} aligned · {} left out": "{} photos · {} aligned · {} left out"
+  "{} photos · {} aligned · {} left out": "{} photos · {} aligned · {} left out",
+  "“{name}” has its old settings again": "”{name}” sai vanhat asetuksensa takaisin",
+  "“{name}” takes the active photo's settings. Its name, group, place and marks stay.": "”{name}” ottaa aktiivisen kuvan asetukset. Nimi, ryhmä, paikka ja merkinnät säilyvät."
 }
