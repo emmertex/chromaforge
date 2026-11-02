@@ -1586,8 +1586,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "panel.remove" => {
             panel(app, &ctx, RightPanel::Remove, "Remove");
+            // back on the tool used last (Heal stays Heal)
             if app.ui.right == RightPanel::Remove && app.ui.tool.is_empty() {
-                app.ui.tool = "remove".into();
+                let last =
+                    crate::panels::right::REMOVE_MODES.iter().find(|(_, _, t, _)| *t == app.ui.remove_tool).map_or("remove", |(_, _, t, _)| *t);
+                app.ui.tool = last.into();
             }
             Ok(Value::Null)
         }

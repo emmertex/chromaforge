@@ -363,6 +363,9 @@ pub struct ImportDefaults {
     /// pictures are queued after the import, under one row in the activity stack.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub denoise_above_iso: Option<u32>,
+    /// After an import, Remove Dust runs on the new raw photos in the background (`spot.findDust`; off by default).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub remove_dust: bool,
 }
 
 impl ImportDefaults {
@@ -1874,6 +1877,11 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
     s.record_xmp_stamps(&with_xmp, true);
     // Edit In versions (TIFF/PSD with an xmpMM:DerivedFrom link) stack on their source again
     crate::cmd::edit_in::stack_derived(s, &with_xmp);
+    if s.import_defaults.remove_dust {
+        let raws: Vec<lcc_catalog::PhotoId> =
+            report.imported.iter().map(|id| lcc_catalog::PhotoId(*id)).filter(|id| s.catalog.photo(*id).is_some_and(|p| p.develops_raw())).collect();
+        crate::cmd::sensor::remove_dust_after_import(s, raws);
+    }
     Ok(report)
 }
 

@@ -16,6 +16,7 @@ lcc-raster = { workspace = true }
 lcc-develop = { workspace = true }
 lcc-raw = { workspace = true }
 lcc-inpaint = { workspace = true }
+lcc-genfill = { workspace = true }
 lcc-filters = { workspace = true }
 serde_json = { workspace = true }
 rayon = { workspace = true }

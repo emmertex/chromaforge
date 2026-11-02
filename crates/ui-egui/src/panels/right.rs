@@ -608,11 +608,33 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     });
 }
 
-const REMOVE_MODES: [(Icon, &str, &str, &str); 4] = [
-    (Icon::Eraser, "Remove", "remove", "Heal with automatically chosen source"),
-    (Icon::Sparkle, "Content-Aware", "fill", "Multi-scale synthesized fill"),
-    (Icon::Bandage, "Heal", "heal", "Blend source texture with target tone"),
-    (Icon::Stamp, "Clone", "clone", "Exact 1:1 pixel copy"),
+/// The Remove panel's tools: icon, label, tool id and what each is for, in plain words (its tooltip).
+pub(crate) const REMOVE_MODES: [(Icon, &str, &str, &str); 5] = [
+    (
+        Icon::Eraser,
+        "Remove",
+        "remove",
+        "Paint over a distraction and {app} decides what goes there: a click copies the best-matching area nearby and blends it in; a painted stroke is rebuilt from what surrounds it.",
+    ),
+    (
+        Icon::Sparkle,
+        "Content-Aware",
+        "fill",
+        "Rebuilds the painted area from small pieces of its surroundings, continuing lines and edges through it. For larger objects. No source to choose.",
+    ),
+    (
+        Icon::Cloud,
+        "Generative",
+        "generate",
+        "Replaces the painted area using an online image service, with your own account. Nothing is sent until you click Generate.",
+    ),
+    (
+        Icon::Bandage,
+        "Heal",
+        "heal",
+        "Copies the texture from a source and matches it to the colour and brightness around the area, so it blends in. Drag the source pin to choose the place.",
+    ),
+    (Icon::Stamp, "Clone", "clone", "Copies the source exactly as it is, colour and all, with a soft edge. Drag the source pin to choose the place."),
 ];
 
 fn mode_segmented_bar(ui: &mut egui::Ui, id: &str, active_key: &str) -> Option<&'static str> {
@@ -676,6 +698,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         // Mode icon segmented bar
         if let Some(tool) = mode_segmented_bar(ui, "removeMode", &app.ui.tool) {
             app.ui.tool = tool.into();
+            app.ui.remove_tool = tool.into();
         }
         ui.add_space(6.0);
 
@@ -685,11 +708,21 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.label(egui::RichText::new(count_str).size(12.0).color(t.text_dim));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if text_button(ui, "findDust", crate::i18n::tr("Find Dust"), false)
-                    .on_hover_text(crate::i18n::tr("Automatically find and heal dust spots on smooth areas"))
+                let several = app.session.selection.ids.len() > 1;
+                let busy = app.session.sensor_job.as_ref().is_some_and(|j| !j.finished.load(std::sync::atomic::Ordering::Relaxed));
+                let label = if several { crate::i18n::tr("Remove Dust from Selected") } else { crate::i18n::tr("Remove Dust") };
+                if text_button(ui, "findDust", label, false)
+                    .on_hover_text(crate::i18n::tr(
+                        "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have",
+                    ))
                     .clicked()
+                    && !busy
                 {
                     match app.run("spot.findDust", json!({})) {
+                        Ok(r) if r.get("total").is_some() => {
+                            let n = r["total"].as_u64().unwrap_or(0);
+                            app.toast(ui.ctx(), crate::i18n::tr_format!("Removing dust from {n} photos", n = n));
+                        }
                         Ok(r) => {
                             let n = r["added"].as_u64().unwrap_or(0);
                             app.toast(
@@ -707,13 +740,37 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             });
         });
 
+        // the camera body's dust map, when it has one
+        let body = app.session.source_info(id).pixels.and_then(|p| p.body);
+        if let Some(m) = body.as_deref().and_then(lcc_engine::sensor_maps::get).filter(|m| m.dust.iter().any(|d| d.confirmed)) {
+            let confirmed = m.dust.iter().filter(|d| d.confirmed).count();
+            ui.label(
+                egui::RichText::new(crate::i18n::tr_format!(
+                    "Camera {}: {} known dust spots",
+                    lcc_engine::sensor_maps::body_label(&m.body),
+                    confirmed
+                ))
+                .size(11.0)
+                .color(t.text_dim),
+            );
+        }
+        let auto = d.spots.iter().filter(|sp| sp.auto.is_some()).count();
+        if auto > 0 {
+            ui.label(
+                egui::RichText::new(crate::i18n::tr_format!("{} spot(s) from Remove Dust (outlined in amber)", auto)).size(11.0).color(t.text_dim),
+            );
+        }
+
         if d.spots.is_empty() {
             ui.add_space(2.0);
             ui.label(egui::RichText::new(crate::i18n::tr("Paint over a distraction on the photo to remove it.")).size(11.0).color(t.text_dim));
         }
     });
 
+    // with a spot selected the brush sliders edit that spot too, except a spot that shows a generated fill: it
+    // keeps the stroke its paid fill was made for, and the sliders are the next stroke's
     let sel = app.session.active_spot.and_then(|i| d.spots.get(i).map(|sp| (i, sp.clone())));
+    let bound = sel.as_ref().is_some_and(|(_, sp)| sp.shown_gen().is_none());
 
     let plain = |id: &'static str, label: &'static str, min: f64, max: f64, default: f64| lcc_develop::ControlSpec {
         id,
@@ -726,7 +783,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         decimals: 0,
         track: lcc_develop::Track::Plain,
     };
-    let (cur_size, cur_feather, cur_opacity) = if let Some((_, sp)) = &sel {
+    let (cur_size, cur_feather, cur_opacity) = if let Some((_, sp)) = sel.as_ref().filter(|_| bound) {
         (sp.size * 1000.0, sp.feather, sp.opacity)
     } else {
         ((app.ui.remove_size * 1000.0) as f64, app.ui.remove_feather as f64, app.ui.remove_opacity as f64)
@@ -746,9 +803,34 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 _ => app.ui.remove_opacity = v as f32,
             }
         }
-        if let Some((i, _)) = sel {
+        if let Some((i, _)) = sel.as_ref().filter(|_| bound) {
+            let i = *i;
             super::edit::apply_slider_out(app, &spec, out, |app, v| app.run("spot.update", json!({"index": i, key: v / scale})));
         }
+    }
+    // generative fill: for a generative spot, or with the Generative tool
+    let generative = sel.as_ref().is_some_and(|(_, sp)| sp.mode == lcc_develop::SpotMode::Generate);
+    if generative || (sel.is_none() && app.ui.tool == "generate") {
+        divider(ui);
+        padded(ui, |ui| super::genfill::remove_section(app, ui, sel.clone().filter(|_| generative)));
+    }
+    // a mask (an Object selection, a brushed area) can become a spot
+    if let Some(mid) = app.session.active_mask.filter(|m| d.masks.iter().any(|x| x.id == *m)) {
+        padded(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if text_button(ui, "spotFromMaskFill", crate::i18n::tr("Fill Selected Mask"), false)
+                    .on_hover_text(crate::i18n::tr(
+                        "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill",
+                    ))
+                    .clicked()
+                {
+                    let _ = app.run("spot.fromMask", json!({"mask": mid, "mode": "fill"}));
+                }
+                if text_button(ui, "spotFromMaskGenerate", crate::i18n::tr("Generate into Selected Mask"), false).clicked() {
+                    let _ = app.run("spot.fromMask", json!({"mask": mid, "mode": "generate"}));
+                }
+            });
+        });
     }
 
     // --- Dedicated Selected Spot Section ---
@@ -761,6 +843,8 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     lcc_develop::SpotMode::Clone => "Clone",
                     lcc_develop::SpotMode::Remove => "Remove",
                     lcc_develop::SpotMode::Fill => "Content-Aware",
+                    lcc_develop::SpotMode::Generate => "Generative",
+                    lcc_develop::SpotMode::Flat => "Even Out",
                 };
                 super::edit::sub_title(
                     ui,
@@ -783,6 +867,8 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 lcc_develop::SpotMode::Fill => "fill",
                 lcc_develop::SpotMode::Heal => "heal",
                 lcc_develop::SpotMode::Clone => "clone",
+                lcc_develop::SpotMode::Generate => "generate",
+                lcc_develop::SpotMode::Flat => "flat",
             };
             if let Some(new_mode) = mode_segmented_bar(ui, "selSpotMode", cur_mode) {
                 let _ = app.run("spot.update", json!({"index": i, "mode": new_mode}));
@@ -793,20 +879,25 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
 
-                let tip_ref = crate::widgets::command_tooltip(ui, "Refresh Source", Some("/"));
-                let r_ref = crate::widgets::icon_button_named(
-                    ui,
-                    "spotRefresh",
-                    Icon::RotateRight,
-                    vec2(32.0, 26.0),
-                    false,
-                    true,
-                    crate::i18n::tr("Refresh Source"),
-                    &tip_ref,
-                );
-                register(ui.ctx(), "button:spotRefresh", r_ref.rect);
-                if r_ref.clicked() {
-                    let _ = app.run("spot.refreshSource", json!({"index": i}));
+                // (Fill, Generative and Even Out spots, and a brushed Remove, have no source)
+                if sp.source_offset.is_some()
+                    && !matches!(sp.mode, lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate | lcc_develop::SpotMode::Flat)
+                {
+                    let tip_ref = crate::widgets::command_tooltip(ui, "Refresh Source", Some("/"));
+                    let r_ref = crate::widgets::icon_button_named(
+                        ui,
+                        "spotRefresh",
+                        Icon::RotateRight,
+                        vec2(32.0, 26.0),
+                        false,
+                        true,
+                        crate::i18n::tr("Refresh Source"),
+                        &tip_ref,
+                    );
+                    register(ui.ctx(), "button:spotRefresh", r_ref.rect);
+                    if r_ref.clicked() {
+                        let _ = app.run("spot.refreshSource", json!({"index": i}));
+                    }
                 }
 
                 let tip_res = crate::i18n::tr("Reset");
@@ -900,6 +991,24 @@ pub(crate) fn tool_overlay_options(app: &mut LccApp, ui: &mut egui::Ui) {
             }
         });
     });
+}
+
+/// Called every frame: a background Remove Dust's finished photos get their spots (`dust.pump`), and the window
+/// keeps redrawing while it runs.
+pub fn dust_pump(app: &mut LccApp, ctx: &egui::Context) {
+    let Some(job) = app.session.sensor_job.clone() else { return };
+    if job.what != "removeDust" {
+        return;
+    }
+    let running = !job.finished.load(std::sync::atomic::Ordering::Relaxed);
+    if let Ok(v) = app.session.execute("dust.pump", &json!({}))
+        && v["applied"].as_u64().unwrap_or(0) > 0
+    {
+        ctx.request_repaint();
+    }
+    if running {
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
 }
 
 fn red_eye(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {

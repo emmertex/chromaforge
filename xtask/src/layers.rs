@@ -66,6 +66,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("develop", Class::Layer(1)),
     ("lensdb", Class::Layer(2)),
     ("inpaint", Class::Layer(1)),
+    ("genfill", Class::Layer(1)),
     ("faces", Class::Layer(1)),
     // the pure-Rust TFLite interpreter and MediaPipe pre/post-processing (People masks, Faces)
     ("tflite", Class::Layer(1)),

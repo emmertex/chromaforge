@@ -1229,6 +1229,9 @@ pub struct UiState {
     pub selected_guide: Option<(u64, usize)>,
     /// White Balance Selector: side of the averaged square, in preview pixels (1, 3, 5, 9, 15).
     pub wb_sample: u32,
+    /// The Remove panel's tool last used ("remove", "fill", "generate", "heal", "clone"): the panel
+    /// opens on it again (this session).
+    pub remove_tool: String,
     pub brush_size: f32,
     pub brush_feather: f32,
     pub brush_flow: f32,
@@ -1248,6 +1251,13 @@ pub struct UiState {
     pub remove_size: f32,
     pub remove_feather: f32,
     pub remove_opacity: f32,
+    /// Generative fill choices of the Remove panel (prompt, estimate; not saved).
+    #[serde(skip)]
+    pub genfill: crate::panels::genfill::GenfillUi,
+    /// Generative fill: the service last used (its id; empty: the first one set up), how many
+    /// variations (each is a paid result; 1 unless changed). Remembered.
+    pub genfill_provider: String,
+    pub genfill_variations: u32,
     /// Selected Point Color sample.
     pub point_color: usize,
     /// Point Color "Visualize range": the selected sample's range in colour, the rest grey.
@@ -1775,6 +1785,14 @@ pub enum Dialog {
     DeleteEffects {
         names: Vec<String>,
     },
+    /// Before a generative fill provider is used for the first time: what is uploaded (the crop,
+    /// shown), the provider's data policy and the cost; OK agrees and generates spot `index`.
+    GenfillConsent {
+        provider: String,
+        index: usize,
+        prompt: String,
+        variations: u32,
+    },
     /// Confirm moving photos to Recently Deleted or deleting from disk.
     ConfirmDelete {
         count: usize,
@@ -2005,6 +2023,7 @@ impl Default for UiState {
             tool: String::new(),
             selected_guide: None,
             wb_sample: 5,
+            remove_tool: "remove".into(),
             brush_size: 0.04,
             brush_feather: 50.0,
             brush_flow: 60.0,
@@ -2017,6 +2036,9 @@ impl Default for UiState {
             remove_size: 0.02,
             remove_feather: 50.0,
             remove_opacity: 100.0,
+            genfill: Default::default(),
+            genfill_provider: String::new(),
+            genfill_variations: 1,
             point_color: 0,
             point_color_visualize: false,
             hdr_visualize: false,

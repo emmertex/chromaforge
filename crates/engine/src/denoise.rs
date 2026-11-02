@@ -1229,12 +1229,14 @@ pub(crate) fn make_product(spec: &JobSpec, progress: Option<&Progress>) -> Resul
         if lcc_raw::probe(&bytes).is_none() {
             return Err(MakeError::Unsupported("not a raw file".into()));
         }
-        let raw = match lcc_raw::decode(&bytes) {
+        let mut raw = match lcc_raw::decode(&bytes) {
             Ok(r) => r,
             Err(lcc_raw::RawError::Unsupported(why)) => return Err(MakeError::Unsupported(why)),
             Err(e) => return Err(MakeError::Failed(e.to_string())),
         };
         drop(bytes);
+        // hot, dead and stuck pixels go before the denoiser sees them, as in the plain development
+        crate::files::repair_pixels(&mut raw, &crate::files::RawOptions::for_path(&spec.path, true));
         if raw.cpp != 1 || !raw.cfa.as_ref().is_some_and(lcc_raw::Cfa::is_bayer) {
             return Err(MakeError::Unsupported(
                 "only Bayer raw files can be denoised (this one has another sensor layout or is already demosaiced)".into(),

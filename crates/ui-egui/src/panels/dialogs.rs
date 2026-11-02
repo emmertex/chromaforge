@@ -288,6 +288,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::SamModel { .. } if sam_by_hand(&app.session.segmenter) => "Install the SAM 3 Model",
         Dialog::SamModel { .. } => "Download the SAM 3 Model?",
         Dialog::AiModels { .. } => "AI Models",
+        Dialog::GenfillConsent { .. } => "Generative Fill",
         Dialog::About => "About {app}",
         Dialog::Update => "Check for Updates",
         Dialog::Shortcuts => "Keyboard Shortcuts",
@@ -958,6 +959,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 Dialog::Settings { tab } => crate::panels::settings::body(app, ui, tab, settings_height),
                 Dialog::SamModel { error, .. } => sam_model_body(app, ui, error.as_deref()),
                 Dialog::AiModels { error } => crate::panels::ai_models::body(app, ui, error),
+                Dialog::GenfillConsent { provider, index, prompt, variations } => crate::panels::genfill::consent_body(app, ui, provider, *index, prompt, *variations),
                 Dialog::KeywordTag {
                     editing,
                     name,
@@ -1426,6 +1428,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::SamModel { .. } if sam_installed || sam_running || sam_nowhere => "",
                     Dialog::SamModel { error, .. } if error.is_some() || sam_failed => "Try Again",
                     Dialog::SamModel { .. } => "Download",
+                    Dialog::GenfillConsent { .. } => "Generate",
                     Dialog::RenamePerson { from, to, .. } if person_rename_plan(&app.session.catalog, from, to).needs_merge => "Merge",
                     _ if informational => "Close",
                     // the confirm button names its action (upstream #2075)
@@ -1909,6 +1912,10 @@ pub(crate) fn album_entries(cat: &lcc_catalog::Catalog, editing: Option<u64>) ->
 
 pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Value, String> {
     match dlg {
+        Dialog::GenfillConsent { provider, index, prompt, variations } => {
+            app.run("genfill.consent", json!({"provider": provider, "accept": true}))?;
+            crate::panels::genfill::send(app, provider, *index, prompt, *variations)
+        }
         Dialog::LightroomResult { first, .. } => {
             if let Some(first) = first {
                 app.run("library.source", json!({"kind": "all"}))?;
@@ -1923,6 +1930,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
             Ok(serde_json::Value::Null)
         }
+
         Dialog::SamModel { then, .. } => {
             if app.session.segmenter.installed() {
                 // installed: start what the user was doing

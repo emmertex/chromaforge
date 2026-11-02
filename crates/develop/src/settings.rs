@@ -302,6 +302,18 @@ pub struct DevelopSettings {
     pub enhance: Enhance,
     /// Camera calibration: shadows tint and primary hue/saturation (applied before tone mapping).
     pub calibration: Calibration,
+    /// Smooth Skin (beyond Lightroom). Not written while it is the default, so settings without it
+    /// keep their JSON and `hash64`.
+    #[serde(skip_serializing_if = "SkinSmoothing::is_default", deserialize_with = "lenient")]
+    pub skin: SkinSmoothing,
+    /// The skin and faces the models found for Smooth Skin on this photo (its own data: in no
+    /// settings group, so copy, paste, sync and presets never carry it).
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub skin_analysis: Option<SkinAnalysis>,
+    /// Sensor repairs made on the raw data before it is developed (hot, dead and stuck pixels). Not written while
+    /// it is the default (on), so settings from before it existed keep their JSON and hash.
+    #[serde(skip_serializing_if = "Sensor::is_default")]
+    pub sensor: Sensor,
     /// Section on/off toggles (the "eye" buttons on panel headers): section id → enabled.
     #[serde(deserialize_with = "capped::<MAX_DISABLED_SECTIONS, _, _>")]
     pub disabled_sections: Vec<String>,
@@ -394,9 +406,39 @@ impl Default for DevelopSettings {
             lens_blur: LensBlur::default(),
             enhance: Enhance::default(),
             calibration: Calibration::default(),
+            skin: SkinSmoothing::default(),
+            skin_analysis: None,
+            sensor: Sensor::default(),
             disabled_sections: Vec::new(),
             plugin_filters: Vec::new(),
         }
+    }
+}
+
+/// Sensor repairs on a raw photo's data, before demosaic (`lcc_raw::defects`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sensor {
+    /// Fix hot, dead and stuck pixels: 1 = on (the default: the camera body's known defects and the clear ones this
+    /// photo shows), 0 = off (the data as the camera recorded it). A number so it is a develop control
+    /// (`sensor.pixelFix`).
+    pub pixel_fix: f64,
+}
+
+impl Default for Sensor {
+    fn default() -> Self {
+        Self { pixel_fix: 1.0 }
+    }
+}
+
+impl Sensor {
+    pub fn is_default(&self) -> bool {
+        *self == Sensor::default()
+    }
+
+    /// Whether hot, dead and stuck pixels are fixed.
+    pub fn fixes_pixels(&self) -> bool {
+        self.pixel_fix >= 0.5 || self.pixel_fix.is_nan()
     }
 }
 
@@ -1458,6 +1500,164 @@ pub enum SpotMode {
     Clone,
     /// Content-aware: the spot is rebuilt from patches of its surroundings (no single source).
     Fill,
+    /// Even out (flat-field): the spot keeps its own pixels and is lifted by the smooth gain that brings its tone to
+    /// its surroundings' (divides by the estimated transmission of a sensor dust shadow). No source.
+    Flat,
+    /// Generative: the spot is filled by a cloud image model the user chose (their own API key),
+    /// stored as a patch of the photo's own pixels ([`GenFill`]). Until it is generated (or when
+    /// it was moved since, or its patch file is missing) it changes nothing: it only marks the area.
+    Generate,
+}
+
+/// A generative fill: which patches a [`SpotMode::Generate`] spot shows. The pixels are never in the
+/// settings (or XMP): they are files in the library's `genfill` folder, named by the photo and `id`
+/// (`docs/generative-fill.md`); these settings only refer to them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GenFill {
+    /// Id of this generation (16 hex digits): its variations are the files `<id>-<n>.lcpatch`.
+    pub id: String,
+    /// How many variations were generated, and which one (0-based) the spot shows.
+    pub variants: u32,
+    pub variant: u32,
+    /// The provider that made them (`openai`, `stability`, …) and the prompt, if any.
+    pub provider: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub prompt: String,
+    /// [`Spot::stroke_key`] of the stroke they were made for: once the spot is moved or resized the
+    /// patch no longer fits and the spot renders as a content-aware fill until generated again.
+    pub stroke: u64,
+    /// Generation resolution relative to the photo's own pixels: 1 = native, below 1 = upscaled
+    /// (a softer patch; the panel says so).
+    pub scale: f64,
+    /// The stroke these results were made for, so a spot moved or resized since can be put back where its fill
+    /// fits ([`Spot::put_back`]). `None` in fills made before it was kept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub made_for: Option<GenStroke>,
+    /// The spot's earlier generations, in the order they were made (each a paid result: kept, and offered with
+    /// the variations). Never nested: their own `earlier` is empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub earlier: Vec<GenFill>,
+    /// Where this generation sits among `earlier` (how many of them come before it).
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub place: u32,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+/// A stroke a generative fill was made for: its points and size (see [`Spot`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GenStroke {
+    pub points: Vec<Point>,
+    pub size: f64,
+}
+
+impl GenStroke {
+    /// [`Spot::stroke_key`] of a spot with this stroke.
+    pub fn key(&self) -> u64 {
+        stroke_key(&self.points, self.size)
+    }
+}
+
+/// See [`Spot::stroke_key`].
+fn stroke_key(points: &[Point], size: f64) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |v: f64| {
+        for b in v.to_bits().to_le_bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for p in points {
+        eat(p.x);
+        eat(p.y);
+    }
+    eat(size);
+    h
+}
+
+/// Most generations a spot keeps (the oldest beyond are dropped from the spot; their files stay in the library and
+/// can be restored from there).
+pub const MAX_GENERATIONS: usize = 32;
+
+impl GenFill {
+    /// This spot's generations in the order they were made, this one among them (each without its `earlier`).
+    pub fn generations(&self) -> Vec<GenFill> {
+        let one = |g: &GenFill| GenFill { earlier: Vec::new(), place: 0, ..g.clone() };
+        let place = (self.place as usize).min(self.earlier.len());
+        let mut all: Vec<GenFill> = self.earlier.iter().take(place).map(one).collect();
+        all.push(one(self));
+        all.extend(self.earlier.iter().skip(place).map(one));
+        all
+    }
+
+    /// `generations` with generation `index` shown (its variation `variant`), the others kept as earlier ones.
+    fn from_generations(mut all: Vec<GenFill>, index: usize, variant: u32) -> Option<GenFill> {
+        if index >= all.len() {
+            return None;
+        }
+        let mut cur = all.remove(index);
+        cur.variant = variant.min(cur.variants.saturating_sub(1));
+        cur.place = index as u32;
+        cur.earlier = all;
+        Some(cur)
+    }
+
+    /// Every result of every generation: how many, and which one (0-based) is shown.
+    pub fn results(&self) -> (u32, u32) {
+        let place = (self.place as usize).min(self.earlier.len());
+        let before: u32 = self.earlier.iter().take(place).map(|g| g.variants.max(1)).fold(0, u32::saturating_add);
+        let after: u32 = self.earlier.iter().skip(place).map(|g| g.variants.max(1)).fold(0, u32::saturating_add);
+        let total = before.saturating_add(self.variants.max(1)).saturating_add(after);
+        (total, before.saturating_add(self.variant.min(self.variants.max(1) - 1)))
+    }
+
+    /// Show result `k` of [`GenFill::results`] (any generation's variation); `false` when there is no such result.
+    pub fn choose(&mut self, k: u32) -> bool {
+        let all = self.generations();
+        let mut at = 0u32;
+        for (i, g) in all.iter().enumerate() {
+            let n = g.variants.max(1);
+            if k < at.saturating_add(n) {
+                let v = k - at;
+                return match GenFill::from_generations(all, i, v) {
+                    Some(g) => {
+                        *self = g;
+                        true
+                    }
+                    None => false,
+                };
+            }
+            at = at.saturating_add(n);
+        }
+        false
+    }
+
+    /// `next`, made after this generation, with this one and its earlier ones kept as earlier generations (at
+    /// most [`MAX_GENERATIONS`] in all).
+    pub fn followed_by(&self, mut next: GenFill) -> GenFill {
+        let mut all = self.generations();
+        all.extend(next.generations().into_iter().skip(1));
+        let drop = (all.len() + 1).saturating_sub(MAX_GENERATIONS);
+        all.drain(..drop.min(all.len()));
+        next.place = all.len() as u32;
+        next.earlier = all;
+        next
+    }
+
+    /// The name of the patch file of variation `variant` (without the folder).
+    pub fn file_name(&self, variant: u32) -> String {
+        format!("{}-{variant}.lcpatch", self.id)
+    }
+
+    /// Whether `id` is a generation id this build writes (16 lower-case hex digits): anything else
+    /// is never turned into a file name.
+    pub fn valid_id(id: &str) -> bool {
+        id.len() == 16 && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1473,12 +1673,100 @@ pub struct Spot {
     pub opacity: f64,
     /// Source offset (normalized) from the target; None = auto (content-aware remove).
     pub source_offset: Option<Point>,
+    /// The generated patches of a [`SpotMode::Generate`] spot (none until generated).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated: Option<GenFill>,
+    /// Added by an automatic finder (Remove Dust), not drawn by hand; `None` once the user moves or resizes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto: Option<AutoSpot>,
 }
 
 impl Default for Spot {
     fn default() -> Self {
-        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None }
+        Self {
+            mode: SpotMode::Remove,
+            points: Vec::new(),
+            size: 0.02,
+            feather: 50.0,
+            opacity: 100.0,
+            source_offset: None,
+            generated: None,
+            auto: None,
+        }
     }
+}
+
+impl Spot {
+    /// A stable fingerprint of the stroke (points and size; FNV-1a over their bits, the same in
+    /// every build): a generated patch is shown only while the stroke is the one it was made for.
+    pub fn stroke_key(&self) -> u64 {
+        stroke_key(&self.points, self.size)
+    }
+
+    /// The generated patch this spot shows: its [`GenFill`] while it fits the stroke.
+    pub fn shown_gen(&self) -> Option<&GenFill> {
+        self.generated.as_ref().filter(|g| self.mode == SpotMode::Generate && g.stroke == self.stroke_key() && GenFill::valid_id(&g.id))
+    }
+
+    /// Put a spot that was moved or resized since its fill was generated back on the stroke the fill was made for,
+    /// so it shows again. `false` when it already fits or the stroke isn't known.
+    pub fn put_back(&mut self) -> bool {
+        let Some(g) = &self.generated else { return false };
+        if g.stroke == self.stroke_key() {
+            return false;
+        }
+        let Some(at) = g.made_for.clone() else { return false };
+        let (points, size) = (std::mem::replace(&mut self.points, at.points), self.size);
+        self.size = at.size;
+        if self.generated.as_ref().is_some_and(|g| g.stroke == self.stroke_key()) {
+            return true;
+        }
+        // (a stroke that doesn't hash to its key: leave the spot as it was)
+        (self.points, self.size) = (points, size);
+        false
+    }
+
+    /// Move the spot's points with `f` (a change of coordinates, e.g. to follow a change of geometry), its
+    /// generated fills' strokes with them: a fill that showed keeps showing.
+    pub fn map_points(&mut self, f: impl Fn(Point) -> Point) {
+        let fitted = self.generated.as_ref().is_some_and(|g| g.stroke == self.stroke_key());
+        self.points.iter_mut().for_each(|p| *p = f(*p));
+        let key = self.stroke_key();
+        if let Some(g) = &mut self.generated {
+            let remap = |g: &mut GenFill| {
+                if let Some(at) = &mut g.made_for {
+                    at.points.iter_mut().for_each(|p| *p = f(*p));
+                    g.stroke = at.key();
+                }
+            };
+            g.earlier.iter_mut().for_each(remap);
+            remap(g);
+            if fitted {
+                g.stroke = key;
+            }
+        }
+    }
+}
+
+/// What added a spot automatically.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoSpotKind {
+    /// Sensor dust.
+    Dust,
+}
+
+/// A spot an automatic finder added: what it is and how sure it was.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoSpot {
+    pub kind: AutoSpotKind,
+    /// The camera body's dust map has it (seen in several photos), rather than this photo alone.
+    #[serde(default)]
+    pub confirmed: bool,
+    /// 0..1.
+    #[serde(default)]
+    pub confidence: f32,
 }
 
 /// A red eye / pet eye correction: the user's ellipse (centre normalized, radii as fractions of
@@ -1527,6 +1815,142 @@ impl Enhance {
     pub fn denoise_enabled(&self) -> bool {
         self.denoise_on.unwrap_or(self.denoise > 0.0)
     }
+}
+
+/// Which skin Smooth Skin works on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkinArea {
+    /// The face's skin (never the eyes, brows, lips or facial hair).
+    #[default]
+    Face,
+    /// Shoulders, arms, back, hands: skin that is not the face.
+    Body,
+    Both,
+}
+
+impl SkinArea {
+    /// `face`, `body` or `both` (case-insensitive).
+    pub fn parse(name: &str) -> Option<SkinArea> {
+        match name.to_ascii_lowercase().as_str() {
+            "face" | "face skin" => Some(SkinArea::Face),
+            "body" | "body skin" => Some(SkinArea::Body),
+            "both" | "all" | "face and body" => Some(SkinArea::Both),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SkinArea::Face => "face",
+            SkinArea::Body => "body",
+            SkinArea::Both => "both",
+        }
+    }
+}
+
+/// Smooth Skin: frequency separation on the scene-linear image inside the skin the models found
+/// ([`SkinAnalysis`]). Its bands are measured in each face's eye distance, so a preview and an
+/// export look alike. All zero is off.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkinSmoothing {
+    /// 0..100: softens the middle band (uneven texture, small bumps), keeping edges.
+    pub amount: f64,
+    /// −100..100: the fine band (pores). 0 keeps it as it is; below softens it, above brings it out.
+    pub texture: f64,
+    /// 0..100: evens out blotches of tone and colour (the low band).
+    pub even_tone: f64,
+    /// 0..100: reduces patches redder than the skin around them.
+    pub redness: f64,
+    pub area: SkinArea,
+    /// 0: everyone; n: the n-th person from the left (by their face), as People masks count.
+    pub person: u32,
+}
+
+impl Default for SkinSmoothing {
+    fn default() -> Self {
+        Self { amount: 0.0, texture: 0.0, even_tone: 0.0, redness: 0.0, area: SkinArea::Face, person: 0 }
+    }
+}
+
+impl SkinSmoothing {
+    /// Most people Smooth Skin tells apart (Person 1 to 4, as the People mask offers).
+    pub const MAX_PERSON: u32 = 4;
+    /// The subtle starting point Smooth Skin is switched on with.
+    pub const SUBTLE: SkinSmoothing = SkinSmoothing { amount: 35.0, texture: 0.0, even_tone: 25.0, redness: 20.0, area: SkinArea::Face, person: 0 };
+
+    pub fn is_default(&self) -> bool {
+        *self == SkinSmoothing::default()
+    }
+
+    /// Whether it changes anything (some slider away from zero).
+    pub fn active(&self) -> bool {
+        let on = |v: f64| v.is_finite() && v != 0.0;
+        on(self.amount) || on(self.texture) || on(self.even_tone) || on(self.redness)
+    }
+}
+
+/// A face Smooth Skin measures its bands by: its centre (normalized, of the uncropped, upright
+/// photo) and the distance between its eyes (a fraction of the photo's long edge).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SkinFace {
+    pub x: f64,
+    pub y: f64,
+    pub eyes: f64,
+}
+
+/// Most faces a stored analysis keeps (a hostile document can't make rendering explode).
+pub const MAX_SKIN_FACES: usize = 64;
+
+/// What the models found for Smooth Skin on one photo: its skin (for [`SkinArea`] `area` and
+/// `person`, with the photo turned to `orientation`) and its faces. Recomputed when any of
+/// those changes; rendering never needs the models.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SkinAnalysis {
+    pub area: SkinArea,
+    pub person: u32,
+    pub orientation: Orientation,
+    pub seg: crate::SegMask,
+    #[serde(default, deserialize_with = "de_skin_faces")]
+    pub faces: Vec<SkinFace>,
+}
+
+impl SkinAnalysis {
+    /// Whether it was made for these settings on a photo turned to `orientation`.
+    pub fn is_for(&self, s: &SkinSmoothing, orientation: Orientation) -> bool {
+        self.area == s.area && self.person == s.person && self.orientation == orientation
+    }
+}
+
+/// A value that doesn't read (damaged, or from a newer version) is its default: it costs that
+/// value, never the photo's other settings.
+fn lenient<'de, D: serde::Deserializer<'de>, T: Default + serde::de::DeserializeOwned>(d: D) -> Result<T, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or_default())
+}
+
+/// Keep at most [`MAX_SKIN_FACES`] faces (the rest are skipped unread).
+fn de_skin_faces<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<SkinFace>, D::Error> {
+    struct Capped;
+    impl<'de> serde::de::Visitor<'de> for Capped {
+        type Value = Vec<SkinFace>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a list of faces")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<SkinFace>, A::Error> {
+            let mut out = Vec::new();
+            while out.len() < MAX_SKIN_FACES {
+                match seq.next_element::<SkinFace>()? {
+                    Some(f) => out.push(f),
+                    None => return Ok(out),
+                }
+            }
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(out)
+        }
+    }
+    d.deserialize_seq(Capped)
 }
 
 /// HDR editing. When enabled, an HDR render ([`Hdr::peak`]) keeps highlights above SDR white (1.0)

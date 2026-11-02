@@ -351,15 +351,33 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
 }
 
 /// A decoded [`SegMask`]: its logits and the normalized rectangle they cover.
-struct SegGrid {
+pub(crate) struct SegGrid {
     logits: Vec<f32>,
     side: usize,
     r: [f64; 4],
 }
 
 impl SegGrid {
-    fn new(seg: &SegMask) -> Option<SegGrid> {
+    pub(crate) fn new(seg: &SegMask) -> Option<SegGrid> {
         Some(SegGrid { logits: seg.logits()?, side: seg.side as usize, r: seg.bounds()? })
+    }
+
+    /// The normalized box of the cells whose logit is above `min` (`None`: no such cell).
+    pub(crate) fn bounds_above(&self, min: f32) -> Option<[f64; 4]> {
+        let side = self.side;
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+        for (i, l) in self.logits.iter().enumerate() {
+            if *l > min {
+                let (x, y) = (i % side, i / side);
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+            }
+        }
+        if x0 == usize::MAX {
+            return None;
+        }
+        let (rw, rh) = (self.r[2] - self.r[0], self.r[3] - self.r[1]);
+        let s = side as f64;
+        Some([self.r[0] + x0 as f64 / s * rw, self.r[1] + y0 as f64 / s * rh, self.r[0] + x1 as f64 / s * rw, self.r[1] + y1 as f64 / s * rh])
     }
 
     fn contains(&self, n: Point) -> bool {
@@ -368,7 +386,7 @@ impl SegGrid {
 
     /// The bilinearly sampled logit at normalized image point `n` (cell centres at
     /// `(i + 0.5) / side` of the rectangle).
-    fn logit(&self, n: Point) -> f32 {
+    pub(crate) fn logit(&self, n: Point) -> f32 {
         let side = self.side;
         let at = |x: usize, y: usize| self.logits.get(y.min(side - 1) * side + x.min(side - 1)).copied().unwrap_or(-16.0);
         let u = (n.x - self.r[0]) / (self.r[2] - self.r[0]);

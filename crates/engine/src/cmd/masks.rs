@@ -243,6 +243,8 @@ fn find(masks: &mut [Mask], id: u32, c: &str) -> Result<usize> {
     masks.iter().position(|m| m.id == id).ok_or_else(|| bad(c, format!("no mask {id}")))
 }
 
+/// Why a spot that shows a generated fill is not moved or resized.
+pub const GENERATED_STAYS: &str = "a generated fill stays where it was made: paint a new area to fill somewhere else";
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -931,42 +933,6 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         // ---- Remove tool (spots)
         cmd!(
-            "spot.findDust",
-            "Find Dust Spots",
-            [],
-            None,
-            "{sensitivity?: 0..100 (50), add?: bool (true)} — find sensor-dust spots (small soft dark spots on smooth areas) and add a heal spot on each (one undo step) → {spots: [{x, y, size}], added}",
-            has_active,
-            |s, p| {
-                let c = "spot.findDust";
-                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
-                // the uncropped photo, so positions are the spots' own coordinates
-                let job = s.render_job(id, 1600, 1600, false, false).ok_or_else(|| bad(c, "no photo"))?;
-                let img = job.run().rendered.map_err(|e| bad(c, e))?.image;
-                let found = lcc_pipeline::dust::detect(&img, f64_or(p, "sensitivity", 50.0) as f32);
-                let out: Vec<Value> = found.iter().map(|d| json!({"x": d.x, "y": d.y, "size": d.radius})).collect();
-                if !p.get("add").and_then(Value::as_bool).unwrap_or(true) || found.is_empty() {
-                    return Ok(json!({"spots": out, "added": 0}));
-                }
-                let mut dd = (*s.develop_of(id).unwrap_or_default()).clone();
-                let base = Spot::default();
-                for d in &found {
-                    let mut spot = Spot {
-                        mode: SpotMode::Heal,
-                        points: vec![Point::new(d.x, d.y)],
-                        size: d.radius.clamp(SPOT_SIZE.0, SPOT_SIZE.1),
-                        feather: base.feather,
-                        opacity: 100.0,
-                        source_offset: None,
-                    };
-                    spot.source_offset = pick_source(s, id, &dd, &spot, None);
-                    dd.spots.push(spot);
-                }
-                s.set_develop(id, dd, "Find Dust Spots")?;
-                Ok(json!({"spots": out, "added": found.len()}))
-            }
-        ),
-        cmd!(
             "spot.findBlemishes",
             "Find Blemishes",
             [],
@@ -1014,6 +980,8 @@ pub fn specs() -> Vec<CommandSpec> {
                         feather: base.feather,
                         opacity: 100.0,
                         source_offset: None,
+                        generated: None,
+                        auto: None,
                     };
                     spot.source_offset = pick_source(s, id, &dd, &spot, None);
                     dd.spots.push(spot);
@@ -1027,7 +995,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Remove Spot",
             [],
             None,
-            "{mode?: remove|heal|clone|fill (content-aware), points: [[x,y],…], size?: fraction of long edge, feather?, opacity?, source?: [dx,dy] (default: the best match nearby)} — selects the new spot; returns {index}",
+            "{mode?: remove|heal|clone|fill (content-aware), points: [[x,y],…], size?: fraction of long edge, feather?, opacity?, source?: [dx,dy] (default: the best match nearby; a brushed Remove stroke has none and is rebuilt from its surroundings)} — selects the new spot; returns {index}",
             has_active,
             |s, p| {
                 let mode: SpotMode =
@@ -1048,10 +1016,14 @@ pub fn specs() -> Vec<CommandSpec> {
                     feather: f64_or(p, "feather", d.feather).clamp(0.0, 100.0),
                     opacity: f64_or(p, "opacity", d.opacity).clamp(0.0, 100.0),
                     source_offset: point(p, "source"),
+                    generated: None,
+                    auto: None,
                 };
                 let id = s.active().ok_or_else(|| bad("spot.add", "no active photo"))?;
                 let mut dd = (*s.develop_of(id).unwrap_or_default()).clone();
-                if spot.source_offset.is_none() && spot.mode != SpotMode::Fill {
+                // a brushed Remove stroke is rebuilt from its surroundings (no single source fits it)
+                let synthesised = spot.mode == SpotMode::Remove && lcc_pipeline::spots::brushed(&spot);
+                if spot.source_offset.is_none() && !synthesised && !matches!(spot.mode, SpotMode::Fill | SpotMode::Generate | SpotMode::Flat) {
                     // resolve the automatic source now: it gets a pin and stays put at every size
                     spot.source_offset = pick_source(s, id, &dd, &spot, None);
                 }
@@ -1076,7 +1048,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Spot",
             [],
             None,
-            "{index? (the selected spot), move?: [dx,dy] (the target, normalized), source?: [dx,dy] (offset from the target), moveSource?: [dx,dy], size?, feather?, opacity?, mode?}",
+            "{index? (the selected spot), move?: [dx,dy] (the target, normalized), source?: [dx,dy] (offset from the target), moveSource?: [dx,dy], size?, feather?, opacity?, mode?: remove|heal|clone|fill|flat, repick?: bool (a Remove spot chooses its source again)} — moving or resizing a spot Remove Dust added makes it an ordinary spot",
             has_active,
             |s, p| {
                 let c = "spot.update";
@@ -1085,33 +1057,59 @@ pub fn specs() -> Vec<CommandSpec> {
                     Some(m) => Some(serde_json::from_value(m.clone()).map_err(|e| bad(c, e.to_string()))?),
                     None => None,
                 };
-                spots_edit(s, c, "Edit Spot", |spots| {
-                    let sp = &mut spots[i];
-                    if let Some(d) = point(p, "move") {
-                        sp.points.iter_mut().for_each(|q| *q = Point::new(q.x + d.x, q.y + d.y));
-                        // the source moves along (its offset is relative to the target)
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                let before = s.develop_of(id).unwrap_or_default();
+                let mut dd = (*before).clone();
+                let sp = dd.spots.get_mut(i).ok_or_else(|| bad(c, "no such spot"))?;
+                // a generated fill is paid for and fits only the stroke it was made for: its spot is not moved or
+                // resized (a brush size or a nudge meant for the next stroke hid it, test note 5)
+                if sp.shown_gen().is_some() && (p.get("move").is_some() || p.get("size").is_some()) {
+                    return Err(bad(c, GENERATED_STAYS));
+                }
+                if let Some(d) = point(p, "move") {
+                    sp.points.iter_mut().for_each(|q| *q = Point::new(q.x + d.x, q.y + d.y));
+                    // the source moves along (its offset is relative to the target)
+                }
+                if let Some(o) = point(p, "source") {
+                    sp.source_offset = Some(o);
+                }
+                if let Some(d) = point(p, "moveSource") {
+                    let o = sp.source_offset.unwrap_or(Point::new(0.0, 0.0));
+                    sp.source_offset = Some(Point::new(o.x + d.x, o.y + d.y));
+                }
+                if let Some(v) = p.get("size").and_then(Value::as_f64) {
+                    sp.size = v.clamp(SPOT_SIZE.0, SPOT_SIZE.1);
+                }
+                if let Some(v) = p.get("feather").and_then(Value::as_f64) {
+                    sp.feather = v.clamp(0.0, 100.0);
+                }
+                if let Some(v) = p.get("opacity").and_then(Value::as_f64) {
+                    sp.opacity = v.clamp(0.0, 100.0);
+                }
+                if let Some(m) = mode {
+                    sp.mode = m;
+                }
+                // a spot Remove Dust added that the user moves or resizes becomes theirs (a later Remove Dust keeps it)
+                if p.get("move").is_some() || p.get("size").is_some() {
+                    sp.auto = None;
+                }
+                // Remove picks its own source: asked with `repick`, a Remove spot chooses again where it
+                // now is, unless this call set the source; Heal and Clone keep theirs (a dragged spot
+                // keeps its source, as it always has)
+                let given = p.get("source").is_some() || p.get("moveSource").is_some();
+                let repick = !given && bool_or(p, "repick", false) && sp.mode == SpotMode::Remove && sp.source_offset.is_some();
+                if repick {
+                    let spot = sp.clone();
+                    if let Some(next) = pick_source(s, id, &dd, &spot, None)
+                        && let Some(t) = dd.spots.get_mut(i)
+                    {
+                        t.source_offset = Some(next);
                     }
-                    if let Some(o) = point(p, "source") {
-                        sp.source_offset = Some(o);
-                    }
-                    if let Some(d) = point(p, "moveSource") {
-                        let o = sp.source_offset.unwrap_or(Point::new(0.0, 0.0));
-                        sp.source_offset = Some(Point::new(o.x + d.x, o.y + d.y));
-                    }
-                    if let Some(v) = p.get("size").and_then(Value::as_f64) {
-                        sp.size = v.clamp(SPOT_SIZE.0, SPOT_SIZE.1);
-                    }
-                    if let Some(v) = p.get("feather").and_then(Value::as_f64) {
-                        sp.feather = v.clamp(0.0, 100.0);
-                    }
-                    if let Some(v) = p.get("opacity").and_then(Value::as_f64) {
-                        sp.opacity = v.clamp(0.0, 100.0);
-                    }
-                    if let Some(m) = mode {
-                        sp.mode = m;
-                    }
-                    Ok(())
-                })?;
+                }
+                // (nothing changed, e.g. a repick that found the same source: no undo step)
+                if dd != *before {
+                    s.set_develop(id, dd, "Edit Spot")?;
+                }
                 Ok(json!({"index": i}))
             }
         ),

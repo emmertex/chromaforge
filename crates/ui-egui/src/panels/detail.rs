@@ -1461,7 +1461,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         match right {
             RightPanel::Crop => crop_overlay(app, ui, &resp, &map, &frame, &d, id),
             RightPanel::Masking => mask_overlay(app, ui, &resp, &map, &d),
-            RightPanel::Remove => remove_overlay(app, ui, &resp, &map, &d),
+            RightPanel::Remove => {
+                remove_overlay(app, ui, &resp, &map, &d);
+                // a spot being generated: a spinner over it until the result arrives
+                crate::panels::genfill::canvas(app, ui, &ui.painter_at(app.canvas_rect.unwrap_or(map.rect)), &|q| map.screen(q), &d);
+            }
             RightPanel::RedEye => eye_overlay(app, ui, &resp, &map, &d),
             _ => {
                 // side by side / stacked: Before shows the same frame, so a click in its view (white
@@ -3590,17 +3594,18 @@ fn pin(p: &egui::Painter, c: Pos2, sel: bool) {
     p.circle_stroke(c, 6.0, Stroke::new(1.5, Color32::WHITE));
 }
 
-fn spot_pin(p: &egui::Painter, c: Pos2, sel: bool, mode: lcc_develop::SpotMode) {
+/// A spot's pin; `tint` replaces its background (Remove Dust's spots).
+fn spot_pin(p: &egui::Painter, c: Pos2, sel: bool, mode: lcc_develop::SpotMode, tint: Option<Color32>) {
     let pin_r = 9.0;
-    let bg = if sel { Color32::from_rgb(1, 101, 221) } else { Color32::from_rgba_unmultiplied(35, 35, 38, 225) };
+    let bg = tint.unwrap_or(if sel { Color32::from_rgb(1, 101, 221) } else { Color32::from_rgba_unmultiplied(35, 35, 38, 225) });
     p.circle_filled(c, pin_r, bg);
     p.circle_stroke(c, pin_r, Stroke::new(1.5, Color32::WHITE));
     let icon_rect = Rect::from_center_size(c, vec2(11.0, 11.0));
     let icon = match mode {
-        lcc_develop::SpotMode::Heal => crate::icons::Icon::Bandage,
+        lcc_develop::SpotMode::Heal | lcc_develop::SpotMode::Flat => crate::icons::Icon::Bandage,
         lcc_develop::SpotMode::Clone => crate::icons::Icon::Stamp,
         lcc_develop::SpotMode::Remove => crate::icons::Icon::Eraser,
-        lcc_develop::SpotMode::Fill => crate::icons::Icon::Sparkle,
+        lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate => crate::icons::Icon::Sparkle,
     };
     crate::icons::paint(p, icon_rect, icon, Color32::WHITE);
 }
@@ -3896,8 +3901,16 @@ fn extract_stroke_contour(pts: &[Pos2], r: f32, feather: f64) -> Vec<Vec<Pos2>> 
 
 /// Renders a unified outer perimeter with a 1px solid white outline and a 1px subtle dark drop-shadow/halo.
 fn draw_unified_outline(p: &egui::Painter, loops: &[Vec<Pos2>], offset: egui::Vec2, sel: bool) {
+    draw_tinted_outline(p, loops, offset, sel, None);
+}
+
+/// [`draw_unified_outline`] in `tint` instead of white (Remove Dust's spots), drawn a little wider.
+fn draw_tinted_outline(p: &egui::Painter, loops: &[Vec<Pos2>], offset: egui::Vec2, sel: bool, tint: Option<Color32>) {
     let halo_stroke = Stroke::new(2.5, if sel { Color32::from_black_alpha(150) } else { Color32::from_black_alpha(80) });
-    let outline_stroke = Stroke::new(1.0, if sel { Color32::WHITE } else { Color32::from_white_alpha(130) });
+    let outline_stroke = match tint {
+        Some(c) => Stroke::new(if sel { 2.0 } else { 1.5 }, c),
+        None => Stroke::new(1.0, if sel { Color32::WHITE } else { Color32::from_white_alpha(130) }),
+    };
 
     for loop_pts in loops {
         if loop_pts.len() < 3 {
@@ -3966,7 +3979,13 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
             fresh
         });
 
-        draw_unified_outline(p, &loops, egui::Vec2::ZERO, sel);
+        // Remove Dust's spots: amber (the camera's known dust) or yellow (found in this photo alone); with Visualize
+        // Spots on they stand out more
+        let tint = s.auto.map(|a| {
+            let alpha = if sel || app.ui.visualize_spots { 255 } else { 190 };
+            if a.confirmed { Color32::from_rgba_unmultiplied(255, 166, 0, alpha) } else { Color32::from_rgba_unmultiplied(255, 228, 92, alpha) }
+        });
+        draw_tinted_outline(p, &loops, egui::Vec2::ZERO, sel, tint);
 
         if s.mode != lcc_develop::SpotMode::Fill
             && let Some(o) = s.source_offset.filter(|_| sel)
@@ -3994,7 +4013,9 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
                 spot_context_menu(app, ui, i);
             });
         }
-        spot_pin(p, tq, sel, s.mode);
+        // Remove Dust's spots: an amber (known dust) or yellow (this photo alone) pin
+        let dust = s.auto.filter(|_| !sel).map(|a| if a.confirmed { Color32::from_rgb(255, 166, 0) } else { Color32::from_rgb(240, 214, 80) });
+        spot_pin(p, tq, sel, s.mode, dust);
         register(ui.ctx(), format!("spotPin:{i}"), Rect::from_center_size(tq, vec2(18.0, 18.0)));
         grips.push((i, false, tq, r));
         let pin_rect = Rect::from_center_size(tq, vec2(20.0, 20.0));
@@ -4078,6 +4099,11 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
         if Some(spot) != active {
             let _ = app.run("spot.select", json!({"index": spot}));
         }
+        // a spot that shows a generated fill stays where the fill was made (a nudge hid it, test note 5)
+        if d.spots.get(spot).is_some_and(|s| s.shown_gen().is_some()) {
+            app.toast(ui.ctx(), crate::i18n::tr("A generated fill stays where it was made. Paint a new area to fill somewhere else."));
+            return;
+        }
         let _ = app.run("develop.beginInteraction", json!({"label": "Edit Spot"}));
         app.gesture = Some(Gesture::SpotMove { spot, source });
     }
@@ -4127,6 +4153,7 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
             "heal" => "heal",
             "clone" => "clone",
             "fill" => "fill",
+            "generate" => "generate",
             _ => "remove",
         };
         let pts: Vec<[f64; 2]> = points.iter().map(|q| [q.x, q.y]).collect();
@@ -4181,6 +4208,7 @@ fn spot_keys(app: &mut LccApp, ui: &mut egui::Ui, map: &CanvasMap, d: &DevelopSe
             "heal" => "heal",
             "clone" => "clone",
             "fill" => "fill",
+            "generate" => "generate",
             _ => "remove",
         };
         let _ = app.run(

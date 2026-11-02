@@ -28,8 +28,9 @@ fn spots(s: &Session) -> Vec<lcc_develop::Spot> {
 #[test]
 fn spots_select_move_edit_refresh_and_delete() {
     let mut s = Session::with_demo();
-    // a remove spot gets a resolved source (a pin to show) and is selected
-    let r = s.execute("spot.add", &json!({"points": [[0.4, 0.5]], "size": 0.02})).unwrap();
+    // a heal spot gets a resolved source (a pin to show) and is selected (a Remove spot too, but it
+    // chooses again when moved: `remove_picks_its_own_source_and_heal_keeps_its_own`)
+    let r = s.execute("spot.add", &json!({"mode": "heal", "points": [[0.4, 0.5]], "size": 0.02})).unwrap();
     assert_eq!(r["index"], 0);
     assert_eq!(s.active_spot, Some(0));
     let src0 = spots(&s)[0].source_offset.expect("automatic source resolved");

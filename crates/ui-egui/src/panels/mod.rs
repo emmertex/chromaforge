@@ -20,6 +20,7 @@ pub mod empty_library;
 pub mod faces;
 pub mod filterbar;
 pub mod folders;
+pub mod genfill;
 pub mod grid;
 pub mod histogram;
 pub mod keymap;

@@ -405,6 +405,7 @@ impl Headless {
             || self.app.session.denoise_busy()
             || self.app.session.segmenter.busy()
             || self.app.session.segmenter.analyzing()
+            || self.app.session.genfill.running()
             || !self.app.tasks.is_empty()
             || !self.app.synthetic.is_empty()
             || !self.events.is_empty()

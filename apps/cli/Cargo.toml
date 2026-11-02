@@ -28,6 +28,8 @@ lcc-ui-egui = { workspace = true }
 lcc-codecs = { workspace = true }
 lcc-raster = { workspace = true }
 lcc-merge = { workspace = true }
+lcc-genfill = { workspace = true, features = ["cloud"] }
+lcc-inpaint = { workspace = true }
 serde_json = { workspace = true }
 dhat = { workspace = true, optional = true }
 

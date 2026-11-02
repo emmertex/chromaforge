@@ -34,6 +34,7 @@ pub mod filters;
 mod focus;
 pub mod folder_metadata;
 pub mod folders;
+mod genfill;
 pub mod geocode;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod immich;
@@ -84,6 +85,7 @@ mod query;
 mod quick;
 pub mod recheck;
 pub mod reload;
+pub mod sensor;
 mod slideshow;
 pub(crate) mod source;
 mod sync;
@@ -217,6 +219,7 @@ macro_rules! cmd {
     };
 }
 pub(crate) use cmd;
+pub use masks::SPOT_SIZE;
 
 pub fn command_specs() -> &'static [CommandSpec] {
     static SPECS: std::sync::OnceLock<Vec<CommandSpec>> = std::sync::OnceLock::new();
@@ -231,6 +234,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(curves::specs());
         v.extend(crop_aspects::specs());
         v.extend(masks::specs());
+        v.extend(genfill::specs());
         v.extend(organize::specs());
         v.extend(keywords::specs());
         v.extend(manage::specs());
@@ -272,6 +276,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(geocode::specs());
         v.extend(filters::specs());
         v.extend(denoise::specs());
+        v.extend(sensor::specs());
         v.extend(face_models::specs());
         v.extend(face_detect::specs());
         v.extend(face_recognize::specs());

@@ -10,6 +10,7 @@
 //! <cli> merge hdr|panorama|hdr-panorama|hdr-batch|focus [OPTIONS] FILES…
 //! <cli> synth-merge hdr|panorama|focus -o DIR
 //! <cli> denoise-serve [--model ID] [--models DIR] [--listen ADDR] [--token-env VAR] [--run-on auto|gpu|cpu]
+//! <cli> genfill-mock [--port N] [--key KEY] [--fill patchmatch|mean]
 //! <cli> commands [--json]
 //! <cli> controls [--json]
 //! <cli> calibrate [--max N] [--out DIR] FOLDERS/FILES…
@@ -116,6 +117,11 @@ USAGE:
   {cli} synth-merge hdr|panorama|focus -o DIR
       Write synthetic merge inputs (procedural scene; bracketed DNGs, overlapping PNG views or a
       focus bracket as PNGs).
+  {cli} genfill-mock [--port N] [--key KEY] [--fill patchmatch|mean]
+      A local stand-in for the generative fill providers (OpenAI, Stability AI, Black Forest Labs,
+      fal.ai request shapes) on 127.0.0.1, for testing without an account: start {app} with
+      {P}_GENFILL_MOCK=http://127.0.0.1:PORT and any key. It fills holes with {app}'s own
+      content-aware fill (or a flat mean); nothing leaves this computer. Default port 18510.
   {cli} denoise-serve [OPTIONS]
       Run AI Denoise tiles for {app} on other computers ({P}_DENOISE_URL=<this host>:7990 and
       {P}_DENOISE_TOKEN there; see docs/denoise.md). Serves the installed model selected in Settings,
@@ -266,6 +272,7 @@ fn main() -> ExitCode {
         Some("synth-merge") => synth_merge(&args[1..]),
         Some("controls") => controls(&args[1..]),
         Some("denoise-serve") => denoise_serve(&args[1..]),
+        Some("genfill-mock") => genfill_mock(&args[1..]),
         Some("calibrate") => calibrate(&args[1..]),
         Some("camdb") => camdb(&args[1..]),
         Some("calibrate-lightroom") => calibrate_lightroom::run(&args[1..]),
@@ -563,7 +570,7 @@ fn merge(args: &[String]) -> Result<(), String> {
         }
         i += 1;
     }
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_system_clock().with_default_connections();
+    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_connections();
     let paths = expand_paths(&files);
     let r = s.execute("library.import", &json!({"paths": paths})).map_err(|e| e.to_string())?;
     let mut ids: Vec<u64> = r["imported"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
@@ -881,7 +888,7 @@ fn render(args: &[String]) -> Result<(), String> {
     }
     let input = input.ok_or("render: missing input file")?;
     let output = output.ok_or("render: missing -o OUTPUT")?;
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_system_clock().with_default_connections();
+    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_connections();
     let abs = expand_paths(std::slice::from_ref(&input));
     let r = s.execute("library.import", &json!({"paths": abs})).map_err(|e| e.to_string())?;
     let id = r["imported"][0].as_u64().ok_or_else(|| format!("{input}: not a readable photo"))?;
@@ -994,6 +1001,7 @@ fn snapshot(args: &[String]) -> Result<(), String> {
             let mut s = Session::new()
                 .with_fs()
                 .with_default_denoise_models()
+                .with_default_genfill()
                 .with_system_clock()
                 .with_default_connections()
                 .with_default_face_models()
@@ -1007,6 +1015,7 @@ fn snapshot(args: &[String]) -> Result<(), String> {
         None if files.is_empty() => Session::with_demo()
             .with_fs()
             .with_default_denoise_models()
+            .with_default_genfill()
             .with_system_clock()
             .with_default_connections()
             .with_default_face_models()
@@ -1016,6 +1025,7 @@ fn snapshot(args: &[String]) -> Result<(), String> {
         None => Session::new()
             .with_fs()
             .with_default_denoise_models()
+            .with_default_genfill()
             .with_system_clock()
             .with_default_connections()
             .with_default_face_models()
@@ -1204,6 +1214,46 @@ fn controls(args: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// `genfill-mock`: the generative fill providers' request shapes on 127.0.0.1, answered with
+/// the app's own content-aware fill (`lcc_genfill::cloud::mock`).
+fn genfill_mock(args: &[String]) -> Result<(), String> {
+    let (mut port, mut key, mut fill) = (18510u16, None::<String>, "patchmatch".to_string());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--port" => port = it.next().and_then(|v| v.parse().ok()).ok_or("genfill-mock: --port N")?,
+            "--key" => key = Some(it.next().ok_or("genfill-mock: --key KEY")?.clone()),
+            "--fill" => fill = it.next().ok_or("genfill-mock: --fill patchmatch|mean")?.clone(),
+            other => return Err(format!("genfill-mock: unknown option `{other}`")),
+        }
+    }
+    let filler: lcc_genfill::cloud::mock::Filler = match fill.as_str() {
+        "mean" => lcc_genfill::cloud::mock::mean_filler(),
+        "patchmatch" => std::sync::Arc::new(|w, h, rgb: &[u8], mask: &[u8], var| {
+            let img: Vec<f32> = rgb.iter().map(|v| f32::from(*v) / 255.0).collect();
+            let hole: Vec<bool> = mask.iter().map(|m| *m >= 128).collect();
+            let p = lcc_inpaint::CompleteParams { seed: u64::from(var) + 1, ..Default::default() };
+            let out = lcc_inpaint::complete(w, h, 3, &img, &hole, &p).unwrap_or_else(|| lcc_inpaint::membrane_fill(w, h, 3, &img, &hole));
+            out.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect()
+        }),
+        other => return Err(format!("genfill-mock: --fill patchmatch|mean, not `{other}`")),
+    };
+    let server =
+        lcc_genfill::cloud::mock::MockServer::start(port, key.as_deref(), filler).map_err(|e| format!("genfill-mock: 127.0.0.1:{port}: {e}"))?;
+    eprintln!(
+        "{} genfill-mock: listening on {} ({fill} fill{}); set {}={} for {}",
+        lcc_brand::CLI_BINARY,
+        server.base,
+        if key.is_some() { ", key required" } else { "" },
+        lcc_brand::env_var("GENFILL_MOCK"),
+        server.base,
+        lcc_brand::DISPLAY_NAME
+    );
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
 }
 
 /// `denoise-serve`: the remote half of AI Denoise (`lcc_denoise::remote`).

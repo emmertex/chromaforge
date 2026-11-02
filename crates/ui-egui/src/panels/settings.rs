@@ -38,6 +38,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("sync", "Sync"),
     ("shortcuts", "Shortcuts"),
     ("controls", "Controls"),
+    ("genfill", "Generative Fill"),
 ];
 
 /// The room Settings ▸ Slideshow wants: its settings column, the gap and the live preview.
@@ -109,6 +110,7 @@ pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &st
         "slideshow" => slideshow_tab(app, ui, t),
         "faces" => super::faces::settings_tab(app, ui, t),
         "denoise" => super::denoise::settings_tab(app, ui, t),
+        "genfill" => super::genfill::settings_tab(app, ui, t),
         "shortcuts" => shortcuts_tab(app, ui, t),
         "controls" => super::controls::settings_tab(app, ui, t),
         #[cfg(not(target_arch = "wasm32"))]
@@ -523,6 +525,13 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).",
         ),
     );
+    let mut dust = d.remove_dust;
+    row(ui, t, "", |ui| {
+        if check(ui, "settings.removeDust", &mut dust, "Remove dust on import") {
+            let _ = app.run("library.preferences", json!({"import": {"removeDust": dust}}));
+        }
+    });
+    hint(ui, t, crate::i18n::tr("After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included)."));
     if per {
         let cams = cameras(app);
         if cams.is_empty() {

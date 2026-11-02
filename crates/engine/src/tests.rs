@@ -2218,3 +2218,34 @@ fn upright_says_why_it_found_nothing_to_correct() {
     let r = s.execute("geometry.upright", &json!({"mode": "off"})).unwrap();
     assert!(r["note"].is_null());
 }
+
+/// The Remove tools behave differently: a clicked Remove spot gets a source it chose and chooses
+/// again when moved (Heal keeps its own); a brushed Remove stroke has none (it is rebuilt from its
+/// surroundings); an explicit `repick` is a no-op for Heal and adds no undo step.
+#[test]
+fn remove_picks_its_own_source_and_heal_keeps_its_own() {
+    let mut s = demo();
+    let id = s.active().unwrap();
+    let r = s.execute("spot.add", &json!({"mode": "remove", "points": [[0.3, 0.4]], "size": 0.02})).unwrap();
+    let i = r["index"].as_u64().unwrap() as usize;
+    assert!(active_dev(&s).spots[i].source_offset.is_some(), "a click: a source of its own");
+    let brushed = s.execute("spot.add", &json!({"mode": "remove", "points": [[0.6, 0.6], [0.65, 0.62], [0.7, 0.6]], "size": 0.02})).unwrap();
+    let b = brushed["index"].as_u64().unwrap() as usize;
+    assert_eq!(active_dev(&s).spots[b].source_offset, None, "a brushed stroke: rebuilt, no source");
+    let heal = s.execute("spot.add", &json!({"mode": "heal", "points": [[0.2, 0.7]], "size": 0.02, "source": [0.1, 0.0]})).unwrap();
+    let hi = heal["index"].as_u64().unwrap() as usize;
+    // moving: Heal keeps its offset (so does Remove: it chooses again only when asked)
+    s.execute("spot.update", &json!({"index": hi, "move": [0.3, -0.2]})).unwrap();
+    assert_eq!(active_dev(&s).spots[hi].source_offset, Some(lcc_geom::Point::new(0.1, 0.0)));
+    let steps = |s: &mut Session| s.execute("history.list", &json!({})).unwrap()["history"].as_array().unwrap().len();
+    s.execute("spot.update", &json!({"index": i, "move": [0.35, 0.3]})).unwrap();
+    assert!(active_dev(&s).spots[i].source_offset.is_some());
+    // asked, Remove chooses again where it now is; then it has that source: asking again changes
+    // nothing (no undo step), nor does asking Heal
+    s.execute("spot.update", &json!({"index": i, "repick": true})).unwrap();
+    let n = steps(&mut s);
+    s.execute("spot.update", &json!({"index": i, "repick": true})).unwrap();
+    s.execute("spot.update", &json!({"index": hi, "repick": true})).unwrap();
+    assert_eq!(steps(&mut s), n);
+    let _ = id;
+}

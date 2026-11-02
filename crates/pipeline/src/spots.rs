@@ -3,8 +3,10 @@
 //! - **Clone** copies the source patch with a feathered edge.
 //! - **Heal** copies the source's *detail* and keeps the target's *tone*: result = src + blur(target − src)
 //!   (frequency separation — a fast, stable approximation of gradient-domain healing).
-//! - **Remove** is Heal with an automatically chosen source: candidate offsets on rings around the
-//!   spot are scored by how well the source's surrounding annulus matches the target's.
+//! - **Remove** picks its own way: a spot with a source (a click: the app chooses the best match
+//!   nearby, scored by how well the source's surrounding annulus matches the target's, and chooses
+//!   again when the spot moves) heals from it; a spot without one (a brushed stroke, which no single
+//!   source fits) is rebuilt from its surroundings like Fill ([`synthesises`]).
 //! - **Fill** (content-aware) rebuilds the spot from patches of its surroundings instead of one
 //!   source: PatchMatch-based completion ([`lcc_inpaint::complete`]), coarse to fine, so the
 //!   structure is chosen at a scale set by the spot's size (the same at preview and export size).
@@ -184,7 +186,7 @@ pub fn window_for_reads_checked(
                 (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
             }
             // the box `apply` works in: the stroke plus a radius, plus its padding
-            let e = (1.0 + f64::from(box_pad(spot.mode))) * r;
+            let e = (1.0 + f64::from(box_pad(spot))) * r;
             let t = [x0 - e, y0 - e, x1 + e, y1 + e];
             let s = match spot.source_offset {
                 Some(o) => {
@@ -256,32 +258,115 @@ pub fn window_for_reads_checked(
 /// The padding around a spot's stroke box that [`apply`] works in, in spot radii. Content-aware
 /// fill reads the spot's surroundings (2 radii); clone, heal and remove read their tone ring (1.5 radii).
 /// [`window_for_reads_checked`] grows a render window by the same amount.
-fn box_pad(mode: SpotMode) -> f32 {
-    if mode == SpotMode::Fill { 2.0 } else { 1.5 }
+fn box_pad(spot: &Spot) -> f32 {
+    if synthesises(spot) { 2.0 } else { 1.5 }
+}
+
+/// Whether `spot` is rebuilt from its surroundings (content-aware synthesis) rather than copied from
+/// one source: Fill, Generate (until its patch is there) and a Remove spot without a source.
+pub fn synthesises(spot: &Spot) -> bool {
+    matches!(spot.mode, SpotMode::Fill | SpotMode::Generate) || (spot.mode == SpotMode::Remove && spot.source_offset.is_none())
+}
+
+/// Whether a Remove spot's stroke is brushed (its points spread further than its radius): one
+/// source rarely fits such an area, so Remove rebuilds it from its surroundings instead.
+pub fn brushed(spot: &Spot) -> bool {
+    let Some(first) = spot.points.first() else { return false };
+    let r = if spot.size.is_finite() { spot.size.max(0.0) } else { 0.0 };
+    spot.points.iter().any(|p| (p.x - first.x).hypot(p.y - first.y) > r)
+}
+
+/// Even Out ([`SpotMode::Flat`]): per pixel and channel, the gain that lifts the box's smooth tone under the stroke
+/// to the tone its surroundings reach there (a membrane-like interpolation from outside the stroke, as Heal's tone
+/// correction), so a soft shadow — sensor dust, a transmission dip — is divided out and the texture inside stays.
+fn flat_gain(tgt: &[[f32; 3]], alpha: &[f32], bw: usize, bh: usize, r: f32) -> Vec<[f32; 3]> {
+    let outside: Vec<f32> = alpha.iter().map(|a| if *a < 0.02 { 1.0 } else { 0.0 }).collect();
+    let around = Rgb32f { width: bw, height: bh, data: tgt.iter().zip(&outside).map(|(t, m)| [t[0] * m, t[1] * m, t[2] * m]).collect() };
+    let wts = lcc_raster::Plane { width: bw, height: bh, data: outside };
+    let sigma = (r * 0.6).max(1.0);
+    let (ba, bm) = (lcc_raster::blur::gaussian(&around, sigma), lcc_raster::blur::gaussian(&wts, sigma));
+    // the spot's own smooth tone: blurred finer than the shadow, coarser than grain
+    let own = lcc_raster::blur::gaussian(&Rgb32f { width: bw, height: bh, data: tgt.to_vec() }, (r * 0.15).max(1.0));
+    ba.data
+        .iter()
+        .zip(&bm.data)
+        .zip(&own.data)
+        .map(|((a, m), o)| {
+            let m = m.max(1e-4);
+            std::array::from_fn(|c| {
+                let (want, has) = (a[c] / m, o[c]);
+                if has > 1e-5 && want.is_finite() { (want / has).clamp(0.5, 3.0) } else { 1.0 }
+            })
+        })
+        .collect()
 }
 
 /// Content-aware fill of the box: `src` becomes `tgt` with every pixel under the stroke (`alpha > 0`)
 /// rebuilt from the rest of the box. Falls back to a smooth membrane fill when the box holds no whole
 /// patch to copy from.
-fn fill_box(src: &mut [[f32; 3]], tgt: &[[f32; 3]], alpha: &[f32], bw: usize, bh: usize, seed: u64) {
-    let hole: Vec<bool> = alpha.iter().map(|a| *a > 0.0).collect();
-    let flat: Vec<f32> = tgt.iter().flatten().copied().collect();
+///
+/// The completion never copies from `exclude` (other spots, faces). It matches patches on the
+/// square root of the linear values (closer to how differences are seen than linear light, where
+/// highlights would dominate every match) and squares the result back.
+#[allow(clippy::too_many_arguments)]
+fn fill_box(src: &mut [[f32; 3]], tgt: &[[f32; 3]], alpha: &[f32], exclude: &[bool], bw: usize, bh: usize, seed: u64) {
+    // one more pixel than drawn: the completion's edge never shows
+    let hole = lcc_inpaint::dilate(bw, bh, &alpha.iter().map(|a| *a > 0.0).collect::<Vec<_>>(), 1);
+    let exclude: Vec<bool> = exclude.iter().zip(&hole).map(|(e, h)| *e && !*h).collect();
+    let flat: Vec<f32> = tgt.iter().flatten().map(|v| v.max(0.0).sqrt()).collect();
+    let guide = lcc_inpaint::Guide { exclude: exclude.iter().any(|e| *e).then_some(exclude.as_slice()) };
     let params = lcc_inpaint::CompleteParams { seed, ..Default::default() };
-    let out = lcc_inpaint::complete(bw, bh, 3, &flat, &hole, &params).unwrap_or_else(|| lcc_inpaint::membrane_fill(bw, bh, 3, &flat, &hole));
+    let out = lcc_inpaint::complete_guided(bw, bh, 3, &flat, &hole, &guide, &params, &|| false)
+        .ok()
+        .flatten()
+        .or_else(|| lcc_inpaint::complete(bw, bh, 3, &flat, &hole, &params))
+        .unwrap_or_else(|| lcc_inpaint::membrane_fill(bw, bh, 3, &flat, &hole));
     let (pixels, _) = out.as_chunks::<3>();
     for (d, v) in src.iter_mut().zip(pixels) {
-        *d = *v;
+        *d = v.map(|c| c * c);
     }
 }
 
+/// How far Fill and Generate grow the painted area by themselves (to take in an object's soft
+/// edge and the start of its shadow): radius `r` becomes `r · GROW + 1` px.
+pub const GROW: f32 = 1.12;
+
 /// Apply all spots to `img` (output resolution). `ppl` = output pixels per long-edge unit.
 pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
+    apply_skipping(img, spots, frame, ppl, &[], &[]);
+}
+
+/// [`apply`], leaving out the spots marked in `skip` (generative spots whose patch was composited
+/// already, see [`crate::genpatch`]). A generative spot without a patch renders as a Fill.
+/// Content-aware fills never copy from other spots or from `avoid` (`[x0, y0, x1, y1]` boxes in
+/// output pixels: faces).
+pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64, skip: &[bool], avoid: &[[f32; 4]]) {
     if spots.is_empty() {
         return;
     }
     let (w, h) = (img.width, img.height);
     let to_out = frame.norm_to_out(w, h);
-    for spot in spots {
+    // every spot's dabs in output pixels (for the exclusion of other spots' areas)
+    let areas: Vec<(Vec<(f32, f32)>, f32)> = spots
+        .iter()
+        .map(|sp| {
+            let r = (sp.size * ppl).max(1.0) as f32 * GROW + 1.0;
+            let pts = sp
+                .points
+                .iter()
+                .map(|p| {
+                    let q = to_out.apply(*p);
+                    (q.x as f32, q.y as f32)
+                })
+                .filter(|p| p.0.is_finite() && p.1.is_finite())
+                .collect();
+            (pts, if r.is_finite() { r } else { 0.0 })
+        })
+        .collect();
+    for (k, spot) in spots.iter().enumerate() {
+        if skip.get(k).copied().unwrap_or(false) {
+            continue;
+        }
         let r = radius_px(spot.size, ppl) as f32;
         let pts: Vec<(f32, f32)> = spot
             .points
@@ -292,9 +377,10 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
             })
             .collect();
         let Some(&first) = pts.first() else { continue };
-        let fill = spot.mode == SpotMode::Fill;
+        let fill = synthesises(spot);
+        let flat = spot.mode == SpotMode::Flat;
         let offset = match spot.source_offset {
-            _ if fill => (0.0, 0.0),
+            _ if fill || flat => (0.0, 0.0),
             Some(o) => {
                 let a = to_out.apply(Point::new(0.0, 0.0));
                 let b = to_out.apply(o);
@@ -304,13 +390,14 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
         };
         // Bounding box of the stroke.
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        let re = if fill { r * GROW + 1.0 } else { r };
         for p in &pts {
-            x0 = x0.min(p.0 - r);
-            y0 = y0.min(p.1 - r);
-            x1 = x1.max(p.0 + r);
-            y1 = y1.max(p.1 + r);
+            x0 = x0.min(p.0 - re);
+            y0 = y0.min(p.1 - re);
+            x1 = x1.max(p.0 + re);
+            y1 = y1.max(p.1 + re);
         }
-        let pad = box_pad(spot.mode) * r;
+        let pad = box_pad(spot) * r;
         let (bx0, by0) = (((x0 - pad).floor().max(0.0)) as usize, ((y0 - pad).floor().max(0.0)) as usize);
         let (bx1, by1) = (((x1 + pad).ceil() as usize).min(w), ((y1 + pad).ceil() as usize).min(h));
         if bx1 <= bx0 || by1 <= by0 {
@@ -327,15 +414,62 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
             for x in 0..bw {
                 let (px, py) = ((bx0 + x) as f32 + 0.5, (by0 + y) as f32 + 0.5);
                 let d = pts.iter().map(|p| ((px - p.0).powi(2) + (py - p.1).powi(2)).sqrt()).fold(f32::MAX, f32::min);
-                let inner = r * (1.0 - feather * 0.8);
-                alpha[y * bw + x] = (1.0 - smooth(inner, r, d)) * opacity;
+                let rr = if fill { r * GROW + 1.0 } else { r };
+                let inner = rr * (1.0 - feather * 0.8);
+                alpha[y * bw + x] = (1.0 - smooth(inner, rr, d)) * opacity;
                 src[y * bw + x] = img.sample_bilinear(px + offset.0, py + offset.1);
                 tgt[y * bw + x] = img.get(bx0 + x, by0 + y);
             }
         }
         if fill {
             let seed = spot.source_offset.map(|o| (o.x.to_bits() ^ o.y.to_bits().rotate_left(32)).wrapping_add(1)).unwrap_or(1);
-            fill_box(&mut src, &tgt, &alpha, bw, bh, seed);
+            let mut exclude = vec![false; bw * bh];
+            for (j, (pts, rj)) in areas.iter().enumerate() {
+                if j == k || pts.is_empty() {
+                    continue;
+                }
+                for p in pts {
+                    let (xa, xb) = ((p.0 - rj - bx0 as f32).floor().max(0.0) as usize, ((p.0 + rj - bx0 as f32).ceil().max(0.0) as usize).min(bw));
+                    let (ya, yb) = ((p.1 - rj - by0 as f32).floor().max(0.0) as usize, ((p.1 + rj - by0 as f32).ceil().max(0.0) as usize).min(bh));
+                    for y in ya..yb {
+                        for x in xa..xb {
+                            let (px, py) = ((bx0 + x) as f32 + 0.5, (by0 + y) as f32 + 0.5);
+                            if (px - p.0).hypot(py - p.1) < *rj
+                                && let Some(e) = exclude.get_mut(y * bw + x)
+                            {
+                                *e = true;
+                            }
+                        }
+                    }
+                }
+            }
+            for b in avoid {
+                let (xa, xb) = ((b[0] - bx0 as f32).floor().max(0.0) as usize, ((b[2] - bx0 as f32).ceil().max(0.0) as usize).min(bw));
+                let (ya, yb) = ((b[1] - by0 as f32).floor().max(0.0) as usize, ((b[3] - by0 as f32).ceil().max(0.0) as usize).min(bh));
+                for y in ya..yb {
+                    for x in xa..xb {
+                        if let Some(e) = exclude.get_mut(y * bw + x) {
+                            *e = true;
+                        }
+                    }
+                }
+            }
+            fill_box(&mut src, &tgt, &alpha, &exclude, bw, bh, seed);
+            // patch voting averages the copied grain away: give the fill the noise of its surroundings
+            let ring: Vec<usize> = alpha.iter().zip(&exclude).enumerate().filter(|(_, (a, e))| **a <= 0.0 && !**e).map(|(i, _)| i).collect();
+            let around = Rgb32f { width: bw, height: bh, data: tgt.clone() };
+            if let Some(photo) = lcc_genfill::noise::estimate(&around, &ring) {
+                let mut filled = Rgb32f { width: bw, height: bh, data: std::mem::take(&mut src) };
+                let inner: Vec<usize> = alpha.iter().enumerate().filter(|(_, a)| **a >= 0.99 * opacity.max(1e-3)).map(|(i, _)| i).collect();
+                let own = lcc_genfill::noise::estimate(&filled, &inner);
+                let changed: Vec<(usize, f32)> = alpha.iter().enumerate().filter(|(_, a)| **a > 0.0).map(|(i, _)| (i, 1.0)).collect();
+                let (vx, vy) = frame.view.map_or((0, 0), |v| (v.x.max(0.0) as u64, v.y.max(0.0) as u64));
+                let noise_seed = spot.stroke_key() ^ k as u64;
+                lcc_genfill::noise::add(&mut filled, &changed, &photo, own.as_ref(), noise_seed, |i| {
+                    ((by0 + i / bw) as u64 + vy) << 32 | ((bx0 + i % bw) as u64 + vx)
+                });
+                src = filled.data;
+            }
         }
         // Clone: Direct 1:1 copy of source patch, feathered and opacity-blended.
         // Heal: Texture transfer from source patch with tone/gradient separation matching target surroundings.
@@ -370,6 +504,7 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
         } else {
             None
         };
+        let gain = if flat { Some(flat_gain(&tgt, &alpha, bw, bh, r)) } else { None };
         for y in 0..bh {
             for x in 0..bw {
                 let i = y * bw + x;
@@ -381,6 +516,9 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
                 if let Some(l) = &low {
                     let d = l.data[i];
                     v = [v[0] + d[0], v[1] + d[1], v[2] + d[2]];
+                }
+                if let Some(g) = gain.as_ref().and_then(|g| g.get(i)) {
+                    v = [tgt[i][0] * g[0], tgt[i][1] * g[1], tgt[i][2] * g[2]];
                 }
                 let t = tgt[i];
                 img.set(bx0 + x, by0 + y, [t[0] + (v[0] - t[0]) * a, t[1] + (v[1] - t[1]) * a, t[2] + (v[2] - t[2]) * a].map(|c| c.max(0.0)));
@@ -408,6 +546,8 @@ mod tests {
                     feather: 0.0,
                     opacity: 0.0,
                     source_offset: Some(Point::new(8.0 / 64.0, 0.0)),
+                    generated: None,
+                    auto: None,
                 };
                 apply(&mut img, &[spot], &frame, frame.px_per_long(64));
                 for (i, (actual, expected)) in img.data.iter().zip(&original.data).enumerate() {
@@ -430,6 +570,8 @@ mod tests {
                 feather: 0.0,
                 opacity: 100.0,
                 source_offset: Some(Point::new(0.125, 0.0)),
+                generated: None,
+                auto: None,
             };
             apply(&mut img, &[spot], &frame, frame.px_per_long(w));
             let (x, y) = (cx as usize, cy as usize);
@@ -437,6 +579,60 @@ mod tests {
             assert_eq!(img.get(x + radius as usize, y), original.get(x + radius as usize, y), "radius stays unchanged at {w}px");
             assert!(img.data.iter().flatten().all(|v| v.is_finite()));
         }
+    }
+
+    /// The tools differ: a brushed Remove without a source is rebuilt from its surroundings (the
+    /// stripes run on through it, as with Content-Aware) and has no GPU kernel; a Remove with a source
+    /// heals from it (as Heal); Clone copies it as it is.
+    #[test]
+    fn remove_rebuilds_a_brushed_stroke_and_heals_a_click() {
+        let (w, h) = (200, 160);
+        let frame = Frame::new(w, h, &DevelopSettings::default(), true);
+        let stroke = Spot {
+            mode: SpotMode::Remove,
+            points: vec![Point::new(0.47, 0.5), Point::new(0.53, 0.5)],
+            size: 0.05,
+            feather: 0.0,
+            ..Default::default()
+        };
+        let mut img = striped_with_blot(w, h, 8);
+        apply(&mut img, std::slice::from_ref(&stroke), &frame, frame.px_per_long(w));
+        let mut err = 0.0f32;
+        for x in 90..110 {
+            let want = if (x / 8) % 2 == 0 { 0.2 } else { 0.7 };
+            err += (img.get(x, 80)[0] - want).abs();
+        }
+        assert!(err / 20.0 < 0.15, "mean error {}", err / 20.0);
+        // with a source: the same pixels as Heal from it
+        let click = Spot { points: vec![Point::new(0.5, 0.5)], source_offset: Some(Point::new(0.0, 0.3)), ..stroke };
+        let (mut a, mut b) = (striped_with_blot(w, h, 8), striped_with_blot(w, h, 8));
+        apply(&mut a, std::slice::from_ref(&click), &frame, frame.px_per_long(w));
+        apply(&mut b, &[Spot { mode: SpotMode::Heal, ..click.clone() }], &frame, frame.px_per_long(w));
+        assert_eq!(a.data, b.data);
+    }
+
+    /// Even Out lifts a soft dust shadow on a textured gradient and keeps the texture inside it.
+    #[test]
+    fn even_out_divides_out_a_soft_shadow_and_keeps_texture() {
+        let tex = |x: usize, y: usize| 0.02 * (((x * 7 + y * 13) % 5) as f32 - 2.0) / 2.0;
+        let clean = Rgb32f::from_fn(160, 120, |x, y| [0.3 + 0.001 * x as f32 + tex(x, y); 3]);
+        let mut img = clean.clone();
+        for y in 0..120 {
+            for x in 0..160 {
+                let d2 = (x as f32 - 80.0).powi(2) + (y as f32 - 60.0).powi(2);
+                let t = 1.0 - 0.12 * (-d2 / (2.0 * 6.0 * 6.0)).exp();
+                let c = img.get(x, y);
+                img.set(x, y, c.map(|v| v * t));
+            }
+        }
+        let frame = Frame::new(160, 120, &DevelopSettings::default(), true);
+        let spot = Spot { mode: SpotMode::Flat, points: vec![Point::new(0.5, 0.5)], size: 16.0 / 160.0, feather: 50.0, ..Default::default() };
+        apply(&mut img, &[spot], &frame, frame.px_per_long(160));
+        // the centre is back to its tone, and the pattern is still there (not a smooth patch)
+        let err = |x: usize, y: usize| (img.get(x, y)[0] - clean.get(x, y)[0]).abs();
+        assert!(err(80, 60) < 0.012, "{} vs {}", img.get(80, 60)[0], clean.get(80, 60)[0]);
+        let (a, b) = (img.get(80, 60)[0] - img.get(81, 60)[0], clean.get(80, 60)[0] - clean.get(81, 60)[0]);
+        assert!((a - b).abs() < 0.008, "texture kept: {a} vs {b}");
     }
 
     /// Vertical stripes (period `period` px) with a black blot over the middle.
@@ -499,6 +695,33 @@ mod tests {
             }
         }
         assert!(err / n as f32 <= 0.08, "mean difference {}", err / n as f32);
+    }
+
+    // Given a hole on the edge of an area to avoid (a face) or another spot, the fill takes nothing from it
+    #[test]
+    fn fill_never_copies_from_faces_or_other_spots() {
+        let (w, h) = (200, 160);
+        let make = || Rgb32f::from_fn(w, h, |x, y| if x >= 100 { [0.6, 0.1, 0.1] } else { [0.2 + ((x * 7 + y * 3) % 5) as f32 * 0.01; 3] });
+        let frame = Frame::new(w, h, &DevelopSettings::default(), true);
+        let spot = Spot { mode: SpotMode::Fill, points: vec![Point::new(0.5, 0.5)], size: 0.06, feather: 0.0, ..Default::default() };
+        let red_in_hole = |img: &Rgb32f| (90..110).filter(|x| img.get(*x, 80)[0] > img.get(*x, 80)[1] * 2.0).count();
+        let mut plain = make();
+        apply(&mut plain, std::slice::from_ref(&spot), &frame, frame.px_per_long(w));
+        assert!(red_in_hole(&plain) > 0, "without exclusion the fill continues the red half");
+        let mut avoided = make();
+        apply_skipping(&mut avoided, std::slice::from_ref(&spot), &frame, frame.px_per_long(w), &[], &[[100.0, 0.0, 200.0, 160.0]]);
+        assert_eq!(red_in_hole(&avoided), 0, "a face box is never a source");
+        // the same with the red half under another spot (applied after this one)
+        let other = Spot {
+            mode: SpotMode::Clone,
+            points: (0..8).map(|i| Point::new(0.6 + i as f64 * 0.05, 0.5)).collect(),
+            size: 0.25,
+            source_offset: Some(Point::new(-0.5, 0.0)),
+            ..Default::default()
+        };
+        let mut spotted = make();
+        apply_skipping(&mut spotted, &[spot, other], &frame, frame.px_per_long(w), &[], &[]);
+        assert_eq!(red_in_hole(&spotted), 0, "another spot's area is never a source");
     }
 
     #[test]

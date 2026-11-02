@@ -28,6 +28,10 @@ pub enum Section {
     Calibration,
     PointColor,
     RedEye,
+    /// Smooth Skin (beyond Lightroom).
+    Skin,
+    /// Repairs of the raw sensor data (a checkbox in the Detail panel).
+    Sensor,
 }
 
 impl Section {
@@ -49,6 +53,8 @@ impl Section {
             Section::Calibration => "Calibration",
             Section::PointColor => "Point Color",
             Section::RedEye => "Red Eye",
+            Section::Skin => "Smooth Skin",
+            Section::Sensor => "Sensor",
         }
     }
 }
@@ -241,6 +247,10 @@ controls! {
     "grading.global.lum" => grading.global.lum, "Global Luminance", Grading, -100, 100, 0, 1, 0, Centered;
     "grading.blending" => grading.blending, "Blending", Grading, 0, 100, 50, 1, 0, Plain;
     "grading.balance" => grading.balance, "Balance", Grading, -100, 100, 0, 1, 0, Centered;
+    "skin.amount" => skin.amount, "Amount", Skin, 0, 100, 0, 1, 0, Plain;
+    "skin.texture" => skin.texture, "Texture", Skin, -100, 100, 0, 1, 0, Centered;
+    "skin.evenTone" => skin.even_tone, "Even Tone", Skin, 0, 100, 0, 1, 0, Plain;
+    "skin.redness" => skin.redness, "Redness", Skin, 0, 100, 0, 1, 0, Plain;
     "effects.texture" => effects.texture, "Texture", Effects, -100, 100, 0, 1, 0, Centered;
     "effects.clarity" => effects.clarity, "Clarity", Effects, -100, 100, 0, 1, 0, Centered;
     "effects.dehaze" => effects.dehaze, "Dehaze", Effects, -100, 100, 0, 1, 0, Centered;
@@ -291,6 +301,7 @@ controls! {
     "calibration.blueHue" => calibration.blue_hue, "Blue Hue", Calibration, -100, 100, 0, 1, 0, Gradient { from: "#30a0d0", to: "#8040d0" };
     "calibration.blueSat" => calibration.blue_sat, "Blue Saturation", Calibration, -100, 100, 0, 1, 0, Gradient { from: "#7a7a7a", to: "#3a60e0" };
     "crop.angle" => crop.geometry.angle, "Straighten", Geometry, -45, 45, 0, 0.01, 2, Centered;
+    "sensor.pixelFix" => sensor.pixel_fix, "Fix Hot and Dead Pixels", Sensor, 0, 1, 1, 1, 0, Plain;
 }
 
 /// Template specs of the indexed controls (`<family>.<field>`; addressed as `<family>.<i>.<field>`).

@@ -115,6 +115,9 @@ fn prefs(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(v) = i.get("showOnCard").and_then(Value::as_bool) {
             d.show_on_card = v;
         }
+        if let Some(v) = i.get("removeDust").and_then(Value::as_bool) {
+            d.remove_dust = v;
+        }
         if let Some(v) = i.get("importDuplicates").and_then(Value::as_bool) {
             d.import_duplicates = v;
         }
