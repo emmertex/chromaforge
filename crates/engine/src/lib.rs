@@ -455,6 +455,8 @@ pub struct Session {
     pub mask_tool_effects: std::collections::BTreeMap<String, String>,
     /// Saved colour-label name sets.
     pub label_sets: Vec<cmd::manage::LabelSet>,
+    /// File-name templates saved by name (Rename Photos, Export), kept with the library's preferences.
+    pub naming_presets: Vec<cmd::manage::NamingPreset>,
     /// Look-alike signatures by content key (Find Similar).
     pub signatures: std::collections::HashMap<String, [f32; 64]>,
     /// Imported `.cube` LUT profiles.
@@ -672,6 +674,7 @@ impl Session {
             mask_effects: Vec::new(),
             mask_tool_effects: Default::default(),
             label_sets: Vec::new(),
+            naming_presets: Vec::new(),
             signatures: Default::default(),
             lut_profiles: Vec::new(),
             target_album: None,
@@ -1850,6 +1853,8 @@ mod tests_merge;
 mod tests_ml;
 #[cfg(test)]
 mod tests_move_to_share;
+#[cfg(test)]
+mod tests_naming;
 #[cfg(test)]
 mod tests_organize;
 #[cfg(test)]

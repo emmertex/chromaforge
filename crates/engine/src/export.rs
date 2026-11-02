@@ -732,6 +732,10 @@ pub struct ExportOptions {
     /// The text of the `{custom}` naming token (Lightroom's Custom Text, as in "Custom Name -
     /// Sequence"); characters not allowed in file names are replaced.
     pub custom_text: String,
+    /// What the naming's `{text:Label}` tags become, by label: typed at export, so a naming preset
+    /// stays fixed (the couple's initials). Never kept in an export preset.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub texts: std::collections::BTreeMap<String, String>,
     /// A specific folder for the whole batch, or each photo's own folder.
     pub destination_mode: DestinationMode,
     /// Created inside the destination folder (empty = none).
@@ -793,6 +797,7 @@ impl Default for ExportOptions {
             naming: "{name}".into(),
             start_number: 1,
             custom_text: String::new(),
+            texts: std::collections::BTreeMap::new(),
             destination_mode: DestinationMode::SpecificFolder,
             subfolder: String::new(),
             conflict: Conflict::Unique,
@@ -841,6 +846,7 @@ pub const OPTION_PARAMS: &[&str] = &[
     "naming",
     "startNumber",
     "customText",
+    "texts",
     "destinationMode",
     "subfolder",
     "conflict",
@@ -978,7 +984,10 @@ impl ExportOptions {
     pub fn from_params_or(p: &serde_json::Value, fallback: ExportFormat) -> crate::Result<Self> {
         let format = Self::export_format(p, fallback);
         Self::validate_as("app.export", p, Some(format))?;
-        Ok(Self { format, ..Self::from_json(p) })
+        let o = Self { format, ..Self::from_json(p) };
+        // every `{text:…}` of the naming needs its text (asked in the dialog)
+        crate::rename::texts_param(&o.naming, p.get("texts")).map_err(|e| crate::EngineError::BadParams { cmd: "app.export".into(), msg: e })?;
+        Ok(o)
     }
 
     /// The format `app.export` writes: `format` (`null`: the default), else the one the extension of
@@ -1093,6 +1102,12 @@ impl ExportOptions {
                 }
                 "naming" | "customText" | "path" | "dir" | "preset" => {
                     string(cmd, k, v)?;
+                }
+                "texts" => {
+                    let Some(o) = v.as_object() else { return Err(bad(format!("`{k}` must be an object of label: text"))) };
+                    if o.values().any(|t| !t.is_string()) {
+                        return Err(bad(format!("`{k}`: each text must be a string")));
+                    }
                 }
                 "sharpen" => parses(k, v, |s| SharpenFor::parse(s).is_some(), &["none", "screen", "matte", "glossy"])?,
                 "sharpenAmount" => parses(k, v, |s| SharpenAmount::parse(s).is_some(), &["low", "standard", "high"])?,
@@ -1237,6 +1252,11 @@ impl ExportOptions {
             naming: s("naming").map_or(d.naming, str::to_string),
             start_number: u("startNumber").map_or(d.start_number, |v| v.min(999_999) as u32),
             custom_text: s("customText").map_or(d.custom_text, str::to_string),
+            texts: p
+                .get("texts")
+                .and_then(serde_json::Value::as_object)
+                .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).take(64).collect())
+                .unwrap_or_default(),
             destination_mode: s("destinationMode").and_then(DestinationMode::parse).unwrap_or(d.destination_mode),
             // stored prefs are read leniently: a subfolder that is a path becomes one folder name
             subfolder: s("subfolder").map_or(d.subfolder, |v| {
@@ -1416,7 +1436,8 @@ impl ExportOptions {
     pub fn file_name_for(&self, p: &lcc_catalog::Photo, seq: usize) -> String {
         let base = if self.naming.trim().is_empty() { "{name}" } else { self.naming.as_str() };
         let n = seq + self.start_number.max(1) as usize - 1;
-        let name = crate::rename::expand_tokens(base, p, n, 3).replace("{custom}", self.custom_text.trim());
+        let base = crate::rename::fill_texts(base, &|l| self.texts.get(l).cloned());
+        let name = crate::rename::expand_tokens(&base, p, n, 3).replace("{custom}", self.custom_text.trim());
         let mut name = portable_stem(&name);
         let (stem, ext) = p.file_name.rsplit_once('.').unwrap_or((&p.file_name, ""));
         if name.trim().is_empty() {
