@@ -1232,9 +1232,10 @@ impl RenderJob {
                 let src = straight.as_ref().unwrap_or(src);
                 // (a straight picture is this job's own: no stage of an earlier render applies to it)
                 let stages = if straight.is_some() { None } else { self.stages.as_deref() };
-                // Thumbnails (many small jobs side by side) stay on the CPU; views and exports use
-                // the GPU when there is one.
-                let gpu = self.cache.is_none();
+                // Views and exports use the GPU when there is one (waiting for the device if it is
+                // still being created). Thumbnails (grid, filmstrip, preset and profile previews)
+                // use it once it is ready, and never wait for it: at startup they render on the CPU.
+                let gpu = self.cache.is_none() || lcc_gpu::ready();
                 // the display fit on the GPU when the render is there and nothing is done to its
                 // full-size image first (a monitor profile's conversion); else below, on the CPU
                 let fit =
