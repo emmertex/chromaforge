@@ -302,6 +302,14 @@ pub struct DevelopSettings {
     pub enhance: Enhance,
     /// Camera calibration: shadows tint and primary hue/saturation (applied before tone mapping).
     pub calibration: Calibration,
+    /// Smooth Skin (beyond Lightroom). Not written while it is the default, so settings without it
+    /// keep their JSON and `hash64`.
+    #[serde(skip_serializing_if = "SkinSmoothing::is_default", deserialize_with = "lenient")]
+    pub skin: SkinSmoothing,
+    /// The skin and faces the models found for Smooth Skin on this photo (its own data: in no
+    /// settings group, so copy, paste, sync and presets never carry it).
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub skin_analysis: Option<SkinAnalysis>,
     /// Section on/off toggles (the "eye" buttons on panel headers): section id → enabled.
     #[serde(deserialize_with = "capped::<MAX_DISABLED_SECTIONS, _, _>")]
     pub disabled_sections: Vec<String>,
@@ -394,6 +402,8 @@ impl Default for DevelopSettings {
             lens_blur: LensBlur::default(),
             enhance: Enhance::default(),
             calibration: Calibration::default(),
+            skin: SkinSmoothing::default(),
+            skin_analysis: None,
             disabled_sections: Vec::new(),
             plugin_filters: Vec::new(),
         }
@@ -1595,6 +1605,143 @@ impl Enhance {
     pub fn denoise_enabled(&self) -> bool {
         self.denoise_on.unwrap_or(self.denoise > 0.0)
     }
+}
+
+/// Which skin Smooth Skin works on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkinArea {
+    /// The face's skin (never the eyes, brows, lips or facial hair).
+    #[default]
+    Face,
+    /// Shoulders, arms, back, hands: skin that is not the face.
+    Body,
+    Both,
+}
+
+impl SkinArea {
+    /// `face`, `body` or `both` (case-insensitive).
+    pub fn parse(name: &str) -> Option<SkinArea> {
+        match name.to_ascii_lowercase().as_str() {
+            "face" | "face skin" => Some(SkinArea::Face),
+            "body" | "body skin" => Some(SkinArea::Body),
+            "both" | "all" | "face and body" => Some(SkinArea::Both),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SkinArea::Face => "face",
+            SkinArea::Body => "body",
+            SkinArea::Both => "both",
+        }
+    }
+}
+
+/// Smooth Skin: frequency separation on the scene-linear image inside the skin the models found
+/// ([`SkinAnalysis`]). Its bands are measured in each face's eye distance, so a preview and an
+/// export look alike. All zero is off.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkinSmoothing {
+    /// 0..100: softens the middle band (uneven texture, small bumps), keeping edges.
+    pub amount: f64,
+    /// −100..100: the fine band (pores). 0 keeps it as it is; below softens it, above brings it out.
+    pub texture: f64,
+    /// 0..100: evens out blotches of tone and colour (the low band).
+    pub even_tone: f64,
+    /// 0..100: reduces patches redder than the skin around them.
+    pub redness: f64,
+    pub area: SkinArea,
+    /// 0: everyone; n: the n-th person from the left (by their face), as People masks count.
+    pub person: u32,
+}
+
+impl Default for SkinSmoothing {
+    fn default() -> Self {
+        Self { amount: 0.0, texture: 0.0, even_tone: 0.0, redness: 0.0, area: SkinArea::Face, person: 0 }
+    }
+}
+
+impl SkinSmoothing {
+    /// Most people Smooth Skin tells apart (Person 1 to 4, as the People mask offers).
+    pub const MAX_PERSON: u32 = 4;
+    /// The subtle starting point Smooth Skin is switched on with.
+    pub const SUBTLE: SkinSmoothing =
+        SkinSmoothing { amount: 35.0, texture: 0.0, even_tone: 25.0, redness: 20.0, area: SkinArea::Face, person: 0 };
+
+    pub fn is_default(&self) -> bool {
+        *self == SkinSmoothing::default()
+    }
+
+    /// Whether it changes anything (some slider away from zero).
+    pub fn active(&self) -> bool {
+        let on = |v: f64| v.is_finite() && v != 0.0;
+        on(self.amount) || on(self.texture) || on(self.even_tone) || on(self.redness)
+    }
+}
+
+/// A face Smooth Skin measures its bands by: its centre (normalized, of the uncropped, upright
+/// photo) and the distance between its eyes (a fraction of the photo's long edge).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SkinFace {
+    pub x: f64,
+    pub y: f64,
+    pub eyes: f64,
+}
+
+/// Most faces a stored analysis keeps (a hostile document can't make rendering explode).
+pub const MAX_SKIN_FACES: usize = 64;
+
+/// What the models found for Smooth Skin on one photo: its skin (for [`SkinArea`] `area` and
+/// `person`, with the photo turned to `orientation`) and its faces. Recomputed when any of
+/// those changes; rendering never needs the models.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SkinAnalysis {
+    pub area: SkinArea,
+    pub person: u32,
+    pub orientation: Orientation,
+    pub seg: crate::SegMask,
+    #[serde(default, deserialize_with = "de_skin_faces")]
+    pub faces: Vec<SkinFace>,
+}
+
+impl SkinAnalysis {
+    /// Whether it was made for these settings on a photo turned to `orientation`.
+    pub fn is_for(&self, s: &SkinSmoothing, orientation: Orientation) -> bool {
+        self.area == s.area && self.person == s.person && self.orientation == orientation
+    }
+}
+
+/// A value that doesn't read (damaged, or from a newer LightCraft) is its default: it costs that
+/// value, never the photo's other settings.
+fn lenient<'de, D: serde::Deserializer<'de>, T: Default + serde::de::DeserializeOwned>(d: D) -> Result<T, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or_default())
+}
+
+/// Keep at most [`MAX_SKIN_FACES`] faces (the rest are skipped unread).
+fn de_skin_faces<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<SkinFace>, D::Error> {
+    struct Capped;
+    impl<'de> serde::de::Visitor<'de> for Capped {
+        type Value = Vec<SkinFace>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a list of faces")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<SkinFace>, A::Error> {
+            let mut out = Vec::new();
+            while out.len() < MAX_SKIN_FACES {
+                match seq.next_element::<SkinFace>()? {
+                    Some(f) => out.push(f),
+                    None => return Ok(out),
+                }
+            }
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(out)
+        }
+    }
+    d.deserialize_seq(Capped)
 }
 
 /// HDR editing. When enabled, an HDR render ([`Hdr::peak`]) keeps highlights above SDR white (1.0)

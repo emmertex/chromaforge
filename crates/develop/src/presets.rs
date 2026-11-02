@@ -41,10 +41,13 @@ pub enum SettingsGroup {
     LensBlur,
     Calibration,
     PluginFilters,
+    /// Smooth Skin's sliders and which skin it works on (never the skin found on the photo: each
+    /// photo's own is found for it).
+    SmoothSkin,
 }
 
 impl SettingsGroup {
-    pub const ALL: [SettingsGroup; 21] = [
+    pub const ALL: [SettingsGroup; 22] = [
         SettingsGroup::Profile,
         SettingsGroup::Treatment,
         SettingsGroup::WhiteBalance,
@@ -66,13 +69,14 @@ impl SettingsGroup {
         SettingsGroup::LensBlur,
         SettingsGroup::Calibration,
         SettingsGroup::PluginFilters,
+        SettingsGroup::SmoothSkin,
     ];
 
     /// Groups included by default when copying (Lightroom excludes crop, masks and spots by default).
     pub fn default_copy() -> Vec<SettingsGroup> {
         SettingsGroup::ALL
             .into_iter()
-            .filter(|g| !matches!(g, SettingsGroup::Crop | SettingsGroup::Masks | SettingsGroup::Spots | SettingsGroup::RedEye))
+            .filter(|g| !matches!(g, SettingsGroup::Crop | SettingsGroup::Masks | SettingsGroup::Spots | SettingsGroup::RedEye | SettingsGroup::SmoothSkin))
             .collect()
     }
 
@@ -99,6 +103,7 @@ impl SettingsGroup {
             SettingsGroup::LensBlur => "Lens Blur",
             SettingsGroup::Calibration => "Calibration",
             SettingsGroup::PluginFilters => "Plug-in Filters",
+            SettingsGroup::SmoothSkin => "Smooth Skin",
         }
     }
 
@@ -126,6 +131,7 @@ impl SettingsGroup {
             SettingsGroup::LensBlur => &["lens_blur"],
             SettingsGroup::Calibration => &["calibration"],
             SettingsGroup::PluginFilters => &["plugin_filters"],
+            SettingsGroup::SmoothSkin => &["skin"],
         }
     }
 }
@@ -142,6 +148,10 @@ pub fn extract_groups(s: &DevelopSettings, groups: &[SettingsGroup]) -> Value {
                 // Not written while empty: an empty stack still replaces the target's on paste.
                 out.insert((*k).to_string(), Value::Array(Vec::new()));
             }
+        }
+        // (not written while off: copying it off still switches it off where it is pasted)
+        if *g == SettingsGroup::SmoothSkin && !out.contains_key("skin") {
+            out.insert("skin".into(), serde_json::to_value(crate::SkinSmoothing::default()).unwrap_or(Value::Null));
         }
     }
     // the Camera colour is left out of the settings while it is Auto; a preset or a sync of the Profile group still

@@ -230,6 +230,8 @@ impl DevelopSettings {
 
 #[cfg(test)]
 mod tests_process;
+#[cfg(test)]
+mod tests_skin;
 
 #[cfg(test)]
 mod tests {
