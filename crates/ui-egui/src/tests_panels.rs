@@ -3163,3 +3163,37 @@ fn settling_waits_for_the_missing_photos_count() {
     // the next one before the last finished, and settling would never end
     assert!(h.settle(Duration::from_secs(30)), "the sidebar settles while a slow count refreshes");
 }
+
+/// "I" toggles the Info panel; pressing it again brings back exactly what the right column showed
+/// before, closed included (ported from OneSlips' KEY-INFO).
+#[test]
+fn info_toggled_off_brings_back_exactly_what_was_there() {
+    use crate::state::RightPanel;
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+    let r = h.request("ui.set", json!({"view": "detail", "right": "edit"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let exec = |h: &mut Headless, id: &str| {
+        let r = h.request("ui.menu.invoke", json!({"id": id}), T);
+        assert_eq!(r["ok"], true, "{id}: {r}");
+        h.step();
+        h.step();
+    };
+    assert_eq!(h.app.ui.right, RightPanel::Edit);
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Info);
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Edit, "Edit → I → I = Edit");
+    exec(&mut h, "panel.masking");
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Info);
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Masking, "Masks → I → I = Masks");
+    h.app.ui.right = RightPanel::None;
+    h.step();
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Info);
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::None, "closed → I → I = closed");
+}

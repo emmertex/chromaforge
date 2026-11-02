@@ -1185,6 +1185,10 @@ pub fn run_item(app: &mut LccApp, id: &str, params: Value) -> Result<Value, Stri
     if culling_cmd {
         crate::panels::compare::target_active(app, &mut params);
     }
+    if id == "library.deleteRejected" && params.get("files").is_none() {
+        // always asked: it can move files to the trash
+        return crate::menus::ask_delete_rejected(app);
+    }
     if id == "photo.delete" && crate::menus::confirm_delete(app) {
         return Ok(Value::Null);
     }
@@ -1200,7 +1204,7 @@ pub fn run_item(app: &mut LccApp, id: &str, params: Value) -> Result<Value, Stri
     }
     let was = app.session.active();
     let r = app.run(id, params);
-    if culling_cmd && r.is_ok() && app.ui.auto_advance {
+    if culling_cmd && r.is_ok() && app.auto_advance_on() {
         crate::panels::compare::advance(app, was);
     }
     r

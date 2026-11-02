@@ -108,7 +108,10 @@ impl eframe::App for App {
         if let Err(e) = self.1.save(&self.0) {
             log::error!("{e}");
         }
-        catalog_hooks::backup_if_due(&mut self.0.session);
+        // Skip This Time in the quit prompt: no backup on this quit
+        if self.0.exit_backup != Some(false) {
+            catalog_hooks::backup_if_due(&mut self.0.session);
+        }
         if let Err(e) = self.0.session.close_library() {
             log::error!("saving the library failed: {e}");
         }

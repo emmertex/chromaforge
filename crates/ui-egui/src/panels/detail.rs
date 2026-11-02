@@ -4450,139 +4450,151 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
         true,
         app.ui.settings.wheel_scroll_speed,
     );
-    egui::ScrollArea::horizontal().id_salt("filmstrip").auto_shrink([false, false]).show_viewport(&mut child, |ui, vp| {
-        if wheel != egui::Vec2::ZERO {
-            ui.scroll_with_delta_animation(wheel, egui::style::ScrollAnimation::none());
-        }
-        let (area, _) = ui.allocate_exact_size(vec2(ids.len() as f32 * cell_w, r.height() - 16.0), Sense::hover());
-        app.film_scroll = Some(vp.left());
-        for (i, id) in ids.iter().enumerate() {
-            let cr = Rect::from_min_size(pos2(area.left() + i as f32 * cell_w, area.top()), vec2(cell_w, area.height()));
-            let local = Rect::from_min_size(pos2(i as f32 * cell_w, 0.0), cr.size());
-            // centred when it is (partly) off screen; a click on a visible thumbnail leaves the strip alone
-            if follow && Some(*id) == active && !(local.left() >= vp.left() && local.right() <= vp.right()) {
-                ui.scroll_to_rect(cr, Some(egui::Align::Center));
+    // a bar that can be seen and grabbed, as in the grid, its handle always there
+    super::grid::visible_scroll_bar(&mut child);
+    egui::ScrollArea::horizontal()
+        .id_salt("filmstrip")
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .show_viewport(&mut child, |ui, vp| {
+            if wheel != egui::Vec2::ZERO {
+                ui.scroll_with_delta_animation(wheel, egui::style::ScrollAnimation::none());
             }
-            if !local.intersects(vp.expand2(vec2(cell_w * 4.0, 0.0))) {
-                continue;
-            }
-            // in the Map module photos are dragged from the strip onto the map to geotag them
-            let map = app.ui.module == crate::module::ModuleId::Map;
-            // in a regular album they are dragged along the strip to put them in Custom Order
-            let reorder = !map && super::grid::custom_order_album(app).is_some();
-            // cells drawn ahead of the scroll (off view, under the side panels) take no clicks or
-            // keyboard focus: Tab never lands on a thumbnail nobody can see
-            let sense = if !local.intersects(vp) {
-                Sense::hover()
-            } else if map || reorder {
-                Sense::click_and_drag()
-            } else {
-                Sense::click()
-            };
-            let resp = ui.interact(cr, egui::Id::new(("film", id.0)), sense);
-            // asked for first: a failure left by an earlier request is not this tile's verdict once a new one is on its way
-            super::grid::request_thumb(app, *id, (256.0 * ppp.min(2.0) / 2.0) as usize * 2, 8);
-            let failed = app.renderer.thumb(*id).is_none() && app.renderer.thumb_failure(*id).is_some();
-            crate::widgets::announce(&resp, film_spoken(app.session.catalog.photo(*id).map_or("", |p| p.file_name.as_str()), failed));
-            if (map || reorder) && resp.drag_started() {
-                if !app.session.selection.contains(*id) {
-                    let _ = app.run("library.select", json!({"ids": [id.0]}));
+            let (area, _) = ui.allocate_exact_size(vec2(ids.len() as f32 * cell_w, r.height() - 16.0), Sense::hover());
+            app.film_scroll = Some(vp.left());
+            for (i, id) in ids.iter().enumerate() {
+                let cr = Rect::from_min_size(pos2(area.left() + i as f32 * cell_w, area.top()), vec2(cell_w, area.height()));
+                let local = Rect::from_min_size(pos2(i as f32 * cell_w, 0.0), cr.size());
+                // centred when it is (partly) off screen; a click on a visible thumbnail leaves the strip alone
+                if follow && Some(*id) == active && !(local.left() >= vp.left() && local.right() <= vp.right()) {
+                    ui.scroll_to_rect(cr, Some(egui::Align::Center));
                 }
-                app.ui.dragging_photos = Some(app.session.selection.ids.iter().map(|p| p.0).collect());
-            } else if reorder && let Some(dragged) = app.ui.dragging_photos.clone() {
-                super::grid::reorder_drop(app, ui, *id, cr, &dragged);
-            }
-            register(ui.ctx(), format!("film:{}", id.0), cr);
-            let state = app.session.selection.state_of(*id);
-            let p = ui.painter();
-            let label = app.session.catalog.photo(*id).and_then(|ph| ph.label);
-            let selected = state != lcc_engine::SelectionState::NotSelected;
-            let base = if selected {
-                t.cell_selected
-            } else if resp.hovered() {
-                t.cell_selected.gamma_multiply(0.6)
-            } else {
-                t.canvas
-            };
-            p.rect_filled(cr, 0.0, crate::theme::label_background(base, label, selected));
-            let names = app.ui.settings.film_names;
-            if let Some(ph) = app.session.catalog.photo(*id).filter(|_| names) {
-                let name = ph.file_name.rsplit_once('.').map(|(n, _)| n).unwrap_or(&ph.file_name);
-                p.text(pos2(cr.left() + 8.0, cr.top() + 10.0), Align2::LEFT_CENTER, film_label(name), t.font(10.0), t.text_dim);
-                p.text(pos2(cr.right() - 8.0, cr.top() + 10.0), Align2::RIGHT_CENTER, &ph.format, t.semibold(8.5), t.text_dim);
-            }
-            let img_area = Rect::from_min_max(cr.min + vec2(10.0, 22.0), cr.max - vec2(10.0, 8.0));
-            let thumb = app.renderer.thumb(*id);
-            if thumb.is_none() {
-                p.rect_filled(img_area, 0.0, t.skeleton);
-                if failed {
-                    p.text(img_area.center(), Align2::CENTER_CENTER, "!", t.semibold(14.0), t.text);
+                if !local.intersects(vp.expand2(vec2(cell_w * 4.0, 0.0))) {
+                    continue;
+                }
+                // in the Map module photos are dragged from the strip onto the map to geotag them
+                let map = app.ui.module == crate::module::ModuleId::Map;
+                // in a regular album they are dragged along the strip to put them in Custom Order
+                let reorder = !map && super::grid::custom_order_album(app).is_some();
+                // cells drawn ahead of the scroll (off view, under the side panels) take no clicks or
+                // keyboard focus: Tab never lands on a thumbnail nobody can see
+                let sense = if !local.intersects(vp) {
+                    Sense::hover()
+                } else if map || reorder {
+                    Sense::click_and_drag()
                 } else {
-                    super::grid::paint_loading_cue(p, &t, img_area, img_area, "film:badge:loading:", id.0);
+                    Sense::click()
+                };
+                let resp = ui.interact(cr, egui::Id::new(("film", id.0)), sense);
+                // asked for first: a failure left by an earlier request is not this tile's verdict once a new one is on its way
+                super::grid::request_thumb(app, *id, (256.0 * ppp.min(2.0) / 2.0) as usize * 2, 8);
+                let failed = app.renderer.thumb(*id).is_none() && app.renderer.thumb_failure(*id).is_some();
+                crate::widgets::announce(&resp, film_spoken(app.session.catalog.photo(*id).map_or("", |p| p.file_name.as_str()), failed));
+                if (map || reorder) && resp.drag_started() {
+                    if !app.session.selection.contains(*id) {
+                        let _ = app.run("library.select", json!({"ids": [id.0]}));
+                    }
+                    app.ui.dragging_photos = Some(app.session.selection.ids.iter().map(|p| p.0).collect());
+                } else if reorder && let Some(dragged) = app.ui.dragging_photos.clone() {
+                    super::grid::reorder_drop(app, ui, *id, cr, &dragged);
                 }
-            }
-            if let Some(tex) = thumb {
-                let [tw, th] = tex.size;
-                let s = (img_area.width() / tw as f32).min(img_area.height() / th as f32);
-                let fr = Rect::from_center_size(img_area.center(), vec2(tw as f32 * s, th as f32 * s));
-                p.image(tex.tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                super::grid::selection_ring(p, &t, fr, state);
-                if app.ui.settings.film_badges
-                    && let Some(ph) = app.session.catalog.photo(*id)
-                {
-                    film_badges(p, &t, fr, ph);
+                register(ui.ctx(), format!("film:{}", id.0), cr);
+                let state = app.session.selection.state_of(*id);
+                let p = ui.painter();
+                let label = app.session.catalog.photo(*id).and_then(|ph| ph.label);
+                let selected = state != lcc_engine::SelectionState::NotSelected;
+                let base = if selected {
+                    t.cell_selected
+                } else if resp.hovered() {
+                    t.cell_selected.gamma_multiply(0.6)
+                } else {
+                    t.canvas
+                };
+                p.rect_filled(cr, 0.0, crate::theme::label_background(base, label, selected));
+                let names = app.ui.settings.film_names;
+                if let Some(ph) = app.session.catalog.photo(*id).filter(|_| names) {
+                    let name = ph.file_name.rsplit_once('.').map(|(n, _)| n).unwrap_or(&ph.file_name);
+                    p.text(pos2(cr.left() + 8.0, cr.top() + 10.0), Align2::LEFT_CENTER, film_label(name), t.font(10.0), t.text_dim);
+                    p.text(pos2(cr.right() - 8.0, cr.top() + 10.0), Align2::RIGHT_CENTER, &ph.format, t.semibold(8.5), t.text_dim);
                 }
-                if let Some(st) = app.session.catalog.stack_of(*id) {
-                    let collapsed = st.collapsed;
-                    let text =
-                        if collapsed { st.photos.len().to_string() } else { format!("{}/{}", st.position(*id).unwrap_or(0) + 1, st.photos.len()) };
-                    let g = p.layout_no_wrap(text, t.semibold(9.5), Color32::WHITE);
-                    let br = Rect::from_min_size(fr.min + vec2(3.0, 3.0), vec2(g.size().x + 22.0, 15.0));
-                    // like the grid's badge: a click expands / collapses the stack
-                    let badge = ui.interact(br, egui::Id::new(("film-stack-badge", id.0)), Sense::click()).on_hover_text(if collapsed {
-                        "Stack — click to expand"
+                let img_area = Rect::from_min_max(cr.min + vec2(10.0, 22.0), cr.max - vec2(10.0, 8.0));
+                let thumb = app.renderer.thumb(*id);
+                // the picture: a click outside it (on the frame) selects this photo alone
+                let mut picture = img_area;
+                if thumb.is_none() {
+                    p.rect_filled(img_area, 0.0, t.skeleton);
+                    if failed {
+                        p.text(img_area.center(), Align2::CENTER_CENTER, "!", t.semibold(14.0), t.text);
                     } else {
-                        "Stack — click to collapse"
-                    });
-                    crate::widgets::announce(&badge, crate::i18n::tr(if collapsed { "Expand Stack" } else { "Collapse Stack" }));
-                    register(ui.ctx(), format!("filmstack:{}", id.0), br);
-                    let p = ui.painter();
-                    let fill = if badge.hovered() { Color32::from_black_alpha(230) } else { Color32::from_black_alpha(170) };
-                    p.rect_filled(br, 7.5, fill);
-                    crate::icons::paint(p, Rect::from_min_size(br.min + vec2(4.0, 2.0), vec2(11.0, 11.0)), crate::icons::Icon::Stack, Color32::WHITE);
-                    p.galley(pos2(br.min.x + 17.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
-                    if badge.clicked() {
-                        super::grid::toggle_stack(app, ui.ctx(), *id);
+                        super::grid::paint_loading_cue(p, &t, img_area, img_area, "film:badge:loading:", id.0);
                     }
                 }
-            }
-            if resp.clicked() {
-                let m = ui.input(|i| i.modifiers);
-                let compare = app.ui.view == crate::state::ViewMode::Compare;
-                let r = if compare && !m.command && !m.shift {
-                    // Compare: the clicked photo replaces the active side (or swaps with the other one)
-                    app.run("compare.set", json!({"id": id.0}))
-                } else if compare {
-                    // ⌘/Ctrl- and Shift-clicks change the selection; the pair on screen stays (#187)
-                    super::compare::select_with_modifier(app, *id, !m.command)
-                } else {
-                    let mode = if m.command {
-                        "toggle"
-                    } else if m.shift {
-                        "range"
-                    } else {
-                        "replace"
-                    };
-                    app.run("library.select", json!({"ids": [id.0], "mode": mode}))
-                };
-                if compare && let Err(e) = r {
-                    app.toast(ui.ctx(), e);
+                if let Some(tex) = thumb {
+                    let [tw, th] = tex.size;
+                    let s = (img_area.width() / tw as f32).min(img_area.height() / th as f32);
+                    let fr = Rect::from_center_size(img_area.center(), vec2(tw as f32 * s, th as f32 * s));
+                    picture = fr;
+                    p.image(tex.tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    super::grid::selection_ring(p, &t, fr, state);
+                    if app.ui.settings.film_badges
+                        && let Some(ph) = app.session.catalog.photo(*id)
+                    {
+                        film_badges(p, &t, fr, ph);
+                    }
+                    if let Some(st) = app.session.catalog.stack_of(*id) {
+                        let collapsed = st.collapsed;
+                        let text = if collapsed {
+                            st.photos.len().to_string()
+                        } else {
+                            format!("{}/{}", st.position(*id).unwrap_or(0) + 1, st.photos.len())
+                        };
+                        let g = p.layout_no_wrap(text, t.semibold(9.5), Color32::WHITE);
+                        let br = Rect::from_min_size(fr.min + vec2(3.0, 3.0), vec2(g.size().x + 22.0, 15.0));
+                        // like the grid's badge: a click expands / collapses the stack
+                        let badge = ui.interact(br, egui::Id::new(("film-stack-badge", id.0)), Sense::click()).on_hover_text(if collapsed {
+                            "Stack — click to expand"
+                        } else {
+                            "Stack — click to collapse"
+                        });
+                        crate::widgets::announce(&badge, crate::i18n::tr(if collapsed { "Expand Stack" } else { "Collapse Stack" }));
+                        register(ui.ctx(), format!("filmstack:{}", id.0), br);
+                        let p = ui.painter();
+                        let fill = if badge.hovered() { Color32::from_black_alpha(230) } else { Color32::from_black_alpha(170) };
+                        p.rect_filled(br, 7.5, fill);
+                        crate::icons::paint(
+                            p,
+                            Rect::from_min_size(br.min + vec2(4.0, 2.0), vec2(11.0, 11.0)),
+                            crate::icons::Icon::Stack,
+                            Color32::WHITE,
+                        );
+                        p.galley(pos2(br.min.x + 17.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
+                        if badge.clicked() {
+                            super::grid::toggle_stack(app, ui.ctx(), *id);
+                        }
+                    }
                 }
+                if resp.clicked() {
+                    let m = ui.input(|i| i.modifiers);
+                    let compare = app.ui.view == crate::state::ViewMode::Compare;
+                    let r = if compare && !m.command && !m.shift {
+                        // Compare: the clicked photo replaces the active side (or swaps with the other one)
+                        app.run("compare.set", json!({"id": id.0}))
+                    } else if compare {
+                        // ⌘/Ctrl- and Shift-clicks change the selection; the pair on screen stays (#187)
+                        super::compare::select_with_modifier(app, *id, !m.command)
+                    } else {
+                        // on the picture: the active photo changes, the set stays; on the frame: this photo alone
+                        let on_picture = resp.interact_pointer_pos().is_none_or(|at| picture.contains(at));
+                        app.run("library.select", json!({"ids": [id.0], "mode": super::grid::click_mode(m, on_picture)}))
+                    };
+                    if compare && let Err(e) = r {
+                        app.toast(ui.ctx(), e);
+                    }
+                }
+                // the same photo actions as the grid and loupe (Restore / Delete Permanently in Recently Deleted)
+                crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
             }
-            // the same photo actions as the grid and loupe (Restore / Delete Permanently in Recently Deleted)
-            crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
-        }
-    });
+        });
 }
 
 /// What a screen reader says for a filmstrip thumbnail: the file, and why there is no picture

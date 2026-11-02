@@ -312,6 +312,8 @@ struct PrefsFile {
     mask_tool_effects: std::collections::BTreeMap<String, String>,
     /// Colour-label name sets.
     label_sets: Vec<crate::cmd::manage::LabelSet>,
+    /// File-name templates saved by name (Rename Photos, Export).
+    naming_presets: Vec<crate::cmd::manage::NamingPreset>,
     /// Imported LUT profiles.
     lut_profiles: Vec<crate::cmd::lut_profiles::LutProfile>,
     /// Keyword sets, the one in use, recent keywords.
@@ -618,6 +620,8 @@ impl Session {
         self.mask_effects = prefs.mask_effects;
         self.mask_tool_effects = prefs.mask_tool_effects;
         self.label_sets = prefs.label_sets;
+        self.naming_presets =
+            prefs.naming_presets.into_iter().filter(|p| !p.name.trim().is_empty()).take(crate::cmd::manage::MAX_NAMING_PRESETS).collect();
         self.lut_profiles = prefs.lut_profiles;
         crate::cmd::lut_profiles::register_all(self, on_disk.then(|| dir.join("Profiles")).as_deref());
         self.keyword_sets = prefs.keyword_sets;
@@ -985,6 +989,7 @@ impl Session {
             mask_effects: self.mask_effects.clone(),
             mask_tool_effects: self.mask_tool_effects.clone(),
             label_sets: self.label_sets.clone(),
+            naming_presets: self.naming_presets.clone(),
             lut_profiles: self.lut_profiles.clone(),
             keyword_sets: self.keyword_sets.clone(),
             keyword_set: self.keyword_set.clone(),

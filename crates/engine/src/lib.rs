@@ -295,6 +295,12 @@ pub struct Session {
     /// place in the order ([`Session::visible`]). It is also what a held view holds ([`Session::hold_view`]).
     /// Another source, filter or sort is another view, and so is a smart album whose rules were changed.
     base: Option<(String, u64, Vec<PhotoId>)>,
+    /// Select All (`library.selectAll`) was the last change to the selection, in the view named here: while the
+    /// selection is still exactly what the view shows, photos that join the view (an import still adding them)
+    /// join the selection too.
+    pub(crate) all_selected: Option<String>,
+    /// Show Alternatives is on: the original photo, and the view to go back to.
+    pub alternatives: Option<cmd::alternatives::Alternatives>,
     /// How many times the view followed an edit from the list it had, and how many times it was worked out from
     /// every photo (`ui.inspect` → `perf`): what tells a slow library from a slow edit.
     pub view_followed: u64,
@@ -462,6 +468,8 @@ pub struct Session {
     pub mask_tool_effects: std::collections::BTreeMap<String, String>,
     /// Saved colour-label name sets.
     pub label_sets: Vec<cmd::manage::LabelSet>,
+    /// File-name templates saved by name (Rename Photos, Export), kept with the library's preferences.
+    pub naming_presets: Vec<cmd::manage::NamingPreset>,
     /// Look-alike signatures by content key (Find Similar).
     pub signatures: std::collections::HashMap<String, [f32; 64]>,
     /// Imported `.cube` LUT profiles.
@@ -601,6 +609,8 @@ impl Session {
             visible_clock_minute: None,
             hold_view: false,
             base: None,
+            all_selected: None,
+            alternatives: None,
             view_followed: 0,
             view_worked_out: 0,
             #[cfg(test)]
@@ -684,6 +694,7 @@ impl Session {
             mask_effects: Vec::new(),
             mask_tool_effects: Default::default(),
             label_sets: Vec::new(),
+            naming_presets: Vec::new(),
             signatures: Default::default(),
             lut_profiles: Vec::new(),
             target_album: None,
@@ -1506,7 +1517,7 @@ impl Session {
             });
             // Views whose order or photos are not the query's alone are worked out whole each time: an album in
             // its own order, Recently Added (how far back it reaches moves with every import), Missing Photos.
-            let own_order = matches!(self.source, LibrarySource::Album(a) if self.sort.key == lcc_catalog::SortKey::CaptureDate
+            let own_order = matches!(self.source, LibrarySource::Album(a) if self.sort.key == lcc_catalog::SortKey::Custom
                 && self.filter == Filter::default()
                 && self.catalog.album(a).is_some_and(|al| !al.is_smart()));
             let whole = own_order || matches!(self.source, LibrarySource::RecentlyAdded | LibrarySource::Missing);
@@ -1544,35 +1555,16 @@ impl Session {
                 self.library_folder = None;
                 return self.visible();
             }
-            if matches!(self.source, LibrarySource::Album(_))
-                && self.sort.key == lcc_catalog::SortKey::CaptureDate
-                && let LibrarySource::Album(a) = self.source
-                && let Some(al) = self.catalog.album(a)
-                && !al.is_smart()
-                && self.filter == Filter::default()
-            {
-                // each photo's place looked up, not searched for (a big album sorted in O(n log n))
-                let mut place: std::collections::HashMap<PhotoId, usize> = std::collections::HashMap::with_capacity(al.photos.len());
-                for (i, id) in al.photos.iter().enumerate() {
-                    place.entry(*id).or_insert(i);
-                }
-                visible.sort_by_key(|id| place.get(id).copied().unwrap_or(usize::MAX));
-                if !self.sort.ascending {
-                    visible.reverse();
-                }
-            }
+            // a collection shown by capture time is in capture time like every view: filled card by card, it no longer
+            // shows one camera after the other; its own order is Custom Order (the catalog query gives it)
             if self.source == LibrarySource::RecentlyAdded {
-                // newest import first, whatever the sort direction (the grid groups by import day);
-                // a batch stays in file order (name, then id)
-                let cat = &self.catalog;
-                visible.sort_by(|a, b| {
-                    let key = |id: &PhotoId| cat.photo(*id).map(|p| p.imported.clone()).unwrap_or_default();
-                    let name = |id: &PhotoId| cat.photo(*id).map(|p| p.file_name.as_str());
-                    let by_name = match (name(a), name(b)) {
-                        (Some(x), Some(y)) => lcc_catalog::query::cmp_name(x, y),
-                        _ => std::cmp::Ordering::Equal,
-                    };
-                    key(b).cmp(&key(a)).then(by_name).then(a.cmp(b))
+                // newest import first, whatever the sort direction (the grid groups by import day); inside one
+                // import, the sort chosen (a two-camera import by capture time interleaves the bodies)
+                // (forward in either direction: the direction flips only which import comes first)
+                let (cat, sort) = (&self.catalog, lcc_catalog::Sort { ascending: true, ..self.sort });
+                visible.sort_by(|a, b| match (cat.photo(*a), cat.photo(*b)) {
+                    (Some(x), Some(y)) => y.imported.cmp(&x.imported).then_with(|| sort.order(x, y)),
+                    _ => a.cmp(b),
                 });
             }
             if self.source == LibrarySource::Missing {
@@ -1601,6 +1593,13 @@ impl Session {
                 gone.sort();
                 visible.extend(gone);
             }
+            if self.all_selected.as_deref() == Some(key.1.as_str()) && self.selection.ids[..] == self.visible[..] && visible[..] != self.visible[..] {
+                // still "every photo of this view": the photos that came in are selected too
+                self.selection.ids = visible.clone();
+                if self.selection.active.is_none_or(|a| !visible.contains(&a)) {
+                    self.selection.active = visible.first().copied();
+                }
+            }
             self.visible = visible.into();
             self.visible_gen = VISIBLE_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.visible_key = Some(key);
@@ -1625,6 +1624,12 @@ impl Session {
     }
 
     /// `source` as a filter over `base` (the filter bar's, or none), with the folder it shows.
+    /// The view's photos counted by culling mark (picks, rejects, stars, colour labels): its source and
+    /// filters without the stars / flags / labels filter itself (`library.tally`, the filter bar's counts).
+    pub fn tally(&self) -> lcc_catalog::Tally {
+        self.catalog.tally(&self.view_filter(self.source, &self.filter.without_quick()))
+    }
+
     pub(crate) fn view_filter(&self, source: LibrarySource, base: &Filter) -> Filter {
         let mut f = source.to_filter(base, &self.catalog);
         if source == LibrarySource::Folder {
@@ -1885,6 +1890,8 @@ mod tests_autosync_wb;
 #[cfg(test)]
 mod tests_camera_profile_defaults;
 #[cfg(test)]
+mod tests_capture_sort;
+#[cfg(test)]
 mod tests_catalog_cmds;
 #[cfg(test)]
 mod tests_classic;
@@ -1974,6 +1981,8 @@ mod tests_merge;
 mod tests_ml;
 #[cfg(test)]
 mod tests_move_to_share;
+#[cfg(test)]
+mod tests_naming;
 #[cfg(test)]
 mod tests_organize;
 #[cfg(test)]

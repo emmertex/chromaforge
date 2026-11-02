@@ -281,6 +281,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::ManageEffects { .. } => "Manage Effect Presets",
         Dialog::DeleteEffects { names } if names.len() == 1 => "Delete Effect Preset",
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
+        Dialog::DeleteRejected { .. } => "Delete Rejected Photos",
         Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Library",
         Dialog::RemoveFolder { .. } => "Remove Folder from Library",
         Dialog::SynchronizeFolder { .. } => "Synchronize Folder",
@@ -719,7 +720,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         confirm = true;
                     }
                 }
-                Dialog::Rename { template, start } => {
+                Dialog::Rename { template, start, texts } => {
                     let n = app.session.selected().len();
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr_format!("{n} photo{}", if n == 1 { "" } else { "s" }, n = n)).color(t.text_dim));
                     let template_id = egui::Id::new("rename-template");
@@ -734,22 +735,15 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         crate::import::tag_help(ui, "renameTemplate", template, template_id);
                     }
                     crate::import::unknown_tags_warning(ui, template);
-                    field(ui, "Presets", |ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for (i, (label, tpl)) in
-                            [("Name", "{name}"), ("Date–Name", "{date}_{name}"), ("Title–Seq", "{title}-{seq:3}"), ("Custom–Seq", "Photo-{seq:3}")].iter().enumerate()
-                        {
-                            if crate::widgets::text_button(ui, &format!("renamePreset-{i}"), label, template == tpl).clicked() {
-                                *template = tpl.to_string();
-                            }
-                        }
-                    });
+                    naming_presets_row(app, ui, "rename", template);
+                    text_tag_fields(ui, "rename", template, texts);
                     field(ui, "Start at", |ui| ui.add(egui::DragValue::new(start).range(0..=999_999)));
                     ui.label(
                         egui::RichText::new(crate::i18n::tr("Tags: see Tags beside the template. Files are renamed on disk (with their XMP sidecars); existing names get -1, -2…"))
                             .color(t.text_dim),
                     );
-                    let (preview, total) = rename_preview(app, ui.ctx(), template, *start as usize);
+                    let filled = lcc_engine::rename::fill_texts(template, &|l| texts.get(l).cloned());
+                    let (preview, total) = rename_preview(app, ui.ctx(), &filled, *start as usize);
                     match &preview {
                         Some(rows) => {
                             egui::Grid::new("rename-preview").num_columns(3).spacing([8.0, 2.0]).show(ui, |ui| {
@@ -1154,6 +1148,22 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(what)).color(t.text_dim));
                 }
                 d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::body(app, ui, d),
+                Dialog::DeleteRejected { count, recycle } => {
+                    ui.label(crate::i18n::tr_format!("Delete the {n} rejected photos of this view?", n = count));
+                    ui.add_space(6.0);
+                    let keep = ui.radio_value(recycle, false, crate::i18n::tr("Remove from the library (to Recently Deleted; the files stay on disk)"));
+                    crate::widgets::register(ui.ctx(), "radio:rejectsKeep", keep.rect);
+                    if app.session.trash.is_some() {
+                        let bin = ui.radio_value(recycle, true, crate::i18n::tr("Remove, and move the files to the system trash"));
+                        crate::widgets::register(ui.ctx(), "radio:rejectsRecycle", bin.rect);
+                    }
+                    let note = if *recycle {
+                        "The files and their own XMP sidecars go to the system trash, where they can be put back; the photos leave the library."
+                    } else {
+                        "Edit ▸ Undo brings them back; Recently Deleted keeps them until it is emptied."
+                    };
+                    crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(note)).color(t.text_dim));
+                }
                 Dialog::RemoveFolder { name, count, path, disk } => {
                     ui.label(crate::i18n::tr_format!(
                         "Remove “{name}” and its {count} photo{} from the library?",
@@ -1420,6 +1430,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::KeywordTag { editing: None, .. } => "Create",
                     Dialog::KeywordTag { .. } => "Save",
                     Dialog::RemoveFolder { .. } => "Remove",
+                    Dialog::DeleteRejected { recycle: true, .. } => "Move to Trash",
+                    Dialog::DeleteRejected { .. } => "Remove",
                     Dialog::LightroomCatalog { .. } => "Import Lightroom Catalog…",
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
@@ -1999,7 +2011,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             };
             app.run("photo.rename", json!({"ids": [*id], "template": template}))
         }
-        Dialog::Rename { template, start } => app.run("photo.rename", json!({"template": template, "start": start})),
+        Dialog::Rename { template, start, texts } => app.run("photo.rename", json!({"template": template, "start": start, "texts": texts})),
         Dialog::RenameKeyword { from, to } => app.run("keyword.rename", json!({"from": from, "to": to})),
         Dialog::RenamePerson { from, to, merge } => app.run("faces.renamePerson", json!({"from": from, "to": to.trim(), "merge": merge})),
         Dialog::KeywordTag {
@@ -2167,6 +2179,21 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::DeleteEffects { names } => app.run("mask.deleteEffect", json!({"names": names})),
         Dialog::RemoveFolder { path, disk, .. } => app.run("library.removeFolder", json!({"path": path, "disk": disk})),
+        Dialog::DeleteRejected { recycle, .. } => {
+            let r = app.run("library.deleteRejected", json!({"files": if *recycle { "recycle" } else { "keep" }, "confirm": true}));
+            if let Ok(v) = &r {
+                let n = v["deleted"].as_u64().unwrap_or(0);
+                let text = if *recycle {
+                    crate::i18n::tr_format!("{n} rejected photos moved to the trash", n = n)
+                } else {
+                    crate::i18n::tr_format!("{n} rejected photos removed (Edit ▸ Undo brings them back)", n = n)
+                };
+                if let Some(ctx) = app.tasks.repaint.clone() {
+                    app.toast(&ctx, text);
+                }
+            }
+            r
+        }
         d @ Dialog::SynchronizeFolder { .. } => crate::sync::confirm(app, d),
         Dialog::NewPhotoDefault { name } => app.run("library.setImportDefault", json!({"name": name.trim()})),
         Dialog::Watermark { wm, preset_name } => {
@@ -2809,6 +2836,9 @@ fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, prese
             crate::import::tag_help(ui, "exportNaming", &mut opts.naming, naming_id);
         }
         crate::import::unknown_tags_warning(ui, &opts.naming);
+        naming_presets_row(app, ui, "export", &mut opts.naming);
+        let naming = opts.naming.clone();
+        text_tag_fields(ui, "export", &naming, &mut opts.texts);
         if opts.naming.contains("{seq") {
             let mut v = opts.start_number as f64;
             if num(ui, &START_NUMBER, &mut v) {
@@ -3579,6 +3609,101 @@ fn person_rename_plan(cat: &lcc_catalog::Catalog, from: &str, to: &str) -> Perso
 /// selected, so typing replaces it. It takes the focus back only while nothing else has it: taking
 /// it back every frame would keep Tab from ever reaching the dialog's buttons and check boxes.
 /// True when Return confirms the dialog; Esc cancels the dialog (`show`).
+/// Naming presets: the built-in templates, then the ones saved (right-click one to delete it), a
+/// "+ Number" that puts `{seq}` at the end, and Save as Preset… for the template typed.
+fn naming_presets_row(app: &mut LccApp, ui: &mut egui::Ui, tag: &str, template: &mut String) {
+    let presets: Vec<(String, String, bool)> = lcc_engine::cmd::manage::builtin_naming_presets()
+        .into_iter()
+        .map(|p| (p.name, p.template, true))
+        .chain(app.session.naming_presets.iter().map(|p| (p.name.clone(), p.template.clone(), false)))
+        .collect();
+    let mut delete: Option<String> = None;
+    let save_id = egui::Id::new(("naming-save-as", tag));
+    let mut save_as: Option<String> = ui.data(|d| d.get_temp(save_id));
+    field(ui, "Presets", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (i, (name, tpl, builtin)) in presets.iter().enumerate() {
+                let r =
+                    crate::widgets::text_button(ui, &format!("{tag}Preset-{i}"), crate::i18n::tr(name), template == tpl).on_hover_text(tpl.as_str());
+                if r.clicked() {
+                    *template = tpl.clone();
+                }
+                if !builtin {
+                    r.context_menu(|ui| {
+                        if ui.button(crate::i18n::tr("Delete Preset")).clicked() {
+                            delete = Some(name.clone());
+                            ui.close();
+                        }
+                    });
+                }
+            }
+            let numbered = template.contains("{seq") || template.contains("{n}") || template.contains("{n:");
+            if crate::widgets::text_button(ui, &format!("{tag}Number"), crate::i18n::tr("+ Number"), false)
+                .on_hover_text(crate::i18n::tr("Add {seq}: 1, 2, 3… in the order the photos are shown"))
+                .clicked()
+                && !numbered
+            {
+                let t = template.trim_end();
+                let sep = if t.is_empty() || t.ends_with(['_', '-', ' ', '.']) { "" } else { "_" };
+                *template = format!("{t}{sep}{{seq}}");
+            }
+            if crate::widgets::text_button(ui, &format!("{tag}NamingSaveAs"), crate::i18n::tr("Save as Preset…"), save_as.is_some()).clicked() {
+                save_as = if save_as.is_some() { None } else { Some(String::new()) };
+            }
+        });
+    });
+    if let Some(name) = delete
+        && let Err(e) = app.run("naming.deletePreset", json!({"name": name}))
+    {
+        app.toast(ui.ctx(), e);
+    }
+    if let Some(name) = save_as.as_mut() {
+        let mut save = false;
+        field(ui, "Preset name", |ui| {
+            let r = crate::text_field::TextField::singleline(&format!("field:{tag}NamingPresetName"), name)
+                .hint(crate::i18n::tr("Preset name"))
+                .width(220.0)
+                .show(ui);
+            let named = !name.trim().is_empty() && !template.trim().is_empty();
+            if (crate::widgets::text_button(ui, &format!("{tag}NamingSave"), crate::i18n::tr("Save"), false).clicked()
+                || r.ending == Some(crate::text_field::Ending::Return))
+                && named
+            {
+                save = true;
+            }
+        });
+        if save {
+            match app.run("naming.savePreset", json!({"name": name.trim(), "template": template.trim()})) {
+                Ok(_) => save_as = None,
+                Err(e) => app.toast(ui.ctx(), e),
+            }
+        }
+    }
+    ui.data_mut(|d| match save_as {
+        Some(v) => {
+            d.insert_temp(save_id, v);
+        }
+        None => d.remove::<String>(save_id),
+    });
+}
+
+/// A text field for each `{text:Label}` of `template`, asked at each rename or export.
+fn text_tag_fields(ui: &mut egui::Ui, tag: &str, template: &str, texts: &mut std::collections::BTreeMap<String, String>) {
+    let labels = lcc_engine::rename::text_labels(template);
+    texts.retain(|k, _| labels.contains(k));
+    for (i, label) in labels.iter().enumerate() {
+        let mut v = texts.get(label).cloned().unwrap_or_default();
+        field(ui, label, |ui| {
+            crate::text_field::TextField::singleline(&format!("field:{tag}Text-{i}"), &mut v)
+                .hint(crate::i18n::tr("typed for this time only"))
+                .width(220.0)
+                .show(ui);
+        });
+        texts.insert(label.clone(), v);
+    }
+}
+
 fn dialog_field(ui: &mut egui::Ui, widget: &str, text: &mut String, hint: &str) -> bool {
     let r = crate::text_field::TextField::singleline(widget, text).hint(crate::i18n::tr(hint)).width(f32::INFINITY).select_on_focus(true).show(ui);
     // (and takes it back when nothing has it: after a click on the dialog's background or a check box,
@@ -3639,7 +3764,8 @@ pub fn confirm_style(dlg: &Dialog) -> ConfirmStyle {
         | Dialog::ConfirmPurge { .. }
         | Dialog::DeleteKeyword { .. }
         | Dialog::DeleteEffects { .. }
-        | Dialog::RemoveFolder { .. } => ConfirmStyle::Plain,
+        | Dialog::RemoveFolder { .. }
+        | Dialog::DeleteRejected { .. } => ConfirmStyle::Plain,
         _ if only_shows(dlg) => ConfirmStyle::Plain,
         _ => ConfirmStyle::Primary,
     }

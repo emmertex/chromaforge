@@ -542,3 +542,30 @@ fn immediate_library_commands_and_auto_sync_show_completion() {
     assert!(h.app.run("library.compact", json!({})).is_err());
     assert!(h.app.ui.toast().is_none());
 }
+
+/// A catalog backup due at quit asks first, as Lightroom Classic does: Skip This Time quits without
+/// one (ported from OneSlips' LR-BACKUP).
+#[test]
+fn quitting_with_a_backup_due_asks_and_skip_quits() {
+    let dir = std::env::temp_dir().join(format!("lcc-quit-backup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut session = lcc_engine::Session::new().with_fs();
+    session.open_library(&dir, false).unwrap();
+    let settings = lcc_catalog::library::CatalogSettings {
+        backup: lcc_catalog::library::BackupSchedule::EveryExit,
+        last_backup: None,
+        ..session.catalog_settings()
+    };
+    session.set_catalog_settings(&settings).unwrap();
+    let app = LccApp::new(session, Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
+    h.settle(T);
+    assert!(!crate::panels::notices::may_close(&mut h.app));
+    assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
+    click(&mut h, "button:quitSkipBackup");
+    assert_eq!(h.app.exit_backup, Some(false));
+    assert!(h.quit_requested());
+    assert!(crate::panels::notices::may_close(&mut h.app), "asked once");
+    let _ = h.app.session.close_library();
+    let _ = std::fs::remove_dir_all(&dir);
+}

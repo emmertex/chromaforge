@@ -50,7 +50,7 @@ use lcc_develop::DevelopSettings;
 pub use local::{DEFAULT_FORGET_DAYS, ForgetPlan, LocalRecords, folder_of};
 pub use lock::{LibraryLock, LockError, LockOwner};
 pub use model::*;
-pub use query::{DateGroup, Filter, MatchOp, Person, RatingOp, Sort, SortKey, mix64};
+pub use query::{DateGroup, Filter, MatchOp, Person, RatingOp, Sort, SortKey, Tally, mix64};
 pub use remote::{PreviewEntry, RemoteIdentity, RemoteKey, RemoteTable, SyncState};
 pub use rules::{Match, Rule, RuleSet};
 use serde::{Deserialize, Serialize};

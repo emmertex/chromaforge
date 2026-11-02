@@ -374,7 +374,36 @@ fn keyboard_owned(app: &LccApp, ctx: &egui::Context) -> bool {
     })
 }
 
+/// Caps Lock's state, read from this frame's typing: a letter key pressed without Shift that types
+/// a capital (or with Shift, a small letter) means Caps Lock is on, and the other way round it is
+/// off. `None` when no letter was typed. egui has no Caps Lock key or modifier, but the text a key
+/// types follows it; the culling keys (P, X, U) are letters, so the state is known by the time it
+/// matters.
+pub fn caps_lock_from(events: &[egui::Event]) -> Option<bool> {
+    let mut last_key: Option<(egui::Key, bool)> = None;
+    let mut seen = None;
+    for e in events {
+        match e {
+            egui::Event::Key { key, pressed: true, modifiers, .. } => last_key = Some((*key, modifiers.shift)),
+            egui::Event::Text(t) => {
+                let mut chars = t.chars();
+                if let (Some(c), None, Some((key, shift))) = (chars.next(), chars.next(), last_key)
+                    && c.is_ascii_alphabetic()
+                    && key.symbol_or_name().eq_ignore_ascii_case(&c.to_string())
+                {
+                    seen = Some(c.is_ascii_uppercase() != shift);
+                }
+            }
+            _ => {}
+        }
+    }
+    seen
+}
+
 pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
+    if let Some(on) = ctx.input(|i| caps_lock_from(&i.events)) {
+        app.ui.caps_lock = on;
+    }
     // the Back / Forward presses were for this pass's shortcuts only, as a key press is
     let nav_buttons = std::mem::take(&mut app.nav_buttons);
     // Space held over a tool ends when the key is up, whoever has the keyboard by then
@@ -506,7 +535,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
         compare::target_active(app, &mut params);
         let was = app.session.active();
         let ok = app.run(id, params).is_ok();
-        if ok && (advance || app.ui.auto_advance) {
+        if ok && (advance || app.auto_advance_on()) {
             compare::advance(app, was);
         }
     };
@@ -1136,6 +1165,33 @@ mod tests {
         assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().label, None);
         assert_eq!(h.app.session.catalog.photo(PhotoId(2)).unwrap().label, Some(ColorLabel::Red));
         assert_eq!(h.app.session.active(), Some(PhotoId(3)));
+    }
+
+    /// Caps Lock is read from the case a letter key types, and turns Auto Advance on while it lasts.
+    #[test]
+    fn caps_lock_auto_advances() {
+        use egui::{Event, Key, Modifiers};
+        use lcc_catalog::PhotoId;
+        let press = |k: Key, shift: bool| Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers { shift, ..Default::default() },
+        };
+        assert_eq!(super::caps_lock_from(&[press(Key::P, false), Event::Text("P".into())]), Some(true));
+        assert_eq!(super::caps_lock_from(&[press(Key::P, false), Event::Text("p".into())]), Some(false));
+        assert_eq!(super::caps_lock_from(&[press(Key::X, true), Event::Text("x".into())]), Some(true), "Shift with Caps Lock types small letters");
+        assert_eq!(super::caps_lock_from(&[press(Key::X, true), Event::Text("X".into())]), Some(false));
+        assert_eq!(super::caps_lock_from(&[press(Key::Num5, false), Event::Text("5".into())]), None, "a digit says nothing");
+        assert_eq!(super::caps_lock_from(&[Event::Text("Q".into())]), None, "text without its key (a paste, an IME) says nothing");
+        for k in ["X", "P", "3"] {
+            let mut h = library();
+            h.app.ui.caps_lock = true;
+            assert!(!h.app.ui.auto_advance);
+            key(&mut h, k, false);
+            assert_eq!(h.app.session.active(), Some(PhotoId(2)), "{k} with Caps Lock moves on");
+        }
     }
 
     #[test]

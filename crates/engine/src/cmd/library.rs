@@ -809,7 +809,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Select Photos",
             [],
             None,
-            "{ids: [id], active?: id, mode?: replace|add|toggle|range} — every id must be a photo of the library",
+            "{ids: [id], active?: id, mode?: replace|add|toggle|range|click} — every id must be a photo of the library. toggle (⌘/Ctrl-click) and range (Shift-click, from the active photo) keep the active photo; click (a plain click on a picture) on a photo of a selection of several makes it the active one and keeps the selection, elsewhere it selects that photo alone",
             always,
             |s, p| {
                 let ids = super::photo_ids(p, "library.select")?.unwrap_or_default();
@@ -838,6 +838,11 @@ pub fn specs() -> Vec<CommandSpec> {
                         }
                     }
                     "toggle" => ids.into_iter().for_each(|id| s.selection.toggle(id)),
+                    "click" => {
+                        if let Some(id) = ids.first() {
+                            s.selection.click(*id);
+                        }
+                    }
                     "range" => {
                         let vis = s.visible_cloned();
                         if let Some(id) = ids.first() {
@@ -851,11 +856,20 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"selected": s.selection.ids.len()}))
             }
         ),
-        cmd!("library.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", always, |s, _| {
-            let vis = s.visible_cloned();
-            s.selection = Selection { active: s.selection.active.filter(|a| vis.contains(a)).or(vis.first().copied()), ids: vis };
-            Ok(json!({"selected": s.selection.ids.len()}))
-        }),
+        cmd!(
+            "library.selectAll",
+            "Select All",
+            ["Edit"],
+            Some("Cmd+A"),
+            "{} — every photo of the view; photos that join the view later (an import still running) are selected too, until the selection or the view changes",
+            always,
+            |s, _| {
+                let vis = s.visible_cloned();
+                s.selection = Selection { active: s.selection.active.filter(|a| vis.contains(a)).or(vis.first().copied()), ids: vis };
+                s.all_selected = s.visible_key.as_ref().map(|k| k.1.clone());
+                Ok(json!({"selected": s.selection.ids.len()}))
+            }
+        ),
         cmd!(query "library.devices", "Cameras and Cards", [], None, "{} → [{name, path (its DCIM folder), root}] — mounted volumes with a DCIM folder", always, |_, _| {
             Ok(serde_json::to_value(crate::devices::devices_now()).unwrap_or_default())
         }),
@@ -1223,6 +1237,40 @@ pub fn specs() -> Vec<CommandSpec> {
                 let r = crate::disk_delete::delete_from_disk(s, p)?;
                 select_after_deletion(s, &before);
                 Ok(r)
+            }
+        ),
+        cmd!(query "library.tally", "Culling Counts", [], None, "{} → {total, picks, rejects, unflagged, stars: [0★..5★], labels: [red, yellow, green, blue, purple], unlabeled} — the view's photos by culling mark, counted without the stars / flags / labels filter itself", always, |s, _| {
+            Ok(serde_json::to_value(s.tally()).unwrap_or_default())
+        }),
+        cmd!(
+            "library.deleteRejected",
+            "Delete Rejected Photos",
+            ["Photo"],
+            None,
+            "{files?: keep (default) | recycle, confirm?: bool} — every rejected photo of the view in one go: keep removes them from the library to Recently Deleted (one undo step, the files stay on disk); recycle moves their files (and the sidecars that are theirs alone) to the system trash as Delete from Disk does, and needs confirm: true → {deleted, files}",
+            always,
+            |s, p| {
+                let files = str_param(p, "files").unwrap_or("keep");
+                if !matches!(files, "keep" | "recycle") {
+                    return Err(bad("library.deleteRejected", format!("unknown files `{files}` (keep|recycle)")));
+                }
+                let rejected: Vec<u64> = s
+                    .visible_cloned()
+                    .into_iter()
+                    .filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.flag == Flag::Reject))
+                    .map(|id| id.0)
+                    .collect();
+                if rejected.is_empty() {
+                    return Ok(json!({"deleted": 0, "files": files}));
+                }
+                let n = rejected.len();
+                if files == "recycle" {
+                    let confirm = bool_or(p, "confirm", false);
+                    s.execute("photo.deleteFromDisk", &json!({"ids": rejected, "confirm": confirm}))?;
+                } else {
+                    s.execute("photo.delete", &json!({"ids": rejected}))?;
+                }
+                Ok(json!({"deleted": n, "files": files}))
             }
         ),
         // ---- metadata
@@ -2554,3 +2602,7 @@ mod enable_filters_tests;
 #[cfg(test)]
 #[path = "library/tests_source_album_filter.rs"]
 mod source_album_filter_tests;
+
+#[cfg(test)]
+#[path = "library/tests_select.rs"]
+mod tests_select;

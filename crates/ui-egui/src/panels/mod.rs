@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod ai_models;
+pub mod alternatives;
 pub mod bottombar;
 pub mod cells;
 pub mod chips;

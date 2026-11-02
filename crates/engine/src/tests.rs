@@ -2249,3 +2249,49 @@ fn remove_picks_its_own_source_and_heal_keeps_its_own() {
     assert_eq!(steps(&mut s), n);
     let _ = id;
 }
+
+/// Delete Rejected Photos takes every rejected photo of the view in one undo step, to Recently
+/// Deleted (files stay); a bad `files` is refused. Ported from OneSlips' LR-DELETE-REJECTED.
+#[test]
+fn delete_rejected_photos_takes_the_views_rejects_in_one_step() {
+    let mut s = demo();
+    let ids: Vec<u64> = s.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    let before = s.visible_cloned().len();
+    s.execute("photo.flag", &json!({"ids": [ids[0], ids[2]], "flag": "reject"})).unwrap();
+    s.execute("photo.flag", &json!({"ids": [ids[1]], "flag": "none"})).unwrap();
+    let view = s.visible_cloned();
+    let rejects = view.iter().filter(|id| s.catalog.photo(**id).is_some_and(|p| p.flag == lcc_catalog::Flag::Reject)).count();
+    assert!(rejects >= 2);
+    assert!(s.execute("library.deleteRejected", &json!({"files": "shred"})).is_err());
+    let r = s.execute("library.deleteRejected", &json!({})).unwrap();
+    assert_eq!(r["deleted"], rejects, "{r}");
+    assert_eq!(s.visible_cloned().len(), before - rejects);
+    assert!(s.catalog.photo(lcc_catalog::PhotoId(ids[0])).is_some_and(|p| p.deleted), "to Recently Deleted");
+    assert!(s.catalog.photo(lcc_catalog::PhotoId(ids[1])).is_some_and(|p| !p.deleted), "a photo not rejected stays");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.visible_cloned().len(), before, "one undo step brings both back");
+    let r = s.execute("library.deleteRejected", &json!({"files": "recycle"}));
+    assert!(r.is_err(), "sending files to the trash needs confirm: {r:?}");
+    let all: Vec<u64> = s.visible_cloned().iter().map(|p| p.0).collect();
+    s.execute("photo.flag", &json!({"ids": all, "flag": "none"})).unwrap();
+    assert_eq!(s.execute("library.deleteRejected", &json!({})).unwrap()["deleted"], 0);
+}
+
+/// The filter bar's live counts: the view by mark, counted without the marks' own filter, so the
+/// pick count stays while only picks are shown. Ported from OneSlips' LR-FILTER-BAR (engine).
+#[test]
+fn tally_counts_the_view_without_its_mark_filter() {
+    let mut s = demo();
+    let ids: Vec<u64> = s.visible_cloned().iter().map(|p| p.0).collect();
+    s.execute("photo.flag", &json!({"ids": ids, "flag": "none"})).unwrap();
+    s.execute("photo.flag", &json!({"ids": [ids[0], ids[1]], "flag": "pick"})).unwrap();
+    s.execute("photo.flag", &json!({"ids": [ids[2]], "flag": "reject"})).unwrap();
+    s.execute("photo.label", &json!({"ids": [ids[0]], "label": "red"})).unwrap();
+    let t = s.execute("library.tally", &json!({})).unwrap();
+    assert_eq!((t["picks"].as_u64(), t["rejects"].as_u64(), t["total"].as_u64()), (Some(2), Some(1), Some(ids.len() as u64)), "{t}");
+    assert!(t["labels"][0].as_u64().is_some_and(|n| n >= 1), "{t}");
+    s.execute("library.filter", &json!({"flag": "pick"})).unwrap();
+    assert_eq!(s.visible_cloned().len(), 2);
+    let t = s.tally();
+    assert_eq!((t.picks, t.rejects, t.total), (2, 1, ids.len()), "the flag filter itself isn't counted in");
+}
