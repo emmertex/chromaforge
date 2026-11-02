@@ -369,8 +369,9 @@ fn step(s: &mut Session, d: isize) -> Result<Value> {
         None => 0,
     };
     s.end_interaction()?;
+    let (was, was_mask) = (s.selection.active, s.active_mask);
     s.selection = Selection::single(vis[next]);
-    s.active_mask = None;
+    s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
     s.active_spot = None;
     Ok(json!({"active": vis[next].0}))
 }
@@ -827,6 +828,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("library.select", format!("no such photo {}", id.0)));
                 }
                 s.end_interaction()?;
+                let (was, was_mask) = (s.selection.active, s.active_mask);
                 match mode {
                     "replace" => {
                         // a repeated id is one photo: keep the first of each, in the order given
@@ -851,8 +853,12 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     other => return Err(bad("library.select", format!("unknown mode `{other}`"))),
                 }
-                s.active_mask = None;
-                s.active_spot = None;
+                // the selected mask stays: on the same active photo (a ⇧-click range, a ⌘-click),
+                // or its linked copy on the new one
+                s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
+                if s.selection.active != was {
+                    s.active_spot = None;
+                }
                 Ok(json!({"selected": s.selection.ids.len()}))
             }
         ),

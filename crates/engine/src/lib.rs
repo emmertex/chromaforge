@@ -1312,6 +1312,24 @@ impl Session {
         (ops, compute)
     }
 
+    /// The mask that stays selected when the active photo goes from `from` (with mask `mask`
+    /// selected) to `to`: the same mask when the active photo stays; else its copy on `to`, the one
+    /// linked with it ([`lcc_develop::Mask::link`]). `None` when `to` has no such mask, or the mask
+    /// isn't linked.
+    pub fn carried_mask(&self, from: Option<PhotoId>, mask: Option<u32>, to: Option<PhotoId>) -> Option<u32> {
+        let (mask, to) = (mask?, to?);
+        let there = self.develop_of(to)?;
+        if from == Some(to) {
+            return there.masks.iter().any(|m| m.id == mask).then_some(mask);
+        }
+        let here = self.develop_of(from?)?;
+        let m = here.masks.iter().find(|m| m.id == mask)?;
+        if m.link.is_empty() {
+            return None;
+        }
+        there.masks.iter().find(|t| t.link == m.link).map(|t| t.id)
+    }
+
     /// Give the masks of `new` that differ from photo `id`'s (added or edited) and aren't linked yet
     /// a fresh link ([`lcc_develop::Mask::link`]); returns `(mask id, link)` of those.
     fn link_edited_masks(&self, id: PhotoId, new: &mut DevelopSettings) -> Vec<(u32, String)> {
