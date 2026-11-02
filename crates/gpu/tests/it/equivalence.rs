@@ -1024,6 +1024,58 @@ fn windows_match() {
     check("window: vignette corner", &src, &info, &s, &corner);
 }
 
+/// A zoomed window of a photo with a dress brushed over (thousands of dabs, TEST-NOTES 2026-10-16
+/// item 28: 9–55 s a window): the brush kernel looks only at the dabs near each pixel, matches the
+/// CPU, and a window of a few megapixels takes well under a second (`LC_BRUSH_BENCH=1` prints the
+/// times at 45 MP, 100 %).
+#[test]
+fn a_zoomed_window_of_a_big_brush_matches_and_is_quick() {
+    if !gpu() {
+        return;
+    }
+    use lcc_pipeline::PixelWindow;
+    let dress = |auto_mask: bool| {
+        let mut strokes = Vec::new();
+        for k in 0..12 {
+            let y0 = 0.25 + 0.04 * k as f64;
+            let points: Vec<Point> = (0..=200)
+                .map(|i| {
+                    let t = i as f64 / 200.0;
+                    Point::new(0.3 + 0.4 * (t * 6.0 * std::f64::consts::PI).sin().abs(), y0 + 0.08 * t)
+                })
+                .collect();
+            strokes.push(BrushStroke { points, size: 0.02, auto_mask, ..Default::default() });
+        }
+        DevelopSettings {
+            masks: vec![Mask {
+                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -40.0, ..Default::default() },
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    };
+    let bench = std::env::var_os("LC_BRUSH_BENCH").is_some();
+    let (fw, fh) = if bench { (8192, 5464) } else { (4096, 2732) };
+    let src = scene(1, if bench { 2048 } else { 960 }, if bench { 1366 } else { 640 });
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let win = if bench { PixelWindow { x: 3000, y: 2000, w: 2048, h: 1792 } } else { PixelWindow { x: 1500, y: 1000, w: 1024, h: 896 } };
+    let req = RenderRequest { window: Some(win), ..RenderRequest::fit(fw, fh) };
+    for auto in [false, true] {
+        let s = dress(auto);
+        // (the first render builds the kernels and uploads the source)
+        let _ = lcc_gpu::render(&src, &info, &s, &req, None).expect("gpu render");
+        let t = std::time::Instant::now();
+        let gpu = lcc_gpu::render(&src, &info, &s, &req, None).expect("gpu render");
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("brushed dress window {}x{} (auto {auto}): {ms:.0} ms on the GPU", gpu.image.width, gpu.image.height);
+        if !bench {
+            check(&format!("big brush window (auto {auto})"), &src, &info, &s, &req);
+        }
+        assert!(ms < 3000.0, "a zoomed brush window took {ms:.0} ms");
+    }
+}
+
 /// Issue #323: a window of a 24 MP photo is cut from a source of 288 MB on the device. Keeping that
 /// upload with the view's stages counted it against the stage budget on every tick of a drag and
 /// got the stages cleared, and the upload and resampling redone: the window's stages are its own

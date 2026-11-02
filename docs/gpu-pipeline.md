@@ -233,8 +233,10 @@ walks the drive.
   grew, HDR renders and a monitor profile's conversion keep the CPU fit. A render at rest reads the full
   image back with the fitted one, for the photo's view preview; a drag's updates cache the fitted one.
 - Per-stage hybrid: defringe and spot removal (rare, CPU-only for now) download the resampled image,
-  run on the CPU and upload; heuristic mask shapes (Sky, Subject, Background, …) and brushes of more
-  than 4096 dabs are evaluated on the CPU and uploaded; sources over the buffer limit are resampled
+  run on the CPU and upload; heuristic mask shapes (Sky, Subject, Background, …), brushes with pen pressure and
+  brushes of more than 65 536 dabs (or whose tile lists would pass 8 M words) are evaluated on the CPU and uploaded. The
+  brush kernel bins each stroke's dabs into tiles of about a quarter radius, so a pixel looks only at the dabs that reach
+  its tile instead of every dab of the stroke (a dress brushed over, zoomed to 100 %: tens of seconds before); sources over the buffer limit are resampled
   on the CPU.
 - Stage cache: `GpuStages` mirrors `StageCache` (same keys: source identity + `geo`, `lin_key`,
   per-plane radii) and lives in it as an extension, so the UI needs no change. The uploaded source is

@@ -1246,28 +1246,78 @@ fn prepare(cx: &mut Cx<'_>, lin: &Buf, plan: &Plan<'_>, req: &RenderRequest, pla
     Prep { log_l, base, clarity, texture, sharpen, dark, chroma, air }
 }
 
-/// Most brush dabs the mask kernel evaluates per pixel (more: the CPU rasterizes the brush).
-const MAX_DABS: usize = 4096;
+/// Most brush dabs the mask kernel takes (more: the CPU rasterizes the brush).
+const MAX_DABS: usize = 65_536;
+/// Most words of brush data (stroke records, dab centres, tile lists): indices are stored as
+/// `f32`, exact below 2²⁴.
+const MAX_BRUSH_WORDS: usize = 8 << 20;
+/// Words per stroke record in [`brush_aux`].
+const STROKE_WORDS: usize = 16;
 
-/// The `shape` kernel's brush data for `dabs`: stroke records (12 words: dab offset, dab count,
-/// r, hard, flow, density, erase, bbox x0 y0 x1 y1, auto) then the dab centres.
-fn brush_aux(dabs: &[&lcc_pipeline::masks::BrushDabs], erase: bool) -> Vec<f32> {
-    let mut aux = Vec::new();
-    let mut off = 12 * dabs.len();
+/// The `shape` kernel's brush data for `dabs` in a `w × h` output, or `None` when it would be too
+/// big (the CPU rasterizes the brush then): stroke records ([`STROKE_WORDS`] words: dab offset, dab
+/// count, r, hard, flow, density, erase, bbox x0 y0 x1 y1, auto, tile table offset, tiles across,
+/// tiles down, tile size), then each stroke's dab centres, tile table and tile lists.
+///
+/// Each stroke's dabs are binned into square tiles (about a quarter radius across): a pixel looks
+/// only at the dabs that reach its tile, in stroke order, instead of every dab of the stroke. A
+/// dress brushed over at 100 % zoom (thousands of dabs, millions of pixels) kept the GPU busy for
+/// tens of seconds (TEST-NOTES 2026-10-16 item 28).
+fn brush_aux(dabs: &[&lcc_pipeline::masks::BrushDabs], erase: bool, w: usize, h: usize) -> Option<Vec<f32>> {
+    let mut head = Vec::with_capacity(STROKE_WORDS * dabs.len());
+    let mut tail: Vec<f32> = Vec::new();
+    let base = STROKE_WORDS * dabs.len();
     for d in dabs {
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for q in &d.dabs {
             (x0, y0, x1, y1) = (x0.min(q.x - d.r), y0.min(q.y - d.r), x1.max(q.x + d.r), y1.max(q.y + d.r));
         }
-        aux.extend([off as f32, d.dabs.len() as f32, d.r as f32, d.hard as f32, d.flow, d.density, (erase && d.erase) as u8 as f32]);
-        aux.extend([x0, y0, x1, y1].map(|v| v as f32));
-        aux.push(d.auto as u8 as f32);
-        off += 2 * d.dabs.len();
+        let off = base + tail.len();
+        tail.extend(d.dabs.iter().flat_map(|q| [q.x as f32, q.y as f32]));
+        // tiles of about a quarter radius: a dab reaches ~9 × 9 of them, a pixel looks at less than
+        // twice the dabs that touch it
+        let ts = (d.r / 4.0).round().clamp(8.0, 256.0);
+        let ts = if ts.is_finite() { ts } else { 256.0 };
+        let (tx, ty) = (((w as f64) / ts).ceil().max(1.0) as usize, ((h as f64) / ts).ceil().max(1.0) as usize);
+        let mut lists: Vec<Vec<u32>> = vec![Vec::new(); tx.checked_mul(ty)?];
+        let mut entries = 0usize;
+        for (j, q) in d.dabs.iter().enumerate() {
+            let reaches = q.x + d.r > 0.0 && q.x - d.r < w as f64 && q.y + d.r > 0.0 && q.y - d.r < h as f64;
+            if !reaches {
+                continue;
+            }
+            let j = u32::try_from(j).ok()?;
+            let cell = |v: f64, n: usize| ((v / ts).floor().max(0.0) as usize).min(n - 1);
+            let (cx0, cx1, cy0, cy1) = (cell(q.x - d.r, tx), cell(q.x + d.r, tx), cell(q.y - d.r, ty), cell(q.y + d.r, ty));
+            entries = entries.saturating_add((cx1 - cx0 + 1) * (cy1 - cy0 + 1));
+            if entries > MAX_BRUSH_WORDS {
+                return None;
+            }
+            for cy in cy0..=cy1 {
+                for cx in cx0..=cx1 {
+                    lists.get_mut(cy * tx + cx)?.push(j);
+                }
+            }
+        }
+        let table = base + tail.len();
+        let mut start = table + 2 * lists.len();
+        for l in &lists {
+            tail.extend([start as f32, l.len() as f32]);
+            start += l.len();
+        }
+        for l in &lists {
+            tail.extend(l.iter().map(|j| *j as f32));
+        }
+        if base + tail.len() > MAX_BRUSH_WORDS {
+            return None;
+        }
+        head.extend([off as f32, d.dabs.len() as f32, d.r as f32, d.hard as f32, d.flow, d.density, (erase && d.erase) as u8 as f32]);
+        head.extend([x0, y0, x1, y1].map(|v| v as f32));
+        head.push(d.auto as u8 as f32);
+        head.extend([table as f32, tx as f32, ty as f32, ts as f32]);
     }
-    for d in dabs {
-        aux.extend(d.dabs.iter().flat_map(|q| [q.x as f32, q.y as f32]));
-    }
-    aux
+    head.extend(tail);
+    Some(head)
 }
 
 /// How [`guided_cross`] combines the filtered plane with its input.
@@ -1399,18 +1449,26 @@ fn mask_alpha(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &m
                         })
                         .collect();
                     // pen pressure varies radius and flow per dab, which the kernel doesn't take: the CPU rasterizes it
-                    if dabs.iter().map(|d| d.dabs.len()).sum::<usize>() > MAX_DABS || dabs.iter().any(|d| !d.pressure.is_empty()) {
+                    let auxes: Option<Vec<Vec<f32>>> =
+                        if dabs.iter().map(|d| d.dabs.len()).sum::<usize>() > MAX_DABS || dabs.iter().any(|d| !d.pressure.is_empty()) {
+                            None
+                        } else if dabs.iter().any(|d| d.auto) {
+                            dabs.iter().map(|d| brush_aux(&[d], false, w, h)).collect()
+                        } else {
+                            brush_aux(&dabs.iter().collect::<Vec<_>>(), true, w, h).map(|a| vec![a])
+                        };
+                    if auxes.is_none() {
                         None
                     } else if dabs.iter().any(|d| d.auto) {
                         // Auto Mask: stroke by stroke (each one refined before it's combined)
                         let brush = cx.zeroed(n);
                         let stroke = cx.gpu.buffer(n);
-                        for d in &dabs {
+                        for (d, aux) in dabs.iter().zip(auxes.unwrap_or_default()) {
                             let mut q = p.clone();
                             q[2] = 4;
                             q[3] = 0;
                             q.push(1);
-                            let aux = cx.gpu.upload(&brush_aux(&[d], false));
+                            let aux = cx.gpu.upload(&aux);
                             cx.run("shape", &q, &[Some(lin), Some(&prep.log_l), Some(&aux), Some(&stroke), Some(&brush)], groups2(w, h, [16, 16]));
                             let refined = d.auto.then(|| {
                                 let (sigma, eps) = lcc_pipeline::masks::auto_refine(d.r);
@@ -1431,7 +1489,7 @@ fn mask_alpha(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &m
                         None
                     } else {
                         p.push(dabs.len() as u32);
-                        aux = brush_aux(&dabs.iter().collect::<Vec<_>>(), true);
+                        aux = auxes.and_then(|a| a.into_iter().next()).unwrap_or_default();
                         Some(4)
                     }
                 }
