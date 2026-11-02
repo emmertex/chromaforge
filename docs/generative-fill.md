@@ -1,8 +1,9 @@
 # Content-aware and generative fill
 
-> **Last updated:** 2026-10-14 · **Change:** new page (structure-aware Fill, source exclusion,
-> masks as spots; generative fill through the user's own cloud API key, placed in the photo's
-> scene-linear pixels)
+> **Last updated:** 2026-10-16 · **Change:** first real-account test (OpenAI): the HTTPS upload
+> fixed, large areas as sharper tiles, a Generative spot only marks its area until its result
+> arrives, the short consent dialog, errors with Retry, a card per service. Before: new page
+> (2026-10-14).
 
 The Remove panel has two ways to replace an area with something new instead of copying one source:
 
@@ -70,15 +71,44 @@ alternative to Adobe's apps and uses no Adobe services or assets (and the API is
 Google's Gemini image models have no pixel mask (prompt-only edits) and Replicate takes inline images
 only up to 256 KB; both are possible later.
 
+### Which service, for what
+
+Settings ▸ Generative Fill has a card per service: what it is best at, its weak spots, the largest
+area it takes at full resolution, the price per fill, whether it trains on uploads and what marks
+it adds. In short (2026-10-16):
+
+- **OpenAI (GPT Image)**: best at following a written prompt and understanding the whole scene;
+  redraws the whole crop (details can drift), at most 1536 px per request, 30–60 s per request,
+  about $0.20. Does not train on API uploads.
+- **Stability AI (Erase / Inpaint)**: best at removing without a prompt and at large areas (3072
+  px); follows prompts less well; trains on uploads unless switched off in the account. About $0.05.
+- **Black Forest Labs (FLUX Fill)**: photographic realism, textures, extending a scene (2048 px);
+  its terms allow training on uploads with no opt-out; not for photos of children. About $0.05.
+- **fal.ai**: FLUX Fill and object removal in one pay-as-you-go account (2048 px); does not say
+  whether it trains on uploads. About $0.05–0.06.
+
+Recommended for removing distractions from client photos: OpenAI, or Stability with training
+switched off. Only OpenAI has been tried with a real account so far (below); a side-by-side
+comparison of the services needs the user's keys and test crops.
+
 ### Setting it up
 
 1. Create an API key in your account with the provider (Settings ▸ Generative Fill ▸ *Get an API key*).
 2. Paste it in Settings ▸ Generative Fill and click **Save Key**. Or set
    `LCC_GENFILL_<PROVIDER>_KEY` (e.g. `LCC_GENFILL_OPENAI_KEY`) before starting LightCraft.
-3. The first Generate with a provider opens a dialog that shows the crop that will be uploaded (the
-   area to fill tinted red), what the provider does with uploads, a link to its policy, and the
-   cost. **Agree and Generate** records your consent for that provider; Settings ▸ Generative Fill
-   withdraws it.
+3. The first Generate with a provider opens a short dialog: the crop that will be uploaded (the
+   area to fill lightly tinted), its size and the cost ("About $0.20, billed to your OpenAI
+   account"), with **Generate** and **Cancel**. What the provider does with uploads, its
+   provenance marks and a link to its policy are behind **Details**; a warning shows only when it
+   matters (the area will be softer; the service trains on uploads by default). **Generate**
+   records your consent for that provider and starts; you are not asked again. Settings ▸
+   Generative Fill withdraws it.
+
+The Remove panel shows only the services that have a key (none: **Set Up a Service…**).
+**Variations** is 1 unless you choose more (each is a paid result) and is remembered, with the
+price per variation; once an area is painted the estimate shows the requests and the total. A
+failed generation stays in the panel with what went wrong, **Retry** and **Dismiss** (and a
+toast); while one runs, a spinner and "Generating…" sit over the area on the photo.
 
 Keys are kept in `genfill-keys.json` in LightCraft's settings folder (`%APPDATA%\LightCraft` on
 Windows, `~/Library/Application Support/LightCraft` on macOS, `~/.config/lightcraft` on Linux),
@@ -99,6 +129,14 @@ Only a **context crop** around the spot, with the mask of the area to fill — n
   it is long and thin (a wire, a fence; at most 8 crops, each seeing the ones before it filled), or
   **downscaled**: the hole with a little context, sent smaller and upscaled back. That patch is
   softer than the photo, and the panel and the consent dialog say so ("generated at 47 %").
+- **Sharper result for a large area** (on by default; `sharp` in `genfill.plan` / `spot.generate`):
+  instead of one crop at, say, 28 %, the area goes as up to 8 tiles at a higher resolution — the
+  fewest tiles that reach half the photo's resolution (or 1.5× one crop's), each of the provider's
+  sizes tried. The panel shows both choices with their requests and cost. Each tile masks every
+  part of the area no earlier tile filled (so the model never sees the rest of the object and
+  continues it), its colour and level are matched to the unmasked part of what was sent, and it
+  is blended into the tiles before it over a band, so there are no straight seams. A result sent
+  smaller than native has the model's own grain smoothed away before the photo's grain is added.
 - **Variations** (1–4): pick with ‹ › under the spot; **Generate Again** makes new ones.
 
 ### Where the patch goes: the photo's own pixels
@@ -136,8 +174,12 @@ A generated patch is brought back to the raw-level picture and placed **before e
 
 What changes a patch: only what is upstream of it — the raw decode itself (a new LightCraft version
 that demosaics differently) and the AI Denoise amount (the patch keeps its pixels; only the noise
-added changes). The patch belongs to the stroke it was made for: moving or resizing the spot shows a
-content-aware fill until it is generated again.
+added changes). The patch belongs to the stroke it was made for: moving or resizing the spot leaves the photo
+untouched there until it is generated again.
+
+**Until its result arrives a Generative spot only marks its area**: painting with the Generative
+tool runs no heal or content-aware fill (an early build did, and it looked like a poor AI result).
+The same holds while a generation runs, after a move, and when the patch file is missing.
 
 Limits:
 
@@ -148,8 +190,20 @@ Limits:
 - **Resolution.** A downscaled generation is softer; the warning says by how much.
 - **Model changes.** A model redraws its whole crop; only the painted area (and its feather) is kept.
 - **Missing files.** A patch file that is gone (library moved without its `genfill` folder, or the
-  XMP opened elsewhere) is never a crash: the spot renders as a content-aware fill and the panel
-  says to generate it again.
+  XMP opened elsewhere) is never a crash: the photo shows through and the panel says to generate
+  it again.
+
+### Tested with a real account (2026-10-16)
+
+The first real upload failed with "secure connection failed: failed to write whole buffer": the
+pure-Rust HTTPS client handed rustls the whole multi-megabyte body at once, and rustls takes 64 KiB
+at a time. It now feeds it in pieces (`crates/fetch/src/http.rs`, test: a 6 MB POST to a local
+rustls server). Then, with OpenAI (gpt-image-1.5) on wedding photos (a test copy, the user's own key
+and consent): a guest in the background removed (one request, 1270 px crop sent at 81 %, 46 s), and
+a striped flag across the full height of the frame (4 tiles at 50 % instead of one crop at 28 %,
+about 4 minutes); both blend with the photo's colour and grain, and white balance and exposure
+changed afterwards apply to the patch. `cargo run --release -p lcc-engine --example
+genfill_check` with `GENFILL_REAL=1` repeats such a test (each run is a paid request).
 
 ### Trying it without an account
 
