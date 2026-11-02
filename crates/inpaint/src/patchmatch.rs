@@ -76,11 +76,14 @@ pub struct CompleteParams {
     /// Strength of the structure pass ([`crate::structure`]): straight edges and lines that cross
     /// the hole are detected and continued through it. `0` turns it off (plain texture completion).
     pub structure: f32,
+    /// Blend the fill into the known pixels around it ([`seam_blend`]) so copied blocks meet them
+    /// without a hard seam.
+    pub seam_blend: bool,
 }
 
 impl Default for CompleteParams {
     fn default() -> Self {
-        Self { patch_radius: 3, em_iters: 8, min_em_iters: 2, pm_iters: 2, refine_extent: 96, seed: 1, structure: 1.0 }
+        Self { patch_radius: 3, em_iters: 8, min_em_iters: 2, pm_iters: 2, refine_extent: 96, seed: 1, structure: 1.0, seam_blend: true }
     }
 }
 
@@ -450,6 +453,35 @@ pub fn complete_guided(
     p: &CompleteParams,
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<Option<Vec<f32>>, Cancelled> {
+    if !p.seam_blend || Some(hole.len()) != w.checked_mul(h) || guide.exclude.is_some_and(|e| e.len() != hole.len()) {
+        return complete_inner(w, h, ch, img, hole, guide, p, cancelled);
+    }
+    // Fill a ring of SEAM_RING known pixels too: there the fill can be compared with the photo, and
+    // the mismatch is what `seam_blend` takes out.
+    let ex = |i: usize| guide.exclude.and_then(|e| e.get(i)).copied().unwrap_or(false);
+    let wide: Vec<bool> =
+        crate::mask::dilate(w, h, hole, SEAM_RING).iter().enumerate().map(|(i, d)| *d && (hole.get(i).copied().unwrap_or(false) || !ex(i))).collect();
+    let Some(mut out) = complete_inner(w, h, ch, img, &wide, guide, p, cancelled)? else {
+        return complete_inner(w, h, ch, img, hole, guide, p, cancelled);
+    };
+    seam_blend(w, h, ch, img, &mut out, hole, &wide);
+    Ok(Some(out))
+}
+
+/// Width of the ring of known pixels [`complete_guided`] also fills to measure the seam.
+const SEAM_RING: usize = 2;
+
+#[allow(clippy::too_many_arguments)]
+fn complete_inner(
+    w: usize,
+    h: usize,
+    ch: usize,
+    img: &[f32],
+    hole: &[bool],
+    guide: &Guide,
+    p: &CompleteParams,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Option<Vec<f32>>, Cancelled> {
     let check = || if cancelled() { Err(Cancelled) } else { Ok(()) };
     if ch == 0 || Some(hole.len()) != w.checked_mul(h) || Some(img.len()) != hole.len().checked_mul(ch) {
         return Ok(None);
@@ -661,6 +693,71 @@ pub fn complete_guided(
         prev = Some((lw, lh, limg));
     }
     Ok(prev.map(|(_, _, img)| img))
+}
+
+/// Seamless edges (in the spirit of P. Pérez, M. Gangnet, A. Blake, *Poisson Image Editing*,
+/// SIGGRAPH 2003, applied as a membrane correction). `out` was completed over `wide` (the hole and a
+/// ring of known pixels around it), so on that ring it can be compared with the photo: the
+/// mismatch (smoothed along the ring, so the photo's grain is not copied in) is spread smoothly over
+/// the hole and added, and the ring gets the photo's pixels back. A copied block whose far end did not
+/// match the photo (a band continued from one side of a long hole) then meets it without a hard,
+/// straight seam, while a fill that already matches (the mismatch is zero) is left as it is.
+pub fn seam_blend(w: usize, h: usize, ch: usize, orig: &[f32], out: &mut [f32], hole: &[bool], wide: &[bool]) {
+    let n = w * h;
+    if hole.len() != n || wide.len() != n || orig.len() != n * ch || out.len() != n * ch || ch == 0 {
+        return;
+    }
+    let ring: Vec<bool> = (0..n).map(|i| wide[i] && !hole[i]).collect();
+    // smoothed mismatch on the ring (ring pixels within R px)
+    const R: i64 = 4;
+    let mut fix = vec![0.0f32; n * ch];
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if !ring[i] {
+                continue;
+            }
+            let mut k = 0.0f32;
+            let mut acc = vec![0.0f32; ch];
+            for dy in -R..=R {
+                for dx in -R..=R {
+                    let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                    if nx < 0 || ny < 0 || nx as usize >= w || ny as usize >= h {
+                        continue;
+                    }
+                    let j = ny as usize * w + nx as usize;
+                    if ring[j] {
+                        for (c, a) in acc.iter_mut().enumerate() {
+                            *a += orig.get(j * ch + c).copied().unwrap_or(0.0) - out.get(j * ch + c).copied().unwrap_or(0.0);
+                        }
+                        k += 1.0;
+                    }
+                }
+            }
+            for (c, a) in acc.iter().enumerate() {
+                if let Some(f) = fix.get_mut(i * ch + c) {
+                    *f = a / k.max(1.0);
+                }
+            }
+        }
+    }
+    // spread over the hole (the ring is the boundary; outside it there is nothing to correct)
+    let field = crate::membrane::membrane_fill(w, h, ch, &fix, hole);
+    for i in 0..n {
+        for c in 0..ch {
+            let k = i * ch + c;
+            if hole[i] {
+                if let (Some(o), Some(f)) = (out.get_mut(k), field.get(k))
+                    && f.is_finite()
+                {
+                    *o += f;
+                }
+            } else if let (Some(o), Some(v)) = (out.get_mut(k), orig.get(k)) {
+                // the ring (and everything else outside the hole) is the photo again
+                *o = *v;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

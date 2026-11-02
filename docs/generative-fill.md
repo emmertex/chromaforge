@@ -25,6 +25,10 @@ its surroundings, coarse to fine:
   both sides match), refit to sub-pixel accuracy and continued through the hole: each line adds a
   guide channel (signed distance to the line) to the patch distance, and PatchMatch also tries
   copying the band along the line from beyond the hole. Texture without such lines fills as before.
+- **No seams.** The completion also fills a 2-px ring of known pixels around the hole; the mismatch
+  there (smoothed along the ring) is spread over the fill as a smooth correction (a membrane, as in
+  Poisson image editing), so a band copied from one side of a long hole meets the other side without
+  a hard, straight edge. A fill that already matches is unchanged.
 - **Multi-scale.** The structure is decided at a scale set by the spot's size, so a preview and a
   full-size export agree.
 - **Never copies from the wrong place.** Other spots' areas and faces (face regions of the photo)
@@ -50,6 +54,15 @@ of the long edge) is unchanged.
 | Stability AI | Inpaint / Erase | yes | up to 3072 px a side | $0.05 | **yes, unless you switch it off** in your account |
 | Black Forest Labs | FLUX.1 Fill [pro] / Erase | yes | up to 2048 px | $0.05 | **terms allow it**; no images of anyone under 18 |
 | fal.ai | FLUX Fill / object removal | yes | up to 2048 px | $0.05 / MP | not stated; LightCraft asks fal not to store the request |
+
+**Provenance marks.** OpenAI says images from its API carry C2PA provenance metadata *and* an invisible
+SynthID watermark (help center: "C2PA and SynthID in OpenAI-generated images"); Google's image models
+add SynthID; Black Forest Labs may embed C2PA Content Credentials and its terms forbid removing them;
+Stability's API docs say nothing (third parties report C2PA on its hosted images); fal depends on the
+model. **LightCraft keeps only the pixels** of the filled area: C2PA metadata in the returned PNG is
+not read, so it is not in the patch, the photo or any export. A watermark hidden in the pixels
+(SynthID) may survive in the patch, weakened by the colour match and the added grain. The consent
+dialog says so. Writing LightCraft's own note that generative fill was used (XMP) is a follow-up.
 
 Prices and policies were read from each provider's own pages on 2026-10-14; the consent dialog
 shows the summary and links the page. Adobe Firefly is not offered: LightCraft is a clean-room

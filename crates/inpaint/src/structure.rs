@@ -510,12 +510,19 @@ pub fn guide_channels(lines: &[Line], lw: usize, lh: usize, scale: f32, band: f3
     for y in 0..lh {
         for x in 0..lw {
             let (px, py) = (x as f32 * scale + off, y as f32 * scale + off);
-            // Each pixel belongs to its nearest line only: where two lines come close (one crossing
-            // the other), demanding the same offset from both would leave almost no source.
+            // Each pixel belongs mostly to its nearest line: where two lines come close (one crossing
+            // the other), demanding the same offset from both would leave almost no source. The hand-over
+            // between lines is gradual (over a band): an abrupt switch from one line's channel to the
+            // other's made the matches jump too, and the fill showed straight, blocky seams there.
             let pick = nearest_line(lines, px, py, scale, band);
-            let Some((_, k)) = pick else { continue };
-            let (Some(l), Some(v)) = (lines.get(k), g.get_mut((y * lw + x) * gc + k)) else { continue };
-            *v = profile(l, px, py, scale, band) * weight * l.contrast;
+            let Some((d0, _)) = pick else { continue };
+            for (k, l) in lines.iter().enumerate() {
+                let Some(dk) = near(l, px, py, scale, band) else { continue };
+                let own = 1.0 - smooth01((dk.abs() - d0) / band);
+                if let Some(v) = g.get_mut((y * lw + x) * gc + k) {
+                    *v = profile(l, px, py, scale, band) * weight * l.contrast * own;
+                }
+            }
         }
     }
     g
@@ -540,17 +547,31 @@ fn near(l: &Line, px: f32, py: f32, scale: f32, band: f32) -> Option<f32> {
     (t >= l.t0 - margin && t <= l.t1 + margin && d.abs() < 2.0 * band).then_some(d)
 }
 
-/// `(signed distance in level px) / band` ramped to zero between one and two bands; 0 off the span.
+/// `(signed distance in level px) / band` ramped to zero between one and two bands, and faded out
+/// over the band beyond each end of the span (a hard stop there cut the fill with a straight seam
+/// across the line); 0 off the span.
 fn profile(l: &Line, px: f32, py: f32, scale: f32, band: f32) -> f32 {
     let Some(d) = near(l, px, py, scale, band) else { return 0.0 };
+    let u = l.u();
+    let t = px * u.0 + py * u.1;
+    let margin = (band * scale).max(1e-6);
+    let beyond = (l.t0 - t).max(t - l.t1).max(0.0) / margin;
+    let fade = 1.0 - smooth01(beyond);
     let d = d / band;
-    if d.abs() <= 1.0 {
+    let p = if d.abs() <= 1.0 {
         d
     } else if d.abs() < 2.0 {
         d.signum() * (2.0 - d.abs())
     } else {
         0.0
-    }
+    };
+    p * fade
+}
+
+/// Smoothstep on `0..1` (clamped).
+fn smooth01(x: f32) -> f32 {
+    let t = if x.is_finite() { x.clamp(0.0, 1.0) } else { 1.0 };
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Line-continuation candidates for each target pixel within two bands of a line (and in its span):
@@ -613,7 +634,11 @@ pub(crate) fn line_candidates(
                     }
                 }
             }
-            near_px.push((i, k));
+            // the coherent band copy is for the core band only: copied as one block further out, it
+            // ended in straight, blocky seams where the next line's or the texture's matches took over
+            if d <= band {
+                near_px.push((i, k));
+            }
         }
     }
     let mut idx = vec![u32::MAX; lw * lh];

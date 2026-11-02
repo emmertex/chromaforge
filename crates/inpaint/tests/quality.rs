@@ -347,3 +347,63 @@ fn guided_completion_can_be_cancelled() {
     let r = complete_guided(c.w, c.h, CH, &dirty(&c), &c.hole, &g, &CompleteParams::default(), &|| true);
     assert_eq!(r, Err(lcc_inpaint::Cancelled));
 }
+
+/// A beach like a real one out of focus: soft transitions, a sea with darker and lighter streaks, a
+/// bright surf band broken into foam blobs, and wet sand; a tall stroke (a person and their
+/// reflection) crosses every band, wider than the coarse-to-fine refinement extent at full size.
+fn case_surf(w: usize, h: usize) -> Case {
+    let (hf, wf) = (h as f32, w as f32);
+    let soft = |y: f32, at: f32, width: f32| ((y - at) / width).clamp(-1.0, 1.0) * 0.5 + 0.5;
+    let clean = build(w, h, |x, y| {
+        let yf = y as f32;
+        let t = 0.012 * hash(x, y, 22);
+        let sky = [0.55, 0.68, 0.85];
+        let streak = 0.06 * value_noise(x / 3, y, 18, 24);
+        let sea = [0.12 + streak, 0.22 + streak, 0.35 + streak];
+        let foam = 0.3 * value_noise(x, y / 2, 30, 23).max(-0.2);
+        let surf = [0.62 + foam, 0.68 + foam, 0.78 + foam];
+        let sand = [0.4, 0.48, 0.6];
+        let a = lerp3(sky, sea, soft(yf, 0.3 * hf, 1.0));
+        let b = lerp3(a, surf, soft(yf, 0.52 * hf, 10.0));
+        let c = lerp3(b, sand, soft(yf, 0.62 * hf, 8.0));
+        [c[0] + t, c[1] + t, c[2] + t]
+    });
+    let (cx, w2) = (wf * 0.55, wf * 0.12);
+    let hole: Vec<bool> = (0..w * h)
+        .map(|i| {
+            let (x, y) = ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
+            let yy = y.clamp(hf * 0.2, hf * 0.85);
+            (x - cx).hypot(y - yy) < w2
+        })
+        .collect();
+    Case { name: "g_surf", w, h, clean, hole, exclude: None }
+}
+
+/// The largest jump between neighbouring columns of the surf band's mean brightness inside the hole,
+/// over the same measure on the clean photo: a hard, straight seam (a block copied with an abrupt
+/// end) shows as a large jump.
+fn surf_seam(c: &Case, out: &[f32]) -> f32 {
+    let (y0, y1) = ((c.h as f32 * 0.52) as usize, (c.h as f32 * 0.6) as usize);
+    let col = |img: &[f32], x: usize| (y0..y1).map(|y| img[(y * c.w + x) * CH + 1]).sum::<f32>() / (y1 - y0) as f32;
+    // the hole's columns and one known column on each side (a seam sits where the fill meets the photo)
+    let mut inside: Vec<usize> = (0..c.w).filter(|x| (y0..y1).all(|y| c.hole[y * c.w + x])).collect();
+    if let (Some(&a), Some(&b)) = (inside.first(), inside.last()) {
+        inside.insert(0, a.saturating_sub(2));
+        inside.push((b + 2).min(c.w - 1));
+    }
+    let step = |img: &[f32]| inside.windows(2).map(|p| (col(img, p[1]) - col(img, p[0])).abs()).fold(0.0f32, f32::max);
+    step(out) / step(&c.clean).max(1e-3)
+}
+
+// Given parallel lines meeting a tall hole, the fill has no hard straight seams across them
+#[test]
+fn parallel_lines_leave_no_blocky_seams() {
+    let c = case_surf(560, 700);
+    let out = run(&c, &dirty(&c), &CompleteParams::default());
+    let seam = surf_seam(&c, &out);
+    eprintln!("surf seam ratio {seam}");
+    if let Some(dir) = std::env::var_os("INPAINT_OUT") {
+        write_png(&std::path::Path::new(&dir).join("g_surf.png"), c.w, c.h, &[&c.clean, &dirty(&c), &out]);
+    }
+    assert!(seam < 2.5, "a jump {seam}× the photo's own across the surf line");
+}
