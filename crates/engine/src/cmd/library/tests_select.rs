@@ -8,7 +8,7 @@ use crate::{Result, Session};
 fn add(s: &mut Session, id: u64) -> Result<()> {
     let photo = Photo::new(
         PhotoId(id),
-        Source::File { path: format!("/lightcraft-select/{id:03}.jpg") },
+        Source::File { path: format!("/app-select/{id:03}.jpg") },
         &format!("{id:03}.jpg"),
         "JPEG",
         40,
