@@ -636,6 +636,10 @@ fn apply_compact(ctx: &egui::Context) {
             s.spacing.item_spacing = egui::vec2(4.0, 2.0);
             s.spacing.button_padding = egui::vec2(6.0, 2.0);
             s.spacing.interact_size.y = 18.0;
+            // smaller checkboxes and radio buttons
+            s.spacing.icon_width = 12.0;
+            s.spacing.icon_width_inner = 7.0;
+            s.spacing.icon_spacing = 4.0;
         });
     }
 }
@@ -795,6 +799,16 @@ pub fn apply_kind(ctx: &egui::Context, kind: ThemeKind) {
     });
     if compact(ctx) {
         apply_compact(ctx);
+    } else {
+        // what Compact shrinks and the theme above doesn't set: back to egui's own
+        let d = egui::style::Spacing::default();
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            ctx.style_mut_of(theme, |s| {
+                s.spacing.icon_width = d.icon_width;
+                s.spacing.icon_width_inner = d.icon_width_inner;
+                s.spacing.icon_spacing = d.icon_spacing;
+            });
+        }
     }
 }
 

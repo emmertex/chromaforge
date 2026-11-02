@@ -725,6 +725,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         step: 1.0,
         decimals: 0,
         track: lcc_develop::Track::Plain,
+        shade: lcc_develop::Shade::Plain,
     };
     let (cur_size, cur_feather, cur_opacity) = if let Some((_, sp)) = &sel {
         (sp.size * 1000.0, sp.feather, sp.opacity)
@@ -864,6 +865,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         step: 1.0,
         decimals: 0,
         track: lcc_develop::Track::Plain,
+        shade: lcc_develop::Shade::Plain,
     };
     let out = slider(ui, &spec, app.ui.spots_threshold as f64, app.ui.visualize_spots, None);
     if let Some(v) = out.value {

@@ -3,7 +3,7 @@
 //! ([`register`]) so the control channel can find and click it by name.
 
 use egui::{Align2, Color32, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use lcc_develop::{ControlSpec, Track};
+use lcc_develop::{ControlSpec, Shade, Track};
 
 use crate::icons::{Icon, paint};
 use crate::theme::Tokens;
@@ -218,11 +218,33 @@ fn track_stops(track: &Track) -> Option<Vec<Color32>> {
     })
 }
 
-fn paint_track(ui: &Ui, rect: Rect, track: &Track, t: &Tokens, thumb_x: f32, ring: f32) {
+fn paint_track(ui: &Ui, rect: Rect, track: &Track, shade: Shade, t: &Tokens, thumb_x: f32, ring: f32) {
     let p = ui.painter();
     let y = rect.center().y;
     let h = 1.0;
-    if let Some(stops) = track_stops(track) {
+    if shade != Shade::Plain && track_stops(track).is_none() {
+        // the Compact layout's grey ramp: one mesh with a colour per column of vertices
+        let hh = h + 0.5;
+        let steps: u32 = 48;
+        let mut mesh = egui::Mesh::default();
+        for i in 0..=steps {
+            let a = i as f32 / steps as f32;
+            let x = rect.left() + rect.width() * a;
+            let c = shade_color(shade, t, a);
+            mesh.colored_vertex(pos2(x, y - hh), c);
+            mesh.colored_vertex(pos2(x, y + hh), c);
+            if i > 0 {
+                let k = 2 * i;
+                mesh.add_triangle(k - 2, k - 1, k);
+                mesh.add_triangle(k - 1, k, k + 1);
+            }
+        }
+        p.add(egui::Shape::mesh(mesh));
+        if matches!(track, Track::Centered) {
+            // where the slider has no effect, lighter than the ramp around it
+            p.rect_filled(Rect::from_center_size(pos2(rect.center().x, y), vec2(1.0, 6.0)), 0.0, t.text_label);
+        }
+    } else if let Some(stops) = track_stops(track) {
         // gradient: segments between stops
         let n = stops.len().max(2) - 1;
         let steps = 48;
@@ -240,6 +262,24 @@ fn paint_track(ui: &Ui, rect: Rect, track: &Track, t: &Tokens, thumb_x: f32, rin
     }
     // gap around the hollow thumb
     p.rect_filled(Rect::from_center_size(pos2(thumb_x, y), vec2(ring * 2.0 + 4.0, 6.0)), 0.0, t.chrome);
+}
+
+/// The colour of a grey track shaded `shade` at `x` (0 = left end, 1 = right end): between the
+/// theme's track colour pulled toward its darkest and its lightest colour, so it stays subtle in
+/// every theme. A plain shade is the track colour.
+pub(crate) fn shade_color(shade: Shade, t: &Tokens, x: f32) -> Color32 {
+    let x = if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.5 };
+    let lum = |c: Color32| u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b());
+    let (darkest, lightest) = if lum(t.chrome) < lum(t.text) { (t.chrome, t.text) } else { (t.text, t.chrome) };
+    let dark = t.track.lerp_to_gamma(darkest, 0.4);
+    let light = t.track.lerp_to_gamma(lightest, 0.3);
+    match shade {
+        Shade::Plain => t.track,
+        Shade::Ramp => dark.lerp_to_gamma(light, x),
+        Shade::ReverseRamp => light.lerp_to_gamma(dark, x),
+        Shade::CentreLight => dark.lerp_to_gamma(light, 1.0 - (2.0 * x - 1.0).abs()),
+        Shade::Tinted => dark.lerp_to_gamma(light.lerp_to_gamma(Color32::from_rgb(0xc8, 0x40, 0x40), 0.45), x),
+    }
 }
 
 /// Result of a slider interaction this frame.
@@ -339,6 +379,11 @@ fn slider_laid_out(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, l
     let geo = match form_label {
         Some(label_w) => SliderGeometry::form(row, label_w),
         None if two_rows => SliderGeometry::two_rows(row, k),
+        // Compact: the name column fitted to the longest name of its section or flyout
+        None if compact => {
+            let name_w = ui.painter().layout_no_wrap(label_str.clone(), font.clone(), t.text_label).size().x.ceil();
+            SliderGeometry::new(row, name_column(ui, name_w).clamp(24.0_f32.min(max_label_col(w, k)), max_label_col(w, k)), k)
+        }
         None => SliderGeometry::new(row, label_column(ui, w, &font, k), k),
     };
     let (label_rect, track_rect, value_rect) = (geo.label, geo.track, geo.value);
@@ -709,7 +754,9 @@ fn slider_laid_out(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, l
     }
     let ring = THUMB_RING;
     let tx = to_x(v);
-    paint_track(ui, track_rect, &spec.track, &t, tx, ring);
+    // (the grey ramps are the Compact layout's; Classic's tracks stay flat)
+    let shade = if compact { spec.shade } else { Shade::Plain };
+    paint_track(ui, track_rect, &spec.track, shade, &t, tx, ring);
     let p = ui.painter();
     let ring_c = if !enabled {
         t.text_disabled
@@ -1065,8 +1112,62 @@ fn label_column(ui: &Ui, row_w: f32, font: &egui::FontId, k: f32) -> f32 {
             w
         }
     };
-    let max_col = ((row_w - 48.0) * (0.34 * k).min(0.42)).clamp(24.0, MAX_LABEL_COL * k);
+    let max_col = max_label_col(row_w, k);
     widest.clamp(24.0_f32.min(max_col), max_col)
+}
+
+/// The widest a slider's name column may be in a row `row_w` wide, so the track keeps most of it.
+fn max_label_col(row_w: f32, k: f32) -> f32 {
+    ((row_w - 48.0) * (0.34 * k).min(0.42)).clamp(24.0, MAX_LABEL_COL * k)
+}
+
+/// Where the current slider group is kept, per layer (a dialog's sliders aren't the panel's).
+fn group_slot(layer: egui::LayerId) -> egui::Id {
+    egui::Id::new(("slider-group", layer))
+}
+
+/// Starts a group of sliders whose names share one column in the Compact layout (a section:
+/// [`section_header`] calls it). Sliders drawn outside any group this pass share a column with
+/// the others in their `Ui`.
+pub(crate) fn begin_slider_group(ui: &Ui, id: &str) {
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.data_mut(|d| d.insert_temp(group_slot(ui.layer_id()), (egui::Id::new(("slider-names", id)), pass)));
+}
+
+/// Draws `body` as a slider group of its own (a flyout such as SDR Rendition or Defringe): in the
+/// Compact layout its names get their own column, so a few long ones neither shorten the tracks
+/// of the section around it nor move them as it opens and closes. The section's group carries on
+/// after it.
+pub(crate) fn slider_group<R>(ui: &mut Ui, id: &str, body: impl FnOnce(&mut Ui) -> R) -> R {
+    let slot = group_slot(ui.layer_id());
+    let outer = ui.data(|d| d.get_temp::<(egui::Id, u64)>(slot));
+    begin_slider_group(ui, id);
+    let out = body(ui);
+    ui.data_mut(|d| match outer {
+        Some(g) => {
+            d.insert_temp(slot, g);
+        }
+        None => d.remove::<(egui::Id, u64)>(slot),
+    });
+    out
+}
+
+/// The Compact layout's name column of the slider group being drawn: the longest name in it, as
+/// measured over this pass and the one before (a group's rows below this one count once they
+/// have been drawn), so a section's tracks start together just after its longest name.
+fn name_column(ui: &Ui, name_w: f32) -> f32 {
+    let pass = ui.ctx().cumulative_pass_nr();
+    let group = match ui.data(|d| d.get_temp::<(egui::Id, u64)>(group_slot(ui.layer_id()))) {
+        Some((g, p)) if p == pass => g,
+        _ => ui.id().with("slider-names"),
+    };
+    let name_w = if name_w.is_finite() { name_w.max(0.0) } else { 0.0 };
+    let (seen, cur, prev) = ui.data(|d| d.get_temp::<(u64, f32, f32)>(group)).unwrap_or((pass, 0.0, 0.0));
+    // a new pass: the last one's widest becomes the remembered one
+    let (cur, prev) = if seen == pass { (cur, prev) } else { (0.0, cur) };
+    let cur = cur.max(name_w);
+    ui.data_mut(|d| d.insert_temp(group, (pass, cur, prev)));
+    cur.max(prev)
 }
 
 /// How far a slider moves per point of pointer travel in a frame that moved it `dx`, with
@@ -1108,6 +1209,8 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
     let compact = crate::theme::compact(ui.ctx());
     let h = if compact { crate::theme::COMPACT_SECTION_H } else { 40.0 };
     let (r, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    // the section's sliders share one name column (Compact)
+    begin_slider_group(ui, id);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
     register(ui.ctx(), format!("section:{id}"), r);
     let p = ui.painter();
@@ -1482,6 +1585,7 @@ mod tests {
             step,
             decimals: 2,
             track: Track::Plain,
+            shade: lcc_develop::Shade::Plain,
         };
         assert!((nudged(&spec("light.exposure", -5.0, 5.0, 0.01), 0.0, 1.0) - 0.05).abs() < 1e-9);
         assert_eq!(nudged(&spec("light.contrast", -100.0, 100.0, 1.0), 10.0, -5.0), 5.0);

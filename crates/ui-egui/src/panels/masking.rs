@@ -12,21 +12,26 @@ use crate::theme::Tokens;
 use crate::widgets::{divider, flyout_row, icon_button, one_line, register, slider, text_button};
 
 const fn spec(id: &'static str, label: &'static str, min: f64, max: f64, step: f64, decimals: u8, track: Track) -> ControlSpec {
-    ControlSpec { id, label, section: Section::Light, min, max, default: 0.0, step, decimals, track }
+    ControlSpec { id, label, section: Section::Light, min, max, default: 0.0, step, decimals, track, shade: lcc_develop::Shade::Plain }
+}
+
+/// `s` with the grey ramp of its Edit twin (drawn only in the Compact layout).
+const fn shaded(s: ControlSpec, shade: lcc_develop::Shade) -> ControlSpec {
+    ControlSpec { shade, ..s }
 }
 
 /// Local adjustment sliders (key = `LocalAdjustments` field name).
 pub const LOCAL: &[ControlSpec] = &[
     spec("temp", "Temp", -100.0, 100.0, 1.0, 0, Track::Temp),
     spec("tint", "Tint", -100.0, 100.0, 1.0, 0, Track::Tint),
-    spec("exposure", "Exposure", -4.0, 4.0, 0.01, 2, Track::Centered),
-    spec("contrast", "Contrast", -100.0, 100.0, 1.0, 0, Track::Centered),
-    spec("highlights", "Highlights", -100.0, 100.0, 1.0, 0, Track::Centered),
-    spec("shadows", "Shadows", -100.0, 100.0, 1.0, 0, Track::Centered),
-    spec("whites", "Whites", -100.0, 100.0, 1.0, 0, Track::Centered),
-    spec("blacks", "Blacks", -100.0, 100.0, 1.0, 0, Track::Centered),
+    shaded(spec("exposure", "Exposure", -4.0, 4.0, 0.01, 2, Track::Centered), lcc_develop::Shade::Ramp),
+    shaded(spec("contrast", "Contrast", -100.0, 100.0, 1.0, 0, Track::Centered), lcc_develop::Shade::ReverseRamp),
+    shaded(spec("highlights", "Highlights", -100.0, 100.0, 1.0, 0, Track::Centered), lcc_develop::Shade::Ramp),
+    shaded(spec("shadows", "Shadows", -100.0, 100.0, 1.0, 0, Track::Centered), lcc_develop::Shade::Ramp),
+    shaded(spec("whites", "Whites", -100.0, 100.0, 1.0, 0, Track::Centered), lcc_develop::Shade::Ramp),
+    shaded(spec("blacks", "Blacks", -100.0, 100.0, 1.0, 0, Track::Centered), lcc_develop::Shade::Ramp),
     spec("texture", "Texture", -100.0, 100.0, 1.0, 0, Track::Centered),
-    spec("clarity", "Clarity", -100.0, 100.0, 1.0, 0, Track::Centered),
+    shaded(spec("clarity", "Clarity", -100.0, 100.0, 1.0, 0, Track::Centered), lcc_develop::Shade::ReverseRamp),
     spec("dehaze", "Dehaze", -100.0, 100.0, 1.0, 0, Track::Centered),
     spec("hue", "Hue", -100.0, 100.0, 1.0, 0, Track::Rainbow),
     spec("saturation", "Saturation", -100.0, 100.0, 1.0, 0, Track::Gradient { from: "#7a7a7a", to: "#e04a3a" }),
@@ -56,7 +61,18 @@ pub fn grade_specs(zone: &str) -> [ControlSpec; 3] {
         "global" => ("grade_global_hue", "grade_global_sat", "grade_global_lum"),
         _ => ("grade_shadows_hue", "grade_shadows_sat", "grade_shadows_lum"),
     };
-    let c = |id, label, min, max, track| ControlSpec { id, label, section: Section::Grading, min, max, default: 0.0, step: 1.0, decimals: 0, track };
+    let c = |id, label, min, max, track| ControlSpec {
+        id,
+        label,
+        section: Section::Grading,
+        min,
+        max,
+        default: 0.0,
+        step: 1.0,
+        decimals: 0,
+        track,
+        shade: lcc_develop::Shade::Plain,
+    };
     [c(h, "Hue", 0.0, 360.0, Track::Rainbow), c(s, "Saturation", 0.0, 100.0, Track::Plain), c(l, "Luminance", -100.0, 100.0, Track::Centered)]
 }
 
@@ -77,6 +93,8 @@ fn section_header(app: &mut LccApp, ui: &mut egui::Ui, key: &str, title: &str, c
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
     register(ui.ctx(), format!("section:{id}"), r);
+    // the section's sliders share one name column (Compact)
+    crate::widgets::begin_slider_group(ui, &id);
     let p = ui.painter();
     if resp.hovered() {
         p.rect_filled(r, 0.0, t.chrome.gamma_multiply(1.06));
@@ -223,22 +241,25 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 .fold(0.0, f32::max)
         };
         let (cols, tile, size) = tile_layout(ui.available_width(), widest);
+        let compact = crate::theme::compact(ui.ctx());
         let grid_w = cols as f32 * tile + (cols as f32 - 1.0) * TILE_GAP;
         let pad = ((ui.available_width() - grid_w) / 2.0).max(0.0);
         ui.horizontal(|ui| {
             ui.add_space(pad);
             egui::Grid::new("mask-tiles").spacing(vec2(TILE_GAP, TILE_GAP)).show(ui, |ui| {
                 for (i, (kind, label)) in tiles.iter().enumerate() {
-                    let (r, resp) = ui.allocate_exact_size(vec2(tile, 52.0), Sense::click());
+                    // Compact: shorter tiles with a smaller icon
+                    let (tile_h, icon, icon_up, label_up) = if compact { (36.0, 14.0, 5.0, 7.0) } else { (52.0, 20.0, 7.0, 9.0) };
+                    let (r, resp) = ui.allocate_exact_size(vec2(tile, tile_h), Sense::click());
                     crate::widgets::announce(&resp, crate::i18n::tr(label));
                     register(ui.ctx(), format!("maskNew:{kind}"), r);
                     ui.painter().rect_filled(r, 4.0, if resp.hovered() { t.hover } else { t.inset });
-                    paint(ui.painter(), Rect::from_center_size(r.center() - vec2(0.0, 7.0), vec2(20.0, 20.0)), kind_icon(kind), t.text_label);
+                    paint(ui.painter(), Rect::from_center_size(r.center() - vec2(0.0, icon_up), vec2(icon, icon)), kind_icon(kind), t.text_label);
                     // (cut short only in a panel too narrow for the label: the full name on hover)
                     let label = crate::i18n::tr(label);
                     let g = one_line(ui.painter(), label, t.font(size), t.text_dim, tile - 2.0 * TILE_PAD);
                     let elided = g.elided;
-                    let at = pos2(r.center().x, r.bottom() - 9.0) - g.size() / 2.0;
+                    let at = pos2(r.center().x, r.bottom() - label_up) - g.size() / 2.0;
                     register(ui.ctx(), format!("maskNewLabel:{kind}"), Rect::from_min_size(at, g.size()));
                     ui.painter().galley(at, g, t.text_dim);
                     let resp = if elided { resp.on_hover_text(label) } else { resp };
@@ -639,6 +660,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             step: 1.0,
                             decimals: 0,
                             track: Track::Plain,
+                            shade: lcc_develop::Shade::Plain,
                         };
                         let out = slider(ui, &refine, cur_m.refine, true, None);
                         apply_slider_out(app, &refine, out, |app, v| app.run("mask.refine", json!({"value": v})));
@@ -688,7 +710,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 app.ui.toggle_flyout("maskCurve");
             }
             if open {
-                super::edit::curve_editor(app, ui, id, &d, super::edit::CurveTarget::Mask(m.id));
+                crate::widgets::slider_group(ui, "maskCurve", |ui| {
+                    super::edit::curve_editor(app, ui, id, &d, super::edit::CurveTarget::Mask(m.id));
+                });
             }
         }
         if *key == "color" {
@@ -718,6 +742,7 @@ fn amount_slider(app: &mut LccApp, ui: &mut egui::Ui, index: usize, m: &lcc_deve
         step: 1.0,
         decimals: 0,
         track: Track::Plain,
+        shade: lcc_develop::Shade::Plain,
     };
     let out = slider(ui, &amt, m.adjust.amount, true, None);
     apply_slider_out(app, &amt, out, |app, v| app.run("mask.adjust", json!({"values": {"amount": v}})));
@@ -791,6 +816,7 @@ pub(crate) fn color_overlay_popup(app: &mut LccApp, ui: &mut egui::Ui) {
         step: 1.0,
         decimals: 0,
         track: Track::Plain,
+        shade: lcc_develop::Shade::Plain,
     };
     let out = slider(ui, &spec, app.ui.mask_overlay_opacity as f64, true, None);
     if let Some(v) = out.value {
@@ -1011,6 +1037,7 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
                 step: 1.0,
                 decimals: 0,
                 track: Track::Plain,
+                shade: lcc_develop::Shade::Plain,
             };
             let cur = ((lo_feather + hi_feather) / 2.0 / 0.5 * 100.0).clamp(0.0, 100.0);
             let out = slider(ui, &smooth, cur, true, None);
@@ -1058,6 +1085,7 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
                 step: 1.0,
                 decimals: 0,
                 track: Track::Plain,
+                shade: lcc_develop::Shade::Plain,
             };
             let out = slider(ui, &spec, *refine, true, None);
             let samples = samples.clone();
@@ -1334,7 +1362,18 @@ fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
         ("ui.brushFlow", "Flow", 1.0, 100.0, app.ui.brush_flow as f64),
         ("ui.brushDensity", "Density", 0.0, 100.0, app.ui.brush_density as f64),
     ] {
-        let s = ControlSpec { id, label, section: Section::Light, min, max, default: min, step: 1.0, decimals: 0, track: Track::Plain };
+        let s = ControlSpec {
+            id,
+            label,
+            section: Section::Light,
+            min,
+            max,
+            default: min,
+            step: 1.0,
+            decimals: 0,
+            track: Track::Plain,
+            shade: lcc_develop::Shade::Plain,
+        };
         let out = slider(ui, &s, get, true, None);
         if let Some(v) = out.value {
             match id {

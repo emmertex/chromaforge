@@ -3314,7 +3314,7 @@ const LABEL_W: f32 = 78.0;
 const FORM_LABEL_W: f32 = 112.0;
 
 const fn spec(id: &'static str, label: &'static str, min: f64, max: f64, default: f64, step: f64) -> ControlSpec {
-    ControlSpec { id, label, section: Section::Light, min, max, default, step, decimals: 0, track: Track::Plain }
+    ControlSpec { id, label, section: Section::Light, min, max, default, step, decimals: 0, track: Track::Plain, shade: lcc_develop::Shade::Plain }
 }
 const QUALITY: ControlSpec = spec("export.quality", "Quality", 1.0, 100.0, 90.0, 1.0);
 const VIDEO_QUALITY: ControlSpec = spec("export.videoQuality", "Video quality", 1.0, 100.0, 80.0, 1.0);

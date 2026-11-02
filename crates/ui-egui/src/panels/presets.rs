@@ -167,6 +167,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
                 step: 1.0,
                 decimals: 0,
                 track: Track::Plain,
+                shade: lcc_develop::Shade::Plain,
             };
             let out = slider(ui, &spec, last.amount, true, None);
             if let Some(v) = out.value
