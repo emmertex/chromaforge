@@ -5067,10 +5067,20 @@ mod tests {
                     assert_eq!(Some(still), h.app.image_rect);
                     h.app.run("develop.beginInteraction", json!({"label": "Exposure"})).unwrap();
                     assert!(h.settle(SETTLE));
-                    let draft_size = shown_size(&h);
-                    assert_ne!(still_size, draft_size, "the test exercises a real texture-size transition");
                     assert_eq!(bounds(&h), still, "drag: {native:?}, {ppp}x, HDR {hdr}");
                     h.app.run("develop.set", json!({"values": {"light.exposure": 0.25}})).unwrap();
+                    // (a drag drafts once it changes the photo, not when it begins, and the full
+                    // render replaces the draft soon after: watch the frames in between)
+                    let mut drafted = false;
+                    for _ in 0..2000 {
+                        h.step();
+                        if shown_size(&h) != still_size {
+                            drafted = true;
+                            assert_eq!(bounds(&h), still, "draft: {native:?}, {ppp}x, HDR {hdr}");
+                            break;
+                        }
+                    }
+                    assert!(drafted, "the test exercises a real texture-size transition");
                     assert!(h.settle(SETTLE));
                     assert_eq!(bounds(&h), still, "update: {native:?}, {ppp}x, HDR {hdr}");
                     h.app.run("develop.endInteraction", json!({})).unwrap();
