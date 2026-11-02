@@ -22,7 +22,7 @@ use lcc_geom::{Affine, Orientation, Point, Rect};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-type Row = BTreeMap<String, Value>;
+pub(crate) type Row = BTreeMap<String, Value>;
 const COMMAND: &str = "library.importLightroom";
 
 fn error(why: impl Into<String>) -> crate::EngineError {
@@ -50,7 +50,7 @@ fn source_path(p: &Photo) -> Option<&str> {
     }
 }
 
-struct Reader {
+pub(crate) struct Reader {
     db: Database,
 }
 /// Expanded XMP packets kept from one catalog, all rows together (each is bounded on its own).
@@ -121,7 +121,7 @@ impl Reader {
         walked.map_err(|e| format!("{name}: {e}"))
     }
 
-    fn table(&self, name: &str, required: bool, cancel: &AtomicBool) -> Result<Vec<Row>, String> {
+    pub(crate) fn table(&self, name: &str, required: bool, cancel: &AtomicBool) -> Result<Vec<Row>, String> {
         let mut out = Vec::new();
         self.each_row(name, required, true, cancel, |row, _| {
             out.try_reserve(1).map_err(|_| format!("{name}: unable to reserve bounded rows"))?;
@@ -560,7 +560,7 @@ impl GuardedFile {
     }
 }
 
-struct SourceGuard {
+pub(crate) struct SourceGuard {
     main: GuardedFile,
     wal_path: PathBuf,
     wal: Option<GuardedFile>,
@@ -586,7 +586,7 @@ impl SourceGuard {
         self.wal.as_ref().map(|file| file.initial.stamp.len)
     }
 
-    fn verify(&self) -> Result<(), String> {
+    pub(crate) fn verify(&self) -> Result<(), String> {
         self.main.verify()?;
         match (&self.wal, optional_path_stamp(&self.wal_path)?) {
             (Some(file), Some(_)) => file.verify(),
@@ -672,9 +672,20 @@ pub fn read(path: &Path) -> Result<CatalogImport, String> {
 /// stopping when `cancel` is set. Images whose catalog records are incomplete are left out and
 /// listed in [`CatalogImport::skipped`] instead of failing the read.
 pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize, done: &AtomicUsize) -> Result<CatalogImport, String> {
+    // A Capture One catalog takes the same road from here on (the same model, job and report).
+    if crate::capture_one_catalog::is_capture_one(path) {
+        return crate::capture_one_catalog::read_with_progress(path, cancel, total, done);
+    }
     // 14 catalog tables plus one validation stage; ImportJob adds one unit per original path.
     total.store(15, Ordering::Relaxed);
     done.store(0, Ordering::Relaxed);
+    let (reader, source_guard) = open_catalog(path, cancel)?;
+    read_lightroom(path, reader, source_guard, cancel, done)
+}
+
+/// Open a catalog's SQLite file (and its committed `-wal` pages) read-only, with a guard that tells
+/// whether either file changed while it was read.
+pub(crate) fn open_catalog(path: &Path, cancel: &AtomicBool) -> Result<(Reader, SourceGuard), String> {
     ensure_read_active(cancel)?;
     let wal_path = PathBuf::from(format!("{}-wal", path.display()));
     let main_file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -701,7 +712,10 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
             hook(path);
         }
     }
-    let reader = Reader { db };
+    Ok((Reader { db }, source_guard))
+}
+
+fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel: &AtomicBool, done: &AtomicUsize) -> Result<CatalogImport, String> {
     let mut warnings = Vec::new();
     let table = |name: &str, required: bool| -> Result<Vec<Row>, String> {
         ensure_read_active(cancel)?;
@@ -959,7 +973,7 @@ pub(crate) fn refuse_non_media(data: &mut CatalogImport) {
     data.warnings.extend(warnings);
 }
 
-fn ensure_read_active(cancel: &AtomicBool) -> Result<(), String> {
+pub(crate) fn ensure_read_active(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) { Err("Lightroom import cancelled".into()) } else { Ok(()) }
 }
 

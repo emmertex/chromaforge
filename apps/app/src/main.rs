@@ -706,7 +706,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         pick_lightroom_catalog: picker!(|| {
             file_dialog()
                 .set_title(lcc_ui_egui::i18n::tr("Import Lightroom Catalog"))
-                .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom Classic Catalog"), &["lrcat"])
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom Classic Catalog"), &["lrcat", "cocatalogdb"])
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
         }),

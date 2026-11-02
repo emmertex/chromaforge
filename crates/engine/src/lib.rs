@@ -76,6 +76,7 @@ pub mod lens_download;
 pub mod lens_profiles;
 pub mod library;
 mod lightroom_archive;
+pub mod capture_one_catalog;
 pub mod lightroom_catalog;
 pub mod lightroom_folder;
 pub mod lightroom_job;
