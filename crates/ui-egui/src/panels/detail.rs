@@ -5043,6 +5043,7 @@ mod tests {
             info: Default::default(),
             display_fit: None,
             hdr_texels: None,
+            superseded: None,
             settings: Default::default(),
             request: lcc_pipeline::RenderRequest {
                 max_w: 100,

@@ -29,6 +29,7 @@ pub mod control_auth;
 pub mod creations;
 pub mod crs;
 pub mod crs_masks;
+pub(crate) mod decode_share;
 pub mod demo;
 pub mod denoise;
 pub mod desktop;
