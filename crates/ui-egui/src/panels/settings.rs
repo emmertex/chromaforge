@@ -250,11 +250,25 @@ fn shortcuts_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 // ------------------------------------------------------------------------------------- General
 
 fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
-    // Modern (Android's default) or Classic; on either, this row switches back
+    // Modern (Android's default), Classic or Compact (Classic drawn denser); on each, this row switches back
     row(ui, t, crate::i18n::tr("Layout"), |ui| {
-        let mut modern = app.ui.modern.enabled;
-        if choices(ui, "settingsLayout", &[(false, "Classic – Advanced"), (true, "Modern – Simple")], &mut modern) {
-            let _ = app.run("view.modernLayout", json!({"on": modern}));
+        let now = if app.ui.modern.enabled {
+            1
+        } else if app.compact() {
+            2
+        } else {
+            0
+        };
+        let mut layout = now;
+        if choices(ui, "settingsLayout", &[(0, "Classic – Advanced"), (1, "Modern – Simple"), (2, "Compact – Dense")], &mut layout) {
+            let _ = match layout {
+                1 => app.run("view.modernLayout", json!({"on": true})),
+                2 => app.run("view.compactLayout", json!({"on": true})),
+                _ => {
+                    let _ = app.run("view.modernLayout", json!({"on": false}));
+                    app.run("view.compactLayout", json!({"on": false}))
+                }
+            };
         }
     });
     row(ui, t, crate::i18n::tr("Language"), |ui| {

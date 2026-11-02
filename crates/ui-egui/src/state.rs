@@ -487,6 +487,10 @@ pub struct AppSettings {
     pub ui_font_size: UiFontSize,
     /// Panel sliders on one row or two (Settings ▸ Interface).
     pub slider_layout: crate::theme::SliderLayout,
+    /// The Compact layout (Settings ▸ General ▸ Layout, `view.compactLayout`): Classic's panels
+    /// drawn denser (one-line slider rows, short section headers, sharper corners). Off: Classic
+    /// as it always was. The Modern layout overrides it.
+    pub compact_layout: bool,
     /// Panel slider names and values compact or at the regular text size (Settings ▸ Interface).
     pub slider_text: crate::theme::SliderText,
     /// How dragging a slider and scrubbing its value follow the pointer (Settings ▸ Interface).
@@ -639,6 +643,7 @@ impl Default for AppSettings {
             light_theme: LightTheme::Silver,
             ui_font_size: UiFontSize::default(),
             slider_layout: Default::default(),
+            compact_layout: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
             favorite_themes: Vec::new(),

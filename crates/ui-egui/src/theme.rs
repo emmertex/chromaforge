@@ -602,6 +602,49 @@ pub fn set_slider_control(ctx: &egui::Context, control: SliderControl) {
     }
 }
 
+fn compact_id() -> egui::Id {
+    egui::Id::new("app-compact-layout")
+}
+
+/// Whether `ctx` draws the Compact layout (denser panels; Classic otherwise).
+pub fn compact(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(compact_id())).unwrap_or(false)
+}
+
+/// Draw the Compact layout (`on`) or Classic from the next frame on; a change restyles `ctx`.
+pub fn set_compact(ctx: &egui::Context, on: bool) {
+    if compact(ctx) != on {
+        ctx.data_mut(|d| d.insert_temp(compact_id(), on));
+        apply_kind(ctx, current(ctx).unwrap_or_default());
+        ctx.request_repaint();
+    }
+}
+
+/// The Compact layout's style over the theme's: tighter spacing, shorter controls, sharper
+/// corners (2 on controls, 3 on cards, menus and windows). Only called when Compact is on, so
+/// Classic's style is untouched.
+fn apply_compact(ctx: &egui::Context) {
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(theme, |s| {
+            let v = &mut s.visuals;
+            v.window_corner_radius = CornerRadius::same(3);
+            v.menu_corner_radius = CornerRadius::same(3);
+            for state in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open]
+            {
+                state.corner_radius = CornerRadius::same(2);
+            }
+            s.spacing.item_spacing = egui::vec2(4.0, 2.0);
+            s.spacing.button_padding = egui::vec2(6.0, 2.0);
+            s.spacing.interact_size.y = 18.0;
+        });
+    }
+}
+
+/// A panel slider row's height in the Compact layout.
+pub const COMPACT_SLIDER_ROW_H: f32 = 19.0;
+/// A panel section header's height in the Compact layout (Classic: 40).
+pub const COMPACT_SECTION_H: f32 = 26.0;
+
 fn slider_layout_id() -> egui::Id {
     egui::Id::new("app-slider-layout")
 }
@@ -750,6 +793,9 @@ pub fn apply_kind(ctx: &egui::Context, kind: ThemeKind) {
         s.text_styles.insert(egui::TextStyle::Heading, FontId::new(16.0, FontFamily::Name(FONT_SEMIBOLD.into())));
         s.animation_time = 0.08;
     });
+    if compact(ctx) {
+        apply_compact(ctx);
+    }
 }
 
 #[cfg(test)]

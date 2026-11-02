@@ -2114,7 +2114,18 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::CopySettings { groups } => app.run("develop.copy", json!({"groups": groups})),
         Dialog::PasteSettings { groups } => app.run("develop.paste", json!({"groups": groups})),
         Dialog::SyncSettings { groups, controls } => app.run("develop.sync", json!({"groups": groups, "controls": controls})),
-        Dialog::Export { opts, full_size, resize, limit_kb, dir, .. } => {
+        Dialog::Export { opts, full_size, resize, limit_kb, dir, preset_name } => {
+            // a name typed in the preset name field is saved by Export too (the Add button is easy to miss)
+            if !preset_name.trim().is_empty() {
+                let params = preset_params(opts, *full_size, resize, *limit_kb, dir);
+                let saved = app.run("export.savePreset", json!({"name": preset_name.trim(), "params": params}));
+                if let Some(ctx) = app.tasks.repaint.clone() {
+                    match saved {
+                        Ok(_) => app.toast(&ctx, crate::i18n::tr_format!("Saved export preset “{}”", preset_name.trim())),
+                        Err(e) => app.toast(&ctx, e),
+                    }
+                }
+            }
             let mut p = export_dialog_params(opts, *full_size, resize, *limit_kb);
             // (Choose folder later: `app.export` asks for it)
             if opts.destination_mode != lcc_engine::export::DestinationMode::ChooseLater {

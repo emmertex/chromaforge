@@ -324,7 +324,15 @@ fn slider_laid_out(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, l
     let two_rows = form_label.is_none() && crate::theme::slider_layout(ui.ctx()) == crate::theme::SliderLayout::TwoRows;
     let font = slider_font(ui);
     let k = text_scale(&font);
-    let row_h = if two_rows { t.slider_row_h + TWO_ROW_EXTRA + TWO_ROW_TEXT_H * (k - 1.0) } else { t.slider_row_h };
+    let compact = form_label.is_none() && crate::theme::compact(ui.ctx());
+    let row_h = if two_rows {
+        t.slider_row_h + TWO_ROW_EXTRA + TWO_ROW_TEXT_H * (k - 1.0)
+    } else if compact {
+        // one dense line, still tall enough for the text at its size
+        crate::theme::COMPACT_SLIDER_ROW_H.max(font.size + 4.0)
+    } else {
+        t.slider_row_h
+    };
     let (row, _) = ui.allocate_exact_size(vec2(w, row_h), Sense::hover());
     // one row: name (left-aligned flush with section header) | wide track | compact value
     let label_str = crate::i18n::tr(label_override.unwrap_or(spec.label)).to_string();
@@ -1097,7 +1105,9 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
     let title = crate::i18n::tr(title);
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width();
-    let (r, resp) = ui.allocate_exact_size(vec2(w, 40.0), Sense::click());
+    let compact = crate::theme::compact(ui.ctx());
+    let h = if compact { crate::theme::COMPACT_SECTION_H } else { 40.0 };
+    let (r, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
     register(ui.ctx(), format!("section:{id}"), r);
     let p = ui.painter();
@@ -1106,7 +1116,11 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
     }
     let chev = Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(16.0, 16.0));
     paint(p, chev, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_label);
-    p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(14.0), t.text);
+    if compact {
+        // a compact header is a band with a rule on top, so sections still read apart
+        p.line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.divider));
+    }
+    p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(if compact { 13.0 } else { 14.0 }), t.text);
     let mut toggled = None;
     // shown while the pointer is anywhere on the header: `resp.hovered()` turns false as soon as the
     // pointer is over the eye itself (the eye is on top), which hid the eye before it could be
