@@ -1620,7 +1620,8 @@ pub fn encode_with_metadata(img: &Rgba8, o: &ExportOptions, meta: Option<&Metada
         ExportFormat::Jpeg => {
             // 4:4:4 normally; 4:2:0 when targeting a file size (much smaller at equal visual quality).
             let sub = if o.limit_kb.is_some() { ChromaSubsampling::S420 } else { ChromaSubsampling::S444 };
-            return encode_jpeg_with_limit(o, |q| encode::encode_jpeg(&e, q, sub, &meta));
+            let fixed = profile.len() + exif.as_ref().map_or(0, Vec::len) + xmp.as_ref().map_or(0, String::len);
+            return encode_jpeg_with_limit(o, &img, sub, fixed, &mut |q| encode::encode_jpeg(&e, q, sub, &meta).map_err(|e| e.to_string()));
         }
         ExportFormat::Png => encode::encode_png(&e, &meta),
         ExportFormat::Tiff => encode::encode_tiff_associated(&e, o.tiff_compression, &meta),
@@ -1634,25 +1635,126 @@ pub fn encode_with_metadata(img: &Rgba8, o: &ExportOptions, meta: Option<&Metada
     r.map_err(|e| e.to_string())
 }
 
-/// Apply the same file-size policy to ordinary JPEGs and complete HDR gain map JPEGs.
-fn encode_jpeg_with_limit(o: &ExportOptions, jpeg: impl Fn(u8) -> lcc_codecs::Result<Vec<u8>>) -> Result<Vec<u8>, String> {
-    let Some(kb) = o.limit_kb else { return jpeg(o.quality).map_err(|e| e.to_string()) };
-    let limit = u64::from(kb) * 1024;
-    let (mut lo, mut hi) = (1u8, o.quality.min(100));
-    let mut best = None;
-    while lo <= hi {
-        let mid = lo + (hi - lo) / 2;
-        let b = jpeg(mid).map_err(|e| e.to_string())?;
-        if b.len() as u64 <= limit {
-            best = Some(b);
-            lo = mid + 1;
-        } else if mid == 1 {
-            break;
-        } else {
-            hi = mid - 1;
+/// Apply the same file-size policy to ordinary JPEGs and complete HDR gain map JPEGs: `encode(q)`
+/// is the whole file of `img` at quality q, `fixed` of its bytes (metadata, profile, a gain map)
+/// don't change with q.
+fn encode_jpeg_with_limit(
+    o: &ExportOptions,
+    img: &Rgba8,
+    sub: ChromaSubsampling,
+    fixed: usize,
+    encode: &mut dyn FnMut(u8) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    match o.limit_kb {
+        Some(kb) => fit_jpeg(img, o.quality, kb, sub, fixed, encode),
+        None => encode(o.quality),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Full-size JPEG encodes [`fit_jpeg`] made on this thread so far (tests: at most two per photo).
+    pub(crate) static FIT_ENCODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The JPEG of `img` at the highest quality up to `quality` whose file fits within `kb` KB, in
+/// two full-size encodes (a binary search made seven or eight of a 6000 px photo).
+///
+/// The first is at `quality`; when it is too big, how the size falls with the quality is measured
+/// on a small mosaic of the photo's own blocks (a sixteenth of it), scaled to the first encode's
+/// size, and the second encode is at the quality that curve says fits, with a margin. Should the
+/// photo still not fit (the mosaic misjudged it), the curve is corrected by that encode and a
+/// lower quality tried, until quality 1.
+fn fit_jpeg(
+    img: &Rgba8,
+    quality: u8,
+    kb: u32,
+    sub: ChromaSubsampling,
+    fixed: usize,
+    encode: &mut dyn FnMut(u8) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let limit = (kb as usize).saturating_mul(1024);
+    let mut full = |q: u8| {
+        #[cfg(test)]
+        FIT_ENCODES.with(|c| c.set(c.get() + 1));
+        encode(q)
+    };
+    let quality = quality.clamp(1, 100);
+    let first = full(quality)?;
+    if first.len() <= limit {
+        return Ok(first);
+    }
+    let mosaic = sample_mosaic(img);
+    let me = EncodeImage::rgba8(&mosaic);
+    let none = EncodeMeta::default();
+    let small = |q: u8| encode::encode_jpeg(&me, q, sub, &none).map(|b| b.len()).map_err(|e| e.to_string());
+    let (mut q_at, mut file_at) = (quality, first.len());
+    let mut m_at = small(q_at)?.max(1);
+    // (an 8×8 encode's size: the headers every encode has)
+    let headers = encode::encode_jpeg(&EncodeImage::rgba8(&Rgba8 { width: 8, height: 8, data: vec![[128, 128, 128, 255]; 64] }), quality, sub, &none)
+        .map(|b| b.len())
+        .unwrap_or(600);
+    let mut margin = 0.96;
+    loop {
+        // file(q) ≈ fixed + k × (mosaic(q) − headers): `fixed` doesn't shrink with the quality
+        let pixel_bytes = |m: usize| m.saturating_sub(headers).max(1) as f64;
+        let k = file_at.saturating_sub(fixed) as f64 / pixel_bytes(m_at);
+        let target = limit as f64 * margin;
+        // highest quality below q_at predicted to fit (binary search on the mosaic)
+        let (mut lo, mut hi) = (1u8, q_at.saturating_sub(1).max(1));
+        let mut pick = 1u8;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let predicted = fixed as f64 + k * pixel_bytes(small(mid)?);
+            if predicted <= target {
+                pick = mid;
+                lo = mid + 1;
+            } else if mid == 1 {
+                break;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let b = full(pick)?;
+        if b.len() <= limit {
+            return Ok(b);
+        }
+        if pick <= 1 {
+            return Err(format!("cannot fit within {kb} KB"));
+        }
+        // the mosaic misjudged this photo: correct the curve with what this encode gave
+        (q_at, file_at) = (pick, b.len());
+        m_at = small(q_at)?.max(1);
+        margin *= 0.97;
+    }
+}
+
+/// A sixteenth of `img`: its 32 px blocks at every fourth row and column of blocks, side by side
+/// (whole JPEG MCUs, so the mosaic's blocks code as the photo's do). Small photos are used whole.
+fn sample_mosaic(img: &Rgba8) -> Rgba8 {
+    const T: usize = 32;
+    const STEP: usize = 4;
+    let (w, h) = (img.width, img.height);
+    let (cols, rows) = (w / T / STEP, h / T / STEP);
+    if cols == 0 || rows == 0 {
+        return img.clone();
+    }
+    let (mw, mh) = (cols * T, rows * T);
+    let mut data = vec![[0u8; 4]; mw * mh];
+    for r in 0..rows {
+        for c in 0..cols {
+            let (sx, sy) = (c * T * STEP + T * (STEP / 2), r * T * STEP + T * (STEP / 2));
+            for y in 0..T {
+                let (src_y, dst_y) = (sy + y, r * T + y);
+                let src = img.data.get(src_y * w + sx..src_y * w + sx + T);
+                let dst = data.get_mut(dst_y * mw + c * T..dst_y * mw + c * T + T);
+                if let (Some(src), Some(dst)) = (src, dst) {
+                    dst.copy_from_slice(src);
+                }
+            }
         }
     }
-    best.ok_or_else(|| format!("cannot fit within {kb} KB"))
+    Rgba8 { width: mw, height: mh, data }
 }
 
 /// Output sharpening and the watermark on an 8-bit render in `o.effective_space()`: the render itself when
@@ -1719,7 +1821,11 @@ pub fn encode_gain_map_jpeg(sdr: &Rgba8, hdr: &DeepImage, o: &ExportOptions, met
     let xmp = meta.map(|m| lcc_meta::write_xmp(m, None));
     let em = EncodeMeta { icc: Some(&profile), exif: exif.as_deref(), xmp: xmp.as_deref(), ppi: Some(o.ppi) };
     let sub = if o.limit_kb.is_some() { ChromaSubsampling::S420 } else { ChromaSubsampling::S444 };
-    let r = encode_jpeg_with_limit(o, |q| gainmap::encode_jpeg(&EncodeImage::rgba8(&base), &map, &gm, q, sub, &em));
+    // the gain map is encoded once; a file size limit only encodes the primary image again
+    let gain_jpeg = gainmap::encode_gain(&map, &gm, o.quality).map_err(|e| e.to_string())?;
+    let e = EncodeImage::rgba8(&base);
+    let fixed = gain_jpeg.len() + profile.len() + exif.as_ref().map_or(0, Vec::len) + xmp.as_ref().map_or(0, String::len);
+    let r = encode_jpeg_with_limit(o, &base, sub, fixed, &mut |q| gainmap::encode_with_gain(&e, &gain_jpeg, q, sub, &em).map_err(|e| e.to_string()));
     lap("gain map: JPEG encode", &mut t);
     r
 }
@@ -3027,6 +3133,74 @@ mod tests {
             *p = [(x * 2) as u8, (y * 3) as u8, ((x * y) % 255) as u8, 255];
         }
         img
+    }
+
+    /// A detailed photo-like image (gradients, texture, edges) of `w × h`.
+    fn detailed(w: usize, h: usize) -> Rgba8 {
+        let mut img = Rgba8::new(w, h);
+        let mut seed = 12345u32;
+        for y in 0..h {
+            for x in 0..w {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                let n = (seed >> 24) as i32 - 128;
+                let base = ((x * 255 / w) as i32 + ((y / 40) % 2) as i32 * 60 + (((x as f32 / 9.0).sin() * 30.0) as i32)).clamp(0, 255);
+                let c = |o: i32| (base + o + n / 3).clamp(0, 255) as u8;
+                img.data[y * w + x] = [c(0), c(-20), c(25), 255];
+            }
+        }
+        img
+    }
+
+    /// "Limit file size" made a full encode per step of a binary search (7-8 of a 6000 px
+    /// photo). Now at most two: the quality is predicted from the first encode's size.
+    #[test]
+    fn a_file_size_limit_takes_at_most_two_encodes() {
+        let img = detailed(1600, 1100);
+        let full = encode_image(&img, &ExportOptions { quality: 90, limit_kb: None, ..Default::default() }).unwrap();
+        for share in [0.8, 0.5, 0.3, 0.15] {
+            let kb = ((full.len() as f64 * share) / 1024.0) as u32;
+            FIT_ENCODES.with(|c| c.set(0));
+            let b = encode_image(&img, &ExportOptions { quality: 90, limit_kb: Some(kb), ..Default::default() }).unwrap();
+            let n = FIT_ENCODES.with(|c| c.get());
+            assert!(b.len() <= kb as usize * 1024, "{} bytes over {kb} KB", b.len());
+            assert!(n <= 2, "{n} encodes for {share} of the size");
+            // and not much smaller than it may be: the quality is close to the best that fits
+            assert!(b.len() as f64 >= kb as f64 * 1024.0 * 0.6, "{} bytes for {kb} KB", b.len());
+        }
+        // one encode when it fits already
+        FIT_ENCODES.with(|c| c.set(0));
+        encode_image(&img, &ExportOptions { quality: 90, limit_kb: Some(100_000), ..Default::default() }).unwrap();
+        assert_eq!(FIT_ENCODES.with(|c| c.get()), 1);
+    }
+
+    /// The limit holds for a gain map JPEG too (it used to only switch to 4:2:0), in at most two
+    /// encodes of the primary image and one of the gain map.
+    #[test]
+    fn a_gain_map_jpeg_fits_the_file_size_limit() {
+        let sdr = detailed(1200, 800);
+        let hdr = DeepImage {
+            width: 1200,
+            height: 800,
+            space: OutputSpace::Srgb,
+            samples: DeepSamples::F32(
+                sdr.data
+                    .iter()
+                    .flat_map(|p| {
+                        let l = |v: u8| lcc_pipeline::OutputTrc::Srgb.decode(v as f32 / 255.0);
+                        let g = if p[0] > 200 { 3.0 } else { 1.0 };
+                        [l(p[0]) * g, l(p[1]) * g, l(p[2]) * g]
+                    })
+                    .collect(),
+            ),
+        };
+        let o = ExportOptions { quality: 90, hdr: true, ..Default::default() };
+        let free = encode_gain_map_jpeg(&sdr, &hdr, &o, None).unwrap();
+        let kb = (free.len() as f64 * 0.5 / 1024.0) as u32;
+        FIT_ENCODES.with(|c| c.set(0));
+        let b = encode_gain_map_jpeg(&sdr, &hdr, &ExportOptions { limit_kb: Some(kb), ..o }, None).unwrap();
+        assert!(b.len() <= kb as usize * 1024, "{} bytes over {kb} KB", b.len());
+        assert!(FIT_ENCODES.with(|c| c.get()) <= 2);
+        assert!(lcc_codecs::gainmap::read_jpeg(&b).is_some(), "still a gain map JPEG");
     }
 
     /// The gain map's linear SDR (a table of the 256 levels) is each sample decoded on its own.
