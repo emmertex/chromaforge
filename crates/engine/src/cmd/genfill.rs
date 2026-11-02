@@ -7,7 +7,9 @@ use lcc_develop::{Spot, SpotMode};
 use lcc_geom::Point;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, bool_or, cmd, f64_or, has_active, str_param};
+#[cfg(not(target_arch = "wasm32"))]
+use super::f64_or;
+use super::{CommandSpec, bad, bool_or, cmd, has_active, str_param};
 use crate::{Result, Session};
 
 /// `index` from the params, else the selected spot.

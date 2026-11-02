@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use lcc_catalog::{Photo, PhotoId};
 use lcc_develop::{DevelopSettings, GenFill, Spot, SpotMode};
 use lcc_genfill::PatchLayer;
+#[cfg(not(target_arch = "wasm32"))]
 use lcc_genfill::patch::PatchInfo;
 use lcc_geom::Point;
 use lcc_pipeline::genpatch::{GenStore, PatchSource};
@@ -127,6 +128,7 @@ impl Job {
     pub fn state(&self) -> JobState {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn set(&self, s: JobState) {
         *self.state.lock().unwrap_or_else(PoisonError::into_inner) = s;
     }
@@ -240,6 +242,7 @@ pub struct Limits {
     pub sizes: &'static [(u32, u32)],
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn smooth(e0: f64, e1: f64, x: f64) -> f64 {
     let t = ((x - e0) / (e1 - e0).max(1e-9)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -476,6 +479,7 @@ fn tile_mask(p: &Plan, field: &Plane, t: &Tile) -> Vec<u8> {
     m
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// One request's results for a tile: decoded to linear light at the crop's native size.
 fn receive(img: &lcc_genfill::cloud::Image, neutral: lcc_genfill::Neutral, t: &Tile) -> Option<Rgb32f> {
     let lin = neutral.decode(img.width, img.height, &img.rgb)?;
@@ -487,6 +491,7 @@ fn receive(img: &lcc_genfill::cloud::Image, neutral: lcc_genfill::Neutral, t: &T
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Paste a tile's result into the working patch `gen` (rect-sized) where the hole and its margin are.
 fn paste(p: &Plan, field: &Plane, t: &Tile, res: &Rgb32f, gen_img: &mut Rgb32f) {
     let [rx0, ry0, rx1, ry1] = p.rect;
@@ -503,6 +508,7 @@ fn paste(p: &Plan, field: &Plane, t: &Tile, res: &Rgb32f, gen_img: &mut Rgb32f) 
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The finished patch of one variation: matched to the photo, with its blend weight.
 fn finish(
     src: &Rgb32f,
