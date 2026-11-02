@@ -569,13 +569,15 @@ pub enum QuitPrompt {
     Unsaved(String),
     /// Tasks that quitting would cut short are running: an import, an export… (issue #345).
     Tasks(String),
+    /// A catalog backup is due (Settings ▸ Catalog ▸ Back up catalog): Back Up and Quit, or Skip This Time.
+    Backup(String),
 }
 
 impl QuitPrompt {
     /// The prompt's message.
     pub fn text(&self) -> &str {
         match self {
-            QuitPrompt::Unsaved(text) | QuitPrompt::Tasks(text) => text,
+            QuitPrompt::Unsaved(text) | QuitPrompt::Tasks(text) | QuitPrompt::Backup(text) => text,
         }
     }
 }
@@ -611,6 +613,9 @@ pub struct LccApp {
     pub quit_prompt: Option<QuitPrompt>,
     /// Quit Anyway was chosen: the window may close with unsaved changes.
     pub quit_confirmed: bool,
+    /// The quit prompt's answer about a due catalog backup: `Some(true)` Back Up and Quit, `Some(false)` Skip This
+    /// Time, `None` not asked (the host backs up when due).
+    pub exit_backup: Option<bool>,
     control_rx: Option<Receiver<ControlRequest>>,
     midi_rx: Option<Receiver<lcc_engine::midi::Action>>,
     /// Re-reads the MIDI map file (`midi.reload`); the host app provides it with the MIDI input.
@@ -857,6 +862,7 @@ impl LccApp {
             notices: vec![],
             quit_prompt: None,
             quit_confirmed: false,
+            exit_backup: None,
             control_rx: None,
             midi_rx: None,
             midi_reload: None,

@@ -56,6 +56,13 @@ pub fn may_close(app: &mut LccApp) -> bool {
         }));
         return false;
     }
+    // a catalog backup due: asked once, as Lightroom Classic asks when it closes
+    if app.exit_backup.is_none() && app.session.catalog_dir().is_some() && app.session.catalog_settings().backup_due(lcc_catalog::library::now_secs())
+    {
+        app.quit_prompt =
+            Some(QuitPrompt::Backup(crate::i18n::tr("A backup of the catalog is due. Back it up now, before {app} quits?").to_string()));
+        return false;
+    }
     if app.session.unsaved().is_none() {
         return true;
     }
@@ -141,6 +148,24 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             if may_close(app) {
                 app.ui.quit = true;
             }
+        }
+        return;
+    }
+    if let Some(QuitPrompt::Backup(text)) = app.quit_prompt.clone() {
+        let buttons = [
+            ("quitBackUp", "Back Up and Quit", Choice::Retry),
+            ("quitSkipBackup", "Skip This Time", Choice::QuitAnyway),
+            ("quitCancel", "Cancel", Choice::Cancel),
+        ];
+        let Some(i) = window(ctx, "quit-backup", "Back up the catalog?", &text, &buttons) else { return };
+        app.quit_prompt = None;
+        match buttons[i].2 {
+            Choice::Retry => app.exit_backup = Some(true),
+            Choice::QuitAnyway => app.exit_backup = Some(false),
+            Choice::Cancel | Choice::Ok => return,
+        }
+        if may_close(app) {
+            app.ui.quit = true;
         }
         return;
     }
