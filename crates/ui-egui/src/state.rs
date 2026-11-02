@@ -433,6 +433,9 @@ pub struct AppSettings {
     /// A click on the dimmed backdrop around a dialog closes it, like Esc (off: a stray click
     /// never throws away a dialog's choices).
     pub close_dialogs_outside: bool,
+    /// The Settings section shown last: Settings… opens there again (LR-PREF-WINDOW).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub settings_tab: String,
     /// GPU rendering allowed (`app.gpu`).
     pub gpu: bool,
     /// The graphics interface GPU rendering uses (Settings ▸ Performance; applies at next launch).
@@ -627,6 +630,7 @@ impl Default for AppSettings {
             confirm_delete: true,
             ask_before_move: true,
             close_dialogs_outside: false,
+            settings_tab: String::new(),
             gpu: true,
             gpu_backend: GpuBackend::Auto,
             compose_window: false,

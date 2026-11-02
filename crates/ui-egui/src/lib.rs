@@ -302,6 +302,8 @@ mod tests_sam_setup;
 #[cfg(test)]
 mod tests_scroll;
 #[cfg(test)]
+mod tests_settings_window;
+#[cfg(test)]
 mod tests_slider_drag;
 #[cfg(test)]
 mod tests_slider_reset;

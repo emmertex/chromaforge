@@ -1045,8 +1045,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                 },
             };
-            let tab = section_tab.or_else(|| p.get("tab").and_then(Value::as_str)).unwrap_or("general");
-            if !crate::panels::settings::TABS.iter().any(|(id, _)| *id == tab) {
+            // without a tab, the section shown last (else General)
+            let last = app.ui.settings.settings_tab.clone();
+            let last = if crate::settings_screen::known(&last) { last.as_str() } else { "general" };
+            let tab = section_tab.or_else(|| p.get("tab").and_then(Value::as_str)).unwrap_or(last);
+            if !crate::panels::settings::TABS.iter().any(|(id, _)| *id == tab) && !crate::settings_screen::known(tab) {
                 let tabs: Vec<&str> = crate::panels::settings::TABS.iter().map(|(id, _)| *id).collect();
                 return Some(Err(format!("unknown settings tab `{tab}` ({})", tabs.join("|"))));
             }
