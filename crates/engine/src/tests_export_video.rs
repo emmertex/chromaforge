@@ -342,6 +342,7 @@ fn export_grade_applies_feathered_mask() {
         visible: true,
         feather: 60.0,
         components: vec![MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,

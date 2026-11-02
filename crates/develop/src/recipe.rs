@@ -1,0 +1,265 @@
+//! Mask recipes: masks as presets carry them — what to select, never the pixels a model found on
+//! another photo. A recipe is an ordinary [`Mask`] whose AI components have no segmentation
+//! ([`Mask::strip_ai`]); each photo computes its own when the mask is applied. Two additions make
+//! recipes say more than "the sky":
+//!
+//! - [`Who`]: People by name ("Sam") or by role in the shoot ("Bride"), resolved per photo;
+//! - [`Anchor`]: a gradient placed relative to a selection's box ("from the bottom of the
+//!   couple"), resolved into the component's shape on each photo.
+//!
+//! Ported from OneSlips' fork (own design there). Subject, Sky, Background, People and
+//! Landscape keep no pixels in Chromaforge's model (the segmenter's per-photo cache holds them), so
+//! only Object and Describe selections carry a segmentation to drop.
+
+use lcc_geom::Point;
+use serde::{Deserialize, Serialize};
+
+use crate::{Mask, MaskShape};
+
+/// Who a People selection is about.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Who {
+    /// A person by name, the same across the catalog ("Sam").
+    Name(String),
+    /// A role in the shoot ("Bride", "Groom"): the person tagged with it where the photo is.
+    Role(String),
+}
+
+impl Who {
+    /// The name or role as written.
+    pub fn text(&self) -> &str {
+        match self {
+            Who::Name(s) | Who::Role(s) => s,
+        }
+    }
+
+    /// For a mask's name: "Bride", "Sam".
+    pub fn label(&self) -> String {
+        self.text().trim().to_string()
+    }
+}
+
+/// The aspect ratio a recipe's gradients are written for when no photo is at hand (3:2).
+pub const RECIPE_ASPECT: f64 = 1.5;
+
+/// What an anchored gradient is placed relative to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AnchorTo {
+    /// The subject's box (BiRefNet, else the people).
+    Subject,
+    /// The box around everyone in the photo (MediaPipe people).
+    People,
+    /// One person's box.
+    Who(Who),
+}
+
+/// A gradient in the frame of a selection's box: `shape` (Linear or Radial) has its points in
+/// 0..1 of the box (0,0 its top left, 1,1 its bottom right), radial radii as fractions of the
+/// box's width / height. `bounds` is the box found on this photo (normalized image coordinates),
+/// filled in when the photo's AI masks are computed; the component's own shape is `shape` placed
+/// through it (the whole image while none is known).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Anchor {
+    pub to: AnchorTo,
+    pub shape: MaskShape,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<[f64; 4]>,
+}
+
+/// A sane box: finite, inside 0..1, not empty.
+pub fn valid_box(b: [f64; 4]) -> Option<[f64; 4]> {
+    let c = b.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) } else { f64::NAN });
+    (c.iter().all(|v| v.is_finite()) && c[2] - c[0] > 1e-4 && c[3] - c[1] > 1e-4).then_some(c)
+}
+
+impl Anchor {
+    /// The gradient placed through `bounds` (the whole image when unknown) on an image of
+    /// `aspect` = width / height (oriented). `None` when `shape` isn't a gradient.
+    pub fn placed(&self, aspect: f64) -> Option<MaskShape> {
+        let b = self.bounds.and_then(valid_box).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let map = |p: Point| Point::new(b[0] + p.x.clamp(-2.0, 3.0) * (b[2] - b[0]), b[1] + p.y.clamp(-2.0, 3.0) * (b[3] - b[1]));
+        match &self.shape {
+            MaskShape::Linear { start, end } => Some(MaskShape::Linear { start: map(*start), end: map(*end) }),
+            MaskShape::Radial { center, rx, ry, angle, feather, invert } => {
+                // radii are long-edge units in a Radial shape: a box fraction of the width is
+                // (box width × width / long edge)
+                let a = if aspect.is_finite() && aspect > 0.0 { aspect.clamp(0.05, 20.0) } else { 1.0 };
+                let (wf, hf) = if a >= 1.0 { (1.0, 1.0 / a) } else { (a, 1.0) };
+                let fin = |v: f64| if v.is_finite() { v.clamp(0.0, 4.0) } else { 0.0 };
+                Some(MaskShape::Radial {
+                    center: map(*center),
+                    rx: fin(*rx) * (b[2] - b[0]) * wf,
+                    ry: fin(*ry) * (b[3] - b[1]) * hf,
+                    angle: *angle,
+                    feather: *feather,
+                    invert: *invert,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+impl MaskShape {
+    /// Whether a model computes it per photo (Subject, Sky, Background, People, Landscape,
+    /// Object, Describe).
+    pub fn is_ai(&self) -> bool {
+        matches!(
+            self,
+            MaskShape::Subject
+                | MaskShape::Sky
+                | MaskShape::Background
+                | MaskShape::People { .. }
+                | MaskShape::Landscape { .. }
+                | MaskShape::Object { .. }
+                | MaskShape::Prompt { .. }
+        )
+    }
+
+    /// Whether it holds a segmentation computed for one photo (Object and Describe keep theirs in
+    /// the mask; the other AI selections come from the segmenter's per-photo cache).
+    pub fn has_seg(&self) -> bool {
+        match self {
+            MaskShape::Object { seg, detail, .. } | MaskShape::Prompt { seg, detail, .. } => seg.is_some() || !detail.is_empty(),
+            _ => false,
+        }
+    }
+
+    /// Whether a computed segmentation is stored in the shape (Object, Describe).
+    pub fn stores_seg(&self) -> bool {
+        matches!(self, MaskShape::Object { .. } | MaskShape::Prompt { .. })
+    }
+
+    /// The same selection without what a model computed for one photo.
+    pub fn recipe(&self) -> MaskShape {
+        let mut s = self.clone();
+        if let MaskShape::Object { seg, detail, .. } | MaskShape::Prompt { seg, detail, .. } = &mut s {
+            *seg = None;
+            detail.clear();
+        }
+        s
+    }
+}
+
+impl Mask {
+    /// Drop every segmentation and anchor box computed for one photo, keeping the recipe (what
+    /// to select, how, and the adjustments). Anchored gradients go back to their recipe frame.
+    pub fn strip_ai(&mut self, aspect: f64) {
+        for c in &mut self.components {
+            c.shape = c.shape.recipe();
+            if let Some(a) = &mut c.anchor {
+                a.bounds = None;
+                if let Some(s) = a.placed(aspect) {
+                    c.shape = s;
+                }
+            }
+        }
+    }
+
+    /// Whether its AI parts need computing on this photo (a component without a segmentation,
+    /// or an anchored gradient without its box).
+    pub fn needs_compute(&self) -> bool {
+        self.components.iter().any(|c| (c.shape.stores_seg() && !c.shape.has_seg()) || c.anchor.as_ref().is_some_and(|a| a.bounds.is_none()))
+    }
+
+    /// Whether it uses an AI selection at all.
+    pub fn uses_ai(&self) -> bool {
+        self.components.iter().any(|c| c.shape.is_ai() || c.anchor.is_some())
+    }
+
+    /// The same recipe as `other` (ignoring ids, computed segmentations and anchor boxes).
+    pub fn same_recipe(&self, other: &Mask) -> bool {
+        let strip = |m: &Mask| {
+            let mut m = m.clone();
+            m.id = 0;
+            m.preset = None;
+            m.strip_ai(1.5);
+            m
+        };
+        strip(self) == strip(other)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MaskComponent, MaskOp, SegMask};
+
+    fn seg() -> SegMask {
+        SegMask::from_logits(4, &[1.0; 16])
+    }
+
+    #[test]
+    fn recipes_drop_segmentations_and_keep_the_selection() {
+        let s = MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Role("Groom".into())) };
+        assert!(s.is_ai() && !s.has_seg());
+        assert!(matches!(s.recipe(), MaskShape::People { who: Some(Who::Role(ref g)), .. } if g == "Groom"));
+        let o = MaskShape::Object { hint: vec![Point::new(0.5, 0.5)], exclude: vec![], seg: Some(seg()), detail: vec![seg()], edge: 0.0 };
+        assert!(o.has_seg() && !o.recipe().has_seg());
+        let lin = MaskShape::Linear { start: Point::new(0.0, 0.0), end: Point::new(1.0, 1.0) };
+        assert!(!lin.is_ai() && lin.recipe() == lin);
+    }
+
+    #[test]
+    fn anchored_gradients_follow_the_box() {
+        let a = Anchor {
+            to: AnchorTo::People,
+            shape: MaskShape::Linear { start: Point::new(0.5, 1.0), end: Point::new(0.5, 0.5) },
+            bounds: Some([0.2, 0.4, 0.6, 0.8]),
+        };
+        let MaskShape::Linear { start, end } = a.placed(1.5).unwrap() else { panic!() };
+        assert!((start.x - 0.4).abs() < 1e-9 && (start.y - 0.8).abs() < 1e-9);
+        assert!((end.y - 0.6).abs() < 1e-9);
+        // no box yet: the whole image is the frame
+        let none = Anchor { bounds: None, ..a.clone() };
+        let MaskShape::Linear { start, .. } = none.placed(1.5).unwrap() else { panic!() };
+        assert!((start.y - 1.0).abs() < 1e-9);
+        // hostile boxes and values stay finite
+        for b in [[f64::NAN, 0.0, 1.0, 1.0], [0.5, 0.5, 0.5, 0.5], [2.0, -3.0, 9.0, 1e300]] {
+            let h = Anchor { bounds: Some(b), ..a.clone() };
+            let MaskShape::Linear { start, end } = h.placed(f64::INFINITY).unwrap() else { panic!() };
+            assert!(start.x.is_finite() && end.y.is_finite());
+        }
+        let r = Anchor {
+            to: AnchorTo::Subject,
+            shape: MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.5, ry: f64::NAN, angle: 0.0, feather: 50.0, invert: false },
+            bounds: Some([0.0, 0.0, 0.5, 1.0]),
+        };
+        let MaskShape::Radial { rx, ry, .. } = r.placed(2.0).unwrap() else { panic!() };
+        assert!((rx - 0.25).abs() < 1e-9 && ry == 0.0);
+        let not_gradient = Anchor { shape: MaskShape::Sky, ..a };
+        assert!(not_gradient.placed(1.0).is_none());
+    }
+
+    #[test]
+    fn masks_know_what_they_need_and_compare_by_recipe() {
+        let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
+        let obj = MaskShape::Object { hint: vec![Point::new(0.5, 0.5)], exclude: vec![], seg: Some(seg()), detail: vec![], edge: 0.0 };
+        let mut m = Mask { components: vec![comp(obj)], ..Default::default() };
+        assert!(!m.needs_compute() && m.uses_ai());
+        let mut other = m.clone();
+        other.id = 7;
+        other.strip_ai(1.0);
+        assert!(other.needs_compute());
+        assert!(m.same_recipe(&other));
+        m.components.push(comp(MaskShape::LuminanceRange { lo: 0.1, hi: 0.9, lo_feather: 0.1, hi_feather: 0.1 }));
+        assert!(!m.same_recipe(&other));
+        let json = serde_json::to_value(&other).unwrap();
+        assert!(json.pointer("/components/0/shape/seg").is_none() && json.get("preset").is_none());
+    }
+
+    #[test]
+    fn who_and_anchor_serialize_plainly() {
+        let w: Who = serde_json::from_value(serde_json::json!({"role": "Bride"})).unwrap();
+        assert_eq!(w, Who::Role("Bride".into()));
+        let s: MaskShape =
+            serde_json::from_value(serde_json::json!({"kind": "people", "person": 0, "parts": ["Clothes"], "who": {"name": "Jack"}})).unwrap();
+        assert!(matches!(s, MaskShape::People { who: Some(Who::Name(ref n)), .. } if n == "Jack"));
+        let a: AnchorTo = serde_json::from_value(serde_json::json!({"who": {"role": "Groom"}})).unwrap();
+        assert_eq!(a, AnchorTo::Who(Who::Role("Groom".into())));
+        let a: AnchorTo = serde_json::from_value(serde_json::json!("people")).unwrap();
+        assert_eq!(a, AnchorTo::People);
+    }
+}

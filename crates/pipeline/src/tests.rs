@@ -185,6 +185,7 @@ fn mask_brightens_only_inside() {
     let mut s = DevelopSettings::default();
     s.masks.push(Mask {
         components: vec![MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,
@@ -376,6 +377,7 @@ fn color_range_sampling_respects_disabled_sections() {
         s.masks.push(lcc_develop::Mask {
             id: 1,
             components: vec![lcc_develop::MaskComponent {
+                anchor: None,
                 name: None,
                 op: lcc_develop::MaskOp::Add,
                 invert: false,

@@ -196,7 +196,7 @@ fn mask_edge_refinement_does_not_depend_on_the_window() {
     let mut s = DevelopSettings::default();
     s.masks.push(Mask {
         id: 1,
-        components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+        components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
         adjust: LocalAdjustments { exposure: 1.5, ..Default::default() },
         refine: 100.0,
         ..Default::default()
@@ -221,7 +221,7 @@ fn a_mask_overlay_window_matches_the_whole_render() {
         let mut s = DevelopSettings::default();
         s.masks.push(Mask {
             id: 3,
-            components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
             adjust: LocalAdjustments { exposure: 1.0, ..Default::default() },
             refine,
             ..Default::default()
@@ -254,7 +254,7 @@ fn an_all_masks_overlay_window_matches_the_whole_render() {
     for (id, shape, refine) in shapes {
         s.masks.push(Mask {
             id,
-            components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
             adjust: LocalAdjustments { exposure: 1.0, ..Default::default() },
             refine,
             ..Default::default()
@@ -399,7 +399,7 @@ fn auto_mask_strokes_match_the_whole_render() {
     let strokes = vec![st(&[(0.2, 0.55), (0.5, 0.6), (0.8, 0.5)], true, false), st(&[(0.5, 0.58)], true, true)];
     let s = DevelopSettings {
         masks: vec![Mask {
-            components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
             adjust: LocalAdjustments { exposure: 1.0, saturation: -50.0, ..Default::default() },
             ..Default::default()
         }],
@@ -416,7 +416,7 @@ fn automatic_ai_masks_do_not_depend_on_the_window() {
     for shape in [MaskShape::Sky, MaskShape::Subject] {
         let mut s = DevelopSettings::default();
         let mut m =
-            Mask { components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: shape.clone() }], ..Default::default() };
+            Mask { components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: shape.clone() }], ..Default::default() };
         m.adjust.exposure = -2.0;
         s.masks.push(m);
         check(&format!("{shape:?}"), &s, PixelWindow { x: 100, y: 0, w: 400, h: 300 }, 40, 2.0);
@@ -471,7 +471,7 @@ fn a_mask_s_adaptive_whites_and_blacks_do_not_depend_on_the_window() {
     let mut s = DevelopSettings::default();
     s.masks.push(Mask {
         id: 1,
-        components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+        components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
         adjust: LocalAdjustments { whites: 80.0, blacks: -60.0, ..Default::default() },
         ..Default::default()
     });
@@ -499,7 +499,7 @@ fn a_bright_subject_s_whites_reach_its_own_highlights() {
     let shape = MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.18, ry: 0.2, angle: 0.0, feather: 0.0, invert: false };
     let mask = |whites: f64| Mask {
         id: 1,
-        components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: shape.clone() }],
+        components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: shape.clone() }],
         adjust: LocalAdjustments { whites, ..Default::default() },
         ..Default::default()
     };

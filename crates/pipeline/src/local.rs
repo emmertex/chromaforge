@@ -1069,7 +1069,7 @@ mod tests {
         use lcc_develop::{Mask, MaskComponent, MaskOp, MaskShape};
         use lcc_geom::Point;
         let shape = MaskShape::Linear { start: Point::new(0.0, 0.0), end: Point::new(1.0, 0.0) };
-        let component = MaskComponent { name: None, op: MaskOp::Add, invert: false, shape };
+        let component = MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
         let mut s = DevelopSettings::default();
         s.masks.push(Mask {
             visible: false,
@@ -1082,6 +1082,7 @@ mod tests {
         s.masks[0].components.clear();
         assert!(plane_sigmas(&s, 2000.0, 2000.0, Quality::Full).base.is_none());
         s.masks[0].components.push(MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,

@@ -223,6 +223,7 @@ fn object_clicks_are_capped() {
     d.masks.push(lcc_develop::Mask {
         id: 1,
         components: vec![lcc_develop::MaskComponent {
+            anchor: None,
             name: None,
             op: lcc_develop::MaskOp::Add,
             invert: false,
@@ -317,7 +318,7 @@ fn subject_model_is_optional_and_used_once_installed() {
         let src = scene.render_fit(200);
         let mut set = DevelopSettings::default();
         set.masks.push(Mask {
-            components: vec![MaskComponent { name: None, op: Default::default(), invert: false, shape: MaskShape::Subject }],
+            components: vec![MaskComponent { anchor: None, name: None, op: Default::default(), invert: false, shape: MaskShape::Subject }],
             ..Default::default()
         });
         let info = lcc_pipeline::SourceInfo::default();

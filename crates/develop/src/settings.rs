@@ -1387,6 +1387,10 @@ pub enum MaskShape {
         person: u32,
         #[serde(deserialize_with = "capped::<MAX_PEOPLE_PARTS, _, _>")]
         parts: Vec<String>,
+        /// Who it is about by name or role ("Sam", the Bride of this shoot), resolved on each
+        /// photo when the mask is computed; `None`: by `person` (position).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        who: Option<crate::recipe::Who>,
     },
     Landscape {
         class: String,
@@ -1398,6 +1402,10 @@ pub struct MaskComponent {
     /// A name given in the Masking panel (Rename); `None` shows the shape's kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// A gradient placed relative to a selection's box ("from the bottom of the couple"): the
+    /// recipe, resolved into `shape` on each photo when its AI masks are computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<crate::recipe::Anchor>,
     #[serde(default)]
     pub op: MaskOp,
     #[serde(default)]
@@ -1430,6 +1438,9 @@ pub struct Mask {
     /// photo's colour tools, weighted by the mask. Not written while empty.
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "capped::<MAX_POINT_COLORS, _, _>")]
     pub point_colors: Vec<PointColor>,
+    /// The preset that added it (applying that preset again refreshes it instead of adding a copy).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -1449,6 +1460,7 @@ impl Default for Mask {
             feather: 0.0,
             curve: PointCurves::default(),
             point_colors: Vec::new(),
+            preset: None,
         }
     }
 }

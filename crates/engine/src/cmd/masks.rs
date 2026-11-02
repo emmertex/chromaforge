@@ -265,7 +265,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     masks.push(Mask {
                         id: next,
                         name: name.unwrap_or_else(|| format!("Mask {next}")),
-                        components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+                        components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
                         adjust,
                         ..Default::default()
                     });
@@ -302,7 +302,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mut comp = 0;
                 let out = masks_edit(s, "mask.addComponent", "Edit Mask", |masks, _| {
                     let i = find(masks, mid, "mask.addComponent")?;
-                    masks[i].components.push(MaskComponent { name: None, op, invert: bool_or(p, "invert", false), shape });
+                    masks[i].components.push(MaskComponent { anchor: None, name: None, op, invert: bool_or(p, "invert", false), shape });
                     comp = masks[i].components.len() - 1;
                     Ok(())
                 })?;
@@ -382,6 +382,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         }
                     } else {
                         m.components.push(MaskComponent {
+                            anchor: None,
                             name: None,
                             op: MaskOp::Add,
                             invert: false,

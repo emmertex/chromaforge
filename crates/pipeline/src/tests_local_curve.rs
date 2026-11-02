@@ -17,7 +17,7 @@ fn ramp() -> Rgb32f {
 /// Settings with one mask of `shape`, with the local Curve `curve` and Amount `amount`.
 fn masked(shape: MaskShape, curve: PointCurves, amount: f64) -> DevelopSettings {
     let mut s = DevelopSettings::default();
-    let mut m = Mask { id: 1, components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }], curve, ..Default::default() };
+    let mut m = Mask { id: 1, components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }], curve, ..Default::default() };
     m.adjust.amount = amount;
     s.masks.push(m);
     s

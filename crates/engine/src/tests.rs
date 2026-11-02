@@ -1543,7 +1543,7 @@ fn ai_masks_without_the_model_explain_themselves() {
     let mut d = (*s.develop_of(id).unwrap()).clone();
     d.masks.push(lcc_develop::Mask {
         id: 1,
-        components: vec![lcc_develop::MaskComponent { name: None, op: lcc_develop::MaskOp::Add, invert: false, shape }],
+        components: vec![lcc_develop::MaskComponent { anchor: None, name: None, op: lcc_develop::MaskOp::Add, invert: false, shape }],
         ..Default::default()
     });
     s.set_develop(id, d, "test").unwrap();
