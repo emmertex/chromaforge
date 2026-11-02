@@ -727,6 +727,28 @@ pub(crate) struct Planes {
     pub dark: Option<(u64, Arc<Plane>, f32)>,
     /// Blurred chromaticity (local Moiré / Noise).
     pub chroma: Option<(u32, Arc<Rgb32f>)>,
+    /// The visible masks' alpha planes, in order ([`masks::alpha_key`]; the mattes they were
+    /// evaluated with, compared by identity).
+    pub masks: Option<MaskPlanes>,
+}
+
+/// Cached mask alpha planes (see [`Planes::masks`]).
+#[derive(Clone)]
+pub(crate) struct MaskPlanes {
+    pub key: u64,
+    pub mattes: Option<Arc<masks::Mattes>>,
+    pub alphas: Vec<Arc<Plane>>,
+}
+
+impl MaskPlanes {
+    fn fits(&self, key: u64, mattes: Option<&Arc<masks::Mattes>>) -> bool {
+        self.key == key
+            && match (&self.mattes, mattes) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
 }
 
 impl Planes {
@@ -734,7 +756,8 @@ impl Planes {
     /// enough for a draft: the wide blurs (base, clarity, dehaze, chromaticity). Its `key` matches
     /// no image, so only another draft takes them.
     pub fn for_other_nr(self) -> Planes {
-        Planes { key: 0, pre_nr: self.pre_nr, log_l: None, texture: None, sharpen: None, ..self }
+        // (the masks are evaluated on the image itself: redone)
+        Planes { key: 0, pre_nr: self.pre_nr, log_l: None, texture: None, sharpen: None, masks: None, ..self }
     }
 }
 
@@ -885,7 +908,7 @@ pub(crate) fn prepare(
     px_per_long: f64,
     q: Quality,
     planes: &mut Planes,
-    mattes: Option<&masks::Mattes>,
+    mattes: Option<&Arc<masks::Mattes>>,
 ) -> Prepared {
     let log_l = planes.log_l.get_or_insert_with(|| Arc::new(timed("log_l", || img.map(log_lum)))).clone();
     let PlaneSigmas {
@@ -944,7 +967,21 @@ pub(crate) fn prepare(
         None => (None, 1.0),
     };
     let ev = s.light.exposure as f32;
-    let masks = timed("masks", || masks::evaluate(&s.masks, frame, img.width, img.height, &img, &log_l, ev, mattes));
+    let key = masks::alpha_key(&s.masks, ev, img.width, img.height);
+    let visible: Vec<_> = s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).collect();
+    let masks = match &planes.masks {
+        // the same masks on the same image: their planes, with the adjustments as they are now
+        Some(c) if c.fits(key, mattes) && c.alphas.len() == visible.len() => visible
+            .iter()
+            .zip(&c.alphas)
+            .map(|(m, a)| masks::Evaluated { id: m.id, alpha: a.clone(), adjust: m.adjust, curve: crate::finish::local_curve_luts(&m.curve) })
+            .collect(),
+        _ => {
+            let e = timed("masks", || masks::evaluate(&s.masks, frame, img.width, img.height, &img, &log_l, ev, mattes.map(|m| &**m)));
+            planes.masks = Some(MaskPlanes { key, mattes: mattes.cloned(), alphas: e.iter().map(|e| e.alpha.clone()).collect() });
+            e
+        }
+    };
     Prepared { img, log_l, base, clarity_blur, texture_blur, sharpen_blur, dark, chroma_blur, air, masks, px_per_long }
 }
 

@@ -132,10 +132,52 @@ impl Mattes {
 pub struct Evaluated {
     /// The mask's id ([`Mask::id`]).
     pub id: u32,
-    pub alpha: Plane,
+    /// Shared with the view's stage cache, which keeps it for the next render ([`alpha_key`]).
+    pub alpha: std::sync::Arc<Plane>,
     pub adjust: LocalAdjustments,
     /// The mask's local Curve as tables ([`crate::finish::local_curve_luts`]); `None` while it is linear.
     pub curve: Option<[Lut1; 3]>,
+}
+
+/// Whether `shape`'s alpha depends on the exposure: range masks select on exposed values, and so
+/// does the sky heuristic. Shapes not listed as independent count as dependent (a new shape is
+/// re-evaluated rather than wrongly reused).
+fn reads_exposure(shape: &MaskShape) -> bool {
+    !matches!(
+        shape,
+        MaskShape::Linear { .. }
+            | MaskShape::Radial { .. }
+            | MaskShape::Brush { .. }
+            | MaskShape::Subject
+            | MaskShape::Background
+            | MaskShape::Object { .. }
+            | MaskShape::Prompt { .. }
+            | MaskShape::People { .. }
+    )
+}
+
+/// Key of the alpha planes [`evaluate`] gives for `masks` at `w × h` with exposure `ev`, for one
+/// image: the caller also keys that image (its linear stage and frame) and the source's mattes
+/// (by identity). What the planes depend on is in it — the visible masks' components, inversion,
+/// Refine Edges, Feather and amount, and the exposure where a shape selects on it — and nothing else, so
+/// a slider that does not touch the masks reuses them (a drag of a photo with AI masks re-ran
+/// them every tick: most of its render time).
+pub fn alpha_key(masks: &[Mask], ev: f32, w: usize, h: usize) -> u64 {
+    use std::fmt::Write;
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+    let mut parts = String::new();
+    let mut exposure = false;
+    for m in masks.iter().filter(|m| m.visible && !m.components.is_empty()) {
+        let _ = write!(parts, "{}|{}|{}|{}|{}", m.id, m.invert, m.refine.to_bits(), m.feather.to_bits(), m.adjust.amount.to_bits());
+        for c in &m.components {
+            // (the whole component: a field added to it later counts too)
+            let _ = write!(parts, "|{c:?}");
+            exposure |= reads_exposure(&c.shape);
+        }
+        parts.push(';');
+    }
+    let ev = if exposure { ev.to_bits() } else { 0 };
+    BuildHasherDefault::<DefaultHasher>::default().hash_one((parts, w, h, ev))
 }
 
 #[inline]
@@ -152,7 +194,7 @@ pub fn evaluate(masks: &[Mask], frame: &Frame, w: usize, h: usize, img: &Rgb32f,
         .filter(|m| m.visible && !m.components.is_empty())
         .map(|m| Evaluated {
             id: m.id,
-            alpha: evaluate_one(m, frame, w, h, img, log_l, ev, mattes),
+            alpha: std::sync::Arc::new(evaluate_one(m, frame, w, h, img, log_l, ev, mattes)),
             adjust: m.adjust,
             curve: crate::finish::local_curve_luts(&m.curve),
         })
@@ -804,6 +846,40 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Given masks, the key of their planes changes with what the planes depend on and only that:
+    // the exposure counts for a range mask, not for a gradient; a mask's own sliders never count
+    #[test]
+    fn the_alpha_key_follows_what_the_planes_depend_on() {
+        use lcc_develop::MaskOp;
+        let comp = |shape| MaskComponent { name: None, op: MaskOp::Add, invert: false, shape };
+        let linear = MaskShape::Linear { start: Point::new(0.2, 0.5), end: Point::new(0.8, 0.5) };
+        let mut masks = vec![Mask { id: 1, components: vec![comp(linear)], ..Default::default() }];
+        let k = alpha_key(&masks, 0.0, 100, 50);
+        assert_eq!(alpha_key(&masks, 1.5, 100, 50), k, "a gradient does not read the exposure");
+        assert_ne!(alpha_key(&masks, 0.0, 100, 51), k, "size");
+        masks[0].adjust.exposure = 1.0;
+        assert_eq!(alpha_key(&masks, 0.0, 100, 50), k, "the mask's own sliders");
+        masks[0].adjust.amount = 50.0;
+        let k2 = alpha_key(&masks, 0.0, 100, 50);
+        assert_ne!(k2, k, "the amount scales the plane");
+        masks[0].feather = 30.0;
+        let k2 = alpha_key(&masks, 0.0, 100, 50);
+        assert_ne!(k2, k, "feathered");
+        masks[0].curve.master = vec![Point::new(0.0, 0.1), Point::new(1.0, 0.9)];
+        assert_eq!(alpha_key(&masks, 0.0, 100, 50), k2, "the mask's own curve");
+        masks[0].invert = true;
+        assert_ne!(alpha_key(&masks, 0.0, 100, 50), k2, "inverted");
+        masks.push(Mask {
+            id: 2,
+            components: vec![comp(MaskShape::LuminanceRange { lo: 0.2, hi: 0.8, lo_feather: 0.1, hi_feather: 0.1 })],
+            ..Default::default()
+        });
+        let k3 = alpha_key(&masks, 0.0, 100, 50);
+        assert_ne!(alpha_key(&masks, 0.5, 100, 50), k3, "a range mask reads the exposure");
+        masks[1].visible = false;
+        assert_eq!(alpha_key(&masks, 0.5, 100, 50), alpha_key(&masks, 0.0, 100, 50), "hidden masks count for nothing");
+    }
     use lcc_develop::{DevelopSettings, MaskComponent};
 
     fn frame(w: usize, h: usize) -> Frame {

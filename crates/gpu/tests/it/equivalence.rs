@@ -1609,3 +1609,63 @@ fn a_gpu_draft_has_the_large_scale_tone_of_the_full_render() {
         }
     }
 }
+
+/// A drag of a photo with masks reuses their device-resident alpha planes (AI masks are
+/// evaluated on the CPU): the result must equal a fresh render while the exposure moves (a range
+/// mask selects on it), the masks' own sliders change, and a mask moves, is feathered or hidden.
+#[test]
+fn cached_mask_planes_match_uncached() {
+    use lcc_develop::LocalAdjustments;
+    if !gpu() {
+        return;
+    }
+    let src = scene(2, 900, 600);
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let cache = StageCache::default();
+    let req = RenderRequest::fit(640, 640);
+    let comp = |shape| MaskComponent { name: None, op: MaskOp::Add, invert: false, shape };
+    let mut s = DevelopSettings::default();
+    typical(&mut s);
+    let radial = MaskShape::Radial { center: Point::new(0.5, 0.4), rx: 0.3, ry: 0.2, angle: 0.0, feather: 50.0, invert: false };
+    s.masks.push(Mask {
+        id: 1,
+        components: vec![comp(radial)],
+        adjust: LocalAdjustments { exposure: 0.5, ..Default::default() },
+        ..Default::default()
+    });
+    let range = MaskShape::LuminanceRange { lo: 0.3, hi: 0.6, lo_feather: 0.1, hi_feather: 0.1 };
+    s.masks.push(Mask {
+        id: 2,
+        components: vec![comp(range)],
+        adjust: LocalAdjustments { saturation: -50.0, ..Default::default() },
+        ..Default::default()
+    });
+    s.masks.push(Mask {
+        id: 3,
+        components: vec![comp(MaskShape::Subject)],
+        adjust: LocalAdjustments { contrast: 30.0, ..Default::default() },
+        ..Default::default()
+    });
+    let step = |s: &DevelopSettings, what: &str| {
+        let warm = lcc_gpu::render(&src, &info, s, &req, Some(&cache)).expect("gpu");
+        let fresh = lcc_gpu::render(&src, &info, s, &req, None).expect("gpu");
+        assert_eq!(warm.image, fresh.image, "{what}");
+    };
+    step(&s, "first");
+    for k in 0..3 {
+        s.light.exposure = -0.5 + 0.6 * k as f64;
+        step(&s, "exposure");
+    }
+    s.masks[0].adjust.exposure = -0.3;
+    s.masks[2].adjust.amount = 40.0;
+    step(&s, "mask sliders and amount");
+    if let Some(MaskShape::Radial { center, .. }) = s.masks.first_mut().and_then(|m| m.components.first_mut()).map(|c| &mut c.shape) {
+        *center = Point::new(0.3, 0.6);
+    }
+    step(&s, "moved radial");
+    s.masks[0].feather = 40.0;
+    s.masks[1].curve.master = vec![Point::new(0.0, 0.1), Point::new(1.0, 0.9)];
+    step(&s, "feather and a mask's curve");
+    s.masks[1].visible = false;
+    step(&s, "hidden mask");
+}
