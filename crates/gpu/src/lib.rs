@@ -575,7 +575,9 @@ fn try_render_with(
         let s: &DevelopSettings = &effective;
         let device_proof = req.proof.is_some_and(|p| lcc_pipeline::proof_profile(p.profile).is_some());
         // pixel-filter plug-ins run in the CPU pipeline
-        if !enabled() || !handles(req.depth, device_proof, req.overlay) || lcc_pipeline::plugin_filters::any_active(s) {
+        // process V7's particle grain (`lcc_pipeline::grain`) is drawn by the CPU finish stage
+        let particle_grain = s.grain.amount > 0.0 && s.process.process() == lcc_develop::Process::V7 && s.section_enabled("effects");
+        if !enabled() || !handles(req.depth, device_proof, req.overlay) || lcc_pipeline::plugin_filters::any_active(s) || particle_grain {
             return Err(Fallback::NotTried);
         }
         let s = &*lcc_pipeline::settings_for(s, req);

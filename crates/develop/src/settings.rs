@@ -228,6 +228,10 @@ pub enum Process {
     /// AI Denoise's amount is eased (`1 − (1 − a)³`, [`denoise_weight`]) instead of a straight mix, so
     /// half-way already removes most of the noise, as Lightroom's slider does (fork issue: grainy at 50).
     V6,
+    /// Film grain as clumps of irregular particles (a filtered Boolean model, resolution independent),
+    /// with Size Variation, Clumping, Color and Response, calibrated against Lightroom Classic exports
+    /// (OneSlips); V1–V6 keep their value-noise grain.
+    V7,
 }
 
 /// How much of the AI-denoised picture to mix in for a Denoise slider fraction `a` (0 to 1) under
@@ -237,14 +241,14 @@ pub fn denoise_weight(process: Process, a: f32) -> f32 {
     let a = if a.is_finite() { a.clamp(0.0, 1.0) } else { 0.0 };
     match process {
         Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 => a,
-        Process::V6 => 1.0 - (1.0 - a).powi(3),
+        Process::V6 | Process::V7 => 1.0 - (1.0 - a).powi(3),
     }
 }
 
 impl Process {
     /// Every process, oldest first.
-    pub const ALL: [Process; 6] = [Process::V1, Process::V2, Process::V3, Process::V4, Process::V5, Process::V6];
-    pub const LATEST: Process = Process::V6;
+    pub const ALL: [Process; 7] = [Process::V1, Process::V2, Process::V3, Process::V4, Process::V5, Process::V6, Process::V7];
+    pub const LATEST: Process = Process::V7;
 
     pub const fn version(self) -> ProcessVersion {
         match self {
@@ -254,6 +258,7 @@ impl Process {
             Process::V4 => ProcessVersion(4),
             Process::V5 => ProcessVersion(5),
             Process::V6 => ProcessVersion(6),
+            Process::V7 => ProcessVersion(7),
         }
     }
 }
@@ -920,15 +925,28 @@ impl Default for Vignette {
 #[serde(default)]
 pub struct Grain {
     pub amount: f64,
+    /// Grain size, relative to the frame (0..100). From process V7 the mean grain radius is 0.3–3 px on a
+    /// 6000 px export (≈ 1.8–18 µm on a 35 mm frame); finer grain is also stronger, as in Lightroom Classic.
     pub size: f64,
+    /// 0 = fine, round, regular grain; 100 = coarse, elongated, irregular grains.
     pub roughness: f64,
     /// Seed for the procedural grain (stable per photo).
     pub seed: u32,
+    /// Colour (chroma) grain, 0..100: independent dye-layer grain on top of the luminance grain (V7).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub color: f64,
+    /// Where grain is strongest (V7): −100 shadows … 0 equal at every tone … +100 highlights.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub response: f64,
+    /// Spread of grain sizes, 0..100 (V7): 0 = all grains the mean size.
+    pub size_variation: f64,
+    /// Clumping, 0..100 (V7): 0 = single grains; 100 = clusters of several grains.
+    pub clumping: f64,
 }
 
 impl Default for Grain {
     fn default() -> Self {
-        Self { amount: 0.0, size: 25.0, roughness: 50.0, seed: 0 }
+        Self { amount: 0.0, size: 25.0, roughness: 50.0, seed: 0, color: 0.0, response: 0.0, size_variation: 40.0, clumping: 30.0 }
     }
 }
 
