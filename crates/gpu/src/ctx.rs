@@ -60,6 +60,7 @@ const MODULES: &[Module] = &[
             "nr_lum",
             "chroma_k",
             "clamp0_k",
+            "chroma_med",
             "nr_col",
             "subsample",
             "redeye_k",
@@ -416,10 +417,8 @@ impl Gpu {
         // no indirect-call validation pipeline: Intel Metal fails to compile it (#250)
         desc.flags = crate::backend::instance_flags_from_env(desc.flags);
         let instance = wgpu::Instance::new(desc);
-        let adapter = pollster::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }),
-        )
-        .map_err(|e| format!("no GPU adapter among {backends:?} ({e})"))?;
+        // the card `<PREFIX>_GPU_ADAPTER` names, else the high-performance one
+        let adapter = crate::backend::pick_adapter(&instance, backends)?;
         let info = adapter.get_info();
         if info.device_type == wgpu::DeviceType::Cpu {
             log::info!("gpu: only a software adapter ({}), using the CPU pipeline", info.name);
@@ -809,8 +808,8 @@ fn parse_limits(v: &str) -> Option<(u64, u64)> {
         }
         n => {
             let mb: u64 = n.trim_end_matches("mib").trim_end_matches("mb").trim().parse().ok()?;
-            let b = mb.max(1) << 20;
-            Some((b, 2 * b))
+            let b = mb.max(1).checked_mul(1 << 20)?;
+            Some((b, b.checked_mul(2)?))
         }
     }
 }
@@ -957,6 +956,16 @@ pub fn groups1(n: usize) -> [u32; 3] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn limits_override_is_in_mebibytes_and_never_overflows() {
+        assert_eq!(super::parse_limits("512MiB"), Some((512 << 20, 1024 << 20)));
+        assert_eq!(super::parse_limits("0"), Some((1 << 20, 2 << 20)));
+        assert_eq!(super::parse_limits(""), None);
+        assert_eq!(super::parse_limits("lots"), None);
+        assert_eq!(super::parse_limits("9223372036854775807"), None);
+        assert_eq!(super::parse_limits("17592186044416"), None);
+    }
+
     /// Every kernel module, as it is handed to the device (the generated constants, the bindings, `common.wgsl`, the
     /// module), parses and validates without a GPU.
     #[test]

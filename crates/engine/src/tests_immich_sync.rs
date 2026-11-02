@@ -17,6 +17,12 @@ struct Server {
     albums: Vec<(String, String, Vec<String>)>,
     stacks: Vec<Vec<String>>,
     uploads: u32,
+    /// Uploads whose multipart body carried a `sidecarData` part (IMM-SIDECARS).
+    sidecar_uploads: u32,
+    /// Asset id → the XMP sidecar the server holds for it.
+    sidecars: std::collections::HashMap<String, String>,
+    /// Assets removed with `DELETE /assets` (the temporary sidecar-copy assets).
+    deleted: Vec<String>,
 }
 
 impl Server {
@@ -44,6 +50,17 @@ fn serve_state(state: Shared, down: Arc<AtomicBool>, hits: Arc<AtomicU32>) -> St
         }
     });
     format!("http://127.0.0.1:{port}")
+}
+
+/// The `sidecarData` part of a multipart upload, as the server would store it.
+fn sidecar_part(body: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    let i = text.find("name=\"sidecarData\"")?;
+    let after = &text[i..];
+    let start = after.find("\r\n\r\n")? + 4;
+    let rest = &after[start..];
+    let end = rest.find("\r\n--")?;
+    Some(rest[..end].to_string())
 }
 
 fn handle(state: &Shared, down: &AtomicBool, m: &str, t: &str, key: Option<&str>, body: &[u8]) -> Vec<u8> {
@@ -94,7 +111,19 @@ fn handle(state: &Shared, down: &AtomicBool, m: &str, t: &str, key: Option<&str>
             let now = st.tick();
             // the checksum of the uploaded part is not parsed: the test server keys duplicates by name
             let text = String::from_utf8_lossy(body);
-            let name = text.split("filename=\"").nth(2).and_then(|x| x.split('"').next()).unwrap_or("x").to_string();
+            let name = text
+                .split("name=\"assetData\"")
+                .nth(1)
+                .and_then(|x| x.split("filename=\"").nth(1))
+                .and_then(|x| x.split('"').next())
+                .unwrap_or("x")
+                .to_string();
+            if text.contains("name=\"sidecarData\"") {
+                st.sidecar_uploads += 1;
+            }
+            if let Some(xml) = sidecar_part(body) {
+                st.sidecars.insert(id.clone(), xml);
+            }
             // like the real server, the asset remembers the uploading device (`deviceId` form field)
             let device = text.split("name=\"deviceId\"").nth(1).and_then(|x| x.trim_start().lines().next()).unwrap_or("").trim().to_string();
             st.assets.push(json!({"id": id, "type": "IMAGE", "deviceId": device, "originalFileName": name, "updatedAt": now, "checksum": format!("name:{name}"), "exifInfo": {}, "tags": []}));
@@ -200,8 +229,32 @@ fn handle(state: &Shared, down: &AtomicBool, m: &str, t: &str, key: Option<&str>
                     a["isTrashed"] = json!(true);
                     a["updatedAt"] = json!(now);
                 }
+                st.deleted.push(id.to_string());
             }
             resp("204 No Content", "application/json", b"")
+        }
+        ("PUT", "/api/assets/copy") => {
+            let (src, tgt) = (b["sourceId"].as_str().unwrap_or(""), b["targetId"].as_str().unwrap_or(""));
+            if b["sidecar"] == true && let Some(xml) = st.sidecars.get(src).cloned() {
+                st.sidecars.insert(tgt.to_string(), xml);
+            }
+            resp("204 No Content", "application/json", b"")
+        }
+        ("POST", "/api/assets/jobs") => resp("204 No Content", "application/json", b""),
+        ("GET", "/api/asset-files") => {
+            let asset = query.split('&').find_map(|kv| kv.strip_prefix("assetId=")).unwrap_or("");
+            let files: Vec<Value> = match st.sidecars.get(asset) {
+                Some(_) => vec![json!({"id": format!("sidecar-{asset}"), "type": "sidecar", "path": format!("/x/{asset}.xmp")})],
+                None => Vec::new(),
+            };
+            json(Value::Array(files))
+        }
+        ("GET", p) if p.starts_with("/api/asset-files/") && p.ends_with("/download") => {
+            let asset = p.trim_start_matches("/api/asset-files/").trim_end_matches("/download").trim_start_matches("sidecar-");
+            match st.sidecars.get(asset) {
+                Some(xml) => resp("200 OK", "application/xml", xml.as_bytes()),
+                None => not_found(),
+            }
         }
         ("GET", "/api/faces") => {
             let id = query.trim_start_matches("id=");
@@ -565,6 +618,26 @@ fn publish_to_immich_albums_renders_and_stacks() {
     assert_eq!(st.uploads, uploads + 1, "only the render was uploaded");
     assert_eq!(st.stacks.last().unwrap()[1], "bbbb-2");
     drop(st);
+
+    // an original that is not linked yet: it is uploaded with the photo's whole XMP sidecar
+    // (IMM-SIDECARS — this is how a managed asset's develop settings reach Immich)
+    let three_bytes = png(42);
+    std::fs::write(dir.join("three.png"), &three_bytes).unwrap();
+    s.execute("library.import", &json!({"paths": [dir.join("three.png").to_string_lossy()]})).unwrap();
+    let three = s.catalog.photos().find(|p| p.file_name == "three.png").unwrap().id;
+    s.execute("photo.rate", &json!({"ids": [three.0], "rating": 5})).unwrap();
+    let svc3 = s
+        .execute(
+            "publish.createService",
+            &json!({"kind": "immich", "name": "Immich originals", "settings": {"account": account, "send": "original"}, "export": {"format": "jpeg", "longEdge": 20}}),
+        )
+        .unwrap();
+    s.execute("library.select", &json!({"ids": [three.0]})).unwrap();
+    let coll3 = s.execute("publish.createCollection", &json!({"service": svc3["id"], "name": "Originals", "addSelected": true})).unwrap();
+    let before = state.lock().unwrap().sidecar_uploads;
+    let r = s.execute("publish.run", &json!({"collection": coll3["collection"]})).unwrap();
+    assert_eq!(r["runs"][0]["published"].as_array().map(Vec::len), Some(1), "{r}");
+    assert_eq!(state.lock().unwrap().sidecar_uploads, before + 1, "the original carried its sidecar");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -730,4 +803,31 @@ fn stacks_mirror_both_ways() {
     s.execute("stack.ungroup", &json!({"ids": [one.0]})).unwrap();
     s.execute("immich.sync", &json!({})).unwrap();
     assert!(state.lock().unwrap().stacks.iter().all(|x| x.len() < 2));
+}
+
+// IMM-SIDECARS full push: Immich's sidecar is the base, the catalog's metadata and develop
+// settings are merged into it, and the merged XMP is copied back through a temporary asset
+// (Immich has no endpoint that writes an existing asset's sidecar).
+#[test]
+fn full_sidecar_push_merges_immichs_sidecar_and_copies_it_back() {
+    let Setup { mut s, state, one, .. } = setup("full-sidecar");
+    let existing = r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:dc='http://purl.org/dc/elements/1.1/' xmlns:xmp='http://ns.adobe.com/xap/1.0/'
+ xmlns:crs='http://ns.adobe.com/camera-raw-settings/1.0/' xmlns:other='http://example.invalid/ns/'>
+<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>Immich copy</rdf:li></rdf:Alt></dc:description>
+<xmp:Rating>1</xmp:Rating><crs:Exposure2012='+0.60' other:Secret='keep me'/></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+    state.lock().unwrap().sidecars.insert("aaaa-1".into(), existing.into());
+    s.execute("photo.rate", &json!({"ids": [one.0], "rating": 5})).unwrap();
+    s.execute("photo.setMeta", &json!({"ids": [one.0], "caption": "Catalog caption", "keywords": ["Trip/Paris"]})).unwrap();
+    let r = s.execute("immich.pushSidecars", &json!({"ids": [one.0], "full": true})).unwrap();
+    assert_eq!(r["pushed"], 1, "{r}");
+    let st = state.lock().unwrap();
+    let xml = st.sidecars.get("aaaa-1").expect("the target keeps a sidecar");
+    let d = lcc_meta::parse_xmp(xml).unwrap();
+    assert_eq!(d.metadata.rating, Some(5), "the catalog's rating replaces Immich's:\n{xml}");
+    assert_eq!(d.metadata.caption.as_deref(), Some("Catalog caption"), "{xml}");
+    assert!(xml.contains("crs:Exposure2012='+0.60'"), "another app's settings stay:\n{xml}");
+    assert!(xml.contains("other:Secret='keep me'"), "unknown namespaces stay:\n{xml}");
+    assert!(d.lc_settings.is_some(), "the develop settings were added:\n{xml}");
+    assert!(st.deleted.iter().any(|id| id.starts_with("up-")), "the temporary asset was removed: {:?}", st.deleted);
 }

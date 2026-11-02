@@ -681,10 +681,12 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             .collect();
             v.push(MenuNode::Separator);
             v.extend((1..=5u8).map(|r| {
-                item("library.filter", json!({"rating": if f.rating == r { 0 } else { r }}), "★".repeat(r as usize), None, true, Some(f.rating == r))
+                // picking the stars it has clears the rule, operator included: "= 0" would now be the unrated photos
+                let params = if f.rating == r { json!({"rating": 0, "ratingOp": "atLeast"}) } else { json!({"rating": r}) };
+                item("library.filter", params, "★".repeat(r as usize), None, true, Some(f.rating == r))
             }));
             v.push(MenuNode::Separator);
-            v.push(item("library.filter", json!({"rating": 0}), "None", None, f.rating > 0, None));
+            v.push(item("library.filter", json!({"rating": 0, "ratingOp": "atLeast"}), "None", None, f.rating_filters(), None));
             v
         }
         "Set Rating" => (0..=5u8)
@@ -1651,7 +1653,7 @@ mod tests {
     }
 
     /// File opens with the import entry points, worded as importing (not as adding a sidebar
-    /// folder): Import Photos… (⇧⌘I), Import from Folder…, Import from Device ▸.
+    /// folder): Import… (⇧⌘I, the dialog that also takes folders), Import from Folder…, Import from Device ▸.
     #[test]
     fn file_menu_starts_with_the_import_entry_points() {
         let bar = menu_bar(&app());
@@ -1665,7 +1667,7 @@ mod tests {
                 MenuNode::Separator => "---".into(),
             })
             .collect();
-        assert_eq!(labels[0], "Import Photos… [Cmd+Shift+I]");
+        assert_eq!(labels[0], "Import… [Cmd+Shift+I]");
         assert_eq!(labels[1..], ["Import from Folder…".to_string(), "Import from Device ▸".to_string()]);
         let all: Vec<MenuNode> = bar.iter().flat_map(|(_, v)| v.clone()).collect();
         let text = serde_json::to_string(&all).unwrap();

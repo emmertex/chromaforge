@@ -13,7 +13,7 @@ pub(crate) fn invert_module(id: &str) -> Vec<u8> {
 }
 
 /// A filter module with `manifest`; `analysis`: it also exports `pc_analyze` returning that JSON.
-fn module(manifest: &str, analysis: Option<&str>) -> Vec<u8> {
+pub(crate) fn module(manifest: &str, analysis: Option<&str>) -> Vec<u8> {
     let analyze = match analysis {
         Some(a) => format!(
             r#"(data (i32.const 8192) "{a}")
@@ -111,6 +111,22 @@ fn install_list_add_render_undo() {
     let gone = render(&mut s);
     assert!(!gone.warnings.is_empty());
     assert_eq!(gone.image.data, before.image.data);
+}
+
+/// `plugin.list` gives a filter its module's size, and `plugin.enable` on one says filters can't be
+/// turned off (not that it isn't installed).
+#[test]
+fn a_filter_lists_its_size_and_cant_be_turned_off() {
+    let mut s = Session::with_demo();
+    let bytes = invert_module("test.engine.size");
+    install_bytes(&mut s, "test.engine.size", &bytes);
+    let listed = s.execute("plugin.list", &json!({})).unwrap();
+    let f = listed["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.engine.size").unwrap().clone();
+    assert_eq!(f["size"], json!(bytes.len()), "the module's size in bytes");
+    let e = s.execute("plugin.enable", &json!({"id": "test.engine.size", "enabled": false})).unwrap_err().to_string();
+    assert!(e.contains("can't be turned off"), "says why: {e}");
+    assert!(!e.contains("is installed"), "not that it isn't installed: {e}");
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.size"})).unwrap();
 }
 
 #[test]

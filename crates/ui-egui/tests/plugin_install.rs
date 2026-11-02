@@ -1,6 +1,6 @@
 //! The Install Plug-in dialog: a plug-in this version can't run offers no Install button, and an
 //! older version than the installed one is installed only through *Install Older Version*; a
-//! plug-in that didn't load can be removed from the Plug-in Manager.
+//! plug-in that didn't load can be removed from its page in the Plug-in Manager.
 //!
 //! Its own test binary: the Plug-in Manager's window state is the process's, and other UI tests
 //! drawing frames at the same time would race it.
@@ -126,6 +126,7 @@ fn the_dialog_refuses_what_this_version_cant_run_and_confirms_downgrades() {
     exec(&mut h, "plugins.manager", json!({"open": true}));
     h.step();
     h.step();
+    click(&mut h, "pluginEntry:test.uifailed");
     click(&mut h, "button:pluginRemoveFailed:test.uifailed");
     assert!(row(&mut h).is_none(), "removed");
     assert!(

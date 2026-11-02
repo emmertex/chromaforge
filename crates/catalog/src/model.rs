@@ -158,7 +158,10 @@ impl CopyrightStatus {
 pub fn parse_shutter_seconds(s: &str) -> Option<f64> {
     let s = s.trim().trim_end_matches(['s', 'S']).trim().trim_end_matches(['″', '"', '\'', '”']).trim();
     match s.split_once('/') {
-        Some((n, d)) => Some(n.trim().parse::<f64>().ok()? / d.trim().parse::<f64>().ok()?),
+        Some((n, d)) => {
+            let (n, d) = (n.trim().parse::<f64>().ok()?, d.trim().parse::<f64>().ok()?);
+            (n > 0.0 && d > 0.0).then(|| n / d)
+        }
         None => s.parse().ok(),
     }
     .filter(|v: &f64| v.is_finite() && *v > 0.0)
@@ -209,7 +212,22 @@ pub struct Meta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gps_removed: Option<(f64, f64)>,
     pub title: String,
+    /// The headline (IPTC Content): a brief publishable synopsis (`photoshop:Headline`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub headline: String,
     pub caption: String,
+    /// Who wrote the caption (IPTC Content, `photoshop:CaptionWriter`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description_writer: String,
+    /// The legacy category code (IPTC Content, `photoshop:Category`; at most three characters).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub category: String,
+    /// The supplemental (other) categories (IPTC Content, `photoshop:SupplementalCategories`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supplemental_categories: Vec<String>,
+    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`; no legacy IPTC-IIM equivalent).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_code: Vec<String>,
     /// Accessibility text and long description.
     pub alt_text: String,
     pub extended_description: String,

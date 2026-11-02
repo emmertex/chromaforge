@@ -746,6 +746,9 @@ impl Journal {
         };
         self.pending =
             Some(Pending { seq, tail: Vec::new(), tail_records: 0, records: self.log_records, started: t0, start_ms: ms_since(t0), worker });
+        // One line per compaction start, always (issue #448): with the completion line in
+        // [`Journal::record_snapshot`] it says when the UI's own thread did what.
+        log::info!("catalog: compaction started: {} record(s), {} B in the log", self.log_records, self.log_bytes);
         Ok(())
     }
 
@@ -825,6 +828,20 @@ impl Journal {
         self.stats.last_snapshot = t;
         self.stats.max_snapshot_ms = self.stats.max_snapshot_ms.max(t.total_ms);
         self.stats.max_blocking_ms = self.stats.max_blocking_ms.max(t.blocking_ms);
+        // One line per compaction, always (not only under `{PREFIX}_PROFILE`): the timings say
+        // whether a catalog this size can really be persisted without holding the UI up, which
+        // issue #448's measurements could only infer from the log file's size changes.
+        log::info!(
+            "catalog: {}snapshot of {} record(s), {} B: serialize {:.1} ms, write+sync {:.1} ms, log reset {:.1} ms, total {:.1} ms, blocking {:.1} ms",
+            if t.background { "background " } else { "" },
+            t.records,
+            t.bytes,
+            t.serialize_ms,
+            t.write_sync_ms,
+            t.reset_ms,
+            t.total_ms,
+            t.blocking_ms
+        );
         if profiling() {
             eprintln!(
                 "catalog: {}snapshot of {} records, {} B: serialize {:.1} ms, write+sync {:.1} ms, log reset {:.1} ms, total {:.1} ms, blocking {:.1} ms",

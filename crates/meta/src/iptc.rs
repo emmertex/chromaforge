@@ -14,6 +14,49 @@ fn decode(b: &[u8], utf8: bool) -> String {
     }
 }
 
+/// IPTC `Date Created` (+ optional `Time Created`) as a capture time. The whole time must be valid: blank or
+/// absent keeps the date alone, six digits are a local clock, eleven characters `HHMMSS+HHMM` carry an offset;
+/// anything else (partial offset, extra digits, trailing text) gives `None`, so it cannot block a valid XMP
+/// or file-date fallback.
+fn parse_created(date: Option<&str>, time: Option<&str>) -> Option<DateTime> {
+    let date = date.filter(|value| value.len() == 8 && value.bytes().all(|byte| byte.is_ascii_digit()))?;
+    let time = time.filter(|value| !value.is_empty());
+    if let Some(time) = time {
+        let bytes = time.as_bytes();
+        let clock = bytes.get(..6)?;
+        if !clock.iter().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        match bytes.len() {
+            6 => {}
+            11 => {
+                let offset = bytes.get(6..11)?;
+                if !matches!(offset.first().copied(), Some(b'+' | b'-')) || !offset.get(1..)?.iter().all(|byte| byte.is_ascii_digit()) {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+
+    let mut iso = format!("{}-{}-{}", date.get(..4)?, date.get(4..6)?, date.get(6..8)?);
+    if let Some(time) = time {
+        iso.push('T');
+        iso.push_str(time.get(..2)?);
+        iso.push(':');
+        iso.push_str(time.get(2..4)?);
+        iso.push(':');
+        iso.push_str(time.get(4..6)?);
+        if time.len() == 11 {
+            let offset = time.get(6..)?;
+            iso.push_str(offset.get(..3)?);
+            iso.push(':');
+            iso.push_str(offset.get(3..)?);
+        }
+    }
+    DateTime::parse_iso(&iso)
+}
+
 /// Parse an IIM stream into the fields [`Metadata`] carries (title, keywords, artist, copyright, caption,
 /// creation date/time).
 pub fn parse_iptc(b: &[u8]) -> Metadata {
@@ -39,31 +82,31 @@ pub fn parse_iptc(b: &[u8]) -> Metadata {
         match (rec, ds) {
             (1, 90) => utf8 = data == b"\x1b%G",
             (2, 5) => m.title = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
+            (2, 15) => m.category = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
+            (2, 20) => {
+                let c = decode(data, utf8);
+                if !c.is_empty() && !m.supplemental_categories.contains(&c) {
+                    m.supplemental_categories.push(c);
+                }
+            }
             (2, 25) => {
                 let k = decode(data, utf8);
                 if !k.is_empty() && !m.keywords.contains(&k) {
                     m.keywords.push(k);
                 }
             }
+            (2, 105) => m.headline = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
             (2, 80) => m.artist = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
             (2, 116) => m.copyright = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
             (2, 120) => m.caption = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
+            (2, 122) => m.description_writer = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
             (2, 55) => date = Some(decode(data, utf8)),
             (2, 60) => time = Some(decode(data, utf8)),
             _ => {}
         }
         i = at.saturating_add(size);
     }
-    if let Some(d) = date.filter(|d| d.len() == 8 && d.bytes().all(|c| c.is_ascii_digit())) {
-        let mut s = format!("{}-{}-{}", &d[..4], &d[4..6], &d[6..8]);
-        if let Some(t) = time.filter(|t| t.is_ascii() && t.len() >= 6 && t[..6].bytes().all(|c| c.is_ascii_digit())) {
-            s += &format!("T{}:{}:{}", &t[..2], &t[2..4], &t[4..6]);
-            if t.len() >= 11 {
-                s += &format!("{}:{}", &t[6..9], &t[9..11]);
-            }
-        }
-        m.capture_time = DateTime::parse_iso(&s);
-    }
+    m.capture_time = parse_created(date.as_deref(), time.as_deref());
     m
 }
 
@@ -82,12 +125,16 @@ pub(crate) mod tests {
         ds(&mut v, 1, 90, b"\x1b%G");
         ds(&mut v, 2, 0, &[0, 4]);
         ds(&mut v, 2, 5, "Tïtle".as_bytes());
+        ds(&mut v, 2, 15, b"CAT");
+        ds(&mut v, 2, 20, b"Sports");
         ds(&mut v, 2, 25, b"alpha");
         ds(&mut v, 2, 25, b"beta");
         ds(&mut v, 2, 25, b"alpha");
         ds(&mut v, 2, 80, b"Photographer");
         ds(&mut v, 2, 116, b"CC0");
+        ds(&mut v, 2, 105, b"A headline");
         ds(&mut v, 2, 120, b"A caption");
+        ds(&mut v, 2, 122, b"Jane Doe");
         ds(&mut v, 2, 55, b"20210304");
         ds(&mut v, 2, 60, b"101112+0100");
         v
@@ -97,11 +144,56 @@ pub(crate) mod tests {
     fn parses_record2() {
         let m = parse_iptc(&sample_iim());
         assert_eq!(m.title.as_deref(), Some("Tïtle"));
+        assert_eq!(m.category.as_deref(), Some("CAT"));
+        assert_eq!(m.supplemental_categories, vec!["Sports".to_string()]);
+        assert_eq!(m.headline.as_deref(), Some("A headline"));
+        assert_eq!(m.description_writer.as_deref(), Some("Jane Doe"));
         assert_eq!(m.keywords, vec!["alpha".to_string(), "beta".to_string()]);
         assert_eq!(m.artist.as_deref(), Some("Photographer"));
         assert_eq!(m.copyright.as_deref(), Some("CC0"));
         assert_eq!(m.caption.as_deref(), Some("A caption"));
         assert_eq!(m.capture_time.unwrap().to_iso(), "2021-03-04T10:11:12+01:00");
+    }
+
+    fn capture_time(time: Option<&[u8]>) -> Metadata {
+        let mut iim = Vec::new();
+        ds(&mut iim, 2, 55, b"20260101");
+        if let Some(time) = time {
+            ds(&mut iim, 2, 60, time);
+        }
+        ds(&mut iim, 2, 5, b"kept title");
+        ds(&mut iim, 2, 25, b"kept keyword");
+        parse_iptc(&iim)
+    }
+
+    #[test]
+    fn iptc_time_created_rejects_incomplete_or_trailing_text() {
+        for time in
+            [&b"121314+01"[..], b"121314junk", b"12131499", b"121314+0100junk", b"121314+", b"121314+010", b"121314+01000", b"12345", b"121314+1801"]
+        {
+            let metadata = capture_time(Some(time));
+            assert_eq!(metadata.capture_time, None, "accepted malformed Time Created {time:?}");
+            assert_eq!(metadata.title.as_deref(), Some("kept title"), "unrelated metadata was lost for {time:?}");
+            assert_eq!(metadata.keywords, ["kept keyword"], "unrelated metadata was lost for {time:?}");
+        }
+    }
+
+    #[test]
+    fn iptc_time_created_preserves_supported_forms() {
+        let cases: &[(Option<&[u8]>, Option<&str>)] = &[
+            (None, Some("2026-01-01T00:00:00")),
+            (Some(b""), Some("2026-01-01T00:00:00")),
+            (Some(b" 	"), Some("2026-01-01T00:00:00")),
+            (Some(b"121314"), Some("2026-01-01T12:13:14")),
+            (Some(b"121314+0100"), Some("2026-01-01T12:13:14+01:00")),
+            (Some(b"121314-0530"), Some("2026-01-01T12:13:14-05:30")),
+            (Some(b"121314+1800"), Some("2026-01-01T12:13:14+18:00")),
+            (Some(b" 121314+0000  "), Some("2026-01-01T12:13:14+00:00")),
+        ];
+        for (time, expected) in cases {
+            let metadata = capture_time(*time);
+            assert_eq!(metadata.capture_time.map(|value| value.to_iso()).as_deref(), *expected, "Time Created {time:?}");
+        }
     }
 
     #[test]

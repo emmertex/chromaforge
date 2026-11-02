@@ -13,6 +13,17 @@ pub enum RatingOp {
     AtMost,
 }
 
+/// How a metadata filter's multi-select (the filter bar's pickers, the Metadata columns) combines its values
+/// (issue #683): `Any` matches photos with at least one of them (OR, the default), `All` only photos with
+/// every one of them (AND).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MatchOp {
+    #[default]
+    Any,
+    All,
+}
+
 /// What the grid shows. Empty/None fields don't filter.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
@@ -65,6 +76,12 @@ pub struct Filter {
     /// Any of these lenses, each matched as [`Filter::lens`]; empty = no constraint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lenses: Vec<String>,
+    /// How [`Filter::keywords`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
+    pub keyword_op: MatchOp,
+    /// How [`Filter::people`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
+    pub person_op: MatchOp,
+    /// How [`Filter::lenses`] combine (issue #683): `Any` of them (OR, the default) or `All` of them (AND).
+    pub lens_op: MatchOp,
     /// Capture date range, inclusive: `dateFrom` is compared as a lower bound (`2026-04-01`),
     /// `dateTo` as a prefix upper bound (`2026-04` includes all of April).
     pub date_from: Option<String>,
@@ -718,7 +735,10 @@ fn token_matches(p: &Photo, tok: &str, kept: Option<&[Box<str>]>) -> bool {
             "type" | "kind" => format!("{:?}", p.kind).eq_ignore_ascii_case(val),
             "video" => (val == "true" || val == "yes") == (p.kind == MediaKind::Video),
             "edited" => (val == "true" || val == "yes") == p.is_edited(),
-            "date" => p.captured.as_deref().is_some_and(|c| c.starts_with(val)),
+            "date" => p.captured.as_deref().is_some_and(|c| {
+                // the token is lower-cased, the stored time has an upper-case `T`
+                crate::dates::capture_start(c).get(..val.len()).is_some_and(|head| head.eq_ignore_ascii_case(val))
+            }),
             "copy" | "virtual" => (val == "true" || val == "yes") == p.copy_of.is_some(),
             "name" | "file" => p.file_name.to_lowercase().contains(val),
             // a plug-in metadata field by its key (`job:J-77`), whichever plug-in has it; and, as
@@ -790,9 +810,15 @@ impl Filter {
         self.describe_in(Some(cat))
     }
 
+    /// Whether the rating rule narrows the view. Only "at least no stars" lets every photo through:
+    /// "exactly" or "at most" no stars shows the unrated photos, as in Lightroom's filter bar.
+    pub fn rating_filters(&self) -> bool {
+        self.rating > 0 || self.rating_op != RatingOp::AtLeast
+    }
+
     fn describe_in(&self, cat: Option<&crate::Catalog>) -> String {
         let mut v: Vec<String> = Vec::new();
-        if self.rating > 0 {
+        if self.rating_filters() {
             let op = match self.rating_op {
                 RatingOp::AtLeast => "≥",
                 RatingOp::Exactly => "=",
@@ -828,9 +854,15 @@ impl Filter {
                 v.push(format!("{name} {x}"));
             }
         }
-        for (name, list) in [("keyword", &self.keywords), ("person", &self.people), ("camera", &self.cameras), ("lens", &self.lenses)] {
+        for (name, list, op) in [
+            ("keyword", &self.keywords, self.keyword_op),
+            ("person", &self.people, self.person_op),
+            // a photo has one camera: several of them can only mean any of them
+            ("camera", &self.cameras, MatchOp::Any),
+            ("lens", &self.lenses, self.lens_op),
+        ] {
             if !list.is_empty() {
-                v.push(format!("{name} {}", list.join(" or ")));
+                v.push(format!("{name} {}", list.join(if op == MatchOp::All { " and " } else { " or " })));
             }
         }
         match (&self.date_from, &self.date_to) {
@@ -902,7 +934,7 @@ impl Filter {
                 }
             }
         }
-        if self.rating > 0 {
+        if self.rating_filters() {
             let ok = match self.rating_op {
                 RatingOp::AtLeast => p.rating >= self.rating,
                 RatingOp::Exactly => p.rating == self.rating,
@@ -948,17 +980,18 @@ impl Filter {
         {
             return false;
         }
+        // a partial capture time (`1983-04`) stands for the start of its period
         if let Some(from) = &self.date_from
-            && match p.captured.as_deref() {
-                Some(c) => c < from.as_str(),
+            && match p.captured.as_deref().map(crate::dates::capture_start) {
+                Some(c) => *c < *from.as_str(),
                 None => true,
             }
         {
             return false;
         }
         if let Some(to) = &self.date_to
-            && match p.captured.as_deref() {
-                Some(c) => c.get(..to.len()).unwrap_or(c) > to.as_str(),
+            && match p.captured.as_deref().map(crate::dates::capture_start) {
+                Some(c) => c.get(..to.len()).unwrap_or(&c) > to.as_str(),
                 None => true,
             }
         {
@@ -970,7 +1003,7 @@ impl Filter {
             return false;
         }
         if let Some(d) = &self.date
-            && !p.captured.as_deref().is_some_and(|c| c.starts_with(d.as_str()))
+            && !p.captured.as_deref().is_some_and(|c| crate::dates::capture_start(c).starts_with(d.as_str()))
         {
             return false;
         }
@@ -1009,12 +1042,19 @@ impl Filter {
         {
             return false;
         }
-        // the multi-selects: any value of each list, every list
-        let any = |list: &[String], one: &dyn Fn(&str) -> bool| list.is_empty() || list.iter().any(|v| one(v));
-        if !any(&self.keywords, &|k| p.meta.keywords.iter().any(|x| crate::keywords::is_under(x, k)))
-            || !any(&self.people, &|n| has_person(p, n))
-            || !any(&self.cameras, &|c| p.meta.camera.eq_ignore_ascii_case(c))
-            || !any(&self.lenses, &|l| p.meta.lens.to_lowercase().contains(&l.to_lowercase()))
+        // the multi-selects: each list's values combine by its operator (any = OR, all = AND, issue #683), and
+        // every list must let the photo through
+        let list_matches = |list: &[String], op: MatchOp, one: &dyn Fn(&str) -> bool| {
+            list.is_empty()
+                || match op {
+                    MatchOp::Any => list.iter().any(|v| one(v)),
+                    MatchOp::All => list.iter().all(|v| one(v)),
+                }
+        };
+        if !list_matches(&self.keywords, self.keyword_op, &|k| p.meta.keywords.iter().any(|x| crate::keywords::is_under(x, k)))
+            || !list_matches(&self.people, self.person_op, &|n| has_person(p, n))
+            || !list_matches(&self.cameras, MatchOp::Any, &|c| p.meta.camera.eq_ignore_ascii_case(c))
+            || !list_matches(&self.lenses, self.lens_op, &|l| p.meta.lens.to_lowercase().contains(&l.to_lowercase()))
         {
             return false;
         }
@@ -1162,20 +1202,26 @@ impl Catalog {
 
     /// Year → month → day counts for the "By Date" section (newest first).
     pub fn date_groups(&self) -> Vec<DateGroup> {
+        use std::borrow::Cow;
         use std::collections::BTreeMap;
-        let mut years: BTreeMap<&str, (BTreeMap<&str, usize>, BTreeMap<&str, usize>)> = BTreeMap::new();
+        let mut years: BTreeMap<Cow<str>, (BTreeMap<Cow<str>, usize>, BTreeMap<Cow<str>, usize>)> = BTreeMap::new();
         for p in self.photos().filter(|p| p.in_library()) {
-            let Some(d) = p.captured.as_deref() else { continue };
+            let Some(d) = p.captured.as_deref().map(crate::dates::capture_start) else { continue };
             // `get`, not `[..]`: a corrupt or foreign `captured` (a Lightroom catalog's
             // captureTime is copied verbatim) may not be ASCII, and slicing it on a byte index
-            // would panic
-            if let (Some(year), Some(month), Some(day)) = (d.get(..4), d.get(..7), d.get(..10)) {
+            // would panic. A partial time (`1983-04`) counts at the start of its period, so only
+            // it owns its keys.
+            let part = |n: usize| match &d {
+                Cow::Borrowed(d) => d.get(..n).map(Cow::Borrowed),
+                Cow::Owned(d) => d.get(..n).map(|k| Cow::Owned(k.to_string())),
+            };
+            if let (Some(year), Some(month), Some(day)) = (part(4), part(7), part(10)) {
                 let (months, days) = years.entry(year).or_default();
                 *months.entry(month).or_default() += 1;
                 *days.entry(day).or_default() += 1;
             }
         }
-        let newest_first = |m: BTreeMap<&str, usize>| m.into_iter().rev().map(|(k, n)| (k.to_string(), n)).collect::<Vec<_>>();
+        let newest_first = |m: BTreeMap<Cow<str>, usize>| m.into_iter().rev().map(|(k, n)| (k.to_string(), n)).collect::<Vec<_>>();
         years
             .into_iter()
             .rev()

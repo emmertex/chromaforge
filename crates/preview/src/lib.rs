@@ -94,6 +94,48 @@ impl PreviewCache {
         self.disk.as_ref()
     }
 
+    /// The disk cache's bytes, for the interface: never waits. `None` while they are not known yet
+    /// (without a disk cache too); the first call then counts them on a thread of its own (a walk of
+    /// the whole folder, which Settings > Performance did on the interface's thread every frame).
+    pub fn disk_size_now(self: &Arc<Self>) -> Option<u64> {
+        self.disk_size_now_with(|| ())
+    }
+
+    /// [`Self::disk_size_now`] where `hold` is called when a count starts, and what it returns is kept
+    /// by the counting thread until the count ends (the interface passes an activity-stack guard, so
+    /// the walk of the folder shows as a task).
+    pub fn disk_size_now_with<G: Send + 'static>(self: &Arc<Self>, hold: impl FnOnce() -> G) -> Option<u64> {
+        let d = self.disk.as_ref()?;
+        if let Some(b) = d.known_size() {
+            return Some(b);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = hold;
+            Some(d.size())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if d.claim_count() {
+                let held = hold();
+                let cache = Arc::downgrade(self);
+                let spawned = std::thread::Builder::new().name("lc-preview-size".into()).spawn(move || {
+                    let _held = held;
+                    if let Some(me) = cache.upgrade()
+                        && let Some(d) = &me.disk
+                    {
+                        d.size();
+                        d.count_ended();
+                    }
+                });
+                if spawned.is_err() {
+                    d.count_ended();
+                }
+            }
+            None
+        }
+    }
+
     pub fn get(&self, key: Hash128) -> Option<Arc<Rgba8>> {
         self.get_at(self.generation(), key)
     }

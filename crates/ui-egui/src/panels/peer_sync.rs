@@ -139,7 +139,7 @@ fn last_synced(last: i64) -> String {
         trf!("Last synced {} h ago", ago / 3600)
     } else {
         // the calendar day of `YYYY-MM-DDTHH:MM:SS`
-        let stamp = lcc_catalog::dates::civil(last);
+        let stamp = lcc_catalog::dates::local(last).unwrap_or_else(|| lcc_catalog::dates::civil(last));
         let date = stamp.get(..10).unwrap_or(&stamp).to_string();
         trf!("Last synced on {}", date)
     }

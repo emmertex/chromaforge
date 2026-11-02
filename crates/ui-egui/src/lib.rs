@@ -176,6 +176,8 @@ mod tests_filter_search;
 #[cfg(test)]
 mod tests_focus_point;
 #[cfg(test)]
+mod tests_folder_add;
+#[cfg(test)]
 mod tests_folder_drop;
 #[cfg(test)]
 mod tests_folder_poll;
@@ -1036,6 +1038,16 @@ impl LccApp {
             // menu), it must not keep a search that no longer applies (issue #1648)
             self.ui.search.clear();
         }
+        if r.is_ok() && id == "mask.addComponent" && matches!(self.ui.tool.as_str(), "colorRange" | "brush" | "object") {
+            // The eyedropper, the brush and the object tool take every press on the photo, so the handles of a
+            // gradient (or any other shape) added meanwhile would be dead: disarm them. A component of the
+            // tool's own kind keeps it (Pick, another colour range; Brush, Brush; Object, another object). An
+            // omitted kind is a brush, as in the engine.
+            let kind = params.get("kind").and_then(Value::as_str).unwrap_or("brush");
+            if kind != self.ui.tool {
+                self.ui.tool.clear();
+            }
+        }
         if r.is_ok() && id == "mask.adjust" {
             // Judge local adjustments on the photo: while a slider is at work nothing covers it, not even
             // an overlay switched on with O (it comes back when the slider rests); one that showed by
@@ -1822,6 +1834,10 @@ impl LccApp {
         let dropped: Vec<String> =
             ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).collect());
         if dropped.is_empty() {
+            return;
+        }
+        // a plug-in module dropped while the Plug-in Manager is open installs, not imports
+        if panels::plugins::take_drop(self, ctx, &dropped) {
             return;
         }
         // a dialog is on screen: the review would replace it, losing what it holds

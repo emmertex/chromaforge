@@ -1899,6 +1899,45 @@ fn assert_close(a: &serde_json::Value, b: &serde_json::Value) {
     assert!(a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.05), "{a:?} vs {b:?}");
 }
 
+/// A gradient subtracted from (or intersected with) a brush mask while the brush is still armed must be
+/// draggable: the brush took every press on the photo, so its handles were dead and each drag painted a stroke.
+#[test]
+fn adding_a_gradient_to_a_brush_mask_disarms_the_brush() {
+    for op in ["subtract", "intersect"] {
+        let mut h = detail("panel.masking");
+        exec(&mut h, "tool.brush", json!({"new": true}));
+        assert_eq!(h.app.ui.tool, "brush", "the brush is armed");
+        exec(&mut h, "mask.addComponent", json!({"kind": "radial", "op": op, "center": [0.5, 0.5], "rx": 0.22, "ry": 0.22}));
+        assert!(h.app.ui.tool.is_empty(), "{op}: adding a radial component disarms the brush");
+    }
+
+    // a brush component of the brush's own kind keeps it armed
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    exec(&mut h, "mask.addComponent", json!({"kind": "brush", "op": "subtract"}));
+    assert_eq!(h.app.ui.tool, "brush", "Subtract > Brush keeps the brush armed");
+
+    // an omitted kind is a brush, as in the engine: the brush stays armed for painting
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    exec(&mut h, "mask.addComponent", json!({"op": "subtract"}));
+    assert_eq!(h.app.ui.tool, "brush", "an omitted kind is a brush component and keeps the brush armed");
+    assert!(matches!(develop(&h).masks[0].components[1].shape, MaskShape::Brush { .. }), "the engine adds a brush component when kind is omitted");
+}
+
+/// The Colour Range eyedropper takes every press on the photo too: a gradient added while it is armed disarms it,
+/// another colour range keeps it.
+#[test]
+fn adding_a_gradient_while_the_color_range_picker_is_armed_disarms_it() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "colorRange"}));
+    h.app.ui.tool = "colorRange".into();
+    exec(&mut h, "mask.addComponent", json!({"kind": "colorRange", "op": "add"}));
+    assert_eq!(h.app.ui.tool, "colorRange", "another colour range keeps the picker armed");
+    exec(&mut h, "mask.addComponent", json!({"kind": "radial", "op": "subtract", "center": [0.5, 0.5], "rx": 0.22, "ry": 0.22}));
+    assert!(h.app.ui.tool.is_empty(), "adding a radial component disarms the eyedropper");
+}
+
 /// Regression: the Colour Range "Pick" button armed the eyedropper, but with the Masking panel
 /// open the loupe's clicks went to the mask overlay, so no sample was ever taken.
 #[test]

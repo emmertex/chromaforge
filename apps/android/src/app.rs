@@ -27,7 +27,7 @@ pub fn main(activity: AndroidApp) {
         config_root: config_root.clone(),
         pictures: external.unwrap_or_else(|| config_root.clone()),
     });
-    lcc_engine::guard::install_hook(config_root.join(format!("{}-panics.log", lcc_brand::BINARY)));
+    lcc_engine::guard::install_hook(Some(config_root.join(format!("{}-panics.log", lcc_brand::BINARY))));
 
     let host = match Host::new(&activity) {
         Ok(h) => Some(Arc::new(h)),

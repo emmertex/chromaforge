@@ -56,6 +56,8 @@ log = { workspace = true }
 ab_glyph = { workspace = true }
 # Apply the font’s vertical substitutions and origins to Japanese watermarks.
 harfrust = { version = "0.12", default-features = false, features = ["std"] }
+# Compose decomposed (NFD) text before it is laid out, one glyph per character.
+unicode-normalization = "0.1"
 unicode-segmentation = "1.13"
 lcc-segment = { workspace = true, optional = true }
 # video clips: probe and poster frames (every call is `Unsupported` on wasm32)
@@ -101,8 +103,9 @@ denoise = ["dep:lcc-denoise", "lcc-denoise/runtime", "lcc-gpu/denoise"]
 rawnind-model = ["denoise", "lcc-denoise/rawnind-model", "lcc-denoise-core/rawnind-model"]
 # The upstream project's own denoise model offered as a download (MIT OR Apache-2.0 weights, CC0 training data).
 own-model = ["denoise", "lcc-denoise/own-model", "lcc-denoise-core/own-model"]
-# Tests of other crates only (the UI's update dialog): `Updater::trust_test_key`, so they can stand in
-# a throwaway update key for the brand's. Never enabled by an app build.
+# Tests of other crates only: `Updater::trust_test_key` (the UI's update dialog), so they can stand in
+# a throwaway update key for the brand's; `filter_plugins::install_in_memory` (the Plug-in Manager), so
+# they install a pixel filter without a file in the plug-ins folder. Never enabled by an app build.
 test-support = []
 
 [dev-dependencies]

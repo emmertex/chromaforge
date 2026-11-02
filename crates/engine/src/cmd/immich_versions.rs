@@ -170,6 +170,8 @@ fn upload_version(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (_, client) = s.immich_client(&account).map_err(|e| bad(C, e.to_string()))?;
     let created = ph.captured.clone().unwrap_or_else(|| ph.imported.clone());
+    // a year or a month alone (`1983-04`) is sent as the start of its period, a time the server reads
+    let created = lcc_catalog::dates::capture_start(&created).into_owned();
     let created = if created.len() == 19 { format!("{created}.000Z") } else { created };
     let job = Job {
         photo: id,

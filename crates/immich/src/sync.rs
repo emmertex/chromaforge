@@ -264,7 +264,9 @@ pub fn local(p: &Photo, cfg: &SyncConfig, excluded: &dyn Fn(&str) -> bool) -> Sn
         description: text.trim().to_string(),
         keywords: p.meta.keywords.iter().filter(|k| !excluded(k)).map(|k| norm_keyword(k)).filter(|k| !k.is_empty()).collect(),
         location: p.meta.gps.and_then(|(a, b)| location(Some(a), Some(b))),
-        captured: crate::mapping::captured(p).and_then(norm_time),
+        // a year or a month alone (`1983-04`) is compared and sent as the start of its period, the time Immich holds
+        // for it; read as no date, Immich's time would replace it
+        captured: crate::mapping::captured(p).map(lcc_catalog::dates::capture_start).and_then(|c| norm_time(&c)),
     }
 }
 
@@ -362,17 +364,12 @@ pub fn instant(t: &str) -> Option<i64> {
     let base = norm_time(t)?;
     let num = |r: std::ops::Range<usize>| base.get(r).and_then(|s| s.parse::<i64>().ok());
     let (y, mo, d, h, mi, s) = (num(0..4)?, num(5..7)?, num(8..10)?, num(11..13)?, num(14..16)?, num(17..19)?);
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 60 {
+    if h > 23 || mi > 59 || s > 60 {
         return None;
     }
-    // days from civil (Howard Hinnant's public-domain algorithm)
-    let yy = if mo <= 2 { y - 1 } else { y };
-    let era = yy.div_euclid(400);
-    let yoe = yy - era * 400;
-    let mp = (mo + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    // (a day the month doesn't have, 2026-02-30, is no instant)
+    let date = chrono::NaiveDate::from_ymd_opt(i32::try_from(y).ok()?, u32::try_from(mo).ok()?, u32::try_from(d).ok()?)?;
+    let days = date.signed_duration_since(chrono::DateTime::UNIX_EPOCH.date_naive()).num_days();
     let rest = t.trim().get(19..).unwrap_or_default();
     let (frac, zone) = match rest.strip_prefix('.') {
         Some(r) => {

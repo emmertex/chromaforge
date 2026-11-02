@@ -196,6 +196,14 @@ pub struct SidecarData {
     pub country: Option<String>,
     pub alt_text: Option<String>,
     pub extended_description: Option<String>,
+    /// The IPTC Content fields other editors write (headline, description writer, legacy category).
+    pub headline: Option<String>,
+    pub description_writer: Option<String>,
+    pub category: Option<String>,
+    /// The supplemental (other) categories (`photoshop:SupplementalCategories`).
+    pub supplemental_categories: Vec<String>,
+    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`).
+    pub subject_code: Vec<String>,
     /// `exif:GPSLatitude` / `exif:GPSLongitude` (latitude, longitude): wins over a position embedded in the file.
     pub gps: Option<(f64, f64)>,
     pub keywords: Option<Vec<String>>,
@@ -259,6 +267,11 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         country: m.country.clone(),
         alt_text: m.alt_text.clone(),
         extended_description: m.extended_description.clone(),
+        headline: m.headline.clone(),
+        description_writer: m.description_writer.clone(),
+        category: m.category.clone(),
+        supplemental_categories: m.supplemental_categories.clone(),
+        subject_code: m.subject_code.clone(),
         gps: m.gps.map(|g| (g.latitude, g.longitude)),
         keywords: (!m.keywords.is_empty() || !m.hierarchical_keywords.is_empty())
             .then(|| lcc_catalog::keywords::from_file(&m.keywords, &m.hierarchical_keywords)),
@@ -424,10 +437,19 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
         (&sc.country, &mut m.country),
         (&sc.alt_text, &mut m.alt_text),
         (&sc.extended_description, &mut m.extended_description),
+        (&sc.headline, &mut m.headline),
+        (&sc.description_writer, &mut m.description_writer),
+        (&sc.category, &mut m.category),
     ] {
         if let Some(v) = src {
             *dst = v.clone();
         }
+    }
+    if !sc.supplemental_categories.is_empty() {
+        m.supplemental_categories = sc.supplemental_categories.clone();
+    }
+    if !sc.subject_code.is_empty() {
+        m.subject_code = sc.subject_code.clone();
     }
     if let Some(gps) = sc.gps {
         m.gps = Some(gps);
@@ -684,7 +706,12 @@ fn packet(p: &Photo, cat: &lcc_catalog::Catalog, remove_location: bool, gps: boo
     let meta = lcc_meta::Metadata {
         software: Some(lcc_brand::DISPLAY_NAME.into()),
         title: nz(&p.meta.title),
+        headline: nz(&p.meta.headline),
         caption: nz(&p.meta.caption),
+        description_writer: nz(&p.meta.description_writer),
+        category: nz(&p.meta.category),
+        supplemental_categories: p.meta.supplemental_categories.clone(),
+        subject_code: p.meta.subject_code.clone(),
         alt_text: nz(&p.meta.alt_text),
         extended_description: nz(&p.meta.extended_description),
         sublocation: nz(&p.meta.location),
@@ -785,6 +812,22 @@ pub const OWNED: &[&str] = &[
 /// writes (`xmp:CreatorTool`) goes only into new sidecars.
 pub const OWNED_IF_STATED: &[&str] = &["exif:DateTimeOriginal", "photoshop:DateCreated", "exif:GPSLatitude", "exif:GPSLongitude"];
 
+/// Merge the app's fresh packet (`fresh`) into an XMP packet another writer produced (`existing`)
+/// the way a sidecar save does: the app's properties ([`OWNED`], [`OWNED_IF_STATED`]) replace
+/// theirs, everything else — another editor's `crs:` settings, history, unknown namespaces — is
+/// kept. An empty `existing` takes `fresh`; an unreadable one is an error, never a silent
+/// replacement (the caller leaves the other side as it is).
+///
+/// Used by IMM-SIDECARS to fill Immich's sidecar with the app's metadata and develop settings
+/// without dropping what Immich or another writer already had.
+pub fn merge_packet(existing: &str, fresh: &str) -> std::result::Result<String, String> {
+    if existing.trim().is_empty() {
+        return Ok(fresh.to_string());
+    }
+    let rules = lcc_meta::MergeRules { owned: OWNED, owned_if_present: OWNED_IF_STATED };
+    lcc_meta::merge_xmp(existing, fresh, rules).map_err(|e| e.to_string())
+}
+
 /// Write `data` to `path` atomically: a temp file next to it, synced, then renamed over it.
 fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     lcc_catalog::safe_file::write_atomic(path, data)
@@ -852,7 +895,9 @@ impl Packets {
     }
 }
 
-/// [`sidecar_contents`] from the photo's packets already made.
+/// [`sidecar_contents`] from the photo's packets already made. A capture time of a year or a month alone is stated
+/// in `photoshop:DateCreated` only, so an `exif:DateTimeOriginal` already there (an earlier full time) is removed
+/// rather than left to outrank it on the next read.
 fn merged_contents(path: &Path, p: &Photo, packets: &Packets, stamp: &str) -> std::io::Result<(String, bool, Option<PathBuf>)> {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -865,7 +910,8 @@ fn merged_contents(path: &Path, p: &Photo, packets: &Packets, stamp: &str) -> st
     }
     match std::str::from_utf8(&bytes).map_err(|e| e.to_string()).and_then(|old| {
         let gps = GpsOnSave::of(p, old);
-        let owned: Vec<&str> = OWNED.iter().chain(gps.owned_tags()).copied().collect();
+        let partial_capture = p.captured.as_deref().and_then(lcc_catalog::dates::partial_capture).is_some();
+        let owned: Vec<&str> = OWNED.iter().chain(gps.owned_tags()).copied().chain(partial_capture.then_some("exif:DateTimeOriginal")).collect();
         let rules = lcc_meta::MergeRules { owned: &owned, owned_if_present: OWNED_IF_STATED };
         let fresh = if gps.write() { &packets.with_gps } else { &packets.without_gps };
         lcc_meta::merge_xmp(old, fresh, rules).map_err(|e| e.to_string())
@@ -2462,5 +2508,34 @@ mod jpeg_header_tests {
         let mut ids = Vec::new();
         ops.iter().for_each(|o| op_photos(o, &mut ids));
         assert_eq!(ids, vec![a, b, c]);
+    }
+
+    /// IMM-SIDECARS: filling Immich's sidecar keeps what another writer put there, while the
+    /// app's properties and develop settings replace theirs.
+    #[test]
+    fn merge_packet_keeps_foreign_xmp_and_takes_ours() {
+        let existing = r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:dc='http://purl.org/dc/elements/1.1/' xmlns:xmp='http://ns.adobe.com/xap/1.0/'
+ xmlns:crs='http://ns.adobe.com/camera-raw-settings/1.0/' xmlns:other='http://example.invalid/ns/'>
+<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>Immich copy</rdf:li></rdf:Alt></dc:description>
+<xmp:Rating>2</xmp:Rating><crs:Exposure2012='+0.60' other:Secret='keep me'/></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+        let fresh = format!(
+            r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:dc='http://purl.org/dc/elements/1.1/' xmlns:xmp='http://ns.adobe.com/xap/1.0/'
+ xmlns:lc='{}'>
+<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>From the catalog</rdf:li></rdf:Alt></dc:description>
+<xmp:Rating>5</xmp:Rating><lc:settings>{{"version":1}}</lc:settings></rdf:Description></rdf:RDF></x:xmpmeta>"#,
+            lcc_meta::LC_NS
+        );
+        let out = super::merge_packet(existing, &fresh).unwrap();
+        let d = lcc_meta::parse_xmp(&out).unwrap();
+        assert_eq!(d.metadata.rating, Some(5), "ours replaces theirs");
+        assert_eq!(d.metadata.caption.as_deref(), Some("From the catalog"));
+        assert!(out.contains("crs:Exposure2012='+0.60'"), "another app's settings stay:\n{out}");
+        assert!(out.contains("other:Secret='keep me'"), "unknown namespaces stay:\n{out}");
+        assert!(d.lc_settings.is_some(), "the develop settings are there");
+        // an empty sidecar takes the fresh packet; an unreadable one is refused, not replaced
+        assert_eq!(super::merge_packet("", &fresh).unwrap(), fresh);
+        assert!(super::merge_packet("<not xmp", &fresh).is_err());
     }
 }

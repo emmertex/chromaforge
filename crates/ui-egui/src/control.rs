@@ -220,7 +220,7 @@ const MAX_GESTURE_NUMBER: f64 = 1e6;
 /// Every number of a gesture's parameters (and of `ui.pointer`'s events) is finite and within
 /// ±[`MAX_GESTURE_NUMBER`]. A larger one turns into an infinite or NaN `f32` position or scroll
 /// delta: egui asserts on NaN positions, and a release build would hand them to every widget.
-/// `count` and `steps` are clamped where they are read instead, and `ui.zoom`'s `factor` (a
+/// `count` and `steps` are bounded where they are read instead (`bounded_arg` refuses a value past its range), and `ui.zoom`'s `factor` (a
 /// multiplier, not a position) is checked by its own branch.
 pub(crate) fn check_gesture_numbers(method: &str, p: &Value) -> Result<(), String> {
     fn check(method: &str, key: &str, v: &Value) -> Result<(), String> {

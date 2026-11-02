@@ -212,13 +212,10 @@ impl ToneMap {
                 if p <= 1.0 {
                     // S-curve anchored at 0, grey and 1
                     p += c * 0.35 * (p - m) * (1.0 - (2.0 * p - 1.0).powi(2));
-                    // whites: lift/lower the upper tones; blacks: the lower tones
-                    let up = smooth(0.45, 1.0, p);
-                    p += w * 0.12 * up * (1.0 - p * 0.5);
-                    let lo = 1.0 - smooth(0.0, 0.45, p);
-                    p += b * 0.07 * lo * (p * 2.0).min(1.0);
+                    // whites and blacks: broad tonal responses fitted to Lightroom's
+                    p += w_b_shift(p, w, b);
                 } else {
-                    p += w * 0.12 * 0.5;
+                    p += w_b_shift(p, w, b);
                 }
                 let mut o = p.max(0.0).powf(2.2);
                 // short shoulder (SDR, edited curves): slope 1 at 0.95, reaching 1.0 at 1.05
@@ -233,7 +230,7 @@ impl ToneMap {
                 o.clamp(0.0, peak)
             })
             .collect();
-        ToneMap { lut, chroma: NO_CHROMA }
+        ToneMap { lut: monotone(lut), chroma: NO_CHROMA }
     }
 
     /// Fits an HDR tone map reaching `peak` into SDR (own design, issue #69). Display values up to
@@ -296,6 +293,47 @@ impl ToneMap {
         let v = self.lut[i] + (self.lut[i + 1] - self.lut[i]) * t;
         if ev < LUT_MIN_EV { v * (y / (GREY * 2f32.powf(LUT_MIN_EV))) } else { v }
     }
+}
+
+/// Gamma-space positions of the knots in [`WHITES_UP`] and the other whites/blacks tables.
+const WB_X: [f32; 12] = [0.0, 0.075, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.925, 1.0];
+/// Shift of the display value (gamma 2.2) at each knot for a slider at +100 / −100, fitted to the
+/// response of Lightroom's sliders on a Sony A7 V raw (issue #1371; measured as the mean change of
+/// export luminance per tonal band). Whites reach from the darker midtones to white and peak in
+/// the upper midtones; Blacks act on the whole lower half and fade out towards white.
+const WHITES_UP: [f32; 12] = [0.0, 0.008, 0.061, 0.113, 0.177, 0.243, 0.281, 0.288, 0.236, 0.168, 0.10, 0.06];
+const WHITES_DOWN: [f32; 12] = [0.0, -0.002, -0.005, -0.010, -0.018, -0.031, -0.044, -0.061, -0.088, -0.101, -0.117, -0.115];
+const BLACKS_UP: [f32; 12] = [0.04, 0.085, 0.105, 0.103, 0.098, 0.084, 0.067, 0.050, 0.029, 0.019, 0.008, 0.0];
+const BLACKS_DOWN: [f32; 12] = [-0.06, -0.076, -0.139, -0.189, -0.182, -0.148, -0.120, -0.088, -0.056, -0.037, -0.015, 0.0];
+
+/// Smooth interpolation of `table` at `p` (0..1).
+fn wb_at(table: &[f32; 12], p: f32) -> f32 {
+    let p = p.clamp(0.0, 1.0);
+    let i = WB_X.iter().rposition(|&x| x <= p).unwrap_or(0).min(WB_X.len() - 2);
+    let t = smooth(WB_X[i], WB_X[i + 1], p);
+    table[i] + (table[i + 1] - table[i]) * t
+}
+
+/// Whites and Blacks (−1..1) as a shift of display value `p` (gamma 2.2, 0..1).
+fn w_b_shift(p: f32, w: f32, b: f32) -> f32 {
+    let mut d = 0.0;
+    if w != 0.0 {
+        d += w.abs() * wb_at(if w > 0.0 { &WHITES_UP } else { &WHITES_DOWN }, p);
+    }
+    if b != 0.0 {
+        d += b.abs() * wb_at(if b > 0.0 { &BLACKS_UP } else { &BLACKS_DOWN }, p);
+    }
+    d
+}
+
+/// Running maximum: strong Whites lift the upper tones past white, which must not fold back.
+fn monotone(mut lut: Vec<f32>) -> Vec<f32> {
+    let mut top = f32::MIN;
+    for v in &mut lut {
+        top = top.max(*v);
+        *v = top;
+    }
+    lut
 }
 
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {

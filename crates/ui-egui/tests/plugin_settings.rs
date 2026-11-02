@@ -87,26 +87,25 @@ fn the_plugin_page_saves_settings_and_dialogs_remember() {
     exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "set", &settings, "{}")}));
     exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "ask", &asks, r#"{"ok":{"message":"Nothing to do here."}}"#)}));
 
-    // the page: only a plug-in with settings has one, opened on its Settings tab
-    ui_cmd(&mut h, "plugins.manager", json!({"open": true}));
-    assert!(has_widget(&mut h, "button:pluginSettings:test.uiset"));
-    assert!(!has_widget(&mut h, "button:pluginSettings:test.uiask"), "no settings, no page yet");
-    let r = h.request("engine.execute", json!({"command": "plugins.page", "params": {"id": "test.uiask"}}), T);
-    assert_eq!(r["ok"], false, "not through the command either: {r}");
-    ask(&mut h, "ui.clickWidget", json!({"id": "button:pluginSettings:test.uiset"}));
+    // the page: a plug-in with settings opens on its Settings tab; one without has none
+    ui_cmd(&mut h, "plugins.page", json!({"id": "test.uiset"}));
     assert!(has_widget(&mut h, "button:pluginPage-settings"), "the Settings tab");
     assert!(h.painted_text().iter().any(|t| t == "first"), "the setting's value: {:?}", h.painted_text());
+    let r = h.request("engine.execute", json!({"command": "plugins.page", "params": {"id": "test.uiask", "tab": "settings"}}), T);
+    assert_eq!(r["ok"], false, "no settings, no Settings tab: {r}");
+    ui_cmd(&mut h, "plugins.page", json!({"id": "test.uiset"}));
     // type a new value and save it
     ask(&mut h, "ui.clickWidget", json!({"id": "pluginText:settings:test.uiset:name"}));
     ask(&mut h, "ui.key", json!({"key": "a", "cmd": true}));
     ask(&mut h, "ui.text", json!({"text": "second"}));
     ask(&mut h, "ui.clickWidget", json!({"id": "button:pluginSettingsSave"}));
     assert_eq!(exec(&mut h, "plugin.settings", json!({"id": "test.uiset"}))["values"], json!({"name": "second"}));
-    assert!(!has_widget(&mut h, "button:pluginSettingsSave"), "saved and closed");
+    assert!(has_widget(&mut h, "button:pluginSettingsSave"), "saved; the page stays");
     // the page opens again with what was saved
+    ui_cmd(&mut h, "plugins.manager", json!({"open": false}));
     ui_cmd(&mut h, "plugins.page", json!({"id": "test.uiset"}));
     assert!(h.painted_text().iter().any(|t| t == "second"), "{:?}", h.painted_text());
-    ask(&mut h, "ui.clickWidget", json!({"id": "button:pluginSettingsCancel"}));
+    ui_cmd(&mut h, "plugins.manager", json!({"open": false}));
 
     // a dialog opens with the values it last ran with
     exec(&mut h, "plugin.run", json!({"plugin": "test.uiset", "command": "go", "args": {"who": "you"}}));

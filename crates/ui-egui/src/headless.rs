@@ -714,7 +714,8 @@ mod tests {
 
     /// A coordinate or delta too large for an `f32` became an infinite or NaN pointer position or
     /// scroll delta (egui panics on NaN positions in debug builds). Such a gesture is refused and
-    /// queues nothing; ordinary values and over-large `count` / `steps` still work.
+    /// queues nothing; ordinary values work, and an over-large `count` / `steps` is refused too
+    /// (`control::bounded_arg`: an error, never a silent clamp or a billion queued events).
     #[test]
     fn gestures_refuse_numbers_that_are_not_screen_positions() {
         let mut app = LccApp::new(lcc_engine::Session::new(), crate::Services::default());
@@ -736,10 +737,16 @@ mod tests {
             assert_eq!(r["ok"], false, "{method} {p}: {r}");
             assert!(r["error"].as_str().is_some_and(|e| e.starts_with(method) && e.contains("between")), "{r}");
         }
+        let r = h.request("ui.click", json!({"x": 10.0, "y": 5.0, "count": 2}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        let r = h.request("ui.drag", json!({"x": 1.0, "y": 1.0, "toX": 999_999.0, "toY": 1.0, "steps": 20}), t);
+        assert_eq!(r["ok"], true, "{r}");
         let r = h.request("ui.click", json!({"x": 10.0, "y": 5.0, "count": u64::MAX}), t);
-        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(r["error"].as_str().is_some_and(|e| e.contains("`count`")), "{r}");
         let r = h.request("ui.drag", json!({"x": 1.0, "y": 1.0, "toX": 999_999.0, "toY": 1.0, "steps": 1e12}), t);
-        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(r["error"].as_str().is_some_and(|e| e.contains("`steps`")), "{r}");
         h.step();
     }
 
@@ -4068,9 +4075,16 @@ mod tests {
         let browse =
             |h: &mut Headless| h.request("engine.execute", json!({"command": "library.browse", "params": {"path": dir.to_string_lossy()}}), t);
         assert_eq!(browse(&mut h)["result"]["scanning"], true);
-        std::thread::sleep(Duration::from_millis(200));
+        // the read is under way (held at its one file), however long a loaded machine takes to get there
+        // (frames run meanwhile: the read hands its files on from the frame loop)
+        h.step_until(SETTLE, |_| started.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert_eq!(started.load(std::sync::atomic::Ordering::Relaxed), 1, "the read started");
         assert_eq!(browse(&mut h)["result"]["scanning"], true);
-        std::thread::sleep(Duration::from_millis(200));
+        // a second read would reach the folder's one file as the first did, a few frames after it started
+        // (the first is still held there, so nothing else probes meanwhile)
+        for _ in 0..30 {
+            h.step();
+        }
         assert_eq!(started.load(std::sync::atomic::Ordering::Relaxed), 1, "the second click must not start another read");
         gate.store(true, std::sync::atomic::Ordering::Relaxed);
         h.settle(SETTLE);
