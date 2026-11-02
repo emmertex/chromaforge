@@ -3451,6 +3451,13 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if app.ui.tool == "object" {
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            // ⌥ / Alt: the click leaves out what's under it; a minus beside the pointer says so
+            if ui.input(|i| i.modifiers.alt)
+                && let Some(h) = resp.hover_pos()
+            {
+                brush_minus(p, h + vec2(14.0, 14.0));
+                register(ui.ctx(), "objectCursor:exclude", Rect::from_center_size(h, vec2(12.0, 12.0)));
+            }
         }
         if resp.clicked()
             && let Some(q) = resp.interact_pointer_pos()
@@ -3497,6 +3504,15 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             if r > r0 + 0.5 {
                 p.circle_stroke(h, r, Stroke::new(1.0, Color32::from_white_alpha(150)));
             }
+            // the centre, where Auto Mask samples what to follow: a minus while the stroke would
+            // erase (Erase on, or ⌥ / Alt held), a cross while it paints
+            let erasing = app.ui.brush_erasing();
+            if erasing {
+                brush_minus(p, h);
+            } else {
+                brush_crosshair(p, h);
+            }
+            register(ui.ctx(), if erasing { "brushCursor:erase" } else { "brushCursor:paint" }, Rect::from_center_size(h, vec2(2.0 * r, 2.0 * r)));
         }
         if let Some(q) = resp.interact_pointer_pos()
             && (resp.drag_started() || resp.dragged() || resp.clicked())
@@ -3662,6 +3678,21 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if resp.drag_stopped() && matches!(app.gesture, Some(Gesture::MaskHandle { .. })) {
         app.gesture = None;
         let _ = app.run("develop.endInteraction", json!({}));
+    }
+}
+
+/// The erasing brush's centre: a minus (dark under light, so it reads on any photo).
+fn brush_minus(p: &egui::Painter, c: Pos2) {
+    for (w, col) in [(3.5, Color32::from_black_alpha(140)), (1.5, Color32::WHITE)] {
+        p.line_segment([c - vec2(6.0, 0.0), c + vec2(6.0, 0.0)], Stroke::new(w, col));
+    }
+}
+
+/// The painting brush's centre: a small cross (dark under light, so it reads on any photo).
+fn brush_crosshair(p: &egui::Painter, c: Pos2) {
+    for (w, col) in [(3.0, Color32::from_black_alpha(140)), (1.0, Color32::WHITE)] {
+        p.line_segment([c - vec2(5.0, 0.0), c + vec2(5.0, 0.0)], Stroke::new(w, col));
+        p.line_segment([c - vec2(0.0, 5.0), c + vec2(0.0, 5.0)], Stroke::new(w, col));
     }
 }
 

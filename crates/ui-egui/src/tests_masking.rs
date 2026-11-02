@@ -2660,3 +2660,27 @@ fn brush_size_is_a_screen_size_and_old_sizes_migrate() {
     }
     h.settle(SETTLE);
 }
+
+/// The brush's centre says what a stroke does: a cross while it paints, a minus while it erases
+/// (Erase picked or ⌥ held); the Object tool shows a minus while ⌥ leaves things out.
+#[test]
+fn brush_and_object_cursors_show_erasing() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    let has = |h: &Headless, w: &str| h.app.widgets.iter().any(|(id, _)| id == w);
+    pointer(&mut h, json!([{"kind": "move", "x": 0.5, "y": 0.5}]));
+    h.step();
+    assert!(has(&h, "brushCursor:paint") && !has(&h, "brushCursor:erase"));
+    let r = h.request("ui.pointer", json!({"events": [{"kind": "down", "x": 0.52, "y": 0.5}], "alt": true}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(has(&h, "brushCursor:erase"), "⌥ held: the stroke would erase");
+    pointer(&mut h, json!([{"kind": "up", "x": 0.52, "y": 0.5}]));
+    h.app.ui.brush_erase = true;
+    pointer(&mut h, json!([{"kind": "move", "x": 0.5, "y": 0.5}]));
+    h.step();
+    assert!(has(&h, "brushCursor:erase"), "Erase picked");
+    h.app.ui.tool = "object".into();
+    let r = h.request("ui.pointer", json!({"events": [{"kind": "down", "x": 0.5, "y": 0.5}], "alt": true}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(has(&h, "objectCursor:exclude"));
+}
