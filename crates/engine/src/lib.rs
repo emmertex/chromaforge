@@ -462,6 +462,15 @@ pub struct Session {
     /// The effect a new mask of each kind (`brush`, `linear`…) starts with: the one last applied
     /// to a mask of that kind.
     pub mask_tool_effects: std::collections::BTreeMap<String, String>,
+    /// The adjustments the next new mask starts with, whatever its tool: what was dialed in the
+    /// Masking panel while no mask was selected (or a tool armed before its first stroke), as
+    /// Lightroom Classic does. Edits of existing masks never change it. Kept across photos.
+    pub mask_next: lcc_develop::LocalAdjustments,
+    /// [`mask_next`](Self::mask_next) was dialed in since it was last zeroed.
+    pub mask_next_set: bool,
+    /// Reset Settings on New Mask: once a new mask took [`mask_next`](Self::mask_next), it goes back
+    /// to zero, so the next one starts at zero unless something is dialed in again.
+    pub mask_reset_new: bool,
     /// Saved colour-label name sets.
     pub label_sets: Vec<cmd::manage::LabelSet>,
     /// Reject Closed and Blurry Eyes running in the background, and what it has finished so far.
@@ -685,6 +694,9 @@ impl Session {
             crop_aspects: Default::default(),
             mask_effects: Vec::new(),
             mask_tool_effects: Default::default(),
+            mask_next: Default::default(),
+            mask_next_set: false,
+            mask_reset_new: false,
             label_sets: Vec::new(),
             eye_cull: None,
             eye_cull_results: Vec::new(),
@@ -1922,6 +1934,8 @@ mod tests_autosync_wb;
 mod tests_autosync;
 #[cfg(test)]
 mod tests_mask_links;
+#[cfg(test)]
+mod tests_mask_next;
 #[cfg(test)]
 mod tests_camera_profile_defaults;
 #[cfg(test)]

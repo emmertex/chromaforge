@@ -2437,5 +2437,7 @@
   "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Клацніть або проведіть по фото, щоб узяти кольори; ⇧ додає ще (до 5), ⌥-клацання прибирає один, перетягніть мітку, щоб перемістити її",
   "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Клацніть по фото, щоб узяти тон, або проведіть по області, щоб узяти її тони; ⇧ розширює діапазон",
   "No colour picked": "Колір не вибрано",
-  "Selecting the object…": "Виділяю об’єкт…"
+  "Selecting the object…": "Виділяю об’єкт…",
+  "Settings for the next mask": "Налаштування для наступної маски",
+  "Reset settings on new mask": "Скидати налаштування для нової маски"
 }

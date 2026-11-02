@@ -308,13 +308,13 @@ pub fn mask_tool(m: &Mask) -> Option<String> {
 
 /// The adjustments a new mask made with `tool` starts with: the effect last applied to a mask of
 /// that kind (Lightroom carries the chosen effect over to the next mask), else all at 0.
-pub fn new_mask_adjust(s: &Session, tool: &str) -> LocalAdjustments {
-    s.mask_tool_effects
-        .get(tool)
-        .and_then(|name| position(s, name))
-        .and_then(|i| s.mask_effects.get(i))
-        .map(|e| super::masks::clamp_local(e.apply(&LocalAdjustments::default())))
-        .unwrap_or_default()
+pub fn new_mask_adjust(s: &mut Session, _tool: &str) -> LocalAdjustments {
+    let a = super::masks::clamp_local(s.mask_next);
+    if s.mask_reset_new {
+        s.mask_next = LocalAdjustments::default();
+        s.mask_next_set = false;
+    }
+    a
 }
 
 fn list(s: &Session) -> Value {
@@ -339,6 +339,12 @@ fn apply_effect(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "mask.applyEffect";
     let name = name_param(p, C)?;
     let effect = s.mask_effects.get(effect_index(s, &name, C)?).cloned().ok_or_else(|| bad(C, format!("no effect `{name}`")))?;
+    // no mask selected (nor named): the effect is for the next new mask
+    if s.active_mask.is_none() && p.get("id").and_then(Value::as_u64).is_none() && p.get("ids").is_none() && p.get("all").is_none() {
+        s.mask_next = super::masks::clamp_local(effect.apply(&LocalAdjustments::default()));
+        s.mask_next_set = true;
+        return Ok(json!({"name": effect.name, "masks": [], "next": s.mask_next}));
+    }
     let id = s.active().ok_or_else(|| bad(C, "no active photo"))?;
     let d = s.develop_of(id).unwrap_or_default();
     // the masks: `ids`, `all`, else `id` or the selected one

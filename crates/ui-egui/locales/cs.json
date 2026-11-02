@@ -2468,5 +2468,7 @@
   "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Klepnutím nebo tažením přes fotku vyberte barvy; ⇧ přidá další (až 5), ⌥-klepnutí jednu odebere, tažením špendlíku ji přesunete",
   "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Klepnutím na fotku vyberte její tón, nebo tažením přes oblast vyberte její tóny; ⇧ rozsah rozšíří",
   "No colour picked": "Žádná vybraná barva",
-  "Selecting the object…": "Vybírám předmět…"
+  "Selecting the object…": "Vybírám předmět…",
+  "Settings for the next mask": "Nastavení pro další masku",
+  "Reset settings on new mask": "U nové masky vynulovat nastavení"
 }

@@ -2714,3 +2714,18 @@ fn the_mask_row_activates_its_top_component() {
     assert_eq!(h.app.ui.active_mask_component, Some(0));
     assert_ne!(h.app.ui.tool, "brush", "a gradient on top arms no brush");
 }
+
+/// With no mask selected the panel shows the settings for the next mask: what is dialed in there
+/// goes to the next new mask, whatever its tool.
+#[test]
+fn the_panel_sets_the_next_masks_settings_with_no_mask_selected() {
+    let mut h = detail("panel.masking");
+    h.step();
+    assert!(h.app.widgets.iter().any(|(id, _)| id == "maskNextSettings"), "the next mask's settings show");
+    click(&mut h, "maskResetNew");
+    assert!(h.app.session.mask_reset_new, "Reset settings on new mask turns on");
+    click(&mut h, "maskResetNew");
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.6}}));
+    exec(&mut h, "mask.add", json!({"kind": "radial"}));
+    assert_eq!(develop(&h).masks[0].adjust.exposure, 0.6);
+}

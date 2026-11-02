@@ -1,0 +1,2 @@
+### Settings for the next mask
+- With no mask selected, the Masking panel shows the effect menu and sliders as "Settings for the next mask": set the look first, then draw. A new mask, whatever its tool, starts with exactly those settings; editing a mask or applying an effect to it no longer changes them. Reset settings on new mask sets them back to zero once a mask took them. Ported from OneSlips' fork.

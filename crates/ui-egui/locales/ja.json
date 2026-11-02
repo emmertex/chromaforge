@@ -2437,5 +2437,7 @@
   "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "写真をクリックまたはドラッグして色を拾います。⇧ で追加（最大 5）、⌥-クリックで 1 つ削除、ピンをドラッグで移動",
   "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "写真をクリックしてその明るさを、範囲をドラッグしてその明るさの幅を拾います。⇧ で範囲を広げます",
   "No colour picked": "色が拾われていません",
-  "Selecting the object…": "オブジェクトを選択しています…"
+  "Selecting the object…": "オブジェクトを選択しています…",
+  "Settings for the next mask": "次のマスクの設定",
+  "Reset settings on new mask": "新しいマスクで設定をリセット"
 }

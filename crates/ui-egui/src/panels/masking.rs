@@ -736,6 +736,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             divider(ui);
             brush_settings(app, ui);
         }
+        next_mask_settings(app, ui);
         return;
     };
     let Some(m) = d.masks.iter().find(|m| m.id == mid).cloned() else { return };
@@ -794,6 +795,37 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     ui.add_space(30.0);
     let _ = Stroke::NONE;
+}
+
+/// With no mask selected: the effect menu and sliders for the next new mask (set the look first,
+/// then draw; `mask.adjust` / `mask.applyEffect` with no mask set them), and Reset Settings on New
+/// Mask.
+fn next_mask_settings(app: &mut LccApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    divider(ui);
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 0 }).show(ui, |ui| {
+        let r = ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr("Settings for the next mask")).color(t.text_dim)).wrap());
+        register(ui.ctx(), "maskNextSettings", r.rect);
+        let mut on = app.session.mask_reset_new;
+        let r = ui.checkbox(&mut on, crate::i18n::tr("Reset settings on new mask"));
+        register(ui.ctx(), "maskResetNew", r.rect);
+        if r.changed() {
+            let _ = app.run("mask.next", json!({"resetNew": on}));
+        }
+    });
+    // (id 0: no mask; the effect menu then sets the next mask's settings)
+    let shown = lcc_develop::Mask { id: 0, adjust: app.session.mask_next, ..Default::default() };
+    super::mask_effects::effect_row(app, ui, &shown);
+    for (key, title, ids) in GROUPS {
+        if !section_header(app, ui, key, title, group_changed(&shown.adjust, ids)) {
+            continue;
+        }
+        for s in LOCAL.iter().filter(|s| ids.contains(&s.id)) {
+            let v = local_get(&shown.adjust, s.id);
+            let out = slider(ui, s, v, true, None);
+            apply_slider_out(app, s, out, |app, v| app.run("mask.adjust", json!({"values": {s.id: v}})));
+        }
+    }
 }
 
 /// The mask Color Mixer's slider ids, per group (hue, sat, lum) and band (`MIXER_BANDS`' order).

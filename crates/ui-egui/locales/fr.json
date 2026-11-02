@@ -3623,5 +3623,7 @@
   "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Cliquez ou faites glisser sur la photo pour prélever des couleurs ; ⇧ en ajoute (jusqu’à 5), ⌥-clic en retire une, faites glisser une épingle pour la déplacer",
   "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Cliquez sur la photo pour prélever son ton, ou faites glisser sur une zone pour prélever ses tons ; ⇧ élargit la plage",
   "No colour picked": "Aucune couleur prélevée",
-  "Selecting the object…": "Sélection de l’objet…"
+  "Selecting the object…": "Sélection de l’objet…",
+  "Settings for the next mask": "Réglages du prochain masque",
+  "Reset settings on new mask": "Réinitialiser les réglages pour chaque nouveau masque"
 }
