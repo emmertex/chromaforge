@@ -5321,6 +5321,7 @@ dependencies = [
  "lcc-brand",
  "lcc-fetch",
  "lcc-testkit",
+ "lcc-tflite",
  "log",
  "rayon",
  "serde",

@@ -37,10 +37,16 @@ mod detector;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fetch;
 pub mod mask;
+/// Matte refinement on coverage grids (People masks).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod matte;
 #[cfg(not(target_arch = "wasm32"))]
 mod neck;
 #[cfg(not(target_arch = "wasm32"))]
 mod nn;
+/// People masks from MediaPipe's models, run by `lcc-tflite`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod people;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote;
 pub mod tokenizer;
