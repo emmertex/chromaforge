@@ -1556,6 +1556,9 @@ pub enum Dialog {
     Rename {
         template: String,
         start: u32,
+        /// What each `{text:Label}` of the template becomes (typed for this rename only).
+        #[serde(default)]
+        texts: std::collections::BTreeMap<String, String>,
     },
     /// Rename a keyword on every photo (children included).
     RenameKeyword {

@@ -231,3 +231,31 @@ fn alternatives_bar_shows_and_goes_back() {
     assert_eq!(h.app.session.visible_cloned(), vec![id]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Rename Photos: a naming preset sets the template, a `{text:…}` tag gets its own field, and the
+/// rename uses what was typed. Ported from OneSlips' LR-LIB-RENAME.
+#[test]
+fn rename_with_a_text_preset_asks_for_the_text() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
+    let first = h.app.session.visible_cloned()[0];
+    h.app.session.execute("library.select", &json!({"ids": [first.0]})).unwrap();
+    h.app.ui.dialog = Some(crate::state::Dialog::Rename { template: "{name}".into(), start: 1, texts: Default::default() });
+    h.settle(Duration::from_secs(60));
+    // the built-in "Custom Text - Number" preset is the fourth
+    let r = h.request("ui.clickWidget", json!({"id": "button:renamePreset-3"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(Duration::from_secs(60));
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "field:renameText-0"), "a field for the text tag");
+    if let Some(crate::state::Dialog::Rename { texts, template, .. }) = h.app.ui.dialog.as_mut() {
+        assert!(template.contains("{text:"), "{template}");
+        texts.insert("Name".into(), "RA".into());
+    }
+    let r = h.request("ui.dialog.confirm", json!({}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(
+        h.app.session.catalog.photo(first).is_some_and(|p| p.file_name.starts_with("RA-")),
+        "{:?}",
+        h.app.session.catalog.photo(first).map(|p| p.file_name.clone())
+    );
+}
