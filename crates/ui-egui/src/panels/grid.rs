@@ -551,13 +551,20 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
     let anchor_id = egui::Id::new("grid-anchor");
     let lay_id = (Arc::as_ptr(&lay) as usize, ids.len(), lay.height.to_bits());
     let last: Option<GridAnchor> = ui.ctx().data(|d| d.get_temp(anchor_id));
-    let mut area_ui = egui::ScrollArea::vertical().id_salt("grid-scroll").auto_shrink([false, false]);
+    // a bar that can be seen and grabbed, its handle always drawn: it says where the view is in the shoot
+    visible_scroll_bar(ui);
+    let mut area_ui = egui::ScrollArea::vertical()
+        .id_salt("grid-scroll")
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
+    let mut viewport_seen = Rect::NOTHING;
     if scroll_to.is_none()
         && let Some(y) = last.as_ref().and_then(|a| a.reflow_offset(lay_id, &ids, &lay))
     {
         area_ui = area_ui.vertical_scroll_offset(y);
     }
     area_ui.show_viewport(ui, |ui, viewport| {
+        viewport_seen = viewport;
         let next = GridAnchor::follow(last, lay_id, &ids, &lay, viewport, active);
         ui.ctx().data_mut(|d| match next {
             Some(a) => {
@@ -621,6 +628,8 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
             group_header(app, ui, run, &ids, hr, true);
         }
     });
+    // where the view is in the shoot: "1,234 / 2,233" by the scroll bar while it is dragged or the view scrolls
+    scroll_position_label(app, ui, scroll_rect, viewport_seen, total_h, &ids, &lay);
     app.caches.grid_stats.cells_visited += visited;
     app.renderer.evict_thumbs(&visible_ids, 600);
     let _ = (Color32::BLACK, StrokeKind::Inside, Stroke::NONE);
@@ -943,6 +952,76 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
         }
         None => app.renderer.request(Slot::Thumb(id), job, priority),
     }
+}
+
+/// Thickness (points) of the grid's and the filmstrip's scroll bars.
+pub const SCROLL_BAR_W: f32 = 7.5;
+
+/// A scroll bar that can be seen and grabbed: solid, [`SCROLL_BAR_W`] wide, its handle drawn in the
+/// theme's text colour (egui's default floats thin over the photos and fades out).
+pub(crate) fn visible_scroll_bar(ui: &mut egui::Ui) {
+    let s = &mut ui.style_mut().spacing.scroll;
+    *s = egui::style::ScrollStyle::solid();
+    s.bar_width = SCROLL_BAR_W;
+    s.handle_min_length = 32.0;
+    s.bar_inner_margin = 2.0;
+    s.foreground_color = true;
+    s.dormant_background_opacity = 0.25;
+    s.active_background_opacity = 0.35;
+    s.interact_background_opacity = 0.45;
+    s.dormant_handle_opacity = 0.55;
+    s.active_handle_opacity = 0.8;
+    s.interact_handle_opacity = 1.0;
+}
+
+/// A count with its thousands grouped ("2,233"; a no-break space outside English).
+pub(crate) fn group_digits(n: usize) -> String {
+    let sep = if crate::i18n::language() == crate::i18n::Locale::En { ',' } else { '\u{a0}' };
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(sep);
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// While the grid scrolls (or its bar is dragged): a label by the bar saying where the view is in
+/// the shoot ("1,234 / 2,233" and the capture time of the photos there), in the theme's colours.
+fn scroll_position_label(app: &LccApp, ui: &mut egui::Ui, area: Rect, viewport: Rect, total_h: f32, ids: &[PhotoId], lay: &GridLayout) {
+    if !viewport.is_positive() || total_h <= viewport.height() {
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    let moving_id = egui::Id::new("grid-scroll-moving");
+    let now = ui.input(|i| i.time);
+    let last_top: Option<(f32, f64)> = ui.data(|d| d.get_temp(moving_id));
+    let moved = last_top.is_none_or(|(y, _)| (y - viewport.top()).abs() > 0.5);
+    let since = if moved { now } else { last_top.map_or(now, |(_, at)| at) };
+    ui.data_mut(|d| d.insert_temp(moving_id, (viewport.top(), since)));
+    let dragging = ui.input(|i| i.pointer.primary_down())
+        && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| p.x > area.right() - 16.0 && area.contains(p));
+    if last_top.is_none() || (now - since > 0.9 && !dragging) {
+        return;
+    }
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    let Some(row) = rows_between(&lay.rows, viewport.center().y, viewport.bottom()).first() else { return };
+    let Some(id) = ids.get(row.start) else { return };
+    let mut text = format!("{} / {}", group_digits(row.start.saturating_add(1)), group_digits(ids.len()));
+    if let Some(date) = app.session.catalog.photo(*id).and_then(|p| p.captured.clone()) {
+        text.push_str(" · ");
+        text.push_str(&crate::i18n::display_time(&date));
+    }
+    let frac = (viewport.top() / (total_h - viewport.height()).max(1.0)).clamp(0.0, 1.0);
+    let y = area.top() + 18.0 + frac * (area.height() - 36.0).max(0.0);
+    let g = ui.painter().layout_no_wrap(text, t.semibold(12.0), t.text);
+    let r = Rect::from_min_size(pos2(area.right() - 22.0 - g.size().x - 16.0, y - (g.size().y + 8.0) / 2.0), g.size() + vec2(16.0, 8.0));
+    let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("grid-scroll-label")));
+    p.rect(r, 6.0, t.chrome, Stroke::new(1.0, t.divider), StrokeKind::Inside);
+    p.galley(r.min + vec2(8.0, 4.0), g, t.text);
+    register(ui.ctx(), "grid:scrollPosition", r);
 }
 
 /// The `library.select` mode of a click on a photo cell, as in Lightroom Classic: Shift = range, ⌘/Ctrl = toggle; a
@@ -1792,6 +1871,14 @@ mod tests {
 
     /// A grid's thumbnail follows a slider drag (one render at a time); under the loupe it waits
     /// for the drag to end.
+    #[test]
+    fn counts_group_their_thousands() {
+        assert_eq!(group_digits(0), "0");
+        assert_eq!(group_digits(999), "999");
+        assert_eq!(group_digits(1234), "1,234");
+        assert_eq!(group_digits(2_233_000), "2,233,000");
+    }
+
     #[test]
     fn grid_thumbnails_follow_a_drag() {
         assert!(!drag_waits(false, true, false), "a grid asks for the new picture");
