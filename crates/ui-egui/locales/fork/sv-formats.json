@@ -47,7 +47,6 @@
   "about {} minutes": "about {} minutes",
   "about {} seconds": "about {} seconds",
   "by {author} · {id}": "av {author} · {id}",
-  "{added} added, {missing} missing, {changed} read from changed sidecars": "{added} added, {missing} missing, {changed} read from changed sidecars",
   "{app} can't decode this raw variant yet ({}). You're editing the camera's embedded JPEG preview, which already includes the camera's picture style (e.g. Monochrome) and white balance.": "{app} can't decode this raw variant yet ({}). You're editing the camera's embedded JPEG preview, which already includes the camera's picture style (e.g. Monochrome) and white balance.",
   "{app} could not open its window: {e}": "{app} could not open its window: {e}",
   "{app} could not open its window: {e}\n\nThe log file has the details: {path}": "{app} could not open its window: {e}\n\nThe log file has the details: {path}",

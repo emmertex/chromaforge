@@ -46,7 +46,6 @@
   "about {} minutes": "დაახლ. {} წთ",
   "about {} seconds": "დაახლ. {} წმ",
   "by {author} · {id}": "ავტორი: {author} · {id}",
-  "{added} added, {missing} missing, {changed} read from changed sidecars": "{added} დამატებულია, {missing} აკლია, {changed} წაკითხულია შეცვლილი XMP ფაილებიდან",
   "{app} {version}": "{app} {version}",
   "{app} {version} is available (Help ▸ Check for Updates…)": "ხელმისაწვდომია {app} {version} (დახმარება ▸ განახლებების შემოწმება…)",
   "{a} on map · {b} untagged": "{a} რუკაზე · {b} მდებარეობის გარეშე",

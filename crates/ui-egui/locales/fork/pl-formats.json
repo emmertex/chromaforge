@@ -46,7 +46,6 @@
   "about {} minutes": "około {} min",
   "about {} seconds": "około {} s",
   "by {author} · {id}": "autor: {author} · {id}",
-  "{added} added, {missing} missing, {changed} read from changed sidecars": "Dodano: {added}, brakuje: {missing}, odczytano ze zmienionych plików XMP: {changed}",
   "{app} {version}": "{app} {version}",
   "{app} {version} is available (Help ▸ Check for Updates…)": "Dostępna jest wersja {app} {version} (Pomoc ▸ Sprawdź aktualizacje…)",
   "{a} on map · {b} untagged": "Na mapie: {a} · bez lokalizacji: {b}",
