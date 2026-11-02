@@ -81,6 +81,9 @@ pub mod soft_keyboard;
 pub mod softpaint;
 pub mod space_hand;
 pub mod state;
+pub mod surface;
+pub mod surface_icons;
+pub mod surface_plugin;
 pub mod sync;
 pub mod tasks;
 pub mod text_field;
@@ -264,6 +267,8 @@ mod tests_offline;
 #[cfg(test)]
 mod tests_open_lightroom;
 #[cfg(test)]
+mod tests_osd;
+#[cfg(test)]
 mod tests_panels;
 #[cfg(test)]
 mod tests_preset_favorites;
@@ -305,6 +310,8 @@ mod tests_slideshow;
 mod tests_solo_sections;
 #[cfg(test)]
 mod tests_space_hand;
+#[cfg(test)]
+mod tests_surface;
 #[cfg(test)]
 mod tests_switch_library;
 #[cfg(test)]
@@ -389,6 +396,9 @@ pub type CheckEditorFn = Box<dyn Fn(&str) -> Result<(), String>>;
 /// Something the host does with the session (web: back up or restore the library in browser
 /// storage); the work may finish asynchronously.
 pub type HostAction = Box<dyn FnMut(&mut Session) -> Result<Value, String>>;
+
+/// Start or stop the control-surface listener (see [`Services::surface_listener`]).
+pub type SurfaceListenerFn = Box<dyn FnMut(Option<u16>) -> Result<(), String>>;
 
 /// The system's dark/light appearance where egui doesn't report one (Linux desktops whose
 /// windowing layer says nothing, e.g. many Wayland compositors). The host answers from what it
@@ -543,6 +553,18 @@ pub struct Services {
     pub video_gpu: Option<Box<dyn VideoGpu>>,
     /// HDR display output (none: the window is SDR).
     pub hdr_output: Option<Box<dyn HdrOutput>>,
+    /// Where control-surface settings are kept (`control-surfaces.json`; none: in memory).
+    pub surface_store: Option<Box<dyn surface::SurfaceStore>>,
+    /// Open dialog for control-surface files (TactileBridge `settings.json`, `.lp5`, `.lcsurface`).
+    pub pick_surface_file: Option<PickFiles>,
+    /// Save dialog for an exported `.lcsurface` layout file.
+    pub save_surface_file: Option<SaveFile>,
+    /// Start (`Some(port)`) or stop (`None`) the loopback listener control surfaces connect to
+    /// (desktop only); it serves `surface.*` methods only.
+    pub surface_listener: Option<SurfaceListenerFn>,
+    /// Installs a surface's plugin into its maker's app (the the app plugin for Logi
+    /// Options+; desktop only): Settings ▸ Controls, `surface.installPlugin`.
+    pub surface_plugin: Option<std::sync::Arc<dyn surface_plugin::PluginInstaller>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -808,6 +830,8 @@ pub struct LccApp {
     /// A dialog panel asked to be closed (it cannot do it itself: the dialog frame writes the state
     /// back after the body has drawn). Taken by the dialog frame each frame.
     pub close_dialog: bool,
+    /// Control surfaces: their engine, pairing and subscribers (`surface`).
+    pub surface: surface::SurfaceHost,
 }
 
 impl LccApp {
@@ -944,6 +968,7 @@ impl LccApp {
             activity_expanded: false,
             activity_open: Default::default(),
             activity_seen_seq: 0,
+            surface: Default::default(),
         }
     }
 
@@ -959,6 +984,13 @@ impl LccApp {
     pub fn with_midi(mut self, rx: Receiver<lcc_engine::midi::Action>, reload: MidiReload) -> Self {
         self.midi_rx = Some(rx);
         self.midi_reload = Some(reload);
+        self
+    }
+
+    /// Take requests from `rx` (the desktop app's control-surface listener) without the extra
+    /// screenshot support of [`Self::with_control`].
+    pub fn with_requests(mut self, rx: Receiver<ControlRequest>) -> Self {
+        self.control_rx = Some(rx);
         self
     }
 
@@ -1665,6 +1697,7 @@ impl LccApp {
             self.last_time = now;
             self.drain_control(ctx);
             self.drain_midi(ctx);
+            surface::tick(self, ctx);
         }
         self.apply_settings(ctx);
         if !self.synthetic.is_empty() {
@@ -2160,6 +2193,7 @@ impl LccApp {
             catalog_ui::show(self, &ctx);
             panels::library_problem::show(self, &ctx);
             pick::poll(self, &ctx);
+            panels::surface_osd::show(self, &ctx);
             panels::toast(self, &ctx);
             drop_overlay::show(self, &ctx);
             self.widgets = widgets::take_registry(&ctx);
@@ -2205,6 +2239,7 @@ impl LccApp {
         panels::left::album_drag_feedback(self, &ctx);
         panels::left::section_drag_feedback(self, &ctx);
         panels::keyword_list::drag_feedback(self, &ctx);
+        panels::surface_osd::show(self, &ctx);
         panels::toast(self, &ctx);
         drop_overlay::show(self, &ctx);
         self.widgets = widgets::take_registry(&ctx);

@@ -1,5 +1,5 @@
 //! The Settings dialog (⌘,): General, Import, Folders, Performance, Display, Interface, Slideshow, Faces,
-//! AI Denoise.
+//! AI Denoise, Controls (control surfaces, `panels::controls`).
 //!
 //! Changes apply immediately (no OK/Cancel). Where they are stored:
 //! - **app settings** ([`crate::state::AppSettings`]: startup view, delete confirmation, GPU,
@@ -37,6 +37,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("connections", "Connections"),
     ("sync", "Sync"),
     ("shortcuts", "Shortcuts"),
+    ("controls", "Controls"),
 ];
 
 /// The room Settings ▸ Slideshow wants: its settings column, the gap and the live preview.
@@ -62,7 +63,12 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, tab: &mut String, max_height: f
     let t = Tokens::get(ui.ctx());
     let room = ui.ctx().content_rect().width() - 96.0;
     // the slideshow category is an editor with its preview beside it: wider
-    let wanted = if tab == "slideshow" { SLIDESHOW_COLUMN_W + 12.0 + super::slide_layout::PREVIEW_W + 40.0 } else { CONTENT_W };
+    // (Controls draws the device beside its editor: it takes more room too)
+    let wanted = match tab.as_str() {
+        "slideshow" => SLIDESHOW_COLUMN_W + 12.0 + super::slide_layout::PREVIEW_W + 40.0,
+        "controls" => CONTENT_W.max(900.0),
+        _ => CONTENT_W,
+    };
     // (and once the window was that wide, every category fills it)
     let window = ui.available_width() - SIDEBAR_W - 9.0 - 2.0 * ui.spacing().item_spacing.x;
     let content_w = (room - SIDEBAR_W - 24.0).min(wanted.max(window)).max(240.0);
@@ -104,6 +110,7 @@ pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &st
         "faces" => super::faces::settings_tab(app, ui, t),
         "denoise" => super::denoise::settings_tab(app, ui, t),
         "shortcuts" => shortcuts_tab(app, ui, t),
+        "controls" => super::controls::settings_tab(app, ui, t),
         #[cfg(not(target_arch = "wasm32"))]
         "connections" => super::connections::settings_tab(app, ui, t),
         #[cfg(not(target_arch = "wasm32"))]
@@ -1313,6 +1320,8 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         choices(ui, "settingsInfo", &[(I::Off, "Off"), (I::Basic, "Info 1"), (I::Exposure, "Info 2")], &mut app.ui.info_overlay);
     });
     hint(ui, t, crate::i18n::tr("View → View Options chooses the lines Info 1 and Info 2 show."));
+    // the overlay that reports every change (and the control surfaces' readout)
+    super::surface_osd::settings_section(app, ui, t);
 }
 
 /// View ▸ View Options (⌘J), Lightroom Classic's Loupe View tab: whether the info overlay shows and

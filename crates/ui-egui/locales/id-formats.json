@@ -1,7 +1,6 @@
 {
   " · aesthetic {:.1}": " · estetika {:.1}",
   " · eyes {:.0}%": " · mata {:.0}%",
-
   " · {skipped} skipped (file exists)": " · {skipped} dilewati (file sudah ada)",
   " · {} duplicate{} skipped": " · {} duplikat dilewati{:.0}",
   " · {} failed: {}": " · {} gagal: {}",
@@ -312,5 +311,24 @@
   "{n} done": "{n} selesai",
   ", {n} failed": ", {n} gagal",
   "{n} failed": "{n} gagal",
-  "Show each photo ({n})": "Tampilkan setiap foto ({n})"
+  "Show each photo ({n})": "Tampilkan setiap foto ({n})",
+  "Imported into the profile “{name}”": "Diimpor ke profil “{name}”",
+  "Label: {name}": "Label: {name}",
+  "Last import: {mapped} brought over, {dropped} left out": "Impor terakhir: {mapped} dibawa, {dropped} ditinggalkan",
+  "Listening on 127.0.0.1:{port}": "Mendengarkan di 127.0.0.1:{port}",
+  "{name} asks to control {app}: see Settings, Controls": "{name} meminta izin mengendalikan {app}: lihat Pengaturan, Kontrol",
+  "{name} asks to pair. Code: {code}": "{name} meminta pemasangan. Kode: {code}",
+  "Now: {context}": "Sekarang: {context}",
+  "{n} stars": "{n} bintang",
+  "on {n} photos": "pada {n} foto",
+  "Paired: {name}": "Terpasang: {name}",
+  "Plugin {version} installed": "Plugin {version} terpasang",
+  "Profile {name}": "Profil {name}",
+  "Profile {name} applied to {n} photos": "Profil {name} diterapkan ke {n} foto",
+  "Redo: {what}": "Ulangi: {what}",
+  "Saved {path}": "Disimpan: {path}",
+  "Show page {name}": "Tampilkan halaman {name}",
+  "Switch to profile {name}": "Beralih ke profil {name}",
+  "This action doesn't use: {keys}. Choose Preset above to put a preset on this key.": "Tindakan ini tidak memakai: {keys}. Pilih Preset di atas untuk menaruh preset pada tombol ini.",
+  "Undo: {what}": "Urungkan: {what}"
 }

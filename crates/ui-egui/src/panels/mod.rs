@@ -10,6 +10,7 @@ pub mod collections;
 pub mod compare;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod connections;
+pub mod controls;
 pub mod crop_overlay;
 pub mod denoise;
 pub mod detail;
@@ -58,6 +59,7 @@ pub mod slide_templates;
 pub mod slide_titles;
 pub mod slideshow;
 pub mod strip;
+pub mod surface_osd;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tether_bar;
 pub mod topbar;

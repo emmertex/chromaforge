@@ -257,6 +257,12 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
         // video is native-only
         video_gpu: None,
         hdr_output: None,
+        // no control surfaces in the browser
+        surface_store: None,
+        pick_surface_file: None,
+        save_surface_file: None,
+        surface_listener: None,
+        surface_plugin: None,
     }
 }
 

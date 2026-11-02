@@ -205,6 +205,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.none", "No Tool", None, ""),
     // brush size / feather of the active brush (Masking brush, Remove tool and its selected spot)
     ("brush.smaller", "Decrease Brush Size", Some("["), "Window>Tools"),
+    // the brush's Erase mode; {on} sets it (a console key holds it like Alt), none toggles
+    ("brush.erase", "Erase", None, ""),
     ("brush.larger", "Increase Brush Size", Some("]"), "Window>Tools"),
     ("brush.featherLess", "Decrease Brush Feather", Some("Shift+["), "Window>Tools"),
     ("brush.featherMore", "Increase Brush Feather", Some("Shift+]"), "Window>Tools"),
@@ -368,6 +370,30 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.captureTime", "Edit Capture Time…", None, "Metadata"),
     ("photo.tagFromTracklog", "Auto-Tag from Tracklog…", None, "Metadata"),
     ("app.exportPrevious", "Export with Previous", Some("Cmd+Alt+Shift+E"), "File"),
+    // control surfaces (`surface`): what their keys run, and their settings for agents
+    ("surface.maskPrevious", "Select Previous Mask", None, ""),
+    ("surface.maskNext", "Select Next Mask", None, ""),
+    ("surface.dialogConfirm", "Confirm Dialog", None, ""),
+    ("surface.dialogCancel", "Cancel Dialog", None, ""),
+    ("surface.pageNext", "Next Surface Page", None, ""),
+    ("surface.pagePrevious", "Previous Surface Page", None, ""),
+    ("surface.page", "Show Surface Page", None, ""),
+    ("surface.profile", "Control Surface Profile", None, ""),
+    ("surface.applyToSelected", "Dials Change All Selected Photos", None, ""),
+    ("surface.followContext", "Surface Pages Follow the App", None, ""),
+    ("surface.input", "Control Surface Input", None, ""),
+    ("surface.state", "Control Surface State", None, ""),
+    ("surface.settings", "Control Surface Settings", None, ""),
+    ("surface.forget", "Forget a Paired Surface", None, ""),
+    ("surface.import", "Import Control Surface Setup", None, ""),
+    ("surface.export", "Export Control Surface Layout", None, ""),
+    ("surface.plugin", "Surface Plugin Status", None, ""),
+    ("surface.installPlugin", "Install the Surface Plugin", None, ""),
+    ("surface.uninstallPlugin", "Remove the Surface Plugin", None, ""),
+    // the on-screen overlay (`panels::surface_osd`): its settings, for keys and agents
+    ("osd.settings", "Overlay Settings", None, ""),
+    ("osd.mode", "Overlay: What It Shows", None, ""),
+    ("osd.state", "Overlay State", None, ""),
 ];
 
 fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
@@ -611,6 +637,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 Err(e)
             }
         });
+    }
+    if id.starts_with("surface.")
+        && let Some(r) = crate::surface::command(app, id, p)
+    {
+        return Some(r);
+    }
+    if id.starts_with("osd.") {
+        return Some(crate::panels::surface_osd::command(app, id, p));
     }
     if let Some(language) = language_from_command(id) {
         app.ui.language = language;
@@ -1401,6 +1435,17 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 Some(other) => return Some(Err(format!("brush.preset: `slot` is \"a\" or \"b\", not {other:?}"))),
             };
             Ok(switch_brush_preset(app, want))
+        }
+        "brush.erase" => {
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.brush_erase);
+            if on && app.ui.tool != "brush" {
+                // erasing needs the brush: pick it up on the selected mask
+                if let Err(e) = app.run("tool.brush", json!({})) {
+                    return Some(Err(e));
+                }
+            }
+            app.ui.brush_erase = on;
+            Ok(json!({"on": on}))
         }
         "brush.smaller" | "brush.larger" | "brush.featherLess" | "brush.featherMore" => {
             let (k, df) = match id {
@@ -2941,6 +2986,10 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "app.showInFolders" => show_in_folders_enabled(app, None),
         "app.openSamModelFolder" => app.session.segmenter.dir.is_some() && app.services.open_with.is_some(),
         "dialog.aiModels" => lcc_engine::segment::Segmenter::AVAILABLE,
+        "surface.maskPrevious" | "surface.maskNext" => {
+            app.session.active().and_then(|id| app.session.develop_of(id)).is_some_and(|d| !d.masks.is_empty())
+        }
+        "surface.dialogConfirm" | "surface.dialogCancel" => app.ui.dialog.is_some(),
         "file.exportPresets" => app.session.presets.iter().any(|p| !p.builtin),
         // a raw on disk has a camera colour to export; any photo has a look
         "file.exportCameraProfile" => app

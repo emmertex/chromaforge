@@ -21,6 +21,7 @@ pub mod availability;
 pub mod bounded_read;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
+pub mod change_report;
 pub mod cmd;
 pub mod colour_export;
 pub mod config;
@@ -225,6 +226,9 @@ pub struct Interaction {
     /// photo shows was fitted by Constrain Crop, and the final commit starts again from the original
     /// crop, so Auto Sync carries the edit and not the active photo's fitted crop.
     pub crop_edited: bool,
+    /// Other photos edited live along with the active one (a multi-photo edit: each nudged from
+    /// its own value as it goes), with their settings before. They join the same undo step.
+    pub others: Vec<(PhotoId, Arc<DevelopSettings>)>,
 }
 
 /// The most photos an edit may touch for the view to follow it photo by photo; a larger edit is worked out whole.
@@ -310,6 +314,12 @@ pub struct Session {
     /// Exact filesystem repairs from discarded history; catalog inverses stay discarded.
     pub(crate) pending_sidecar_repairs: Vec<rename::SidecarMove>,
     pub interaction: Option<Interaction>,
+    /// What the last command changed, for the on-screen overlay ([`change_report`]).
+    pub last_change: Option<change_report::ChangeReport>,
+    change_seq: u64,
+    /// Live changes applied without an undo step (a drag in progress): counted, so the command
+    /// that made one reports it.
+    silent_changes: u64,
     /// Set by a command whose change must not rewrite the photo's XMP sidecar even with auto-write on
     /// (a catalog-only edit of data the sidecar writer does not emit); consumed when the command ends.
     pub(crate) skip_auto_write: bool,
@@ -596,6 +606,9 @@ impl Session {
             redo: Vec::new(),
             pending_sidecar_repairs: Vec::new(),
             interaction: None,
+            last_change: None,
+            change_seq: 0,
+            silent_changes: 0,
             skip_auto_write: false,
             stems: Default::default(),
             folder_metadata: None,
@@ -745,10 +758,17 @@ impl Session {
     fn run_command(&mut self, id: &str, journal: Option<&Value>, f: impl FnOnce(&mut Session) -> Result<Value>) -> Result<Value> {
         let log_start = self.pending_log.len();
         let was_active = self.active();
+        let (commits_before, silent_before) = (self.commits, self.silent_changes);
         self.depth += 1;
         // last-resort guard: a panic in a command is that command's error, not a crash
         let r = guard::catch(&format!("`{id}`"), || f(self)).unwrap_or_else(|e| Err(EngineError::Other(e)));
         self.depth -= 1;
+        // what it changed, for the overlay (before auto versions and follow-ups add their own)
+        if self.depth == 0
+            && let (Ok(v), Some(params)) = (&r, journal)
+        {
+            self.report_change(id, params, v, log_start, commits_before, silent_before);
+        }
         if self.depth == 0 && was_active.is_some() && self.active() != was_active {
             self.previous_active = was_active;
             if let Some(left) = was_active {
@@ -785,6 +805,49 @@ impl Session {
             }
         }
         r
+    }
+
+    /// Fill [`Session::last_change`] when command `id` changed something the user sees: the ops
+    /// it logged since `log_start`, or live (undo-less) changes inside an interaction.
+    fn report_change(&mut self, id: &str, params: &Value, result: &Value, log_start: usize, commits_before: u64, silent_before: u64) {
+        if change_report::is_background(id) {
+            return;
+        }
+        let logged = self.pending_log.get(log_start..).unwrap_or_default();
+        let (photos, kind, live) = match change_report::summarize(logged) {
+            Some((n, k)) => (n, k, false),
+            None if self.silent_changes != silent_before => {
+                // a drag or a turning dial: the active photo, and the ones moving along
+                let n = self.interaction.as_ref().map_or(1, |i| 1 + i.others.len());
+                (n, change_report::ChangeKind::Develop, self.interaction.is_some())
+            }
+            None => return,
+        };
+        let label = if self.commits != commits_before {
+            self.undo.last().map(|e| e.label.clone())
+        } else if live {
+            self.interaction.as_ref().map(|i| i.label.clone())
+        } else {
+            None
+        };
+        let label = label.or_else(|| find_command(id).map(|c| c.label.to_string())).unwrap_or_else(|| id.to_string());
+        let detail = ["undone", "redone"].iter().find_map(|k| result.get(*k).and_then(Value::as_str)).map(str::to_string);
+        // the end of a drag commits the value it was moving: still that value
+        let control = change_report::control_of(id, params).or_else(|| {
+            (id == "develop.endInteraction").then(|| self.last_change.as_ref().filter(|c| c.live).and_then(|c| c.control.clone())).flatten()
+        });
+        self.change_seq = self.change_seq.wrapping_add(1);
+        self.last_change = Some(change_report::ChangeReport {
+            seq: self.change_seq,
+            command: id.to_string(),
+            params: params.clone(),
+            label,
+            photos,
+            kind,
+            control,
+            detail,
+            live,
+        });
     }
 
     pub fn commands(&self) -> Vec<CommandInfo> {
@@ -959,6 +1022,7 @@ impl Session {
     /// Apply without recording undo (interactive previews).
     fn apply_silent(&mut self, op: Op) -> Result<()> {
         self.catalog.apply(op)?;
+        self.silent_changes = self.silent_changes.wrapping_add(1);
         Ok(())
     }
 
@@ -1282,18 +1346,29 @@ impl Session {
     }
 
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
+        self.begin_interaction_with(label, &[])
+    }
+
+    /// Begin an interaction that also edits `others` live (`develop.adjust` nudges each from its
+    /// own value as the active photo moves; the end commits all of them as one undo step).
+    pub fn begin_interaction_with(&mut self, label: &str, others: &[PhotoId]) -> Result<()> {
         if self.interaction.is_some() {
             self.end_interaction()?;
         }
         let id = self.active().ok_or_else(|| EngineError::Other("no active photo".into()))?;
         let original = self.develop_of(id).unwrap_or_default();
-        self.interaction = Some(Interaction { label: label.into(), photo: id, original, crop_edited: false });
+        let mut seen = std::collections::HashSet::new();
+        let others = others.iter().filter(|x| **x != id && seen.insert(**x)).filter_map(|x| self.develop_of(*x).map(|d| (*x, d))).collect();
+        self.interaction = Some(Interaction { label: label.into(), photo: id, original, crop_edited: false, others });
         Ok(())
     }
 
     /// Commit the interaction as one undo step (no-op if nothing changed).
     pub fn end_interaction(&mut self) -> Result<()> {
         let Some(i) = self.interaction.take() else { return Ok(()) };
+        if !i.others.is_empty() {
+            return self.end_multi_interaction(i);
+        }
         let Some(cur) = self.develop_of(i.photo) else { return Ok(()) };
         if *cur == *i.original {
             return Ok(());
@@ -1309,8 +1384,50 @@ impl Session {
         self.set_develop(i.photo, last, &i.label)
     }
 
+    /// The end of a multi-photo interaction: every photo it changed, in one undo step (Auto Sync
+    /// doesn't run on top: the other photos were edited along already).
+    fn end_multi_interaction(&mut self, i: Interaction) -> Result<()> {
+        let mut all = vec![(i.photo, i.original.clone())];
+        all.extend(i.others.iter().cloned());
+        let mut ops = Vec::new();
+        for (id, original) in all {
+            let Some(cur) = self.develop_of(id) else { continue };
+            if *cur == *original {
+                continue;
+            }
+            self.apply_silent(Op::SetDevelop { id, settings: original.clone(), label: i.label.clone(), edited: None })?;
+            let mut settings = (*cur).clone();
+            // as in a one-photo interaction: a crop nobody edited goes back to the original's
+            if !i.crop_edited {
+                settings.crop.geometry = original.crop.geometry;
+            }
+            if let Some(op) = self.develop_op(id, settings, &i.label) {
+                ops.push(op);
+            }
+        }
+        match ops.len() {
+            0 => Ok(()),
+            1 => self.commit(&i.label, ops.remove(0)),
+            _ => self.commit(&i.label, Op::Batch { ops }),
+        }
+    }
+
+    /// The photos a running interaction edits along with the active one.
+    pub fn interaction_others(&self) -> Vec<PhotoId> {
+        self.interaction.as_ref().map(|i| i.others.iter().map(|(id, _)| *id).collect()).unwrap_or_default()
+    }
+
+    /// Set a photo's settings without an undo step while an interaction edits it along.
+    pub fn set_develop_silent(&mut self, id: PhotoId, settings: DevelopSettings, label: &str) -> Result<()> {
+        let now = (self.clock)();
+        self.apply_silent(Op::SetDevelop { id, settings: Arc::new(settings), label: label.into(), edited: Some(now) })
+    }
+
     pub fn cancel_interaction(&mut self) -> Result<()> {
         if let Some(i) = self.interaction.take() {
+            for (id, original) in i.others {
+                self.apply_silent(Op::SetDevelop { id, settings: original, label: i.label.clone(), edited: None })?;
+            }
             self.apply_silent(Op::SetDevelop { id: i.photo, settings: i.original, label: i.label, edited: None })?;
         }
         Ok(())

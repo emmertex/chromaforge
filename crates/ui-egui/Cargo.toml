@@ -33,6 +33,7 @@ lcc-classic-slideshow = { workspace = true }
 lcc-book = { workspace = true }
 lcc-text = { workspace = true }
 lcc-webgallery = { workspace = true }
+lcc-surface = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

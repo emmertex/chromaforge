@@ -21,6 +21,30 @@ fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettin
     ok()
 }
 
+/// `d` (photo with source `info`, crop frame `dims`) with control `ctl` moved by `delta` from its
+/// own value: white balance on the photo's own scale (As Shot read as the file's white first),
+/// clamped to the control's range. Quick Develop and the live multi-photo edit use it, so every
+/// photo moves by the same amount whatever its starting point.
+fn nudge(info: &lcc_pipeline::SourceInfo, dims: (f64, f64), d: &DevelopSettings, ctl: &str, delta: f64, default: f64) -> DevelopSettings {
+    let mut nd = d.clone();
+    let wb = ctl == "wb.temp" || ctl == "wb.tint";
+    if wb {
+        lcc_pipeline::local::normalize_wb(&mut nd, info);
+        if nd.wb.mode == WbMode::AsShot {
+            nd.wb.temp = info.as_shot_temp;
+            nd.wb.tint = info.as_shot_tint;
+        }
+    }
+    let before = nd.crop.geometry;
+    let v = controls::get(&nd, ctl).unwrap_or(default);
+    controls::set(&mut nd, ctl, v + delta);
+    refit_crop_angle(ctl == CROP_ANGLE, before, &mut nd, dims);
+    if wb {
+        nd.wb.mode = WbMode::Custom;
+    }
+    nd
+}
+
 fn section_param(p: &Value, c: &str) -> Result<Section> {
     let v = p.get("section").cloned().ok_or_else(|| bad(c, "missing `section`"))?;
     serde_json::from_value(v).map_err(|e| bad(c, e.to_string()))
@@ -353,20 +377,17 @@ pub fn specs() -> Vec<CommandSpec> {
             let id = active(s, "develop.adjust")?;
             let (info, dims) = (s.source_info(id), crop_dims(s, id));
             edit(s, "develop.adjust", spec.label, |d| {
-                let before = d.crop.geometry;
-                if c == "wb.temp" || c == "wb.tint" {
-                    lcc_pipeline::local::normalize_wb(d, &info);
-                    if d.wb.mode == WbMode::AsShot {
-                        d.wb.temp = info.as_shot_temp;
-                        d.wb.tint = info.as_shot_tint;
-                    }
-                    d.wb.mode = WbMode::Custom;
-                }
-                let v = controls::get(d, &c).unwrap_or(spec.default);
-                controls::set(d, &c, v + delta);
-                refit_crop_angle(c == CROP_ANGLE, before, d, dims);
+                *d = nudge(&info, dims, d, &c, delta, spec.default);
                 Ok(())
-            })
+            })?;
+            // a multi-photo interaction (develop.beginInteraction {ids}): the other photos move along,
+            // live, each from its own value
+            for other in s.interaction_others() {
+                let Some(d) = s.develop_of(other) else { continue };
+                let nd = nudge(&s.source_info(other), crop_dims(s, other), &d, &c, delta, spec.default);
+                s.set_develop_silent(other, nd, spec.label)?;
+            }
+            ok()
         }),
         cmd!("develop.merge", "Apply Settings JSON", [], None, "{settings: partial DevelopSettings JSON, label?}", has_active, |s, p| {
             let partial = p.get("settings").cloned().ok_or_else(|| bad("develop.merge", "missing settings"))?;
@@ -1145,23 +1166,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     .into_iter()
                     .filter_map(|id| s.develop_of(id).map(|d| (id, d)))
                     .filter_map(|(id, d)| {
-                        let mut nd = (*d).clone();
-                        if ctl == "wb.temp" || ctl == "wb.tint" {
-                            // each photo on its own scale: Kelvin (an old relative value converted first) or relative
-                            let info = s.source_info(id);
-                            lcc_pipeline::local::normalize_wb(&mut nd, &info);
-                            if nd.wb.mode == WbMode::AsShot {
-                                nd.wb.temp = info.as_shot_temp;
-                                nd.wb.tint = info.as_shot_tint;
-                            }
-                        }
-                        let before = nd.crop.geometry;
-                        let v = controls::get(&nd, &ctl).unwrap_or(spec.default);
-                        controls::set(&mut nd, &ctl, v + delta);
-                        refit_crop_angle(ctl == CROP_ANGLE, before, &mut nd, crop_dims(s, id));
-                        if ctl == "wb.temp" || ctl == "wb.tint" {
-                            nd.wb.mode = WbMode::Custom;
-                        }
+                        // each photo on its own scale: Kelvin (an old relative value converted first) or relative
+                        let nd = nudge(&s.source_info(id), crop_dims(s, id), &d, &ctl, delta, spec.default);
                         s.develop_op(id, nd, &label)
                     })
                     .collect();
@@ -1597,10 +1603,23 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         // ---- interactions (slider drags, brush strokes)
-        cmd!("develop.beginInteraction", "Begin Interaction", [], None, "{label}", has_active, |s, p| {
-            s.begin_interaction(str_param(p, "label").unwrap_or("Edit"))?;
-            ok()
-        }),
+        cmd!(
+            "develop.beginInteraction",
+            "Begin Interaction",
+            [],
+            None,
+            "{label, ids?} — ids: more photos develop.adjust moves along, live (a multi-photo edit; one undo step)",
+            has_active,
+            |s, p| {
+                let ids: Vec<PhotoId> = p
+                    .get("ids")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_u64).take(100_000).map(PhotoId).collect())
+                    .unwrap_or_default();
+                s.begin_interaction_with(str_param(p, "label").unwrap_or("Edit"), &ids)?;
+                ok()
+            }
+        ),
         cmd!("develop.endInteraction", "End Interaction", [], None, "{}", always, |s, _| {
             s.end_interaction()?;
             ok()

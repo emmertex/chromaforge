@@ -1,5 +1,5 @@
 //! Settings (fork-owned), the one Settings screen of every layout: a full-window sheet with an icon
-//! rail of seven sections down its left side and the open section's rows beside it.
+//! rail of eight sections down its left side and the open section's rows beside it.
 //!
 //! - With room (a window at least [`ROOMY`] points wide: desktops, tablets) the rail always shows
 //!   each section's name and a search field; Back (the ‹ button, Esc, Android's Back) closes
@@ -7,8 +7,8 @@
 //! - On a narrow window the rail is icons only while a section is open. Back widens it to show the
 //!   names (and the search field); Back again closes Settings. A tap on an icon switches section.
 //!
-//! The twelve tabs of the old dialog become seven sections (General, Library, Import, Editing,
-//! Display & Speed, Sync, Shortcuts; Slideshow only in the Classic layout, which has that module).
+//! The twelve tabs of the old dialog become eight sections (General, Library, Import, Editing,
+//! Display & Speed, Sync, Shortcuts, Controls; Slideshow only in the Classic layout, which has that module).
 //! Each section shows the old tabs' own rows ([`crate::panels::settings::tab_body`]), so every
 //! setting keeps its control and its command.
 //!
@@ -82,6 +82,13 @@ const SECTIONS: &[Section] = &[
         words: "devices peers immich server api key connections keychain",
     },
     Section { key: "shortcuts", label: "Shortcuts", icon: Icon::Help, tabs: &["shortcuts"], words: "keyboard keymap keys" },
+    Section {
+        key: "controls",
+        label: "Controls",
+        icon: Icon::Sliders,
+        tabs: &["controls"],
+        words: "control surfaces hardware console dial dials knob keys keypad dialpad actions ring logi logitech mx creative loupedeck tactilebridge plugin pairing",
+    },
     Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"], words: "slide duration fade playback export" },
 ];
 
@@ -98,7 +105,8 @@ pub struct SettingsScreen {
 }
 
 fn shown(app: &LccApp, s: &Section) -> bool {
-    if cfg!(target_arch = "wasm32") && s.key == "sync" {
+    // the browser has no sync and no control surfaces
+    if cfg!(target_arch = "wasm32") && matches!(s.key, "sync" | "controls") {
         return false;
     }
     // Slideshow is a Classic module: its settings are Classic's
