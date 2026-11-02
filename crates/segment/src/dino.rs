@@ -80,7 +80,6 @@ pub struct AttnNames {
 }
 
 /// EoMT's names (`EomtAttention`).
-#[allow(dead_code)] // for the EoMT scene model (not ported: licence pending)
 pub const EOMT_ATTN: AttnNames = AttnNames { q: "attention.q_proj", k: "attention.k_proj", v: "attention.v_proj", o: "attention.out_proj" };
 /// The Hugging Face DINOv2 checkpoint names (`Dinov2SelfAttention` + `Dinov2SelfOutput`).
 pub const DINOV2_ATTN: AttnNames =
@@ -495,7 +494,6 @@ impl Conv3x3 {
 
 /// A depthwise 3 × 3 convolution with padding 1 and no bias on `[1, C, H, W]`
 /// (`weight`: `[C, 1, 3, 3]`).
-#[allow(dead_code)] // for the EoMT scene model (not ported: licence pending)
 pub fn depthwise3x3(x: &Tensor, weight: &Tensor) -> Result<Tensor> {
     let (b, c, h, w) = x.dims4()?;
     if b != 1 || weight.dims() != [c, 1, 3, 3] {
@@ -528,7 +526,6 @@ pub fn depthwise3x3(x: &Tensor, weight: &Tensor) -> Result<Tensor> {
 }
 
 /// Layer norm over the channels of `[1, C, H, W]` (`LayerNorm2d`), in parallel on the CPU.
-#[allow(dead_code)] // for the EoMT scene model (not ported: licence pending)
 pub fn layer_norm2d(x: &Tensor, weight: &Tensor, bias: &Tensor, eps: f64) -> Result<Tensor> {
     let (b, c, h, w) = x.dims4()?;
     if !x.device().is_cpu() || b != 1 || c == 0 {

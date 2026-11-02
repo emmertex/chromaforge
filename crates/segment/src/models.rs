@@ -5,7 +5,7 @@
 //! folder, only after the user asked for it (the app names the model, its size and its licence
 //! first). SAM 3 (gated, SAM License) and BiRefNet keep their own download paths ([`crate::fetch`]).
 //!
-//! Both models here are Apache-2.0 and ungated; their default download location is the
+//! The models here are Apache-2.0 or MIT and ungated; their default download location is the
 //! publisher's own Hugging Face repository, pinned to a commit (licences checked on the model
 //! cards and repositories on 2026-10-14 by OneSlips, and again on 2026-11-03).
 
@@ -39,6 +39,8 @@ pub struct ModelInfo {
     /// address with the model. The model works without them, so they are not part of
     /// [`ModelInfo::installed_in`].
     pub companions: &'static [Companion],
+    /// Credit for what the model was trained on, shown with its licence (empty: none needed).
+    pub credit: &'static str,
 }
 
 /// An optional file that comes with a model (see [`ModelInfo::companions`]).
@@ -119,6 +121,7 @@ pub const SAM2: ModelInfo = ModelInfo {
     mirrors_env: "SAM2_MIRRORS",
     offered: true,
     companions: &[],
+    credit: "",
 };
 
 pub const DEPTH: ModelInfo = ModelInfo {
@@ -134,6 +137,38 @@ pub const DEPTH: ModelInfo = ModelInfo {
     mirrors_env: "DEPTH_MIRRORS",
     offered: false,
     companions: &[],
+    credit: "",
+};
+
+/// EoMT-S 2× COCO panoptic, 640 px (`tue-mps/coco_panoptic_eomt_small_640_2x`); `config.json`
+/// is checked by the loader (the right architecture).
+pub const SCENE_FILES: &[FileSpec<'static>] = &[
+    FileSpec { name: "config.json", size: Some(6_426), sha256: Some("de222958bcd41d63e57059ffb42bfedbe6dddc6f8ac61529af8558e86667d2cc"), max: 6_426 },
+    FileSpec {
+        name: "model.safetensors",
+        size: Some(95_927_796),
+        sha256: Some("516b0b23acace639cc27739593881dda1c0010b3bec06aae138b615717fb8855"),
+        max: 95_927_796,
+    },
+];
+
+/// EoMT-S (MIT code and weights, by the TU/e Mobile Perception Systems lab), trained on COCO
+/// panoptic: its annotations are CC BY 4.0, credited with the model (maintainer decision
+/// 2026-11-03: offered as an on-request download).
+pub const SCENE: ModelInfo = ModelInfo {
+    key: "scene",
+    dir_name: "eomt-s-coco",
+    title: "EoMT scene",
+    purpose: "Sky, Landscape and People masks: what is sky, water, plants or a person",
+    files: SCENE_FILES,
+    license_name: "MIT",
+    license_url: "https://github.com/tue-mps/eomt/blob/master/LICENSE",
+    page_url: "https://huggingface.co/tue-mps/coco_panoptic_eomt_small_640_2x",
+    default_mirrors: &["https://huggingface.co/tue-mps/coco_panoptic_eomt_small_640_2x/resolve/10f5326794a8ce7e0e975791033ae1c13aec3767"],
+    mirrors_env: "SCENE_MIRRORS",
+    offered: true,
+    companions: &[],
+    credit: "Trained on COCO (cocodataset.org); COCO annotations © the COCO Consortium, CC BY 4.0",
 };
 
 /// A pinned file of [`lcc_tflite::models`] as a download spec.
@@ -164,6 +199,7 @@ pub const PEOPLE: ModelInfo = ModelInfo {
     mirrors_env: "PEOPLE_MIRRORS",
     offered: true,
     companions: &[],
+    credit: "",
 };
 
 /// Faces with their landmarks: Detect Faces, the face scan, and the parts of a face Retouch works on.
@@ -181,10 +217,11 @@ pub const FACE: ModelInfo = ModelInfo {
     offered: true,
     // BlazeFace full range, for the small faces of group photos
     companions: &[Companion { file: spec(TF_FACE_FAR), base: "https://storage.googleapis.com/mediapipe-assets" }],
+    credit: "",
 };
 
 /// Every model of this registry, in display order.
-pub const MODELS: &[&ModelInfo] = &[&PEOPLE, &FACE, &SAM2, &DEPTH];
+pub const MODELS: &[&ModelInfo] = &[&PEOPLE, &FACE, &SAM2, &SCENE, &DEPTH];
 
 /// The model with command key `key`.
 pub fn by_key(key: &str) -> Option<&'static ModelInfo> {
