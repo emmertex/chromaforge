@@ -1245,7 +1245,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "library.deleteRejected",
             "Delete Rejected Photos",
-            ["Photo"],
+            ["Photo", "File"],
             None,
             "{files?: keep (default) | recycle, confirm?: bool} — every rejected photo of the view in one go: keep removes them from the library to Recently Deleted (one undo step, the files stay on disk); recycle moves their files (and the sidecars that are theirs alone) to the system trash as Delete from Disk does, and needs confirm: true → {deleted, files}",
             always,

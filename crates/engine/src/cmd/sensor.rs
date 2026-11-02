@@ -532,7 +532,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             query "camera.pixelMap.rebuild",
             "Rebuild Hot Pixel Map",
-            ["Photo", "Camera Sensor"],
+            ["Photo", "Develop Settings"],
             None,
             "{body?: bodyKey (only that body's photos), ids?: [photoId] (default: the selection, else the photos in view), clear?: bool (true: start the map afresh), wait?: bool} → job {what, total, done, running, bodies…} — reads the raws in the background (activity row \"Mapping hot pixels\"); a pixel found in 3 photos from 3 different 5-minute periods is confirmed and fixed on every photo of the body",
             always,
@@ -577,7 +577,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             query "camera.dustMap.rebuild",
             "Rebuild Sensor Dust Map",
-            ["Photo", "Camera Sensor"],
+            ["Photo", "Develop Settings"],
             None,
             "{body?, ids?, clear?: bool (true), sensitivity?: 0..100 (50), wait?} → job — analyses the photos for dust in the background, oldest first (activity row \"Mapping sensor dust\"); a spot in 3 photos over 2 periods is confirmed",
             always,
@@ -636,7 +636,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "spot.findDust",
             "Remove Dust",
-            ["Photo", "Camera Sensor"],
+            ["Photo", "Develop Settings"],
             None,
             "{sensitivity?: 0..100 (50), add?: bool (true), useMap?: bool (true: add the camera body's known dust, re-checked on this photo), replace?: bool (true: earlier auto-dust spots go), ids?: [photoId] (several: in the background, activity row \"Removing dust\"; default: the selection when more than one, else the active photo), wait?: bool} → one photo: {spots: [{x, y, size, mode, confirmed, confidence}], added, found, confirmed, fromMap, skippedOnDetail, body, learnt}; several: job — find sensor dust (small soft dark spots on smooth areas) and heal each (or even it out: large faint ones); the spots are tagged auto dust; the photo also teaches its body's dust map",
             has_active,

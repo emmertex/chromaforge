@@ -476,6 +476,12 @@ fn transform_is_a_section_of_the_edit_panel() {
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
     assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit);
+    // the section's rows can sit below the fold (more sections above it): scroll the panel to them
+    if let Some((_, panel)) = h.app.widgets.iter().find(|(w, _)| w == "panel:right_panel").cloned() {
+        h.request("ui.move", json!({"x": panel.center().x, "y": panel.center().y}), T);
+        h.request("ui.scroll", json!({"dy": -300.0}), T);
+        h.settle(SETTLE);
+    }
     // (Guided: the other modes analyse the photo's pixels, which this harness doesn't decode)
     let r = h.request("ui.clickWidget", json!({"id": "button:upright-guided"}), T);
     assert_eq!(r["ok"], true, "{r}");

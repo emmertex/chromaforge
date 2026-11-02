@@ -149,7 +149,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "photo.showAlternatives",
             "Show Alternatives",
-            ["Photo"],
+            ["Photo", "Stack"],
             None,
             "{id?, around?: n (default 5)} → {original, photos: [{id, file, inLibrary}]} — the frames around the photo in its folder on disk (a burst's neighbours, imported or not), shown as a view of that folder with the photo selected; photo.importAlternatives brings chosen ones in, photo.closeAlternatives goes back",
             always,

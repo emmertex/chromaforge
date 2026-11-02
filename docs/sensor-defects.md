@@ -66,7 +66,7 @@ corrected or learnt from that photo.
 - **Commands:** `camera.pixelMap.status {body?|"all", list?}`, `camera.pixelMap.rebuild {body?, ids?, clear?, wait?}`
   (reads the photos in the background, activity row *Mapping hot pixels*), `camera.pixelMap.learn`,
   `camera.pixelMap.clear {body}`, `photo.pixelDefects {id?}` (what a photo's decode corrects, read-only).
-  Photo ▸ Camera Sensor ▸ Rebuild Hot Pixel Map.
+  Photo ▸ Develop Settings ▸ Rebuild Hot Pixel Map.
 
 ### Dark frames (`crates/raw/src/darkframe.rs`)
 
@@ -93,7 +93,7 @@ All levels are normalised: 0 = the file's black level, 1 = its white level.
 
 ## Sensor dust
 
-**Remove Dust** (Remove panel; Photo ▸ Camera Sensor ▸ Remove Dust; `spot.findDust`) on the active photo, or on a
+**Remove Dust** (Remove panel; Photo ▸ Develop Settings ▸ Remove Dust; `spot.findDust`) on the active photo, or on a
 selection in the background (activity row *Removing dust*):
 
 1. The photo is rendered uncropped (≈1600 px) without its earlier auto-dust spots, and the dust detector
