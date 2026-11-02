@@ -147,7 +147,7 @@ fn banded_full_size_render_matches() {
     let src = scene(3, w, h);
     let mut s = DevelopSettings::default();
     typical(&mut s);
-    // the value-noise grain the GPU draws (process V7's particle grain renders on the CPU)
+    // the value-noise grain (processes V1–V6)
     s.process = lcc_develop::Process::V6.version();
     s.grain.amount = 30.0;
     s.vignette.amount = -30.0;
@@ -242,8 +242,15 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.vignette.amount = -40.0;
             s.vignette.style = VignetteStyle::PaintOverlay;
         }),
+        ("particle grain (V7)", |s| {
+            s.process = lcc_develop::Process::V7.version();
+            s.grain.amount = 50.0;
+            s.grain.size = 40.0;
+            s.grain.roughness = 60.0;
+            s.grain.color = 30.0;
+        }),
         ("grain", |s| {
-            // the value-noise grain the GPU draws (process V7's particle grain renders on the CPU)
+            // processes V1–V6 keep their value-noise grain
             s.process = lcc_develop::Process::V6.version();
             s.grain.amount = 50.0;
             s.grain.size = 40.0;
@@ -933,7 +940,7 @@ fn saturated(s: &mut DevelopSettings) {
     s.color.vibrance = 40.0;
     s.curve.highlights = 30.0;
     s.curve.shadows = -20.0;
-    // the value-noise grain the GPU draws (process V7's particle grain renders on the CPU)
+    // the value-noise grain (processes V1–V6)
     s.process = lcc_develop::Process::V6.version();
     s.grain.amount = 30.0;
 }
@@ -1165,7 +1172,7 @@ fn hdr_renders_match() {
     s.effects.clarity = 30.0;
     s.curve.master = vec![Point::new(0.0, 0.0), Point::new(0.5, 0.6), Point::new(1.0, 1.0)];
     check_hdr("hdr vignette + curve", &src, &raw, &s, 320, 240);
-    // the value-noise grain the GPU draws (process V7's particle grain renders on the CPU)
+    // the value-noise grain (processes V1–V6)
     s.process = lcc_develop::Process::V6.version();
     s.grain.amount = 30.0;
     s.color.saturation = 20.0;

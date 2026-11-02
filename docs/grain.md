@@ -1,10 +1,9 @@
 # Film grain
 
 The Effects panel's Grain (`ctl:grain.*`, `crates/pipeline/src/grain.rs`) renders grain particles on the
-spot, per output pixel, rather than overlaying a noise texture. Ported from OneSlips' fork; in Chromaforge
-the particle grain is drawn by the CPU finish stage only: a render with it falls back from the GPU to the
-CPU (`lcc_gpu::try_render`), and OneSlips' WGSL port is not taken yet (it was not measured on a GPU since
-the Lightroom Classic calibration).
+spot, per output pixel, rather than overlaying a noise texture. Ported from OneSlips' fork, with its GPU
+port in `crates/gpu/src/wgsl/finish.wgsl` (checked against the CPU by `crates/gpu/tests/it/equivalence.rs`:
+max 1 LSB).
 
 This is the grain of **process V7** and later ([process-versions.md](process-versions.md)). Photos
 on V1 to V6 keep the value-noise grain they were edited with (`finish::FinishParams::grain`), so opening an
@@ -171,7 +170,12 @@ own settings; Camera Raw has no equivalents.
 
 ## Performance
 
-- **GPU:** not in Chromaforge yet: a render with particle grain is drawn on the CPU.
+- **GPU** (Chromaforge, 2026-11-03, 6000 × 4000 grey ramp, `<PREFIX>_PROFILE=1`, `gpu finish + readback`;
+  the same machine's CPU finish in brackets): no grain 28 ms; Amount 50 at defaults 397 ms (CPU 1312 ms);
+  Size 0 165 ms; Roughness 0 619 ms; Size 100 323 ms; Color 50 1774 ms. At 1900 px (the loupe): defaults
+  11 ms (CPU 99 ms), Size 0 48 ms, Roughness 0 38 ms, Size 100 83 ms, Color 50 34 ms. Whole renders at
+  defaults: about 460 ms for the 24 MP export and 33 ms at 1900 px, inside the budgets (1 s, 60 ms); Size
+  100 in the loupe (≈ 105 ms) and Color 50 on a 24 MP export (≈ 1.8 s) are over them.
 - **CPU:** works on bands of 8 output rows. Each clump is generated once per band and its grains
   are splatted onto the pixels they reach (`band_matches_per_pixel` checks the result equals the
   per-pixel evaluation). The finish stage (`<PREFIX>_PROFILE=1`) of a `<cli> render`
