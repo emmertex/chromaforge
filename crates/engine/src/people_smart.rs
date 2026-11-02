@@ -88,6 +88,35 @@ impl Session {
         Ok(out)
     }
 
+    /// The automatic name of mask `m` on photo `id`: what it selects, People with their role and
+    /// the name it has in this shoot ("Groom Jamie - Clothes, Hair").
+    pub fn auto_mask_name(&mut self, id: PhotoId, m: &lcc_develop::Mask) -> String {
+        let mut m = m.clone();
+        if m.components.iter().any(|c| matches!(c.shape, lcc_develop::MaskShape::People { who: Some(Who::Role(_)), .. })) {
+            let ctx = self.photo_context(id);
+            for c in &mut m.components {
+                if let lcc_develop::MaskShape::People { who: Some(Who::Role(r)), .. } = &mut c.shape
+                    && let Some(n) = self.people_store().role_for(r, &ctx).map(str::to_string)
+                {
+                    *r = format!("{} {n}", r.trim());
+                }
+            }
+        }
+        lcc_develop::recipe::content_name(&m)
+    }
+
+    /// Give the masks of `after` that still carry an automatic name (a placeholder such as
+    /// "Mask 3", or the name they had automatically in `before`) the name of what they select now;
+    /// a name the photographer gave is kept.
+    pub(crate) fn refresh_mask_names(&mut self, id: PhotoId, before: &[lcc_develop::Mask], after: &mut [lcc_develop::Mask]) {
+        for m in after.iter_mut().filter(|m| !m.components.is_empty()) {
+            let was = before.iter().find(|b| b.id == m.id).filter(|b| !b.components.is_empty()).map(|b| self.auto_mask_name(id, b));
+            if lcc_develop::recipe::generic_name(&m.name) || was.as_deref() == Some(m.name.as_str()) {
+                m.name = self.auto_mask_name(id, m);
+            }
+        }
+    }
+
     /// Who `who` is on photo `id`.
     pub fn resolve_who(&mut self, id: PhotoId, who: &Who) -> Resolved {
         match who {

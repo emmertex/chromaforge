@@ -2295,3 +2295,21 @@ fn brush_stroke_runs_and_live_updates_replace_what_the_gesture_sent() {
         assert!(s.execute("mask.brushStroke", &bad).is_err(), "{bad}");
     }
 }
+
+/// Masks are named after what they select ("Radial Gradient − Linear Gradient") and follow their
+/// components while the name is automatic; a name the photographer gives is kept.
+#[test]
+fn masks_get_automatic_names_until_renamed() {
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].name, "Radial Gradient");
+    s.execute("mask.addComponent", &json!({"kind": "linear", "op": "subtract"})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].name, "Radial Gradient − Linear Gradient");
+    s.execute("mask.rename", &json!({"name": "Face light"})).unwrap();
+    s.execute("mask.addComponent", &json!({"kind": "brush", "op": "add"})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].name, "Face light", "a given name is kept");
+    // a brush stroke into no mask makes one named after it
+    s.execute("mask.select", &json!({"id": null})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.5, 0.5]]})).unwrap();
+    assert_eq!(active_dev(&s).masks[1].name, "Brush");
+}

@@ -421,12 +421,18 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             // a long name is cut short (with …) before the right buttons, the full name on hover
             let color = if m.visible { t.text } else { t.text_disabled };
             let right_room = if sel || ui.rect_contains_pointer(r) { 92.0 } else { 28.0 };
-            let g = one_line(ui.painter(), &m.name, t.font(13.0), color, r.width() - 44.0 - right_room);
+            // a mask from before automatic names ("Mask 1") shows what it selects
+            let shown = if lcc_develop::recipe::generic_name(&m.name) && !m.components.is_empty() {
+                lcc_develop::recipe::content_name(m)
+            } else {
+                m.name.clone()
+            };
+            let g = one_line(ui.painter(), &shown, t.font(13.0), color, r.width() - 44.0 - right_room);
             let elided = g.elided;
             let at = pos2(r.left() + 44.0, r.center().y - g.size().y / 2.0);
             register(ui.ctx(), format!("maskName:{}", m.id), Rect::from_min_size(at, g.size()));
             ui.painter().galley(at, g, color);
-            let resp = if elided { resp.on_hover_text(&m.name) } else { resp };
+            let resp = if elided { resp.on_hover_text(&shown) } else { resp };
 
             let right = r.right();
             let cy = r.center().y;
