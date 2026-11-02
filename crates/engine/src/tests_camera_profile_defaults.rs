@@ -9,6 +9,9 @@ use serde_json::json;
 
 use crate::Session;
 
+/// The decoder's camera defaults are one per process: the tests that set them take turns.
+static DECODER_DEFAULTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn temp_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("lc-camera-profile-defaults-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -22,6 +25,7 @@ fn stored(s: &Session) -> Vec<(String, String)> {
 
 #[test]
 fn the_default_is_set_removed_and_handed_to_the_decoder() {
+    let _turn = DECODER_DEFAULTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut s = Session::with_demo();
     // unknown ids are refused, so a typo can't silently drop photos to a plain colour
     assert!(s.execute("library.preferences", &json!({"cameraDefault": {"camera": "NIKON Z 8", "profile": "dcp:gone"}})).is_err());
@@ -47,6 +51,7 @@ fn the_default_is_set_removed_and_handed_to_the_decoder() {
 
 #[test]
 fn the_default_persists_with_the_library_and_reinstalls_on_reopen() {
+    let _turn = DECODER_DEFAULTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let lib = temp_dir("persist");
     {
         let mut s = Session::new().with_fs();
