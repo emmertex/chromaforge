@@ -399,7 +399,20 @@ pub fn specs() -> Vec<CommandSpec> {
                 let next = s.active().and_then(|id| s.develop_of(id)).map(|d| d.next_mask_id()).unwrap_or(1);
                 let want = mask_id_param(p, "mask.brushStroke")?.or(s.active_mask);
                 let adjust = super::mask_effects::new_mask_adjust(s, "brush");
-                let target_comp = p.get("component").and_then(Value::as_u64).map(|k| k as usize);
+                // the Brush component armed on the photo: strokes and erasing go into THAT one (its
+                // own Add or Subtract); a component that isn't a Brush, or isn't there, is refused
+                let target_comp = match p.get("component").filter(|v| !v.is_null()) {
+                    None => None,
+                    Some(v) => Some(
+                        v.as_u64()
+                            .and_then(|k| usize::try_from(k).ok())
+                            .ok_or_else(|| bad("mask.brushStroke", "`component` must be a component index"))?,
+                    ),
+                };
+                let exists = want.is_some_and(|m| s.active().and_then(|id| s.develop_of(id)).is_some_and(|d| d.masks.iter().any(|x| x.id == m)));
+                if target_comp.is_some() && !exists {
+                    return Err(bad("mask.brushStroke", "`component` needs an existing mask"));
+                }
                 let mut out = masks_edit(s, "mask.brushStroke", "Brush", |masks, active| {
                     let i = match want.and_then(|m| masks.iter().position(|x| x.id == m)) {
                         Some(i) => i,
@@ -411,8 +424,12 @@ pub fn specs() -> Vec<CommandSpec> {
                     };
                     let m = &mut masks[i];
                     let brush_idx = match target_comp {
-                        Some(k) if m.components.get(k).is_some_and(|c| matches!(c.shape, MaskShape::Brush { .. })) => Some(k),
-                        _ => m.components.iter().rposition(|c| matches!(c.shape, MaskShape::Brush { .. })),
+                        Some(k) => match m.components.get(k) {
+                            Some(c) if matches!(c.shape, MaskShape::Brush { .. }) => Some(k),
+                            Some(_) => return Err(bad("mask.brushStroke", format!("component {k} is not a Brush"))),
+                            None => return Err(bad("mask.brushStroke", format!("no component {k}"))),
+                        },
+                        None => m.components.iter().rposition(|c| matches!(c.shape, MaskShape::Brush { .. })),
                     };
                     let brush_comp = brush_idx.and_then(|k| m.components.get_mut(k));
                     if let Some(MaskComponent { shape: MaskShape::Brush { strokes }, .. }) = brush_comp {

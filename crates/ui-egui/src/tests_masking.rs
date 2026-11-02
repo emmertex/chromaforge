@@ -2440,3 +2440,24 @@ fn picking_another_mask_or_photo_mid_stroke_ends_the_stroke() {
         h.settle(SETTLE);
     }
 }
+
+/// Leaving Masking puts its tools away: back in Masking no brush is armed (it hid the overlay and
+/// made pin drags paint). Colour Range's eyedropper, used from Edit too, is left alone.
+#[test]
+fn leaving_masking_puts_the_brush_away() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "brush");
+    exec(&mut h, "panel.edit", json!({}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "", "the brush is put away");
+    exec(&mut h, "panel.masking", json!({}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "", "and not back");
+    // nor in a grid
+    exec(&mut h, "tool.brush", json!({}));
+    exec(&mut h, "view.gridToggle", json!({}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "");
+}

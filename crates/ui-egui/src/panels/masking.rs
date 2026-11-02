@@ -1905,3 +1905,18 @@ mod tests {
         assert!(!enter_submits(false, true, false));
     }
 }
+
+/// The on-photo tools that belong to Masking (armed from its panel or a shortcut). Colour Range's
+/// eyedropper is not one: it also samples from Edit.
+pub(crate) fn is_mask_tool(tool: &str) -> bool {
+    matches!(tool, "brush" | "linear" | "radial" | "object" | "prompt" | "depthRange" | "luminanceRange" | "maskPointColor")
+        || tool.starts_with("maskMixer:")
+}
+
+/// Leaving Masking or the loupe puts its tools away, checked once a frame whatever path left it:
+/// coming back never finds the brush armed (it hid the overlay elsewhere and made pin drags paint).
+pub(crate) fn put_tools_away(app: &mut LccApp) {
+    if is_mask_tool(&app.ui.tool) && (app.ui.right != crate::state::RightPanel::Masking || app.ui.view != crate::state::ViewMode::Detail) {
+        app.ui.tool.clear();
+    }
+}

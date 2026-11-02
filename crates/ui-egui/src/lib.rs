@@ -1867,6 +1867,7 @@ impl LccApp {
         panels::faces::pump(self, ctx);
         focus_scan::pump(self, ctx);
         eye_strip::reject_pump(self);
+        panels::masking::put_tools_away(self);
         enhance_pump::pump(self, ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);

@@ -2218,3 +2218,40 @@ fn upright_says_why_it_found_nothing_to_correct() {
     let r = s.execute("geometry.upright", &json!({"mode": "off"})).unwrap();
     assert!(r["note"].is_null());
 }
+
+/// A stroke goes into the chosen Brush component of a mask (the one armed on the photo), not only
+/// the last one; a component that isn't a Brush, or isn't there, is an error and changes nothing.
+#[test]
+fn brush_strokes_go_into_the_chosen_brush_component() {
+    use lcc_develop::{MaskOp, MaskShape};
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "brush"})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2]]})).unwrap();
+    s.execute("mask.addComponent", &json!({"kind": "linear", "start": [0.1, 0.5], "end": [0.9, 0.5]})).unwrap();
+    s.execute("mask.addComponent", &json!({"kind": "brush", "op": "subtract"})).unwrap();
+    let counts = |s: &Session| {
+        active_dev(s).masks[0]
+            .components
+            .iter()
+            .map(|c| match &c.shape {
+                MaskShape::Brush { strokes } => strokes.len() as i32,
+                _ => -1,
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = counts(&s);
+    assert_eq!(before.iter().filter(|n| **n >= 0).count(), 2, "{before:?}");
+    let first = before.iter().position(|n| *n >= 0).unwrap();
+    let last = before.iter().rposition(|n| *n >= 0).unwrap();
+    let linear = before.iter().position(|n| *n < 0).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.3, 0.3]], "component": first})).unwrap();
+    assert_eq!(counts(&s)[first], before[first] + 1, "into the first Brush, not the last");
+    s.execute("mask.brushStroke", &json!({"points": [[0.4, 0.4]], "component": last, "erase": true})).unwrap();
+    assert_eq!(counts(&s)[last], before[last] + 1);
+    assert_eq!(active_dev(&s).masks[0].components[last].op, MaskOp::Subtract, "its own operation is kept");
+    let now = counts(&s);
+    for bad in [json!(linear), json!(9), json!(-1), json!("x")] {
+        assert!(s.execute("mask.brushStroke", &json!({"points": [[0.5, 0.5]], "component": bad})).is_err(), "{bad}");
+    }
+    assert_eq!(counts(&s), now, "a refused stroke changes nothing");
+}
