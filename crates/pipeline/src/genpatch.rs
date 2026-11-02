@@ -142,6 +142,30 @@ pub fn seed_of(id: &str, variant: u32) -> u64 {
     h
 }
 
+/// Boxes normalized to the EXIF-oriented source (faces) as boxes in output pixels of a `w × h`
+/// render of `frame`, a little larger (lens corrections are left out: they move a face by far
+/// less than the margin).
+pub fn avoid_boxes(boxes: &[[f64; 4]], frame: &Frame, w: usize, h: usize) -> Vec<[f32; 4]> {
+    let to_out = frame.norm_to_out(w, h);
+    boxes
+        .iter()
+        .filter_map(|b| {
+            let (mx, my) = ((b[2] - b[0]) * 0.1, (b[3] - b[1]) * 0.1);
+            let corners = [(b[0] - mx, b[1] - my), (b[2] + mx, b[1] - my), (b[0] - mx, b[3] + my), (b[2] + mx, b[3] + my)];
+            let pts: Vec<Point> = corners
+                .iter()
+                .map(|(x, y)| {
+                    let (ox, oy) = frame.orient.map(*x, *y, 1.0, 1.0);
+                    to_out.apply(Point::new(ox, oy))
+                })
+                .collect();
+            let (x0, x1) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+            let (y0, y1) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+            [x0, y0, x1, y1].iter().all(|v| v.is_finite()).then_some([x0 as f32, y0 as f32, x1 as f32, y1 as f32])
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,28 +252,4 @@ mod tests {
         let p = transformed_to_source(&f, Point::new(0.0, 0.0));
         assert!((p.x - 0.0).abs() < 1e-6 && (p.y - 300.0).abs() < 1e-6, "{p:?}");
     }
-}
-
-/// Boxes normalized to the EXIF-oriented source (faces) as boxes in output pixels of a `w × h`
-/// render of `frame`, a little larger (lens corrections are left out: they move a face by far
-/// less than the margin).
-pub fn avoid_boxes(boxes: &[[f64; 4]], frame: &Frame, w: usize, h: usize) -> Vec<[f32; 4]> {
-    let to_out = frame.norm_to_out(w, h);
-    boxes
-        .iter()
-        .filter_map(|b| {
-            let (mx, my) = ((b[2] - b[0]) * 0.1, (b[3] - b[1]) * 0.1);
-            let corners = [(b[0] - mx, b[1] - my), (b[2] + mx, b[1] - my), (b[0] - mx, b[3] + my), (b[2] + mx, b[3] + my)];
-            let pts: Vec<Point> = corners
-                .iter()
-                .map(|(x, y)| {
-                    let (ox, oy) = frame.orient.map(*x, *y, 1.0, 1.0);
-                    to_out.apply(Point::new(ox, oy))
-                })
-                .collect();
-            let (x0, x1) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
-            let (y0, y1) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
-            [x0, y0, x1, y1].iter().all(|v| v.is_finite()).then_some([x0 as f32, y0 as f32, x1 as f32, y1 as f32])
-        })
-        .collect()
 }

@@ -241,7 +241,9 @@ pub fn consent_body(app: &mut LccApp, ui: &mut egui::Ui, provider: &str, index: 
     {
         // the area to fill tinted, so it is clear what the model is asked to change
         let rgba: Vec<u8> = rgb
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .zip(&mask)
             .flat_map(|(c, m)| {
                 if *m > 0 {

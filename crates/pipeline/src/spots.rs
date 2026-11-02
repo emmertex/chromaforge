@@ -589,10 +589,10 @@ mod tests {
         let spot = Spot { mode: SpotMode::Fill, points: vec![Point::new(0.5, 0.5)], size: 0.06, feather: 0.0, ..Default::default() };
         let red_in_hole = |img: &Rgb32f| (90..110).filter(|x| img.get(*x, 80)[0] > img.get(*x, 80)[1] * 2.0).count();
         let mut plain = make();
-        apply(&mut plain, &[spot.clone()], &frame, frame.px_per_long(w));
+        apply(&mut plain, std::slice::from_ref(&spot), &frame, frame.px_per_long(w));
         assert!(red_in_hole(&plain) > 0, "without exclusion the fill continues the red half");
         let mut avoided = make();
-        apply_skipping(&mut avoided, &[spot.clone()], &frame, frame.px_per_long(w), &[], &[[100.0, 0.0, 200.0, 160.0]]);
+        apply_skipping(&mut avoided, std::slice::from_ref(&spot), &frame, frame.px_per_long(w), &[], &[[100.0, 0.0, 200.0, 160.0]]);
         assert_eq!(red_in_hole(&avoided), 0, "a face box is never a source");
         // the same with the red half under another spot (applied after this one)
         let other = Spot {
