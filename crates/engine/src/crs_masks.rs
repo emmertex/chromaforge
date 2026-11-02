@@ -114,6 +114,43 @@ fn unmapped_local(c: &XmpValue) -> Vec<String> {
         .collect()
 }
 
+/// A local point curve (`"x,y"` items on 0..255) → our points on 0..1: `[]` for the straight line, `None`
+/// when absent or unreadable.
+fn local_curve(c: &XmpValue, k: &str) -> Option<Value> {
+    let mut pts = Vec::new();
+    for it in c.field(k)?.items().iter().filter_map(XmpValue::text).take(64) {
+        let (x, y) = it.split_once(',')?;
+        let n = |t: &str| t.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        pts.push(((n(x)? / 255.0).clamp(0.0, 1.0), (n(y)? / 255.0).clamp(0.0, 1.0)));
+    }
+    if pts.len() < 2 {
+        return None;
+    }
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let identity = pts.iter().all(|(x, y)| (x - y).abs() < 1e-9);
+    Some(if identity { json!([]) } else { Value::Array(pts.into_iter().map(|(x, y)| pt(x, y)).collect()) })
+}
+
+/// A correction's local Curve (`MainCurve`, `RedCurve`, `GreenCurve`, `BlueCurve`) as our
+/// `PointCurves` JSON, when a channel is bent.
+fn local_curves(c: &XmpValue) -> Option<Value> {
+    let mut o = serde_json::Map::new();
+    for (k, ch) in [("crs:MainCurve", "master"), ("crs:RedCurve", "red"), ("crs:GreenCurve", "green"), ("crs:BlueCurve", "blue")] {
+        if let Some(v) = local_curve(c, k).filter(|v| v.as_array().is_some_and(|a| !a.is_empty())) {
+            o.insert(ch.into(), v);
+        }
+    }
+    (!o.is_empty()).then_some(Value::Object(o))
+}
+
+/// A correction's local Point Color samples (`LocalPointColors`, with `LocalColorVariance`) as our
+/// `PointColor` JSON ([`crate::crs_point_color`]).
+fn local_points(c: &XmpValue) -> Vec<Value> {
+    let texts = |k: &str| -> Vec<&str> { c.field(k).map(XmpValue::items).unwrap_or_default().iter().filter_map(XmpValue::text).collect() };
+    let var = crate::crs_point_color::variances(texts("crs:LocalColorVariance"));
+    crate::crs_point_color::read(texts("crs:LocalPointColors"), &var).iter().filter_map(|p| serde_json::to_value(p).ok()).collect()
+}
+
 /// Perceptual lightness 0..1 (how range masks store luminance) → our range scale: log
 /// luminance on −8..+4 EV mapped to 0..1.
 fn lightness_to_range(l: f64) -> f64 {
@@ -292,7 +329,15 @@ pub fn masks(values: &Values, aspect: f64) -> (Vec<Value>, Vec<String>) {
             }
             let n = out.len() + 1;
             let name = text(c, "crs:CorrectionName").map(str::to_string).unwrap_or_else(|| format!("Mask {n}"));
-            out.push(json!({"id": n, "name": name, "visible": true, "invert": false, "components": merged, "adjust": adjust(c)}));
+            let mut mask = json!({"id": n, "name": name, "visible": true, "invert": false, "components": merged, "adjust": adjust(c)});
+            if let Some(curve) = local_curves(c) {
+                mask["curve"] = curve;
+            }
+            let points = local_points(c);
+            if !points.is_empty() {
+                mask["point_colors"] = Value::Array(points);
+            }
+            out.push(mask);
         }
     }
     skipped.sort();
@@ -659,6 +704,38 @@ mod tests {
         assert_eq!((*hi, *hi_feather), (1.0, 0.0), "brighter than scene white is still in the range");
         assert_eq!(s.masks[0].adjust.clarity, -30.0);
         assert_eq!(unmapped, ["Mask: LocalGrain"], "a refine saturation of 100 is neutral, not reported");
+    }
+
+    #[test]
+    fn local_point_color_and_curve_import_into_the_mask() {
+        // written for this test: a range correction with a bent master curve and one Point Color sample
+        let sample = "0.558493, 0.255117, 0.846338, 0.000000, -1.000000, 0.000000, 0.500000, 0.000000, 0.333333, 0.666667, 1.000000, 0.000000, 0.075117, 0.435117, 0.985117, 0.380000, 0.930000, 1.000000, 1.000000";
+        let x = format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
+ <crs:MaskGroupBasedCorrections><rdf:Seq>
+  <rdf:li><rdf:Description crs:What="Correction" crs:LocalExposure2012="0.2">
+   <crs:CorrectionMasks><rdf:Seq>
+    <rdf:li crs:What="Mask/RangeMask"><crs:CorrectionRangeMask crs:Type="2" crs:LumRange="0.2 0.4 0.6 0.8"/></rdf:li>
+   </rdf:Seq></crs:CorrectionMasks>
+   <crs:MainCurve><rdf:Seq><rdf:li>0, 0</rdf:li><rdf:li>128, 160</rdf:li><rdf:li>255, 255</rdf:li></rdf:Seq></crs:MainCurve>
+   <crs:RedCurve><rdf:Seq><rdf:li>0, 0</rdf:li><rdf:li>255, 255</rdf:li></rdf:Seq></crs:RedCurve>
+   <crs:LocalPointColors><rdf:Seq><rdf:li>{sample}</rdf:li><rdf:li>nonsense</rdf:li></rdf:Seq></crs:LocalPointColors>
+   <crs:LocalColorVariance><rdf:Seq><rdf:li>-25</rdf:li></rdf:Seq></crs:LocalColorVariance>
+  </rdf:Description></rdf:li>
+ </rdf:Seq></crs:MaskGroupBasedCorrections>
+</rdf:Description></rdf:RDF></x:xmpmeta>"#
+        );
+        let d = lcc_meta::parse_xmp(&x).unwrap();
+        let (partial, unmapped) = crate::crs::to_partial_report(&d.properties, Some(&d.values), crate::crs::Target::Any, 1.5);
+        let s = DevelopSettings::default().merged(&partial).expect("valid settings");
+        let m = &s.masks[0];
+        assert_eq!(m.curve.master.len(), 3, "the bent master curve");
+        assert!(m.curve.red.is_empty(), "a straight channel stays empty");
+        assert_eq!(m.point_colors.len(), 1, "the unreadable slot is skipped");
+        assert_eq!(m.point_colors[0].sat_shift, -100.0);
+        assert_eq!(m.point_colors[0].variance, -25.0);
+        assert!(!unmapped.iter().any(|u| u.contains("Point") || u.contains("Curve")), "{unmapped:?}");
     }
 
     #[test]

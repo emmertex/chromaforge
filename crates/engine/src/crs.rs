@@ -342,6 +342,21 @@ pub fn to_partial(props: &Props, target: Target) -> Value {
         n(o, &format!("GrayMixer{crs}"), &format!("bw_mix.{band}"));
     }
 
+    // ---- Point Color (empty slots are all -1; variance is stored apart, one per sample)
+    if let Some(lines) = props.get("crs:PointColors") {
+        let var = crate::crs_point_color::variances(props.get("crs:ColorVariance").into_iter().flatten().map(String::as_str));
+        let samples = crate::crs_point_color::read(lines.iter().map(String::as_str), &var);
+        // read when every used slot was understood (a slot of another shape stays reported)
+        let used = lines.iter().filter(|l| !l.split(',').all(|n| n.trim().parse::<f64>().is_ok_and(|x| x == -1.0))).count();
+        if samples.len() == used.min(lcc_develop::MAX_POINT_COLORS) {
+            note("crs:PointColors");
+            note("crs:ColorVariance");
+        }
+        if !samples.is_empty() {
+            put(o, "point_colors", serde_json::to_value(&samples).unwrap_or(Value::Null));
+        }
+    }
+
     // ---- Tone curve: parametric regions + point curves
     n(o, "ParametricShadows", "curve.shadows");
     n(o, "ParametricDarks", "curve.darks");

@@ -29,6 +29,7 @@ pub mod control_auth;
 pub mod creations;
 pub mod crs;
 pub mod crs_masks;
+pub mod crs_point_color;
 pub mod demo;
 pub mod denoise;
 pub mod desktop;
