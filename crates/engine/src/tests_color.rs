@@ -510,7 +510,9 @@ fn mask_point_color_pick_set_and_delete() {
     assert_eq!(pc.lum, d.masks[0].point_colors[0].lum, "the sampled colour stays");
     let after = s.render_now(id, 384, 384).unwrap().image;
     assert!(chroma_at(&after, 0.5, 0.08) + 8 < chroma_at(&before, 0.5, 0.08), "the sky inside the mask loses colour");
-    for bad in [json!({"index": 3, "values": {}}), json!({"index": -1, "values": {}}), json!({"index": 0}), json!({"id": 999, "index": 0, "values": {}})] {
+    for bad in
+        [json!({"index": 3, "values": {}}), json!({"index": -1, "values": {}}), json!({"index": 0}), json!({"id": 999, "index": 0, "values": {}})]
+    {
         assert!(s.execute("mask.pointColorSet", &bad).is_err(), "{bad}");
     }
     assert!(s.execute("mask.pointColorDelete", &json!({"index": 5})).is_err());

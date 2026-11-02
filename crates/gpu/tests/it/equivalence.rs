@@ -534,13 +534,25 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 m(
                     radial,
                     vec![
-                        PointColor { lum: 0.62, chroma: 0.09, hue: 60.0, hue_shift: 40.0, sat_shift: -30.0, lum_shift: 20.0, range: 80.0, ..Default::default() },
+                        PointColor {
+                            lum: 0.62,
+                            chroma: 0.09,
+                            hue: 60.0,
+                            hue_shift: 40.0,
+                            sat_shift: -30.0,
+                            lum_shift: 20.0,
+                            range: 80.0,
+                            ..Default::default()
+                        },
                         PointColor { lum: 0.4, chroma: 0.01, hue: 0.0, lum_shift: -30.0, ..Default::default() },
                     ],
                 ),
                 // a mask without samples in between: its record is empty
                 m(linear.clone(), Vec::new()),
-                m(linear, vec![PointColor { lum: 0.5, chroma: 0.12, hue: 270.0, variance: -60.0, sat_shift: 40.0, hue_range: 80.0, ..Default::default() }]),
+                m(
+                    linear,
+                    vec![PointColor { lum: 0.5, chroma: 0.12, hue: 270.0, variance: -60.0, sat_shift: 40.0, hue_range: 80.0, ..Default::default() }],
+                ),
             ];
         }),
         ("calibration", |s| {

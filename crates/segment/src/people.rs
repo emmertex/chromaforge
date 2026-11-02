@@ -13,9 +13,9 @@
 use std::path::Path;
 
 use crate::matte;
-use lcc_tflite::mediapipe::{self, Detection, FacePart, Grid};
-use lcc_tflite as tflite;
 use crate::{Error, Result};
+use lcc_tflite as tflite;
+use lcc_tflite::mediapipe::{self, Detection, FacePart, Grid};
 
 /// The Selfie Multiclass file in its model folder.
 pub const PEOPLE_FILE: &str = "selfie_multiclass_256x256.tflite";
@@ -2136,7 +2136,6 @@ mod tests {
         assert!(clothes_at(&one, 155, 100) > 0.5 && clothes_at(&one, 45, 100) < 0.5);
     }
 
-
     /// Regression (OneSlips' test notes 2026-10-22, note 6): the people model calls a bare arm below an
     /// off-shoulder tulle sleeve "clothes"; skin is never in Clothes, so the arm, grown from the
     /// skin the model does see (the forearm) through the cells coloured like it, is cut out.
@@ -2195,7 +2194,4 @@ mod tests {
         assert_eq!(Surfaces::from_grid(2, 2, vec![1.0; 4]).at(f32::NAN, 0.5), 0.0);
         assert!(is_surface("floor-wood") && is_surface("wall-brick") && is_surface("grass-merged") && !is_surface("person"));
     }
-
-
 }
-

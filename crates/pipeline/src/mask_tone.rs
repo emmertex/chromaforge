@@ -18,7 +18,6 @@ use crate::geometry::Frame;
 use crate::local::{frame_proxy, log_lum, white_balance};
 use crate::masks::{self, Mattes};
 
-
 /// Long edge of the render the tones are measured on.
 pub const EDGE: usize = 384;
 

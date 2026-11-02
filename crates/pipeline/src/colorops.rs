@@ -186,11 +186,7 @@ impl ColorOps {
             sat: bands.map(|b| (b.sat / 100.0) as f32),
             lum: bands.map(|b| (b.lum / 100.0) as f32 * 0.18),
             mixer: !s.mixer.is_neutral(),
-            points: if crate::is_bw(s) {
-                Vec::new()
-            } else {
-                point_ks(&s.point_colors)
-            },
+            points: if crate::is_bw(s) { Vec::new() } else { point_ks(&s.point_colors) },
             bw: crate::is_bw(s).then(|| s.bw_mix.bands().map(|v| (v / 100.0) as f32)),
             grading: (!g.is_neutral()).then(|| {
                 (

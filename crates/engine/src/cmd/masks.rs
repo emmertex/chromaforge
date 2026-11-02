@@ -1,6 +1,8 @@
 //! Masking and Remove (spot) commands on the active photo.
 
-use lcc_develop::{BrushStroke, LocalAdjustments, MAX_POINT_COLORS, MAX_RED_EYES, Mask, MaskComponent, MaskOp, MaskShape, PointColor, RedEye, Spot, SpotMode};
+use lcc_develop::{
+    BrushStroke, LocalAdjustments, MAX_POINT_COLORS, MAX_RED_EYES, Mask, MaskComponent, MaskOp, MaskShape, PointColor, RedEye, Spot, SpotMode,
+};
 use lcc_geom::Point;
 use serde_json::{Value, json};
 

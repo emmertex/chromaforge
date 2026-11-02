@@ -736,7 +736,9 @@ fn mask_point_color(app: &mut LccApp, ui: &mut egui::Ui, m: &lcc_develop::Mask) 
             ui.spacing_mut().item_spacing.x = 5.0;
             let active = app.ui.tool == "maskPointColor";
             let full = n >= lcc_develop::MAX_POINT_COLORS;
-            if icon_button(ui, "maskPointColorPicker", Icon::Picker, vec2(26.0, 26.0), active, !full, crate::i18n::tr("Sample a colour on the photo")).clicked() {
+            if icon_button(ui, "maskPointColorPicker", Icon::Picker, vec2(26.0, 26.0), active, !full, crate::i18n::tr("Sample a colour on the photo"))
+                .clicked()
+            {
                 app.ui.tool = if active { String::new() } else { "maskPointColor".into() };
             }
             for (i, p) in m.point_colors.iter().enumerate() {

@@ -23,7 +23,12 @@ fn sample() -> PointColor {
 
 fn masked(shape: MaskShape, point_colors: Vec<PointColor>) -> DevelopSettings {
     let mut s = DevelopSettings::default();
-    s.masks.push(Mask { id: 1, components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }], point_colors, ..Default::default() });
+    s.masks.push(Mask {
+        id: 1,
+        components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+        point_colors,
+        ..Default::default()
+    });
     s
 }
 
