@@ -1293,6 +1293,9 @@ pub struct UiState {
     /// (see [`crate::shortcuts::caps_lock_from`]).
     #[serde(skip)]
     pub caps_lock: bool,
+    /// Show Alternatives: the frames brought in get the original's edit.
+    #[serde(skip)]
+    pub alternatives_same_edit: bool,
     /// Full-screen preview (F): the photo alone on black, no chrome.
     pub fullscreen: bool,
     /// Window ▸ Second Window.
@@ -2037,6 +2040,7 @@ impl Default for UiState {
             spots_threshold: 50.0,
             auto_advance: false,
             caps_lock: false,
+            alternatives_same_edit: true,
             fullscreen: false,
             slideshow: None,
             slides: Default::default(),

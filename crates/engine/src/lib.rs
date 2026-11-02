@@ -292,6 +292,8 @@ pub struct Session {
     /// selection is still exactly what the view shows, photos that join the view (an import still adding them)
     /// join the selection too.
     pub(crate) all_selected: Option<String>,
+    /// Show Alternatives is on: the original photo, and the view to go back to.
+    pub alternatives: Option<cmd::alternatives::Alternatives>,
     /// How many times the view followed an edit from the list it had, and how many times it was worked out from
     /// every photo (`ui.inspect` → `perf`): what tells a slow library from a slow edit.
     pub view_followed: u64,
@@ -589,6 +591,7 @@ impl Session {
             hold_view: false,
             base: None,
             all_selected: None,
+            alternatives: None,
             view_followed: 0,
             view_worked_out: 0,
             #[cfg(test)]

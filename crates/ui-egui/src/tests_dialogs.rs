@@ -196,3 +196,38 @@ fn the_filter_bar_shows_live_counts() {
     assert!(h.app.widgets.iter().any(|(w, _)| w == "filter:count:pick"), "no pick count drawn");
     assert!(h.app.widgets.iter().any(|(w, _)| w == "filter:count:red"));
 }
+
+/// Show Alternatives: the bar over the frames around a photo appears, and Back leaves them.
+#[test]
+fn alternatives_bar_shows_and_goes_back() {
+    let dir = std::env::temp_dir().join(format!("lcc-ui-alternatives-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paths = Vec::new();
+    for i in 0..5u8 {
+        let p = dir.join(format!("IMG_{i:02}.jpg"));
+        let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 13) as u8, i * 40, 255]);
+        std::fs::write(&p, lcc_engine::export::encode_image(&img, &lcc_engine::export::ExportOptions::default()).unwrap()).unwrap();
+        paths.push(p.to_string_lossy().into_owned());
+    }
+    let mut session = lcc_engine::Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [paths[2]]})).unwrap();
+    let app = LccApp::new(session, Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+    h.app.ui.view = crate::state::ViewMode::Detail;
+    let id = h.app.session.visible_cloned()[0];
+    h.app.session.execute("photo.showAlternatives", &json!({"id": id.0})).unwrap();
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "alternatives:bar"));
+    h.settle(Duration::from_secs(60));
+    let r = h.request("ui.clickWidget", json!({"id": "button:alternativesBack"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(h.app.session.alternatives.is_none(), "Back leaves the alternatives");
+    assert_eq!(h.app.session.visible_cloned(), vec![id]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

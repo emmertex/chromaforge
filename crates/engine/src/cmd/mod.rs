@@ -6,6 +6,7 @@
 
 pub mod actions;
 mod activity;
+pub mod alternatives;
 mod before;
 pub(crate) mod browse;
 #[cfg(not(target_arch = "wasm32"))]
@@ -224,6 +225,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         let mut v = Vec::new();
         v.extend(edit::specs());
         v.extend(library::specs());
+        v.extend(alternatives::specs());
         v.extend(collections::specs());
         v.extend(develop::specs());
         v.extend(color::specs());
