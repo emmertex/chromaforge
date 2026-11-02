@@ -1530,7 +1530,9 @@ impl Session {
         if self.sidecar_writer.is_some() && self.no_sidecar_repairs() {
             let stamp = (self.clock)();
             for id in ids {
-                let Some(p) = self.catalog.photo(id).filter(|p| file_path(p).is_some() && p.copy_of.is_none() && (browsed_too || !p.local)) else { continue };
+                let Some(p) = self.catalog.photo(id).filter(|p| file_path(p).is_some() && p.copy_of.is_none() && (browsed_too || !p.local)) else {
+                    continue;
+                };
                 let original = PathBuf::from(file_path(p).unwrap_or_default());
                 let packets = Packets::of(p, &self.catalog);
                 let photo = Box::new((**p).clone());
