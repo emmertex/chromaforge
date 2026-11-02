@@ -2084,22 +2084,61 @@ pub(crate) fn edit_component(app: &mut LccApp, p: &serde_json::Value) -> Result<
 /// One masking mode at a time: another photo puts the tools away, and so does a mask selected
 /// (its row, pin or a command) while a tool waits for a new mask.
 pub(crate) fn put_tools_away(app: &mut LccApp) {
+    sync_reset_new(app);
     let photo = app.session.active().map(|p| p.0);
     let left = app.ui.right != crate::state::RightPanel::Masking || app.ui.view != crate::state::ViewMode::Detail;
     let armed = is_mask_tool(&app.ui.tool) || app.ui.mask_new.is_some();
-    let other_photo = app.ui.tool_photo.is_some() && app.ui.tool_photo != photo;
+    let carried = carry_component(app, photo);
+    let other_photo = app.ui.tool_photo.is_some() && app.ui.tool_photo != photo && !carried;
     let picked = app.ui.mask_new.is_some() && app.session.active_mask.is_some() && app.ui.mask_drawing.is_none();
     if armed && (left || other_photo || picked) {
         app.cancel_brush_gesture();
         disarm(app);
     }
     if is_mask_tool(&app.ui.tool) {
-        if app.ui.tool_photo.is_none() {
+        if app.ui.tool_photo.is_none() || carried {
             app.ui.tool_photo = photo;
         }
     } else {
         app.ui.tool_photo = None;
     }
+    app.ui.mask_held = photo.zip(app.session.active_mask).map(|(p, m)| (p, m, app.ui.active_mask_component));
+}
+
+/// Keep "Reset settings on new mask" in the saved UI settings: the saved choice goes to the engine
+/// at start, and a `mask.next {resetNew}` from any surface comes back to be saved.
+fn sync_reset_new(app: &mut LccApp) {
+    let now = app.session.mask_reset_new;
+    match app.ui.mask_reset_seen {
+        Some(seen) if seen != now => app.ui.mask_reset_new = now,
+        _ => app.session.mask_reset_new = app.ui.mask_reset_new,
+    }
+    app.ui.mask_reset_seen = Some(app.session.mask_reset_new);
+}
+
+/// Another photo with a mask selected: the engine selected its linked copy there (or none). The
+/// component edited on the photo before stays the one edited when the copy has one of the same
+/// kind at that place; otherwise none is. Returns whether a brush armed on it stays armed.
+fn carry_component(app: &mut LccApp, photo: Option<u64>) -> bool {
+    let Some((q, old_mid, comp)) = app.ui.mask_held else { return false };
+    let Some(p) = photo.filter(|p| *p != q) else { return false };
+    let Some(k) = comp else { return false };
+    let kind_of = |pid: u64, mid: u32| {
+        app.session
+            .develop_of(PhotoId(pid))
+            .and_then(|d| d.masks.iter().find(|m| m.id == mid).and_then(|m| m.components.get(k).map(|c| std::mem::discriminant(&c.shape))))
+    };
+    let before = kind_of(q, old_mid);
+    let now = app.session.active_mask.and_then(|mid| kind_of(p, mid));
+    if before.is_none() || before != now {
+        app.ui.active_mask_component = None;
+        return false;
+    }
+    app.ui.active_mask_component = Some(k);
+    let brush = app.session.develop_of(PhotoId(p)).is_some_and(|d| {
+        d.masks.iter().any(|m| Some(m.id) == app.session.active_mask && m.components.get(k).is_some_and(|c| matches!(c.shape, MaskShape::Brush { .. })))
+    });
+    brush && app.ui.tool == "brush" && app.ui.mask_new.is_none()
 }
 
 #[cfg(test)]

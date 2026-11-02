@@ -2756,3 +2756,53 @@ fn a_masks_own_row_shows_no_overlay_a_component_row_does() {
     h.step();
     assert_eq!(h.app.ui.mask_hover, Some(mid), "a component row shows the whole mask");
 }
+
+/// The selected mask follows its linked copy to another photo: the component edited there stays
+/// the one edited, and a brush armed on it stays armed; a photo without the copy has none.
+#[test]
+fn the_edited_component_and_armed_brush_carry_to_the_linked_copy() {
+    let mut h = detail("panel.masking");
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    let (a, b, e) = (ids[0], ids[1], ids[2]);
+    exec(&mut h, "library.select", json!({"ids": [b]}));
+    exec(&mut h, "mask.add", json!({"kind": "radial"}));
+    exec(&mut h, "library.select", json!({"ids": [a, b], "active": a}));
+    exec(&mut h, "develop.autoSync", json!({"on": true}));
+    exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.3], "end": [0.5, 0.6]}));
+    exec(&mut h, "mask.addComponent", json!({"kind": "brush"}));
+    exec(&mut h, "develop.autoSync", json!({"on": false}));
+    let on_a = h.app.session.active_mask.expect("selected");
+    let link = develop(&h).masks.iter().find(|m| m.id == on_a).map(|m| m.link.clone()).expect("mask");
+    assert!(!link.is_empty());
+    exec(&mut h, "mask.editComponent", json!({"id": on_a, "component": 1}));
+    assert_eq!((h.app.ui.tool.as_str(), h.app.ui.active_mask_component), ("brush", Some(1)));
+    exec(&mut h, "library.select", json!({"ids": [b]}));
+    h.step();
+    let on_b = develop(&h).masks.iter().find(|m| m.link == link).map(|m| m.id).expect("b's copy");
+    assert_eq!(h.app.session.active_mask, Some(on_b));
+    assert_eq!((h.app.ui.tool.as_str(), h.app.ui.active_mask_component), ("brush", Some(1)), "the brush stays armed on the copy's Brush");
+    exec(&mut h, "library.select", json!({"ids": [e]}));
+    h.step();
+    assert_eq!(h.app.session.active_mask, None);
+    assert_ne!(h.app.ui.tool.as_str(), "brush", "no copy: the brush is put away");
+    h.settle(SETTLE);
+}
+
+/// "Reset settings on new mask" is saved with the UI settings: a saved choice reaches the engine,
+/// and a `mask.next` from a command comes back to be saved.
+#[test]
+fn reset_settings_on_new_mask_is_saved_with_the_ui_settings() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.next", json!({"resetNew": true}));
+    h.step();
+    assert!(h.app.ui.mask_reset_new, "a command's choice is saved");
+    let saved = serde_json::to_string(&h.app.ui).unwrap();
+    let mut back: crate::UiState = serde_json::from_str(&saved).unwrap();
+    assert!(back.mask_reset_new);
+    back.mask_reset_new = true;
+    let mut h2 = detail("panel.masking");
+    h2.app.ui = back;
+    h2.step();
+    assert!(h2.app.session.mask_reset_new, "the saved choice reaches the engine");
+    h.settle(SETTLE);
+}

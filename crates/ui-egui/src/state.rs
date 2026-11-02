@@ -1140,6 +1140,11 @@ pub struct UiState {
     /// The photo the armed mask tool belongs to: another photo puts it away.
     #[serde(skip)]
     pub tool_photo: Option<u64>,
+    /// What was selected in Masks last frame (photo, mask, the component edited): on another photo
+    /// the engine selects the mask's linked copy, and the same component (and an armed brush on
+    /// it) carries over when it is the same kind.
+    #[serde(skip)]
+    pub mask_held: Option<(u64, u32, Option<usize>)>,
     /// A linear or radial gradient being drawn by a drag of a tool armed for a new mask
     /// (mask, component, the drag's start in image coordinates).
     #[serde(skip)]
@@ -1347,6 +1352,12 @@ pub struct UiState {
     pub brush_erase: bool,
     /// Brush Auto Mask: dabs stick to areas like the one under the brush centre.
     pub brush_auto_mask: bool,
+    /// Masking's "Reset settings on new mask", saved with the UI settings (the engine holds it as
+    /// `Session::mask_reset_new` while the app runs).
+    pub mask_reset_new: bool,
+    /// The engine's `mask_reset_new` last frame: a change there came from a command.
+    #[serde(skip)]
+    pub mask_reset_seen: Option<bool>,
     /// Brush Auto Mask range, −100 (tight) … 0 (Lightroom's limits) … 100 (wide): kept with each stroke painted
     /// ([`lcc_develop::BrushStroke::auto_range`]), so changing it leaves the strokes already painted.
     pub brush_auto_range: f32,
@@ -2035,6 +2046,7 @@ impl Default for UiState {
             active_mask_component: None,
             mask_new: None,
             tool_photo: None,
+            mask_held: None,
             mask_drawing: None,
             collapsed_masks: Default::default(),
             view: ViewMode::Detail,
@@ -2147,6 +2159,8 @@ impl Default for UiState {
             brush_alt: false,
             brush_erase: false,
             brush_auto_mask: false,
+            mask_reset_new: false,
+            mask_reset_seen: None,
             brush_auto_range: 0.0,
             brush_pressure: true,
             remove_size: 0.02,
