@@ -395,13 +395,14 @@ impl Preset {
     }
 }
 
-/// `partial`'s masks as recipes: no segmentation computed for one photo, no provisional tag (what
-/// presets, copy and paste carry).
+/// `partial`'s masks as recipes: no segmentation computed for one photo, no Object clicks (they
+/// point at that photo's pixels: the object is picked again on each photo), no provisional tag
+/// (what presets, copy and paste carry).
 pub fn to_recipes(partial: &mut Value) {
     let Some(masks) = partial.get_mut("masks").and_then(Value::as_array_mut) else { return };
     for m in masks.iter_mut() {
         if let Ok(mut mask) = serde_json::from_value::<crate::Mask>(m.clone()) {
-            mask.strip_ai(crate::recipe::RECIPE_ASPECT);
+            mask.for_other_photo(crate::recipe::RECIPE_ASPECT);
             mask.preset = None;
             if let Ok(v) = serde_json::to_value(mask) {
                 *m = v;

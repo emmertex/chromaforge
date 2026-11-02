@@ -1173,9 +1173,15 @@ impl Session {
         }
         let own_auto = self.own_auto_wb(id, &requested, label);
         let mut ops = vec![self.develop_op(id, (*settings).clone(), label).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?];
-        ops.extend(self.auto_sync_ops(id, &requested, label, &own_auto));
+        let (synced, compute) = self.auto_sync_ops(id, &requested, label, &own_auto);
+        ops.extend(synced);
         let op = if ops.len() == 1 { ops.remove(0) } else { Op::Batch { ops } };
-        self.commit(label, op)
+        self.commit(label, op)?;
+        // AI masks Auto Sync carried over are computed on each photo from its own pixels
+        for x in compute {
+            let _ = if self.segmenter.background { self.compute_masks_later(x, false).map(|_| ()) } else { self.compute_masks(x, false).map(|_| ()) };
+        }
+        Ok(())
     }
 
     /// "Constrain Crop" keeps the stored crop inside the warped photo, as Lightroom does (issue
@@ -1213,16 +1219,26 @@ impl Session {
     /// before its crop is fitted) over to the other selected photos: only the settings that changed;
     /// never spot removal or red eye (they belong to one photo's pixels), nor the rendering process
     /// (Sync doesn't carry it either), nor history / snapshot restores. Constrain Crop then fits each
-    /// photo's own crop: the active photo's fitted crop is never copied over another's.
+    /// photo's own crop: the active photo's fitted crop is never copied over another's. Masks are
+    /// merged into each photo's own ([`lcc_develop::recipe::sync_masks`]): AI selections travel as
+    /// recipes, never as the active photo's pixels. Also returns the photos whose AI masks now
+    /// need computing.
     ///
     /// White balance goes on each photo as the active photo's mode or value on the photo's own
     /// scale ([`sync_same`]): As Shot its own camera white, Auto its own (`own_auto`, worked out
     /// on its pixels), a Temp or Tint the same number, only the slider that moved.
-    fn auto_sync_ops(&self, id: PhotoId, new: &DevelopSettings, label: &str, own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>) -> Vec<Op> {
+    fn auto_sync_ops(
+        &self,
+        id: PhotoId,
+        new: &DevelopSettings,
+        label: &str,
+        own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>,
+    ) -> (Vec<Op>, Vec<PhotoId>) {
         if !self.auto_sync_applies(id, label) {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
-        let Some(old) = self.develop_of(id) else { return Vec::new() };
+        let Some(old) = self.develop_of(id) else { return (Vec::new(), Vec::new()) };
+        let masks_changed = old.masks != new.masks;
         let mut old_json = old.to_json();
         let mut new_json = new.to_json();
         // False is omitted from stored profile JSON. Keep it explicit for this comparison so
@@ -1232,13 +1248,10 @@ impl Session {
         // Compare actual HDR leaves even when persisted defaults omit the whole HDR object.
         old_json["hdr"] = serde_json::json!(old.hdr);
         new_json["hdr"] = serde_json::json!(new.hdr);
-        let Some(mut delta) = json_delta(&old_json, &new_json) else { return Vec::new() };
+        let mut delta = json_delta(&old_json, &new_json).unwrap_or_else(|| Value::Object(Default::default()));
         if let Some(o) = delta.as_object_mut() {
-            for k in ["spots", "red_eye", "version", "process"] {
+            for k in ["spots", "red_eye", "version", "process", "masks"] {
                 o.remove(k);
-            }
-            if o.is_empty() {
-                return Vec::new();
             }
             // White balance travels whole (mode, temperature, tint and the scale they were written on), as
             // Sync copies it: a lone `temp` landing on a photo still on the legacy relative scale (6500 K = as
@@ -1247,24 +1260,38 @@ impl Session {
                 o.insert("wb".into(), serde_json::json!(new.wb));
             }
         }
+        let settings_changed = delta.as_object().is_some_and(|o| !o.is_empty());
+        if !settings_changed && !masks_changed {
+            return (Vec::new(), Vec::new());
+        }
         let wb_changed = delta.get("wb").is_some();
         let ainfo = self.source_info(id);
-        self.selection
+        let mut compute = Vec::new();
+        let ops = self
+            .selection
             .ids
             .iter()
             .filter(|x| **x != id)
             .filter_map(|x| self.develop_of(*x).map(|d| (*x, d)))
             .filter_map(|(x, d)| {
-                let mut synced = lcc_develop::apply_partial(&d, &delta, 1.0);
+                let mut synced = if settings_changed { lcc_develop::apply_partial(&d, &delta, 1.0) } else { (*d).clone() };
                 if wb_changed {
                     // each photo on its own scale: Kelvin on a raw with one, relative elsewhere
                     lcc_pipeline::local::normalize_wb(&mut synced, &self.source_info(x));
                     sync_same::synced_wb(&ainfo, &old, new, &self.source_info(x), &d, own_auto.get(&x).copied(), &mut synced);
                 }
+                if masks_changed {
+                    let (masks, needs) = lcc_develop::recipe::sync_masks(&old.masks, &new.masks, &d.masks, self.photo_aspect(x));
+                    synced.masks = masks;
+                    if needs {
+                        compute.push(x);
+                    }
+                }
                 let synced = self.fit_constrained_crop(x, synced);
                 (synced != *d).then(|| self.develop_op(x, synced, label)).flatten()
             })
-            .collect()
+            .collect();
+        (ops, compute)
     }
 
     /// Auto Sync carries an edit of photo `id` labelled `label` to the other selected photos: it is
@@ -1828,6 +1855,8 @@ mod tests_albums_local;
 mod tests_auto_mask_range;
 #[cfg(test)]
 mod tests_autosync_wb;
+#[cfg(test)]
+mod tests_autosync;
 #[cfg(test)]
 mod tests_camera_profile_defaults;
 #[cfg(test)]

@@ -264,6 +264,173 @@ impl Mask {
         };
         strip(self) == strip(other)
     }
+
+    /// The same selection as `other`: the same components (by [`component_key`]) and inversion,
+    /// whatever the adjustments, names and computed parts.
+    fn same_selection(&self, other: &Mask) -> bool {
+        self.invert == other.invert
+            && self.components.len() == other.components.len()
+            && self.components.iter().zip(&other.components).all(|(a, b)| component_key(a) == component_key(b))
+    }
+
+    /// The mask as it travels to another photo: its AI components as recipes (computed there) and
+    /// an Object's clicks dropped (they point at this photo's pixels: the object is picked again
+    /// on each photo).
+    pub fn for_other_photo(&mut self, aspect: f64) {
+        self.strip_ai(aspect);
+        for c in &mut self.components {
+            clear_clicks(c);
+        }
+    }
+}
+
+/// Drop an Object component's clicks (see [`Mask::for_other_photo`]).
+fn clear_clicks(c: &mut crate::MaskComponent) {
+    if let MaskShape::Object { hint, exclude, .. } = &mut c.shape {
+        hint.clear();
+        exclude.clear();
+    }
+}
+
+/// What a component selects, for matching it across photos: its recipe, without what was
+/// computed for one photo (segmentations, anchor boxes) and without an Object's clicks (each
+/// photo has its own).
+fn component_key(c: &crate::MaskComponent) -> crate::MaskComponent {
+    let mut c = c.clone();
+    c.shape = c.shape.recipe();
+    if let Some(a) = &mut c.anchor {
+        a.bounds = None;
+        // the placed shape follows from the anchor
+        c.shape = MaskShape::Linear { start: Point::new(0.0, 0.0), end: Point::new(0.0, 0.0) };
+    }
+    clear_clicks(&mut c);
+    c
+}
+
+/// The other photo's counterpart of mask `m` among `masks`: the same id with the same selection
+/// or name, else one with the same selection and name (a mask Auto Sync carried over earlier).
+fn counterpart(m: &Mask, masks: &[Mask]) -> Option<usize> {
+    masks
+        .iter()
+        .position(|t| t.id == m.id && (t.same_selection(m) || t.name == m.name))
+        .or_else(|| masks.iter().position(|t| t.same_selection(m) && t.name == m.name))
+}
+
+/// The fields of `new` that differ from `old`, set on `target` (each a whole value: an
+/// adjustment slider, a curve), so the other photo keeps the rest of its own.
+fn carry_fields<T: Serialize + serde::de::DeserializeOwned + Clone>(old: &T, new: &T, target: &T) -> T {
+    let (Ok(serde_json::Value::Object(o)), Ok(serde_json::Value::Object(n)), Ok(serde_json::Value::Object(mut t))) =
+        (serde_json::to_value(old), serde_json::to_value(new), serde_json::to_value(target))
+    else {
+        return new.clone();
+    };
+    for (k, v) in &n {
+        if o.get(k) != Some(v) {
+            t.insert(k.clone(), v.clone());
+        }
+    }
+    for k in o.keys() {
+        if !n.contains_key(k) {
+            t.remove(k);
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(t)).unwrap_or_else(|_| new.clone())
+}
+
+/// Auto Sync of a masks edit on one photo (`old` → `new`) onto another photo's `target` masks
+/// (whose image is `aspect` = width / height, oriented), merged rather than copied over:
+///
+/// - a mask added is added (its AI parts as recipes, computed on that photo; an Object without
+///   clicks, picked again there);
+/// - a mask changed changes its counterpart there: only the settings that changed, and only the
+///   components whose recipe changed are replaced (as recipes), so the other photo keeps its own
+///   computed selections; a change of computed parts only (an AI mask recomputed) carries nothing;
+/// - a mask deleted deletes its counterpart;
+/// - the other photo's own masks stay.
+///
+/// Returns the merged masks and whether any component now needs computing on that photo.
+pub fn sync_masks(old: &[Mask], new: &[Mask], target: &[Mask], aspect: f64) -> (Vec<Mask>, bool) {
+    let mut out = target.to_vec();
+    let mut compute = false;
+    for o in old.iter().filter(|o| !new.iter().any(|n| n.id == o.id)) {
+        if let Some(k) = counterpart(o, &out) {
+            out.remove(k);
+        }
+    }
+    for n in new {
+        let old_one = old.iter().find(|o| o.id == n.id);
+        if old_one == Some(n) {
+            continue;
+        }
+        let at = old_one.and_then(|o| counterpart(o, &out));
+        let (Some(o), Some(k)) = (old_one, at) else {
+            // new here (or its counterpart was deleted): added as a recipe
+            let mut m = n.clone();
+            m.for_other_photo(aspect);
+            if out.iter().any(|t| t.id == m.id) {
+                m.id = out.iter().map(|t| t.id).max().unwrap_or(0).saturating_add(1);
+            }
+            compute |= m.needs_compute();
+            out.push(m);
+            continue;
+        };
+        let Some(t) = out.get_mut(k) else { continue };
+        let mut m = t.clone();
+        if o.name != n.name {
+            m.name = n.name.clone();
+        }
+        if o.visible != n.visible {
+            m.visible = n.visible;
+        }
+        if o.invert != n.invert {
+            m.invert = n.invert;
+        }
+        if o.refine != n.refine {
+            m.refine = n.refine;
+        }
+        if o.preset != n.preset {
+            m.preset = n.preset.clone();
+        }
+        if o.adjust != n.adjust {
+            m.adjust = carry_fields(&o.adjust, &n.adjust, &t.adjust);
+        }
+        if o.curve != n.curve {
+            m.curve = n.curve.clone();
+        }
+        if o.point_colors != n.point_colors {
+            m.point_colors = n.point_colors.clone();
+        }
+        if o.mixer != n.mixer {
+            m.mixer = n.mixer;
+        }
+        if o.feather != n.feather {
+            m.feather = n.feather;
+        }
+        let keys_old: Vec<_> = o.components.iter().map(component_key).collect();
+        let keys_new: Vec<_> = n.components.iter().map(component_key).collect();
+        if keys_old != keys_new {
+            // each component the other photo already has (the same recipe) keeps its own
+            // computed selection; the rest come over as recipes
+            let mut own: Vec<Option<crate::MaskComponent>> = t.components.iter().cloned().map(Some).collect();
+            m.components = n
+                .components
+                .iter()
+                .zip(&keys_new)
+                .map(|(c, key)| {
+                    let reuse = own.iter_mut().find(|x| x.as_ref().is_some_and(|x| component_key(x) == *key)).and_then(Option::take);
+                    reuse.unwrap_or_else(|| {
+                        let mut one = Mask { components: vec![c.clone()], ..Mask::default() };
+                        one.for_other_photo(aspect);
+                        let c = one.components.into_iter().next().unwrap_or_else(|| c.clone());
+                        compute |= (c.shape.is_ai() && !c.shape.has_seg()) || c.anchor.as_ref().is_some_and(|a| a.bounds.is_none());
+                        c
+                    })
+                })
+                .collect();
+        }
+        *t = m;
+    }
+    (out, compute)
 }
 
 #[cfg(test)]

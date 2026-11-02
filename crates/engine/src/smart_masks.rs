@@ -63,6 +63,15 @@ pub struct Completed {
 }
 
 impl Session {
+    /// Width / height of photo `id` as masks see it (oriented); 3:2 when unknown.
+    pub fn photo_aspect(&self, id: PhotoId) -> f64 {
+        self.catalog.photo(id).map_or(1.5, |p| {
+            let (w, h) = (f64::from(p.width.max(1)), f64::from(p.height.max(1)));
+            let a = if p.develop.orientation.swaps_axes() { h / w } else { w / h };
+            if a.is_finite() && a > 0.0 { a } else { 1.5 }
+        })
+    }
+
     /// The 1-based place (from the left) of `who` on photo `id`, `0` (everyone) and why when
     /// they aren't found.
     fn person_index(&mut self, id: PhotoId, who: &Who, faces: &[Face]) -> (u32, Option<String>) {
@@ -81,10 +90,7 @@ impl Session {
     pub fn complete_recipes(&mut self, id: PhotoId, d: &mut DevelopSettings) -> Completed {
         let faces = faces(self, id);
         let mut out = Completed::default();
-        let aspect = self.catalog.photo(id).map_or(1.5, |p| {
-            let (w, h) = (f64::from(p.width.max(1)), f64::from(p.height.max(1)));
-            if p.develop.orientation.swaps_axes() { h / w } else { w / h }
-        });
+        let aspect = self.photo_aspect(id);
         for m in &mut d.masks {
             for c in &mut m.components {
                 if let MaskShape::People { person, who: Some(who), .. } = &mut c.shape {
