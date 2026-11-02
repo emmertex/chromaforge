@@ -9,6 +9,10 @@ use lcc_pipeline::finish::{CURVE_LUT_N, FinishParams, MASK_TERMS, srgb_lut};
 /// Entries per tone-curve table (`lcc_pipeline::finish` builds them at this size).
 pub const CURVE_N: u32 = CURVE_LUT_N as u32;
 
+/// Words per mask in the local Point Color records: the number of samples, then up to 8 samples of
+/// [`POINT_WORDS`].
+pub const LOCAL_POINT_WORDS: usize = 1 + 8 * POINT_WORDS;
+
 /// Field name and number of 32-bit words.
 const FIELDS: &[(&str, usize)] = &[
     ("W", 1),
@@ -20,6 +24,9 @@ const FIELDS: &[(&str, usize)] = &[
     ("CURVES", 1),
     // the masks' local Curves: a slot per mask (its table set, or −1), then the table sets
     ("LCURVE_OFF", 1),
+    // the masks' local Point Color: one record of `LOCAL_POINT_WORDS` per mask in `aux`
+    ("LPOINTS", 1),
+    ("LPOINT_OFF", 1),
     ("LCURVES", 1),
     ("GAIN", 1),
     ("EV", 1),
@@ -197,6 +204,19 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     for l in curves.iter().take(masks.len()).flatten().flatten() {
         aux.extend_from_slice(&l.v);
     }
+    // local Point Color: one record per mask (only when the lists line up, as on the CPU)
+    let lpoints = !fp.local_points.is_empty() && fp.local_points.len() == masks.len();
+    let lpoint_off = aux.len();
+    if lpoints {
+        for points in &fp.local_points {
+            let mut rec = [0.0f32; LOCAL_POINT_WORDS];
+            rec[0] = points.len().min(8) as f32;
+            for (slot, v) in rec.iter_mut().skip(1).zip(points.iter().take(8).flat_map(|k| k.words())) {
+                *slot = v;
+            }
+            aux.extend_from_slice(&rec);
+        }
+    }
 
     let mut p = Block::new();
     p.u("W", fp.w as u32);
@@ -208,6 +228,8 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     p.b("CURVES", fp.curves.is_some());
     p.u("LCURVE_OFF", lcurve_off as u32);
     p.b("LCURVES", next > 0.0);
+    p.b("LPOINTS", lpoints);
+    p.u("LPOINT_OFF", lpoint_off as u32);
     p.f("REFINE_SAT", fp.refine_sat);
     p.f("GAIN", fp.gain);
     p.f("EV", fp.ev);

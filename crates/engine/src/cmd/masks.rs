@@ -1,6 +1,6 @@
 //! Masking and Remove (spot) commands on the active photo.
 
-use lcc_develop::{BrushStroke, LocalAdjustments, MAX_RED_EYES, Mask, MaskComponent, MaskOp, MaskShape, RedEye, Spot, SpotMode};
+use lcc_develop::{BrushStroke, LocalAdjustments, MAX_POINT_COLORS, MAX_RED_EYES, Mask, MaskComponent, MaskOp, MaskShape, PointColor, RedEye, Spot, SpotMode};
 use lcc_geom::Point;
 use serde_json::{Value, json};
 
@@ -706,6 +706,80 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
+        cmd!(
+            "mask.pointColorPick",
+            "Add Mask Point Color Sample",
+            [],
+            None,
+            "{id?, x, y} normalized image coords — samples the colour there into the mask's local Point Color (max 8); returns {index, lum, chroma, hue}",
+            has_active,
+            |s, p| {
+                let c = "mask.pointColorPick";
+                let (x, y) = (super::f64_req(p, "x", c)?, super::f64_req(p, "y", c)?);
+                let mid = mask_id(p, s.active_mask, c)?;
+                let [l, ch, h] = super::color::encoded_to_oklch(super::color::probe(s, c, x, y, super::color::after_mixer_neutral)?);
+                let sample = PointColor { lum: l as f64, chroma: ch as f64, hue: (h as f64).to_degrees().rem_euclid(360.0), ..Default::default() };
+                let mut index = 0;
+                masks_edit(s, c, "Mask Point Color", |masks, _| {
+                    let i = find(masks, mid, c)?;
+                    let m = masks.get_mut(i).ok_or_else(|| bad(c, format!("no mask {mid}")))?;
+                    if m.point_colors.len() >= MAX_POINT_COLORS {
+                        return Err(bad(c, format!("at most {MAX_POINT_COLORS} point colours per mask")));
+                    }
+                    m.point_colors.push(sample);
+                    index = m.point_colors.len() - 1;
+                    Ok(())
+                })?;
+                Ok(json!({"index": index, "lum": sample.lum, "chroma": sample.chroma, "hue": sample.hue}))
+            }
+        ),
+        cmd!(
+            "mask.pointColorSet",
+            "Set Mask Point Color",
+            [],
+            None,
+            "{id?, index, values: {hue_shift, sat_shift, lum_shift, variance, range, hue_range, sat_range, lum_range}} — changes one of the mask's Point Color samples (shifts and variance −100..100, ranges 0..100)",
+            has_active,
+            |s, p| {
+                let c = "mask.pointColorSet";
+                let k = super::index_req(p, "index", c)?;
+                let vals = p.get("values").cloned().ok_or_else(|| bad(c, "missing values"))?;
+                let mid = mask_id(p, s.active_mask, c)?;
+                masks_edit(s, c, "Mask Point Color", |masks, _| {
+                    let i = find(masks, mid, c)?;
+                    let m = masks.get_mut(i).ok_or_else(|| bad(c, format!("no mask {mid}")))?;
+                    let pc = m.point_colors.get_mut(k).ok_or_else(|| bad(c, "no such sample"))?;
+                    let mut v = serde_json::to_value(*pc).unwrap_or_default();
+                    lcc_develop::presets::deep_merge(&mut v, &vals);
+                    let mut n: PointColor = serde_json::from_value(v).map_err(|e| bad(c, e.to_string()))?;
+                    // the sampled colour stays; the adjustments keep to their ranges (NaN → 0)
+                    let clamp = |v: f64, lo: f64, hi: f64| if v.is_finite() { v.clamp(lo, hi) } else { 0.0 };
+                    (n.lum, n.chroma, n.hue) = (pc.lum, pc.chroma, pc.hue);
+                    for f in [&mut n.hue_shift, &mut n.sat_shift, &mut n.lum_shift, &mut n.variance] {
+                        *f = clamp(*f, -100.0, 100.0);
+                    }
+                    for f in [&mut n.range, &mut n.hue_range, &mut n.sat_range, &mut n.lum_range] {
+                        *f = clamp(*f, 0.0, 100.0);
+                    }
+                    *pc = n;
+                    Ok(())
+                })
+            }
+        ),
+        cmd!("mask.pointColorDelete", "Delete Mask Point Color Sample", [], None, "{id?, index}", has_active, |s, p| {
+            let c = "mask.pointColorDelete";
+            let k = super::index_req(p, "index", c)?;
+            let mid = mask_id(p, s.active_mask, c)?;
+            masks_edit(s, c, "Delete Mask Point Color", |masks, _| {
+                let i = find(masks, mid, c)?;
+                let m = masks.get_mut(i).ok_or_else(|| bad(c, format!("no mask {mid}")))?;
+                if k >= m.point_colors.len() {
+                    return Err(bad(c, "no such sample"));
+                }
+                m.point_colors.remove(k);
+                Ok(())
+            })
+        }),
         cmd!("mask.select", "Select Mask", [], None, "{id|null}", has_active, |s, p| {
             s.active_mask = mask_id_param(p, "mask.select")?;
             ok()

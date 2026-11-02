@@ -99,13 +99,22 @@ fn band_weights(h: f32) -> array<f32, 8> {
 // `PointK::apply` for Point Color sample `k` (OkLCh in, OkLCh out).
 fn point_color(k: u32, lch: vec3<f32>) -> vec3<f32> {
     let o = F_PC + k * POINT_WORDS;
-    let sl = pf(o);
-    let sc = pf(o + 1u);
-    let sh = pf(o + 2u);
-    let var_k = pf(o + 6u);
-    let wh_ = pf(o + 7u);
-    let wc_ = pf(o + 8u);
-    let wl_ = pf(o + 9u);
+    var w: array<f32, POINT_WORDS>;
+    for (var j = 0u; j < POINT_WORDS; j++) {
+        w[j] = pf(o + j);
+    }
+    return point_apply(w, lch, 1.0);
+}
+
+// `PointK::apply_scaled`: the sample's words `pw` (`PointK::words`) at `strength`.
+fn point_apply(pw: array<f32, POINT_WORDS>, lch: vec3<f32>, strength: f32) -> vec3<f32> {
+    let sl = pw[0];
+    let sc = pw[1];
+    let sh = pw[2];
+    let var_k = pw[6];
+    let wh_ = pw[7];
+    let wc_ = pw[8];
+    let wl_ = pw[9];
     var l = lch.x;
     var c = lch.y;
     var h = lch.z;
@@ -118,15 +127,50 @@ fn point_color(k: u32, lch: vec3<f32>) -> vec3<f32> {
     }
     let wc = 1.0 - sstep(0.5 * wc_, wc_, abs(c - sc));
     let wl = 1.0 - sstep(0.5 * wl_, wl_, abs(l - sl));
-    let w = wh * wc * wl;
+    let w = wh * wc * wl * strength;
     if (w <= 0.0) {
         return lch;
     }
-    h += w * (var_k * wrap_angle(h - sh) + pf(o + 3u));
+    h += w * (var_k * wrap_angle(h - sh) + pw[3]);
     c += w * var_k * (c - sc);
-    c = max(c * (1.0 + w * pf(o + 4u)), 0.0);
-    l += w * (var_k * (l - sl) + pf(o + 5u));
+    c = max(c * (1.0 + w * pw[4]), 0.0);
+    l += w * (var_k * (l - sl) + pw[5]);
     return vec3<f32>(l, c, h);
+}
+
+// `finish::local_point_colors`: each mask's Point Color samples at the mask's opacity (at most 1).
+fn local_point_colors(d: vec3<f32>, i: u32, n: u32) -> vec3<f32> {
+    var lch = vec3<f32>(0.0);
+    var any = false;
+    for (var m = 0u; m < pu(F_NMASK); m++) {
+        let rec = pu(F_LPOINT_OFF) + m * LOCAL_POINT_WORDS;
+        let np = min(u32(aux[rec]), 8u);
+        if (np == 0u) {
+            continue;
+        }
+        let a = min(masks[m * n + i], 1.0);
+        if (a <= 0.0) {
+            continue;
+        }
+        if (!any) {
+            let lab = oklab(d);
+            let c0 = sqrt(lab.y * lab.y + lab.z * lab.z);
+            // (atan2(0, 0) is undefined in WGSL: a neutral pixel's hue is 0, as on the CPU)
+            lch = vec3<f32>(lab.x, c0, select(atan2(lab.z, lab.y), 0.0, c0 == 0.0));
+            any = true;
+        }
+        for (var k = 0u; k < np; k++) {
+            var w: array<f32, POINT_WORDS>;
+            for (var j = 0u; j < POINT_WORDS; j++) {
+                w[j] = aux[rec + 1u + k * POINT_WORDS + j];
+            }
+            lch = point_apply(w, lch, a);
+        }
+    }
+    if (!any) {
+        return d;
+    }
+    return oklab_inv(vec3<f32>(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z)));
 }
 
 // `ColorOps::apply`.
@@ -552,6 +596,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // --- colour
     d = color_ops(d, lt[11], lt[12]);
+    if (pu(F_LPOINTS) != 0u) {
+        d = local_point_colors(d, i, n);
+    }
     if (tint_on) {
         let lab = oklab(d);
         d = oklab_inv(vec3<f32>(lab.x, lab.y + tint_dir.x * 0.08 * tint_amt, lab.z + tint_dir.y * 0.08 * tint_amt));

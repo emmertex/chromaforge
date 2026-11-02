@@ -521,6 +521,28 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 ),
             ];
         }),
+        ("masks (local point color)", |s| {
+            use lcc_develop::PointColor;
+            let radial = MaskShape::Radial { center: Point::new(0.45, 0.5), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: false };
+            let linear = MaskShape::Linear { start: Point::new(0.5, 0.1), end: Point::new(0.5, 0.8) };
+            let m = |shape, point_colors| Mask {
+                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+                point_colors,
+                ..Default::default()
+            };
+            s.masks = vec![
+                m(
+                    radial,
+                    vec![
+                        PointColor { lum: 0.62, chroma: 0.09, hue: 60.0, hue_shift: 40.0, sat_shift: -30.0, lum_shift: 20.0, range: 80.0, ..Default::default() },
+                        PointColor { lum: 0.4, chroma: 0.01, hue: 0.0, lum_shift: -30.0, ..Default::default() },
+                    ],
+                ),
+                // a mask without samples in between: its record is empty
+                m(linear.clone(), Vec::new()),
+                m(linear, vec![PointColor { lum: 0.5, chroma: 0.12, hue: 270.0, variance: -60.0, sat_shift: 40.0, hue_range: 80.0, ..Default::default() }]),
+            ];
+        }),
         ("calibration", |s| {
             s.calibration.shadows_tint = 40.0;
             s.calibration.red_hue = 50.0;
@@ -534,6 +556,27 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.optics.defringe_purple_amount = 5.0;
         }),
     ]
+}
+
+/// A mask's local Point Color is drawn by the kernel, as the CPU draws it.
+#[test]
+fn local_point_colors_render_on_the_gpu() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 480, 320);
+    let (raw, req) = (SourceInfo { raw: true, ..Default::default() }, RenderRequest::fit(480, 480));
+    let mut s = DevelopSettings::default();
+    let edit = cases().into_iter().find(|(name, _)| *name == "masks (local point color)").map(|c| c.1).unwrap();
+    edit(&mut s);
+    check("local point color", &src, &raw, &s, &req);
+    let with = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    for m in &mut s.masks {
+        m.point_colors.clear();
+    }
+    let without = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    let (mean, max, _) = diff(&with, &without);
+    assert!(mean > 0.2 && max > 10, "the samples change the GPU render: mean {mean:.2}, max {max}");
 }
 
 /// A mask's local Curve is drawn by the kernel (not left out, nor handed to the CPU), as the CPU draws it.

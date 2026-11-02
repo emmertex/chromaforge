@@ -276,6 +276,9 @@ pub struct FinishParams {
     pub lut: Option<(std::sync::Arc<crate::lut::Lut3d>, f32)>,
     pub tone: ToneMap,
     pub ops: ColorOps,
+    /// The masks' local Point Color samples, one list per evaluated mask (empty when none has any,
+    /// [`crate::colorops::mask_point_ks`]).
+    pub local_points: Vec<Vec<crate::colorops::PointK>>,
     /// Calibration: primaries matrix (row-major, linear Rec.2020) and shadows tint (−1..1).
     pub calib: Option<[[f32; 3]; 3]>,
     pub shadow_tint: f32,
@@ -381,6 +384,7 @@ impl FinishParams {
             tone: base_tone(s, info, peak),
             lut: crate::lut::get(&s.profile.id).map(|l| (l, (s.profile.amount / 100.0).clamp(0.0, 2.0) as f32)),
             ops: ColorOps::new(s),
+            local_points: crate::colorops::mask_point_ks(s),
             curves: curve_luts(&s.curve),
             refine_sat: (s.curve.refine_saturation / 100.0).clamp(0.0, 1.0) as f32,
             vig: if effects { vignette(s) } else { None },
@@ -613,6 +617,8 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let (sharpen_limit, sharpen_fade) = (*sharpen_limit, *sharpen_fade);
     let mut terms: Vec<[f32; MASK_TERMS]> = p.masks.iter().map(|m| mask_terms(&m.adjust)).collect();
     with_tone(&mut terms, &p.mask_tone);
+    // (only when it lines up with the evaluated masks, which it does unless a caller mixed settings)
+    let local_points: &[Vec<crate::colorops::PointK>] = if fp.local_points.len() == p.masks.len() { &fp.local_points } else { &[] };
     let local_curves: Vec<_> = p.masks.iter().filter_map(|m| Some((m, m.curve.as_ref()?))).collect();
     let out_to_norm = fp.out_to_norm;
     let long = fp.ow.max(fp.oh);
@@ -821,6 +827,10 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
 
             // --- colour
             d = ops.apply(d, l_sat, l_hue);
+            // local Point Color: each mask's samples at the mask's opacity
+            if !local_points.is_empty() {
+                d = local_point_colors(d, i, &p.masks, local_points);
+            }
             if let Some((dir, amt)) = tint_col {
                 let lab = lcc_color::perceptual::oklab_from_2020(d);
                 d = lcc_color::perceptual::oklab_to_2020([lab[0], lab[1] + dir[0] * 0.08 * amt, lab[2] + dir[1] * 0.08 * amt]);
@@ -950,6 +960,29 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
         }
     });
     out
+}
+
+/// The masks' local Point Color on display-linear Rec.2020 colour `d` of pixel `i`: each mask's
+/// samples in turn, at the mask's opacity there (at most 1).
+#[inline]
+fn local_point_colors(d: [f32; 3], i: usize, masks: &[crate::masks::Evaluated], local: &[Vec<crate::colorops::PointK>]) -> [f32; 3] {
+    use lcc_color::perceptual::{lab_to_lch, lch_to_lab, oklab_from_2020, oklab_to_2020};
+    let mut lch: Option<[f32; 3]> = None;
+    for (m, points) in masks.iter().zip(local) {
+        if points.is_empty() {
+            continue;
+        }
+        let a = m.alpha.data.get(i).copied().unwrap_or(0.0).min(1.0);
+        if a <= 0.0 {
+            continue;
+        }
+        let mut v = lch.unwrap_or_else(|| lab_to_lch(oklab_from_2020(d)));
+        for k in points {
+            v = k.apply_scaled(v, a);
+        }
+        lch = Some(v);
+    }
+    lch.map_or(d, |v| oklab_to_2020(lch_to_lab(v)))
 }
 
 /// A colour needing more desaturation than this (scale < `GAMUT_WARN`) to fit is out of gamut for

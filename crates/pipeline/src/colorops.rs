@@ -115,8 +115,14 @@ impl PointK {
     /// Apply this sample's adjustment to an OkLCh colour.
     #[inline]
     pub fn apply(&self, lch: [f32; 3]) -> [f32; 3] {
+        self.apply_scaled(lch, 1.0)
+    }
+
+    /// [`Self::apply`] at `strength` 0..1 (a mask's opacity there: its local Point Color).
+    #[inline]
+    pub fn apply_scaled(&self, lch: [f32; 3], strength: f32) -> [f32; 3] {
         let [mut l, mut c, mut h] = lch;
-        let w = self.weight(l, c, h);
+        let w = self.weight(l, c, h) * strength;
         if w <= 0.0 {
             return lch;
         }
@@ -126,6 +132,23 @@ impl PointK {
         l += w * (self.var * (l - self.l) + self.dl);
         [l, c, h]
     }
+}
+
+/// The Point Color samples of `points` that change something, resolved (at most
+/// [`lcc_develop::MAX_POINT_COLORS`]).
+pub fn point_ks(points: &[PointColor]) -> Vec<PointK> {
+    points.iter().take(lcc_develop::MAX_POINT_COLORS).filter(|p| !p.is_neutral()).map(PointK::new).collect()
+}
+
+/// The masks' local Point Color samples, one list per mask the per-pixel stage evaluates (visible,
+/// with components: the order of [`crate::masks::evaluate`]); empty when no mask has any, and in a
+/// black-and-white rendition (Point Color does nothing there, as globally).
+pub fn mask_point_ks(s: &DevelopSettings) -> Vec<Vec<PointK>> {
+    if crate::is_bw(s) {
+        return Vec::new();
+    }
+    let v: Vec<Vec<PointK>> = s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).map(|m| point_ks(&m.point_colors)).collect();
+    if v.iter().all(Vec::is_empty) { Vec::new() } else { v }
 }
 
 /// The colour tools' parameters, resolved once per render (fields are read by the GPU kernel).
@@ -166,7 +189,7 @@ impl ColorOps {
             points: if crate::is_bw(s) {
                 Vec::new()
             } else {
-                s.point_colors.iter().take(lcc_develop::MAX_POINT_COLORS).filter(|p| !p.is_neutral()).map(PointK::new).collect()
+                point_ks(&s.point_colors)
             },
             bw: crate::is_bw(s).then(|| s.bw_mix.bands().map(|v| (v / 100.0) as f32)),
             grading: (!g.is_neutral()).then(|| {

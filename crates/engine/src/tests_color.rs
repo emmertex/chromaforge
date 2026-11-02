@@ -489,3 +489,35 @@ fn one_field_wb_preset_apply_keeps_the_other_field_on_its_scale() {
     let back = (*s.develop_of(kelvin).unwrap()).clone();
     assert_eq!(back.wb, look.wb, "a preset made from the photo puts its whole white balance back: {:?} vs {:?}", back.wb, look.wb);
 }
+
+/// A mask's local Point Color: picked into the mask, adjusted, rendered only inside it, deleted;
+/// hostile arguments are errors.
+#[test]
+fn mask_point_color_pick_set_and_delete() {
+    let mut s = demo();
+    let id = s.active().unwrap();
+    // a mask over the top half (the sky)
+    s.execute("mask.add", &json!({"kind": "linear", "start": [0.5, 0.45], "end": [0.5, 0.55]})).unwrap();
+    let before = s.render_now(id, 384, 384).unwrap().image;
+    let r = s.execute("mask.pointColorPick", &json!({"x": 0.5, "y": 0.08})).unwrap();
+    assert_eq!(r["index"], 0);
+    let d = active_dev(&s);
+    assert!(d.point_colors.is_empty(), "the photo's own Point Color is untouched");
+    assert_eq!(d.masks[0].point_colors.len(), 1);
+    s.execute("mask.pointColorSet", &json!({"index": 0, "values": {"sat_shift": -500, "lum": 9.0}})).unwrap();
+    let pc = active_dev(&s).masks[0].point_colors[0];
+    assert_eq!(pc.sat_shift, -100.0, "clamped");
+    assert_eq!(pc.lum, d.masks[0].point_colors[0].lum, "the sampled colour stays");
+    let after = s.render_now(id, 384, 384).unwrap().image;
+    assert!(chroma_at(&after, 0.5, 0.08) + 8 < chroma_at(&before, 0.5, 0.08), "the sky inside the mask loses colour");
+    for bad in [json!({"index": 3, "values": {}}), json!({"index": -1, "values": {}}), json!({"index": 0}), json!({"id": 999, "index": 0, "values": {}})] {
+        assert!(s.execute("mask.pointColorSet", &bad).is_err(), "{bad}");
+    }
+    assert!(s.execute("mask.pointColorDelete", &json!({"index": 5})).is_err());
+    for _ in 1..lcc_develop::MAX_POINT_COLORS {
+        s.execute("mask.pointColorPick", &json!({"x": 0.3, "y": 0.1})).unwrap();
+    }
+    assert!(s.execute("mask.pointColorPick", &json!({"x": 0.3, "y": 0.1})).is_err(), "at most 8");
+    s.execute("mask.pointColorDelete", &json!({"index": 0})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].point_colors.len(), lcc_develop::MAX_POINT_COLORS - 1);
+}

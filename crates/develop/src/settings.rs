@@ -86,6 +86,7 @@ impl DevelopSettings {
             || self.spots.iter().any(|sp| over(sp.points.len(), MAX_SPOT_POINTS))
             || self.masks.iter().any(|m| {
                 over(m.components.len(), MAX_MASK_COMPONENTS)
+                    || over(m.point_colors.len(), MAX_POINT_COLORS)
                     || m.components.iter().any(|comp| match &comp.shape {
                         MaskShape::Brush { strokes } => {
                             over(strokes.len(), MAX_STROKES)
@@ -116,6 +117,7 @@ impl DevelopSettings {
         }
         for m in &mut self.masks {
             m.components.truncate(MAX_MASK_COMPONENTS);
+            m.point_colors.truncate(MAX_POINT_COLORS);
             for comp in &mut m.components {
                 match &mut comp.shape {
                     MaskShape::Brush { strokes } => {
@@ -1424,6 +1426,10 @@ pub struct Mask {
     /// no points, so masks without one keep their JSON (and every cached preview its `hash64`).
     #[serde(skip_serializing_if = "PointCurves::is_empty")]
     pub curve: PointCurves,
+    /// The local Point Color: up to [`MAX_POINT_COLORS`] samples, applied inside the mask after the
+    /// photo's colour tools, weighted by the mask. Not written while empty.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "capped::<MAX_POINT_COLORS, _, _>")]
+    pub point_colors: Vec<PointColor>,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -1442,6 +1448,7 @@ impl Default for Mask {
             refine: 0.0,
             feather: 0.0,
             curve: PointCurves::default(),
+            point_colors: Vec::new(),
         }
     }
 }
