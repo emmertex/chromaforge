@@ -501,16 +501,17 @@ fn unpack(zip: &Path, stage: &Path, exe_name: &str) -> Result<Vec<PathBuf>, Upda
     let mut entries: Vec<(usize, PathBuf)> = Vec::new();
     for i in 0..archive.len() {
         let entry = archive.by_index(i).map_err(|e| install_error(format!("the update zip is damaged: {e}")))?;
+        let name = entry.name().map_err(|e| install_error(format!("the update zip is damaged: {e}")))?;
         let Some(path) = entry.enclosed_name() else {
-            return Err(install_error(format!("the update zip names a file outside its folder ({:?})", entry.name())));
+            return Err(install_error(format!("the update zip names a file outside its folder ({name:?})")));
         };
         // the name as stored too: `enclosed_name` reads it with this system's rules, under which
         // `C:x` or `a\b` can look harmless on one system and not on another
-        if !entry.name().split('/').filter(|part| !part.is_empty()).all(safe_name) {
-            return Err(install_error(format!("the update zip names a file Windows can't hold as given ({:?})", entry.name())));
+        if !name.split('/').filter(|part| !part.is_empty()).all(safe_name) {
+            return Err(install_error(format!("the update zip names a file Windows can't hold as given ({name:?})")));
         }
         if entry.is_symlink() {
-            return Err(install_error(format!("the update zip holds a link ({:?})", entry.name())));
+            return Err(install_error(format!("the update zip holds a link ({name:?})")));
         }
         if entry.is_dir() || path.components().count() == 0 {
             continue;
