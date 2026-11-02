@@ -342,6 +342,20 @@ fn wheel_notches(events: &[egui::Event]) -> f32 {
 
 /// Native pinch (also modifier-wheel zoom) and two-finger scroll, scoped to this image view.
 pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, area: Rect, img: Rect, native: [usize; 2]) -> bool {
+    // While the White Balance Selector is armed, a wheel notch steps its sample size instead of zooming
+    // (OneSlips, test notes 2026-10-25 note 13); Ctrl/Cmd+wheel still zooms.
+    if app.ui.tool == "wbPicker" && !ui.input(|i| i.modifiers.command) {
+        let notches = ui.input(|i| wheel_notches(&i.events));
+        if notches != 0.0 {
+            let at = WB_SAMPLES.iter().position(|v| *v == app.ui.wb_sample).unwrap_or(2) as isize;
+            let next = (at + notches.signum() as isize).clamp(0, WB_SAMPLES.len() as isize - 1) as usize;
+            app.ui.wb_sample = WB_SAMPLES.get(next).copied().unwrap_or(5);
+            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            ui.ctx().request_repaint();
+            return true;
+        }
+    }
+
     if !resp.hovered() {
         return false;
     }
@@ -2424,8 +2438,15 @@ fn general_interaction(
             && let Some(q) = resp.interact_pointer_pos()
         {
             let n = map.norm(q);
-            let _ = app.run("develop.wbPick", json!({"x": n.x, "y": n.y, "size": app.ui.wb_sample}));
-            app.ui.tool.clear();
+            match app.run("develop.wbPick", json!({"x": n.x, "y": n.y, "size": app.ui.wb_sample})) {
+                // a clipped, near-white or near-black spot: nothing changes, the selector stays
+                // armed and says why (OneSlips, test notes 2026-10-25 note 13)
+                Ok(r) if r["applied"] == false => {
+                    let message = r["message"].as_str().unwrap_or("This spot can't be read").to_string();
+                    app.toast(ui.ctx(), crate::i18n::tr(&message));
+                }
+                _ => app.ui.tool.clear(),
+            }
         } else if let Some(q) = resp.hover_pos() {
             wb_loupe(app, ui, q, img, canvas);
         }

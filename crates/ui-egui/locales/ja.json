@@ -2815,5 +2815,8 @@
   "Rebuilds the painted area from small pieces of its surroundings, continuing lines and edges through it. For larger objects. No source to choose.": "塗った範囲を周囲の小さな断片から作り直し、線や輪郭をつなげます。大きめの物向け。コピー元の指定は不要です。",
   "Replaces the painted area using an online image service, with your own account. Nothing is sent until you click Generate.": "塗った範囲を、ご自身のアカウントのオンライン画像サービスで置き換えます。「生成」をクリックするまで何も送信されません。",
   "Copies the texture from a source and matches it to the colour and brightness around the area, so it blends in. Drag the source pin to choose the place.": "コピー元の質感を写し、範囲の周りの色と明るさに合わせてなじませます。コピー元のピンをドラッグして場所を選べます。",
-  "Copies the source exactly as it is, colour and all, with a soft edge. Drag the source pin to choose the place.": "コピー元を色も含めてそのまま、柔らかい縁で写します。コピー元のピンをドラッグして場所を選べます。"
+  "Copies the source exactly as it is, colour and all, with a soft edge. Drag the source pin to choose the place.": "コピー元を色も含めてそのまま、柔らかい縁で写します。コピー元のピンをドラッグして場所を選べます。",
+  "This spot is too dark to read its colour: click a brighter neutral area": "この場所は暗すぎて色を読み取れません。もっと明るいニュートラルな部分をクリックしてください",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "この場所は明るすぎて色を読み取れません。少し暗いニュートラルな部分をクリックしてください",
+  "This spot can't be read": "この場所は読み取れません"
 }

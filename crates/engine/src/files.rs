@@ -23,6 +23,7 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
         camera: lcc_catalog::camera_label(&camera_make, &camera_model),
         camera_make,
         camera_model,
+        camera_serial: m.serial_number.as_deref().map(str::trim).unwrap_or_default().chars().take(64).collect(),
         // (a camera that writes no lens name, like Nikon's DSLRs, still says what range the lens covers)
         lens: m.lens_model.clone().or_else(|| m.lens_spec.and_then(lcc_meta::lens_spec_name)).unwrap_or_default(),
         focal_mm: m.focal_length.map(|f| f as f32),

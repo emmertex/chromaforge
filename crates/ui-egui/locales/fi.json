@@ -2346,5 +2346,8 @@
   "Path copied": "Polku kopioitu",
   "Same Content as Another Photo": "Sama sisältö kuin toisella kuvalla",
   "{app} Effect Presets": "{app}in tehosteesiasetukset",
-  "Console: Masking and Mask are now one Masks page": "Konsoli: Maskaus ja Maski ovat nyt yksi Maskit-sivu"
+  "Console: Masking and Mask are now one Masks page": "Konsoli: Maskaus ja Maski ovat nyt yksi Maskit-sivu",
+  "This spot is too dark to read its colour: click a brighter neutral area": "Tämä kohta on liian tumma sen värin lukemiseen: napsauta kirkkaampaa neutraalia aluetta",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "Tämä kohta on liian kirkas sen värin lukemiseen: napsauta hieman tummempaa neutraalia aluetta",
+  "This spot can't be read": "Tätä kohtaa ei voi lukea"
 }

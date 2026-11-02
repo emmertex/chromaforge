@@ -167,6 +167,12 @@ struct PresetsFile {
     /// Favourite profiles, and the recently applied ones (newest first).
     profile_favorites: Vec<String>,
     profile_recent: Vec<String>,
+    /// Profiles the Profile Manager hides.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    profile_hidden: Vec<String>,
+    /// Each camera body's camera profile.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    body_profiles: std::collections::BTreeMap<String, String>,
 }
 
 /// The state presets.json was last written (or read) from. Saving checks the preset list's
@@ -179,6 +185,8 @@ struct PresetsSaved {
     folders: Vec<String>,
     profile_favorites: Vec<String>,
     profile_recent: Vec<String>,
+    profile_hidden: Vec<String>,
+    body_profiles: std::collections::BTreeMap<String, String>,
     /// Hash of the bytes written: a list borrowed mutably but left as it was isn't rewritten.
     hash: u64,
 }
@@ -190,6 +198,8 @@ impl PresetsSaved {
             folders: s.preset_folders.clone(),
             profile_favorites: s.profile_favorites.clone(),
             profile_recent: s.profile_recent.clone(),
+            profile_hidden: s.profile_hidden.clone(),
+            body_profiles: s.body_profiles.clone(),
             hash: 0,
         }
     }
@@ -200,6 +210,8 @@ impl PresetsSaved {
             || self.folders != s.preset_folders
             || self.profile_favorites != s.profile_favorites
             || self.profile_recent != s.profile_recent
+            || self.profile_hidden != s.profile_hidden
+            || self.body_profiles != s.body_profiles
     }
 }
 
@@ -360,6 +372,8 @@ fn presets_json(s: &Session) -> String {
         favorites: presets.iter().filter(|p| p.builtin && p.favorite).map(|p| p.id.clone()).collect(),
         profile_favorites: s.profile_favorites.clone(),
         profile_recent: s.profile_recent.clone(),
+        profile_hidden: s.profile_hidden.clone(),
+        body_profiles: s.body_profiles.clone(),
     };
     serde_json::to_string_pretty(&f).unwrap_or_default()
 }
@@ -680,6 +694,9 @@ impl Session {
             let known = |id: &String| crate::presets::profile(id).is_some() || self.lut_profiles.iter().any(|p| &p.id == id);
             self.profile_favorites = f.profile_favorites.into_iter().filter(known).collect();
             self.profile_recent = f.profile_recent.into_iter().filter(known).take(crate::presets::RECENT_PROFILES).collect();
+            // (a hidden id this build doesn't know is kept: a LUT folder may come back)
+            self.profile_hidden = f.profile_hidden.into_iter().take(10_000).collect();
+            self.body_profiles = f.body_profiles.into_iter().take(10_000).collect();
         }
         // view state
         if let Some(v) = settings.read::<ViewFile>(files.as_mut(), "view.json") {

@@ -64,8 +64,8 @@ const SECTIONS: &[Section] = &[
         key: "editing",
         label: "Editing",
         icon: Icon::Sliders,
-        tabs: &["denoise", "faces"],
-        words: "ai denoise model faces people recognition",
+        tabs: &["denoise", "faces", "profiles"],
+        words: "ai denoise model faces people recognition profiles hide camera body serial",
     },
     Section {
         key: "display",

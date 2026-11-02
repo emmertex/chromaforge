@@ -126,8 +126,14 @@ fn cube_files(paths: &[String]) -> (Vec<(String, String, Option<String>)>, Vec<V
                 }
             }
         } else {
+            let ext = path.extension().map(|x| x.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            // a camera profile is imported by `camera.importDcp` (see `import`): only .cube files are
+            // read as LUTs, so a .dcp is not also reported as an unreadable LUT (OneSlips)
+            if ext == "dcp" {
+                continue;
+            }
             match std::fs::read_to_string(path) {
-                Ok(t) if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("xmp")) => look(stem(path), &t, None, &mut out, &mut failed),
+                Ok(t) if ext == "xmp" => look(stem(path), &t, None, &mut out, &mut failed),
                 Ok(t) => out.push((stem(path), t, None)),
                 Err(e) => failed.push(json!([stem(path), e.to_string()])),
             }
@@ -184,7 +190,20 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     s.save_prefs()?;
     // presets that name these profiles use them now
     crate::profile_refs::refresh(s);
-    Ok(json!({"imported": imported, "failed": failed}))
+    // the user's own DNG camera profiles (.dcp) among the paths go to the camera-profile library
+    // (OneSlips: File ▸ Import Profiles and drag and drop take them too)
+    let dcps: Vec<&String> = paths.iter().filter(|p| Path::new(p).extension().is_some_and(|x| x.eq_ignore_ascii_case("dcp"))).collect();
+    let mut camera = Vec::new();
+    if !dcps.is_empty() {
+        match super::dcp_profiles::import(s, &json!({"paths": dcps})) {
+            Ok(r) => {
+                camera = r.get("imported").and_then(Value::as_array).cloned().unwrap_or_default();
+                failed.extend(r.get("failed").and_then(Value::as_array).cloned().unwrap_or_default());
+            }
+            Err(e) => failed.extend(dcps.iter().map(|p| json!([p, e.to_string()]))),
+        }
+    }
+    Ok(json!({"imported": imported, "camera": camera, "failed": failed}))
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -194,7 +213,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Profiles",
             [],
             None,
-            "{paths: [.cube file, XMP look (.xmp with crs:RGBTable), folder or .zip]} — 3D LUTs and XMP looks become creative profiles (Amount 0–200 %; rendered on the CPU) in the profile browser's groups (folder / zip name, else Imported) → {imported: [{id, name, group}], failed}",
+            "{paths: [.cube file, XMP look (.xmp with crs:RGBTable), .dcp camera profile, folder or .zip]} — 3D LUTs and XMP looks become creative profiles; .dcp files go to the camera profiles (as camera.importDcp) (Amount 0–200 %; rendered on the CPU) in the profile browser's groups (folder / zip name, else Imported) → {imported: [{id, name, group}], camera: [camera.importDcp's imported], failed}",
             always,
             import
         ),
@@ -217,4 +236,22 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"deleted": id}))
         }),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A single .dcp handed to Import Profiles is a camera profile only: it is not also read as a
+    /// .cube LUT and reported as failed (OneSlips).
+    #[test]
+    fn a_dcp_file_is_not_read_as_a_lut() {
+        let dir = std::env::temp_dir().join(format!("lut-dcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("mine.dcp");
+        std::fs::write(&f, [0x49u8, 0x49, 0x52, 0x43, 8, 0, 0, 0]).unwrap();
+        let (luts, failed) = cube_files(&[f.to_string_lossy().to_string()]);
+        assert!(luts.is_empty() && failed.is_empty(), "{luts:?} {failed:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

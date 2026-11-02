@@ -507,8 +507,16 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             control(app, ui, d, c, enabled);
         }
         sub_title(ui, crate::i18n::tr("Grain"));
-        for c in ["grain.amount", "grain.size", "grain.roughness"] {
-            control(app, ui, d, c, c == "grain.amount" || d.grain.amount != 0.0);
+        // process V7's particle grain has its own controls (OneSlips); earlier processes render the
+        // value-noise grain, which only reads Amount, Size and Roughness
+        let particles = d.process.process() == lcc_develop::Process::V7;
+        let grain: &[&str] = if particles {
+            &["grain.amount", "grain.size", "grain.sizeVariation", "grain.roughness", "grain.clumping", "grain.color", "grain.response", "grain.seed"]
+        } else {
+            &["grain.amount", "grain.size", "grain.roughness"]
+        };
+        for c in grain {
+            control(app, ui, d, c, *c == "grain.amount" || d.grain.amount != 0.0);
         }
         ui.add_space(8.0);
     });
@@ -572,7 +580,7 @@ fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, b
         let r = crate::widgets::menu_button(ui, crate::i18n::tr(g), |ui| {
             crate::menu_level::level(ui, 2, Some(below), |ui| {
                 ui.set_min_width(170.0);
-                for p in PROFILES.iter().filter(|p| p.group == g) {
+                for p in PROFILES.iter().filter(|p| p.group == g && !app.session.profile_hidden.iter().any(|h| h == p.id)) {
                     item(ui, "group", p.id, p.name, &mut pick);
                 }
             });
@@ -591,7 +599,7 @@ fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, b
         let r = crate::widgets::menu_button(ui, g.as_str(), |ui| {
             crate::menu_level::level(ui, 2, Some(below), |ui| {
                 ui.set_min_width(170.0);
-                for p in app.session.lut_profiles.iter().filter(|p| &p.group == g) {
+                for p in app.session.lut_profiles.iter().filter(|p| &p.group == g && !app.session.profile_hidden.contains(&p.id)) {
                     item(ui, "group", &p.id, &p.name, &mut pick);
                 }
             });
@@ -619,6 +627,11 @@ fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, b
     register(ui.ctx(), "profileMenu:browse", r.rect);
     if r.clicked() {
         let _ = app.run("panel.profiles", json!({}));
+    }
+    let r = ui.button(crate::i18n::tr("Manage Profiles…"));
+    register(ui.ctx(), "profileMenu:manage", r.rect);
+    if r.clicked() {
+        let _ = app.run("app.settings", json!({"tab": "profiles"}));
     }
     // resting on a profile previews it in the loupe
     if let Some(hovered_id) = &pick.1

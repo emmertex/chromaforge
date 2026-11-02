@@ -2800,5 +2800,8 @@
   "Masks panel: painting with the Brush": "ნიღბების პანელი: ფუნჯით ხატვა",
   "New mask": "ახალი ნიღაბი",
   "The console shows this page while you edit it. When you close Settings it shows the page for what {app} shows again.": "კონსოლი ამ გვერდს აჩვენებს, სანამ მას არედაქტირებთ. პარამეტრების დახურვისას ის ისევ აჩვენებს გვერდს იმისთვის, რასაც {app} აჩვენებს.",
-  "Console: Masking and Mask are now one Masks page": "კონსოლი: ნიღბვის ორი გვერდი ახლა ერთი გვერდია „ნიღბები“"
+  "Console: Masking and Mask are now one Masks page": "კონსოლი: ნიღბვის ორი გვერდი ახლა ერთი გვერდია „ნიღბები“",
+  "This spot is too dark to read its colour: click a brighter neutral area": "ეს წერტილი ზედმეტად მუქია მისი ფერის წასაკითხად: დააწკაპუნეთ უფრო ნათელ ნეიტრალურ ადგილზე",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "ეს წერტილი ზედმეტად ნათელია მისი ფერის წასაკითხად: დააწკაპუნეთ ოდნავ უფრო მუქ ნეიტრალურ ადგილზე",
+  "This spot can't be read": "ამ წერტილის წაკითხვა შეუძლებელია"
 }

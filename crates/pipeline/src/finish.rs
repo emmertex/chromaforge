@@ -281,8 +281,10 @@ pub struct FinishParams {
     pub air_pre: f32,
     pub gain: f32,
     pub ev: f32,
-    /// Grain: amount, cell size (px), roughness, seed.
+    /// Grain of processes V1–V6: amount, cell size (px), roughness, seed.
     pub grain: Option<(f32, f32, f32, u32)>,
+    /// Grain from process V7: clumps of particles ([`crate::grain`]); `grain` is then `None`.
+    pub particles: Option<crate::grain::GrainParams>,
     /// Output px → normalized oriented coordinates.
     pub out_to_norm: lcc_geom::Affine,
     pub ow: f64,
@@ -330,7 +332,12 @@ impl FinishParams {
             && frame.oh.is_finite()
             && frame.ow.max(frame.oh) > 0.0
             && out_to_norm.0.iter().all(|v| v.is_finite());
-        let grain = (s.grain.amount > 0.0 && effects && finite_frame).then(|| {
+        let v7 = match s.process.process() {
+            Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 => false,
+            Process::V7 => true,
+        };
+        let particles = if effects && finite_frame && v7 { crate::grain::GrainParams::new(&s.grain, px_per_long) } else { None };
+        let grain = (s.grain.amount > 0.0 && effects && finite_frame && !v7).then(|| {
             let cell = (0.0006 + (s.grain.size / 100.0) as f32 * 0.0024) * px_per_long as f32;
             // Grain finer than GRAIN_CELL_MIN px is drawn at that size, its amplitude scaled by the ratio of cell
             // sizes: averaging the export's grain down to this preview size reduces it by about as much, so a
@@ -371,6 +378,7 @@ impl FinishParams {
             gain,
             ev,
             grain,
+            particles,
             out_to_norm,
             ow: frame.ow,
             oh: frame.oh,
@@ -418,11 +426,13 @@ fn base_tone_at(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
     match s.process.process() {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), V5 the over-range colours
         // ([`hue_clip`]), not the tone map
-        Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 => match info.camera_tone.as_ref().filter(|_| raw) {
-            Some(curve) => ToneMap::camera_hdr(curve, l.contrast, l.whites, l.blacks, peak),
-            None if raw => ToneMap::hdr(l.contrast, l.whites, l.blacks, peak),
-            None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
-        },
+        Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 => {
+            match info.camera_tone.as_ref().filter(|_| raw) {
+                Some(curve) => ToneMap::camera_hdr(curve, l.contrast, l.whites, l.blacks, peak),
+                None if raw => ToneMap::hdr(l.contrast, l.whites, l.blacks, peak),
+                None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
+            }
+        }
     }
 }
 
@@ -570,6 +580,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
         gain,
         ev,
         grain,
+        particles,
         ..
     } = fp;
     let dehaze_v3 = *dehaze_v3;
@@ -589,8 +600,13 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let peak = fp.peak;
     let hdr = peak > 1.0;
     let mut out = vec![T::default(); w * h];
-    for_rows(&mut out, w, |y, row| {
-        for (x, px) in row.iter_mut().enumerate() {
+    // bands of rows: the particle grain splats each grain once per band (`GrainParams::apply_band`)
+    const BAND: usize = 8;
+    for_rows(&mut out, (w * BAND).max(1), |band, rows| {
+        // display-encoded colour and gamut-warning overlay per pixel, before particle grain and LUT
+        let mut enc: Vec<([f32; 3], Option<[f32; 3]>)> = Vec::with_capacity(rows.len());
+        for q in 0..rows.len() {
+            let (x, y) = (q % w.max(1), band * BAND + q / w.max(1));
             let i = y * w + x;
             let raw = p.img.data[i];
             let mut c = if gain == 1.0 { raw } else { raw.map(|v| v * gain) };
@@ -886,6 +902,26 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                     e = e.map(|v| v + k);
                 }
             }
+            enc.push((e, warn));
+        }
+        // process V7: clumps of particles over the band (OneSlips, `crate::grain`)
+        if let Some(gp) = particles {
+            let (mut gx, mut gy) = (Vec::with_capacity(enc.len()), Vec::with_capacity(enc.len()));
+            for q in 0..enc.len() {
+                let (x, y) = (q % w.max(1), band * BAND + q / w.max(1));
+                let n = out_to_norm.apply(Point::new(x as f64 + 0.5, y as f64 + 0.5));
+                gx.push((n.x * fp.ow / long) as f32);
+                gy.push((n.y * fp.oh / long) as f32);
+            }
+            let mut es: Vec<[f32; 3]> = enc.iter().map(|q| q.0).collect();
+            gp.apply_band(&gx, &gy, w, &mut es);
+            for (q, e) in enc.iter_mut().zip(es) {
+                if e.iter().all(|v| v.is_finite()) {
+                    q.0 = e;
+                }
+            }
+        }
+        for (px, (e, warn)) in rows.iter_mut().zip(enc) {
             let e = match &p_lut {
                 Some((l, k)) if hdr => {
                     // the LUT sees SDR values; the part above SDR white is carried over

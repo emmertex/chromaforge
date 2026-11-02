@@ -138,7 +138,7 @@ USAGE:
   {cli} controls [--json]   list every develop control id with its range
   {cli} calibrate [--max N] [--out DIR] FOLDERS/FILES…
       Fit a colour profile per camera model from raw files and their embedded camera JPEGs
-      (Sony ARW, Nikon NEF, Fujifilm RAF): up to N files spread over the folders (default 300; 0 = all), pooled per
+      (Sony ARW, Nikon NEF, Fujifilm RAF, Canon CR3/CR2, Panasonic RW2, Olympus ORF, Pentax PEF…): up to N files spread over the folders (default 300; 0 = all), pooled per
       model, written as <model>.json to DIR (default: the profiles folder {app} reads,
       <config>/camera-profiles, or ${P}_CAMERA_PROFILES). Raws of a profiled model then
       take their colour from the profile and only their tone from their own JPEG.
@@ -299,8 +299,11 @@ fn main() -> ExitCode {
 
 /// Raw files below `path` (or `path` itself), skipping hidden and NAS metadata folders.
 fn raw_files(path: &Path, out: &mut Vec<std::path::PathBuf>, depth: usize) {
-    let is_raw =
-        |p: &Path| p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["arw", "nef", "nrw", "raf"].iter().any(|x| e.eq_ignore_ascii_case(x)));
+    let is_raw = |p: &Path| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| ["arw", "nef", "nrw", "raf", "cr3", "cr2", "rw2", "orf", "pef", "srw", "erf"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+    };
     if path.is_file() {
         if is_raw(path) {
             out.push(path.to_path_buf());

@@ -2358,5 +2358,8 @@
   "Copy Path": "Salin jalur",
   "Path copied": "Jalur disalin",
   "Same Content as Another Photo": "Konten sama dengan foto lain",
-  "Console: Masking and Mask are now one Masks page": "Konsol: dua halaman masker kini menjadi satu halaman Masker"
+  "Console: Masking and Mask are now one Masks page": "Konsol: dua halaman masker kini menjadi satu halaman Masker",
+  "This spot is too dark to read its colour: click a brighter neutral area": "Titik ini terlalu gelap untuk dibaca warnanya: klik area netral yang lebih terang",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "Titik ini terlalu terang untuk dibaca warnanya: klik area netral yang sedikit lebih gelap",
+  "This spot can't be read": "Titik ini tidak dapat dibaca"
 }

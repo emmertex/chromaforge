@@ -56,6 +56,7 @@ mod ml;
 pub(crate) mod organize;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peers;
+pub mod profile_manager;
 #[cfg(test)]
 pub(crate) use organize::STACK_WORK;
 pub(crate) mod plugin_filters;
@@ -246,6 +247,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(lens_db::specs());
         v.extend(source::specs());
         v.extend(dcp_profiles::specs());
+        v.extend(profile_manager::specs());
         v.extend(mask_effects::specs());
         v.extend(cull::specs());
         v.extend(convert::specs());

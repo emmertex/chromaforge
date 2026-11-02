@@ -598,7 +598,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "White Balance Selector",
             [],
             Some("W"),
-            "{x, y} normalized image coords of a neutral point, size?: side of the averaged square in pixels (1..=31, odd; default 5)",
+            "{x, y} normalized image coords of a neutral point, size?: side of the averaged square in pixels (1..=31, odd; default 5) → {applied: true, temp, tint}, or {applied: false, refused: bright|dark, message} for a clipped, near-white or near-black spot: nothing changes",
             has_active,
             |s, p| {
                 let (x, y) = (f64_req(p, "x", "develop.wbPick")?, f64_req(p, "y", "develop.wbPick")?);
@@ -613,16 +613,18 @@ pub fn specs() -> Vec<CommandSpec> {
                 // Sample a small neighbourhood in the oriented source.
                 let o = src.oriented(d.orientation);
                 let (cx, cy) = ((x.clamp(0.0, 1.0) * o.width as f64) as isize, (y.clamp(0.0, 1.0) * o.height as f64) as isize);
-                let mut acc = [0.0f32; 3];
-                let n = ((2 * half + 1) * (2 * half + 1)) as f32;
-                for dy in -half..=half {
-                    for dx in -half..=half {
-                        let c = o.get_clamped(cx + dx, cy + dy);
-                        for i in 0..3 {
-                            acc[i] += c[i] / n;
-                        }
+                let acc = match wb_sample(&o, cx, cy, half) {
+                    WbSample::Neutral(c) => c,
+                    // a white balance from a spot with no colour left is wrong: nothing changes and
+                    // the selector stays armed (OneSlips, test notes 2026-10-25 note 13)
+                    refused => {
+                        let (why, message) = match refused {
+                            WbSample::TooDark => ("dark", "This spot is too dark to read its colour: click a brighter neutral area"),
+                            _ => ("bright", "This spot is too bright to read its colour: click a slightly darker neutral area"),
+                        };
+                        return Ok(json!({"applied": false, "refused": why, "message": message}));
                     }
-                }
+                };
                 let patch = lcc_raster::Rgb32f::filled(4, 4, acc);
                 let (t, tint) = lcc_pipeline::auto::auto_wb(&patch, &info);
                 edit(s, "develop.wbPick", "White Balance", |d| {
@@ -632,7 +634,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     d.wb.tint = tint;
                     Ok(())
                 })?;
-                Ok(json!({"temp": t, "tint": tint}))
+                Ok(json!({"applied": true, "temp": t, "tint": tint}))
             }
         ),
         cmd!(
@@ -965,7 +967,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Upright",
             [],
             None,
-            "{mode: off|auto|guided|level|vertical|full} — analyses the photo (line segments → vanishing points) and stores the correction; run again to update after lens changes → {mode, transform, note (why the mode found nothing to correct, when it didn't)}",
+            "{mode: off|auto|guided|level|vertical|full, again?: bool} — analyses the photo (line segments → vanishing points) and stores the correction; run again to update after lens changes. `again` (a second click on the mode that is on) analyses it afresh and clears Guided's guides; the Transform sliders stay → {mode, transform, note (why the mode found nothing to correct, when it didn't)}",
             has_active,
             |s, p| {
                 let mode: Upright =
@@ -982,7 +984,13 @@ pub fn specs() -> Vec<CommandSpec> {
                         (Some(lcc_pipeline::upright::solve(m, &a)), lcc_pipeline::upright::shortfall(m, &a))
                     }
                 };
+                let again = bool_or(p, "again", false);
                 edit(s, "geometry.upright", "Upright", |d| {
+                    // a second click on the mode analyses it afresh (OneSlips, test notes 2026-10-24 note 6);
+                    // the Transform sliders stay as set (decision 2026-10-25 item 11)
+                    if again && mode == Upright::Guided {
+                        d.geometry.guides.clear();
+                    }
                     d.geometry.upright = mode;
                     d.geometry.upright_transform = transform;
                     Ok(())
@@ -1094,7 +1102,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let ops = ids
                     .iter()
                     .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                    .filter_map(|(id, d)| s.develop_op(id, lcc_develop::apply_partial(&d, &clip, 1.0), "Paste Settings"))
+                    .filter_map(|(id, d)| {
+                        let mut pasted = lcc_develop::apply_partial(&d, &clip, 1.0);
+                        crate::upright_jobs::as_recipe(&d, &mut pasted);
+                        s.develop_op(id, pasted, "Paste Settings")
+                    })
                     .collect::<Vec<_>>();
                 let n = ops.len();
                 s.commit("Paste Settings", Op::Batch { ops })?;
@@ -1140,6 +1152,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         for (k, v) in &values {
                             lcc_develop::controls::set(&mut nd, k, *v);
                         }
+                        crate::upright_jobs::as_recipe(&dd, &mut nd);
                         s.develop_op(x, nd, "Sync Settings")
                     })
                     .collect::<Vec<_>>();
@@ -1698,6 +1711,98 @@ pub(crate) fn wb_pick_half(size: Option<f64>) -> isize {
     match size {
         Some(v) if v.is_finite() => ((v.clamp(1.0, 31.0).round() as isize) / 2).clamp(0, 15),
         _ => 2,
+    }
+}
+
+/// A channel this close to the photo's top (its brightest value of that channel) has lost its colour.
+/// Relative, as sources can be scene-referred (values past 1.0).
+const WB_CLIPPED: f32 = 0.97;
+/// A sample whose mean is this close to the top in some channel is near white.
+const WB_NEAR_WHITE: f32 = 0.9;
+/// Below this (linear, the brightest channel) a spot is noise, not colour.
+const WB_DARK: f32 = 0.004;
+
+/// What the White Balance Selector reads at a spot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum WbSample {
+    /// The mean colour of the sample.
+    Neutral([f32; 3]),
+    /// Clipped or near white: no colour left to read.
+    TooBright,
+    /// Near black: noise.
+    TooDark,
+}
+
+/// The photo's top in each channel: white (1.0), or its brightest finite value where a scene-referred
+/// source passes that; read on every other pixel.
+fn wb_top(img: &lcc_raster::Rgb32f) -> [f32; 3] {
+    let mut top = [1.0f32; 3];
+    for c in img.data.iter().step_by(2) {
+        for (t, v) in top.iter_mut().zip(c.iter()) {
+            if v.is_finite() && *v > *t {
+                *t = *v;
+            }
+        }
+    }
+    top
+}
+
+/// The square of half-side `half` around pixel (`cx`, `cy`) of `img` (clamped at the edges): its mean
+/// colour, unless a quarter of it is clipped, its mean is near white, or it is near black
+/// (OneSlips' White Balance Selector, test notes 2026-10-25 note 13).
+pub(crate) fn wb_sample(img: &lcc_raster::Rgb32f, cx: isize, cy: isize, half: isize) -> WbSample {
+    let top = wb_top(img);
+    let half = half.clamp(0, 64);
+    let (mut acc, mut n, mut clipped) = ([0.0f64; 3], 0usize, 0usize);
+    for dy in -half..=half {
+        for dx in -half..=half {
+            let c = img.get_clamped(cx.saturating_add(dx), cy.saturating_add(dy));
+            if !c.iter().all(|v| v.is_finite()) {
+                continue;
+            }
+            if c.iter().zip(top.iter()).any(|(v, t)| *v >= WB_CLIPPED * t) {
+                clipped += 1;
+            }
+            for (a, v) in acc.iter_mut().zip(c.iter()) {
+                *a += f64::from(*v);
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return WbSample::TooDark;
+    }
+    let mean = acc.map(|a| (a / n as f64) as f32);
+    if clipped * 4 >= n || mean.iter().zip(top.iter()).any(|(m, t)| *m >= WB_NEAR_WHITE * t) {
+        return WbSample::TooBright;
+    }
+    if mean[0].max(mean[1]).max(mean[2]) < WB_DARK {
+        return WbSample::TooDark;
+    }
+    WbSample::Neutral(mean)
+}
+
+#[cfg(test)]
+mod wb_sample_tests {
+    use super::*;
+
+    #[test]
+    fn clipped_white_and_black_spots_are_refused() {
+        let mut img = lcc_raster::Rgb32f::filled(32, 32, [0.3, 0.25, 0.2]);
+        assert!(matches!(wb_sample(&img, 16, 16, 2), WbSample::Neutral(_)));
+        for p in img.data.iter_mut().take(32 * 16) {
+            *p = [1.0, 1.0, 1.0];
+        }
+        assert_eq!(wb_sample(&img, 16, 2, 2), WbSample::TooBright);
+        let dark = lcc_raster::Rgb32f::filled(8, 8, [0.001, 0.001, 0.001]);
+        assert_eq!(wb_sample(&dark, 4, 4, 2), WbSample::TooDark);
+        // a scene-referred photo whose top is past white: a dim grey card still reads
+        let mut hdr = lcc_raster::Rgb32f::filled(32, 32, [0.9, 0.9, 0.9]);
+        hdr.data[0] = [4.0, 4.0, 4.0];
+        assert!(matches!(wb_sample(&hdr, 16, 16, 2), WbSample::Neutral(_)));
+        // hostile input: NaN pixels and huge offsets don't panic
+        let nan = lcc_raster::Rgb32f::filled(4, 4, [f32::NAN; 3]);
+        assert_eq!(wb_sample(&nan, isize::MAX, isize::MIN, 1000), WbSample::TooDark);
     }
 }
 

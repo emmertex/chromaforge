@@ -62,6 +62,19 @@ fn camera_profile_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, 
     if choice != current {
         let _ = app.run("develop.cameraProfile", json!({"id": choice}));
     }
+    // a camera profile chosen for this photo can become its body's own (OneSlips, LR-PROF-BODY)
+    if !current.is_empty()
+        && let Some(body) = lcc_engine::profile_bodies::key_of(&photo)
+    {
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            if app.session.body_profiles.get(&body) == Some(&current) {
+                ui.label(egui::RichText::new(crate::i18n::tr("This body's default")).color(t.text_dim).font(t.font(12.0)));
+            } else if crate::widgets::text_button(ui, "bodyDefault", crate::i18n::tr("Make default for this body"), false).clicked() {
+                let _ = app.run("profile.setBodyDefault", json!({"id": current, "photo": id.0}));
+            }
+        });
+    }
     ui.add_space(4.0);
 }
 
@@ -105,7 +118,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             g,
             "",
             false,
-            PROFILES.iter().filter(|p| p.group == g).map(|p| (p.id.to_string(), p.name.to_string(), p.group.to_string())).collect(),
+            PROFILES
+                .iter()
+                .filter(|p| p.group == g && !app.session.profile_hidden.iter().any(|h| h == p.id))
+                .map(|p| (p.id.to_string(), p.name.to_string(), p.group.to_string()))
+                .collect(),
         ));
     }
     // imported LUT profile groups
@@ -113,9 +130,17 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     lut_groups.sort_unstable();
     lut_groups.dedup();
     for g in &lut_groups {
-        let profiles = app.session.lut_profiles.iter().filter(|p| &p.group == g).map(|p| (p.id.clone(), p.name.clone(), p.group.clone())).collect();
+        let profiles = app
+            .session
+            .lut_profiles
+            .iter()
+            .filter(|p| &p.group == g && !app.session.profile_hidden.contains(&p.id))
+            .map(|p| (p.id.clone(), p.name.clone(), p.group.clone()))
+            .collect();
         sections.push((g.as_str(), "", true, profiles));
     }
+    // (a group whose profiles the Profile Manager all hides is left out)
+    sections.retain(|s| !s.3.is_empty());
     for (title, tag, imported, list) in sections {
         // an imported folder named like a built-in group still opens and closes on its own
         let key = if imported { format!("lut:{title}") } else { format!("profile:{title}") };

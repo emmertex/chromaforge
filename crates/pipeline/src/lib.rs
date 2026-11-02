@@ -34,6 +34,7 @@ pub mod finish;
 pub mod genpatch;
 pub mod geometry;
 pub mod grade;
+pub mod grain;
 pub mod local;
 pub mod local_tone;
 pub mod lut;

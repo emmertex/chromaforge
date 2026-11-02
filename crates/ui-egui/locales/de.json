@@ -3894,5 +3894,8 @@
   "Rebuilds the painted area from small pieces of its surroundings, continuing lines and edges through it. For larger objects. No source to choose.": "Baut den bemalten Bereich aus kleinen Stücken seiner Umgebung neu auf und führt Linien und Kanten hindurch. Für größere Objekte. Keine Quelle zu wählen.",
   "Replaces the painted area using an online image service, with your own account. Nothing is sent until you click Generate.": "Ersetzt den bemalten Bereich mit einem Online-Bilddienst über Ihr eigenes Konto. Nichts wird gesendet, bevor Sie auf Generieren klicken.",
   "Copies the texture from a source and matches it to the colour and brightness around the area, so it blends in. Drag the source pin to choose the place.": "Kopiert die Struktur aus einer Quelle und gleicht sie an Farbe und Helligkeit rund um den Bereich an, damit sie sich einfügt. Ziehen Sie die Quellnadel, um die Stelle zu wählen.",
-  "Copies the source exactly as it is, colour and all, with a soft edge. Drag the source pin to choose the place.": "Kopiert die Quelle genau so, wie sie ist, samt Farbe, mit weicher Kante. Ziehen Sie die Quellnadel, um die Stelle zu wählen."
+  "Copies the source exactly as it is, colour and all, with a soft edge. Drag the source pin to choose the place.": "Kopiert die Quelle genau so, wie sie ist, samt Farbe, mit weicher Kante. Ziehen Sie die Quellnadel, um die Stelle zu wählen.",
+  "This spot is too dark to read its colour: click a brighter neutral area": "Diese Stelle ist zu dunkel, um ihre Farbe zu lesen: Klicken Sie auf eine hellere neutrale Fläche",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "Diese Stelle ist zu hell, um ihre Farbe zu lesen: Klicken Sie auf eine etwas dunklere neutrale Fläche",
+  "This spot can't be read": "Diese Stelle lässt sich nicht lesen"
 }
