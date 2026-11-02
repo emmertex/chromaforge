@@ -1,6 +1,6 @@
 //! The Masking panel: create masks, list them, edit components and local adjustments.
 
-use egui::{Rect, Sense, Stroke, pos2, vec2};
+use egui::{Align2, Rect, Sense, Stroke, pos2, vec2};
 use lcc_catalog::PhotoId;
 use lcc_develop::{ControlSpec, LocalAdjustments, MaskShape, Section, Track};
 use serde_json::json;
@@ -381,6 +381,30 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
 
             let icon = m.components.first().map(|c| kind_label(&c.shape).1).unwrap_or(Icon::Mask);
             paint(ui.painter(), Rect::from_min_size(pos2(r.left() + 22.0, r.min.y + 7.0), vec2(16.0, 16.0)), icon, t.text_label);
+            // a stale AI mask (copied, synced, a preset's): an amber badge on its icon; click to update
+            let mut badge_clicked = false;
+            if let Some(why) = mask_ai_status(m).filter(|_| !app.session.segmenter.recomputing()) {
+                let br = Rect::from_center_size(pos2(r.left() + 37.0, r.min.y + 9.0), vec2(10.0, 10.0));
+                register(ui.ctx(), format!("maskStale:{}", m.id), br);
+                let badge = ui.interact(br.expand(2.0), egui::Id::new(("maskStale", m.id)), Sense::click());
+                crate::widgets::announce(&badge, crate::i18n::tr(why));
+                ui.painter().circle_filled(br.center(), 4.5, egui::Color32::from_rgb(240, 170, 40));
+                ui.painter().text(br.center(), Align2::CENTER_CENTER, "!", t.semibold(8.5), egui::Color32::BLACK);
+                let tip = if why == PICK_OBJECT {
+                    crate::i18n::tr(why).to_string()
+                } else {
+                    format!("{}\n{}", crate::i18n::tr(why), crate::i18n::tr("Click to update it."))
+                };
+                let badge = badge.on_hover_text(tip);
+                if badge.clicked() {
+                    badge_clicked = true;
+                    if why != PICK_OBJECT
+                        && let Err(e) = app.run("mask.updateAi", json!({"id": m.id}))
+                    {
+                        app.ai_error(ui.ctx(), e, None);
+                    }
+                }
+            }
             // a long name is cut short (with …) before the right buttons, the full name on hover
             let color = if m.visible { t.text } else { t.text_disabled };
             let right_room = if sel || ui.rect_contains_pointer(r) { 92.0 } else { 28.0 };
@@ -472,7 +496,15 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 egui::Popup::menu(&plus).show(|ui| component_menu(app, ui, "add"));
             }
 
-            if resp.clicked() && !eye_clicked && !bin_clicked && !minus_clicked && !plus_clicked && !chev_resp.clicked() && !popup_open_at_start {
+            if resp.clicked()
+                && !eye_clicked
+                && !bin_clicked
+                && !minus_clicked
+                && !plus_clicked
+                && !badge_clicked
+                && !chev_resp.clicked()
+                && !popup_open_at_start
+            {
                 let _ = app.run("mask.select", json!({"id": m.id}));
                 if app.ui.active_mask_component.is_none() {
                     app.ui.active_mask_component = Some(0);
@@ -923,6 +955,45 @@ fn menu_label(source: &str) -> &str {
     crate::i18n::tr(source)
 }
 
+/// The photo's right-click menu in Masking: a pin right-clicked opens its mask's menu (→ `true`:
+/// nothing else is shown); otherwise the selected AI mask can be updated from here too.
+pub(crate) fn photo_mask_menu(app: &mut LccApp, ui: &mut egui::Ui) -> bool {
+    let Some(d) = app.session.active().and_then(|p| app.session.develop_of(p)) else { return false };
+    if let Some((index, m)) = app.ui.mask_menu_for.and_then(|id| d.masks.iter().enumerate().find(|(_, m)| m.id == id)) {
+        mask_menu(app, ui, m.id, &m.name, m.visible, index, d.masks.len());
+        return true;
+    }
+    if let Some(m) = d.masks.iter().find(|m| Some(m.id) == app.session.active_mask).filter(|m| m.uses_ai()) {
+        let b = ui.button(menu_label("Update AI Mask"));
+        register(ui.ctx(), "photoMenu:updateAiMask", b.rect);
+        if b.clicked() {
+            if let Err(e) = app.run("mask.updateAi", json!({"id": m.id})) {
+                app.ai_error(ui.ctx(), e, None);
+            }
+            ui.close();
+        }
+        ui.separator();
+    }
+    false
+}
+
+/// What an AI mask's row badge and panel say when its AI selection isn't there for this photo: an
+/// Object without clicks here (copied or synced from another photo) is picked again, any other AI
+/// part not computed for this photo needs updating. `None`: up to date.
+pub(crate) fn mask_ai_status(m: &lcc_develop::Mask) -> Option<&'static str> {
+    if !m.uses_ai() || !m.needs_compute() {
+        return None;
+    }
+    let unpicked =
+        m.components.iter().any(|c| matches!(&c.shape, MaskShape::Object { hint, seg: None, detail, .. } if hint.is_empty() && detail.is_empty()));
+    Some(if unpicked { PICK_OBJECT } else { NEEDS_UPDATE })
+}
+
+/// See [`mask_ai_status`].
+pub(crate) const PICK_OBJECT: &str = "Pick the object on this photo: click it with the Object tool.";
+/// See [`mask_ai_status`].
+pub(crate) const NEEDS_UPDATE: &str = "This mask's AI selection wasn't computed for this photo yet.";
+
 /// The right-click menu of a mask in the Masks list.
 fn mask_menu(app: &mut LccApp, ui: &mut egui::Ui, id: u32, name: &str, visible: bool, index: usize, count: usize) {
     let mut run = |ui: &mut egui::Ui, label: &str, enabled: bool, cmd: &str, p: serde_json::Value| {
@@ -936,6 +1007,32 @@ fn mask_menu(app: &mut LccApp, ui: &mut egui::Ui, id: u32, name: &str, visible: 
     run(ui, "Invert Mask", true, "mask.invert", json!({"id": id}));
     run(ui, if visible { "Hide Mask" } else { "Show Mask" }, true, "mask.visible", json!({"id": id}));
     ui.separator();
+    // compute the mask's AI selections again from this photo (one mask, or every AI mask on it)
+    let photo = app.session.active();
+    let d = photo.and_then(|p| app.session.develop_of(p));
+    let ai = d.as_ref().and_then(|d| d.masks.iter().find(|m| m.id == id)).is_some_and(|m| m.uses_ai());
+    let any_ai = d.as_ref().is_some_and(|d| d.masks.iter().any(|m| m.uses_ai()));
+    let b = ui.add_enabled(ai, egui::Button::new(menu_label("Update AI Mask")));
+    register(ui.ctx(), format!("maskMenu:update:{id}"), b.rect);
+    if b.clicked() {
+        if let Err(e) = app.run("mask.updateAi", json!({"id": id})) {
+            app.ai_error(ui.ctx(), e, None);
+        }
+        ui.close();
+    }
+    if ui.add_enabled(any_ai, egui::Button::new(menu_label("Update All AI Masks"))).clicked() {
+        if let Some(p) = photo {
+            let _ = app.run("masks.updateAi", json!({"ids": [p.0]}));
+        }
+        ui.close();
+    }
+    ui.separator();
+    let mut run = |ui: &mut egui::Ui, label: &str, enabled: bool, cmd: &str, p: serde_json::Value| {
+        if ui.add_enabled(enabled, egui::Button::new(menu_label(label))).clicked() {
+            let _ = app.run(cmd, p);
+            ui.close();
+        }
+    };
     run(ui, "Move Up", index > 0, "mask.move", json!({"id": id, "delta": -1}));
     run(ui, "Move Down", index + 1 < count, "mask.move", json!({"id": id, "delta": 1}));
     ui.separator();
@@ -1221,7 +1318,7 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
             Ok(_) => {
                 app.ui.role_draft = None;
                 let shape = MaskShape::People { person: 0, parts: parts.clone(), who: Some(lcc_develop::recipe::Who::Role(role)) };
-                let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
+                let _ = app.run("mask.updateAi", json!({"component": comp, "shape": shape}));
                 let _ = app.run("masks.recompute", json!({"id": photo.0}));
             }
             Err(e) => app.toast(ui.ctx(), e),
@@ -1229,7 +1326,7 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
     }
     if let Some(w) = chosen {
         let shape = MaskShape::People { person: 0, parts: parts.clone(), who: w };
-        let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
+        let _ = app.run("mask.updateAi", json!({"component": comp, "shape": shape}));
         let _ = app.run("masks.recompute", json!({"id": photo.0}));
     }
 }
@@ -1237,7 +1334,7 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
 fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &MaskShape) {
     let t = Tokens::get(ui.ctx());
     let update = |app: &mut LccApp, shape: MaskShape| {
-        let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
+        let _ = app.run("mask.updateAi", json!({"component": comp, "shape": shape}));
     };
     match shape {
         MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather } => {
@@ -1309,7 +1406,7 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
             let out = slider(ui, &smooth, cur, true, None);
             apply_slider_out(app, &smooth, out, |app, v| {
                 let f = v / 100.0 * 0.5;
-                app.run("mask.update", json!({"component": comp, "shape": MaskShape::LuminanceRange { lo, hi, lo_feather: f, hi_feather: f }}))
+                app.run("mask.updateAi", json!({"component": comp, "shape": MaskShape::LuminanceRange { lo, hi, lo_feather: f, hi_feather: f }}))
             });
             let mut map = app.ui.mask_overlay && app.ui.mask_overlay_mode == "colorOnBw";
             let r = ui.checkbox(&mut map, crate::i18n::tr("Show Luminance Map"));
@@ -1355,7 +1452,7 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
             let out = slider(ui, &spec, *refine, true, None);
             let samples = samples.clone();
             apply_slider_out(app, &spec, out, |app, v| {
-                app.run("mask.update", json!({"component": comp, "shape": MaskShape::ColorRange { samples: samples.clone(), refine: v }}))
+                app.run("mask.updateAi", json!({"component": comp, "shape": MaskShape::ColorRange { samples: samples.clone(), refine: v }}))
             });
         }
         _ => {}
@@ -1364,6 +1461,15 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
 
 /// The right-click / "…" menu of one component of the selected mask.
 fn component_row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: u32, k: usize, label: &str, count: usize) {
+    if app.session.active().and_then(|p| app.session.develop_of(p)).is_some_and(|d| d.masks.iter().any(|m| m.id == mask && m.uses_ai())) {
+        if ui.button(menu_label("Update AI Mask")).clicked() {
+            if let Err(e) = app.run("mask.updateAi", json!({"id": mask})) {
+                app.ai_error(ui.ctx(), e, None);
+            }
+            ui.close();
+        }
+        ui.separator();
+    }
     let mut run = |ui: &mut egui::Ui, text: &str, p: serde_json::Value| {
         if ui.button(menu_label(text)).clicked() {
             let mut p = p;
@@ -1375,6 +1481,7 @@ fn component_row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: u32, k: usize, 
     };
     run(ui, "Invert", json!({"action": "invert"}));
     run(ui, &crate::i18n::tr_format!("Duplicate \"{label}\"", label = label), json!({"action": "duplicate"}));
+
     if k > 0 {
         crate::widgets::menu_button(ui, crate::i18n::tr("Mode"), |ui| {
             for (op, text) in [("add", "Add"), ("subtract", "Subtract"), ("intersect", "Intersect")] {

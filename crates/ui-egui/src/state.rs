@@ -1054,6 +1054,8 @@ pub struct UiState {
     /// being adjusted.
     #[serde(skip)]
     pub mask_hover: Option<u32>,
+    /// The mask whose pin was right-clicked on the photo: the photo's menu is that mask's.
+    pub mask_menu_for: Option<u32>,
     /// Active mask component index within the currently selected mask.
     #[serde(skip)]
     pub active_mask_component: Option<usize>,
@@ -1910,6 +1912,7 @@ impl Default for UiState {
             luminance_map_restore: None,
             mask_overlay_pinned: false,
             mask_adjusting_until: None,
+            mask_menu_for: None,
             mask_hover: None,
             active_mask_component: None,
             collapsed_masks: Default::default(),

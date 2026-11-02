@@ -128,14 +128,7 @@ impl Session {
         let before = self.develop_of(id).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
         let mut d = (*before).clone();
         if force {
-            for m in &mut d.masks {
-                for c in &mut m.components {
-                    c.shape = c.shape.recipe();
-                    if let Some(a) = &mut c.anchor {
-                        a.bounds = None;
-                    }
-                }
-            }
+            to_recipes(&mut d, None);
         }
         let mut out = self.complete_recipes(id, &mut d);
         let mut model_missing = false;
@@ -196,6 +189,19 @@ pub(crate) fn completed(s: &mut Session, id: PhotoId, mut d: DevelopSettings) ->
     d
 }
 
+/// `d`'s masks (only mask `only`, when given) back to their recipes: Object and Describe without
+/// their segmentation, anchored gradients without their box, to be computed on this photo again.
+fn to_recipes(d: &mut DevelopSettings, only: Option<u32>) {
+    for m in d.masks.iter_mut().filter(|m| only.is_none_or(|o| o == m.id)) {
+        for c in &mut m.components {
+            c.shape = c.shape.recipe();
+            if let Some(a) = &mut c.anchor {
+                a.bounds = None;
+            }
+        }
+    }
+}
+
 /// Whether `d` has Object or Describe selections without a segmentation.
 fn missing_seg(d: &DevelopSettings) -> bool {
     d.masks.iter().flat_map(|m| &m.components).any(|c| c.shape.stores_seg() && !c.shape.has_seg())
@@ -209,20 +215,43 @@ impl Session {
         }
     }
 
+    /// Update AI Mask: mask `mask` of photo `id` (every AI mask without `mask`) computed again from
+    /// this photo, replacing what it holds (a copied, synced or stale selection). In the app on the AI
+    /// worker ([`Session::compute_masks_later`]), otherwise waited for. An Object selection without
+    /// clicks on this photo can't be: it has to be picked here first.
+    pub fn update_ai_mask(&mut self, id: PhotoId, mask: Option<u32>) -> crate::Result<(Completed, usize)> {
+        let bad = |why: &str| crate::cmd::bad("mask.updateAi", why);
+        let before = self.develop_of(id).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
+        let masks: Vec<&lcc_develop::Mask> = before.masks.iter().filter(|m| mask.is_none_or(|o| o == m.id)).collect();
+        if let Some(o) = mask {
+            let m = masks.first().ok_or_else(|| bad(&format!("no mask {o}")))?;
+            if !m.uses_ai() {
+                return Err(bad("the mask has no AI selection"));
+            }
+            if m.components.iter().any(|c| matches!(&c.shape, MaskShape::Object { hint, .. } if hint.is_empty())) {
+                return Err(bad("pick the object on this photo first: click it with the Object tool"));
+            }
+        }
+        let mut d = (*before).clone();
+        to_recipes(&mut d, mask);
+        if *before != d {
+            let op = self.develop_op(id, d, "Update AI Mask").ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
+            self.commit("Update AI Mask", op)?;
+        }
+        if self.segmenter.background {
+            return self.compute_masks_later(id, false);
+        }
+        let done = self.compute_masks(id, false)?;
+        Ok((done, 0))
+    }
+
     /// The app's Recompute AI Masks: the recipes are completed now (from the photo's metadata, no
     /// pixels), the selections are queued on the AI worker as one batch with an activity row.
     pub fn compute_masks_later(&mut self, id: PhotoId, force: bool) -> crate::Result<(Completed, usize)> {
         let before = self.develop_of(id).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
         let mut d = (*before).clone();
         if force {
-            for m in &mut d.masks {
-                for c in &mut m.components {
-                    c.shape = c.shape.recipe();
-                    if let Some(a) = &mut c.anchor {
-                        a.bounds = None;
-                    }
-                }
-            }
+            to_recipes(&mut d, None);
         }
         let mut out = self.complete_recipes(id, &mut d);
         if *before != d {

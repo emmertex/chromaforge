@@ -335,6 +335,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "develop.treatment",
             "develop.matchExposure",
             "develop.updateProcess",
+            "masks.updateAi",
             "---",
             "version.create",
             "dialog.createPreset",

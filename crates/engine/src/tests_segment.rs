@@ -445,3 +445,44 @@ fn recompute_runs_on_the_worker_with_one_activity_row() {
     let _ = settle(&mut s, Duration::from_secs(60));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Update AI Mask computes the mask again from this photo: what it held (a copied selection) is
+/// dropped; an Object without clicks here has to be picked first; Update All AI Masks covers the
+/// selection.
+#[test]
+fn update_ai_mask_replaces_what_the_mask_held() {
+    let mut s = Session::with_demo();
+    let id = s.active().unwrap();
+    let seg = serde_json::to_value(lcc_develop::SegMask::from_logits(4, &[5.0; 16])).unwrap();
+    s.execute("mask.add", &json!({"kind": "prompt", "text": "sky", "seg": seg})).unwrap();
+    let m = s.develop_of(id).unwrap().masks[0].id;
+    assert!(s.develop_of(id).unwrap().masks[0].components[0].shape.has_seg());
+    let r = s.execute("mask.updateAi", &json!({"id": m})).unwrap();
+    assert!(r.get("notes").is_some(), "{r}");
+    let d = s.develop_of(id).unwrap();
+    assert!(!d.masks[0].components[0].shape.has_seg(), "the copied selection is gone, to be computed here");
+    assert!(d.masks[0].needs_compute());
+    // undo brings it back in one step
+    s.undo_step().unwrap();
+    assert!(s.develop_of(id).unwrap().masks[0].components[0].shape.has_seg());
+    // an Object without clicks on this photo
+    let mut d = (*s.develop_of(id).unwrap()).clone();
+    d.masks.push(lcc_develop::Mask {
+        id: 7,
+        components: vec![lcc_develop::MaskComponent {
+            anchor: None,
+            name: None,
+            op: lcc_develop::MaskOp::Add,
+            invert: false,
+            shape: lcc_develop::MaskShape::Object { hint: vec![], exclude: vec![], seg: None, detail: vec![], edge: 0.0 },
+        }],
+        ..Default::default()
+    });
+    s.set_develop(id, d, "paste").unwrap();
+    let e = s.execute("mask.updateAi", &json!({"id": 7})).unwrap_err().to_string();
+    assert!(e.contains("pick the object"), "{e}");
+    assert!(s.execute("mask.updateAi", &json!({"id": 999})).is_err());
+    let r = s.execute("masks.updateAi", &json!({})).unwrap();
+    assert_eq!(r["photos"][0]["id"], id.0, "{r}");
+    assert!(!s.develop_of(id).unwrap().masks[0].components[0].shape.has_seg());
+}

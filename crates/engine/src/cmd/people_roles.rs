@@ -93,6 +93,45 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "mask.updateAi",
+            "Update AI Mask",
+            [],
+            None,
+            "{id?: maskId (default: the selected mask), photo?: photoId} — compute the mask's AI selections again from this photo, replacing what it holds (copied, synced or stale); an Object needs its clicks on this photo. In the app on the AI worker (activity row `aiMasks`) → {changed, notes, queued?}",
+            super::has_active,
+            |s, p| {
+                let c = "mask.updateAi";
+                let photo = p.get("photo").and_then(Value::as_u64).map(PhotoId).or_else(|| s.active()).ok_or_else(|| bad(c, "no photo"))?;
+                let mask = match p.get("id") {
+                    Some(v) => Some(v.as_u64().and_then(|v| u32::try_from(v).ok()).ok_or_else(|| bad(c, "`id` is a mask id"))?),
+                    None => Some(s.active_mask.ok_or_else(|| bad(c, "no mask selected (give `id`)"))?),
+                };
+                let (done, queued) = s.update_ai_mask(photo, mask)?;
+                Ok(json!({"changed": done.changed, "notes": done.notes, "queued": queued}))
+            }
+        ),
+        cmd!(
+            "masks.updateAi",
+            "Update All AI Masks",
+            ["Photo", "Develop Settings"],
+            None,
+            "{ids?: [photoId] (default: the selection)} — every AI mask on the photos computed again from each photo's own pixels (as `mask.updateAi` on each); in the app one activity row for the batch → {photos: [{id, changed, notes, queued?}]}",
+            super::has_selection,
+            |s, p| {
+                let c = "masks.updateAi";
+                let ids = s.targets(p)?;
+                if ids.len() > 50_000 {
+                    return Err(bad(c, "at most 50000 photos at a time"));
+                }
+                let mut photos = Vec::new();
+                for id in ids {
+                    let (done, queued) = s.update_ai_mask(id, None)?;
+                    photos.push(json!({"id": id.0, "changed": done.changed, "notes": done.notes, "queued": queued}));
+                }
+                Ok(json!({"photos": photos}))
+            }
+        ),
+        cmd!(
             "people.setRole",
             "Set Role",
             [],

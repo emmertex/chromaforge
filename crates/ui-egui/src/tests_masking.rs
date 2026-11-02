@@ -2315,3 +2315,48 @@ fn mask_color_mixer_flyout_edits_the_masks_mixer() {
     h.settle(SETTLE);
     assert!(widgets_contain(&mut h, "button:maskMixerReset"), "Reset shows once something is set");
 }
+
+/// A stale AI mask (its selection not computed for this photo) shows a badge on its row; the mask
+/// list's menu and the photo's menu offer Update AI Mask.
+#[test]
+fn a_stale_ai_mask_shows_a_badge_and_offers_update() {
+    let mut h = detail("panel.masking");
+    let id = h.app.session.active().unwrap();
+    let mut d = develop(&h);
+    d.masks.push(lcc_develop::Mask {
+        id: 5,
+        components: vec![lcc_develop::MaskComponent {
+            anchor: None,
+            name: None,
+            op: lcc_develop::MaskOp::Add,
+            invert: false,
+            shape: lcc_develop::MaskShape::Prompt { text: "the sky".into(), seg: None, detail: vec![], edge: 0.0 },
+        }],
+        ..Default::default()
+    });
+    h.app.session.set_develop(id, d, "paste").unwrap();
+    exec(&mut h, "mask.select", json!({"id": 5}));
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "maskStale:5"), "the badge shows");
+    // a mask with its selection: no badge
+    let seg = serde_json::to_value(lcc_develop::SegMask::from_logits(4, &[5.0; 16])).unwrap();
+    exec(&mut h, "mask.add", json!({"kind": "prompt", "text": "sky", "seg": seg}));
+    h.settle(SETTLE);
+    let m = develop(&h).masks.last().unwrap().id;
+    assert!(!widgets_contain(&mut h, &format!("maskStale:{m}")));
+    // the photo's right-click menu offers Update AI Mask for the selected AI mask
+    exec(&mut h, "mask.select", json!({"id": 5}));
+    h.settle(SETTLE);
+    let canvas = h.app.canvas_rect.expect("the photo is on screen");
+    let corner = canvas.left_top() + egui::vec2(30.0, 30.0);
+    h.request("ui.click", json!({"x": corner.x, "y": corner.y, "button": "right"}), T);
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "photoMenu:updateAiMask"), "{}", h.request("ui.widgets", json!({"filter": "Menu"}), T));
+    h.request("ui.key", json!({"key": "Escape"}), T);
+    h.settle(SETTLE);
+    // a right-click on a mask's pin (the Describe mask's, at the centre) opens that mask's menu
+    let c = canvas.center();
+    h.request("ui.click", json!({"x": c.x, "y": c.y, "button": "right"}), T);
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, &format!("maskMenu:update:{m}")), "{}", h.request("ui.widgets", json!({"filter": "Menu"}), T));
+}

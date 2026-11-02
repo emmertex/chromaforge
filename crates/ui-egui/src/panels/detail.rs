@@ -1527,6 +1527,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         preview_only_pill(ui, canvas, why, top);
     }
     crate::widgets::context_menu(&resp, |ui| {
+        // Masking: a pin right-clicked opens its mask's menu; elsewhere the selected AI mask can be
+        // updated from here too
+        if app.ui.right == RightPanel::Masking && super::masking::photo_mask_menu(app, ui) {
+            return;
+        }
         if app.ui.right == RightPanel::Remove
             && let Some(active_idx) = app.session.active_spot
             && let Some(d) = app.session.active().and_then(|id| app.session.develop_of(id))
@@ -3350,6 +3355,12 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                 grips.push((m.id, ci, 0, q));
             }
         }
+    }
+    // a right-click on a pin: the photo's menu is that mask's (`masking::photo_mask_menu`)
+    if resp.secondary_clicked() {
+        let at = resp.interact_pointer_pos();
+        app.ui.mask_menu_for =
+            at.and_then(|q| grips.iter().filter(|g| g.3.distance(q) < 10.0).min_by(|a, b| a.3.distance(q).total_cmp(&b.3.distance(q)))).map(|g| g.0);
     }
     mask_keys(app, ui, map, d, &grips);
     // Object selections (SAM 3) of the selected mask: each click, green to include, red to exclude
