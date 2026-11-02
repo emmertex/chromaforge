@@ -2255,3 +2255,43 @@ fn brush_strokes_go_into_the_chosen_brush_component() {
     }
     assert_eq!(counts(&s), now, "a refused stroke changes nothing");
 }
+
+/// A gesture painted in parts (⌥ pressed and let go during it) arrives as `runs`, one stroke per
+/// mode; a live update (`continue`) replaces what the gesture sent last time (`replace` strokes),
+/// so the gesture stays as many strokes as it has runs. Hostile `runs` are errors.
+#[test]
+fn brush_stroke_runs_and_live_updates_replace_what_the_gesture_sent() {
+    use lcc_develop::MaskShape;
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "brush"})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.1, 0.1]]})).unwrap();
+    let strokes = |s: &Session| match &active_dev(s).masks[0].components[0].shape {
+        MaskShape::Brush { strokes } => strokes.clone(),
+        _ => panic!("brush"),
+    };
+    // the live stroke: first sent plain, then again as it grows
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2]], "size": 0.05})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2], [0.3, 0.3]], "size": 0.05, "continue": true})).unwrap();
+    assert_eq!(strokes(&s).len(), 2, "the live update replaced the stroke it grew from");
+    assert_eq!(strokes(&s)[1].points.len(), 2);
+    // ⌥ pressed part-way: two runs replace the one stroke sent so far
+    let runs = json!({"runs": [{"points": [[0.2, 0.2], [0.3, 0.3]]}, {"points": [[0.3, 0.3], [0.4, 0.4]], "erase": true, "size": 0.08}],
+        "size": 0.05, "continue": true});
+    s.execute("mask.brushStroke", &runs).unwrap();
+    let now = strokes(&s);
+    assert_eq!(now.len(), 3, "{now:?}");
+    assert!(!now[1].erase && now[2].erase, "each run keeps its mode");
+    assert_eq!((now[1].size, now[2].size), (0.05, 0.08), "a run's own value, else the top level's");
+    // the next update says how many it sent last time
+    let mut more = runs.clone();
+    more["replace"] = json!(2);
+    s.execute("mask.brushStroke", &more).unwrap();
+    assert_eq!(strokes(&s).len(), 3, "two replaced by two");
+    assert!(
+        s.execute("mask.brushStroke", &json!({"runs": [{"points": [[0.1, 0.1]]}], "replace": -4, "continue": true})).is_ok(),
+        "a bad count is one"
+    );
+    for bad in [json!({"runs": []}), json!({"runs": 3}), json!({"runs": [{"size": 0.1}]})] {
+        assert!(s.execute("mask.brushStroke", &bad).is_err(), "{bad}");
+    }
+}

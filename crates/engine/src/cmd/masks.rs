@@ -372,33 +372,21 @@ pub fn specs() -> Vec<CommandSpec> {
             "Brush Stroke",
             [],
             None,
-            "{id?: maskId, component?: index, points: [[x,y],…] normalized, size?: the solid core's radius, fraction of long edge (0.03), feather?: 0..100, the soft halo outside the core, flow?, density?, erase?: bool, model?: 1 Lightroom's brush (default) | 0 the brush of strokes saved before it (size = the whole dab, feather inward), autoMask?: bool, autoRange?: -100 (tight) … 0 (default, Lightroom's limits) … 100 (wide), how different a pixel may be from the one under the dab and still take Auto Mask's paint (the limits scale by ½ … 2), kept with the stroke, pressure?: [p,…] pen pressure 0..1 per point (scales each dab's size and flow; omitted: full), connect?: bool — start from the last point of the mask's last stroke (⇧-click), size / feather / flow tapering from that stroke's to these} → {activeMask, connected}",
+            "{id?: maskId, component?: index, points: [[x,y],…] normalized, size?: the solid core's radius, fraction of long edge (0.03), feather?: 0..100, the soft halo outside the core, flow?, density?, erase?: bool, model?: 1 Lightroom's brush (default) | 0 the brush of strokes saved before it (size = the whole dab, feather inward), autoMask?: bool, autoRange?: -100 (tight) … 0 (default, Lightroom's limits) … 100 (wide), how different a pixel may be from the one under the dab and still take Auto Mask's paint (the limits scale by ½ … 2), kept with the stroke, pressure?: [p,…] pen pressure 0..1 per point (scales each dab's size and flow; omitted: full), runs?: [{points, erase?, size?, feather?, flow?, density?, pressure?}, …] (one gesture in parts painted with different modes, e.g. ⌥ / Alt pressed and let go during it: each run is a stroke, the values left out taken from the top level; instead of `points`), continue?: bool (the stroke being painted, sent again as it grows: it replaces the component's last `replace` strokes, so it shows live), replace?: n (with `continue`: how many strokes the gesture sent last time, 1), connect?: bool — start from the last point of the mask's last stroke (⇧-click), size / feather / flow tapering from that stroke's to these} → {activeMask, connected}",
             has_active,
             |s, p| {
-                let pts: Vec<Point> = p
-                    .get("points")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| bad("mask.brushStroke", "missing points"))?
-                    .iter()
-                    .filter_map(|q| Some(Point::new(q.get(0)?.as_f64()?, q.get(1)?.as_f64()?)))
-                    .collect();
-                let pts_len = pts.len();
-                let d = BrushStroke::default();
-                let stroke = BrushStroke {
-                    points: pts,
-                    size: f64_or(p, "size", d.size),
-                    feather: f64_or(p, "feather", d.feather),
-                    flow: f64_or(p, "flow", d.flow),
-                    density: f64_or(p, "density", d.density),
-                    erase: bool_or(p, "erase", false),
-                    auto_mask: bool_or(p, "autoMask", false),
-                    // fixed with the stroke: a later change of the slider leaves it as painted
-                    auto_range: f64_or(p, "autoRange", d.auto_range).clamp(-lcc_develop::AUTO_RANGE_MAX, lcc_develop::AUTO_RANGE_MAX),
-                    pressure: pressure_list(p.get("pressure"), pts_len)?,
-                    // new strokes paint with Lightroom's brush (notes 18/22)
-                    model: if p.get("model").and_then(Value::as_u64) == Some(0) { BRUSH_MODEL_LEGACY } else { BRUSH_MODEL_LRC },
+                // one stroke, or one per run of a gesture painted in parts (⌥ / Alt pressed and let go during it)
+                let mut new: Vec<BrushStroke> = match p.get("runs") {
+                    Some(Value::Array(runs)) if !runs.is_empty() => runs.iter().map(|r| brush_stroke_of(r, p)).collect::<Result<_>>()?,
+                    Some(Value::Array(_)) => return Err(bad("mask.brushStroke", "`runs` is empty")),
+                    Some(_) => return Err(bad("mask.brushStroke", "`runs` must be a list of strokes")),
+                    None => vec![brush_stroke_of(p, p)?],
                 };
-                let connect = bool_or(p, "connect", false);
+                // the stroke being painted, sent again as it grows: it replaces what it sent last time
+                let again = bool_or(p, "continue", false);
+                let replace = p.get("replace").and_then(Value::as_u64).map_or(1, |n| usize::try_from(n).unwrap_or(usize::MAX)).max(1);
+                // a ⇧-click line goes on from one click, not a gesture in parts or a live update
+                let connect = bool_or(p, "connect", false) && new.len() == 1 && !again;
                 let mut connected = false;
                 let next = s.active().and_then(|id| s.develop_of(id)).map(|d| d.next_mask_id()).unwrap_or(1);
                 let want = mask_id_param(p, "mask.brushStroke")?.or(s.active_mask);
@@ -453,11 +441,16 @@ pub fn specs() -> Vec<CommandSpec> {
                             ))
                         });
                         match anchor {
-                            Some((from, last)) => {
+                            _ if again && !strokes.is_empty() => {
+                                strokes.truncate(strokes.len().saturating_sub(replace));
+                                strokes.append(&mut new);
+                            }
+                            Some((from, last)) if new.len() == 1 => {
+                                let stroke = new.remove(0);
                                 strokes.extend(connected_strokes(from, &last, stroke));
                                 connected = true;
                             }
-                            None => strokes.push(stroke),
+                            _ => strokes.append(&mut new),
                         }
                     } else {
                         m.components.push(MaskComponent {
@@ -465,7 +458,7 @@ pub fn specs() -> Vec<CommandSpec> {
                             name: None,
                             op: MaskOp::Add,
                             invert: false,
-                            shape: MaskShape::Brush { strokes: vec![stroke] },
+                            shape: MaskShape::Brush { strokes: std::mem::take(&mut new) },
                         });
                     }
                     Ok(())
@@ -1551,6 +1544,37 @@ pub(crate) fn clamp_local(mut a: LocalAdjustments) -> LocalAdjustments {
     }
     c(&mut a.amount, 0.0, 200.0);
     a
+}
+
+/// One stroke of `mask.brushStroke` from `r` (the command's parameters, or one of its `runs`), the values `r`
+/// leaves out taken from `top` (the command's parameters) or the defaults. New strokes paint with Lightroom's
+/// brush unless `model: 0` asks for the legacy one.
+fn brush_stroke_of(r: &Value, top: &Value) -> Result<BrushStroke> {
+    let points: Vec<Point> = r
+        .get("points")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad("mask.brushStroke", "missing points"))?
+        .iter()
+        .filter_map(|q| Some(Point::new(q.get(0)?.as_f64()?, q.get(1)?.as_f64()?)))
+        .collect();
+    let d = BrushStroke::default();
+    let num = |k: &str, dflt: f64| r.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or_else(|| f64_or(top, k, dflt));
+    let flag = |k: &str| r.get(k).and_then(Value::as_bool).unwrap_or_else(|| bool_or(top, k, false));
+    let pressure = pressure_list(r.get("pressure"), points.len())?;
+    let model = r.get("model").or_else(|| top.get("model")).and_then(Value::as_u64);
+    Ok(BrushStroke {
+        size: num("size", d.size),
+        feather: num("feather", d.feather),
+        flow: num("flow", d.flow),
+        density: num("density", d.density),
+        erase: flag("erase"),
+        auto_mask: flag("autoMask"),
+        // fixed with the stroke: a later change of the slider leaves it as painted
+        auto_range: num("autoRange", d.auto_range).clamp(-lcc_develop::AUTO_RANGE_MAX, lcc_develop::AUTO_RANGE_MAX),
+        pressure,
+        model: if model == Some(0) { BRUSH_MODEL_LEGACY } else { BRUSH_MODEL_LRC },
+        points,
+    })
 }
 
 /// `mask.brushStroke`'s `pressure`: one number 0..1 per point (clamped), at most one per point; absent or `null`
