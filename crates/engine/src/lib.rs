@@ -41,6 +41,10 @@ pub mod enhance;
 mod errors;
 pub mod export;
 pub mod export_video;
+pub mod eye_cull;
+pub mod eye_prep;
+pub mod eye_store;
+pub mod eyes;
 pub mod face_download;
 pub mod face_tiles;
 #[cfg(not(target_arch = "wasm32"))]
@@ -457,6 +461,11 @@ pub struct Session {
     pub mask_tool_effects: std::collections::BTreeMap<String, String>,
     /// Saved colour-label name sets.
     pub label_sets: Vec<cmd::manage::LabelSet>,
+    /// Reject Closed and Blurry Eyes running in the background, and what it has finished so far.
+    pub(crate) eye_cull: Option<Arc<eye_cull::EyeCullRun>>,
+    pub(crate) eye_cull_results: Vec<(PhotoId, std::result::Result<Arc<eyes::EyeReport>, String>)>,
+    /// The last `eyes.analyze` run in the background.
+    pub(crate) eye_prep: Option<Arc<eye_prep::EyePrep>>,
     /// Look-alike signatures by content key (Find Similar).
     pub signatures: std::collections::HashMap<String, [f32; 64]>,
     /// Imported `.cube` LUT profiles.
@@ -673,6 +682,9 @@ impl Session {
             mask_effects: Vec::new(),
             mask_tool_effects: Default::default(),
             label_sets: Vec::new(),
+            eye_cull: None,
+            eye_cull_results: Vec::new(),
+            eye_prep: None,
             signatures: Default::default(),
             lut_profiles: Vec::new(),
             target_album: None,
@@ -1842,6 +1854,8 @@ mod tests_enhance;
 mod tests_export;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_export_video;
+#[cfg(test)]
+mod tests_eye_store;
 #[cfg(test)]
 mod tests_face_models;
 #[cfg(test)]

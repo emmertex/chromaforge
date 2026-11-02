@@ -123,6 +123,42 @@ fn disk_cache_roundtrip_and_prune() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Records kept beside the thumbnails (a photo's eyes) come back as written, count in the
+/// cache's size, are let go like thumbnails when it is full, and go when dropped.
+#[test]
+fn data_records_roundtrip_count_and_prune() {
+    let dir = temp_dir("data");
+    let d = DiskCache::new(&dir, 40_000);
+    let k = hash_bytes(b"eyes-1");
+    assert!(d.get_data(k).is_none());
+    d.put_data(k, b"hello eyes");
+    assert_eq!(d.get_data(k).as_deref(), Some(&b"hello eyes"[..]));
+    assert_eq!(d.size(), 10);
+    // a thumbnail under another key and the record are both cache files
+    let hex = k.to_string();
+    assert!(disk::is_cache_file(&hex[..2], &format!("{hex}.{DATA_EXT}")));
+    // fill past the budget: the oldest records go
+    let keys: Vec<_> = (0..40u8).map(|i| hash_bytes(&[i, 9])).collect();
+    for k in &keys {
+        d.put_data(*k, &[7u8; 2000]);
+    }
+    assert!(d.size() <= 40_000, "{}", d.size());
+    assert!(d.get_data(*keys.last().unwrap()).is_some());
+    assert!(d.get_data(keys[0]).is_none());
+    let before = d.size();
+    d.remove_data(*keys.last().unwrap());
+    assert!(d.get_data(*keys.last().unwrap()).is_none());
+    assert_eq!(d.size(), before - 2000);
+    // a retired cache reads and writes no records
+    let cache = PreviewCache::with_disk(1 << 20, &dir, 1 << 20);
+    cache.put_data(k, b"again");
+    assert_eq!(cache.get_data(k).as_deref(), Some(&b"again"[..]));
+    cache.retire();
+    assert!(cache.get_data(k).is_none());
+    d.clear();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn disk_cache_overwrite_accounts_for_replaced_jpeg_only_once() {
     let dir = temp_dir("overwrite");

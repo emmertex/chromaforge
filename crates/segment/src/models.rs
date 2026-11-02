@@ -114,8 +114,77 @@ pub const DEPTH: ModelInfo = ModelInfo {
     offered: false,
 };
 
+/// MediaPipe Selfie Multiclass 256 (float32, version 1, Apache-2.0, Google).
+pub const PEOPLE_FILES: &[FileSpec<'static>] = &[FileSpec {
+    name: "selfie_multiclass_256x256.tflite",
+    size: Some(16_371_837),
+    sha256: Some("c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0"),
+    max: 16_371_837,
+}];
+
+/// MediaPipe Face Landmarker bundle (float16, version 1, Apache-2.0, Google): a zip of BlazeFace
+/// (short range), FaceMesh-V2 and the blendshapes model (unused).
+pub const FACE_FILES: &[FileSpec<'static>] = &[FileSpec {
+    name: "face_landmarker.task",
+    size: Some(3_758_596),
+    sha256: Some("64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"),
+    max: 3_758_596,
+}];
+
+/// MediaPipe BlazeFace full range (float32, Apache-2.0, Google): the small faces of group photos
+/// that the bundle's short-range detector misses. Kept in the faces model's folder.
+pub const FACE_FAR_FILES: &[FileSpec<'static>] = &[FileSpec {
+    name: "face_detection_full_range.tflite",
+    size: Some(1_083_786),
+    sha256: Some("3698b18f063835bc609069ef052228fbe86d9c9a6dc8dcb7c7c2d69aed2b181b"),
+    max: 1_083_786,
+}];
+
+pub const PEOPLE: ModelInfo = ModelInfo {
+    key: "people",
+    dir_name: "mediapipe-selfie-multiclass",
+    title: "MediaPipe people",
+    purpose: "People: hair, face skin, body skin and clothes",
+    files: PEOPLE_FILES,
+    license_name: "Apache-2.0",
+    license_url: "https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Multiclass%20Segmentation.pdf",
+    page_url: "https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter",
+    default_mirrors: &["https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1"],
+    mirrors_env: "PEOPLE_MIRRORS",
+    offered: true,
+};
+
+pub const FACE: ModelInfo = ModelInfo {
+    key: "face",
+    dir_name: "mediapipe-face-landmarker",
+    title: "MediaPipe faces",
+    purpose: "People and eye focus: faces, eyes, irises, eyebrows, lips and teeth",
+    files: FACE_FILES,
+    license_name: "Apache-2.0",
+    license_url: "https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf",
+    page_url: "https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker",
+    default_mirrors: &["https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1"],
+    mirrors_env: "FACE_MIRRORS",
+    offered: true,
+};
+
+/// Fetched with [`FACE`] (same folder): not listed on its own.
+pub const FACE_FAR: ModelInfo = ModelInfo {
+    key: "faceFar",
+    dir_name: "mediapipe-face-landmarker",
+    title: "MediaPipe small faces",
+    purpose: "Eye focus and People: the small faces of group photos",
+    files: FACE_FAR_FILES,
+    license_name: "Apache-2.0",
+    license_url: "https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf",
+    page_url: "https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector",
+    default_mirrors: &["https://storage.googleapis.com/mediapipe-assets"],
+    mirrors_env: "FACE_FAR_MIRRORS",
+    offered: false,
+};
+
 /// Every model of this registry, in display order.
-pub const MODELS: &[&ModelInfo] = &[&SAM2, &DEPTH];
+pub const MODELS: &[&ModelInfo] = &[&PEOPLE, &FACE, &FACE_FAR, &SAM2, &DEPTH];
 
 /// The model with command key `key`.
 pub fn by_key(key: &str) -> Option<&'static ModelInfo> {
