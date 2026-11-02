@@ -68,3 +68,23 @@ fn a_cancelled_sam_download_is_told_by_its_flag() {
     assert!(error && text.starts_with("The SAM 3 download failed: "), "{text}");
     assert_eq!(crate::sam_download_ended(&DownloadStatus::default()), None);
 }
+
+/// With SAM 2.1 chosen for Object masks, its missing model opens the AI Models dialog (which
+/// draws headless), and `dialog.aiModels` opens it too.
+#[test]
+fn a_missing_sam2_opens_the_ai_models_dialog() {
+    let mut h = demo();
+    let ctx = h.view.ctx.clone();
+    let missing = CommandError { message: "x".into(), kind: ErrorKind::ModelMissing(AiModel::Sam2) };
+    h.app.ai_error(&ctx, missing, Some(("object", "new")));
+    if !Segmenter::AVAILABLE {
+        assert_eq!(h.app.ui.dialog, None);
+        return;
+    }
+    assert_eq!(h.app.ui.dialog, Some(Dialog::AiModels { error: None }));
+    h.app.ui.dialog = None;
+    h.app.run("dialog.aiModels", json!({})).unwrap();
+    assert!(matches!(h.app.ui.dialog, Some(Dialog::AiModels { .. })));
+    h.step();
+    assert!(matches!(h.app.ui.dialog, Some(Dialog::AiModels { .. })), "it stays open while shown");
+}

@@ -1717,6 +1717,12 @@ pub enum Dialog {
         #[serde(default)]
         error: Option<String>,
     },
+    /// The AI Models dialog: every AI mask model's download, and which one computes Object
+    /// masks (`dialog.aiModels`). `error`: why the last action failed.
+    AiModels {
+        #[serde(default)]
+        error: Option<String>,
+    },
     /// Open Library was given a Lightroom Classic catalog (issue #891): offer File ▸ Import
     /// Lightroom Catalog… with `catalog` (the `.lrcat` found; `None`: ask for it) instead.
     /// `folder`: what was chosen.
