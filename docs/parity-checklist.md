@@ -47,16 +47,16 @@ cited here still exists. Formerly docs/parity.md.
 | S. Export (EXP) | 15 | 4 | 0 | 0 | 7/7 (100%) | 6/7 (86%) |
 | T. Share (SHARE) | 0 | 0 | 0 | 4 | — | — |
 | U. Map & location (MAP) | 0 | 2 | 0 | 0 | — | 0/1 (0%) |
-| V. Preferences (PREF) | 6 | 2 | 2 | 2 | 1/1 (100%) | 4/5 (80%) |
+| V. Preferences (PREF) | 7 | 2 | 2 | 2 | 1/1 (100%) | 5/6 (83%) |
 | W. Cloud & AI infrastructure (CLOUD / AI) | 1 | 0 | 1 | 2 | — | — |
 | X. Cross-cutting behaviours (BEHAV) | 23 | 6 | 1 | 1 | 8/8 (100%) | 7/10 (70%) |
 | Y. Menus | 88 | 0 | 2 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 77 | 5 | 2 | 1 | 48/52 (92%) | 24/26 (92%) |
 | Lightroom Classic extras | 104 | 20 | 3 | 0 | — | 35/39 (90%) |
 | IMM. Immich integration | 11 | 0 | 0 | 0 | — | 7/7 (100%) |
-| **Total** | 505 | 70 | 30 | 27 | 195/203 (96%) | 166/185 (90%) |
+| **Total** | 506 | 70 | 30 | 27 | 195/203 (96%) | 167/186 (90%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.3%** of 605 in-scope rows — P0 98.0% of 203 · P1 94.6% of 185 · P2 76.5% of 215.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.3%** of 606 in-scope rows — P0 98.0% of 203 · P1 94.6% of 186 · P2 76.5% of 215.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -522,6 +522,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-PREF-PEOPLE | Face recognition | P2 | 🟡 | `cmd:faces.enable`, `cmd:faces.models.list`, `cmd:faces.models.inspect`, `cmd:faces.models.install`, `cmd:faces.models.download`, `cmd:faces.models.downloads`, `cmd:faces.models.downloadCancel`, `cmd:faces.models.remove`, `cmd:faces.models.select`, `cmd:dialog.faceModel`, `crates/faces/src/lib.rs`, `crates/ui-egui/src/panels/faces.rs` | Settings ▸ Faces: an off-by-default toggle and the face model list. Models are opt-in and never bundled, the 232 KB YuNet detector included. Press Download (terms first; then a pinned address, size and SHA-256 checked, fetched over pure-Rust https with `lcc-fetch`), or add any `.onnx` by picking or dropping it: it is recognised by hash or described from its shape, shows its licence terms and training-data note, runs a self-test, and installs only after an "I accept" box; an installed model is chosen and recognition switched on at once (the newest wins, each model keeps its own embedding cache). Non-commercial models are add-by-file only, never offered for download. Suggestions of names run on the shared pure-Rust CPU interpreter (`crates/faces/src/net.rs`, `crates/faces/src/runtime.rs`; bounded im2col/GEMM, checked ONNX shapes/operators; no external inference runtime; 40 public crops agree within 2.1e-6, one-thread SFace 34–36 ms / AuraFace 233–252 ms; the whole network runs on the GPU through wgpu, activations kept on the device, when a background check (shown in the activity stack) finds it agrees with the CPU and is faster: YuNet ~3×, SFace ~4×, AuraFace ~4× faster; Settings ▸ Faces shows the device and can keep them on the CPU (`cmd:faces.gpu`); the scan's pace limits GPU use, see docs/faces.md) in a background worker and are never applied automatically. Thresholds are starting points calibrated on busts, not yet on live faces; the Recognise faces switch is off until a recognition model is chosen and installed (`faces.enable {enabled: true}` refuses otherwise; removing the last recogniser switches it off), issue #678 |
 | LR-PREF-WATERMARK | Watermark settings | P1 | ✅ | `cmd:export.savePreset`, `crates/ui-egui/src/panels/dialogs.rs` | set in the Export dialog; kept with Export with Previous and in saved export presets |
 | LR-PREF-SHORTCUTS | Shortcut customisation | — | ✅ | `cmd:app.setShortcut`, `cmd:app.resetShortcuts`, `crates/ui-egui/src/panels/keymap.rs` | an extra (the reference app has no keymap editor): Help ▸ Keyboard Shortcuts (⌘/) lists every command; click a shortcut and press the new keys (Esc cancels), × removes, ↺ restores, Reset All; a key another command had moves over; a declared key that `ui.json` already gives another command stays with that command until ↺ takes it back; saved in `ui.json`; native menu accelerators follow. Rating/label digits and secondary keys are listed read-only and yield to a key given to a command |
+| LR-PREF-SHARED | Presets shared by every library | P1 | ✅ | `cmd:store.info`, `cmd:store.mergeLibraries`, `cmd:store.gatherPresets`, `cmd:store.useLibrary`, `crates/engine/src/app_store.rs` | like the other app's presets folder: develop presets (with their At Import / hidden marks), LUT profiles (files copied), local adjustment presets, import develop defaults, export presets, the last export and Photo Merge options, print / metadata / filter / curve / label / keyword-set presets and slideshow settings live in the settings folder's `Library Store/` (LR-PREF-HABITS); each library is merged in once, read only (same preset once, a clash as "name 2", a profile id taken by another file gets a new one and the library's photos follow it); Open Recent's libraries and their backups are gathered when a library opens; a library can keep its own (`store.useLibrary`); `<cli> run --shared-settings` without a library; a damaged store file is kept as `.corrupt-<time>` and reported. From OneSlips. Not taken: their camera-profile (.dcp) and Profile Manager parts (our .dcp profiles are already app-wide), remembered objects, the grid's sort |
 | LR-PREF-TECHPREVIEW | Early-access toggles | P2 | ⬜ | | |
 | LR-PREF-NOTIFICATIONS | Notifications | OOS | 🚫 | | |
 | LR-PREF-DEVICE | Device settings | P2 | ⬜ | | |

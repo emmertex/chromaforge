@@ -86,6 +86,7 @@ pub mod recheck;
 pub mod reload;
 mod slideshow;
 pub(crate) mod source;
+mod store;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tether;
@@ -266,6 +267,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(missing::specs());
         v.extend(recheck::specs());
         v.extend(sync::specs());
+        v.extend(store::specs());
         v.extend(metadata::specs());
         v.extend(metadata_files::specs());
         v.extend(export_preset_files::specs());

@@ -21,8 +21,9 @@ pub struct LutProfile {
     pub file: String,
 }
 
+/// Where imported profile files are kept: the app store's `Profiles/`, else the library's.
 fn profiles_dir(s: &Session) -> Option<PathBuf> {
-    s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join("Profiles"))
+    s.profiles_dir()
 }
 
 /// Largest `.cube` file read back from a library: a 129³ LUT, the largest size in common use, is

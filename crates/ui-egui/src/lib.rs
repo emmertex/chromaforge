@@ -2167,7 +2167,31 @@ impl LccApp {
             settings.recent_opened.insert(path, (self.session.clock)());
             settings.recent_opened.retain(|p, _| settings.recent_libraries.contains(p));
         }
+        self.gather_shared_presets(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.window_title()));
+    }
+
+    /// LR-PREF-SHARED: the libraries of File ▸ Open Recent Library join the shared store (once each;
+    /// they are only read), and their named presets, backups' included, are gathered; says so when
+    /// that added some.
+    fn gather_shared_presets(&mut self, ctx: &egui::Context) {
+        if !self.session.uses_app_store() {
+            return;
+        }
+        let paths = self.ui.settings.recent_libraries.clone();
+        let mut n = 0;
+        match self.run("store.mergeLibraries", serde_json::json!({"paths": paths})) {
+            Ok(r) => n += r["merged"].as_array().into_iter().flatten().map(|m| m["presets"].as_u64().unwrap_or(0)).sum::<u64>(),
+            Err(e) => log::warn!("store: {e}"),
+        }
+        match self.run("store.gatherPresets", serde_json::json!({"paths": paths})) {
+            Ok(r) => n += r["count"].as_u64().unwrap_or(0),
+            Err(e) => log::warn!("store: {e}"),
+        }
+        if n > 0 {
+            let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
+            self.toast(ctx, msg);
+        }
     }
 
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).

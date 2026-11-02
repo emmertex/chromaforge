@@ -15,7 +15,11 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 fn info(lib: &Path) -> (bool, String, String) {
-    let o = Command::new(BIN).args(["run", "--library", lib.to_str().unwrap(), "library.info"]).output().unwrap();
+    let o = Command::new(BIN)
+        .env(lcc_brand::env_var("NO_PREFS"), "1")
+        .args(["run", "--library", lib.to_str().unwrap(), "library.info"])
+        .output()
+        .unwrap();
     (o.status.success(), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
 }
 

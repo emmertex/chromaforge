@@ -15,6 +15,7 @@
 extern crate lcc_denoise_core as lcc_denoise;
 
 pub mod activity;
+pub mod app_store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos;
 pub mod availability;
@@ -399,6 +400,9 @@ pub struct Session {
     pub preset_hidden: Vec<String>,
     /// Recently applied profile ids, newest first (at most [`presets::RECENT_PROFILES`]).
     pub profile_recent: Vec<String>,
+    /// The app-wide store of presets, profiles and habits shared by every library (`None`: each
+    /// library keeps its own; see [`app_store`]).
+    pub app_store: Option<app_store::AppStore>,
     /// Executed commands (actions / debugging / replay).
     pub journal: Vec<(String, Value)>,
     /// Actions and Edit In presets (P4.4/P4.5, [`cmd::actions`]).
@@ -647,6 +651,7 @@ impl Session {
             preset_at_import: Vec::new(),
             preset_hidden: Vec::new(),
             profile_recent: Vec::new(),
+            app_store: None,
             journal: Vec::new(),
             workflow: Default::default(),
             pending_log: Vec::new(),
@@ -776,6 +781,15 @@ impl Session {
             let skip = std::mem::take(&mut self.skip_auto_write);
             if r.is_ok() && !skip && self.xmp.auto_write && self.interaction.is_none() && self.pending_log.len() > log_start {
                 self.auto_write_sidecars_since(log_start);
+            }
+        }
+        if self.depth == 0 && self.library.is_none() && self.app_store.is_some() {
+            // no library (`run --shared-settings`): the store is saved after each command
+            if let Err(e) = self.save_app_store() {
+                log::error!("store: {e}");
+                if r.is_ok() {
+                    return Err(e);
+                }
             }
         }
         if self.depth == 0 && self.library.is_some() {
@@ -1829,6 +1843,8 @@ mod tests_album_order;
 mod tests_album_remove;
 #[cfg(test)]
 mod tests_albums_local;
+#[cfg(test)]
+mod tests_app_store;
 #[cfg(test)]
 mod tests_autosync_crop;
 #[cfg(test)]
