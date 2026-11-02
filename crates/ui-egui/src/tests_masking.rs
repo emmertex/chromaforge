@@ -2683,3 +2683,34 @@ fn brush_and_object_cursors_show_erasing() {
     assert_eq!(r["ok"], true, "{r}");
     assert!(has(&h, "objectCursor:exclude"));
 }
+
+/// Clicking a mask's row edits its top component: a Brush mask arms the brush on it (a stroke goes
+/// into that mask, no new one), a gradient's row shows its handles.
+#[test]
+fn the_mask_row_activates_its_top_component() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "brush"}));
+    let brush = h.app.session.active_mask.expect("the brush mask");
+    exec(&mut h, "mask.brushStroke", json!({"points": [[0.3, 0.3], [0.4, 0.3]], "size": 0.02}));
+    exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.3], "end": [0.5, 0.6]}));
+    let lin = h.app.session.active_mask.expect("the gradient");
+    h.step();
+    click(&mut h, &format!("mask:{brush}"));
+    h.step();
+    assert_eq!(h.app.session.active_mask, Some(brush));
+    assert_eq!(h.app.ui.tool, "brush", "the row arms the brush on the mask's Brush");
+    assert!(h.app.ui.mask_new.is_none(), "not for a new mask");
+    pointer(&mut h, json!([{"kind": "down", "x": 0.7, "y": 0.75}, {"kind": "drag", "x": 0.75, "y": 0.75}, {"kind": "drag", "x": 0.8, "y": 0.75}, {"kind": "up", "x": 0.8, "y": 0.75}]));
+    let d = develop(&h);
+    assert_eq!(d.masks.len(), 2, "no new mask");
+    let n = d.masks.iter().find(|m| m.id == brush).map(|m| match &m.components[0].shape {
+        MaskShape::Brush { strokes } => strokes.len(),
+        _ => 0,
+    });
+    assert_eq!(n, Some(2), "the stroke went into the selected brush mask");
+    click(&mut h, &format!("mask:{lin}"));
+    h.step();
+    assert_eq!(h.app.session.active_mask, Some(lin));
+    assert_eq!(h.app.ui.active_mask_component, Some(0));
+    assert_ne!(h.app.ui.tool, "brush", "a gradient on top arms no brush");
+}

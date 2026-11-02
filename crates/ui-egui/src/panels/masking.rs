@@ -527,9 +527,16 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 && !chev_resp.clicked()
                 && !popup_open_at_start
             {
-                let _ = app.run("mask.select", json!({"id": m.id}));
-                if app.ui.active_mask_component.is_none() {
-                    app.ui.active_mask_component = Some(0);
+                // the mask row: any new-mask tool is put away and the mask's top component is the
+                // one edited: a Brush arms the brush on it (paint adds strokes, ⌥ erases), a
+                // gradient shows its handles
+                disarm(app);
+                let top = if m.components.is_empty() { None } else { app.run("mask.editComponent", json!({"id": m.id, "component": 0})).ok() };
+                if top.is_none() {
+                    let _ = app.run("mask.select", json!({"id": m.id}));
+                    if app.ui.active_mask_component.is_none() {
+                        app.ui.active_mask_component = Some(0);
+                    }
                 }
             }
             if resp.double_clicked() {
