@@ -685,7 +685,7 @@ pub fn render(
                 Some(_) => Arc::new(upload()),
                 None => Arc::new(upload()),
             };
-            sample(&mut cx, src, src_buf, &plan)
+            sample(&mut cx, src, src_buf, plan)
         }
         None => {
             let img = plan.frame.sample(src, w, h);
@@ -699,7 +699,7 @@ pub fn render(
     // 2. white balance, defringe, spots, noise reduction
     let lin = match cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == plan.lin_key) {
         Some((_, b)) => b,
-        None => Arc::new(linear(&mut cx, &sampled, info, &plan, &mut host)),
+        None => Arc::new(linear(&mut cx, &sampled, info, plan, &mut host)),
     };
     lap("wb/nr", &mut t, &mut cx);
 
@@ -708,7 +708,7 @@ pub fn render(
         Some(p) if p.key == plan.lin_key => p,
         _ => Planes { key: plan.lin_key, ..Default::default() },
     };
-    let mut prep = prepare(&mut cx, &lin, &plan, req, &mut planes);
+    let mut prep = prepare(&mut cx, &lin, plan, req, &mut planes);
     // a window dehazes with the whole frame's airlight
     if let Some(a) = plan.fixed_air {
         prep.air = a;
@@ -719,7 +719,7 @@ pub fn render(
     }
 
     // 4. masks
-    let (masks, terms, curves) = masks(&mut cx, &lin, &prep, &plan, &mut host);
+    let (masks, terms, curves) = masks(&mut cx, &lin, &prep, plan, &mut host);
     lap("masks", &mut t, &mut cx);
 
     // 5. per-pixel stage
@@ -935,7 +935,7 @@ pub fn render(
         let deep = lcc_pipeline::DeepImage { width: w, height: h, space: req.space, samples: lcc_pipeline::DeepSamples::F32(samples) };
         return Some(Rendered { image, histogram, deep: Some(deep), warnings: Vec::new(), coverage, alpha: None });
     }
-    lcc_pipeline::visualize::apply(&mut image, req.overlay, &plan, overlay_mask.as_ref(), all_overlay_alphas.as_deref());
+    lcc_pipeline::visualize::apply(&mut image, req.overlay, plan, overlay_mask.as_ref(), all_overlay_alphas.as_deref());
     // spots grew the window the render worked on: cut it back to the request
     if let Some(k) = plan.keep {
         image = image.crop(k.x, k.y, k.w, k.h);

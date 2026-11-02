@@ -324,20 +324,6 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-#[cfg(test)]
-mod pagination_tests {
-    use super::*;
-
-    #[test]
-    fn offsets_and_limits_saturate_instead_of_wrapping_on_wasm() {
-        assert_eq!(pagination_usize(0), 0);
-        assert_eq!(pagination_usize(200), 200);
-        assert_eq!(pagination_usize(u64::MAX), usize::MAX);
-        #[cfg(target_pointer_width = "32")]
-        assert_eq!(pagination_usize(u64::from(u32::MAX) + 1), usize::MAX);
-    }
-}
-
 /// What happened to the graphics card this session ([`lcc_gpu::events_after`]), for `app.gpu`.
 fn gpu_events() -> Value {
     #[cfg(not(target_arch = "wasm32"))]
@@ -352,5 +338,19 @@ fn gpu_events() -> Value {
     #[cfg(target_arch = "wasm32")]
     {
         Value::Array(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+
+    #[test]
+    fn offsets_and_limits_saturate_instead_of_wrapping_on_wasm() {
+        assert_eq!(pagination_usize(0), 0);
+        assert_eq!(pagination_usize(200), 200);
+        assert_eq!(pagination_usize(u64::MAX), usize::MAX);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(pagination_usize(u64::from(u32::MAX) + 1), usize::MAX);
     }
 }

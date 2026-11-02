@@ -633,7 +633,7 @@ pub fn encode_with_gain(base: &EncodeImage, gain_jpeg: &[u8], quality: u8, sub: 
         let slot = primary.get_mut(at..at + 4).ok_or_else(|| Error::Encode("gain map JPEG: truncated MPF segment".into()))?;
         slot.copy_from_slice(&v.to_be_bytes());
     }
-    primary.extend_from_slice(&gain_jpeg);
+    primary.extend_from_slice(gain_jpeg);
     Ok(primary)
 }
 

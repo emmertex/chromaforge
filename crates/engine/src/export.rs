@@ -2709,6 +2709,7 @@ pub fn run_batch_cancellable(
 }
 
 /// [`export_batch`] with `lanes` photos side by side and nothing written (measurements, tests).
+#[cfg(test)]
 pub(crate) fn export_batch_lanes(
     session: &mut crate::Session,
     ids: &[lcc_catalog::PhotoId],
