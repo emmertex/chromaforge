@@ -1700,6 +1700,17 @@ pub enum Dialog {
         pick_best: bool,
         burst_gap: f32,
         similarity: f32,
+        /// Reject photos where a subject's eyes are closed / blurry (`photo.rejectEyes`).
+        #[serde(default)]
+        closed_eyes: bool,
+        #[serde(default)]
+        blurry_eyes: bool,
+        /// Soft eyes are rejected as well as blurry ones (`photo.rejectEyes` `soft`).
+        #[serde(default)]
+        soft_eyes: bool,
+        /// Everyone's eyes count, not only the main subjects' (`mainOnly: false`).
+        #[serde(default)]
+        everyone: bool,
     },
     /// Help ▸ System Info: (label, value) rows.
     DenoiseModel {

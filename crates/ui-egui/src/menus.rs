@@ -2011,7 +2011,16 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "photo.openOriginalInExternal" => open_original_in(app, &ctx, p),
         "dialog.cull" => {
             let (burst_gap, similarity) = app.ui.cull_burst.unwrap_or((10.0, 0.93));
-            app.ui.dialog = Some(Dialog::Cull { reject_below: 0.0, pick_best: true, burst_gap, similarity });
+            app.ui.dialog = Some(Dialog::Cull {
+                reject_below: 0.0,
+                pick_best: true,
+                burst_gap,
+                similarity,
+                closed_eyes: false,
+                blurry_eyes: false,
+                soft_eyes: false,
+                everyone: false,
+            });
             Ok(Value::Null)
         }
         "app.whatsNew" => {

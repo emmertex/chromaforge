@@ -3163,3 +3163,19 @@ fn settling_waits_for_the_missing_photos_count() {
     // the next one before the last finished, and settling would never end
     assert!(h.settle(Duration::from_secs(30)), "the sidebar settles while a slow count refreshes");
 }
+
+/// Assisted Culling: the eyes are asked about; with "blurry eyes" ticked the dialog asks how soft is
+/// too soft, and whether only the main subjects count; the choices reach the dialog's state.
+#[test]
+fn assisted_culling_asks_about_the_eyes() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
+    exec(&mut h, "dialog.cull", json!({}));
+    assert!(!h.app.widgets.iter().any(|(w, _)| w == "radio:cullSoftToo"), "only once blurry eyes are asked for");
+    click(&mut h, "check:cullBlurryEyes");
+    click(&mut h, "radio:cullSoftToo");
+    click(&mut h, "check:cullMainOnly");
+    let Some(crate::state::Dialog::Cull { blurry_eyes, soft_eyes, everyone, closed_eyes, .. }) = h.app.ui.dialog.clone() else {
+        panic!("the dialog stays")
+    };
+    assert!(blurry_eyes && soft_eyes && everyone && !closed_eyes);
+}
