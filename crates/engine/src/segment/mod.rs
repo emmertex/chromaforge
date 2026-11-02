@@ -139,6 +139,7 @@ pub struct Segmenter {
     pub(crate) wanted: Vec<PhotoId>,
     /// The running Recompute AI Masks batch (one activity row).
     recompute: Option<RecomputeRun>,
+    #[cfg_attr(not(feature = "sam"), allow(dead_code))]
     run_seq: u64,
     #[cfg(feature = "sam")]
     worker: worker::Worker,
@@ -174,6 +175,7 @@ impl Default for Segmenter {
 
 /// A Recompute AI Masks batch on the worker: its activity row (✕ sets `cancel`, which the worker
 /// checks before each job) and the selections still on their way.
+#[cfg_attr(not(feature = "sam"), allow(dead_code))]
 struct RecomputeRun {
     id: u64,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
