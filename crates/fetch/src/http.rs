@@ -5,9 +5,9 @@
 //!
 //! Only what a large-file download needs: one request per connection (`Connection: close`),
 //! `Range` requests for resuming, redirects (followed by the caller), `Content-Length`,
-//! chunked and read-to-close bodies. Every read waits at most `stall` for data and checks the
-//! cancel flag at least twice a second, so a dead server or a cancelled download never hangs
-//! the downloading thread. No proxies (see docs/ai-masks.md).
+//! chunked and read-to-close bodies. Sockets are non-blocking: every read or write waits at most
+//! `stall` for progress and checks the cancel flag every few milliseconds, so a dead server or a
+//! cancelled download never hangs the downloading thread. No proxies (see docs/ai-masks.md).
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -208,8 +208,9 @@ pub struct Limits<'a> {
     pub cancel: &'a AtomicBool,
 }
 
-/// How often a blocked read wakes up to check the cancel flag.
-const TICK: Duration = Duration::from_millis(250);
+/// Longest pause between two looks at a socket that had nothing to read or no room to write (the cancel flag is
+/// checked at each look).
+const MAX_WAIT: Duration = Duration::from_millis(16);
 /// Longest status line + headers accepted.
 const MAX_HEAD: usize = 64 * 1024;
 
@@ -220,6 +221,20 @@ enum Stream {
 
 fn is_timeout(e: &std::io::Error) -> bool {
     matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted)
+}
+
+/// Pauses between looks at a non-blocking socket: 1 ms, doubling up to [`MAX_WAIT`].
+struct Backoff(Duration);
+
+impl Backoff {
+    fn new() -> Backoff {
+        Backoff(Duration::from_millis(1))
+    }
+
+    fn pause(&mut self) {
+        std::thread::sleep(self.0);
+        self.0 = (self.0 * 2).min(MAX_WAIT);
+    }
 }
 
 fn tls_config() -> Result<Arc<rustls::ClientConfig>, HttpError> {
@@ -259,7 +274,7 @@ fn lookup(
         if left.is_zero() {
             return Err(HttpError::Connect(format!("{host}: the name lookup timed out")));
         }
-        match rx.recv_timeout(left.min(TICK)) {
+        match rx.recv_timeout(left.min(Duration::from_millis(250))) {
             Ok(r) => return r.map_err(|e| HttpError::Connect(format!("{host}: {e}"))),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(HttpError::Connect(format!("{host}: the name lookup failed"))),
@@ -294,8 +309,11 @@ impl Stream {
         let (host, port) = (url.host.clone(), url.port);
         let addrs = lookup(&url.host, move || (host.as_str(), port).to_socket_addrs().map(Iterator::collect), deadline, limits)?;
         let sock = connect_any(&url.host, &addrs, deadline, limits)?;
-        sock.set_read_timeout(Some(TICK)).map_err(|e| HttpError::Io(e.to_string()))?;
-        sock.set_write_timeout(Some(TICK)).map_err(|e| HttpError::Io(e.to_string()))?;
+        // Non-blocking, not socket timeouts: on Windows a send that times out may already have sent part of its
+        // data ("the socket state is indeterminate"), and sending it again corrupted the TLS stream: the server
+        // answered "received fatal alert: BadRecordMac" (note 5). A non-blocking send that can't go out says
+        // WouldBlock having sent nothing, so waiting and trying again is exact.
+        sock.set_nonblocking(true).map_err(|e| HttpError::Io(e.to_string()))?;
         let _ = sock.set_nodelay(true);
         if !url.tls {
             return Ok(Stream::Plain(sock));
@@ -311,9 +329,10 @@ impl Stream {
         Ok(s)
     }
 
-    /// Wait for `f` to make progress, retrying timeouts until `stall` passes without any.
+    /// Wait for `f` to make progress, retrying "not now" until `stall` passes without any.
     fn retry<T>(limits: &Limits, mut f: impl FnMut() -> std::io::Result<T>) -> Result<T, HttpError> {
         let start = Instant::now();
+        let mut backoff = Backoff::new();
         loop {
             if limits.cancel.load(Ordering::Relaxed) {
                 return Err(HttpError::Cancelled);
@@ -324,6 +343,7 @@ impl Stream {
                     if start.elapsed() >= limits.stall {
                         return Err(HttpError::Stalled);
                     }
+                    backoff.pause();
                 }
                 Err(e) if e.kind() == ErrorKind::InvalidData => return Err(HttpError::Tls(e.to_string())),
                 Err(e) => return Err(HttpError::Io(e.to_string())),
@@ -381,6 +401,7 @@ impl Stream {
             Stream::Plain(sock) => Self::retry(limits, || sock.read(buf)),
             Stream::Tls(conn, sock) => {
                 let start = Instant::now();
+                let mut backoff = Backoff::new();
                 loop {
                     if limits.cancel.load(Ordering::Relaxed) {
                         return Err(HttpError::Cancelled);
@@ -405,6 +426,7 @@ impl Stream {
                             if start.elapsed() >= limits.stall {
                                 return Err(HttpError::Stalled);
                             }
+                            backoff.pause();
                         }
                         Err(e) => return Err(HttpError::Io(e.to_string())),
                     }
@@ -1016,6 +1038,101 @@ sQ6l5HDDBbhGkYuLCq/Hs2w/8suhRANCAATfwLLDsrJ+pxUuCMLz7sTkEYam3ozL\
         let got = String::from_utf8(r.read_to_end(1 << 20, &limits).unwrap()).unwrap();
         assert_eq!(got, format!("{{\"len\":6000000,\"sum\":{sum}}}"));
         server.join().unwrap();
+    }
+
+    /// The test server's and client's TLS configurations (the client trusts only the test CA).
+    fn test_tls() -> (rustls::ServerConfig, Arc<rustls::ClientConfig>) {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        let provider = Arc::new(rustls_rustcrypto::provider());
+        let server_cfg = rustls::ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(pem_der(TEST_LEAF)), CertificateDer::from(pem_der(TEST_CA))],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(b64(TEST_LEAF_KEY))),
+            )
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(CertificateDer::from(pem_der(TEST_CA))).unwrap();
+        let client_cfg = Arc::new(
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        (server_cfg, client_cfg)
+    }
+
+    /// A server that reads the upload slowly (a slow uplink: the client's sends wait longer than one cancel tick)
+    /// still gets every byte intact. On Windows a socket send that times out may already have sent part of its
+    /// data ("the socket state is indeterminate"), so sending it again corrupted the TLS record stream and the
+    /// server answered "received fatal alert: BadRecordMac" (note 5, the second generative-fill request).
+    #[test]
+    fn a_slow_reading_server_gets_the_whole_upload_over_tls() {
+        let (server_cfg, client_cfg) = test_tls();
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || -> Result<String, String> {
+            let (mut sock, _) = l.accept().unwrap();
+            let mut conn = rustls::ServerConnection::new(Arc::new(server_cfg)).unwrap();
+            let mut plain = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut want: Option<usize> = None;
+            let mut reads = 0u32;
+            let end = |p: &[u8]| p.windows(4).position(|w| w == b"\r\n\r\n");
+            loop {
+                if conn.wants_write() {
+                    conn.write_tls(&mut sock).map_err(|e| e.to_string())?;
+                    continue;
+                }
+                let n = conn.read_tls(&mut sock).map_err(|e| e.to_string())?;
+                if n == 0 {
+                    return Err("client closed".into());
+                }
+                // read in bites with pauses: the client's send buffer fills and its sends wait
+                reads += 1;
+                if reads.is_multiple_of(48) {
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                conn.process_new_packets().map_err(|e| format!("server: {e}"))?;
+                while let Ok(k) = conn.reader().read(&mut buf) {
+                    if k == 0 {
+                        break;
+                    }
+                    plain.extend_from_slice(&buf[..k]);
+                }
+                if want.is_none()
+                    && let Some(i) = end(&plain)
+                {
+                    let head = String::from_utf8_lossy(&plain[..i]).to_string();
+                    let len: usize = head.lines().find_map(|l| l.strip_prefix("Content-Length: ")).unwrap().trim().parse().unwrap();
+                    want = Some(i + 4 + len);
+                }
+                if want.is_some_and(|w| plain.len() >= w) {
+                    break;
+                }
+            }
+            let body = &plain[end(&plain).unwrap() + 4..];
+            let sum: u64 = body.iter().enumerate().map(|(i, b)| (i as u64 % 251) * u64::from(*b)).sum();
+            let reply = format!("{{\"len\":{},\"sum\":{sum}}}", body.len());
+            let mut tls = rustls::StreamOwned::new(conn, sock);
+            write!(tls, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+            tls.flush().unwrap();
+            Ok(reply)
+        });
+        let cancel = AtomicBool::new(false);
+        let limits = Limits { connect: Duration::from_secs(5), stall: Duration::from_secs(30), cancel: &cancel };
+        let body: Vec<u8> = (0..12_000_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+        let sum: u64 = body.iter().enumerate().map(|(i, b)| (i as u64 % 251) * u64::from(*b)).sum();
+        let url = Url::parse(&format!("https://localhost:{port}/v1/flux-tools/erase-v1")).unwrap();
+        let r = request_with("POST", &url, &[("Content-Type", "application/json".into())], Some(&body), &limits, Some(client_cfg));
+        let served = server.join().unwrap();
+        assert_eq!(served, Ok(format!("{{\"len\":12000000,\"sum\":{sum}}}")));
+        let mut r = r.unwrap();
+        assert_eq!(r.status, 200);
+        assert_eq!(String::from_utf8(r.read_to_end(1 << 20, &limits).unwrap()).unwrap(), served.unwrap());
     }
 
     #[test]
