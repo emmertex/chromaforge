@@ -1241,7 +1241,8 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
                             q.push(1);
                             let aux = cx.gpu.upload(&brush_aux(&[d], false));
                             cx.run("shape", &q, &[Some(lin), Some(&prep.log_l), Some(&aux), Some(&stroke), Some(&brush)], groups2(w, h, [16, 16]));
-                            let refined = d.auto.then(|| {
+                            // (a Lightroom-model stroke keeps its pixel-sharp cut)
+                            let refined = (d.auto && d.lrc.is_none()).then(|| {
                                 let (sigma, eps) = lcc_pipeline::masks::auto_refine(d.r);
                                 guided_cross_max(cx, &prep.log_l, &stroke, w, h, sigma, eps)
                             });

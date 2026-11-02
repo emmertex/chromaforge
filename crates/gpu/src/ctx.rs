@@ -384,8 +384,12 @@ fn constants() -> String {
     s += &format!("const LOCAL_POINT_WORDS: u32 = {}u;\n", crate::params::LOCAL_POINT_WORDS);
     s += &format!("const LOCAL_POINT_SAMPLES: u32 = {}u;\n", crate::params::LOCAL_POINT_SAMPLES);
     s += &format!("const EYE_WORDS: u32 = {}u;\n", lcc_pipeline::redeye::EYE_WORDS);
-    use lcc_pipeline::masks::{AUTO_TOL_CHROMA, AUTO_TOL_EV};
+    use lcc_pipeline::masks::{AUTO_LRC_CHROMA, AUTO_LRC_EV, AUTO_TOL_CHROMA, AUTO_TOL_EV};
     s += &format!("const AUTO_TOL_EV: f32 = {AUTO_TOL_EV:?};\nconst AUTO_TOL_CHROMA: f32 = {AUTO_TOL_CHROMA:?};\n");
+    s += &format!(
+        "const AUTO_LRC_EV0: f32 = {:?};\nconst AUTO_LRC_EV1: f32 = {:?};\nconst AUTO_LRC_CH0: f32 = {:?};\nconst AUTO_LRC_CH1: f32 = {:?};\n",
+        AUTO_LRC_EV.0, AUTO_LRC_EV.1, AUTO_LRC_CHROMA.0, AUTO_LRC_CHROMA.1
+    );
     s += &format!("const SHADOW_TINT_K: f32 = {:?};\n", lcc_pipeline::colorops::SHADOW_TINT);
     for (i, h) in GRAIN_HASH.iter().enumerate() {
         s += &format!("const GRAIN_H{i}: u32 = {h}u;\n");

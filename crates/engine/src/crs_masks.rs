@@ -204,6 +204,56 @@ fn radial_feather(m: &XmpValue, container: &str) -> f64 {
     (if versionless_group { f / 2.0 } else { f }).clamp(0.0, 100.0)
 }
 
+/// A dab line of a `Mask/Paint`'s `crs:Dabs`: `d x y` (a dab), `M x y` (an Auto Mask dab); `r …` and `h …`
+/// (the radius or CenterWeight changing mid-stroke) and anything else are not dabs.
+fn dab(line: &str) -> Option<(bool, f64, f64)> {
+    let mut it = line.split_whitespace();
+    let auto = match it.next()? {
+        "d" => false,
+        "M" => true,
+        _ => return None,
+    };
+    let (x, y) = (it.next()?.parse::<f64>().ok()?, it.next()?.parse::<f64>().ok()?);
+    (x.is_finite() && y.is_finite()).then_some((auto, x, y))
+}
+
+/// A Lightroom brush stroke (`Mask/Paint`) → our Brush component, painted with Lightroom's brush model
+/// (`lcc_develop::brush_model`, notes 18/22): `crs:Radius` is where the halo ends (a fraction of the long
+/// side) and `crs:CenterWeight` follows Feather, so Feather = the inverse of the measured CenterWeight table and
+/// Size (the solid core) = Radius / outer_ratio(Feather). `M` dabs are Auto Mask dabs (Lightroom recomputes the
+/// Auto Mask from them, as we do); a stroke mixing `d` and `M` dabs becomes one stroke per run.
+fn paint(m: &XmpValue) -> Result<Value, String> {
+    use lcc_develop::brush_model;
+    let dabs: Vec<(bool, f64, f64)> =
+        m.field("crs:Dabs").map(XmpValue::items).unwrap_or_default().iter().filter_map(XmpValue::text).filter_map(dab).collect();
+    if dabs.is_empty() {
+        return Err("empty brush".into());
+    }
+    let value = num(m, "crs:MaskValue").filter(|v| v.is_finite()).unwrap_or(1.0);
+    let erase = value <= 0.0;
+    // an eraser saved at 0 erases fully (a density of 0 would erase nothing)
+    let density = if erase && value == 0.0 { 100.0 } else { (value.abs() * 100.0).clamp(0.0, 100.0) };
+    let feather = num(m, "crs:CenterWeight").map_or(50.0, brush_model::feather_of);
+    let radius = num(m, "crs:Radius").filter(|v| v.is_finite()).unwrap_or(0.03).clamp(0.001, 1.0);
+    let size = (radius / brush_model::outer_ratio(feather)).clamp(0.0005, 1.0);
+    let flow = (num(m, "crs:Flow").filter(|v| v.is_finite()).unwrap_or(1.0) * 100.0).clamp(0.0, 100.0);
+    let mut strokes: Vec<Value> = Vec::new();
+    for run in dabs.chunk_by(|a, b| a.0 == b.0) {
+        let auto = run.first().is_some_and(|d| d.0);
+        strokes.push(json!({
+            "points": run.iter().map(|(_, x, y)| pt(*x, *y)).collect::<Vec<_>>(),
+            "size": size,
+            "feather": feather,
+            "flow": flow,
+            "density": density,
+            "erase": erase,
+            "auto_mask": auto,
+            "model": lcc_develop::BRUSH_MODEL_LRC,
+        }));
+    }
+    Ok(json!({"kind": "brush", "strokes": strokes}))
+}
+
 /// One mask component of a correction in `container` → our component JSON; `Err(kind)` names an
 /// unsupported one.
 /// Lightroom's People parts by `MaskSubCategoryID`, as Lightroom Classic writes them in presets
@@ -305,36 +355,7 @@ fn component(m: &XmpValue, container: &str, aspect: f64) -> Result<Value, String
                 "invert": !radial_inside(m, container),
             })
         }
-        "Mask/Paint" => {
-            let pts: Vec<Value> = m
-                .field("crs:Dabs")
-                .map(XmpValue::items)
-                .unwrap_or_default()
-                .iter()
-                .filter_map(XmpValue::text)
-                .filter_map(|d| {
-                    let mut it = d.split_whitespace().skip(1).filter_map(|v| v.parse::<f64>().ok());
-                    Some(pt(it.next()?, it.next()?))
-                })
-                .collect();
-            if pts.is_empty() {
-                return Err("empty brush".into());
-            }
-            let value = num(m, "crs:MaskValue").unwrap_or(1.0);
-            let erase = value <= 0.0;
-            // Zero means paint toward zero (erase), not an eraser with zero strength.
-            let density = if value == 0.0 { 1.0 } else { value.abs() };
-            json!({"kind": "brush", "strokes": [{
-                "points": pts,
-                "size": num(m, "crs:Radius").unwrap_or(0.03).clamp(0.001, 1.0),
-                // CenterWeight is hardness: zero is a fully soft dab, one a hard disk.
-                // Copying it as feather turns soft imported brushes into oversized solid disks.
-                "feather": ((1.0 - num(m, "crs:CenterWeight").unwrap_or(0.5)) * 100.0).clamp(0.0, 100.0),
-                "flow": (num(m, "crs:Flow").unwrap_or(1.0) * 100.0).clamp(0.0, 100.0),
-                "density": (density * 100.0).clamp(0.0, 100.0),
-                "erase": erase,
-            }]})
-        }
+        "Mask/Paint" => paint(m)?,
         "Mask/Image" => image_mask(m)?,
         "Mask/RangeMask" => {
             let r = m.field("crs:CorrectionRangeMask").unwrap_or(m);
@@ -633,7 +654,10 @@ mod tests {
         assert_eq!(brush.adjust.clarity, 40.0);
         assert_eq!(brush.components.len(), 1, "the brush's dab runs are one component");
         let MaskShape::Brush { strokes } = &brush.components[0].shape else { panic!() };
-        assert_eq!((strokes.len(), strokes[0].points.len(), strokes[0].flow, strokes[0].feather), (2, 2, 80.0, 70.0));
+        assert_eq!(
+            (strokes.len(), strokes[0].points.len(), strokes[0].flow, strokes[0].feather.round()),
+            (2, 2, 80.0, lcc_develop::brush_model::feather_of(0.3).round())
+        );
         assert_eq!(unmapped, vec!["Mask: AI mask (9)".to_string()]);
     }
 
@@ -667,7 +691,7 @@ mod tests {
             for (attr, feather) in [
                 ("", 50.0),
                 (r#"crs:CenterWeight="0""#, 100.0),
-                (r#"crs:CenterWeight="0.3""#, 70.0),
+                (r#"crs:CenterWeight="0.3""#, lcc_develop::brush_model::feather_of(0.3)),
                 (r#"crs:CenterWeight="1""#, 0.0),
                 (r#"crs:CenterWeight="-2""#, 100.0),
                 (r#"crs:CenterWeight="2""#, 0.0),
@@ -678,8 +702,10 @@ mod tests {
                 assert!(unmapped.is_empty(), "{unmapped:?}");
                 let s = DevelopSettings::default().merged(&partial).unwrap();
                 let MaskShape::Brush { strokes } = &s.masks[0].components[0].shape else { panic!() };
-                assert_eq!(strokes[0].feather, feather, "{container} {attr}");
-                assert_eq!(strokes[0].size, 0.065549, "feather conversion must preserve the outer radius");
+                // Lightroom's brush: Feather is the inverse of the measured CenterWeight table, Size the solid core
+                assert!((strokes[0].feather - feather).abs() < 0.5, "{container} {attr}: {}", strokes[0].feather);
+                let outer = strokes[0].size * lcc_develop::brush_model::outer_ratio(strokes[0].feather);
+                assert!((outer - 0.065549).abs() < 1e-9, "feather conversion must preserve the outer radius: {outer}");
             }
         }
     }
@@ -706,7 +732,9 @@ mod tests {
                 alpha.data[center.y.floor() as usize * w + x]
             };
             assert!(sample(0.0) > 0.99);
-            assert!((sample(0.5) - 0.5).abs() < 0.08, "half-radius falloff at {w} px: {}", sample(0.5));
+            // a soft falloff all the way out (Lightroom's Feather-100 dab, a Gaussian)
+            assert!(sample(0.5) > 0.05 && sample(0.5) < 0.6, "half-radius falloff at {w} px: {}", sample(0.5));
+            assert!(sample(0.25) > sample(0.5) && sample(0.5) > sample(0.9), "falls off");
             assert!(sample(0.9) < 0.06, "the outer ring must not be a solid disk: {}", sample(0.9));
             assert_eq!(sample(1.1), 0.0);
         }
@@ -723,7 +751,9 @@ mod tests {
         let imported = crate::preset_import::read_presets("Soft.lrtemplate", t.as_bytes(), None).unwrap();
         let s = DevelopSettings::default().merged(&imported[0].preset.settings).unwrap();
         let MaskShape::Brush { strokes } = &s.masks[0].components[0].shape else { panic!() };
-        assert_eq!((strokes[0].size, strokes[0].feather), (0.065549, 100.0));
+        assert!(strokes[0].feather > 99.5, "{}", strokes[0].feather);
+        let outer = strokes[0].size * lcc_develop::brush_model::outer_ratio(strokes[0].feather);
+        assert!((outer - 0.065549).abs() < 1e-9, "the outer radius is kept: {outer}");
     }
 
     /// Apply zero-valued erase strokes to earlier paint without changing paint outside the eraser.
@@ -750,7 +780,7 @@ mod tests {
             let log_l = lcc_raster::Plane::new(300, 200);
             let alpha = lcc_pipeline::masks::shape_alpha(shape, &frame, 300, 200, &img, &log_l, 0.0, None);
             assert_eq!(alpha.data[100 * 300 + 150], 0.0, "erase removes the painted centre");
-            assert_eq!(alpha.data[100 * 300 + 162], 1.0, "paint beyond the eraser stays");
+            assert!(alpha.data[100 * 300 + 162] > 0.99, "paint beyond the eraser stays: {}", alpha.data[100 * 300 + 162]);
             assert_eq!(alpha.data[100 * 300 + 175], 0.0, "the outer brush radius stays fixed");
         }
     }
@@ -1035,5 +1065,78 @@ mod tests {
         let img = lcc_scenes::demo_library()[0].render(96, 64);
         let render = |d: &DevelopSettings| lcc_pipeline::render(&img, &Default::default(), d, &lcc_pipeline::RenderRequest::fit(96, 64)).image.data;
         assert_ne!(render(&DevelopSettings { light: s.light, ..Default::default() }), render(&s), "the spots change the picture");
+    }
+}
+
+/// Lightroom brush strokes (notes 18/22): the measured Radius / CenterWeight of Lightroom's own strokes come in as
+/// its Size and Feather, Auto Mask dabs as Auto Mask, and the strokes render with Lightroom's brush model.
+#[cfg(test)]
+mod brush_import_tests {
+    use lcc_develop::{BRUSH_MODEL_LRC, MaskShape};
+
+    /// One correction holding `paints` (`Mask/Paint` attributes, dab lines).
+    fn packet(paints: &[(&str, &[&str])]) -> String {
+        let items: String = paints
+            .iter()
+            .map(|(attrs, dabs)| {
+                let lis: String = dabs.iter().map(|d| format!("<rdf:li>{d}</rdf:li>")).collect();
+                format!("<rdf:li><rdf:Description crs:What=\"Mask/Paint\" crs:MaskBlendMode=\"0\" {attrs}><crs:Dabs><rdf:Seq>{lis}</rdf:Seq></crs:Dabs></rdf:Description></rdf:li>")
+            })
+            .collect();
+        format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
+   <crs:MaskGroupBasedCorrections><rdf:Seq><rdf:li><rdf:Description crs:What="Correction" crs:CorrectionAmount="1" crs:CorrectionActive="true" crs:LocalExposure2012="-1">
+   <crs:CorrectionMasks><rdf:Seq>{items}</rdf:Seq></crs:CorrectionMasks></rdf:Description></rdf:li></rdf:Seq></crs:MaskGroupBasedCorrections>
+  </rdf:Description></rdf:RDF></x:xmpmeta>"#
+        )
+    }
+
+    fn strokes(xmp: &str) -> Vec<lcc_develop::BrushStroke> {
+        let d = lcc_meta::parse_xmp(xmp).expect("well-formed XMP");
+        let (masks, skipped) = super::masks(&d.values, 1.5);
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let mask: lcc_develop::Mask = serde_json::from_value(masks[0].clone()).expect("a mask");
+        assert_eq!(mask.components.len(), 1, "one brush component");
+        let MaskShape::Brush { strokes } = &mask.components[0].shape else { panic!("a brush") };
+        strokes.clone()
+    }
+
+    // The single clicks Lightroom saved at Size 20 (Feather 0 / 20 / 50 / 100: Radius and CenterWeight as
+    // measured) all come back with the same Size, the core, and their Feather; before, CenterWeight 0 (Feather
+    // 100) arrived as a hard Feather 0 brush and Radius as the size
+    #[test]
+    fn lightroom_radius_and_center_weight_become_size_and_feather() {
+        let xmp = packet(&[
+            ("crs:MaskValue=\"1\" crs:Radius=\"0.054416\" crs:Flow=\"1\" crs:CenterWeight=\"1\"", &["d 0.2 0.5"]),
+            ("crs:MaskValue=\"1\" crs:Radius=\"0.059840\" crs:Flow=\"1\" crs:CenterWeight=\"0.501304\"", &["d 0.4 0.5"]),
+            ("crs:MaskValue=\"1\" crs:Radius=\"0.104394\" crs:Flow=\"0.5\" crs:CenterWeight=\"0.105656\"", &["d 0.6 0.5"]),
+            ("crs:MaskValue=\"0.8\" crs:Radius=\"0.135599\" crs:Flow=\"1\" crs:CenterWeight=\"0\"", &["d 0.8 0.5"]),
+        ]);
+        let s = strokes(&xmp);
+        let got: Vec<(f64, f64)> = s.iter().map(|s| (s.size, s.feather)).collect();
+        for ((size, feather), want) in got.iter().zip([0.0, 20.0, 60.0, 100.0]) {
+            assert!((size - 0.0544).abs() < 0.0005, "{got:?}");
+            assert!((feather - want).abs() < 0.5, "{got:?}");
+        }
+        assert!(s.iter().all(|s| s.model == BRUSH_MODEL_LRC && !s.auto_mask && !s.erase));
+        assert_eq!((s[2].flow, s[3].density), (50.0, 80.0));
+    }
+
+    // `M` dabs are Auto Mask dabs; `r` / `h` lines (radius or CenterWeight changing mid-stroke) are not dabs;
+    // a stroke mixing `d` and `M` becomes one stroke per run; an eraser saved at 0 erases fully
+    #[test]
+    fn auto_mask_dabs_and_other_dab_lines() {
+        let xmp = packet(&[
+            (
+                "crs:MaskValue=\"1\" crs:Radius=\"0.137885\" crs:Flow=\"1\" crs:CenterWeight=\"0\"",
+                &["M 0.1 0.2", "M 0.1 0.25", "h 0.5013", "r 0.05", "d 0.1 0.3", "d 0.1 0.35"],
+            ),
+            ("crs:MaskValue=\"0\" crs:Radius=\"0.05\" crs:Flow=\"1\" crs:CenterWeight=\"1\"", &["d 0.5 0.5", "x 1 2", "d nan 3"]),
+        ]);
+        let s = strokes(&xmp);
+        assert_eq!(s.len(), 3, "{s:?}");
+        assert_eq!((s[0].auto_mask, s[0].points.len()), (true, 2));
+        assert_eq!((s[1].auto_mask, s[1].points.len()), (false, 2));
+        assert_eq!((s[2].erase, s[2].density, s[2].points.len()), (true, 100.0, 1));
     }
 }

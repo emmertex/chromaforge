@@ -1,11 +1,11 @@
 //! Write presets as Lightroom-style XMP preset files (`preset.exportXmp`), masks included:
 //! Subject, Sky, Background and People parts become Lightroom AI masks (`Mask/Image`, which
 //! Lightroom recomputes on each photo, as we do), gradients `Mask/Gradient` /
-//! `Mask/CircularGradient`, luminance ranges `Mask/RangeMask`, with the `Local*` sliders, the
+//! `Mask/CircularGradient`, luminance ranges `Mask/RangeMask`, brush strokes `Mask/Paint`, with the `Local*` sliders, the
 //! mask's Curve (`MainCurve`, `RedCurve`, …) and Point Color (`LocalPointColors`).
 //!
 //! What Lightroom has no equivalent for — People by name or role, anchored gradients, Landscape,
-//! colour ranges, brushes, object selections, and the global settings (no writer for Lightroom's
+//! colour ranges, object selections, and the global settings (no writer for Lightroom's
 //! global `crs:` fields yet) — is listed in the report, and the whole preset is kept in our own
 //! namespace (`lc:PresetSettings`, JSON), which Lightroom ignores and we read back: an exported
 //! preset imports unchanged.
@@ -213,11 +213,23 @@ fn component(m: &Mask, k: usize, aspect: f64, notes: &mut Vec<String>) -> Option
                 q[3]
             )
         }
+        MaskShape::Brush { strokes } => {
+            if strokes.iter().any(|s| !s.is_lrc()) {
+                notes.push(format!(
+                    "{}: brush strokes painted before the app used Lightroom's brush are written in Lightroom's terms and may look a little different there",
+                    m.name
+                ));
+            }
+            let items: Vec<String> = strokes.iter().filter_map(|s| paint(s, mode, inverted, &sync, aspect)).collect();
+            if items.is_empty() {
+                return None;
+            }
+            items.join("\n        ")
+        }
         other => {
             let what = match other {
                 MaskShape::Landscape { class, .. } => format!("Landscape ({class})"),
                 MaskShape::ColorRange { .. } => "a colour range".into(),
-                MaskShape::Brush { .. } => "a brush".into(),
                 MaskShape::Prompt { text, .. } => format!("the description “{text}”"),
                 MaskShape::Object { .. } => "an object selection".into(),
                 MaskShape::DepthRange { .. } => "a depth range".into(),
@@ -227,6 +239,51 @@ fn component(m: &Mask, k: usize, aspect: f64, notes: &mut Vec<String>) -> Option
             return None;
         }
     })
+}
+
+/// One brush stroke as a Lightroom `Mask/Paint` (Lightroom's brush model, `lcc_develop::brush_model`):
+/// `crs:Radius` where the halo ends (a fraction of the long side), `crs:CenterWeight` from Feather, `crs:Flow`,
+/// the density as `crs:MaskValue` (0 for an eraser, as Lightroom reads it), and the dabs Lightroom saves: one
+/// every `DAB_SPACING` × Radius along the path, `d x y` (or `M x y`, an Auto Mask dab) in fractions of the
+/// width and height. A legacy stroke ([`lcc_develop::BRUSH_MODEL_LEGACY`], its size the whole dab) is
+/// written with that size as Radius. `None` for a stroke without points.
+fn paint(s: &lcc_develop::BrushStroke, mode: u8, inverted: bool, sync: &str, aspect: f64) -> Option<String> {
+    use lcc_develop::brush_model;
+    use lcc_geom::Point;
+    let feather = s.feather.clamp(0.0, 100.0);
+    let radius = if s.is_lrc() { s.size * brush_model::outer_ratio(feather) } else { s.size };
+    let radius = if radius.is_finite() { radius.clamp(0.0001, 1.0) } else { 0.03 };
+    // the walk on a photo 10 000 units along its long side (it works in pixels), the dabs back in fractions of
+    // the width and height
+    const LONG: f64 = 10_000.0;
+    let (sx, sy) = if aspect >= 1.0 { (LONG, LONG / aspect) } else { (LONG * aspect, LONG) };
+    let mut dabs = Vec::new();
+    let (mut walk, mut emitted, mut ts) = (lcc_pipeline::masks::DabWalk::default(), 0usize, Vec::new());
+    for p in &s.points {
+        lcc_pipeline::masks::walk_dabs(
+            &mut dabs,
+            &mut emitted,
+            &mut walk,
+            Point::new(p.x * sx, p.y * sy),
+            brush_model::DAB_SPACING * radius * LONG,
+            &mut ts,
+        );
+    }
+    if dabs.is_empty() {
+        return None;
+    }
+    let kind = if s.auto_mask { "M" } else { "d" };
+    let lines: Vec<String> = dabs.iter().map(|d| format!("<rdf:li>{kind} {} {}</rdf:li>", f(d.x / sx), f(d.y / sy))).collect();
+    let value = if s.erase { 0.0 } else { (s.density / 100.0).clamp(0.0, 1.0) };
+    Some(format!(
+        "<rdf:li>\n        <rdf:Description\n         crs:What=\"Mask/Paint\"\n         crs:MaskActive=\"true\"\n         crs:MaskName=\"Brush 1\"\n         crs:MaskBlendMode=\"{mode}\"\n         crs:MaskInverted=\"{}\"\n         crs:MaskSyncID=\"{sync}\"\n         crs:MaskValue=\"{}\"\n         crs:Radius=\"{}\"\n         crs:Flow=\"{}\"\n         crs:CenterWeight=\"{}\">\n        <crs:Dabs>\n         <rdf:Seq>\n          {}\n         </rdf:Seq>\n        </crs:Dabs>\n        </rdf:Description>\n        </rdf:li>",
+        if inverted { "true" } else { "false" },
+        f(value),
+        f(radius),
+        f((s.flow / 100.0).clamp(0.0, 1.0)),
+        f(brush_model::center_weight(feather)),
+        lines.join("\n          ")
+    ))
 }
 
 /// Preset `p` as a Lightroom XMP preset file, and notes on what Lightroom won't get.
@@ -347,6 +404,62 @@ mod tests {
         let back: Value = serde_json::from_str(lc).unwrap();
         assert_eq!(back, preset().settings);
         assert!(xmp.contains("Sun &lt;kissed&gt;"));
+    }
+
+    // Notes 18/22: brush strokes go to Lightroom as `Mask/Paint` (Radius = where the halo ends, CenterWeight from
+    // Feather, `d` / `M` dabs every 0.3 × Radius), and come back as the same strokes; written again, the values
+    // are the same
+    #[test]
+    fn brush_strokes_round_trip_through_lightroom_terms() {
+        use lcc_develop::{BRUSH_MODEL_LRC, BrushStroke, brush_model};
+        use lcc_geom::Point;
+        let st = |points: Vec<Point>, feather: f64, auto_mask: bool, erase: bool| BrushStroke {
+            points,
+            size: 0.04,
+            feather,
+            flow: 70.0,
+            density: if erase { 100.0 } else { 90.0 },
+            erase,
+            auto_mask,
+            model: BRUSH_MODEL_LRC,
+            ..Default::default()
+        };
+        // a dragged stroke: samples a hair apart, as the pointer records them
+        let drag: Vec<Point> = (0..=300).map(|k| Point::new(0.2 + 0.002 * k as f64, 0.4)).collect();
+        let strokes =
+            vec![st(drag, 40.0, false, false), st(vec![Point::new(0.5, 0.6)], 100.0, true, false), st(vec![Point::new(0.5, 0.42)], 0.0, false, true)];
+        let masks = json!([{"id": 1, "name": "Brushed", "components": [{"op": "add", "shape": {"kind": "brush", "strokes": strokes}}], "adjust": {"exposure": -1.0, "amount": 100.0}}]);
+        let p =
+            Preset { id: "user.b".into(), name: "B".into(), group: "G".into(), settings: json!({"masks": masks}), favorite: false, builtin: false };
+        let (xmp, notes) = to_xmp(&p);
+        assert!(!notes.iter().any(|n| n.contains("brush")), "{notes:?}");
+        assert!(xmp.contains("crs:What=\"Mask/Paint\""));
+        assert!(xmp.contains(&format!("crs:Radius=\"{}\"", f(0.04 * brush_model::outer_ratio(40.0)))), "{xmp}");
+        assert!(xmp.contains(&format!("crs:CenterWeight=\"{}\"", f(brush_model::center_weight(40.0)))));
+        assert!(xmp.contains("<rdf:li>M 0.500000 0.600000</rdf:li>"), "an Auto Mask dab");
+        let d = lcc_meta::parse_xmp(&xmp).expect("well-formed XMP");
+        let (back, unmapped) = crate::crs_masks::masks(&d.values, lcc_develop::recipe::RECIPE_ASPECT);
+        assert!(unmapped.is_empty(), "{unmapped:?}");
+        let mask: Mask = serde_json::from_value(back[0].clone()).expect("a mask");
+        let MaskShape::Brush { strokes: got } = &mask.components[0].shape else { panic!("a brush") };
+        assert_eq!(got.len(), 3);
+        for (g, want) in got.iter().zip(&strokes) {
+            assert!((g.size - want.size).abs() < 1e-5 && (g.feather - want.feather).abs() < 0.05, "{g:?}");
+            assert_eq!((g.flow, g.density, g.erase, g.auto_mask, g.model), (want.flow, want.density, want.erase, want.auto_mask, BRUSH_MODEL_LRC));
+        }
+        // the drag was saved as Lightroom saves it: a dab every 0.3 × Radius (0.6 of the long side / ~0.017)
+        let spacing = brush_model::DAB_SPACING * 0.04 * brush_model::outer_ratio(40.0);
+        assert_eq!(got[0].points.len(), (0.6 / spacing).floor() as usize + 1, "{}", got[0].points.len());
+        // and written again, Lightroom gets the same values
+        let p2 = Preset { settings: json!({"masks": [serde_json::to_value(&mask).unwrap()]}), ..p };
+        let (xmp2, _) = to_xmp(&p2);
+        let attrs = |x: &str| -> Vec<String> {
+            x.lines()
+                .filter(|l| l.contains("crs:Radius") || l.contains("crs:CenterWeight") || l.contains("rdf:li>d ") || l.contains("rdf:li>M "))
+                .map(|l| l.trim().to_string())
+                .collect()
+        };
+        assert_eq!(attrs(&xmp2), attrs(&xmp));
     }
 }
 

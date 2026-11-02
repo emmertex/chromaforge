@@ -1920,4 +1920,3 @@ mod tests {
         assert!(!enter_submits(false, true, false));
     }
 }
-

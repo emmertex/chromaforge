@@ -26,6 +26,13 @@ fn auto_similarity(l: f32, ch: vec3<f32>, rl: f32, rch: vec3<f32>) -> f32 {
     return 1.0 - sstep(0.5, 1.0, sqrt(dl * dl + dc * dc));
 }
 
+// `masks::auto_similarity_lrc` (a Lightroom-model stroke).
+fn auto_similarity_lrc(l: f32, ch: vec3<f32>, rl: f32, rch: vec3<f32>) -> f32 {
+    let dl = abs(l - rl);
+    let dc = length(ch - rch);
+    return (1.0 - sstep(AUTO_LRC_EV0, AUTO_LRC_EV1, dl)) * (1.0 - sstep(AUTO_LRC_CH0, AUTO_LRC_CH1, dc));
+}
+
 @compute @workgroup_size(16, 16)
 fn shape(@builtin(global_invocation_id) g: vec3<u32>) {
     let w = pu(0u);
@@ -117,7 +124,11 @@ fn shape(@builtin(global_invocation_id) g: vec3<u32>) {
                     let rx = min(u32(max(floor(aux[off + 2u * j]), 0.0)), w - 1u);
                     let ry = min(u32(max(floor(aux[off + 2u * j + 1u]), 0.0)), h - 1u);
                     let ri = ry * w + rx;
-                    a *= auto_similarity(lp, chp, log_l[ri], chroma_at(ri));
+                    if (lrc) {
+                        a *= auto_similarity_lrc(lp, chp, log_l[ri], chroma_at(ri));
+                    } else {
+                        a *= auto_similarity(lp, chp, log_l[ri], chroma_at(ri));
+                    }
                 }
                 keep *= 1.0 - a * flow;
             }

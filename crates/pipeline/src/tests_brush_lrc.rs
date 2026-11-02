@@ -166,3 +166,55 @@ fn strokes_saved_before_the_lightroom_model_render_unchanged() {
     assert!(json.contains("\"model\":1"), "{json}");
     assert_eq!(serde_json::from_str::<BrushStroke>(&json).unwrap(), new);
 }
+
+// Note 24: Auto Mask tolerances measured on Lightroom: brightness passes fully up to 0.7 EV and is blocked from
+// 0.8 EV; at the same brightness, our chroma distance 0.13 passes, 0.195 → 0.93, 0.26 → 0.70, 0.40 → 0.05
+#[test]
+fn auto_mask_tolerances_match_lightrooms() {
+    let grey = [1.0f32, 1.0, 1.0];
+    for ev in [0.2f32, 0.3, 0.5, 0.7] {
+        for sign in [-1.0f32, 1.0] {
+            assert_eq!(auto_similarity_lrc(sign * ev, grey, 0.0, grey), 1.0, "{ev} EV");
+        }
+    }
+    for ev in [0.83f32, 1.32, 1.85, 2.0] {
+        assert_eq!(auto_similarity_lrc(-ev, grey, 0.0, grey), 0.0, "{ev} EV");
+    }
+    for (dc, want) in [(0.13f32, 1.0f32), (0.195, 0.93), (0.26, 0.70), (0.40, 0.05)] {
+        let got = auto_similarity_lrc(0.0, [1.0 + dc, 1.0, 1.0], 0.0, grey);
+        assert!((got - want).abs() <= 0.05, "chroma {dc}: {got} vs {want}");
+    }
+    // the legacy brush's tolerances are unchanged (0.5 EV blocks)
+    assert_eq!(auto_similarity(-0.5, grey, 0.0, grey), 0.0);
+}
+
+// Note 24: an Auto Mask click across a brightness step: Lightroom passes 0.5 EV as if there were no edge and
+// stops sharply at 1 EV (full strength two pixels before the edge, nothing one pixel past it)
+#[test]
+fn an_auto_mask_click_stops_sharply_at_an_edge_lightroom_blocks() {
+    let edge = 600usize;
+    for (ev, blocked) in [(0.5f32, false), (1.0, true)] {
+        let mut img = Rgb32f::new(W, H);
+        for (i, p) in img.data.iter_mut().enumerate() {
+            let v = if i % W < edge { 0.18 } else { 0.18 * (-ev).exp2() };
+            *p = [v, v, v];
+        }
+        let log_l = Plane { width: W, height: H, data: img.data.iter().map(|c| lcc_color::luminance_2020(*c).max(1e-6).log2()).collect() };
+        let render_auto = |auto_mask: bool, model| {
+            let s = BrushStroke { auto_mask, model, ..stroke(&[(edge as f64 - 60.5, 500.5)], 100.0) };
+            shape_alpha(&MaskShape::Brush { strokes: vec![s] }, &frame(), W, H, &img, &log_l, 0.0, None)
+        };
+        let (auto, plain) = (render_auto(true, BRUSH_MODEL_LRC), render_auto(false, BRUSH_MODEL_LRC));
+        let y = 500;
+        if blocked {
+            assert!(auto.get(edge - 2, y) >= plain.get(edge - 2, y) - 1e-4, "full strength before the edge");
+            for x in edge + 1..edge + 40 {
+                assert_eq!(auto.get(x, y), 0.0, "{ev} EV, {} px past the edge", x - edge);
+            }
+        } else {
+            for x in edge - 40..edge + 40 {
+                assert!((auto.get(x, y) - plain.get(x, y)).abs() < 1e-4, "{ev} EV passes at {x}");
+            }
+        }
+    }
+}
