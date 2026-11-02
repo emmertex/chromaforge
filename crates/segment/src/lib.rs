@@ -33,11 +33,17 @@ mod clip;
 #[cfg(not(target_arch = "wasm32"))]
 mod cpu;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod depth;
+#[cfg(not(target_arch = "wasm32"))]
 mod detector;
 #[cfg(not(target_arch = "wasm32"))]
-mod hiera;
+mod dino;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fetch;
+#[cfg(not(target_arch = "wasm32"))]
+mod grid;
+#[cfg(not(target_arch = "wasm32"))]
+mod hiera;
 pub mod mask;
 #[cfg(not(target_arch = "wasm32"))]
 mod neck;
@@ -77,6 +83,9 @@ pub enum Error {
     Model(String),
     #[error("SAM 3 model files not found in {0} (expected model.safetensors, vocab.json, merges.txt)")]
     Missing(PathBuf),
+    /// An error that names its model itself (the depth model).
+    #[error("{0}")]
+    Message(String),
     #[error("SAM 2 model: {0}")]
     Sam2(String),
     #[error("SAM 2 model files not found in {0} (expected model.safetensors and config.json)")]

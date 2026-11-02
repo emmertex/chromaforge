@@ -14,8 +14,8 @@
 use candle_core::{D, Module, Tensor};
 use candle_nn::{Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder};
 
-use crate::sam2_kernels::{Act, attention, linear};
 use crate::nn::{ln, to_vec};
+use crate::sam2_kernels::{Act, attention, linear};
 use crate::{Error, Result, nn};
 
 /// The Hiera hyper-parameters (`Sam2HieraDetConfig`) and the neck's top-down levels.
