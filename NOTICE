@@ -154,3 +154,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+
+crates/tflite (lcc-tflite, Apache License 2.0) — a TensorFlow Lite interpreter written by OneSlips
+in 2026 from the TensorFlow Lite model schema (schema.fbs: field order, enum values, option
+defaults; Copyright The TensorFlow Authors, Apache License 2.0) and the documented behaviour of
+its builtin operators; no TensorFlow code was copied. Its MediaPipe landmark index lists are data
+from MediaPipe's face_landmarks_connections (Copyright 2023 The MediaPipe Authors, Apache License
+2.0). Ported into Chromaforge from OneSlips' fork.
