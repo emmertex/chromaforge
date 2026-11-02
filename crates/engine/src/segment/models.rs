@@ -285,7 +285,11 @@ impl Segmenter {
         }
         let m = reg::by_key(key).ok_or_else(|| format!("unknown AI model `{key}`"))?;
         let dir = self.open_model_dir(key).ok_or("no folder is set for AI models")?;
-        if m.installed_in(&dir) {
+        #[cfg(feature = "sam")]
+        let companions: Vec<_> = m.missing_companions(&dir).into_iter().map(|c| (&c.file, c.base)).collect();
+        #[cfg(not(feature = "sam"))]
+        let companions: Vec<()> = Vec::new();
+        if m.installed_in(&dir) && companions.is_empty() {
             return Ok(false);
         }
         let mirrors = self.open_mirrors(m);
@@ -294,11 +298,11 @@ impl Segmenter {
         }
         #[cfg(feature = "sam")]
         {
-            self.model_downloads.entry(m.key).or_default().start(m.files, mirrors, dir, lcc_segment::fetch::Options::default(), activity, m.title)
+            self.model_downloads.entry(m.key).or_default().start(m.files, companions, mirrors, dir, lcc_segment::fetch::Options::default(), activity, m.title)
         }
         #[cfg(not(feature = "sam"))]
         {
-            let _ = (dir, activity);
+            let _ = (dir, activity, companions);
             Ok(false)
         }
     }

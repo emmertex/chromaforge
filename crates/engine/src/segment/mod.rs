@@ -308,7 +308,7 @@ impl Segmenter {
             if mirrors.is_empty() {
                 return Err(lcc_segment::fetch::no_mirrors_message());
             }
-            self.download.start(lcc_segment::fetch::SAM3_FILES, mirrors, dir, lcc_segment::fetch::options(), activity, "SAM 3")
+            self.download.start(lcc_segment::fetch::SAM3_FILES, Vec::new(), mirrors, dir, lcc_segment::fetch::options(), activity, "SAM 3")
         }
         #[cfg(not(feature = "sam"))]
         {

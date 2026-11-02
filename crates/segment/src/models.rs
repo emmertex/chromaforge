@@ -35,12 +35,32 @@ pub struct ModelInfo {
     /// Whether the app offers it in the model dialog (a model nothing uses yet is only
     /// downloadable by command).
     pub offered: bool,
+    /// Extra files from the same publisher under the same licence, each fetched from its own
+    /// address with the model. The model works without them, so they are not part of
+    /// [`ModelInfo::installed_in`].
+    pub companions: &'static [Companion],
+}
+
+/// An optional file that comes with a model (see [`ModelInfo::companions`]).
+#[derive(Debug)]
+pub struct Companion {
+    pub file: FileSpec<'static>,
+    /// The folder it is published in (the file is at `<base>/<name>`).
+    pub base: &'static str,
 }
 
 impl ModelInfo {
-    /// Bytes to download.
+    /// Bytes to download (the files and the companions).
     pub fn size(&self) -> u64 {
-        self.files.iter().filter_map(|f| f.size).sum()
+        self.files.iter().chain(self.companions.iter().map(|c| &c.file)).filter_map(|f| f.size).sum()
+    }
+
+    /// The companions missing from `dir` (or there with the wrong size).
+    pub fn missing_companions(&self, dir: &Path) -> Vec<&'static Companion> {
+        self.companions
+            .iter()
+            .filter(|c| !matches!((std::fs::metadata(dir.join(c.file.name)), c.file.size), (Ok(m), Some(size)) if m.is_file() && m.len() == size))
+            .collect()
     }
 
     /// Whether `dir` holds the model: every file is there, pinned ones with their exact size
@@ -98,6 +118,7 @@ pub const SAM2: ModelInfo = ModelInfo {
     default_mirrors: &["https://huggingface.co/facebook/sam2.1-hiera-tiny/resolve/de431c4043854a71d8101e17995dfe596bf101a5"],
     mirrors_env: "SAM2_MIRRORS",
     offered: true,
+    companions: &[],
 };
 
 pub const DEPTH: ModelInfo = ModelInfo {
@@ -112,10 +133,58 @@ pub const DEPTH: ModelInfo = ModelInfo {
     default_mirrors: &["https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf/resolve/5426e4f0f36572d16453bbda7a8389317b1bef99"],
     mirrors_env: "DEPTH_MIRRORS",
     offered: false,
+    companions: &[],
+};
+
+/// A pinned file of [`lcc_tflite::models`] as a download spec.
+const fn spec(f: &lcc_tflite::models::ModelFile) -> FileSpec<'static> {
+    FileSpec { name: f.name, size: Some(f.size), sha256: Some(f.sha256), max: f.size }
+}
+
+const TF_PEOPLE: &lcc_tflite::models::ModelFile = &lcc_tflite::models::PEOPLE.files[0];
+const TF_FACE: &lcc_tflite::models::ModelFile = &lcc_tflite::models::FACE.files[0];
+const TF_FACE_FAR: &lcc_tflite::models::ModelFile = &lcc_tflite::models::FACE.files[1];
+
+/// MediaPipe Selfie Multiclass 256 (float32, v1).
+pub const PEOPLE_FILES: &[FileSpec<'static>] = &[spec(TF_PEOPLE)];
+/// MediaPipe Face Landmarker bundle (float16, v1: BlazeFace short range and FaceMesh-V2).
+pub const FACE_FILES: &[FileSpec<'static>] = &[spec(TF_FACE)];
+
+/// Skin, hair and clothes of people: what Smooth Skin and Find Blemishes look on.
+pub const PEOPLE: ModelInfo = ModelInfo {
+    key: lcc_tflite::models::PEOPLE.key,
+    dir_name: lcc_tflite::models::PEOPLE.dir_name,
+    title: "MediaPipe people",
+    purpose: "Retouch: face and body skin (Smooth Skin, Find Blemishes)",
+    files: PEOPLE_FILES,
+    license_name: lcc_tflite::models::PEOPLE.license_name,
+    license_url: lcc_tflite::models::PEOPLE.license_url,
+    page_url: lcc_tflite::models::PEOPLE.page_url,
+    default_mirrors: &["https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1"],
+    mirrors_env: "PEOPLE_MIRRORS",
+    offered: true,
+    companions: &[],
+};
+
+/// Faces with their landmarks: Detect Faces, the face scan, and the parts of a face Retouch works on.
+pub const FACE: ModelInfo = ModelInfo {
+    key: lcc_tflite::models::FACE.key,
+    dir_name: lcc_tflite::models::FACE.dir_name,
+    title: "MediaPipe faces",
+    purpose: "Faces: Detect Faces, eyes, lips and teeth for Retouch",
+    files: FACE_FILES,
+    license_name: lcc_tflite::models::FACE.license_name,
+    license_url: lcc_tflite::models::FACE.license_url,
+    page_url: lcc_tflite::models::FACE.page_url,
+    default_mirrors: &["https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1"],
+    mirrors_env: "FACE_MIRRORS",
+    offered: true,
+    // BlazeFace full range, for the small faces of group photos
+    companions: &[Companion { file: spec(TF_FACE_FAR), base: "https://storage.googleapis.com/mediapipe-assets" }],
 };
 
 /// Every model of this registry, in display order.
-pub const MODELS: &[&ModelInfo] = &[&SAM2, &DEPTH];
+pub const MODELS: &[&ModelInfo] = &[&PEOPLE, &FACE, &SAM2, &DEPTH];
 
 /// The model with command key `key`.
 pub fn by_key(key: &str) -> Option<&'static ModelInfo> {
@@ -135,6 +204,19 @@ mod tests {
             assert!(m.size() > 0);
         }
         assert!(by_key("nope").is_none());
+    }
+
+    #[test]
+    fn the_mediapipe_entries_download_what_lcc_tflite_pins() {
+        for (m, tf) in [(&PEOPLE, &lcc_tflite::models::PEOPLE), (&FACE, &lcc_tflite::models::FACE)] {
+            let names: Vec<&str> = m.files.iter().chain(m.companions.iter().map(|c| &c.file)).map(|f| f.name).collect();
+            let pinned: Vec<&str> = tf.files.iter().map(|f| f.name).collect();
+            assert_eq!(names, pinned, "{}", m.key);
+            for f in tf.files {
+                let base = m.companions.iter().find(|c| c.file.name == f.name).map_or(m.default_mirrors[0], |c| c.base);
+                assert_eq!(format!("{base}/{}", f.name), f.url);
+            }
+        }
     }
 
     #[test]

@@ -104,6 +104,7 @@ impl Downloader {
     pub fn start(
         &self,
         files: &'static [fetch::FileSpec],
+        companions: Vec<(&'static fetch::FileSpec<'static>, &'static str)>,
         mirrors: Vec<String>,
         dir: PathBuf,
         opts: Options,
@@ -117,7 +118,7 @@ impl Downloader {
         s.cancel.store(false, Ordering::SeqCst);
         s.finished.store(false, Ordering::SeqCst);
         s.done.store(0, Ordering::SeqCst);
-        s.total.store(files.iter().filter_map(|f| f.size).sum(), Ordering::SeqCst);
+        s.total.store(files.iter().chain(companions.iter().map(|c| c.0)).filter_map(|f| f.size).sum(), Ordering::SeqCst);
         // nothing else runs while `running` was false
         *lock(&s.text) = Text::default();
         *lock(&self.last) = Text::default();
@@ -138,20 +139,31 @@ impl Downloader {
                     lock(&s.text).file.clone_from(&p.file);
                 }
             };
-            let r =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch::download(files, &mirrors, &dir, &opts, &s.cancel, &mut on_progress)));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                fetch::download(files, &mirrors, &dir, &opts, &s.cancel, &mut on_progress)?;
+                // the optional extra files, each from its own address (their bytes count after the model's)
+                let before: u64 = files.iter().filter_map(|f| f.size).sum();
+                for (file, base) in &companions {
+                    let mut shifted = |p: &Progress| {
+                        let p = Progress { done: before.saturating_add(p.done), total: before.saturating_add(p.total), file: p.file.clone(), mirror: p.mirror.clone() };
+                        on_progress(&p)
+                    };
+                    fetch::download(std::slice::from_ref(*file), &[base.to_string()], &dir, &opts, &s.cancel, &mut shifted)?;
+                }
+                Ok(())
+            }));
             let cancelled = matches!(r, Ok(Err(fetch::DownloadError::Cancelled)));
             let error = match r {
                 Ok(Ok(())) => {
                     s.finished.store(true, Ordering::SeqCst);
-                    log::info!("SAM 3 model downloaded to {}", dir.display());
+                    log::info!("model downloaded to {}", dir.display());
                     None
                 }
                 Ok(Err(e)) => Some(e.to_string()),
                 Err(_) => Some("the download failed unexpectedly".to_string()),
             };
             if let Some(e) = &error {
-                log::warn!("SAM 3 download: {e}");
+                log::warn!("model download: {e}");
             }
             let mut text = lock(&s.text);
             text.cancelled = cancelled;
