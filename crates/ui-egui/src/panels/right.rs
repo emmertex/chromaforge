@@ -1346,7 +1346,9 @@ pub(crate) fn versions_body(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             // thumbnail of the version's look
             let tr = Rect::from_min_size(r.min + vec2(4.0, 5.0), vec2(72.0, 48.0));
             ui.painter().rect_filled(tr, 2.0, t.canvas);
-            if let Some(job) = app.session.variant_job(id, &v.settings, 160)
+            // (only the versions in view: a photo can have many)
+            if ui.is_rect_visible(tr)
+                && let Some(job) = app.session.variant_job(id, &v.settings, 160)
                 && let Some(tex) = app.renderer.variant(job)
             {
                 ui.painter().image(tex.tex.id(), tr, crate::panels::presets::cover_uv(tr, tex.size), egui::Color32::WHITE);

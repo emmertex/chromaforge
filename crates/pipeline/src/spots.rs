@@ -384,6 +384,105 @@ fn fill_box(src: &mut [[f32; 3]], tgt: &[[f32; 3]], alpha: &[f32], bw: usize, bh
     }
 }
 
+/// For each pixel of the `bw × bh` box at (`bx0`, `by0`): the distance from its centre to the
+/// nearest of `pts`, where one lies within `reach` (elsewhere `f32::MAX`: the stroke paints nothing
+/// there). Each point stamps only the pixels it can reach, instead of every pixel of the box
+/// measuring every point: a patch outline of hundreds of points over a large box took seconds per
+/// render (a OneSlips test note). The same distances as measuring every point.
+fn nearest_point_distance(pts: &[(f32, f32)], bx0: usize, by0: usize, bw: usize, bh: usize, reach: f32) -> Vec<f32> {
+    let mut near = vec![f32::MAX; bw.saturating_mul(bh)];
+    // (one pixel of slack: the stamp holds every pixel centre within `reach`)
+    let r = if reach.is_finite() { reach.max(0.0) + 1.0 } else { f32::MAX };
+    for p in pts {
+        if !(p.0.is_finite() && p.1.is_finite()) {
+            continue; // measured as NaN, which the nearest-point minimum skips
+        }
+        let (lx, ly) = (p.0 - bx0 as f32, p.1 - by0 as f32);
+        let (xa, xb) = (((lx - r).floor().max(0.0)) as usize, ((lx + r).ceil().max(0.0) as usize).min(bw));
+        let (ya, yb) = (((ly - r).floor().max(0.0)) as usize, ((ly + r).ceil().max(0.0) as usize).min(bh));
+        for y in ya..yb {
+            let py = (by0 + y) as f32 + 0.5;
+            for x in xa..xb {
+                let px = (bx0 + x) as f32 + 0.5;
+                let d = ((px - p.0).powi(2) + (py - p.1).powi(2)).sqrt();
+                if let Some(n) = near.get_mut(y * bw + x) {
+                    *n = n.min(d);
+                }
+            }
+        }
+    }
+    near
+}
+
+/// Content-aware fills already solved (their box's pixels after the fill), by everything the fill
+/// reads ([`fill_key`]): every render of the photo that holds the same box — the loupe and its
+/// drafts, the before view, a thumbnail at the same size — takes the patch instead of solving it
+/// again (a PatchMatch completion per spot per render made one finished patch outline keep every
+/// core busy for over a minute: a OneSlips test note).
+struct FillCache {
+    entries: Vec<(u128, std::sync::Arc<Vec<[f32; 3]>>)>,
+    bytes: usize,
+}
+
+/// Most bytes of solved fills kept (least recently used dropped first).
+const FILL_CACHE_BYTES: usize = if cfg!(target_arch = "wasm32") { 32 << 20 } else { 192 << 20 };
+
+impl FillCache {
+    fn get(&mut self, key: u128) -> Option<std::sync::Arc<Vec<[f32; 3]>>> {
+        let i = self.entries.iter().position(|(k, _)| *k == key)?;
+        let e = self.entries.remove(i);
+        let v = e.1.clone();
+        self.entries.push(e);
+        Some(v)
+    }
+
+    fn put(&mut self, key: u128, v: std::sync::Arc<Vec<[f32; 3]>>) {
+        let size = v.len().saturating_mul(12);
+        if size > FILL_CACHE_BYTES / 2 {
+            return;
+        }
+        if let Some(i) = self.entries.iter().position(|(k, _)| *k == key) {
+            let (_, old) = self.entries.remove(i);
+            self.bytes = self.bytes.saturating_sub(old.len().saturating_mul(12));
+        }
+        while self.bytes.saturating_add(size) > FILL_CACHE_BYTES && !self.entries.is_empty() {
+            let (_, old) = self.entries.remove(0);
+            self.bytes = self.bytes.saturating_sub(old.len().saturating_mul(12));
+        }
+        self.bytes = self.bytes.saturating_add(size);
+        self.entries.push((key, v));
+    }
+}
+
+/// The process's [`FillCache`] (a poisoned lock is taken over: the cache only holds finished results).
+fn fills() -> std::sync::MutexGuard<'static, FillCache> {
+    static CACHE: std::sync::Mutex<FillCache> = std::sync::Mutex::new(FillCache { entries: Vec::new(), bytes: 0 });
+    CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The keys of the fills solved so far, in order (tests).
+#[cfg(test)]
+static FILLS_SOLVED: std::sync::Mutex<Vec<u128>> = std::sync::Mutex::new(Vec::new());
+
+/// Key of a fill: the box's pixels, the stroke's alpha, where the box is and the seed (two independent 64-bit hashes).
+fn fill_key(tgt: &[[f32; 3]], alpha: &[f32], geometry: [u64; 4], seed: u64) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let half = |salt: u64| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        salt.hash(&mut h);
+        geometry.hash(&mut h);
+        seed.hash(&mut h);
+        for c in tgt {
+            c.map(f32::to_bits).hash(&mut h);
+        }
+        for a in alpha {
+            a.to_bits().hash(&mut h);
+        }
+        h.finish()
+    };
+    (u128::from(half(0x9e37_79b9_7f4a_7c15)) << 64) | u128::from(half(0x2545_f491_4f6c_dd1d))
+}
+
 /// Apply all spots to `img` (output resolution). `ppl` = output pixels per long-edge unit.
 pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
     if spots.is_empty() {
@@ -400,10 +499,11 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
         let mut alpha = vec![0.0f32; bw * bh];
         let mut src = vec![[0.0f32; 3]; bw * bh];
         let mut tgt = vec![[0.0f32; 3]; bw * bh];
+        let near = nearest_point_distance(&pts, bx0, by0, bw, bh, r);
         for y in 0..bh {
             for x in 0..bw {
                 let (px, py) = ((bx0 + x) as f32 + 0.5, (by0 + y) as f32 + 0.5);
-                let d = pts.iter().map(|p| ((px - p.0).powi(2) + (py - p.1).powi(2)).sqrt()).fold(f32::MAX, f32::min);
+                let d = near.get(y * bw + x).copied().unwrap_or(f32::MAX);
                 alpha[y * bw + x] = (1.0 - smooth(inner, r, d)) * opacity;
                 src[y * bw + x] = img.sample_bilinear(px + offset.0, py + offset.1);
                 tgt[y * bw + x] = img.get(bx0 + x, by0 + y);
@@ -411,7 +511,18 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
         }
         if fill {
             let seed = spot.source_offset.map(|o| (o.x.to_bits() ^ o.y.to_bits().rotate_left(32)).wrapping_add(1)).unwrap_or(1);
-            fill_box(&mut src, &tgt, &alpha, bw, bh, seed);
+            let key = fill_key(&tgt, &alpha, [bw, bh, bx0, by0].map(|v| v as u64), seed);
+            let cached = fills().get(key);
+            src = match cached {
+                Some(done) => done.as_ref().clone(),
+                None => {
+                    #[cfg(test)]
+                    FILLS_SOLVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(key);
+                    fill_box(&mut src, &tgt, &alpha, bw, bh, seed);
+                    fills().put(key, std::sync::Arc::new(src.clone()));
+                    src
+                }
+            };
         }
         // Clone: Direct 1:1 copy of source patch, feathered and opacity-blended.
         // Heal: Texture transfer from source patch with tone/gradient separation matching target surroundings.
@@ -537,6 +648,50 @@ mod tests {
             feather: 0.0,
             source_offset: Some(Point::new(0.3, 0.0)),
             ..Default::default()
+        }
+    }
+
+    /// A fill is solved once: the next render holding the same box (another view of the photo, a
+    /// queued render of the same edit) takes the solved patch, with the same pixels.
+    #[test]
+    fn a_fill_is_solved_once_for_every_render_of_the_same_box() {
+        let (w, h) = (210, 150);
+        let frame = Frame::new(w, h, &DevelopSettings::default(), true);
+        let solved = || FILLS_SOLVED.lock().unwrap().clone();
+        let before = solved().len();
+        let mut a = striped_with_blot(w, h, 7);
+        apply(&mut a, &[fill_spot()], &frame, frame.px_per_long(w));
+        let first: Vec<u128> = solved()[before..].to_vec();
+        assert!(!first.is_empty(), "the first render solves it");
+        let mid = solved().len();
+        let mut b = striped_with_blot(w, h, 7);
+        apply(&mut b, &[fill_spot()], &frame, frame.px_per_long(w));
+        assert!(solved()[mid..].iter().all(|k| !first.contains(k)), "the second render solved it again");
+        assert_eq!(a.data, b.data);
+    }
+
+    /// The stamped nearest-point distance is the one measuring every point gives, for an outline of
+    /// many points, points off the box and a point that is not a number.
+    #[test]
+    fn stamped_distances_match_measuring_every_point() {
+        let (bx, by, bw, bh) = (10, 20, 90, 70);
+        let mut pts: Vec<(f32, f32)> = (0..300).map(|i| (5.0 + 0.4 * i as f32, 30.0 + 25.0 * ((i as f32) * 0.05).sin())).collect();
+        pts.push((f32::NAN, 40.0));
+        pts.push((-500.0, -500.0));
+        for reach in [0.5f32, 6.0, 30.0, 1e6] {
+            let near = nearest_point_distance(&pts, bx, by, bw, bh, reach);
+            for y in 0..bh {
+                for x in 0..bw {
+                    let (px, py) = ((bx + x) as f32 + 0.5, (by + y) as f32 + 0.5);
+                    let d = pts.iter().map(|p| ((px - p.0).powi(2) + (py - p.1).powi(2)).sqrt()).fold(f32::MAX, f32::min);
+                    let got = near[y * bw + x];
+                    if d < reach {
+                        assert_eq!(got, d, "({x}, {y}) reach {reach}");
+                    } else {
+                        assert!(got >= reach, "({x}, {y}) reach {reach}: {got}");
+                    }
+                }
+            }
         }
     }
 

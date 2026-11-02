@@ -33,7 +33,7 @@ guard.detail(&file_name);
   dead job never leaves a stuck bar. A worker that only reports progress takes a `TaskHandle` (`guard.handle()`,
   `Clone + Send`).
 - **`kind`** is a stable camelCase id that agents filter by (`export`, `import`, `scan`, `sync`, `previews`,
-  `download`, `faces`, `cache`, `focus`, `sidecars`, `saveMetadata`, `readMetadata`, `mlIndex`…). **`label`** is a short English name in sentence case ("Building previews"). The stack shows it
+  `download`, `faces`, `cache`, `focus`, `fill`, `sidecars`, `saveMetadata`, `readMetadata`, `mlIndex`…). **`label`** is a short English name in sentence case ("Building previews"). The stack shows it
   translated, so add it to every catalog in `crates/ui-egui/locales/`.
 - **Progress:** `progress(done, total)`. A `total` of 0 means the amount of work isn't known yet, and the bar sweeps.
   `set_unit(Unit::Bytes)` makes the count read "12 of 340 MB"; `Unit::Percent` reads "40 %". The default `Unit::Count`
@@ -83,6 +83,7 @@ let photo = batch.child("denoise", "AI Denoise"); // the photo in progress, unde
 | Model downloads | `crates/engine/src/face_download.rs` | report progress through a `TaskHandle` in shared state |
 | Lightroom catalog import | `crates/ui-egui/src/lightroom_import.rs` | stop being cancellable for a phase that must finish |
 | Face scan | `crates/engine/src/cmd/face_recognize.rs` | a continuous job with no ✕, kept in session state |
+| Filling spots | `crates/ui-egui/src/render.rs` (`Renderer::track_fills`) | a row held while a render that solves a content-aware fill is out, with no ✕ (`Cancel::No`); solved fills are cached, so it shows for a new fill only |
 | AI Denoise | `crates/engine/src/denoise.rs` (`denoise_track`) | a continuous queue shown as a batch while busy (photos counted since it was last idle), the running photo's tiles as its child; ✕ empties the queue and holds those photos until asked for again |
 | Find Missing Photos | `crates/ui-egui/src/tasks.rs` | a generic background task with a row (`kind: Some(..)`) |
 | Background XMP sidecar writes | `crates/engine/src/sidecar_writer.rs` | one row per batch from a worker thread, no ✕; the stack's 0.5 s delay keeps a quick write after an edit from showing |

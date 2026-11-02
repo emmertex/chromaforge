@@ -290,6 +290,8 @@ mod tests_recheck;
 #[cfg(test)]
 mod tests_rename_person;
 #[cfg(test)]
+mod tests_render_storms;
+#[cfg(test)]
 mod tests_rules_editor;
 #[cfg(test)]
 mod tests_sam_setup;

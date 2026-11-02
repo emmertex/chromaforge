@@ -375,6 +375,11 @@ pub const MAX_VARIANT_TEXTURES: usize = 800;
 /// Priority of variant thumbnail jobs: below on-screen grid thumbnails and the loupe.
 const VARIANT_PRIORITY: u32 = 6;
 
+/// Whether a render of `s` solves a content-aware fill (a Fill spot).
+fn has_fill(s: &lcc_develop::DevelopSettings) -> bool {
+    s.spots.iter().any(|sp| matches!(sp.mode, lcc_develop::SpotMode::Fill))
+}
+
 pub struct Renderer {
     #[cfg(test)]
     pub(crate) thumb_jobs_built: usize,
@@ -400,6 +405,11 @@ pub struct Renderer {
     seq: u64,
     /// Slot → (key, priority) of the request in flight (queued or running).
     pending: HashMap<Slot, (u64, u32)>,
+    /// Pending requests whose settings hold a content-aware fill (slot → key): solving one can take
+    /// seconds, so while any is out the activity stack says so ([`Self::fill_row`]).
+    fill_jobs: HashMap<Slot, u64>,
+    /// The "Filling spots" row, while [`Self::fill_jobs`] isn't empty.
+    fill_row: Option<lcc_engine::activity::TaskGuard>,
     pub textures: HashMap<Slot, Tex>,
     /// Recent full-quality whole-frame renders ([`KEPT_VIEWS`], least recently shown first).
     kept_views: std::collections::VecDeque<Tex>,
@@ -534,6 +544,8 @@ impl Renderer {
             queue: Vec::new(),
             seq: 0,
             pending: HashMap::new(),
+            fill_jobs: HashMap::new(),
+            fill_row: None,
             textures: HashMap::new(),
             kept_views: std::collections::VecDeque::new(),
             main_drafts: std::collections::HashSet::new(),
@@ -977,6 +989,11 @@ impl Renderer {
             return;
         }
         self.pending.insert(slot, (job.key, priority));
+        if has_fill(&job.settings) {
+            self.fill_jobs.insert(slot, job.key);
+        } else {
+            self.fill_jobs.remove(&slot);
+        }
         job.request_id = lcc_preview::next_tick();
         if slot == Slot::Main {
             self.main_requested += 1;
@@ -1439,6 +1456,7 @@ impl Renderer {
         #[cfg(not(target_arch = "wasm32"))]
         let inline_ms = 0.0;
         let changed = self.collect(ctx, session, inline_ms);
+        self.track_fills(session);
         self.evict_variants();
         #[cfg(not(target_arch = "wasm32"))]
         self.trim_when_idle(ctx);
@@ -1446,6 +1464,25 @@ impl Renderer {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         changed
+    }
+
+    /// Hold the "Filling spots" activity row while a render that solves a content-aware fill is
+    /// out (a finished patch outline kept the machine busy with no word of why). Solved fills are
+    /// cached, so the row stays only for the first render of a new fill.
+    fn track_fills(&mut self, session: &Session) {
+        let pending = &self.pending;
+        self.fill_jobs.retain(|s, k| pending.get(s).is_some_and(|p| p.0 == *k));
+        if self.fill_jobs.is_empty() {
+            self.fill_row = None;
+        } else if self.fill_row.is_none() {
+            self.fill_row = Some(session.activity.start("fill", "Filling spots", lcc_engine::activity::Cancel::No));
+        }
+    }
+
+    /// Whether the "Filling spots" row is up (tests).
+    #[cfg(test)]
+    pub(crate) fn filling(&self) -> bool {
+        self.fill_row.is_some()
     }
 
     /// In a slider drag, give the loupe's draft (just requested) until `budget` to finish, so that it
