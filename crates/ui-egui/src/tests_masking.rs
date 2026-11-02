@@ -2201,3 +2201,31 @@ fn effect_dropdown_applies_saves_and_shows_the_matching_effect() {
     assert_eq!((a.exposure, a.shadows, a.clarity, a.amount), (0.7, 25.0, 0.0, 50.0));
     assert_eq!(exec(&mut h, "mask.effects", json!({}))["current"], "Lift");
 }
+
+fn widgets_contain(h: &mut Headless, id: &str) -> bool {
+    h.request("ui.widgets", json!({}), T).to_string().contains(&format!("\"{id}\""))
+}
+
+/// The mask's Point Color flyout: the eyedropper samples into the active mask (not the photo), the
+/// swatch appears, and Delete removes it.
+#[test]
+fn mask_point_color_eyedropper_samples_into_the_mask() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "linear"}));
+    h.app.ui.toggle_flyout("maskPointColor");
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "icon:maskPointColorPicker"), "the flyout shows the eyedropper");
+    // (the eyedropper's button sets this tool)
+    h.app.ui.tool = "maskPointColor".into();
+    h.step();
+    brush_at(&mut h, 0.5, 0.1);
+    let d = develop(&h);
+    assert_eq!(d.masks[0].point_colors.len(), 1, "sampled into the mask");
+    assert!(d.point_colors.is_empty(), "not into the photo's Point Color");
+    assert!(h.app.ui.tool.is_empty(), "one sample per pick");
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "maskPointColor:0"), "the sample's swatch shows");
+    exec(&mut h, "mask.pointColorDelete", json!({"index": 0}));
+    assert!(develop(&h).masks[0].point_colors.is_empty());
+    h.settle(SETTLE);
+}

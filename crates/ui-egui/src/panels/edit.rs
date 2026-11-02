@@ -2104,7 +2104,7 @@ fn mixer_by_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 // ------------------------------------------------------------------------------ point color
 
 /// Display colour of an OkLCh sample (lightness, chroma, hue in degrees).
-fn oklch_color(l: f64, c: f64, h_deg: f64) -> Color32 {
+pub(crate) fn oklch_color(l: f64, c: f64, h_deg: f64) -> Color32 {
     use lcc_color::perceptual::{lch_to_lab, oklab_to_2020};
     let lin = oklab_to_2020(lch_to_lab([l as f32, c as f32, (h_deg as f32).to_radians()]));
     let s = lcc_color::REC2020.to_space(&lcc_color::SRGB).apply_f32(lin);

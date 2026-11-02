@@ -694,10 +694,94 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         if *key == "color" {
             divider(ui);
             grading_section(app, ui, &m.adjust);
+            // the mask's own Point Color (a colour photo's tool, as globally)
+            if !crate::is_bw(&d) {
+                let open = app.ui.flyout_open("maskPointColor");
+                if flyout_row(ui, "maskPointColor", "Point Color", Icon::Picker, open).clicked() {
+                    app.ui.toggle_flyout("maskPointColor");
+                }
+                if open {
+                    mask_point_color(app, ui, &m);
+                }
+            }
         }
     }
     ui.add_space(30.0);
     let _ = Stroke::NONE;
+}
+
+/// The local Point Color sliders: (widget id, the global control's field, the `mask.pointColorSet` key).
+const MASK_POINT_FIELDS: [(&str, &str, &str); 8] = [
+    ("maskPointColor.hueShift", "hueShift", "hue_shift"),
+    ("maskPointColor.satShift", "satShift", "sat_shift"),
+    ("maskPointColor.lumShift", "lumShift", "lum_shift"),
+    ("maskPointColor.variance", "variance", "variance"),
+    ("maskPointColor.range", "range", "range"),
+    ("maskPointColor.hueRange", "hueRange", "hue_range"),
+    ("maskPointColor.satRange", "satRange", "sat_range"),
+    ("maskPointColor.lumRange", "lumRange", "lum_range"),
+];
+
+/// The active mask's Point Color: its samples' swatches (+ the eyedropper, tool `maskPointColor`), the selected
+/// sample's shifts and range, and Delete; the same sliders as the photo's Point Color.
+fn mask_point_color(app: &mut LccApp, ui: &mut egui::Ui, m: &lcc_develop::Mask) {
+    let t = Tokens::get(ui.ctx());
+    let n = m.point_colors.len();
+    if app.ui.mask_point_color >= n && n > 0 {
+        app.ui.mask_point_color = n - 1;
+    }
+    let sel = app.ui.mask_point_color;
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 4 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            let active = app.ui.tool == "maskPointColor";
+            let full = n >= lcc_develop::MAX_POINT_COLORS;
+            if icon_button(ui, "maskPointColorPicker", Icon::Picker, vec2(26.0, 26.0), active, !full, crate::i18n::tr("Sample a colour on the photo")).clicked() {
+                app.ui.tool = if active { String::new() } else { "maskPointColor".into() };
+            }
+            for (i, p) in m.point_colors.iter().enumerate() {
+                let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                crate::widgets::announce(&resp, format!("{} {}", crate::i18n::tr("Point Color"), i + 1));
+                register(ui.ctx(), format!("maskPointColor:{i}"), r);
+                ui.painter().rect_filled(r.shrink(2.0), 3.0, super::edit::oklch_color(p.lum, p.chroma, p.hue));
+                if i == sel {
+                    ui.painter().rect_stroke(r, 4.0, Stroke::new(1.5, t.text), egui::StrokeKind::Inside);
+                }
+                if resp.clicked() {
+                    app.ui.mask_point_color = i;
+                }
+            }
+        });
+    });
+    let Some(pc) = m.point_colors.get(sel).copied() else {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 8 }).show(ui, |ui| {
+            ui.label(egui::RichText::new(crate::i18n::tr("Pick a colour on the photo with the eyedropper.")).size(12.0).color(t.text_dim));
+        });
+        return;
+    };
+    for (wid, field, key) in MASK_POINT_FIELDS {
+        let Some(base) = lcc_develop::controls::find(&format!("pointColor.0.{field}")) else { continue };
+        let spec = ControlSpec { id: wid, ..*base };
+        let v = match key {
+            "hue_shift" => pc.hue_shift,
+            "sat_shift" => pc.sat_shift,
+            "lum_shift" => pc.lum_shift,
+            "variance" => pc.variance,
+            "range" => pc.range,
+            "hue_range" => pc.hue_range,
+            "sat_range" => pc.sat_range,
+            _ => pc.lum_range,
+        };
+        let out = slider(ui, &spec, v, true, None);
+        apply_slider_out(app, &spec, out, |app, v| app.run("mask.pointColorSet", json!({"id": m.id, "index": sel, "values": {key: v}})));
+    }
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 8 }).show(ui, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if text_button(ui, "maskPointColorDelete", crate::i18n::tr("Delete"), false).clicked() {
+                let _ = app.run("mask.pointColorDelete", json!({"id": m.id, "index": sel}));
+            }
+        });
+    });
 }
 
 /// The active mask's Amount slider, under a line naming the mask (its name, else "Mask N").

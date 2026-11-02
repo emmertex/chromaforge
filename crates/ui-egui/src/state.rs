@@ -1250,6 +1250,8 @@ pub struct UiState {
     pub remove_opacity: f32,
     /// Selected Point Color sample.
     pub point_color: usize,
+    /// Selected sample of the active mask's local Point Color.
+    pub mask_point_color: usize,
     /// Point Color "Visualize range": the selected sample's range in colour, the rest grey.
     pub point_color_visualize: bool,
     /// Light panel "Visualize HDR": grey below SDR white, colour bands above (HDR edits).
@@ -2012,6 +2014,7 @@ impl Default for UiState {
             remove_feather: 50.0,
             remove_opacity: 100.0,
             point_color: 0,
+            mask_point_color: 0,
             point_color_visualize: false,
             hdr_visualize: false,
             hover_color: None,
