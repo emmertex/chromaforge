@@ -106,12 +106,17 @@ pub enum Gesture {
 }
 
 /// Screen ↔ normalized-image mapping for the displayed frame.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CanvasMap {
     rect: Rect,
     to_norm: Affine,
     from_norm: Affine,
     k: f32,
+    /// The frame's lens / perspective warp (with the oriented size it works in), when it moves
+    /// pixels: a mask on the photo (`Mask::on_photo`) has its coordinates before it.
+    warp: Option<std::sync::Arc<(lcc_pipeline::optics::Warp, f64, f64)>>,
+    /// Whether `norm` / `screen` speak a mask's coordinates on the photo ([`CanvasMap::for_mask`]).
+    on_photo: bool,
 }
 
 impl CanvasMap {
@@ -119,12 +124,33 @@ impl CanvasMap {
         let k = 8.0f32;
         let (w, h) = ((rect.width() * k).round().max(1.0) as usize, (rect.height() * k).round().max(1.0) as usize);
         let to_norm = frame.out_to_norm(w, h);
-        CanvasMap { rect, to_norm, from_norm: to_norm.inverse().unwrap_or(Affine::IDENTITY), k }
+        let warp = frame.warp.as_ref().filter(|w| w.moves_pixels()).map(|w| std::sync::Arc::new((w.clone(), frame.ow, frame.oh)));
+        CanvasMap { rect, to_norm, from_norm: to_norm.inverse().unwrap_or(Affine::IDENTITY), k, warp, on_photo: false }
+    }
+    /// The mapping for a mask's coordinates: on the photo before lens corrections, Upright and
+    /// Transform (`on_photo`: every mask made now), or an old mask's on the corrected frame.
+    pub(crate) fn for_mask(&self, on_photo: bool) -> CanvasMap {
+        CanvasMap { on_photo, ..self.clone() }
+    }
+    /// [`Self::for_mask`] for mask `id` of `d` (none, or a new mask: on the photo).
+    pub(crate) fn for_mask_id(&self, d: &DevelopSettings, id: Option<u32>) -> CanvasMap {
+        self.for_mask(id.and_then(|id| d.masks.iter().find(|m| m.id == id)).is_none_or(|m| m.on_photo))
     }
     pub fn norm(&self, p: Pos2) -> Point {
-        self.to_norm.apply(Point::new(((p.x - self.rect.left()) * self.k) as f64, ((p.y - self.rect.top()) * self.k) as f64))
+        let n = self.to_norm.apply(Point::new(((p.x - self.rect.left()) * self.k) as f64, ((p.y - self.rect.top()) * self.k) as f64));
+        match self.warp.as_deref().filter(|_| self.on_photo) {
+            Some((w, ow, oh)) => {
+                let s = w.to_source(Point::new(n.x * ow, n.y * oh), 1);
+                Point::new(s.x / ow, s.y / oh)
+            }
+            None => n,
+        }
     }
     pub fn screen(&self, n: Point) -> Pos2 {
+        let n = match self.warp.as_deref().filter(|_| self.on_photo) {
+            Some((w, ow, oh)) => w.from_source(Point::new(n.x * ow, n.y * oh)).map_or(n, |t| Point::new(t.x / ow, t.y / oh)),
+            None => n,
+        };
         let q = self.from_norm.apply(n);
         pos2(self.rect.left() + q.x as f32 / self.k, self.rect.top() + q.y as f32 / self.k)
     }
@@ -132,7 +158,7 @@ impl CanvasMap {
 
 /// How the crop tool holds its view still while the crop changes (issue #60). As in Lightroom the
 /// crop box stays upright on screen and the photo turns and moves beneath it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CropLayout {
     /// Straightening, rotating or moving: the box keeps its centre on screen (`centre`) and the
     /// scale (`k` points per pixel of the oriented photo); the photo turns and slides under it.
@@ -143,7 +169,7 @@ pub enum CropLayout {
 
 /// The crop tool's view of the photo: the crop box upright, the whole photo around it, turned by
 /// the straighten angle.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct CropView {
     /// Normalized photo ↔ screen, through the crop box (upright on screen).
     pub map: CanvasMap,
@@ -907,7 +933,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if !crop_tool || app.session.interaction.is_none() {
         app.crop_layout = None;
     }
-    let crop_view = crop_tool.then(|| crop_view(&frame, d.crop.geometry, main_area, app.crop_layout, app.ui.zoom, ppp, app.ui.pan));
+    let crop_view = crop_tool.then(|| crop_view(&frame, d.crop.geometry, main_area, app.crop_layout.clone(), app.ui.zoom, ppp, app.ui.pan));
     if let Some(v) = &crop_view {
         if app.session.interaction.is_some() && app.crop_layout.is_none() {
             app.crop_layout = Some(CropLayout::Pinned { centre: v.centre, k: v.k });
@@ -2679,13 +2705,13 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             return;
         }
         let d = app.session.develop_of(id).unwrap_or_default();
-        let (start, angle, map) = (d.crop.geometry.rect, d.crop.geometry.angle, *map);
+        let (start, angle, map) = (d.crop.geometry.rect, d.crop.geometry.angle, map.clone());
         // screen points per pixel of the photo: the box's width on screen over its width in pixels
         let native_w = Frame { crop: d.crop.geometry, ..frame.clone() }.native_size().0 as f32;
         let k = pts[0].distance(pts[1]) / native_w.max(1e-3);
         let pinned = Some(CropLayout::Pinned { centre: box_centre, k });
         let (gesture, layout) = match handles.iter().position(|h| h.distance(q) < 12.0) {
-            Some(h) => (Gesture::CropHandle { handle: h as u8, start, angle, map }, Some(CropLayout::Frozen(map))),
+            Some(h) => (Gesture::CropHandle { handle: h as u8, start, angle, map: map.clone() }, Some(CropLayout::Frozen(map))),
             None if inside(q) => (Gesture::CropHandle { handle: 8, start, angle, map }, pinned),
             None => (Gesture::CropRotate { start_angle: angle, a0: (q - box_centre).angle() }, pinned),
         };
@@ -3283,6 +3309,8 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     }
     for m in &d.masks {
         let sel = Some(m.id) == active;
+        // (its coordinates on the photo, or an old mask's on the corrected frame)
+        let map = &map.for_mask(m.on_photo);
         // Ctrl+Shift+O (`mask_overlay_all`) shows every visible mask's region; outline each one
         // too, not just the selected mask. Handles and the rotation grip stay on the selected
         // mask so nothing else becomes draggable. The component check keeps this in step with the
@@ -3367,6 +3395,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     // (clicks still on their way to the model included)
     let pending = app.session.segmenter.pending_clicks().cloned();
     for m in d.masks.iter().filter(|m| Some(m.id) == active) {
+        let map = &map.for_mask(m.on_photo);
         for (k, c) in m.components.iter().enumerate() {
             if let MaskShape::Object { hint, exclude, .. } = &c.shape {
                 let (hint, exclude) = match pending.as_ref().filter(|q| (q.mask, q.comp) == (m.id, k)) {
@@ -3416,7 +3445,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             if own_pin_at(&grips, app.session.active_mask, q) {
                 return;
             }
-            let n = map.norm(q);
+            let n = map.for_mask_id(d, active).norm(q);
             let exclude = ui.input(|i| i.modifiers.alt);
             match app.run_typed("mask.objectPoint", json!({"x": n.x, "y": n.y, "exclude": exclude})) {
                 Ok(_) => {
@@ -3440,7 +3469,8 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         if let Some(q) = resp.interact_pointer_pos()
             && (resp.drag_started() || resp.dragged() || resp.clicked())
         {
-            let n = map.norm(q);
+            // the stroke goes into the selected mask (or a new one): in its coordinates
+            let n = map.for_mask_id(d, active).norm(q);
             let force = if app.ui.brush_pressure { ui.input(pen_force) } else { None };
             match &mut app.gesture {
                 // a held, unmoving pointer records nothing: coverage builds by passes, not time (#518)
@@ -3459,7 +3489,10 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         // the stroke being painted (the render shows it once it's committed), with the committed
         // stroke's dab spacing, feather and flow (issue #517)
         if let Some(Gesture::Brush { points, pressure }) = &app.gesture {
-            let screen: Vec<Pos2> = points.iter().map(|q| map.screen(*q)).collect();
+            let screen: Vec<Pos2> = {
+                let mmap = map.for_mask_id(d, active);
+                points.iter().map(|q| mmap.screen(*q)).collect()
+            };
             let opacity = if app.ui.mask_overlay && app.ui.mask_overlay_opacity > 0.0 { app.ui.mask_overlay_opacity / 100.0 } else { 110.0 / 255.0 };
             let params = crate::brush_live::LiveParams {
                 clip,
@@ -3525,8 +3558,9 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             let m = d.masks.iter().find(|m| Some(m.id) == active)?;
             // Handles take precedence; otherwise grab the selected radial component under
             // the press, including components after the first in compound masks.
-            let at = map.norm(q);
-            if let Some(ci) = m.components.iter().position(|c| radial_body_contains(&c.shape, at, map)) {
+            let mmap = map.for_mask(m.on_photo);
+            let at = mmap.norm(q);
+            if let Some(ci) = m.components.iter().position(|c| radial_body_contains(&c.shape, at, &mmap)) {
                 return Some((m.id, ci, 0));
             }
             // anywhere on the photo drags the selected linear gradient
@@ -3551,6 +3585,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if resp.dragged()
         && let (Some(Gesture::MaskHandle { mask, comp, handle, original_shape }), Some(q)) = (app.gesture.clone(), resp.interact_pointer_pos())
     {
+        let map = &map.for_mask_id(d, Some(mask));
         let n = map.norm(q);
         let press_origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(q);
         let n0 = map.norm(press_origin);
@@ -3588,6 +3623,7 @@ fn mask_keys(app: &mut LccApp, ui: &mut egui::Ui, map: &CanvasMap, d: &DevelopSe
     for &(mid, ci, handle, q) in grips {
         let Some(m) = d.masks.iter().find(|m| m.id == mid) else { continue };
         let Some(shape) = m.components.get(ci).map(|c| &c.shape) else { continue };
+        let map = &map.for_mask(m.on_photo);
         let at = map.norm(q);
         let mask_name = if m.name.trim().is_empty() { format!("{} {mid}", crate::i18n::tr("Mask")) } else { m.name.clone() };
         let name = mask_handle_name(&mask_name, shape, handle);
@@ -3609,7 +3645,9 @@ fn mask_keys(app: &mut LccApp, ui: &mut egui::Ui, map: &CanvasMap, d: &DevelopSe
 
 /// Long-edge units → normalized units for x and y.
 fn frame_long_norm(map: &CanvasMap) -> (f64, f64) {
-    // derive from the mapping: 1 normalized unit in x and y in screen points
+    // derive from the mapping: 1 normalized unit in x and y in screen points (of the frame's
+    // proportions, which a lens or perspective warp doesn't change)
+    let map = map.for_mask(false);
     let o = map.screen(Point::new(0.0, 0.0));
     let x = map.screen(Point::new(1.0, 0.0)).distance(o) as f64;
     let y = map.screen(Point::new(0.0, 1.0)).distance(o) as f64;
@@ -4774,6 +4812,27 @@ fn straighten_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response
 
 #[cfg(test)]
 mod tests {
+    /// A mask on the photo (`Mask::on_photo`) is placed through the frame's warp: a point taken
+    /// from the screen lands back where it was, and on the photo it is not the corrected-frame
+    /// point (the warp moves it).
+    #[test]
+    fn mask_coordinates_go_through_the_warp() {
+        use super::{CanvasMap, DevelopSettings, Frame, Rect, pos2};
+        let mut s = DevelopSettings::default();
+        s.geometry.vertical = 40.0;
+        let frame = Frame::new(600, 400, &s, true);
+        let map = CanvasMap::new(&frame, Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(600.0, 400.0)));
+        let on = map.for_mask(true);
+        let q = pos2(150.0, 120.0);
+        let (n_on, n_old) = (on.norm(q), map.norm(q));
+        assert!(on.screen(n_on).distance(q) < 0.5, "round trip: {:?}", on.screen(n_on));
+        assert!((n_on.x - n_old.x).hypot(n_on.y - n_old.y) > 0.005, "the warp moves it: {n_on:?} vs {n_old:?}");
+        // an old mask (and a frame without a warp) maps as before
+        assert_eq!(map.for_mask(false), map);
+        let flat = CanvasMap::new(&Frame::new(600, 400, &DevelopSettings::default(), true), map.rect);
+        assert_eq!(flat.for_mask(true).norm(q), flat.norm(q));
+    }
+
     #[test]
     fn contour_extraction_single_point_stroke_and_degenerate_inputs() {
         use egui::Pos2;

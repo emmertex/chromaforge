@@ -43,6 +43,9 @@ pub struct Frame {
     pub warp: Option<Warp>,
     /// Set when this frame draws only a window of a larger output (see [`Frame::window`]).
     pub view: Option<ViewWindow>,
+    /// Mask coordinates are on the photo before the warp ([`Frame::for_mask`],
+    /// `lcc_develop::Mask::on_photo`); otherwise normalized coordinates of the transformed image.
+    pub masks_on_photo: bool,
     /// Filter of the area downscale ahead of the bilinear resample ([`Frame::sample`]); see
     /// [`crate::Downscale`].
     pub downscale: Filter,
@@ -91,6 +94,7 @@ impl Frame {
             warp: (!warp.is_identity()).then_some(warp),
             view: None,
             downscale: Filter::Mitchell,
+            masks_on_photo: false,
         };
         if apply_crop {
             f.constrain_to_image(s.geometry.constrain_crop);
@@ -291,6 +295,56 @@ impl Frame {
     /// Normalized oriented coords → output pixel (inverse of `out_to_norm`).
     pub fn norm_to_out(&self, out_w: usize, out_h: usize) -> Affine {
         self.out_to_norm(out_w, out_h).inverse().unwrap_or(Affine::IDENTITY)
+    }
+
+    /// This frame for evaluating a mask whose coordinates are on the photo before the warp
+    /// (`on_photo`, [`lcc_develop::Mask::on_photo`]) or on the corrected frame.
+    pub fn for_mask(&self, on_photo: bool) -> std::borrow::Cow<'_, Frame> {
+        if self.masks_on_photo == on_photo {
+            std::borrow::Cow::Borrowed(self)
+        } else {
+            std::borrow::Cow::Owned(Frame { masks_on_photo: on_photo, ..self.clone() })
+        }
+    }
+
+    /// The warp mask coordinates go through: the lens / perspective warp when masks are on the
+    /// photo and it moves pixels, else none (mask coordinates are then normalized coordinates).
+    pub fn mask_warp(&self) -> Option<&Warp> {
+        self.warp.as_ref().filter(|w| self.masks_on_photo && w.moves_pixels())
+    }
+
+    /// Output pixel → mask coordinates (see [`Frame::masks_on_photo`]).
+    pub fn out_to_mask(&self, out_w: usize, out_h: usize) -> MaskMap {
+        MaskMap {
+            o2t: self.out_to_oriented(out_w, out_h),
+            to_norm: self.out_to_norm(out_w, out_h),
+            ow: self.ow,
+            oh: self.oh,
+            warp: self.mask_warp().cloned(),
+        }
+    }
+
+    /// Mask coordinates → output pixel (the inverse of [`Frame::out_to_mask`]).
+    pub fn mask_to_out(&self, out_w: usize, out_h: usize) -> impl Fn(Point) -> Point + use<> {
+        let to_out = self.norm_to_out(out_w, out_h);
+        let (warp, ow, oh) = (self.mask_warp().cloned(), self.ow, self.oh);
+        move |n: Point| to_out.apply(mask_to_norm(warp.as_ref(), ow, oh, n))
+    }
+
+    /// Normalized coordinates of this frame's transformed image → mask coordinates.
+    pub fn norm_to_mask(&self, n: Point) -> Point {
+        match self.mask_warp() {
+            Some(w) => {
+                let s = w.to_source(Point::new(n.x * self.ow, n.y * self.oh), 1);
+                Point::new(s.x / self.ow, s.y / self.oh)
+            }
+            None => n,
+        }
+    }
+
+    /// Mask coordinates → normalized coordinates of this frame's transformed image.
+    pub fn mask_to_norm(&self, n: Point) -> Point {
+        mask_to_norm(self.mask_warp(), self.ow, self.oh, n)
     }
 
     /// Convert normalized oriented coordinates to "long-edge units" (isotropic), used by mask shapes.
@@ -677,5 +731,38 @@ mod tests {
         s.crop.geometry.angle = 45.0;
         let f = Frame::new(48_000, 48_000, &s, true);
         assert_eq!(f.fit(54_000, 13_000), (54_000, 13_000));
+    }
+}
+
+/// Mask coordinates `n` (on the photo before `warp`, normalized to `ow × oh`) → normalized
+/// transformed coordinates. A point the warp can't invert (far outside a strong one) stays put.
+fn mask_to_norm(warp: Option<&Warp>, ow: f64, oh: f64, n: Point) -> Point {
+    match warp.and_then(|w| w.from_source(Point::new(n.x * ow, n.y * oh))) {
+        Some(t) => Point::new(t.x / ow, t.y / oh),
+        None => n,
+    }
+}
+
+/// Output pixel → mask coordinates of a frame ([`Frame::out_to_mask`]).
+#[derive(Clone, Debug)]
+pub struct MaskMap {
+    o2t: Affine,
+    to_norm: Affine,
+    ow: f64,
+    oh: f64,
+    warp: Option<Warp>,
+}
+
+impl MaskMap {
+    /// The mask coordinates at output position `p` (px; pixel centres at `x + 0.5`).
+    #[inline]
+    pub fn apply(&self, p: Point) -> Point {
+        match &self.warp {
+            Some(w) => {
+                let s = w.to_source(self.o2t.apply(p), 1);
+                Point::new(s.x / self.ow, s.y / self.oh)
+            }
+            None => self.to_norm.apply(p),
+        }
     }
 }

@@ -36,7 +36,7 @@ cited here still exists. Formerly docs/parity.md.
 | H. Crop & rotate (CROP) | 10 | 1 | 0 | 1 | 8/8 (100%) | 2/3 (67%) |
 | I. Remove / healing (REM) | 8 | 1 | 2 | 2 | 4/4 (100%) | 2/3 (67%) |
 | J. Red eye (EYE) | 2 | 0 | 0 | 0 | — | 1/1 (100%) |
-| K. Masking (MASK) | 18 | 7 | 3 | 0 | 7/8 (88%) | 8/8 (100%) |
+| K. Masking (MASK) | 19 | 7 | 3 | 0 | 7/8 (88%) | 9/9 (100%) |
 | L. Presets (PRE) | 6 | 0 | 1 | 1 | 2/2 (100%) | 2/2 (100%) |
 | M. Versions & history (VER) | 5 | 0 | 0 | 0 | 1/1 (100%) | 3/3 (100%) |
 | N. Copy / paste / sync (SYNC) | 6 | 0 | 0 | 0 | 3/3 (100%) | 2/2 (100%) |
@@ -54,9 +54,9 @@ cited here still exists. Formerly docs/parity.md.
 | Z. Keyboard shortcuts (desktop) | 77 | 5 | 2 | 1 | 48/52 (92%) | 24/26 (92%) |
 | Lightroom Classic extras | 104 | 20 | 3 | 0 | — | 35/39 (90%) |
 | IMM. Immich integration | 11 | 0 | 0 | 0 | — | 7/7 (100%) |
-| **Total** | 507 | 72 | 27 | 27 | 195/203 (96%) | 166/185 (90%) |
+| **Total** | 508 | 72 | 27 | 27 | 195/203 (96%) | 167/186 (90%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.6%** of 606 in-scope rows — P0 98.0% of 203 · P1 94.6% of 185 · P2 77.4% of 215.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.6%** of 607 in-scope rows — P0 98.0% of 203 · P1 94.6% of 186 · P2 77.4% of 215.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -395,6 +395,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-MASK-OVERLAYALL | Show all mask overlays | P1 | ✅ | `cmd:view.maskOverlayAll`, `crates/ui-egui/src/panels/masking.rs`, `crates/pipeline/src/visualize.rs` | one diagnostic tint over every visible mask at once (CPU + GPU): the masks still stack their adjustments as before — this only paints each mask's region together, so you can see all masked areas at a glance (⌘⇧O / Ctrl+Shift+O) |
 | LR-MASK-PINS | Pins | P1 | ✅ | `cmd:view.maskPins`, `cmd:view.toolOverlay`, `crates/ui-egui/src/panels/detail.rs`, `crates/ui-egui/src/tests_tool_overlay.rs` | a pin per radial/linear/brush component: click selects its mask, drag moves it; Show Pins on follows the Tool Overlay mode (Auto: while the pointer is over the photo, hidden while brushing; Always; Selected: the selected mask's; Never; ⇧H cycles, #224); no pins for range/AI components |
 | LR-MASK-UPDATE | Recompute AI masks | P2 | ✅ | `cmd:mask.updateAi`, `cmd:masks.updateAi`, `cmd:masks.recompute`, `crates/engine/src/tests_segment.rs` | Update AI Mask in the mask list's menu, a component's menu, the photo's right-click menu (a pin right-clicked opens its mask's menu) and Photo ▸ Develop Settings ▸ Update All AI Masks (the selection); a stale AI mask (copied, synced, a preset's) has an amber badge on its row, click to update; an Object without clicks on this photo asks to be picked again. In the app the selections compute on the AI worker as one cancellable activity row (`aiMasks`); undo cancels, redo and presets start it by themselves (ported from OneSlips) |
+| LR-MASK-GEOMETRY | Masks stay on the photo under lens corrections, Upright, Transform and Rotate | P1 | ✅ | `crates/pipeline/src/mask_space.rs`, `crates/pipeline/src/tests_mask_geometry.rs`, `crates/engine/src/tests_mask_geometry.rs` | a mask's coordinates live on the photo before the warp (`Mask::on_photo`); renders (CPU and GPU, equivalence-tested; gradients under a warp evaluate on the CPU) and the on-photo tools map them through it, Rotate Left / Right turns them with the photo, and the AI models see the photo without lens corrections, Upright, Transform and flips. Masks from before move onto the photo, without moving on screen, at their next edit (ported from OneSlips) |
 | LR-MASK-SYNC | Copy masks to other photos | P1 | ✅ | `cmd:develop.copy` (`groups`) | |
 | LR-MASK-ADAPTIVE | Adaptive presets | P2 | ⬜ | | |
 

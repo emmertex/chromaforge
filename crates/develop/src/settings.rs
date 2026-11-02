@@ -1442,6 +1442,13 @@ pub struct Mask {
     /// colour tools and before the mask's Point Color, weighted by the mask. Not written while neutral.
     #[serde(skip_serializing_if = "Mixer::is_neutral")]
     pub mixer: Mixer,
+    /// Where its coordinates (gradients, brush strokes, Object clicks and AI selections) live:
+    /// `true`, on the photo as shot (user orientation, before lens corrections, Upright and
+    /// Transform), so the mask stays on the same content whatever those do; `false`, a mask from
+    /// before that, on the corrected frame. Read as `false` when absent; [`Mask::default`] (every
+    /// new mask) is `true`, and the next edit moves an old one there (`lcc_pipeline::mask_space`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub on_photo: bool,
     /// The preset that added it (applying that preset again refreshes it instead of adding a copy).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
@@ -1449,6 +1456,10 @@ pub struct Mask {
 
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl Default for Mask {
@@ -1465,6 +1476,7 @@ impl Default for Mask {
             curve: PointCurves::default(),
             point_colors: Vec::new(),
             mixer: Mixer::default(),
+            on_photo: true,
             preset: None,
         }
     }

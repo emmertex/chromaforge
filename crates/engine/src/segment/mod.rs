@@ -427,6 +427,16 @@ impl Session {
         let p = self.catalog.photo(id)?;
         let mut d = (*p.develop).clone();
         d.masks.clear();
+        // masks live on the photo before lens corrections, Upright, Transform and the flips
+        // (`Mask::on_photo`): the model sees it so, and its selections stay on the content
+        d.crop.flip_h = false;
+        d.crop.flip_v = false;
+        d.geometry = Default::default();
+        d.optics.lens_profile = false;
+        d.optics.distortion = 0.0;
+        d.optics.remove_ca = false;
+        d.optics.ca_red = 0.0;
+        d.optics.ca_blue = 0.0;
         let content = crate::media::content_key(p);
         let mut h = mix(0xcbf2_9ce4_8422_2325, d.hash64());
         h = mix(h, id.0);
@@ -455,6 +465,13 @@ impl Session {
         region: Option<[f64; 4]>,
     ) -> Result<worker::Job, String> {
         let dir = self.segmenter.model_dir()?;
+        // old masks go onto the photo first: the selection that comes back is in its coordinates
+        if let Some(cur) = self.develop_of(id).filter(|d| d.masks.iter().any(|m| !m.on_photo)) {
+            let mut on = (*cur).clone();
+            self.attach_masks(id, &cur, &mut on);
+            let op = lcc_catalog::Op::SetDevelop { id, settings: std::sync::Arc::new(on), label: "Masks".into(), edited: None };
+            self.apply_unrecorded(op).map_err(|e| e.to_string())?;
+        }
         let (key, mut d) = self.segment_key(id).ok_or("no such photo")?;
         let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
         let missing = match &p.source {

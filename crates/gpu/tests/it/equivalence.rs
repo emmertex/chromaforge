@@ -564,6 +564,40 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 ),
             ];
         }),
+        ("masks on the photo under transform + distortion", |s| {
+            use lcc_develop::{BrushStroke, LocalAdjustments};
+            s.geometry.vertical = 35.0;
+            s.geometry.rotate = 4.0;
+            s.optics.distortion = 30.0;
+            let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
+            let adj = LocalAdjustments { exposure: 1.2, saturation: -40.0, ..Default::default() };
+            s.masks = vec![
+                Mask {
+                    components: vec![comp(MaskShape::Radial {
+                        center: Point::new(0.4, 0.45),
+                        rx: 0.25,
+                        ry: 0.2,
+                        angle: 20.0,
+                        feather: 50.0,
+                        invert: false,
+                    })],
+                    adjust: adj,
+                    ..Default::default()
+                },
+                Mask {
+                    components: vec![comp(MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.6) })],
+                    adjust: adj,
+                    ..Default::default()
+                },
+                Mask {
+                    components: vec![comp(MaskShape::Brush {
+                        strokes: vec![BrushStroke { points: vec![Point::new(0.2, 0.7), Point::new(0.7, 0.75)], size: 0.04, ..Default::default() }],
+                    })],
+                    adjust: adj,
+                    ..Default::default()
+                },
+            ];
+        }),
         ("masks (local color mixer)", |s| {
             use lcc_develop::{Hsl, Mixer, PointColor};
             let radial = MaskShape::Radial { center: Point::new(0.45, 0.5), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: false };

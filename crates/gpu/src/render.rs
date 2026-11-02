@@ -1162,6 +1162,11 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
     }
     let comp_plane = cx.gpu.buffer(n);
     for (mi, m) in list.iter().enumerate() {
+        // its coordinates on the photo before the warp (`masks::evaluate_one`): through a lens or
+        // perspective warp the kernels' affine positions don't hold, so its gradients run on the CPU
+        let mframe = plan.frame.for_mask(m.on_photo);
+        let frame = &*mframe;
+        let warped = frame.mask_warp().is_some();
         let mut first = true;
         for comp in &m.components {
             let op = match comp.op {
@@ -1177,6 +1182,7 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
             let mut aux: Vec<f32> = Vec::new();
             let mut own: Option<Buf> = None;
             let kind = match &comp.shape {
+                MaskShape::Linear { .. } | MaskShape::Radial { .. } if warped => None,
                 MaskShape::Linear { start, end } => {
                     let (a, b) = (frame.norm_to_long(*start), frame.norm_to_long(*end));
                     let d = b - a;
