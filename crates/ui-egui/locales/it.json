@@ -2459,5 +2459,8 @@
   "This is a file, not a library folder": "Questo è un file, non una cartella di libreria",
   "This library couldn't be checked": "Impossibile controllare questa libreria",
   "This library couldn't be checked:": "Impossibile controllare questa libreria:",
-  "When importing a Lightroom catalog": "Quando importi un catalogo Lightroom"
+  "When importing a Lightroom catalog": "Quando importi un catalogo Lightroom",
+  "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Fai clic o trascina sulla foto per prelevare i colori; ⇧ ne aggiunge altri (fino a 5), ⌥-clic ne toglie uno, trascina un segnaposto per spostarlo",
+  "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Fai clic sulla foto per prelevarne il tono, o trascina su un'area per prelevarne i toni; ⇧ allarga l'intervallo",
+  "No colour picked": "Nessun colore prelevato"
 }

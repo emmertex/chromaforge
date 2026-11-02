@@ -1451,7 +1451,16 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
     };
     match shape {
         MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather } => {
-            ui.label(egui::RichText::new(crate::i18n::tr("Select Luminance Range")).color(t.text_dim));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(crate::i18n::tr("Select Luminance Range")).color(t.text_dim));
+                let picking = app.ui.tool == "lumRange";
+                if text_button(ui, &format!("lumPick{comp}"), crate::i18n::tr("Pick"), picking)
+                    .on_hover_text(crate::i18n::tr("Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range"))
+                    .clicked()
+                {
+                    app.ui.tool = if picking { String::new() } else { "lumRange".into() };
+                }
+            });
             let (lo, hi) = (*lo, *hi);
             let w = ui.available_width().min(240.0);
             let (rect, resp) = ui.allocate_exact_size(vec2(w, 18.0), Sense::click_and_drag());
@@ -1537,15 +1546,23 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
                 }
             }
         }
-        MaskShape::ColorRange { samples, refine } => {
+        MaskShape::ColorRange { samples, refine, areas } => {
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr_format!("{} sample{}", samples.len(), if samples.len() == 1 { "" } else { "s" }))
-                        .color(t.text_dim),
-                );
+                // the picked colours, as swatches
+                for (i, s) in samples.iter().enumerate() {
+                    let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                    ui.painter().rect_filled(r, 2.0, super::range_pick::oklab_color(*s));
+                    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.button_border), egui::StrokeKind::Inside);
+                    register(ui.ctx(), format!("colorSwatch:{comp}:{i}"), r);
+                }
+                if samples.is_empty() {
+                    ui.label(egui::RichText::new(crate::i18n::tr("No colour picked")).color(t.text_dim));
+                }
                 let picking = app.ui.tool == "colorRange";
                 if text_button(ui, &format!("colorPick{comp}"), crate::i18n::tr("Pick"), picking)
-                    .on_hover_text(crate::i18n::tr("Click the photo to pick a colour; ⇧-click adds more (up to 5)"))
+                    .on_hover_text(crate::i18n::tr(
+                        "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it",
+                    ))
                     .clicked()
                 {
                     app.ui.tool = if picking { String::new() } else { "colorRange".into() };
@@ -1565,7 +1582,10 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
             let out = slider(ui, &spec, *refine, true, None);
             let samples = samples.clone();
             apply_slider_out(app, &spec, out, |app, v| {
-                app.run("mask.update", json!({"component": comp, "shape": MaskShape::ColorRange { samples: samples.clone(), refine: v }}))
+                app.run(
+                    "mask.update",
+                    json!({"component": comp, "shape": MaskShape::ColorRange { samples: samples.clone(), refine: v, areas: areas.clone() }}),
+                )
             });
         }
         _ => {}

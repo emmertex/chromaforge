@@ -887,6 +887,61 @@ pub fn color_range_sample(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, 
     Some(acc.map(|v| v / n))
 }
 
+/// What the Colour Range and Luminance Range pickers see in `area` (normalized `[x0, y0, x1, y1]`
+/// of the oriented, cropped frame; a point, `x0 == x1`, reads the 3 × 3 pixels round it): each
+/// pixel's OkLab colour as the colour range compares it, and its luminance on the luminance
+/// range's 0..1 scale (−8..+4 EV, exposure included). Rendered as `req` asks (a small preview is
+/// plenty); at most 65 536 pixels, evenly spread over a large area. `None` when the area misses
+/// the photo.
+pub fn range_area_pixels(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, area: [f64; 4]) -> Option<Vec<([f64; 3], f64)>> {
+    if !area.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let effective = s.effective();
+    let rendition = settings_for(&effective, req);
+    let plan = plan(src, info, &rendition, req);
+    if plan.w == 0 || plan.h == 0 {
+        return None;
+    }
+    let mut img = plan.frame.sample(src, plan.w, plan.h);
+    lin_cpu(&mut img, info, &plan);
+    let to = plan.frame.norm_to_out(plan.w, plan.h);
+    let (a, b) = (to.apply(lcc_geom::Point::new(area[0], area[1])), to.apply(lcc_geom::Point::new(area[2], area[3])));
+    let (mut x0, mut x1) = (a.x.min(b.x).floor() as i64, a.x.max(b.x).floor() as i64);
+    let (mut y0, mut y1) = (a.y.min(b.y).floor() as i64, a.y.max(b.y).floor() as i64);
+    if x0 == x1 && y0 == y1 {
+        // a click: the pixels round it
+        (x0, x1, y0, y1) = (x0 - 1, x1 + 1, y0 - 1, y1 + 1);
+    }
+    let (x0, y0) = (x0.max(0), y0.max(0));
+    let (x1, y1) = (x1.min(plan.w as i64 - 1), y1.min(plan.h as i64 - 1));
+    if x0 > x1 || y0 > y1 {
+        return None;
+    }
+    let (n_x, n_y) = ((x1 - x0 + 1) as u64, (y1 - y0 + 1) as u64);
+    // every k-th pixel each way keeps a large area to about 65 536 of them
+    let step = ((n_x.saturating_mul(n_y) as f64 / 65_536.0).sqrt().ceil() as i64).max(1);
+    let ev = plan.settings.light.exposure as f32;
+    let gain = ev.exp2();
+    let mut out = Vec::new();
+    let mut y = y0;
+    while y <= y1 {
+        let mut x = x0;
+        while x <= x1 {
+            if let Some(c) = img.data.get(y as usize * plan.w + x as usize) {
+                let lab = lcc_color::perceptual::oklab_from_2020(masks::tonemap_for_select(c.map(|v| v * gain)));
+                let lum = ((local::log_lum(*c) + ev + 8.0) / 12.0).clamp(0.0, 1.0);
+                if lab.iter().all(|v| v.is_finite()) && lum.is_finite() {
+                    out.push((lab.map(f64::from), f64::from(lum)));
+                }
+            }
+            x += step;
+        }
+        y += step;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// The alpha plane a mask overlay shows: the one the render evaluated, or (for a hidden mask) a
 /// fresh evaluation.
 fn overlay_alpha(o: Overlay, plan: &Plan<'_>, prep: &Prepared) -> Option<Plane> {

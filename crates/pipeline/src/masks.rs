@@ -289,7 +289,7 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
                 *v = smooth(lo - lf, lo, y) * (1.0 - smooth(hi, hi + hf, y));
             }
         }
-        MaskShape::ColorRange { samples, refine } => {
+        MaskShape::ColorRange { samples, refine, .. } => {
             let tol = color_range_tolerance(*refine);
             let samples: Vec<[f32; 3]> = samples.iter().map(|s| [s[0] as f32, s[1] as f32, s[2] as f32]).collect();
             for (v, c) in out.data.iter_mut().zip(&img.data) {

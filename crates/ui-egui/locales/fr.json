@@ -3619,5 +3619,8 @@
   "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).": "Les nouvelles photos raw prises à cet ISO ou au-delà commencent avec le débruitage IA activé, et leurs images débruitées sont créées en arrière-plan après l’importation. Nécessite un modèle de débruitage (Réglages, Débruitage IA).",
   "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.": "Photos et aperçus gardés en mémoire, pour que les photos sur lesquelles vous revenez s’affichent tout de suite. Automatique utilise un quart de la mémoire de cet ordinateur, jusqu’à 16 Go. Choisissez plus pour les grandes séances, mais laissez-en pour les autres apps.",
   "Finding skin and faces to retouch": "Recherche de la peau et des visages à retoucher",
-  "Custom size limit, in GB": "Taille limite personnalisée, en Go"
+  "Custom size limit, in GB": "Taille limite personnalisée, en Go",
+  "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Cliquez ou faites glisser sur la photo pour prélever des couleurs ; ⇧ en ajoute (jusqu’à 5), ⌥-clic en retire une, faites glisser une épingle pour la déplacer",
+  "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Cliquez sur la photo pour prélever son ton, ou faites glisser sur une zone pour prélever ses tons ; ⇧ élargit la plage",
+  "No colour picked": "Aucune couleur prélevée"
 }

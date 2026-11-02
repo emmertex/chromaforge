@@ -381,7 +381,7 @@ fn color_range_sampling_respects_disabled_sections() {
                 name: None,
                 op: lcc_develop::MaskOp::Add,
                 invert: false,
-                shape: lcc_develop::MaskShape::ColorRange { samples: vec![sample], refine: 0.0 },
+                shape: lcc_develop::MaskShape::ColorRange { samples: vec![sample], refine: 0.0, areas: Vec::new() },
             }],
             ..Default::default()
         });

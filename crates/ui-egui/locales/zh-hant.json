@@ -2238,5 +2238,8 @@
   "AI Denoise from": "AI 降噪起始 ISO",
   "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).": "以此 ISO 或更高拍攝的新 RAW 照片會開啟 AI 降噪，匯入後在背景產生降噪後的影像。需要降噪模型（設定，AI 降噪）。",
   "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.": "照片與預覽保存在記憶體中，返回查看的照片可立即顯示。自動使用本機記憶體的四分之一，最多 16 GB。大型拍攝可選擇更多，但請為其他應用程式留出空間。",
-  "Finding skin and faces to retouch": "正在尋找要修飾的皮膚和臉部"
+  "Finding skin and faces to retouch": "正在尋找要修飾的皮膚和臉部",
+  "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "按一下或在照片上拖曳以取色；⇧ 加入更多（最多 5 個），⌥-按一下移除一個，拖曳圖釘可移動它",
+  "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "按一下照片以選取該處的亮度，或拖過一個區域以選取其亮度範圍；⇧ 擴大範圍",
+  "No colour picked": "未取色"
 }

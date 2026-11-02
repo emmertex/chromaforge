@@ -2464,5 +2464,8 @@
   "AI Denoise from": "Redukce šumu pomocí AI od",
   "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).": "Nové raw fotografie pořízené při tomto ISO nebo vyšším začínají se zapnutou redukcí šumu pomocí AI a jejich odšuměné obrázky se po importu vytvoří na pozadí. Potřebuje model pro odšumění (Nastavení, Redukce šumu pomocí AI).",
   "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.": "Fotografie a náhledy držené v paměti, aby se fotografie, ke kterým se vracíte, zobrazily hned. Automaticky použije čtvrtinu paměti počítače, nejvýše 16 GB. Pro velká focení zvolte víc, ale nechte něco i ostatním aplikacím.",
-  "Finding skin and faces to retouch": "Hledání pleti a tváří k retuši"
+  "Finding skin and faces to retouch": "Hledání pleti a tváří k retuši",
+  "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Klepnutím nebo tažením přes fotku vyberte barvy; ⇧ přidá další (až 5), ⌥-klepnutí jednu odebere, tažením špendlíku ji přesunete",
+  "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Klepnutím na fotku vyberte její tón, nebo tažením přes oblast vyberte její tóny; ⇧ rozsah rozšíří",
+  "No colour picked": "Žádná vybraná barva"
 }

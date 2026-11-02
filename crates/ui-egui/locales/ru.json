@@ -2431,5 +2431,8 @@
   "AI Denoise from": "ИИ-шумоподавление от",
   "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).": "Новые raw-фото, снятые с этим ISO или выше, получают включённое ИИ-шумоподавление, а их очищенные изображения создаются в фоне после импорта. Нужна модель шумоподавления (Настройки, ИИ-шумоподавление).",
   "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.": "Фото и превью хранятся в памяти, чтобы фото, к которым вы возвращаетесь, появлялись сразу. «Автоматически» использует четверть памяти этого компьютера, до 16 ГБ. Для больших съёмок выберите больше, но оставьте немного другим приложениям.",
-  "Finding skin and faces to retouch": "Поиск кожи и лиц для ретуши"
+  "Finding skin and faces to retouch": "Поиск кожи и лиц для ретуши",
+  "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Щёлкните или проведите по фото, чтобы взять цвета; ⇧ добавляет ещё (до 5), ⌥-щелчок убирает один, перетащите метку, чтобы переместить её",
+  "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Щёлкните по фото, чтобы взять тон, или проведите по области, чтобы взять её тона; ⇧ расширяет диапазон",
+  "No colour picked": "Цвет не выбран"
 }

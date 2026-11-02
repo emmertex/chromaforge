@@ -345,7 +345,7 @@ mod tests {
         let stroke = BrushStroke { points: vec![p; MAX_STROKE_POINTS + 1], pressure: vec![1.0; MAX_STROKE_POINTS + 1], ..Default::default() };
         let shapes = [
             MaskShape::Brush { strokes: vec![stroke; 2] },
-            MaskShape::ColorRange { samples: vec![[0.0; 3]; MAX_COLOR_SAMPLES + 1], refine: 0.0 },
+            MaskShape::ColorRange { samples: vec![[0.0; 3]; MAX_COLOR_SAMPLES + 1], refine: 0.0, areas: Vec::new() },
             MaskShape::Object { hint: vec![p; MAX_PROMPT_POINTS + 1], exclude: vec![p; MAX_PROMPT_POINTS + 1], seg: None, detail: vec![], edge: 0.0 },
             MaskShape::People { person: 0, parts: vec![String::new(); MAX_PEOPLE_PARTS + 1], who: None },
         ];

@@ -404,7 +404,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
                         name: None,
                         op: MaskOp::Add,
                         invert: false,
-                        shape: MaskShape::ColorRange { samples: vec![[0.6, -0.05, -0.08]], refine: 50.0 },
+                        shape: MaskShape::ColorRange { samples: vec![[0.6, -0.05, -0.08]], refine: 50.0, areas: Vec::new() },
                     }],
                     adjust: lcc_develop::LocalAdjustments { saturation: 40.0, tint: 20.0, ..Default::default() },
                     invert: true,
