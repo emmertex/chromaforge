@@ -336,6 +336,6 @@
   "{} fixed in this photo": "{} исправлено в этом фото",
   "{} fixed: {} known for camera {}, {} found in this photo": "{} исправлено: {} известно для камеры {}, {} найдено в этом фото",
   "Removing dust from {n} photos": "Удаление пыли с {n} фото",
-  "Camera {} dust map: {} spots ({} confirmed)": "Карта пыли камеры {}: пятен — {} (подтверждено — {})",
+  "Camera {}: {} known dust spots": "Камера {}: известных пятен пыли — {}",
   "{} spot(s) from Remove Dust (outlined in amber)": "Пятен от «Удалить пыль»: {} (обведены янтарным)"
 }

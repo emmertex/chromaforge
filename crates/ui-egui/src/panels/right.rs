@@ -720,13 +720,12 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
 
         // the camera body's dust map, when it has one
         let body = app.session.source_info(id).pixels.and_then(|p| p.body);
-        if let Some(m) = body.as_deref().and_then(lcc_engine::sensor_maps::get).filter(|m| !m.dust.is_empty()) {
+        if let Some(m) = body.as_deref().and_then(lcc_engine::sensor_maps::get).filter(|m| m.dust.iter().any(|d| d.confirmed)) {
             let confirmed = m.dust.iter().filter(|d| d.confirmed).count();
             ui.label(
                 egui::RichText::new(crate::i18n::tr_format!(
-                    "Camera {} dust map: {} spots ({} confirmed)",
+                    "Camera {}: {} known dust spots",
                     lcc_engine::sensor_maps::body_label(&m.body),
-                    m.dust.len(),
                     confirmed
                 ))
                 .size(11.0)

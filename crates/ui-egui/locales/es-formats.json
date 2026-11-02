@@ -337,6 +337,6 @@
   "{} fixed in this photo": "{} corregidos en esta foto",
   "{} fixed: {} known for camera {}, {} found in this photo": "{} corregidos: {} conocidos de la cámara {}, {} encontrados en esta foto",
   "Removing dust from {n} photos": "Quitando polvo de {n} fotos",
-  "Camera {} dust map: {} spots ({} confirmed)": "Mapa de polvo de la cámara {}: {} manchas ({} confirmadas)",
+  "Camera {}: {} known dust spots": "Cámara {}: {} manchas de polvo conocidas",
   "{} spot(s) from Remove Dust (outlined in amber)": "{} mancha(s) de «Quitar polvo» (contorno ámbar)"
 }

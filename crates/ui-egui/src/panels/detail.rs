@@ -3590,9 +3590,10 @@ fn pin(p: &egui::Painter, c: Pos2, sel: bool) {
     p.circle_stroke(c, 6.0, Stroke::new(1.5, Color32::WHITE));
 }
 
-fn spot_pin(p: &egui::Painter, c: Pos2, sel: bool, mode: lcc_develop::SpotMode) {
+/// A spot's pin; `tint` replaces its background (Remove Dust's spots).
+fn spot_pin(p: &egui::Painter, c: Pos2, sel: bool, mode: lcc_develop::SpotMode, tint: Option<Color32>) {
     let pin_r = 9.0;
-    let bg = if sel { Color32::from_rgb(1, 101, 221) } else { Color32::from_rgba_unmultiplied(35, 35, 38, 225) };
+    let bg = tint.unwrap_or(if sel { Color32::from_rgb(1, 101, 221) } else { Color32::from_rgba_unmultiplied(35, 35, 38, 225) });
     p.circle_filled(c, pin_r, bg);
     p.circle_stroke(c, pin_r, Stroke::new(1.5, Color32::WHITE));
     let icon_rect = Rect::from_center_size(c, vec2(11.0, 11.0));
@@ -4008,7 +4009,9 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
                 spot_context_menu(app, ui, i);
             });
         }
-        spot_pin(p, tq, sel, s.mode);
+        // Remove Dust's spots: an amber (known dust) or yellow (this photo alone) pin
+        let dust = s.auto.filter(|_| !sel).map(|a| if a.confirmed { Color32::from_rgb(255, 166, 0) } else { Color32::from_rgb(240, 214, 80) });
+        spot_pin(p, tq, sel, s.mode, dust);
         register(ui.ctx(), format!("spotPin:{i}"), Rect::from_center_size(tq, vec2(18.0, 18.0)));
         grips.push((i, false, tq, r));
         let pin_rect = Rect::from_center_size(tq, vec2(20.0, 20.0));

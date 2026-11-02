@@ -31,6 +31,12 @@ fn a_pixel_is_confirmed_in_photos_of_different_scenes_only() {
         assert!(m.record_pixels(&shot(k, 0, 0.01, 100), &[hot(100, 200)]));
     }
     assert!(!m.pixels[0].confirmed && m.pixels[0].hits == 5 && m.pixels[0].buckets == 1);
+    // photos of two scenes in any order (parallel workers): two periods, however they alternate
+    let mut m2 = BodyMap::new("order", "", "M", [100, 100]);
+    for (k, minute) in [0i64, 20, 0, 20, 0, 20].into_iter().enumerate() {
+        m2.record_pixels(&shot(100 + k as u64, minute, 0.01, 100), &[hot(1, 1)]);
+    }
+    assert_eq!((m2.pixels[0].hits, m2.pixels[0].buckets, m2.pixels[0].confirmed), (6, 2, false));
     // the same frame decoded again is not counted again
     assert!(!m.record_pixels(&shot(4, 0, 0.01, 100), &[hot(100, 200)]));
     assert_eq!(m.pixels[0].hits, 5);

@@ -336,6 +336,6 @@
   "{} fixed in this photo": "{} corrigé(s) sur cette photo",
   "{} fixed: {} known for camera {}, {} found in this photo": "{} corrigé(s) : {} connu(s) pour l’appareil {}, {} trouvé(s) sur cette photo",
   "Removing dust from {n} photos": "Suppression de la poussière de {n} photos",
-  "Camera {} dust map: {} spots ({} confirmed)": "Carte de poussière de l’appareil {} : {} taches ({} confirmées)",
+  "Camera {}: {} known dust spots": "Appareil {} : {} taches de poussière connues",
   "{} spot(s) from Remove Dust (outlined in amber)": "{} tache(s) de « Supprimer la poussière » (contour ambre)"
 }

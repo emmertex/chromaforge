@@ -336,6 +336,6 @@
   "{} fixed in this photo": "この写真で {} 個を補正",
   "{} fixed: {} known for camera {}, {} found in this photo": "{} 個を補正（既知 {} 個・カメラ {}、この写真で検出 {} 個）",
   "Removing dust from {n} photos": "{n} 枚の写真からダストを除去中",
-  "Camera {} dust map: {} spots ({} confirmed)": "カメラ {} のダストマップ: {} 箇所（確認済み {}）",
+  "Camera {}: {} known dust spots": "カメラ {}: 既知のダスト {} 箇所",
   "{} spot(s) from Remove Dust (outlined in amber)": "「ダストを除去」によるスポット {} 個（琥珀色の枠）"
 }

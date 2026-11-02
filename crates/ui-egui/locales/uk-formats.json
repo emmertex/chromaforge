@@ -336,6 +336,6 @@
   "{} fixed in this photo": "{} виправлено на цьому фото",
   "{} fixed: {} known for camera {}, {} found in this photo": "{} виправлено: {} відомо для камери {}, {} знайдено на цьому фото",
   "Removing dust from {n} photos": "Видалення пилу з {n} фото",
-  "Camera {} dust map: {} spots ({} confirmed)": "Карта пилу камери {}: плям — {} (підтверджено — {})",
+  "Camera {}: {} known dust spots": "Камера {}: відомих плям пилу — {}",
   "{} spot(s) from Remove Dust (outlined in amber)": "Плям від «Видалити пил»: {} (обведені бурштиновим)"
 }

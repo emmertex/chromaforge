@@ -336,6 +336,6 @@
   "{} fixed in this photo": "本照片中修復了 {} 個",
   "{} fixed: {} known for camera {}, {} found in this photo": "已修復 {} 個：相機已知 {} 個（{}），本照片中發現 {} 個",
   "Removing dust from {n} photos": "正在去除 {n} 張照片的灰塵",
-  "Camera {} dust map: {} spots ({} confirmed)": "相機 {} 灰塵圖：{} 個斑點（已確認 {} 個）",
+  "Camera {}: {} known dust spots": "相機 {}：已知灰塵斑點 {} 個",
   "{} spot(s) from Remove Dust (outlined in amber)": "來自「去除灰塵」的斑點 {} 個（琥珀色輪廓）"
 }

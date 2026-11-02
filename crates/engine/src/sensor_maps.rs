@@ -125,6 +125,10 @@ pub struct PixelEntry {
     pub buckets: u32,
     #[serde(default)]
     pub last_bucket: i64,
+    /// The first few capture periods it was found in (distinct; enough to count up to confirmation whatever order
+    /// photos are analysed in).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub periods: Vec<i64>,
     /// Photos analysed since it was last found.
     #[serde(default)]
     pub since: u32,
@@ -178,6 +182,9 @@ pub struct DustWindow {
     pub buckets: u32,
     #[serde(default)]
     pub last_bucket: i64,
+    /// The first few distinct capture periods it was seen in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub periods: Vec<i64>,
     /// Photos since the last sighting where it could have shown (smooth, bright place, aperture small enough) and
     /// didn't; at [`DUST_WINDOW_MISSES`] the window closes.
     pub misses: u32,
@@ -350,10 +357,8 @@ impl BodyMap {
                         *h = true;
                     }
                     p.hits = p.hits.saturating_add(1);
-                    if p.last_bucket != bucket {
-                        p.buckets = p.buckets.saturating_add(1);
-                        p.last_bucket = bucket;
-                    }
+                    note_period(&mut p.periods, &mut p.buckets, bucket);
+                    p.last_bucket = bucket;
                     (p.since, p.misses) = (0, 0);
                     if !when.is_empty() && (p.first.is_empty() || when < p.first) {
                         p.first = when.clone();
@@ -385,6 +390,7 @@ impl BodyMap {
                         hits: 1,
                         buckets: 1,
                         last_bucket: bucket,
+                        periods: vec![bucket],
                         since: 0,
                         misses: 0,
                         first: when.clone(),
@@ -463,6 +469,7 @@ impl BodyMap {
                         hits: 1,
                         buckets: 1,
                         last_bucket: 0,
+                        periods: Vec::new(),
                         since: 0,
                         misses: 0,
                         first: when.clone(),
@@ -541,10 +548,8 @@ impl BodyMap {
             if let Some(w) = e.windows.last_mut() {
                 w.hits = w.hits.saturating_add(1);
                 w.misses = 0;
-                if w.last_bucket != bucket {
-                    w.buckets = w.buckets.saturating_add(1);
-                    w.last_bucket = bucket;
-                }
+                note_period(&mut w.periods, &mut w.buckets, bucket);
+                w.last_bucket = bucket;
                 if t < w.t0 {
                     (w.t0, w.first) = (t, when.clone());
                 }
@@ -649,6 +654,19 @@ impl BodyMap {
                 .iter()
                 .all(|d| (0.0..=1.0).contains(&d.x) && (0.0..=1.0).contains(&d.y) && d.windows.len() <= 10_000 && d.apertures.len() <= 200);
         self.version == VERSION && !self.body.is_empty() && pixels && dust && self.seen.len() <= 2 * MAX_SEEN && self.dust_seen.len() <= 2 * MAX_SEEN
+    }
+}
+
+/// Count capture period `b` once: kept in `periods` (the first 8 distinct ones; more than confirmation needs).
+fn note_period(periods: &mut Vec<i64>, buckets: &mut u32, b: i64) {
+    if periods.contains(&b) {
+        return;
+    }
+    if periods.len() < 8 {
+        periods.push(b);
+        *buckets = (*buckets).max(periods.len() as u32);
+    } else {
+        *buckets = buckets.saturating_add(1);
     }
 }
 
