@@ -238,6 +238,16 @@ struct ViewFile {
 }
 
 impl Library {
+    /// A small file of the library's own (`people.json`): `None` when missing.
+    pub(crate) fn read_file(&mut self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
+        self.files.read(name)
+    }
+
+    /// Replace a small file of the library's own atomically.
+    pub(crate) fn write_file(&mut self, name: &str, data: &[u8]) -> std::io::Result<()> {
+        self.files.write_atomic(name, data)
+    }
+
     pub fn journal(&self) -> &Journal {
         &self.journal
     }

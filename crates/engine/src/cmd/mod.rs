@@ -54,6 +54,7 @@ mod ml;
 pub(crate) mod organize;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peers;
+mod people_roles;
 #[cfg(test)]
 pub(crate) use organize::STACK_WORK;
 pub(crate) mod plugin_filters;
@@ -231,6 +232,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(curves::specs());
         v.extend(crop_aspects::specs());
         v.extend(masks::specs());
+        v.extend(people_roles::specs());
         v.extend(organize::specs());
         v.extend(keywords::specs());
         v.extend(manage::specs());

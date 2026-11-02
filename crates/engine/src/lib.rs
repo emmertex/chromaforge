@@ -84,6 +84,8 @@ mod pdf;
 pub mod peer_exchange;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peers;
+mod people_smart;
+pub mod people_store;
 pub mod preset_import;
 pub mod preset_luminar;
 pub mod preset_xmp;
@@ -315,6 +317,8 @@ pub struct Session {
     /// Set by a command whose change must not rewrite the photo's XMP sidecar even with auto-write on
     /// (a catalog-only edit of data the sidecar writer does not emit); consumed when the command ends.
     pub(crate) skip_auto_write: bool,
+    /// The library's `people.json` (roles, appearance examples), loaded when first needed.
+    pub(crate) people: people_smart::PeopleState,
     /// The folder metadata save or read waiting for `folder.metadataPump` ([`cmd::folder_metadata`]); dropped when another library opens.
     pub(crate) folder_metadata: Option<cmd::folder_metadata::FolderMetadataJob>,
     /// The order of Reload from Disk runs, so an older one finishing late is dropped ([`cmd::reload`]).
@@ -599,6 +603,7 @@ impl Session {
             pending_sidecar_repairs: Vec::new(),
             interaction: None,
             skip_auto_write: false,
+            people: Default::default(),
             stems: Default::default(),
             folder_metadata: None,
             reload_tickets: Default::default(),
