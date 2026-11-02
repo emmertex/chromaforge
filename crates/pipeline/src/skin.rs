@@ -38,6 +38,10 @@ pub const LOW: f64 = 0.22;
 /// Eye distance assumed where no face was found (body skin of someone facing away), as a
 /// fraction of the long edge.
 pub const NO_FACE_EYES: f64 = 0.04;
+/// Shine: how much brighter than the skin around it (log2) a spot may stand before it is toned down.
+const SHINE_MARGIN: f32 = 0.06;
+/// Shine at 100: the share of a hot spot's excess brightness taken away.
+const SHINE_STRENGTH: f32 = 0.8;
 /// Faces whose eye distances are within this ratio share their bands.
 const BUCKET_RATIO: f64 = 1.5;
 /// Pixels with less skin coverage than this are left alone.
@@ -62,23 +66,25 @@ pub struct Params {
     pub even: f32,
     /// Redness reduction, 0..1.
     pub red: f32,
+    /// Shine reduction, 0..1.
+    pub shine: f32,
 }
 
 impl Params {
     pub fn of(s: &lcc_develop::SkinSmoothing) -> Params {
         let f = |v: f64, lo: f64| if v.is_finite() { (v / 100.0).clamp(lo, 1.0) as f32 } else { 0.0 };
-        Params { amount: f(s.amount, 0.0), texture: f(s.texture, -1.0), even: f(s.even_tone, 0.0), red: f(s.redness, 0.0) }
+        Params { amount: f(s.amount, 0.0), texture: f(s.texture, -1.0), even: f(s.even_tone, 0.0), red: f(s.redness, 0.0), shine: f(s.shine, 0.0) }
     }
 
     fn is_identity(&self) -> bool {
-        self.amount == 0.0 && self.texture == 0.0 && self.even == 0.0 && self.red == 0.0
+        self.amount == 0.0 && self.texture == 0.0 && self.even == 0.0 && self.red == 0.0 && self.shine == 0.0
     }
 }
 
 /// The analysis Smooth Skin renders `s` with, or `None` when it changes nothing (off, its section
 /// switched off, or no skin found yet for its area, person and orientation).
 pub fn analysis(s: &DevelopSettings) -> Option<&SkinAnalysis> {
-    if !s.skin.active() || !s.section_enabled("skin") || Params::of(&s.skin).is_identity() {
+    if !s.skin.active() || !s.retouch_section_on("skin") || Params::of(&s.skin).is_identity() {
         return None;
     }
     s.skin_analysis.as_ref().filter(|a| a.is_for(&s.skin, s.orientation))
@@ -91,7 +97,7 @@ pub fn key(s: &DevelopSettings) -> Option<u64> {
     let k = &s.skin;
     let faces: Vec<[u64; 3]> = a.faces.iter().map(|f| [f.x.to_bits(), f.y.to_bits(), f.eyes.to_bits()]).collect();
     Some(BuildHasherDefault::<DefaultHasher>::default().hash_one((
-        [k.amount, k.texture, k.even_tone, k.redness].map(f64::to_bits),
+        [k.amount, k.texture, k.even_tone, k.redness, k.shine].map(f64::to_bits),
         a.seg.side,
         &a.seg.data,
         a.seg.rect.map(|r| r.map(f64::to_bits)),
@@ -437,12 +443,18 @@ fn smooth_bucket(img: &mut Rgb32f, cover: &Plane, origin: (usize, usize), faces:
             let v3 = norm(low.at(x, y), v2);
             // luminance: the middle band's small swings softened, the low band's evened, the fine band kept
             let (hi, md, lo) = (v0[0] - v1[0], v1[0] - v2[0], v2[0] - v3[0]);
-            let dl = -p.amount * md * small(md, k_mid) - even * lo * small(lo, k_low) + tex * hi;
+            let mut dl = -p.amount * md * small(md, k_mid) - even * lo * small(lo, k_low) + tex * hi;
+            // shine: what stands brighter than the skin around it (the middle and low bands above
+            // a small margin, so the face's own light and shading stay) toned down towards it
+            let hot = (md + lo - SHINE_MARGIN).max(0.0);
+            let shine = p.shine * (hot * 3.0).min(1.0);
+            dl -= p.shine * SHINE_STRENGTH * hot;
             // colour: blotches (middle + low bands) evened, redder patches reduced, the middle band softened
             let (va, vb) = (v1[1] - v3[1], v1[2] - v3[2]);
             let (ma, mb) = (v1[1] - v2[1], v1[2] - v2[2]);
-            let da = -even_c * va * small(va, k_chroma) - p.red * va.max(0.0) * (1.0 - even_c) - 0.5 * p.amount * ma;
-            let db = -even_c * vb * small(vb, k_chroma) - 0.5 * p.amount * mb;
+            // (and a hot spot's washed-out colour back towards the skin's)
+            let da = -even_c * va * small(va, k_chroma) - p.red * va.max(0.0) * (1.0 - even_c) - 0.5 * p.amount * ma - shine * 0.6 * va;
+            let db = -even_c * vb * small(vb, k_chroma) - 0.5 * p.amount * mb - shine * 0.6 * vb;
             let out = shifted(px, dl, da, db);
             if let Some(o) = row.get_mut(gx) {
                 *o = std::array::from_fn(|k| px[k] + m * (out[k] - px[k]));

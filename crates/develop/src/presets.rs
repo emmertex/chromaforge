@@ -105,7 +105,7 @@ impl SettingsGroup {
             SettingsGroup::LensBlur => "Lens Blur",
             SettingsGroup::Calibration => "Calibration",
             SettingsGroup::PluginFilters => "Plug-in Filters",
-            SettingsGroup::SmoothSkin => "Smooth Skin",
+            SettingsGroup::SmoothSkin => "Retouch",
         }
     }
 

@@ -145,7 +145,12 @@ impl Downloader {
                 let before: u64 = files.iter().filter_map(|f| f.size).sum();
                 for (file, base) in &companions {
                     let mut shifted = |p: &Progress| {
-                        let p = Progress { done: before.saturating_add(p.done), total: before.saturating_add(p.total), file: p.file.clone(), mirror: p.mirror.clone() };
+                        let p = Progress {
+                            done: before.saturating_add(p.done),
+                            total: before.saturating_add(p.total),
+                            file: p.file.clone(),
+                            mirror: p.mirror.clone(),
+                        };
                         on_progress(&p)
                     };
                     fetch::download(std::slice::from_ref(*file), &[base.to_string()], &dir, &opts, &s.cancel, &mut shifted)?;

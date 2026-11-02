@@ -189,10 +189,16 @@ impl Segmenter {
         if self.object_model_in_use() != "sam2" {
             return self.require_model();
         }
+        self.require_open_model("sam2", crate::AiModel::Sam2)
+    }
+
+    /// The folder of openly licensed model `key` when it is installed; otherwise
+    /// [`crate::EngineError::ModelMissing`] (`model`) saying how to get it.
+    pub fn require_open_model(&self, key: &str, model: crate::AiModel) -> crate::Result<PathBuf> {
         if !Self::AVAILABLE {
             return Err(crate::EngineError::Other("AI masks are not available in this build".into()));
         }
-        let m = reg::by_key("sam2").ok_or_else(|| crate::EngineError::Other("AI masks are not available in this build".into()))?;
+        let m = reg::by_key(key).ok_or_else(|| crate::EngineError::Other("AI masks are not available in this build".into()))?;
         let dir = self.open_model_dir(m.key).ok_or_else(|| crate::EngineError::Other("no folder is set for AI models".into()))?;
         if m.installed_in(&dir) {
             return Ok(dir);
@@ -212,7 +218,7 @@ impl Segmenter {
                 dir.display()
             )
         };
-        Err(crate::EngineError::ModelMissing { model: crate::AiModel::Sam2, msg })
+        Err(crate::EngineError::ModelMissing { model, msg })
     }
 
     /// [`Segmenter::require_object_model`] as text.
@@ -298,7 +304,15 @@ impl Segmenter {
         }
         #[cfg(feature = "sam")]
         {
-            self.model_downloads.entry(m.key).or_default().start(m.files, companions, mirrors, dir, lcc_segment::fetch::Options::default(), activity, m.title)
+            self.model_downloads.entry(m.key).or_default().start(
+                m.files,
+                companions,
+                mirrors,
+                dir,
+                lcc_segment::fetch::Options::default(),
+                activity,
+                m.title,
+            )
         }
         #[cfg(not(feature = "sam"))]
         {

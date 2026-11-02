@@ -61,6 +61,7 @@ harfrust = { version = "0.12", default-features = false, features = ["std"] }
 unicode-normalization = "0.1"
 unicode-segmentation = "1.13"
 lcc-segment = { workspace = true, optional = true }
+lcc-tflite = { workspace = true, optional = true }
 # video clips: probe and poster frames (every call is `Unsupported` on wasm32)
 lcc-video = { workspace = true }
 lcc-audio-out = { workspace = true }
@@ -100,7 +101,7 @@ rustix = { workspace = true }
 # the BSDs PulseAudio; on Linux this adds cpal's libasound fallback, see docs/video.md).
 audio-out = ["lcc-audio-out/audio-out"]
 # AI masks with SAM 3 (Object / Describe). Off for the web and CLI builds.
-sam = ["dep:lcc-segment"]
+sam = ["dep:lcc-segment", "dep:lcc-tflite"]
 denoise = ["dep:lcc-denoise", "lcc-denoise/runtime", "lcc-gpu/denoise"]
 rawnind-model = ["denoise", "lcc-denoise/rawnind-model", "lcc-denoise-core/rawnind-model"]
 # The upstream project's own denoise model offered as a download (MIT OR Apache-2.0 weights, CC0 training data).

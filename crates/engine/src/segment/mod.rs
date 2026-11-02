@@ -18,9 +18,15 @@
 #[cfg(feature = "sam")]
 mod download;
 pub mod models;
+mod skin;
 pub mod subject;
 #[cfg(feature = "sam")]
 mod worker;
+
+#[cfg(feature = "sam")]
+pub(crate) use skin::face_model;
+pub use skin::{FoundFace, SkinFound};
+pub(crate) use skin::{SkinKey, SkinPurpose};
 
 use std::path::PathBuf;
 
@@ -138,6 +144,8 @@ pub struct Segmenter {
     model_downloads: std::collections::HashMap<&'static str, download::Downloader>,
     pending: Option<PendingClicks>,
     messages: Vec<String>,
+    /// Smooth Skin and Find Blemishes requests ([`skin`]).
+    pub(crate) skin: skin::SkinJobs,
     #[cfg(feature = "sam")]
     worker: worker::Worker,
     #[cfg(feature = "sam")]
@@ -161,6 +169,7 @@ impl Default for Segmenter {
             model_downloads: std::collections::HashMap::new(),
             pending: None,
             messages: Vec::new(),
+            skin: skin::SkinJobs::default(),
             #[cfg(feature = "sam")]
             worker: worker::Worker::default(),
             #[cfg(feature = "sam")]
@@ -620,6 +629,7 @@ impl Session {
     pub fn segment_poll(&mut self) -> Polled {
         #[cfg_attr(not(feature = "sam"), allow(unused_mut))]
         let mut polled = Polled { messages: std::mem::take(&mut self.segmenter.messages), ..Default::default() };
+        self.skin_poll(&mut polled);
         #[cfg(feature = "sam")]
         {
             // (before draining: a worker that is idle now has sent everything)

@@ -24,9 +24,9 @@ fn secs(iso: &str) -> Option<i64> {
     Some(d.unix_seconds())
 }
 
-/// Eyes-open from YuNet landmarks when the detector is installed; otherwise a weak guess from a
+/// Eyes-open from the face model's landmarks when it is installed; otherwise a weak guess from a
 /// stored face box. `None` when neither is available (the field is skipped, not stored as 0).
-fn eyes_open_for(src: &Rgb32f, detector: Option<&lcc_faces::yunet::Detector>, photo: Option<&Photo>) -> Option<f32> {
+fn eyes_open_for(src: &Rgb32f, detector: Option<&super::face_detect::Finder>, photo: Option<&Photo>) -> Option<f32> {
     if let Some(det) = detector {
         let rgb: Vec<u8> = src
             .data
@@ -35,7 +35,7 @@ fn eyes_open_for(src: &Rgb32f, detector: Option<&lcc_faces::yunet::Detector>, ph
                 [0, 1, 2].map(|i| (lcc_color::transfer::linear_to_srgb(c.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0)) * 255.0).round() as u8)
             })
             .collect();
-        if let Ok(faces) = det.detect(&rgb, src.width, src.height, &lcc_faces::yunet::Options::default())
+        if let Ok(faces) = det.detect(&rgb, src.width, src.height, false)
             && let Some(first) = faces.first()
         {
             return lcc_pipeline::cull::eyes_open(src, &first.landmarks);

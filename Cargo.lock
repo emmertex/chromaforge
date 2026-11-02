@@ -4845,6 +4845,7 @@ dependencies = [
  "lcc-sysmem",
  "lcc-testkit",
  "lcc-tether",
+ "lcc-tflite",
  "lcc-tiff",
  "lcc-updater",
  "lcc-video",

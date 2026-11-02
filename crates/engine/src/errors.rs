@@ -9,8 +9,12 @@ use crate::EngineError;
 /// A model a feature needs and the app downloads only when the person agrees.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AiModel {
-    /// YuNet, which finds faces (`faces.detect`; installed in Settings ▸ Faces).
+    /// The open MediaPipe face model, which finds faces and their landmarks (`faces.detect`, the face scan,
+    /// Retouch; `ai.models.download {"id": "face"}`).
     FaceDetector,
+    /// The open MediaPipe people model, which finds face and body skin (Retouch;
+    /// `ai.models.download {"id": "people"}`).
+    People,
     /// SAM 3, behind Object and Describe masks (`segment.model.download`).
     Sam3,
     /// SAM 2.1, behind Object masks when the user chose it (`ai.models.download {"id": "sam2"}`).

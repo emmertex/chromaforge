@@ -251,6 +251,7 @@ controls! {
     "skin.texture" => skin.texture, "Texture", Skin, -100, 100, 0, 1, 0, Centered;
     "skin.evenTone" => skin.even_tone, "Even Tone", Skin, 0, 100, 0, 1, 0, Plain;
     "skin.redness" => skin.redness, "Redness", Skin, 0, 100, 0, 1, 0, Plain;
+    "skin.shine" => skin.shine, "Reduce Shine", Skin, 0, 100, 0, 1, 0, Plain;
     "effects.texture" => effects.texture, "Texture", Effects, -100, 100, 0, 1, 0, Centered;
     "effects.clarity" => effects.clarity, "Clarity", Effects, -100, 100, 0, 1, 0, Centered;
     "effects.dehaze" => effects.dehaze, "Dehaze", Effects, -100, 100, 0, 1, 0, Centered;

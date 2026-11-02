@@ -57,6 +57,7 @@ pub(crate) mod organize;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peers;
 pub mod profile_manager;
+pub(crate) mod retouch;
 #[cfg(test)]
 pub(crate) use organize::STACK_WORK;
 pub(crate) mod plugin_filters;
@@ -237,6 +238,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(curves::specs());
         v.extend(crop_aspects::specs());
         v.extend(masks::specs());
+        v.extend(retouch::specs());
         v.extend(genfill::specs());
         v.extend(organize::specs());
         v.extend(keywords::specs());

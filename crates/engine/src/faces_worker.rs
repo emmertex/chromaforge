@@ -1,6 +1,6 @@
 //! The heavy part of scanning faces, run off the session thread, on a few threads at once.
 //!
-//! For one photo: render it (upright, uncropped, default settings), find its faces with the YuNet detector (when installed)
+//! For one photo: render it (upright, uncropped, default settings), find its faces with the open MediaPipe face model (when installed)
 //! so each region can be aligned by landmarks, cut each region out and run the recognition model. A photo that has
 //! no face regions at all and has not been searched yet also gets its detections back, with their embeddings, so the
 //! scan decodes each photo once. The session thread only prepares the job (which needs the catalog) and later ingests
@@ -15,7 +15,9 @@ use std::time::Duration;
 use lcc_catalog::PhotoId;
 use lcc_faces::align::{Rgb, align_to_template, crop_box};
 use lcc_faces::runtime::Embedder;
-use lcc_faces::yunet::{Detector, Face, Options};
+use lcc_faces::yunet::Face;
+
+use crate::cmd::face_detect::Finder;
 use lcc_geom::Rect;
 
 use crate::media::{PreviewLoader, RenderJob};
@@ -154,9 +156,9 @@ pub(crate) struct Prepared {
     pub todo: Vec<Rect>,
     /// The photo has no face regions and has not been searched: look for faces too.
     pub detect: bool,
-    /// The YuNet detector, when the user has installed it: faces are aligned by its landmarks, and it finds the faces of
+    /// The face model, when the user has installed it: faces are aligned by its landmarks, and it finds the faces of
     /// photos that have none. Without it a scan only embeds the faces the photos already have, cut by their boxes.
-    pub detector: Option<Arc<Detector>>,
+    pub detector: Option<Arc<Finder>>,
 }
 
 /// The embeddings made for a [`Prepared`]; `None` for a face that could not be embedded.
@@ -207,7 +209,7 @@ pub(crate) fn process(p: Prepared, embedder: &Embedder) -> Done {
         let (w, h) = (image.width, image.height);
         let rgb: Vec<u8> = image.data.iter().flat_map(|px| [px[0], px[1], px[2]]).collect();
         // the detector's landmarks, where it finds the same face: faces are aligned by them, not cut by a box
-        let detected = detector.as_deref().and_then(|d| d.detect(&rgb, w, h, &Options { score: 0.5, ..Options::default() }).ok());
+        let detected = detector.as_deref().and_then(|d| d.detect(&rgb, w, h, true).ok());
         let found = detected.clone().unwrap_or_default();
         let img = Rgb { data: &rgb, width: w, height: h };
         let (iw, ih) = embedder.input_size();

@@ -909,6 +909,8 @@ impl Session {
         }
         // after the undo step, so a correction worked out now is journalled after the edit it completes
         self.upright_after(&upright);
+        // photos whose Smooth Skin now wants the skin found get it
+        self.skin_after(&upright);
         Ok(())
     }
 
@@ -1077,6 +1079,7 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        let applied = e.op.clone();
         self.pending_log.push(e.op);
         self.redo.push(UndoEntry {
             label: e.label.clone(),
@@ -1085,6 +1088,8 @@ impl Session {
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
         });
+        // a step that brings back Smooth Skin without its skin gets it again (kept for the session: no model runs)
+        self.skin_after(&applied);
         Ok(e.label)
     }
 
@@ -1103,6 +1108,7 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        let applied = e.op.clone();
         self.pending_log.push(e.op);
         self.undo.push(UndoEntry {
             label: e.label.clone(),
@@ -1111,6 +1117,8 @@ impl Session {
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
         });
+        // a step that brings back Smooth Skin without its skin gets it again (kept for the session: no model runs)
+        self.skin_after(&applied);
         Ok(e.label)
     }
 
@@ -2024,6 +2032,8 @@ mod tests_process;
 mod tests_profile_manager;
 #[cfg(test)]
 mod tests_recheck;
+#[cfg(test)]
+mod tests_retouch;
 #[cfg(test)]
 mod tests_segment;
 #[cfg(test)]

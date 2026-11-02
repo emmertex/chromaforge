@@ -326,3 +326,37 @@ fn the_fast_logarithm_and_power_are_accurate() {
     assert_eq!(fast_exp2(-200.0), 0.0);
     assert!(fast_exp2(500.0).is_finite() && fast_exp2(f32::NAN) == 1.0);
 }
+
+#[test]
+fn reduce_shine_tones_down_hot_spots_and_leaves_the_rest() {
+    // a shiny spot of 0.1 d, a stop brighter than the skin and paler, in a skin that ends at x = 0.75
+    let (w, h, d) = (800, 800, 300.0);
+    let (cx, cy, r) = (300.0, 400.0, 30.0);
+    let before = Rgb32f::from_fn(w, h, |x, y| {
+        let q = (((x as f64 - cx).powi(2) + (y as f64 - cy).powi(2)).sqrt() / r).min(3.0);
+        let t = (-q * q / 2.0).exp() as f32;
+        // (brighter, and towards white)
+        SKIN.map(|c| c * (1.0 + t) + 0.25 * t)
+    });
+    let s = settings(SkinSmoothing { shine: 100.0, ..Default::default() }, d / w as f64, |x, _| x < 0.75);
+    let mut after = before.clone();
+    smooth(&mut after, &s);
+    let lum = |p: [f32; 3]| 0.2627 * p[0] + 0.678 * p[1] + 0.0593 * p[2];
+    let at = |img: &Rgb32f, x: usize, y: usize| img.data[y * w + x];
+    let (hot0, hot1) = (lum(at(&before, 300, 400)), lum(at(&after, 300, 400)));
+    let skin0 = lum(at(&before, 500, 400));
+    assert!((hot1 / skin0).log2() < 0.6 * (hot0 / skin0).log2(), "the hot spot is toned down: {hot0} → {hot1} (skin {skin0})");
+    // its colour comes back towards the skin's (redder than the washed-out spot)
+    let rg = |p: [f32; 3]| (p[0] / p[1]).log2();
+    assert!(rg(at(&after, 300, 400)) > rg(at(&before, 300, 400)) + 0.02);
+    // the plain skin around it and everything outside the skin stay
+    for (x, y) in [(550, 400), (500, 150)] {
+        let (a, b) = (at(&before, x, y), at(&after, x, y));
+        assert!((lum(a) / lum(b) - 1.0).abs() < 0.02, "skin at {x},{y}: {a:?} → {b:?}");
+    }
+    assert_eq!(at(&before, 700, 400), at(&after, 700, 400), "outside the skin");
+    // off: nothing changes
+    let mut same = before.clone();
+    smooth(&mut same, &settings(SkinSmoothing::default(), d / w as f64, |x, _| x < 0.75));
+    assert_eq!(same.data, before.data);
+}
