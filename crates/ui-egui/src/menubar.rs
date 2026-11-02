@@ -1200,7 +1200,7 @@ pub fn run_item(app: &mut LccApp, id: &str, params: Value) -> Result<Value, Stri
     }
     let was = app.session.active();
     let r = app.run(id, params);
-    if culling_cmd && r.is_ok() && app.ui.auto_advance {
+    if culling_cmd && r.is_ok() && app.auto_advance_on() {
         crate::panels::compare::advance(app, was);
     }
     r

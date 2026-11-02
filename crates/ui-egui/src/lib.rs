@@ -1240,6 +1240,12 @@ impl LccApp {
         }
     }
 
+    /// Whether a rating, flag or label moves on to the next photo: Photo ▸ Auto Advance, or Caps
+    /// Lock while it is on (as in other photo libraries).
+    pub fn auto_advance_on(&self) -> bool {
+        self.ui.auto_advance || self.ui.caps_lock
+    }
+
     /// A toast that stays `secs` seconds (messages that say where to look or what to do next).
     pub fn toast_for(&mut self, ctx: &egui::Context, text: impl Into<String>, secs: f64) {
         let t = ctx.input(|i| i.time);

@@ -960,6 +960,11 @@ pub struct UiState {
     pub modern: crate::modern::ModernUi,
     pub left_panel: bool,
     pub right: RightPanel,
+    /// The panel a toggle (a panel key or button: I, M, R, Q…) opened, with what the right column showed
+    /// before it: toggling it off puts back exactly that, closed included. Forgotten once another
+    /// toggle opens a panel.
+    #[serde(skip)]
+    pub toggle_return: Option<(RightPanel, RightPanel)>,
     /// The right panel (and Library's right column) is folded away by the tool strip's top button;
     /// the strip stays, and choosing any of its tools unfolds it.
     pub right_collapsed: bool,
@@ -1284,6 +1289,10 @@ pub struct UiState {
     pub local_browse_root: Option<String>,
     /// Culling: after a rating, flag or colour-label key, move to the next photo.
     pub auto_advance: bool,
+    /// Caps Lock is on, as last seen from a letter key: it turns Auto Advance on while it lasts
+    /// (see [`crate::shortcuts::caps_lock_from`]).
+    #[serde(skip)]
+    pub caps_lock: bool,
     /// Full-screen preview (F): the photo alone on black, no chrome.
     pub fullscreen: bool,
     /// Window ▸ Second Window.
@@ -1907,6 +1916,7 @@ impl Default for UiState {
             left_width: LEFT_WIDTH.default,
             right_width: RIGHT_WIDTH.default,
             right: RightPanel::Edit,
+            toggle_return: None,
             right_collapsed: false,
             right_hidden: RightPanel::None,
             presets: false,
@@ -2020,6 +2030,7 @@ impl Default for UiState {
             visualize_spots: false,
             spots_threshold: 50.0,
             auto_advance: false,
+            caps_lock: false,
             fullscreen: false,
             slideshow: None,
             slides: Default::default(),

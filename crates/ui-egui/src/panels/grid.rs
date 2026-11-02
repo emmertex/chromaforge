@@ -890,10 +890,15 @@ fn group_header(app: &mut LccApp, ui: &mut egui::Ui, run: &DateRun, ids: &[Photo
 /// [`lcc_engine::media::Session::embedded_thumb_is_final`]), which for a folder of raws on a
 /// network share is the difference between reading every file whole and reading a preview each.
 pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) {
-    // A slider drag changes the photo every frame: its thumbnail follows once the drag ends, so its
-    // renders (a raw decode the first time) don't compete with the loupe's drafts.
-    if app.session.interaction.as_ref().is_some_and(|i| i.photo == id) && app.renderer.thumb(id).is_some() {
-        return;
+    // A slider drag changes the photo it edits every frame. Under the loupe its thumbnail follows
+    // once the drag ends, so its renders (a raw decode the first time) don't compete with the
+    // loupe's drafts. In a grid the thumbnail is what the user watches: it follows live, one render
+    // at a time (the newest settings when the last one is in).
+    if app.session.interaction.as_ref().is_some_and(|i| i.photo == id) {
+        let loupe = matches!(app.ui.view, ViewMode::Detail | ViewMode::Compare | ViewMode::Reference);
+        if drag_waits(loupe, app.renderer.thumb(id).is_some(), app.renderer.is_pending(Slot::Thumb(id))) {
+            return;
+        }
     }
     // never less than the photo has or is getting: a smaller ask (the filmstrip beside a larger view) moving the
     // job up would otherwise swap it for a smaller one, and the larger view swap it back
@@ -938,6 +943,13 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
         }
         None => app.renderer.request(Slot::Thumb(id), job, priority),
     }
+}
+
+/// During a slider drag, whether the photo it edits skips asking for a new thumbnail this frame:
+/// under the loupe (`loupe`) while it has one, anywhere while one is being rendered (`pending`);
+/// in a grid it follows the drag.
+pub(crate) fn drag_waits(loupe: bool, has_thumb: bool, pending: bool) -> bool {
+    (loupe && has_thumb) || pending
 }
 
 /// Whether a photo's grid thumbnail is already the picture it should show, so the render of the raw
@@ -1767,6 +1779,16 @@ fn quick_collection_item(app: &mut LccApp, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grid's thumbnail follows a slider drag (one render at a time); under the loupe it waits
+    /// for the drag to end.
+    #[test]
+    fn grid_thumbnails_follow_a_drag() {
+        assert!(!drag_waits(false, true, false), "a grid asks for the new picture");
+        assert!(drag_waits(false, true, true), "one render at a time");
+        assert!(drag_waits(true, true, false), "under the loupe it waits");
+        assert!(!drag_waits(true, false, false), "a photo without a thumbnail gets one");
+    }
 
     #[test]
     fn a_photo_keeps_its_place_through_a_run_of_small_resizes() {

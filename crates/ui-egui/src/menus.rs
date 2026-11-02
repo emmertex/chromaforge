@@ -373,9 +373,19 @@ fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
     if app.ui.right == p && crate::docking::exposed(app, crate::docking::Panel::Tools) {
         // Classic Develop: a tool's drawer closes back to the panels under it, as in Lightroom Classic
         let drawer = app.ui.module == crate::module::ModuleId::Develop && p != RightPanel::Edit && p.is_edit_tool();
-        app.ui.right = if drawer { RightPanel::Edit } else { RightPanel::None };
+        // toggled off: back to exactly what the right column showed before the toggle opened it,
+        // closed when it was closed
+        let before = app.ui.toggle_return.take().and_then(|(opened, before)| (opened == p && before != p).then_some(before));
+        app.ui.right = match before {
+            Some(before) => before,
+            None if drawer => RightPanel::Edit,
+            None => RightPanel::None,
+        };
         app.toast(ctx, crate::i18n::tr_format!("{name} Off", name = crate::i18n::tr(name)));
     } else {
+        // a panel hidden behind another dock tab was not on show: nothing to come back to but it
+        let before = if app.ui.right == p { RightPanel::None } else { app.ui.right };
+        app.ui.toggle_return = Some((p, before));
         app.ui.right = p;
         // one panel at a time on the right: a tool takes Presets' place, and unfolds the side
         app.ui.presets = false;
