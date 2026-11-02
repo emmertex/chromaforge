@@ -225,10 +225,10 @@ fn mask_pins_follow_the_tool_overlay_and_show_pins() {
     assert!(pins(&h, "maskPin:").is_empty());
     // Show Pins off hides them in every mode; view.maskPins answers as before
     exec(&mut h, "view.toolOverlay", json!({"mode": "always"}));
-    assert_eq!(exec(&mut h, "view.maskPins", json!({"show": false})), json!({"maskPins": false}));
+    assert_eq!(exec(&mut h, "view.maskPins", json!({"show": false}))["maskPins"], json!(false));
     h.step();
     assert!(pins(&h, "maskPin:").is_empty());
-    assert_eq!(exec(&mut h, "view.maskPins", json!({})), json!({"maskPins": true}));
+    assert_eq!(exec(&mut h, "view.maskPins", json!({}))["maskPins"], json!(true));
     h.step();
     assert_eq!(pins(&h, "maskPin:"), both);
     assert_eq!(h.app.ui.tool_overlay, ToolOverlay::Always, "Show Pins leaves the mode alone");

@@ -155,11 +155,11 @@ fn xmp_metadata_template_imports_and_sidecars_do_not() {
         ..Default::default()
     };
     let mut packet = lcc_meta::write_xmp(&m, None);
-    packet = packet.replace("   <dc:rights>", "   <photoshop:Headline>Hi</photoshop:Headline>\n   <dc:rights>");
+    packet = packet.replace("   <dc:rights>", "   <photoshop:Instructions>Hi</photoshop:Instructions>\n   <dc:rights>");
     let f = write(&dir.join("Studio.xmp"), &packet);
     let r = s.execute("metadata.importPresets", &json!({"paths": [f]})).unwrap();
     assert_eq!(r["imported"][0]["name"], "Studio", "{r}");
-    assert_eq!(r["imported"][0]["unmapped"], json!(["photoshop:Headline"]), "{r}");
+    assert_eq!(r["imported"][0]["unmapped"], json!(["photoshop:Instructions"]), "{r}");
     let fields = &s.metadata_presets[0].fields;
     assert_eq!((fields["copyright"].as_str(), fields["creatorPhone"].as_str()), (Some("© Studio"), Some("+1 555")));
     assert_eq!(fields["keywords"], json!(["studio"]));
