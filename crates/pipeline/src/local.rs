@@ -381,7 +381,7 @@ pub const DEHAZE_PATCH_MAX: usize = 64;
 pub fn dehaze_patch_radius(s: &DevelopSettings, px_per_long: f64) -> usize {
     match s.process.process() {
         Process::V1 | Process::V2 => 0,
-        Process::V3 | Process::V4 | Process::V5 => ((DEHAZE_PATCH * px_per_long).round().max(1.0) as usize).min(DEHAZE_PATCH_MAX),
+        Process::V3 | Process::V4 | Process::V5 | Process::V6 => ((DEHAZE_PATCH * px_per_long).round().max(1.0) as usize).min(DEHAZE_PATCH_MAX),
     }
 }
 
@@ -438,7 +438,7 @@ pub fn base_detail_radius(px_per_long: f64) -> usize {
 pub fn tone_base_detail(s: &DevelopSettings, px_per_long: f64) -> usize {
     match s.process.process() {
         Process::V1 => 0,
-        Process::V2 | Process::V3 | Process::V4 | Process::V5 => base_detail_radius(px_per_long),
+        Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 => base_detail_radius(px_per_long),
     }
 }
 
@@ -569,14 +569,79 @@ pub fn apply_nr(img: &mut Rgb32f, lum: Option<NrLum>, col: Option<NrColor>, draf
     }
 }
 
+/// Speckle-adaptive colour NR (issue #679): the per-channel chromaticity deviations (rgb / Y units)
+/// from a pixel's 3 × 3 median at which the blend towards the blurred chromaticity starts and
+/// reaches full. A plain blur mix removes chroma speckle (green and magenta single-pixel noise at
+/// high ISO) only by its small base weight, so it survives as the coloured dots the issue shows; a
+/// pixel that disagrees with *all* of its neighbours at once is speckle, not texture or a hue edge
+/// (a 3 × 3 median tracks both), and is pulled all the way in. Sources: own design (median outlier
+/// test + adaptive blend).
+pub const SPECKLE_LO: f32 = 0.16;
+pub const SPECKLE_HI: f32 = 0.26;
+
+/// `smooth(e0, e1, x)`: 0 below `e0`, 1 above `e1`, a smooth step between (the same easing the
+/// sharpening mask uses, [`crate::finish`]).
+fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0).max(1e-6)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The chromaticity (rgb / Y) of every pixel.
+fn chroma_plane(img: &Rgb32f) -> Rgb32f {
+    Rgb32f::from_fn(img.width, img.height, |x, y| {
+        let c = img.get(x, y).map(|v| v.max(0.0));
+        let y = luminance_2020(c).max(1e-6);
+        c.map(|v| v / y)
+    })
+}
+
+/// The per-channel median of the 3 × 3 chromaticity neighbourhood of pixel `i` (`chroma` from
+/// [`chroma_plane`]): the value most neighbours agree on. Smooth fields and hue edges pass through
+/// (the median takes the pixel's own side of an edge); an isolated speckle stands alone against all
+/// nine samples.
+fn median_chroma3x3(chroma: &Rgb32f, x: usize, y: usize) -> [f32; 3] {
+    let mut v = [[0.0f32; 9]; 3];
+    let mut n = 0;
+    for dy in -1..=1isize {
+        for dx in -1..=1isize {
+            let c = chroma.get_clamped(x as isize + dx, y as isize + dy);
+            for (k, val) in c.into_iter().enumerate() {
+                v[k][n] = val;
+            }
+            n += 1;
+        }
+    }
+    let mut out = [0.0f32; 3];
+    for (k, channel) in v.iter_mut().enumerate() {
+        channel.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        out[k] = channel[4];
+    }
+    out
+}
+
+/// One pixel of speckle-adaptive colour NR: blend the pixel's chromaticity `c0` towards the
+/// luminance-weighted blurred chromaticity `cb` by `t`, harder per channel where the pixel is a
+/// speckle outlier against its 3 × 3 median `med` ([`SPECKLE_LO`]..[`SPECKLE_HI`]), then re-apply
+/// the luminance `yl`.
+fn nr_pixel(c0: [f32; 3], cb: [f32; 3], med: [f32; 3], t: f32, yl: f32) -> [f32; 3] {
+    [0, 1, 2].map(|k| {
+        let extra = smooth(SPECKLE_LO, SPECKLE_HI, (c0[k] - med[k]).abs());
+        let tk = t + (1.0 - t) * extra;
+        ((c0[k] + (cb[k] - c0[k]) * tk) * yl).max(0.0)
+    })
+}
+
 /// Colour noise reduction: the chromaticity (rgb / Y) blurred, mixed in by `nr.t`, under the
 /// original luminance; with `half_res` the blur runs at half resolution ([`HALF_RES_NR_SIGMA`]).
+/// Pixels that are speckle outliers against their neighbourhood are pulled in harder
+/// ([`SPECKLE_LO`], [`nr_pixel`]).
 ///
 /// The blurred chromaticity is luminance weighted (blurred rgb over its blurred Y), not a blur of
 /// per-pixel rgb / Y: in deep shadows Y is near zero and noise, so per-pixel ratios explode and
 /// spread coloured specks into their neighbours.
 fn colour_nr(img: &mut Rgb32f, nr: NrColor, half_res: bool) {
     let w = img.width;
+    let med = chroma_plane(img);
     {
         let chroma_of = |c: [f32; 3]| {
             let y = luminance_2020(c).max(1e-6);
@@ -619,7 +684,8 @@ fn colour_nr(img: &mut Rgb32f, nr: NrColor, half_res: bool) {
                     }));
                     let yl = luminance_2020(*p);
                     let c0 = chroma_of(*p);
-                    *p = [0, 1, 2].map(|k| ((c0[k] + (cb[k] - c0[k]) * nr.t) * yl).max(0.0));
+                    let md = median_chroma3x3(&med, x, y);
+                    *p = nr_pixel(c0, cb, md, nr.t, yl);
                 }
             });
         } else {
@@ -631,7 +697,8 @@ fn colour_nr(img: &mut Rgb32f, nr: NrColor, half_res: bool) {
                     let c0 = chroma_of(*p);
                     let Some(&bl) = b.data.get(i) else { continue };
                     let cb = chroma_of(bl);
-                    *p = [0, 1, 2].map(|k| ((c0[k] + (cb[k] - c0[k]) * nr.t) * yl).max(0.0));
+                    let md = median_chroma3x3(&med, x, y);
+                    *p = nr_pixel(c0, cb, md, nr.t, yl);
                 }
             });
         }

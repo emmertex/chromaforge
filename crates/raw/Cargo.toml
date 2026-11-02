@@ -9,6 +9,7 @@ description = "RAW decoding, demosaicing and DNG colour model (L1)"
 workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 lcc-brand = { workspace = true }
 lcc-tiff = { workspace = true }
 lcc-meta = { workspace = true }

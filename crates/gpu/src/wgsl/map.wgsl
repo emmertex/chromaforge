@@ -166,8 +166,55 @@ fn clamp0_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups
     put_rgb(i, max(rgb_a(i), vec3<f32>(0.0)));
 }
 
+// Per-pixel chromaticity (rgb / Y of max(rgb, 0)): the plane colour NR's 3 × 3 speckle median reads
+// (`local::chroma_plane`). P[1] = width.
+@compute @workgroup_size(256)
+fn chroma_med(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let w = pu(1u);
+    let x = i % w;
+    let y = i / w;
+    var v = array<array<f32, 9u>, 3u>();
+    var n = 0u;
+    for (var dy: i32 = -1; dy <= 1; dy++) {
+        for (var dx: i32 = -1; dx <= 1; dx++) {
+            let xx = u32(min(max(i32(x) + dx, 0), i32(w) - 1));
+            let yy = u32(min(max(i32(y) + dy, 0), i32(pu(0u) / w) - 1));
+            let c = max(rgb_a(yy * w + xx), vec3<f32>(0.0));
+            let yl = max(lum2020(c), 1e-6);
+            for (var k = 0u; k < 3u; k++) {
+                v[k][n] = c[k] / yl;
+            }
+            n++;
+        }
+    }
+    var out = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        // insertion sort; the 3 × 3 median is the fifth
+        for (var s = 1u; s < 9u; s++) {
+            let key = v[k][s];
+            var j = s;
+            loop {
+                if (j == 0u || v[k][j - 1u] <= key) {
+                    break;
+                }
+                v[k][j] = v[k][j - 1u];
+                j--;
+            }
+            v[k][j] = key;
+        }
+        out[k] = v[k][4u];
+    }
+    put_rgb(i, out);
+}
+
 // Colour NR: blend chromaticity towards the luminance-weighted blurred one and re-apply luminance
-// (a: image, b: unused, c: blurred max(rgb, 0)). P[1] = t.
+// (a: image, b: 3 × 3 median chromaticity, c: blurred max(rgb, 0)). P[1] = t, P[2] / P[3] = the
+// speckle deviation window (`local::SPECKLE_LO` / `SPECKLE_HI`): a channel that disagrees with all
+// nine of its 3 × 3 median samples at once is speckle and is pulled all the way in.
 @compute @workgroup_size(256)
 fn nr_col(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
     let i = lin_index(g, nw);
@@ -177,10 +224,20 @@ fn nr_col(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) 
     let p = rgb_a(i);
     let yl = lum2020(p);
     let t = pf(1u);
+    let lo = pf(2u);
+    let hi = pf(3u);
     let c0 = p / max(yl, 1e-6);
     let bl = vec3<f32>(c[3u * i], c[3u * i + 1u], c[3u * i + 2u]);
     let cb = bl / max(lum2020(bl), 1e-6);
-    put_rgb(i, max((c0 + (cb - c0) * t) * yl, vec3<f32>(0.0)));
+    let md = vec3<f32>(b[3u * i], b[3u * i + 1u], b[3u * i + 2u]);
+    var out = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        var s = clamp((abs(c0[k] - md[k]) - lo) / max(hi - lo, 1e-6), 0.0, 1.0);
+        s = s * s * (3.0 - 2.0 * s);
+        let tk = t + (1.0 - t) * s;
+        out[k] = max((c0[k] + (cb[k] - c0[k]) * tk) * yl, 0.0);
+    }
+    put_rgb(i, out);
 }
 
 // Every P[1]-th value of `a` (airlight sampling). P[0] = output count.

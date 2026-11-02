@@ -177,8 +177,18 @@ impl LensDb {
     /// The best profile for an EXIF lens model (and lens make, when the file has one), preferring lenses for the
     /// camera's mount. `None` when no name is a convincing match.
     pub fn find_lens(&self, lens_make: Option<&str>, lens_model: &str, camera: Option<&Camera>) -> Option<&Profile> {
-        // a compact camera's built-in lens is named after the camera, not the EXIF focal range
-        self.best_lens(lens_make, lens_model, camera, |_| true).or_else(|| self.find_fixed_lens(&tokens(lens_model), camera?))
+        let by_name = self.best_lens(lens_make, lens_model, camera, |_| true);
+        // a compact camera's built-in lens is named after the camera ("fixed lens"), not the EXIF focal range
+        let built_in = camera.and_then(|cam| self.find_fixed_lens(&tokens(lens_model), cam));
+        match (by_name, built_in) {
+            (Some(name), Some(built_in)) => {
+                let cam = camera?;
+                // the name match wins when it is for the camera's own mount; else the built-in lens does, so
+                // another maker's lens with the same numbers can't win on tokens alone
+                if name.mounts.iter().any(|m| m.eq_ignore_ascii_case(&cam.mount)) { Some(name) } else { Some(built_in) }
+            }
+            (name, built_in) => name.or(built_in),
+        }
     }
 
     /// [`find_lens`](Self::find_lens) among the profiles one of whose names is exactly `name`
@@ -196,7 +206,9 @@ impl LensDb {
     }
 
     fn best_lens(&self, lens_make: Option<&str>, lens_model: &str, camera: Option<&Camera>, eligible: impl Fn(&Profile) -> bool) -> Option<&Profile> {
-        let exif = tokens(lens_model);
+        // designation codes ([`is_designation`]) are dropped on both sides: the database names carry them
+        // ("Macro B016"), a quoted full name may too, and EXIF alone never does
+        let exif = db_name_tokens(lens_model);
         if exif.is_empty() {
             return None;
         }
@@ -207,7 +219,7 @@ impl LensDb {
             if !make.is_empty() && !maker.is_empty() && !maker_matches(&maker, &make) {
                 continue;
             }
-            let mut score = lens.models.iter().map(|m| name_score(&tokens(m), &exif, &maker)).fold(0.0, f64::max);
+            let mut score = lens.models.iter().map(|m| name_score(&db_name_tokens(m), &exif, &maker)).fold(0.0, f64::max);
             if let Some(cam) = camera
                 && !lens.mounts.is_empty()
                 && !lens.mounts.iter().any(|m| m.eq_ignore_ascii_case(&cam.mount))
@@ -335,8 +347,29 @@ fn maker_matches(a: &[String], b: &[String]) -> bool {
     }
 }
 
-/// How well a database name matches the EXIF name, 0..1. Every number in the database name (focal lengths,
-/// apertures) must appear in the EXIF name; the maker's words are ignored on both sides (EXIF often omits them).
+/// A model-name word that is a maker's internal designation code ("B016", "(A037)", "A20", "B016E"): a few
+/// letters followed by 2–4 digits, optionally one trailing letter or closing parenthesis. EXIF never reports
+/// these codes, and their digits ("016" of "B016") must not fail the number match (issue #671: a Tamron
+/// 16-300mm … Macro B016 had no effect when EXIF reported the name without the code).
+fn is_designation(word: &str) -> bool {
+    let w = word.trim_matches(|c| c == '(' || c == ')');
+    let mut it = w.chars();
+    let letters = it.by_ref().take_while(|c| c.is_alphabetic()).count();
+    let digits = it.by_ref().take_while(|c| c.is_ascii_digit()).count();
+    let rest = it.count();
+    (1..=3).contains(&letters) && (2..=4).contains(&digits) && rest <= 1
+}
+
+/// Tokenise a database model name for matching: designation codes ([`is_designation`]) are dropped, so their
+/// digits don't fail the number check and their absence in the EXIF name doesn't lower the score.
+fn db_name_tokens(model: &str) -> Vec<String> {
+    model.split_whitespace().filter(|w| !is_designation(w)).flat_map(tokens).collect()
+}
+
+/// How well a database name matches the EXIF name, 0..1: twice the common tokens over both names' lengths
+/// (the Dice coefficient). Every number in the EXIF name (focal lengths, apertures) must appear in the
+/// database name, and every database number outside a designation code in the EXIF name; the maker's words
+/// are ignored on both sides (EXIF often omits them).
 fn name_score(db: &[String], exif: &[String], maker: &[String]) -> f64 {
     let db: Vec<&String> = db.iter().filter(|t| !maker.contains(t)).collect();
     let exif: Vec<&String> = exif.iter().filter(|t| !maker.contains(t)).collect();
@@ -347,7 +380,7 @@ fn name_score(db: &[String], exif: &[String], maker: &[String]) -> f64 {
         return 0.0;
     }
     let common = db.iter().filter(|t| exif.contains(t)).count() as f64;
-    common / db.len().max(exif.len()) as f64
+    2.0 * common / (db.len() + exif.len()) as f64
 }
 
 fn camera(n: &xml::Node) -> Option<Camera> {

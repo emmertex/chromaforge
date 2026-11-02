@@ -426,6 +426,51 @@ mod tests {
         assert_eq!(camera_to_rec2020(&raw, D65).1, [1.0, 1.0, 1.0]);
     }
 
+    /// Issue #451 (Sony a1, in-camera tungsten white balance): an extreme as-shot white through a
+    /// dual-illuminant profile that carries forward matrices (the shape of the shipped camera
+    /// calibrations) renders a camera neutral neutral, on the tungsten side of the calibration too,
+    /// and the white-balance picker names the white it was lit by. The gains are what an ARW's
+    /// `WB_RGGBLevels` read: `[R/G, 1, B/G]`.
+    #[test]
+    fn as_shot_tungsten_renders_neutral_through_dual_illuminant_profile() {
+        // DNG-style forward matrices for each illuminant: white-balanced camera → XYZ D50, as the
+        // calibrations ship them
+        let forward = |m: &Mat3, ill: Xy| {
+            let n = m.apply(ill.to_xyz());
+            let mx = n.iter().cloned().fold(f64::MIN, f64::max);
+            let fm = bradford(ill, D50).mul(&m.inverse().unwrap()).mul(&Mat3::diag(n[0] / mx, n[1] / mx, n[2] / mx));
+            let w = fm.apply([1.0; 3]);
+            Mat3(fm.0.map(|r| r.map(|v| v * (D50.to_xyz()[1] / w[1]))))
+        };
+        let color = ColorData {
+            illuminant: [17, 21],
+            color_matrix: [Some(cam_a()), Some(cam_b())],
+            forward_matrix: [Some(forward(&cam_a(), cct::temp_tint_to_xy(2856.0, 0.0))), Some(forward(&cam_b(), D65))],
+            ..Default::default()
+        };
+        // a grey card lit by tungsten, as the camera records it, and the gains the camera applied
+        let to = cct::temp_tint_to_xy(3000.0, 0.0);
+        let gains = wb_multipliers(&color, to);
+        let neutral = camera_neutral(&color, to);
+        let xy = as_shot_white_of(&color, Some(gains.map(|v| v as f32)));
+        let (t, _tint) = cct::xy_to_temp_tint(xy);
+        assert!((t - 3000.0).abs() < 5.0, "{t} from {xy:?}");
+        // the tungsten side of the calibration does the work: most of the weight on illuminant A's
+        // matrices, none of it on D65's
+        assert!(illuminant_weight(&color, xy) > 0.8, "{}", illuminant_weight(&color, xy));
+        assert_eq!(illuminant_weight(&color, cct::temp_tint_to_xy(6504.0, 0.0)), 0.0);
+        let tr = camera_transform_of(&color, xy);
+        // the gains the render applies are the ones the file recorded (up to its R/G offset)
+        for i in 0..3 {
+            assert!((f64::from(tr.wb[i]) / gains[i] - f64::from(tr.wb[1]) / gains[1]).abs() < 1e-6, "{:?} vs {gains:?}", tr.wb);
+        }
+        let pixel = tr.matrix.apply(std::array::from_fn(|i| neutral[i] * f64::from(tr.wb[i])));
+        assert!(close(pixel, [1.0; 3], 1e-6), "{pixel:?}");
+        // and auto white balance reads the same white back off the developed pixel
+        let seen = neutral_white(&color, xy, pixel).unwrap();
+        assert!((seen.x - xy.x).abs() < 1e-6 && (seen.y - xy.y).abs() < 1e-6, "{seen:?} vs {xy:?}");
+    }
+
     /// Camera-space white balance: re-developing for another white turns a neutral lit by that
     /// white neutral (the camera's own matrices, interpolated for the new white, say how); the same
     /// white is the identity; without a colour matrix there is nothing to re-evaluate.

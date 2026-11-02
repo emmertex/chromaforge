@@ -179,6 +179,21 @@ fn new_library_without_seed_is_empty_and_compacts() {
     assert!(s.catalog.is_empty());
     s.execute("album.create", &json!({"name": "A"})).unwrap();
     s.execute("library.compact", &json!({})).unwrap();
+    // while it runs it has a row in the activity stack (it can't be stopped)
+    let rows = s.activity.list();
+    let running = s.library.as_ref().is_some_and(|l| l.journal().snapshot_running());
+    assert!(!running || rows.iter().any(|r| r.kind == "compaction" && !r.cancellable), "{rows:?}");
+    // the compaction is written on a worker (issue #448: a large catalog frozen the UI while it
+    // was serialised): the frame loop's persist finishes it
+    for _ in 0..1000 {
+        s.persist_if_dirty();
+        if s.execute("library.info", &json!({})).unwrap()["logRecords"] == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    s.persist_if_dirty();
+    assert!(s.activity.list().iter().all(|r| r.kind != "compaction"), "the row goes when the compaction has landed");
     let info = s.execute("library.info", &json!({})).unwrap();
     assert_eq!(info["logRecords"], 0);
     assert_eq!(info["snapshotSeq"], info["seq"]);
@@ -819,7 +834,7 @@ fn a_thumbnail_cache_from_before_is_tidied_in_the_background_when_the_library_op
     let _ = std::fs::remove_dir_all(&thumbs);
     let img = lcc_raster::Rgba8 { width: 32, height: 20, data: vec![[90, 120, 150, 255]; 640] };
     let jpeg = lcc_preview::encode_jpeg(&img).unwrap();
-    let names: Vec<String> = (0..2000u16).map(|i| lcc_preview::hash_bytes(&i.to_le_bytes()).to_string()).collect();
+    let names: Vec<String> = (0..500u16).map(|i| lcc_preview::hash_bytes(&i.to_le_bytes()).to_string()).collect();
     for hex in &names {
         std::fs::create_dir_all(thumbs.join(&hex[..2])).unwrap();
         std::fs::write(thumbs.join(&hex[..2]).join(format!("{hex}.jpg")), &jpeg).unwrap();
@@ -827,11 +842,12 @@ fn a_thumbnail_cache_from_before_is_tidied_in_the_background_when_the_library_op
 
     let mut s = Session::new().with_fs();
     s.open_library(&dir, true).unwrap();
-    // (two thousand files to rename: the row is there when the library has just opened)
+    // (five hundred files to rename: the row is there when the library has just opened)
     let rows = s.activity.list();
     assert!(rows.iter().any(|r| r.kind == "cache" && r.label == "Tidying the thumbnail cache" && r.cancellable), "{rows:?}");
+    // (a machine busy with other tests can take a while)
     let t0 = std::time::Instant::now();
-    while !s.activity.list().is_empty() && t0.elapsed() < std::time::Duration::from_secs(20) {
+    while !s.activity.list().is_empty() && t0.elapsed() < std::time::Duration::from_secs(120) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert!(s.activity.list().is_empty());

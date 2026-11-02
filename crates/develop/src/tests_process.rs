@@ -197,3 +197,35 @@ fn lightroom_classic_panels_switch_off_their_own_settings() {
         assert_eq!((e.curve.highlights, e.mixer.red.hue, controls::get(&e, "grading.shadows.sat")), (curve, hue, grading), "{section} off");
     }
 }
+
+/// Denoise's response: V5 and older keep the straight mix, V6 eases it; every process goes from 0 to 1, rises with
+/// the slider and shrugs off hostile amounts.
+#[test]
+fn denoise_weight_is_straight_before_v6_and_eased_from_it() {
+    for p in Process::ALL {
+        if p < Process::V6 {
+            for a in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                assert_eq!(denoise_weight(p, a), a, "{p:?} at {a}");
+            }
+        }
+        assert_eq!(denoise_weight(p, 0.0), 0.0);
+        assert_eq!(denoise_weight(p, 1.0), 1.0);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -3.0, 7.0] {
+            let w = denoise_weight(p, bad);
+            assert!((0.0..=1.0).contains(&w), "{p:?} at {bad}");
+        }
+        let mut last = -1.0;
+        for i in 0..=100 {
+            let w = denoise_weight(p, i as f32 / 100.0);
+            assert!(w > last, "{p:?} rises at {i}");
+            last = w;
+        }
+    }
+    assert!(denoise_weight(Process::V6, 0.5) >= 0.7);
+    let mut s = DevelopSettings::default();
+    s.enhance.denoise_on = Some(true);
+    s.enhance.denoise = f64::NAN;
+    assert_eq!(s.denoise_amount(), 0.0);
+    s.enhance.denoise = 1e300;
+    assert_eq!(s.denoise_amount(), 1.0);
+}
