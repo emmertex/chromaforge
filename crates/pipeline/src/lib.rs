@@ -609,11 +609,11 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     }
 }
 
-/// Whether the scene-linear stage needs work only the CPU does (defringe, spot removal).
+/// Whether the scene-linear stage needs work only the CPU does (content-aware Fill spots, the camera's local tone map).
 pub fn lin_needs_cpu(s: &DevelopSettings, info: &SourceInfo) -> bool {
-    let o = &s.optics;
-    let defringe = s.section_enabled("optics") && (o.defringe_purple_amount > 0.0 || o.defringe_green_amount > 0.0);
-    defringe || !s.spots.is_empty() || local_tone::enabled(info, s)
+    // defringe and Clone / Heal / Remove spots have GPU kernels; content-aware Fill and the
+    // camera's local tone map don't
+    s.spots.iter().any(|sp| sp.mode == lcc_develop::SpotMode::Fill) || local_tone::enabled(info, s)
 }
 
 /// The white-balanced, defringed, retouched image (before noise reduction): the CPU part of the

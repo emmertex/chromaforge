@@ -974,7 +974,7 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
     let n = w * h;
     let s = &*plan.settings;
     let img = if lcc_pipeline::lin_needs_cpu(s, info) {
-        // defringe / spot removal / local tone mapping: CPU
+        // content-aware Fill spots / the camera's local tone map: the whole stage on the CPU
         let mut img = match host.sampled.take() {
             Some(i) => i,
             None => cx.read_rgb(sampled, w, h),
@@ -987,6 +987,9 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
         p.extend(m.unwrap_or_default().iter().flatten().map(|v| v.to_bits()));
         let out = cx.gpu.buffer(n * 3);
         map(cx, "wb_k", n, &p, [Some(sampled), None, None], &out);
+        // `lin_cpu`'s order: white balance, defringe, spots, red eye
+        let out = defringe(cx, out, plan);
+        let out = spots(cx, out, plan);
         if plan.eyes.is_empty() {
             out
         } else {
@@ -998,6 +1001,80 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
         }
     };
     denoise(cx, img, plan)
+}
+
+/// Defringe (`optics::defringe`) of the white-balanced image.
+fn defringe(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
+    use lcc_pipeline::optics;
+    let (w, h) = (plan.w, plan.h);
+    let Some(dp) = optics::defringe_params(&plan.settings, plan.px_per_long / optics::DEFRINGE_REF_LONG, w, h) else { return img };
+    let n = w * h;
+    let lab = cx.gpu.buffer(n * 3);
+    map(cx, "fringe_lab", n, &[], [Some(&img), None, None], &lab);
+    // the lightness channel, then its min and max around each pixel
+    let l = cx.gpu.buffer(n);
+    map(cx, "subsample", n, &[3], [Some(&lab), None, None], &l);
+    let r = dp.radius.min(w.max(h)) as u32;
+    let filtered = |cx: &mut Cx<'_>, max: u32| {
+        let tmp = cx.gpu.buffer(n);
+        cx.run("minmax", &[w as u32, h as u32, r, 0, max], &[Some(&l), Some(&tmp)], groups2(w, h, [16, 16]));
+        let out = cx.gpu.buffer(n);
+        cx.run("minmax", &[w as u32, h as u32, r, 1, max], &[Some(&tmp), Some(&out)], groups2(w, h, [16, 16]));
+        out
+    };
+    let (lo, hi) = (filtered(cx, 0), filtered(cx, 1));
+    // the kernel writes only the pixels it changes
+    let out = cx.copy(&img);
+    let p = [dp.purple.0, dp.purple.1, dp.green.0, dp.green.1, dp.purple_strength, dp.green_strength].map(f32::to_bits);
+    map(cx, "fringe_apply", n, &p, [Some(&lab), Some(&lo), Some(&hi)], &out);
+    out
+}
+
+/// Spot removal (`spots::apply`; Clone, Heal, Remove), spot by spot on `img` in place: each spot
+/// reads the image as the earlier ones left it.
+fn spots(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
+    use lcc_pipeline::spots;
+    let (w, h) = (plan.w, plan.h);
+    for spot in &plan.settings.spots {
+        let Some(l) = spots::layout(spot, &plan.frame, w, h, plan.px_per_long) else { continue };
+        let Some(&first) = l.pts.first() else { continue };
+        let offset = match l.offset {
+            Some(o) => o,
+            None => auto_source(cx, &img, w, h, first, l.r),
+        };
+        let pts = cx.gpu.upload(&l.pts.iter().flat_map(|p| [p.0, p.1]).collect::<Vec<f32>>());
+        let nb = l.bw * l.bh;
+        let (al, sp, df, wt) = (cx.gpu.buffer(nb), cx.gpu.buffer(3 * nb), cx.gpu.buffer(3 * nb), cx.gpu.buffer(nb));
+        let mut p = vec![w as u32, h as u32, l.bx as u32, l.by as u32, l.bw as u32, l.bh as u32, l.pts.len() as u32];
+        p.extend([l.r, l.inner, l.opacity, offset.0, offset.1].map(f32::to_bits));
+        p.push(l.heal as u32);
+        let groups = groups2(l.bw, l.bh, [16, 16]);
+        cx.run("spot_prep", &p, &[Some(&img), Some(&pts), Some(&al), Some(&sp), Some(&df), Some(&wt)], groups);
+        // Heal: the tone correction is the masked difference's normalized blur
+        let blurred = l.heal.then(|| {
+            let sigma = (l.r * 0.6).max(1.0);
+            (gaussian(cx, &df, l.bw, l.bh, 3, sigma), gaussian(cx, &wt, l.bw, l.bh, 1, sigma))
+        });
+        let (bd, bm) = blurred.as_ref().map_or((&df, &wt), |(d, m)| (d, m));
+        cx.run("spot_apply", &p, &[Some(&img), Some(&pts), Some(&al), Some(&sp), Some(bd), Some(bm)], groups);
+    }
+    img
+}
+
+/// `spots::auto_source` on the device: every candidate scored at once, only the scores read back.
+fn auto_source(cx: &mut Cx<'_>, img: &Buf, w: usize, h: usize, target: (f32, f32), r: f32) -> (f32, f32) {
+    use lcc_pipeline::spots;
+    let cands = spots::candidates(r);
+    let mut data: Vec<f32> = cands.iter().flat_map(|d| [d.0, d.1]).collect();
+    data.extend(spots::ring_dirs().iter().flat_map(|d| [d.0, d.1]));
+    let pts = cx.gpu.upload(&data);
+    let [around, within] = spots::score_radii(r);
+    let mut p = vec![w as u32, h as u32];
+    p.extend([target.0, target.1].iter().chain(&around).chain(&within).map(|v| v.to_bits()));
+    let scores = cx.gpu.buffer(cands.len());
+    cx.run("spot_score", &p, &[Some(img), Some(&pts), Some(&scores), None, None, None], [cands.len().div_ceil(64) as u32, 1, 1]);
+    let scores: Vec<f32> = cx.read(&scores, cands.len());
+    spots::rank(&cands, &scores).first().copied().unwrap_or_else(|| spots::fallback_source(r))
 }
 
 /// Noise reduction (`local::denoise`).

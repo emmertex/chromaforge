@@ -1473,3 +1473,74 @@ fn refine_edges_and_feather_match() {
         assert!(refine < 50.0 && feather == 0.0 || diff(&gpu(&s), &gpu(&plain)).1 > 3, "refine {refine} / feather {feather} change the mask");
     }
 }
+
+/// Spot removal on the device: Clone, Heal and Remove (automatic source, scored on the device),
+/// brushed strokes, overlapping spots (each reads what the earlier ones left), feather 0 and
+/// spots cut by the image edge.
+#[test]
+fn spots_match() {
+    if !gpu() {
+        return;
+    }
+    use lcc_develop::SpotMode;
+    let src = scene(3, 900, 600);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    let spot = |mode, pts: &[(f64, f64)], size, feather, off: Option<(f64, f64)>| Spot {
+        mode,
+        points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+        size,
+        feather,
+        opacity: 100.0,
+        source_offset: off.map(|o| Point::new(o.0, o.1)),
+        ..Default::default()
+    };
+    let sets: Vec<(&str, Vec<Spot>)> = vec![
+        ("clone", vec![spot(SpotMode::Clone, &[(0.3, 0.4)], 0.04, 40.0, Some((0.15, 0.05)))]),
+        ("heal", vec![spot(SpotMode::Heal, &[(0.6, 0.5)], 0.05, 60.0, Some((-0.12, 0.1)))]),
+        ("remove (auto source)", vec![spot(SpotMode::Remove, &[(0.5, 0.45)], 0.03, 50.0, None)]),
+        ("remove near the edge (auto)", vec![spot(SpotMode::Remove, &[(0.04, 0.5)], 0.03, 50.0, None)]),
+        ("brushed heal stroke", vec![spot(SpotMode::Heal, &[(0.2, 0.7), (0.3, 0.72), (0.4, 0.69)], 0.02, 30.0, Some((0.0, -0.15)))]),
+        ("feather 0, half opacity", vec![Spot { opacity: 50.0, ..spot(SpotMode::Clone, &[(0.7, 0.3)], 0.04, 0.0, Some((-0.2, 0.0))) }]),
+        ("cut by the edge", vec![spot(SpotMode::Heal, &[(0.99, 0.02)], 0.05, 50.0, Some((-0.2, 0.2)))]),
+        (
+            "overlapping, auto after manual",
+            vec![
+                spot(SpotMode::Clone, &[(0.45, 0.5)], 0.04, 50.0, Some((0.1, 0.0))),
+                spot(SpotMode::Remove, &[(0.47, 0.52)], 0.04, 50.0, None),
+                spot(SpotMode::Heal, &[(0.5, 0.5)], 0.03, 70.0, Some((0.0, 0.12))),
+            ],
+        ),
+    ];
+    for (name, spots) in sets {
+        let mut s = DevelopSettings::default();
+        typical(&mut s);
+        s.spots = spots;
+        check(&format!("spots: {name}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
+    }
+}
+
+/// Defringe on the device: purple and green at several amounts and hue ranges, at preview and
+/// full size (its filter radius follows the output size).
+#[test]
+fn defringe_matches() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(1, 1800, 1200);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    for (purple, green, hue) in [(4.0, 0.0, (30.0, 70.0)), (0.0, 10.0, (20.0, 80.0)), (20.0, 15.0, (0.0, 100.0))] {
+        let mut s = DevelopSettings::default();
+        typical(&mut s);
+        s.color.saturation = 40.0;
+        s.optics.defringe_purple_amount = purple;
+        s.optics.defringe_green_amount = green;
+        s.optics.defringe_purple_hue_lo = hue.0;
+        s.optics.defringe_purple_hue_hi = hue.1;
+        s.optics.defringe_green_hue_lo = hue.0;
+        s.optics.defringe_green_hue_hi = hue.1;
+        for edge in [640, 1800] {
+            check(&format!("defringe {purple}/{green} {hue:?} @{edge}"), &src, &raw, &s, &RenderRequest::fit(edge, edge));
+        }
+    }
+}
+

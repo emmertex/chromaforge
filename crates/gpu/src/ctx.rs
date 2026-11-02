@@ -32,7 +32,7 @@ const MODULES: &[Module] = &[
     Module {
         src: include_str!("wgsl/blur.wgsl"),
         bindings: &[("src", false, "f32"), ("dst", true, "f32")],
-        entries: &["box_h", "box_h_slide", "box_v", "median_h", "median_v", "min_h", "min_v"],
+        entries: &["box_h", "box_h_slide", "box_v", "median_h", "median_v", "min_h", "min_v", "minmax"],
     },
     Module {
         src: include_str!("wgsl/gauss.wgsl"),
@@ -67,7 +67,14 @@ const MODULES: &[Module] = &[
             "xguided_pre",
             "xguided_ab",
             "xguided_apply",
+            "fringe_lab",
+            "fringe_apply",
         ],
+    },
+    Module {
+        src: include_str!("wgsl/spot.wgsl"),
+        bindings: &[("img", true, "f32"), ("pts", false, "f32"), ("al", true, "f32"), ("sp", true, "f32"), ("df", true, "f32"), ("wt", true, "f32")],
+        entries: &["spot_prep", "spot_apply", "spot_score"],
     },
     Module {
         src: include_str!("wgsl/mask.wgsl"),
@@ -384,6 +391,7 @@ fn constants() -> String {
     s += &format!("const EYE_WORDS: u32 = {}u;\n", lcc_pipeline::redeye::EYE_WORDS);
     use lcc_pipeline::masks::{AUTO_TOL_CHROMA, AUTO_TOL_EV};
     s += &format!("const AUTO_TOL_EV: f32 = {AUTO_TOL_EV:?};\nconst AUTO_TOL_CHROMA: f32 = {AUTO_TOL_CHROMA:?};\n");
+    s += &format!("const NCAND: u32 = {}u;\n", lcc_pipeline::spots::candidates(1.0).len());
     s += &format!("const SHADOW_TINT_K: f32 = {:?};\n", lcc_pipeline::colorops::SHADOW_TINT);
     for (i, h) in GRAIN_HASH.iter().enumerate() {
         s += &format!("const GRAIN_H{i}: u32 = {h}u;\n");

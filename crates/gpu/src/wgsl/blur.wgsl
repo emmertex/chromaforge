@@ -195,3 +195,40 @@ fn min_v(@builtin(global_invocation_id) g: vec3<u32>) {
     }
     dst[g.y * w + g.x] = m;
 }
+
+// Square min (P[4] = 0) or max (1) filter of radius r along one axis (`optics::min_filter`):
+// clamped to the image, single channel. P: w, h, r, axis (0 horizontal, 1 vertical), max.
+@compute @workgroup_size(16, 16)
+fn minmax(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    if (g.x >= w || g.y >= h) {
+        return;
+    }
+    let r = pu(2u);
+    let vertical = pu(3u) != 0u;
+    let is_max = pu(4u) != 0u;
+    let i = g.y * w + g.x;
+    var v = src[i];
+    var lo = 0u;
+    var hi = 0u;
+    if (vertical) {
+        lo = g.y - min(g.y, r);
+        hi = min(g.y + min(r, h), h - 1u);
+    } else {
+        lo = g.x - min(g.x, r);
+        hi = min(g.x + min(r, w), w - 1u);
+    }
+    for (var k = lo; k <= hi; k++) {
+        var j = g.y * w + k;
+        if (vertical) {
+            j = k * w + g.x;
+        }
+        if (is_max) {
+            v = max(v, src[j]);
+        } else {
+            v = min(v, src[j]);
+        }
+    }
+    dst[i] = v;
+}
