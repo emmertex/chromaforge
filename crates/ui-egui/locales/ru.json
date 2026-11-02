@@ -2463,5 +2463,21 @@
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "Удаляет то, что покрывает выбранная маска (выделение объекта щелчком, закрашенная область), заливкой с учётом содержимого",
   "Generating fill": "Создание заливки",
   "No API key yet: add yours in Settings → Generative Fill": "API-ключа ещё нет: добавьте свой в «Настройки → Генеративная заливка»",
-  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Запрос делается один раз для каждого сервиса. Отозвать согласие можно в любое время в «Настройки → Генеративная заливка»."
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Запрос делается один раз для каждого сервиса. Отозвать согласие можно в любое время в «Настройки → Генеративная заливка».",
+  "Sensor": "Сенсор",
+  "Fix hot and dead pixels": "Исправлять горячие и битые пиксели",
+  "Replace single stuck, hot or dead sensor pixels. Pixels this camera has shown in several photos are always fixed.": "Заменяет отдельные застрявшие, горячие или битые пиксели сенсора. Пиксели, которые эта камера показала на нескольких фото, исправляются всегда.",
+  "Remove Dust": "Удалить пыль",
+  "Remove Dust from Selected": "Удалить пыль с выбранных",
+  "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have": "Убирает небольшие мягкие тёмные пятна, которые пыль на сенсоре оставляет на ровных участках, и известную пыль этой камеры",
+  "Even Out": "Выровнять",
+  "Camera Sensor": "Сенсор камеры",
+  "Rebuild Hot Pixel Map": "Пересобрать карту горячих пикселей",
+  "Rebuild Sensor Dust Map": "Пересобрать карту пыли сенсора",
+  "Mapping hot pixels": "Поиск горячих пикселей",
+  "Mapping sensor dust": "Поиск пыли на сенсоре",
+  "Removing dust": "Удаление пыли",
+  "Fix Hot and Dead Pixels": "Исправлять горячие и битые пиксели",
+  "Remove dust on import": "Удалять пыль при импорте",
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "После импорта «Удалить пыль» выполняется в фоне для новых raw-фото (с картой пыли их камеры)."
 }

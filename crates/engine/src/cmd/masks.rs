@@ -848,43 +848,6 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         // ---- Remove tool (spots)
         cmd!(
-            "spot.findDust",
-            "Find Dust Spots",
-            [],
-            None,
-            "{sensitivity?: 0..100 (50), add?: bool (true)} — find sensor-dust spots (small soft dark spots on smooth areas) and add a heal spot on each (one undo step) → {spots: [{x, y, size}], added}",
-            has_active,
-            |s, p| {
-                let c = "spot.findDust";
-                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
-                // the uncropped photo, so positions are the spots' own coordinates
-                let job = s.render_job(id, 1600, 1600, false, false).ok_or_else(|| bad(c, "no photo"))?;
-                let img = job.run().rendered.map_err(|e| bad(c, e))?.image;
-                let found = lcc_pipeline::dust::detect(&img, f64_or(p, "sensitivity", 50.0) as f32);
-                let out: Vec<Value> = found.iter().map(|d| json!({"x": d.x, "y": d.y, "size": d.radius})).collect();
-                if !p.get("add").and_then(Value::as_bool).unwrap_or(true) || found.is_empty() {
-                    return Ok(json!({"spots": out, "added": 0}));
-                }
-                let mut dd = (*s.develop_of(id).unwrap_or_default()).clone();
-                let base = Spot::default();
-                for d in &found {
-                    let mut spot = Spot {
-                        mode: SpotMode::Heal,
-                        points: vec![Point::new(d.x, d.y)],
-                        size: d.radius.clamp(SPOT_SIZE.0, SPOT_SIZE.1),
-                        feather: base.feather,
-                        opacity: 100.0,
-                        source_offset: None,
-                        generated: None,
-                    };
-                    spot.source_offset = pick_source(s, id, &dd, &spot, None);
-                    dd.spots.push(spot);
-                }
-                s.set_develop(id, dd, "Find Dust Spots")?;
-                Ok(json!({"spots": out, "added": found.len()}))
-            }
-        ),
-        cmd!(
             "spot.findBlemishes",
             "Find Blemishes",
             [],
@@ -933,6 +896,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         opacity: 100.0,
                         source_offset: None,
                         generated: None,
+                        auto: None,
                     };
                     spot.source_offset = pick_source(s, id, &dd, &spot, None);
                     dd.spots.push(spot);
@@ -968,6 +932,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     opacity: f64_or(p, "opacity", d.opacity).clamp(0.0, 100.0),
                     source_offset: point(p, "source"),
                     generated: None,
+                    auto: None,
                 };
                 let id = s.active().ok_or_else(|| bad("spot.add", "no active photo"))?;
                 let mut dd = (*s.develop_of(id).unwrap_or_default()).clone();
@@ -996,7 +961,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Spot",
             [],
             None,
-            "{index? (the selected spot), move?: [dx,dy] (the target, normalized), source?: [dx,dy] (offset from the target), moveSource?: [dx,dy], size?, feather?, opacity?, mode?}",
+            "{index? (the selected spot), move?: [dx,dy] (the target, normalized), source?: [dx,dy] (offset from the target), moveSource?: [dx,dy], size?, feather?, opacity?, mode?: remove|heal|clone|fill|flat} — moving or resizing a spot Remove Dust added makes it an ordinary spot",
             has_active,
             |s, p| {
                 let c = "spot.update";
@@ -1029,6 +994,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     if let Some(m) = mode {
                         sp.mode = m;
+                    }
+                    // a spot Remove Dust added that the user moves or resizes becomes theirs (a later Remove Dust keeps it)
+                    if p.get("move").is_some() || p.get("size").is_some() {
+                        sp.auto = None;
                     }
                     Ok(())
                 })?;

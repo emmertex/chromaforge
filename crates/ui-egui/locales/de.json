@@ -3552,5 +3552,21 @@
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "Entfernt, was die ausgewählte Maske abdeckt (eine per Klick erstellte Objektauswahl, ein gemalter Bereich), mit einer inhaltsbasierten Füllung",
   "Generating fill": "Füllung wird generiert",
   "No API key yet: add yours in Settings → Generative Fill": "Noch kein API-Schlüssel: Füge deinen unter Einstellungen → Generatives Füllen hinzu",
-  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Du wirst einmal pro Dienst gefragt. Du kannst die Zustimmung jederzeit unter Einstellungen → Generatives Füllen widerrufen."
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Du wirst einmal pro Dienst gefragt. Du kannst die Zustimmung jederzeit unter Einstellungen → Generatives Füllen widerrufen.",
+  "Sensor": "Sensor",
+  "Fix hot and dead pixels": "Heiße und tote Pixel korrigieren",
+  "Replace single stuck, hot or dead sensor pixels. Pixels this camera has shown in several photos are always fixed.": "Ersetzt einzelne hängende, heiße oder tote Sensorpixel. Pixel, die diese Kamera in mehreren Fotos gezeigt hat, werden immer korrigiert.",
+  "Remove Dust": "Staub entfernen",
+  "Remove Dust from Selected": "Staub aus Auswahl entfernen",
+  "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have": "Heilt die kleinen, weichen dunklen Flecken, die Sensorstaub auf glatten Flächen hinterlässt, und den bekannten Staub dieser Kamera",
+  "Even Out": "Ausgleichen",
+  "Camera Sensor": "Kamerasensor",
+  "Rebuild Hot Pixel Map": "Karte heißer Pixel neu erstellen",
+  "Rebuild Sensor Dust Map": "Sensorstaub-Karte neu erstellen",
+  "Mapping hot pixels": "Heiße Pixel werden erfasst",
+  "Mapping sensor dust": "Sensorstaub wird erfasst",
+  "Removing dust": "Staub wird entfernt",
+  "Fix Hot and Dead Pixels": "Heiße und tote Pixel korrigieren",
+  "Remove dust on import": "Beim Import Staub entfernen",
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "Nach einem Import läuft „Staub entfernen“ im Hintergrund über die neuen Raw-Fotos (mit der Staubkarte ihrer Kamera)."
 }

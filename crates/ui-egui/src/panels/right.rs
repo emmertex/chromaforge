@@ -686,11 +686,21 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.label(egui::RichText::new(count_str).size(12.0).color(t.text_dim));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if text_button(ui, "findDust", crate::i18n::tr("Find Dust"), false)
-                    .on_hover_text(crate::i18n::tr("Automatically find and heal dust spots on smooth areas"))
+                let several = app.session.selection.ids.len() > 1;
+                let busy = app.session.sensor_job.as_ref().is_some_and(|j| !j.finished.load(std::sync::atomic::Ordering::Relaxed));
+                let label = if several { crate::i18n::tr("Remove Dust from Selected") } else { crate::i18n::tr("Remove Dust") };
+                if text_button(ui, "findDust", label, false)
+                    .on_hover_text(crate::i18n::tr(
+                        "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have",
+                    ))
                     .clicked()
+                    && !busy
                 {
                     match app.run("spot.findDust", json!({})) {
+                        Ok(r) if r.get("total").is_some() => {
+                            let n = r["total"].as_u64().unwrap_or(0);
+                            app.toast(ui.ctx(), crate::i18n::tr_format!("Removing dust from {n} photos", n = n));
+                        }
                         Ok(r) => {
                             let n = r["added"].as_u64().unwrap_or(0);
                             app.toast(
@@ -707,6 +717,26 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 }
             });
         });
+
+        // the camera body's dust map, when it has one
+        let body = app.session.source_info(id).pixels.and_then(|p| p.body);
+        if let Some(m) = body.as_deref().and_then(lcc_engine::sensor_maps::get).filter(|m| !m.dust.is_empty()) {
+            let confirmed = m.dust.iter().filter(|d| d.confirmed).count();
+            ui.label(
+                egui::RichText::new(crate::i18n::tr_format!(
+                    "Camera {} dust map: {} spots ({} confirmed)",
+                    lcc_engine::sensor_maps::body_label(&m.body),
+                    m.dust.len(),
+                    confirmed
+                ))
+                .size(11.0)
+                .color(t.text_dim),
+            );
+        }
+        let auto = d.spots.iter().filter(|sp| sp.auto.is_some()).count();
+        if auto > 0 {
+            ui.label(egui::RichText::new(crate::i18n::tr_format!("{} spot(s) from Remove Dust (outlined in amber)", auto)).size(11.0).color(t.text_dim));
+        }
 
         if d.spots.is_empty() {
             ui.add_space(2.0);
@@ -787,6 +817,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     lcc_develop::SpotMode::Remove => "Remove",
                     lcc_develop::SpotMode::Fill => "Content-Aware",
                     lcc_develop::SpotMode::Generate => "Generative",
+                    lcc_develop::SpotMode::Flat => "Even Out",
                 };
                 super::edit::sub_title(
                     ui,
@@ -810,6 +841,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 lcc_develop::SpotMode::Heal => "heal",
                 lcc_develop::SpotMode::Clone => "clone",
                 lcc_develop::SpotMode::Generate => "generate",
+                lcc_develop::SpotMode::Flat => "flat",
             };
             if let Some(new_mode) = mode_segmented_bar(ui, "selSpotMode", cur_mode) {
                 let _ = app.run("spot.update", json!({"index": i, "mode": new_mode}));
@@ -930,6 +962,24 @@ pub(crate) fn tool_overlay_options(app: &mut LccApp, ui: &mut egui::Ui) {
             }
         });
     });
+}
+
+/// Called every frame: a background Remove Dust's finished photos get their spots (`dust.pump`), and the window
+/// keeps redrawing while it runs.
+pub fn dust_pump(app: &mut LccApp, ctx: &egui::Context) {
+    let Some(job) = app.session.sensor_job.clone() else { return };
+    if job.what != "removeDust" {
+        return;
+    }
+    let running = !job.finished.load(std::sync::atomic::Ordering::Relaxed);
+    if let Ok(v) = app.session.execute("dust.pump", &json!({}))
+        && v["applied"].as_u64().unwrap_or(0) > 0
+    {
+        ctx.request_repaint();
+    }
+    if running {
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
 }
 
 fn red_eye(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {

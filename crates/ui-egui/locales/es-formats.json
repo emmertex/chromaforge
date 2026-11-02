@@ -333,5 +333,10 @@
   "{name} API key": "Clave de API de {name}",
   "Generated {} variations": "{} variaciones generadas",
   "Generative Fill failed: {e}": "El relleno generativo falló: {e}",
-  "Add your {} API key in Settings → Generative Fill first.": "Primero añade tu clave de API de {} en Ajustes → Relleno generativo."
+  "Add your {} API key in Settings → Generative Fill first.": "Primero añade tu clave de API de {} en Ajustes → Relleno generativo.",
+  "{} fixed in this photo": "{} corregidos en esta foto",
+  "{} fixed: {} known for camera {}, {} found in this photo": "{} corregidos: {} conocidos de la cámara {}, {} encontrados en esta foto",
+  "Removing dust from {n} photos": "Quitando polvo de {n} fotos",
+  "Camera {} dust map: {} spots ({} confirmed)": "Mapa de polvo de la cámara {}: {} manchas ({} confirmadas)",
+  "{} spot(s) from Remove Dust (outlined in amber)": "{} mancha(s) de «Quitar polvo» (contorno ámbar)"
 }

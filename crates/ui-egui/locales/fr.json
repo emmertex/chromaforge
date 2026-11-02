@@ -3651,5 +3651,21 @@
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "Supprime ce que couvre le masque sélectionné (une sélection d’objet faite d’un clic, une zone peinte) avec un remplissage d’après le contenu",
   "Generating fill": "Génération du remplissage",
   "No API key yet: add yours in Settings → Generative Fill": "Pas encore de clé API : ajoutez la vôtre dans Réglages → Remplissage génératif",
-  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "La question est posée une fois par service. Retirez votre accord à tout moment dans Réglages → Remplissage génératif."
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "La question est posée une fois par service. Retirez votre accord à tout moment dans Réglages → Remplissage génératif.",
+  "Sensor": "Capteur",
+  "Fix hot and dead pixels": "Corriger les pixels chauds et morts",
+  "Replace single stuck, hot or dead sensor pixels. Pixels this camera has shown in several photos are always fixed.": "Remplace les pixels isolés du capteur bloqués, chauds ou morts. Les pixels que cet appareil a montrés sur plusieurs photos sont toujours corrigés.",
+  "Remove Dust": "Supprimer la poussière",
+  "Remove Dust from Selected": "Supprimer la poussière de la sélection",
+  "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have": "Corrige les petites taches sombres et douces que la poussière du capteur laisse sur les zones unies, ainsi que la poussière connue de cet appareil",
+  "Even Out": "Égaliser",
+  "Camera Sensor": "Capteur de l’appareil",
+  "Rebuild Hot Pixel Map": "Reconstruire la carte des pixels chauds",
+  "Rebuild Sensor Dust Map": "Reconstruire la carte de poussière du capteur",
+  "Mapping hot pixels": "Recherche des pixels chauds",
+  "Mapping sensor dust": "Recherche de la poussière du capteur",
+  "Removing dust": "Suppression de la poussière",
+  "Fix Hot and Dead Pixels": "Corriger les pixels chauds et morts",
+  "Remove dust on import": "Supprimer la poussière à l’importation",
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "Après une importation, « Supprimer la poussière » s’applique en arrière-plan aux nouvelles photos raw (avec la carte de poussière de leur appareil)."
 }

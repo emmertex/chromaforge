@@ -2469,5 +2469,21 @@
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "Elimina lo que cubre la máscara seleccionada (una selección de objeto hecha con un clic, una zona pintada) con un relleno según el contenido",
   "Generating fill": "Generando relleno",
   "No API key yet: add yours in Settings → Generative Fill": "Aún no hay clave de API: añade la tuya en Ajustes → Relleno generativo",
-  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Se te pregunta una vez por servicio. Retíralo cuando quieras en Ajustes → Relleno generativo."
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Se te pregunta una vez por servicio. Retíralo cuando quieras en Ajustes → Relleno generativo.",
+  "Sensor": "Sensor",
+  "Fix hot and dead pixels": "Corregir píxeles calientes y muertos",
+  "Replace single stuck, hot or dead sensor pixels. Pixels this camera has shown in several photos are always fixed.": "Sustituye píxeles sueltos del sensor atascados, calientes o muertos. Los píxeles que esta cámara ha mostrado en varias fotos se corrigen siempre.",
+  "Remove Dust": "Quitar polvo",
+  "Remove Dust from Selected": "Quitar polvo de la selección",
+  "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have": "Corrige las pequeñas manchas oscuras y suaves que deja el polvo del sensor en zonas lisas, y el polvo conocido de esta cámara",
+  "Even Out": "Igualar",
+  "Camera Sensor": "Sensor de la cámara",
+  "Rebuild Hot Pixel Map": "Rehacer mapa de píxeles calientes",
+  "Rebuild Sensor Dust Map": "Rehacer mapa de polvo del sensor",
+  "Mapping hot pixels": "Buscando píxeles calientes",
+  "Mapping sensor dust": "Buscando polvo del sensor",
+  "Removing dust": "Quitando polvo",
+  "Fix Hot and Dead Pixels": "Corregir píxeles calientes y muertos",
+  "Remove dust on import": "Quitar polvo al importar",
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "Tras una importación, «Quitar polvo» se aplica en segundo plano a las nuevas fotos raw (con el mapa de polvo de su cámara)."
 }

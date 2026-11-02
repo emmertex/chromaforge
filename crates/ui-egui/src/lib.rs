@@ -1816,6 +1816,7 @@ impl LccApp {
         self.session.persist_if_dirty();
         panels::denoise::pump(self, ctx);
         panels::plugin_filters::pump(self, ctx);
+        panels::right::dust_pump(self, ctx);
         panels::faces::pump(self, ctx);
         focus_scan::pump(self, ctx);
         enhance_pump::pump(self, ctx);

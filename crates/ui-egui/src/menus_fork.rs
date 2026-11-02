@@ -177,7 +177,7 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
                         lcc_develop::SpotMode::Remove => "heal",
                         lcc_develop::SpotMode::Heal => "clone",
                         lcc_develop::SpotMode::Clone => "fill",
-                        lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate => "remove",
+                        lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate | lcc_develop::SpotMode::Flat => "remove",
                     };
                     app.run("spot.update", json!({"index": i, "mode": next})).map(|_| json!({"mode": next}))
                 }

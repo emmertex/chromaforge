@@ -340,6 +340,7 @@ fn with_spot(mode: lcc_develop::SpotMode, at: (f64, f64), offset: Option<(f64, f
         opacity: 100.0,
         source_offset: offset.map(|(x, y)| Point::new(x, y)),
         generated: None,
+        auto: None,
     });
     s
 }

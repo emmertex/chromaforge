@@ -2465,5 +2465,21 @@
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "Вилучає те, що покриває вибрана маска (виділення об’єкта клацанням, зафарбована ділянка), заповненням з урахуванням вмісту",
   "Generating fill": "Створення заповнення",
   "No API key yet: add yours in Settings → Generative Fill": "API-ключа ще немає: додайте свій у «Налаштування → Генеративне заповнення»",
-  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Запит робиться один раз для кожного сервісу. Відкликати згоду можна будь-коли в «Налаштування → Генеративне заповнення»."
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Запит робиться один раз для кожного сервісу. Відкликати згоду можна будь-коли в «Налаштування → Генеративне заповнення».",
+  "Sensor": "Сенсор",
+  "Fix hot and dead pixels": "Виправляти гарячі й биті пікселі",
+  "Replace single stuck, hot or dead sensor pixels. Pixels this camera has shown in several photos are always fixed.": "Замінює окремі застряглі, гарячі або биті пікселі сенсора. Пікселі, які ця камера показала на кількох фото, виправляються завжди.",
+  "Remove Dust": "Видалити пил",
+  "Remove Dust from Selected": "Видалити пил із вибраних",
+  "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have": "Прибирає невеликі м’які темні плями, які пил на сенсорі лишає на рівних ділянках, і відомий пил цієї камери",
+  "Even Out": "Вирівняти",
+  "Camera Sensor": "Сенсор камери",
+  "Rebuild Hot Pixel Map": "Перебудувати карту гарячих пікселів",
+  "Rebuild Sensor Dust Map": "Перебудувати карту пилу сенсора",
+  "Mapping hot pixels": "Пошук гарячих пікселів",
+  "Mapping sensor dust": "Пошук пилу на сенсорі",
+  "Removing dust": "Видалення пилу",
+  "Fix Hot and Dead Pixels": "Виправляти гарячі й биті пікселі",
+  "Remove dust on import": "Видаляти пил під час імпорту",
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "Після імпорту «Видалити пил» виконується у фоні для нових raw-фото (з картою пилу їхньої камери)."
 }

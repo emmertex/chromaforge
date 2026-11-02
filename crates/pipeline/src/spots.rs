@@ -260,6 +260,31 @@ fn box_pad(mode: SpotMode) -> f32 {
     if mode == SpotMode::Fill { 2.0 } else { 1.5 }
 }
 
+/// Even Out ([`SpotMode::Flat`]): per pixel and channel, the gain that lifts the box's smooth tone under the stroke
+/// to the tone its surroundings reach there (a membrane-like interpolation from outside the stroke, as Heal's tone
+/// correction), so a soft shadow — sensor dust, a transmission dip — is divided out and the texture inside stays.
+fn flat_gain(tgt: &[[f32; 3]], alpha: &[f32], bw: usize, bh: usize, r: f32) -> Vec<[f32; 3]> {
+    let outside: Vec<f32> = alpha.iter().map(|a| if *a < 0.02 { 1.0 } else { 0.0 }).collect();
+    let around = Rgb32f { width: bw, height: bh, data: tgt.iter().zip(&outside).map(|(t, m)| [t[0] * m, t[1] * m, t[2] * m]).collect() };
+    let wts = lcc_raster::Plane { width: bw, height: bh, data: outside };
+    let sigma = (r * 0.6).max(1.0);
+    let (ba, bm) = (lcc_raster::blur::gaussian(&around, sigma), lcc_raster::blur::gaussian(&wts, sigma));
+    // the spot's own smooth tone: blurred finer than the shadow, coarser than grain
+    let own = lcc_raster::blur::gaussian(&Rgb32f { width: bw, height: bh, data: tgt.to_vec() }, (r * 0.15).max(1.0));
+    ba.data
+        .iter()
+        .zip(&bm.data)
+        .zip(&own.data)
+        .map(|((a, m), o)| {
+            let m = m.max(1e-4);
+            std::array::from_fn(|c| {
+                let (want, has) = (a[c] / m, o[c]);
+                if has > 1e-5 && want.is_finite() { (want / has).clamp(0.5, 3.0) } else { 1.0 }
+            })
+        })
+        .collect()
+}
+
 /// Content-aware fill of the box: `src` becomes `tgt` with every pixel under the stroke (`alpha > 0`)
 /// rebuilt from the rest of the box. Falls back to a smooth membrane fill when the box holds no whole
 /// patch to copy from.
@@ -337,8 +362,9 @@ pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64,
             .collect();
         let Some(&first) = pts.first() else { continue };
         let fill = matches!(spot.mode, SpotMode::Fill | SpotMode::Generate);
+        let flat = spot.mode == SpotMode::Flat;
         let offset = match spot.source_offset {
-            _ if fill => (0.0, 0.0),
+            _ if fill || flat => (0.0, 0.0),
             Some(o) => {
                 let a = to_out.apply(Point::new(0.0, 0.0));
                 let b = to_out.apply(o);
@@ -462,6 +488,7 @@ pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64,
         } else {
             None
         };
+        let gain = if flat { Some(flat_gain(&tgt, &alpha, bw, bh, r)) } else { None };
         for y in 0..bh {
             for x in 0..bw {
                 let i = y * bw + x;
@@ -473,6 +500,9 @@ pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64,
                 if let Some(l) = &low {
                     let d = l.data[i];
                     v = [v[0] + d[0], v[1] + d[1], v[2] + d[2]];
+                }
+                if let Some(g) = gain.as_ref().and_then(|g| g.get(i)) {
+                    v = [tgt[i][0] * g[0], tgt[i][1] * g[1], tgt[i][2] * g[2]];
                 }
                 let t = tgt[i];
                 img.set(bx0 + x, by0 + y, [t[0] + (v[0] - t[0]) * a, t[1] + (v[1] - t[1]) * a, t[2] + (v[2] - t[2]) * a].map(|c| c.max(0.0)));
@@ -531,6 +561,30 @@ mod tests {
             assert_eq!(img.get(x + radius as usize, y), original.get(x + radius as usize, y), "radius stays unchanged at {w}px");
             assert!(img.data.iter().flatten().all(|v| v.is_finite()));
         }
+    }
+
+    /// Even Out lifts a soft dust shadow on a textured gradient and keeps the texture inside it.
+    #[test]
+    fn even_out_divides_out_a_soft_shadow_and_keeps_texture() {
+        let tex = |x: usize, y: usize| 0.02 * (((x * 7 + y * 13) % 5) as f32 - 2.0) / 2.0;
+        let clean = Rgb32f::from_fn(160, 120, |x, y| [0.3 + 0.001 * x as f32 + tex(x, y); 3]);
+        let mut img = clean.clone();
+        for y in 0..120 {
+            for x in 0..160 {
+                let d2 = (x as f32 - 80.0).powi(2) + (y as f32 - 60.0).powi(2);
+                let t = 1.0 - 0.12 * (-d2 / (2.0 * 6.0 * 6.0)).exp();
+                let c = img.get(x, y);
+                img.set(x, y, c.map(|v| v * t));
+            }
+        }
+        let frame = Frame::new(160, 120, &DevelopSettings::default(), true);
+        let spot = Spot { mode: SpotMode::Flat, points: vec![Point::new(0.5, 0.5)], size: 16.0 / 160.0, feather: 50.0, ..Default::default() };
+        apply(&mut img, &[spot], &frame, frame.px_per_long(160));
+        // the centre is back to its tone, and the pattern is still there (not a smooth patch)
+        let err = |x: usize, y: usize| (img.get(x, y)[0] - clean.get(x, y)[0]).abs();
+        assert!(err(80, 60) < 0.012, "{} vs {}", img.get(80, 60)[0], clean.get(80, 60)[0]);
+        let (a, b) = (img.get(80, 60)[0] - img.get(81, 60)[0], clean.get(80, 60)[0] - clean.get(81, 60)[0]);
+        assert!((a - b).abs() < 0.008, "texture kept: {a} vs {b}");
     }
 
     /// Vertical stripes (period `period` px) with a black blot over the middle.

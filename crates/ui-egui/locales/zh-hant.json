@@ -2270,5 +2270,21 @@
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "用內容感知填充移除所選遮色片覆蓋的內容（點擊得到的物件選取範圍、筆刷塗抹的區域）",
   "Generating fill": "正在生成填充",
   "No API key yet: add yours in Settings → Generative Fill": "尚無 API 金鑰：請在 設定 → 生成式填充 中新增",
-  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "每個服務只詢問一次。可隨時在 設定 → 生成式填充 中撤回。"
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "每個服務只詢問一次。可隨時在 設定 → 生成式填充 中撤回。",
+  "Sensor": "感光元件",
+  "Fix hot and dead pixels": "修復熱像素與壞點",
+  "Replace single stuck, hot or dead sensor pixels. Pixels this camera has shown in several photos are always fixed.": "替換單一卡住、過熱或失效的感光元件像素。此相機在多張照片中出現過的像素一律會修復。",
+  "Remove Dust": "去除灰塵",
+  "Remove Dust from Selected": "去除所選照片的灰塵",
+  "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have": "修復感光元件灰塵在平滑區域留下的柔和小暗斑，以及此相機已知的灰塵",
+  "Even Out": "均勻化",
+  "Camera Sensor": "相機感光元件",
+  "Rebuild Hot Pixel Map": "重建熱像素圖",
+  "Rebuild Sensor Dust Map": "重建感光元件灰塵圖",
+  "Mapping hot pixels": "正在記錄熱像素",
+  "Mapping sensor dust": "正在記錄感光元件灰塵",
+  "Removing dust": "正在去除灰塵",
+  "Fix Hot and Dead Pixels": "修復熱像素與壞點",
+  "Remove dust on import": "匯入時去除灰塵",
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "匯入後，在背景對新的 RAW 照片執行「去除灰塵」（包括其相機的灰塵圖）。"
 }

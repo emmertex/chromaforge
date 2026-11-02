@@ -518,6 +518,13 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).",
         ),
     );
+    let mut dust = d.remove_dust;
+    row(ui, t, "", |ui| {
+        if check(ui, "settings.removeDust", &mut dust, "Remove dust on import") {
+            let _ = app.run("library.preferences", json!({"import": {"removeDust": dust}}));
+        }
+    });
+    hint(ui, t, crate::i18n::tr("After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included)."));
     if per {
         let cams = cameras(app);
         if cams.is_empty() {

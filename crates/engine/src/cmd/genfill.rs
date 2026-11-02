@@ -344,5 +344,5 @@ fn spot_from_mask(s: &mut Session, id: crate::PhotoId, mid: u32, mode: SpotMode)
         }
     }
     let size = (r / w.max(h) as f64).clamp(super::masks::SPOT_SIZE.0, super::masks::SPOT_SIZE.1);
-    Ok(Spot { mode, points, size, feather: 30.0, opacity: 100.0, source_offset: None, generated: None })
+    Ok(Spot { mode, points, size, feather: 30.0, opacity: 100.0, source_offset: None, generated: None, auto: None })
 }

@@ -2311,5 +2311,21 @@
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "Remove o que a máscara selecionada cobre (uma seleção de objeto feita com um clique, uma área pintada) com um preenchimento baseado no conteúdo",
   "Generating fill": "Gerando preenchimento",
   "No API key yet: add yours in Settings → Generative Fill": "Ainda sem chave de API: adicione a sua em Configurações → Preenchimento generativo",
-  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Você é consultado uma vez por serviço. Retire a qualquer momento em Configurações → Preenchimento generativo."
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Você é consultado uma vez por serviço. Retire a qualquer momento em Configurações → Preenchimento generativo.",
+  "Sensor": "Sensor",
+  "Fix hot and dead pixels": "Corrigir pixels quentes e mortos",
+  "Replace single stuck, hot or dead sensor pixels. Pixels this camera has shown in several photos are always fixed.": "Substitui pixels isolados do sensor travados, quentes ou mortos. Pixels que esta câmera mostrou em várias fotos são sempre corrigidos.",
+  "Remove Dust": "Remover poeira",
+  "Remove Dust from Selected": "Remover poeira da seleção",
+  "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have": "Corrige as pequenas manchas escuras e suaves que a poeira do sensor deixa em áreas lisas, e a poeira conhecida desta câmera",
+  "Even Out": "Uniformizar",
+  "Camera Sensor": "Sensor da câmera",
+  "Rebuild Hot Pixel Map": "Refazer mapa de pixels quentes",
+  "Rebuild Sensor Dust Map": "Refazer mapa de poeira do sensor",
+  "Mapping hot pixels": "Mapeando pixels quentes",
+  "Mapping sensor dust": "Mapeando poeira do sensor",
+  "Removing dust": "Removendo poeira",
+  "Fix Hot and Dead Pixels": "Corrigir pixels quentes e mortos",
+  "Remove dust on import": "Remover poeira ao importar",
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "Depois de uma importação, “Remover poeira” roda em segundo plano nas novas fotos raw (com o mapa de poeira da câmera delas)."
 }

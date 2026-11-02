@@ -338,5 +338,10 @@
   "{name} API key": "{name} API 密钥",
   "Generated {} variations": "已生成 {} 个变体",
   "Generative Fill failed: {e}": "生成式填充失败：{e}",
-  "Add your {} API key in Settings → Generative Fill first.": "请先在 设置 → 生成式填充 中添加你的 {} API 密钥。"
+  "Add your {} API key in Settings → Generative Fill first.": "请先在 设置 → 生成式填充 中添加你的 {} API 密钥。",
+  "{} fixed in this photo": "本照片中修复了 {} 个",
+  "{} fixed: {} known for camera {}, {} found in this photo": "已修复 {} 个：相机已知 {} 个（{}），本照片中发现 {} 个",
+  "Removing dust from {n} photos": "正在去除 {n} 张照片的灰尘",
+  "Camera {} dust map: {} spots ({} confirmed)": "相机 {} 灰尘图：{} 个斑点（已确认 {} 个）",
+  "{} spot(s) from Remove Dust (outlined in amber)": "来自“去除灰尘”的斑点 {} 个（琥珀色轮廓）"
 }

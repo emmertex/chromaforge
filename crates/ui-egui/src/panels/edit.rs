@@ -370,6 +370,26 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 if super::settings::check(ui, "detail.nrOutliers", &mut on, "Remove Hot Pixels") {
                     let _ = app.run("develop.merge", json!({"settings": {"detail": {"nr_outliers": on}}, "label": "Remove Hot Pixels"}));
                 }
+                // hot, dead and stuck pixels this camera body has shown (its sensor map) and the clear ones in this photo
+                let mut fix = d.sensor.fixes_pixels();
+                if super::settings::check(ui, "sensor.pixelFix", &mut fix, "Fix Hot and Dead Pixels") {
+                    let _ = app.run("develop.set", json!({"control": "sensor.pixelFix", "value": if fix { 1.0 } else { 0.0 }}));
+                }
+                if let Some(px) = app.session.source_info(id).pixels.filter(|p| p.on) {
+                    let label = px.body.as_deref().map(lcc_engine::sensor_maps::body_label).unwrap_or_default();
+                    let text = if label.is_empty() {
+                        crate::i18n::tr_format!("{} fixed in this photo", px.found)
+                    } else {
+                        crate::i18n::tr_format!(
+                            "{} fixed: {} known for camera {}, {} found in this photo",
+                            px.from_map + px.found,
+                            px.from_map,
+                            label,
+                            px.found
+                        )
+                    };
+                    ui.label(egui::RichText::new(text).size(11.0).color(Tokens::get(ui.ctx()).text_dim));
+                }
             });
         }
         ui.add_space(8.0);

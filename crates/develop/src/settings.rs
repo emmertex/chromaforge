@@ -310,6 +310,10 @@ pub struct DevelopSettings {
     /// settings group, so copy, paste, sync and presets never carry it).
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     pub skin_analysis: Option<SkinAnalysis>,
+    /// Sensor repairs made on the raw data before it is developed (hot, dead and stuck pixels). Not written while
+    /// it is the default (on), so settings from before it existed keep their JSON and hash.
+    #[serde(skip_serializing_if = "Sensor::is_default")]
+    pub sensor: Sensor,
     /// Section on/off toggles (the "eye" buttons on panel headers): section id → enabled.
     #[serde(deserialize_with = "capped::<MAX_DISABLED_SECTIONS, _, _>")]
     pub disabled_sections: Vec<String>,
@@ -404,9 +408,37 @@ impl Default for DevelopSettings {
             calibration: Calibration::default(),
             skin: SkinSmoothing::default(),
             skin_analysis: None,
+            sensor: Sensor::default(),
             disabled_sections: Vec::new(),
             plugin_filters: Vec::new(),
         }
+    }
+}
+
+/// Sensor repairs on a raw photo's data, before demosaic (`lcc_raw::defects`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sensor {
+    /// Fix hot, dead and stuck pixels: 1 = on (the default: the camera body's known defects and the clear ones this
+    /// photo shows), 0 = off (the data as the camera recorded it). A number so it is a develop control
+    /// (`sensor.pixelFix`).
+    pub pixel_fix: f64,
+}
+
+impl Default for Sensor {
+    fn default() -> Self {
+        Self { pixel_fix: 1.0 }
+    }
+}
+
+impl Sensor {
+    pub fn is_default(&self) -> bool {
+        *self == Sensor::default()
+    }
+
+    /// Whether hot, dead and stuck pixels are fixed.
+    pub fn fixes_pixels(&self) -> bool {
+        self.pixel_fix >= 0.5 || self.pixel_fix.is_nan()
     }
 }
 
@@ -1468,6 +1500,9 @@ pub enum SpotMode {
     Clone,
     /// Content-aware: the spot is rebuilt from patches of its surroundings (no single source).
     Fill,
+    /// Even out (flat-field): the spot keeps its own pixels and is lifted by the smooth gain that brings its tone to
+    /// its surroundings' (divides by the estimated transmission of a sensor dust shadow). No source.
+    Flat,
     /// Generative: the spot is filled by a cloud image model the user chose (their own API key),
     /// stored as a patch of the photo's own pixels ([`GenFill`]). Until it is generated (or when
     /// its patch file is missing) it renders like [`SpotMode::Fill`].
@@ -1526,11 +1561,14 @@ pub struct Spot {
     /// The generated patches of a [`SpotMode::Generate`] spot (none until generated).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generated: Option<GenFill>,
+    /// Added by an automatic finder (Remove Dust), not drawn by hand; `None` once the user moves or resizes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto: Option<AutoSpot>,
 }
 
 impl Default for Spot {
     fn default() -> Self {
-        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None, generated: None }
+        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None, generated: None, auto: None }
     }
 }
 
@@ -1557,6 +1595,27 @@ impl Spot {
     pub fn shown_gen(&self) -> Option<&GenFill> {
         self.generated.as_ref().filter(|g| self.mode == SpotMode::Generate && g.stroke == self.stroke_key() && GenFill::valid_id(&g.id))
     }
+}
+
+/// What added a spot automatically.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoSpotKind {
+    /// Sensor dust.
+    Dust,
+}
+
+/// A spot an automatic finder added: what it is and how sure it was.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoSpot {
+    pub kind: AutoSpotKind,
+    /// The camera body's dust map has it (seen in several photos), rather than this photo alone.
+    #[serde(default)]
+    pub confirmed: bool,
+    /// 0..1.
+    #[serde(default)]
+    pub confidence: f32,
 }
 
 /// A red eye / pet eye correction: the user's ellipse (centre normalized, radii as fractions of

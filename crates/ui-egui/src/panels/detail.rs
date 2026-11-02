@@ -3597,7 +3597,7 @@ fn spot_pin(p: &egui::Painter, c: Pos2, sel: bool, mode: lcc_develop::SpotMode) 
     p.circle_stroke(c, pin_r, Stroke::new(1.5, Color32::WHITE));
     let icon_rect = Rect::from_center_size(c, vec2(11.0, 11.0));
     let icon = match mode {
-        lcc_develop::SpotMode::Heal => crate::icons::Icon::Bandage,
+        lcc_develop::SpotMode::Heal | lcc_develop::SpotMode::Flat => crate::icons::Icon::Bandage,
         lcc_develop::SpotMode::Clone => crate::icons::Icon::Stamp,
         lcc_develop::SpotMode::Remove => crate::icons::Icon::Eraser,
         lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate => crate::icons::Icon::Sparkle,
@@ -3896,8 +3896,16 @@ fn extract_stroke_contour(pts: &[Pos2], r: f32, feather: f64) -> Vec<Vec<Pos2>> 
 
 /// Renders a unified outer perimeter with a 1px solid white outline and a 1px subtle dark drop-shadow/halo.
 fn draw_unified_outline(p: &egui::Painter, loops: &[Vec<Pos2>], offset: egui::Vec2, sel: bool) {
+    draw_tinted_outline(p, loops, offset, sel, None);
+}
+
+/// [`draw_unified_outline`] in `tint` instead of white (Remove Dust's spots), drawn a little wider.
+fn draw_tinted_outline(p: &egui::Painter, loops: &[Vec<Pos2>], offset: egui::Vec2, sel: bool, tint: Option<Color32>) {
     let halo_stroke = Stroke::new(2.5, if sel { Color32::from_black_alpha(150) } else { Color32::from_black_alpha(80) });
-    let outline_stroke = Stroke::new(1.0, if sel { Color32::WHITE } else { Color32::from_white_alpha(130) });
+    let outline_stroke = match tint {
+        Some(c) => Stroke::new(if sel { 2.0 } else { 1.5 }, c),
+        None => Stroke::new(1.0, if sel { Color32::WHITE } else { Color32::from_white_alpha(130) }),
+    };
 
     for loop_pts in loops {
         if loop_pts.len() < 3 {
@@ -3966,7 +3974,13 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
             fresh
         });
 
-        draw_unified_outline(p, &loops, egui::Vec2::ZERO, sel);
+        // Remove Dust's spots: amber (the camera's known dust) or yellow (found in this photo alone); with Visualize
+        // Spots on they stand out more
+        let tint = s.auto.map(|a| {
+            let alpha = if sel || app.ui.visualize_spots { 255 } else { 190 };
+            if a.confirmed { Color32::from_rgba_unmultiplied(255, 166, 0, alpha) } else { Color32::from_rgba_unmultiplied(255, 228, 92, alpha) }
+        });
+        draw_tinted_outline(p, &loops, egui::Vec2::ZERO, sel, tint);
 
         if s.mode != lcc_develop::SpotMode::Fill
             && let Some(o) = s.source_offset.filter(|_| sel)

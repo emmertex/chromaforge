@@ -38,6 +38,7 @@ pub mod display;
 pub mod doc_path;
 pub mod enhance;
 mod errors;
+pub mod dust_map;
 pub mod export;
 pub mod export_video;
 pub mod face_download;
@@ -97,6 +98,7 @@ pub mod remote;
 pub mod rename;
 pub mod render_dng;
 pub mod segment;
+pub mod sensor_maps;
 pub mod sidecar;
 #[cfg(not(target_arch = "wasm32"))]
 mod sidecar_writer;
@@ -493,6 +495,8 @@ pub struct Session {
     pub genfill: genfill::GenfillState,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
+    /// The camera sensor map build or batch Remove Dust running in the background, or the last one.
+    pub sensor_job: Option<std::sync::Arc<cmd::sensor::SensorJob>>,
     /// Develop defaults applied on import (persisted in prefs.json).
     pub import_defaults: import::ImportDefaults,
     /// The default camera profile per camera model (`""` = every camera; persisted in prefs.json,
@@ -686,6 +690,7 @@ impl Session {
             genfill: Default::default(),
             preview_build: None,
             slideshow_export: None,
+            sensor_job: None,
             import_defaults: import::ImportDefaults::default(),
             camera_profile_defaults: Default::default(),
             cache_mb: 0,
@@ -1876,6 +1881,8 @@ mod tests_process;
 mod tests_recheck;
 #[cfg(test)]
 mod tests_segment;
+#[cfg(test)]
+mod tests_sensor;
 #[cfg(test)]
 mod tests_settings_files;
 #[cfg(test)]

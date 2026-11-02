@@ -997,6 +997,7 @@ fn windows_match() {
             feather: 30.0,
             opacity: 100.0,
             source_offset: Some(Point::new(0.15, 0.0)),
+            auto: None,
             ..Default::default()
         });
     }));

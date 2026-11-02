@@ -2465,5 +2465,21 @@
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "選択したマスクの範囲（クリックで作ったオブジェクト選択、ブラシで塗った範囲）をコンテンツに応じた塗りつぶしで除去します",
   "Generating fill": "塗りつぶしを生成中",
   "No API key yet: add yours in Settings → Generative Fill": "API キーがまだありません：設定 → 生成塗りつぶし で追加してください",
-  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "サービスごとに一度だけ確認します。設定 → 生成塗りつぶし でいつでも取り消せます。"
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "サービスごとに一度だけ確認します。設定 → 生成塗りつぶし でいつでも取り消せます。",
+  "Sensor": "センサー",
+  "Fix hot and dead pixels": "ホットピクセルとデッドピクセルを補正",
+  "Replace single stuck, hot or dead sensor pixels. Pixels this camera has shown in several photos are always fixed.": "固着・ホット・デッドのセンサー画素を1つずつ置き換えます。このカメラで複数の写真に現れた画素は常に補正されます。",
+  "Remove Dust": "ダストを除去",
+  "Remove Dust from Selected": "選択した写真のダストを除去",
+  "Heal the small, soft dark spots sensor dust leaves on smooth areas, and the dust this camera is known to have": "センサーダストが平坦な部分に残す小さくぼやけた暗い斑点と、このカメラで既知のダストを修復します",
+  "Even Out": "均す",
+  "Camera Sensor": "カメラセンサー",
+  "Rebuild Hot Pixel Map": "ホットピクセルマップを再作成",
+  "Rebuild Sensor Dust Map": "センサーダストマップを再作成",
+  "Mapping hot pixels": "ホットピクセルを調査中",
+  "Mapping sensor dust": "センサーダストを調査中",
+  "Removing dust": "ダストを除去中",
+  "Fix Hot and Dead Pixels": "ホットピクセルとデッドピクセルを補正",
+  "Remove dust on import": "読み込み時にダストを除去",
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "読み込み後、新しい RAW 写真に対して「ダストを除去」をバックグラウンドで実行します（カメラのダストマップも使用）。"
 }

@@ -142,7 +142,7 @@ pub type FileLoader = Arc<dyn Fn(&str, usize, LoadOptions) -> Result<(Rgb32f, So
 
 /// The photo's settings a decode depends on: decoded sources are cached with them ([`DecodedSource::options`]) and
 /// decoded again when they change.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadOptions {
     /// Where a raw without colour matrices takes its starting colour from (`Profile::camera_colour`).
     pub colour: lcc_develop::CameraColour,
@@ -151,11 +151,35 @@ pub struct LoadOptions {
     /// How a raw's colour model is chosen (`Profile::camera`): empty for its camera's default, `lc` for the app's own
     /// colour, `dcp:<id>` for an imported camera profile (`.dcp`).
     pub camera: String,
+    /// Correct the raw's hot, dead and stuck pixels (`sensor.pixelFix`): the camera body's known ones
+    /// and the clear ones this photo shows (`crate::files::repair_pixels`).
+    pub pixel_fix: bool,
+    /// The file being decoded, set by the filesystem loaders: names the camera body when the raw has
+    /// no serial number (`crate::sensor_maps::body_key`). Not a setting: [`DecodedSource::serves`]
+    /// ignores it.
+    pub path: Option<String>,
+}
+
+impl Default for LoadOptions {
+    fn default() -> Self {
+        LoadOptions { colour: Default::default(), outliers: false, camera: String::new(), pixel_fix: true, path: None }
+    }
 }
 
 impl LoadOptions {
     pub fn of(s: &DevelopSettings) -> LoadOptions {
-        LoadOptions { colour: s.profile.camera_colour, outliers: s.detail.nr_outliers, camera: s.profile.camera.clone() }
+        LoadOptions {
+            colour: s.profile.camera_colour,
+            outliers: s.detail.nr_outliers,
+            camera: s.profile.camera.clone(),
+            pixel_fix: s.sensor.fixes_pixels(),
+            path: None,
+        }
+    }
+
+    /// These options for a decode of the file at `path`.
+    pub fn at(self, path: &str) -> LoadOptions {
+        LoadOptions { path: Some(path.to_string()), ..self }
     }
 }
 
@@ -239,7 +263,8 @@ impl DecodedSource {
         self.from_proxy
             || ((self.options.outliers == options.outliers || !info.is_some_and(|i| i.raw))
                 && (self.options.colour == options.colour || !info.is_some_and(|i| i.colorimetric))
-                && (self.options.camera == options.camera || !info.is_some_and(|i| i.raw)))
+                && (self.options.camera == options.camera || !info.is_some_and(|i| i.raw))
+                && (self.options.pixel_fix == options.pixel_fix || !info.is_some_and(|i| i.raw)))
     }
 
     /// The picture to develop for a Denoise `amount` (0 to 1, see [`DevelopSettings::denoise_amount`]): the plain one,
@@ -523,6 +548,8 @@ pub struct MediaCache {
     /// [`ProfileFacts`]): kept when the decoded sources go, so those rows do not vanish while a source is decoded
     /// again or evicted, which would move every control under them.
     profile_facts: HashMap<PhotoId, ProfileFacts>,
+    /// The camera bodies' corrections the decoded sources were made with ([`crate::sensor_maps::generation`]).
+    sensor_generation: u64,
 }
 
 /// File facts that decide whether the Edit panel's Profile section shows an option: a camera model with measured
@@ -604,6 +631,7 @@ impl Default for MediaCache {
             rendered: Arc::new(PreviewCache::memory(rendered_budget(budget))),
             denoise: DenoiseIndex::default(),
             profile_facts: HashMap::new(),
+            sensor_generation: 0,
         }
     }
 }
@@ -723,6 +751,16 @@ impl MediaCache {
     }
 
     fn get_source(&mut self, id: PhotoId, level: SourceLevel) -> Option<DecodedSource> {
+        // a camera body's corrections changed (a pixel was confirmed): raws decoded before are out of date
+        let generation = crate::sensor_maps::generation();
+        if generation != self.sensor_generation {
+            if self.sensor_generation != 0 {
+                self.thumbs = Lru::new(THUMB_SOURCE_BYTES.min(self.budget));
+                self.previews.clear();
+                self.full.clear();
+            }
+            self.sensor_generation = generation;
+        }
         match level {
             SourceLevel::Thumb => self.thumbs.get(&id).cloned(),
             SourceLevel::Preview => self.previews.iter_mut().find(|e| e.0 == id).map(|e| {
@@ -1621,7 +1659,12 @@ impl crate::Session {
             ^ salt;
         let cache = thumb_bucket.map(|b| {
             let mut k = Hasher128::new();
-            k.str(&content_key).u64(settings_hash).u64(b as u64).u64(RENDER_CACHE_VERSION).u64(crate::camera_profiles::cache_key());
+            k.str(&content_key)
+                .u64(settings_hash)
+                .u64(b as u64)
+                .u64(RENDER_CACHE_VERSION)
+                .u64(crate::camera_profiles::cache_key())
+                .u64(crate::sensor_maps::generation());
             // (only a render that uses a denoised picture has it in its key, so every other thumbnail stays valid)
             if salt != 0 {
                 k.u64(salt);
@@ -1670,6 +1713,7 @@ impl crate::Session {
             .u64(edge as u64)
             .u64(RENDER_CACHE_VERSION)
             .u64(crate::camera_profiles::cache_key())
+            .u64(crate::sensor_maps::generation())
             .finish()
     }
 
@@ -1789,6 +1833,7 @@ impl crate::Session {
             .u64(apply_crop as u64)
             .u64(RENDER_CACHE_VERSION)
             .u64(crate::camera_profiles::cache_key())
+            .u64(crate::sensor_maps::generation())
             .finish()
     }
 
@@ -2210,6 +2255,7 @@ mod thumbnail_hash_tests {
                 .u64(b as u64)
                 .u64(RENDER_CACHE_VERSION)
                 .u64(crate::camera_profiles::cache_key())
+                .u64(crate::sensor_maps::generation())
                 .finish();
             let job = s.thumb_job(p.id, edge).unwrap();
             assert_eq!(job.key, expected);
@@ -2913,6 +2959,7 @@ mod tests {
             points: vec![lcc_geom::Point::new(0.2, 0.5)],
             size: 0.01,
             source_offset: Some(lcc_geom::Point::new(0.6, 0.0)),
+            auto: None,
             ..Default::default()
         });
         s.set_develop(id, d, "Spot").unwrap();
