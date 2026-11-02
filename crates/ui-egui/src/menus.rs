@@ -362,6 +362,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.showInFinder", "Show in Finder", Some("Cmd+R"), "Photo>File"),
     ("app.showInFolders", "Show in Folders", None, "Photo>File"),
     ("app.openSamModelFolder", "Show in File Manager", None, ""),
+    ("dialog.aiModels", "AI Models…", None, ""),
     ("dialog.rename", "Rename Photos…", Some("F2"), "Library"),
     ("dialog.labelNames", "Edit Color Label Names…", None, ""),
     ("dialog.captureTime", "Edit Capture Time…", None, "Metadata"),
@@ -1921,6 +1922,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "dialog.mergeHdrPanorama" => crate::merge::open(app, "merge.hdrPanorama"),
         "dialog.mergeFocusStack" => crate::merge::open(app, "merge.focusStack"),
         "app.openSamModelFolder" => crate::panels::dialogs::show_model_folder(app),
+        "dialog.aiModels" => {
+            app.ui.dialog = Some(Dialog::AiModels { error: None });
+            Ok(json!({"open": true}))
+        }
         "app.about" => {
             app.ui.dialog = Some(Dialog::About);
             Ok(Value::Null)
@@ -2935,6 +2940,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         }
         "app.showInFolders" => show_in_folders_enabled(app, None),
         "app.openSamModelFolder" => app.session.segmenter.dir.is_some() && app.services.open_with.is_some(),
+        "dialog.aiModels" => lcc_engine::segment::Segmenter::AVAILABLE,
         "file.exportPresets" => app.session.presets.iter().any(|p| !p.builtin),
         // a raw on disk has a camera colour to export; any photo has a look
         "file.exportCameraProfile" => app

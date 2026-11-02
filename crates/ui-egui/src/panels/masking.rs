@@ -310,6 +310,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 }
             });
         }
+        // the AI mask models: downloads, and which one computes Object masks
+        if lcc_engine::segment::Segmenter::AVAILABLE && !download.running {
+            ui.add_space(2.0);
+            if text_button(ui, "maskAiModels", crate::i18n::tr("AI Models…"), false).clicked() {
+                app.ui.dialog = Some(crate::state::Dialog::AiModels { error: None });
+            }
+        }
         // the active mask's Amount, right under the tiles (as Camera Raw / Lightroom Classic place it)
         if let Some((index, m)) = d.masks.iter().enumerate().find(|(_, m)| app.session.active_mask == Some(m.id)) {
             ui.add_space(6.0);
@@ -1619,6 +1626,14 @@ fn component_row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: u32, k: usize, 
 /// offered (with `then` to start afterwards) instead of starting an AI mask.
 fn needs_model(app: &mut LccApp, kind: &str, op: &str) -> bool {
     let seg = &app.session.segmenter;
+    if kind == "object" && seg.object_model_in_use() == "sam2" {
+        // SAM 2.1 was chosen for Object masks: without it, the AI Models dialog offers it
+        let missing = lcc_engine::segment::Segmenter::AVAILABLE && !seg.open_model_installed("sam2");
+        if missing && app.ui.dialog.is_none() {
+            app.ui.dialog = Some(crate::state::Dialog::AiModels { error: None });
+        }
+        return missing;
+    }
     let missing = lcc_engine::segment::Segmenter::AVAILABLE && seg.remote_endpoint().is_none() && seg.dir.is_some() && !seg.installed();
     if missing {
         app.offer_sam_download(Some((kind, op)));

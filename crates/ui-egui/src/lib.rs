@@ -1317,6 +1317,11 @@ impl LccApp {
         let e = e.into();
         if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
             self.offer_sam_download(then);
+        } else if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam2) {
+            // SAM 2.1 was chosen for Object masks: its download is in the AI Models dialog
+            if self.ui.dialog.is_none() {
+                self.ui.dialog = Some(state::Dialog::AiModels { error: None });
+            }
         } else {
             self.toast_error(ctx, e.message);
         }

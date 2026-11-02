@@ -287,6 +287,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         // (nothing to download from in this build: the dialog explains the manual install)
         Dialog::SamModel { .. } if sam_by_hand(&app.session.segmenter) => "Install the SAM 3 Model",
         Dialog::SamModel { .. } => "Download the SAM 3 Model?",
+        Dialog::AiModels { .. } => "AI Models",
         Dialog::About => "About {app}",
         Dialog::Update => "Check for Updates",
         Dialog::Shortcuts => "Keyboard Shortcuts",
@@ -956,6 +957,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 Dialog::Import { opts } => crate::import::body(app, ui, opts),
                 Dialog::Settings { tab } => crate::panels::settings::body(app, ui, tab, settings_height),
                 Dialog::SamModel { error, .. } => sam_model_body(app, ui, error.as_deref()),
+                Dialog::AiModels { error } => crate::panels::ai_models::body(app, ui, error),
                 Dialog::KeywordTag {
                     editing,
                     name,
@@ -2075,7 +2077,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
         Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::install(app, info, *accepted),
         Dialog::FaceModel { path, info, accepted } => crate::panels::faces::install(app, path, info, *accepted),
-        Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::WhatsNew => Ok(serde_json::Value::Null),
+        Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => Ok(serde_json::Value::Null),
         Dialog::Cull { reject_below, pick_best, burst_gap, similarity } => {
             app.ui.cull_burst = Some((*burst_gap, *similarity));
             app.run("photo.analyze", cull_params(*reject_below, *pick_best, *burst_gap, *similarity))
@@ -3648,6 +3650,8 @@ fn only_shows(dlg: &Dialog) -> bool {
             | Dialog::AllMetadata { .. }
             | Dialog::WhatsNew
             | Dialog::ManageEffects { .. }
+            // each model has its own Download button in the body
+            | Dialog::AiModels { .. }
             // the updater has its own buttons in the body; the footer only closes
             | Dialog::Update
     ) || matches!(dlg, Dialog::SynchronizeFolder { counts: Some(c), .. } if c.up_to_date())
