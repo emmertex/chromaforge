@@ -5955,9 +5955,10 @@ mod tests {
         h.request("ui.move", json!({"x": anchor.x, "y": anchor.y}), t);
         for (tool, expected) in [
             ("", egui::CursorIcon::Grab),
-            ("wbPicker", egui::CursorIcon::Crosshair),
-            ("colorRange", egui::CursorIcon::Crosshair),
-            ("pointColor", egui::CursorIcon::Crosshair),
+            // the colour pickers hide the system pointer: the eyedropper is painted instead
+            ("wbPicker", egui::CursorIcon::None),
+            ("colorRange", egui::CursorIcon::None),
+            ("pointColor", egui::CursorIcon::None),
             ("tat:curve", egui::CursorIcon::ResizeVertical),
         ] {
             h.app.ui.tool = tool.into();

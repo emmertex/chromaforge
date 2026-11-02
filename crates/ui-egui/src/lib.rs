@@ -24,6 +24,7 @@ pub mod control;
 pub mod creations_ui;
 pub mod credits;
 pub mod date_picker;
+pub mod eyedropper;
 pub mod dialog_frame;
 pub mod docking;
 mod drop_overlay;

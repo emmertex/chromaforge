@@ -2409,7 +2409,13 @@ fn general_cursor(app: &LccApp, ui: &egui::Ui, resp: &egui::Response, img: Rect,
         return;
     }
     let cursor = match app.ui.tool.as_str() {
-        "wbPicker" | "colorRange" | "pointColor" => egui::CursorIcon::Crosshair,
+        // the colour pickers: an eyedropper, its tip on the pixel picked
+        "wbPicker" | "colorRange" | "pointColor" => {
+            if let Some(q) = resp.hover_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())) {
+                crate::eyedropper::show(ui.ctx(), q);
+            }
+            return;
+        }
         tool if tool.starts_with("tat:") => egui::CursorIcon::ResizeVertical,
         _ if img.width() > canvas.width() + 1.0 || img.height() > canvas.height() + 1.0 => {
             if resp.dragged() {
@@ -3438,8 +3444,8 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     // Colour Range "Pick": the Masking panel owns the loupe's clicks (general_interaction
     // never runs while it is open), so the eyedropper is handled here too.
     if app.ui.tool == "colorRange" {
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        if let Some(q) = resp.hover_pos() {
+            crate::eyedropper::show(ui.ctx(), q);
         }
         color_range_pick(app, ui, resp, map);
         return;
