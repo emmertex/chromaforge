@@ -170,3 +170,37 @@ fn the_overlay_draws_at_every_size_and_position() {
     assert!(rects[2].2.height() > rects[0].2.height() * 3.0, "size 2 is four times size 0.5");
     assert!(rects[2].2.center().y < canvas.center().y && rects[0].2.center().y > canvas.center().y, "up is above, down below");
 }
+
+/// While an on-photo tool is in use (crop, a brush, a picker, a drag on the photo) the overlay never covers the photo;
+/// with the tool put away, the same change shows again (test notes 2026-10-24 note 15).
+#[test]
+fn the_overlay_stays_off_the_photo_while_a_tool_is_in_use() {
+    let mut h = demo();
+    open(&mut h, 1);
+    let drawn = |h: &mut Headless| {
+        h.step();
+        h.step();
+        widget(h, "osd:surface").is_some()
+    };
+    // crop: straightening shows its own angle by the pointer, not a second note over the photo
+    run(&mut h, "panel.crop", json!({}));
+    h.settle(T);
+    assert_eq!(h.app.ui.right, RightPanel::Crop);
+    run(&mut h, "develop.set", json!({"control": "crop.angle", "value": 2.0}));
+    assert!(!drawn(&mut h), "no overlay while cropping");
+    assert_eq!(run(&mut h, "osd.state", json!({}))["held"], true);
+    run(&mut h, "panel.crop", json!({}));
+    h.settle(T);
+    // a brush (any armed tool on the photo)
+    h.app.ui.right = RightPanel::Masking;
+    h.app.ui.tool = "brush".into();
+    run(&mut h, "develop.set", json!({"control": "light.exposure", "value": 0.5}));
+    assert!(!drawn(&mut h), "no overlay while a brush is armed");
+    // put away: the next change shows, once
+    h.app.ui.tool.clear();
+    h.app.ui.right = RightPanel::Edit;
+    run(&mut h, "develop.set", json!({"control": "light.exposure", "value": 0.7}));
+    assert!(drawn(&mut h), "a slider change shows again");
+    assert_eq!(h.app.widgets.iter().filter(|(w, _)| w == "osd:surface").count(), 1, "one overlay");
+    assert_eq!(shown(&mut h)["value"], "+0.70");
+}
