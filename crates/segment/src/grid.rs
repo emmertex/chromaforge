@@ -175,7 +175,7 @@ pub fn round_even(x: f64) -> usize {
 /// A `w × h` probability grid covering the whole image, resampled bilinearly to `side × side`
 /// (the image stretched to a square; output cell centres at `(i + 0.5) / side`) and converted to
 /// logits `ln(p / (1 − p))`, with `p` clamped to `[1e-4, 1 − 1e-4]`.
-#[allow(dead_code)] // the scene grid as a square mask; Chromaforge's scene masks sample the grid directly
+#[allow(dead_code)] // the scene grid as a square mask; the scene masks here sample the grid directly
 pub fn to_square_logits(probs: &[f32], w: usize, h: usize, side: usize) -> Vec<f32> {
     let n = side.saturating_mul(side);
     let p_lo: f32 = 1e-4;
