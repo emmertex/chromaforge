@@ -39,6 +39,12 @@ pub enum Gesture {
         /// Pen pressure (0..1) at each point; empty when no pen pressure was reported (a mouse) or the
         /// brush's Pen Pressure switch is off.
         pressure: Vec<f32>,
+        /// Whether each point was painted erasing (Erase picked, or ⌥ / Alt held then): the
+        /// gesture goes to `mask.brushStroke` as `runs` of one mode each.
+        erase: Vec<bool>,
+        /// Strokes already sent live for this gesture (a mask with settings shows its effect while
+        /// painting); the next send replaces them. 0: nothing sent yet.
+        sent: usize,
     },
     Spot {
         points: Vec<Point>,
@@ -3493,12 +3499,15 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             // the stroke goes into the selected mask (or a new one): in its coordinates
             let n = map.for_mask_id(d, active).norm(q);
             let force = if app.ui.brush_pressure { ui.input(pen_force) } else { None };
+            // ⌥ / Alt is read every frame of the stroke: each point keeps the mode it was painted in
+            let erasing = app.ui.brush_erase != ui.input(|i| i.modifiers.alt);
             match &mut app.gesture {
                 // a held, unmoving pointer records nothing: coverage builds by passes, not time (#518)
                 Some(Gesture::Brush { points, .. }) if points.last() == Some(&n) => {}
-                Some(Gesture::Brush { points, pressure }) => {
+                Some(Gesture::Brush { points, pressure, erase, .. }) => {
                     record_pressure(pressure, points.len(), force);
                     points.push(n);
+                    erase.push(erasing);
                 }
                 // a stroke starts with a press, not part-way through a drag: one ended for picking
                 // another mask or photo (`LccApp::cancel_brush_gesture`) paints nothing more until
@@ -3507,13 +3516,35 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                 _ => {
                     let mut pressure = Vec::new();
                     record_pressure(&mut pressure, 0, force);
-                    app.gesture = Some(Gesture::Brush { points: vec![n], pressure });
+                    app.gesture = Some(Gesture::Brush { points: vec![n], pressure, erase: vec![erasing], sent: 0 });
                 }
             }
         }
         // the stroke being painted (the render shows it once it's committed), with the committed
         // stroke's dab spacing, feather and flow (issue #517)
-        if let Some(Gesture::Brush { points, pressure }) = &app.gesture {
+        // a mask with settings and Auto Mask off shows the stroke's effect while it is painted (the
+        // stroke goes to the mask live); the red stroke is for a mask without settings, or with the
+        // overlay on
+        let target = if app.ui.mask_new.is_some() { None } else { d.masks.iter().find(|m| Some(m.id) == active) };
+        let live = !app.ui.brush_auto_mask && !app.ui.mask_overlay && target.is_some_and(|m| m.adjust != lcc_develop::LocalAdjustments::default());
+        if live
+            && resp.dragged()
+            && let Some(Gesture::Brush { points, pressure, erase, sent }) = &app.gesture
+            && points.len() > 1
+        {
+            let (points, pressure, erase, sent) = (points.clone(), pressure.clone(), erase.clone(), *sent);
+            if sent == 0 {
+                let _ = app.run("develop.beginInteraction", json!({"label": "Brush"}));
+            }
+            let params = brush_params(app, d, &points, &pressure, &erase, sent, false);
+            let n = params["runs"].as_array().map_or(1, Vec::len);
+            if app.run("mask.brushStroke", params).is_ok()
+                && let Some(Gesture::Brush { sent, .. }) = &mut app.gesture
+            {
+                *sent = n;
+            }
+        }
+        if let Some(Gesture::Brush { points, pressure, sent: 0, .. }) = &app.gesture {
             let screen: Vec<Pos2> = {
                 let mmap = map.for_mask_id(d, active);
                 points.iter().map(|q| mmap.screen(*q)).collect()
@@ -3538,27 +3569,27 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             app.brush_live = None;
         }
         if (resp.drag_stopped() || resp.clicked())
-            && let Some(Gesture::Brush { points, pressure }) = app.gesture.take()
+            && let Some(Gesture::Brush { points, pressure, erase, sent }) = app.gesture.take()
         {
             app.brush_live = None;
-            let pts: Vec<[f64; 2]> = points.iter().map(|q| [q.x, q.y]).collect();
-            // holding ⌥ (Alt) paints with the other mode: Erase while adding, Add while erasing
-            let (alt, shift) = resp.ctx.input(|i| (i.modifiers.alt, i.modifiers.shift));
-            let erase = app.ui.brush_erase != alt;
             // a ⇧-click draws a straight line from where the last stroke ended, as in Lightroom
-            let connect = shift && resp.clicked() && pts.len() == 1;
-            let mut params = json!({"points": pts, "size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow,
-                   "density": app.ui.brush_density, "erase": erase, "autoMask": app.ui.brush_auto_mask, "autoRange": app.ui.brush_auto_range, "pressure": pressure, "connect": connect});
-            let is_brush = app
-                .ui
-                .active_mask_component
-                .and_then(|ci| d.masks.iter().find(|m| Some(m.id) == app.session.active_mask).and_then(|m| m.components.get(ci)))
-                .is_some_and(|c| matches!(c.shape, MaskShape::Brush { .. }));
-            if is_brush && let Some(ci) = app.ui.active_mask_component {
-                params["component"] = json!(ci);
+            let shift = resp.ctx.input(|i| i.modifiers.shift);
+            let connect = shift && resp.clicked() && points.len() == 1;
+            let params = brush_params(app, d, &points, &pressure, &erase, sent, connect);
+            let made = app.run("mask.brushStroke", params);
+            if sent > 0 {
+                let _ = app.run("develop.endInteraction", json!({}));
             }
-            let _ = app.run("mask.brushStroke", params);
+            // the first stroke of a tool armed for a new mask made it: the brush paints on into it
+            if made.is_ok() && app.ui.mask_new.take().is_some() {
+                app.ui.active_mask_component = Some(0);
+            }
         }
+        return;
+    }
+    // a gradient tool armed for a new mask: a drag draws it (one undo step), a click places one
+    if matches!(app.ui.tool.as_str(), "linear" | "radial") && (app.ui.mask_new.is_some() || app.ui.mask_drawing.is_some()) {
+        draw_new_gradient(app, ui, resp, map, d);
         return;
     }
     // the grip under the pointer: the selected mask's first, then the nearest
@@ -3627,6 +3658,145 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         app.gesture = None;
         let _ = app.run("develop.endInteraction", json!({}));
     }
+}
+
+/// A linear or radial gradient drawn by a drag of a tool armed for a new mask: the press makes the
+/// mask (the next-mask settings), the drag shapes it from the press (Linear: start to end; Radial:
+/// centred on the press, out to the pointer), letting go ends it as one undo step. A click
+/// places a gradient of the default size there.
+fn draw_new_gradient(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map: &CanvasMap, d: &DevelopSettings) {
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    let kind = app.ui.tool.clone();
+    let mmap = map.for_mask_id(d, None);
+    if resp.clicked()
+        && app.ui.mask_drawing.is_none()
+        && let Some(q) = resp.interact_pointer_pos()
+    {
+        let n = mmap.norm(q);
+        let params = if kind == "linear" {
+            json!({"kind": kind, "start": [n.x, n.y - 0.15], "end": [n.x, n.y + 0.15]})
+        } else {
+            json!({"kind": kind, "center": [n.x, n.y]})
+        };
+        if app.run("mask.add", params).is_ok() {
+            app.ui.mask_new = None;
+            app.ui.active_mask_component = Some(0);
+        }
+        return;
+    }
+    if resp.drag_started()
+        && app.ui.mask_drawing.is_none()
+        && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
+    {
+        let o = mmap.norm(q);
+        let params = if kind == "linear" {
+            json!({"kind": kind, "start": [o.x, o.y], "end": [o.x, o.y + 0.001]})
+        } else {
+            json!({"kind": kind, "center": [o.x, o.y], "rx": 0.005, "ry": 0.005})
+        };
+        let _ = app.run("develop.beginInteraction", json!({"label": "Add Mask"}));
+        match app.run("mask.add", params) {
+            Ok(_) => {
+                if let Some(mid) = app.session.active_mask {
+                    app.ui.mask_drawing = Some((mid, 0, o));
+                }
+                app.ui.mask_new = None;
+                app.ui.active_mask_component = Some(0);
+            }
+            Err(_) => {
+                let _ = app.run("develop.endInteraction", json!({}));
+            }
+        }
+        return;
+    }
+    if resp.dragged()
+        && let (Some((mid, comp, o)), Some(q)) = (app.ui.mask_drawing, resp.interact_pointer_pos())
+        && let Some(shape) = d.masks.iter().find(|m| m.id == mid).and_then(|m| m.components.get(comp)).map(|c| c.shape.clone())
+    {
+        let n = map.for_mask_id(d, Some(mid)).norm(q);
+        let shape = match shape {
+            MaskShape::Linear { .. } => Some(MaskShape::Linear { start: o, end: n }),
+            MaskShape::Radial { angle, feather, invert, .. } => {
+                Some(MaskShape::Radial { center: o, rx: (n.x - o.x).abs().max(0.005), ry: (n.y - o.y).abs().max(0.005), angle, feather, invert })
+            }
+            _ => None,
+        };
+        if let Some(shape) = shape {
+            let _ = app.run("mask.update", json!({"id": mid, "component": comp, "shape": shape}));
+        }
+    }
+    if resp.drag_stopped() && app.ui.mask_drawing.take().is_some() {
+        let _ = app.run("develop.endInteraction", json!({}));
+    }
+}
+
+/// `mask.brushStroke`'s parameters for brush gesture `points` (with its `pressure` and each point's
+/// `erase` mode): one stroke, or `runs` of one mode each joined without a gap; `sent` strokes
+/// sent live before are replaced (`continue`). The stroke goes into the selected mask's active
+/// Brush component, or makes a new mask while a tool is armed for one.
+pub(crate) fn brush_params(
+    app: &LccApp,
+    d: &DevelopSettings,
+    points: &[Point],
+    pressure: &[f32],
+    erase: &[bool],
+    sent: usize,
+    connect: bool,
+) -> serde_json::Value {
+    let pt = |q: &Point| [q.x, q.y];
+    let mut runs: Vec<(bool, Vec<[f64; 2]>, Vec<f32>)> = Vec::new();
+    for (i, q) in points.iter().enumerate() {
+        let mode = erase.get(i).or(erase.last()).copied().unwrap_or(app.ui.brush_erase);
+        let p = pressure.get(i).copied();
+        match runs.last_mut() {
+            Some((m, pts, pr)) if *m == mode => {
+                pts.push(pt(q));
+                pr.extend(p);
+            }
+            last => {
+                // a new run starts where the last one ended: no gap between them
+                let join = last.and_then(|(_, pts, pr)| Some((*pts.last()?, pr.last().copied())));
+                let (mut pts, mut pr) = (Vec::new(), Vec::new());
+                if let Some((at, p0)) = join {
+                    pts.push(at);
+                    pr.extend(p0);
+                }
+                pts.push(pt(q));
+                pr.extend(p);
+                runs.push((mode, pts, pr));
+            }
+        }
+    }
+    let mut params = json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow,
+           "density": app.ui.brush_density, "autoMask": app.ui.brush_auto_mask, "autoRange": app.ui.brush_auto_range, "connect": connect});
+    match runs.as_slice() {
+        [(mode, pts, pr)] => {
+            params["points"] = json!(pts);
+            params["erase"] = json!(mode);
+            params["pressure"] = json!(pr);
+        }
+        _ => {
+            params["runs"] = runs.iter().map(|(mode, pts, pr)| json!({"points": pts, "erase": mode, "pressure": pr})).collect();
+        }
+    }
+    if sent > 0 {
+        params["continue"] = json!(true);
+        params["replace"] = json!(sent);
+    }
+    if app.ui.mask_new.is_some() {
+        return params;
+    }
+    let is_brush = app
+        .ui
+        .active_mask_component
+        .and_then(|ci| d.masks.iter().find(|m| Some(m.id) == app.session.active_mask).and_then(|m| m.components.get(ci)))
+        .is_some_and(|c| matches!(c.shape, MaskShape::Brush { .. }));
+    if is_brush && let Some(ci) = app.ui.active_mask_component {
+        params["component"] = json!(ci);
+    }
+    params
 }
 
 /// A mask handle's name for screen readers: `handle` 0 is the component's pin, 1..5 a radial

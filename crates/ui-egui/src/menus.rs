@@ -204,6 +204,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
     ("tool.none", "No Tool", None, ""),
+    // {id?, component}: the component edited on the photo (a Brush component arms the brush on it)
+    ("mask.editComponent", "Edit Mask Component", None, ""),
     // brush size / feather of the active brush (Masking brush, Remove tool and its selected spot)
     ("brush.smaller", "Decrease Brush Size", Some("["), "Window>Tools"),
     ("brush.larger", "Increase Brush Size", Some("]"), "Window>Tools"),
@@ -1607,6 +1609,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             Ok(Value::Null)
         }
+        "mask.editComponent" => crate::panels::masking::edit_component(app, p),
         "tool.done" => {
             // Return commits a tool panel (crop, remove, red eye, masking): back to Edit
             use RightPanel::*;
@@ -1663,15 +1666,18 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "guidedUpright".into();
                 }
                 "brush" => {
-                    // A new mask and Add/Subtract are selection operations, not the brush's
-                    // Erase mode. Paint positively into a component with the requested op.
-                    let create = if p.get("new").and_then(Value::as_bool) == Some(true) {
-                        Some(app.run("mask.add", json!({"kind": "brush"})))
-                    } else {
-                        p.get("op").map(|op| app.run("mask.addComponent", json!({"kind": "brush", "op": op})))
-                    };
-                    if let Some(result) = create {
-                        if let Err(e) = result {
+                    // A new mask is armed: the first stroke makes it. Add/Subtract are selection
+                    // operations, not the brush's Erase mode: paint positively into a new component.
+                    if p.get("new").and_then(Value::as_bool) == Some(true) {
+                        if let Err(e) = crate::panels::masking::arm_new(app, "brush") {
+                            return Some(Err(e));
+                        }
+                        app.ui.brush_erase = false;
+                        app.ui.mask_overlay = true;
+                        return Some(Ok(json!({"armed": "brush"})));
+                    }
+                    if let Some(op) = p.get("op") {
+                        if let Err(e) = app.run("mask.addComponent", json!({"kind": "brush", "op": op})) {
                             return Some(Err(e));
                         }
                         app.ui.brush_erase = false;
@@ -1687,10 +1693,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "brush".into();
                 }
                 "linear" | "radial" => {
-                    app.ui.right = RightPanel::Masking;
-                    app.ui.view = ViewMode::Detail;
-                    app.ui.tool = tool.into();
-                    return Some(app.session.execute("mask.add", &json!({"kind": tool})).map_err(|e| e.to_string()));
+                    // armed: a drag on the photo draws the gradient (a click places a default one)
+                    return Some(crate::panels::masking::arm_new(app, tool));
                 }
                 "wbPicker" => {
                     app.ui.right = RightPanel::Edit;

@@ -252,12 +252,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             }
                             "object" => start_object(app, ui.ctx(), "new"),
                             "prompt" => start_describe(app, "new"),
-                            "brush" => {
-                                let _ = app.run("tool.brush", json!({"new": true}));
-                            }
-                            "linear" | "radial" => {
-                                app.ui.tool = kind.to_string();
-                                let _ = app.run("mask.add", json!({"kind": kind}));
+                            "brush" | "linear" | "radial" => {
+                                let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
                             }
                             k => {
                                 let _ = app.run("mask.add", json!({"kind": k}));
@@ -651,22 +647,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         ui.painter().galley(at_dots, g_dots, if more.hovered() { t.text } else { t.text_dim });
                         egui::Popup::menu(&more).show(|ui| component_row_menu(app, ui, m.id, i, &label, cur_m.components.len()));
 
-                        if resp.clicked() && !comp_bin.clicked() && !more.clicked() && !popup_open_at_start {
-                            if !sel {
-                                let _ = app.run("mask.select", json!({"id": m.id}));
-                            }
-                            app.ui.active_mask_component = Some(i);
-                            match &c.shape {
-                                MaskShape::Brush { .. } => app.ui.tool = "brush".into(),
-                                MaskShape::Linear { .. } => app.ui.tool = "linear".into(),
-                                MaskShape::Radial { .. } => app.ui.tool = "radial".into(),
-                                MaskShape::ColorRange { .. } => app.ui.tool = "colorRange".into(),
-                                MaskShape::LuminanceRange { .. } => app.ui.tool = "luminanceRange".into(),
-                                MaskShape::DepthRange { .. } => app.ui.tool = "depthRange".into(),
-                                MaskShape::Object { .. } => app.ui.tool = "object".into(),
-                                MaskShape::Prompt { .. } => app.ui.tool = "prompt".into(),
-                                _ => {}
-                            }
+                        if resp.clicked()
+                            && !comp_bin.clicked()
+                            && !more.clicked()
+                            && !popup_open_at_start
+                            && let Err(e) = app.run("mask.editComponent", json!({"id": m.id, "component": i}))
+                        {
+                            app.toast(ui.ctx(), e);
                         }
                         if resp.double_clicked() {
                             app.ui.renaming_component = Some((m.id, i, label.clone()));
@@ -727,6 +714,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }).show(ui, |ui| {
                 show_overlay_row(app, ui);
             });
+        }
+        // the brush armed for a new mask: its settings before the first stroke
+        if app.ui.tool == "brush" && app.ui.mask_new.is_some() {
+            divider(ui);
+            brush_settings(app, ui);
         }
         return;
     };
@@ -1914,11 +1906,99 @@ pub(crate) fn is_mask_tool(tool: &str) -> bool {
         || tool.starts_with("maskMixer:")
 }
 
+/// Arm mask tool `kind` (`brush`, `linear`, `radial`) for a new mask: no mask is selected, and the
+/// first stroke or drag on the photo makes the mask (one masking mode at a time: a selected mask
+/// and a tool waiting for a new one are never at once).
+pub(crate) fn arm_new(app: &mut LccApp, kind: &str) -> Result<serde_json::Value, String> {
+    let photo = app.session.active().ok_or_else(|| format!("tool.{kind}: no photo"))?;
+    app.cancel_brush_gesture();
+    app.run("mask.select", json!({"id": null}))?;
+    app.ui.active_mask_component = None;
+    app.ui.mask_new = Some((photo.0, kind.into()));
+    app.ui.mask_drawing = None;
+    app.ui.tool = kind.into();
+    app.ui.tool_photo = Some(photo.0);
+    app.ui.right = crate::state::RightPanel::Masking;
+    app.ui.view = crate::state::ViewMode::Detail;
+    Ok(json!({"armed": kind}))
+}
+
+/// Put every mask tool away: the tool on the photo and a tool waiting for a new mask.
+pub(crate) fn disarm(app: &mut LccApp) {
+    if is_mask_tool(&app.ui.tool) {
+        app.ui.tool.clear();
+    }
+    app.ui.mask_new = None;
+    app.ui.mask_drawing = None;
+}
+
+/// `mask.editComponent {id, component}`: make component `k` of mask `mid` the one edited on the
+/// photo. The mask is selected and any tool waiting for a new mask put away; a Brush component
+/// arms the brush on it (strokes add to it, erasing takes from it, by its own Add or Subtract),
+/// any other kind puts the brush away so its handles take the drags.
+pub(crate) fn edit_component(app: &mut LccApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let c = "mask.editComponent";
+    let photo = app.session.active().ok_or_else(|| format!("{c}: no photo"))?;
+    let mid = p.get("id").and_then(serde_json::Value::as_u64).and_then(|v| u32::try_from(v).ok()).or(app.session.active_mask);
+    let mid = mid.ok_or_else(|| format!("{c}: no mask selected"))?;
+    let k = p
+        .get("component")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or_else(|| format!("{c}: `component` must be a component index"))?;
+    let d = app.session.develop_of(photo).unwrap_or_default();
+    let m = d.masks.iter().find(|m| m.id == mid).ok_or_else(|| format!("{c}: no mask {mid}"))?;
+    let shape = &m.components.get(k).ok_or_else(|| format!("{c}: mask {mid} has no component {k}"))?.shape;
+    let brush = matches!(shape, MaskShape::Brush { .. });
+    app.cancel_brush_gesture();
+    disarm(app);
+    if app.session.active_mask != Some(mid) {
+        app.run("mask.select", json!({"id": mid}))?;
+    }
+    app.ui.active_mask_component = Some(k);
+    // the component's own tool on the photo (its handles, eyedropper or clicks)
+    let tool = match shape {
+        MaskShape::Brush { .. } => "brush",
+        MaskShape::Linear { .. } => "linear",
+        MaskShape::Radial { .. } => "radial",
+        MaskShape::ColorRange { .. } => "colorRange",
+        MaskShape::LuminanceRange { .. } => "luminanceRange",
+        MaskShape::DepthRange { .. } => "depthRange",
+        MaskShape::Object { .. } => "object",
+        MaskShape::Prompt { .. } => "prompt",
+        _ => "",
+    };
+    if !tool.is_empty() {
+        app.ui.right = crate::state::RightPanel::Masking;
+        app.ui.tool = tool.into();
+        app.ui.tool_photo = Some(photo.0);
+    }
+    if brush {
+        app.ui.brush_erase = false;
+    }
+    Ok(json!({"mask": mid, "component": k, "brush": brush}))
+}
+
 /// Leaving Masking or the loupe puts its tools away, checked once a frame whatever path left it:
 /// coming back never finds the brush armed (it hid the overlay elsewhere and made pin drags paint).
+/// One masking mode at a time: another photo puts the tools away, and so does a mask selected
+/// (its row, pin or a command) while a tool waits for a new mask.
 pub(crate) fn put_tools_away(app: &mut LccApp) {
-    if is_mask_tool(&app.ui.tool) && (app.ui.right != crate::state::RightPanel::Masking || app.ui.view != crate::state::ViewMode::Detail) {
-        app.ui.tool.clear();
+    let photo = app.session.active().map(|p| p.0);
+    let left = app.ui.right != crate::state::RightPanel::Masking || app.ui.view != crate::state::ViewMode::Detail;
+    let armed = is_mask_tool(&app.ui.tool) || app.ui.mask_new.is_some();
+    let other_photo = app.ui.tool_photo.is_some() && app.ui.tool_photo != photo;
+    let picked = app.ui.mask_new.is_some() && app.session.active_mask.is_some() && app.ui.mask_drawing.is_none();
+    if armed && (left || other_photo || picked) {
+        app.cancel_brush_gesture();
+        disarm(app);
+    }
+    if is_mask_tool(&app.ui.tool) {
+        if app.ui.tool_photo.is_none() {
+            app.ui.tool_photo = photo;
+        }
+    } else {
+        app.ui.tool_photo = None;
     }
 }
 

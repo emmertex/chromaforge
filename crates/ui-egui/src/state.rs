@@ -1067,6 +1067,18 @@ pub struct UiState {
     /// Active mask component index within the currently selected mask.
     #[serde(skip)]
     pub active_mask_component: Option<usize>,
+    /// A mask tool armed for a new mask (photo, `mask.add` kind): no mask is selected, and the
+    /// mask is made by the first stroke or drag on the photo. Selecting a mask, another photo or
+    /// leaving Masking puts it away (one masking mode at a time).
+    #[serde(skip)]
+    pub mask_new: Option<(u64, String)>,
+    /// The photo the armed mask tool belongs to: another photo puts it away.
+    #[serde(skip)]
+    pub tool_photo: Option<u64>,
+    /// A linear or radial gradient being drawn by a drag of a tool armed for a new mask
+    /// (mask, component, the drag's start in image coordinates).
+    #[serde(skip)]
+    pub mask_drawing: Option<(u32, usize, lcc_geom::Point)>,
     /// Mask IDs whose sub-actions are collapsed in the masking panel.
     #[serde(default)]
     pub collapsed_masks: std::collections::HashSet<u32>,
@@ -1937,6 +1949,9 @@ impl Default for UiState {
             mask_menu_for: None,
             mask_hover: None,
             active_mask_component: None,
+            mask_new: None,
+            tool_photo: None,
+            mask_drawing: None,
             collapsed_masks: Default::default(),
             view: ViewMode::Detail,
             modern: crate::modern::ModernUi::default(),

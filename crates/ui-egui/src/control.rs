@@ -484,6 +484,11 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                     u.toasts = app.ui.toasts.clone();
                     u.dialog = app.ui.dialog.clone();
                     u.status = app.ui.status.clone();
+                    // the masking mode (not settings): a tool armed for a new mask stays armed
+                    u.mask_new = app.ui.mask_new.clone();
+                    u.tool_photo = app.ui.tool_photo;
+                    u.mask_drawing = app.ui.mask_drawing;
+                    u.active_mask_component = app.ui.active_mask_component;
                     crate::docking::cancel_replaced_gesture(app, u.docking.as_ref());
                     app.ui = u;
                     crate::i18n::set_language(app.ui.language);

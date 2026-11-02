@@ -125,12 +125,13 @@ fn new_brush_starts_a_separate_mask_in_paint_mode() {
     h.app.ui.brush_erase = true;
     h.app.ui.mask_overlay = false;
     click(&mut h, "maskNew:brush");
-    assert_eq!(h.app.session.active_mask, Some(2));
+    assert_eq!(h.app.session.active_mask, None, "armed: the first stroke makes the mask");
     assert!(!h.app.ui.brush_erase);
     assert!(h.app.ui.mask_overlay);
     let r = h.request("ui.set", json!({"brushSize": 0.15, "brushFeather": 0.0, "brushFlow": 100.0}), T);
     assert_eq!(r["ok"], true, "{r}");
     brush_at(&mut h, 0.5, 0.5);
+    assert_eq!(h.app.session.active_mask, Some(2));
     assert!(mask_coverage(&h, 1, 50, 50) > 0.99);
     h.app.ui.brush_erase = true;
     brush_at(&mut h, 0.5, 0.5);
@@ -1945,6 +1946,7 @@ fn adding_a_gradient_to_a_brush_mask_disarms_the_brush() {
         let mut h = detail("panel.masking");
         exec(&mut h, "tool.brush", json!({"new": true}));
         assert_eq!(h.app.ui.tool, "brush", "the brush is armed");
+        brush_at(&mut h, 0.5, 0.5);
         exec(&mut h, "mask.addComponent", json!({"kind": "radial", "op": op, "center": [0.5, 0.5], "rx": 0.22, "ry": 0.22}));
         assert!(h.app.ui.tool.is_empty(), "{op}: adding a radial component disarms the brush");
     }
@@ -1952,12 +1954,14 @@ fn adding_a_gradient_to_a_brush_mask_disarms_the_brush() {
     // a brush component of the brush's own kind keeps it armed
     let mut h = detail("panel.masking");
     exec(&mut h, "tool.brush", json!({"new": true}));
+    brush_at(&mut h, 0.5, 0.5);
     exec(&mut h, "mask.addComponent", json!({"kind": "brush", "op": "subtract"}));
     assert_eq!(h.app.ui.tool, "brush", "Subtract > Brush keeps the brush armed");
 
     // an omitted kind is a brush, as in the engine: the brush stays armed for painting
     let mut h = detail("panel.masking");
     exec(&mut h, "tool.brush", json!({"new": true}));
+    brush_at(&mut h, 0.5, 0.5);
     exec(&mut h, "mask.addComponent", json!({"op": "subtract"}));
     assert_eq!(h.app.ui.tool, "brush", "an omitted kind is a brush component and keeps the brush armed");
     assert!(matches!(develop(&h).masks[0].components[1].shape, MaskShape::Brush { .. }), "the engine adds a brush component when kind is omitted");
@@ -2498,4 +2502,99 @@ fn leaving_masking_puts_the_brush_away() {
     exec(&mut h, "view.gridToggle", json!({}));
     h.step();
     assert_eq!(h.app.ui.tool, "");
+}
+
+/// One masking mode at a time: a tool armed for a new mask selects none and makes its mask on the
+/// first stroke or drag; selecting a mask, or another photo, puts the armed tool away.
+#[test]
+fn tools_arm_and_make_their_mask_on_the_first_stroke() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.2, 0.2], "rx": 0.05, "ry": 0.05}));
+    let first = h.app.session.active_mask.expect("a mask");
+    // Linear: armed, nothing made, then a drag draws it from the press to the release (one undo step)
+    exec(&mut h, "tool.linear", json!({}));
+    h.step();
+    assert_eq!((h.app.session.active_mask, develop(&h).masks.len()), (None, 1), "armed: no mask selected, none made");
+    pointer(
+        &mut h,
+        json!([{"kind": "down", "x": 0.5, "y": 0.3}, {"kind": "drag", "x": 0.5, "y": 0.4}, {"kind": "drag", "x": 0.5, "y": 0.6}, {"kind": "up", "x": 0.5, "y": 0.6}]),
+    );
+    let d = develop(&h);
+    assert_eq!(d.masks.len(), 2);
+    let MaskShape::Linear { start, end } = d.masks[1].components[0].shape.clone() else { panic!("linear") };
+    assert!(end.y - start.y > 0.15, "drawn by the drag: {start:?} → {end:?}");
+    exec(&mut h, "edit.undo", json!({}));
+    assert_eq!(develop(&h).masks.len(), 1, "one undo step takes the drawn gradient back");
+    // Radial: a click places one there
+    exec(&mut h, "tool.radial", json!({}));
+    brush_at(&mut h, 0.7, 0.6);
+    let MaskShape::Radial { center, .. } = develop(&h).masks[1].components[0].shape.clone() else { panic!("radial") };
+    assert!((center.x - 0.7).abs() < 0.05 && (center.y - 0.6).abs() < 0.05, "{center:?}");
+    // selecting a mask while a tool waits for a new one puts the tool away
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.step();
+    exec(&mut h, "mask.select", json!({"id": first}));
+    h.step();
+    assert_eq!((h.app.ui.tool.as_str(), h.app.ui.mask_new.is_none()), ("", true), "the selected mask wins");
+    // another photo puts an armed tool away
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.step();
+    let photo = h.app.session.active().expect("a photo");
+    let other = h.app.session.visible_cloned().into_iter().find(|p| *p != photo).expect("another photo");
+    exec(&mut h, "library.select", json!({"ids": [other.0]}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "", "another photo disarms");
+    h.settle(SETTLE);
+}
+
+/// `mask.editComponent` makes one component the one edited on the photo: a Brush component arms the
+/// brush on it, so strokes go into it (not the mask's last Brush); bad arguments are errors.
+#[test]
+fn edit_component_arms_the_brush_on_that_component() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    brush_at(&mut h, 0.3, 0.3);
+    exec(&mut h, "mask.addComponent", json!({"kind": "linear", "op": "add", "start": [0.1, 0.5], "end": [0.9, 0.5]}));
+    exec(&mut h, "mask.addComponent", json!({"kind": "brush", "op": "subtract"}));
+    let mid = h.app.session.active_mask.expect("a mask");
+    let r = exec(&mut h, "mask.editComponent", json!({"id": mid, "component": 0}));
+    assert_eq!(r["brush"], true, "{r}");
+    assert_eq!((h.app.ui.tool.as_str(), h.app.ui.active_mask_component), ("brush", Some(0)));
+    brush_at(&mut h, 0.6, 0.6);
+    let d = develop(&h);
+    let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };
+    assert_eq!(strokes.len(), 2, "into the chosen component");
+    let r = exec(&mut h, "mask.editComponent", json!({"id": mid, "component": 1}));
+    assert_eq!((r["brush"].clone(), h.app.ui.tool.as_str()), (json!(false), "linear"), "the gradient's handles take the drags");
+    for bad in [json!({"id": mid, "component": 9}), json!({"id": 999, "component": 0}), json!({"id": mid}), json!({"id": mid, "component": "x"})] {
+        let r = h.request("engine.execute", json!({"command": "mask.editComponent", "params": bad}), T);
+        assert_eq!(r["ok"], false, "{bad}: {r}");
+    }
+    h.settle(SETTLE);
+}
+
+/// Painting a mask that has settings, with Auto Mask and the overlay off, sends the stroke live: its
+/// effect shows while the button is still held, and the whole stroke is one undo step.
+#[test]
+fn a_stroke_on_a_mask_with_settings_shows_live() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.app.ui.brush_auto_mask = false;
+    brush_at(&mut h, 0.2, 0.2);
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 1.0}}));
+    h.app.ui.mask_overlay = false;
+    h.app.ui.mask_overlay_pinned = false;
+    let strokes = |h: &Headless| match &develop(h).masks[0].components[0].shape {
+        MaskShape::Brush { strokes } => strokes.len(),
+        _ => 0,
+    };
+    let before = strokes(&h);
+    pointer(&mut h, json!([{"kind": "down", "x": 0.4, "y": 0.5}, {"kind": "drag", "x": 0.5, "y": 0.5}, {"kind": "drag", "x": 0.6, "y": 0.5}]));
+    h.step();
+    assert_eq!(strokes(&h), before + 1, "the stroke is on the mask before the button is let go");
+    pointer(&mut h, json!([{"kind": "drag", "x": 0.7, "y": 0.5}, {"kind": "up", "x": 0.7, "y": 0.5}]));
+    assert_eq!(strokes(&h), before + 1, "still one stroke");
+    exec(&mut h, "edit.undo", json!({}));
+    assert_eq!(strokes(&h), before, "one undo step");
+    h.settle(SETTLE);
 }

@@ -1421,9 +1421,13 @@ impl LccApp {
     /// End a Brush stroke being painted, if one is: it is dropped (strokes reach the photo when
     /// released), and the pointer still held paints nothing more until it is let go.
     pub(crate) fn cancel_brush_gesture(&mut self) {
-        if matches!(self.gesture, Some(panels::detail::Gesture::Brush { .. })) {
+        if let Some(panels::detail::Gesture::Brush { sent, .. }) = self.gesture {
             self.gesture = None;
             self.brush_live = None;
+            // a stroke sent live keeps what it painted so far, as one undo step
+            if sent > 0 {
+                let _ = self.run("develop.endInteraction", serde_json::json!({}));
+            }
         }
     }
 
