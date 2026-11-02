@@ -1144,10 +1144,10 @@ fn rank_of(path: &str, kind: MediaKind, id: u64) -> Rank {
 pub(crate) struct StemOwners(HashMap<String, PhotoId>);
 
 impl StemOwners {
-    /// The owners of every shared stem in the library, each file's key made the long way: what
-    /// [`StemOwners::among`] must agree with for the photos it is asked about (this is how the
-    /// owners were worked out before, for every write).
-    #[cfg(test)]
+    /// The owners of every shared stem in the library: what [`Session::stem_owners`] keeps built,
+    /// so naming one photo is a hash lookup. The library is passed over once; each file's key is
+    /// made the long way (only [`StemOwners::where_wanted`] can reuse one buffer, filtering as it
+    /// goes). What [`StemOwners::among`] must agree with for the photos it is asked about.
     pub(crate) fn of(cat: &lcc_catalog::Catalog) -> StemOwners {
         let mut best: HashMap<String, (Rank, PhotoId, usize)> = HashMap::new();
         for p in cat.photos().filter(|p| p.copy_of.is_none()) {
@@ -1277,26 +1277,47 @@ pub(crate) fn namings_in(cat: &lcc_catalog::Catalog, naming: SidecarNaming, ids:
 }
 
 impl Session {
-    /// The sidecar naming for photo `id`: the library's, except under Stem naming when another
-    /// catalogued file shares the stem (`IMG_0001.CR3` + `IMG_0001.JPG`) and owns the stem
-    /// sidecar — a raw first, else the first by file name. The others use Full naming
-    /// (`IMG_0001.JPG.xmp`), so their metadata never overwrites each other.
-    /// [`Session::sidecar_naming`] for many photos, their stems' owners worked out once (per
-    /// photo that is a pass over the whole catalog).
+    /// The sidecar naming for many photos, their stems' owners worked out in one pass over the
+    /// catalog. For a photo asked about often — the grid's badges name a sidecar for every
+    /// visible cell, every frame — [`Session::sidecar_naming`] keeps the whole table built
+    /// instead.
     pub fn sidecar_namings(&self, ids: &[PhotoId]) -> Vec<SidecarNaming> {
         namings_in(&self.catalog, self.xmp.naming, ids)
     }
 
+    /// The sidecar naming for photo `id`: the library's, except under Stem naming when another
+    /// catalogued file shares the stem (`IMG_0001.CR3` + `IMG_0001.JPG`) and owns the stem
+    /// sidecar — a raw first, else the first by file name. The others use Full naming
+    /// (`IMG_0001.JPG.xmp`), so their metadata never overwrites each other.
     pub fn sidecar_naming(&self, id: PhotoId) -> SidecarNaming {
         match self.catalog.photo(id) {
-            Some(p) if self.xmp.naming == SidecarNaming::Stem => StemOwners::among(&self.catalog, &[id]).naming(p, self.xmp.naming),
+            Some(p) if self.xmp.naming == SidecarNaming::Stem => self.stem_owners().naming(p, self.xmp.naming),
             _ => self.xmp.naming,
         }
     }
 
+    /// The owners of every shared stem in the library, as the catalog stands at its current
+    /// revision: built in one pass the first time, kept until the next applied op bumps the
+    /// revision (a library loaded in this process takes a revision range of its own, so nothing
+    /// of the last one's survives). Working the owners out is that whole-library pass — the grid's
+    /// thumbnail badges made it per visible cell, per frame, which froze the UI on large libraries
+    /// (issue #742).
+    pub(crate) fn stem_owners(&self) -> std::sync::Arc<StemOwners> {
+        let mut cached = self.stems.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((rev, owners)) = cached.as_ref()
+            && *rev == self.catalog.revision
+        {
+            return owners.clone();
+        }
+        let owners = std::sync::Arc::new(StemOwners::of(&self.catalog));
+        *cached = Some((self.catalog.revision, owners.clone()));
+        owners
+    }
+
     /// Write the photo's XMP sidecar, merged into an existing one (see the module docs).
     pub fn save_sidecar(&mut self, id: PhotoId) -> Result<SidecarSaved> {
-        self.save_sidecar_with(id, &StemOwners::among(&self.catalog, &[id]))
+        let owners = self.stem_owners();
+        self.save_sidecar_with(id, &owners)
     }
 
     /// Where photo `id`'s sidecar goes: the preferred path and the spellings an existing packet may have (a shared stem

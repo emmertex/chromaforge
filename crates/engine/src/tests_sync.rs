@@ -805,6 +805,37 @@ fn sidecar_namings_for_many_photos_agree_with_one_at_a_time() {
     assert!(one_by_one.contains(&crate::sidecar::SidecarNaming::Full), "the case that matters is there");
 }
 
+/// The grid's thumbnail badges name a sidecar for every visible cell, every frame, so
+/// [`Session::sidecar_naming`] keeps the stems' owner table built and rebuilds it only when the
+/// catalog's revision changes (issue #742): a stem shared with a file that arrives later, or
+/// whose rival leaves, is named by the table as the catalog now stands, not by the one first
+/// built.
+#[test]
+fn sidecar_naming_follows_the_catalog_past_the_owner_table_it_caches() {
+    let dir = Scratch::new("naming-cache");
+    let mut s = library(&dir);
+    let add = |s: &mut Session, name: &str| {
+        let id = s.catalog.alloc_photo_id();
+        let p = lcc_catalog::Photo::new(id, lcc_catalog::Source::File { path: dir.path(&format!("trip/{name}")) }, name, "X", 6, 4, "2026-01-01");
+        s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        id
+    };
+    // alone, the JPEG owns its stem (this call builds and caches the owner table)
+    let jpg = add(&mut s, "IMG_1.JPG");
+    assert_eq!(s.sidecar_naming(jpg), crate::sidecar::SidecarNaming::Stem);
+    // the raw that arrives after the table was built takes the stem over: the table kept built
+    // must not keep naming the JPEG as the stem's owner
+    let raw = add(&mut s, "IMG_1.CR3");
+    assert_eq!(s.sidecar_naming(raw), crate::sidecar::SidecarNaming::Stem, "a raw owns its stem");
+    assert_eq!(s.sidecar_naming(jpg), crate::sidecar::SidecarNaming::Full, "the JPEG now writes IMG_1.JPG.xmp");
+    let ids = [jpg, raw];
+    let one_by_one: Vec<_> = ids.iter().map(|id| s.sidecar_naming(*id)).collect();
+    assert_eq!(s.sidecar_namings(&ids), one_by_one, "the table kept built agrees with a pass over the catalog");
+    // the raw gone, the JPEG has its stem back
+    s.catalog.apply(lcc_catalog::Op::RemovePhoto { id: raw }).unwrap();
+    assert_eq!(s.sidecar_naming(jpg), crate::sidecar::SidecarNaming::Stem, "the last file of a stem owns it again");
+}
+
 /// ✕ set after the listing, while the scan goes through the files: the probes a preceding scan
 /// kept are not checked against the disk one by one (a round trip per file on a network share);
 /// the files not reached come back as errors.

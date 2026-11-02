@@ -412,6 +412,10 @@ pub struct Session {
     pub(crate) plugin_library: String,
     /// XMP sidecar preferences (persisted with the library).
     pub xmp: sidecar::XmpPrefs,
+    /// The library's shared-stem owners with the catalog revision they were built at
+    /// ([`Session::stem_owners`]): one pass per catalog change, a hash lookup per photo
+    /// otherwise. Not saved.
+    pub(crate) stems: std::sync::Mutex<Option<(u64, std::sync::Arc<sidecar::StemOwners>)>>,
     /// Parameters of the last export (`app.export` params, minus targets), persisted in prefs.json.
     pub last_export: Option<serde_json::Value>,
     /// The photos of the last export (the Previous Export source), persisted in view.json.
@@ -591,6 +595,7 @@ impl Session {
             pending_sidecar_repairs: Vec::new(),
             interaction: None,
             skip_auto_write: false,
+            stems: Default::default(),
             folder_metadata: None,
             reload_tickets: Default::default(),
             unsaved_sidecars: Default::default(),
