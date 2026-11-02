@@ -794,7 +794,17 @@ impl Session {
     pub fn persist(&mut self) -> Result<()> {
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         if !self.pending_log.is_empty() {
-            if let Err(e) = lib.journal.append(&self.pending_log) {
+            let mut appended = lib.journal.append(&self.pending_log);
+            if appended.is_err() && lib.journal.lost() > 0 && self.interaction.is_none() {
+                // a log write failed after earlier changes were handed over (natively the log is
+                // written by a thread of its own): a snapshot now saves them and the queued ones
+                let queued = self.pending_log.len() as u64;
+                if lib.journal.snapshot_with_unlogged(&self.catalog, queued).is_ok() && lib.journal.lost() == 0 {
+                    log::warn!("library: a catalog log write failed; a snapshot saved every change");
+                    appended = Ok(());
+                }
+            }
+            if let Err(e) = appended {
                 // the ops stay queued (and applied in memory): the next persist retries them
                 let reason = e.to_string();
                 log::error!("library: {} change(s) not written to disk: {reason}", self.pending_log.len());
@@ -810,6 +820,13 @@ impl Session {
             self.pending_log.clear();
             lib.last_error = None;
         }
+        if self.pending_log.is_empty()
+            && let Err(e) = lib.journal.check_log()
+        {
+            // a log write on its thread failed: the snapshot below saves what it lost
+            lib.last_error = Some(e.to_string());
+            lib.unsaved_error = Some(e.to_string());
+        }
         poll_compaction(lib);
         // Never snapshot mid-interaction: the catalog then holds an uncommitted preview value.
         // The snapshot is written by a worker thread (natively); appends go on meanwhile.
@@ -821,6 +838,10 @@ impl Session {
         {
             log::error!("library: compaction: {e}");
             lib.last_error = Some(format!("compaction: {e}"));
+        }
+        if self.pending_log.is_empty() && lib.journal.lost() == 0 && lib.unsaved_error.is_some() && lib.retry_at.is_none() {
+            // what a failed log write lost is in the snapshot now
+            lib.unsaved_error = None;
         }
         self.sync_compaction_row();
         let due = self.library.as_ref().is_some_and(|l| l.presets_saved.differs(self) && !l.blocked.contains(&"presets.json"));
@@ -900,8 +921,13 @@ impl Session {
         self.save_view();
         let unlogged = if persisted.is_err() { self.pending_log.len() as u64 } else { 0 };
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
-        let before = lib.journal.seq();
+        // (ops a failed log write lost count with the queued ones: the snapshot saves both)
+        let before = lib.journal.seq().saturating_add(lib.journal.lost());
         let snapshot = lib.journal.snapshot_with_unlogged(&self.catalog, unlogged);
+        if snapshot.is_err() {
+            // at least everything handed to the log's thread is written and synced
+            let _ = lib.journal.flush();
+        }
         if unlogged > 0 && lib.journal.seq() == before + unlogged {
             // the snapshot holds the queued ops: they are saved, never append them again
             log::info!("library: {unlogged} queued change(s) saved in the closing snapshot");
@@ -913,13 +939,28 @@ impl Session {
         let result = match (persisted, snapshot) {
             (_, Ok(())) => Ok(()),
             // neither the log nor the snapshot took the queued ops
-            (Err(EngineError::NotSaved(e)), Err(s)) if lib.journal.seq() == before => Err(EngineError::NotSaved(format!("{e}; snapshot: {s}"))),
+            (Err(EngineError::NotSaved(e)), Err(s)) if lib.journal.seq().saturating_add(lib.journal.lost()) == before => {
+                Err(EngineError::NotSaved(format!("{e}; snapshot: {s}")))
+            }
             (_, Err(s)) => Err(s.into()),
         };
         if result.is_ok() {
             self.library_identity = std::sync::Arc::new(());
         }
         result
+    }
+
+    /// Wait until every change handed to the catalog log is durable (natively the log is written
+    /// by a thread of its own). An error: a write failed and the changes it lost are saved by
+    /// the next save (a snapshot). A no-op without a library.
+    pub fn flush_catalog(&mut self) -> Result<()> {
+        let Some(lib) = self.library.as_mut() else { return Ok(()) };
+        lib.journal.flush().map_err(|e| {
+            let reason = e.to_string();
+            lib.last_error = Some(reason.clone());
+            lib.unsaved_error = Some(reason.clone());
+            EngineError::NotSaved(reason)
+        })
     }
 
     /// Let go of the open library's lock (and with it the owner note, `catalog.lock.owner`) while

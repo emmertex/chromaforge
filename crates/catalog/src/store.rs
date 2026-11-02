@@ -30,7 +30,9 @@ pub trait Store: Send {
         self.write_atomic(name, &buf)?;
         Ok(buf.len() as u64)
     }
-    /// Append and make durable (fsync) before returning. On an error, part of `data` may have
+    /// Append and make durable (fsync): before returning, or, where [`Store::log_progress`] says
+    /// `Some` (natively, [`FsStore`]'s own log thread), right after; it is acknowledged once
+    /// [`LogProgress::durable_len`] covers it. On an error, part of `data` may have
     /// been written (a full disk, a dropped network share): the journal cuts the file back to its
     /// previous length with [`Store::truncate`] before appending again.
     fn append(&mut self, name: &str, data: &[u8]) -> io::Result<()>;
@@ -45,6 +47,16 @@ pub trait Store: Send {
     fn background_writer(&self) -> Option<Box<dyn Store>> {
         None
     }
+    /// How much of `name` is durable, when appends to it are written by a thread of the store's
+    /// own (`None`, the default: every append is durable when it returns).
+    fn log_progress(&self, _name: &str) -> Option<LogProgress> {
+        None
+    }
+    /// Wait until every append to `name` handed over is written and synced, or has failed (then
+    /// [`Store::log_progress`] says why). The default has nothing to wait for.
+    fn flush(&mut self, _name: &str) -> io::Result<()> {
+        Ok(())
+    }
     /// The directory the files are in, when they are plain files there: such a library uses the
     /// v4 store ([`crate::db`]) beside its log. `None` (the default): JSON snapshots.
     fn dir(&self) -> Option<&Path> {
@@ -52,11 +64,25 @@ pub trait Store: Send {
     }
 }
 
+/// What a store's log thread has made durable ([`Store::log_progress`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LogProgress {
+    /// Bytes of the file written whole and synced, from its start.
+    pub durable_len: u64,
+    /// Why a write or sync failed (appends after it are left out, so the file never holds a gap),
+    /// until the file is cut back or replaced.
+    pub failed: Option<String>,
+}
+
 /// Files in a directory.
 pub struct FsStore {
     dir: PathBuf,
-    /// Open append handle (kept between appends; dropped on rewrite/truncate).
+    /// Open append handle (kept between appends; dropped on rewrite/truncate). Used where no
+    /// thread writes the log (the browser build, or one that couldn't start).
     appender: Option<(String, std::fs::File)>,
+    /// The thread that writes the log (natively; started by the first append).
+    #[cfg(not(target_arch = "wasm32"))]
+    log: Option<crate::log_writer::LogWriter>,
     /// Keep the JSON snapshot (format 3 storage) instead of the v4 store.
     json_only: bool,
 }
@@ -65,7 +91,13 @@ impl FsStore {
     /// Use `dir` (created if missing).
     pub fn open(dir: impl AsRef<Path>) -> io::Result<FsStore> {
         std::fs::create_dir_all(dir.as_ref())?;
-        Ok(FsStore { dir: dir.as_ref().to_path_buf(), appender: None, json_only: false })
+        Ok(FsStore {
+            dir: dir.as_ref().to_path_buf(),
+            appender: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            log: None,
+            json_only: false,
+        })
     }
     /// [`FsStore::open`], keeping the JSON snapshot storage ([`Store::dir`] says `None`): for
     /// tools and tests of that format, and the benchmark's baseline.
@@ -77,6 +109,19 @@ impl FsStore {
     }
     fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
+    }
+    /// The log thread, when it writes `name`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn log_for(&self, name: &str) -> Option<&crate::log_writer::LogWriter> {
+        self.log.as_ref().filter(|w| w.name == name)
+    }
+    /// Stop the log thread when it writes `name` (it writes and syncs what it was handed first).
+    fn stop_log(&mut self, name: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.log_for(name).is_some() {
+            self.log = None;
+        }
+        let _ = name;
     }
     fn sync_dir(&self) {
         // Makes the rename durable on POSIX; opening a directory fails on Windows (where
@@ -102,6 +147,11 @@ impl Store for FsStore {
     /// linked to a private file would be read as damaged and copied into the library.
     fn read(&mut self, name: &str) -> io::Result<Option<Vec<u8>>> {
         use std::io::Read;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(w) = self.log_for(name) {
+            // every byte handed over, in order
+            w.flush()?;
+        }
         let Some(mut f) = crate::safe_file::open_regular(&self.path(name), std::fs::OpenOptions::new().read(true))? else { return Ok(None) };
         let mut b = Vec::new();
         f.read_to_end(&mut b)?;
@@ -110,6 +160,11 @@ impl Store for FsStore {
 
     fn write_atomic(&mut self, name: &str, data: &[u8]) -> io::Result<()> {
         use std::io::Write;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(w) = self.log_for(name) {
+            // (after the appends handed over before)
+            return w.replace(data);
+        }
         if self.appender.as_ref().is_some_and(|(n, _)| n == name) {
             self.appender = None;
         }
@@ -132,6 +187,8 @@ impl Store for FsStore {
 
     fn write_atomic_with(&mut self, name: &str, fill: &mut dyn FnMut(&mut dyn io::Write) -> io::Result<()>) -> io::Result<u64> {
         use std::io::Write;
+        // written here, once the log thread is done (the next append starts it again)
+        self.stop_log(name);
         if self.appender.as_ref().is_some_and(|(n, _)| n == name) {
             self.appender = None;
         }
@@ -158,6 +215,31 @@ impl Store for FsStore {
 
     fn append(&mut self, name: &str, data: &[u8]) -> io::Result<()> {
         use std::io::Write;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.log.as_ref().is_some_and(|w| w.name != name) {
+                self.log = None;
+            }
+            if self.log.is_none() {
+                // opened here, so a link at the name or a failing open is this append's error
+                let (f, created) = crate::safe_file::open_or_create_regular(&self.path(name), std::fs::OpenOptions::new().append(true))?;
+                if created {
+                    self.sync_dir();
+                }
+                let len = f.metadata()?.len();
+                drop(f);
+                self.appender = None;
+                self.log = crate::log_writer::LogWriter::start(&self.dir, name, len);
+            }
+            if let Some(w) = self.log.as_ref() {
+                if w.append(data).is_ok() {
+                    return Ok(());
+                }
+                // the thread is gone: what it was handed is in its last progress; write here from now on
+                self.log = None;
+                return Err(io::Error::other("the catalog log writer stopped"));
+            }
+        }
         if self.appender.as_ref().is_none_or(|(n, _)| n != name) {
             // never through a link at the name: the records would land in the file it points to, and
             // a dangling link would create that file (issue #2552)
@@ -179,6 +261,10 @@ impl Store for FsStore {
     }
 
     fn truncate(&mut self, name: &str, len: u64) -> io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(w) = self.log_for(name) {
+            return w.truncate(len);
+        }
         if self.appender.as_ref().is_some_and(|(n, _)| n == name) {
             self.appender = None;
         }
@@ -197,7 +283,20 @@ impl Store for FsStore {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn background_writer(&self) -> Option<Box<dyn Store>> {
-        Some(Box::new(FsStore { dir: self.dir.clone(), appender: None, json_only: self.json_only }))
+        Some(Box::new(FsStore { dir: self.dir.clone(), appender: None, log: None, json_only: self.json_only }))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn log_progress(&self, name: &str) -> Option<LogProgress> {
+        self.log_for(name).map(crate::log_writer::LogWriter::progress)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn flush(&mut self, name: &str) -> io::Result<()> {
+        match self.log_for(name) {
+            Some(w) => w.flush(),
+            None => Ok(()),
+        }
     }
 
     fn dir(&self) -> Option<&Path> {

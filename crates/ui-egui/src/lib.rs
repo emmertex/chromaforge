@@ -834,6 +834,9 @@ impl LccApp {
         }
         // AI mask requests run on the model's worker; frames apply their results (never wait)
         session.segmenter.background = true;
+        // a flag or a step never waits for the drive: the catalog log's own thread writes and
+        // syncs it (control replies wait for it, `drain_control`)
+        session.wait_for_catalog_log = false;
         Self {
             session,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1422,7 +1425,14 @@ impl LccApp {
             }
             let reply = req.reply.clone();
             match control::handle(self, ctx, &req) {
-                control::Outcome::Done(v) => {
+                control::Outcome::Done(mut v) => {
+                    // the UI's own commands don't wait for the catalog log's thread; a reply
+                    // to someone outside does: "done" only for what is on disk
+                    if let Err(e) = self.session.flush_catalog()
+                        && let Some(o) = v.as_object_mut()
+                    {
+                        o.insert("notSaved".into(), serde_json::Value::String(e.to_string()));
+                    }
                     let _ = reply.send(v);
                 }
                 control::Outcome::Screenshot { path, headless } => {

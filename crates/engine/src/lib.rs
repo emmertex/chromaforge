@@ -399,6 +399,11 @@ pub struct Session {
     /// Current time provider (ISO 8601); injectable for tests and wasm.
     pub clock: Box<dyn Fn() -> String + Send>,
     depth: u32,
+    /// A top-level command waits until its catalog records are durable before it returns (the
+    /// default: an agent or script is told "done" only for what is on disk). The desktop UI turns
+    /// it off for its own commands, so a flag or a step never waits for the drive; the control
+    /// channel then waits ([`Session::flush_catalog`]) before it replies.
+    pub wait_for_catalog_log: bool,
     /// Selected mask (Masking panel), by mask id.
     pub active_mask: Option<u32>,
     /// AI masks (SAM 3): the model and the last photo prepared for it.
@@ -644,6 +649,7 @@ impl Session {
             media: media::MediaCache::default(),
             clock: Box::new(|| "2026-09-30T12:00:00".to_string()),
             depth: 0,
+            wait_for_catalog_log: true,
             active_mask: None,
             segmenter: segment::Segmenter::default(),
             active_spot: None,
@@ -777,7 +783,11 @@ impl Session {
             // persistence trouble (a failed compaction, an older queued change still unwritten by
             // a command that changed nothing) doesn't fail the command; `library.info` reports it.
             let produced = self.pending_log.len() > log_start;
-            if let Err(e @ EngineError::NotSaved(_)) = self.persist()
+            let mut persisted = self.persist();
+            if persisted.is_ok() && produced && self.wait_for_catalog_log {
+                persisted = self.flush_catalog();
+            }
+            if let Err(e @ EngineError::NotSaved(_)) = persisted
                 && produced
                 && r.is_ok()
             {
