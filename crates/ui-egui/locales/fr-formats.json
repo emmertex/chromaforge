@@ -331,5 +331,6 @@
   "Key from the environment variable {}": "Clé issue de la variable d’environnement {}",
   "{name} API key": "Clé API {name}",
   "Generated {} variations": "{} variantes générées",
-  "Generative Fill failed: {e}": "Échec du remplissage génératif : {e}"
+  "Generative Fill failed: {e}": "Échec du remplissage génératif : {e}",
+  "Add your {} API key in Settings → Generative Fill first.": "Ajoutez d’abord votre clé API {} dans Réglages → Remplissage génératif."
 }

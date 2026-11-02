@@ -331,5 +331,6 @@
   "Key from the environment variable {}": "環境変数 {} のキー",
   "{name} API key": "{name} の API キー",
   "Generated {} variations": "{} 個のバリエーションを生成しました",
-  "Generative Fill failed: {e}": "生成塗りつぶしに失敗しました：{e}"
+  "Generative Fill failed: {e}": "生成塗りつぶしに失敗しました：{e}",
+  "Add your {} API key in Settings → Generative Fill first.": "まず 設定 → 生成塗りつぶし で {} の API キーを追加してください。"
 }

@@ -820,20 +820,23 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
 
-                let tip_ref = crate::widgets::command_tooltip(ui, "Refresh Source", Some("/"));
-                let r_ref = crate::widgets::icon_button_named(
-                    ui,
-                    "spotRefresh",
-                    Icon::RotateRight,
-                    vec2(32.0, 26.0),
-                    false,
-                    true,
-                    crate::i18n::tr("Refresh Source"),
-                    &tip_ref,
-                );
-                register(ui.ctx(), "button:spotRefresh", r_ref.rect);
-                if r_ref.clicked() {
-                    let _ = app.run("spot.refreshSource", json!({"index": i}));
+                // (Fill and Generative spots have no source)
+                if !matches!(sp.mode, lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate) {
+                    let tip_ref = crate::widgets::command_tooltip(ui, "Refresh Source", Some("/"));
+                    let r_ref = crate::widgets::icon_button_named(
+                        ui,
+                        "spotRefresh",
+                        Icon::RotateRight,
+                        vec2(32.0, 26.0),
+                        false,
+                        true,
+                        crate::i18n::tr("Refresh Source"),
+                        &tip_ref,
+                    );
+                    register(ui.ctx(), "button:spotRefresh", r_ref.rect);
+                    if r_ref.clicked() {
+                        let _ = app.run("spot.refreshSource", json!({"index": i}));
+                    }
                 }
 
                 let tip_res = crate::i18n::tr("Reset");

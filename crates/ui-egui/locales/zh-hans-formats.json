@@ -337,5 +337,6 @@
   "Key from the environment variable {}": "来自环境变量 {} 的密钥",
   "{name} API key": "{name} API 密钥",
   "Generated {} variations": "已生成 {} 个变体",
-  "Generative Fill failed: {e}": "生成式填充失败：{e}"
+  "Generative Fill failed: {e}": "生成式填充失败：{e}",
+  "Add your {} API key in Settings → Generative Fill first.": "请先在 设置 → 生成式填充 中添加你的 {} API 密钥。"
 }

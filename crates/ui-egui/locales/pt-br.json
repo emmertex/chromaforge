@@ -2309,5 +2309,7 @@
   "Fill Selected Mask": "Preencher a máscara selecionada",
   "Generate into Selected Mask": "Gerar na máscara selecionada",
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "Remove o que a máscara selecionada cobre (uma seleção de objeto feita com um clique, uma área pintada) com um preenchimento baseado no conteúdo",
-  "Generating fill": "Gerando preenchimento"
+  "Generating fill": "Gerando preenchimento",
+  "No API key yet: add yours in Settings → Generative Fill": "Ainda sem chave de API: adicione a sua em Configurações → Preenchimento generativo",
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Você é consultado uma vez por serviço. Retire a qualquer momento em Configurações → Preenchimento generativo."
 }

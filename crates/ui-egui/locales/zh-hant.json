@@ -2268,5 +2268,7 @@
   "Fill Selected Mask": "填充所選遮色片",
   "Generate into Selected Mask": "在所選遮色片中生成",
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "用內容感知填充移除所選遮色片覆蓋的內容（點擊得到的物件選取範圍、筆刷塗抹的區域）",
-  "Generating fill": "正在生成填充"
+  "Generating fill": "正在生成填充",
+  "No API key yet: add yours in Settings → Generative Fill": "尚無 API 金鑰：請在 設定 → 生成式填充 中新增",
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "每個服務只詢問一次。可隨時在 設定 → 生成式填充 中撤回。"
 }

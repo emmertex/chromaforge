@@ -331,5 +331,6 @@
   "Key from the environment variable {}": "Ключ из переменной окружения {}",
   "{name} API key": "API-ключ {name}",
   "Generated {} variations": "Создано вариантов: {}",
-  "Generative Fill failed: {e}": "Генеративная заливка не удалась: {e}"
+  "Generative Fill failed: {e}": "Генеративная заливка не удалась: {e}",
+  "Add your {} API key in Settings → Generative Fill first.": "Сначала добавьте API-ключ {} в «Настройки → Генеративная заливка»."
 }

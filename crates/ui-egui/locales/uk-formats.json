@@ -331,5 +331,6 @@
   "Key from the environment variable {}": "Ключ зі змінної середовища {}",
   "{name} API key": "API-ключ {name}",
   "Generated {} variations": "Створено варіантів: {}",
-  "Generative Fill failed: {e}": "Генеративне заповнення не вдалося: {e}"
+  "Generative Fill failed: {e}": "Генеративне заповнення не вдалося: {e}",
+  "Add your {} API key in Settings → Generative Fill first.": "Спершу додайте API-ключ {} у «Налаштування → Генеративне заповнення»."
 }

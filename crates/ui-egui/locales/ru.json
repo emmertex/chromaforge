@@ -2461,5 +2461,7 @@
   "Fill Selected Mask": "Залить выбранную маску",
   "Generate into Selected Mask": "Создать в выбранной маске",
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "Удаляет то, что покрывает выбранная маска (выделение объекта щелчком, закрашенная область), заливкой с учётом содержимого",
-  "Generating fill": "Создание заливки"
+  "Generating fill": "Создание заливки",
+  "No API key yet: add yours in Settings → Generative Fill": "API-ключа ещё нет: добавьте свой в «Настройки → Генеративная заливка»",
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Запрос делается один раз для каждого сервиса. Отозвать согласие можно в любое время в «Настройки → Генеративная заливка»."
 }

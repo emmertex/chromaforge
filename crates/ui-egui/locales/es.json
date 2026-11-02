@@ -2467,5 +2467,7 @@
   "Fill Selected Mask": "Rellenar la máscara seleccionada",
   "Generate into Selected Mask": "Generar en la máscara seleccionada",
   "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill": "Elimina lo que cubre la máscara seleccionada (una selección de objeto hecha con un clic, una zona pintada) con un relleno según el contenido",
-  "Generating fill": "Generando relleno"
+  "Generating fill": "Generando relleno",
+  "No API key yet: add yours in Settings → Generative Fill": "Aún no hay clave de API: añade la tuya en Ajustes → Relleno generativo",
+  "You are asked once per service. Withdraw it any time in Settings → Generative Fill.": "Se te pregunta una vez por servicio. Retíralo cuando quieras en Ajustes → Relleno generativo."
 }

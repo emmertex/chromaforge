@@ -232,7 +232,7 @@ pub enum GenError {
 impl std::fmt::Display for GenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GenError::NoKey => write!(f, "no API key for this provider: add yours in Settings ▸ Generative Fill"),
+            GenError::NoKey => write!(f, "no API key for this provider: add yours in Settings → Generative Fill"),
             GenError::Cancelled => write!(f, "cancelled"),
             GenError::Unauthorized(e) => write!(f, "the provider refused the API key: {e}"),
             GenError::Payment(e) => write!(f, "the provider asks for payment or credits: {e}"),

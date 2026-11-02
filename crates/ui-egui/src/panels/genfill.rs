@@ -1,6 +1,6 @@
 //! Generative fill in the UI (`docs/generative-fill.md`): the Remove panel's Generative section
 //! (provider, prompt, variations, the estimate, Generate, the variation picker and warnings), the
-//! consent dialog before a provider is first used, and Settings ▸ Generative Fill (your own API
+//! consent dialog before a provider is first used, and Settings → Generative Fill (your own API
 //! keys, consent per provider).
 //!
 //! Nothing is sent until Generate is clicked, and never to a provider whose terms the user has
@@ -69,7 +69,7 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
             let r = r.on_hover_text(crate::i18n::tr(if p["configured"] == true {
                 "API key set"
             } else {
-                "No API key yet: add yours in Settings ▸ Generative Fill"
+                "No API key yet: add yours in Settings → Generative Fill"
             }));
             if r.clicked() {
                 app.ui.genfill.provider = id;
@@ -194,7 +194,7 @@ fn generate(app: &mut LccApp, ctx: &egui::Context, index: usize, provider: &Valu
     if provider["configured"] != true {
         app.toast(
             ctx,
-            crate::i18n::tr_format!("Add your {} API key in Settings ▸ Generative Fill first.", provider["name"].as_str().unwrap_or_default()),
+            crate::i18n::tr_format!("Add your {} API key in Settings → Generative Fill first.", provider["name"].as_str().unwrap_or_default()),
         );
         app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "genfill".into() });
         return;
@@ -302,13 +302,13 @@ pub fn consent_body(app: &mut LccApp, ui: &mut egui::Ui, provider: &str, index: 
         ui.label(RichText::new(crate::i18n::tr(w)).color(t.caution));
     }
     ui.label(
-        RichText::new(crate::i18n::tr("You are asked once per service. Withdraw it any time in Settings ▸ Generative Fill."))
+        RichText::new(crate::i18n::tr("You are asked once per service. Withdraw it any time in Settings → Generative Fill."))
             .size(11.0)
             .color(t.text_dim),
     );
 }
 
-/// Settings ▸ Generative Fill: your own API keys and consent, per provider.
+/// Settings → Generative Fill: your own API keys and consent, per provider.
 pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     super::settings::hint(
         ui,
