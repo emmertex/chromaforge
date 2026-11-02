@@ -33,7 +33,7 @@ impl Drop for Scratch {
     }
 }
 
-fn photo(c: &mut Catalog, i: u64) -> Photo {
+pub(crate) fn photo(c: &mut Catalog, i: u64) -> Photo {
     let id = c.alloc_photo_id();
     let mut p = Photo::new(
         id,
@@ -696,7 +696,7 @@ fn another_apps_catalog_is_foreign_and_left_untouched() {
 }
 
 /// A `meta` value of the store, as written.
-fn stored_meta(dir: &Path, key: &str) -> Option<String> {
+pub(crate) fn stored_meta(dir: &Path, key: &str) -> Option<String> {
     use redb::ReadableDatabase;
     let db = redb::Database::open(dir.join(DB_FILE)).unwrap();
     let r = db.begin_read().unwrap();
@@ -706,7 +706,7 @@ fn stored_meta(dir: &Path, key: &str) -> Option<String> {
 
 /// A library with photos in its store, then marked as an older build left it: `version` set to
 /// `version`, or removed when `None`.
-fn older_store(tag: &str, version: Option<&str>) -> Scratch {
+pub(crate) fn older_store(tag: &str, version: Option<&str>) -> Scratch {
     let s = Scratch::new(tag);
     {
         let (mut j, mut c, _) = open(s.path());

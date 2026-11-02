@@ -39,6 +39,8 @@ pub mod store;
 pub mod tally;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transfer;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod upgrade_backup;
 pub mod xmp_state;
 
 use std::collections::BTreeMap;
@@ -1828,6 +1830,8 @@ mod tests_search_text;
 mod tests_sort_cache;
 #[cfg(test)]
 mod tests_tally;
+#[cfg(test)]
+mod tests_upgrade_backup;
 #[cfg(test)]
 mod tests_torn_append;
 #[cfg(test)]

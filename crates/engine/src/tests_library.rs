@@ -957,3 +957,31 @@ fn collection_ids_are_aliases_of_album_ids() {
     assert_eq!(crate::canonical_id("library.import"), "library.import");
     assert!(matches!(s.execute("collection.noSuchThing", &json!({})), Err(crate::EngineError::UnknownCommand(_))));
 }
+
+/// A library whose catalog is upgraded says so once, names the unchanged copy it kept and how to
+/// go back; `library.info` reports both.
+#[test]
+fn an_upgraded_library_says_where_its_older_copy_is() {
+    let dir = temp_dir("upgrade-notice");
+    {
+        let mut s = open(&dir, true);
+        s.execute("album.create", &json!({"name": "Keepers"})).unwrap();
+    }
+    // the catalog as a format-11 build left it
+    {
+        let db = redb::Database::open(dir.join(lcc_catalog::db::DB_FILE)).unwrap();
+        let w = db.begin_write().unwrap();
+        w.open_table(redb::TableDefinition::<&str, &[u8]>::new("meta")).unwrap().insert("version", b"11".as_slice()).unwrap();
+        w.commit().unwrap();
+    }
+    let mut s = open(&dir, false);
+    let notes = s.take_library_warnings();
+    let note = notes.iter().find(|n| n.contains("upgraded from format v11")).expect("the upgrade is told");
+    let info = s.execute("library.info", &json!({})).unwrap();
+    let kept = info["load"]["upgradeBackup"].as_str().expect("library.info names the copy").to_string();
+    assert_eq!(info["load"]["upgradedFrom"], 11);
+    assert!(note.contains(&kept) && note.contains("to go back"), "{note}");
+    assert!(std::path::Path::new(&kept).join(lcc_catalog::db::DB_FILE).is_file());
+    assert!(s.take_library_warnings().iter().all(|n| !n.contains("upgraded from")), "told once");
+    let _ = std::fs::remove_dir_all(&dir);
+}

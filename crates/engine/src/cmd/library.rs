@@ -2166,6 +2166,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     "replayed": lib.report.replayed,
                     "tornBytes": lib.report.torn_bytes,
                     "damaged": lib.report.damaged,
+                    // the catalog was in an older format: upgraded, a verified copy kept as it was
+                    "upgradedFrom": lib.report.upgraded_from,
+                    "upgradeBackup": lib.report.upgrade_backup.as_ref().map(|p| p.display().to_string()),
                 },
             }))
         }),

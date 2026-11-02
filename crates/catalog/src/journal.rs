@@ -126,6 +126,9 @@ pub struct LoadReport {
     /// The library was in an older catalog format (`0` = before format versions: a log without a
     /// snapshot) and was rewritten in this version's format ([`VERSION`]).
     pub upgraded_from: Option<u32>,
+    /// With [`Self::upgraded_from`] on disk: the verified copy of the library as it was before the
+    /// upgrade (`backups/before-v<N> <time>/`), which the older version still opens.
+    pub upgrade_backup: Option<std::path::PathBuf>,
     /// What [`Catalog::repair`] changed in a damaged snapshot (empty for a sound one).
     pub repaired: Vec<String>,
 }
