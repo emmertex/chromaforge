@@ -1,0 +1,2 @@
+### Masks applied together stay linked
+- A mask applied to several photos in one go (Auto Sync, a preset on a selection, Paste, Sync Settings, Paste from Previous) stays linked across them. With Auto Sync on, editing it on one photo changes its copies on the other selected photos: a gradient you drag lands in exactly the same place, while AI selections keep what was found on each photo and only their settings follow. Photos that aren't selected, or any edit with Auto Sync off, stay as they are. Ported from OneSlips' fork.

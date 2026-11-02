@@ -382,6 +382,9 @@ pub struct Session {
     pub(crate) enhance: enhance::EnhanceJobs,
     /// Copied develop settings (partial JSON) for Paste.
     pub clipboard: Option<Value>,
+    /// The photo [`Session::clipboard`] was copied from: Paste links its masks with the pasted
+    /// copies.
+    pub clipboard_from: Option<PhotoId>,
     /// The folder on disk the [`LibrarySource::Folder`] view browses.
     pub browse: Option<Browse>,
     /// The folder the [`LibrarySource::LibraryFolder`] view shows: the library's photos imported
@@ -647,6 +650,7 @@ impl Session {
             focus_scan: Default::default(),
             enhance: Default::default(),
             clipboard: None,
+            clipboard_from: None,
             meta_clipboard: None,
             browse: None,
             library_folder: None,
@@ -1171,6 +1175,20 @@ impl Session {
             i.crop_edited |= crop_edited;
             return self.apply_silent(Op::SetDevelop { id, settings, label: label.into(), edited: Some(now) });
         }
+        // masks Auto Sync carries to the other selected photos are linked with their copies there
+        let mut settings = settings;
+        if self.auto_sync_applies(id, label) {
+            let links = self.link_edited_masks(id, &mut requested);
+            if !links.is_empty() {
+                let mut s = (*settings).clone();
+                for m in &mut s.masks {
+                    if let Some((_, l)) = links.iter().find(|(mid, _)| *mid == m.id) {
+                        m.link = l.clone();
+                    }
+                }
+                settings = Arc::new(s);
+            }
+        }
         let own_auto = self.own_auto_wb(id, &requested, label);
         let mut ops = vec![self.develop_op(id, (*settings).clone(), label).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?];
         let (synced, compute) = self.auto_sync_ops(id, &requested, label, &own_auto);
@@ -1292,6 +1310,20 @@ impl Session {
             })
             .collect();
         (ops, compute)
+    }
+
+    /// Give the masks of `new` that differ from photo `id`'s (added or edited) and aren't linked yet
+    /// a fresh link ([`lcc_develop::Mask::link`]); returns `(mask id, link)` of those.
+    fn link_edited_masks(&self, id: PhotoId, new: &mut DevelopSettings) -> Vec<(u32, String)> {
+        let Some(old) = self.develop_of(id) else { return Vec::new() };
+        let mut out = Vec::new();
+        for m in &mut new.masks {
+            if m.link.is_empty() && old.masks.iter().find(|o| o.id == m.id) != Some(&*m) {
+                m.link = new_mask_link(u64::from(m.id) ^ id.0);
+                out.push((m.id, m.link.clone()));
+            }
+        }
+        out
     }
 
     /// Auto Sync carries an edit of photo `id` labelled `label` to the other selected photos: it is
@@ -1811,6 +1843,19 @@ pub fn bad_ids_entry(a: &[Value]) -> Option<String> {
 /// Automatic versions kept per photo.
 pub const AUTO_VERSIONS: usize = 20;
 
+/// A new mask link ([`lcc_develop::Mask::link`]): 16 hex digits from the time, the process, a
+/// counter and `salt`.
+pub fn new_mask_link(salt: u64) -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let t = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default() as u64;
+    // a splitmix64 step mixes the parts into 64 well-spread bits
+    let mut x = t ^ u64::from(std::process::id()).rotate_left(32) ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ salt.rotate_left(17);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    format!("{:016x}", x ^ (x >> 31))
+}
+
 /// The parts of `new` that differ from `old` (objects recurse; anything else is taken whole).
 pub fn json_delta(old: &Value, new: &Value) -> Option<Value> {
     match (old, new) {
@@ -1857,6 +1902,8 @@ mod tests_auto_mask_range;
 mod tests_autosync_wb;
 #[cfg(test)]
 mod tests_autosync;
+#[cfg(test)]
+mod tests_mask_links;
 #[cfg(test)]
 mod tests_camera_profile_defaults;
 #[cfg(test)]

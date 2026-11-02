@@ -595,6 +595,11 @@ pub fn specs() -> Vec<CommandSpec> {
             masks_edit(s, "mask.update", "Edit Mask", |masks, _| {
                 let i = find(masks, mid, "mask.update")?;
                 let c = masks[i].components.get_mut(comp).ok_or_else(|| bad("mask.update", "no such component"))?;
+                // a gradient placed by hand stays where it was put: no longer placed through its
+                // anchor's box (recomputing would move it), and its linked copies get exactly this place
+                if c.shape != shape {
+                    c.anchor = None;
+                }
                 c.shape = shape;
                 Ok(())
             })
