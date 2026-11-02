@@ -559,7 +559,7 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 let active = modes.iter().position(|(_, m, _)| *m == d.geometry.upright);
                 if let Some(i) = crate::widgets::segmented(ui, "upright", &items, active, 3) {
                     let (_, mode, key) = modes[i];
-                    let r = app.run("geometry.upright", json!({"mode": key}));
+                    let r = app.run("geometry.upright", json!({"mode": key, "again": Some(i) == active}));
                     upright_note(app, ui.ctx(), r.as_ref().ok());
                     app.ui.tool = if mode == Upright::Guided { "guidedUpright".into() } else { String::new() };
                 }

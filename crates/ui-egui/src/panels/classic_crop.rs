@@ -120,7 +120,7 @@ pub(crate) fn transform_body(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 if let Some(i) = crate::widgets::segmented(ui, "upright", &items, active, 3)
                     && let Some((_, mode, key)) = modes.get(i)
                 {
-                    let _ = app.run("geometry.upright", json!({"mode": key}));
+                    let _ = app.run("geometry.upright", json!({"mode": key, "again": Some(i) == active}));
                     app.ui.tool = if *mode == Upright::Guided { "guidedUpright".into() } else { String::new() };
                 }
             }

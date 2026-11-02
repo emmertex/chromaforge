@@ -113,6 +113,7 @@ pub mod text;
 pub mod timelapse;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod update;
+pub mod upright_jobs;
 pub mod video;
 mod view;
 pub mod walk;
@@ -486,6 +487,8 @@ pub struct Session {
     pub activity: activity::Activity,
     /// Video playback, trim and poster (M14.4/M14.6): the decoder backend and the player.
     pub video: video::VideoState,
+    /// Upright analysed on each photo an automatic mode reaches without its own correction ([`upright_jobs`]).
+    pub upright_jobs: upright_jobs::UprightJobs,
     /// The last (or running) slideshow export (`slideshow.export`).
     pub slideshow_export: Option<std::sync::Arc<slideshow_export::ExportRun>>,
     /// The last (or running) Build Previews.
@@ -680,6 +683,7 @@ impl Session {
             folder_new: Default::default(),
             activity: Default::default(),
             video: Default::default(),
+            upright_jobs: Default::default(),
             preview_build: None,
             slideshow_export: None,
             import_defaults: import::ImportDefaults::default(),
@@ -799,6 +803,7 @@ impl Session {
     pub fn commit(&mut self, label: &str, op: Op) -> Result<()> {
         let fwd = op.clone();
         let inv = self.apply_through(op, Catalog::apply_new)?;
+        let upright = fwd.clone();
         self.pending_log.push(fwd);
         self.undo.push(UndoEntry { label: label.to_string(), op: inv, folder: None, retry_inverse: Vec::new(), retry_sidecars: Vec::new() });
         self.commits = self.commits.wrapping_add(1);
@@ -810,6 +815,8 @@ impl Session {
         for mut dropped in self.redo.drain(..) {
             self.pending_sidecar_repairs.append(&mut dropped.retry_sidecars);
         }
+        // after the undo step, so a correction worked out now is journalled after the edit it completes
+        self.upright_after(&upright);
         Ok(())
     }
 
@@ -1230,6 +1237,7 @@ impl Session {
                     lcc_pipeline::local::normalize_wb(&mut synced, &self.source_info(x));
                     sync_same::synced_wb(&ainfo, &old, new, &self.source_info(x), &d, own_auto.get(&x).copied(), &mut synced);
                 }
+                upright_jobs::as_recipe(&d, &mut synced);
                 let synced = self.fit_constrained_crop(x, synced);
                 (synced != *d).then(|| self.develop_op(x, synced, label)).flatten()
             })
@@ -1886,6 +1894,8 @@ mod tests_sync;
 mod tests_target_params;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_timelapse;
+#[cfg(test)]
+mod tests_upright_jobs;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_video_posters;
 #[cfg(test)]

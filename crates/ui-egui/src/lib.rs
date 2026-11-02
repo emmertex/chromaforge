@@ -832,6 +832,7 @@ impl LccApp {
         }
         // AI mask requests run on the model's worker; frames apply their results (never wait)
         session.segmenter.background = true;
+        session.upright_jobs.background = true;
         Self {
             session,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1262,6 +1263,13 @@ impl LccApp {
     /// show their errors; start a zoomed-in detail pass once the clicking stops
     /// (`ui.detail_due`); watch the model download. Never waits for the model.
     fn ai_mask_detail(&mut self, ctx: &egui::Context) {
+        // Upright worked out in the background for photos an automatic mode reached by sync or paste
+        if self.session.upright_poll() {
+            ctx.request_repaint();
+        }
+        if self.session.upright_jobs.pending() > 0 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let polled = self.session.segment_poll();
         let now = ctx.input(|i| i.time);
         if polled.changed {

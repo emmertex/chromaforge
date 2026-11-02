@@ -946,7 +946,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Upright",
             [],
             None,
-            "{mode: off|auto|guided|level|vertical|full} — analyses the photo (line segments → vanishing points) and stores the correction; run again to update after lens changes → {mode, transform, note (why the mode found nothing to correct, when it didn't)}",
+            "{mode: off|auto|guided|level|vertical|full, again?: bool} — analyses the photo (line segments → vanishing points) and stores the correction; run again to update after lens changes. `again` (a second click on the mode that is on) analyses it afresh and clears Guided's guides; the Transform sliders stay → {mode, transform, note (why the mode found nothing to correct, when it didn't)}",
             has_active,
             |s, p| {
                 let mode: Upright =
@@ -963,7 +963,13 @@ pub fn specs() -> Vec<CommandSpec> {
                         (Some(lcc_pipeline::upright::solve(m, &a)), lcc_pipeline::upright::shortfall(m, &a))
                     }
                 };
+                let again = bool_or(p, "again", false);
                 edit(s, "geometry.upright", "Upright", |d| {
+                    // a second click on the mode analyses it afresh (OneSlips, test notes 2026-10-24 note 6);
+                    // the Transform sliders stay as set (decision 2026-10-25 item 11)
+                    if again && mode == Upright::Guided {
+                        d.geometry.guides.clear();
+                    }
                     d.geometry.upright = mode;
                     d.geometry.upright_transform = transform;
                     Ok(())
@@ -1075,7 +1081,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let ops = ids
                     .iter()
                     .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                    .filter_map(|(id, d)| s.develop_op(id, lcc_develop::apply_partial(&d, &clip, 1.0), "Paste Settings"))
+                    .filter_map(|(id, d)| {
+                        let mut pasted = lcc_develop::apply_partial(&d, &clip, 1.0);
+                        crate::upright_jobs::as_recipe(&d, &mut pasted);
+                        s.develop_op(id, pasted, "Paste Settings")
+                    })
                     .collect::<Vec<_>>();
                 let n = ops.len();
                 s.commit("Paste Settings", Op::Batch { ops })?;
@@ -1121,6 +1131,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         for (k, v) in &values {
                             lcc_develop::controls::set(&mut nd, k, *v);
                         }
+                        crate::upright_jobs::as_recipe(&dd, &mut nd);
                         s.develop_op(x, nd, "Sync Settings")
                     })
                     .collect::<Vec<_>>();
