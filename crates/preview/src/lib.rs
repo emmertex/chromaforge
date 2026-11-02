@@ -167,6 +167,16 @@ impl PreviewCache {
         Some(img)
     }
 
+    /// Keep `img` under `key` in memory only (never written to disk): a decoded camera JPEG the
+    /// loupe steps back to.
+    pub fn put_memory(&self, key: Hash128, img: Arc<Rgba8>) {
+        if self.generation.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            return;
+        }
+        let c = cost(&img);
+        self.mem.lock().unwrap_or_else(|e| e.into_inner()).insert(key, img, c);
+    }
+
     pub fn put(&self, key: Hash128, img: Arc<Rgba8>) {
         self.put_at(self.generation(), key, img);
     }

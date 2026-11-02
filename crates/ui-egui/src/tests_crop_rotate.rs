@@ -517,3 +517,35 @@ fn auto_straighten_says_when_it_finds_nothing() {
     assert_eq!(angle(&h), 0.0);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Note 5 of 2026-10-31: every C (Crop on / off) rendered the loupe again, though the edit did
+/// not change. The renderer keeps the last full-quality whole-frame renders: C off → on → off with
+/// the edit unchanged shows them at once and asks for no render; an edit renders again.
+#[test]
+fn crop_on_and_off_with_an_unchanged_edit_renders_nothing_again() {
+    use crate::render::Slot;
+    let mut h = crop_tool();
+    let c = |h: &mut Headless| {
+        let r = h.request("engine.execute", json!({"command": "panel.crop"}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+    };
+    let key = |h: &Headless| h.app.renderer.textures.get(&Slot::Main).map(|t| t.key).expect("a loupe render");
+    let r = h.request("engine.execute", json!({"command": "crop.aspect", "params": {"aspect": "4x5"}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let whole = key(&h);
+    c(&mut h);
+    let cropped = key(&h);
+    assert_ne!(whole, cropped, "Crop off renders the cropped view");
+    let before = h.app.renderer.main_requested;
+    c(&mut h);
+    assert_eq!(key(&h), whole, "Crop on shows the kept whole photo");
+    c(&mut h);
+    assert_eq!(key(&h), cropped, "Crop off shows the kept cropped view");
+    assert_eq!(h.app.renderer.main_requested, before, "pressing C rendered again");
+    let r = h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.4}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(h.app.renderer.main_requested > before, "an edit renders");
+}

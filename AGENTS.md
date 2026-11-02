@@ -70,7 +70,7 @@ of it. Full standard: `../craftrules/standards/never-crash.md`
   fallback (`unwrap_or…`) only where it can't silently corrupt a document. An unfinished feature returns an
   "unsupported" error or is disabled. Sole exception: a provably infallible literal, as `#[allow(clippy::expect_used)]`
   + `.expect("why it can't fail")`.
-- **`unsafe` lives only in `crates/sysmem`** (two FFI calls: `malloc_zone_pressure_relief`, that returns freed
+- **`unsafe` lives only in `crates/sysmem`** (FFI calls: `SetThreadPriority` + `GetCurrentThread` on Windows, that run render workers below normal priority so the desktop stays responsive; `malloc_zone_pressure_relief`, that returns freed
   allocator pages to macOS after raw decodes, and `fsync`, for volumes such as SMB shares that refuse std's `F_FULLFSYNC`) **and `crates/hdrmeta`** (wgpu-hal calls on Linux / BSD: open the
   window's Vulkan device with `VK_EXT_hdr_metadata`, and `vkSetHdrMetadataEXT` on its swapchain, so the Wayland
   compositor shows HDR; no-op elsewhere). **`crates/gpumem`** (wgpu-hal calls: read how much memory the window's GPU offers — Vulkan

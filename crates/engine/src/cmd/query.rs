@@ -291,27 +291,37 @@ pub fn specs() -> Vec<CommandSpec> {
                 .collect();
             Ok(json!({"groups": groups, "cursor": ph.history_index(), "latest": ph.history_cursor.is_none()}))
         }),
-        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool} — allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why)}", always, |_, p| {
+        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool} — allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why), recoveries (lost devices replaced), events [{seq, kind: lost|recovered|gaveUp, text}] (what happened to the graphics card, in plain words), batch {jobs, bytes, waiting, limitBytes, limitJobs, waits, waitedMs} (exports' turns at the GPU)}", always, |_, p| {
             if let Some(on) = p.get("enabled").and_then(Value::as_bool) {
                 lcc_gpu::set_enabled(on);
             }
+            let b = lcc_gpu::batch_usage();
             Ok(json!({
                 "enabled": lcc_gpu::enabled(),
                 "available": lcc_gpu::available(),
                 "adapter": lcc_gpu::adapter_name(),
                 "reason": lcc_gpu::unavailable_reason(),
                 "lastFallback": lcc_gpu::last_fallback(),
+                "recoveries": lcc_gpu::recoveries(),
+                "events": gpu_events(),
+                "batch": {
+                    "jobs": b.jobs, "bytes": b.bytes, "waiting": b.waiting, "limitBytes": b.limit_bytes,
+                    "limitJobs": b.limit_jobs, "waits": b.waits, "waitedMs": b.waited_ms,
+                },
             }))
         }),
         cmd!(query "library.memory", "Memory Usage", [], None, "{} — bytes held by each cache (decoded sources, rendered previews, GPU buffers; heap when instrumented)", always, |s, _| {
             Ok(serde_json::to_value(s.memory_report()).unwrap_or_default())
         }),
-        cmd!(query "app.memoryBudget", "Memory Budget", [], None, "{mb?: number} — set the memory budget shared by the caches (default: a quarter of RAM, at most 1536 MB); returns the report", always, |s, p| {
+        cmd!(query "app.memoryBudget", "Memory Budget", [], None, "{mb?: number (0 = automatic)} — set the memory budget shared by the caches (automatic: a quarter of the computer's memory, at most 16 GB; by hand at most three quarters of it, `maxBudget`); returns the report", always, |s, p| {
             if let Some(mb) = p.get("mb").and_then(Value::as_f64) {
-                if !(64.0..=1_048_576.0).contains(&mb) {
-                    return Err(bad("app.memoryBudget", "mb must be 64..1048576"));
+                if mb == 0.0 {
+                    s.set_memory_budget(crate::memory::default_budget());
+                } else if !(64.0..=1_048_576.0).contains(&mb) {
+                    return Err(bad("app.memoryBudget", "mb must be 64..1048576, or 0 for automatic"));
+                } else {
+                    s.set_memory_budget((mb * 1048576.0) as usize);
                 }
-                s.set_memory_budget((mb * 1048576.0) as usize);
             }
             Ok(serde_json::to_value(s.memory_report()).unwrap_or_default())
         }),
@@ -321,6 +331,23 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Array(s.journal[start..].iter().map(|(c, p)| json!({"command": c, "params": p})).collect()))
         }),
     ]
+}
+
+/// What happened to the graphics card this session ([`lcc_gpu::events_after`]), for `app.gpu`.
+fn gpu_events() -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let kind = |k: lcc_gpu::EventKind| match k {
+            lcc_gpu::EventKind::Lost => "lost",
+            lcc_gpu::EventKind::Recovered => "recovered",
+            lcc_gpu::EventKind::GaveUp => "gaveUp",
+        };
+        Value::Array(lcc_gpu::events_after(0).into_iter().map(|e| json!({"seq": e.seq, "kind": kind(e.kind), "text": e.text})).collect())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Value::Array(Vec::new())
+    }
 }
 
 #[cfg(test)]

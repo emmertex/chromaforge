@@ -41,14 +41,28 @@ fn radius_px(size: f64, ppl: f64) -> f64 {
     (size * ppl).max(1.0)
 }
 
-/// Mean colour of `img` in a disc/annulus.
-fn ring_stats(img: &Rgb32f, c: (f32, f32), r0: f32, r1: f32) -> Option<Vec<[f32; 3]>> {
+/// Directions (cos, sin) of the 24 spokes [`ring_stats`] samples along.
+pub fn ring_dirs() -> [(f32, f32); 24] {
+    std::array::from_fn(|i| {
+        let a = i as f32 / 24.0 * std::f32::consts::TAU;
+        (a.cos(), a.sin())
+    })
+}
+
+/// The radii (inner, middle, outer) of the rings a source is scored on for a spot of radius `r`:
+/// the surroundings (compared between target and source) and the inside of the source.
+pub fn score_radii(r: f32) -> [[f32; 3]; 2] {
+    let ring = |r0: f32, r1: f32| [r0, (r0 + r1) / 2.0, r1];
+    [ring(r * 1.05, r * 1.6), ring(r * 0.2, r * 0.9)]
+}
+
+/// Samples of `img` along the spokes at three radii (spoke by spoke); `None` when one falls
+/// outside the image.
+fn ring_stats(img: &Rgb32f, c: (f32, f32), radii: [f32; 3]) -> Option<Vec<[f32; 3]>> {
     let mut out = Vec::new();
-    let n = 24;
-    for i in 0..n {
-        let a = i as f32 / n as f32 * std::f32::consts::TAU;
-        for rr in [r0, (r0 + r1) / 2.0, r1] {
-            let (x, y) = (c.0 + a.cos() * rr, c.1 + a.sin() * rr);
+    for (cos, sin) in ring_dirs() {
+        for rr in radii {
+            let (x, y) = (c.0 + cos * rr, c.1 + sin * rr);
             if x < 0.0 || y < 0.0 || x >= img.width as f32 || y >= img.height as f32 {
                 return None;
             }
@@ -59,9 +73,10 @@ fn ring_stats(img: &Rgb32f, c: (f32, f32), r0: f32, r1: f32) -> Option<Vec<[f32;
 }
 
 fn score(img: &Rgb32f, target: (f32, f32), source: (f32, f32), r: f32) -> f32 {
-    let (Some(a), Some(b)) = (ring_stats(img, target, r * 1.05, r * 1.6), ring_stats(img, source, r * 1.05, r * 1.6)) else { return f32::MAX };
+    let [around, within] = score_radii(r);
+    let (Some(a), Some(b)) = (ring_stats(img, target, around), ring_stats(img, source, around)) else { return f32::MAX };
     // also compare the inside of the source against the target's surroundings (texture continuity)
-    let inside = ring_stats(img, source, r * 0.2, r * 0.9);
+    let inside = ring_stats(img, source, within);
     let mut s = 0.0;
     for (p, q) in a.iter().zip(&b) {
         for c in 0..3 {
@@ -80,24 +95,40 @@ fn score(img: &Rgb32f, target: (f32, f32), source: (f32, f32), r: f32) -> f32 {
 /// Candidate source offsets (output pixels) for a spot of radius `r` at `target`, best first
 /// (candidates reaching outside the image are left out).
 pub fn ranked_sources(img: &Rgb32f, target: (f32, f32), r: f32) -> Vec<(f32, f32)> {
-    let mut c: Vec<(f32, (f32, f32))> = Vec::new();
+    let cands = candidates(r);
+    let scores: Vec<f32> = cands.iter().map(|d| score(img, target, (target.0 + d.0, target.1 + d.1), r)).collect();
+    rank(&cands, &scores)
+}
+
+/// The source offsets [`ranked_sources`] tries for a spot of radius `r`, in order: 16 directions
+/// on each of three rings.
+pub fn candidates(r: f32) -> Vec<(f32, f32)> {
+    let mut c = Vec::with_capacity(48);
     for ring in [2.4f32, 3.2, 4.2] {
         for i in 0..16 {
             let a = i as f32 / 16.0 * std::f32::consts::TAU;
-            let d = (a.cos() * r * ring, a.sin() * r * ring);
-            let s = score(img, target, (target.0 + d.0, target.1 + d.1), r);
-            if s < f32::MAX {
-                c.push((s, d));
-            }
+            c.push((a.cos() * r * ring, a.sin() * r * ring));
         }
     }
+    c
+}
+
+/// `candidates` ordered by `scores` (best first, ties in candidate order), leaving out those
+/// that scored `f32::MAX` (they reach outside the image).
+pub fn rank(candidates: &[(f32, f32)], scores: &[f32]) -> Vec<(f32, f32)> {
+    let mut c: Vec<(f32, (f32, f32))> = scores.iter().zip(candidates).filter(|(s, _)| **s < f32::MAX).map(|(s, d)| (*s, *d)).collect();
     c.sort_by(|a, b| a.0.total_cmp(&b.0));
     c.into_iter().map(|(_, d)| d).collect()
 }
 
+/// The offset used when no candidate fits in the image.
+pub fn fallback_source(r: f32) -> (f32, f32) {
+    (r * 2.5, 0.0)
+}
+
 /// Pick a source offset (in output pixels) for a remove/heal spot.
 pub fn auto_source(img: &Rgb32f, target: (f32, f32), r: f32) -> (f32, f32) {
-    ranked_sources(img, target, r).first().copied().unwrap_or((r * 2.5, 0.0))
+    ranked_sources(img, target, r).first().copied().unwrap_or_else(|| fallback_source(r))
 }
 
 /// A source offset (normalized, as [`Spot::source_offset`]) for `spot` on `src` developed with
@@ -301,6 +332,94 @@ fn flat_gain(tgt: &[[f32; 3]], alpha: &[f32], bw: usize, bh: usize, r: f32) -> V
         .collect()
 }
 
+/// One spot as both renderers lay it out, in output pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpotLayout {
+    /// Radius.
+    pub r: f32,
+    /// The stroke's points.
+    pub pts: Vec<(f32, f32)>,
+    /// Where the patch is read from, relative to the target; `None`: chosen automatically
+    /// ([`auto_source`] around the first point, on the image as the earlier spots left it).
+    pub offset: Option<(f32, f32)>,
+    /// The box the spot works in: left, top, width, height (inside the image, never empty).
+    pub bx: usize,
+    pub by: usize,
+    pub bw: usize,
+    pub bh: usize,
+    /// Alpha at distance d from the stroke: `(1 − smoothstep(inner, reach, d)) · opacity`.
+    pub inner: f32,
+    /// The stroke's outer edge: `r`, grown by [`GROW`] for the spots rebuilt from their surroundings.
+    pub reach: f32,
+    pub opacity: f32,
+    /// Heal / Remove (tone from the surroundings) rather than Clone or Fill.
+    pub heal: bool,
+    /// Rebuilt from the box around it ([`synthesises`]: Fill, Generate, a Remove without a source;
+    /// CPU only: the GPU renderer runs this stage on the CPU for such a photo).
+    pub fill: bool,
+    /// Even Out ([`SpotMode::Flat`]: CPU only, as `fill`).
+    pub flat: bool,
+}
+
+/// `spot`'s layout in a `w × h` output of `frame` (`ppl` = output pixels per long-edge unit);
+/// `None` when it has no points or its box misses the image.
+pub fn layout(spot: &Spot, frame: &Frame, w: usize, h: usize, ppl: f64) -> Option<SpotLayout> {
+    let to_out = frame.norm_to_out(w, h);
+    let r = radius_px(spot.size, ppl) as f32;
+    let pts: Vec<(f32, f32)> = spot
+        .points
+        .iter()
+        .map(|p| {
+            let q = to_out.apply(*p);
+            (q.x as f32, q.y as f32)
+        })
+        .collect();
+    pts.first()?;
+    let fill = synthesises(spot);
+    let flat = spot.mode == SpotMode::Flat;
+    let offset = if fill || flat {
+        Some((0.0, 0.0))
+    } else {
+        spot.source_offset.map(|o| {
+            let a = to_out.apply(Point::new(0.0, 0.0));
+            let b = to_out.apply(o);
+            ((b.x - a.x) as f32, (b.y - a.y) as f32)
+        })
+    };
+    // a rebuilt area grows by itself, to take in an object's soft edge
+    let reach = if fill { r * GROW + 1.0 } else { r };
+    // Bounding box of the stroke.
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for p in &pts {
+        x0 = x0.min(p.0 - reach);
+        y0 = y0.min(p.1 - reach);
+        x1 = x1.max(p.0 + reach);
+        y1 = y1.max(p.1 + reach);
+    }
+    let pad = box_pad(spot) * r;
+    let (bx0, by0) = (((x0 - pad).floor().max(0.0)) as usize, ((y0 - pad).floor().max(0.0)) as usize);
+    let (bx1, by1) = (((x1 + pad).ceil() as usize).min(w), ((y1 + pad).ceil() as usize).min(h));
+    if bx1 <= bx0 || by1 <= by0 {
+        return None;
+    }
+    let feather = (spot.feather / 100.0).clamp(0.0, 1.0) as f32;
+    Some(SpotLayout {
+        r,
+        pts,
+        offset,
+        bx: bx0,
+        by: by0,
+        bw: bx1 - bx0,
+        bh: by1 - by0,
+        inner: reach * (1.0 - feather * 0.8),
+        reach,
+        opacity: (spot.opacity / 100.0).clamp(0.0, 1.0) as f32,
+        heal: matches!(spot.mode, SpotMode::Remove | SpotMode::Heal),
+        fill,
+        flat,
+    })
+}
+
 /// Content-aware fill of the box: `src` becomes `tgt` with every pixel under the stroke (`alpha > 0`)
 /// rebuilt from the rest of the box. Falls back to a smooth membrane fill when the box holds no whole
 /// patch to copy from.
@@ -330,6 +449,105 @@ fn fill_box(src: &mut [[f32; 3]], tgt: &[[f32; 3]], alpha: &[f32], exclude: &[bo
 /// How far Fill and Generate grow the painted area by themselves (to take in an object's soft
 /// edge and the start of its shadow): radius `r` becomes `r · GROW + 1` px.
 pub const GROW: f32 = 1.12;
+
+/// For each pixel of the `bw × bh` box at (`bx0`, `by0`): the distance from its centre to the
+/// nearest of `pts`, where one lies within `reach` (elsewhere `f32::MAX`: the stroke paints nothing
+/// there). Each point stamps only the pixels it can reach, instead of every pixel of the box
+/// measuring every point: a patch outline of hundreds of points over a large box took seconds per
+/// render (a OneSlips test note). The same distances as measuring every point.
+fn nearest_point_distance(pts: &[(f32, f32)], bx0: usize, by0: usize, bw: usize, bh: usize, reach: f32) -> Vec<f32> {
+    let mut near = vec![f32::MAX; bw.saturating_mul(bh)];
+    // (one pixel of slack: the stamp holds every pixel centre within `reach`)
+    let r = if reach.is_finite() { reach.max(0.0) + 1.0 } else { f32::MAX };
+    for p in pts {
+        if !(p.0.is_finite() && p.1.is_finite()) {
+            continue; // measured as NaN, which the nearest-point minimum skips
+        }
+        let (lx, ly) = (p.0 - bx0 as f32, p.1 - by0 as f32);
+        let (xa, xb) = (((lx - r).floor().max(0.0)) as usize, ((lx + r).ceil().max(0.0) as usize).min(bw));
+        let (ya, yb) = (((ly - r).floor().max(0.0)) as usize, ((ly + r).ceil().max(0.0) as usize).min(bh));
+        for y in ya..yb {
+            let py = (by0 + y) as f32 + 0.5;
+            for x in xa..xb {
+                let px = (bx0 + x) as f32 + 0.5;
+                let d = ((px - p.0).powi(2) + (py - p.1).powi(2)).sqrt();
+                if let Some(n) = near.get_mut(y * bw + x) {
+                    *n = n.min(d);
+                }
+            }
+        }
+    }
+    near
+}
+
+/// Content-aware fills already solved (their box's pixels after the fill), by everything the fill
+/// reads ([`fill_key`]): every render of the photo that holds the same box — the loupe and its
+/// drafts, the before view, a thumbnail at the same size — takes the patch instead of solving it
+/// again (a PatchMatch completion per spot per render made one finished patch outline keep every
+/// core busy for over a minute: a OneSlips test note).
+struct FillCache {
+    entries: Vec<(u128, std::sync::Arc<Vec<[f32; 3]>>)>,
+    bytes: usize,
+}
+
+/// Most bytes of solved fills kept (least recently used dropped first).
+const FILL_CACHE_BYTES: usize = if cfg!(target_arch = "wasm32") { 32 << 20 } else { 192 << 20 };
+
+impl FillCache {
+    fn get(&mut self, key: u128) -> Option<std::sync::Arc<Vec<[f32; 3]>>> {
+        let i = self.entries.iter().position(|(k, _)| *k == key)?;
+        let e = self.entries.remove(i);
+        let v = e.1.clone();
+        self.entries.push(e);
+        Some(v)
+    }
+
+    fn put(&mut self, key: u128, v: std::sync::Arc<Vec<[f32; 3]>>) {
+        let size = v.len().saturating_mul(12);
+        if size > FILL_CACHE_BYTES / 2 {
+            return;
+        }
+        if let Some(i) = self.entries.iter().position(|(k, _)| *k == key) {
+            let (_, old) = self.entries.remove(i);
+            self.bytes = self.bytes.saturating_sub(old.len().saturating_mul(12));
+        }
+        while self.bytes.saturating_add(size) > FILL_CACHE_BYTES && !self.entries.is_empty() {
+            let (_, old) = self.entries.remove(0);
+            self.bytes = self.bytes.saturating_sub(old.len().saturating_mul(12));
+        }
+        self.bytes = self.bytes.saturating_add(size);
+        self.entries.push((key, v));
+    }
+}
+
+/// The process's [`FillCache`] (a poisoned lock is taken over: the cache only holds finished results).
+fn fills() -> std::sync::MutexGuard<'static, FillCache> {
+    static CACHE: std::sync::Mutex<FillCache> = std::sync::Mutex::new(FillCache { entries: Vec::new(), bytes: 0 });
+    CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The keys of the fills solved so far, in order (tests).
+#[cfg(test)]
+static FILLS_SOLVED: std::sync::Mutex<Vec<u128>> = std::sync::Mutex::new(Vec::new());
+
+/// Key of a fill: the box's pixels, the stroke's alpha, where the box is and the seed (two independent 64-bit hashes).
+fn fill_key(tgt: &[[f32; 3]], alpha: &[f32], geometry: [u64; 4], seed: u64) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let half = |salt: u64| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        salt.hash(&mut h);
+        geometry.hash(&mut h);
+        seed.hash(&mut h);
+        for c in tgt {
+            c.map(f32::to_bits).hash(&mut h);
+        }
+        for a in alpha {
+            a.to_bits().hash(&mut h);
+        }
+        h.finish()
+    };
+    (u128::from(half(0x9e37_79b9_7f4a_7c15)) << 64) | u128::from(half(0x2545_f491_4f6c_dd1d))
+}
 
 /// Apply all spots to `img` (output resolution). `ppl` = output pixels per long-edge unit.
 pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
@@ -367,56 +585,22 @@ pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64,
         if skip.get(k).copied().unwrap_or(false) {
             continue;
         }
-        let r = radius_px(spot.size, ppl) as f32;
-        let pts: Vec<(f32, f32)> = spot
-            .points
-            .iter()
-            .map(|p| {
-                let q = to_out.apply(*p);
-                (q.x as f32, q.y as f32)
-            })
-            .collect();
-        let Some(&first) = pts.first() else { continue };
-        let fill = synthesises(spot);
-        let flat = spot.mode == SpotMode::Flat;
-        let offset = match spot.source_offset {
-            _ if fill || flat => (0.0, 0.0),
-            Some(o) => {
-                let a = to_out.apply(Point::new(0.0, 0.0));
-                let b = to_out.apply(o);
-                ((b.x - a.x) as f32, (b.y - a.y) as f32)
-            }
-            None => auto_source(img, first, r),
-        };
-        // Bounding box of the stroke.
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        let re = if fill { r * GROW + 1.0 } else { r };
-        for p in &pts {
-            x0 = x0.min(p.0 - re);
-            y0 = y0.min(p.1 - re);
-            x1 = x1.max(p.0 + re);
-            y1 = y1.max(p.1 + re);
-        }
-        let pad = box_pad(spot) * r;
-        let (bx0, by0) = (((x0 - pad).floor().max(0.0)) as usize, ((y0 - pad).floor().max(0.0)) as usize);
-        let (bx1, by1) = (((x1 + pad).ceil() as usize).min(w), ((y1 + pad).ceil() as usize).min(h));
-        if bx1 <= bx0 || by1 <= by0 {
+        let Some(SpotLayout { r, pts, offset, bx: bx0, by: by0, bw, bh, inner, reach, opacity, heal, fill, flat }) = layout(spot, frame, w, h, ppl)
+        else {
             continue;
-        }
-        let (bw, bh) = (bx1 - bx0, by1 - by0);
-        let feather = (spot.feather / 100.0).clamp(0.0, 1.0) as f32;
-        let opacity = (spot.opacity / 100.0).clamp(0.0, 1.0) as f32;
+        };
+        let Some(&first) = pts.first() else { continue };
+        let offset = offset.unwrap_or_else(|| auto_source(img, first, r));
         // alpha of the stroke and source patch in the box
         let mut alpha = vec![0.0f32; bw * bh];
         let mut src = vec![[0.0f32; 3]; bw * bh];
         let mut tgt = vec![[0.0f32; 3]; bw * bh];
+        let near = nearest_point_distance(&pts, bx0, by0, bw, bh, reach);
         for y in 0..bh {
             for x in 0..bw {
                 let (px, py) = ((bx0 + x) as f32 + 0.5, (by0 + y) as f32 + 0.5);
-                let d = pts.iter().map(|p| ((px - p.0).powi(2) + (py - p.1).powi(2)).sqrt()).fold(f32::MAX, f32::min);
-                let rr = if fill { r * GROW + 1.0 } else { r };
-                let inner = rr * (1.0 - feather * 0.8);
-                alpha[y * bw + x] = (1.0 - smooth(inner, rr, d)) * opacity;
+                let d = near.get(y * bw + x).copied().unwrap_or(f32::MAX);
+                alpha[y * bw + x] = (1.0 - smooth(inner, reach, d)) * opacity;
                 src[y * bw + x] = img.sample_bilinear(px + offset.0, py + offset.1);
                 tgt[y * bw + x] = img.get(bx0 + x, by0 + y);
             }
@@ -454,7 +638,24 @@ pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64,
                     }
                 }
             }
-            fill_box(&mut src, &tgt, &alpha, &exclude, bw, bh, seed);
+            let mut key = fill_key(&tgt, &alpha, [bw, bh, bx0, by0].map(|v| v as u64), seed);
+            // what the fill may not copy from is part of what it reads
+            key ^= exclude
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| **e)
+                .fold(0u128, |h, (i, _)| h.rotate_left(7) ^ (i as u128 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+            let cached = fills().get(key);
+            src = match cached {
+                Some(done) => done.as_ref().clone(),
+                None => {
+                    #[cfg(test)]
+                    FILLS_SOLVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(key);
+                    fill_box(&mut src, &tgt, &alpha, &exclude, bw, bh, seed);
+                    fills().put(key, std::sync::Arc::new(src.clone()));
+                    src
+                }
+            };
             // patch voting averages the copied grain away: give the fill the noise of its surroundings
             let ring: Vec<usize> = alpha.iter().zip(&exclude).enumerate().filter(|(_, (a, e))| **a <= 0.0 && !**e).map(|(i, _)| i).collect();
             let around = Rgb32f { width: bw, height: bh, data: tgt.clone() };
@@ -475,7 +676,6 @@ pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64,
         // Heal: Texture transfer from source patch with tone/gradient separation matching target surroundings.
         // Remove: Heal with an automatically chosen source matching target surroundings.
         // Fill: Direct content-aware patch-match completion.
-        let heal = matches!(spot.mode, SpotMode::Remove | SpotMode::Heal);
         let low = if heal {
             // Tone correction from the spot's *surroundings* only: normalized convolution of
             // (target − source) over pixels outside the stroke (a membrane-like interpolation).
@@ -658,6 +858,50 @@ mod tests {
             feather: 0.0,
             source_offset: Some(Point::new(0.3, 0.0)),
             ..Default::default()
+        }
+    }
+
+    /// A fill is solved once: the next render holding the same box (another view of the photo, a
+    /// queued render of the same edit) takes the solved patch, with the same pixels.
+    #[test]
+    fn a_fill_is_solved_once_for_every_render_of_the_same_box() {
+        let (w, h) = (210, 150);
+        let frame = Frame::new(w, h, &DevelopSettings::default(), true);
+        let solved = || FILLS_SOLVED.lock().unwrap().clone();
+        let before = solved().len();
+        let mut a = striped_with_blot(w, h, 7);
+        apply(&mut a, &[fill_spot()], &frame, frame.px_per_long(w));
+        let first: Vec<u128> = solved()[before..].to_vec();
+        assert!(!first.is_empty(), "the first render solves it");
+        let mid = solved().len();
+        let mut b = striped_with_blot(w, h, 7);
+        apply(&mut b, &[fill_spot()], &frame, frame.px_per_long(w));
+        assert!(solved()[mid..].iter().all(|k| !first.contains(k)), "the second render solved it again");
+        assert_eq!(a.data, b.data);
+    }
+
+    /// The stamped nearest-point distance is the one measuring every point gives, for an outline of
+    /// many points, points off the box and a point that is not a number.
+    #[test]
+    fn stamped_distances_match_measuring_every_point() {
+        let (bx, by, bw, bh) = (10, 20, 90, 70);
+        let mut pts: Vec<(f32, f32)> = (0..300).map(|i| (5.0 + 0.4 * i as f32, 30.0 + 25.0 * ((i as f32) * 0.05).sin())).collect();
+        pts.push((f32::NAN, 40.0));
+        pts.push((-500.0, -500.0));
+        for reach in [0.5f32, 6.0, 30.0, 1e6] {
+            let near = nearest_point_distance(&pts, bx, by, bw, bh, reach);
+            for y in 0..bh {
+                for x in 0..bw {
+                    let (px, py) = ((bx + x) as f32 + 0.5, (by + y) as f32 + 0.5);
+                    let d = pts.iter().map(|p| ((px - p.0).powi(2) + (py - p.1).powi(2)).sqrt()).fold(f32::MAX, f32::min);
+                    let got = near[y * bw + x];
+                    if d < reach {
+                        assert_eq!(got, d, "({x}, {y}) reach {reach}");
+                    } else {
+                        assert!(got >= reach, "({x}, {y}) reach {reach}: {got}");
+                    }
+                }
+            }
         }
     }
 

@@ -17,6 +17,9 @@ const MAX_LSB: u8 = 3;
 fn gpu() -> bool {
     let ok = lcc_gpu::available();
     if !ok {
+        // no adapter (CI) skips; an adapter whose kernels don't build is a bug in them
+        let why = lcc_gpu::unavailable_reason().unwrap_or_default();
+        assert!(!why.contains("kernels failed to build"), "{why}");
         lcc_testkit::skip!(Gpu, "no GPU adapter");
     }
     // which card the comparisons ran on (`<PREFIX>_GPU_ADAPTER` picks one on a machine with two)
@@ -1055,6 +1058,58 @@ fn windows_match() {
     check("window: vignette corner", &src, &info, &s, &corner);
 }
 
+/// A zoomed window of a photo with a dress brushed over (thousands of dabs, TEST-NOTES 2026-10-16
+/// item 28: 9–55 s a window): the brush kernel looks only at the dabs near each pixel, matches the
+/// CPU, and a window of a few megapixels takes well under a second (`LC_BRUSH_BENCH=1` prints the
+/// times at 45 MP, 100 %).
+#[test]
+fn a_zoomed_window_of_a_big_brush_matches_and_is_quick() {
+    if !gpu() {
+        return;
+    }
+    use lcc_pipeline::PixelWindow;
+    let dress = |auto_mask: bool| {
+        let mut strokes = Vec::new();
+        for k in 0..12 {
+            let y0 = 0.25 + 0.04 * k as f64;
+            let points: Vec<Point> = (0..=200)
+                .map(|i| {
+                    let t = i as f64 / 200.0;
+                    Point::new(0.3 + 0.4 * (t * 6.0 * std::f64::consts::PI).sin().abs(), y0 + 0.08 * t)
+                })
+                .collect();
+            strokes.push(BrushStroke { points, size: 0.02, auto_mask, ..Default::default() });
+        }
+        DevelopSettings {
+            masks: vec![Mask {
+                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -40.0, ..Default::default() },
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    };
+    let bench = std::env::var_os("LC_BRUSH_BENCH").is_some();
+    let (fw, fh) = if bench { (8192, 5464) } else { (4096, 2732) };
+    let src = scene(1, if bench { 2048 } else { 960 }, if bench { 1366 } else { 640 });
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let win = if bench { PixelWindow { x: 3000, y: 2000, w: 2048, h: 1792 } } else { PixelWindow { x: 1500, y: 1000, w: 1024, h: 896 } };
+    let req = RenderRequest { window: Some(win), ..RenderRequest::fit(fw, fh) };
+    for auto in [false, true] {
+        let s = dress(auto);
+        // (the first render builds the kernels and uploads the source)
+        let _ = lcc_gpu::render(&src, &info, &s, &req, None).expect("gpu render");
+        let t = std::time::Instant::now();
+        let gpu = lcc_gpu::render(&src, &info, &s, &req, None).expect("gpu render");
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("brushed dress window {}x{} (auto {auto}): {ms:.0} ms on the GPU", gpu.image.width, gpu.image.height);
+        if !bench {
+            check(&format!("big brush window (auto {auto})"), &src, &info, &s, &req);
+        }
+        assert!(ms < 3000.0, "a zoomed brush window took {ms:.0} ms");
+    }
+}
+
 /// Issue #323: a window of a 24 MP photo is cut from a source of 288 MB on the device. Keeping that
 /// upload with the view's stages counted it against the stage budget on every tick of a drag and
 /// got the stages cleared, and the upload and resampling redone: the window's stages are its own
@@ -1414,4 +1469,293 @@ fn the_display_fit_on_the_device_matches_the_cpus() {
     if let Ok(r) = lcc_gpu::try_render_fitted(&src, &info, &s, &overlay, None, Some((640, 480))) {
         assert_eq!(r.image.width, whole.image.width, "an overlay is drawn on the CPU, after the fit there");
     }
+}
+
+/// A non-trivial 3D LUT (cross-process look: lifted blacks, warm highlights).
+fn look_lut(n: usize, domain_max: f32) -> lcc_pipeline::lut::Lut3d {
+    let mut data = Vec::with_capacity(n * n * n);
+    for b in 0..n {
+        for g in 0..n {
+            for r in 0..n {
+                let c = [r, g, b].map(|v| v as f32 / (n - 1) as f32 * domain_max);
+                data.push([
+                    (0.06 + 0.9 * c[0].powf(0.9) + 0.05 * c[2]).min(1.0),
+                    (0.04 + 0.92 * c[1] * (1.0 - 0.1 * c[2])).min(1.0),
+                    (0.1 + 0.6 * c[2] + 0.2 * c[0] * c[1]).min(1.0),
+                ]);
+            }
+        }
+    }
+    lcc_pipeline::lut::Lut3d { size: n, data, domain_min: [0.0; 3], domain_max: [domain_max; 3], title: None }
+}
+
+/// LUT profiles render on the GPU (the table is applied after grain, blended by the amount).
+#[test]
+fn lut_profiles_match() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(1, 900, 600);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    lcc_pipeline::lut::register("lut:gpu-test-17", look_lut(17, 1.0));
+    lcc_pipeline::lut::register("lut:gpu-test-domain", look_lut(9, 1.2));
+    for (id, amount) in [("lut:gpu-test-17", 100.0), ("lut:gpu-test-17", 160.0), ("lut:gpu-test-domain", 60.0)] {
+        for (name, edit) in [("default", (|_| {}) as Edit), ("saturated", saturated as Edit)] {
+            let mut s = DevelopSettings::default();
+            edit(&mut s);
+            s.profile.id = id.into();
+            s.profile.amount = amount;
+            check(&format!("{id} {amount} {name}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
+        }
+    }
+    // the case is meaningful: the LUT changes the image
+    let s = DevelopSettings::default();
+    let looked = DevelopSettings { profile: lcc_develop::Profile { id: "lut:gpu-test-17".into(), amount: 100.0, ..s.profile.clone() }, ..s.clone() };
+    let gpu = |s: &DevelopSettings| lcc_gpu::render(&src, &raw, s, &RenderRequest::fit(320, 320), None).expect("gpu render").image;
+    assert!(diff(&gpu(&s), &gpu(&looked)).1 > 10, "the LUT applies");
+}
+
+/// Refine Edges (the cross guided filter, blended by √refine) and Feather (a Gaussian of the
+/// combined alpha) on a mask render on the GPU, before the mask's invert and amount.
+#[test]
+fn refine_edges_and_feather_match() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 900, 600);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    for (refine, feather) in [(15.0, 0.0), (60.0, 0.0), (100.0, 0.0), (0.0, 40.0), (50.0, 80.0)] {
+        let mut s = DevelopSettings::default();
+        typical(&mut s);
+        s.masks = vec![
+            Mask {
+                components: vec![MaskComponent {
+                    name: None,
+                    op: MaskOp::Add,
+                    invert: false,
+                    shape: MaskShape::Radial { center: Point::new(0.45, 0.55), rx: 0.3, ry: 0.2, angle: 10.0, feather: 30.0, invert: false },
+                }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 0.9, saturation: -30.0, ..Default::default() },
+                refine,
+                feather,
+                ..Default::default()
+            },
+            Mask {
+                components: vec![MaskComponent {
+                    name: None,
+                    op: MaskOp::Add,
+                    invert: false,
+                    shape: MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.5) },
+                }],
+                adjust: lcc_develop::LocalAdjustments { exposure: -0.7, amount: 70.0, ..Default::default() },
+                refine: refine / 2.0,
+                feather: feather / 2.0,
+                invert: true,
+                ..Default::default()
+            },
+        ];
+        check(&format!("refine {refine} feather {feather}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
+        let gpu = |s: &DevelopSettings| lcc_gpu::render(&src, &raw, s, &RenderRequest::fit(640, 640), None).expect("gpu render").image;
+        let plain = DevelopSettings { masks: s.masks.iter().map(|m| Mask { refine: 0.0, feather: 0.0, ..m.clone() }).collect(), ..s.clone() };
+        // (a light refine barely moves a soft radial edge; a strong one or a feather visibly does)
+        assert!(refine < 50.0 && feather == 0.0 || diff(&gpu(&s), &gpu(&plain)).1 > 3, "refine {refine} / feather {feather} change the mask");
+    }
+}
+
+/// Spot removal on the device: Clone, Heal and Remove (automatic source, scored on the device),
+/// brushed strokes, overlapping spots (each reads what the earlier ones left), feather 0 and
+/// spots cut by the image edge.
+#[test]
+fn spots_match() {
+    if !gpu() {
+        return;
+    }
+    use lcc_develop::SpotMode;
+    let src = scene(3, 900, 600);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    let spot = |mode, pts: &[(f64, f64)], size, feather, off: Option<(f64, f64)>| Spot {
+        mode,
+        points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+        size,
+        feather,
+        opacity: 100.0,
+        source_offset: off.map(|o| Point::new(o.0, o.1)),
+        ..Default::default()
+    };
+    let sets: Vec<(&str, Vec<Spot>)> = vec![
+        ("clone", vec![spot(SpotMode::Clone, &[(0.3, 0.4)], 0.04, 40.0, Some((0.15, 0.05)))]),
+        ("heal", vec![spot(SpotMode::Heal, &[(0.6, 0.5)], 0.05, 60.0, Some((-0.12, 0.1)))]),
+        ("remove (auto source)", vec![spot(SpotMode::Remove, &[(0.5, 0.45)], 0.03, 50.0, None)]),
+        ("heal (auto source)", vec![spot(SpotMode::Heal, &[(0.5, 0.45)], 0.03, 50.0, None)]),
+        ("remove near the edge (auto)", vec![spot(SpotMode::Remove, &[(0.04, 0.5)], 0.03, 50.0, None)]),
+        ("brushed heal stroke", vec![spot(SpotMode::Heal, &[(0.2, 0.7), (0.3, 0.72), (0.4, 0.69)], 0.02, 30.0, Some((0.0, -0.15)))]),
+        ("feather 0, half opacity", vec![Spot { opacity: 50.0, ..spot(SpotMode::Clone, &[(0.7, 0.3)], 0.04, 0.0, Some((-0.2, 0.0))) }]),
+        ("cut by the edge", vec![spot(SpotMode::Heal, &[(0.99, 0.02)], 0.05, 50.0, Some((-0.2, 0.2)))]),
+        (
+            "overlapping, auto after manual",
+            vec![
+                spot(SpotMode::Clone, &[(0.45, 0.5)], 0.04, 50.0, Some((0.1, 0.0))),
+                spot(SpotMode::Remove, &[(0.47, 0.52)], 0.04, 50.0, None),
+                spot(SpotMode::Heal, &[(0.5, 0.5)], 0.03, 70.0, Some((0.0, 0.12))),
+            ],
+        ),
+    ];
+    for (name, spots) in sets {
+        let mut s = DevelopSettings::default();
+        typical(&mut s);
+        s.spots = spots;
+        check(&format!("spots: {name}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
+    }
+}
+
+/// Defringe on the device: purple and green at several amounts and hue ranges, at preview and
+/// full size (its filter radius follows the output size).
+#[test]
+fn defringe_matches() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(1, 1800, 1200);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    for (purple, green, hue) in [(4.0, 0.0, (30.0, 70.0)), (0.0, 10.0, (20.0, 80.0)), (20.0, 15.0, (0.0, 100.0))] {
+        let mut s = DevelopSettings::default();
+        typical(&mut s);
+        s.color.saturation = 40.0;
+        s.optics.defringe_purple_amount = purple;
+        s.optics.defringe_green_amount = green;
+        s.optics.defringe_purple_hue_lo = hue.0;
+        s.optics.defringe_purple_hue_hi = hue.1;
+        s.optics.defringe_green_hue_lo = hue.0;
+        s.optics.defringe_green_hue_hi = hue.1;
+        for edge in [640, 1800] {
+            check(&format!("defringe {purple}/{green} {hue:?} @{edge}"), &src, &raw, &s, &RenderRequest::fit(edge, edge));
+        }
+    }
+}
+
+/// Note 4 of 2026-10-31: a slider draft on the GPU has the large-scale tone of the full render (the
+/// Highlights / Shadows base was narrower in drafts), for a slider drag and a mask stroke, in a
+/// 100 % window of a 6000 px frame and in a whole frame drawn 2000 px wide; and it matches the CPU's
+/// full render as closely.
+#[test]
+fn a_gpu_draft_has_the_large_scale_tone_of_the_full_render() {
+    use lcc_pipeline::PixelWindow;
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 960, 640);
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let mut slider = DevelopSettings::default();
+    typical(&mut slider);
+    slider.light.shadows = 60.0;
+    slider.light.highlights = -60.0;
+    let mut stroke = DevelopSettings::default();
+    typical(&mut stroke);
+    stroke.masks.push(Mask {
+        components: vec![MaskComponent {
+            name: None,
+            op: MaskOp::Add,
+            invert: false,
+            shape: MaskShape::Radial { center: Point::new(0.3, 0.3), rx: 0.1, ry: 0.1, angle: 0.0, feather: 50.0, invert: false },
+        }],
+        adjust: lcc_develop::LocalAdjustments { exposure: 0.5, shadows: 50.0, ..Default::default() },
+        ..Default::default()
+    });
+    // worst 16 px block mean difference, in 8-bit levels
+    let block_diff = |a: &Rgba8, b: &Rgba8| {
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        let mut worst = 0f64;
+        for by in 0..a.height / 16 {
+            for bx in 0..a.width / 16 {
+                let (mut da, mut db) = (0f64, 0f64);
+                for y in by * 16..by * 16 + 16 {
+                    for x in bx * 16..bx * 16 + 16 {
+                        let (p, q) = (a.get(x, y), b.get(x, y));
+                        da += (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0;
+                        db += (q[0] as f64 + q[1] as f64 + q[2] as f64) / 3.0;
+                    }
+                }
+                worst = worst.max((da - db).abs() / 256.0);
+            }
+        }
+        worst
+    };
+    let cases = [
+        RenderRequest { window: Some(PixelWindow { x: 2400, y: 1500, w: 384, h: 256 }), ..RenderRequest::fit(6000, 4000) },
+        RenderRequest::fit(2000, 2000),
+    ];
+    for (name, s) in [("slider", &slider), ("stroke", &stroke)] {
+        for req in cases {
+            let full = lcc_gpu::render(&src, &info, s, &RenderRequest { quality: Quality::Full, ..req }, None).expect("gpu full").image;
+            let draft = lcc_gpu::render(&src, &info, s, &RenderRequest { quality: Quality::Draft, ..req }, None).expect("gpu draft").image;
+            let cpu = render(&src, &info, s, &RenderRequest { quality: Quality::Full, ..req }).image;
+            let (d, c) = (block_diff(&full, &draft), block_diff(&cpu, &draft));
+            eprintln!("{name} {:?}: gpu draft vs gpu full {d:.3}/255, vs cpu full {c:.3}/255", req.window);
+            assert!(
+                d <= 0.5 && c <= 0.5,
+                "{name} {:?}: the GPU draft's large-scale tone is {d:.2}/255 off the GPU full render, {c:.2}/255 off the CPU's",
+                req.window
+            );
+        }
+    }
+}
+
+/// A drag of a photo with masks reuses their device-resident alpha planes (AI masks are
+/// evaluated on the CPU): the result must equal a fresh render while the exposure moves (a range
+/// mask selects on it), the masks' own sliders change, and a mask moves, is feathered or hidden.
+#[test]
+fn cached_mask_planes_match_uncached() {
+    use lcc_develop::LocalAdjustments;
+    if !gpu() {
+        return;
+    }
+    let src = scene(2, 900, 600);
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let cache = StageCache::default();
+    let req = RenderRequest::fit(640, 640);
+    let comp = |shape| MaskComponent { name: None, op: MaskOp::Add, invert: false, shape };
+    let mut s = DevelopSettings::default();
+    typical(&mut s);
+    let radial = MaskShape::Radial { center: Point::new(0.5, 0.4), rx: 0.3, ry: 0.2, angle: 0.0, feather: 50.0, invert: false };
+    s.masks.push(Mask {
+        id: 1,
+        components: vec![comp(radial)],
+        adjust: LocalAdjustments { exposure: 0.5, ..Default::default() },
+        ..Default::default()
+    });
+    let range = MaskShape::LuminanceRange { lo: 0.3, hi: 0.6, lo_feather: 0.1, hi_feather: 0.1 };
+    s.masks.push(Mask {
+        id: 2,
+        components: vec![comp(range)],
+        adjust: LocalAdjustments { saturation: -50.0, ..Default::default() },
+        ..Default::default()
+    });
+    s.masks.push(Mask {
+        id: 3,
+        components: vec![comp(MaskShape::Subject)],
+        adjust: LocalAdjustments { contrast: 30.0, ..Default::default() },
+        ..Default::default()
+    });
+    let step = |s: &DevelopSettings, what: &str| {
+        let warm = lcc_gpu::render(&src, &info, s, &req, Some(&cache)).expect("gpu");
+        let fresh = lcc_gpu::render(&src, &info, s, &req, None).expect("gpu");
+        assert_eq!(warm.image, fresh.image, "{what}");
+    };
+    step(&s, "first");
+    for k in 0..3 {
+        s.light.exposure = -0.5 + 0.6 * k as f64;
+        step(&s, "exposure");
+    }
+    s.masks[0].adjust.exposure = -0.3;
+    s.masks[2].adjust.amount = 40.0;
+    step(&s, "mask sliders and amount");
+    if let Some(MaskShape::Radial { center, .. }) = s.masks.first_mut().and_then(|m| m.components.first_mut()).map(|c| &mut c.shape) {
+        *center = Point::new(0.3, 0.6);
+    }
+    step(&s, "moved radial");
+    s.masks[0].feather = 40.0;
+    s.masks[1].curve.master = vec![Point::new(0.0, 0.1), Point::new(1.0, 0.9)];
+    step(&s, "feather and a mask's curve");
+    s.masks[1].visible = false;
+    step(&s, "hidden mask");
 }

@@ -233,8 +233,10 @@ walks the drive.
   grew, HDR renders and a monitor profile's conversion keep the CPU fit. A render at rest reads the full
   image back with the fitted one, for the photo's view preview; a drag's updates cache the fitted one.
 - Per-stage hybrid: defringe and spot removal (rare, CPU-only for now) download the resampled image,
-  run on the CPU and upload; heuristic mask shapes (Sky, Subject, Background, …) and brushes of more
-  than 4096 dabs are evaluated on the CPU and uploaded; sources over the buffer limit are resampled
+  run on the CPU and upload; heuristic mask shapes (Sky, Subject, Background, …), brushes with pen pressure and
+  brushes of more than 65 536 dabs (or whose tile lists would pass 8 M words) are evaluated on the CPU and uploaded. The
+  brush kernel bins each stroke's dabs into tiles of about a quarter radius, so a pixel looks only at the dabs that reach
+  its tile instead of every dab of the stroke (a dress brushed over, zoomed to 100 %: tens of seconds before); sources over the buffer limit are resampled
   on the CPU. Smooth Skin and Retouch ▸ Teeth (`lcc_pipeline::retouch_people`) read the
   noise-reduced scene-linear image back, run the CPU's code and upload it again, so the two renderers
   match by construction (`gpu_matches_cpu` case `retouch teeth (cpu stage)`); they are per-pixel
@@ -432,7 +434,7 @@ A view's stages keep an uploaded source only up to 96 MB (a Preview-level source
 - Imports read raw headers only (`lcc_raw::probe_info`): no pixel data is decompressed,
   except the first rows a few vendor formats need for facts their headers lack (Nikon NEF: the
   first 128 rows for the masked trailing columns, issue #708).
-- One budget (`memory::budget`, default min(25 % of RAM, 1.5 GiB); `<PREFIX>_MEMORY_MB` or
+- One budget (`memory::budget`, default min(25 % of RAM, 16 GiB); by hand at most 75 % of RAM; `<PREFIX>_MEMORY_MB` or
   `app.memoryBudget {mb}`): half for the engine caches (decoded thumbnail / preview / full
   sources and rendered previews, evicted least recently used *across* them; the photo on screen
   stays), a quarter for decodes in flight (`memory::work_gate`: grid thumbnails, neighbour

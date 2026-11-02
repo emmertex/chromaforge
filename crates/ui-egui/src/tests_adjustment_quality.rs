@@ -198,12 +198,24 @@ fn high_quality_adjustment_hdr_jobs_keep_full_quality_and_extended_values() {
 fn high_quality_adjustments_can_switch_during_a_drag_and_ignore_slow_verdicts() {
     let (mut h, work) = detail([1024, 768], 1.0);
     h.app.drag_scale.remember_slow(PhotoId(1), "Exposure");
+    // (the drag's drafts, not the refine of a still photo, are what this test looks at)
+    h.app.still_refine.never = true;
     h.app.session.begin_interaction("Exposure").unwrap();
     for high in [false, true, false, true] {
         let reply = h.request("ui.set", json!({"settings": {"highQualityAdjustmentPreviews": high}}), TIMEOUT);
         assert_eq!(reply["ok"], true, "{reply}");
         assert!(h.settle(TIMEOUT));
-        let job = latest(&work, Slot::Main);
+        // the job behind the picture shown (switching back to full quality may show the full
+        // render kept from before, with the same edit, instead of asking for it again)
+        let shown = h.app.renderer.textures.get(&Slot::Main).map(|t| t.key).expect("a loupe picture");
+        let job = work
+            .borrow()
+            .asked
+            .iter()
+            .rev()
+            .find(|(s, j)| *s == Slot::Main && j.key == shown)
+            .map(|(_, j)| j.clone())
+            .expect("the shown render's job");
         assert_eq!(job.request.quality, if high { Quality::Full } else { Quality::Draft });
         assert_eq!(job.display_fit.is_some(), high);
         assert!(h.app.session.interaction.is_some(), "changing quality must not end the drag");

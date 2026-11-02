@@ -205,6 +205,10 @@ pub(crate) struct PresetsSaved {
     profile_recent: Vec<String>,
     profile_hidden: Vec<String>,
     body_profiles: std::collections::BTreeMap<String, String>,
+    at_import: Vec<String>,
+    hidden: Vec<String>,
+    builtin_names: std::collections::BTreeMap<String, String>,
+    builtin_groups: std::collections::BTreeMap<String, String>,
     /// Hash of the bytes written: a list borrowed mutably but left as it was isn't rewritten.
     hash: u64,
 }
@@ -218,6 +222,10 @@ impl PresetsSaved {
             profile_recent: s.profile_recent.clone(),
             profile_hidden: s.profile_hidden.clone(),
             body_profiles: s.body_profiles.clone(),
+            at_import: s.preset_at_import.clone(),
+            hidden: s.preset_hidden.clone(),
+            builtin_names: s.preset_builtin_names.clone(),
+            builtin_groups: s.preset_builtin_groups.clone(),
             hash: 0,
         }
     }
@@ -230,10 +238,14 @@ impl PresetsSaved {
             || self.profile_recent != s.profile_recent
             || self.profile_hidden != s.profile_hidden
             || self.body_profiles != s.body_profiles
+            || self.at_import != s.preset_at_import
+            || self.hidden != s.preset_hidden
+            || self.builtin_names != s.preset_builtin_names
+            || self.builtin_groups != s.preset_builtin_groups
     }
 }
 
-fn bytes_hash(b: &[u8]) -> u64 {
+pub(crate) fn bytes_hash(b: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     b.hash(&mut h);
@@ -409,21 +421,8 @@ fn read_frozen(store: &mut dyn Store) -> serde_json::Map<String, serde_json::Val
 pub(crate) fn presets_json(s: &Session) -> String {
     #[cfg(test)]
     PRESETS_SERIALIZED.with(|c| c.set(c.get() + 1));
-    let presets = &s.presets;
-    let f = PresetsFile {
-        user: presets.iter().filter(|p| !p.builtin).cloned().collect(),
-        folders: s.preset_folders.clone(),
-        favorites: presets.iter().filter(|p| p.builtin && p.favorite).map(|p| p.id.clone()).collect(),
-        at_import: s.preset_at_import.clone(),
-        hidden: s.preset_hidden.clone(),
-        builtin_names: s.preset_builtin_names.clone(),
-        builtin_groups: s.preset_builtin_groups.clone(),
-        profile_favorites: s.profile_favorites.clone(),
-        profile_recent: s.profile_recent.clone(),
-        profile_hidden: s.profile_hidden.clone(),
-        body_profiles: s.body_profiles.clone(),
-    };
-    serde_json::to_string_pretty(&f).unwrap_or_default()
+    // (borrowed: the 10 000+ presets of an imported collection are not copied to be written)
+    crate::presets_save::Snapshot::of(s).json()
 }
 
 /// Finish a background compaction that is done (cheap otherwise). A failed one lost nothing (the
@@ -785,7 +784,7 @@ impl Session {
         // photo ids are per library: drop decoded sources of the previous one
         self.media.clear_sources();
         if on_disk {
-            self.media.attach_disk_cache(&dir.join("thumbs"), self.cache_bytes());
+            self.media.attach_disk_cache(&dir.join("thumbs"), self.cache_bytes_in(&dir.join("thumbs")));
             self.tidy_thumbnail_cache();
         }
         let view_written = self.view_json();
@@ -879,7 +878,17 @@ impl Session {
     pub fn persist(&mut self) -> Result<()> {
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         if !self.pending_log.is_empty() {
-            if let Err(e) = lib.journal.append(&self.pending_log) {
+            let mut appended = lib.journal.append(&self.pending_log);
+            if appended.is_err() && lib.journal.lost() > 0 && self.interaction.is_none() {
+                // a log write failed after earlier changes were handed over (natively the log is
+                // written by a thread of its own): a snapshot now saves them and the queued ones
+                let queued = self.pending_log.len() as u64;
+                if lib.journal.snapshot_with_unlogged(&self.catalog, queued).is_ok() && lib.journal.lost() == 0 {
+                    log::warn!("library: a catalog log write failed; a snapshot saved every change");
+                    appended = Ok(());
+                }
+            }
+            if let Err(e) = appended {
                 // the ops stay queued (and applied in memory): the next persist retries them
                 let reason = e.to_string();
                 log::error!("library: {} change(s) not written to disk: {reason}", self.pending_log.len());
@@ -895,6 +904,13 @@ impl Session {
             self.pending_log.clear();
             lib.last_error = None;
         }
+        if self.pending_log.is_empty()
+            && let Err(e) = lib.journal.check_log()
+        {
+            // a log write on its thread failed: the snapshot below saves what it lost
+            lib.last_error = Some(e.to_string());
+            lib.unsaved_error = Some(e.to_string());
+        }
         poll_compaction(lib);
         // Never snapshot mid-interaction: the catalog then holds an uncommitted preview value.
         // The snapshot is written by a worker thread (natively); appends go on meanwhile.
@@ -907,6 +923,10 @@ impl Session {
             log::error!("library: compaction: {e}");
             lib.last_error = Some(format!("compaction: {e}"));
         }
+        if self.pending_log.is_empty() && lib.journal.lost() == 0 && lib.unsaved_error.is_some() && lib.retry_at.is_none() {
+            // what a failed log write lost is in the snapshot now
+            lib.unsaved_error = None;
+        }
         self.sync_compaction_row();
         if self.uses_app_store() {
             // the presets live in the app store: the library's presets.json stays as it was
@@ -918,9 +938,33 @@ impl Session {
             }
             return Ok(());
         }
+        // a background save that failed: the presets count as unsaved and are saved again now
+        if let Some(e) = self.presets_save_failed()
+            && let Some(lib) = self.library.as_mut()
+        {
+            log::error!("library: presets: {e}");
+            lib.presets_error = Some(format!("presets: {e}"));
+            lib.presets_saved = PresetsSaved::default();
+        }
         let due = self.library.as_ref().is_some_and(|l| l.presets_saved.differs(self) && !l.blocked.contains(&"presets.json"));
         if !due {
             return Ok(());
+        }
+        // off the UI thread when it can be (`presets_save`): the bytes are made and compared there
+        if let Some(lib) = self.library.take() {
+            let known = lib.presets_saved.hash;
+            let handed = self.save_presets_in_background(lib.files.as_ref(), known);
+            self.library = Some(lib);
+            if handed {
+                let mut state = PresetsSaved::state_of(self);
+                state.hash = known;
+                if let Some(lib) = self.library.as_mut() {
+                    lib.presets_saved = state;
+                    // (a failure of this save sets it again on the next persist)
+                    lib.presets_error = None;
+                }
+                return Ok(());
+            }
         }
         let presets = presets_json(self);
         let mut state = PresetsSaved::state_of(self);
@@ -992,11 +1036,24 @@ impl Session {
         // the automatic sidecar writes still queued are made, and a failed one recorded, before the library goes
         self.flush_sidecar_writes();
         let persisted = self.persist();
+        // a presets.json save on its way finishes first (it is this library's), and a failed one
+        // is made here, in the close
+        self.flush_presets();
+        if self.presets_saver.is_some() {
+            let saves = std::mem::replace(&mut self.background_saves, false);
+            let _ = self.persist();
+            self.background_saves = saves;
+        }
         self.save_view();
         let unlogged = if persisted.is_err() { self.pending_log.len() as u64 } else { 0 };
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
-        let before = lib.journal.seq();
+        // (ops a failed log write lost count with the queued ones: the snapshot saves both)
+        let before = lib.journal.seq().saturating_add(lib.journal.lost());
         let snapshot = lib.journal.snapshot_with_unlogged(&self.catalog, unlogged);
+        if snapshot.is_err() {
+            // at least everything handed to the log's thread is written and synced
+            let _ = lib.journal.flush();
+        }
         if unlogged > 0 && lib.journal.seq() == before + unlogged {
             // the snapshot holds the queued ops: they are saved, never append them again
             log::info!("library: {unlogged} queued change(s) saved in the closing snapshot");
@@ -1008,13 +1065,28 @@ impl Session {
         let result = match (persisted, snapshot) {
             (_, Ok(())) => Ok(()),
             // neither the log nor the snapshot took the queued ops
-            (Err(EngineError::NotSaved(e)), Err(s)) if lib.journal.seq() == before => Err(EngineError::NotSaved(format!("{e}; snapshot: {s}"))),
+            (Err(EngineError::NotSaved(e)), Err(s)) if lib.journal.seq().saturating_add(lib.journal.lost()) == before => {
+                Err(EngineError::NotSaved(format!("{e}; snapshot: {s}")))
+            }
             (_, Err(s)) => Err(s.into()),
         };
         if result.is_ok() {
             self.library_identity = std::sync::Arc::new(());
         }
         result
+    }
+
+    /// Wait until every change handed to the catalog log is durable (natively the log is written
+    /// by a thread of its own). An error: a write failed and the changes it lost are saved by
+    /// the next save (a snapshot). A no-op without a library.
+    pub fn flush_catalog(&mut self) -> Result<()> {
+        let Some(lib) = self.library.as_mut() else { return Ok(()) };
+        lib.journal.flush().map_err(|e| {
+            let reason = e.to_string();
+            lib.last_error = Some(reason.clone());
+            lib.unsaved_error = Some(reason.clone());
+            EngineError::NotSaved(reason)
+        })
     }
 
     /// Let go of the open library's lock (and with it the owner note, `catalog.lock.owner`) while
@@ -1158,9 +1230,57 @@ impl Session {
         out
     }
 
-    /// The thumbnail disk cache budget in bytes ([`Session::cache_mb`], else the default).
+    /// The thumbnail disk cache budget in bytes ([`Session::cache_mb`], else the default, which
+    /// grows with the library: [`crate::media::default_disk_cache_bytes`]).
     pub fn cache_bytes(&self) -> u64 {
-        if self.cache_mb == 0 { crate::media::DISK_CACHE_BYTES } else { u64::from(self.cache_mb) << 20 }
+        match (self.cache_mb, self.media.rendered.disk()) {
+            (0, Some(d)) => self.cache_bytes_in(d.dir()),
+            (0, None) => crate::media::default_disk_cache_bytes(self.catalog.len()),
+            (mb, _) => u64::from(mb) << 20,
+        }
+    }
+
+    /// [`Self::cache_bytes`] for a cache in `dir`: Automatic is a share of its drive's free space
+    /// ([`crate::media::automatic_disk_cache_bytes`]; looked up at most once a minute).
+    pub fn cache_bytes_in(&self, dir: &std::path::Path) -> u64 {
+        if self.cache_mb != 0 {
+            return u64::from(self.cache_mb) << 20;
+        }
+        let used = self.media.rendered.disk().filter(|d| d.dir() == dir).and_then(|d| d.known_size()).unwrap_or(0);
+        crate::media::automatic_disk_cache_bytes(self.catalog.len(), self.cache_drive_free(dir), used)
+    }
+
+    /// What Automatic would make the preview cache now (Settings shows it), whatever is chosen.
+    pub fn automatic_cache_bytes(&self) -> u64 {
+        match self.media.rendered.disk() {
+            Some(d) => crate::media::automatic_disk_cache_bytes(self.catalog.len(), self.cache_drive_free(d.dir()), d.known_size().unwrap_or(0)),
+            None => crate::media::default_disk_cache_bytes(self.catalog.len()),
+        }
+    }
+
+    /// The free space of the drive holding `dir` (`None`: unknown), looked up again after a minute.
+    fn cache_drive_free(&self, dir: &std::path::Path) -> Option<u64> {
+        let mut known = self.cache_drive_free.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, d, free)) = known.as_ref()
+            && d == dir
+            && at.elapsed() < std::time::Duration::from_secs(60)
+        {
+            return *free;
+        }
+        let free = lcc_sysmem::free_disk_space(dir);
+        *known = Some((web_time::Instant::now(), dir.to_path_buf(), free));
+        free
+    }
+
+    /// Bring the disk cache's budget up to date with the library (photos were added since it was
+    /// set): cheap, nothing is read or written. Called before previews are built.
+    pub fn fit_disk_cache(&mut self) {
+        let want = self.cache_bytes();
+        if let Some(d) = self.media.rendered.disk()
+            && d.budget() != want
+        {
+            d.set_budget(want);
+        }
     }
 
     /// Change the thumbnail disk cache budget (MB, 0 = default) in place: the cached thumbnails

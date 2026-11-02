@@ -5,7 +5,6 @@
 use std::sync::{Arc, Mutex};
 
 use lcc_color::spline::Lut1;
-use lcc_develop::DevelopSettings;
 use lcc_geom::Orientation;
 use lcc_pipeline::finish::{FinishParams, MASK_TERMS, local_curve_luts, mask_terms};
 use lcc_pipeline::geometry::SampleMode;
@@ -24,6 +23,10 @@ pub struct GpuStages {
     entries: Mutex<Vec<Entry>>,
     /// The uploaded source (a view renders one photo at several sizes).
     source: Mutex<Option<(Arc<Rgb32f>, Arc<Buf>)>>,
+    /// Held by the render uploading `source` (never by a reader of it).
+    uploading: Mutex<()>,
+    /// The device generation the buffers belong to (0: none yet; see [`GpuStages::adopt_generation`]).
+    generation: std::sync::atomic::AtomicU64,
 }
 
 const CAPACITY: usize = 2;
@@ -48,9 +51,45 @@ struct Planes {
     sharpen: Option<(u32, Arc<Buf>)>,
     dark: Option<(u64, Arc<Buf>, f32)>,
     chroma: Option<(u32, Arc<Buf>)>,
+    /// The masks' alpha planes (and the chromaticity after them): see [`MaskBufs`].
+    masks: Option<MaskBufs>,
+}
+
+/// The masks' alpha buffer of one image, kept for the next render: keyed by
+/// [`lcc_pipeline::masks::alpha_key`], the chromaticity plane appended to it, and the
+/// mattes it was evaluated with (by identity). A slider drag that does not touch the masks reuses
+/// it: AI masks are evaluated on the CPU, and re-evaluating them every tick (a readback of the
+/// image, the matte resampled, an upload) was most of a drag's render time.
+#[derive(Clone)]
+struct MaskBufs {
+    key: u64,
+    chroma: Option<u32>,
+    mattes: Option<Arc<lcc_pipeline::masks::Mattes>>,
+    alpha: Arc<Buf>,
+}
+
+impl MaskBufs {
+    fn fits(&self, key: u64, chroma: Option<u32>, mattes: Option<&Arc<lcc_pipeline::masks::Mattes>>) -> bool {
+        self.key == key
+            && self.chroma == chroma
+            && match (&self.mattes, mattes) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
 }
 
 impl GpuStages {
+    /// Use these stages on the device of `generation`: what was cached on another one (a device
+    /// that failed and was replaced) is dropped first.
+    pub(crate) fn adopt_generation(&self, generation: u64) {
+        use std::sync::atomic::Ordering;
+        if self.generation.swap(generation, Ordering::Relaxed) != generation {
+            self.clear();
+        }
+    }
+
     fn get(&self, src: &Arc<Rgb32f>, geo: u64) -> Option<Entry> {
         self.lock().iter().find(|e| e.geo == geo && Arc::ptr_eq(&e.src, src)).cloned()
     }
@@ -64,17 +103,24 @@ impl GpuStages {
         }
     }
 
+    /// The uploaded copy of `src`, uploading it (`upload`) when the view has another photo's or none.
+    /// The upload (a conversion and a copy of up to [`RETAIN_SOURCE_BYTES`]) runs with the lock
+    /// released: the UI thread reads these stages' size every frame ([`Self::bytes`]), so it must
+    /// never wait for an upload.
     fn source(&self, src: &Arc<Rgb32f>, upload: impl FnOnce() -> Buf) -> Arc<Buf> {
-        let mut g = self.source.lock().unwrap_or_else(|e| e.into_inner());
-        match &*g {
-            Some((s, b)) if Arc::ptr_eq(s, src) => b.clone(),
-            _ => {
-                *g = None; // free the previous photo's buffer first
-                let b = Arc::new(upload());
-                *g = Some((src.clone(), b.clone()));
-                b
+        // (one upload at a time per view; only its renders wait here)
+        let _one = self.uploading.lock().unwrap_or_else(|e| e.into_inner());
+        let old = {
+            let mut g = self.source.lock().unwrap_or_else(|e| e.into_inner());
+            match &*g {
+                Some((s, b)) if Arc::ptr_eq(s, src) => return b.clone(),
+                _ => g.take(), // free the previous photo's buffer first
             }
-        }
+        };
+        drop(old);
+        let b = Arc::new(upload());
+        *self.source.lock().unwrap_or_else(|e| e.into_inner()) = Some((src.clone(), b.clone()));
+        b
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Entry>> {
@@ -109,6 +155,8 @@ impl GpuStages {
             p.texture.iter().for_each(|(_, b)| add(b));
             p.sharpen.iter().for_each(|(_, b)| add(b));
             p.dark.iter().for_each(|(_, b, _)| add(b));
+            p.chroma.iter().for_each(|(_, b)| add(b));
+            p.masks.iter().for_each(|m| add(&m.alpha));
         }
         if let Some((_, b)) = &*self.source.lock().unwrap_or_else(|e| e.into_inner()) {
             add(b);
@@ -134,6 +182,8 @@ pub(crate) struct Cx<'a> {
     enc: Option<wgpu::CommandEncoder>,
     /// Kernel invocations recorded since the last submit.
     pending: u64,
+    /// The last submission (a batch render waits for it before the next: see `gate::throttle`).
+    last: Option<wgpu::SubmissionIndex>,
 }
 
 /// Kernel invocations recorded before a render submits them (under one full-size pass over a
@@ -145,7 +195,7 @@ const BAND_PIXELS: usize = 4 << 20;
 
 impl<'a> Cx<'a> {
     pub fn new(gpu: &'a Gpu) -> Cx<'a> {
-        Cx { gpu, enc: Some(gpu.encoder()), pending: 0 }
+        Cx { gpu, enc: Some(gpu.encoder()), pending: 0, last: None }
     }
 
     /// Record kernel `name` (see [`Gpu::run`]).
@@ -180,7 +230,12 @@ impl<'a> Cx<'a> {
     pub fn flush(&mut self) {
         self.pending = 0;
         if let Some(enc) = self.enc.take() {
-            self.gpu.submit([enc.finish()]);
+            // an export keeps one submission queued at a time: the window's renders slot in between
+            if !crate::gate::throttle(self.gpu, self.last.take()) {
+                fail(FailKind::Busy, "the GPU did not finish an earlier step in time (busy)".into());
+                return;
+            }
+            self.last = Some(self.gpu.submit([enc.finish()]));
         }
     }
 
@@ -510,25 +565,39 @@ static SOURCE_UPLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// stages; it is released with the buffer pool when the app idles.
 static SHARED_SOURCE: std::sync::Mutex<Option<(std::sync::Weak<Rgb32f>, Arc<Buf>)>> = std::sync::Mutex::new(None);
 
-fn shared_source(src: &Arc<Rgb32f>, upload: impl FnOnce() -> Buf) -> Arc<Buf> {
-    let mut g = SHARED_SOURCE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((weak, buf)) = &*g
-        && weak.upgrade().is_some_and(|s| Arc::ptr_eq(&s, src))
-    {
-        return buf.clone();
-    }
-    // the previous photo's copy goes (on a render thread it is retired with the render's other
-    // buffers, so for a moment both exist)
-    *g = None;
+/// The shared copy of `src` ([`SHARED_SOURCE`]), uploading it when it is another photo's. The
+/// conversion and upload (288 MB for 24 MP, up to seconds on a busy card) run with the lock
+/// released: the UI thread reads its size (`ui.inspect`) and frees it when idle, and waited for the
+/// whole upload (1.5 s when a view first zoomed to 100 %).
+fn shared_source(src: &Arc<Rgb32f>, generation: u64, upload: impl FnOnce() -> Buf) -> Arc<Buf> {
+    // (one upload at a time: a second view of the photo waits for the first's copy instead of
+    // making its own; only renders wait here, never a reader of the size)
+    let _one = SHARED_UPLOAD.lock().unwrap_or_else(|e| e.into_inner());
+    let old = {
+        let mut g = SHARED_SOURCE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((weak, buf)) = &*g
+            && weak.upgrade().is_some_and(|s| Arc::ptr_eq(&s, src))
+            && buf.generation() == generation
+        {
+            return buf.clone();
+        }
+        // the previous photo's copy goes (on a render thread it is retired with the render's
+        // other buffers, so for a moment both exist)
+        g.take()
+    };
+    drop(old);
     SOURCE_UPLOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let buf = Arc::new(upload());
     // an upload that failed (out of memory, over the limit) holds a placeholder: this render
     // fails, and no other render may be handed it as the photo
     if !crate::ctx::failed() {
-        *g = Some((Arc::downgrade(src), buf.clone()));
+        *SHARED_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = Some((Arc::downgrade(src), buf.clone()));
     }
     buf
 }
+
+/// Held by the render uploading the shared source ([`shared_source`]), never by a reader.
+static SHARED_UPLOAD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Free the shared big source (see [`shared_source`]).
 pub(crate) fn release_shared_source() {
@@ -607,9 +676,9 @@ pub(crate) fn profiling() -> bool {
 /// render failed: the reason is recorded with [`crate::ctx::fail`].
 pub fn render(
     gpu: &Gpu,
+    plan: &Plan<'_>,
     src: &Arc<Rgb32f>,
     info: &SourceInfo,
-    s: &DevelopSettings,
     req: &RenderRequest,
     stages: Option<&GpuStages>,
     fault: Option<crate::Fault>,
@@ -627,7 +696,6 @@ pub fn render(
         }
         None => cx.flush(),
     };
-    let plan = lcc_pipeline::plan(src, info, s, req);
     let (w, h) = (plan.w, plan.h);
     let Some(n) = w.checked_mul(h).filter(|n| n.checked_mul(12).is_some()) else {
         fail(FailKind::Limit, format!("{w}×{h} output is too large"));
@@ -663,10 +731,12 @@ pub fn render(
             // cut from the photo's own pixels, and what its stages keep is its own sampled pixels)
             let src_buf = match stages {
                 Some(c) if src.data.len() * 12 <= RETAIN_SOURCE_BYTES => c.source(src, upload),
-                Some(_) => shared_source(src, upload),
+                // (an export keeps its own: photos side by side would take the one copy from each other)
+                Some(_) if !crate::gate::is_batch() => shared_source(src, gpu.generation, upload),
+                Some(_) => Arc::new(upload()),
                 None => Arc::new(upload()),
             };
-            sample(&mut cx, src, src_buf, &plan)
+            sample(&mut cx, src, src_buf, plan)
         }
         None => {
             let img = plan.frame.sample(src, w, h);
@@ -680,7 +750,7 @@ pub fn render(
     // 2. white balance, defringe, spots, noise reduction
     let lin = match cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == plan.lin_key) {
         Some((_, b)) => b,
-        None => Arc::new(linear(&mut cx, &sampled, info, &plan, &mut host)),
+        None => Arc::new(linear(&mut cx, &sampled, info, plan, &mut host)),
     };
     lap("wb/nr", &mut t, &mut cx);
 
@@ -689,19 +759,19 @@ pub fn render(
         Some(p) if p.key == plan.lin_key => p,
         _ => Planes { key: plan.lin_key, ..Default::default() },
     };
-    let mut prep = prepare(&mut cx, &lin, &plan, req, &mut planes);
+    let mut prep = prepare(&mut cx, &lin, plan, req, &mut planes);
     // a window dehazes with the whole frame's airlight
     if let Some(a) = plan.fixed_air {
         prep.air = a;
     }
     lap("planes", &mut t, &mut cx);
+
+    // 4. masks (kept with the planes)
+    let (masks, terms, curves) = masks(&mut cx, &lin, &prep, plan, &mut host, &mut planes);
+    lap("masks", &mut t, &mut cx);
     if let Some(c) = stages {
         c.put(Entry { src: src.clone(), geo: plan.geo, sampled, lin: Some((plan.lin_key, lin.clone())), planes });
     }
-
-    // 4. masks
-    let (masks, terms, curves) = masks(&mut cx, &lin, &prep, &plan, &mut host);
-    lap("masks", &mut t, &mut cx);
 
     // 5. per-pixel stage
     let mut fp = FinishParams::new(s, &plan.frame, info, w, h, plan.px_per_long, prep.air, req.space);
@@ -762,7 +832,7 @@ pub fn render(
                 prep.clarity.as_deref(),
                 tex_buf.as_deref(),
                 prep.dark.as_deref(),
-                masks.as_ref(),
+                masks.as_deref(),
                 Some(&aux),
                 Some(&out),
             ],
@@ -916,7 +986,7 @@ pub fn render(
         let deep = lcc_pipeline::DeepImage { width: w, height: h, space: req.space, samples: lcc_pipeline::DeepSamples::F32(samples) };
         return Some(Rendered { image, histogram, deep: Some(deep), warnings: Vec::new(), coverage, alpha: None });
     }
-    lcc_pipeline::visualize::apply(&mut image, req.overlay, &plan, overlay_mask.as_ref(), all_overlay_alphas.as_deref());
+    lcc_pipeline::visualize::apply(&mut image, req.overlay, plan, overlay_mask.as_ref(), all_overlay_alphas.as_deref());
     // spots grew the window the render worked on: cut it back to the request
     if let Some(k) = plan.keep {
         image = image.crop(k.x, k.y, k.w, k.h);
@@ -974,7 +1044,7 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
     let n = w * h;
     let s = &*plan.settings;
     let img = if lcc_pipeline::lin_needs_cpu(s, info) {
-        // defringe / spot removal / local tone mapping: CPU
+        // content-aware Fill spots / the camera's local tone map: the whole stage on the CPU
         let mut img = match host.sampled.take() {
             Some(i) => i,
             None => cx.read_rgb(sampled, w, h),
@@ -987,6 +1057,9 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
         p.extend(m.unwrap_or_default().iter().flatten().map(|v| v.to_bits()));
         let out = cx.gpu.buffer(n * 3);
         map(cx, "wb_k", n, &p, [Some(sampled), None, None], &out);
+        // `lin_cpu`'s order: white balance, defringe, spots, red eye
+        let out = defringe(cx, out, plan);
+        let out = spots(cx, out, plan);
         if plan.eyes.is_empty() {
             out
         } else {
@@ -1008,6 +1081,80 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
     let buf = cx.gpu.upload(rgb_words(&host_img));
     host.lin = Some(Arc::new(host_img));
     buf
+}
+
+/// Defringe (`optics::defringe`) of the white-balanced image.
+fn defringe(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
+    use lcc_pipeline::optics;
+    let (w, h) = (plan.w, plan.h);
+    let Some(dp) = optics::defringe_params(&plan.settings, plan.px_per_long / optics::DEFRINGE_REF_LONG, w, h) else { return img };
+    let n = w * h;
+    let lab = cx.gpu.buffer(n * 3);
+    map(cx, "fringe_lab", n, &[], [Some(&img), None, None], &lab);
+    // the lightness channel, then its min and max around each pixel
+    let l = cx.gpu.buffer(n);
+    map(cx, "subsample", n, &[3], [Some(&lab), None, None], &l);
+    let r = dp.radius.min(w.max(h)) as u32;
+    let filtered = |cx: &mut Cx<'_>, max: u32| {
+        let tmp = cx.gpu.buffer(n);
+        cx.run("minmax", &[w as u32, h as u32, r, 0, max], &[Some(&l), Some(&tmp)], groups2(w, h, [16, 16]));
+        let out = cx.gpu.buffer(n);
+        cx.run("minmax", &[w as u32, h as u32, r, 1, max], &[Some(&tmp), Some(&out)], groups2(w, h, [16, 16]));
+        out
+    };
+    let (lo, hi) = (filtered(cx, 0), filtered(cx, 1));
+    // the kernel writes only the pixels it changes
+    let out = cx.copy(&img);
+    let p = [dp.purple.0, dp.purple.1, dp.green.0, dp.green.1, dp.purple_strength, dp.green_strength].map(f32::to_bits);
+    map(cx, "fringe_apply", n, &p, [Some(&lab), Some(&lo), Some(&hi)], &out);
+    out
+}
+
+/// Spot removal (`spots::apply`; Clone, Heal, Remove), spot by spot on `img` in place: each spot
+/// reads the image as the earlier ones left it.
+fn spots(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
+    use lcc_pipeline::spots;
+    let (w, h) = (plan.w, plan.h);
+    for spot in &plan.settings.spots {
+        let Some(l) = spots::layout(spot, &plan.frame, w, h, plan.px_per_long) else { continue };
+        let Some(&first) = l.pts.first() else { continue };
+        let offset = match l.offset {
+            Some(o) => o,
+            None => auto_source(cx, &img, w, h, first, l.r),
+        };
+        let pts = cx.gpu.upload(&l.pts.iter().flat_map(|p| [p.0, p.1]).collect::<Vec<f32>>());
+        let nb = l.bw * l.bh;
+        let (al, sp, df, wt) = (cx.gpu.buffer(nb), cx.gpu.buffer(3 * nb), cx.gpu.buffer(3 * nb), cx.gpu.buffer(nb));
+        let mut p = vec![w as u32, h as u32, l.bx as u32, l.by as u32, l.bw as u32, l.bh as u32, l.pts.len() as u32];
+        p.extend([l.r, l.inner, l.opacity, offset.0, offset.1].map(f32::to_bits));
+        p.push(l.heal as u32);
+        let groups = groups2(l.bw, l.bh, [16, 16]);
+        cx.run("spot_prep", &p, &[Some(&img), Some(&pts), Some(&al), Some(&sp), Some(&df), Some(&wt)], groups);
+        // Heal: the tone correction is the masked difference's normalized blur
+        let blurred = l.heal.then(|| {
+            let sigma = (l.r * 0.6).max(1.0);
+            (gaussian(cx, &df, l.bw, l.bh, 3, sigma), gaussian(cx, &wt, l.bw, l.bh, 1, sigma))
+        });
+        let (bd, bm) = blurred.as_ref().map_or((&df, &wt), |(d, m)| (d, m));
+        cx.run("spot_apply", &p, &[Some(&img), Some(&pts), Some(&al), Some(&sp), Some(bd), Some(bm)], groups);
+    }
+    img
+}
+
+/// `spots::auto_source` on the device: every candidate scored at once, only the scores read back.
+fn auto_source(cx: &mut Cx<'_>, img: &Buf, w: usize, h: usize, target: (f32, f32), r: f32) -> (f32, f32) {
+    use lcc_pipeline::spots;
+    let cands = spots::candidates(r);
+    let mut data: Vec<f32> = cands.iter().flat_map(|d| [d.0, d.1]).collect();
+    data.extend(spots::ring_dirs().iter().flat_map(|d| [d.0, d.1]));
+    let pts = cx.gpu.upload(&data);
+    let [around, within] = spots::score_radii(r);
+    let mut p = vec![w as u32, h as u32];
+    p.extend([target.0, target.1].iter().chain(&around).chain(&within).map(|v| v.to_bits()));
+    let scores = cx.gpu.buffer(cands.len());
+    cx.run("spot_score", &p, &[Some(img), Some(&pts), Some(&scores), None, None, None], [cands.len().div_ceil(64) as u32, 1, 1]);
+    let scores: Vec<f32> = cx.read(&scores, cands.len());
+    spots::rank(&cands, &scores).first().copied().unwrap_or_else(|| spots::fallback_source(r))
 }
 
 /// Noise reduction (`local::denoise`).
@@ -1109,32 +1256,92 @@ fn prepare(cx: &mut Cx<'_>, lin: &Buf, plan: &Plan<'_>, req: &RenderRequest, pla
     Prep { log_l, base, clarity, texture, sharpen, dark, chroma, air }
 }
 
-/// Most brush dabs the mask kernel evaluates per pixel (more: the CPU rasterizes the brush).
-const MAX_DABS: usize = 4096;
+/// Most brush dabs the mask kernel takes (more: the CPU rasterizes the brush).
+const MAX_DABS: usize = 65_536;
+/// Most words of brush data (stroke records, dab centres, tile lists): indices are stored as
+/// `f32`, exact below 2²⁴.
+const MAX_BRUSH_WORDS: usize = 8 << 20;
+/// Words per stroke record in [`brush_aux`].
+const STROKE_WORDS: usize = 16;
 
-/// The `shape` kernel's brush data for `dabs`: stroke records (12 words: dab offset, dab count,
-/// r, hard, flow, density, erase, bbox x0 y0 x1 y1, auto) then the dab centres.
-fn brush_aux(dabs: &[&lcc_pipeline::masks::BrushDabs], erase: bool) -> Vec<f32> {
-    let mut aux = Vec::new();
-    let mut off = 12 * dabs.len();
+/// The `shape` kernel's brush data for `dabs` in a `w × h` output, or `None` when it would be too
+/// big (the CPU rasterizes the brush then): stroke records ([`STROKE_WORDS`] words: dab offset, dab
+/// count, r, hard, flow, density, erase, bbox x0 y0 x1 y1, auto, tile table offset, tiles across,
+/// tiles down, tile size), then each stroke's dab centres, tile table and tile lists.
+///
+/// Each stroke's dabs are binned into square tiles (about a quarter radius across): a pixel looks
+/// only at the dabs that reach its tile, in stroke order, instead of every dab of the stroke. A
+/// dress brushed over at 100 % zoom (thousands of dabs, millions of pixels) kept the GPU busy for
+/// tens of seconds (TEST-NOTES 2026-10-16 item 28).
+fn brush_aux(dabs: &[&lcc_pipeline::masks::BrushDabs], erase: bool, w: usize, h: usize) -> Option<Vec<f32>> {
+    let mut head = Vec::with_capacity(STROKE_WORDS * dabs.len());
+    let mut tail: Vec<f32> = Vec::new();
+    let base = STROKE_WORDS * dabs.len();
     for d in dabs {
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for q in &d.dabs {
             (x0, y0, x1, y1) = (x0.min(q.x - d.r), y0.min(q.y - d.r), x1.max(q.x + d.r), y1.max(q.y + d.r));
         }
-        aux.extend([off as f32, d.dabs.len() as f32, d.r as f32, d.hard as f32, d.flow, d.density, (erase && d.erase) as u8 as f32]);
-        aux.extend([x0, y0, x1, y1].map(|v| v as f32));
-        aux.push(d.auto as u8 as f32);
-        off += 2 * d.dabs.len();
+        let off = base + tail.len();
+        tail.extend(d.dabs.iter().flat_map(|q| [q.x as f32, q.y as f32]));
+        // tiles of about a quarter radius: a dab reaches ~9 × 9 of them, a pixel looks at less than
+        // twice the dabs that touch it
+        let ts = (d.r / 4.0).round().clamp(8.0, 256.0);
+        let ts = if ts.is_finite() { ts } else { 256.0 };
+        let (tx, ty) = (((w as f64) / ts).ceil().max(1.0) as usize, ((h as f64) / ts).ceil().max(1.0) as usize);
+        let mut lists: Vec<Vec<u32>> = vec![Vec::new(); tx.checked_mul(ty)?];
+        let mut entries = 0usize;
+        for (j, q) in d.dabs.iter().enumerate() {
+            let reaches = q.x + d.r > 0.0 && q.x - d.r < w as f64 && q.y + d.r > 0.0 && q.y - d.r < h as f64;
+            if !reaches {
+                continue;
+            }
+            let j = u32::try_from(j).ok()?;
+            let cell = |v: f64, n: usize| ((v / ts).floor().max(0.0) as usize).min(n - 1);
+            let (cx0, cx1, cy0, cy1) = (cell(q.x - d.r, tx), cell(q.x + d.r, tx), cell(q.y - d.r, ty), cell(q.y + d.r, ty));
+            entries = entries.saturating_add((cx1 - cx0 + 1) * (cy1 - cy0 + 1));
+            if entries > MAX_BRUSH_WORDS {
+                return None;
+            }
+            for cy in cy0..=cy1 {
+                for cx in cx0..=cx1 {
+                    lists.get_mut(cy * tx + cx)?.push(j);
+                }
+            }
+        }
+        let table = base + tail.len();
+        let mut start = table + 2 * lists.len();
+        for l in &lists {
+            tail.extend([start as f32, l.len() as f32]);
+            start += l.len();
+        }
+        for l in &lists {
+            tail.extend(l.iter().map(|j| *j as f32));
+        }
+        if base + tail.len() > MAX_BRUSH_WORDS {
+            return None;
+        }
+        head.extend([off as f32, d.dabs.len() as f32, d.r as f32, d.hard as f32, d.flow, d.density, (erase && d.erase) as u8 as f32]);
+        head.extend([x0, y0, x1, y1].map(|v| v as f32));
+        head.push(d.auto as u8 as f32);
+        head.extend([table as f32, tx as f32, ty as f32, ts as f32]);
     }
-    for d in dabs {
-        aux.extend(d.dabs.iter().flat_map(|q| [q.x as f32, q.y as f32]));
-    }
-    aux
+    head.extend(tail);
+    Some(head)
 }
 
-/// Cross guided filter (`masks::guided_cross`) of `p` steered by `guide`, max-combined with `p`.
-fn guided_cross_max(cx: &mut Cx<'_>, guide: &Buf, p: &Buf, w: usize, h: usize, sigma: f32, eps: f32) -> Buf {
+/// How [`guided_cross`] combines the filtered plane with its input.
+#[derive(Clone, Copy)]
+enum Combine {
+    /// The larger of the two (Auto Mask strokes).
+    Max,
+    /// The input moved towards the filtered plane by this much (Refine Edges).
+    Mix(f32),
+}
+
+/// Cross guided filter (`masks::guided_cross`) of `p` steered by `guide`, combined with `p`.
+#[allow(clippy::too_many_arguments)]
+fn guided_cross(cx: &mut Cx<'_>, guide: &Buf, p: &Buf, w: usize, h: usize, sigma: f32, eps: f32, how: Combine) -> Buf {
     let n = w * h;
     let (m0, m1) = (cx.gpu.buffer(2 * n), cx.gpu.buffer(2 * n));
     map(cx, "xguided_pre", n, &[0], [Some(guide), Some(p), None], &m0);
@@ -1144,20 +1351,46 @@ fn guided_cross_max(cx: &mut Cx<'_>, guide: &Buf, p: &Buf, w: usize, h: usize, s
     map(cx, "xguided_ab", n, &[eps.to_bits()], [Some(&b0), Some(&b1), None], &ab);
     let ab = gaussian(cx, &ab, w, h, 2, sigma);
     let q = cx.gpu.buffer(n);
-    map(cx, "xguided_apply", n, &[], [Some(guide), Some(&ab), Some(p)], &q);
+    let mode = match how {
+        Combine::Max => [0, 0],
+        Combine::Mix(k) => [1, k.to_bits()],
+    };
+    map(cx, "xguided_apply", n, &mode, [Some(guide), Some(&ab), Some(p)], &q);
     q
 }
 
 /// Evaluate the masks (`lcc_pipeline::masks::evaluate`): their alpha planes (concatenated,
-/// followed by the blurred chromaticity when local Moiré / Noise need it), their adjustment
-/// terms and their local Curves. Shapes without a kernel (Sky, Subject, …) run on the CPU.
-fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Host) -> (Option<Buf>, Vec<[f32; MASK_TERMS]>, Vec<Option<[Lut1; 3]>>) {
-    use lcc_develop::{MaskOp, MaskShape};
+/// followed by the blurred chromaticity when local Moiré / Noise need it; kept with the view's
+/// planes, [`MaskBufs`]), their adjustment terms and their local Curves. Shapes without a kernel (Sky, Subject, …) run on the CPU.
+fn masks(
+    cx: &mut Cx<'_>,
+    lin: &Buf,
+    prep: &Prep,
+    plan: &Plan<'_>,
+    host: &mut Host,
+    planes: &mut Planes,
+) -> (Option<Arc<Buf>>, Vec<[f32; MASK_TERMS]>, Vec<Option<[Lut1; 3]>>) {
     let s = &*plan.settings;
     let list: Vec<_> = s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).collect();
     if list.is_empty() {
         return (None, Vec::new(), Vec::new());
     }
+    let terms = list.iter().map(|m| mask_terms(&m.adjust)).collect();
+    let curves = list.iter().map(|m| local_curve_luts(&m.curve)).collect();
+    let key = lcc_pipeline::masks::alpha_key(&s.masks, s.light.exposure as f32, plan.w, plan.h, plan.mattes.as_deref());
+    let chroma = planes.chroma.as_ref().filter(|_| prep.chroma.is_some()).map(|(k, _)| *k);
+    if let Some(m) = planes.masks.as_ref().filter(|m| m.fits(key, chroma, plan.mattes.as_ref())) {
+        return (Some(m.alpha.clone()), terms, curves);
+    }
+    let alpha = Arc::new(mask_alpha(cx, lin, prep, plan, host, &list));
+    planes.masks = Some(MaskBufs { key, chroma, mattes: plan.mattes.clone(), alpha: alpha.clone() });
+    (Some(alpha), terms, curves)
+}
+
+/// The alpha planes of the visible masks `list` (concatenated, then the blurred chromaticity).
+fn mask_alpha(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Host, list: &[&lcc_develop::Mask]) -> Buf {
+    use lcc_develop::{MaskOp, MaskShape};
+    let s = &*plan.settings;
     let (w, h) = (plan.w, plan.h);
     let n = w * h;
     let frame = &plan.frame;
@@ -1226,22 +1459,30 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
                         })
                         .collect();
                     // pen pressure varies radius and flow per dab, which the kernel doesn't take: the CPU rasterizes it
-                    if dabs.iter().map(|d| d.dabs.len()).sum::<usize>() > MAX_DABS || dabs.iter().any(|d| !d.pressure.is_empty()) {
+                    let auxes: Option<Vec<Vec<f32>>> =
+                        if dabs.iter().map(|d| d.dabs.len()).sum::<usize>() > MAX_DABS || dabs.iter().any(|d| !d.pressure.is_empty()) {
+                            None
+                        } else if dabs.iter().any(|d| d.auto) {
+                            dabs.iter().map(|d| brush_aux(&[d], false, w, h)).collect()
+                        } else {
+                            brush_aux(&dabs.iter().collect::<Vec<_>>(), true, w, h).map(|a| vec![a])
+                        };
+                    if auxes.is_none() {
                         None
                     } else if dabs.iter().any(|d| d.auto) {
                         // Auto Mask: stroke by stroke (each one refined before it's combined)
                         let brush = cx.zeroed(n);
                         let stroke = cx.gpu.buffer(n);
-                        for d in &dabs {
+                        for (d, aux) in dabs.iter().zip(auxes.unwrap_or_default()) {
                             let mut q = p.clone();
                             q[2] = 4;
                             q[3] = 0;
                             q.push(1);
-                            let aux = cx.gpu.upload(&brush_aux(&[d], false));
+                            let aux = cx.gpu.upload(&aux);
                             cx.run("shape", &q, &[Some(lin), Some(&prep.log_l), Some(&aux), Some(&stroke), Some(&brush)], groups2(w, h, [16, 16]));
                             let refined = d.auto.then(|| {
                                 let (sigma, eps) = lcc_pipeline::masks::auto_refine(d.r);
-                                guided_cross_max(cx, &prep.log_l, &stroke, w, h, sigma, eps)
+                                guided_cross(cx, &prep.log_l, &stroke, w, h, sigma, eps, Combine::Max)
                             });
                             let op = if d.erase { 2 } else { 1 };
                             cx.run(
@@ -1258,7 +1499,7 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
                         None
                     } else {
                         p.push(dabs.len() as u32);
-                        aux = brush_aux(&dabs.iter().collect::<Vec<_>>(), true);
+                        aux = auxes.and_then(|a| a.into_iter().next()).unwrap_or_default();
                         Some(4)
                     }
                 }
@@ -1300,6 +1541,21 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
                 cx.run("finalize", &fk, &[None, None, None, None, Some(&alpha)], groups1(n));
             }
         }
+        // Refine Edges and Feather (`masks::evaluate_one`): on the combined alpha, before the
+        // mask's invert and amount
+        if m.refine > 0.0 || m.feather > 0.0 {
+            let mut plane = cx.slice(&alpha, mi * n, n);
+            if m.refine > 0.0 {
+                let k = (m.refine / 100.0).clamp(0.0, 1.0) as f32;
+                let sigma = (0.04 * frame.output_long(w, h) as f32 * k).max(1.0);
+                plane = guided_cross(cx, &prep.log_l, &plane, w, h, sigma, 0.02, Combine::Mix(k.sqrt()));
+            }
+            if m.feather > 0.0 {
+                let k = (m.feather / 100.0).clamp(0.0, 1.0) as f32;
+                plane = gaussian(cx, &plane, w, h, 1, 0.02 * frame.output_long(w, h) as f32 * k);
+            }
+            cx.copy_into(&plane, &alpha, mi * n);
+        }
         let amt = (m.adjust.amount / 100.0) as f32;
         cx.run(
             "finalize",
@@ -1308,14 +1564,75 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
             groups1(n),
         );
     }
-    let terms = list.iter().map(|m| mask_terms(&m.adjust)).collect();
-    let curves = list.iter().map(|m| local_curve_luts(&m.curve)).collect();
-    (Some(alpha), terms, curves)
+    alpha
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lcc_develop::DevelopSettings;
+
+    /// Runs `upload_with` on a thread whose upload takes 800 ms, and returns how long `read` took
+    /// on this thread while that upload ran.
+    fn read_during_slow_upload(
+        upload_with: impl FnOnce(Box<dyn FnOnce() -> Buf + Send>) + Send + 'static,
+        read: impl FnOnce(),
+    ) -> std::time::Duration {
+        let (started, wait) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            upload_with(Box::new(move || {
+                let _ = started.send(());
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                Buf::detached(16)
+            }))
+        });
+        wait.recv().expect("the upload started");
+        let t = std::time::Instant::now();
+        read();
+        let took = t.elapsed();
+        worker.join().expect("the upload finished");
+        took
+    }
+
+    /// The UI thread reads a view's stage size every frame (`trim_stages`) and for `ui.inspect`;
+    /// it waited for the whole upload of the view's source. It never waits now.
+    #[test]
+    fn a_views_size_is_read_at_once_while_its_source_uploads() {
+        let stages = Arc::new(GpuStages::default());
+        let src = Arc::new(Rgb32f::new(4, 4));
+        let (s, src2) = (stages.clone(), src.clone());
+        let took = read_during_slow_upload(
+            move |upload| {
+                s.source(&src2, upload);
+            },
+            || {
+                let _ = stages.bytes();
+            },
+        );
+        assert!(took < std::time::Duration::from_millis(400), "the size waited {took:?} for the upload");
+        assert_eq!(stages.bytes(), 64, "the uploaded source counts once it is there");
+        let again = stages.source(&src, || Buf::detached(99));
+        assert_eq!(again.len, 16, "the same photo is not uploaded again");
+    }
+
+    /// The same for the one shared big source: `ui.inspect` blocked on it when a view first zoomed
+    /// to 100 %, and the idle trim (UI thread) takes it too.
+    #[test]
+    fn the_shared_sources_size_is_read_at_once_while_it_uploads() {
+        let src = Arc::new(Rgb32f::new(4, 4));
+        let src2 = src.clone();
+        let took = read_during_slow_upload(
+            move |upload| {
+                let _ = shared_source(&src2, 0, upload);
+            },
+            || {
+                let _ = shared_source_bytes();
+            },
+        );
+        assert!(took < std::time::Duration::from_millis(400), "the size waited {took:?} for the upload");
+        assert_eq!(shared_source(&src, 0, || Buf::detached(99)).len, 16, "kept for the photo's other views");
+        release_shared_source();
+    }
 
     #[test]
     fn coverage_mask_matches_per_pixel_decision() {
@@ -1405,7 +1722,7 @@ mod tests {
             lcc_testkit::skip!(Gpu, "no GPU adapter");
             return;
         };
-        let _scope = crate::ctx::RenderScope::new(gpu);
+        let _scope = crate::ctx::RenderScope::new(&gpu);
         let v = |x: usize, y: usize, c: usize| ((x * 7 + y * 13 + c * 5) % 17) as f32 / 16.0 + if x % 61 < 3 { 2.0 } else { 0.0 };
         for (w, h) in [(1000, 5), (257, 3), (5, 4), (1, 9)] {
             for sigma in [0.8f32, 2.0, 4.5, 30.0, 250.0, 1000.0] {
@@ -1413,7 +1730,7 @@ mod tests {
                 let want: Vec<Plane> = planes.iter().map(|p| blur::gaussian(p, sigma)).collect();
                 for nc in [1, 2, 3] {
                     let words: Vec<f32> = (0..w * h).flat_map(|i| (0..nc).map(move |c| (i, c))).map(|(i, c)| planes[c].data[i]).collect();
-                    let mut cx = Cx::new(gpu);
+                    let mut cx = Cx::new(&gpu);
                     let src = gpu.upload(&words);
                     let out = gaussian(&mut cx, &src, w, h, nc, sigma);
                     let got: Vec<f32> = cx.read(&out, w * h * nc);

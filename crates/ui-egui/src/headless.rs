@@ -5564,12 +5564,12 @@ mod tests {
         h.step();
         h.step();
         assert!(custom_field(h) && h.app.session.cache_mb == 16384, "16 GB stays, shown as custom");
-        crate::settings_screen::reveal(h, "button:settingsCache-3");
-        h.request("ui.clickWidget", json!({"id": "button:settingsCache-3"}), t);
+        crate::settings_screen::reveal(h, "button:settingsCache-4");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-4"}), t);
         h.step();
         assert!(!custom_field(h) && h.app.session.cache_mb == 4096);
-        crate::settings_screen::reveal(h, "button:settingsCache-0");
-        h.request("ui.clickWidget", json!({"id": "button:settingsCache-0"}), t);
+        crate::settings_screen::reveal(h, "button:settingsCache-1");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
         assert_eq!(h.app.session.cache_mb, 512);
     }
 
@@ -5589,8 +5589,8 @@ mod tests {
         };
         // 3 typed, then 1 GB chosen: Custom… again starts from 1 GB, and the 3 is not saved behind it
         type_size(h, "3");
-        crate::settings_screen::reveal(h, "button:settingsCache-1");
-        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
+        crate::settings_screen::reveal(h, "button:settingsCache-2");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-2"}), t);
         h.step();
         assert_eq!(h.app.session.cache_mb, 1024);
         crate::settings_screen::reveal(h, "button:settingsCacheCustom");
@@ -5606,8 +5606,8 @@ mod tests {
         h.step();
         assert_eq!(h.app.session.cache_mb, 5120, "saved when the section is left");
         h.request("ui.clickWidget", json!({"id": "button:settingsTab-performance"}), t);
-        crate::settings_screen::reveal(h, "button:settingsCache-0");
-        h.request("ui.clickWidget", json!({"id": "button:settingsCache-0"}), t);
+        crate::settings_screen::reveal(h, "button:settingsCache-1");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
         assert_eq!(h.app.session.cache_mb, 512);
     }
 
@@ -5648,9 +5648,15 @@ mod tests {
         assert_eq!(h.app.ui.settings.grid_badges, crate::state::GridBadges::Always);
         // Performance: the thumbnail cache size goes to the library preferences
         h.request("ui.clickWidget", json!({"id": "button:settingsTab-performance"}), t);
+        crate::settings_screen::reveal(&mut h, "button:settingsCache-1");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
+        assert_eq!(h.app.session.cache_mb, 512);
+        // Automatic: a share of the cache drive's free space
         crate::settings_screen::reveal(&mut h, "button:settingsCache-0");
         h.request("ui.clickWidget", json!({"id": "button:settingsCache-0"}), t);
-        assert_eq!(h.app.session.cache_mb, 512);
+        assert_eq!(h.app.session.cache_mb, 0);
+        crate::settings_screen::reveal(&mut h, "button:settingsCache-1");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
         custom_cache_size(&mut h, t);
         custom_cache_size_pending(&mut h, t);
         crate::settings_screen::reveal(&mut h, "button:settingsPreview-3");

@@ -687,6 +687,41 @@ fn browsing_a_folder_lists_its_photos_without_adding_them() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// PERF-CULL-1: the Local view reads only what the library lacks, in the sort's file-time order
+/// for the date sorts, so the first screen is read first; other sorts follow their key.
+#[test]
+fn browsing_queues_unknown_files_in_the_order_the_view_shows_them() {
+    use lcc_catalog::{Sort, SortKey};
+    let dir = temp_dir("browse-order");
+    let set_time = |p: &Path, secs: u64| {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        std::fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
+    };
+    for (name, seed, secs) in [("a.png", 1u8, 300u64), ("b.png", 2, 100), ("c.png", 3, 200)] {
+        write_png(&dir.join(name), seed);
+        set_time(&dir.join(name), 1_700_000_000 + secs);
+    }
+    let mut s = Session::new().with_fs();
+    let known = dir.join("b.png").to_string_lossy().to_string();
+    s.execute("library.import", &json!({"paths": [known.clone()]})).unwrap();
+    let files: Vec<String> = ["a.png", "b.png", "c.png", "gone.png"].iter().map(|n| dir.join(n).to_string_lossy().to_string()).collect();
+    let (input, _) = crate::import::ScanInput::new(&mut s, &[]);
+    let names = |v: Vec<String>| v.iter().map(|f| Path::new(f).file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>();
+    // newest first, the file already in the library left out, an unreadable one last
+    // the listing keeps the known file, so a browse doesn't forget its record
+    let all = crate::import::browse_candidates(&input, files.clone(), &Sort::default());
+    assert!(all.iter().any(|c| c.path == known && c.duplicate.is_some()));
+    let q = crate::import::browse_queue(&input, files.clone(), &Sort { ascending: false, ..Sort::default() });
+    assert_eq!(names(q), ["a.png", "c.png", "gone.png"]);
+    let q = crate::import::browse_queue(&input, files.clone(), &Sort { ascending: true, ..Sort::default() });
+    assert_eq!(names(q), ["c.png", "a.png", "gone.png"]);
+    let q = crate::import::browse_queue(&input, files.clone(), &Sort { key: SortKey::FileName, ascending: false, ..Sort::default() });
+    assert_eq!(names(q), ["gone.png", "c.png", "a.png"]);
+    let q = crate::import::browse_queue(&input, files, &Sort { key: SortKey::Rating, ..Sort::default() });
+    assert_eq!(names(q), ["a.png", "c.png", "gone.png"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Photos a.png, b.png, c.png imported from `old`, then: a renamed into `moved`; b renamed, with
 /// an impostor (same name and size, other bytes) under its old name; c gone, with two impostors.
 fn renamed_and_ambiguous_scene(tag: &str) -> (std::path::PathBuf, Session) {

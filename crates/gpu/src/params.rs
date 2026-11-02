@@ -130,6 +130,13 @@ const FIELDS: &[(&str, usize)] = &[
     ("PROOF_OUT", 9),
     ("PROOF_DEST_WARN", 1),
     ("PROOF_DISP_WARN", 1),
+    // a LUT profile (`finish`'s `lut`): its table in `aux` at LUT_OFF (size³ rgb, red fastest), amount, domain
+    ("LUT", 1),
+    ("LUT_OFF", 1),
+    ("LUT_N", 1),
+    ("LUT_AMT", 1),
+    ("LUT_MIN", 3),
+    ("LUT_MAX", 3),
     // first row of a band dispatch (the kernel runs over rows Y0.., see `render`)
     ("Y0", 1),
 ];
@@ -231,6 +238,12 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     for l in curves.iter().take(masks.len()).flatten().flatten() {
         aux.extend_from_slice(&l.v);
     }
+    // the LUT profile's table, when it is well formed (size ≥ 2, size³ entries)
+    let lut_off = aux.len();
+    let lut = fp.lut.as_ref().filter(|(l, _)| l.size >= 2 && l.size.checked_pow(3) == Some(l.data.len()));
+    if let Some((l, _)) = lut {
+        aux.extend(l.data.iter().flatten());
+    }
 
     let mut p = Block::new();
     p.u("W", fp.w as u32);
@@ -325,6 +338,14 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         p.fs("PROOF_OUT", pp.proof_to_out.as_flattened());
         p.b("PROOF_DEST_WARN", pp.dest_warning);
         p.b("PROOF_DISP_WARN", pp.display_warning);
+    }
+    if let Some((l, amount)) = lut {
+        p.b("LUT", true);
+        p.u("LUT_OFF", lut_off as u32);
+        p.u("LUT_N", l.size as u32);
+        p.f("LUT_AMT", *amount);
+        p.fs("LUT_MIN", &l.domain_min);
+        p.fs("LUT_MAX", &l.domain_max);
     }
     let grain_on = fp.grain.is_some() || fp.particles.is_some();
     if let Some((amt, cell, rough, seed)) = fp.grain {

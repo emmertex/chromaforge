@@ -47,6 +47,7 @@ pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
+pub mod machine_test;
 pub mod map;
 pub mod menu_level;
 pub mod menubar;
@@ -306,6 +307,8 @@ mod tests_rating;
 mod tests_recheck;
 #[cfg(test)]
 mod tests_rename_person;
+#[cfg(test)]
+mod tests_render_storms;
 #[cfg(test)]
 mod tests_retouch;
 #[cfg(test)]
@@ -589,6 +592,27 @@ pub struct Services {
     pub surface_plugin: Option<std::sync::Arc<dyn surface_plugin::PluginInstaller>>,
 }
 
+/// A frame that held the UI thread for [`SLOW_FRAME_MS`] or more, and what ran in it: a stall is
+/// told by its causes, not only by its length.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlowFrame {
+    pub ms: f64,
+    pub logic_ms: f64,
+    pub layout_ms: f64,
+    /// Commands, control requests and slow panels (`panel.tools 340 ms`) of the frame, in order.
+    pub ran: Vec<String>,
+    /// When it ended ([`now_ms`]).
+    pub at_ms: f64,
+}
+
+/// A frame this long or longer is logged and kept as [`LccApp::slowest_frame`].
+pub const SLOW_FRAME_MS: f64 = 500.0;
+/// The most names a frame's log keeps.
+const FRAME_LOG_LEN: usize = 32;
+/// A panel that took this long in a frame is named in its log ([`LccApp::lap`]).
+const SLOW_PANEL_MS: f64 = 50.0;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Perf {
     /// Layout of the last frame ([`LccApp::ui`], including commands run from widgets).
@@ -635,6 +659,12 @@ pub struct LccApp {
     pub services: Services,
     pub renderer: render::Renderer,
     pub perf: Perf,
+    /// What this frame ran (commands, control requests, slow panels), for [`SlowFrame`]: at most
+    /// [`FRAME_LOG_LEN`] names.
+    frame_log: Vec<String>,
+    /// The slowest frame since start that took [`SLOW_FRAME_MS`] or more (`ui.inspect` →
+    /// `perf.slowestFrame`), with what ran in it.
+    pub slowest_frame: Option<SlowFrame>,
     /// macOS: the host draws the traffic lights over our top bar.
     pub integrated_titlebar: bool,
     /// The host installed a native menu bar (no in-window menus then).
@@ -742,6 +772,8 @@ pub struct LccApp {
     pub(crate) size_hold: region::SizeHold,
     /// The size of a slider drag's whole-frame drafts (full size where they keep up, issue #330).
     pub(crate) drag_scale: region::DragScale,
+    /// When a drag's drafts give way to the full render in an open interaction.
+    pub(crate) still_refine: region::StillRefine,
     /// High quality adjustment previews: whether a drag keeps full quality or falls back to drafts.
     pub(crate) hq_drag: region::HqDrag,
     /// The photo the loupe shows whole, and since when (host clock, s): after a short look its
@@ -819,6 +851,15 @@ pub struct LccApp {
     /// The display's headroom when the window shows HDR now ([`HdrOutput::headroom`]): the loupe
     /// then draws HDR edits from their HDR render ([`render::Slot::HdrView`]).
     pub hdr_headroom: Option<f32>,
+    /// The last GPU event told (`lcc_gpu::events_after`: the graphics card stopped
+    /// responding, was restarted …).
+    gpu_event_seen: u64,
+    /// The window's size last frame: a resize asks the GPU's batch work (exports) to make room.
+    last_screen: egui::Vec2,
+    /// The export lanes, processor-only switch and GPU share last applied (install settings).
+    export_tuning_applied: Option<(u32, bool, u32, u32)>,
+    /// "Test my machine" while it runs (Settings ▸ Performance).
+    pub machine: Option<machine_test::MachineTask>,
     /// The memory budget setting last applied (MB, 0 = automatic).
     memory_applied: Option<u32>,
     /// The display profile setting last applied (`app.displayProfile`).
@@ -899,6 +940,9 @@ impl LccApp {
         // generative fills run on their own thread; frames apply them
         session.genfill.background = true;
         session.upright_jobs.background = true;
+        // a flag or a step never waits for the drive: the catalog log's own thread writes and
+        // syncs it (control replies wait for it, `drain_control`)
+        session.wait_for_catalog_log = false;
         Self {
             session,
             #[cfg(not(target_arch = "wasm32"))]
@@ -913,6 +957,8 @@ impl LccApp {
             services,
             renderer: render::Renderer::default(),
             perf: Perf::default(),
+            frame_log: Vec::new(),
+            slowest_frame: None,
             caches: Caches::default(),
             integrated_titlebar: false,
             native_menu: false,
@@ -966,6 +1012,7 @@ impl LccApp {
             region_before_view: None,
             size_hold: Default::default(),
             drag_scale: Default::default(),
+            still_refine: Default::default(),
             hq_drag: Default::default(),
             whole_since: None,
             window_refused: None,
@@ -1002,6 +1049,10 @@ impl LccApp {
             startup_update_check: false,
             hdr_display_sdr: false,
             hdr_headroom: None,
+            gpu_event_seen: 0,
+            last_screen: egui::Vec2::ZERO,
+            export_tuning_applied: None,
+            machine: None,
             memory_applied: None,
             display_applied: None,
             display_error: None,
@@ -1070,6 +1121,7 @@ impl LccApp {
     /// [`LccApp::run`], keeping what kind of error a refusal is: for code that decides on it
     /// (offer a model's download, treat a cancel as one) instead of reading the message.
     pub fn run_typed(&mut self, id: &str, params: Value) -> Result<Value, CommandError> {
+        self.note_ran(id);
         shortcuts::set_active(self.ui.settings.keymap_set);
         if let Some(r) = edit_in::intercept(self, id, &params) {
             return r.map_err(CommandError::from);
@@ -1571,8 +1623,16 @@ impl LccApp {
                 continue;
             }
             let reply = req.reply.clone();
+            self.note_ran(&req.method);
             match control::handle(self, ctx, &req) {
-                control::Outcome::Done(v) => {
+                control::Outcome::Done(mut v) => {
+                    // the UI's own commands don't wait for the catalog log's thread; a reply
+                    // to someone outside does: "done" only for what is on disk
+                    if let Err(e) = self.session.flush_catalog()
+                        && let Some(o) = v.as_object_mut()
+                    {
+                        o.insert("notSaved".into(), serde_json::Value::String(e.to_string()));
+                    }
                     let _ = reply.send(v);
                 }
                 control::Outcome::Screenshot { path, headless } => {
@@ -1749,6 +1809,7 @@ impl LccApp {
     /// Per-frame logic before layout (control channel, renders, shortcuts, drops).
     pub fn logic(&mut self, ctx: &egui::Context) {
         i18n::set_language(self.ui.language);
+        self.frame_log.clear();
         widgets::sync_section_folds(ctx, &mut self.ui.section_open);
         let t0 = now_ms();
         panels::library_problem::logic(self, ctx);
@@ -2025,6 +2086,28 @@ impl LccApp {
         import::drop_paths(self, ctx, photos);
     }
 
+    /// The window and the GPU's batch work (exports): a resize makes room for the window's own
+    /// drawing first (`lcc_gpu::hold_batch`: the surface is reconfigured, which waits for
+    /// the GPU); what happened to the GPU (it stopped responding, it was restarted) is told once.
+    fn gpu_housekeeping(&mut self, ctx: &egui::Context) {
+        let screen = ctx.content_rect().size();
+        if screen != self.last_screen {
+            if self.last_screen != egui::Vec2::ZERO {
+                lcc_engine::gpu::hold_batch(std::time::Duration::from_millis(800));
+            }
+            self.last_screen = screen;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        for e in lcc_engine::gpu::events_after(self.gpu_event_seen) {
+            self.gpu_event_seen = self.gpu_event_seen.max(e.seq);
+            let text = crate::i18n::tr(&e.text).to_string();
+            match e.kind {
+                lcc_engine::gpu::EventKind::Recovered => self.toast_for(ctx, text, 8.0),
+                _ => self.toast_for(ctx, text, 15.0),
+            }
+        }
+    }
+
     /// Apply settings that act outside the UI state: GPU rendering and window full screen.
     fn apply_settings(&mut self, ctx: &egui::Context) {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
@@ -2050,6 +2133,14 @@ impl LccApp {
             let _ = self.session.execute("app.memoryBudget", &serde_json::json!({"mb": mb}));
         }
         self.memory_applied = Some(mb);
+        // export lanes and the GPU's share for exports (Settings ▸ Performance, "Test my machine")
+        let st = &self.ui.settings;
+        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs);
+        if self.export_tuning_applied != Some(tuning) {
+            crate::machine_test::apply(st);
+            self.export_tuning_applied = Some(tuning);
+        }
+        self.gpu_housekeeping(ctx);
         // the monitor profile (Settings ▸ Display): previews follow it from the next frame
         if self.display_applied.as_ref() != Some(&self.ui.settings.display_profile) {
             let path = self.ui.settings.display_profile.clone();
@@ -2240,6 +2331,45 @@ impl LccApp {
         self.perf.frame_ms = now_ms() - t0;
         self.perf.update_ms = self.perf.logic_ms + self.perf.frame_ms;
         self.perf.max_update_ms = self.perf.max_update_ms.max(self.perf.update_ms);
+        self.note_slow_frame(ctx.cumulative_pass_nr());
+    }
+
+    /// Remember that `what` ran in this frame (see [`SlowFrame`]).
+    pub(crate) fn note_ran(&mut self, what: &str) {
+        if self.frame_log.len() < FRAME_LOG_LEN {
+            self.frame_log.push(what.to_string());
+        }
+    }
+
+    /// Name the part of the frame since `*t` (`what`, e.g. a panel) in the frame's log when it took
+    /// [`SLOW_PANEL_MS`] or more, and restart the clock.
+    pub(crate) fn lap(&mut self, t: &mut f64, what: &str) {
+        let now = now_ms();
+        let ms = now - *t;
+        *t = now;
+        if ms >= SLOW_PANEL_MS {
+            self.note_ran(&format!("{what} {ms:.0} ms"));
+        }
+    }
+
+    /// A frame of [`SLOW_FRAME_MS`] or more (after start-up, `pass` > 10: the first frames load
+    /// fonts and open the library) is logged with what ran in it and kept if it is the slowest.
+    fn note_slow_frame(&mut self, pass: u64) {
+        if self.perf.update_ms < SLOW_FRAME_MS || pass <= 10 {
+            return;
+        }
+        let ran = std::mem::take(&mut self.frame_log);
+        log::warn!(
+            "slow frame: {:.0} ms on the UI thread (logic {:.0} ms, layout {:.0} ms); ran: {}",
+            self.perf.update_ms,
+            self.perf.logic_ms,
+            self.perf.frame_ms,
+            if ran.is_empty() { "nothing named".to_string() } else { ran.join(", ") }
+        );
+        if self.slowest_frame.as_ref().is_none_or(|s| s.ms < self.perf.update_ms) {
+            self.slowest_frame =
+                Some(SlowFrame { ms: self.perf.update_ms, logic_ms: self.perf.logic_ms, layout_ms: self.perf.frame_ms, ran, at_ms: now_ms() });
+        }
     }
 
     /// Once per library opened (at launch too): name it in the window title, so nobody edits in
@@ -2385,6 +2515,7 @@ impl LccApp {
         #[cfg(not(target_arch = "wasm32"))]
         panels::plugins::poll(self, &ctx);
         render_dng_task::poll(self, &ctx);
+        machine_test::poll(self, &ctx);
         slideshow_export::poll(self, &ctx);
         panels::activity::show(self, &ctx);
         export_task::poll_photos(self, &ctx);

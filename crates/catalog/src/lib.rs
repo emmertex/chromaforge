@@ -25,6 +25,8 @@ pub mod keywords;
 pub mod library;
 pub mod local;
 pub mod lock;
+#[cfg(not(target_arch = "wasm32"))]
+mod log_writer;
 pub mod model;
 pub mod progress;
 pub mod query;
@@ -1814,6 +1816,8 @@ mod tests_journal;
 mod tests_local;
 #[cfg(test)]
 mod tests_lock;
+#[cfg(test)]
+mod tests_log_thread;
 #[cfg(test)]
 mod tests_repair;
 #[cfg(test)]

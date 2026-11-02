@@ -46,6 +46,7 @@ mod screen_profile;
 mod screen_profile_linux;
 #[cfg(any(windows, test))]
 mod screen_profile_windows;
+mod threads;
 mod video_gpu;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod wayland_hdr;
@@ -209,9 +210,8 @@ fn gpu_lost_marker_path() -> Option<std::path::PathBuf> {
     gpu_marker_path().map(|p| p.with_file_name("gpu-lost.marker"))
 }
 
-/// Why the GPU was lost, when the GPU pipeline stopped after a device failure in this process (a
-/// driver reset, a hang, the Windows watchdog): `None` for other reasons it is off, or when it
-/// never failed.
+/// Why the GPU was lost, when the device failed in this process (a driver reset, a hang, the
+/// Windows watchdog), even if a new device replaced it since: `None` when it never failed.
 fn gpu_lost_reason() -> Option<String> {
     lcc_engine::gpu::unavailable_reason().and_then(|r| r.strip_prefix("stopped after a GPU failure: ").map(str::to_string))
 }
@@ -959,6 +959,8 @@ fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool) -> (Session, 
     s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
     // Control requests are answered on the UI thread: Add to Apple Photos must not wait there
     s.apple_photos_background = true;
+    // presets.json (40 MB for an imported Lightroom collection) is saved off the UI thread
+    s.background_saves = true;
     (s, problem)
 }
 
@@ -1160,6 +1162,8 @@ fn main() -> eframe::Result {
         logging::record_panics(logger);
     }
     alloc_release::install();
+    // the shared worker pool leaves cores free and renders run below normal priority
+    threads::install();
     let mut control_port = control_port_from(&lcc_brand::env_var("CONTROL_PORT"), lcc_brand::env("CONTROL_PORT").filter(|v| !v.is_empty()));
     let mut control_token_arg = control_auth::env_token().filter(|v| !v.trim().is_empty());
     let mut files = Vec::new();

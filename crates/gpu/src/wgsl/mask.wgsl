@@ -77,24 +77,38 @@ fn shape(@builtin(global_invocation_id) g: vec3<u32>) {
         }
         v = 1.0 - sstep(tol * 0.5, tol, best);
     } else if (kind == 4u) {
-        // stroke record: dab offset, dab count, r, hard, flow, density, erase, bbox x0 y0 x1 y1, auto
+        // stroke record (16 words): dab offset, dab count, r, hard, flow, density, erase,
+        // bbox x0 y0 x1 y1, auto, tile table offset, tiles across, tiles down, tile size. A tile's
+        // entry (start, count) lists the dabs that reach it, in stroke order.
         let px = f32(g.x) + 0.5;
         let py = f32(g.y) + 0.5;
         let lp = log_l[i];
         let chp = chroma_at(i);
         for (var k = 0u; k < pu(10u); k++) {
-            let o = 12u * k;
+            let o = 16u * k;
             let auto_mask = aux[o + 11u] != 0.0;
             if (px < aux[o + 7u] || py < aux[o + 8u] || px > aux[o + 9u] || py > aux[o + 10u]) {
                 continue;
             }
             let off = u32(aux[o]);
-            let cnt = u32(aux[o + 1u]);
             let r = aux[o + 2u];
             let hard = aux[o + 3u];
             let flow = aux[o + 4u];
+            let tiles_x = u32(aux[o + 13u]);
+            let ts = aux[o + 15u];
+            let tx = min(g.x / u32(ts), tiles_x - 1u);
+            let ty = min(g.y / u32(ts), u32(aux[o + 14u]) - 1u);
+            let cell = u32(aux[o + 12u]) + 2u * (ty * tiles_x + tx);
+            let first = u32(aux[cell]);
+            let cnt = u32(aux[cell + 1u]);
             var keep = 1.0;
-            for (var j = 0u; j < cnt; j++) {
+            let density = aux[o + 5u];
+            for (var q = 0u; q < cnt; q++) {
+                // painted up to the density: the dabs left can't change it
+                if (1.0 - keep >= density) {
+                    break;
+                }
+                let j = u32(aux[first + q]);
                 let dx = px - aux[off + 2u * j];
                 let dy = py - aux[off + 2u * j + 1u];
                 let dd = sqrt(dx * dx + dy * dy);
@@ -113,7 +127,7 @@ fn shape(@builtin(global_invocation_id) g: vec3<u32>) {
                 }
                 keep *= 1.0 - a * flow;
             }
-            let sa = min(1.0 - keep, aux[o + 5u]);
+            let sa = min(1.0 - keep, density);
             if (aux[o + 6u] != 0.0) {
                 v = v * (1.0 - sa);
             } else {

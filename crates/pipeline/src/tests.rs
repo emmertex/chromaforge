@@ -855,3 +855,68 @@ fn negative_channels_render_finite_everywhere() {
     assert!(t.is_finite() && k.is_finite(), "auto WB {t} {k}");
     assert!(auto::scene_log_mean(&src, &info, &pushed).is_none_or(f64::is_finite));
 }
+
+/// Note 4 of 2026-10-31: while a slider moved or a brush stroke rendered, the draft on screen had
+/// other large-scale tone than the final render (shadows lifted ~6/255 and lower contrast at 100 %,
+/// ~1/255 at fit), which then snapped in: drafts capped the Highlights / Shadows base at 24 px.
+/// A draft and a full render of the same frame, whole or a window of a zoomed view, now match.
+#[test]
+fn a_draft_has_the_large_scale_tone_of_the_full_render() {
+    use crate::{PixelWindow, Quality};
+    let src = lcc_scenes::demo_library()[0].render(960, 640);
+    let info = SourceInfo { raw: true, ..Default::default() };
+    // a slider drag (Highlights / Shadows) and a mask stroke (a local Shadows / Exposure change)
+    let mut slider = typical_edits();
+    slider.light.shadows = 60.0;
+    slider.light.highlights = -60.0;
+    let mut stroke = typical_edits();
+    stroke.masks.push(lcc_develop::Mask {
+        components: vec![lcc_develop::MaskComponent {
+            name: None,
+            op: lcc_develop::MaskOp::Add,
+            invert: false,
+            shape: lcc_develop::MaskShape::Radial {
+                center: lcc_geom::Point::new(0.3, 0.3),
+                rx: 0.1,
+                ry: 0.1,
+                angle: 0.0,
+                feather: 50.0,
+                invert: false,
+            },
+        }],
+        adjust: lcc_develop::LocalAdjustments { exposure: 0.5, shadows: 50.0, ..Default::default() },
+        ..Default::default()
+    });
+    // mean of absolute differences over 16 px blocks: the low-frequency part the eye saw flicker
+    let block_diff = |a: &lcc_raster::Rgba8, b: &lcc_raster::Rgba8| {
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        let mut worst = 0f64;
+        for by in 0..a.height / 16 {
+            for bx in 0..a.width / 16 {
+                let (mut da, mut db) = (0f64, 0f64);
+                for y in by * 16..by * 16 + 16 {
+                    for x in bx * 16..bx * 16 + 16 {
+                        let (p, q) = (a.get(x, y), b.get(x, y));
+                        da += (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0;
+                        db += (q[0] as f64 + q[1] as f64 + q[2] as f64) / 3.0;
+                    }
+                }
+                worst = worst.max((da - db).abs() / 256.0);
+            }
+        }
+        worst
+    };
+    // a zoomed view's window at 100 % of a 6000 px frame, and a whole frame drawn 2000 px wide
+    let cases = [
+        RenderRequest { window: Some(PixelWindow { x: 2400, y: 1500, w: 384, h: 256 }), ..RenderRequest::fit(6000, 4000) },
+        RenderRequest::fit(2000, 2000),
+    ];
+    for (name, s) in [("slider", &slider), ("stroke", &stroke)] {
+        for req in cases {
+            let full = render(&src, &info, s, &RenderRequest { quality: Quality::Full, ..req }).image;
+            let draft = render(&src, &info, s, &RenderRequest { quality: Quality::Draft, ..req }).image;
+            let d = block_diff(&full, &draft);
+            assert!(d <= 0.5, "{name} {:?}: the draft's large-scale tone is {d:.2}/255 off the full render's", req.window);
+        }
+    }
+}

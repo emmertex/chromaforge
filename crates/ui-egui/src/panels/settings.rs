@@ -1018,6 +1018,60 @@ pub(crate) fn save_pending_cache_size(app: &mut LccApp, ctx: &egui::Context) {
     }
 }
 
+/// Exports: photos side by side, the GPU for exports, and "Test my machine", which measures both and
+/// sets them (its last report below the button).
+fn exports_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    heading(ui, t, crate::i18n::tr("Exports"));
+    row(ui, t, crate::i18n::tr("Photos at once"), |ui| {
+        // (what Automatic is here: what Test my machine found, else half the processor's threads, up to 12)
+        let tested = app.ui.settings.machine_test.as_ref().map(|m| m.lanes).filter(|n| *n > 0);
+        let auto = match tested {
+            Some(n) => format!("{} ({n}, {})", crate::i18n::tr("Automatic"), crate::i18n::tr("tested")),
+            None => {
+                let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
+                format!("{} ({})", crate::i18n::tr("Automatic"), (cores / 2).clamp(1, 12))
+            }
+        };
+        let mut opts: Vec<(u32, String)> = vec![(0, auto)];
+        let cur = app.ui.settings.export_lanes;
+        for n in [2u32, 4, 6, 8, 12, 16, 24] {
+            opts.push((n, n.to_string()));
+        }
+        if cur > 0 && !opts.iter().any(|(v, _)| *v == cur) {
+            opts.push((cur, cur.to_string()));
+            opts.sort_by_key(|(v, _)| *v);
+        }
+        let opts: Vec<(u32, &str)> = opts.iter().map(|(v, l)| (*v, l.as_str())).collect();
+        choices(ui, "settingsExportLanes", &opts, &mut app.ui.settings.export_lanes);
+    });
+    let mut gpu_exports = !app.ui.settings.export_cpu_only;
+    if check(ui, "settings.exportGpu", &mut gpu_exports, "Use the GPU for exports") {
+        app.ui.settings.export_cpu_only = !gpu_exports;
+    }
+    row(ui, t, crate::i18n::tr("Test my machine"), |ui| {
+        let running = crate::machine_test::running(app);
+        let label = if running { crate::i18n::tr("Testing…") } else { crate::i18n::tr("Test my machine") };
+        let r = ui.add_enabled(!running, egui::Button::new(label));
+        register(ui.ctx(), "button:settingsTestMachine", r.rect);
+        if r.clicked()
+            && let Err(e) = crate::machine_test::start(app)
+        {
+            app.toast_error(ui.ctx(), e);
+        }
+    });
+    let text = match &app.ui.settings.machine_test {
+        Some(m) => {
+            let when = m.tested.get(..10).unwrap_or(&m.tested);
+            format!("{} {when}: {}", crate::i18n::tr("Tested"), crate::i18n::tr(&m.summary))
+        }
+        None => crate::i18n::tr(
+            "Exports a few of your photos (or the demo photos) for a few minutes at several settings, then uses the fastest. Run it again after changing the computer or its graphics driver.",
+        )
+        .to_string(),
+    };
+    hint(ui, t, &text);
+}
+
 fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     use lcc_engine::gpu;
     heading(ui, t, crate::i18n::tr("Rendering"));
@@ -1070,15 +1124,20 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         let opts = [(0u32, auto.as_str()), (512, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB")];
         choices(ui, "settingsMemory", &opts, &mut app.ui.settings.memory_mb);
     });
+    exports_section(app, ui, t);
     heading(ui, t, crate::i18n::tr("Thumbnail cache"));
     let cur = (app.session.cache_bytes() >> 20) as u32;
+    // (0: Automatic, a share of the cache drive's free space)
+    let chosen = app.session.cache_mb;
     // a size of the user's own, in whole GB: a large library outgrows 8 GB (#3252)
     let custom_id = egui::Id::new("settings-cache-custom");
-    let mut custom = !CACHE_SIZES.contains(&cur) || ui.data(|d| d.get_temp::<bool>(custom_id)).unwrap_or(false);
+    let mut custom = (chosen != 0 && !CACHE_SIZES.contains(&chosen)) || ui.data(|d| d.get_temp::<bool>(custom_id)).unwrap_or(false);
     row(ui, t, crate::i18n::tr("Size limit"), |ui| {
-        let opts = [(512u32, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")];
-        // none of the five lit while a custom size is chosen
-        let mut v = if custom { 0 } else { cur };
+        let gb = app.session.automatic_cache_bytes().div_ceil(1 << 30);
+        let auto = format!("{} ({gb} GB)", crate::i18n::tr("Automatic"));
+        let opts = [(0u32, auto.as_str()), (512, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")];
+        // none of them lit while a custom size is chosen
+        let mut v = if custom { u32::MAX } else { chosen };
         if choices(ui, "settingsCache", &opts, &mut v) {
             custom = false;
             // a size typed earlier does not come back with Custom…

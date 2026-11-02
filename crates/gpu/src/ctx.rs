@@ -1,6 +1,7 @@
 //! The wgpu device, the compiled kernels, buffers, dispatch and readback.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use wgpu::util::DeviceExt;
@@ -32,7 +33,7 @@ const MODULES: &[Module] = &[
     Module {
         src: include_str!("wgsl/blur.wgsl"),
         bindings: &[("src", false, "f32"), ("dst", true, "f32")],
-        entries: &["box_h", "box_h_slide", "box_v", "median_h", "median_v", "min_h", "min_v"],
+        entries: &["box_h", "box_h_slide", "box_v", "median_h", "median_v", "min_h", "min_v", "minmax"],
     },
     Module {
         src: include_str!("wgsl/gauss.wgsl"),
@@ -67,7 +68,14 @@ const MODULES: &[Module] = &[
             "xguided_pre",
             "xguided_ab",
             "xguided_apply",
+            "fringe_lab",
+            "fringe_apply",
         ],
+    },
+    Module {
+        src: include_str!("wgsl/spot.wgsl"),
+        bindings: &[("img", true, "f32"), ("pts", false, "f32"), ("al", true, "f32"), ("sp", true, "f32"), ("df", true, "f32"), ("wt", true, "f32")],
+        entries: &["spot_prep", "spot_apply", "spot_score"],
     },
     Module {
         src: include_str!("wgsl/mask.wgsl"),
@@ -203,6 +211,17 @@ pub struct Buf {
 }
 
 impl Buf {
+    /// A buffer of `len` words on no device (tests of what holds buffers, without a GPU).
+    #[cfg(test)]
+    pub(crate) fn detached(len: usize) -> Buf {
+        Buf { buf: None, len }
+    }
+
+    /// The generation of the device the buffer was made on ([`Gpu::generation`]).
+    pub fn generation(&self) -> u64 {
+        self.buf.as_ref().map_or(0, |b| b.1)
+    }
+
     pub fn raw(&self) -> &wgpu::Buffer {
         // `buf` is `Some` from construction (`Gpu::buffer`/`upload`) until `Drop` takes it back
         // for the pool, so a live `Buf` always has it.
@@ -291,13 +310,16 @@ impl Drop for RenderScope<'_> {
     }
 }
 
-/// A device buffer, counted in [`ALLOCATED`] while it exists.
-pub(crate) struct Tracked(wgpu::Buffer);
+/// A device buffer, counted in [`ALLOCATED`] while it exists, and the generation of the device it
+/// was made on: a buffer of a device that was replaced ([`crate::device`] recovers from a lost one)
+/// is never pooled for, or bound on, the new one.
+pub(crate) struct Tracked(wgpu::Buffer, u64);
 
 impl Tracked {
-    fn new(b: wgpu::Buffer) -> Tracked {
-        ALLOCATED.fetch_add(b.size(), Ordering::Relaxed);
-        Tracked(b)
+    fn new(b: wgpu::Buffer, generation: u64) -> Tracked {
+        let now = ALLOCATED.fetch_add(b.size(), Ordering::Relaxed).saturating_add(b.size());
+        PEAK.fetch_max(now, Ordering::Relaxed);
+        Tracked(b, generation)
     }
 }
 
@@ -319,11 +341,18 @@ thread_local! {
 
 /// Bytes of device buffers that exist (in use, retired or pooled).
 static ALLOCATED: AtomicU64 = AtomicU64::new(0);
+/// The most [`ALLOCATED`] has been since [`reset_peak`].
+static PEAK: AtomicU64 = AtomicU64::new(0);
+
+/// Measure [`GpuMemory::peak`] again from what exists now.
+pub(crate) fn reset_peak() {
+    PEAK.store(ALLOCATED.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
 /// Bytes waiting in per-thread retired lists.
 static RETIRED_BYTES: AtomicU64 = AtomicU64::new(0);
-/// The render device is lost: wgpu's `poll` panics from then on, so [`Gpu::poll`] stops calling it.
-/// Other failures that retire the GPU leave the device usable for releasing its buffers.
-static DEVICE_LOST: AtomicBool = AtomicBool::new(false);
+/// The generation the next device gets ([`Gpu::generation`]).
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// Bytes in the free pool.
 static POOLED: AtomicU64 = AtomicU64::new(0);
 /// Most bytes kept in the free pool (see [`crate::set_pool_limit`]).
@@ -341,10 +370,17 @@ pub struct GpuMemory {
     pub pooled: u64,
     /// Of which buffers dropped since their thread's last submit (pooled at its next submit).
     pub retired: u64,
+    /// The most that existed at once since [`crate::reset_memory_peak`].
+    pub peak: u64,
 }
 
 pub(crate) fn memory() -> GpuMemory {
-    GpuMemory { allocated: ALLOCATED.load(Ordering::Relaxed), pooled: POOLED.load(Ordering::Relaxed), retired: RETIRED_BYTES.load(Ordering::Relaxed) }
+    GpuMemory {
+        allocated: ALLOCATED.load(Ordering::Relaxed),
+        pooled: POOLED.load(Ordering::Relaxed),
+        retired: RETIRED_BYTES.load(Ordering::Relaxed),
+        peak: PEAK.load(Ordering::Relaxed),
+    }
 }
 
 pub struct Gpu {
@@ -358,6 +394,14 @@ pub struct Gpu {
     free: std::sync::Mutex<Vec<Tracked>>,
     /// Largest storage buffer the device accepts (bytes).
     pub max_buffer: u64,
+    /// Which device this is: each one created in the process gets the next number, so buffers and
+    /// cached stages of a device that was replaced are told apart.
+    pub generation: u64,
+    /// The adapter's own memory (bytes), when its backend tells ([`lcc_gpumem::adapter_memory`]).
+    pub vram: Option<u64>,
+    /// This device is lost: wgpu's `poll` panics from then on, so [`Gpu::poll`] stops calling it.
+    /// Other failures leave the device usable for releasing its buffers.
+    lost: Arc<AtomicBool>,
 }
 
 /// WGSL constants shared by every module (generated from the CPU pipeline's values).
@@ -384,6 +428,7 @@ fn constants() -> String {
     s += &format!("const EYE_WORDS: u32 = {}u;\n", lcc_pipeline::redeye::EYE_WORDS);
     use lcc_pipeline::masks::{AUTO_TOL_CHROMA, AUTO_TOL_EV};
     s += &format!("const AUTO_TOL_EV: f32 = {AUTO_TOL_EV:?};\nconst AUTO_TOL_CHROMA: f32 = {AUTO_TOL_CHROMA:?};\n");
+    s += &format!("const NCAND: u32 = {}u;\n", lcc_pipeline::spots::candidates(1.0).len());
     s += &format!("const SHADOW_TINT_K: f32 = {:?};\n", lcc_pipeline::colorops::SHADOW_TINT);
     // value noise of processes V1–V6
     for (i, h) in GRAIN_HASH.iter().enumerate() {
@@ -457,17 +502,24 @@ impl Gpu {
             ..Default::default()
         }))
         .map_err(|e| format!("{}: device creation failed ({e})", info.name))?;
-        // Errors outside a render's error scopes (see `ErrorScopes`): log, and stop using the GPU.
-        device.on_uncaptured_error(std::sync::Arc::new(|e| {
+        let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let lost = Arc::new(AtomicBool::new(false));
+        // Errors outside a render's error scopes (see `ErrorScopes`): log, and replace the device.
+        device.on_uncaptured_error(std::sync::Arc::new(move |e| {
             log::error!("gpu: {e}");
-            crate::mark_broken(&format!("device error: {e}"));
+            crate::mark_broken(generation, &format!("device error: {e}"));
         }));
         // wgpu reports a lost device (driver reset, GPU hang, watchdog) only here — never as an
-        // error — so without this callback a lost device went unnoticed.
-        device.set_device_lost_callback(|reason, msg| {
-            DEVICE_LOST.store(true, Ordering::Relaxed);
+        // error — so without this callback a lost device went unnoticed. (A device dropped after
+        // it was replaced reports `Destroyed`: not a failure.)
+        let flag = lost.clone();
+        device.set_device_lost_callback(move |reason, msg| {
+            flag.store(true, Ordering::Relaxed);
+            if reason == wgpu::DeviceLostReason::Destroyed {
+                return;
+            }
             log::error!("gpu: device lost ({reason:?}): {msg}");
-            crate::mark_broken(&format!("device lost ({reason:?}): {msg}"));
+            crate::mark_broken(generation, &format!("device lost ({reason:?}): {msg}"));
         });
         let started = std::time::Instant::now();
         let kernels = match build_kernels(&device) {
@@ -493,7 +545,8 @@ impl Gpu {
             .collect();
         let max_buffer = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
         log::info!("gpu: {} ({:?}), {} kernels in {build_ms} ms, buffers ≤ {} MiB", info.name, info.backend, kernels.len(), max_buffer >> 20);
-        Ok(Gpu { device, queue, info, kernels, dummy, free: Default::default(), max_buffer })
+        let vram = lcc_gpumem::adapter_memory(&adapter);
+        Ok(Gpu { device, queue, info, kernels, dummy, free: Default::default(), max_buffer, generation, vram, lost })
     }
 
     /// A buffer of `len` 32-bit values with undefined contents (a recycled one when possible).
@@ -504,11 +557,11 @@ impl Gpu {
         let size = (len.max(1) * 4) as u64;
         if size > self.limit() {
             self.over_limit(size);
-            return Buf { buf: Some(Tracked::new(self.placeholder())), len };
+            return Buf { buf: Some(Tracked::new(self.placeholder(), self.generation)), len };
         }
         if simulated_oom() {
             fail(FailKind::OutOfMemory, "out of device memory (simulated)".into());
-            return Buf { buf: Some(Tracked::new(self.placeholder())), len };
+            return Buf { buf: Some(Tracked::new(self.placeholder(), self.generation)), len };
         }
         let recycled = {
             let mut f = self.free.lock().unwrap_or_else(|e| e.into_inner());
@@ -537,17 +590,19 @@ impl Gpu {
                         mapped_at_creation: false,
                     })
                 });
-                Tracked::new(created.unwrap_or_else(|| self.placeholder()))
+                Tracked::new(created.unwrap_or_else(|| self.placeholder()), self.generation)
             }
         };
         Buf { buf: Some(buf), len }
     }
 
     /// Submit command buffers, then make the buffers this thread dropped before reusable.
-    pub fn submit(&self, cmds: impl IntoIterator<Item = wgpu::CommandBuffer>) {
-        self.queue.submit(cmds);
+    /// Returns the submission, to wait for it alone ([`Gpu::finish_and_read`]).
+    pub fn submit(&self, cmds: impl IntoIterator<Item = wgpu::CommandBuffer>) -> wgpu::SubmissionIndex {
+        let index = self.queue.submit(cmds);
         let retired = take_retired();
         self.pool(retired);
+        index
     }
 
     /// Put reusable buffers into the free pool (trimmed to its limit).
@@ -555,7 +610,8 @@ impl Gpu {
         let mut added = false;
         {
             let mut f = self.free.lock().unwrap_or_else(|e| e.into_inner());
-            for b in bufs {
+            // (buffers of a device this one replaced are freed instead)
+            for b in bufs.into_iter().filter(|b| b.1 == self.generation) {
                 POOLED.fetch_add(b.0.size(), Ordering::Relaxed);
                 f.push(b);
                 added = true;
@@ -591,7 +647,7 @@ impl Gpu {
     /// second panic while a failed render unwinds aborts the process. A lost device is not polled
     /// again; a poll that panics counts as one and stops the GPU.
     pub(crate) fn poll(&self, t: wgpu::PollType) -> Result<wgpu::PollStatus, String> {
-        if DEVICE_LOST.load(Ordering::Relaxed) {
+        if self.lost.load(Ordering::Relaxed) {
             return Err("the device is lost".into());
         }
         let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -604,8 +660,8 @@ impl Gpu {
         match polled {
             Ok(r) => r.map_err(|e| e.to_string()),
             Err(_) => {
-                DEVICE_LOST.store(true, Ordering::Relaxed);
-                crate::mark_broken("device lost: Device::poll failed");
+                self.lost.store(true, Ordering::Relaxed);
+                crate::mark_broken(self.generation, "device lost: Device::poll failed");
                 Err("the device is lost (Device::poll failed)".into())
             }
         }
@@ -620,7 +676,7 @@ impl Gpu {
         }
         if bytes.len() as u64 > self.limit() {
             self.over_limit(bytes.len() as u64);
-            return Buf { buf: Some(Tracked::new(self.placeholder())), len };
+            return Buf { buf: Some(Tracked::new(self.placeholder(), self.generation)), len };
         }
         // created unmapped and filled through the queue: a buffer mapped at creation would hand
         // back a mapping of nothing when the device has no memory for it
@@ -634,7 +690,7 @@ impl Gpu {
             })
         });
         let Some(buf) = buf else {
-            return Buf { buf: Some(Tracked::new(self.placeholder())), len };
+            return Buf { buf: Some(Tracked::new(self.placeholder(), self.generation)), len };
         };
         if bytes.len() as u64 == size {
             self.queue.write_buffer(&buf, 0, bytes);
@@ -644,7 +700,7 @@ impl Gpu {
             padded.resize(size as usize, 0);
             self.queue.write_buffer(&buf, 0, &padded);
         }
-        Buf { buf: Some(Tracked::new(buf)), len }
+        Buf { buf: Some(Tracked::new(buf, self.generation)), len }
     }
 
     /// Create a buffer, or record [`FailKind::OutOfMemory`] and return `None` when the device has
@@ -763,7 +819,7 @@ impl Gpu {
             return zeros();
         };
         enc.copy_buffer_to_buffer(src.raw(), 0, &staging, 0, size);
-        self.submit([enc.finish()]);
+        let index = self.submit([enc.finish()]);
         let slice = staging.slice(..size);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
@@ -776,8 +832,16 @@ impl Gpu {
         // A lost device makes the wait fail ([`Gpu::poll`] turns wgpu's panic into the error) and
         // the map callback never run: checking both keeps this from blocking forever (or handing
         // back an unwritten buffer as the image).
-        if let Err(e) = self.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(READBACK_TIMEOUT) }) {
-            return failed(e);
+        // The wait is for this render's own submission: waiting for the whole queue (every other
+        // render's work too) timed out when several exports shared the GPU, and turned it off.
+        match self.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: Some(READBACK_TIMEOUT) }) {
+            Ok(_) => {}
+            // the GPU is busy, not broken: this render goes to the CPU, the GPU stays in use
+            Err(e) if e == wgpu::PollError::Timeout.to_string() => {
+                fail(FailKind::Busy, format!("the GPU did not finish within {} s (busy)", READBACK_TIMEOUT.as_secs()));
+                return zeros();
+            }
+            Err(e) => return failed(e),
         }
         // another thread's poll may be the one that runs the callback: allow it a moment
         match rx.recv_timeout(std::time::Duration::from_secs(10)) {
@@ -840,7 +904,10 @@ pub(crate) enum FailKind {
     OutOfMemory,
     /// The image came back entirely black: redone on the CPU in case the GPU dropped work.
     Blank,
-    /// Device error or loss, readback failure, incomplete image: the GPU is not used again.
+    /// The GPU took too long (busy with other work): this render only.
+    Busy,
+    /// Device error or loss, readback failure, incomplete image: the device is replaced
+    /// ([`crate::device`] recovers after a pause), the render redone on the CPU.
     Fatal,
 }
 
@@ -1080,7 +1147,7 @@ mod tests {
             println!("CHILD: no GPU");
             return;
         };
-        crate::mark_broken("device error: simulated validation error");
+        crate::mark_broken(0, "device error: simulated validation error");
         assert!(!crate::available());
         drop(g.upload(&[1u32; 1024]));
         g.poll(wgpu::PollType::Poll).unwrap();
@@ -1089,7 +1156,7 @@ mod tests {
 
     /// Empties the buffer pool when dropped, as the UI does (`trim_pool(0)`) and as returning a
     /// buffer to a full pool does.
-    struct TrimOnDrop(&'static super::Gpu);
+    struct TrimOnDrop(std::sync::Arc<super::Gpu>);
 
     impl Drop for TrimOnDrop {
         fn drop(&mut self) {
@@ -1109,7 +1176,7 @@ mod tests {
         super::SIMULATED_LOST_POLL.with(|c| c.set(true));
         // a render (caught as `try_render` catches it) whose readback finds the device lost
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _trim = TrimOnDrop(g);
+            let _trim = TrimOnDrop(g.clone());
             let v: Vec<u32> = g.finish_and_read(g.encoder(), &src, 1024);
             assert!(v.iter().all(|x| *x == 0), "a failed readback hands back zeros");
         }));
@@ -1119,7 +1186,7 @@ mod tests {
         // a render that panics for another reason still unwinds through a destructor that polls
         drop(g.upload(&[3u32; 1024]));
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _trim = TrimOnDrop(g);
+            let _trim = TrimOnDrop(g.clone());
             panic!("a render panics (expected in this test)");
         }));
         assert!(r.is_err());

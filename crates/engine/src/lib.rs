@@ -31,6 +31,7 @@ pub mod control_auth;
 pub mod creations;
 pub mod crs;
 pub mod crs_masks;
+pub(crate) mod decode_share;
 pub mod demo;
 pub mod denoise;
 pub mod desktop;
@@ -73,6 +74,7 @@ mod lightroom_smart;
 mod lightroom_sqlite;
 pub mod link;
 pub mod logging;
+pub mod machine_test;
 pub mod media;
 pub mod memory;
 pub mod merge;
@@ -90,6 +92,7 @@ pub mod peers;
 pub mod preset_import;
 pub mod preset_luminar;
 pub mod presets;
+mod presets_save;
 pub mod print;
 pub mod print_color;
 pub mod print_pdf;
@@ -449,6 +452,11 @@ pub struct Session {
     /// Current time provider (ISO 8601); injectable for tests and wasm.
     pub clock: Box<dyn Fn() -> String + Send>,
     depth: u32,
+    /// A top-level command waits until its catalog records are durable before it returns (the
+    /// default: an agent or script is told "done" only for what is on disk). The desktop UI turns
+    /// it off for its own commands, so a flag or a step never waits for the drive; the control
+    /// channel then waits ([`Session::flush_catalog`]) before it replies.
+    pub wait_for_catalog_log: bool,
     /// Selected mask (Masking panel), by mask id.
     pub active_mask: Option<u32>,
     /// AI masks (SAM 3): the model and the last photo prepared for it.
@@ -545,6 +553,8 @@ pub struct Session {
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
     /// The camera sensor map build or batch Remove Dust running in the background, or the last one.
     pub sensor_job: Option<std::sync::Arc<cmd::sensor::SensorJob>>,
+    /// The preview cache drive's free space as last looked up: (when, cache folder, bytes).
+    pub(crate) cache_drive_free: std::sync::Mutex<Option<(web_time::Instant, std::path::PathBuf, Option<u64>)>>,
     /// Develop defaults applied on import (persisted in prefs.json).
     pub import_defaults: import::ImportDefaults,
     /// The default camera profile per camera model (`""` = every camera; persisted in prefs.json,
@@ -593,6 +603,12 @@ pub struct Session {
     /// (lcc-cli, a script) never ends in the middle of one.
     #[cfg(not(target_arch = "wasm32"))]
     pub apple_photos_background: bool,
+    /// Save `presets.json` on a background thread ([`presets_save`]), where the library's store
+    /// allows it: set by the desktop app (a 40 MB preset collection froze the UI for each save).
+    /// Off (the default): saves happen inside the command that changed the presets.
+    pub background_saves: bool,
+    /// The background saver, once started.
+    presets_saver: Option<presets_save::Saver>,
     /// Moves a file to the system trash (`photo.deleteFromDisk`). `None` in wasm and sessions without a filesystem.
     pub trash: Option<disk_delete::TrashFn>,
 }
@@ -712,6 +728,7 @@ impl Session {
             media: media::MediaCache::default(),
             clock: Box::new(|| "2026-09-30T12:00:00".to_string()),
             depth: 0,
+            wait_for_catalog_log: true,
             active_mask: None,
             segmenter: segment::Segmenter::default(),
             active_spot: None,
@@ -751,6 +768,7 @@ impl Session {
             genfill: Default::default(),
             upright_jobs: Default::default(),
             preview_build: None,
+            cache_drive_free: std::sync::Mutex::new(None),
             slideshow_export: None,
             sensor_job: None,
             import_defaults: import::ImportDefaults::default(),
@@ -773,6 +791,8 @@ impl Session {
             apple_photos_imports: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             apple_photos_background: false,
+            background_saves: false,
+            presets_saver: None,
             trash: None,
         }
     }
@@ -864,7 +884,11 @@ impl Session {
             // persistence trouble (a failed compaction, an older queued change still unwritten by
             // a command that changed nothing) doesn't fail the command; `library.info` reports it.
             let produced = self.pending_log.len() > log_start;
-            if let Err(e @ EngineError::NotSaved(_)) = self.persist()
+            let mut persisted = self.persist();
+            if persisted.is_ok() && produced && self.wait_for_catalog_log {
+                persisted = self.flush_catalog();
+            }
+            if let Err(e @ EngineError::NotSaved(_)) = persisted
                 && produced
                 && r.is_ok()
             {
@@ -915,6 +939,36 @@ impl Session {
             detail,
             live,
         });
+    }
+
+    /// Hand `presets.json` to the background saver ([`presets_save`]) when this session saves
+    /// in the background and `store` can be written from another thread; `known` is the hash
+    /// of what the file holds (0: unknown). Whether it was handed over (else: save it now).
+    pub(crate) fn save_presets_in_background(&mut self, store: &dyn lcc_catalog::Store, known: u64) -> bool {
+        if !self.background_saves {
+            return false;
+        }
+        let Some(writer) = store.background_writer() else { return false };
+        if self.presets_saver.is_none() {
+            self.presets_saver = presets_save::Saver::start();
+        }
+        let Some(saver) = self.presets_saver.as_ref() else { return false };
+        saver.save(presets_save::Snapshot::of(self), writer, "presets.json", known);
+        true
+    }
+
+    /// A background save of `presets.json` failed since the last call (its reason, once).
+    pub(crate) fn presets_save_failed(&self) -> Option<String> {
+        self.presets_saver.as_ref().and_then(presets_save::Saver::take_error)
+    }
+
+    /// Wait (bounded) for a background `presets.json` save in progress.
+    pub(crate) fn flush_presets(&self) {
+        if let Some(s) = &self.presets_saver
+            && !s.flush(std::time::Duration::from_secs(20))
+        {
+            log::warn!("presets: the background save is taking long; not waiting for it");
+        }
     }
 
     pub fn commands(&self) -> Vec<CommandInfo> {

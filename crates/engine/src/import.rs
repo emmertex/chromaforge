@@ -866,6 +866,7 @@ pub struct ScanProgress {
 }
 
 /// The result of [`scan_with`]: the candidates, and the probes to keep for the import that follows.
+#[derive(Default)]
 pub struct ScanOutput {
     pub candidates: Vec<ImportCandidate>,
     pub probes: HashMap<String, ProbeInfo>,
@@ -895,6 +896,65 @@ impl ScanInput {
     /// The library as the scan sees it (shared, for [`crate::sync`], which looks at the same one).
     pub(crate) fn library(&self) -> std::sync::Arc<lcc_catalog::Catalog> {
         std::sync::Arc::clone(&self.library)
+    }
+}
+
+/// What browsing a folder (Local) has to read: the files of `files` the library has no photo at,
+/// in the order the view will show them (see [`browse_order`]). Unlike [`scan_with`] nothing is
+/// read, so the import that follows adds the photos batch by batch as it reads them, and the first
+/// screen of a 3,000-raw wedding shows within a second instead of after every file was read
+/// (measured on 2,933 EOS R5 C CR3s: 30.6 s to the first photo before).
+pub fn browse_queue(input: &ScanInput, files: Vec<String>, sort: &lcc_catalog::Sort) -> Vec<String> {
+    browse_candidates(input, files, sort).into_iter().filter(|c| c.duplicate.is_none() && !c.local).map(|c| c.path).collect()
+}
+
+/// Every file of `files` as a browse candidate, in the order the view will show them: those the
+/// library has a photo at are its summaries of them, as [`scan_with`] gives (so a browse still
+/// counts them as listed and doesn't forget their records), the rest are unread, for the import.
+pub fn browse_candidates(input: &ScanInput, mut files: Vec<String>, sort: &lcc_catalog::Sort) -> Vec<ImportCandidate> {
+    let known = library_files(&input.library, &files);
+    browse_order(&mut files, sort);
+    files
+        .into_iter()
+        .map(|path| match known.get(Path::new(&path)) {
+            Some((_, c, _)) => c.clone(),
+            None => ImportCandidate { path, ..Default::default() },
+        })
+        .collect()
+}
+
+/// Order `files` the way a view sorted by `sort` will show them, as far as the file system can
+/// tell before the files are read: by modification time for the date sorts (a camera's file time
+/// is its capture time, near enough to fill the first screen first), by name, or by size. Other
+/// sorts keep the given order. Files whose time or size can't be read go last.
+pub fn browse_order(files: &mut [String], sort: &lcc_catalog::Sort) {
+    use lcc_catalog::SortKey;
+    let asc = sort.ascending;
+    match sort.key {
+        SortKey::CaptureDate | SortKey::ImportDate | SortKey::EditDate => {
+            let mut keyed: Vec<(Option<std::time::SystemTime>, String)> =
+                files.iter().map(|f| (std::fs::metadata(f).and_then(|m| m.modified()).ok(), f.clone())).collect();
+            keyed.sort_by(|a, b| match (a.0, b.0) {
+                (Some(x), Some(y)) => if asc { x.cmp(&y) } else { y.cmp(&x) }.then_with(|| a.1.cmp(&b.1)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.1.cmp(&b.1),
+            });
+            for (slot, (_, f)) in files.iter_mut().zip(keyed) {
+                *slot = f;
+            }
+        }
+        SortKey::FileName => {
+            let name = |f: &String| Path::new(f).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            files.sort_by(|a, b| if asc { name(a).cmp(&name(b)) } else { name(b).cmp(&name(a)) });
+        }
+        SortKey::FileSize => {
+            files.sort_by_cached_key(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0));
+            if !asc {
+                files.reverse();
+            }
+        }
+        SortKey::Rating | SortKey::Random | SortKey::Custom => {}
     }
 }
 
@@ -2007,12 +2067,22 @@ impl Session {
             preview_cut: None,
             display_fit: None,
             hdr_texels: None,
+            superseded: None,
         };
         let embedded = match (&self.media.preview_loader, c.kind) {
             (Some(l), MediaKind::Raw) => Some((c.path.clone(), l.clone(), edge)),
             _ => None,
         };
-        Some(crate::media::QuickJob { request_id: 0, photo: id, key, cached: Vec::new(), embedded, small: Some(Box::new(small)) })
+        Some(crate::media::QuickJob {
+            request_id: 0,
+            photo: id,
+            key,
+            cached: Vec::new(),
+            embedded,
+            embedded_cache: None,
+            embedded_on_disk: false,
+            small: Some(Box::new(small)),
+        })
     }
 
     /// Use the system clock for import/edit times (native hosts).
