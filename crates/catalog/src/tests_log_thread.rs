@@ -2,6 +2,8 @@
 //! for the drive, yet what was acknowledged is durable, order is kept, a crash loses at most the
 //! unacknowledged tail, a failed write loses nothing a snapshot can't save, and shutdown flushes.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::path::{Path, PathBuf};
 
 use crate::journal::LOG;

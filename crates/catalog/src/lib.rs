@@ -1803,7 +1803,7 @@ mod tests_journal;
 mod tests_local;
 #[cfg(test)]
 mod tests_lock;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests_log_thread;
 #[cfg(test)]
 mod tests_repair;
