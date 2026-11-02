@@ -104,13 +104,12 @@ pub fn file_name(model: &str) -> String {
     format!("{name}.json")
 }
 
-/// Read and validate a profile file.
+/// Read and validate a profile file (a pipe or a device is refused, not read).
 pub fn load(path: &Path) -> Result<CameraProfile, String> {
-    let size = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
-    if size > MAX_FILE {
-        return Err(format!("{}: {size} bytes is too large for a camera profile", path.display()));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = crate::bounded_read::read_bounded(path, MAX_FILE).map_err(|e| match e {
+        crate::bounded_read::ReadError::TooLarge(size) => format!("{}: {size} bytes is too large for a camera profile", path.display()),
+        e => format!("{}: {e}", path.display()),
+    })?;
     parse(&bytes, &path.display().to_string())
 }
 
@@ -231,13 +230,12 @@ pub fn dcp_file_name(model: &str) -> String {
     format!("{}.dcp", json.trim_end_matches(".json"))
 }
 
-/// Read a `.dcp` file.
+/// Read a `.dcp` file (a pipe or a device is refused, not read).
 pub fn load_dcp(path: &Path) -> Result<lcc_raw::dcp::Dcp, String> {
-    let size = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
-    if size > lcc_raw::dcp::MAX_FILE as u64 {
-        return Err(format!("{}: {size} bytes is too large for a camera profile", path.display()));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = crate::bounded_read::read_bounded(path, lcc_raw::dcp::MAX_FILE as u64).map_err(|e| match e {
+        crate::bounded_read::ReadError::TooLarge(size) => format!("{}: {size} bytes is too large for a camera profile", path.display()),
+        e => format!("{}: {e}", path.display()),
+    })?;
     lcc_raw::dcp::parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
