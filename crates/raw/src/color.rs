@@ -80,6 +80,17 @@ pub fn has_matrix(color: &ColorData) -> bool {
     color.color_matrix.iter().any(|m| m.is_some())
 }
 
+/// Whether the file's "camera" is a linear RGB space and not a sensor: one matrix pair and a neutral of exactly
+/// (1, 1, 1), which no sensor's response gives. Photo Merge of JPEGs and rendered DNGs are written this way, and a
+/// camera profile, made for its sensor's RGB, doesn't describe their pixels.
+pub fn is_rendered_rgb(color: &ColorData) -> bool {
+    color.as_shot_neutral == Some([1.0; 3])
+        && color.color_matrix[0].is_some()
+        && color.forward_matrix[0].is_some()
+        && color.color_matrix[1].is_none()
+        && color.forward_matrix[1].is_none()
+}
+
 /// `XYZtoCamera` for white `xy` (fallback: XYZ → linear sRGB).
 pub fn xyz_to_camera(color: &ColorData, white: Xy) -> Mat3 {
     let g = illuminant_weight(color, white);
@@ -296,6 +307,17 @@ mod tests {
 
     fn close(a: [f64; 3], b: [f64; 3], tol: f64) -> bool {
         (0..3).all(|i| (a[i] - b[i]).abs() < tol)
+    }
+
+    /// Only a linear RGB space's tags count as rendered: a sensor's neutral, or a second matrix pair, keeps the profile.
+    #[test]
+    fn rendered_rgb_is_told_from_a_sensor() {
+        let m = Some(Mat3::IDENTITY);
+        let rendered = ColorData { color_matrix: [m, None], forward_matrix: [m, None], as_shot_neutral: Some([1.0; 3]), ..Default::default() };
+        assert!(is_rendered_rgb(&rendered));
+        assert!(!is_rendered_rgb(&ColorData { as_shot_neutral: Some([0.5, 1.0, 0.7]), ..rendered.clone() }));
+        assert!(!is_rendered_rgb(&ColorData { color_matrix: [m, m], forward_matrix: [m, m], ..rendered.clone() }));
+        assert!(!is_rendered_rgb(&ColorData { as_shot_neutral: Some([1.0; 3]), ..Default::default() }));
     }
 
     #[test]
