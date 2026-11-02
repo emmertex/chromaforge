@@ -99,3 +99,24 @@ fn shaded_tracks_run_dark_to_light_and_survive_hostile_positions() {
     }
     assert_eq!(lcc_develop::controls::find("light.exposure").map(|c| c.shade), Some(Shade::Ramp));
 }
+
+/// Settings ▸ Generative Fill (where the Remove panel's Generative tool sends you for an API key) opens the section
+/// that holds it, with the services' key fields in view, in Classic and in Compact alike.
+#[test]
+fn settings_open_on_generative_fill_in_classic_and_compact() {
+    for compact in [false, true] {
+        let mut h = develop();
+        run(&mut h, "view.compactLayout", json!({"on": compact}));
+        run(&mut h, "app.settings", json!({"tab": "genfill"}));
+        h.settle(std::time::Duration::from_secs(60));
+        let section = match &h.app.ui.dialog {
+            Some(crate::state::Dialog::Settings { tab }) => crate::settings_screen::section_of(tab),
+            other => panic!("Settings is open: {other:?}"),
+        };
+        assert_ne!(section, "general", "compact {compact}: Generative Fill has a section of its own to open");
+        let rows = rect(&h, "settings:rows").expect("Settings' rows");
+        let key = h.app.widgets.iter().find(|(w, _)| w.contains("genfillKey-")).map(|(_, r)| *r);
+        let key = key.unwrap_or_else(|| panic!("compact {compact}: a service's key field is drawn"));
+        assert!(rows.intersects(key), "compact {compact}: the key field {key:?} is in view in {rows:?}");
+    }
+}

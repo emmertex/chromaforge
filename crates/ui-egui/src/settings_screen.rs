@@ -64,8 +64,8 @@ const SECTIONS: &[Section] = &[
         key: "editing",
         label: "Editing",
         icon: Icon::Sliders,
-        tabs: &["denoise", "faces", "profiles"],
-        words: "ai denoise model faces people recognition profiles hide camera body serial",
+        tabs: &["denoise", "faces", "profiles", "genfill"],
+        words: "ai denoise model faces people recognition profiles hide camera body serial generative fill openai service api key consent",
     },
     Section {
         key: "display",
