@@ -201,6 +201,11 @@ pub struct WindowGeom {
     pub full_quality: bool,
 }
 
+/// Full-quality whole-frame loupe renders ([`Slot::Main`]) kept after the view moved on, newest
+/// last: the crop tool's whole photo and the cropped view of the same edit (pressing C changes
+/// nothing in the edit, so C on and off shows the kept render at once instead of rendering again).
+pub const KEPT_VIEWS: usize = 2;
+
 pub struct Tex {
     pub key: u64,
     pub photo: PhotoId,
@@ -396,6 +401,12 @@ pub struct Renderer {
     /// Slot → (key, priority) of the request in flight (queued or running).
     pending: HashMap<Slot, (u64, u32)>,
     pub textures: HashMap<Slot, Tex>,
+    /// Recent full-quality whole-frame renders ([`KEPT_VIEWS`], least recently shown first).
+    kept_views: std::collections::VecDeque<Tex>,
+    /// Request ids of the loupe's ([`Slot::Main`]) draft requests still out.
+    main_drafts: std::collections::HashSet<u64>,
+    /// Keys of the full-quality (not draft) whole-frame renders among the textures and `kept_views`.
+    full_views: std::collections::HashSet<u64>,
     /// The last [`Slot::HdrHistogram`] result: (photo, job key, histogram).
     pub live_hdr_histogram: Option<(PhotoId, u64, Histogram)>,
     /// The last [`Slot::PanelHistogram`] result: (photo, job key, histogram with its waveform).
@@ -419,6 +430,8 @@ pub struct Renderer {
     pub last_main_ms: f64,
     /// Jobs finished since start (for inspect/perf).
     pub completed: u64,
+    /// Loupe ([`Slot::Main`]) renders asked for since start (a kept view shown again is none).
+    pub main_requested: u64,
     /// Finished jobs thrown away because a newer request for their slot had replaced them.
     pub discarded: u64,
     /// Keep a CPU copy of every texture so the UI can be rasterized headlessly (set when the app
@@ -522,6 +535,9 @@ impl Renderer {
             seq: 0,
             pending: HashMap::new(),
             textures: HashMap::new(),
+            kept_views: std::collections::VecDeque::new(),
+            main_drafts: std::collections::HashSet::new(),
+            full_views: std::collections::HashSet::new(),
             live_hdr_histogram: None,
             panel_histogram: None,
             hdr_view_result: HashMap::new(),
@@ -534,6 +550,7 @@ impl Renderer {
             hdr_view_ms: HashMap::new(),
             last_main_ms: 0.0,
             completed: 0,
+            main_requested: 0,
             discarded: 0,
             keep_pixels: false,
             stages: HashMap::new(),
@@ -780,9 +797,48 @@ impl Renderer {
         }
         true
     }
+    /// Show the kept whole-frame render made for `key` of `photo` ([`KEPT_VIEWS`]) in
+    /// [`Slot::Main`], keeping the one shown there now. Whether there was one. (Not for HDR
+    /// views: their HDR texture is not kept with the picture.)
+    fn take_kept_view(&mut self, key: u64, photo: PhotoId) -> bool {
+        if !self.hdr_view.is_empty() {
+            return false;
+        }
+        let Some(i) = self.kept_views.iter().position(|t| t.key == key && t.photo == photo) else { return false };
+        let Some(found) = self.kept_views.remove(i) else { return false };
+        self.pending.remove(&Slot::Main);
+        self.requests.remove(&Slot::Main);
+        self.failed.remove(&Slot::Main);
+        // (a render still out for the view is older than this one now)
+        self.shown_ids.insert(Slot::Main, lcc_preview::next_tick());
+        if let Some(old) = self.textures.insert(Slot::Main, found) {
+            self.keep_view(old);
+        }
+        true
+    }
+
+    /// Keep `t`, a whole-frame render leaving [`Slot::Main`], if it is a full-quality one.
+    fn keep_view(&mut self, t: Tex) {
+        if !self.full_views.contains(&t.key) || !self.hdr_view.is_empty() {
+            self.full_views.remove(&t.key);
+            return;
+        }
+        self.kept_views.retain(|k| k.key != t.key);
+        self.kept_views.push_back(t);
+        while self.kept_views.len() > KEPT_VIEWS {
+            if let Some(gone) = self.kept_views.pop_front() {
+                self.full_views.remove(&gone.key);
+            }
+        }
+    }
+
     /// Free a view slot's texture and stage cache (the view is no longer shown).
     pub fn release(&mut self, slot: Slot) {
         self.textures.remove(&slot);
+        if slot == Slot::Main {
+            self.kept_views.clear();
+            self.full_views.clear();
+        }
         self.stages.remove(&slot);
         self.window_shown.remove(&slot);
     }
@@ -914,11 +970,20 @@ impl Renderer {
             self.slides_live = true;
         }
         let mut job = self.job_for(slot, job);
+        if slot == Slot::Main && self.textures.get(&slot).is_none_or(|t| t.key != job.key) && self.take_kept_view(job.key, job.photo) {
+            return;
+        }
         if !self.request_needed(slot, job.key, priority) {
             return;
         }
         self.pending.insert(slot, (job.key, priority));
         job.request_id = lcc_preview::next_tick();
+        if slot == Slot::Main {
+            self.main_requested += 1;
+            if job.request.quality == lcc_pipeline::Quality::Draft {
+                self.main_drafts.insert(job.request_id);
+            }
+        }
         self.requests.insert(slot, Requested { id: job.request_id, source: Some(job.origin.clone()) });
         // the loupe stepping to a neighbour that was prepared: its render is there already
         // (its stages are not kept: a neighbour's would hold ~100 MB of device memory for the
@@ -1066,6 +1131,9 @@ impl Renderer {
         self.pool.reprioritize(|_, _| None);
         self.thumb_inputs.clear();
         self.textures.clear();
+        self.kept_views.clear();
+        self.full_views.clear();
+        self.main_drafts.clear();
         self.stages.clear();
         self.quick_tried.clear();
         self.failed.clear();
@@ -1419,6 +1487,7 @@ impl Renderer {
         let mut changed = false;
         for (mut slot, mut r, mut color, texels, ms) in finished {
             self.completed += 1;
+            let main_draft = slot == Slot::Main && self.main_drafts.remove(&r.request_id);
             // made for another display profile than the one in use: obsolete
             if r.display.is_some_and(|id| Some(id) != self.display_id()) {
                 continue;
@@ -1560,6 +1629,18 @@ impl Renderer {
             // the loupe's render stays readable on the CPU for the colour readout under the pointer
             let pixels = (self.keep_pixels || slot == Slot::Main).then(|| color.clone());
             let name = format!("{slot:?}");
+            // the whole frame: a full-quality render shown so far is kept for a return to it (Crop
+            // on and off), and the new one gets a texture of its own
+            if slot == Slot::Main {
+                if !main_draft {
+                    self.full_views.insert(r.key);
+                }
+                if self.textures.get(&slot).is_some_and(|t| t.key != r.key && self.full_views.contains(&t.key))
+                    && let Some(t) = self.textures.remove(&slot)
+                {
+                    self.keep_view(t);
+                }
+            }
             match self.textures.get_mut(&slot) {
                 Some(t) => {
                     t.tex.set(color, egui::TextureOptions::LINEAR);
