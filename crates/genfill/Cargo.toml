@@ -20,6 +20,7 @@ lcc-brand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 miniz_oxide = { workspace = true }
+log = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lcc-fetch = { workspace = true, optional = true }

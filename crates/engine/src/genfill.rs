@@ -12,6 +12,14 @@
 //!   linear as-shot light, matches them to the photo around the hole and writes the patches. The
 //!   job holds an activity row with ✕ the whole time.
 //! * **Keys and consent** live in the app's settings folder (see [`lcc_genfill::cloud::keys`]).
+//! * **A paid result is never lost** (test note 5). Each generation's patches and a small record of it
+//!   (`<id>.json`: the stroke it was made for, the service, the prompt) are written before it is shown. A finished
+//!   generation always lands on a spot, also when the spot was edited, moved or deleted meanwhile. Generate Again
+//!   keeps the spot's earlier generations among its variations. A spot that shows a fill is not moved or resized
+//!   by accident (its brush size is the next stroke's); one moved before this was so can be put back
+//!   ([`lcc_develop::Spot::put_back`]). Every generation in the library's folder can be restored
+//!   ([`Session::genfill_results`], [`Session::genfill_restore`]). A generation that failed after the service
+//!   accepted it is fetched, not paid for again, when it is tried again within a few minutes ([`Resume`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -19,7 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use lcc_catalog::{Photo, PhotoId};
-use lcc_develop::{DevelopSettings, GenFill, Spot, SpotMode};
+use lcc_develop::{DevelopSettings, GenFill, GenStroke, Spot, SpotMode};
 use lcc_genfill::PatchLayer;
 #[cfg(not(target_arch = "wasm32"))]
 use lcc_genfill::patch::PatchInfo;
@@ -79,6 +87,14 @@ impl PatchCache {
     }
 }
 
+/// Read a generation's record (`None`: missing or unreadable).
+pub fn read_record(path: &Path) -> Option<Record> {
+    if std::fs::metadata(path).ok()?.len() > 16 * 1024 * 1024 {
+        return None;
+    }
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
 /// Read a patch file (size-capped; a damaged file is an error).
 pub fn read_patch(path: &Path) -> Result<PatchLayer, String> {
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
@@ -125,10 +141,33 @@ pub struct Job {
     pub spot: usize,
     pub stroke: u64,
     pub provider: String,
+    /// The spot as it was when the generation started (the result goes back on it whatever happens meanwhile).
+    spot_at: Spot,
     state: Mutex<JobState>,
     result: Mutex<Option<Generated>>,
     cancel: Arc<AtomicBool>,
+    #[cfg(not(target_arch = "wasm32"))]
+    resume: Resume,
 }
+
+/// What trying a failed generation again needs to fetch, rather than pay for again, what the service already
+/// accepted: the same generation (its id, so its files are the same) and the requests the service accepted.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub struct Resume {
+    pub photo: PhotoId,
+    pub stroke: u64,
+    pub provider: String,
+    pub prompt: String,
+    pub variations: u32,
+    pub id: String,
+    pub accepted: Arc<lcc_genfill::cloud::Accepted>,
+    pub at: web_time::Instant,
+}
+
+/// How long a service keeps a result to fetch (Black Forest Labs: 10 minutes): a Retry later sends a new request.
+#[cfg(not(target_arch = "wasm32"))]
+const RESUME_FOR: std::time::Duration = std::time::Duration::from_secs(9 * 60);
 
 impl Job {
     pub fn state(&self) -> JobState {
@@ -168,6 +207,10 @@ pub struct GenfillState {
     pub job: Option<Arc<Job>>,
     /// The last finished job's warnings or error, for the panel.
     pub last: Option<Result<Generated, String>>,
+    /// A generation that failed after the service accepted (and billed) it: Generate or Retry on the same spot with
+    /// the same choices fetches its results instead of sending it again.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub resume: Option<Resume>,
 }
 
 impl GenfillState {
@@ -204,6 +247,24 @@ impl GenfillState {
 
     pub fn running(&self) -> bool {
         self.job.as_ref().is_some_and(|j| matches!(j.state(), JobState::Running { .. }))
+    }
+
+    /// Where generative fill stands, as `genfill.status` and the control protocol's `ui.inspect`
+    /// (`genfill`) report it: `{running, done, total, provider, photo, spot, last: {ok, warnings?,
+    /// id?, error?} | null}`.
+    pub fn status_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        let (running, done, total) = match self.job.as_ref().map(|j| j.state()) {
+            Some(JobState::Running { done, total }) => (true, done, total),
+            _ => (false, 0, 0),
+        };
+        let last = match &self.last {
+            Some(Ok(g)) => json!({"ok": true, "warnings": g.warnings, "id": g.fill.id}),
+            Some(Err(e)) => json!({"ok": false, "error": e}),
+            None => serde_json::Value::Null,
+        };
+        let job = self.job.as_ref();
+        json!({"running": running, "done": done, "total": total, "provider": job.map(|j| j.provider.clone()), "photo": job.map(|j| j.photo.0), "spot": job.map(|j| j.spot), "last": last})
     }
 }
 
@@ -509,6 +570,34 @@ pub fn write_patch(path: &Path, layer: &PatchLayer) -> Result<(), String> {
     })
 }
 
+/// Write a generation's record (a temporary name, then renamed).
+pub fn write_record(path: &Path, r: &Record) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(r).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not save the generated fill's record: {e}")
+    })
+}
+
+/// Most generations listed for one photo.
+const MAX_LISTED: usize = 256;
+
+/// A generation found in a photo's folder ([`Session::genfill_results`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    pub id: String,
+    pub variants: u32,
+    pub provider: String,
+    pub prompt: String,
+    /// Seconds since 1970 (the file's time when there is no record).
+    pub made: u64,
+    /// The spot that keeps it (shown or among its earlier generations), if any.
+    pub spot: Option<usize>,
+    /// Whether that spot shows it now.
+    pub shown: bool,
+}
+
 /// A new generation id: 16 hex digits from the time, the process and a counter.
 pub fn new_id(salt: u64) -> String {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -547,6 +636,23 @@ pub struct Work {
     pub variations: u32,
     pub dir: PathBuf,
     pub id: String,
+    /// What the service accepted so far (kept for a Retry).
+    pub accepted: Arc<lcc_genfill::cloud::Accepted>,
+}
+
+/// The record of a generation kept next to its patches (`<id>.json`), so it can be restored onto the photo
+/// whatever happened to its spot.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Record {
+    pub fill: GenFill,
+    /// When it was made (seconds since 1970).
+    #[serde(default)]
+    pub made: u64,
+}
+
+/// Name of generation `id`'s record file.
+pub fn record_name(id: &str) -> String {
+    format!("{id}.json")
 }
 
 /// Run a generation (on any thread): load the full-size source, send the crop(s), write the
@@ -568,7 +674,8 @@ pub fn run(w: &Work, cancel: &AtomicBool, cache: &PatchCache, progress: &dyn Fn(
     let field = p.field();
     let [rx0, ry0, rx1, ry1] = p.rect;
     let base = Rgb32f::from_fn(rx1 - rx0, ry1 - ry0, |x, y| src.data.get((ry0 + y) * src.width + rx0 + x).copied().unwrap_or_default());
-    let ctl = Control { cancel, stall: std::time::Duration::from_secs(180), deadline: std::time::Duration::from_secs(600) };
+    let ctl =
+        Control { cancel, stall: std::time::Duration::from_secs(180), deadline: std::time::Duration::from_secs(600), accepted: Some(&w.accepted) };
     let mut gens: Vec<Rgb32f> = vec![base.clone(); n as usize];
     progress(0, total);
     let seed = u64::from_str_radix(&w.id, 16).unwrap_or(1);
@@ -607,6 +714,9 @@ pub fn run(w: &Work, cancel: &AtomicBool, cache: &PatchCache, progress: &dyn Fn(
         prompt: w.prompt.trim().to_string(),
         stroke: w.spot.stroke_key(),
         scale: p.scale,
+        made_for: Some(GenStroke { points: w.spot.points.clone(), size: w.spot.size }),
+        earlier: Vec::new(),
+        place: 0,
     };
     for (k, g) in gens.into_iter().enumerate() {
         let layer = finish(&src, &p, &field, g, w.provider.info().id, neutral)?;
@@ -614,6 +724,9 @@ pub fn run(w: &Work, cancel: &AtomicBool, cache: &PatchCache, progress: &dyn Fn(
         write_patch(&path, &layer)?;
         cache.forget(&path);
     }
+    // the record that lets it be restored whatever happens to its spot (written before it is shown)
+    let made = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    write_record(&photo_dir.join(record_name(&w.id)), &Record { fill: fill.clone(), made })?;
     let mut warnings = Vec::new();
     if p.scale < 0.95 {
         warnings.push(format!(
@@ -752,6 +865,18 @@ impl crate::Session {
         if p.width >= 16 && p.height >= 16 {
             plan(&spot, &p.develop, p.embedded_lens.as_deref(), p.width as usize, p.height as usize, Limits::for_provider(provider))?;
         }
+        // a generation the service accepted before failing is fetched, not sent (and paid for) again
+        let n = variations.clamp(1, MAX_VARIATIONS);
+        let resume = self
+            .genfill
+            .resume
+            .clone()
+            .filter(|r| r.photo == id && r.stroke == spot.stroke_key() && r.provider == pid && r.prompt == prompt.trim() && r.variations == n)
+            .filter(|r| r.at.elapsed() < RESUME_FOR);
+        let (gen_id, accepted) = match &resume {
+            Some(r) => (r.id.clone(), r.accepted.clone()),
+            None => (new_id(id.0), Arc::new(lcc_genfill::cloud::Accepted::default())),
+        };
         let work = Work {
             provider,
             key,
@@ -764,9 +889,10 @@ impl crate::Session {
             source: self.media.source_ref_uncached(&p, crate::media::SourceLevel::Full),
             header: crate::media::source_info(&p),
             prompt: prompt.trim().to_string(),
-            variations: variations.clamp(1, MAX_VARIATIONS),
+            variations: n,
             dir: self.genfill_dir(id),
-            id: new_id(id.0),
+            id: gen_id.clone(),
+            accepted: accepted.clone(),
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let job = Arc::new(Job {
@@ -774,9 +900,20 @@ impl crate::Session {
             spot: index,
             stroke: spot.stroke_key(),
             provider: pid.to_string(),
+            spot_at: spot.clone(),
             state: Mutex::new(JobState::Running { done: 0, total: 0 }),
             result: Mutex::new(None),
             cancel: cancel.clone(),
+            resume: Resume {
+                photo: id,
+                stroke: spot.stroke_key(),
+                provider: pid.to_string(),
+                prompt: prompt.trim().to_string(),
+                variations: n,
+                id: gen_id,
+                accepted,
+                at: web_time::Instant::now(),
+            },
         });
         let guard = self.activity.start("genfill", "Generating fill", Cancel::Flag(cancel.clone()));
         guard.detail(provider.info().name);
@@ -823,15 +960,42 @@ impl crate::Session {
     /// is running: the app calls it every frame.
     pub fn genfill_poll(&mut self) -> Option<Result<Generated, String>> {
         let job = self.genfill.job.clone()?;
+        // what the service accepted before a failure or a cancel is kept for a Retry (it is billed)
+        #[cfg(not(target_arch = "wasm32"))]
+        let kept = |s: &mut Self| -> bool {
+            if job.resume.accepted.is_empty() {
+                return false;
+            }
+            s.genfill.resume = Some(Resume { at: web_time::Instant::now(), ..job.resume.clone() });
+            true
+        };
+        #[cfg(target_arch = "wasm32")]
+        let kept = |_: &mut Self| false;
         let out = match job.state() {
             JobState::Running { .. } => return None,
-            JobState::Cancelled => Err("cancelled".to_string()),
-            JobState::Failed(e) => Err(e),
+            JobState::Cancelled => {
+                kept(self);
+                Err("cancelled".to_string())
+            }
+            JobState::Failed(e) => {
+                if kept(self) {
+                    Err(format!("{e}. The service already made it: Retry within a few minutes fetches it without paying again."))
+                } else {
+                    Err(e)
+                }
+            }
             JobState::Done => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.genfill.resume.as_ref().is_some_and(|r| r.id == job.resume.id) {
+                    self.genfill.resume = None;
+                }
                 let g = job.result.lock().unwrap_or_else(PoisonError::into_inner).take();
                 match g {
                     None => Err("the generative fill ended without a result".into()),
-                    Some(g) => self.genfill_apply(&job, &g).map(|()| g),
+                    Some(mut g) => self.genfill_apply(&job, &g.fill).map(|note| {
+                        g.warnings.extend(note);
+                        g
+                    }),
                 }
             }
         };
@@ -840,16 +1004,203 @@ impl crate::Session {
         Some(out)
     }
 
-    fn genfill_apply(&mut self, job: &Job, g: &Generated) -> Result<(), String> {
+    /// Put a finished generation on its spot (one undo step). It always lands: on the spot it was made for, wherever
+    /// that spot went meanwhile (spots added or deleted before it), else back on its stroke (the spot was moved or
+    /// resized meanwhile), else on a spot of its own again (the spot was deleted). Generate Again keeps the spot's
+    /// earlier generations. Returns a note when the spot had changed.
+    fn genfill_apply(&mut self, job: &Job, fill: &GenFill) -> Result<Option<String>, String> {
         let mut d = (*self.develop_of(job.photo).ok_or("the photo is gone")?).clone();
-        let sp = d
+        let same = |s: &Spot| s.stroke_key() == job.stroke && s.mode == SpotMode::Generate;
+        let found = d
             .spots
-            .get_mut(job.spot)
-            .filter(|s| s.stroke_key() == job.stroke)
-            .ok_or("the spot changed while it was generating; generate it again")?;
+            .get(job.spot)
+            .filter(|s| same(s))
+            .map(|_| job.spot)
+            .or_else(|| d.spots.iter().position(same))
+            .or_else(|| d.spots.get(job.spot).filter(|s| s.mode == SpotMode::Generate).map(|_| job.spot));
+        let (index, note) = match found {
+            Some(i) if d.spots.get(i).is_some_and(same) => (i, None),
+            Some(i) => (i, Some("The spot was changed while it was generating: it is back where the fill was made.".to_string())),
+            None => {
+                d.spots.push(Spot { mode: SpotMode::Generate, generated: None, ..job.spot_at.clone() });
+                (d.spots.len() - 1, Some("The spot was removed while it was generating: it is back with its fill.".to_string()))
+            }
+        };
+        let sp = d.spots.get_mut(index).ok_or("the spot is gone")?;
         sp.mode = SpotMode::Generate;
-        sp.generated = Some(g.fill.clone());
-        self.set_develop(job.photo, d, "Generative Fill").map_err(|e| e.to_string())
+        sp.generated = Some(match &sp.generated {
+            Some(prev) => prev.followed_by(fill.clone()),
+            None => fill.clone(),
+        });
+        sp.put_back();
+        self.set_develop(job.photo, d, "Generative Fill").map_err(|e| e.to_string())?;
+        if self.active() == Some(job.photo) && note.is_some() {
+            self.active_spot = Some(index);
+        }
+        Ok(note)
+    }
+
+    /// The generations in photo `id`'s folder, newest first: each one's record, and the spot that keeps it.
+    pub fn genfill_results(&self, id: PhotoId) -> Vec<Found> {
+        let dir = self.genfill_dir(id);
+        let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+        let mut found: BTreeMap<String, Found> = BTreeMap::new();
+        for e in entries.flatten().take(MAX_LISTED * 8) {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Some((which, variant)) = name.strip_suffix(".lcpatch").and_then(|s| s.split_once('-')) else { continue };
+            let (Some(v), true) = (variant.parse::<u32>().ok(), GenFill::valid_id(which)) else { continue };
+            let made = e
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs());
+            let f = found.entry(which.to_string()).or_insert_with(|| Found {
+                id: which.to_string(),
+                variants: 0,
+                provider: String::new(),
+                prompt: String::new(),
+                made,
+                spot: None,
+                shown: false,
+            });
+            f.variants = f.variants.max(v.saturating_add(1));
+        }
+        let spots = self.develop_of(id).map(|d| d.spots.clone()).unwrap_or_default();
+        let mut out: Vec<Found> = found
+            .into_values()
+            .map(|mut f| {
+                if let Some(r) = read_record(&dir.join(record_name(&f.id))) {
+                    (f.provider, f.prompt) = (r.fill.provider, r.fill.prompt);
+                    f.made = if r.made > 0 { r.made } else { f.made };
+                }
+                f.spot = spots.iter().position(|s| s.generated.as_ref().is_some_and(|g| g.generations().iter().any(|x| x.id == f.id)));
+                f.shown = spots.iter().any(|s| s.shown_gen().is_some_and(|g| g.id == f.id));
+                f
+            })
+            .collect();
+        out.sort_by(|a, b| b.made.cmp(&a.made).then(a.id.cmp(&b.id)));
+        out.truncate(MAX_LISTED);
+        out
+    }
+
+    /// Show generation `which` of photo `id` again (one undo step): on the spot that keeps it (put back on its stroke
+    /// if the spot moved), else on a new spot where it was made (from its record, the photo's history, or the patch
+    /// itself). Returns the spot's index, which becomes the selected spot.
+    pub fn genfill_restore(&mut self, id: PhotoId, which: &str) -> Result<usize, String> {
+        if !GenFill::valid_id(which) {
+            return Err("not a generated fill's id".into());
+        }
+        let dir = self.genfill_dir(id);
+        if !dir.join(format!("{which}-0.lcpatch")).is_file() {
+            return Err("this generated fill is not in the library any more".into());
+        }
+        let mut d = (*self.develop_of(id).ok_or("no such photo")?).clone();
+        let kept = d.spots.iter().position(|s| s.generated.as_ref().is_some_and(|g| g.generations().iter().any(|x| x.id == which)));
+        let index = match kept {
+            Some(i) => {
+                let sp = d.spots.get_mut(i).ok_or("no such spot")?;
+                sp.mode = SpotMode::Generate;
+                if let Some(g) = &mut sp.generated {
+                    let gens = g.generations();
+                    let first: u32 = gens.iter().take_while(|x| x.id != which).map(|x| x.variants.max(1)).fold(0, u32::saturating_add);
+                    if g.id != which {
+                        g.choose(first);
+                    }
+                }
+                sp.put_back();
+                i
+            }
+            None => {
+                let mut sp = self.genfill_spot_for(id, which).ok_or("could not tell where this generated fill belongs")?;
+                sp.put_back();
+                d.spots.push(sp);
+                d.spots.len() - 1
+            }
+        };
+        self.set_develop(id, d, "Restore Generated Fill").map_err(|e| e.to_string())?;
+        if self.active() == Some(id) {
+            self.active_spot = Some(index);
+        }
+        Ok(index)
+    }
+
+    /// A Generate spot showing generation `which` where it was made: from its record, else from a step of the photo's
+    /// history that showed it, else around its patch (fills made before records were kept).
+    fn genfill_spot_for(&self, id: PhotoId, which: &str) -> Option<Spot> {
+        let dir = self.genfill_dir(id);
+        if let Some(r) = read_record(&dir.join(record_name(which)))
+            && let Some(at) = r.fill.made_for.clone()
+        {
+            let fill = GenFill { stroke: at.key(), ..r.fill };
+            return Some(Spot { mode: SpotMode::Generate, points: at.points, size: at.size, generated: Some(fill), ..Default::default() });
+        }
+        let p = self.catalog.photo(id)?;
+        for step in p.history.iter().rev() {
+            for s in &step.settings.spots {
+                if let Some(g) = s.shown_gen().filter(|g| g.id == which) {
+                    let fill =
+                        GenFill { made_for: Some(GenStroke { points: s.points.clone(), size: s.size }), earlier: Vec::new(), place: 0, ..g.clone() };
+                    return Some(Spot { generated: Some(fill), ..s.clone() });
+                }
+            }
+        }
+        // only the patch: a spot over it (the patch carries its own shape, the spot marks where it is)
+        let layer = read_patch(&dir.join(format!("{which}-0.lcpatch"))).ok()?;
+        let [x0, y0, x1, y1] = layer.info.rect;
+        let frame = lcc_pipeline::geometry::Frame::with_lens(
+            p.width.max(1) as usize,
+            p.height.max(1) as usize,
+            &p.develop,
+            false,
+            p.embedded_lens.as_deref(),
+        );
+        let (sw, sh) = (f64::from(layer.info.source_w.max(1)), f64::from(layer.info.source_h.max(1)));
+        // its centre, oriented (lens corrections and perspective left out: the spot only marks the place)
+        let (cx, cy) = frame.orient.map((x0 + x1) / 2.0, (y0 + y1) / 2.0, 1.0, 1.0);
+        let fin = |v: f64, lo: f64, hi: f64, or: f64| if v.is_finite() { v.clamp(lo, hi) } else { or };
+        let at = GenStroke {
+            points: vec![Point::new(fin(cx, 0.0, 1.0, 0.5), fin(cy, 0.0, 1.0, 0.5))],
+            size: fin(((x1 - x0) * sw).min((y1 - y0) * sh) / 2.0 / sw.max(sh), 0.002, 0.25, 0.02),
+        };
+        let variants = (0..MAX_VARIATIONS).take_while(|v| dir.join(format!("{which}-{v}.lcpatch")).is_file()).count() as u32;
+        let fill = GenFill {
+            id: which.to_string(),
+            variants: variants.max(1),
+            provider: layer.info.provider.clone(),
+            stroke: at.key(),
+            scale: layer.info.scale,
+            made_for: Some(at.clone()),
+            ..Default::default()
+        };
+        Some(Spot { mode: SpotMode::Generate, points: at.points, size: at.size, generated: Some(fill), ..Default::default() })
+    }
+
+    /// Put spot `index` of photo `id` back on the stroke its fill was made for (one undo step): from the fill's
+    /// record of it, else from a step of the photo's history where the spot showed it.
+    pub fn genfill_put_back(&mut self, id: PhotoId, index: usize) -> Result<(), String> {
+        let mut d = (*self.develop_of(id).ok_or("no such photo")?).clone();
+        let sp = d.spots.get_mut(index).ok_or("no such spot")?;
+        let g = sp.generated.clone().ok_or("this spot has no generated fill")?;
+        if sp.shown_gen().is_some() {
+            return Ok(());
+        }
+        if !sp.put_back() {
+            let p = self.catalog.photo(id).ok_or("no such photo")?;
+            let old = p
+                .history
+                .iter()
+                .rev()
+                .flat_map(|h| h.settings.spots.iter())
+                .find(|s| s.stroke_key() == g.stroke)
+                .ok_or("where this fill was made is not known any more")?;
+            (sp.points, sp.size) = (old.points.clone(), old.size);
+            if let Some(f) = &mut sp.generated {
+                f.made_for = Some(GenStroke { points: old.points.clone(), size: old.size });
+            }
+        }
+        sp.mode = SpotMode::Generate;
+        self.set_develop(id, d, "Put Back Generated Fill").map_err(|e| e.to_string())
     }
 
     /// Cancel the running generation (if any).

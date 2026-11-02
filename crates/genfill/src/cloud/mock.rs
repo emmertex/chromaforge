@@ -47,6 +47,9 @@ struct State {
     seen: Mutex<Vec<Seen>>,
     next: AtomicU64,
     stop: AtomicBool,
+    /// Requests whose path starts with the prefix are read whole and then the connection is closed without a reply,
+    /// this many more times (a connection that breaks after the request arrived).
+    drops: Mutex<Vec<(String, usize)>>,
 }
 
 /// A running mock server; it stops when dropped.
@@ -104,6 +107,7 @@ impl MockServer {
             seen: Mutex::new(Vec::new()),
             next: AtomicU64::new(1),
             stop: AtomicBool::new(false),
+            drops: Mutex::new(Vec::new()),
         });
         let st = state.clone();
         std::thread::Builder::new().name("genfill-mock".into()).spawn(move || {
@@ -119,6 +123,12 @@ impl MockServer {
             }
         })?;
         Ok(MockServer { state, base })
+    }
+
+    /// Break the connection of the next `times` requests whose path starts with `prefix`, after reading them whole
+    /// (they count as seen): what a network failure after the request reached the provider looks like.
+    pub fn drop_next(&self, prefix: &str, times: usize) {
+        self.state.drops.lock().unwrap_or_else(PoisonError::into_inner).push((prefix.to_string(), times));
     }
 
     /// Requests seen so far.
@@ -192,6 +202,22 @@ fn handle(mut s: TcpStream, st: &State) {
     };
     let mut seen = Seen { method: method.clone(), path: path.clone(), authorized, store_io: header("x-fal-store-io"), ..Default::default() };
     let record = |seen: Seen| st.seen.lock().unwrap_or_else(PoisonError::into_inner).push(seen);
+    let drop_it = {
+        let mut drops = st.drops.lock().unwrap_or_else(PoisonError::into_inner);
+        match drops.iter_mut().find(|(p, n)| *n > 0 && path.starts_with(p.as_str())) {
+            Some((_, n)) => {
+                *n -= 1;
+                true
+            }
+            None => false,
+        }
+    };
+    if drop_it {
+        // the request arrived; the connection breaks before any reply
+        record(seen);
+        let _ = s.shutdown(std::net::Shutdown::Both);
+        return;
+    }
     // pre-signed result links carry no key
     if method == "GET" && path.starts_with("/mock/sample/") {
         record(seen);

@@ -237,6 +237,8 @@ fn find(masks: &mut [Mask], id: u32, c: &str) -> Result<usize> {
     masks.iter().position(|m| m.id == id).ok_or_else(|| bad(c, format!("no mask {id}")))
 }
 
+/// Why a spot that shows a generated fill is not moved or resized.
+pub const GENERATED_STAYS: &str = "a generated fill stays where it was made: paint a new area to fill somewhere else";
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -976,6 +978,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let before = s.develop_of(id).unwrap_or_default();
                 let mut dd = (*before).clone();
                 let sp = dd.spots.get_mut(i).ok_or_else(|| bad(c, "no such spot"))?;
+                // a generated fill is paid for and fits only the stroke it was made for: its spot is not moved or
+                // resized (a brush size or a nudge meant for the next stroke hid it, test note 5)
+                if sp.shown_gen().is_some() && (p.get("move").is_some() || p.get("size").is_some()) {
+                    return Err(bad(c, GENERATED_STAYS));
+                }
                 if let Some(d) = point(p, "move") {
                     sp.points.iter_mut().for_each(|q| *q = Point::new(q.x + d.x, q.y + d.y));
                     // the source moves along (its offset is relative to the target)

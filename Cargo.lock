@@ -4925,6 +4925,7 @@ dependencies = [
  "lcc-color",
  "lcc-fetch",
  "lcc-raster",
+ "log",
  "miniz_oxide 0.8.9",
  "png 0.18.1",
  "serde",

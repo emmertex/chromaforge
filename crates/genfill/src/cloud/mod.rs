@@ -16,6 +16,7 @@ pub mod mock;
 pub mod util;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use lcc_fetch::http::{self, HttpError, Limits, Url};
@@ -325,6 +326,49 @@ pub struct Control<'a> {
     pub stall: Duration,
     /// Longest whole generation (polling included).
     pub deadline: Duration,
+    /// Requests the provider already accepted (and bills), kept across a failure so that trying again fetches their
+    /// results instead of paying for new ones. `None`: not kept.
+    pub accepted: Option<&'a Accepted>,
+}
+
+/// Generations a provider accepted whose results are still to be fetched: `(provider, slot, addresses)`, the slot
+/// being the request's place in the generation (a variation), the addresses where its result is asked for
+/// (`{"polling"}` for Black Forest Labs, `{"status", "response"}` for fal). Providers that answer with the image
+/// itself (OpenAI, Stability) have none.
+#[derive(Debug, Default)]
+pub struct Accepted(Mutex<Vec<(Provider, u32, Value)>>);
+
+impl Accepted {
+    fn get(&self, p: Provider, slot: u32) -> Option<Value> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(q, s, _)| *q == p && *s == slot).map(|(_, _, v)| v.clone())
+    }
+
+    fn put(&self, p: Provider, slot: u32, v: Value) {
+        let mut l = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        l.retain(|(q, s, _)| !(*q == p && *s == slot));
+        l.push((p, slot, v));
+    }
+
+    /// How many accepted generations wait for their results.
+    pub fn len(&self) -> usize {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Control<'_> {
+    fn remember(&self, p: Provider, slot: u32, v: Value) {
+        if let Some(a) = self.accepted {
+            a.put(p, slot, v);
+        }
+    }
+
+    fn accepted(&self, p: Provider, slot: u32) -> Option<Value> {
+        self.accepted.and_then(|a| a.get(p, slot))
+    }
 }
 
 impl Control<'_> {
@@ -336,20 +380,52 @@ impl Control<'_> {
 /// Largest response read (base64 images of a few MP).
 const MAX_RESPONSE: usize = 96 * 1024 * 1024;
 
-fn net(e: HttpError) -> GenError {
+fn net(e: HttpError, tries: u32) -> GenError {
     match e {
         HttpError::Cancelled => GenError::Cancelled,
+        e if tries > 1 => GenError::Network(format!(
+            "{e} (tried {tries} times, each on a new connection; if this keeps happening, a VPN, proxy or antivirus that inspects secure connections may be in the way)"
+        )),
         e => GenError::Network(e.to_string()),
     }
 }
 
-/// Send one request and read the whole reply: `(status, body)`.
+/// Tries of a request that reads (`GET`): a broken connection is followed by a new one.
+const READ_TRIES: u32 = 3;
+
+/// Send one request and read the whole reply: `(status, body)`. Each try is a new connection (none is ever
+/// reused). A failed read (`GET`: polling, a result) is tried again up to [`READ_TRIES`] times; a request that
+/// starts a paid generation (`POST`) once more only when it certainly never reached the provider (the connection
+/// broke while it was being sent, or the provider's TLS layer refused it), so it is never paid for twice.
 fn call(method: &str, url: &Url, headers: &[(&str, String)], body: Option<&[u8]>, ctl: &Control) -> Result<(u16, Vec<u8>), GenError> {
     let limits = ctl.limits();
-    let mut r = http::request(method, url, headers, body, &limits).map_err(net)?;
-    let status = r.status;
-    let bytes = r.read_to_end(MAX_RESPONSE, &limits).map_err(net)?;
-    Ok((status, bytes))
+    let mut tries = 0u32;
+    loop {
+        tries += 1;
+        let once = || -> Result<(u16, Vec<u8>), (HttpError, http::Stage)> {
+            let mut r = http::request_staged(method, url, headers, body, &limits)?;
+            let status = r.status;
+            let bytes = r.read_to_end(MAX_RESPONSE, &limits).map_err(|e| (e, http::Stage::Receive))?;
+            Ok((status, bytes))
+        };
+        let (e, stage) = match once() {
+            Ok(r) => return Ok(r),
+            Err(f) => f,
+        };
+        let again = http::transient(&e) && if method == "GET" { tries < READ_TRIES } else { tries < 2 && http::not_delivered(&e, stage) };
+        if !again {
+            return Err(net(e, tries));
+        }
+        log::warn!("generative fill: {method} {} failed ({e}); trying again on a new connection", url.display());
+        // a moment before the next try, cancellable
+        let until = Instant::now() + Duration::from_millis(400 * u64::from(tries));
+        while Instant::now() < until {
+            if ctl.cancel.load(Ordering::Relaxed) {
+                return Err(GenError::Cancelled);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
 }
 
 /// A provider's error body in a sentence (its `message`/`error`/`detail`, else the start of the body).
@@ -600,13 +676,22 @@ fn bfl(key: &str, at: &Endpoint, r: &Request, i: u32, ctl: &Control, started: In
             json!({"image": b64_encode(&image), "mask": b64_encode(&mask), "prompt": r.prompt.trim(), "steps": 50, "guidance": 60, "seed": seed, "output_format": "png", "safety_tolerance": 2, "prompt_upsampling": false}),
         )
     };
-    let body = serde_json::to_vec(&body).map_err(|e| GenError::Provider(e.to_string()))?;
     let headers = [("x-key", key.to_string()), ("Content-Type", "application/json".to_string()), ("Accept", "application/json".to_string())];
-    let (status, reply) = call("POST", &at.url(path)?, &headers, Some(&body), ctl)?;
-    check_status(status, &reply)?;
-    let v = json_body(&reply)?;
-    let polling = v.get("polling_url").and_then(Value::as_str).ok_or_else(|| GenError::Provider("no polling address in the reply".into()))?;
-    let polling = at.follow(Provider::Bfl, polling)?;
+    // a generation the provider already accepted is not sent (and paid for) again: its result is fetched
+    let polling = match ctl.accepted(Provider::Bfl, i).and_then(|v| v.get("polling").and_then(Value::as_str).map(str::to_string)) {
+        Some(p) => p,
+        None => {
+            let body = serde_json::to_vec(&body).map_err(|e| GenError::Provider(e.to_string()))?;
+            let (status, reply) = call("POST", &at.url(path)?, &headers, Some(&body), ctl)?;
+            check_status(status, &reply)?;
+            let v = json_body(&reply)?;
+            let polling =
+                v.get("polling_url").and_then(Value::as_str).ok_or_else(|| GenError::Provider("no polling address in the reply".into()))?.to_string();
+            ctl.remember(Provider::Bfl, i, json!({"polling": polling}));
+            polling
+        }
+    };
+    let polling = at.follow(Provider::Bfl, &polling)?;
     let res = poll(&polling, &headers[..1], ctl, started, |v| match v.get("status").and_then(Value::as_str).unwrap_or_default() {
         "Ready" => Ok(true),
         "Pending" | "Reasoning" | "Generating" | "Queued" | "Task not found" => Ok(false),
@@ -627,15 +712,32 @@ fn fal(key: &str, at: &Endpoint, r: &Request, n: u32, ctl: &Control, started: In
         ("Accept", "application/json".to_string()),
         ("X-Fal-Store-IO", "0".to_string()),
     ];
-    let one = |model: &str, body: Value| -> Result<Vec<Image>, GenError> {
-        let body = serde_json::to_vec(&body).map_err(|e| GenError::Provider(e.to_string()))?;
-        let (status, reply) = call("POST", &at.url(&format!("/{model}"))?, &headers, Some(&body), ctl)?;
-        check_status(status, &reply)?;
-        let v = json_body(&reply)?;
-        let status_url = v.get("status_url").and_then(Value::as_str).ok_or_else(|| GenError::Provider("no status address in the reply".into()))?;
-        let response_url =
-            v.get("response_url").and_then(Value::as_str).ok_or_else(|| GenError::Provider("no result address in the reply".into()))?;
-        let (su, ru) = (at.follow(Provider::Fal, status_url)?, at.follow(Provider::Fal, response_url)?);
+    let one = |slot: u32, model: &str, body: Value| -> Result<Vec<Image>, GenError> {
+        let addresses =
+            |v: &Value| -> Option<(String, String)> { Some((v.get("status")?.as_str()?.to_string(), v.get("response")?.as_str()?.to_string())) };
+        // a generation the provider already accepted is not sent (and paid for) again: its result is fetched
+        let (status_url, response_url) = match ctl.accepted(Provider::Fal, slot).as_ref().and_then(addresses) {
+            Some(a) => a,
+            None => {
+                let body = serde_json::to_vec(&body).map_err(|e| GenError::Provider(e.to_string()))?;
+                let (status, reply) = call("POST", &at.url(&format!("/{model}"))?, &headers, Some(&body), ctl)?;
+                check_status(status, &reply)?;
+                let v = json_body(&reply)?;
+                let status_url = v
+                    .get("status_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| GenError::Provider("no status address in the reply".into()))?
+                    .to_string();
+                let response_url = v
+                    .get("response_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| GenError::Provider("no result address in the reply".into()))?
+                    .to_string();
+                ctl.remember(Provider::Fal, slot, json!({"status": status_url, "response": response_url}));
+                (status_url, response_url)
+            }
+        };
+        let (su, ru) = (at.follow(Provider::Fal, &status_url)?, at.follow(Provider::Fal, &response_url)?);
         poll(&su, &headers[..1], ctl, started, |v| match v.get("status").and_then(Value::as_str).unwrap_or_default() {
             "COMPLETED" => Ok(true),
             "IN_QUEUE" | "IN_PROGRESS" => Ok(false),
@@ -658,12 +760,17 @@ fn fal(key: &str, at: &Endpoint, r: &Request, n: u32, ctl: &Control, started: In
     };
     if erase {
         let mut out = Vec::new();
-        for _ in 0..n {
-            out.extend(one(FAL.remove_model, json!({"image_url": img_uri, "mask_url": mask_uri, "model": "best_quality", "mask_expansion": 4}))?);
+        for slot in 0..n {
+            out.extend(one(
+                slot,
+                FAL.remove_model,
+                json!({"image_url": img_uri, "mask_url": mask_uri, "model": "best_quality", "mask_expansion": 4}),
+            )?);
         }
         Ok(out)
     } else {
         one(
+            0,
             FAL.fill_model,
             json!({"prompt": r.prompt.trim(), "image_url": img_uri, "mask_url": mask_uri, "num_images": n.min(FAL.per_request), "output_format": "png", "safety_tolerance": "2", "sync_mode": true, "seed": r.seed % 4_294_967_294}),
         )

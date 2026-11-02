@@ -225,7 +225,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Choose Generated Variation",
             [],
             None,
-            "{index? (the selected spot), variant?: 0-based, delta?: ±1} — which generated variation a Generative spot shows → {variant, variants}",
+            "{index? (the selected spot), variant?: 0-based (of the generation shown), result?: 0-based (of every generation's results: Generate Again keeps the earlier ones), delta?: ±1 (through every result)} — which generated result a Generative spot shows → {variant, variants, result, results, id}",
             has_active,
             |s, p| {
                 let c = "spot.variation";
@@ -233,19 +233,69 @@ pub fn specs() -> Vec<CommandSpec> {
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
                 let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
                 let g = d.spots.get_mut(i).and_then(|sp| sp.generated.as_mut()).ok_or_else(|| bad(c, "this spot has no generated variations"))?;
-                let n = g.variants.max(1) as i64;
-                let v = match (p.get("variant").and_then(Value::as_i64), p.get("delta").and_then(Value::as_i64)) {
-                    (Some(v), _) => v,
-                    (None, Some(dl)) => (i64::from(g.variant) + dl).rem_euclid(n),
-                    (None, None) => return Err(bad(c, "give `variant` or `delta`")),
-                };
-                if !(0..n).contains(&v) {
-                    return Err(bad(c, format!("variant must be 0..{}", n - 1)));
+                let (total, at) = g.results();
+                let k =
+                    match (p.get("variant").and_then(Value::as_i64), p.get("result").and_then(Value::as_i64), p.get("delta").and_then(Value::as_i64))
+                    {
+                        (Some(v), _, _) => {
+                            let n = i64::from(g.variants.max(1));
+                            if !(0..n).contains(&v) {
+                                return Err(bad(c, format!("variant must be 0..{}", n - 1)));
+                            }
+                            i64::from(at) - i64::from(g.variant) + v
+                        }
+                        (None, Some(r), _) => r,
+                        (None, None, Some(dl)) => (i64::from(at) + dl).rem_euclid(i64::from(total.max(1))),
+                        (None, None, None) => return Err(bad(c, "give `variant`, `result` or `delta`")),
+                    };
+                if !(0..i64::from(total)).contains(&k) || !g.choose(k as u32) {
+                    return Err(bad(c, format!("result must be 0..{}", total.saturating_sub(1))));
                 }
-                g.variant = v as u32;
-                let out = json!({"variant": g.variant, "variants": g.variants});
+                let (results, result) = g.results();
+                let out = json!({"variant": g.variant, "variants": g.variants, "result": result, "results": results, "id": g.id});
                 s.set_develop(id, d, "Choose Variation")?;
                 Ok(out)
+            }
+        ),
+        cmd!(
+            "spot.putBack",
+            "Put Back Generated Fill",
+            [],
+            None,
+            "{index? (the selected spot)} — put a Generative spot that was moved or resized since its fill was generated back where the fill was made, so it shows again (one undo step) → {index, shown}",
+            has_active,
+            |s, p| {
+                let c = "spot.putBack";
+                let i = spot_index(s, p, c)?;
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                s.genfill_put_back(id, i).map_err(|e| bad(c, e))?;
+                let shown = s.develop_of(id).and_then(|d| d.spots.get(i).map(|sp| sp.shown_gen().is_some())).unwrap_or(false);
+                Ok(json!({"index": i, "shown": shown}))
+            }
+        ),
+        cmd!(query "genfill.results", "Generated Fills of This Photo", [], None, "{} — every generated fill kept in the library for the active photo, newest first (each a paid result; none is ever deleted by LightCraft) → {results: [{id, variants, provider, prompt, made (seconds since 1970), spot: index | null (the spot that keeps it), shown}]}", has_active, |s, _| {
+            let c = "genfill.results";
+            let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+            let list: Vec<Value> = s
+                .genfill_results(id)
+                .into_iter()
+                .map(|f| json!({"id": f.id, "variants": f.variants, "provider": f.provider, "prompt": f.prompt, "made": f.made, "spot": f.spot, "shown": f.shown}))
+                .collect();
+            Ok(json!({"results": list}))
+        }),
+        cmd!(
+            "spot.restoreGenerated",
+            "Restore Generated Fill",
+            [],
+            None,
+            "{id: a generated fill's id (genfill.results)} — show that generated fill on the photo again: on the spot that keeps it, else on a new spot where it was made (one undo step) → {index}",
+            has_active,
+            |s, p| {
+                let c = "spot.restoreGenerated";
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                let which = str_param(p, "id").ok_or_else(|| bad(c, "missing `id`"))?.to_string();
+                let index = s.genfill_restore(id, &which).map_err(|e| bad(c, e))?;
+                Ok(json!({"index": index}))
             }
         ),
         cmd!(

@@ -12,7 +12,7 @@ fn request(w: usize, h: usize, prompt: &str, n: u32) -> Request {
 }
 
 fn ctl(cancel: &AtomicBool) -> Control<'_> {
-    Control { cancel, stall: Duration::from_secs(10), deadline: Duration::from_secs(30) }
+    Control { cancel, stall: Duration::from_secs(10), deadline: Duration::from_secs(30), accepted: None }
 }
 
 #[test]
@@ -108,4 +108,57 @@ fn provider_facts_are_complete() {
     assert_eq!(openai_size(300, 100), "1536x1024");
     assert_eq!(openai_size(100, 300), "1024x1536");
     assert_eq!(openai_size(100, 100), "1024x1024");
+}
+
+fn posts(mock: &MockServer) -> usize {
+    mock.seen().iter().filter(|s| s.method == "POST").count()
+}
+
+/// A connection that breaks while the result is asked for is followed by a new one: the generation still
+/// arrives, and the provider was asked (and paid) once.
+#[test]
+fn a_broken_connection_while_polling_is_tried_again() {
+    let mock = MockServer::start(0, Some(KEY), mean_filler()).unwrap();
+    let at = Endpoint::mock(&mock.base).unwrap();
+    let cancel = AtomicBool::new(false);
+    mock.drop_next("/v1/get_result", 2);
+    let out = generate(Provider::Bfl, KEY, &at, &request(64, 64, "", 1), &ctl(&cancel)).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(posts(&mock), 1, "one paid request");
+    assert!(mock.seen().iter().filter(|s| s.path == "/v1/get_result").count() >= 3);
+}
+
+/// When fetching a paid result fails for good, the generation the provider accepted is kept: trying again
+/// fetches it instead of paying for a new one (Black Forest Labs and fal answer with an address to ask).
+#[test]
+fn a_paid_generation_is_fetched_again_not_bought_again() {
+    let mock = MockServer::start(0, Some(KEY), mean_filler()).unwrap();
+    let at = Endpoint::mock(&mock.base).unwrap();
+    let cancel = AtomicBool::new(false);
+    for (p, poll) in [(Provider::Bfl, "/v1/get_result"), (Provider::Fal, "/fal-ai/object-removal/mask/requests/")] {
+        let before = posts(&mock);
+        let accepted = Accepted::default();
+        let c = Control { accepted: Some(&accepted), ..ctl(&cancel) };
+        mock.drop_next(poll, READ_TRIES as usize);
+        let e = generate(p, KEY, &at, &request(64, 64, "", 1), &c).unwrap_err();
+        assert!(matches!(&e, GenError::Network(m) if m.contains("tried 3 times")), "{p:?}: {e}");
+        assert_eq!((posts(&mock) - before, accepted.len()), (1, 1), "{p:?}: paid once, kept");
+        // Retry: the same accepted generation is fetched
+        let out = generate(p, KEY, &at, &request(64, 64, "", 1), &c).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(posts(&mock) - before, 1, "{p:?}: not paid for again");
+    }
+}
+
+/// A paid request whose connection broke after it reached the provider is not sent again by itself (it may
+/// have been accepted and billed); the user decides with Retry.
+#[test]
+fn a_request_that_reached_the_provider_is_not_sent_twice() {
+    let mock = MockServer::start(0, Some(KEY), mean_filler()).unwrap();
+    let at = Endpoint::mock(&mock.base).unwrap();
+    let cancel = AtomicBool::new(false);
+    mock.drop_next("/v1/flux-tools/erase-v1", 1);
+    let e = generate(Provider::Bfl, KEY, &at, &request(64, 64, "", 1), &ctl(&cancel)).unwrap_err();
+    assert!(matches!(e, GenError::Network(_)), "{e}");
+    assert_eq!(posts(&mock), 1);
 }

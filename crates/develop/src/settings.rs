@@ -1530,9 +1530,124 @@ pub struct GenFill {
     /// Generation resolution relative to the photo's own pixels: 1 = native, below 1 = upscaled
     /// (a softer patch; the panel says so).
     pub scale: f64,
+    /// The stroke these results were made for, so a spot moved or resized since can be put back where its fill
+    /// fits ([`Spot::put_back`]). `None` in fills made before it was kept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub made_for: Option<GenStroke>,
+    /// The spot's earlier generations, in the order they were made (each a paid result: kept, and offered with
+    /// the variations). Never nested: their own `earlier` is empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub earlier: Vec<GenFill>,
+    /// Where this generation sits among `earlier` (how many of them come before it).
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub place: u32,
 }
 
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+/// A stroke a generative fill was made for: its points and size (see [`Spot`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GenStroke {
+    pub points: Vec<Point>,
+    pub size: f64,
+}
+
+impl GenStroke {
+    /// [`Spot::stroke_key`] of a spot with this stroke.
+    pub fn key(&self) -> u64 {
+        stroke_key(&self.points, self.size)
+    }
+}
+
+/// See [`Spot::stroke_key`].
+fn stroke_key(points: &[Point], size: f64) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |v: f64| {
+        for b in v.to_bits().to_le_bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for p in points {
+        eat(p.x);
+        eat(p.y);
+    }
+    eat(size);
+    h
+}
+
+/// Most generations a spot keeps (the oldest beyond are dropped from the spot; their files stay in the library and
+/// can be restored from there).
+pub const MAX_GENERATIONS: usize = 32;
+
 impl GenFill {
+    /// This spot's generations in the order they were made, this one among them (each without its `earlier`).
+    pub fn generations(&self) -> Vec<GenFill> {
+        let one = |g: &GenFill| GenFill { earlier: Vec::new(), place: 0, ..g.clone() };
+        let place = (self.place as usize).min(self.earlier.len());
+        let mut all: Vec<GenFill> = self.earlier.iter().take(place).map(one).collect();
+        all.push(one(self));
+        all.extend(self.earlier.iter().skip(place).map(one));
+        all
+    }
+
+    /// `generations` with generation `index` shown (its variation `variant`), the others kept as earlier ones.
+    fn from_generations(mut all: Vec<GenFill>, index: usize, variant: u32) -> Option<GenFill> {
+        if index >= all.len() {
+            return None;
+        }
+        let mut cur = all.remove(index);
+        cur.variant = variant.min(cur.variants.saturating_sub(1));
+        cur.place = index as u32;
+        cur.earlier = all;
+        Some(cur)
+    }
+
+    /// Every result of every generation: how many, and which one (0-based) is shown.
+    pub fn results(&self) -> (u32, u32) {
+        let place = (self.place as usize).min(self.earlier.len());
+        let before: u32 = self.earlier.iter().take(place).map(|g| g.variants.max(1)).fold(0, u32::saturating_add);
+        let after: u32 = self.earlier.iter().skip(place).map(|g| g.variants.max(1)).fold(0, u32::saturating_add);
+        let total = before.saturating_add(self.variants.max(1)).saturating_add(after);
+        (total, before.saturating_add(self.variant.min(self.variants.max(1) - 1)))
+    }
+
+    /// Show result `k` of [`GenFill::results`] (any generation's variation); `false` when there is no such result.
+    pub fn choose(&mut self, k: u32) -> bool {
+        let all = self.generations();
+        let mut at = 0u32;
+        for (i, g) in all.iter().enumerate() {
+            let n = g.variants.max(1);
+            if k < at.saturating_add(n) {
+                let v = k - at;
+                return match GenFill::from_generations(all, i, v) {
+                    Some(g) => {
+                        *self = g;
+                        true
+                    }
+                    None => false,
+                };
+            }
+            at = at.saturating_add(n);
+        }
+        false
+    }
+
+    /// `next`, made after this generation, with this one and its earlier ones kept as earlier generations (at
+    /// most [`MAX_GENERATIONS`] in all).
+    pub fn followed_by(&self, mut next: GenFill) -> GenFill {
+        let mut all = self.generations();
+        all.extend(next.generations().into_iter().skip(1));
+        let drop = (all.len() + 1).saturating_sub(MAX_GENERATIONS);
+        all.drain(..drop.min(all.len()));
+        next.place = all.len() as u32;
+        next.earlier = all;
+        next
+    }
+
     /// The name of the patch file of variation `variant` (without the folder).
     pub fn file_name(&self, variant: u32) -> String {
         format!("{}-{variant}.lcpatch", self.id)
@@ -1576,24 +1691,51 @@ impl Spot {
     /// A stable fingerprint of the stroke (points and size; FNV-1a over their bits, the same in
     /// every build): a generated patch is shown only while the stroke is the one it was made for.
     pub fn stroke_key(&self) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut eat = |v: f64| {
-            for b in v.to_bits().to_le_bytes() {
-                h ^= u64::from(b);
-                h = h.wrapping_mul(0x0100_0000_01b3);
-            }
-        };
-        for p in &self.points {
-            eat(p.x);
-            eat(p.y);
-        }
-        eat(self.size);
-        h
+        stroke_key(&self.points, self.size)
     }
 
     /// The generated patch this spot shows: its [`GenFill`] while it fits the stroke.
     pub fn shown_gen(&self) -> Option<&GenFill> {
         self.generated.as_ref().filter(|g| self.mode == SpotMode::Generate && g.stroke == self.stroke_key() && GenFill::valid_id(&g.id))
+    }
+
+    /// Put a spot that was moved or resized since its fill was generated back on the stroke the fill was made for,
+    /// so it shows again. `false` when it already fits or the stroke isn't known.
+    pub fn put_back(&mut self) -> bool {
+        let Some(g) = &self.generated else { return false };
+        if g.stroke == self.stroke_key() {
+            return false;
+        }
+        let Some(at) = g.made_for.clone() else { return false };
+        let (points, size) = (std::mem::replace(&mut self.points, at.points), self.size);
+        self.size = at.size;
+        if self.generated.as_ref().is_some_and(|g| g.stroke == self.stroke_key()) {
+            return true;
+        }
+        // (a stroke that doesn't hash to its key: leave the spot as it was)
+        (self.points, self.size) = (points, size);
+        false
+    }
+
+    /// Move the spot's points with `f` (a change of coordinates, e.g. to follow a change of geometry), its
+    /// generated fills' strokes with them: a fill that showed keeps showing.
+    pub fn map_points(&mut self, f: impl Fn(Point) -> Point) {
+        let fitted = self.generated.as_ref().is_some_and(|g| g.stroke == self.stroke_key());
+        self.points.iter_mut().for_each(|p| *p = f(*p));
+        let key = self.stroke_key();
+        if let Some(g) = &mut self.generated {
+            let remap = |g: &mut GenFill| {
+                if let Some(at) = &mut g.made_for {
+                    at.points.iter_mut().for_each(|p| *p = f(*p));
+                    g.stroke = at.key();
+                }
+            };
+            g.earlier.iter_mut().for_each(remap);
+            remap(g);
+            if fitted {
+                g.stroke = key;
+            }
+        }
     }
 }
 
