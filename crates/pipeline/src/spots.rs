@@ -276,12 +276,21 @@ fn fill_box(src: &mut [[f32; 3]], tgt: &[[f32; 3]], alpha: &[f32], bw: usize, bh
 
 /// Apply all spots to `img` (output resolution). `ppl` = output pixels per long-edge unit.
 pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
+    apply_skipping(img, spots, frame, ppl, &[]);
+}
+
+/// [`apply`], leaving out the spots marked in `skip` (generative spots whose patch was composited
+/// already, see [`crate::genpatch`]). A generative spot without a patch renders as a Fill.
+pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64, skip: &[bool]) {
     if spots.is_empty() {
         return;
     }
     let (w, h) = (img.width, img.height);
     let to_out = frame.norm_to_out(w, h);
-    for spot in spots {
+    for (k, spot) in spots.iter().enumerate() {
+        if skip.get(k).copied().unwrap_or(false) {
+            continue;
+        }
         let r = radius_px(spot.size, ppl) as f32;
         let pts: Vec<(f32, f32)> = spot
             .points
@@ -292,7 +301,7 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
             })
             .collect();
         let Some(&first) = pts.first() else { continue };
-        let fill = spot.mode == SpotMode::Fill;
+        let fill = matches!(spot.mode, SpotMode::Fill | SpotMode::Generate);
         let offset = match spot.source_offset {
             _ if fill => (0.0, 0.0),
             Some(o) => {
@@ -408,6 +417,7 @@ mod tests {
                     feather: 0.0,
                     opacity: 0.0,
                     source_offset: Some(Point::new(8.0 / 64.0, 0.0)),
+                    generated: None,
                 };
                 apply(&mut img, &[spot], &frame, frame.px_per_long(64));
                 for (i, (actual, expected)) in img.data.iter().zip(&original.data).enumerate() {
@@ -430,6 +440,7 @@ mod tests {
                 feather: 0.0,
                 opacity: 100.0,
                 source_offset: Some(Point::new(0.125, 0.0)),
+                generated: None,
             };
             apply(&mut img, &[spot], &frame, frame.px_per_long(w));
             let (x, y) = (cx as usize, cy as usize);

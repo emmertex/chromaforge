@@ -3600,7 +3600,7 @@ fn spot_pin(p: &egui::Painter, c: Pos2, sel: bool, mode: lcc_develop::SpotMode) 
         lcc_develop::SpotMode::Heal => crate::icons::Icon::Bandage,
         lcc_develop::SpotMode::Clone => crate::icons::Icon::Stamp,
         lcc_develop::SpotMode::Remove => crate::icons::Icon::Eraser,
-        lcc_develop::SpotMode::Fill => crate::icons::Icon::Sparkle,
+        lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate => crate::icons::Icon::Sparkle,
     };
     crate::icons::paint(p, icon_rect, icon, Color32::WHITE);
 }

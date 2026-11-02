@@ -31,6 +31,7 @@ pub mod cull;
 pub mod curve;
 pub mod dust;
 pub mod finish;
+pub mod genpatch;
 pub mod geometry;
 pub mod grade;
 pub mod local;
@@ -117,6 +118,8 @@ pub struct SourceInfo {
     /// their colour (`lcc_codecs::unflatten`) and carries this plane through the geometry
     /// beside the render ([`render_alpha`], issue #2976).
     pub alpha: Option<Arc<Plane>>,
+    /// The photo's generative fill patches ([`genpatch`]), read from the library by the engine.
+    pub generated: Option<genpatch::GenStore>,
 }
 
 impl Default for SourceInfo {
@@ -136,6 +139,7 @@ impl Default for SourceInfo {
             native_long: None,
             colorimetric: false,
             alpha: None,
+            generated: None,
         }
     }
 }
@@ -572,6 +576,9 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         // the Source plug-in filters run before this stage
         source_filters.key,
     ));
+    // a generated patch whose file appears (or goes) changes the image
+    let shown: Vec<bool> = genpatch::shown(&s.spots, info.generated.as_ref()).iter().map(Option::is_some).collect();
+    let pre_nr_key = hash_of((pre_nr_key, shown));
     // a draft's colour NR may take the half-resolution blur: its result is never a final render's
     let draft_nr = req.quality == Quality::Draft && d.nr_color > 0.0;
     let lin_key = hash_of((
@@ -620,11 +627,19 @@ pub fn lin_needs_cpu(s: &DevelopSettings, info: &SourceInfo) -> bool {
 /// scene-linear stage, in place.
 pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
     let s = &*p.settings;
+    // generated patches are source pixels: before anything else touches them
+    let patches = genpatch::shown(&s.spots, info.generated.as_ref());
+    for (sp, layer) in s.spots.iter().zip(&patches) {
+        if let (Some(g), Some(layer)) = (sp.shown_gen(), layer) {
+            genpatch::apply_layer(img, layer, &p.frame, genpatch::seed_of(&g.id, g.variant));
+        }
+    }
     // (before the white balance: the gain's input is the as-shot development, as in the file)
     local_tone::apply(img, info, p);
     local::white_balance(img, info, s);
     optics::defringe(img, s, p.px_per_long / optics::DEFRINGE_REF_LONG);
-    spots::apply(img, &s.spots, &p.frame, p.px_per_long);
+    let skip: Vec<bool> = patches.iter().map(Option::is_some).collect();
+    spots::apply_skipping(img, &s.spots, &p.frame, p.px_per_long, &skip);
     redeye::apply(img, &p.eyes);
 }
 

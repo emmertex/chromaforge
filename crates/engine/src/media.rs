@@ -279,10 +279,11 @@ impl DecodedSource {
 
     /// What to render these pixels against: the decoder's facts, else `header` (the catalog's)
     /// with any stored camera tone curve. The original's size comes from `header` either way: the
-    /// decoder only sees the level it decoded.
+    /// decoder only sees the level it decoded. The photo's generative fill patches always come from
+    /// `header` too (the session knows them, the decoder doesn't).
     pub fn info_or(&self, header: SourceInfo) -> SourceInfo {
         match &self.info {
-            Some(info) => SourceInfo { native_long: info.native_long.or(header.native_long), ..info.clone() },
+            Some(info) => SourceInfo { native_long: info.native_long.or(header.native_long), generated: header.generated, ..info.clone() },
             None => SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header },
         }
     }

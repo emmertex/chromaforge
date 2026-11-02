@@ -761,6 +761,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     lcc_develop::SpotMode::Clone => "Clone",
                     lcc_develop::SpotMode::Remove => "Remove",
                     lcc_develop::SpotMode::Fill => "Content-Aware",
+                    lcc_develop::SpotMode::Generate => "Generative",
                 };
                 super::edit::sub_title(
                     ui,
@@ -783,6 +784,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 lcc_develop::SpotMode::Fill => "fill",
                 lcc_develop::SpotMode::Heal => "heal",
                 lcc_develop::SpotMode::Clone => "clone",
+                lcc_develop::SpotMode::Generate => "generate",
             };
             if let Some(new_mode) = mode_segmented_bar(ui, "selSpotMode", cur_mode) {
                 let _ = app.run("spot.update", json!({"index": i, "mode": new_mode}));

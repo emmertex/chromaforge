@@ -772,6 +772,7 @@ fn load_bytes_now(
                 native_long: None,
                 colorimetric,
                 alpha: None,
+                generated: None,
             },
             used_reduced,
         ));
