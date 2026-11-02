@@ -268,6 +268,8 @@ mod tests_offline;
 #[cfg(test)]
 mod tests_open_lightroom;
 #[cfg(test)]
+mod tests_panel_restore;
+#[cfg(test)]
 mod tests_panels;
 #[cfg(test)]
 mod tests_preset_favorites;
@@ -325,6 +327,8 @@ mod tests_thumb_churn;
 mod tests_titlebar;
 #[cfg(test)]
 mod tests_tool_overlay;
+#[cfg(test)]
+mod tests_tool_pan;
 #[cfg(test)]
 mod tests_tool_row;
 #[cfg(test)]
@@ -2198,6 +2202,8 @@ impl LccApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.library_changed(&ctx);
+        // (a tool panel opened some other way still remembers the panel it took the place of)
+        self.ui.note_right();
         // panels set it again this frame while the pointer rests on a preset or profile
         self.hover_preview = None;
         // …and the histogram sets this while the pointer rests on a clipping indicator
@@ -2338,7 +2344,8 @@ fn sam_download_ended(download: &lcc_engine::segment::DownloadStatus) -> Option<
 /// stores the lock the tool shows.
 fn touches_crop(id: &str, params: &Value, active: Option<lcc_catalog::PhotoId>) -> bool {
     match id {
-        "crop.straighten" | "crop.autoStraighten" | "crop.drag" => true,
+        // (a swap of the orientation too: X keeps the lock the tool shows, 3:2 → 2:3)
+        "crop.straighten" | "crop.autoStraighten" | "crop.drag" | "crop.rotateAspect" => true,
         // a rect given outright is the shape asked for (no lock is honoured there); an angle alone turns the crop
         "crop.set" => params.get("rect").is_none_or(Value::is_null),
         // a flip of other photos leaves the active one alone

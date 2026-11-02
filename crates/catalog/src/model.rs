@@ -649,6 +649,9 @@ impl Photo {
             d.optics.lens_profile = true;
         }
         d.process = self.develop.process;
+        // Constrain Crop is the photo's own, like its process: new photos start with it as the
+        // import preference says, and its value is not an edit
+        d.geometry.constrain_crop = self.develop.geometry.constrain_crop;
         d
     }
     /// The file name's extension without the dot, as written (`CR2` for `IMG_0042.CR2`); empty

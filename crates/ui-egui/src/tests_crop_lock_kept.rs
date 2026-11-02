@@ -236,3 +236,16 @@ fn a_remembered_free_crop_stays_free() {
 fn untouched(h: &Headless, id: lcc_catalog::PhotoId) -> bool {
     h.app.session.develop_of(id).is_some_and(|d| d.crop == lcc_develop::Crop::default())
 }
+
+#[test]
+fn x_swaps_keep_the_lock_shown_on_an_untouched_photo() {
+    let mut h = crop_tool();
+    let want = photo_ratio(&h);
+    for i in 0..4 {
+        ask(&mut h, "engine.execute", json!({"command": "crop.rotateAspect"}));
+        let (lock, rect, _) = crop_state(&h);
+        let shape = if i % 2 == 0 { 1.0 / want } else { want };
+        let lock = lock.expect("still locked after the swap");
+        assert!((lock - shape).abs() < 0.02 && (rect - shape).abs() < 0.02, "swap {i}: lock {lock}, rect {rect}, want {shape}");
+    }
+}

@@ -477,6 +477,9 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                     // a script's values get the same range checks as a settings file's
                     u.clamp_ranges();
                     u.toasts = app.ui.toasts.clone();
+                    // (and the panel a tool panel took the place of, to put back when it closes)
+                    u.tool_return = app.ui.tool_return;
+                    u.right_seen = app.ui.right_seen;
                     u.dialog = app.ui.dialog.clone();
                     u.status = app.ui.status.clone();
                     crate::docking::cancel_replaced_gesture(app, u.docking.as_ref());

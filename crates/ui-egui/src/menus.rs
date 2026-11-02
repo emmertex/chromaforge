@@ -370,13 +370,16 @@ pub const UI_COMMANDS: &[UiCommand] = &[
 ];
 
 fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
+    app.ui.note_right();
     if app.ui.right == p && crate::docking::exposed(app, crate::docking::Panel::Tools) {
-        // Classic Develop: a tool's drawer closes back to the panels under it, as in Lightroom Classic
-        let drawer = app.ui.module == crate::module::ModuleId::Develop && p != RightPanel::Edit && p.is_edit_tool();
-        app.ui.right = if drawer { RightPanel::Edit } else { RightPanel::None };
+        // a tool closes back to the panel shown before it (Edit's panels under a Develop drawer, as
+        // in Lightroom Classic), in the same frame, or leaves the panel hidden when it was
+        let back = if p.is_tool() { app.ui.leave_tool() } else { RightPanel::None };
+        app.ui.right = back;
         app.toast(ctx, crate::i18n::tr_format!("{name} Off", name = crate::i18n::tr(name)));
     } else {
         app.ui.right = p;
+        app.ui.note_right();
         // one panel at a time on the right: a tool takes Presets' place, and unfolds the side
         app.ui.presets = false;
         app.ui.right_collapsed = false;
@@ -1607,7 +1610,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 app.end_midi_interaction();
                 let _ = app.session.end_interaction();
                 app.ui.tool.clear();
-                app.ui.right = Edit;
+                // back to the panel shown before the tool (hidden if it was)
+                app.ui.right = app.ui.leave_tool();
             }
             Ok(Value::Null)
         }

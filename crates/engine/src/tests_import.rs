@@ -3918,3 +3918,40 @@ fn the_recipe_commands_are_listed_with_their_parameters() {
     let save = commands.iter().find(|c| c.id == "preset.saveRecipe").expect("preset.saveRecipe is a command");
     assert!(save.enabled && save.params.contains("recipe: [{id:") && save.params.contains("name"), "{}", save.params);
 }
+
+/// Constrain Crop is on for new photos (item 11 of the evening retest), without counting as an
+/// edit or hiding the camera preview; Settings ▸ Import can turn that off; a Lightroom sidecar
+/// keeps the value it always read (off), and photos already in the library keep theirs.
+#[test]
+fn new_photos_start_with_constrain_crop_on() {
+    let src = temp_dir("constrain");
+    write_png(&src.join("new.png"), 1);
+    write_png(&src.join("lr.png"), 2);
+    std::fs::write(
+        src.join("lr.xmp"),
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="0.5" crs:HasCrop="True" crs:CropLeft="0.1" crs:CropTop="0.1" crs:CropRight="0.9" crs:CropBottom="0.9" crs:CropAngle="3"/></rdf:RDF></x:xmpmeta>"#,
+    )
+    .unwrap();
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [src.to_string_lossy()], "mode": "add"})).unwrap();
+    assert_eq!(ids(&r, "imported"), 2, "{r}");
+    let by_name = |s: &Session, n: &str| s.catalog.photos().find(|p| p.file_name == n).cloned().unwrap();
+    let new = by_name(&s, "new.png");
+    assert!(new.develop.geometry.constrain_crop, "a new photo starts constrained");
+    assert!(!new.is_edited(), "which is not an edit");
+    assert!(crate::import::has_import_look(&new), "the camera preview still stands in for it");
+    let lr = by_name(&s, "lr.png");
+    assert!(!lr.develop.geometry.constrain_crop, "a Lightroom sidecar without the flag: off, as it always read");
+    assert!((lr.develop.crop.geometry.angle - 3.0).abs() < 1e-9, "its crop came along");
+    // the preference off: new photos start unconstrained
+    let p = s.execute("library.preferences", &json!({"import": {"constrainCrop": false}})).unwrap();
+    assert_eq!(p["import"]["cropUnconstrained"], true, "{p}");
+    write_png(&src.join("later.png"), 3);
+    s.execute("library.import", &json!({"paths": [src.join("later.png").to_string_lossy()], "mode": "add"})).unwrap();
+    assert!(!by_name(&s, "later.png").develop.geometry.constrain_crop);
+    // …and photos already in the library keep theirs either way
+    assert!(by_name(&s, "new.png").develop.geometry.constrain_crop);
+    s.execute("library.preferences", &json!({"import": {"constrainCrop": true}})).unwrap();
+    assert!(!by_name(&s, "later.png").develop.geometry.constrain_crop);
+    let _ = std::fs::remove_dir_all(&src);
+}

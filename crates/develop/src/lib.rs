@@ -109,6 +109,8 @@ impl DevelopSettings {
         let d = DevelopSettings::default();
         a.wb = d.wb;
         a.process = d.process;
+        // (new photos start with Constrain Crop on: not an edit)
+        a.geometry.constrain_crop = d.geometry.constrain_crop;
         a == d
     }
 
