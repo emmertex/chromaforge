@@ -697,7 +697,16 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         if *key == "color" {
             divider(ui);
             grading_section(app, ui, &m.adjust);
-            // the mask's own Point Color (a colour photo's tool, as globally)
+            // the mask's own Color Mixer and Point Color (a colour photo's tools, as globally)
+            if !crate::is_bw(&d) {
+                let open = app.ui.flyout_open("maskMixer");
+                if flyout_row(ui, "maskMixer", "Color Mixer", Icon::Target, open).clicked() {
+                    app.ui.toggle_flyout("maskMixer");
+                }
+                if open {
+                    mask_mixer(app, ui, &m);
+                }
+            }
             if !crate::is_bw(&d) {
                 let open = app.ui.flyout_open("maskPointColor");
                 if flyout_row(ui, "maskPointColor", "Point Color", Icon::Picker, open).clicked() {
@@ -711,6 +720,103 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     ui.add_space(30.0);
     let _ = Stroke::NONE;
+}
+
+/// The mask Color Mixer's slider ids, per group (hue, sat, lum) and band (`MIXER_BANDS`' order).
+const MASK_MIXER_IDS: [[&str; 8]; 3] = [
+    [
+        "maskMixer.red.hue",
+        "maskMixer.orange.hue",
+        "maskMixer.yellow.hue",
+        "maskMixer.green.hue",
+        "maskMixer.aqua.hue",
+        "maskMixer.blue.hue",
+        "maskMixer.purple.hue",
+        "maskMixer.magenta.hue",
+    ],
+    [
+        "maskMixer.red.sat",
+        "maskMixer.orange.sat",
+        "maskMixer.yellow.sat",
+        "maskMixer.green.sat",
+        "maskMixer.aqua.sat",
+        "maskMixer.blue.sat",
+        "maskMixer.purple.sat",
+        "maskMixer.magenta.sat",
+    ],
+    [
+        "maskMixer.red.lum",
+        "maskMixer.orange.lum",
+        "maskMixer.yellow.lum",
+        "maskMixer.green.lum",
+        "maskMixer.aqua.lum",
+        "maskMixer.blue.lum",
+        "maskMixer.purple.lum",
+        "maskMixer.magenta.lum",
+    ],
+];
+
+/// The active mask's Color Mixer: Hue | Saturation | Luminance tabs, the group's targeted adjustment
+/// (tool `maskMixer:<group>`: drag up / down on the photo), a slider per colour (the photo mixer's
+/// specs) and Reset while anything is set.
+fn mask_mixer(app: &mut LccApp, ui: &mut egui::Ui, m: &lcc_develop::Mask) {
+    let groups = &super::edit::MIXER_GROUPS[..3];
+    if !groups.iter().any(|(_, k)| *k == app.ui.mask_mixer_group) {
+        app.ui.mask_mixer_group = "hue".into();
+    }
+    let key = app.ui.mask_mixer_group.clone();
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let tool = format!("maskMixer:{key}");
+            let active = app.ui.tool == tool;
+            if icon_button(
+                ui,
+                "maskMixerTargeted",
+                Icon::Target,
+                vec2(22.0, 22.0),
+                active,
+                true,
+                crate::i18n::tr("Targeted adjustment: drag up/down on the photo to adjust the colours there"),
+            )
+            .clicked()
+            {
+                app.ui.tool = if active { String::new() } else { tool };
+            }
+            for (label, k) in groups {
+                if super::edit::group_tab(ui, &format!("maskMixerGroup-{k}"), crate::i18n::tr(label), key == *k).clicked() {
+                    app.ui.mask_mixer_group = k.to_string();
+                    if app.ui.tool.starts_with("maskMixer:") {
+                        app.ui.tool.clear();
+                    }
+                }
+            }
+        });
+    });
+    let gi = groups.iter().position(|(_, k)| *k == key).unwrap_or(0);
+    let Some(ids) = MASK_MIXER_IDS.get(gi) else { return };
+    for ((band, name), wid) in lcc_develop::MIXER_BANDS.iter().zip(super::edit::BAND_NAMES).zip(ids) {
+        let Some(base) = lcc_develop::controls::find(&format!("mixer.{band}.{key}")) else { continue };
+        let spec = ControlSpec { id: wid, ..*base };
+        let hsl = m.mixer.bands().get(lcc_develop::MIXER_BANDS.iter().position(|b| b == band).unwrap_or(0)).copied().unwrap_or_default();
+        let v = match key.as_str() {
+            "sat" => hsl.sat,
+            "lum" => hsl.lum,
+            _ => hsl.hue,
+        };
+        let out = slider(ui, &spec, v, true, Some(name));
+        let field = format!("{band}.{key}");
+        apply_slider_out(app, &spec, out, |app, v| app.run("mask.mixer", json!({"id": m.id, "values": {field.clone(): v}})));
+    }
+    if !m.mixer.is_neutral() {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 8 }).show(ui, |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if text_button(ui, "maskMixerReset", crate::i18n::tr("Reset"), false).clicked() {
+                    let _ = app.run("mask.mixer", json!({"id": m.id, "reset": true}));
+                }
+            });
+        });
+    }
 }
 
 /// The local Point Color sliders: (widget id, the global control's field, the `mask.pointColorSet` key).

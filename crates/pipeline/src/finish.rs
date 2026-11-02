@@ -279,6 +279,9 @@ pub struct FinishParams {
     /// The masks' local Point Color samples, one list per evaluated mask (empty when none has any,
     /// [`crate::colorops::mask_point_ks`]).
     pub local_points: Vec<Vec<crate::colorops::PointK>>,
+    /// The masks' local Color Mixers, one per evaluated mask (empty when none has one,
+    /// [`crate::colorops::mask_mixer_ks`]); applied before the mask's Point Color.
+    pub local_mixers: Vec<Option<crate::colorops::MixerK>>,
     /// Calibration: primaries matrix (row-major, linear Rec.2020) and shadows tint (−1..1).
     pub calib: Option<[[f32; 3]; 3]>,
     pub shadow_tint: f32,
@@ -385,6 +388,7 @@ impl FinishParams {
             lut: crate::lut::get(&s.profile.id).map(|l| (l, (s.profile.amount / 100.0).clamp(0.0, 2.0) as f32)),
             ops: ColorOps::new(s),
             local_points: crate::colorops::mask_point_ks(s),
+            local_mixers: crate::colorops::mask_mixer_ks(s),
             curves: curve_luts(&s.curve),
             refine_sat: (s.curve.refine_saturation / 100.0).clamp(0.0, 1.0) as f32,
             vig: if effects { vignette(s) } else { None },
@@ -619,6 +623,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     with_tone(&mut terms, &p.mask_tone);
     // (only when it lines up with the evaluated masks, which it does unless a caller mixed settings)
     let local_points: &[Vec<crate::colorops::PointK>] = if fp.local_points.len() == p.masks.len() { &fp.local_points } else { &[] };
+    let local_mixers: &[Option<crate::colorops::MixerK>] = if fp.local_mixers.len() == p.masks.len() { &fp.local_mixers } else { &[] };
     let local_curves: Vec<_> = p.masks.iter().filter_map(|m| Some((m, m.curve.as_ref()?))).collect();
     let out_to_norm = fp.out_to_norm;
     let long = fp.ow.max(fp.oh);
@@ -828,8 +833,8 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
             // --- colour
             d = ops.apply(d, l_sat, l_hue);
             // local Point Color: each mask's samples at the mask's opacity
-            if !local_points.is_empty() {
-                d = local_point_colors(d, i, &p.masks, local_points);
+            if !local_points.is_empty() || !local_mixers.is_empty() {
+                d = local_point_colors(d, i, &p.masks, local_mixers, local_points);
             }
             if let Some((dir, amt)) = tint_col {
                 let lab = lcc_color::perceptual::oklab_from_2020(d);
@@ -962,14 +967,23 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     out
 }
 
-/// The masks' local Point Color on display-linear Rec.2020 colour `d` of pixel `i`: each mask's
-/// samples in turn, at the mask's opacity there (at most 1).
+/// The masks' local Color Mixer and Point Color on display-linear Rec.2020 colour `d` of pixel `i`:
+/// each mask's mixer, then its samples, at the mask's opacity there (at most 1). `mixers` and
+/// `local` are each empty or one entry per mask.
 #[inline]
-fn local_point_colors(d: [f32; 3], i: usize, masks: &[crate::masks::Evaluated], local: &[Vec<crate::colorops::PointK>]) -> [f32; 3] {
+fn local_point_colors(
+    d: [f32; 3],
+    i: usize,
+    masks: &[crate::masks::Evaluated],
+    mixers: &[Option<crate::colorops::MixerK>],
+    local: &[Vec<crate::colorops::PointK>],
+) -> [f32; 3] {
     use lcc_color::perceptual::{lab_to_lch, lch_to_lab, oklab_from_2020, oklab_to_2020};
     let mut lch: Option<[f32; 3]> = None;
-    for (m, points) in masks.iter().zip(local) {
-        if points.is_empty() {
+    for (mi, m) in masks.iter().enumerate() {
+        let mixer = mixers.get(mi).copied().flatten();
+        let points: &[crate::colorops::PointK] = local.get(mi).map_or(&[], Vec::as_slice);
+        if points.is_empty() && mixer.is_none() {
             continue;
         }
         let a = m.alpha.data.get(i).copied().unwrap_or(0.0).min(1.0);
@@ -977,6 +991,9 @@ fn local_point_colors(d: [f32; 3], i: usize, masks: &[crate::masks::Evaluated], 
             continue;
         }
         let mut v = lch.unwrap_or_else(|| lab_to_lch(oklab_from_2020(d)));
+        if let Some(mk) = mixer {
+            v = mk.apply_scaled(v, a);
+        }
         for k in points {
             v = k.apply_scaled(v, a);
         }

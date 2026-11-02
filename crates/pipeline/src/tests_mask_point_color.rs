@@ -94,3 +94,43 @@ fn black_and_white_ignores_local_point_color_and_the_list_is_capped() {
     let back: DevelopSettings = serde_json::from_str(&json).unwrap();
     assert_eq!(back.masks[0].point_colors.len(), lcc_develop::MAX_POINT_COLORS);
 }
+
+// --- a mask's local Color Mixer (`Mask::mixer`)
+
+fn mixer() -> lcc_develop::Mixer {
+    use lcc_develop::Hsl;
+    lcc_develop::Mixer { orange: Hsl { hue: 60.0, sat: -60.0, lum: 40.0 }, red: Hsl { hue: -30.0, sat: 50.0, lum: 0.0 }, ..Default::default() }
+}
+
+fn mixed(shape: MaskShape) -> DevelopSettings {
+    let mut s = masked(shape, Vec::new());
+    s.masks[0].mixer = mixer();
+    s
+}
+
+#[test]
+fn under_a_full_mask_the_local_mixer_renders_as_the_global_one() {
+    let src = scene();
+    let local = shot(&src, &mixed(all()));
+    let global = shot(&src, &DevelopSettings { mixer: mixer(), ..masked(all(), Vec::new()) });
+    let plain = shot(&src, &masked(all(), Vec::new()));
+    assert!(max_diff(&plain, &global, 0..W) > 10, "the mixer changes the photo");
+    assert!(max_diff(&local, &global, 0..W) <= 1, "local at full opacity = global");
+}
+
+#[test]
+fn the_local_mixer_stays_inside_its_mask_and_neutral_changes_nothing() {
+    let src = scene();
+    let plain = shot(&src, &DevelopSettings::default());
+    let local = shot(&src, &mixed(left()));
+    assert!(max_diff(&plain, &local, 0..W * 2 / 5) > 10, "inside the mask the colours change");
+    assert_eq!(max_diff(&plain, &local, W * 3 / 5..W), 0, "outside the mask nothing changes");
+    // a neutral mixer is no local stage, and isn't written
+    let s = masked(left(), Vec::new());
+    assert!(crate::colorops::mask_mixer_ks(&s).is_empty());
+    assert!(serde_json::to_value(&s.masks[0]).unwrap().get("mixer").is_none(), "the mask's neutral mixer is left out");
+    // a hostile value renders, never NaN
+    let mut bad = mixed(left());
+    bad.masks[0].mixer.red.hue = f64::NAN;
+    let _ = shot(&src, &bad);
+}

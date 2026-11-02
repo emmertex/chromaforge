@@ -3,15 +3,17 @@
 
 use lcc_color::spline::Lut1;
 use lcc_develop::VignetteStyle;
-use lcc_pipeline::colorops::POINT_WORDS;
+use lcc_pipeline::colorops::{MIXER_WORDS, POINT_WORDS};
 use lcc_pipeline::finish::{CURVE_LUT_N, FinishParams, MASK_TERMS, srgb_lut};
 
 /// Entries per tone-curve table (`lcc_pipeline::finish` builds them at this size).
 pub const CURVE_N: u32 = CURVE_LUT_N as u32;
 
-/// Words per mask in the local Point Color records: the number of samples, then up to 8 samples of
-/// [`POINT_WORDS`].
-pub const LOCAL_POINT_WORDS: usize = 1 + 8 * POINT_WORDS;
+/// Words per mask in the local colour records: the number of Point Color samples, whether the mask
+/// has a Color Mixer, the mixer's [`MIXER_WORDS`], then up to 8 samples of [`POINT_WORDS`].
+pub const LOCAL_POINT_WORDS: usize = 2 + MIXER_WORDS + 8 * POINT_WORDS;
+/// Offset of the first Point Color sample in a local colour record.
+pub const LOCAL_POINT_SAMPLES: usize = 2 + MIXER_WORDS;
 
 /// Field name and number of 32-bit words.
 const FIELDS: &[(&str, usize)] = &[
@@ -204,14 +206,24 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     for l in curves.iter().take(masks.len()).flatten().flatten() {
         aux.extend_from_slice(&l.v);
     }
-    // local Point Color: one record per mask (only when the lists line up, as on the CPU)
-    let lpoints = !fp.local_points.is_empty() && fp.local_points.len() == masks.len();
+    // local Color Mixer and Point Color: one record per mask (each list used only when it lines up
+    // with the masks, as on the CPU)
+    let points_ok = fp.local_points.len() == masks.len();
+    let mixers_ok = fp.local_mixers.len() == masks.len();
+    let lpoints = !masks.is_empty() && ((points_ok && !fp.local_points.is_empty()) || (mixers_ok && !fp.local_mixers.is_empty()));
     let lpoint_off = aux.len();
     if lpoints {
-        for points in &fp.local_points {
+        for m in 0..masks.len() {
             let mut rec = [0.0f32; LOCAL_POINT_WORDS];
+            let points: &[lcc_pipeline::colorops::PointK] = if points_ok { fp.local_points.get(m).map_or(&[], Vec::as_slice) } else { &[] };
             rec[0] = points.len().min(8) as f32;
-            for (slot, v) in rec.iter_mut().skip(1).zip(points.iter().take(8).flat_map(|k| k.words())) {
+            if let Some(mk) = fp.local_mixers.get(m).copied().flatten().filter(|_| mixers_ok) {
+                rec[1] = 1.0;
+                for (slot, v) in rec.iter_mut().skip(2).zip(mk.words()) {
+                    *slot = v;
+                }
+            }
+            for (slot, v) in rec.iter_mut().skip(LOCAL_POINT_SAMPLES).zip(points.iter().take(8).flat_map(|k| k.words())) {
                 *slot = v;
             }
             aux.extend_from_slice(&rec);

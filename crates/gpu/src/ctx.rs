@@ -382,6 +382,7 @@ fn constants() -> String {
     );
     s += &format!("const POINT_WORDS: u32 = {}u;\n", lcc_pipeline::colorops::POINT_WORDS);
     s += &format!("const LOCAL_POINT_WORDS: u32 = {}u;\n", crate::params::LOCAL_POINT_WORDS);
+    s += &format!("const LOCAL_POINT_SAMPLES: u32 = {}u;\n", crate::params::LOCAL_POINT_SAMPLES);
     s += &format!("const EYE_WORDS: u32 = {}u;\n", lcc_pipeline::redeye::EYE_WORDS);
     use lcc_pipeline::masks::{AUTO_TOL_CHROMA, AUTO_TOL_EV};
     s += &format!("const AUTO_TOL_EV: f32 = {AUTO_TOL_EV:?};\nconst AUTO_TOL_CHROMA: f32 = {AUTO_TOL_CHROMA:?};\n");

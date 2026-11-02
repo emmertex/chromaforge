@@ -1438,6 +1438,10 @@ pub struct Mask {
     /// photo's colour tools, weighted by the mask. Not written while empty.
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "capped::<MAX_POINT_COLORS, _, _>")]
     pub point_colors: Vec<PointColor>,
+    /// The local Color Mixer: the global mixer's 8 bands, applied inside the mask after the photo's
+    /// colour tools and before the mask's Point Color, weighted by the mask. Not written while neutral.
+    #[serde(skip_serializing_if = "Mixer::is_neutral")]
+    pub mixer: Mixer,
     /// The preset that added it (applying that preset again refreshes it instead of adding a copy).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
@@ -1460,6 +1464,7 @@ impl Default for Mask {
             feather: 0.0,
             curve: PointCurves::default(),
             point_colors: Vec::new(),
+            mixer: Mixer::default(),
             preset: None,
         }
     }

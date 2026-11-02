@@ -1928,7 +1928,7 @@ fn set_tat(app: &mut LccApp, ctx: &egui::Context, tool: &str, active: bool) {
 pub(crate) const MIXER_ADJUST: [(&str, &str); 2] = [("HSL", "hsl"), ("Color", "color")];
 pub(crate) const MIXER_GROUPS: [(&str, &str); 4] = [("Hue", "hue"), ("Saturation", "sat"), ("Luminance", "lum"), ("All", "all")];
 /// The mixer bands' names, as the HSL sliders are labelled (parallel to `MIXER_BANDS`).
-const BAND_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"];
+pub(crate) const BAND_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"];
 
 /// A Color Mixer targeted adjustment (`tat:hue|sat|lum`) whose button the mixer's layout no longer
 /// shows is put down (a B&W photo shows Luminance's only, Point Color none, HSL the chosen group's
@@ -2024,7 +2024,7 @@ fn mixer(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 }
 
 /// A word tab (Hue, Saturation…): bright and underlined when it is the one shown.
-fn group_tab(ui: &mut egui::Ui, id: &str, label: &str, active: bool) -> egui::Response {
+pub(crate) fn group_tab(ui: &mut egui::Ui, id: &str, label: &str, active: bool) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let font = t.semibold(11.5);
     let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), t.text);

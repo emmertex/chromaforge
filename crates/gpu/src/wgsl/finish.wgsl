@@ -138,14 +138,33 @@ fn point_apply(pw: array<f32, POINT_WORDS>, lch: vec3<f32>, strength: f32) -> ve
     return vec3<f32>(l, c, h);
 }
 
-// `finish::local_point_colors`: each mask's Point Color samples at the mask's opacity (at most 1).
+// `colorops::mixer_apply` for the mixer whose words (`MixerK::words`) start at `aux[o]`, at `strength`.
+fn local_mixer(o: u32, lch: vec3<f32>, strength: f32) -> vec3<f32> {
+    let w = band_weights(lch.z);
+    var dh = 0.0;
+    var ds = 0.0;
+    var dl = 0.0;
+    for (var i = 0u; i < 8u; i++) {
+        dh += w[i] * aux[o + i];
+        ds += w[i] * aux[o + 8u + i];
+        dl += w[i] * aux[o + 16u + i];
+    }
+    let chroma_w = min(lch.y / 0.12, 1.0);
+    let h = lch.z + dh * strength * chroma_w;
+    let c = lch.y * max(1.0 + ds * strength, 0.0);
+    let l = lch.x + dl * strength * chroma_w * sqrt(max(lch.x, 0.05));
+    return vec3<f32>(l, c, h);
+}
+
+// `finish::local_point_colors`: each mask's Color Mixer, then its Point Color samples at the mask's opacity (at most 1).
 fn local_point_colors(d: vec3<f32>, i: u32, n: u32) -> vec3<f32> {
     var lch = vec3<f32>(0.0);
     var any = false;
     for (var m = 0u; m < pu(F_NMASK); m++) {
         let rec = pu(F_LPOINT_OFF) + m * LOCAL_POINT_WORDS;
         let np = min(u32(aux[rec]), 8u);
-        if (np == 0u) {
+        let has_mixer = aux[rec + 1u] != 0.0;
+        if (np == 0u && !has_mixer) {
             continue;
         }
         let a = min(masks[m * n + i], 1.0);
@@ -159,10 +178,13 @@ fn local_point_colors(d: vec3<f32>, i: u32, n: u32) -> vec3<f32> {
             lch = vec3<f32>(lab.x, c0, select(atan2(lab.z, lab.y), 0.0, c0 == 0.0));
             any = true;
         }
+        if (has_mixer) {
+            lch = local_mixer(rec + 2u, lch, a);
+        }
         for (var k = 0u; k < np; k++) {
             var w: array<f32, POINT_WORDS>;
             for (var j = 0u; j < POINT_WORDS; j++) {
-                w[j] = aux[rec + 1u + k * POINT_WORDS + j];
+                w[j] = aux[rec + LOCAL_POINT_SAMPLES + k * POINT_WORDS + j];
             }
             lch = point_apply(w, lch, a);
         }

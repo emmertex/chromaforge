@@ -523,3 +523,49 @@ fn mask_point_color_pick_set_and_delete() {
     s.execute("mask.pointColorDelete", &json!({"index": 0})).unwrap();
     assert_eq!(active_dev(&s).masks[0].point_colors.len(), lcc_develop::MAX_POINT_COLORS - 1);
 }
+
+/// A mask's local Color Mixer: set by band, moved by the targeted tool, rendered only inside the
+/// mask, carried by presets' JSON and Auto Sync; hostile arguments are errors.
+#[test]
+fn mask_color_mixer_set_targeted_and_synced() {
+    let mut s = demo();
+    let id = s.active().unwrap();
+    s.execute("mask.add", &json!({"kind": "linear", "start": [0.5, 0.45], "end": [0.5, 0.55]})).unwrap();
+    let before = s.render_now(id, 384, 384).unwrap().image;
+    let r = s.execute("mask.mixer", &json!({"values": {"blue.sat": -500, "aqua.sat": -100, "purple.sat": -100, "red.sat": -100, "orange.sat": -100, "yellow.sat": -100, "green.sat": -100, "magenta.sat": -100}})).unwrap();
+    assert_eq!(r["mixer"]["blue.sat"], -100.0, "clamped: {r}");
+    let d = active_dev(&s);
+    assert!(d.mixer.is_neutral(), "the photo's own mixer is untouched");
+    let after = s.render_now(id, 384, 384).unwrap().image;
+    assert!(chroma_at(&after, 0.5, 0.08) + 8 < chroma_at(&before, 0.5, 0.08), "the sky inside the mask loses colour");
+    for bad in [
+        json!({}),
+        json!({"values": {"teal.sat": 1}}),
+        json!({"values": {"red.sat": "x"}}),
+        json!({"values": [1]}),
+        json!({"id": 999, "values": {"red.hue": 1}}),
+    ] {
+        assert!(s.execute("mask.mixer", &bad).is_err(), "{bad}");
+    }
+    // the targeted tool moves the band under the point (the sky: blue-ish)
+    s.execute("mask.mixer", &json!({"reset": true})).unwrap();
+    let r = s.execute("mask.mixerTargeted", &json!({"target": "lum", "x": 0.5, "y": 0.08, "delta": 30})).unwrap();
+    let changed = r["changed"].as_object().unwrap();
+    assert!(!changed.is_empty() && changed.keys().all(|k| k.ends_with(".lum")), "{r}");
+    for bad in
+        [json!({"target": "x", "x": 0.5, "y": 0.5, "delta": 1}), json!({"x": 0.5, "y": 0.5}), json!({"id": 999, "x": 0.5, "y": 0.5, "delta": 1})]
+    {
+        assert!(s.execute("mask.mixerTargeted", &bad).is_err(), "{bad}");
+    }
+    // stored with the mask (and only when not neutral)
+    let v = serde_json::to_value(&active_dev(&s).masks[0]).unwrap();
+    assert!(v.get("mixer").is_some());
+    // Auto Sync carries it to the other selected photos
+    let ids: Vec<_> = s.visible_cloned().into_iter().take(2).collect();
+    s.execute("library.select", &json!({"ids": [ids[0].0, ids[1].0], "active": ids[0].0})).unwrap();
+    s.execute("develop.autoSync", &json!({"on": true})).unwrap();
+    s.execute("mask.add", &json!({"kind": "linear", "start": [0.5, 0.45], "end": [0.5, 0.55]})).unwrap();
+    s.execute("mask.mixer", &json!({"values": {"green.hue": 40}})).unwrap();
+    let other = s.develop_of(ids[1]).unwrap();
+    assert!(other.masks.iter().any(|m| m.mixer.green.hue == 40.0), "Auto Sync carries the mask's mixer");
+}

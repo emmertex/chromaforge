@@ -3232,6 +3232,22 @@ fn color_range_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map:
 /// component (click selects its mask, drag moves the component), and brush painting. The mask
 /// itself shows as a rendered overlay ([`view_overlay`]).
 fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, d: &DevelopSettings) {
+    // the mask's Color Mixer targeted adjustment: a vertical drag moves the bands under the point
+    if let Some(group) = app.ui.tool.strip_prefix("maskMixer:").map(str::to_string) {
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if resp.dragged()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let dy = -resp.drag_delta().y;
+            if dy != 0.0 {
+                let n = map.norm(q - resp.drag_delta());
+                let _ = app.run("mask.mixerTargeted", json!({"target": group, "x": n.x, "y": n.y, "delta": f64::from(dy) * 0.5}));
+            }
+        }
+        return;
+    }
     // the mask's Point Color eyedropper: one click samples into the active mask
     if app.ui.tool == "maskPointColor" {
         if resp.hovered() {

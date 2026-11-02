@@ -564,6 +564,32 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 ),
             ];
         }),
+        ("masks (local color mixer)", |s| {
+            use lcc_develop::{Hsl, Mixer, PointColor};
+            let radial = MaskShape::Radial { center: Point::new(0.45, 0.5), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: false };
+            let linear = MaskShape::Linear { start: Point::new(0.5, 0.1), end: Point::new(0.5, 0.8) };
+            let comp = |shape| vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }];
+            s.masks = vec![
+                // a mixer alone, strong in several bands
+                Mask {
+                    components: comp(radial),
+                    mixer: Mixer {
+                        red: Hsl { hue: 40.0, sat: -50.0, lum: 30.0 },
+                        yellow: Hsl { hue: -60.0, sat: 80.0, lum: -40.0 },
+                        blue: Hsl { hue: 30.0, sat: -100.0, lum: 50.0 },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                // a mixer with a Point Color sample after it
+                Mask {
+                    components: comp(linear),
+                    mixer: Mixer { green: Hsl { hue: 70.0, sat: 40.0, lum: -60.0 }, ..Default::default() },
+                    point_colors: vec![PointColor { lum: 0.5, chroma: 0.1, hue: 120.0, sat_shift: -40.0, range: 80.0, ..Default::default() }],
+                    ..Default::default()
+                },
+            ];
+        }),
         ("calibration", |s| {
             s.calibration.shadows_tint = 40.0;
             s.calibration.red_hue = 50.0;
@@ -598,6 +624,27 @@ fn local_point_colors_render_on_the_gpu() {
     let without = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
     let (mean, max, _) = diff(&with, &without);
     assert!(mean > 0.2 && max > 10, "the samples change the GPU render: mean {mean:.2}, max {max}");
+}
+
+/// A mask's local Color Mixer is drawn by the kernel, as the CPU draws it.
+#[test]
+fn local_color_mixers_render_on_the_gpu() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 480, 320);
+    let (raw, req) = (SourceInfo { raw: true, ..Default::default() }, RenderRequest::fit(480, 480));
+    let mut s = DevelopSettings::default();
+    let edit = cases().into_iter().find(|(name, _)| *name == "masks (local color mixer)").map(|c| c.1).unwrap();
+    edit(&mut s);
+    check("local color mixer", &src, &raw, &s, &req);
+    let with = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    for m in &mut s.masks {
+        m.mixer = Default::default();
+    }
+    let without = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    let (mean, max, _) = diff(&with, &without);
+    assert!(mean > 0.2 && max > 10, "the mixers change the GPU render: mean {mean:.2}, max {max}");
 }
 
 /// A mask's local Curve is drawn by the kernel (not left out, nor handed to the CPU), as the CPU draws it.

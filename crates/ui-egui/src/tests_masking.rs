@@ -2248,10 +2248,13 @@ fn mask_point_color_eyedropper_answers_click_widget() {
             h.request("ui.move", json!({"x": x, "y": 400.0}), T);
             h.request("ui.scroll", json!({"dy": -200.0}), T);
             h.settle(SETTLE);
-            if h.request("ui.clickWidget", json!({"id": "icon:maskPointColorPicker"}), T)["ok"] == true {
+            let y = h.request("ui.widgets", json!({"filter": "icon:maskPointColorPicker"}), T)["result"][0]["rect"][1].as_f64().unwrap_or(f64::MAX);
+            if y < 600.0 {
                 break;
             }
         }
+        h.request("ui.clickWidget", json!({"id": "icon:maskPointColorPicker"}), T);
+        {}
     }
     h.settle(SETTLE);
     let rect = h.request("ui.widgets", json!({"filter": "maskPointColor"}), T);
@@ -2283,4 +2286,32 @@ fn a_selected_people_component_offers_who_it_is_about() {
     assert!(
         matches!(&develop(&h).masks[0].components[0].shape, MaskShape::People { who: Some(lcc_develop::recipe::Who::Role(r)), .. } if r == "Bride")
     );
+}
+
+/// The mask's Color Mixer flyout: a slider per colour of the shown group, the group tabs, and the
+/// targeted adjustment, which edits the mask's mixer (not the photo's) on a vertical drag.
+#[test]
+fn mask_color_mixer_flyout_edits_the_masks_mixer() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "linear"}));
+    h.app.ui.toggle_flyout("maskMixer");
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "slider:maskMixer.red.hue"), "the Hue group's sliders show");
+    assert!(widgets_contain(&mut h, "icon:maskMixerTargeted"));
+    h.app.ui.mask_mixer_group = "sat".into();
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "slider:maskMixer.blue.sat"), "the Saturation group's sliders show");
+    // (the targeted button sets this tool)
+    h.app.ui.tool = "maskMixer:sat".into();
+    h.step();
+    pointer(
+        &mut h,
+        json!([{"kind": "down", "x": 0.5, "y": 0.2}, {"kind": "move", "x": 0.5, "y": 0.15}, {"kind": "move", "x": 0.5, "y": 0.1}, {"kind": "up", "x": 0.5, "y": 0.1}]),
+    );
+    let d = develop(&h);
+    assert!(!d.masks[0].mixer.is_neutral(), "the drag moved the mask's mixer");
+    assert!(d.mixer.is_neutral(), "not the photo's");
+    assert!(d.masks[0].mixer.bands().iter().all(|b| b.hue == 0.0 && b.lum == 0.0), "only Saturation moved");
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "button:maskMixerReset"), "Reset shows once something is set");
 }
