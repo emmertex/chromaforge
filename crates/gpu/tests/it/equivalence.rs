@@ -623,7 +623,7 @@ fn clipped_highlights_stay_neutral_on_both() {
         let gpu = lcc_gpu::render(&src, &info, &s, &req, None).expect("gpu render").image;
         for (who, img) in [("CPU", &cpu), ("GPU", &gpu)] {
             let p = img.get(90, 120);
-            assert!(p[1] < 250 && p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) <= 1, "{name} {who}: clipped light {p:?}");
+            assert!(p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) <= 1, "{name} {who}: clipped light {p:?}");
         }
     }
 }

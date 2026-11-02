@@ -520,9 +520,15 @@ fn a_release_at_one_to_one_shows_one_full_quality_window_instead_of_the_tiles_on
         // its pixels are the full-size render's there
         let full = h.app.session.render_job(PhotoId(1), g.full.0, g.full.1, false, true).unwrap().run().rendered.unwrap().image;
         let px = tex.pixels.as_ref().expect("kept pixels");
+        // the window's outermost pixels have no context past them (the colour NR median reads one pixel further)
+        // and are margin, never on screen; a side on the frame's own edge clamps like the full render does
+        let bare = |i: usize, start: usize, len: usize, full: usize| (start > 0 && i < 2) || (start + len < full && i + 2 > len);
         let mut max = 0u8;
         for y in 0..g.window.h {
             for x in 0..g.window.w {
+                if bare(x, g.window.x, g.window.w, full.width) || bare(y, g.window.y, g.window.h, full.height) {
+                    continue;
+                }
                 let a = px.pixels[y * g.window.w + x].to_array();
                 let b = full.data[(g.window.y + y) * full.width + g.window.x + x];
                 max = max.max((0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0));
