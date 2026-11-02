@@ -1108,6 +1108,20 @@ pub struct RenderJob {
     /// GPU, it comes back as the texture's texels made there ([`RenderResult::hdr_texels`]) and
     /// without float samples; on the CPU, as usual. Set by the frontend.
     pub hdr_texels: Option<f32>,
+    /// Shown on screen at once and not kept: the result may stay on the GPU as a texture
+    /// ([`Self::on_screen`]).
+    pub on_screen: bool,
+}
+
+/// A render left on the GPU for the window to draw ([`RenderResult::frame`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub type ScreenFrame = lcc_gpu::DisplayFrame;
+/// A render left on the GPU for the window to draw (never, in the browser build).
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug)]
+pub struct ScreenFrame {
+    pub width: usize,
+    pub height: usize,
 }
 
 /// The least the automatic preview cache takes where the drive has room for it.
@@ -1185,9 +1199,22 @@ pub struct RenderResult {
     /// An HDR view's texture texels made on the GPU, and the headroom they were made for
     /// ([`RenderJob::hdr_texels`]); its render then has no float samples.
     pub hdr_texels: Option<(Vec<u16>, f32)>,
+    /// The result as a texture on the window's GPU device ([`RenderJob::on_screen`]); `rendered`
+    /// then holds its histogram and an empty (0 × 0) image.
+    pub frame: Option<ScreenFrame>,
 }
 
 impl RenderJob {
+    /// The result is only drawn (an interactive draft of a view): when the GPU renderer runs on the
+    /// window's device it may hand back a texture ([`RenderResult::frame`]) instead of reading the
+    /// pixels back. Ignored where pixels are needed: thumbnails (cached), a render kept as the view
+    /// preview (other than a drag's drawn-size one), a monitor profile (corrected on the CPU), a
+    /// slide, transparency and HDR texels. The display fit is then the window's drawing filter.
+    pub fn on_screen(mut self) -> Self {
+        self.on_screen = true;
+        self
+    }
+
     /// Render at draft quality (interactive drags). Gets its own result key.
     /// Shrink the full-quality result to fit `w × h` pixels with a Lanczos filter (see
     /// [`Self::display_fit`]). Gets its own result key, so a change of drawn size renders again.
@@ -1329,6 +1356,7 @@ impl RenderJob {
             quick: None,
             display: None,
             hdr_texels: None,
+            frame: None,
         }
     }
 
@@ -1377,6 +1405,7 @@ impl RenderJob {
                 quick: None,
                 display: None,
                 hdr_texels: None,
+                frame: None,
             };
         }
         if let Some((cache, key)) = &self.cache
@@ -1396,6 +1425,7 @@ impl RenderJob {
                 quick: None,
                 display: None,
                 hdr_texels: None,
+                frame: None,
             };
         }
         // a face tile of an unedited raw: cut from the camera's embedded preview when it is big enough
@@ -1417,6 +1447,7 @@ impl RenderJob {
                 quick: None,
                 display: None,
                 hdr_texels: None,
+                frame: None,
             };
         }
         let was_loaded = matches!(self.source, SourceRef::Loaded(_));
@@ -1463,6 +1494,45 @@ impl RenderJob {
                     Some((headroom, Ok((r, t)))) => {
                         hdr_texels = Some((t, headroom));
                         (r, None)
+                    }
+                    _ if self.on_screen
+                        && gpu
+                        && self.cache.is_none()
+                        && (self.display.is_none() || self.request.display.is_none())
+                        && self.slide.is_none()
+                        && straight.is_none()
+                        && (self.view_cache.is_none() || self.drawn_view_cache) =>
+                    {
+                        match on_screen(src, &info, &self.settings, &self.request, stages) {
+                            Some(OnScreen::Frame(frame, histogram)) => {
+                                return RenderResult {
+                                    request_id: self.request_id,
+                                    source_key: self.source_key,
+                                    photo: self.photo,
+                                    level: self.level,
+                                    key: self.key,
+                                    rendered: Ok(Rendered {
+                                        image: Rgba8 { width: 0, height: 0, data: Vec::new() },
+                                        histogram,
+                                        deep: None,
+                                        warnings: Vec::new(),
+                                        coverage: None,
+                                        alpha: None,
+                                    }),
+                                    gpu_fallback: None,
+                                    loaded: (!was_loaded).then_some(source),
+                                    quick: None,
+                                    display: None,
+                                    hdr_texels: None,
+                                    frame: Some(frame),
+                                };
+                            }
+                            Some(OnScreen::Pixels(r)) => (r, None),
+                            None => {
+                                let (r, fallback, _) = develop_reporting_fitted(src, &info, &self.settings, &self.request, stages, gpu, fit, false);
+                                (r, fallback)
+                            }
+                        }
                     }
                     _ => {
                         let keep_full = self.view_cache.is_some() && !self.drawn_view_cache;
@@ -1527,6 +1597,7 @@ impl RenderJob {
                     quick: None,
                     display,
                     hdr_texels,
+                    frame: None,
                 }
             }
             Err(e) => self.failed(e),
@@ -1582,6 +1653,43 @@ fn develop_reporting_fitted(
         log::warn!("render: {w}");
     }
     (rendered, fallback, full)
+}
+
+/// What [`on_screen`] made.
+enum OnScreen {
+    /// A texture on the window's device, and the histogram.
+    Frame(ScreenFrame, Histogram),
+    /// Pixels from the GPU (it could not hand over a texture for this render).
+    Pixels(Rendered),
+}
+
+/// A render that is only drawn, on the GPU: a texture on the window's device when the GPU renderer
+/// can hand one over, else its pixels. `None`: the GPU did not render it (the CPU must).
+fn on_screen(src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, stages: Option<&StageCache>) -> Option<OnScreen> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if !lcc_gpu::on_window_device() {
+            return None;
+        }
+        let (mut rendered, frame) = lcc_gpu::try_render_display(src, info, s, req, stages).ok()?;
+        // an HDR edit's preview histogram shows the HDR range, as from `develop_reporting_fitted`
+        let hdr = match stages {
+            Some(c) => lcc_pipeline::hdr_histogram_cached(src, info, s, req, c),
+            None => lcc_pipeline::hdr_histogram(src, info, s, req),
+        };
+        if let Some(h) = hdr {
+            rendered.histogram = h;
+        }
+        Some(match frame {
+            Some(f) => OnScreen::Frame(f, rendered.histogram),
+            None => OnScreen::Pixels(rendered),
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (src, info, s, req, stages);
+        None
+    }
 }
 
 /// Whether the GPU pipeline renders `s` for `req` like the CPU does. Every GPU caller (previews,
@@ -1675,6 +1783,7 @@ impl QuickJob {
             quick: None,
             display: None,
             hdr_texels: None,
+            frame: None,
         })
     }
 
@@ -1693,6 +1802,7 @@ impl QuickJob {
             quick,
             display: None,
             hdr_texels: None,
+            frame: None,
         };
         let rendered = |image: Rgba8| {
             let histogram = Histogram::of_srgb8(&image);
@@ -1872,6 +1982,7 @@ impl crate::Session {
         });
         Some(RenderJob {
             drawn_view_cache: false,
+            on_screen: false,
             request_id: 0,
             cache_generation: self.media.rendered.generation(),
             source_key: Some(source_key),
@@ -1930,6 +2041,7 @@ impl crate::Session {
         let ck = Self::variant_key(&p, settings, edge);
         Some(RenderJob {
             drawn_view_cache: false,
+            on_screen: false,
             request_id: 0,
             cache_generation: self.media.rendered.generation(),
             source_key: Some(Hasher128::new().str(&pixels_key(&p)).finish()),
@@ -1988,6 +2100,7 @@ impl crate::Session {
         let preview_cut = self.face_preview_cut(&p, rect, edge, needed as usize);
         Some(RenderJob {
             drawn_view_cache: false,
+            on_screen: false,
             request_id: 0,
             cache_generation: self.media.rendered.generation(),
             source_key: Some(Hasher128::new().str(&pixels_key(&p)).finish()),

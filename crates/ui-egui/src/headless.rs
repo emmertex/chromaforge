@@ -5042,7 +5042,7 @@ mod tests {
                         let tex = if h.app.loupe_shown.is_some_and(|(_, source)| source == "hdr") {
                             egui::TextureId::User(700)
                         } else {
-                            h.app.renderer.textures[&Slot::Main].tex.id()
+                            h.app.renderer.textures[&Slot::Main].id()
                         };
                         h.view
                             .painted_shapes()

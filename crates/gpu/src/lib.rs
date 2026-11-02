@@ -554,12 +554,24 @@ static WINDOW_DEVICE: std::sync::Mutex<Option<WindowDevice>> = std::sync::Mutex:
 #[cfg(not(target_arch = "wasm32"))]
 static WINDOW_DECLINED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Render on the window's device (eframe's) instead of a device of its own, so finished views can
-/// be drawn without reading them back ([`try_render_display`]). Builds the kernels on it (~0.4–2 s:
-/// call it off the UI thread), in place of [`warm_up`]. When that fails, or the window's device
-/// doesn't suit (a software adapter, too few storage buffers), a device of its own is created as
-/// before; `Err` says why the window's wasn't used. Does nothing once a device exists. A device
-/// that replaces a lost one is always one of our own (renders come back as pixels again).
+/// Offer the window's device (eframe's) for the renderer's first device, instead of one of its
+/// own, so finished views can be drawn without reading them back ([`try_render_display`]). Cheap:
+/// the kernels are built on it when the device is first needed ([`warm_up`] or a render, off the UI
+/// thread). A device that doesn't suit (a software adapter, too few storage buffers, kernels that
+/// fail) is declined and one of its own is made as before. Does nothing once a device exists. A
+/// device that replaces a lost one is always one of its own (renders come back as pixels again).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn offer_window_device(device: wgpu::Device, queue: wgpu::Queue, adapter: &wgpu::Adapter) {
+    if env_disabled() || slot::tried() {
+        return;
+    }
+    let info = adapter.get_info();
+    let vram = lcc_gpumem::adapter_memory(adapter);
+    *WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(WindowDevice { device, queue, info, vram });
+}
+
+/// [`offer_window_device`], then make the device now (~0.4–2 s: off the UI thread). `Err` says
+/// why the window's device isn't the one renders run on.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn adopt_window_device(device: wgpu::Device, queue: wgpu::Queue, adapter: &wgpu::Adapter) -> Result<(), String> {
     if env_disabled() || !ENABLED.load(Ordering::Relaxed) {
@@ -568,13 +580,9 @@ pub fn adopt_window_device(device: wgpu::Device, queue: wgpu::Queue, adapter: &w
     if slot::tried() {
         return Err("a device of its own was created first".into());
     }
-    let info = adapter.get_info();
-    let vram = lcc_gpumem::adapter_memory(adapter);
-    *WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(WindowDevice { device, queue, info, vram });
+    offer_window_device(device, queue, adapter);
     let g = self::device();
-    // (not taken: another thread made the first device meanwhile)
-    WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-    if let Some(e) = WINDOW_DECLINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+    if let Some(e) = WINDOW_DECLINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
         return Err(e);
     }
     match g {

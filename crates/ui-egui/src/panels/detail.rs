@@ -805,7 +805,7 @@ pub(crate) fn draw_window(p: &egui::Painter, app: &mut LccApp, c: &WindowCtx, v:
         && g.full == full
         && (c.interacting || g.look == c.look)
     {
-        p.image(tex.tex.id(), place(g.window), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        p.image(tex.id(), place(g.window), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         drag_drawn = true;
     }
     if drag_drawn && c.interacting {
@@ -817,7 +817,7 @@ pub(crate) fn draw_window(p: &egui::Painter, app: &mut LccApp, c: &WindowCtx, v:
         let key = crate::region::TileKey { photo: c.id, pane: v.pane, full, tile, look: view.settings };
         let Some(tex) = app.renderer.tiles.draw(&key, c.interacting || c.holding) else { continue };
         let dst = place(rect);
-        p.image(tex.tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        p.image(tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
 }
 
@@ -1283,7 +1283,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         };
         match &crop_view {
             Some(v) if r == img_rect => {
-                p.with_clip_rect(clip).add(crop_view_mesh(tex.tex.id(), v));
+                p.with_clip_rect(clip).add(crop_view_mesh(tex.id(), v));
             }
             _ => {
                 let image_rect = if tex.quick == Some(lcc_engine::media::QuickSource::Embedded) {
@@ -1291,7 +1291,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 } else {
                     render_texture_rect(r, tex.size)
                 };
-                p.with_clip_rect(clip).image(tex.tex.id(), image_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                p.with_clip_rect(clip).image(tex.id(), image_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             }
         }
         what
@@ -1336,7 +1336,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         && let Some(tex) = app.renderer.textures.get(&Slot::Hover).filter(|t| t.photo == id)
     {
         let hover_rect = fit_texture_rect(img_rect, tex.size);
-        p.image(tex.tex.id(), hover_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        p.image(tex.id(), hover_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         let g = p.layout_no_wrap(label.clone(), t.font(12.0), Color32::WHITE);
         let bg = label_badge_rect(hover_rect, canvas, g.size(), badge_top_inset);
         p.rect_filled(bg, 4.0, Color32::from_black_alpha(160));
@@ -1387,9 +1387,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     // a wipe shows the Before whole-frame render on its side of the line…
     let line = crate::region::wipe_line(img_rect, canvas);
     // (the Before's HDR render when it is an HDR edit, else its 8-bit one)
-    let before_tex = hdr_before
-        .map(|v| (v.tex, v.size))
-        .or_else(|| app.renderer.textures.get(&Slot::Before).filter(|t| t.photo == id).map(|t| (t.tex.id(), t.size)));
+    let before_tex =
+        hdr_before.map(|v| (v.tex, v.size)).or_else(|| app.renderer.textures.get(&Slot::Before).filter(|t| t.photo == id).map(|t| (t.id(), t.size)));
     if app.ui.before_after == BeforeAfter::Split
         && let Some((tex, size)) = before_tex
     {
@@ -1994,7 +1993,7 @@ fn navigator(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, img: Rect, id: P
     let p = ui.painter_at(canvas);
     p.rect_filled(frame.expand(5.0), 4.0, Color32::from_black_alpha(190));
     match tex {
-        Some(t) => p.image(t.tex.id(), frame, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE),
+        Some(t) => p.image(t.id(), frame, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE),
         None => p.rect_filled(frame, 0.0, Tokens::get(ui.ctx()).skeleton),
     };
     // the visible part of the photo, in normalized image coordinates
@@ -2547,7 +2546,7 @@ fn wb_loupe(app: &LccApp, ui: &egui::Ui, q: Pos2, img: Rect, canvas: Rect) {
     let inside = Rect::from_min_max(pos2(uv.left().max(0.0), uv.top().max(0.0)), pos2(uv.right().min(1.0), uv.bottom().min(1.0)));
     if inside.width() > 0.0 && inside.height() > 0.0 {
         let to = |w: Pos2| pos2(at.left() + (w.x - uv.left()) / uv.width() * side, at.top() + (w.y - uv.top()) / uv.height() * side);
-        p.image(tex.tex.id(), Rect::from_min_max(to(inside.min), to(inside.max)), inside, Color32::WHITE);
+        p.image(tex.id(), Rect::from_min_max(to(inside.min), to(inside.max)), inside, Color32::WHITE);
     }
     // the pixel grid, then the averaged square
     let grid = Stroke::new(0.5, Color32::from_black_alpha(70));
@@ -4669,7 +4668,7 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     let s = (img_area.width() / tw as f32).min(img_area.height() / th as f32);
                     let fr = Rect::from_center_size(img_area.center(), vec2(tw as f32 * s, th as f32 * s));
                     picture = fr;
-                    p.image(tex.tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    p.image(tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                     super::grid::selection_ring(p, &t, fr, state);
                     if app.ui.settings.film_badges
                         && let Some(ph) = app.session.catalog.photo(*id)
@@ -5190,6 +5189,7 @@ mod tests {
         // A headroom change must produce a different render key so the texture is re-uploaded (P2-4).
         let base = lcc_engine::media::RenderJob {
             drawn_view_cache: false,
+            on_screen: false,
             cache_generation: 0,
             request_id: 1,
             source_key: None,

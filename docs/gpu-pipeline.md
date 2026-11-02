@@ -457,9 +457,36 @@ A view's stages keep an uploaded source only up to 96 MB (a Preview-level source
 - Result (M4 Pro, 14 raws, loupe, 12 steps): peak RSS 1.9–2.3 GB → 0.83–0.99 GB, peak footprint
   2.5–2.6 GB → 0.91–0.96 GB, heap peak 930 → ~600 MB; stepping median ~13 ms (unchanged).
 
+## Drawing drafts straight from the GPU
+The desktop app creates the window's wgpu device with the adapter's limits and offers it to the GPU
+renderer (`lcc_gpu::offer_window_device`; the kernels build on it when the renderer warms up, off
+the UI thread, under the crash sentinel and the creation deadline), so rendering and drawing share
+one device. A slider drag's drafts of the views (Detail, Before, hover, Compare, the second window)
+are then `RenderJob::on_screen`: the render ends in an `Rgba8Unorm` texture
+(`lcc_gpu::try_render_display`) that egui-wgpu draws as a native texture (`ScreenTextures` in
+`ui-egui`, implemented by the app): no readback, no conversion to egui's pixels, no re-upload. The
+per-render checks run on the device instead: every pixel written (an atomic count), not entirely
+black (the device histogram). Rows are re-laid at a 256-byte stride for the texture copy when the
+width needs it (`present.wgsl`).
+
+Renders that need pixels keep the readback: the settled full-quality render (the cached view
+preview, the colour readout, screenshots), high quality adjustment previews (their Lanczos display
+fit), zoomed windows and tiles, thumbnails, exports, overlays, windows that spots grew, a monitor
+profile, HDR views (their own texels path) and anything the GPU path declines. A device that
+doesn't suit (software adapter, too few storage buffers, kernels that don't build there) is
+declined and the renderer makes one of its own, as before; a device that replaces a lost one is
+always its own. A headless `ui.screenshot` reads a GPU-drawn view back (`lcc_gpu::read_texture`).
+
+- `<PREFIX>_GPU_WINDOW=0`: never offer the window's device (a device of its own, renders read
+  back): to compare, or for a driver that misbehaves with compute and drawing on one device.
+  `<PREFIX>_GPU_LIMITS` caps the adopted device as it caps one of its own.
+- `ui.inspect` → `perf.gpuWindowDevice` (renders run on the window's device), `perf.screenTextures`
+  (the UI can draw GPU-resident renders), `perf.mainOnGpu` (the loupe shows one now).
+- With the renderer on the window's device, errors the device raises outside a render (the window's
+  own included) are logged and replace the render device (one of its own) instead of wgpu's
+  default panic.
+
 ## Open items
-- Keep the loupe texture on the GPU (render into an `egui-wgpu` texture on eframe's device instead of
-  reading back); share the device with eframe.
 - WebGPU in the browser build (async init, single device per canvas).
 - Defringe and spot removal kernels; Sky/Subject heuristics (replaced by the segmenter in M12).
 - Tiling for sources / outputs beyond the buffer limit (24 MP+ on WebGPU-default limits, 60 MP+

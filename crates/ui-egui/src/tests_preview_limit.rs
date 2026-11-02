@@ -801,12 +801,12 @@ mod in_the_loupe {
     /// The meshes the last frame drew with `slot`'s texture: (paint order, clip rect, bounds).
     fn drawn(h: &Headless, slot: Slot) -> Vec<(usize, egui::Rect, egui::Rect)> {
         let Some(tex) = h.app.renderer.textures.get(&slot) else { return vec![] };
-        drawn_with(h, &[tex.tex.id()])
+        drawn_with(h, &[tex.id()])
     }
 
     /// The meshes the last frame drew with one side's tiles.
     fn drawn_tiles(h: &Headless, before: bool) -> Vec<(usize, egui::Rect, egui::Rect)> {
-        let ids: Vec<_> = h.app.renderer.tiles.iter().filter(|(k, _)| k.before() == before).map(|(_, t)| t.tex.id()).collect();
+        let ids: Vec<_> = h.app.renderer.tiles.iter().filter(|(k, _)| k.before() == before).map(|(_, t)| t.id()).collect();
         drawn_with(h, &ids)
     }
 

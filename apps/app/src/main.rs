@@ -71,7 +71,49 @@ fn app_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(png).unwrap_or_default()
 }
 
-struct App(LccApp, PrefsWriter, #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>);
+struct App(LccApp, PrefsWriter, Option<WindowTextures>, #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>);
+
+/// Draws renders that stayed on the GPU: registers their textures with the window's egui-wgpu
+/// renderer (the GPU renderer runs on the window's device, see [`offer_window_device`]).
+struct WindowTextures {
+    device: eframe::wgpu::Device,
+    queue: eframe::wgpu::Queue,
+    renderer: std::sync::Arc<egui::mutex::RwLock<eframe::egui_wgpu::Renderer>>,
+}
+
+impl lcc_ui_egui::render::ScreenTextures for WindowTextures {
+    fn show(&mut self, frame: &lcc_engine::media::ScreenFrame, id: Option<egui::TextureId>) -> Option<egui::TextureId> {
+        let view = frame.texture.create_view(&Default::default());
+        let mut r = self.renderer.write();
+        let filter = eframe::wgpu::FilterMode::Linear;
+        Some(match id {
+            Some(id) => {
+                r.update_egui_texture_from_wgpu_texture(&self.device, &view, filter, id);
+                id
+            }
+            None => r.register_native_texture(&self.device, &view, filter),
+        })
+    }
+
+    fn free(&mut self, id: egui::TextureId) {
+        self.renderer.write().free_texture(&id);
+    }
+
+    fn read(&self, frame: &lcc_engine::media::ScreenFrame) -> Option<egui::ColorImage> {
+        let img = lcc_engine::gpu::read_texture(&self.device, &self.queue, &frame.texture, frame.width, frame.height).ok()?;
+        let pixels = img.data.iter().map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])).collect();
+        Some(egui::ColorImage::new([img.width, img.height], pixels))
+    }
+}
+
+/// Offer the window's device to the GPU renderer, so the loupe's drafts are drawn straight from the
+/// GPU (the kernels are built on it when the renderer warms up, off the UI thread); the textures
+/// they leave are shown through [`WindowTextures`] once it runs there. A device that doesn't suit
+/// is declined and the renderer makes one of its own, as before: every render comes back as pixels.
+fn offer_window_device(rs: &eframe::egui_wgpu::RenderState) -> WindowTextures {
+    lcc_engine::gpu::offer_window_device(rs.device.clone(), rs.queue.clone(), &rs.adapter);
+    WindowTextures { device: rs.device.clone(), queue: rs.queue.clone(), renderer: rs.renderer.clone() }
+}
 
 impl eframe::App for App {
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
@@ -83,7 +125,7 @@ impl eframe::App for App {
     }
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
-        if let Some(m) = self.2.as_mut()
+        if let Some(m) = self.3.as_mut()
             && m.update(&mut self.0, ctx)
             && lcc_ui_egui::panels::notices::may_close(&mut self.0)
         {
@@ -101,6 +143,13 @@ impl eframe::App for App {
     }
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.0.perf.host_frame_ms = frame.info().cpu_usage.map(|s| f64::from(s) * 1000.0);
+        // the GPU renderer adopted the window's device: its renders can be drawn as they are
+        if self.2.is_some()
+            && lcc_engine::gpu::on_window_device()
+            && let Some(t) = self.2.take()
+        {
+            self.0.renderer.set_screen_textures(Box::new(t));
+        }
         self.0.ui(ui);
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -1491,9 +1540,15 @@ fn main() -> eframe::Result {
                 // drawn in the window's top bar). <PREFIX>_NO_NATIVE_MENU=1 keeps the in-window menus.
                 #[cfg(target_os = "macos")]
                 let menu = (!lcc_brand::env_is_set("NO_NATIVE_MENU")).then(|| native_menu::NativeMenu::install(&mut app, &cc.egui_ctx));
+                // the GPU renderer on the window's device, when GPU rendering is on
+                // (<PREFIX>_GPU_WINDOW=0: a device of its own, renders read back - for comparison or a
+                // driver that misbehaves with compute and drawing on one device)
+                let window_device = lcc_brand::env("GPU_WINDOW").is_none_or(|v| v.trim() != "0");
+                let window_textures = cc.wgpu_render_state.as_ref().filter(|_| gpu_on && window_device).map(offer_window_device);
                 Ok(Box::new(App(
                     app,
                     writer,
+                    window_textures,
                     #[cfg(target_os = "macos")]
                     menu,
                 )))
@@ -1596,6 +1651,7 @@ mod tests {
         let mut app = App(
             LccApp::new(Session::new(), Services::default()),
             PrefsWriter::default(),
+            None,
             #[cfg(target_os = "macos")]
             None,
         );
@@ -2158,6 +2214,7 @@ mod tests {
             let mut app = App(
                 app,
                 PrefsWriter::default(),
+                None,
                 #[cfg(target_os = "macos")]
                 None,
             );
@@ -2190,6 +2247,7 @@ mod tests {
             let mut app = App(
                 LccApp::new(session, Services::default()),
                 PrefsWriter::default(),
+                None,
                 #[cfg(target_os = "macos")]
                 None,
             );
