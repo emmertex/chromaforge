@@ -89,6 +89,7 @@ let photo = batch.child("denoise", "AI Denoise"); // the photo in progress, unde
 | Reload from Disk | `crates/ui-egui/src/reload.rs`, `crates/engine/src/cmd/reload.rs` | a command split into plan / probe / apply so the app reads the files on a worker thread (`tasks::spawn_tracked`: progress and `Cancel::Flag`); the result is committed through `Session::execute_fn` (undo step, save, XMP auto-write), and dropped for a photo a later-started reload has already updated; `wait: true` runs it in place |
 | Reading focus points | `crates/engine/src/focus_scan.rs` | a worker paced by the UI's per-frame pump (`focus.pump {pace}`); `Cancel::Flag`; commits in batches without undo steps |
 | AI jobs (models) | `crates/ml/src/queue.rs`, `crates/engine/src/ml.rs` | a queue in a crate below the engine that holds its row through a small trait (`lcc_ml::Rows`); the worker makes the batch row when work arrives and drops it when idle; the row's ✕ is the batch's `Cancel::Flag` (`docs/ml-backend.md`) |
+| Camera sensor maps, Remove Dust on a selection | `crates/engine/src/cmd/sensor.rs` | one job in session state; results applied on the UI thread by a pump (`dust.pump`) |
 
 ## Testing
 
