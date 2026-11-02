@@ -940,6 +940,12 @@ pub struct UiState {
     pub docking: Option<crate::docking::Workspace>,
     #[serde(default = "crate::i18n::default_language")]
     pub language: crate::i18n::Locale,
+    /// The eye focus strip across the top of the loupe (`view.eyeFocus`): each person's sharper
+    /// eye at 100 %, with how sharp it is. On and off apart while browsing a folder to cull it (on
+    /// at first) and in the library (off at first); see `LccApp::eye_focus_on`.
+    #[serde(rename = "eyeFocusLibrary")]
+    pub eye_focus: bool,
+    pub eye_focus_import: bool,
     /// Android: the first-start question whether to add the camera roll was answered (either
     /// way); Settings ▸ Folders offers it again.
     pub camera_roll_asked: bool,
@@ -1914,6 +1920,8 @@ impl Default for UiState {
         UiState {
             window: None,
             docking: None,
+            eye_focus: false,
+            eye_focus_import: true,
             language: crate::i18n::default_language(),
             camera_roll_asked: false,
             preview_build_seen: None,

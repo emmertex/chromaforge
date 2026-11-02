@@ -86,6 +86,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.detail", "Detail View", Some("D"), "View"),
     ("view.compare", "Compare", Some("Shift+C"), "View"),
     ("view.survey", "Survey", Some("N"), "View"),
+    ("view.eyeFocus", "Eye Focus Strip", None, "View"),
     ("view.people", "People", None, "View"),
     ("view.person", "Show Person", None, ""),
     ("view.faceBoxes", "Face Boxes", None, "View>Loupe Info"),
@@ -632,6 +633,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
     // and a toast set by it was long over by the app's clock: it never showed)
     let ctx = app.tasks.repaint.clone().unwrap_or_default();
     let r: Result<Value, String> = match id {
+        "view.eyeFocus" => {
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(!app.eye_focus_on());
+            app.set_eye_focus(on);
+            Ok(json!({"on": on, "where": if app.importing() { "import" } else { "library" }}))
+        }
         "view.photoGrid" => {
             app.ui.view = ViewMode::PhotoGrid;
             Ok(Value::Null)

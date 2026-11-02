@@ -1416,6 +1416,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         let clip = crate::region::window_clip(mode, v.before, v.visible, canvas, img_rect);
         draw_window(&p.with_clip_rect(clip), app, &window_ctx, v, view);
     }
+    // each person's sharper eye at 100 %, found for this photo and the next ones (never waited for)
+    if app.eye_focus_on() {
+        let ids = app.session.visible_cloned();
+        let upcoming: Vec<PhotoId> =
+            ids.iter().position(|p| *p == id).map(|i| ids.iter().skip(i + 1).take(crate::eye_strip::AHEAD).copied().collect()).unwrap_or_default();
+        crate::eye_strip::show(app, ui, canvas, id, &upcoming);
+    }
     if let Some((bg, g)) = before_badge {
         p.rect_filled(bg, 4.0, Color32::from_black_alpha(160));
         p.galley(bg.min + vec2(8.0, 4.0), g, Color32::WHITE);

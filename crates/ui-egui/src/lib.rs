@@ -30,6 +30,7 @@ mod drop_overlay;
 mod edit_in;
 mod enhance_pump;
 pub mod enhance_ui;
+pub mod eye_strip;
 pub mod export_task;
 mod focus_scan;
 pub mod folder_poll;
@@ -694,6 +695,10 @@ pub struct LccApp {
     pub(crate) drag_scale: region::DragScale,
     /// High quality adjustment previews: whether a drag keeps full quality or falls back to drafts.
     pub(crate) hq_drag: region::HqDrag,
+    /// The eye focus strip's results and crops (`view.eyeFocus`).
+    pub(crate) eye_strip: eye_strip::EyeStrip,
+    /// The eye job key of the photo the strip shows (for `ui.inspect`).
+    pub(crate) eye_key: Option<u64>,
     /// The photo the loupe shows whole, and since when (host clock, s): after a short look its
     /// full-resolution source is decoded in the background, for a 1:1 zoom to start from.
     pub(crate) whole_since: Option<(lcc_catalog::PhotoId, f64)>,
@@ -899,6 +904,8 @@ impl LccApp {
             size_hold: Default::default(),
             drag_scale: Default::default(),
             hq_drag: Default::default(),
+            eye_strip: Default::default(),
+            eye_key: None,
             whole_since: None,
             window_refused: None,
             full_preview_loaded: None,
@@ -987,6 +994,26 @@ impl LccApp {
     }
 
     /// Run a UI or engine command by id. The single entry point for every frontend path.
+    /// Whether the photos shown are a folder being browsed to cull and import, not the library's.
+    pub fn importing(&self) -> bool {
+        self.session.source == lcc_engine::LibrarySource::Folder
+    }
+
+    /// Whether the eye focus strip shows here: it has its own switch while browsing a folder (on
+    /// at first: culling) and in the library (off at first: editing).
+    pub fn eye_focus_on(&self) -> bool {
+        if self.importing() { self.ui.eye_focus_import } else { self.ui.eye_focus }
+    }
+
+    /// Switch the eye focus strip on or off where the user is (a browsed folder or the library).
+    pub fn set_eye_focus(&mut self, on: bool) {
+        if self.importing() {
+            self.ui.eye_focus_import = on;
+        } else {
+            self.ui.eye_focus = on;
+        }
+    }
+
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         self.run_typed(id, params).map_err(|e| e.message)
     }
