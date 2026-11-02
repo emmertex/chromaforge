@@ -102,6 +102,15 @@ impl Frame {
         f
     }
 
+    /// `crop` as the crop tool draws it on this frame's photo: shrunk about its centre as the
+    /// render shrinks it (lens corrections always, perspective with Constrain Crop), so the box the
+    /// tool shows is what the render crops.
+    pub fn constrained_crop(&self, crop: CropGeometry, with_persp: bool) -> CropGeometry {
+        let mut f = Frame { crop, view: None, ..self.clone() };
+        f.constrain_to_image(with_persp);
+        f.crop
+    }
+
     /// Shrink the crop about its centre until it contains no area outside the warped source. Lens
     /// corrections (profile, embedded camera warp, manual distortion, lateral CA) always do this, as
     /// a corrected lens never shows the blank past the photo's edge (issue #245); perspective only
@@ -630,6 +639,23 @@ mod tests {
         let out = f.sample(&src, 4, 1);
         assert!((out.get(0, 0)[0] - 3.0).abs() < 1e-5);
         assert!((out.get(3, 0)[0] - 0.0).abs() < 1e-5);
+    }
+
+    /// The crop tool shows the crop Constrain Crop applies: the box `constrained_crop` gives on the
+    /// uncropped frame is the one the render's frame crops to (no white wedges after Upright).
+    #[test]
+    fn the_crop_tool_shows_the_constrained_crop() {
+        let mut s = DevelopSettings::default();
+        s.geometry.vertical = 40.0;
+        s.geometry.constrain_crop = true;
+        let render = Frame::new(600, 400, &s, true);
+        let tool = Frame::new(600, 400, &s, false);
+        let shown = tool.constrained_crop(s.crop.geometry, true);
+        assert_eq!(shown, render.crop);
+        assert!(shown.rect.width() < 1.0 - 1e-3, "the warp pulls the box in: {shown:?}");
+        // without a warp, nothing changes
+        let plain = DevelopSettings::default();
+        assert_eq!(Frame::new(600, 400, &plain, false).constrained_crop(plain.crop.geometry, true), plain.crop.geometry);
     }
 
     /// The crop tool's uncropped frame keeps the flips: Flip H / Flip V show while cropping, and

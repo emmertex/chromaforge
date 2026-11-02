@@ -968,7 +968,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if !crop_tool || app.session.interaction.is_none() {
         app.crop_layout = None;
     }
-    let crop_view = crop_tool.then(|| crop_view(&frame, d.crop.geometry, main_area, app.crop_layout.clone(), app.ui.zoom, ppp, app.ui.pan));
+    let crop_view = crop_tool.then(|| crop_view(&frame, shown_crop(&d, &frame), main_area, app.crop_layout.clone(), app.ui.zoom, ppp, app.ui.pan));
     if let Some(v) = &crop_view {
         if app.session.interaction.is_some() && app.crop_layout.is_none() {
             app.crop_layout = Some(CropLayout::Pinned { centre: v.centre, k: v.k });
@@ -2712,6 +2712,10 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if resp.hovered() && ui.input(|i| i.modifiers.command) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     }
+    // the crop as it will be: shrunk as the render shrinks it (lens corrections; perspective with
+    // Constrain Crop), so no empty wedges show here that vanish on leaving the tool
+    let shown = shown_crop(d, frame);
+    let d = &DevelopSettings { crop: lcc_develop::Crop { geometry: shown, ..d.crop }, ..d.clone() };
     let quad = frame_crop_quad(d, frame);
     let pts: Vec<Pos2> = quad.iter().map(|q| map.screen(*q)).collect();
     let p = ui.painter();
@@ -2734,6 +2738,15 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     let (cw, ch) = (pts[0].distance(pts[1]), pts[0].distance(pts[3]));
     for line in super::crop_overlay::paths(app.ui.crop_overlay, app.ui.crop_overlay_orient, cw, ch) {
         p.add(egui::Shape::line(line.into_iter().map(at).collect(), guide));
+    }
+    // turning the photo: a fine grid in the box, to line things up with
+    if matches!(app.gesture, Some(Gesture::CropRotate { .. })) {
+        let fine = Stroke::new(0.6, Color32::from_white_alpha(70));
+        for k in 1..12 {
+            let u = k as f32 / 12.0;
+            p.line_segment([at((u, 0.0)), at((u, 1.0))], fine);
+            p.line_segment([at((0.0, u)), at((1.0, u))], fine);
+        }
     }
     // handles: 0..3 corners, 4..7 edges (top, right, bottom, left)
     let handles: Vec<Pos2> = (0..8).map(|i| if i < 4 { pts[i] } else { lerp(pts[i - 4], pts[(i - 3) % 4], 0.5) }).collect();
@@ -2811,10 +2824,11 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             let _ = app.session.cancel_interaction();
             return;
         }
-        let d = app.session.develop_of(id).unwrap_or_default();
-        let (start, angle, map) = (d.crop.geometry.rect, d.crop.geometry.angle, map.clone());
+        // (from the crop as shown: a shrunk box starts where it is drawn)
+        let g = shown_crop(&app.session.develop_of(id).unwrap_or_default(), frame);
+        let (start, angle, map) = (g.rect, g.angle, map.clone());
         // screen points per pixel of the photo: the box's width on screen over its width in pixels
-        let native_w = Frame { crop: d.crop.geometry, ..frame.clone() }.native_size().0 as f32;
+        let native_w = Frame { crop: g, ..frame.clone() }.native_size().0 as f32;
         let k = pts[0].distance(pts[1]) / native_w.max(1e-3);
         let pinned = Some(CropLayout::Pinned { centre: box_centre, k });
         let (gesture, layout) = match handles.iter().position(|h| h.distance(q) < 12.0) {
@@ -3222,6 +3236,12 @@ fn outside_crop_mesh(photo: &[Pos2; 4], quad: &[Pos2; 4], color: Color32) -> egu
         }
     }
     mesh
+}
+
+/// The crop the photo gets: shrunk into the warped photo's valid area as the render does it (lens
+/// corrections always, perspective with Constrain Crop).
+fn shown_crop(d: &DevelopSettings, frame: &Frame) -> lcc_geom::CropGeometry {
+    frame.constrained_crop(d.crop.geometry, d.geometry.constrain_crop)
 }
 
 fn frame_crop_quad(d: &DevelopSettings, frame: &Frame) -> [Point; 4] {
