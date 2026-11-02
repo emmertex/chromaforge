@@ -773,6 +773,7 @@ fn load_bytes_now(
                 colorimetric,
                 alpha: None,
                 generated: None,
+                avoid: None,
             },
             used_reduced,
         ));
