@@ -829,7 +829,7 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                     let _ = app.run("library.autoImport", json!({"copy": copy}));
                 }
             });
-            row(ui, t, crate::i18n::tr("Album"), |ui| {
+            row(ui, t, crate::i18n::tr("Collection"), |ui| {
                 let id = egui::Id::new("auto-album");
                 let mut name = ui.data(|m| m.get_temp::<String>(id)).unwrap_or_else(|| d.auto_album.clone().unwrap_or_default());
                 let r = ui.add(egui::TextEdit::singleline(&mut name).hint_text(crate::i18n::tr("None")).desired_width(180.0));

@@ -1474,7 +1474,7 @@ pub fn toast_skipped(app: &mut LccApp, ctx: &egui::Context, r: &serde_json::Valu
         app.toast(
             ctx,
             crate::i18n::tr_format!(
-                "{n} Local photo{} skipped: albums hold library photos (Add to My Photos first)",
+                "{n} Local photo{} skipped: collections hold library photos (Add to My Photos first)",
                 if n == 1 { "" } else { "s" },
                 n = n
             ),
@@ -1668,7 +1668,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 if ui.button(crate::i18n::tr("Remove from Collection")).clicked() {
                     let _ = app.run("album.removePhotos", json!({"id": aid.0}));
                 }
-                if ui.button(crate::i18n::tr("Set as Album Cover")).clicked() {
+                if ui.button(crate::i18n::tr("Set as Collection Cover")).clicked() {
                     let _ = app.run("album.setCover", json!({"id": aid.0, "photo": id.0}));
                 }
             }

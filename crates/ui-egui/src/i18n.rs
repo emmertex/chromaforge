@@ -1062,7 +1062,7 @@ mod tests {
         // a problem with the album filter itself has no rule position to show
         let filter_loop =
             lcc_catalog::rules::Problem { path: Vec::new(), field: Some("album".into()), issue: Issue::AlbumLoop, message: String::new() };
-        assert!(problem_line_in(Locale::En, &filter_loop).starts_with("Album: "), "{}", problem_line_in(Locale::En, &filter_loop));
+        assert!(problem_line_in(Locale::En, &filter_loop).starts_with("Collection: "), "{}", problem_line_in(Locale::En, &filter_loop));
         let g = problems(serde_json::json!([{"group": {"rules": []}}]));
         assert_eq!(problem_text_in(Locale::En, &g[0]), "This group is empty: add a rule or remove it.");
     }
@@ -1645,16 +1645,16 @@ mod tests {
         labels.extend(["Pick a date", "Year", "Month", "Day", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
         // the album pickers
         labels.extend([
-            "Choose an album…",
-            "No albums yet",
-            "Search albums",
-            "No albums match",
-            "This is the album you're editing",
-            "It tests this album, so testing it back would loop",
+            "Choose a collection…",
+            "No collections yet",
+            "Search collections",
+            "No collections match",
+            "This is the collection you're editing",
+            "It tests this collection, so testing it back would loop",
             "Fix the marked rules to save this album.",
             "None",
-            "New album",
-            "New album…",
+            "New collection",
+            "New collection…",
             "Imported Photos",
         ]);
         labels.extend(crate::panels::keyword_list::VARIABLE_LABELS);

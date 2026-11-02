@@ -1527,11 +1527,11 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
     albums.retain(|a| a.folder || !a.smart);
     // Catalog changes while the review is open must not leave a hidden, unselectable destination.
     d.album = d.album.filter(|id| albums.iter().any(|a| a.id == *id && !a.folder));
-    field(ui, "Album", |ui| {
+    field(ui, "Collection", |ui| {
         ui.vertical(|ui| {
             let mut chosen = d.album;
             let mut extra = None;
-            let empty = crate::i18n::tr(if d.new_album.is_empty() { "None" } else { "New album" });
+            let empty = crate::i18n::tr(if d.new_album.is_empty() { "None" } else { "New collection" });
             let response = crate::album_picker::AlbumPicker::new("import-album", &mut chosen, &albums)
                 .width(ui.available_width())
                 .empty_text(empty)
@@ -1541,7 +1541,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
                     if none.clicked() {
                         extra = Some(false);
                     }
-                    let new = ui.selectable_label(d.album.is_none() && !d.new_album.is_empty(), crate::i18n::tr("New album…"));
+                    let new = ui.selectable_label(d.album.is_none() && !d.new_album.is_empty(), crate::i18n::tr("New collection…"));
                     register(ui.ctx(), "importAlbum:new", new.rect);
                     if new.clicked() {
                         extra = Some(true);

@@ -130,7 +130,7 @@ pub mod xmp_look;
 
 use std::sync::Arc;
 
-pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
+pub use cmd::{CommandInfo, CommandSpec, canonical_id, command_specs, find_command};
 pub use errors::{AiModel, ErrorKind};
 pub use fonts::{CRAFT_FONTS, CraftFont};
 use lcc_catalog::{Catalog, Filter, Op, PhotoId, Sort};
@@ -811,6 +811,7 @@ impl Session {
 
     /// Run a command by id. THE entry point for every frontend.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
+        let id = &*cmd::canonical_id(id);
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         // a command that validates the photos a call names isn't held back by the selection
         cmd::video_gate_call(self, id, params).map_err(|why| EngineError::Disabled(id.to_string(), why))?;

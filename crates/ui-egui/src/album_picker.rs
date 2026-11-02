@@ -188,7 +188,7 @@ impl<'a> AlbumPicker<'a> {
         self
     }
 
-    /// Text for an empty choice (already localized by the caller); the default is "Choose an album…".
+    /// Text for an empty choice (already localized by the caller); the default is "Choose a collection…".
     pub fn empty_text(mut self, text: impl Into<String>) -> Self {
         self.empty_text = Some(text.into());
         self
@@ -205,7 +205,7 @@ impl<'a> AlbumPicker<'a> {
     pub fn show_with_choices(self, ui: &mut Ui, choices: impl FnOnce(&mut Ui) -> bool) -> Response {
         let AlbumPicker { id, value, entries, width, empty_text } = self;
         let chosen = value.filter(|v| entries.iter().any(|e| e.id == *v && !e.folder));
-        let text = chosen.map_or_else(|| empty_text.unwrap_or_else(|| crate::i18n::tr("Choose an album…").to_string()), |c| path_label(entries, c));
+        let text = chosen.map_or_else(|| empty_text.unwrap_or_else(|| crate::i18n::tr("Choose a collection…").to_string()), |c| path_label(entries, c));
         // the name, and a drop-down arrow painted at the right (the UI font has no arrow glyph)
         let mut button =
             ui.add_sized(vec2(width, ui.spacing().interact_size.y), egui::Button::new(text.as_str()).truncate().right_text(" ")).on_hover_text(text);
@@ -231,7 +231,7 @@ impl<'a> AlbumPicker<'a> {
                 return;
             }
             let search_box =
-                ui.add(egui::TextEdit::singleline(&mut state.query).hint_text(crate::i18n::tr("Search albums")).desired_width(f32::INFINITY));
+                ui.add(egui::TextEdit::singleline(&mut state.query).hint_text(crate::i18n::tr("Search collections")).desired_width(f32::INFINITY));
             register(ui.ctx(), format!("albumPickerSearch:{id}"), search_box.rect);
             if state.focus {
                 search_box.request_focus();
@@ -308,7 +308,7 @@ impl<'a> AlbumPicker<'a> {
                         }
                     }
                     if entries.iter().all(|e| e.folder) {
-                        ui.label(RichText::new(crate::i18n::tr("No albums yet")).weak());
+                        ui.label(RichText::new(crate::i18n::tr("No collections yet")).weak());
                     }
                 } else {
                     let hits = search(entries, &state.query);
@@ -349,7 +349,7 @@ impl<'a> AlbumPicker<'a> {
                         );
                     }
                     if hits.is_empty() {
-                        ui.label(RichText::new(crate::i18n::tr("No albums match")).weak());
+                        ui.label(RichText::new(crate::i18n::tr("No collections match")).weak());
                     }
                 }
             });

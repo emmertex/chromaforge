@@ -73,7 +73,7 @@ impl LibrarySource {
         match self {
             LibrarySource::All => "All Photos".into(),
             LibrarySource::RecentlyAdded => "Recently Added".into(),
-            LibrarySource::Album(a) => cat.album(*a).map(|a| a.name.clone()).unwrap_or_else(|| "Album".into()),
+            LibrarySource::Album(a) => cat.album(*a).map(|a| a.name.clone()).unwrap_or_else(|| "Collection".into()),
             LibrarySource::RecentlyDeleted => "Recently Deleted".into(),
             LibrarySource::Picks => "Picks".into(),
             LibrarySource::Folder => "Folder".into(),

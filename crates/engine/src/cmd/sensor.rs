@@ -225,7 +225,7 @@ fn pixel_build(s: &mut Session, p: &Value, rebuild: bool) -> Result<Value> {
         .collect();
     items.sort_by(|a, b| a.2.cmp(&b.2));
     if items.is_empty() {
-        return Err(bad(c, "no raw photos to read (select some, or show the folder or album that holds them)"));
+        return Err(bad(c, "no raw photos to read (select some, or show the folder or collection that holds them)"));
     }
     let job = Arc::new(SensorJob { what: "pixels", total: items.len(), ..Default::default() });
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
@@ -652,7 +652,7 @@ fn dust_rebuild(s: &mut Session, p: &Value, rebuild: bool) -> Result<Value> {
     let clear = rebuild && p.get("clear").and_then(Value::as_bool).unwrap_or(true);
     let ids: Vec<PhotoId> = photos(s, p)?.into_iter().filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.develops_raw())).collect();
     if ids.is_empty() {
-        return Err(bad(c, "no raw photos to read (select some, or show the folder or album that holds them)"));
+        return Err(bad(c, "no raw photos to read (select some, or show the folder or collection that holds them)"));
     }
     // a rebuild clears each body's dust before its first photo is learnt: bodies whose photos are in the list
     if clear {

@@ -170,7 +170,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let lines: Vec<Value> = recipe.rows.iter().map(|r| json!({"tag": r.tag, "label": r.label, "value": r.value})).collect();
             Ok(json!({"present": true, "text": recipe.text(), "lines": lines}))
         }),
-        cmd!(query "albums.list", "List Albums", [], None, "{}", always, |s, _| {
+        cmd!(query "albums.list", "List Collections", [], None, "{}", always, |s, _| {
             let all: Vec<Album> = s.catalog.albums().cloned().collect();
             // every album counted in one pass, so a smart album tested by others is worked out once
             let counts = lcc_catalog::tally::AlbumTally::of(&s.catalog);

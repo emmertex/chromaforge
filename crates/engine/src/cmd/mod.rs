@@ -316,7 +316,28 @@ pub fn command_specs() -> &'static [CommandSpec] {
 }
 
 pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
-    command_specs().iter().find(|c| c.id == id)
+    let id = canonical_id(id);
+    command_specs().iter().find(|c| c.id == id.as_ref())
+}
+
+/// Collection command ids, the user-facing names: `collection.*` for `album.*`, `collections.list`
+/// for `albums.list` and `dialog.newCollection`, `dialog.smartCollection`,
+/// `dialog.newSmartCollection` for the dialogs' `…Album` ids. The UI calls them Collections (as
+/// Lightroom Classic does) while the catalog, the journal and saved scripts keep the album ids, so
+/// both spellings run the same command and old scripts, keymaps and journals keep working. Any
+/// other id is returned as it is.
+pub fn canonical_id(id: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    if let Some(rest) = id.strip_prefix("collection.") {
+        return Cow::Owned(format!("album.{rest}"));
+    }
+    match id {
+        "collections.list" => Cow::Borrowed("albums.list"),
+        "dialog.newCollection" => Cow::Borrowed("dialog.newAlbum"),
+        "dialog.smartCollection" => Cow::Borrowed("dialog.smartAlbum"),
+        "dialog.newSmartCollection" => Cow::Borrowed("dialog.newSmartAlbum"),
+        _ => Cow::Borrowed(id),
+    }
 }
 
 // ---------- param helpers

@@ -729,7 +729,7 @@ fn album_list_reports_problems() {
     };
     assert_eq!(find(&mut s)["problems"], serde_json::json!([]));
     s.execute("album.delete", &serde_json::json!({"id": trip})).unwrap();
-    assert_eq!(find(&mut s)["problems"], serde_json::json!([format!("rule 1: no album {trip}")]));
+    assert_eq!(find(&mut s)["problems"], serde_json::json!([format!("rule 1: no collection {trip}")]));
 }
 
 /// "Travel" = keywords contain travel, but not in "Excluded Photos" (red or rejected): the counts
@@ -775,11 +775,11 @@ fn smart_album_excluding_a_smart_album() {
         "album.setRules",
         &serde_json::json!({"id": excluded, "rules": {"ruleSet": {"rules": [{"field": "album", "op": "is", "value": travel}]}}, "replace": true}),
     );
-    assert!(looped.is_err_and(|e| e.to_string().contains("would make this album include itself")), "a loop is refused");
+    assert!(looped.is_err_and(|e| e.to_string().contains("would make this collection include itself")), "a loop is refused");
     // agents read the album by name in the summary
     let list = s.execute("albums.list", &serde_json::json!({})).unwrap();
     let travel_json = list.as_array().unwrap().iter().find(|a| a["id"] == travel).cloned().unwrap();
-    assert!(travel_json["rulesText"].as_str().unwrap_or("").contains("album isn't “Excluded Photos”"), "{travel_json}");
+    assert!(travel_json["rulesText"].as_str().unwrap_or("").contains("collection isn't “Excluded Photos”"), "{travel_json}");
 }
 
 /// "Update Rules from Current Filter" refuses a loop too: showing A ("Album isn't B") and
@@ -793,7 +793,7 @@ fn rules_from_the_view_cant_loop() {
     s.execute("library.source", &serde_json::json!({"kind": "album", "id": a})).unwrap();
     let before = s.catalog.album(lcc_catalog::AlbumId(b)).unwrap().smart.clone();
     let r = s.execute("album.setRules", &serde_json::json!({"id": b, "fromView": true}));
-    assert!(r.is_err_and(|e| e.to_string().contains("would make this album include itself")), "refused");
+    assert!(r.is_err_and(|e| e.to_string().contains("would make this collection include itself")), "refused");
     assert_eq!(s.catalog.album(lcc_catalog::AlbumId(b)).unwrap().smart, before, "B unchanged");
     assert!(s.catalog.smart_album_problems(lcc_catalog::AlbumId(b)).is_empty());
 }
@@ -939,4 +939,21 @@ fn capture_time_from_filename() {
     assert!(r.is_err(), "{r:?}");
     let r = s.execute("photo.setCaptureTime", &serde_json::json!({"ids": all, "fromFilename": true, "fromFile": true}));
     assert!(r.is_err(), "{r:?}");
+}
+
+/// Collections are the user-facing name of albums: `collection.*` and `collections.list` run the
+/// `album.*` commands, the journal keeps the album ids, and the old ids still work.
+#[test]
+fn collection_ids_are_aliases_of_album_ids() {
+    let mut s = Session::with_demo();
+    let made = s.execute("collection.create", &json!({"name": "Keepers"})).unwrap();
+    let id = made["id"].as_u64().unwrap();
+    s.execute("album.rename", &json!({"id": id, "name": "Best"})).unwrap();
+    let list = s.execute("collections.list", &json!({})).unwrap();
+    let old = s.execute("albums.list", &json!({})).unwrap();
+    assert_eq!(list, old);
+    assert!(list.to_string().contains("Best"), "{list}");
+    assert_eq!(crate::find_command("collection.addPhotos").map(|c| c.id), Some("album.addPhotos"));
+    assert_eq!(crate::canonical_id("library.import"), "library.import");
+    assert!(matches!(s.execute("collection.noSuchThing", &json!({})), Err(crate::EngineError::UnknownCommand(_))));
 }
