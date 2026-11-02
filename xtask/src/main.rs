@@ -114,9 +114,11 @@ commands:
                   show where test corpora live; --download fetches PngSuite, CC0 raw samples (raw.pixls.us) and public-domain / CC-BY video clips into corpus/ and checks their sha256
   upstream-review [--ref REF] | --done [REF]
                   list the upstream commits since the last review (upstream-reviewed.txt), grouped by area, into
-                  target/upstream/upstream-review-YYYYMMDD.md for porting by hand; --done records REF as reviewed
+                  target/upstream/upstream-review-YYYYMMDD.md for porting by hand; --done records REF as reviewed.
+                  Commit lane only: pull requests are enumerated with tools/upstream_intake.py, per
+                  docs/upstream-pr-intake.md (one PR per round, merged at a release)
   upstream-merge [--ref REF] [--no-ci]
-                  (no longer used: the fork cherry-picks instead, docs/upstream-merge.md) merge upstream on
+                  (retired: do not use, docs/upstream-pr-intake.md) merge upstream on
                   merge/upstream-YYYYMMDD, keep owned paths, write a review list, map crate names, run ci
   upstream-pr <branch> <commit>...
                   replay commits onto a new branch off upstream/main with upstream crate names (never pushes)
