@@ -4512,6 +4512,7 @@ dependencies = [
  "lcc-hdrmeta",
  "lcc-pipeline",
  "lcc-raster",
+ "lcc-surface",
  "lcc-sysmem",
  "lcc-testkit",
  "lcc-ui-egui",
@@ -5339,6 +5340,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lcc-surface"
+version = "26.45.0"
+dependencies = [
+ "lcc-develop",
+ "miniz_oxide 0.8.9",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "lcc-sysmem"
 version = "26.45.0"
 dependencies = [
@@ -5420,6 +5432,7 @@ dependencies = [
  "lcc-raster",
  "lcc-raw",
  "lcc-slideshow",
+ "lcc-surface",
  "lcc-testkit",
  "lcc-text",
  "lcc-updater",

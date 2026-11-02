@@ -12,6 +12,7 @@
 //!   image coordinates (brush strokes, crop handles…) — mapped to screen and injected as real input
 //! - `ui.key {key, shift?, alt?, cmd?}` / `ui.text {text}` / `ui.scroll {dx, dy}`
 //! - `ui.set {view?, panel?, filmstrip?, leftPanel?, zoom?, …}` / `ui.dialog.confirm|cancel`
+//! - `surface.*`: control surfaces (pairing, subscribe, input, layout, icons; `crate::surface`)
 //! - `ui.screenshot {path?, headless?}` (headless: CPU-rendered, no compositor needed), `ui.resize {width, height}`, `ui.render {id?, size?, path?}`, `app.quit`
 
 use std::sync::mpsc::Sender;
@@ -29,6 +30,10 @@ pub struct ControlRequest {
     /// Who has the request: [`PENDING`], [`TAKEN`] (the app runs it) or [`ABANDONED`] (the
     /// sender gave up on it, so the app must not run it late: issue #718).
     pub state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// The connection it came on (0 = in process: headless scripts and tests, trusted).
+    pub conn: u64,
+    /// Where events for that connection go, for `surface.subscribe` (none in process).
+    pub sink: Option<crate::surface::EventSink>,
 }
 
 /// Queued, not yet run.
@@ -41,7 +46,14 @@ pub const ABANDONED: u8 = 2;
 impl ControlRequest {
     pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx, state: Default::default() }, rx)
+        (Self { method: method.into(), params, reply: tx, state: Default::default(), conn: 0, sink: None }, rx)
+    }
+
+    /// The request came on connection `conn` (numbered from 1), whose pushed events go to `sink`.
+    pub fn on_connection(mut self, conn: u64, sink: crate::surface::EventSink) -> Self {
+        self.conn = conn;
+        self.sink = Some(sink);
+        self
     }
 
     /// Claim the request for running; false when its sender already gave up on it.
@@ -238,6 +250,9 @@ pub(crate) fn check_gesture_numbers(method: &str, p: &Value) -> Result<(), Strin
 }
 
 pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    if let Some(o) = crate::surface::handle(app, req) {
+        return o;
+    }
     let p = &req.params;
     if matches!(
         req.method.as_str(),
@@ -488,41 +503,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 Err(e) => err(e),
             }
         }
-        "ui.dialog.confirm" => match app.ui.dialog.take() {
-            Some(d) => {
-                let r = crate::panels::dialogs::confirm_dialog(app, &d);
-                // the import review and the rule editor stay open on an error, as with their buttons
-                if (r.is_err()
-                    && matches!(
-                        d,
-                        crate::state::Dialog::Import { .. }
-                            | crate::state::Dialog::SamModel { .. }
-                            | crate::state::Dialog::SmartRules { .. }
-                            | crate::state::Dialog::SaveEffect { .. }
-                            | crate::state::Dialog::CaptureTime { .. }
-                    ))
-                    || (r.is_ok() && crate::panels::dialogs::keeps_open(app, &d))
-                    || (r.is_err() && crate::lightroom_destination::keeps_open_on_error(app, &d))
-                {
-                    app.ui.dialog = Some(d);
-                }
-                wrap(r)
-            }
-            // Read / Save Metadata's overwrite question lives with the catalog dialogs: confirm it as its button does
-            #[cfg(not(target_arch = "wasm32"))]
-            None => match app.catalog_ui.dialog.take() {
-                Some(crate::catalog_ui::CatalogDialog::XmpConflict { command, ids, .. }) => {
-                    wrap(app.run(&command, json!({"ids": ids, "confirmed": true})))
-                }
-                other => {
-                    app.catalog_ui.dialog = other;
-                    err("no dialog open")
-                }
-            },
-            // the web build has no Read / Save Metadata overwrite question
-            #[cfg(target_arch = "wasm32")]
-            None => err("no dialog open"),
-        },
+        "ui.dialog.confirm" => wrap(confirm_dialog(app)),
         "ui.dialog.cancel" => {
             app.ui.dialog = None;
             #[cfg(not(target_arch = "wasm32"))]
@@ -598,6 +579,44 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             ok(Value::Null)
         }
         other => err(format!("unknown method `{other}`")),
+    }
+}
+
+/// OK on the open dialog (`ui.dialog.confirm`, a surface's OK key).
+/// Confirms the open dialog as its button does (`ui.dialog.confirm`, and a control surface's Confirm key).
+pub(crate) fn confirm_dialog(app: &mut LccApp) -> Result<Value, String> {
+    match app.ui.dialog.take() {
+        Some(d) => {
+            let r = crate::panels::dialogs::confirm_dialog(app, &d);
+            // the import review and the rule editor stay open on an error, as with their buttons
+            if (r.is_err()
+                && matches!(
+                    d,
+                    crate::state::Dialog::Import { .. }
+                        | crate::state::Dialog::SamModel { .. }
+                        | crate::state::Dialog::SmartRules { .. }
+                        | crate::state::Dialog::SaveEffect { .. }
+                        | crate::state::Dialog::CaptureTime { .. }
+                ))
+                || (r.is_ok() && crate::panels::dialogs::keeps_open(app, &d))
+                || (r.is_err() && crate::lightroom_destination::keeps_open_on_error(app, &d))
+            {
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
+        // Read / Save Metadata's overwrite question lives with the catalog dialogs: confirm it as its button does
+        #[cfg(not(target_arch = "wasm32"))]
+        None => match app.catalog_ui.dialog.take() {
+            Some(crate::catalog_ui::CatalogDialog::XmpConflict { command, ids, .. }) => app.run(&command, json!({"ids": ids, "confirmed": true})),
+            other => {
+                app.catalog_ui.dialog = other;
+                Err("no dialog open".into())
+            }
+        },
+        // the web build has no Read / Save Metadata overwrite question
+        #[cfg(target_arch = "wasm32")]
+        None => Err("no dialog open".into()),
     }
 }
 

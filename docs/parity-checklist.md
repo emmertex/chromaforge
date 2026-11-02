@@ -28,7 +28,7 @@ cited here still exists. Formerly docs/parity.md.
 |---|---:|---:|---:|---:|---:|---:|
 | A. Import (IMP) | 14 | 3 | 1 | 1 | 4/6 (67%) | 5/5 (100%) |
 | B. Library management (LIB) | 22 | 2 | 1 | 2 | 9/9 (100%) | 9/9 (100%) |
-| C. Views & navigation (VIEW) | 17 | 2 | 0 | 0 | 9/9 (100%) | 4/4 (100%) |
+| C. Views & navigation (VIEW) | 18 | 2 | 0 | 0 | 9/9 (100%) | 5/5 (100%) |
 | D. Search & filter (FILT) | 11 | 1 | 1 | 0 | 4/4 (100%) | 4/4 (100%) |
 | E. Metadata (META) | 5 | 1 | 0 | 0 | 2/2 (100%) | 2/2 (100%) |
 | F. Edit panel — global adjustments (EDIT) | 44 | 5 | 1 | 1 | 28/28 (100%) | 13/15 (87%) |
@@ -54,9 +54,9 @@ cited here still exists. Formerly docs/parity.md.
 | Z. Keyboard shortcuts (desktop) | 77 | 5 | 2 | 1 | 48/52 (92%) | 24/26 (92%) |
 | Lightroom Classic extras | 104 | 20 | 3 | 0 | — | 35/39 (90%) |
 | IMM. Immich integration | 11 | 0 | 0 | 0 | — | 7/7 (100%) |
-| **Total** | 505 | 70 | 30 | 27 | 195/203 (96%) | 166/185 (90%) |
+| **Total** | 506 | 70 | 30 | 27 | 195/203 (96%) | 167/186 (90%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.3%** of 605 in-scope rows — P0 98.0% of 203 · P1 94.6% of 185 · P2 76.5% of 215.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.3%** of 606 in-scope rows — P0 98.0% of 203 · P1 94.6% of 186 · P2 76.5% of 215.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -212,6 +212,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-VIEW-COMPARE | Compare two photos | P1 | ✅ | `cmd:view.compare`, `cmd:compare.swap`, `cmd:compare.makeSelect`, `cmd:compare.set`, `crates/ui-egui/src/panels/compare.rs`, `crates/ui-egui/src/tests_compare.rs` | select / candidate, synced zoom + pan, arrows move the candidate; a filmstrip click puts the photo into the active side (a photo on the other side swaps), so the active photo is always one of the two shown; a ⌘/Ctrl- or Shift-click on the filmstrip changes the selection as in the grid while the two photos shown stay selected and the active photo is unchanged (#187); 1:1 to 8:1 sharp on both sides (zoom windows, see LR-VIEW-ZOOM); no zoom-link toggle; each pane says “Rendering…” (widget `compare:rendering:<pane>`) or “This photo can't be opened” (`compare:renderFailed:<pane>`) as the loupe does |
 | LR-VIEW-SURVEY | Survey view [Classic] | P2 | ✅ | `cmd:view.survey`, `crates/ui-egui/src/panels/compare.rs` | selection tiled (≤ 48), keys, the bottom bar and the Info panel's stars and colour labels act on the active photo, each tile's caption shows its colour label, hover × removes |
 | LR-VIEW-INFOOVERLAY | Info overlay on the photo | P1 | ✅ | `cmd:view.infoOverlay`, `cmd:view.viewOptions`, `crates/ui-egui/src/panels/detail.rs` (`info_overlay`) | off / Info 1 (by default file name, capture date, size) / Info 2 (file name, exposure, camera + lens), each three lines chosen in View Options; ⌘I cycles (I in full screen; elsewhere I stays the Info panel); the star rating and flag show under the lines when the photo has them, and in the full-screen preview on macOS the overlay starts below the window controls (issue #2460) |
+| LR-VIEW-ACTIONOSD | A note over the photo for every change (Lightroom's loupe messages) | P1 | ✅ | `cmd:osd.settings`, `cmd:osd.mode`, `cmd:osd.state`, `crates/engine/src/change_report.rs`, `crates/ui-egui/src/panels/surface_osd.rs`, `crates/ui-egui/src/tests_osd.rs` | every command that changes photos reports itself in the shared dispatch, from keys, mouse, menus, sliders, control surfaces and agents alike: a slider's name and value (live while dragging, one note that updates), ratings, flags, labels, profiles, undo and redo, with the number of photos when more than one changed (Auto Sync, a selection); background work never shows; the control surfaces' readout in the same pill with the console's icon; Off / Control surface only / Always, size, opacity, time, four positions and colour in Settings ▸ Interface (TactileBridge's OSD settings plus a size) |
 | LR-VIEW-SLIDESHOW | Slideshow | P2 | ✅ | `cmd:view.slideshow` | Window ▸ Slideshow ▸ Slideshow (⌥⌘↩): the photos in view full screen from the selected one, played with the library's playback settings (see LRC-SS-PLAYBACK: fades, random order, repeat, previews prepared ahead; `interval` / any setting overrides one run); Space pauses, ←/→ step (a cut), Esc ends; playback controls on pointer movement |
 | LR-VIEW-SECONDWINDOW | Second display window [Classic] | P2 | ✅ | `cmd:view.secondWindow`, `crates/ui-egui/src/panels/second.rs` | Window ▸ Second Window (⌘F11): the active photo fitted in its own native window with its own render (a floating panel where there are no native windows); loupe view only (no grid / compare / survey there) |
 | LR-VIEW-CLIPPING | Clipping indicators | P0 | ✅ | `cmd:view.clipping` | Per-pixel clipping overlay (J shortcut and histogram indicators) with pure blue for crushed shadows and pure red for blown-out highlights; interactive Alt/Option-drag on tone sliders (Exposure, Highlights, Whites, Shadows, Blacks), or on the same histogram tonal zones (LRC-DEV-HISTOGRAM-DRAG), renders high-contrast threshold masks (#94) |

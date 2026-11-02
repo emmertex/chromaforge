@@ -2344,5 +2344,7 @@
   "Only a place at the top of Local can be removed from it": "Paikallisesta voi poistaa vain sen ylimmän tason paikan",
   "Copy Path": "Kopioi polku",
   "Path copied": "Polku kopioitu",
-  "Same Content as Another Photo": "Sama sisältö kuin toisella kuvalla"
+  "Same Content as Another Photo": "Sama sisältö kuin toisella kuvalla",
+  "{app} Effect Presets": "{app}in tehosteesiasetukset",
+  "Console: Masking and Mask are now one Masks page": "Konsoli: Maskaus ja Maski ovat nyt yksi Maskit-sivu"
 }

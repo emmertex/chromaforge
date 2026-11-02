@@ -50,6 +50,7 @@ lcc-merge = { path = "crates/merge" }
 lcc-engine = { path = "crates/engine" }
 lcc-ui-egui = { path = "crates/ui-egui" }
 lcc-mcp = { path = "crates/mcp" }
+lcc-surface = { path = "crates/surface" }
 lcc-fetch = { path = "crates/fetch" }
 lcc-net = { path = "crates/net" }
 lcc-updater = { path = "crates/updater" }
@@ -140,6 +141,8 @@ pollster = "1"
 
 # ui
 egui = "0.36"
+# control-surface icons in Settings > Controls and the readout (pure Rust; no text, no raster images)
+resvg = { version = "0.45", default-features = false }
 egui_extras = { version = "0.36", default-features = false }
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"

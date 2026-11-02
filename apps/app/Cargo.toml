@@ -27,6 +27,8 @@ heif = ["lcc-codecs/heif"]
 audio-out = ["lcc-engine/audio-out"]
 
 [dependencies]
+# reading the Logi plugin package's version (`logi_plugin`) and the control-surface e2e test
+lcc-surface = { workspace = true }
 lcc-brand = { workspace = true }
 lcc-engine = { workspace = true, features = ["sam"] }
 lcc-sysmem = { workspace = true }

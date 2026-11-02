@@ -1,7 +1,6 @@
 {
   " · aesthetic {:.1}": " · 审美 {0:.1}",
   " · eyes {:.0}%": " · 睁眼 {0:.0}%",
-
   " · {skipped} skipped (file exists)": " · 已跳过 {skipped} 个（文件已存在）",
   " · {} duplicate{} skipped": " · 已跳过 {0} 个重复项{1:.0}",
   " · {} failed: {}": " · {0} 个失败：{1}",
@@ -322,5 +321,24 @@
   "{n} done": "完成 {n} 张",
   ", {n} failed": "，失败 {n} 张",
   "{n} failed": "失败 {n} 张",
-  "Show each photo ({n})": "显示各张照片（{n}）"
+  "Show each photo ({n})": "显示各张照片（{n}）",
+  "{name} asks to control {app}: see Settings, Controls": "{name} 请求控制 {app}：请查看“设置 - 控制设备”",
+  "Now: {context}": "当前：{context}",
+  "Imported into the profile “{name}”": "已导入到配置“{name}”",
+  "Last import: {mapped} brought over, {dropped} left out": "上次导入：迁移 {mapped} 项，略过 {dropped} 项",
+  "Saved {path}": "已保存：{path}",
+  "Paired: {name}": "已配对：{name}",
+  "{name} asks to pair. Code: {code}": "{name} 请求配对。代码：{code}",
+  "Listening on 127.0.0.1:{port}": "正在 127.0.0.1:{port} 上监听",
+  "Plugin {version} installed": "已安装插件 {version}",
+  "Show page {name}": "显示页面 {name}",
+  "Switch to profile {name}": "切换到配置 {name}",
+  "on {n} photos": "共 {n} 张照片",
+  "Undo: {what}": "撤销：{what}",
+  "Redo: {what}": "重做：{what}",
+  "Profile {name} applied to {n} photos": "已将配置文件 {name} 应用到 {n} 张照片",
+  "Profile {name}": "配置文件 {name}",
+  "{n} stars": "{n} 星",
+  "Label: {name}": "标签：{name}",
+  "This action doesn't use: {keys}. Choose Preset above to put a preset on this key.": "此操作不使用：{keys}。要把预设放到此键上，请在上方选择“预设”。"
 }
