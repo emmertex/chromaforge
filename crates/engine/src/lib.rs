@@ -385,7 +385,11 @@ pub struct Session {
     /// The photo that was active before the current one (Paste Settings from Previous).
     pub previous_active: Option<PhotoId>,
     /// Groups last used for Copy (Lightroom remembers them).
-    pub copy_groups: Vec<lcc_develop::SettingsGroup>,
+    /// What dialogs remember app-wide: Copy / Sync / New Preset ticks, New Preset's group, other
+    /// dialogs' last choices ([`app_store::DialogMemory`]; kept in the app store, else the library).
+    pub dialogs: app_store::DialogMemory,
+    /// The settings the last `preset.update` replaced (`preset.undoUpdate`).
+    pub preset_undo: Option<(String, serde_json::Value)>,
     /// Built-in then user presets; its generation tells savers and caches when it changed.
     pub presets: presets::PresetList,
     /// User-created preset folders (subfolders separated by `/`); empty ones stay until deleted.
@@ -644,7 +648,8 @@ impl Session {
             browse: None,
             library_folder: None,
             previous_active: None,
-            copy_groups: lcc_develop::SettingsGroup::default_copy(),
+            dialogs: Default::default(),
+            preset_undo: None,
             presets: presets::PresetList::new(presets::builtin()),
             preset_folders: Vec::new(),
             profile_favorites: Vec::new(),

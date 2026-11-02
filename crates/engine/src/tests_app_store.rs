@@ -202,3 +202,58 @@ fn use_library_keeps_a_copy_and_gather_reads_backups() {
     assert_eq!(r["count"], 0);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// LR-PRE-CREATE: single settings travel alone, White Balance stays out of a new preset by default,
+/// Update Preset can be undone, the choices are remembered (in the store), a group typed like one
+/// there is joins it, and dialog.remember refuses what it can't keep.
+#[test]
+fn per_setting_picks_update_with_undo_and_remembered_choices() {
+    let root = temp("picks");
+    let (store, a, b) = (root.join("store"), root.join("a"), root.join("b"));
+    let mut s = with_store(&store, &a);
+    let id = s.catalog.alloc_photo_id();
+    let p = lcc_catalog::Photo::new(id, lcc_catalog::Source::File { path: "/x/a.jpg".into() }, "a.jpg", "JPEG", 60, 40, "2026-01-01T10:00:00");
+    s.commit("Add", lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    s.execute("develop.set", &json!({"values": {"light.exposure": 1.0, "light.contrast": 20, "wb.temp": 3000}})).unwrap();
+    let r = s.execute("preset.create", &json!({"name": "Base"})).unwrap();
+    let pid = r["id"].as_str().unwrap().to_string();
+    let pr = s.presets.iter().find(|p| p.id == pid).unwrap();
+    assert!(pr.settings.get("wb").is_none(), "White Balance is off by default: {}", pr.settings);
+    // only Contrast of Light, in a group typed like one there is
+    s.execute("preset.createGroup", &json!({"name": "Wedding"})).unwrap();
+    let r = s.execute("preset.create", &json!({"name": "C", "group": " wedding ", "settings": ["light.contrast"]})).unwrap();
+    assert_eq!(r["group"], "Wedding");
+    let c = r["id"].as_str().unwrap().to_string();
+    assert_eq!(s.presets.iter().find(|p| p.id == c).unwrap().settings, json!({"light": {"contrast": 20.0}}));
+    assert!(s.execute("preset.create", &json!({"name": "X", "settings": ["light.nope"]})).is_err());
+    // Update keeps the picked settings with the new values; Undo puts the old ones back
+    s.execute("develop.set", &json!({"values": {"light.contrast": 50}})).unwrap();
+    s.execute("preset.update", &json!({"id": c})).unwrap();
+    assert_eq!(s.presets.iter().find(|p| p.id == c).unwrap().settings, json!({"light": {"contrast": 50.0}}));
+    s.execute("preset.undoUpdate", &json!({})).unwrap();
+    assert_eq!(s.presets.iter().find(|p| p.id == c).unwrap().settings, json!({"light": {"contrast": 20.0}}));
+    assert!(s.execute("preset.undoUpdate", &json!({})).is_err());
+    // the choices are remembered, the same in the next library
+    s.execute("develop.copy", &json!({"settings": ["light.exposure"]})).unwrap();
+    s.execute("dialog.remember", &json!({"dialog": "export", "choices": {"quality": 80}})).unwrap();
+    assert!(s.execute("dialog.remember", &json!({"dialog": "big", "choices": "x".repeat(70_000)})).is_err());
+    s.persist().unwrap();
+    drop(s);
+    let mut s = with_store(&store, &b);
+    assert_eq!(s.dialogs.copy, lcc_develop::SettingsPick::from_ids(&["light.exposure"]));
+    assert_eq!(s.dialogs.preset_group, "Wedding");
+    assert_eq!(s.execute("dialog.recall", &json!({"dialog": "export"})).unwrap(), json!({"quality": 80}));
+    let items = s.execute("develop.settingItems", &json!({})).unwrap();
+    assert!(items["groups"].as_array().unwrap().iter().any(|g| g["group"] == "light" && !g["settings"].as_array().unwrap().is_empty()));
+    drop(s);
+    // hand-edited choices that don't parse are the defaults, never a damaged store
+    let shared = store.join("shared.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&shared).unwrap()).unwrap();
+    v["dialogs"] = json!({"copy": 7, "other": "nope"});
+    std::fs::write(&shared, serde_json::to_vec(&v).unwrap()).unwrap();
+    let mut s = Session::new().with_app_store(&store);
+    assert!(s.take_library_warnings().is_empty());
+    assert!(s.dialogs.is_default());
+    let _ = std::fs::remove_dir_all(&root);
+}

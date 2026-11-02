@@ -221,7 +221,7 @@ fn scan(s: &mut Session, p: &Value) -> Result<Value> {
 /// Give the new shots `ids` the develop settings (the copy groups) of shot `prev`.
 fn same_as_previous(s: &mut Session, prev: PhotoId, ids: &[u64]) {
     let Some(from) = s.develop_of(prev).filter(|_| s.catalog.photo(prev).is_some_and(|p| !p.deleted)) else { return };
-    let partial = lcc_develop::extract_groups(&from, &s.copy_groups);
+    let partial = s.dialogs.copy.extract(&from);
     let ops: Vec<_> = ids
         .iter()
         .map(|i| PhotoId(*i))

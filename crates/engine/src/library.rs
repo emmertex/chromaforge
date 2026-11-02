@@ -367,6 +367,9 @@ struct PrefsFile {
     /// ([`crate::app_store`]).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     store_with_library: bool,
+    /// What dialogs remember (while the library keeps its own; else in the app store).
+    #[serde(skip_serializing_if = "crate::app_store::DialogMemory::is_default", deserialize_with = "crate::app_store::lenient_dialogs")]
+    dialogs: crate::app_store::DialogMemory,
 }
 
 /// The keys of `store`'s prefs.json the app store holds, as they are on disk.
@@ -684,6 +687,7 @@ impl Session {
         self.slide_titles = prefs.slide_titles.sanitized();
         self.forget_local_days = prefs.forget_local_days.unwrap_or(lcc_catalog::DEFAULT_FORGET_DAYS);
         self.hold_view = prefs.hold_view;
+        self.dialogs = prefs.dialogs.clone();
         self.folder_watch = prefs.folder_watch.sanitized();
         // (a damaged file only costs a fresh start: the next poll records the listings again)
         let watch: crate::folder_watch::WatchState = files
@@ -1066,6 +1070,7 @@ impl Session {
             hold_view: self.hold_view,
             folder_watch: self.folder_watch,
             store_with_library: self.library.as_ref().is_some_and(|l| l.store_with_library),
+            dialogs: self.dialogs.clone(),
         });
         // while the app store holds them, the library's own copies are written back as read
         let v = match (v, self.library.as_ref()) {

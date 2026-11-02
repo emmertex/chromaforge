@@ -88,10 +88,104 @@ pub struct Habits {
     pub slide_overlays: crate::slide_overlay::OverlaySettings,
     pub slide_titles: crate::slide_title::TitleSettings,
     pub hold_view: bool,
+    /// What Copy Settings, Sync and New Preset tick, New Preset's group, and the other dialogs'
+    /// last answers (LR-PRE-CREATE).
+    #[serde(skip_serializing_if = "DialogMemory::is_default", deserialize_with = "lenient_dialogs")]
+    pub dialogs: DialogMemory,
+}
+
+/// The group a new preset goes in unless another is chosen.
+pub const DEFAULT_PRESET_GROUP: &str = "User Presets";
+/// Most dialogs remembered in [`DialogMemory::other`] (a hand-edited file can't grow it without end).
+pub const MAX_REMEMBERED_DIALOGS: usize = 64;
+/// Largest remembered answer of one dialog (bytes of JSON).
+pub const MAX_REMEMBERED_BYTES: usize = 64 << 10;
+
+/// What the dialogs with choices remember, across uses, restarts and libraries.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DialogMemory {
+    /// Copy Settings (Paste Selected offers what was copied; tethering's Same as Previous).
+    pub copy: lcc_develop::SettingsPick,
+    /// Sync Settings.
+    pub sync: lcc_develop::SettingsPick,
+    /// New Preset's ticks (White Balance left out until it is ticked).
+    pub new_preset: lcc_develop::SettingsPick,
+    /// The group New Preset put the last preset in.
+    pub preset_group: String,
+    /// The other dialogs' last choices by dialog id (`dialog.remember`).
+    pub other: BTreeMap<String, Value>,
+}
+
+impl Default for DialogMemory {
+    fn default() -> Self {
+        use lcc_develop::{SettingsGroup, SettingsPick};
+        DialogMemory {
+            copy: SettingsPick::of_groups(SettingsGroup::default_copy()),
+            sync: SettingsPick::of_groups(SettingsGroup::default_copy()),
+            new_preset: SettingsPick::of_groups(SettingsGroup::default_preset()),
+            preset_group: DEFAULT_PRESET_GROUP.into(),
+            other: BTreeMap::new(),
+        }
+    }
+}
+
+/// Remembered choices that can't be read (a hand-edited file) are the defaults, never a damaged store.
+pub(crate) fn lenient_dialogs<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<DialogMemory, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(serde_json::from_value::<DialogMemory>(v)
+        .map_err(|e| log::warn!("the remembered dialog choices can't be read ({e}); the defaults are used"))
+        .unwrap_or_default()
+        .sanitized())
+}
+
+impl DialogMemory {
+    pub fn is_default(&self) -> bool {
+        *self == DialogMemory::default()
+    }
+
+    /// Picks normalized, the map and its answers capped.
+    pub(crate) fn sanitized(mut self) -> DialogMemory {
+        self.copy = self.copy.normalized();
+        self.sync = self.sync.normalized();
+        self.new_preset = self.new_preset.normalized();
+        if self.preset_group.trim().is_empty() {
+            self.preset_group = DEFAULT_PRESET_GROUP.into();
+        }
+        self.other.retain(|k, v| k.len() <= 64 && serde_json::to_vec(v).is_ok_and(|b| b.len() <= MAX_REMEMBERED_BYTES));
+        while self.other.len() > MAX_REMEMBERED_DIALOGS {
+            let Some(k) = self.other.keys().next_back().cloned() else { break };
+            self.other.remove(&k);
+        }
+        self
+    }
+
+    /// Take `other`'s choices where this has only the defaults (a library merged into the store).
+    fn merge(&mut self, other: DialogMemory) {
+        let d = DialogMemory::default();
+        if self.copy == d.copy {
+            self.copy = other.copy;
+        }
+        if self.sync == d.sync {
+            self.sync = other.sync;
+        }
+        if self.new_preset == d.new_preset {
+            self.new_preset = other.new_preset;
+        }
+        if self.preset_group == d.preset_group {
+            self.preset_group = other.preset_group;
+        }
+        for (k, v) in other.other {
+            if self.other.len() < MAX_REMEMBERED_DIALOGS {
+                self.other.entry(k).or_insert(v);
+            }
+        }
+    }
 }
 
 /// The `prefs.json` keys the store holds while a library uses it (kept there as read).
-pub(crate) const SHARED_PREFS_KEYS: [&str; 19] = [
+pub(crate) const SHARED_PREFS_KEYS: [&str; 20] = [
+    "dialogs",
     "lutProfiles",
     "maskEffects",
     "maskToolEffects",
@@ -465,6 +559,7 @@ impl Habits {
             self.slide_titles = other.slide_titles.clone();
         }
         self.hold_view |= other.hold_view;
+        self.dialogs.merge(other.dialogs.clone());
         let keyword_set = other.keyword_set.clone();
         let n = self.merge_named_presets(other);
         if self.keyword_set.is_none() {
@@ -728,6 +823,7 @@ impl Session {
             slide_overlays: self.slide_overlays.clone(),
             slide_titles: self.slide_titles.clone(),
             hold_view: self.hold_view,
+            dialogs: self.dialogs.clone(),
         }
     }
 
@@ -749,6 +845,7 @@ impl Session {
         self.slide_overlays = h.slide_overlays.sanitized();
         self.slide_titles = h.slide_titles.sanitized();
         self.hold_view = h.hold_view;
+        self.dialogs = h.dialogs.sanitized();
         self.lut_profiles = c.lut_profiles;
         let dir = self.profiles_dir();
         crate::cmd::lut_profiles::register_all(self, dir.as_deref());

@@ -256,6 +256,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.presetsManager", "Manage Presets…", None, "Photo>Develop Settings"),
     ("dialog.autoStack", "Auto-Stack by Capture Time…", None, "Photo>Stack"),
     ("dialog.copySettings", "Choose Edit Settings to Copy…", Some("Cmd+Shift+C"), "Photo>Develop Settings"),
+    // {id}: Update Preset with Current Settings, pre-ticked with what the preset holds
+    ("dialog.updatePreset", "Update Preset with Current Settings…", None, ""),
     ("dialog.pasteSettings", "Paste Selected Settings…", Some("Cmd+Shift+V"), "Photo>Develop Settings"),
     ("dialog.syncSettings", "Sync Settings…", Some("Cmd+Shift+S"), "Photo>Develop Settings"),
     ("view.focusSearch", "Find…", Some("Cmd+F"), "Library"),
@@ -1812,7 +1814,17 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "dialog.createPreset" => {
-            app.ui.dialog = Some(Dialog::create_preset());
+            app.ui.dialog = Some(Dialog::create_preset(&app.session));
+            Ok(Value::Null)
+        }
+        "dialog.updatePreset" => {
+            let Some(id) = p.get("id").and_then(Value::as_str).map(str::to_string) else { return Some(Err("missing `id`".into())) };
+            let Some(preset) = app.session.presets.iter().find(|x| x.id == id) else { return Some(Err(format!("unknown preset `{id}`"))) };
+            if preset.builtin {
+                return Some(Err("built-in presets can't be changed".into()));
+            }
+            let (name, groups) = (preset.name.clone(), lcc_develop::SettingsPick::of_partial(&preset.settings).to_ids());
+            app.ui.dialog = Some(Dialog::UpdatePreset { id, name, groups });
             Ok(Value::Null)
         }
         "dialog.presetsManager" => {
@@ -1821,8 +1833,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "dialog.pasteSettings" => {
-            let groups =
-                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
+            let groups = app.session.dialogs.copy.to_ids();
             app.ui.dialog = Some(Dialog::PasteSettings { groups });
             Ok(Value::Null)
         }
@@ -1832,14 +1843,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "dialog.syncSettings" => {
-            let groups =
-                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
-            app.ui.dialog = Some(Dialog::SyncSettings { groups, controls: Vec::new() });
+            let groups = app.session.dialogs.copy.to_ids();
+            let _ = groups;
+            app.ui.dialog = Some(Dialog::SyncSettings { groups: app.session.dialogs.sync.to_ids(), controls: Vec::new() });
             Ok(Value::Null)
         }
         "dialog.copySettings" => {
-            let groups =
-                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
+            let groups = app.session.dialogs.copy.to_ids();
             app.ui.dialog = Some(Dialog::CopySettings { groups });
             Ok(Value::Null)
         }
@@ -2928,6 +2938,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "photo.editInPhotoCraft" | "photo.editInExternal" => app.session.active().is_some() && app.services.open_with.is_some(),
         "app.exportPrevious" => app.session.active().is_some() && app.session.last_export.is_some(),
         "dialog.pasteSettings" => app.session.active().is_some() && app.session.clipboard.is_some(),
+        "dialog.updatePreset" => app.session.active().is_some(),
         "dialog.syncSettings" => app.session.active().is_some() && app.session.selection.ids.len() > 1,
         "photo.openOriginalInExternal" => {
             // only a file type the app reads can be handed over (#2135); the extension alone

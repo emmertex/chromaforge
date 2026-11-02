@@ -126,7 +126,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
         register(ui.ctx(), "icon:presetCreate", plus.rect);
         egui::Popup::menu(&plus).show(|ui| {
             if ui.add_enabled(app.session.active().is_some(), egui::Button::new(crate::i18n::tr("Create Preset…"))).clicked() {
-                app.ui.dialog = Some(crate::state::Dialog::create_preset());
+                app.ui.dialog = Some(crate::state::Dialog::create_preset(&app.session));
             }
             if ui.button(crate::i18n::tr("Create Folder…")).clicked() {
                 app.ui.dialog = Some(crate::state::Dialog::create_preset_folder(None));
@@ -218,7 +218,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
             }
             crate::widgets::context_menu(&space_resp, |ui| {
                 if ui.button(crate::i18n::tr("Create Preset…")).clicked() {
-                    app.ui.dialog = Some(crate::state::Dialog::create_preset());
+                    app.ui.dialog = Some(crate::state::Dialog::create_preset(&app.session));
                 }
                 if ui.button(crate::i18n::tr("Create Folder…")).clicked() {
                     app.ui.dialog = Some(crate::state::Dialog::create_preset_folder(None));
@@ -380,7 +380,7 @@ fn show_folder_node(
     if !favorites {
         crate::widgets::context_menu(&resp, |ui| {
             if ui.button(crate::i18n::tr("Create Preset…")).clicked() {
-                app.ui.dialog = Some(crate::state::Dialog::create_preset_in(Some(&path)));
+                app.ui.dialog = Some(crate::state::Dialog::create_preset_in(&app.session, Some(&path)));
             }
             if ui.button(crate::i18n::tr("Create Subfolder…")).clicked() {
                 app.ui.dialog = Some(crate::state::Dialog::create_preset_folder(Some(path.clone())));
@@ -514,9 +514,14 @@ fn show_folder_node(
                 return;
             }
             ui.separator();
-            if ui.add_enabled(app.session.active().is_some(), egui::Button::new(crate::i18n::tr("Update with Current Settings"))).clicked() {
-                match app.run("preset.update", json!({"id": pid})) {
-                    Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("Updated “{name}”", name = pname)),
+            if ui.add_enabled(app.session.active().is_some(), egui::Button::new(crate::i18n::tr("Update with Current Settings…"))).clicked()
+                && let Err(e) = app.run("dialog.updatePreset", json!({"id": pid}))
+            {
+                app.toast(ui.ctx(), e);
+            }
+            if app.session.preset_undo.as_ref().is_some_and(|(id, _)| *id == pid) && ui.button(crate::i18n::tr("Undo Update")).clicked() {
+                match app.run("preset.undoUpdate", json!({})) {
+                    Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("“{name}” has its old settings again", name = pname)),
                     Err(e) => app.toast(ui.ctx(), e),
                 }
             }

@@ -1457,18 +1457,23 @@ pub struct UiState {
 /// Settings group ids (`SettingsGroup` serde names) a new preset includes by default: everything
 /// but crop, masks, spots and red eye.
 pub fn default_preset_groups() -> Vec<String> {
-    lcc_develop::SettingsGroup::default_copy().iter().filter_map(|g| serde_json::to_value(g).ok()?.as_str().map(str::to_string)).collect()
+    lcc_develop::SettingsPick::of_groups(lcc_develop::SettingsGroup::default_preset()).to_ids()
 }
 
 impl Dialog {
     /// A fresh Create Preset dialog.
-    pub fn create_preset() -> Dialog {
-        Dialog::CreatePreset { name: String::new(), group: "User Presets".into(), groups: default_preset_groups() }
+    /// Ticked and grouped as the last one was (the session's [`lcc_engine::app_store::DialogMemory`]).
+    pub fn create_preset(s: &lcc_engine::Session) -> Dialog {
+        Dialog::CreatePreset { name: String::new(), group: s.dialogs.preset_group.clone(), groups: s.dialogs.new_preset.to_ids() }
     }
 
     /// A fresh Create Preset dialog pre-filling `group`.
-    pub fn create_preset_in(group: Option<&str>) -> Dialog {
-        Dialog::CreatePreset { name: String::new(), group: group.unwrap_or("User Presets").into(), groups: default_preset_groups() }
+    pub fn create_preset_in(s: &lcc_engine::Session, group: Option<&str>) -> Dialog {
+        Dialog::CreatePreset {
+            name: String::new(),
+            group: group.map_or_else(|| s.dialogs.preset_group.clone(), str::to_string),
+            groups: s.dialogs.new_preset.to_ids(),
+        }
     }
 
     /// A fresh Create Preset Folder dialog.
@@ -1706,6 +1711,13 @@ pub enum Dialog {
     SyncSettings {
         groups: Vec<String>,
         controls: Vec<String>,
+    },
+    /// Update Preset with Current Settings: which settings preset `id` keeps (pre-ticked with what it
+    /// holds).
+    UpdatePreset {
+        id: String,
+        name: String,
+        groups: Vec<String>,
     },
     /// Paste Selected Settings: which of the copied groups to paste.
     PasteSettings {
