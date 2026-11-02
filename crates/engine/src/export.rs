@@ -24,6 +24,9 @@ fn lap(what: &str, t: &mut Option<std::time::Instant>) {
     }
 }
 
+/// The error of a photo whose export was cancelled before it was done ([`PreparedExport::run_until`]).
+pub const CANCELLED: &str = "export cancelled";
+
 /// A clock for [`lap`] when profiling (never read otherwise: `Instant::now` panics on wasm32).
 fn lap_clock() -> Option<std::time::Instant> {
     lcc_pipeline::profiling().then(std::time::Instant::now)
@@ -2203,6 +2206,13 @@ impl PreparedExport {
     }
 
     pub fn run(self) -> Result<Exported, String> {
+        self.run_until(&|| false)
+    }
+
+    /// [`Self::run`], giving up ([`CANCELLED`]) between its steps (decode, renders, encode) once
+    /// `stop()` says so: a cancelled export stops within a step, not after the photo.
+    pub fn run_until(self, stop: &dyn Fn() -> bool) -> Result<Exported, String> {
+        let check = || if stop() { Err(CANCELLED.to_string()) } else { Ok(()) };
         let file_name = self.file_name;
         match self.work {
             Work::Video(w) => {
@@ -2222,6 +2232,7 @@ impl PreparedExport {
                 let RenderWork { mut job, mut hdr_job, meta, opts, src_px } = *w;
                 let out_px = job.request.max_w.saturating_mul(job.request.max_h);
                 let mut t = lap_clock();
+                check()?;
                 // 1. The original is decoded before the photo's turn at the GPU, on this lane's
                 // thread: other photos render on the GPU meanwhile (the turn used to cover the
                 // decode and the encode too, so photos side by side took turns at an idle card).
@@ -2240,6 +2251,8 @@ impl PreparedExport {
                 let one_turn = hdr_job.is_some();
                 let renders = || -> Result<(lcc_pipeline::Rendered, Option<DeepImage>, Option<String>), String> {
                     lap("waiting for the GPU", &mut t);
+                    // (cancelled while it waited for its turn: give the turn back at once)
+                    check()?;
                     let _mark = TurnMark::enter();
                     let stages = hdr_job.as_ref().map(|_| std::sync::Arc::new(lcc_pipeline::StageCache::default()));
                     if let Some(st) = &stages {
@@ -2252,6 +2265,7 @@ impl PreparedExport {
                     let gpu_fallback = result.gpu_fallback;
                     let hdr = match hdr_job {
                         Some(mut hj) => {
+                            check()?;
                             if let Some(src) = loaded {
                                 hj.source = crate::media::SourceRef::Loaded(Box::new(src));
                             }
@@ -2268,6 +2282,7 @@ impl PreparedExport {
                 };
                 let (r, hdr, gpu_fallback) = if one_turn { lcc_gpu::in_one_turn(src_px, out_px, renders) } else { renders() }?;
                 // 3. The encode, on this lane's thread after its turn (the next photo renders meanwhile)
+                check()?;
                 let bytes = match &hdr {
                     Some(hdr) => encode_gain_map_jpeg(&r.image, hdr, &opts, meta.as_ref())?,
                     None => encode_rendered(&r, &opts, meta.as_ref())?,
@@ -2545,8 +2560,26 @@ pub fn run_batch(
     stop_on_error: bool,
     progress: &mut dyn FnMut(usize, &str) -> bool,
 ) -> Result<Vec<serde_json::Value>, String> {
+    run_batch_cancellable(items, o, to, write, exists, stop_on_error, progress, None)
+}
+
+/// [`run_batch`] that also stops within about a second once `cancel` is set (a cancelled export
+/// stayed "cancelling" for minutes while the photos in flight finished). The photos then in
+/// flight are dropped (their lanes stop at their next step and give their memory back); the files
+/// already written stay. Returns the files placed until then.
+#[allow(clippy::too_many_arguments)]
+pub fn run_batch_cancellable(
+    items: Vec<PreparedExport>,
+    o: &ExportOptions,
+    to: &Destination,
+    write: &mut dyn FnMut(&str, &[u8]) -> Result<(), String>,
+    exists: &dyn Fn(&str) -> bool,
+    stop_on_error: bool,
+    progress: &mut dyn FnMut(usize, &str) -> bool,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<Vec<serde_json::Value>, String> {
     let lanes = export_parallelism(items.len());
-    run_batch_with(items, &mut Placer::new(o, to, write, exists, stop_on_error), progress, lanes)
+    run_batch_with(items, &mut Placer::new(o, to, write, exists, stop_on_error), progress, lanes, cancel)
 }
 
 /// [`export_batch`] with `lanes` photos side by side and nothing written (measurements, tests).
@@ -2555,7 +2588,7 @@ pub(crate) fn export_batch_lanes(session: &mut crate::Session, ids: &[lcc_catalo
     let to = Destination::default();
     let mut write = |_: &str, _: &[u8]| Ok(());
     let lanes = lanes.clamp(1, MAX_EXPORT_LANES).min(items.len().max(1));
-    run_batch_with(items, &mut Placer::new(o, &to, &mut write, &|_| false, true), &mut |_, _| true, lanes)
+    run_batch_with(items, &mut Placer::new(o, &to, &mut write, &|_| false, true), &mut |_, _| true, lanes, None)
 }
 
 /// How many photos of a batch of `n` render side by side. Each render already spreads its rows
@@ -2634,72 +2667,84 @@ fn note_encode() {
 /// rendition (12 B), the SDR one in linear light (12 B) and the stages its two renders share.
 const GAIN_MAP_BYTES_PER_PX: usize = 48;
 
-/// [`run_batch`] with `lanes` photos in flight (the calling thread is one of them).
+/// [`run_batch`] with `lanes` photos in flight. Without `cancel` the calling thread is one of the
+/// lanes; with it the lanes are threads of their own and this one only places the files, looking
+/// at `cancel` while it waits, so it can leave at once: lanes still in flight then stop at their
+/// next step on their own.
 fn run_batch_with(
     items: Vec<PreparedExport>,
     placer: &mut Placer<'_>,
     progress: &mut dyn FnMut(usize, &str) -> bool,
     lanes: usize,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<serde_json::Value>, String> {
     placer.single = items.len() == 1;
-    if lanes <= 1 || items.len() <= 1 {
+    let cancelled = || cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
+    if cfg!(target_arch = "wasm32") || (cancel.is_none() && (lanes <= 1 || items.len() <= 1)) {
         for (i, item) in items.into_iter().enumerate() {
-            if !progress(i, &item.file_name) {
+            if !progress(i, &item.file_name) || cancelled() {
                 break;
             }
             let (photo, name, guard, source_dir) = (item.photo, item.file_name.clone(), item.guard.clone(), item.source_dir.clone());
-            placer.place(photo, name, source_dir.as_deref(), &guard, run_gated(item))?;
+            let r = run_gated(item, &cancelled);
+            if cancelled() {
+                break;
+            }
+            placer.place(photo, name, source_dir.as_deref(), &guard, r)?;
         }
         return Ok(std::mem::take(&mut placer.out));
     }
     let heads: Vec<_> = items.iter().map(|i| (i.photo, i.file_name.clone(), i.guard.clone(), i.source_dir.clone())).collect();
-    let queue = Queue {
+    let lanes = lanes.max(1);
+    let queue = std::sync::Arc::new(Queue {
         lane: std::sync::Mutex::new(Lane { items: items.into_iter().map(Some).collect(), next: 0, placed: 0, stop: false, done: Default::default() }),
         cv: std::sync::Condvar::new(),
         ahead: lanes,
-    };
-    std::thread::scope(|sc| {
-        // stops the lanes however this thread leaves the scope: a panic in `progress` or the placer
-        // would otherwise leave them waiting and the scope's join would never return
-        let _stop = StopOnDrop(&queue);
-        for k in 1..lanes {
-            let q = &queue;
-            // a lane that can't start leaves its photos to the others (and to this thread)
-            if std::thread::Builder::new().name(format!("export-{k}")).spawn_scoped(sc, move || q.work()).is_err() {
-                break;
-            }
+        cancel: cancel.clone(),
+        lanes: std::sync::atomic::AtomicUsize::new(0),
+    });
+    // stops the lanes however this thread leaves: an error, a cancel, a panic in `progress` or the
+    // placer (lanes still in flight then stop at their next step on their own)
+    let _stop = StopOnDrop(queue.clone());
+    // (without a cancel flag the calling thread is a lane too: one thread fewer)
+    let threads = if cancel.is_some() { lanes } else { lanes - 1 };
+    for k in 0..threads {
+        let q = queue.clone();
+        // a lane that can't start leaves its photos to the others (and to this thread)
+        if std::thread::Builder::new().name(format!("export-{}", k + 1)).spawn(move || q.work()).is_err() {
+            break;
         }
-        let placed = || {
-            for (i, (photo, name, guard, source_dir)) in heads.into_iter().enumerate() {
-                if !progress(i, &name) {
-                    break;
-                }
-                let e = queue.result(i);
-                placer.place(photo, name, source_dir.as_deref(), &guard, e)?;
-            }
-            Ok::<_, String>(())
-        };
-        placed()
-    })?;
+        queue.lanes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    for (i, (photo, name, guard, source_dir)) in heads.into_iter().enumerate() {
+        if !progress(i, &name) || queue.cancelled() {
+            break;
+        }
+        let Some(e) = queue.result(i) else { break };
+        placer.place(photo, name, source_dir.as_deref(), &guard, e)?;
+    }
     Ok(std::mem::take(&mut placer.out))
 }
 
 /// Stops a [`Queue`] when dropped, also while unwinding from a panic.
-struct StopOnDrop<'a>(&'a Queue);
+struct StopOnDrop(std::sync::Arc<Queue>);
 
-impl Drop for StopOnDrop<'_> {
+impl Drop for StopOnDrop {
     fn drop(&mut self) {
         self.0.stop();
     }
 }
 
 /// Run one photo's export holding its working memory from [`crate::memory::export_gate`]; a panic
-/// becomes that photo's error, not the batch's end.
-fn run_gated(item: PreparedExport) -> Result<Exported, String> {
+/// becomes that photo's error, not the batch's end. `stop()`: the batch was cancelled.
+fn run_gated(item: PreparedExport, stop: &dyn Fn() -> bool) -> Result<Exported, String> {
+    if stop() {
+        return Err(CANCELLED.into());
+    }
     let _held = crate::memory::export_gate().acquire(item.weight);
     let what = format!("exporting {}", item.file_name);
     // (its GPU renders take turns with the other photos' and stay behind the window's: `lcc_gpu::as_batch`)
-    crate::guard::catch(&what, || lcc_gpu::as_batch(|| item.run())).and_then(|r| r)
+    crate::guard::catch(&what, || lcc_gpu::as_batch(|| item.run_until(stop))).and_then(|r| r)
 }
 
 /// The photos of a batch shared by its lanes: each lane takes the next one, at most
@@ -2709,6 +2754,10 @@ struct Queue {
     lane: std::sync::Mutex<Lane>,
     cv: std::sync::Condvar,
     ahead: usize,
+    /// The batch's cancel flag ([`run_batch_cancellable`]).
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Lane threads started.
+    lanes: std::sync::atomic::AtomicUsize,
 }
 
 struct Lane {
@@ -2730,17 +2779,34 @@ impl Lane {
     }
 }
 
+/// How often the placer looks at the cancel flag while it waits for a photo.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 impl Queue {
     fn lock(&self) -> std::sync::MutexGuard<'_, Lane> {
         self.lane.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn wait<'a>(&self, g: std::sync::MutexGuard<'a, Lane>) -> std::sync::MutexGuard<'a, Lane> {
-        self.cv.wait(g).unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.cv.wait_timeout(g, CANCEL_POLL).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0)
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Stopped: cancelled, or the batch ended early.
+    fn stopping(&self) -> bool {
+        self.cancelled() || self.lock().stop
     }
 
     fn finish(&self, i: usize, r: Result<Exported, String>) {
-        self.lock().done.insert(i, r);
+        let mut l = self.lock();
+        // (a cancelled or ended batch keeps no results nobody will collect)
+        if !l.stop && !self.cancelled() {
+            l.done.insert(i, r);
+        }
+        drop(l);
         self.cv.notify_all();
     }
 
@@ -2749,7 +2815,7 @@ impl Queue {
         loop {
             let mut l = self.lock();
             let (i, item) = loop {
-                if l.stop || l.next >= l.items.len() {
+                if l.stop || self.cancelled() || l.next >= l.items.len() {
                     return;
                 }
                 if l.next < l.placed.saturating_add(self.ahead) {
@@ -2761,26 +2827,33 @@ impl Queue {
                 l = self.wait(l);
             };
             drop(l);
-            self.finish(i, run_gated(item));
+            let r = run_gated(item, &|| self.stopping());
+            self.finish(i, r);
         }
     }
 
-    /// Photo `i`'s result, waiting for it; run here when no lane has started it yet.
-    fn result(&self, i: usize) -> Result<Exported, String> {
+    /// Photo `i`'s result, waiting for it; run here when no lane has started it yet (and this
+    /// thread is a lane, or no lane could start). `None`: the batch was cancelled meanwhile.
+    fn result(&self, i: usize) -> Option<Result<Exported, String>> {
         let mut l = self.lock();
         loop {
+            if self.cancelled() {
+                return None;
+            }
             if let Some(r) = l.done.remove(&i) {
                 l.placed = i + 1;
                 drop(l);
                 self.cv.notify_all();
-                return r;
+                return Some(r);
             }
-            if l.next == i {
+            let runs_here = self.cancel.is_none() || self.lanes.load(std::sync::atomic::Ordering::Relaxed) == 0;
+            if l.next == i && runs_here {
                 let Some((_, item)) = l.take_next() else {
-                    return Err("export: photo missing from the batch".into());
+                    return Some(Err("export: photo missing from the batch".into()));
                 };
                 drop(l);
-                self.finish(i, run_gated(item));
+                let r = run_gated(item, &|| self.cancelled());
+                self.finish(i, r);
                 l = self.lock();
                 continue;
             }
@@ -4462,7 +4535,7 @@ mod tests {
             seen.push((i, name.to_string()));
             i < cancel_at
         };
-        let files = run_batch_with(items, &mut Placer::new(o, &to, &mut write, &|_| false, stop_on_error), &mut progress, lanes);
+        let files = run_batch_with(items, &mut Placer::new(o, &to, &mut write, &|_| false, stop_on_error), &mut progress, lanes, None);
         (files, written, seen)
     }
 
@@ -4560,7 +4633,7 @@ mod tests {
                 true
             };
             let r = crate::guard::catch("test batch", || {
-                run_batch_with(items, &mut Placer::new(&o, &to, &mut write, &|_| false, true), &mut progress, 2)
+                run_batch_with(items, &mut Placer::new(&o, &to, &mut write, &|_| false, true), &mut progress, 2, None)
             });
             tx.send(r.and_then(|r| r)).ok();
         });
