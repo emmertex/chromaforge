@@ -1,4 +1,4 @@
-//! Upstream tracking (plan/upstream.md, docs/upstream-merge.md):
+//! Upstream tracking (docs/upstream-pr-intake.md, docs/upstream-merge.md):
 //!
 //! - `cargo xtask upstream-merge [--ref REF] [--no-ci]`: merge upstream on `merge/upstream-YYYYMMDD`, keep our
 //!   version of every owned path (`upstream-owned.txt`), write a review report of what upstream changed there, map

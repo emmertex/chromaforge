@@ -312,7 +312,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Brush Stroke",
             [],
             None,
-            "{id?: maskId, points: [[x,y],…] normalized, size?: fraction of long edge (0.03), feather?, flow?, density?, erase?: bool, autoMask?: bool, pressure?: [p,…] pen pressure 0..1 per point (scales each dab's size and flow; omitted: full), connect?: bool — start from the last point of the mask's last stroke (⇧-click), size / feather / flow tapering from that stroke's to these} → {activeMask, connected}",
+            "{id?: maskId, component?: index, points: [[x,y],…] normalized, size?: fraction of long edge (0.03), feather?, flow?, density?, erase?: bool, autoMask?: bool, pressure?: [p,…] pen pressure 0..1 per point (scales each dab's size and flow; omitted: full), connect?: bool — start from the last point of the mask's last stroke (⇧-click), size / feather / flow tapering from that stroke's to these} → {activeMask, connected}",
             has_active,
             |s, p| {
                 let pts: Vec<Point> = p
@@ -339,6 +339,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let next = s.active().and_then(|id| s.develop_of(id)).map(|d| d.next_mask_id()).unwrap_or(1);
                 let want = mask_id_param(p, "mask.brushStroke")?.or(s.active_mask);
                 let adjust = super::mask_effects::new_mask_adjust(s, "brush");
+                let target_comp = p.get("component").and_then(Value::as_u64).map(|k| k as usize);
                 let mut out = masks_edit(s, "mask.brushStroke", "Brush", |masks, active| {
                     let i = match want.and_then(|m| masks.iter().position(|x| x.id == m)) {
                         Some(i) => i,
@@ -349,9 +350,12 @@ pub fn specs() -> Vec<CommandSpec> {
                         }
                     };
                     let m = &mut masks[i];
-                    if let Some(MaskComponent { shape: MaskShape::Brush { strokes }, .. }) =
-                        m.components.iter_mut().rev().find(|c| matches!(c.shape, MaskShape::Brush { .. }))
-                    {
+                    let brush_idx = match target_comp {
+                        Some(k) if m.components.get(k).is_some_and(|c| matches!(c.shape, MaskShape::Brush { .. })) => Some(k),
+                        _ => m.components.iter().rposition(|c| matches!(c.shape, MaskShape::Brush { .. })),
+                    };
+                    let brush_comp = brush_idx.and_then(|k| m.components.get_mut(k));
+                    if let Some(MaskComponent { shape: MaskShape::Brush { strokes }, .. }) = brush_comp {
                         // the previous stroke's end and its brush values (not its points)
                         let anchor = strokes.last().filter(|_| connect).and_then(|l| {
                             Some((
@@ -449,7 +453,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Object Click",
             [],
             None,
-            "{x, y: normalized image point, exclude?: bool (⌥-click: leave this part out), id?: maskId} — a click on the selected mask's Object selection (its last Object component); SAM 3 re-segments the object → {include, exclude}",
+            "{x, y: normalized image point, component?: index, exclude?: bool (⌥-click: leave this part out), id?: maskId} — a click on the selected mask's Object selection (its last Object component); SAM 3 re-segments the object → {include, exclude}",
             has_active,
             |s, p| {
                 let c = "mask.objectPoint";
@@ -460,13 +464,17 @@ pub fn specs() -> Vec<CommandSpec> {
                 let exclude = bool_or(p, "exclude", false);
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
                 let mid = mask_id(p, s.active_mask, c)?;
+                let comp = super::index_opt(p, "component", c)?;
                 let d = s.develop_of(id).unwrap_or_default();
                 let m = d.masks.iter().find(|m| m.id == mid).ok_or_else(|| bad(c, format!("no mask {mid}")))?;
-                let k = m
-                    .components
-                    .iter()
-                    .rposition(|x| matches!(x.shape, MaskShape::Object { .. }))
-                    .ok_or_else(|| bad(c, "the mask has no Object selection (add one first)"))?;
+                let k = match comp {
+                    Some(k) if m.components.get(k).is_some_and(|c| matches!(c.shape, MaskShape::Object { .. })) => k,
+                    _ => m
+                        .components
+                        .iter()
+                        .rposition(|x| matches!(x.shape, MaskShape::Object { .. }))
+                        .ok_or_else(|| bad(c, "the mask has no Object selection (add one first)"))?,
+                };
                 let Some(MaskShape::Object { hint, exclude: ex, edge, .. }) = m.components.get(k).map(|x| &x.shape) else {
                     return Err(bad(c, "not an Object component"));
                 };

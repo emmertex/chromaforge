@@ -6,7 +6,14 @@ full-window Settings, Import and Export screens, the dialog cards) replaced upst
 there and brings in upstream UI changes, tests and translations that have to be undone or rewritten. What upstream
 still offers that helps us is mostly in the engine, raw decoding, the pipeline, the GPU, the catalog and security
 fixes, and those port cleanly as single commits. So upstream is now **reviewed weekly and ported by hand**: we
-cherry-pick what helps and skip the rest.
+cherry-pick what helps and skip the rest. Merging was not merely inconvenient — 281 commits and 88 conflicts per
+round meant conflict resolutions quietly brought upstream behaviour back in, which is where the unintended
+degradation came from.
+
+> **The primary path is PR intake:** [`docs/upstream-pr-intake.md`](upstream-pr-intake.md) covers open, closed and
+> merged pull requests, the local ledger, and the single fork PR per round that merges only at a version release.
+> This page keeps the commit-level lane (upstream commits that never had a PR), the cherry-pick mechanics, and the
+> outbound lane (our fixes offered upstream). `cargo xtask upstream-merge` is retired: do not use it.
 
 The fork point is tagged `fork-base`; the last merge is `9601cbbc6` (upstream commit `38f8d2508`). The last upstream
 commit reviewed since then is recorded in [`upstream-reviewed.txt`](../upstream-reviewed.txt).
@@ -27,6 +34,9 @@ git remote add upstream ../lightcraft  # only if it is missing
    Every upstream commit since the last review, oldest first, with the areas it touches (`crates/raw`,
    `apps/app`, `docs`, …). Paths that are ours ([`upstream-owned.txt`](../upstream-owned.txt) → `[owned]`, which
    includes `crates/ui-egui/` and `crates/catalog/`) are marked *(ours)*, and a commit that touches only those says so.
+   This is the **commit lane only**: it does not list pull requests. Enumerate those with
+   `python3 tools/upstream_intake.py enumerate` and follow [`docs/upstream-pr-intake.md`](upstream-pr-intake.md).
+   A commit that arrived through a PR is decided from the PR, in the ledger, not here.
 2. **Decide per commit.** Port it when it helps the fork:
    - **Port:** bug fixes, security fixes, crash fixes, raw / codec / camera support, pipeline and GPU fixes,
      performance, catalog fixes (by hand: the catalog diverged), engine features we lack.
@@ -34,8 +44,8 @@ git remote add upstream ../lightcraft  # only if it is missing
      replaced), label renames, upstream's own CI and packaging, its docs and What's New, features that conflict with
      the fork's behaviour (e.g. the fork's drop rule: photo files at once, a folder opens the review).
    - When unsure, ask whether a user of the fork would notice the difference. If not, skip it.
-   - **Watchlist:** PRs in [`upstream-pr-reviews/watchlist.md`](upstream-pr-reviews/watchlist.md) are taken without a
-     fresh review once upstream approves them or merges them; check them in each review.
+   - **Watchlist:** `WATCH` rows in [`upstream-pr-reviews/ledger.md`](upstream-pr-reviews/ledger.md) are taken without a
+     fresh review once upstream approves them or merges them; they are re-checked every round.
 3. **Port by cherry-pick**, one commit (or a small related group) at a time:
    ```sh
    git cherry-pick -x <hash>                            # -x records "(cherry picked from commit …)"
@@ -50,8 +60,10 @@ git remote add upstream ../lightcraft  # only if it is missing
 4. **What's New:** an upstream feature worth telling users about gets one of our entries (`docs/whats-new/` and,
    if needed, `docs/changelog/unreleased/`), in our words. `docs/whats-new.md` (upstream's history up to the last
    merge) stays as it is: `cargo xtask notes --check` fails if it changes.
-5. **Check and land** as any change: `cargo xtask ci --fast` plus the targeted tests, then a PR into `main`. Mention
-   the upstream commit(s) in the PR (the `cherry picked from` lines do this per commit).
+5. **Check and land** as any change: `cargo xtask ci --fast` plus the targeted tests. In a PR-intake round the
+   commit goes into that round's single PR (see the runbook), and the PR merges at a version release; a commit
+   reviewed only in the commit lane joins the next round. Mention the upstream commit(s) in the PR (the
+   `cherry picked from` lines do this per commit).
 6. **Record the review** once every listed commit is ported or decided against:
    ```sh
    cargo xtask upstream-review --done <hash>   # the last upstream commit reviewed (the command prints it)

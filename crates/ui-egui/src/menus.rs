@@ -141,6 +141,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.maskOverlayMode", "Cycle Mask Overlay Mode", None, "View>Tool Overlay"),
     ("view.maskOverlayColor", "Cycle Mask Overlay Color", None, "View>Tool Overlay"),
     ("view.maskPins", "Show Mask Pins", None, "View>Tool Overlay"),
+    ("view.maskOverlayAuto", "Automatically Toggle Mask Overlay", None, "View>Tool Overlay"),
+    ("view.maskUnselectedPins", "Show Unselected Mask Pins", Some("Alt+V"), "View>Tool Overlay"),
     // {mode?: auto | always | selected | never}: when spot and mask pins show (steps to the next
     // mode when omitted; Shift+H, like Classic's H for pins, since H opens Remove). View ▸ Tool
     // Overlay and the Remove panel list the modes.
@@ -1337,11 +1339,17 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(json!({"scale": next.name()}))
         }
         "view.maskOverlay" => {
-            app.ui.mask_overlay = p.get("show").and_then(Value::as_bool).unwrap_or(!app.ui.mask_overlay);
-            // switched on, it stays on through edits; switched off, it shows by itself again only for a
-            // mask without settings
-            app.ui.mask_overlay_pinned = app.ui.mask_overlay;
-            Ok(json!({"maskOverlay": app.ui.mask_overlay}))
+            if let Some(auto) = p.get("auto").and_then(Value::as_bool) {
+                app.ui.mask_overlay_auto = auto;
+            }
+            if let Some(show) = p.get("show").and_then(Value::as_bool) {
+                app.ui.mask_overlay = show;
+                app.ui.mask_overlay_pinned = show;
+            } else if p.get("auto").is_none() {
+                app.ui.mask_overlay = !app.ui.mask_overlay;
+                app.ui.mask_overlay_pinned = app.ui.mask_overlay;
+            }
+            Ok(json!({"maskOverlay": app.ui.mask_overlay, "auto": app.ui.mask_overlay_auto}))
         }
         "view.maskOverlayAll" => {
             app.ui.mask_overlay_all = !app.ui.mask_overlay_all;
@@ -1403,8 +1411,23 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(adjust_brush(app, k, df))
         }
         "view.maskPins" => {
-            app.ui.mask_pins = p.get("show").and_then(Value::as_bool).unwrap_or(!app.ui.mask_pins);
-            Ok(json!({"maskPins": app.ui.mask_pins}))
+            if let Some(unselected) = p.get("unselected").and_then(Value::as_bool) {
+                app.ui.mask_unselected_pins = unselected;
+            }
+            if let Some(show) = p.get("show").and_then(Value::as_bool) {
+                app.ui.mask_pins = show;
+            } else if p.get("unselected").is_none() {
+                app.ui.mask_pins = !app.ui.mask_pins;
+            }
+            Ok(json!({"maskPins": app.ui.mask_pins, "unselected": app.ui.mask_unselected_pins}))
+        }
+        "view.maskOverlayAuto" => {
+            app.ui.mask_overlay_auto = p.get("auto").and_then(Value::as_bool).unwrap_or(!app.ui.mask_overlay_auto);
+            Ok(json!({"auto": app.ui.mask_overlay_auto}))
+        }
+        "view.maskUnselectedPins" => {
+            app.ui.mask_unselected_pins = p.get("show").and_then(Value::as_bool).unwrap_or(!app.ui.mask_unselected_pins);
+            Ok(json!({"show": app.ui.mask_unselected_pins}))
         }
         "view.toolOverlay" => {
             use crate::state::ToolOverlay;
@@ -1646,6 +1669,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                         }
                         app.ui.brush_erase = false;
                         app.ui.mask_overlay = true;
+                        if let Some(d) = app.session.active().and_then(|id| app.session.develop_of(id))
+                            && let Some(m) = d.masks.iter().find(|m| Some(m.id) == app.session.active_mask)
+                        {
+                            app.ui.active_mask_component = Some(m.components.len().saturating_sub(1));
+                        }
                     }
                     app.ui.right = RightPanel::Masking;
                     app.ui.view = ViewMode::Detail;

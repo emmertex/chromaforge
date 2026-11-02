@@ -30,18 +30,24 @@ How a real run flows:
 
 ## Prepare and start a release
 
-1. Gather the changelog on `main`, in a PR: `cargo xtask notes --release <version>` writes
+1. **Land the upstream intake PR first.** Upstream work arrives one round at a time, all of a round in a single PR
+   ([`docs/upstream-pr-intake.md`](upstream-pr-intake.md)). That PR is opened ready for review and waits between
+   releases: this is where it merges, before the changelog is gathered, so one full CI run and one set of release
+   notes cover it. Merge `main` into it first if `main` moved, re-run the fast checks, and name the landed upstream
+   PRs and commits in the release notes. Nothing from upstream lands outside this step, except a security or
+   data-loss fix the maintainer chooses to take early (recorded as `URGENT` in the intake ledger).
+2. Gather the changelog on `main`, in a PR: `cargo xtask notes --release <version>` writes
    `docs/changelog/<version>.md` from the entries in `docs/changelog/unreleased/` (adding to the file if it was
    already started) and deletes them; `--dry-run` shows it first. Edit it as usual. Gathering on `main` keeps the
    entries from being gathered again for the next release. Then merge the release-ready changes into `release`.
-2. Set the workspace version in `Cargo.toml` (for example, with `cargo xtask version set 1.2.0`).
+3. Set the workspace version in `Cargo.toml` (for example, with `cargo xtask version set 1.2.0`).
    For a manual workflow run, the version input can override the workspace version for that run.
    Use a semantic version such as `1.2.0` or `1.2.0-rc.1`; versions containing a hyphen are
    marked as prereleases.
-3. Dispatch CI on the commit (Actions → CI → Run workflow: the full test run on all three OSes) and wait for it to
+4. Dispatch CI on the commit (Actions → CI → Run workflow: the full test run on all three OSes) and wait for it to
    pass; a push to `release` doesn't run CI again. Then push that commit to `release`, or dispatch the workflow on
    `release` (a dispatch on another branch is a dry run; see below).
-4. Check the workflow run. On success, the workflow creates or updates a **draft**
+5. Check the workflow run. On success, the workflow creates or updates a **draft**
    GitHub Release named `<app> v<version>`, targeted at the commit that triggered the run.
    Review the draft and its `SHA256SUMS.txt`, then publish it in GitHub Releases when ready. The job log's
    *Sign the checksums* step says `SHA256SUMS.txt.sig verified`; if it warns that the list is not signed,

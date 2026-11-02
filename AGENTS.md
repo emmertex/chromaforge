@@ -1,6 +1,6 @@
 # Instructions for agents
 
-Chromaforge (the app) is a clean-room, open-source, pure-Rust photo library + non-destructive raw developer targeting Adobe Lightroom parity (and beyond). Native on macOS, Windows, Linux; web via WASM. It is a fork of an upstream project (see `NOTICE`). Since 2026-10-25 Chromaforge no longer merges upstream: upstream commits are reviewed weekly and the useful ones cherry-picked (`cargo xtask upstream-review`, procedure in `docs/upstream-merge.md`).
+Chromaforge (the app) is a clean-room, open-source, pure-Rust photo library + non-destructive raw developer targeting Adobe Lightroom parity (and beyond). Native on macOS, Windows, Linux; web via WASM. It is a fork of an upstream project (see `NOTICE`). Since 2026-10-25 Chromaforge no longer merges upstream: merging had become mostly conflicts and silently reintroduced upstream behaviour. Instead every upstream pull request and commit is reviewed on its own and the useful ones ported by hand. One intake round is one fork PR, and it merges only at a version release: [`docs/upstream-pr-intake.md`](docs/upstream-pr-intake.md) is the runbook; [`docs/upstream-merge.md`](docs/upstream-merge.md) has the commit lane and the cherry-pick mechanics.
 
 This file is the one set of instructions for agents and humans: `CLAUDE.md` only imports it (`@AGENTS.md`), so edit
 this file, never that one. How to claim an issue and open a PR: [`CONTRIBUTING.md`](CONTRIBUTING.md).

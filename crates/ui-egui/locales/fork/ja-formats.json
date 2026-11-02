@@ -55,7 +55,6 @@
   "about {} minutes": "約 {} 分",
   "about {} seconds": "約 {} 秒",
   "by {author} · {id}": "作成者 {author} · {id}",
-  "{added} added, {missing} missing, {changed} read from changed sidecars": "{added} 件追加、{missing} 件見つからず、変更されたサイドカーから {changed} 件読み込み",
   "{app} can't decode this raw variant yet ({}). You're editing the camera's embedded JPEG preview, which already includes the camera's picture style (e.g. Monochrome) and white balance.": "{app}はこのRAWの形式（{}）をまだデコードできません。カメラの埋め込みJPEGプレビューを編集しています。このプレビューには、カメラのピクチャースタイル（モノクロなど）とホワイトバランスがすでに反映されています",
   "{app} could not open its window: {e}": "{app}のウィンドウを開けませんでした: {e}",
   "{app} could not open its window: {e}\n\nThe log file has the details: {path}": "{app}のウィンドウを開けませんでした: {e}\n\n詳しくはログファイルをご覧ください: {path}",

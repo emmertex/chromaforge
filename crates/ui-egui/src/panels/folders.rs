@@ -11,9 +11,11 @@ use crate::theme::Tokens;
 use crate::widgets::{icon_button, register};
 
 /// The + menu at the right end of the Folders header: Add Folder… (Import from Folder…, its photos
-/// added where they are), Create Folder….
+/// added where they are), Create Folder…. Hosts with only the background picker (Android) get Add
+/// Folder… alone: their picker copies a picked folder into the app, no place to create one in.
 pub fn header_buttons(app: &mut LccApp, ui: &mut egui::Ui, header: Rect, viewport: Rect) {
-    if app.services.pick_folder.is_none() {
+    let can_create = app.services.pick_folder.is_some();
+    if !can_create && app.services.picker.is_none() {
         return;
     }
     let right = (header.left() + viewport.max.x).min(header.right()) - 26.0;
@@ -24,8 +26,11 @@ pub fn header_buttons(app: &mut LccApp, ui: &mut egui::Ui, header: Rect, viewpor
     );
     let plus = icon_button(&mut hdr, "folderAdd", Icon::Plus, vec2(22.0, 22.0), false, true, "Add Folder");
     egui::Popup::menu(&plus).show(|ui| {
-        let add =
-            ui.button(crate::i18n::tr("Add Folder…")).on_hover_text(crate::i18n::tr("Add the photos of a folder to the library where they are"));
+        // disabled while a Lightroom catalog import runs, as File ▸ Import from Folder… is
+        let enabled = crate::menus::ui_enabled(app, "file.addFolder");
+        let add = ui
+            .add_enabled(enabled, egui::Button::new(crate::i18n::tr("Add Folder…")))
+            .on_hover_text(crate::i18n::tr("Add the photos of a folder to the library where they are"));
         register(ui.ctx(), "button:folderAddFolder", add.rect);
         if add.clicked() {
             // File ▸ Import from Folder…: the dialog and the scan run off the UI thread (#734)
@@ -34,7 +39,7 @@ pub fn header_buttons(app: &mut LccApp, ui: &mut egui::Ui, header: Rect, viewpor
             }
             ui.close();
         }
-        if ui.button(crate::i18n::tr("Create Folder…")).clicked() {
+        if can_create && ui.button(crate::i18n::tr("Create Folder…")).clicked() {
             let picked = app.services.pick_folder.as_mut().and_then(|f| f());
             if let Some(parent) = picked {
                 create_prompt(app, &parent);
