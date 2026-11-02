@@ -19,6 +19,7 @@
 mod download;
 pub mod models;
 mod parts;
+pub mod scene;
 mod skin;
 pub mod subject;
 #[cfg(feature = "sam")]
@@ -141,6 +142,10 @@ pub struct Segmenter {
     pub models_root: Option<PathBuf>,
     /// Which model computes Object clicks ([`models::ObjectModel`]).
     object_model: models::ObjectModel,
+    /// Which model computes Sky, Landscape and People ([`models::SceneModel`]).
+    scene_model: models::SceneModel,
+    /// The scene model as installed in the pipeline.
+    pub scene: scene::SceneMasks,
     #[cfg(feature = "sam")]
     model_downloads: std::collections::HashMap<&'static str, download::Downloader>,
     pending: Option<PendingClicks>,
@@ -168,6 +173,8 @@ impl Default for Segmenter {
             subject: subject::Subject::default(),
             models_root: None,
             object_model: models::ObjectModel::default(),
+            scene_model: models::SceneModel::default(),
+            scene: scene::SceneMasks::default(),
             #[cfg(feature = "sam")]
             model_downloads: std::collections::HashMap::new(),
             pending: None,
@@ -634,6 +641,11 @@ impl Session {
         #[cfg_attr(not(feature = "sam"), allow(unused_mut))]
         let mut polled = Polled { messages: std::mem::take(&mut self.segmenter.messages), ..Default::default() };
         self.skin_poll(&mut polled);
+        // a finished EoMT download is put to use (only for those who chose it: two file checks)
+        if self.segmenter.scene_model() == models::SceneModel::Eomt {
+            let activity = self.activity.clone();
+            self.segmenter.scene_sync(&activity);
+        }
         #[cfg(feature = "sam")]
         {
             // (before draining: a worker that is idle now has sent everything)

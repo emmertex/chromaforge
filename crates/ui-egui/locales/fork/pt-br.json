@@ -1650,5 +1650,8 @@
   "{} photos updated, {} copies": "{} fotos atualizadas, {} cópias",
   "{} selected": "{} selecionadas",
   "{} wants to sync its library “{}” with this library.": "{} quer sincronizar a biblioteca “{}” com esta biblioteca.",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastar para endireitar, ⇧G Upright guiado, uma grade ao transformar."
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastar para endireitar, ⇧G Upright guiado, uma grade ao transformar.",
+  "Sky, Landscape and People masks use": "As máscaras de céu, paisagem e pessoas usam",
+  "Photo analysis": "Análise da foto",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "A análise da foto não precisa de download. O EoMT é usado assim que estiver instalado; até lá, a análise da foto o substitui."
 }

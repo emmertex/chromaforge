@@ -309,6 +309,11 @@ impl SceneModel {
         Self::load_on(dir, best_device())
     }
 
+    /// Load on the CPU (the fallback when the GPU can't run it).
+    pub fn load_cpu(dir: &Path) -> Result<Self> {
+        Self::load_on(dir, Device::Cpu)
+    }
+
     pub fn load_on(dir: &Path, device: Device) -> Result<Self> {
         let (vb, config) = dino::open_checkpoint(dir, WHAT, MODEL_TYPE, &device)?;
         for (key, want) in [

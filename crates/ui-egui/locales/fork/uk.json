@@ -1401,5 +1401,8 @@
   "{} photos linked, {} probable": "Зв’язано {} фото, {} імовірно",
   "{} photos updated, {} copies": "Оновлено фото: {}, копій: {}",
   "{} selected": "Вибрано: {}",
-  "{} wants to sync its library “{}” with this library.": "{} пропонує синхронізувати свою бібліотеку «{}» з цією бібліотекою."
+  "{} wants to sync its library “{}” with this library.": "{} пропонує синхронізувати свою бібліотеку «{}» з цією бібліотекою.",
+  "Sky, Landscape and People masks use": "Маски неба, пейзажу та людей використовують",
+  "Photo analysis": "Аналіз фото",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "Аналізу фото не потрібне завантаження. EoMT використовується, щойно його встановлено; доти його замінює аналіз фото."
 }

@@ -1,10 +1,11 @@
 //! Every AI mask model as the session sees it (`ai.models.*`): SAM 3 and the Subject model keep
 //! their own folders and downloads; the openly licensed models of [`lcc_segment::models`]
-//! (SAM 2.1, Depth Anything V2 Small) live in `<models folder>/<dir_name>/`.
+//! (SAM 2.1, EoMT, Depth Anything V2 Small) live in `<models folder>/<dir_name>/`.
 //!
 //! Which model computes Object clicks is the user's choice ([`ObjectModel`]): `auto` keeps
 //! SAM 3 when it is installed (as before) and otherwise uses SAM 2.1 when that is installed.
-//! Describe (text) needs SAM 3 either way.
+//! Describe (text) needs SAM 3 either way. Sky, Landscape and People masks keep the photo
+//! analysis unless the user chose the EoMT scene model ([`SceneModel`]) and it is installed.
 //!
 //! Nothing is downloaded unless asked for (`ai.models.download {"id", "acknowledged": true}`);
 //! each download is a row in the activity stack, can be cancelled, resumes, and every file is
@@ -34,6 +35,7 @@ mod reg {
         pub files: &'static [File],
         pub license_name: &'static str,
         pub license_url: &'static str,
+        pub credit: &'static str,
         pub mirrors_env: &'static str,
         pub offered: bool,
     }
@@ -90,11 +92,40 @@ impl ObjectModel {
     }
 }
 
+/// Which model computes the Sky, Landscape and People selections.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SceneModel {
+    /// The photo analysis (no model), as before.
+    #[default]
+    Analysis,
+    /// EoMT-S COCO panoptic, when installed (the photo analysis otherwise).
+    Eomt,
+}
+
+impl SceneModel {
+    pub fn key(self) -> &'static str {
+        match self {
+            SceneModel::Analysis => "analysis",
+            SceneModel::Eomt => "eomt",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "analysis" => Some(SceneModel::Analysis),
+            "eomt" => Some(SceneModel::Eomt),
+            _ => None,
+        }
+    }
+}
+
 /// The persisted choices (`<models folder>/ai-models.json`).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct Prefs {
     object_model: ObjectModel,
+    scene_model: SceneModel,
 }
 
 /// One model, for `ai.models.status` and the model dialog.
@@ -111,6 +142,9 @@ pub struct ModelStatus {
     pub size_bytes: u64,
     pub license: String,
     pub license_url: String,
+    /// Credit for its training data, shown with the licence (`None`: none needed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit: Option<String>,
     /// Shown in the model dialog (others are downloadable by command only).
     pub offered: bool,
     pub download: DownloadStatus,
@@ -155,8 +189,37 @@ impl Segmenter {
     /// Set (and, when the session has a models folder, save) the Object model.
     pub fn set_object_model(&mut self, m: ObjectModel) -> Result<(), String> {
         self.object_model = m;
+        self.save_prefs()
+    }
+
+    /// The user's choice of scene model (Sky, Landscape, People).
+    pub fn scene_model(&self) -> SceneModel {
+        self.scene_model
+    }
+
+    /// Set (and save) the scene model; [`Segmenter::scene_sync`] puts it to use.
+    pub fn set_scene_model(&mut self, m: SceneModel) -> Result<(), String> {
+        self.scene_model = m;
+        self.save_prefs()
+    }
+
+    /// The scene model Sky, Landscape and People masks use now: `"eomt"` when chosen and
+    /// installed, else `"analysis"`.
+    pub fn scene_model_in_use(&self) -> &'static str {
+        if self.scene_model == SceneModel::Eomt && self.open_model_installed("scene") { "eomt" } else { "analysis" }
+    }
+
+    /// Install the chosen scene model for the pipeline when its files are in place, or go back
+    /// to the photo analysis (idempotent).
+    pub fn scene_sync(&mut self, activity: &crate::activity::Activity) {
+        let want = (self.scene_model_in_use() == "eomt").then(|| self.open_model_dir("scene")).flatten();
+        self.scene.sync(want, activity);
+    }
+
+    fn save_prefs(&self) -> Result<(), String> {
         let Some(root) = self.open_root() else { return Ok(()) };
-        let text = serde_json::to_string_pretty(&Prefs { object_model: m }).map_err(|e| e.to_string())?;
+        let text =
+            serde_json::to_string_pretty(&Prefs { object_model: self.object_model, scene_model: self.scene_model }).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&root).map_err(|e| format!("couldn't save the AI model choice: {e}"))?;
         std::fs::write(root.join(PREFS_FILE), text).map_err(|e| format!("couldn't save the AI model choice: {e}"))
     }
@@ -170,6 +233,7 @@ impl Segmenter {
         }
         if let Some(p) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Prefs>(&t).ok()) {
             self.object_model = p.object_model;
+            self.scene_model = p.scene_model;
         }
     }
 
@@ -247,6 +311,7 @@ impl Segmenter {
                 size_bytes: super::MODEL_BYTES,
                 license: super::LICENSE_NAME.into(),
                 license_url: super::LICENSE_URL.into(),
+                credit: None,
                 offered: true,
                 download: self.download_status(),
             },
@@ -259,6 +324,7 @@ impl Segmenter {
                 size_bytes: super::subject::MODEL_BYTES,
                 license: super::subject::LICENSE_NAME.into(),
                 license_url: super::subject::LICENSE_URL.into(),
+                credit: None,
                 offered: true,
                 download: self.subject.download_status(),
             },
@@ -272,6 +338,7 @@ impl Segmenter {
             size_bytes: m.size(),
             license: m.license_name.into(),
             license_url: m.license_url.into(),
+            credit: (!m.credit.is_empty()).then(|| m.credit.to_string()),
             offered: m.offered,
             download: self.open_download_status(m.key),
         }));
@@ -376,10 +443,31 @@ mod tests {
     }
 
     #[test]
+    fn the_scene_model_is_the_analysis_unless_eomt_is_chosen_and_installed() {
+        let root = tmp("scene");
+        let mut g = Segmenter { models_root: Some(root.clone()), ..Segmenter::default() };
+        assert_eq!((g.scene_model(), g.scene_model_in_use()), (SceneModel::Analysis, "analysis"));
+        g.set_scene_model(SceneModel::Eomt).unwrap();
+        assert_eq!(g.scene_model_in_use(), "analysis", "chosen but not installed");
+        // both choices are saved side by side
+        g.set_object_model(ObjectModel::Sam2).unwrap();
+        let mut h = Segmenter { models_root: Some(root.clone()), ..Segmenter::default() };
+        h.load_prefs();
+        assert_eq!((h.object_model(), h.scene_model()), (ObjectModel::Sam2, SceneModel::Eomt));
+        // a choices file from before the scene model keeps the analysis
+        std::fs::write(root.join(PREFS_FILE), br#"{"object_model": "sam3"}"#).unwrap();
+        let mut k = Segmenter { models_root: Some(root.clone()), ..Segmenter::default() };
+        k.load_prefs();
+        assert_eq!((k.object_model(), k.scene_model()), (ObjectModel::Sam3, SceneModel::Analysis));
+        assert_eq!(SceneModel::parse("nope"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn status_lists_every_model_and_unknown_ids_are_errors() {
         let mut g = Segmenter::default();
         let ids: Vec<String> = g.model_status().into_iter().map(|m| m.id).collect();
-        assert!(["sam3", "subject", "sam2", "depth"].iter().all(|k| ids.iter().any(|i| i == k)), "{ids:?}");
+        assert!(["sam3", "subject", "sam2", "scene", "depth"].iter().all(|k| ids.iter().any(|i| i == k)), "{ids:?}");
         let a = crate::activity::Activity::default();
         assert!(g.start_model_download("nope", &a).is_err());
         assert!(!g.cancel_model_download("nope"));

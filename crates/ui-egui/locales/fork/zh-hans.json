@@ -1572,5 +1572,8 @@
   "{} photos updated, {} copies": "已更新 {} 张照片，{} 个副本",
   "{} selected": "已选择 {} 张",
   "{} wants to sync its library “{}” with this library.": "{} 想将其图库“{}”与此图库同步。",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。"
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。",
+  "Sky, Landscape and People masks use": "天空、风景和人物蒙版使用",
+  "Photo analysis": "照片分析",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "照片分析无需下载。EoMT 安装后即会使用；在此之前由照片分析代替。"
 }

@@ -186,13 +186,25 @@ path is unchanged) and its own multi-threaded CPU kernels (`sam2_kernels.rs`). I
   back Retouch (Smooth Skin, Find Blemishes) and Detect Faces ([faces.md](faces.md)). Without them those fail with
   `ModelMissing(People)` / `ModelMissing(FaceDetector)` and the app opens the AI Models dialog; nothing is downloaded
   without the person's go-ahead.
-- Not ported: OneSlips' EoMT scene model (licence of its COCO training data pending a maintainer
-  decision), their BiRefNet-portrait checkpoint (licence pending), and their SAM 2 speed work,
+- **EoMT scene** (EoMT-S COCO panoptic, `tue-mps/coco_panoptic_eomt_small_640_2x`, 96 MB, MIT, pinned to
+  commit 10f53267 by size and SHA-256) can compute the Sky, Landscape (water, vegetation) and People
+  selections instead of the photo analysis. It is the person's choice: the AI Models dialog's
+  "Sky, Landscape and People masks use" control, or `ai.models.setSceneModel {"model": "analysis" | "eomt"}`
+  (saved in `ai-models.json`). The default stays the photo analysis; EoMT is used only once it is chosen
+  and installed (`ai.models.download {"id": "scene"}`, mirrors via `<PREFIX>_SCENE_MIRRORS`). It runs
+  once per photo at 640 px, with an activity row; a failure falls back to the analysis. Embedded
+  sky mattes (HEIC) still win over it. The model was trained on COCO, whose annotations are
+  CC BY 4.0: the dialog and `NOTICE` credit it (maintainer decision 2026-11-03). The port
+  (`scene.rs`) is OneSlips'; `people::Surfaces::from_scene` (floors, walls and chairs are never
+  Clothes) comes with it but isn't wired into Retouch's people masks yet.
+- Not ported: their BiRefNet-portrait checkpoint (licence pending) and their SAM 2 speed work,
   which rewrites the segmentation helpers SAM 3 shares.
 
 Tests: `cargo test -p lcc-segment` (kernels against candle, preprocessing, the registry);
 `tests/sam2_reference.rs` compares against Hugging Face `transformers` stage by stage when
-`<PREFIX>_SAM2_DIR` and `<PREFIX>_SAM2_REF` are set (skipped otherwise).
+`<PREFIX>_SAM2_DIR` and `<PREFIX>_SAM2_REF` are set (skipped otherwise). `tests/scene_reference.rs`
+runs the real EoMT weights (`<PREFIX>_SCENE_DIR`): sky above a drawn meadow, and damaged copies of
+the checkpoint as errors, not panics; with `<PREFIX>_SCENE_REF` also the stage-by-stage comparison.
 
 ## Remote Metal inference
 

@@ -1503,5 +1503,8 @@
   "{} photos linked, {} probable": "{} Fotos verknüpft, {} wahrscheinlich",
   "{} photos updated, {} copies": "{} Fotos aktualisiert, {} Kopien",
   "{} selected": "{} ausgewählt",
-  "{} wants to sync its library “{}” with this library.": "{} möchte seine Bibliothek „{}“ mit dieser Bibliothek synchronisieren."
+  "{} wants to sync its library “{}” with this library.": "{} möchte seine Bibliothek „{}“ mit dieser Bibliothek synchronisieren.",
+  "Sky, Landscape and People masks use": "Himmel-, Landschafts- und Personen-Masken nutzen",
+  "Photo analysis": "Fotoanalyse",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "Die Fotoanalyse braucht keinen Download. EoMT wird genutzt, sobald es installiert ist; bis dahin springt die Fotoanalyse ein."
 }

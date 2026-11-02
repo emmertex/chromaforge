@@ -668,15 +668,19 @@ pub fn specs() -> Vec<CommandSpec> {
             "AI Models",
             [],
             None,
-            "{} — every AI mask model (SAM 3, the Subject model, SAM 2.1, Depth Anything V2 Small): installed, folder, size, licence, offered in the model dialog, download progress; and which model computes Object clicks → {available, objectModel: auto|sam3|sam2, objectModelInUse: sam3|sam2, models: [{id, title, purpose, installed, dir, sizeBytes, license, licenseUrl, offered, download}]}",
+            "{} — every AI mask model (SAM 3, the Subject model, SAM 2.1, the EoMT scene model, Depth Anything V2 Small): installed, folder, size, licence (and training-data credit), offered in the model dialog, download progress; which model computes Object clicks, and which computes Sky, Landscape and People → {available, objectModel: auto|sam3|sam2, objectModelInUse: sam3|sam2, sceneModel: analysis|eomt, sceneModelInUse: analysis|eomt, models: [{id, title, purpose, installed, dir, sizeBytes, license, licenseUrl, credit?, offered, download}]}",
             super::always,
             |s, _| {
                 s.segmenter.subject.sync(&s.activity);
+                let activity = s.activity.clone();
+                s.segmenter.scene_sync(&activity);
                 let g = &s.segmenter;
                 Ok(json!({
                     "available": crate::segment::Segmenter::AVAILABLE,
                     "objectModel": g.object_model().key(),
                     "objectModelInUse": g.object_model_in_use(),
+                    "sceneModel": g.scene_model().key(),
+                    "sceneModelInUse": g.scene_model_in_use(),
                     "models": g.model_status(),
                 }))
             }
@@ -686,7 +690,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Download AI Model",
             [],
             None,
-            "{id: sam3|subject|sam2|depth, acknowledged: true} — download that model in the background (pinned size and SHA-256), only after the user agreed to its size and licence (ai.models.status lists both). Watch ai.models.status; ai.models.cancel stops it (it resumes later) → {started, installed, downloading}",
+            "{id: sam3|subject|sam2|scene|depth, acknowledged: true} — download that model in the background (pinned size and SHA-256), only after the user agreed to its size and licence (ai.models.status lists both). Watch ai.models.status; ai.models.cancel stops it (it resumes later) → {started, installed, downloading}",
             super::always,
             |s, p| {
                 let c = "ai.models.download";
@@ -735,6 +739,23 @@ pub fn specs() -> Vec<CommandSpec> {
                 let m = crate::segment::models::ObjectModel::parse(v).ok_or_else(|| bad(c, format!("unknown model `{v}` (auto, sam3 or sam2)")))?;
                 s.segmenter.set_object_model(m).map_err(ai_err)?;
                 Ok(json!({"objectModel": m.key(), "objectModelInUse": s.segmenter.object_model_in_use()}))
+            }
+        ),
+        cmd!(
+            query "ai.models.setSceneModel",
+            "Set Scene Mask Model",
+            [],
+            None,
+            "{model: analysis|eomt} — which model computes Sky, Landscape (water, vegetation) and People masks: the photo analysis (the default, no download) or the EoMT scene model (MIT, trained on COCO; ai.models.download {\"id\": \"scene\"}). EoMT chosen but not installed keeps the analysis. Masks re-render with it; saved for next time → {sceneModel, sceneModelInUse}",
+            super::always,
+            |s, p| {
+                let c = "ai.models.setSceneModel";
+                let v = p.get("model").and_then(Value::as_str).ok_or_else(|| bad(c, "missing `model` (analysis or eomt)"))?;
+                let m = crate::segment::models::SceneModel::parse(v).ok_or_else(|| bad(c, format!("unknown model `{v}` (analysis or eomt)")))?;
+                s.segmenter.set_scene_model(m).map_err(ai_err)?;
+                let activity = s.activity.clone();
+                s.segmenter.scene_sync(&activity);
+                Ok(json!({"sceneModel": m.key(), "sceneModelInUse": s.segmenter.scene_model_in_use()}))
             }
         ),
         cmd!(

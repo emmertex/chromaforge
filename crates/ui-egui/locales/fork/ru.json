@@ -1867,5 +1867,8 @@
   "≥  at least": "≥  не менее",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-перетаскивание для выравнивания, ⇧G Upright по направляющим, сетка во время трансформации.",
   "日本語": "日本語",
-  "繁體中文（台灣）": "繁體中文（台灣）"
+  "繁體中文（台灣）": "繁體中文（台灣）",
+  "Sky, Landscape and People masks use": "Маски неба, пейзажа и людей используют",
+  "Photo analysis": "Анализ фото",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "Анализу фото не нужна загрузка. EoMT используется, как только он установлен; до тех пор его заменяет анализ фото."
 }

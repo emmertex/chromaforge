@@ -50,6 +50,9 @@ pub struct AutoMasks {
     pub subject: Plane,
     pub water: Plane,
     pub vegetation: Plane,
+    /// Every person, when a scene model ([`crate::scene_model`]) saw them; People masks use
+    /// [`AutoMasks::subject`] otherwise.
+    pub person: Option<Plane>,
 }
 
 impl AutoMasks {
@@ -57,7 +60,8 @@ impl AutoMasks {
     pub fn for_shape(&self, shape: &MaskShape) -> Option<&Plane> {
         match shape {
             MaskShape::Sky => Some(&self.sky),
-            MaskShape::Subject | MaskShape::People { .. } | MaskShape::Object { .. } => Some(&self.subject),
+            MaskShape::People { .. } => Some(self.person.as_ref().unwrap_or(&self.subject)),
+            MaskShape::Subject | MaskShape::Object { .. } => Some(&self.subject),
             MaskShape::Landscape { class } => {
                 let c = class.to_ascii_lowercase();
                 if c.contains("sky") {
@@ -159,6 +163,9 @@ pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<A
     if let Some(subject) = model_subject(src, info, s) {
         analysed.subject = subject;
     }
+    if let Some(scene) = crate::scene_model::selection(src, info, s) {
+        crate::scene_model::apply(&mut analysed, &scene);
+    }
     let a = Arc::new(analysed);
     let mut c = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
     if c.len() >= CACHE_LEN {
@@ -166,6 +173,11 @@ pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<A
     }
     c.push((key, a.clone()));
     a
+}
+
+/// Forget the cached analyses (a model was installed or removed).
+pub(crate) fn clear_cache() {
+    CACHE.lock().unwrap_or_else(PoisonError::into_inner).clear();
 }
 
 /// A segmentation model for the Subject (and, inverted, Background) selection: given the whole
@@ -303,7 +315,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let (w, h) = (img.width, img.height);
     let empty = || Plane::new(w, h);
     if w < 4 || h < 4 {
-        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty() };
+        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty(), person: None };
     }
     // exposure-normalize to the photo's median brightness, then a display-like curve
     let mut ys: Vec<f32> = img.data.iter().map(|c| 0.2627 * c[0] + 0.678 * c[1] + 0.0593 * c[2]).collect();
@@ -322,7 +334,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let sky = sky(&lab, &smoothness, w, h);
     let subject = subject(&lab, &tex, w, h);
     let (water, vegetation) = landscape(&lab, &smoothness, &sky, w, h);
-    AutoMasks { sky: sky.alpha, subject, water, vegetation }
+    AutoMasks { sky: sky.alpha, subject, water, vegetation, person: None }
 }
 
 struct Sky {
