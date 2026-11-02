@@ -806,6 +806,10 @@ pub(crate) fn rule_text_of(p: &Photo) -> String {
         &m.state,
         &m.country,
         &m.alt_text,
+        &m.headline,
+        &m.category,
+        &m.supplemental_categories.join(" "),
+        &m.subject_code.join(" "),
         &p.format,
         &m.keywords.join(" "),
         &p.people().join(" "),
@@ -1782,6 +1786,26 @@ mod tests {
         }];
         p.copy_name = Some("Bluish".into());
         for word in ["oregon", "kite", "ana", "bluish"] {
+            assert!(m(&p, word), "{word}");
+        }
+    }
+
+    /// Any Searchable Text also finds the headline, the category, the other categories and the
+    /// subject codes.
+    #[test]
+    fn any_searchable_text_covers_iptc_content() {
+        let cat = Catalog::new();
+        let mut p = photo(1);
+        let m = |p: &Photo, value: &str| rs(json!({"rules": [{"field": "text", "op": "contains", "value": value}]})).matches(p, &cat);
+        let words = ["flood", "wea", "rain", "rivers", "17000000", "06006000"];
+        for word in words {
+            assert!(!m(&p, word), "{word}");
+        }
+        p.meta.headline = "Flood waters rise".into();
+        p.meta.category = "WEA".into();
+        p.meta.supplemental_categories = vec!["Rain".into(), "Rivers".into()];
+        p.meta.subject_code = vec!["17000000".into(), "06006000".into()];
+        for word in words {
             assert!(m(&p, word), "{word}");
         }
     }
