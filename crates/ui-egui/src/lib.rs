@@ -279,6 +279,8 @@ mod tests_panel_restore;
 #[cfg(test)]
 mod tests_panels;
 #[cfg(test)]
+mod tests_pickers;
+#[cfg(test)]
 mod tests_preset_favorites;
 #[cfg(test)]
 mod tests_preset_folders;
@@ -2323,6 +2325,8 @@ impl LccApp {
         self.library_changed(&ctx);
         // (a tool panel opened some other way still remembers the panel it took the place of)
         self.ui.note_right();
+        // a picker armed in another tab or panel than the one on show is put away
+        self.ui.check_picker();
         // Auto Sync is remembered app-wide, however it was switched (menu, switch, console)
         self.ui.settings.auto_sync = self.session.auto_sync;
         // panels set it again this frame while the pointer rests on a preset or profile

@@ -1265,6 +1265,10 @@ pub struct UiState {
     pub grading_hidden: Option<(lcc_catalog::PhotoId, [bool; 3])>,
     /// Active on-canvas tool: "", "brush", "linear", "radial", "wbPicker", "straighten", "remove".
     pub tool: String,
+    /// The panel layout a picker ([`is_picker`]) was armed in: when it changes (another tab, mixer mode, curve
+    /// channel or panel) the picker is put away.
+    #[serde(skip)]
+    pub picker_armed_in: Option<String>,
     /// Guided Upright: the selected guide (photo id + index) while the tool is open. A Delete /
     /// Backspace on it removes that guide alone; a click away or leaving the tool clears it.
     #[serde(skip)]
@@ -1992,6 +1996,13 @@ impl SyncCounts {
     }
 }
 
+/// Whether `tool` is a picker: a targeted adjustment (`tat:*`, drag on a colour or tone) or a colour sampler
+/// (Point Color, Color Range). The white balance picker is left out: it puts itself away after one pick and keeps
+/// working across panels (W).
+pub fn is_picker(tool: &str) -> bool {
+    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange")
+}
+
 impl Default for UiState {
     fn default() -> Self {
         UiState {
@@ -2016,6 +2027,7 @@ impl Default for UiState {
             right: RightPanel::Edit,
             toggle_return: None,
             tool_return: None,
+            picker_armed_in: None,
             right_seen: RightPanel::Edit,
             right_collapsed: false,
             right_hidden: RightPanel::None,
@@ -2257,6 +2269,48 @@ impl UiState {
             *slot = hidden;
         }
         self.grading_hidden = h.iter().any(|x| *x).then_some((photo, h));
+    }
+
+    /// Where a picker is armed: the panel and the tabs on show in it.
+    fn picker_layout(&self) -> String {
+        format!(
+            "{:?}|{:?}|{}|{}|{}|{}|{}|{}",
+            self.view,
+            self.right,
+            self.flyout_open("pointColor"),
+            self.mixer_adjust,
+            self.mixer_group,
+            self.mixer_mode,
+            self.curve_channel,
+            self.grading_mode
+        )
+    }
+
+    /// Once a frame: a picker armed in one layout is put away when the layout changes (another Color Mixer tab,
+    /// Hue / Saturation / Luminance, a mixer mode, the curve channel, another panel or view), so its cursor and its
+    /// claim on the photo's clicks go with it.
+    pub fn check_picker(&mut self) {
+        if !is_picker(&self.tool) {
+            self.picker_armed_in = None;
+            return;
+        }
+        let here = self.picker_layout();
+        match &self.picker_armed_in {
+            Some(armed) if *armed != here => {
+                self.tool.clear();
+                self.picker_armed_in = None;
+            }
+            Some(_) => {}
+            None => self.picker_armed_in = Some(here),
+        }
+    }
+
+    /// A slider (or dial) was touched: a picker armed is put away.
+    pub fn put_away_picker(&mut self) {
+        if is_picker(&self.tool) {
+            self.tool.clear();
+            self.picker_armed_in = None;
+        }
     }
 
     /// Notes the panel on show: a tool panel opened from another panel (or from none) remembers

@@ -3335,6 +3335,8 @@ fn color_range_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map:
 fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, d: &DevelopSettings) {
     let long = (map.rect.width().max(map.rect.height())) as f64;
     let active = app.session.active_mask;
+    // no tool armed as this frame starts (a click that makes a mask puts its tool away: that click doesn't zoom)
+    let idle = app.ui.tool.is_empty();
     let clip = app.canvas_rect.unwrap_or(map.rect);
     let p = &ui.painter_at(clip);
     // (mask, component, handle, screen position) of everything that can be grabbed
@@ -3567,14 +3569,21 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             })
             .copied()
     };
-    if resp.clicked()
-        && let Some(q) = resp.interact_pointer_pos()
-        && let Some((mid, ci, ..)) = hit(q)
-    {
+    let clicked_grip = resp.clicked().then(|| resp.interact_pointer_pos().and_then(hit)).flatten();
+    if let Some((mid, ci, ..)) = clicked_grip {
         if Some(mid) != active {
             let _ = app.run("mask.select", json!({"id": mid}));
         }
         app.ui.active_mask_component = Some(ci);
+    }
+    // no tool armed and no pin or handle clicked: a click zooms, as in Edit (a drag pans below)
+    if (resp.clicked() || resp.double_clicked())
+        && clicked_grip.is_none()
+        && idle
+        && app.ui.tool.is_empty()
+        && let Some(canvas) = app.canvas_rect
+    {
+        click_zoom_and_pan(app, resp, map.rect, canvas);
     }
     if resp.drag_started()
         && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())

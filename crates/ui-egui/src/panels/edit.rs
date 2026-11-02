@@ -19,6 +19,10 @@ use crate::widgets::{BAND_COLORS, SliderOut, divider, flyout_row, hex, register,
 
 /// Commit a slider interaction: begin → live updates → end, so a drag is one undo step.
 pub fn apply_slider_out(app: &mut LccApp, spec: &ControlSpec, out: SliderOut, mut set: impl FnMut(&mut LccApp, f64) -> Result<Value, String>) {
+    // a slider touched puts a picker away: the slider's own change is what is wanted now
+    if out.drag_started || out.reset || out.value.is_some() {
+        app.ui.put_away_picker();
+    }
     if out.drag_started && !out.reset {
         // a MIDI turn still inside its idle window must not outlive the hand-over to the mouse
         app.end_midi_interaction();
