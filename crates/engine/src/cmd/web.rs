@@ -3,7 +3,7 @@
 //!
 //! - `web.preview {settings?, ids?}` → the generated pages without rendering any image.
 //! - `web.export {dir, settings?, ids?}` → writes the site (pages + rendered JPEGs) into `dir`.
-//! - `web.upload {server, settings?, ids?, password?}` → renders and uploads over SFTP.
+//! - `web.upload {server, settings?, ids?, password?}` → checks the server, renders and uploads over SFTP.
 //! - `web.shareImmich {account?, album?, expiresDays?, password?, allowDownload?, showMetadata?}` →
 //!   IMM-SHARELINK: uploads the large images to a new Immich album and returns its shared link.
 //! - [`prepare`] + [`WebJob::run`]: the same three outputs, run off the UI thread by the app.
@@ -278,6 +278,8 @@ fn prepare_site(s: &mut Session, g: &GallerySettings, ids: &[PhotoId], c: &str) 
         let o = image_options(g, r.long_edge, r.large);
         let work = crate::export::prepare_export(s, id, &o, seq).map_err(|e| bad(c, format!("{}: {e}", r.path)))?;
         let created = s.catalog.photo(id).map(|p| p.captured.clone().unwrap_or_else(|| p.imported.clone())).unwrap_or_default();
+        // a year or a month alone (`1983-04`) is sent as the start of its period, a time the server reads
+        let created = lcc_catalog::dates::capture_start(&created).into_owned();
         let created = if created.len() == 19 { format!("{created}.000Z") } else { created };
         images.push(ImageJob { path: r.path.clone(), large: r.large, created, work });
     }
@@ -381,6 +383,10 @@ impl WebJob {
     pub fn run(self, progress: &mut dyn FnMut(usize, usize) -> bool) -> std::result::Result<Value, String> {
         let total = self.steps();
         let WebJob { target, pages, images, photos } = self;
+        // a server that can't take the upload says so now, not after every image has been rendered
+        if let Target::Sftp { server, auth } = &target {
+            sftp::check(server, auth.clone())?;
+        }
         let mut rendered: Vec<(String, Vec<u8>, String)> = Vec::with_capacity(images.len());
         for (k, im) in images.into_iter().enumerate() {
             if !progress(k, total) {
@@ -687,9 +693,29 @@ mod tests {
     #[test]
     fn upload_to_an_unreachable_server_is_an_error() {
         let (mut s, _) = session("upload");
-        let r = s.execute("web.upload", &json!({"server": {"host": "127.0.0.1", "port": 1, "user": "u", "path": "g"}, "password": "x"}));
+        // (one photo: the gallery is rendered before the server is tried)
+        let id = s.catalog.photos().next().unwrap().id.0;
+        let server = json!({"host": "127.0.0.1", "port": 1, "user": "u", "path": "g"});
+        let r = s.execute("web.upload", &json!({"server": server, "password": "x", "ids": [id]}));
         assert!(r.is_err());
         assert!(s.execute("web.upload", &json!({"server": {"host": "127.0.0.1", "user": "u"}})).is_err(), "no password");
+    }
+
+    #[test]
+    fn a_server_that_cannot_be_reached_fails_before_anything_renders() {
+        let (mut s, _) = session("upload-first");
+        let p = json!({"server": {"host": "127.0.0.1", "port": 1, "user": "u", "path": "g"}, "password": "x"});
+        let job = super::prepare(&mut s, "web.upload", &p).unwrap();
+        assert!(job.steps() > 1, "images to render");
+        let mut asked = 0;
+        let e = job
+            .run(&mut |_, _| {
+                asked += 1;
+                true
+            })
+            .unwrap_err();
+        assert!(e.contains("cannot connect"), "{e}");
+        assert_eq!(asked, 0, "rendering started");
     }
 
     #[test]

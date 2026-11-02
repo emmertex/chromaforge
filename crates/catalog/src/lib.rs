@@ -50,7 +50,7 @@ use lcc_develop::DevelopSettings;
 pub use local::{DEFAULT_FORGET_DAYS, ForgetPlan, LocalRecords, folder_of};
 pub use lock::{LibraryLock, LockError, LockOwner};
 pub use model::*;
-pub use query::{DateGroup, Filter, Person, RatingOp, Sort, SortKey, mix64};
+pub use query::{DateGroup, Filter, MatchOp, Person, RatingOp, Sort, SortKey, mix64};
 pub use remote::{PreviewEntry, RemoteIdentity, RemoteKey, RemoteTable, SyncState};
 pub use rules::{Match, Rule, RuleSet};
 use serde::{Deserialize, Serialize};
@@ -1213,7 +1213,7 @@ impl Catalog {
             }
             Op::SetCaptured { id, captured } => {
                 if let Some(c) = &captured
-                    && stacks::iso_seconds(c).is_none()
+                    && !dates::is_capture_time(c)
                 {
                     return Err(CatalogError::Invalid(format!("not a date: {c}")));
                 }

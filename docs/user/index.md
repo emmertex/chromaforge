@@ -23,4 +23,4 @@ You import photos, sort them with ratings, flags and albums, and edit them witho
 
 ## Get help
 
-Open an issue in the [issue tracker](https://github.com/emmertex/lightcraft-classic/issues). Say which system and camera you use, and your Chromaforge version (**Help** > **About Chromaforge**; on macOS, **Chromaforge** > **About Chromaforge**).
+Open an issue in the [issue tracker](https://github.com/emmertex/chromaforge/issues). Say which system and camera you use, and your Chromaforge version (**Help** > **About Chromaforge**; on macOS, **Chromaforge** > **About Chromaforge**).

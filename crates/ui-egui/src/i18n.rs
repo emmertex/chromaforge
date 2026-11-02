@@ -460,6 +460,10 @@ pub fn date_group_label(key: &str, short: bool) -> String {
 /// A capture time for display in the UI language (English: "March 30, 2022 at 10:11:11 PM");
 /// the metadata itself is never rewritten, and a value that doesn't parse is shown as it is.
 pub fn display_time(iso: &str) -> String {
+    // a year or a month alone ("1983", "April 1983"), as the grid's date headers show it
+    if lcc_catalog::dates::partial_capture(iso).is_some() {
+        return date_group_label(iso, false);
+    }
     if language() == Locale::En || lcc_catalog::dates::normalize_iso(iso).is_none() {
         return lcc_catalog::dates::display_time(iso);
     }
@@ -1495,6 +1499,7 @@ mod tests {
         assert_eq!(date_group_label("2026-09-20", true), "Sunday, 20");
         assert_eq!(date_group_label("2026-09", true), "September");
         assert_eq!(display_time("2026-09-20T16:04:05"), lcc_catalog::dates::display_time("2026-09-20T16:04:05"));
+        assert_eq!((display_time("1983-04"), display_time("1983")), ("April 1983".to_string(), "1983".to_string()));
         for language in Locale::ALL {
             set_language(*language);
             if *language != Locale::En {
@@ -1505,6 +1510,9 @@ mod tests {
                 assert!(date_group_label("2026", false).contains("2026"), "{language:?}");
                 assert_eq!(display_time("2026-09-20T16:04:05"), format!("{day} 16:04:05"), "{language:?}");
             }
+            // a capture time stated to the year or the month alone shows as such
+            assert_eq!(display_time("1983-04"), date_group_label("1983-04", false), "{language:?}");
+            assert_eq!(display_time("1983"), date_group_label("1983", false), "{language:?}");
             for key in ["", "abcd", "2026-xx", "2026-13", "2026-09-xx", "２０２６-09"] {
                 assert!(!date_group_label(key, false).contains('{'), "{language:?}: {key:?}");
                 assert!(!date_group_label(key, true).contains('{'), "{language:?}: {key:?}");

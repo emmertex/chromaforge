@@ -345,15 +345,23 @@ fn merge_calibrations(
 
 /// Replace `color` with the colour model a photo's camera-profile choice names (see
 /// [`lcc_raw::dcp::resolve`]): an imported `.dcp`, its camera's default `.dcp`, or nothing
-/// (the app's own colour). Returns the profile's name when one was applied.
+/// (the app's own colour). Returns the profile's name when one was applied. A DNG of rendered RGB keeps its colour
+/// ([`lcc_raw::color::is_rendered_rgb`]).
 pub fn apply_choice(color: &mut lcc_raw::ColorData, meta: &lcc_meta::Metadata, choice: &str) -> Option<String> {
-    let model = meta.model.as_deref()?;
-    let dcp = lcc_raw::dcp::resolve(choice, meta.make.as_deref(), model)?;
+    let dcp = profile_for(color, meta, choice)?;
     dcp.apply(color);
     if lcc_pipeline::profiling() {
         eprintln!("[profile] camera colour from {:?} ({})", dcp.name, dcp.model);
     }
     Some(dcp.name.clone())
+}
+
+/// The profile [`apply_choice`] applies to a file with these colour tags and this metadata.
+pub(crate) fn profile_for(color: &lcc_raw::ColorData, meta: &lcc_meta::Metadata, choice: &str) -> Option<std::sync::Arc<lcc_raw::dcp::Dcp>> {
+    if lcc_raw::color::is_rendered_rgb(color) {
+        return None;
+    }
+    lcc_raw::dcp::resolve(choice, meta.make.as_deref(), meta.model.as_deref()?)
 }
 
 /// [`apply_choice`] with the camera's default.

@@ -21,7 +21,7 @@ pub fn report(bytes: &[u8], camera: &str) -> Result<Value, String> {
         Err(Err(e)) => return Err(e),
     };
     // the photo's camera profile (`.dcp` or calibrated look) replaces the file's colour model, as on opening
-    let camera_profile = raw.metadata.model.as_deref().and_then(|model| lcc_raw::dcp::resolve(camera, raw.metadata.make.as_deref(), model));
+    let camera_profile = crate::camera_profiles::profile_for(&raw.color, &raw.metadata, camera);
     if let Some(d) = &camera_profile {
         d.apply(&mut raw.color);
     }

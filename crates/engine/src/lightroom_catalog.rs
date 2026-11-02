@@ -1161,6 +1161,11 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     refuse_non_media(&mut data);
     validate(&data).map_err(error)?;
     let mut warnings = data.warnings.clone();
+    // Records this import has just added, or promoted from Local untouched since browsing, hold
+    // no edits of the library's own, even when adding or browsing read develop settings from the
+    // file's XMP: the catalog's settings apply to them.
+    let changed: HashSet<_> = files.promoted_changed.iter().collect();
+    let added: HashSet<_> = files.imported.iter().filter(|id| !changed.contains(id)).copied().map(PhotoId).collect();
     let duplicates: HashMap<_, _> = files.duplicates.iter().filter_map(|d| d.existing.map(|id| (key(&d.path), PhotoId(id)))).collect();
     let mut by_path: HashMap<_, _> =
         s.catalog.photos().filter(|p| p.copy_of.is_none()).filter_map(|p| source_path(p).map(|path| (key(path), p.id))).collect();
@@ -1242,10 +1247,32 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         }
         ids.insert(src.source_id, p.id);
         index.photos.insert(identity(&data, src), p.id.0);
-        let keep_develop = existing_id.is_some() && p.edited.is_some() && !update_existing;
+        // A record this import added, or a Local one untouched since browsing (an offline original
+        // never reaches the add step, so it is judged here), holds no edits of the library's own.
+        let fresh = existing_id.is_some_and(|id| added.contains(&id) || s.catalog.photo(id).is_some_and(|q| q.untouched_local()));
+        let keep_develop = existing_id.is_some() && !fresh && p.edited.is_some() && !update_existing;
         let previous_develop = (p.develop.clone(), p.edited.clone());
         if keep_develop {
             preserved += 1;
+        }
+        let orientation = lightroom_orientation(text(&src.image, "orientation")).unwrap_or_default();
+        let stored_aspect = number(&src.image, "fileWidth") as f64 / number(&src.image, "fileHeight") as f64;
+        // Lightroom leaves some settings at zero (Clarity, Texture) out of its develop text, so the
+        // catalog's settings start from the camera's defaults, not from what the file's XMP (or a
+        // default import preset) gave the photo. With no develop text, or one that can't be read,
+        // there is nothing to replace them with.
+        if fresh
+            && !src.settings.is_empty()
+            && mapped_settings(
+                &src.settings,
+                crate::crs::Target::for_photo(&p),
+                p.width.max(1) as f64 / p.height.max(1) as f64,
+                orientation,
+                stored_aspect,
+            )
+            .is_ok()
+        {
+            p.develop = Arc::new(p.camera_defaults());
         }
         if !src.xmp.is_empty() {
             match crate::sidecar::parse_sidecar(&src.xmp, crate::crs::Target::for_photo(&p)) {
@@ -1265,15 +1292,27 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             _ => Flag::None,
         };
         p.label = s.catalog.label_from_name(text(&src.image, "colorLabels"));
-        if !text(&src.image, "captureTime").is_empty() {
-            p.captured = Some(text(&src.image, "captureTime").into());
+        // A capture time the library can't hold would fail the whole batch at `SetCaptured`, and an
+        // impossible date (2026-02-30) would roll over to another day in date grouping: it is left
+        // out with a warning (the catalog's value stays in the import archive). A year or a month
+        // alone (`1983`, `1983-04`: a scanned print's date, from its XMP) is kept as stated.
+        let captured = text(&src.image, "captureTime");
+        let is_date = |c: &str| lcc_catalog::dates::normalize_iso(&lcc_catalog::dates::capture_start(c)).is_some();
+        if is_date(captured) {
+            p.captured = Some(captured.into());
+        } else if !captured.is_empty() {
+            warnings.push(format!("image {}: capture time “{captured}” is not a date; imported without it", src.source_id));
+        }
+        // a new record (a virtual copy, a duplicate) doesn't inherit a time an earlier import stored unchecked
+        if s.catalog.photo(p.id).is_none()
+            && let Some(inherited) = p.captured.take_if(|c| !is_date(c))
+        {
+            warnings.push(format!("image {}: inherited capture time “{inherited}” is not a date; imported without it", src.source_id));
         }
         if !src.keywords.is_empty() {
             p.meta.keywords = src.keywords.clone();
         }
         if !src.settings.is_empty() && !keep_develop {
-            let orientation = lightroom_orientation(text(&src.image, "orientation")).unwrap_or_default();
-            let stored_aspect = number(&src.image, "fileWidth") as f64 / number(&src.image, "fileHeight") as f64;
             let target = crate::crs::Target::for_photo(&p);
             let aspect = p.width.max(1) as f64 / p.height.max(1) as f64;
             let base = p.develop.clone();
@@ -1337,8 +1376,20 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                 Op::SetFlag { id: p.id, flag: p.flag },
                 Op::SetLabel { id: p.id, label: p.label },
                 Op::SetMeta { id: p.id, meta: Box::new(p.meta.clone()) },
-                Op::SetCaptured { id: p.id, captured: p.captured.clone() },
             ]);
+            // A record an earlier import gave a time that isn't a date keeps it: `SetCaptured` refuses
+            // such a time, so setting it would fail the batch, and replacing it would leave an undo
+            // that can't put it back.
+            let settable = |c: Option<&str>| c.is_none_or(lcc_catalog::dates::is_capture_time);
+            let stored = s.catalog.photo(p.id).and_then(|old| old.captured.clone());
+            if settable(stored.as_deref()) && settable(p.captured.as_deref()) {
+                ops.push(Op::SetCaptured { id: p.id, captured: p.captured.clone() });
+            } else if let (Some(stored), true) = (&stored, p.captured != stored) {
+                warnings.push(format!(
+                    "image {}: the library's capture time “{stored}” is not a date, so Lightroom's was not applied (undoing the import could not restore it)",
+                    src.source_id
+                ));
+            }
             ops.push(Op::SetDevelop { id: p.id, settings: p.develop.clone(), label: "Lightroom catalog".into(), edited: p.edited.clone() });
             if !keep_develop && !src.history.is_empty() {
                 ops.push(Op::SetHistory { id: p.id, history: p.history.clone() });
@@ -3580,5 +3631,431 @@ mod tests {
         let error = read(&path).unwrap_err();
         assert!(error.contains("develop settings could not be read"), "{error}");
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// Every shape of `Adobe_images.captureTime`, read from a catalog file and imported: a year or a month alone (a
+    /// scanned print's date; Lightroom also has it in the photo's XMP as `photoshop:DateCreated`) is kept as stated,
+    /// as is every full time; what isn't a date is left out with one warning naming the image, its value stays in the
+    /// import archive, and nothing panics.
+    #[test]
+    fn every_capture_time_shape_imports_as_stated_or_is_left_out() {
+        use crate::lightroom_fixture::{self as fixture, Field, Table, text as t};
+        // (captureTime, what the library keeps; None = left out with a warning, or nothing to keep)
+        let shapes: &[(&str, Option<&str>)] = &[
+            ("1983", Some("1983")),
+            ("1983-04", Some("1983-04")),
+            ("1983-04-12", Some("1983-04-12")),
+            ("2024-01-16T12:34:56", Some("2024-01-16T12:34:56")),
+            ("2024-01-16T12:34:56.12", Some("2024-01-16T12:34:56.12")),
+            ("2024-01-16T12:34:56.123", Some("2024-01-16T12:34:56.123")),
+            ("2024-01-16T12:34:56.123456", Some("2024-01-16T12:34:56.123456")),
+            ("2024-01-16T12:34", Some("2024-01-16T12:34")),
+            ("2024-01-16T12:34:56-07:00", Some("2024-01-16T12:34:56-07:00")),
+            ("2024-01-16T12:34:56Z", Some("2024-01-16T12:34:56Z")),
+            // a date with text after it reads and is kept, as before: Edit Capture Time counts it `unreadable`
+            ("2024-01-16T12:34:56junk", Some("2024-01-16T12:34:56junk")),
+            ("", None),
+            ("1983-13", None),
+            ("0000", None),
+            ("2026-02-30", None),
+            ("garbage", None),
+            ("１９８３", None),
+            ("1983-０4", None),
+        ];
+        let partial = |c: &str| c == "1983" || c == "1983-04";
+        // Lightroom's `Adobe_AdditionalMetadata.xmp` for a file that states only `photoshop:DateCreated`
+        let xmp = |date: &str| {
+            fixture::compressed(&format!(
+                "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+                 <rdf:Description rdf:about=\"\" xmlns:photoshop=\"http://ns.adobe.com/photoshop/1.0/\" \
+                 photoshop:DateCreated=\"{date}\"/></rdf:RDF></x:xmpmeta>"
+            ))
+        };
+        let n = |i: usize| i64::try_from(i + 1).unwrap();
+        let tables = vec![
+            Table {
+                name: "AgLibraryRootFolder",
+                columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, absolutePath UNIQUE NOT NULL DEFAULT '', name NOT NULL DEFAULT '', relativePathFromCatalog",
+                rows: vec![vec![Field::Integer(1), t("root-1"), t("/missing/scans/"), t("scans"), Field::Null]],
+            },
+            Table {
+                name: "AgLibraryFolder",
+                columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, pathFromRoot NOT NULL DEFAULT '', rootFolder INTEGER NOT NULL DEFAULT 0",
+                rows: vec![vec![Field::Integer(1), t("folder-1"), t("Photos/"), Field::Integer(1)]],
+            },
+            Table {
+                name: "AgLibraryFile",
+                columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, baseName NOT NULL DEFAULT '', extension NOT NULL DEFAULT '', folder INTEGER NOT NULL DEFAULT 0, idx_filename NOT NULL DEFAULT ''",
+                rows: (0..shapes.len())
+                    .map(|i| {
+                        vec![
+                            Field::Integer(n(i)),
+                            t(&format!("file-{i}")),
+                            t(&format!("scan{i}")),
+                            t("jpg"),
+                            Field::Integer(1),
+                            t(&format!("scan{i}.jpg")),
+                        ]
+                    })
+                    .collect(),
+            },
+            Table {
+                name: "Adobe_images",
+                columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, captureTime, fileFormat NOT NULL DEFAULT 'unset', fileHeight, fileWidth, rootFile INTEGER NOT NULL DEFAULT 0",
+                rows: shapes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (c, _))| {
+                        let captured = if c.is_empty() { Field::Null } else { t(c) };
+                        vec![
+                            Field::Integer(n(i)),
+                            t(&format!("image-{i}")),
+                            captured,
+                            t("JPG"),
+                            Field::Integer(10),
+                            Field::Integer(20),
+                            Field::Integer(n(i)),
+                        ]
+                    })
+                    .collect(),
+            },
+            Table {
+                name: "Adobe_AdditionalMetadata",
+                columns: "id_local INTEGER PRIMARY KEY, image INTEGER, xmp",
+                rows: shapes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (c, _))| partial(c))
+                    .map(|(i, (c, _))| vec![Field::Integer(n(i)), Field::Integer(n(i)), Field::Blob(xmp(c))])
+                    .collect(),
+            },
+        ];
+        let dir = fixture::dir("capture-time-shapes");
+        let path = dir.join("shapes.lrcat");
+        fixture::write(&path, &tables);
+        let catalog = read(&path).unwrap();
+        assert_eq!(catalog.photos.len(), shapes.len(), "{:?}", catalog.skipped);
+        // the catalog's own value stays in the import archive, whatever the library keeps
+        let archived = fixture::read_archive(&crate::lightroom_archive::store(&dir.join("Interop"), &catalog).unwrap());
+        for photo in archived["photos"].as_array().unwrap() {
+            let i = usize::try_from(photo["source_id"].as_i64().unwrap() - 1).unwrap();
+            let (c, _) = shapes[i];
+            let want = if c.is_empty() { Value::Null } else { json!(c) };
+            assert_eq!(photo["image"]["captureTime"], want, "archived captureTime of image {}", i + 1);
+        }
+        let mut s = crate::Session::new();
+        let r = apply(&mut s, catalog, false).unwrap();
+        let mut warnings = Vec::new();
+        for (i, (c, kept)) in shapes.iter().enumerate() {
+            let id = PhotoId(r["mapping"][(i + 1).to_string()].as_u64().unwrap_or_else(|| panic!("image {} not imported: {r}", i + 1)));
+            assert_eq!(s.catalog.photo(id).unwrap().captured.as_deref(), *kept, "captureTime “{c}”: {r}");
+            if kept.is_none() && !c.is_empty() {
+                warnings.push(format!("image {}: capture time “{c}” is not a date; imported without it", i + 1));
+            }
+        }
+        let got: Vec<&str> = r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).filter(|w| w.contains("capture time")).collect();
+        assert_eq!(got, warnings, "one warning for each time that isn't a date, none for a partial one: {r}");
+        // a reimport over the same records sets the same times again, partial ones included
+        let again = apply(&mut s, read(&path).unwrap(), false).unwrap();
+        assert_eq!(again["mapping"], r["mapping"]);
+        for (i, (c, kept)) in shapes.iter().enumerate() {
+            let id = PhotoId(r["mapping"][(i + 1).to_string()].as_u64().unwrap());
+            assert_eq!(s.catalog.photo(id).unwrap().captured.as_deref(), *kept, "reimported captureTime “{c}”");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The reported failure: photos whose originals are on disk are added as files first and get Lightroom's capture
+    /// time through `SetCaptured`, so one year-only date used to fail the whole import ("not a date: 1983"). Now every
+    /// photo imports: a partial date as stated, one that isn't a date without it.
+    #[test]
+    fn a_partial_capture_time_on_a_file_on_disk_doesnt_fail_the_import() {
+        use crate::lightroom_fixture::{self as fixture, Field, Table, text as t};
+        let shapes = ["1983", "1983-04", "2024-01-16T12:34:56", "garbage"];
+        let dir = fixture::dir("capture-time-on-disk");
+        let originals = dir.join("originals");
+        std::fs::create_dir_all(originals.join("Photos")).unwrap();
+        for i in 0..shapes.len() {
+            crate::tests_xmp::write_png(&originals.join("Photos").join(format!("scan{i}.png")), u8::try_from(i).unwrap());
+        }
+        let n = |i: usize| i64::try_from(i + 1).unwrap();
+        let tables = vec![
+            Table {
+                name: "AgLibraryRootFolder",
+                columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, absolutePath UNIQUE NOT NULL DEFAULT '', name NOT NULL DEFAULT '', relativePathFromCatalog",
+                rows: vec![vec![Field::Integer(1), t("root-1"), Field::Text(format!("{}/", originals.display())), t("originals"), Field::Null]],
+            },
+            Table {
+                name: "AgLibraryFolder",
+                columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, pathFromRoot NOT NULL DEFAULT '', rootFolder INTEGER NOT NULL DEFAULT 0",
+                rows: vec![vec![Field::Integer(1), t("folder-1"), t("Photos/"), Field::Integer(1)]],
+            },
+            Table {
+                name: "AgLibraryFile",
+                columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, baseName NOT NULL DEFAULT '', extension NOT NULL DEFAULT '', folder INTEGER NOT NULL DEFAULT 0, idx_filename NOT NULL DEFAULT ''",
+                rows: (0..shapes.len())
+                    .map(|i| {
+                        vec![
+                            Field::Integer(n(i)),
+                            t(&format!("file-{i}")),
+                            t(&format!("scan{i}")),
+                            t("png"),
+                            Field::Integer(1),
+                            t(&format!("scan{i}.png")),
+                        ]
+                    })
+                    .collect(),
+            },
+            Table {
+                name: "Adobe_images",
+                columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, captureTime, fileFormat NOT NULL DEFAULT 'unset', fileHeight, fileWidth, rootFile INTEGER NOT NULL DEFAULT 0",
+                rows: shapes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        vec![
+                            Field::Integer(n(i)),
+                            t(&format!("image-{i}")),
+                            t(c),
+                            t("PNG"),
+                            Field::Integer(8),
+                            Field::Integer(8),
+                            Field::Integer(n(i)),
+                        ]
+                    })
+                    .collect(),
+            },
+        ];
+        let path = dir.join("on-disk.lrcat");
+        fixture::write(&path, &tables);
+        let mut s = crate::Session::new().with_fs();
+        let r = apply(&mut s, read(&path).unwrap(), false).unwrap();
+        assert_eq!(r["missing"], json!([]), "the originals are on disk: {r}");
+        let kept: Vec<_> = (0..shapes.len())
+            .map(|i| {
+                let id = PhotoId(r["mapping"][(i + 1).to_string()].as_u64().unwrap_or_else(|| panic!("image {} not imported: {r}", i + 1)));
+                s.catalog.photo(id).unwrap().captured.clone()
+            })
+            .collect();
+        assert_eq!(kept[..3], [Some("1983".into()), Some("1983-04".into()), Some("2024-01-16T12:34:56".into())], "{r}");
+        assert_ne!(kept[3].as_deref(), Some("garbage"), "{r}");
+        assert!(r["warnings"].to_string().contains("image 4: capture time “garbage” is not a date"), "{r}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A record an earlier version stored with a capture time that isn't a date keeps it on a reimport, with a warning,
+    /// rather than take Lightroom's (undoing the import could not put it back); a new virtual copy doesn't inherit it.
+    #[test]
+    fn a_stored_capture_time_that_is_not_a_date_is_kept_and_not_inherited() {
+        let mut s = crate::Session::new();
+        let r = apply(&mut s, sample(), false).unwrap();
+        let master = PhotoId(r["mapping"]["1"].as_u64().unwrap());
+        let mut broken = (**s.catalog.photo(master).unwrap()).clone();
+        broken.captured = Some("garbage".into());
+        // as an earlier version stored it, past the check `SetCaptured` makes
+        s.commit("Earlier import", Op::Batch { ops: vec![Op::RemovePhoto { id: master }, Op::AddPhoto { photo: Box::new(broken) }] }).unwrap();
+        // Lightroom's own time isn't applied over it
+        let mut data = sample();
+        data.photos.retain(|p| p.source_id == 1);
+        let again = apply(&mut s, data, false).unwrap();
+        assert_eq!(s.catalog.photo(master).unwrap().captured.as_deref(), Some("garbage"), "{again}");
+        assert!(again["warnings"].to_string().contains("image 1: the library's capture time “garbage” is not a date"), "{again}");
+        // a copy new this time starts from the stored master (whose time this catalog doesn't state) but not its time
+        let mut data = sample();
+        data.photos.iter_mut().for_each(|p| drop(p.image.remove("captureTime")));
+        for p in &mut data.photos {
+            if p.source_id == 2 {
+                p.source_id = 3;
+                p.uuid = "test-copy-2".into();
+                p.image.insert("id_local".into(), json!(3));
+            }
+        }
+        let again = apply(&mut s, data, false).unwrap();
+        assert_eq!(s.catalog.photo(master).unwrap().captured.as_deref(), Some("garbage"), "{again}");
+        let copy = PhotoId(again["mapping"]["3"].as_u64().unwrap());
+        assert_eq!(s.catalog.photo(copy).unwrap().captured, None, "{again}");
+        assert!(again["warnings"].to_string().contains("image 3: inherited capture time “garbage” is not a date"), "{again}");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.catalog.photo(master).unwrap().captured.as_deref(), Some("garbage"), "undo leaves it as it was");
+    }
+
+    /// Settings read from a file's XMP while this import adds it are not edits the library had: the
+    /// catalog's settings and history win, for embedded XMP and sidecars alike, without
+    /// `updateExisting`, and a setting the catalog leaves out (Lightroom omits those at zero) is
+    /// taken neither from the file nor from a default import preset.
+    #[test]
+    fn a_photo_this_import_adds_takes_the_catalogs_settings_over_its_files_xmp() {
+        let dir = crate::tests_xmp::temp_dir("lightroom-embedded-edits");
+        let saved = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="+1.00" crs:Dehaze="0" crs:Clarity2012="+20"/></rdf:RDF></x:xmpmeta>"#;
+        let dng = dir.join("embedded.dng");
+        std::fs::write(&dng, crate::tests_xmp::synthetic_dng_with(Some(saved), Default::default())).unwrap();
+        let raw = dir.join("sidecar.dng");
+        std::fs::write(&raw, crate::tests_xmp::synthetic_dng_with(None, Default::default())).unwrap();
+        std::fs::write(dir.join("sidecar.xmp"), saved).unwrap();
+        let photo = |id: i64, path: &Path| CatalogPhoto {
+            source_id: id,
+            uuid: format!("photo-{id}"),
+            path: path.to_string_lossy().into(),
+            image: row(json!({"id_local":id,"fileFormat":"DNG","fileWidth":32,"fileHeight":24})),
+            settings: "s = { Exposure2012 = 1, Dehaze = -50 }".into(),
+            xmp: String::new(),
+            keywords: Vec::new(),
+            history: vec![
+                row(json!({"id_local":id * 10,"dateCreated":1.0,"name":"Exposure","text":"s = { Exposure2012 = 1 }"})),
+                row(json!({"id_local":id * 10 + 1,"dateCreated":2.0,"name":"Dehaze","text":"s = { Exposure2012 = 1, Dehaze = -50 }"})),
+            ],
+            snapshots: Vec::new(),
+            original: Original::Local,
+        };
+        let data = CatalogImport {
+            source: "test.lrcat".into(),
+            photos: vec![photo(1, &dng), photo(2, &raw)],
+            collections: Vec::new(),
+            members: Vec::new(),
+            collection_content: Vec::new(),
+            stacks: Vec::new(),
+            warnings: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let mut s = crate::Session::new().with_fs();
+        // a default import preset sets a value the catalog leaves out too
+        let added = s.add_presets(vec![lcc_develop::Preset {
+            id: "look".into(),
+            name: "Look".into(),
+            group: "g".into(),
+            settings: json!({"effects": {"texture": 12.0}}),
+            favorite: false,
+            builtin: false,
+        }]);
+        s.import_defaults.raw_preset = added.first().cloned();
+        let r = apply(&mut s, data, false).unwrap();
+        assert_eq!(r["imported"], 2, "{r}");
+        assert_eq!(r["preservedExistingEdits"], 0, "the library held nothing before the import: {r}");
+        assert_eq!(r["historySteps"], 4, "each photo's two Lightroom steps are imported: {r}");
+        for p in s.catalog.photos() {
+            assert_eq!(p.develop.light.exposure, 1.0, "{}: the file's saved exposure and the catalog's agree", p.file_name);
+            assert_eq!(p.develop.effects.dehaze, -50.0, "{}: the catalog's later edit is kept, not the file's", p.file_name);
+            assert_eq!(p.develop.effects.clarity, 0.0, "{}: a setting the catalog leaves out is not taken from the file", p.file_name);
+            assert_eq!(p.develop.effects.texture, 0.0, "{}: nor from a default import preset", p.file_name);
+            let labels: Vec<_> = p.history.iter().map(|h| h.label.as_str()).collect();
+            assert_eq!(labels, ["Exposure", "Dehaze"], "{}: the photo's Lightroom history is imported", p.file_name);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A catalog row whose develop text can't be read leaves a new photo with what its file's XMP and
+    /// the default import preset gave it, not the camera's defaults (and shows that both reach it).
+    #[test]
+    fn unreadable_catalog_settings_leave_a_new_photos_file_settings() {
+        let dir = crate::tests_xmp::temp_dir("lightroom-unreadable-settings");
+        let saved = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Clarity2012="+20"/></rdf:RDF></x:xmpmeta>"#;
+        let dng = dir.join("embedded.dng");
+        std::fs::write(&dng, crate::tests_xmp::synthetic_dng_with(Some(saved), Default::default())).unwrap();
+        let data = CatalogImport {
+            source: "test.lrcat".into(),
+            photos: vec![CatalogPhoto {
+                source_id: 1,
+                uuid: "photo-1".into(),
+                path: dng.to_string_lossy().into(),
+                image: row(json!({"id_local":1,"fileFormat":"DNG","fileWidth":32,"fileHeight":24})),
+                settings: format!("s = {}0{}", "{".repeat(1000), "}".repeat(1000)),
+                xmp: String::new(),
+                keywords: Vec::new(),
+                history: Vec::new(),
+                snapshots: Vec::new(),
+                original: Original::Local,
+            }],
+            collections: Vec::new(),
+            members: Vec::new(),
+            collection_content: Vec::new(),
+            stacks: Vec::new(),
+            warnings: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let mut s = crate::Session::new().with_fs();
+        let added = s.add_presets(vec![lcc_develop::Preset {
+            id: "look".into(),
+            name: "Look".into(),
+            group: "g".into(),
+            settings: json!({"effects": {"texture": 12.0}}),
+            favorite: false,
+            builtin: false,
+        }]);
+        s.import_defaults.raw_preset = added.first().cloned();
+        let r = apply(&mut s, data, false).unwrap();
+        assert_eq!(r["imported"], 1, "{r}");
+        assert!(
+            r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.contains("settings"))),
+            "the unreadable settings are reported: {r}"
+        );
+        let p = s.catalog.photos().next().unwrap();
+        assert_eq!(p.develop.effects.clarity, 20.0, "the file's XMP is kept when the catalog's settings can't be read");
+        assert_eq!(p.develop.effects.texture, 12.0, "and so is the default import preset");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A browsed (Local) photo joins the library through the import's add step, or, when its original
+    /// is offline, through the catalog import alone. Settings browsing read from its file are not the
+    /// library's edits and give way to the catalog's settings and history; a change made after
+    /// browsing is kept, as for any other existing record.
+    #[test]
+    fn a_browsed_photo_keeps_only_edits_made_after_browsing() {
+        use crate::lightroom_fixture::{self as fixture, Table};
+        for (changed, offline) in [(true, false), (false, false), (true, true), (false, true)] {
+            let dir = fixture::dir(&format!("browsed-edits-{changed}-{offline}"));
+            let originals = dir.join("originals");
+            std::fs::create_dir_all(originals.join("Photos")).unwrap();
+            let original = originals.join("Photos/test.ARW");
+            if !offline {
+                std::fs::write(&original, b"original").unwrap();
+            }
+            let mut tables = fixture::one_photo(&originals, "s = { Dehaze = -50 }");
+            tables.push(Table {
+                name: "Adobe_libraryImageDevelopHistoryStep",
+                columns: fixture::HISTORY_COLUMNS,
+                rows: vec![fixture::history_step(2, 1, 10.0, "Dehaze", fixture::text("s = { Dehaze = -50 }"))],
+            });
+            let source = dir.join("source.lrcat");
+            fixture::write(&source, &tables);
+            let mut s = crate::Session::new();
+            s.media.file_probe =
+                Some(Arc::new(|_| Ok(crate::media::ProbeInfo { format: "ARW".into(), width: 20, height: 10, ..Default::default() })));
+            let id = s.catalog.alloc_photo_id();
+            let mut browsed = Photo::new(id, Source::File { path: original.to_string_lossy().into() }, "test.ARW", "ARW", 20, 10, "before");
+            browsed.local = true;
+            // as browsing a raw whose file's XMP holds develop settings leaves it
+            let mut from_file = (*browsed.develop).clone();
+            from_file.effects.dehaze = 10.0;
+            // a setting the catalog's develop text leaves out (Lightroom omits those at zero)
+            from_file.effects.clarity = 15.0;
+            browsed.develop = Arc::new(from_file);
+            browsed.edited = Some("before".into());
+            browsed.set_local_baseline();
+            s.commit("Browse folder", Op::AddPhoto { photo: Box::new(browsed) }).unwrap();
+            if changed {
+                let mut edit = (*s.catalog.photo(id).unwrap().develop).clone();
+                edit.effects.dehaze = 25.0;
+                s.set_develop(id, edit, "Personal edit").unwrap();
+            }
+            let mut job = crate::lightroom_job::LightroomJob::new(&mut s, source, false).unwrap();
+            let prepared = job.prepare(&AtomicBool::new(false)).unwrap();
+            let report = crate::lightroom_job::commit_prepared(&mut s, prepared).unwrap().report;
+            assert_eq!(report["imported"], 1, "the browsed photo joins the library (offline: {offline}): {report}");
+            let photo = s.catalog.photo(id).unwrap();
+            assert!(!photo.local);
+            let catalog_step = photo.history.iter().any(|h| h.label == "Dehaze");
+            if changed {
+                assert_eq!(report["preservedExistingEdits"], 1, "the edit came before the import (offline: {offline}): {report}");
+                assert_eq!(photo.develop.effects.dehaze, 25.0, "the library's edit is kept (offline: {offline})");
+                assert_eq!(photo.develop.effects.clarity, 15.0, "the kept settings are kept whole (offline: {offline})");
+                assert!(!catalog_step, "the library's history is kept too (offline: {offline}): {:?}", photo.history);
+            } else {
+                assert_eq!(report["preservedExistingEdits"], 0, "browsing read the file, nobody edited it (offline: {offline}): {report}");
+                assert_eq!(photo.develop.effects.dehaze, -50.0, "the catalog's settings replace the file's (offline: {offline})");
+                assert_eq!(photo.develop.effects.clarity, 0.0, "a setting the catalog leaves out is not the file's (offline: {offline})");
+                assert!(catalog_step, "the catalog's history is imported (offline: {offline}): {:?}", photo.history);
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }

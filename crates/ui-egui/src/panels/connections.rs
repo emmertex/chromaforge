@@ -93,6 +93,10 @@ pub struct ImmichUi {
     /// `immich.syncConflicts` (refreshed on open, after an action, and while a sync runs).
     sync_open: BTreeSet<String>,
     sync_view: HashMap<String, (Value, Value, f64)>,
+    /// Accounts whose XMP-sidecar section is open (IMM-SIDECARS).
+    sidecars_open: BTreeSet<String>,
+    /// Push the whole XMP for managed assets through a temporary asset (opt-in: `PUT /assets/copy`).
+    full_sidecars: bool,
     /// The filter bar's Immich smart search: the query, a search in flight (account, results),
     /// and the last message.
     smart_query: String,
@@ -213,13 +217,24 @@ pub fn pump(app: &mut LccApp, ctx: &egui::Context) {
         || v["fetching"].as_array().is_some_and(|a| !a.is_empty())
         || v["connecting"] == true
         || v["unlocking"] == true
-        || v["checking"].as_array().is_some_and(|a| !a.is_empty());
+        || v["checking"].as_array().is_some_and(|a| !a.is_empty())
+        || v["sidecars"]["active"] == true;
     // an import that just finished: say so
     if app.immich.last["import"]["active"] == true && v["import"]["active"] == false {
         let n = v["import"]["imported"].as_u64().unwrap_or(0);
         let skipped = v["import"]["skipped"].as_u64().unwrap_or(0);
         let failed = v["import"]["failed"].as_array().map(Vec::len).unwrap_or(0);
         app.toast(ctx, trf!("Imported {} from Immich ({} already in the library, {} failed)", n, skipped, failed));
+    }
+    // a sidecar run that just finished: say what it did
+    if app.immich.last["sidecars"]["active"] == true && v["sidecars"]["active"] == false {
+        let last = &v["sidecars"]["last"];
+        let n = |k: &str| last[k].as_u64().unwrap_or(0);
+        if last["direction"] == "pull" {
+            app.toast(ctx, trf!("Pulled {} XMP sidecars ({} written beside the originals, {} skipped)", n("pulled"), n("written"), n("skipped")));
+        } else if last["direction"] == "push" {
+            app.toast(ctx, trf!("Pushed {} XMP sidecars ({} written beside the originals, {} skipped)", n("pushed"), n("written"), n("skipped")));
+        }
     }
     app.immich.last = v;
     if busy {
@@ -770,6 +785,14 @@ fn account_card(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, a: &V
             if text_button(ui, &format!("immichImport-{i}"), crate::i18n::tr("Import…"), false).clicked() {
                 open_import(app, Some(id.clone()));
             }
+            let sidecars_open = app.immich.sidecars_open.contains(&id);
+            if text_button(ui, &format!("immichSidecars-{i}"), crate::i18n::tr("XMP Sidecars"), sidecars_open).clicked() {
+                if sidecars_open {
+                    app.immich.sidecars_open.remove(&id);
+                } else {
+                    app.immich.sidecars_open.insert(id.clone());
+                }
+            }
             if text_button(ui, &format!("immichDisconnect-{i}"), crate::i18n::tr("Disconnect"), false).clicked() {
                 let _ = app.run("immich.disconnect", json!({"account": id}));
                 app.immich.libraries.remove(&id);
@@ -778,12 +801,85 @@ fn account_card(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, a: &V
         if app.immich.libraries.contains_key(&id) {
             extlib(app, ui, t, &id);
         }
+        if app.immich.sidecars_open.contains(&id) {
+            sidecar_section(app, ui, t, i, &id);
+        }
         if app.immich.sync_open.contains(&id) {
             sync_section(app, ui, t, i, &id);
         }
     });
     register(ui.ctx(), format!("immichAccount:{i}"), r.response.rect);
     ui.add_space(4.0);
+}
+
+/// IMM-SIDECARS: push the catalog's metadata to Immich (whole sidecars for external-library
+/// folders, the supported fields for managed assets) and pull the sidecars Immich stores back.
+fn sidecar_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id: &str) {
+    ui.separator();
+    let state = app.immich.last["sidecars"].clone();
+    let active = state["active"] == true;
+    let direction = state["direction"].as_str().unwrap_or_default().to_string();
+    let last = state["last"].clone();
+    ui.label(
+        RichText::new(crate::i18n::tr("Immich keeps an XMP sidecar for every asset: push yours into it, or pull Immich's into the catalog"))
+            .size(11.5)
+            .color(t.text_dim),
+    );
+    ui.checkbox(
+        &mut app.immich.full_sidecars,
+        crate::i18n::tr("Replace managed sidecars with the whole XMP (creates a temporary asset)"),
+    )
+    .on_hover_text(crate::i18n::tr(
+        "Read the sidecar Immich holds, merge the catalog's metadata and develop settings into it, and copy it back; Immich has no direct write endpoint, so a tiny temporary asset is uploaded and removed",
+    ));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let push = crate::i18n::tr("Push XMP Sidecars");
+        if text_button(ui, &format!("immichPushXmp-{i}"), push, false)
+            .on_hover_text(crate::i18n::tr(
+                "Write the whole sidecar for external-library photos and send the rating, description, date, place and tags of managed photos to Immich",
+            ))
+            .clicked()
+        {
+            let full = app.immich.full_sidecars;
+            match app.run("immich.pushSidecars", json!({"account": id, "background": true, "full": full})) {
+                Ok(r) if r["started"] == true => app.toast(ui.ctx(), crate::i18n::tr("Pushing XMP sidecars to Immich…")),
+                Ok(r) if r["ok"] == false => app.toast(ui.ctx(), r["error"]["message"].as_str().unwrap_or("Immich")),
+                Ok(_) => {}
+                Err(e) => app.toast(ui.ctx(), e.to_string()),
+            }
+        }
+        let pull = crate::i18n::tr("Pull XMP Sidecars");
+        if text_button(ui, &format!("immichPullXmp-{i}"), pull, false)
+            .on_hover_text(crate::i18n::tr(
+                "Read the XMP sidecars Immich stores for the linked photos (metadata and develop settings) into the catalog",
+            ))
+            .clicked()
+        {
+            match app.run("immich.pullSidecars", json!({"account": id, "background": true})) {
+                Ok(r) if r["started"] == true => app.toast(ui.ctx(), crate::i18n::tr("Pulling XMP sidecars from Immich…")),
+                Ok(r) if r["ok"] == false => app.toast(ui.ctx(), r["error"]["message"].as_str().unwrap_or("Immich")),
+                Ok(_) => {}
+                Err(e) => app.toast(ui.ctx(), e.to_string()),
+            }
+        }
+    });
+    if active {
+        let line = if direction == "pull" {
+            crate::i18n::tr("Pulling XMP sidecars from Immich…")
+        } else {
+            crate::i18n::tr("Pushing XMP sidecars to Immich…")
+        };
+        ui.label(RichText::new(line).color(t.text_dim));
+    } else if last.is_object() {
+        let n = |k: &str| last[k].as_u64().unwrap_or(0);
+        let line = if last["direction"] == "pull" {
+            trf!("Pulled {} XMP sidecars ({} written beside the originals, {} skipped)", n("pulled"), n("written"), n("skipped"))
+        } else {
+            trf!("Pushed {} XMP sidecars ({} written beside the originals, {} skipped)", n("pushed"), n("written"), n("skipped"))
+        };
+        ui.label(RichText::new(line).color(if n("failed") > 0 { t.caution } else { t.text_label }));
+    }
 }
 
 /// The external-library helper: libraries, the path mapping table, which catalog folders are
@@ -854,7 +950,7 @@ fn extlib(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, id: &str) {
             .on_hover_text(crate::i18n::tr("Immich reads ratings, descriptions and keywords from the sidecars on its next library scan"))
             .clicked()
         {
-            match app.session.execute("immich.writeSidecars", &json!({"account": id})) {
+            match app.session.execute("immich.pushSidecars", &json!({"account": id, "externalOnly": true})) {
                 Ok(r) => app.toast(ui.ctx(), trf!("Wrote {} XMP sidecars", r["written"].as_u64().unwrap_or(0))),
                 Err(e) => app.toast(ui.ctx(), e.to_string()),
             }

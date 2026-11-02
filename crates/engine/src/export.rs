@@ -1849,7 +1849,12 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
     }
     out.contact = m.contact.clone();
     out.title = text(&m.title);
+    out.headline = text(&m.headline);
     out.caption = text(&m.caption);
+    out.description_writer = text(&m.description_writer);
+    out.category = text(&m.category);
+    out.supplemental_categories = m.supplemental_categories.clone();
+    out.subject_code = m.subject_code.clone();
     out.alt_text = text(&m.alt_text);
     out.extended_description = text(&m.extended_description);
     let remove_location = removes_location(photo, catalog, o);
@@ -3107,6 +3112,27 @@ mod tests {
         let jpg = encode_with_metadata(&test_image(), &ExportOptions::default(), Some(&m)).unwrap();
         let back = lcc_meta::extract(&jpg);
         assert_eq!((back.keywords, back.hierarchical_keywords), (m.keywords.clone(), m.hierarchical_keywords.clone()));
+    }
+
+    /// A year or a month alone (`1983-04`, a scanned print's date) is exported in the XMP's
+    /// `photoshop:DateCreated` as stated, and in neither Exif date nor `exif:DateTimeOriginal`, whose
+    /// form can't say it; a full time still goes in all of them.
+    #[test]
+    fn a_partial_capture_time_is_exported_as_stated() {
+        use lcc_catalog::{Catalog, Photo, PhotoId, Source};
+        let mut p = Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpeg", 10, 10, "2026-09-30T00:00:00");
+        for (captured, full) in [("1983", false), ("1983-04", false), ("2024-01-16T12:34:56", true)] {
+            p.captured = Some(captured.into());
+            let m = export_metadata(&p, &Catalog::new(), &ExportOptions::default()).unwrap();
+            let xmp = lcc_meta::write_xmp(&m, None);
+            let props = lcc_meta::parse_xmp(&xmp).unwrap().properties;
+            assert_eq!(props.get("photoshop:DateCreated"), Some(&vec![captured.to_string()]), "{xmp}");
+            assert_eq!(props.contains_key("exif:DateTimeOriginal"), full, "{xmp}");
+            let exif = lcc_meta::read_exif(&lcc_meta::write_exif(&m));
+            assert_eq!(exif.capture_time.is_some(), full, "{captured}: Exif dates");
+            let jpg = encode_with_metadata(&test_image(), &ExportOptions::default(), Some(&m)).unwrap();
+            assert_eq!(lcc_meta::extract(&jpg).capture_time.map(|d| d.to_iso()).as_deref(), Some(captured), "the exported file reads back as stated");
+        }
     }
 
     #[test]

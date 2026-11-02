@@ -423,7 +423,9 @@ fn flip(s: &mut Session, p: &Value, horizontal: bool) -> Result<Value> {
 fn active_meta(s: &Session, c: &str) -> Result<Value> {
     let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
     let m = &s.catalog.photo(id).ok_or_else(|| bad(c, "no photo"))?.meta;
-    Ok(json!({"title": m.title, "caption": m.caption, "altText": m.alt_text, "extendedDescription": m.extended_description,
+    Ok(json!({"title": m.title, "headline": m.headline, "caption": m.caption, "descriptionWriter": m.description_writer,
+        "category": m.category, "supplementalCategories": m.supplemental_categories, "subjectCode": m.subject_code,
+        "altText": m.alt_text, "extendedDescription": m.extended_description,
         "copyright": m.copyright, "copyrightStatus": m.copyright_status.id(), "usageTerms": m.usage_terms, "copyrightUrl": m.copyright_url,
         "creator": m.creator, "location": m.location, "city": m.city, "state": m.state, "country": m.country,
         "keywords": m.keywords, "creatorJobTitle": m.contact.job_title, "creatorAddress": m.contact.address,
@@ -550,7 +552,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Filter",
             [],
             None,
-            "partial Filter: {text?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], labels?: [any of these labels], faces?: count|min+|range}",
+            "partial Filter: {text?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
             always,
             |s, p| {
                 let mut v = serde_json::to_value(&s.filter).unwrap_or_default();
@@ -1229,11 +1231,17 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Info",
             [],
             None,
-            "{ids?, title?, caption?, altText?, extendedDescription?, copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, location?, city?, state?, country?, gps?: \"lat, lon\" | [lat, lon] | null, keywords?: [..], addKeywords?: [..], removeKeywords?: [..]}",
+            "{ids?, title?, headline?, caption?, descriptionWriter?, category?, supplementalCategories?: [..] | \"a, b\", subjectCode?: [..] | \"c, d\", altText?, extendedDescription?, copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, location?, city?, state?, country?, gps?: \"lat, lon\" | [lat, lon] | null, keywords?: [..], addKeywords?: [..], removeKeywords?: [..]}",
             has_selection,
             |s, p| {
-                let strs =
-                    |k: &str| p.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>());
+                let strs = |k: &str| {
+                    p.get(k).and_then(|v| match v {
+                        Value::Array(a) => Some(a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>()),
+                        // a comma-separated string (the metadata panel's single text field)
+                        Value::String(t) => Some(t.split(',').map(|s| s.trim().to_string()).collect()),
+                        _ => None,
+                    })
+                };
                 let targets = s.targets(p)?;
                 // GPS: "lat, lon" (decimal or 51°30'26"N 0°7'39"W), [lat, lon], or null / "" to clear
                 let gps: Option<Option<(f64, f64)>> = match p.get("gps") {
@@ -1268,7 +1276,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     for (k, field) in [
                         ("title", &mut m.title),
+                        ("headline", &mut m.headline),
                         ("caption", &mut m.caption),
+                        ("descriptionWriter", &mut m.description_writer),
+                        ("category", &mut m.category),
                         ("copyright", &mut m.copyright),
                         ("usageTerms", &mut m.usage_terms),
                         ("copyrightUrl", &mut m.copyright_url),
@@ -1309,6 +1320,23 @@ pub fn specs() -> Vec<CommandSpec> {
                     for k in strs("removeKeywords").unwrap_or_default() {
                         let k = clean(&k);
                         m.keywords.retain(|x| !same(&clean(x), &k));
+                    }
+                    // supplemental categories and subject codes: a list, each once (the UI edits
+                    // them as one comma-separated text field, so trimming empty entries matters)
+                    let distinct = |v: Vec<String>| {
+                        let mut out: Vec<String> = Vec::new();
+                        for s in v {
+                            if !s.is_empty() && !out.contains(&s) {
+                                out.push(s);
+                            }
+                        }
+                        out
+                    };
+                    if let Some(v) = strs("supplementalCategories") {
+                        m.supplemental_categories = distinct(v);
+                    }
+                    if let Some(v) = strs("subjectCode") {
+                        m.subject_code = distinct(v);
                     }
                     ops.push(Op::SetMeta { id, meta: Box::new(m) });
                 }

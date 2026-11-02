@@ -1689,6 +1689,45 @@ fn sidecar_capture_time_fills_in_when_the_file_has_none() {
     let _ = std::fs::remove_dir_all(&lib);
 }
 
+/// A year or a month alone (`1983-04`, a scanned print's date) is saved to the sidecar in
+/// `photoshop:DateCreated` as stated, with no `exif:DateTimeOriginal` (an earlier full time's is
+/// removed, or it would win on the next read), and reads back as the same text; a full time
+/// writes both again.
+#[test]
+fn a_partial_capture_time_is_saved_to_the_sidecar_as_stated() {
+    let src = temp_dir("partial-date");
+    let lib = temp_dir("partial-date-lib");
+    write_png(&src.join("scan.png"), 1);
+    std::fs::write(src.join("scan.xmp"), DATED_SIDECAR).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src.join("scan.png").to_string_lossy()]})).unwrap();
+    let id = only(&s);
+    assert_eq!(s.catalog.photo(id).unwrap().captured.as_deref(), Some("2026-01-14T05:58:48"));
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let saved = |s: &mut Session| {
+        s.execute("photo.saveMetadataToFile", &json!({})).unwrap();
+        let out = std::fs::read_to_string(src.join("scan.xmp")).unwrap();
+        let props = lcc_meta::parse_xmp(&out).unwrap().properties;
+        (props.get("photoshop:DateCreated").cloned(), props.get("exif:DateTimeOriginal").cloned(), out)
+    };
+    for partial in ["1983-04", "1983"] {
+        s.execute("photo.setCaptureTime", &json!({"time": partial})).unwrap();
+        let (created, original, out) = saved(&mut s);
+        assert_eq!(created, Some(vec![partial.to_string()]), "{out}");
+        assert_eq!(original, None, "the earlier full time is gone: {out}");
+        // reading it back gives the same text
+        s.catalog.apply(lcc_catalog::Op::SetCaptured { id, captured: None }).unwrap();
+        s.execute("photo.readMetadataFromFile", &json!({})).unwrap();
+        assert_eq!(s.catalog.photo(id).unwrap().captured.as_deref(), Some(partial));
+    }
+    s.execute("photo.setCaptureTime", &json!({"time": "1983-04-12 10:00"})).unwrap();
+    let (created, original, out) = saved(&mut s);
+    assert_eq!((created, original), (Some(vec!["1983-04-12T10:00:00".to_string()]), Some(vec!["1983-04-12T10:00:00".to_string()])), "{out}");
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
 /// Copyright status, rights usage terms and copyright info URL: edited with `photo.setMeta` (one
 /// undo step), copied / pasted, kept in metadata presets, written to the sidecar as XMP Rights
 /// Management fields and read back on a fresh import.
@@ -1764,6 +1803,73 @@ fn copyright_status_usage_terms_and_url_round_trip() {
         (expect_a.copyright.as_str(), CopyrightStatus::Copyrighted, "Editorial use only", "https://example.com/rights")
     );
     assert_eq!(meta(&s, id(&s, "b.png")).copyright_status, CopyrightStatus::PublicDomain);
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// The IPTC Content fields (issue #687): headline, description writer, category, supplemental
+/// categories and subject codes are edited with `photo.setMeta` (also as comma-separated text, as
+/// the metadata panel sends it), copied with `photo.copyMetadata`, written to the sidecar as XMP
+/// and read back on a fresh import.
+#[test]
+fn iptc_content_fields_round_trip() {
+    let src = temp_dir("content-src");
+    let lib = temp_dir("content-lib");
+    write_png(&src.join("a.png"), 1);
+    write_png(&src.join("b.png"), 2);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let id = |s: &Session, name: &str| s.catalog.photos().find(|p| p.file_name == name).unwrap().id;
+    let (a, b) = (id(&s, "a.png"), id(&s, "b.png"));
+    let meta = |s: &Session, id: PhotoId| s.catalog.photo(id).unwrap().meta.clone();
+    s.execute("library.select", &json!({"ids": [a.0]})).unwrap();
+    s.execute(
+        "photo.setMeta",
+        &json!({
+            "headline": "Sunrise over the harbour",
+            "descriptionWriter": "Jane Doe",
+            "category": "CAT",
+            "supplementalCategories": "Sports, Nature, Sports",
+            "subjectCode": ["01001000", "02002000"],
+        }),
+    )
+    .unwrap();
+    let m = meta(&s, a);
+    assert_eq!(m.headline.as_str(), "Sunrise over the harbour");
+    assert_eq!(m.description_writer.as_str(), "Jane Doe");
+    assert_eq!(m.category.as_str(), "CAT");
+    assert_eq!(m.supplemental_categories, vec!["Sports".to_string(), "Nature".to_string()]);
+    assert_eq!(m.subject_code, vec!["01001000".to_string(), "02002000".to_string()]);
+    // copy → paste onto b (arrays included)
+    let clip = s.execute("photo.copyMetadata", &json!({})).unwrap();
+    assert_eq!(clip["headline"], "Sunrise over the harbour");
+    s.execute("photo.pasteMetadata", &json!({"ids": [b.0], "fields": ["headline", "supplementalCategories"]})).unwrap();
+    let mb = meta(&s, b);
+    assert_eq!(
+        (mb.headline.as_str(), mb.supplemental_categories.clone()),
+        ("Sunrise over the harbour", vec!["Sports".to_string(), "Nature".to_string()])
+    );
+    assert_eq!(mb.description_writer, "", "fields outside `fields` stay");
+    // sidecar: the XMP Content fields, read back by a fresh library
+    s.execute("photo.saveMetadataToFile", &json!({"ids": [a.0]})).unwrap();
+    let xmp = std::fs::read_to_string(src.join("a.xmp")).unwrap();
+    assert!(xmp.contains("<photoshop:Headline>Sunrise over the harbour</photoshop:Headline>"), "{xmp}");
+    assert!(xmp.contains("<photoshop:CaptionWriter>Jane Doe</photoshop:CaptionWriter>"), "{xmp}");
+    assert!(xmp.contains("<photoshop:Category>CAT</photoshop:Category>"), "{xmp}");
+    assert!(xmp.contains("<photoshop:SupplementalCategories>"), "{xmp}");
+    assert!(xmp.contains("<Iptc4xmpCore:SubjectCode>"), "{xmp}");
+    let expect = meta(&s, a);
+    drop(s);
+    std::fs::remove_dir_all(&lib).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let ma = meta(&s, id(&s, "a.png"));
+    assert_eq!(
+        (ma.headline.as_str(), ma.description_writer.as_str(), ma.category.as_str(), ma.supplemental_categories.clone(), ma.subject_code.clone()),
+        ("Sunrise over the harbour", "Jane Doe", "CAT", expect.supplemental_categories.clone(), expect.subject_code.clone())
+    );
     let _ = std::fs::remove_dir_all(&src);
     let _ = std::fs::remove_dir_all(&lib);
 }

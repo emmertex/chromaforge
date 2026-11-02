@@ -4858,6 +4858,7 @@ dependencies = [
  "tiff",
  "toml",
  "trash",
+ "unicode-normalization",
  "unicode-segmentation",
  "wat",
  "web-time",
@@ -5006,7 +5007,9 @@ dependencies = [
 name = "lcc-immich"
 version = "26.44.4"
 dependencies = [
+ "chrono",
  "lcc-catalog",
+ "lcc-codecs",
  "lcc-credentials",
  "lcc-fuzzkit",
  "lcc-geom",
@@ -5014,6 +5017,7 @@ dependencies = [
  "lcc-meta",
  "lcc-net",
  "lcc-publish",
+ "lcc-raster",
  "log",
  "serde",
  "serde_json",
@@ -5272,6 +5276,7 @@ dependencies = [
 name = "lcc-raw"
 version = "26.44.4"
 dependencies = [
+ "chrono",
  "dhat",
  "jpeg-encoder",
  "jxl-oxide",
@@ -10600,6 +10605,7 @@ dependencies = [
  "getrandom 0.3.4",
  "lcc-notes",
  "lcc-sysmem",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "toml",
