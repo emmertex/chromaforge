@@ -2513,5 +2513,6 @@
   "Trains on uploads:": "Entrena con lo que subes:",
   "Marks added:": "Marcas añadidas:",
   "Yes, unless you opt out where the service allows it (see Data policy)": "Sí, salvo que lo rechaces donde el servicio lo permita (ver Política de datos)",
-  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "Recomendado para quitar distracciones de fotos de clientes: OpenAI (no entrena con lo que envías) o Stability AI con el entrenamiento desactivado en tu cuenta. Para texturas realistas: FLUX Fill, aunque sus condiciones permiten entrenar con lo que subes."
+  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "Recomendado para quitar distracciones de fotos de clientes: OpenAI (no entrena con lo que envías) o Stability AI con el entrenamiento desactivado en tu cuenta. Para texturas realistas: FLUX Fill, aunque sus condiciones permiten entrenar con lo que subes.",
+  "The model can't take an area this large. Please select a smaller area.": "El modelo no admite un área tan grande. Selecciona un área más pequeña."
 }

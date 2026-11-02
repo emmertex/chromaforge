@@ -2509,5 +2509,6 @@
   "Trains on uploads:": "Навчається на завантаженнях:",
   "Marks added:": "Додані позначки:",
   "Yes, unless you opt out where the service allows it (see Data policy)": "Так, якщо не відмовитися там, де сервіс це дозволяє (див. Політику даних)",
-  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "Рекомендовано для видалення зайвого з фото клієнтів: OpenAI (не навчається на надісланому) або Stability AI з вимкненим в обліковому записі навчанням. Для реалістичних текстур: FLUX Fill, але його умови дозволяють навчання на завантаженнях."
+  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "Рекомендовано для видалення зайвого з фото клієнтів: OpenAI (не навчається на надісланому) або Stability AI з вимкненим в обліковому записі навчанням. Для реалістичних текстур: FLUX Fill, але його умови дозволяють навчання на завантаженнях.",
+  "The model can't take an area this large. Please select a smaller area.": "Модель не може обробити таку велику область. Виберіть меншу область."
 }

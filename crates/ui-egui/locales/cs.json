@@ -2491,5 +2491,6 @@
   "Trains on uploads:": "Trénuje na nahraných snímcích:",
   "Marks added:": "Přidané značky:",
   "Yes, unless you opt out where the service allows it (see Data policy)": "Ano, pokud to neodmítnete tam, kde to služba dovoluje (viz Zásady dat)",
-  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "Doporučeno pro odstraňování rušivých prvků z fotek klientů: OpenAI (na odeslaných snímcích netrénuje) nebo Stability AI s vypnutým trénováním ve vašem účtu. Pro věrné textury: FLUX Fill, jeho podmínky ale trénování na nahraných snímcích dovolují."
+  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "Doporučeno pro odstraňování rušivých prvků z fotek klientů: OpenAI (na odeslaných snímcích netrénuje) nebo Stability AI s vypnutým trénováním ve vašem účtu. Pro věrné textury: FLUX Fill, jeho podmínky ale trénování na nahraných snímcích dovolují.",
+  "The model can't take an area this large. Please select a smaller area.": "Model nezvládne takto velkou oblast. Vyberte prosím menší oblast."
 }

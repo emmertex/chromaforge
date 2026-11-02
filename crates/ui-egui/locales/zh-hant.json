@@ -2314,5 +2314,6 @@
   "Trains on uploads:": "用上傳內容訓練：",
   "Marks added:": "加入的標記：",
   "Yes, unless you opt out where the service allows it (see Data policy)": "是，除非在服務允許時選擇退出（見資料政策）",
-  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "推薦用於去除客戶相片中的干擾物：OpenAI（不用你傳送的內容訓練），或在帳戶中關閉訓練的 Stability AI。追求真實紋理：FLUX Fill，但其條款允許用上傳內容訓練。"
+  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "推薦用於去除客戶相片中的干擾物：OpenAI（不用你傳送的內容訓練），或在帳戶中關閉訓練的 Stability AI。追求真實紋理：FLUX Fill，但其條款允許用上傳內容訓練。",
+  "The model can't take an area this large. Please select a smaller area.": "模型無法處理這麼大的區域。請選擇較小的區域。"
 }

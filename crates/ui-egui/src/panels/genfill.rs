@@ -15,7 +15,7 @@ use crate::theme::Tokens;
 use crate::widgets::{register, text_button};
 
 /// Remove panel choices that are not develop settings (the remembered ones are in
-/// [`crate::state::UiState`]: `genfill_provider`, `genfill_variations`, `genfill_sharp`).
+/// [`crate::state::UiState`]: `genfill_provider`, `genfill_variations`).
 #[derive(Clone, Default)]
 pub struct GenfillUi {
     pub prompt: String,
@@ -126,23 +126,29 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
     let Some(photo) = app.session.active() else { return };
     // the estimate, refreshed when what it depends on changes
     let n = app.ui.genfill_variations.clamp(1, 4);
-    let sharp = app.ui.genfill_sharp;
     let key = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (photo.0, index, &pid, n, sharp, app.ui.genfill.prompt.trim().is_empty(), sp.stroke_key()).hash(&mut h);
+        (photo.0, index, &pid, n, app.ui.genfill.prompt.trim().is_empty(), sp.stroke_key()).hash(&mut h);
         h.finish()
     };
     if app.ui.genfill.plan.as_ref().is_none_or(|(k, _)| *k != key) {
         let p = app
             .session
-            .execute("genfill.plan", &json!({"index": index, "provider": pid, "variations": n, "prompt": app.ui.genfill.prompt, "sharp": sharp}))
-            .unwrap_or_else(|e| json!({"error": e.to_string()}));
+            .execute("genfill.plan", &json!({"index": index, "provider": pid, "variations": n, "prompt": app.ui.genfill.prompt}))
+            .map_err(|e| match e {
+                lcc_engine::EngineError::BadParams { msg, .. } => msg,
+                e => e.to_string(),
+            })
+            .unwrap_or_else(|e| json!({"error": e}));
         app.ui.genfill.plan = Some((key, p));
     }
     let plan = app.ui.genfill.plan.as_ref().map(|(_, p)| p.clone()).unwrap_or_default();
-    if let Some(e) = plan["error"].as_str() {
-        ui.label(RichText::new(e).size(11.0).color(t.text_dim));
+    // an area too large for one request can't be generated (it is never sent in pieces)
+    let refused = plan["error"].as_str().map(str::to_string);
+    if let Some(e) = &refused {
+        let r = ui.add(egui::Label::new(RichText::new(crate::i18n::tr(e)).size(11.0).color(t.caution)).wrap());
+        register(ui.ctx(), "genfill:refused", r.rect);
     } else {
         let requests = plan["requests"].as_u64().unwrap_or(1);
         let usd = plan["usd"].as_f64().unwrap_or(0.0);
@@ -153,21 +159,7 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
             name = name
         );
         ui.label(RichText::new(line).size(11.0).color(t.text_label));
-        // a large area: sharper tiles (more requests) or one softer crop
-        if plan["other"].is_object() {
-            let mut v = app.ui.genfill_sharp;
-            if ui.checkbox(&mut v, crate::i18n::tr("Sharper result for a large area")).changed() {
-                app.ui.genfill_sharp = v;
-                app.ui.genfill.plan = None;
-            }
-            let pct = percent(&plan["scale"]);
-            let note = if sharp && plan["tiles"].as_u64().unwrap_or(1) > 1 {
-                crate::i18n::tr_format!("Sent as {} pieces at {}% of the photo's resolution.", plan["tiles"], pct)
-            } else {
-                crate::i18n::tr_format!("Sent as one piece at {}% of the photo's resolution: softer than the rest.", pct)
-            };
-            ui.label(RichText::new(note).size(11.0).color(if plan["soft"] == true { t.caution } else { t.text_dim }));
-        } else if plan["soft"] == true && sp.generated.is_none() {
+        if plan["soft"] == true && sp.generated.is_none() {
             ui.label(
                 RichText::new(crate::i18n::tr_format!("Generated at {}% of the photo's resolution: softer than the rest.", percent(&plan["scale"])))
                     .size(11.0)
@@ -197,7 +189,7 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
         } else {
             let label = if sp.generated.is_some() { "Generate Again" } else { "Generate" };
-            if text_button(ui, "genfillGenerate", crate::i18n::tr(label), false).clicked() {
+            if refused.is_none() && text_button(ui, "genfillGenerate", crate::i18n::tr(label), false).clicked() {
                 generate(app, ui.ctx(), index, &current);
             }
         }
@@ -205,7 +197,7 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
     if !running {
         error_box(app, ui, &t, Some((index, &current)));
     }
-    if sp.generated.is_none() && !running && last_error(app).is_none() {
+    if sp.generated.is_none() && !running && last_error(app).is_none() && refused.is_none() {
         ui.label(
             RichText::new(crate::i18n::tr("Not generated yet: the area is only marked. Nothing is sent until you click Generate."))
                 .size(11.0)
@@ -301,8 +293,7 @@ pub fn start(app: &mut LccApp, ctx: &egui::Context, provider: &str, index: usize
 /// Remove panel's Retry.
 pub fn send(app: &mut LccApp, provider: &str, index: usize, prompt: &str, variations: u32) -> Result<Value, String> {
     app.session.genfill.last = None;
-    let sharp = app.ui.genfill_sharp;
-    app.run("spot.generate", json!({"index": index, "provider": provider, "prompt": prompt, "variations": variations, "sharp": sharp})).map_err(|e| {
+    app.run("spot.generate", json!({"index": index, "provider": provider, "prompt": prompt, "variations": variations})).map_err(|e| {
         let e = e.to_string();
         app.session.genfill.last = Some(Err(e.clone()));
         e
@@ -316,16 +307,15 @@ pub fn consent_body(app: &mut LccApp, ui: &mut egui::Ui, provider: &str, index: 
     let list = providers(app);
     let Some(p) = list.iter().find(|p| p["id"] == provider).cloned() else { return };
     let name = short_name(&p);
-    let sharp = app.ui.genfill_sharp;
     let plan = app
         .session
-        .execute("genfill.plan", &json!({"index": index, "provider": provider, "variations": variations, "prompt": prompt, "sharp": sharp}))
+        .execute("genfill.plan", &json!({"index": index, "provider": provider, "variations": variations, "prompt": prompt}))
         .unwrap_or_else(|e| json!({"error": e.to_string()}));
     // the crop as it will be sent (from the preview-size picture: the real one has full resolution)
-    let key = (index as u64) << 32 ^ provider.len() as u64 ^ app.session.active().map_or(0, |i| i.0.rotate_left(7)) ^ u64::from(sharp) << 40;
+    let key = (index as u64) << 32 ^ provider.len() as u64 ^ app.session.active().map_or(0, |i| i.0.rotate_left(7));
     if app.ui.genfill.preview.as_ref().is_none_or(|(k, ..)| *k != key)
         && let Some(id) = app.session.active()
-        && let Ok((w, h, rgb, mask)) = app.session.genfill_preview_by_id(id, index, provider, sharp)
+        && let Ok((w, h, rgb, mask)) = app.session.genfill_preview_by_id(id, index, provider)
     {
         // the area to fill lightly tinted, so it is clear what the service is asked to change
         let rgba: Vec<u8> = rgb
@@ -353,12 +343,12 @@ pub fn consent_body(app: &mut LccApp, ui: &mut egui::Ui, provider: &str, index: 
             register(ui.ctx(), "genfill:consentPreview", r.rect);
         });
     }
-    let crops = plan["crops"].as_array().cloned().unwrap_or_default();
-    let what = match crops.first() {
-        Some(c) if crops.len() == 1 => crate::i18n::tr_format!("Sends this {} × {} px area to {name}.", c["w"], c["h"], name = name),
-        _ => crate::i18n::tr_format!("Sends this area to {name}, in {} pieces.", crops.len(), name = name),
-    };
-    ui.label(RichText::new(what).color(t.text));
+    let c = &plan["crop"];
+    if c.is_object() {
+        ui.label(RichText::new(crate::i18n::tr_format!("Sends this {} × {} px area to {name}.", c["w"], c["h"], name = name)).color(t.text));
+    } else if let Some(e) = plan["error"].as_str() {
+        ui.label(RichText::new(crate::i18n::tr(e)).color(t.caution));
+    }
     if let Some(usd) = plan["usd"].as_f64() {
         ui.label(RichText::new(crate::i18n::tr_format!("About ${usd}, billed to your {name} account.", usd = format!("{usd:.2}"), name = name)).color(t.text_label));
     }

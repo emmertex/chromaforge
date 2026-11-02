@@ -183,3 +183,50 @@ fn a_mask_becomes_a_spot_that_covers_it() {
     let _: Value = s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.develop_of(id).unwrap().masks.len(), 1);
 }
+
+/// How many generation requests reached the mock (not counting anything else it was asked).
+fn generations(mock: &MockServer) -> usize {
+    mock.seen().iter().filter(|x| x.image.is_some()).count()
+}
+
+/// Never several pieces (decided): a normal area goes in exactly one request, with its cost known
+/// before; an area too large for one request sends nothing, starts no activity and says so in the
+/// decided words, from the estimate and from Generate alike.
+#[test]
+fn a_fill_is_one_request_or_none() {
+    let dir = temp("onerequest");
+    let (mut s, mock) = session(&dir, mean_filler());
+    s.genfill.background = true;
+    s.execute("genfill.setKey", &json!({"provider": "openai", "key": KEY})).unwrap();
+    s.execute("genfill.consent", &json!({"provider": "openai", "accept": true})).unwrap();
+    let id = s.active().unwrap();
+    let (pw, ph) = (s.catalog.photo(id).unwrap().width, s.catalog.photo(id).unwrap().height);
+    assert!(pw.max(ph) >= 3000, "the demo photo is large enough to test this ({pw}×{ph})");
+    // too large: a broad stroke across most of the photo
+    let pts: Vec<[f64; 2]> = (0..40).map(|i| [0.1 + i as f64 * 0.02, 0.2 + (i % 5) as f64 * 0.15]).collect();
+    s.execute("spot.add", &json!({"mode": "generate", "points": pts, "size": 0.2})).unwrap();
+    let e = s.execute("genfill.plan", &json!({"provider": "openai"})).unwrap_err().to_string();
+    assert!(e.ends_with(crate::genfill::TOO_LARGE), "{e}");
+    let e = s.execute("spot.generate", &json!({"provider": "openai"})).unwrap_err().to_string();
+    assert!(e.ends_with("The model can't take an area this large. Please select a smaller area."), "{e}");
+    assert_eq!(generations(&mock), 0, "nothing was sent");
+    assert!(s.genfill.job.is_none() && !s.activity.list().iter().any(|t| t.kind == "genfill"), "no job, no activity row");
+    // a normal area: one request, its cost known first
+    s.execute("spot.delete", &json!({})).unwrap();
+    s.execute("spot.add", &json!({"mode": "generate", "points": [[0.4, 0.5], [0.45, 0.5]], "size": 0.03})).unwrap();
+    let plan = s.execute("genfill.plan", &json!({"provider": "openai"})).unwrap();
+    assert_eq!(plan["requests"], 1, "{plan}");
+    assert!(plan["usd"].as_f64().unwrap() > 0.0 && plan["crop"]["w"].as_u64().unwrap() > 0, "{plan}");
+    assert_eq!(s.execute("spot.generate", &json!({"provider": "openai"})).unwrap()["started"], true);
+    let t0 = std::time::Instant::now();
+    let done = loop {
+        if let Some(r) = s.genfill_poll() {
+            break r;
+        }
+        assert!(t0.elapsed().as_secs() < 60, "the generation never finished");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(done.is_ok(), "{done:?}");
+    assert_eq!(generations(&mock), 1, "exactly one request");
+    let _ = std::fs::remove_dir_all(dir);
+}

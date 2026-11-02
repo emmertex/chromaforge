@@ -66,15 +66,14 @@ pub fn plan_json(
     pr: lcc_genfill::cloud::Provider,
     variations: u32,
     remove: bool,
-    sharp: bool,
 ) -> std::result::Result<(Value, crate::genfill::Plan), String> {
     let p = s.catalog.photo(id).ok_or("no such photo")?;
     let spot = p.develop.spots.get(index).ok_or("no such spot")?;
-    let lim = crate::genfill::Limits::for_provider(pr, sharp);
+    let lim = crate::genfill::Limits::for_provider(pr);
     let plan = crate::genfill::plan(spot, &p.develop, p.embedded_lens.as_deref(), p.width as usize, p.height as usize, lim)?;
     let n = variations.clamp(1, crate::genfill::MAX_VARIATIONS);
     let requests = plan.requests(pr, n, remove);
-    let images = plan.tiles.len() as u32 * n;
+    let images = n;
     let mut warnings = Vec::new();
     if plan.scale < 0.95 {
         warnings.push(format!(
@@ -83,41 +82,24 @@ pub fn plan_json(
             plan.scale * 100.0
         ));
     }
-    // (a long, thin area or a large one sent as tiles: the panel says how many requests)
     if requests > crate::genfill::MAX_REQUESTS {
         warnings.push(format!(
             "This would take {requests} requests (at most {}): paint a smaller area or ask for fewer variations.",
             crate::genfill::MAX_REQUESTS
         ));
     }
-    let crops: Vec<Value> = plan
-        .tiles
-        .iter()
-        .map(
-            |t| json!({"x": t.crop[0], "y": t.crop[1], "w": t.crop[2] - t.crop[0], "h": t.crop[3] - t.crop[1], "sentW": t.send.0, "sentH": t.send.1}),
-        )
-        .collect();
-    // the other choice (one softer crop, or sharper tiles) when it makes a different plan
-    let other = crate::genfill::plan(spot, &p.develop, p.embedded_lens.as_deref(), p.width as usize, p.height as usize, crate::genfill::Limits::for_provider(pr, !sharp))
-        .ok()
-        .filter(|o| o.tiles.len() != plan.tiles.len() || (o.scale - plan.scale).abs() > 0.01)
-        .map(|o| {
-            let images = o.tiles.len() as u32 * n;
-            json!({"sharp": !sharp, "requests": o.requests(pr, n, remove), "usd": (f64::from(images) * pr.info().usd_per_image * 100.0).round() / 100.0, "scale": o.scale, "tiles": o.tiles.len()})
-        });
+    let t = &plan.tile;
+    let crop = json!({"x": t.crop[0], "y": t.crop[1], "w": t.crop[2] - t.crop[0], "h": t.crop[3] - t.crop[1], "sentW": t.send.0, "sentH": t.send.1});
     let v = json!({
         "provider": pr.info().id,
-        "sharp": sharp,
-        "other": other,
         "requests": requests,
         "images": images,
         "usd": (f64::from(images) * pr.info().usd_per_image * 100.0).round() / 100.0,
         "scale": plan.scale,
         "soft": plan.scale < 0.95,
-        "tiles": plan.tiles.len(),
-        "crops": crops,
+        "crop": crop,
         "photo": {"w": p.width, "h": p.height},
-        "sends": "only the crop(s) listed, with the mask of the area to fill; never the whole photo unless it is smaller than one crop, never its metadata",
+        "sends": "only this crop, in one request, with the mask of the area to fill; never the whole photo unless it is smaller than the crop, never its metadata",
         "warnings": warnings,
     });
     Ok((v, plan))
@@ -173,7 +155,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Err(bad(c, "generative fill is not available in the web version"))
             }
         }),
-        cmd!(query "genfill.plan", "Generative Fill Estimate", [], None, "{index? (the selected spot), provider?, variations?: 1..4 (1), prompt?, sharp?: bool (true: a large area goes as up to 6 sharper tiles; false: one softer crop), previewPath?: write the first crop as it would be sent (PNG) and its mask (…-mask.png)} — what Generate would send and cost; sends nothing → {provider, requests, images, usd, scale, soft, tiles, crops: [{x, y, w, h, sentW, sentH}], sharp, other: {sharp, requests, usd, scale, tiles} | null (the other choice when it differs), warnings, consented, configured}", has_active, |s, p| {
+        cmd!(query "genfill.plan", "Generative Fill Estimate", [], None, "{index? (the selected spot), provider?, variations?: 1..4 (1), prompt?, previewPath?: write the crop as it would be sent (PNG) and its mask (…-mask.png)} — what Generate would send and cost (always one crop in one request; an area too large for one is an error, sending nothing); sends nothing → {provider, requests, images, usd, scale, soft, crop: {x, y, w, h, sentW, sentH}, warnings, consented, configured}", has_active, |s, p| {
             let c = "genfill.plan";
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -181,12 +163,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let i = spot_index(s, p, c)?;
                 let pr = provider(p, c)?;
                 let remove = str_param(p, "prompt").is_none_or(|t| t.trim().is_empty());
-                let sharp = bool_or(p, "sharp", true);
-                let (mut v, _) = plan_json(s, id, i, pr, f64_or(p, "variations", 1.0) as u32, remove, sharp).map_err(|e| bad(c, e))?;
+                let (mut v, _) = plan_json(s, id, i, pr, f64_or(p, "variations", 1.0) as u32, remove).map_err(|e| bad(c, e))?;
                 v["consented"] = json!(s.genfill.consented(pr.info().id));
                 v["configured"] = json!(s.genfill.keys.status(pr) != lcc_genfill::cloud::keys::KeySource::None);
                 if let Some(path) = str_param(p, "previewPath") {
-                    let (w, h, rgb, mask) = s.genfill_preview(id, i, pr, sharp).map_err(|e| bad(c, e))?;
+                    let (w, h, rgb, mask) = s.genfill_preview(id, i, pr).map_err(|e| bad(c, e))?;
                     let png = lcc_genfill::cloud::util::png_encode(w, h, 3, &rgb).map_err(|e| bad(c, e))?;
                     std::fs::write(path, png).map_err(|e| bad(c, format!("could not write the preview: {e}")))?;
                     let mpath = std::path::Path::new(path).with_extension("mask.png");
@@ -203,7 +184,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Err(bad(c, "generative fill is not available in the web version"))
             }
         }),
-        cmd!(query "spot.generate", "Generate Fill", [], None, "{index? (the selected spot), provider? (openai), variations?: 1..4 (1), prompt? (empty: remove), sharp?: bool (true)} — send the spot's context crop to the provider with YOUR key (after you accepted its terms) and store the results as patches of the photo's own pixels; the spot becomes Generative (one undo step). In the app it runs in the background (activity row with ✕) → {started}; elsewhere it waits → {generated: {id, variants, scale}, warnings}. Never journaled or replayed.", has_active, |s, p| {
+        cmd!(query "spot.generate", "Generate Fill", [], None, "{index? (the selected spot), provider? (openai), variations?: 1..4 (1), prompt? (empty: remove)} — send the spot's context crop, in one request (an area too large for one is refused before anything is sent), to the provider with YOUR key (after you accepted its terms) and store the results as patches of the photo's own pixels; the spot becomes Generative (one undo step). In the app it runs in the background (activity row with ✕) → {started}; elsewhere it waits → {generated: {id, variants, scale}, warnings}. Never journaled or replayed.", has_active, |s, p| {
             let c = "spot.generate";
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -212,7 +193,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let pr = provider(p, c)?;
                 let prompt = str_param(p, "prompt").unwrap_or_default().to_string();
                 let n = f64_or(p, "variations", 1.0).clamp(1.0, f64::from(crate::genfill::MAX_VARIATIONS)) as u32;
-                match s.genfill_start(id, i, pr, &prompt, n, bool_or(p, "sharp", true)).map_err(|e| bad(c, e))? {
+                match s.genfill_start(id, i, pr, &prompt, n).map_err(|e| bad(c, e))? {
                     None => Ok(json!({"started": true})),
                     Some(g) => Ok(json!({"generated": {"id": g.fill.id, "variants": g.fill.variants, "scale": g.fill.scale}, "warnings": g.warnings})),
                 }
@@ -354,5 +335,5 @@ fn spot_from_mask(s: &mut Session, id: crate::PhotoId, mid: u32, mode: SpotMode)
         }
     }
     let size = (r / w.max(h) as f64).clamp(super::masks::SPOT_SIZE.0, super::masks::SPOT_SIZE.1);
-    Ok(Spot { mode, points, size, feather: 30.0, opacity: 100.0, source_offset: None, generated: None, auto: None })
+    Ok(Spot { mode, points, size, feather: 30.0, opacity: 100.0, source_offset: None, auto: None, generated: None })
 }

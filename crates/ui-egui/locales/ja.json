@@ -2509,5 +2509,6 @@
   "Trains on uploads:": "アップロードで学習：",
   "Marks added:": "付加される印：",
   "Yes, unless you opt out where the service allows it (see Data policy)": "はい（サービスが認める場合はオプトアウト可。データポリシーを参照）",
-  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "お客様の写真から邪魔なものを消すなら：OpenAI（送信内容で学習しない）、またはアカウントで学習をオフにした Stability AI。リアルな質感には FLUX Fill（ただし規約上アップロードを学習に使えます）。"
+  "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "お客様の写真から邪魔なものを消すなら：OpenAI（送信内容で学習しない）、またはアカウントで学習をオフにした Stability AI。リアルな質感には FLUX Fill（ただし規約上アップロードを学習に使えます）。",
+  "The model can't take an area this large. Please select a smaller area.": "モデルはこれほど広い範囲を扱えません。もっと小さい範囲を選んでください。"
 }

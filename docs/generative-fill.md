@@ -1,7 +1,8 @@
 # Content-aware and generative fill
 
-> **Last updated:** 2026-10-16 · **Change:** first real-account test (OpenAI): the HTTPS upload
-> fixed, large areas as sharper tiles, a Generative spot only marks its area until its result
+> **Last updated:** 2026-10-17 · **Change:** a fill is never sent in pieces: one request or none
+> ("The model can't take an area this large. Please select a smaller area."). Before (2026-10-16):
+> first real-account test (OpenAI): the HTTPS upload fixed, a Generative spot only marks its area until its result
 > arrives, the short consent dialog, errors with Retry, a card per service. Before: new page
 > (2026-10-14).
 
@@ -125,18 +126,20 @@ Only a **context crop** around the spot, with the mask of the area to fill — n
 
 - The crop is as large as the provider takes **at the photo's native resolution** (OpenAI: one of
   its three sizes; others: up to 2048–3072 px), centred on the hole, so the model sees the scene.
-- A hole too large for one native crop is either sent as **tiles** along it, at native size, when
-  it is long and thin (a wire, a fence; at most 8 crops, each seeing the ones before it filled), or
+- **One request per fill, never several pieces** (the user's decision, 2026-10-16: each piece is a
+  paid request, and pieces that don't match show seams). A hole too large for one native crop is
   **downscaled**: the hole with a little context, sent smaller and upscaled back. That patch is
-  softer than the photo, and the panel and the consent dialog say so ("generated at 47 %").
-- **Sharper result for a large area** (on by default; `sharp` in `genfill.plan` / `spot.generate`):
-  instead of one crop at, say, 28 %, the area goes as up to 8 tiles at a higher resolution — the
-  fewest tiles that reach half the photo's resolution (or 1.5× one crop's), each of the provider's
-  sizes tried. The panel shows both choices with their requests and cost. Each tile masks every
-  part of the area no earlier tile filled (so the model never sees the rest of the object and
-  continues it), its colour and level are matched to the unmasked part of what was sent, and it
-  is blended into the tiles before it over a band, so there are no straight seams. A result sent
-  smaller than native has the model's own grain smoothed away before the photo's grain is added.
+  softer than the photo, and the panel and the consent dialog say so ("generated at 72 %"). A
+  result sent smaller than native has the model's own grain smoothed away before the photo's grain
+  is added.
+- **Too large for one request.** When the area would have to go at under half the photo's
+  resolution (`MIN_SCALE` in `crates/engine/src/genfill.rs`), nothing is sent and no cost is
+  incurred: the estimate (`genfill.plan`), Generate (`spot.generate`) and the Remove panel all say
+  *"The model can't take an area this large. Please select a smaller area."* (A long, thin area
+  such as a wire across the frame counts by its whole extent.)
+- The cost is known before sending: the panel and the consent dialog show the requests and the
+  price; the patch's edge is feathered into the photo over the spot's feather (its blend weight
+  falls from 1 over the hole to 0 on a ring of original pixels).
 - **Variations** (1–4): pick with ‹ › under the spot; **Generate Again** makes new ones.
 
 ### Where the patch goes: the photo's own pixels
@@ -200,8 +203,8 @@ pure-Rust HTTPS client handed rustls the whole multi-megabyte body at once, and 
 at a time. It now feeds it in pieces (`crates/fetch/src/http.rs`, test: a 6 MB POST to a local
 rustls server). Then, with OpenAI (gpt-image-1.5) on wedding photos (a test copy, the user's own key
 and consent): a guest in the background removed (one request, 1270 px crop sent at 81 %, 46 s), and
-a striped flag across the full height of the frame (4 tiles at 50 % instead of one crop at 28 %,
-about 4 minutes); both blend with the photo's colour and grain, and white balance and exposure
+a striped flag across the full height of the frame (then sent as 4 tiles at 50 %, about 4 minutes;
+two of the four didn't match, which is why fills are no longer split); both blend with the photo's colour and grain, and white balance and exposure
 changed afterwards apply to the patch. `cargo run --release -p lcc-engine --example
 genfill_check` with `GENFILL_REAL=1` repeats such a test (each run is a paid request).
 
@@ -221,7 +224,7 @@ loopback addresses are accepted there, so a key can't be sent elsewhere by mista
 | `genfill.providers` | `{}` | providers, key status (never the key), consent, policy, price |
 | `genfill.setKey` | `{provider, key \| null}` | stores or forgets your key |
 | `genfill.consent` | `{provider, accept}` | records or withdraws consent |
-| `genfill.plan` | `{index?, provider?, variations?, prompt?, previewPath?}` | requests, cost, crops, scale, warnings; sends nothing |
+| `genfill.plan` | `{index?, provider?, variations?, prompt?, previewPath?}` | requests, cost, the crop, scale, warnings; sends nothing; an error for an area too large for one request |
 | `spot.generate` | `{index?, provider?, variations?, prompt?}` | generates (background in the app, activity row with ✕) |
 | `spot.variation` | `{index?, variant \| delta}` | which variation a spot shows |
 | `genfill.status`, `genfill.cancel` | `{}` | the running generation |
