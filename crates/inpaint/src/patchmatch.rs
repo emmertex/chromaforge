@@ -747,7 +747,13 @@ pub fn seam_blend(w: usize, h: usize, ch: usize, orig: &[f32], out: &mut [f32], 
     // the hole), so a large mismatch cannot overshoot into values neither side has
     let mut range = vec![(f32::MAX, f32::MIN); ch];
     for i in 0..n {
-        let src = if hole[i] { &*out } else if ring[i] { orig } else { continue };
+        let src = if hole[i] {
+            &*out
+        } else if ring[i] {
+            orig
+        } else {
+            continue;
+        };
         for (c, r) in range.iter_mut().enumerate() {
             if let Some(v) = src.get(i * ch + c).copied().filter(|v| v.is_finite()) {
                 *r = (r.0.min(v), r.1.max(v));
