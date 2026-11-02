@@ -36,6 +36,7 @@ pub mod grade;
 pub mod local;
 pub mod local_tone;
 pub mod lut;
+pub mod mask_tone;
 pub mod masks;
 pub mod optics;
 pub mod output;
@@ -305,6 +306,8 @@ pub(crate) struct Prepared {
     /// Airlight of `dark` (before exposure).
     pub air: f32,
     pub masks: Vec<masks::Evaluated>,
+    /// The masks' own Whites / Blacks tone ranges ([`Plan::mask_tone`]).
+    pub mask_tone: Vec<[f32; 4]>,
     /// Output pixels per unit of the source long edge.
     pub px_per_long: f64,
 }
@@ -481,6 +484,10 @@ pub struct Plan<'a> {
     pub eyes: Vec<redeye::EyeK>,
     /// The whole frame's dehaze airlight, for a windowed render (which can't see the whole frame).
     pub fixed_air: Option<f32>,
+    /// The tone range each visible mask's Whites / Blacks act on, fitted to the tones under it in a fixed-size
+    /// render of the whole frame ([`mask_tone`]), so previews, zoomed windows and exports agree; empty when no mask
+    /// has Whites or Blacks (the masks then use [`finish::DEFAULT_MASK_TONE`]).
+    pub mask_tone: Vec<[f32; 4]>,
     /// A windowed render works on a larger window when spots reach into it (see
     /// [`spots::window_for_reads`]); this is the requested window inside the rendered one, which
     /// the result is cut to.
@@ -588,6 +595,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     } else {
         info.mattes.clone()
     };
+    let mask_tone = mask_tone::ranges(aux(), info, s, &whole_frame, mattes.as_deref());
     Plan {
         settings,
         frame,
@@ -601,6 +609,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         pre_nr_key,
         eyes,
         fixed_air,
+        mask_tone,
         keep,
         mattes,
         source_filters,
@@ -795,6 +804,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     if let Some(a) = plan.fixed_air {
         prep.air = a;
     }
+    prep.mask_tone = plan.mask_tone.clone();
     lap("prepare", &mut t);
     if let Some((a, c)) = shared {
         c.put(CacheEntry { src: a.clone(), geo, sampled, filtered, lin: Some((lin_key, lin)), planes });

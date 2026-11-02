@@ -461,3 +461,61 @@ fn diagnostic_overlays_in_a_window_match_the_full_render() {
     hdr.light.exposure = 1.5;
     check_overlay("hdr range", &hdr, Overlay::HdrRange, MID, 1, 0.1);
 }
+// Given a mask with Whites and Blacks, whose tone range is fitted to the tones under it (decision of
+// 2026-10-17), a window matches the whole render: the range comes from the whole frame, not the window
+#[test]
+fn a_mask_s_adaptive_whites_and_blacks_do_not_depend_on_the_window() {
+    use lcc_develop::{LocalAdjustments, Mask, MaskComponent, MaskOp, MaskShape};
+    use lcc_geom::Point;
+    let shape = MaskShape::Radial { center: Point::new(0.4, 0.45), rx: 0.3, ry: 0.25, angle: 0.0, feather: 40.0, invert: false };
+    let mut s = DevelopSettings::default();
+    s.masks.push(Mask {
+        id: 1,
+        components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+        adjust: LocalAdjustments { whites: 80.0, blacks: -60.0, ..Default::default() },
+        ..Default::default()
+    });
+    check("adaptive whites / blacks", &s, MID, 1, 0.05);
+    let corner = PixelWindow { x: 0, y: 0, w: 320, h: 240 };
+    check("adaptive whites / blacks, corner", &s, corner, 1, 0.05);
+}
+
+// Given a mask over a bright subject only, its Whites reach the subject's own brightest tones: they
+// change it more than the same Whites did on the fixed range, which was full only near clipping
+#[test]
+fn a_bright_subject_s_whites_reach_its_own_highlights() {
+    use lcc_develop::{LocalAdjustments, Mask, MaskComponent, MaskOp, MaskShape};
+    use lcc_geom::Point;
+    // a mid-grey frame with a bright patch (+0.5 .. +1.3 EV over middle grey) in the middle
+    let (w, h) = (240usize, 160usize);
+    let mut src = Rgb32f::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let inside = (80..160).contains(&x) && (50..110).contains(&y);
+            let v = if inside { 0.18 * 2f32.powf(0.5 + 0.8 * (x - 80) as f32 / 80.0) } else { 0.12 };
+            src.data[y * w + x] = [v, v, v];
+        }
+    }
+    let shape = MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.18, ry: 0.2, angle: 0.0, feather: 0.0, invert: false };
+    let mask = |whites: f64| Mask {
+        id: 1,
+        components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: shape.clone() }],
+        adjust: LocalAdjustments { whites, ..Default::default() },
+        ..Default::default()
+    };
+    let mut s = DevelopSettings::default();
+    s.masks.push(mask(100.0));
+    let frame = crate::geometry::Frame::new(w, h, &s, true);
+    let r = crate::mask_tone::ranges(&src, &SourceInfo::default(), &s, &frame, None);
+    assert_eq!(r.len(), 1);
+    let [w_lo, w_hi, ..] = r[0];
+    assert!(w_hi < crate::finish::DEFAULT_MASK_TONE[1] - 0.8, "full at the patch's brightest, not near clipping: {w_hi}");
+    assert!(w_lo < w_hi, "{w_lo} {w_hi}");
+    // and the render: the patch's brightest pixels move clearly
+    let req = RenderRequest::fit(w, h);
+    let before = render(&src, &SourceInfo::default(), &DevelopSettings::default(), &req).image;
+    let after = render(&src, &SourceInfo::default(), &s, &req).image;
+    let (x, y) = (150, 80);
+    let (b, a) = (before.get(x, y)[1], after.get(x, y)[1]);
+    assert!(a > b.saturating_add(12), "Whites +100 brightens the patch's highlights: {b} → {a}");
+}

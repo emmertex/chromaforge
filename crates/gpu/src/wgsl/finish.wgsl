@@ -445,11 +445,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let sg = select(0.92, 0.82, ss > 0.0);
         delta += ss * 1.7 * sg * ws * sqrt(ws) + hh * 0.85 * wh;
     }
-    if (lt[6] != 0.0) {
-        delta += lt[6] * 0.8 * sstep(0.5, 3.0, l1);
-    }
-    if (lt[7] != 0.0) {
-        delta += lt[7] * 0.8 * (1.0 - sstep(-6.0, -1.5, l1));
+    // local Whites / Blacks, each mask on its own tone range (lcc_pipeline::finish::MASK_TONE,
+    // LOCAL_WB_EV)
+    if (lt[6] != 0.0 || lt[7] != 0.0) {
+        for (var m = 0u; m < nm; m++) {
+            let a = masks[m * n + i];
+            if (a <= 0.0) {
+                continue;
+            }
+            let t = pu(F_MASK_OFF) + m * MASK_TERMS;
+            let wh = aux[t + 6u];
+            let bl = aux[t + 7u];
+            if (wh != 0.0) {
+                let wt = sstep(aux[t + MASK_TONE], aux[t + MASK_TONE + 1u], l1);
+                delta += a * wh * 1.5 * wt * sqrt(wt);
+            }
+            if (bl != 0.0) {
+                let bt = 1.0 - sstep(aux[t + MASK_TONE + 2u], aux[t + MASK_TONE + 3u], l1);
+                delta += a * bl * 1.5 * bt;
+            }
+        }
     }
     if (lt[3] != 0.0) {
         delta += lt[3] * 0.14 * clamp(l1, -6.0, 4.0);

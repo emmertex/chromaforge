@@ -1298,7 +1298,8 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
             groups1(n),
         );
     }
-    let terms = list.iter().map(|m| mask_terms(&m.adjust)).collect();
+    let mut terms: Vec<_> = list.iter().map(|m| mask_terms(&m.adjust)).collect();
+    lcc_pipeline::finish::with_tone(&mut terms, &plan.mask_tone);
     let curves = list.iter().map(|m| local_curve_luts(&m.curve)).collect();
     (Some(alpha), terms, curves)
 }

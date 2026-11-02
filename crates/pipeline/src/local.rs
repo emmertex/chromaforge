@@ -945,7 +945,7 @@ pub(crate) fn prepare(
     };
     let ev = s.light.exposure as f32;
     let masks = timed("masks", || masks::evaluate(&s.masks, frame, img.width, img.height, &img, &log_l, ev, mattes));
-    Prepared { img, log_l, base, clarity_blur, texture_blur, sharpen_blur, dark, chroma_blur, air, masks, px_per_long }
+    Prepared { img, log_l, base, clarity_blur, texture_blur, sharpen_blur, dark, chroma_blur, air, masks, mask_tone: Vec::new(), px_per_long }
 }
 
 /// The airlight of the whole output frame, estimated on a small render of it (`proxy_w` px wide):
@@ -964,7 +964,7 @@ const FRAME_PROXIES_KEPT: usize = 4;
 /// `frame.sample(src, w, h)`, kept for the last few (source, frame, size): sampling a 64 MP original down to the
 /// airlight proxy reads all of it (~190 ms of CPU), and every window of a zoomed view with Dehaze asked for it again,
 /// on each pan and slider tick. The proxy is taken before white balance, so a WB change still hits.
-fn frame_proxy(src: &Rgb32f, frame: &Frame, w: usize, h: usize) -> Arc<Rgb32f> {
+pub(crate) fn frame_proxy(src: &Rgb32f, frame: &Frame, w: usize, h: usize) -> Arc<Rgb32f> {
     type Entry = (u64, Frame, usize, usize, Arc<Rgb32f>);
     static CACHE: std::sync::Mutex<Vec<Entry>> = std::sync::Mutex::new(Vec::new());
     let key = crate::optics::fingerprint(src);
