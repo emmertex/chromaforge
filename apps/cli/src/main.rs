@@ -54,6 +54,7 @@ USAGE:
       Options:
         --demo            headless, the procedural demo library
         --library DIR     headless, open (or create) a {app} library; edits are saved
+                          (@app: the library the desktop app opens)
         --import PATH     headless, import a file or folder first (repeatable)
         --connect [ADDR]  drive the running app (`{bin} --control 7980`; default 127.0.0.1:7980)
         --script FILE|-   also run JSON lines {\"command\": id, \"params\": {…}} (or {\"method\": …})
@@ -195,6 +196,34 @@ const BIN: &str = lcc_brand::BINARY;
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
+
+/// `--library @app`: the library the desktop app opens — the one last opened with Settings → Open
+/// Library… (`settings.libraryPath` in its `ui.json`, unless `<PREFIX>_LIBRARY` is set), else the
+/// default location — so a headless run (a prep run before culling) fills the same preview cache
+/// the app reads.
+pub const APP_LIBRARY: &str = "@app";
+
+fn app_library_with(config: Option<std::path::PathBuf>, env_set: bool, default: Option<std::path::PathBuf>) -> Option<String> {
+    let saved = config
+        .filter(|_| !env_set)
+        .and_then(|d| std::fs::read(d.join("ui.json")).ok())
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get("settings")?.get("libraryPath")?.as_str().map(str::to_string))
+        .filter(|p| !p.trim().is_empty());
+    saved.or_else(|| default.map(|d| d.to_string_lossy().into_owned()))
+}
+
+/// The folder `--library` names: `@app` is the desktop app's library ([`APP_LIBRARY`]).
+fn library_arg(dir: &str) -> Result<String, String> {
+    if dir != APP_LIBRARY {
+        return Ok(dir.to_string());
+    }
+    let env_set = lcc_brand::env_os("LIBRARY").is_some_and(|v| !v.is_empty());
+    let found = app_library_with(lcc_engine::config::config_dir(), env_set, lcc_engine::library::default_dir())
+        .ok_or_else(|| "--library @app: no home folder to find the app's library in".to_string())?;
+    eprintln!("{CLI}: the app's library is {found}");
+    Ok(found)
+}
 
 /// Why `--library DIR` can't be opened; for a library open in another program, how to work with
 /// that one instead (issue #99).
@@ -467,7 +496,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
             "--headless" => connect = None,
             "--demo" => demo = true,
             "--compact" => compact = true,
-            "--library" => library = Some(take_value(args, &mut i, "--library")?.to_string()),
+            "--library" => library = Some(library_arg(take_value(args, &mut i, "--library")?)?),
             a if a.starts_with("--") => return Err(format!("unknown option `{a}`")),
             f => files.push(f.to_string()),
         }
@@ -695,7 +724,7 @@ fn run(args: &[String]) -> Result<(), String> {
             },
             a if a.starts_with("--connect=") => connect = Some(a["--connect=".len()..].to_string()),
             "--demo" => demo = true,
-            "--library" => library = Some(take_value(args, &mut i, "--library")?.to_string()),
+            "--library" => library = Some(library_arg(take_value(args, &mut i, "--library")?)?),
             "--import" => imports.push(take_value(args, &mut i, "--import")?.to_string()),
             "--script" => script = Some(take_value(args, &mut i, "--script")?.to_string()),
             "--keep-going" => keep_going = true,
@@ -970,7 +999,7 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     while i < args.len() {
         match args[i].as_str() {
             "--demo" => {}
-            "--library" => library = Some(take_value(args, &mut i, "--library")?.to_string()),
+            "--library" => library = Some(library_arg(take_value(args, &mut i, "--library")?)?),
             "--script" => script = Some(take_value(args, &mut i, "--script")?.to_string()),
             "-o" | "--output" => output = Some(take_value(args, &mut i, "-o")?.to_string()),
             "--size" => {
@@ -1249,4 +1278,30 @@ fn denoise_serve(args: &[String]) -> Result<(), String> {
 #[cfg(not(feature = "denoise"))]
 fn denoise_serve(_: &[String]) -> Result<(), String> {
     Err("denoise-serve: this build has no denoise support (build with the `denoise` feature)".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `--library @app` finds the library the app opens: its saved Settings → Open Library…
+    // choice, unless the environment names one, else the default; anything else is passed through
+    #[test]
+    fn library_at_app_reads_the_apps_saved_library() {
+        let d = std::env::temp_dir().join(format!("cli-app-library-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let default = Some(std::path::PathBuf::from("/home/me/Pictures/Library"));
+        let def = default.clone().map(|p| p.to_string_lossy().into_owned());
+        assert_eq!(app_library_with(Some(d.clone()), false, default.clone()), def, "no settings yet");
+        std::fs::write(d.join("ui.json"), br#"{"settings": {"libraryPath": "/Volumes/Photos/Lib"}}"#).unwrap();
+        assert_eq!(app_library_with(Some(d.clone()), false, default.clone()).as_deref(), Some("/Volumes/Photos/Lib"));
+        assert_eq!(app_library_with(Some(d.clone()), true, default.clone()), def, "the environment wins, as in the app");
+        std::fs::write(d.join("ui.json"), br#"{"settings": {"libraryPath": ""}}"#).unwrap();
+        assert_eq!(app_library_with(Some(d.clone()), false, default.clone()), def);
+        std::fs::write(d.join("ui.json"), b"{not json").unwrap();
+        assert_eq!(app_library_with(Some(d.clone()), false, default.clone()), def);
+        assert_eq!(app_library_with(None, false, None), None);
+        assert_eq!(library_arg("/some/dir").unwrap(), "/some/dir");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
