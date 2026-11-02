@@ -8,7 +8,7 @@
 //!   couple"), resolved into the component's shape on each photo.
 //!
 //! Ported from OneSlips' fork (own design there). Subject, Sky, Background, People and
-//! Landscape keep no pixels in Chromaforge's model (the segmenter's per-photo cache holds them), so
+//! Landscape keep no pixels in our model (the segmenter's per-photo cache holds them), so
 //! only Object and Describe selections carry a segmentation to drop.
 
 use lcc_geom::Point;

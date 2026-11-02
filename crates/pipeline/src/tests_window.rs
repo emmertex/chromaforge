@@ -415,8 +415,10 @@ fn automatic_ai_masks_do_not_depend_on_the_window() {
     use lcc_develop::{Mask, MaskComponent, MaskOp, MaskShape};
     for shape in [MaskShape::Sky, MaskShape::Subject] {
         let mut s = DevelopSettings::default();
-        let mut m =
-            Mask { components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: shape.clone() }], ..Default::default() };
+        let mut m = Mask {
+            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: shape.clone() }],
+            ..Default::default()
+        };
         m.adjust.exposure = -2.0;
         s.masks.push(m);
         check(&format!("{shape:?}"), &s, PixelWindow { x: 100, y: 0, w: 400, h: 300 }, 40, 2.0);

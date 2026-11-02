@@ -409,7 +409,11 @@ mod tests {
         let info = SourceInfo::default();
         let shape = MaskShape::Radial { center: Point::new(0.25, 0.5), rx: 0.15, ry: 0.15, angle: 0.0, feather: 10.0, invert: false };
         let mut s = DevelopSettings::default();
-        s.masks.push(Mask { id: 7, components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }], ..Default::default() });
+        s.masks.push(Mask {
+            id: 7,
+            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
+            ..Default::default()
+        });
         let plain = render(&src, &info, &s, &RenderRequest::fit(80, 40)).image;
         let shot = |s: &DevelopSettings, view: MaskView| {
             let o = Overlay::Mask { id: 7, view, color: [255, 0, 0], opacity: 100 };

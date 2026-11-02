@@ -917,7 +917,13 @@ fn overlays_match() {
         },
         Mask {
             id: 2,
-            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes: vec![stroke] } }],
+            components: vec![MaskComponent {
+                anchor: None,
+                name: None,
+                op: MaskOp::Add,
+                invert: false,
+                shape: MaskShape::Brush { strokes: vec![stroke] },
+            }],
             ..Default::default()
         },
         Mask {
