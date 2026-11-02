@@ -402,6 +402,11 @@ pub struct Session {
     /// Presets hidden from the Presets panel and the pickers (`preset.hide`), kept in the Presets
     /// Manager (LR-PRE-MANAGE). Changing it bumps the preset list's generation.
     pub preset_hidden: Vec<String>,
+    /// Built-in presets the user renamed (id → name) or put in another group (id → group) in the
+    /// Presets Manager (LR-PRE-MANAGE); `preset.restoreBuiltins` lets go of both. Changing them
+    /// bumps the preset list's generation.
+    pub preset_builtin_names: std::collections::BTreeMap<String, String>,
+    pub preset_builtin_groups: std::collections::BTreeMap<String, String>,
     /// Recently applied profile ids, newest first (at most [`presets::RECENT_PROFILES`]).
     pub profile_recent: Vec<String>,
     /// The app-wide store of presets, profiles and habits shared by every library (`None`: each
@@ -655,6 +660,8 @@ impl Session {
             profile_favorites: Vec::new(),
             preset_at_import: Vec::new(),
             preset_hidden: Vec::new(),
+            preset_builtin_names: Default::default(),
+            preset_builtin_groups: Default::default(),
             profile_recent: Vec::new(),
             app_store: None,
             journal: Vec::new(),

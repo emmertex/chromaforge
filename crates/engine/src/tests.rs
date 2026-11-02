@@ -764,7 +764,9 @@ fn presets_versions_history_and_select_by() {
     assert_eq!(preset(&s).settings["light"]["exposure"], 1.25);
     assert!(preset(&s).settings.get("color").is_none(), "only the groups it already had");
     let builtin = s.presets.iter().find(|p| p.builtin).unwrap().id.clone();
-    assert!(s.execute("preset.rename", &json!({"id": builtin, "name": "x"})).is_err());
+    // built-ins can be renamed (LR-PRE-MANAGE) but never take new settings
+    assert!(s.execute("preset.rename", &json!({"id": builtin, "name": "x"})).is_ok());
+    assert!(s.execute("preset.update", &json!({"id": builtin})).is_err());
     // versions
     s.execute("version.create", &json!({"name": "A"})).unwrap();
     s.execute("version.rename", &json!({"index": 0, "name": "First"})).unwrap();

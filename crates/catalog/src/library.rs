@@ -546,7 +546,8 @@ impl Journal {
         let dir = self.db_dir()?;
         let dest = root.join(stamp(now_secs()));
         std::fs::create_dir_all(&dest).map_err(ioe)?;
-        let mut files = vec![DB_FILE.to_string(), LOG.to_string(), SNAPSHOT.to_string(), SETTINGS_FILE.to_string()];
+        // (the library's prefs.json too, where the app keeps its presets: gathered back from a backup)
+        let mut files = vec![DB_FILE.to_string(), LOG.to_string(), SNAPSHOT.to_string(), SETTINGS_FILE.to_string(), "prefs.json".to_string()];
         if let Some(e) = find_entry(&dir).and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned())) {
             files.push(e);
         }

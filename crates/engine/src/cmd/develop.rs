@@ -316,6 +316,74 @@ fn toggle_mark(s: &mut Session, p: &Value, c: &str, key: &str, list: impl Fn(&mu
     Ok(Value::Object(out))
 }
 
+impl Session {
+    /// Built-in presets take their stock name and group, then the user's renames and moves
+    /// ([`Session::preset_builtin_names`], [`Session::preset_builtin_groups`]).
+    pub(crate) fn apply_builtin_edits(&mut self) {
+        let stock: std::collections::HashMap<String, (String, String)> =
+            crate::presets::builtin().into_iter().map(|b| (b.id, (b.name, b.group))).collect();
+        let (names, groups) = (self.preset_builtin_names.clone(), self.preset_builtin_groups.clone());
+        for p in self.presets.iter_mut().filter(|p| p.builtin) {
+            if let Some((name, group)) = stock.get(&p.id) {
+                p.name = names.get(&p.id).cloned().unwrap_or_else(|| name.clone());
+                p.group = groups.get(&p.id).cloned().unwrap_or_else(|| group.clone());
+            }
+        }
+        self.presets.bump();
+    }
+}
+
+/// Give preset `p.id` a new name or group (`name`: which); a built-in one keeps the change in the
+/// session's built-in edits, so it lasts and `preset.restoreBuiltins` can undo it.
+fn edit_preset(s: &mut Session, p: &Value, c: &str, name: bool, value: String) -> Result<()> {
+    let pid = str_param(p, "id").ok_or_else(|| bad(c, "missing id"))?.to_string();
+    let pr = s.presets.iter_mut().find(|x| x.id == pid).ok_or_else(|| bad(c, format!("unknown preset `{pid}`")))?;
+    if name {
+        pr.name = value.clone();
+    } else {
+        pr.group = value.clone();
+    }
+    if pr.builtin {
+        let edits = if name { &mut s.preset_builtin_names } else { &mut s.preset_builtin_groups };
+        edits.insert(pid, value);
+    }
+    s.presets.bump();
+    Ok(())
+}
+
+/// Every preset in `group` or a group under it.
+fn in_group(p: &Preset, group: &str) -> bool {
+    p.group == group || p.group.strip_prefix(group).is_some_and(|r| r.starts_with('/'))
+}
+
+/// `group` (or under it) moved to `new_group`, for user folders and every preset in it (built-in
+/// ones keep it in the built-in edits).
+fn regroup(s: &mut Session, old_group: &str, new_group: &str) {
+    let swap = |g: &str| -> Option<String> {
+        if g == old_group {
+            Some(new_group.to_string())
+        } else {
+            g.strip_prefix(old_group).and_then(|r| r.strip_prefix('/')).map(|rest| format!("{new_group}/{rest}"))
+        }
+    };
+    for f in &mut s.preset_folders {
+        if let Some(n) = swap(f) {
+            *f = n;
+        }
+    }
+    let mut moved_builtin = Vec::new();
+    for p in s.presets.iter_mut() {
+        if let Some(n) = swap(&p.group) {
+            if p.builtin {
+                moved_builtin.push((p.id.clone(), n.clone()));
+            }
+            p.group = n;
+        }
+    }
+    s.preset_builtin_groups.extend(moved_builtin);
+    s.presets.bump();
+}
+
 fn user_preset<'a>(s: &'a mut Session, p: &Value, c: &str) -> Result<&'a mut Preset> {
     let pid = str_param(p, "id").ok_or_else(|| bad(c, "missing id"))?;
     let pr = s.presets.iter_mut().find(|x| x.id == pid).ok_or_else(|| bad(c, format!("unknown preset `{pid}`")))?;
@@ -1473,20 +1541,70 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             |s, p| { toggle_mark(s, p, "preset.hide", "hidden", |s| &mut s.preset_hidden) }
         ),
-        cmd!("preset.rename", "Rename Preset", [], None, "{id, name}", always, |s, p| {
-            let c = "preset.rename";
-            let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?.to_string();
-            user_preset(s, p, c)?.name = name;
-            ok()
-        }),
-        cmd!("preset.move", "Move Preset to Group", [], None, "{id, group}", always, |s, p| {
+        cmd!(
+            "preset.rename",
+            "Rename Preset",
+            [],
+            None,
+            "{id, name} — built-in presets too (preset.restoreBuiltins gives them their names back)",
+            always,
+            |s, p| {
+                let c = "preset.rename";
+                let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?.to_string();
+                edit_preset(s, p, c, true, name)?;
+                ok()
+            }
+        ),
+        cmd!("preset.move", "Move Preset to Group", [], None, "{id, group} — built-in presets too", always, |s, p| {
             let c = "preset.move";
             let group = str_param(p, "group").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
             // (a group named like one there is is that group: never two "Wedding" groups)
             let group = existing_preset_group(s, group);
-            user_preset(s, p, c)?.group = group;
+            edit_preset(s, p, c, false, group)?;
             ok()
         }),
+        cmd!(
+            "preset.hideGroup",
+            "Hide Preset Group",
+            [],
+            None,
+            "{group, hidden?: bool} — every preset in the group (and the groups under it) out of the Presets panel and the pickers, or back → {hidden, count}",
+            always,
+            |s, p| {
+                let c = "preset.hideGroup";
+                let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+                let ids: Vec<String> = s.presets.iter().filter(|q| in_group(q, group)).map(|q| q.id.clone()).collect();
+                if ids.is_empty() {
+                    return Err(bad(c, format!("no presets in `{group}`")));
+                }
+                let all_hidden = ids.iter().all(|id| s.preset_hidden.contains(id));
+                let hidden = bool_or(p, "hidden", !all_hidden);
+                s.preset_hidden.retain(|h| !ids.contains(h));
+                if hidden {
+                    s.preset_hidden.extend(ids.iter().cloned());
+                }
+                s.presets.bump();
+                Ok(json!({"hidden": hidden, "count": ids.len()}))
+            }
+        ),
+        cmd!(
+            "preset.restoreBuiltins",
+            "Restore Built-in Presets",
+            [],
+            None,
+            "{} — built-in presets get their own names and groups back and are shown again → {restored}",
+            always,
+            |s, _p| {
+                let builtin: std::collections::HashSet<String> = s.presets.iter().filter(|q| q.builtin).map(|q| q.id.clone()).collect();
+                let before = s.preset_builtin_names.len() + s.preset_builtin_groups.len();
+                let hidden = s.preset_hidden.len();
+                s.preset_hidden.retain(|h| !builtin.contains(h));
+                s.preset_builtin_names.clear();
+                s.preset_builtin_groups.clear();
+                s.apply_builtin_edits();
+                Ok(json!({"restored": before + hidden - s.preset_hidden.len()}))
+            }
+        ),
         cmd!("preset.createGroup", "Create Preset Folder", [], None, "{name, parent?: group}", always, |s, p| {
             let c = "preset.createGroup";
             let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?;
@@ -1507,102 +1625,54 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"group": group}))
         }),
-        cmd!("preset.renameGroup", "Rename Preset Folder", [], None, "{group, name}", always, |s, p| {
+        cmd!("preset.renameGroup", "Rename Preset Folder", [], None, "{group, name} — built-in groups too", always, |s, p| {
             let c = "preset.renameGroup";
-            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?.to_string();
             let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?;
             if name.contains('/') {
                 return Err(bad(c, "folder name cannot contain slashes"));
-            }
-            if crate::presets::builtin().iter().any(|b| b.group == old_group || b.group.starts_with(&format!("{old_group}/"))) {
-                return Err(bad(c, "built-in groups cannot be renamed"));
             }
             let new_group = match old_group.rsplit_once('/') {
                 Some((parent, _)) => format!("{parent}/{name}"),
                 None => name.to_string(),
             };
-            if old_group == new_group {
-                return Ok(json!({"group": new_group}));
+            if old_group != new_group {
+                regroup(s, &old_group, &new_group);
             }
-            let old_prefix = format!("{old_group}/");
-            let new_prefix = format!("{new_group}/");
-            for f in &mut s.preset_folders {
-                if f == old_group {
-                    *f = new_group.clone();
-                } else if f.starts_with(&old_prefix) {
-                    *f = format!("{}{}", new_prefix, &f[old_prefix.len()..]);
-                }
-            }
-            for p in s.presets.iter_mut() {
-                if !p.builtin {
-                    if p.group == old_group {
-                        p.group = new_group.clone();
-                    } else if p.group.starts_with(&old_prefix) {
-                        p.group = format!("{}{}", new_prefix, &p.group[old_prefix.len()..]);
-                    }
-                }
-            }
-            s.presets.bump();
             Ok(json!({"group": new_group}))
         }),
-        cmd!("preset.moveGroup", "Move Preset Folder", [], None, "{group, parent?: group | null}", always, |s, p| {
+        cmd!("preset.moveGroup", "Move Preset Folder", [], None, "{group, parent?: group | null} — built-in groups too", always, |s, p| {
             let c = "preset.moveGroup";
-            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
-            if crate::presets::builtin().iter().any(|b| b.group == old_group || b.group.starts_with(&format!("{old_group}/"))) {
-                return Err(bad(c, "built-in groups cannot be moved"));
-            }
+            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?.to_string();
             let parent = str_param(p, "parent").map(str::trim).filter(|p| !p.is_empty());
             if let Some(par) = parent
                 && (par == old_group || par.starts_with(&format!("{old_group}/")))
             {
                 return Err(bad(c, "cannot move a folder into itself or its subfolder"));
             }
-            let leaf = old_group.rsplit_once('/').map(|(_, l)| l).unwrap_or(old_group);
+            let leaf = old_group.rsplit_once('/').map(|(_, l)| l).unwrap_or(&old_group);
             let new_group = match parent {
                 Some(par) => format!("{par}/{leaf}"),
                 None => leaf.to_string(),
             };
-            if old_group == new_group {
-                return Ok(json!({"group": new_group}));
+            if old_group != new_group {
+                regroup(s, &old_group, &new_group);
             }
-            let old_prefix = format!("{old_group}/");
-            let new_prefix = format!("{new_group}/");
-            for f in &mut s.preset_folders {
-                if f == old_group {
-                    *f = new_group.clone();
-                } else if f.starts_with(&old_prefix) {
-                    *f = format!("{}{}", new_prefix, &f[old_prefix.len()..]);
-                }
-            }
-            for p in s.presets.iter_mut() {
-                if !p.builtin {
-                    if p.group == old_group {
-                        p.group = new_group.clone();
-                    } else if p.group.starts_with(&old_prefix) {
-                        p.group = format!("{}{}", new_prefix, &p.group[old_prefix.len()..]);
-                    }
-                }
-            }
-            s.presets.bump();
             Ok(json!({"group": new_group}))
         }),
         cmd!("preset.deleteGroup", "Delete Preset Folder", [], None, "{group}", always, |s, p| {
             let c = "preset.deleteGroup";
             let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
-            if crate::presets::builtin().iter().any(|b| b.group == group || b.group.starts_with(&format!("{group}/"))) {
-                return Err(bad(c, "built-in groups cannot be deleted"));
+            if s.presets.iter().any(|q| q.builtin && in_group(q, group)) {
+                return Err(bad(c, "the group holds built-in presets, which can't be deleted: hide the group instead"));
             }
             let prefix = format!("{group}/");
             s.preset_folders.retain(|f| f != group && !f.starts_with(&prefix));
-            let mut removed = 0;
-            s.presets.retain(|p| {
-                if !p.builtin && (p.group == group || p.group.starts_with(&prefix)) {
-                    removed += 1;
-                    false
-                } else {
-                    true
-                }
-            });
+            let gone: Vec<String> = s.presets.iter().filter(|q| in_group(q, group)).map(|q| q.id.clone()).collect();
+            let removed = gone.len();
+            s.presets.retain(|q| !gone.contains(&q.id));
+            s.preset_at_import.retain(|x| !gone.contains(x));
+            s.preset_hidden.retain(|x| !gone.contains(x));
             s.presets.bump();
             Ok(json!({"deleted": removed}))
         }),

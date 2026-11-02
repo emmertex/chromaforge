@@ -88,6 +88,9 @@ pub struct Habits {
     pub slide_overlays: crate::slide_overlay::OverlaySettings,
     pub slide_titles: crate::slide_title::TitleSettings,
     pub hold_view: bool,
+    /// The grid's sort (while the store is in use; a library keeping its own has it in view.json).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid_sort: Option<lcc_catalog::Sort>,
     /// What Copy Settings, Sync and New Preset tick, New Preset's group, and the other dialogs'
     /// last answers (LR-PRE-CREATE).
     #[serde(skip_serializing_if = "DialogMemory::is_default", deserialize_with = "lenient_dialogs")]
@@ -184,7 +187,8 @@ impl DialogMemory {
 }
 
 /// The `prefs.json` keys the store holds while a library uses it (kept there as read).
-pub(crate) const SHARED_PREFS_KEYS: [&str; 20] = [
+pub(crate) const SHARED_PREFS_KEYS: [&str; 21] = [
+    "gridSort",
     "dialogs",
     "lutProfiles",
     "maskEffects",
@@ -213,6 +217,23 @@ pub(crate) const SHARED_PREFS_KEYS: [&str; 20] = [
 pub struct PresetMarks {
     pub at_import: Vec<String>,
     pub hidden: Vec<String>,
+    /// Built-in presets renamed (id → name) and moved to another group (id → group).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub names: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub groups: BTreeMap<String, String>,
+}
+
+impl PresetMarks {
+    /// The session's marks.
+    pub(crate) fn of(s: &Session) -> PresetMarks {
+        PresetMarks {
+            at_import: s.preset_at_import.clone(),
+            hidden: s.preset_hidden.clone(),
+            names: s.preset_builtin_names.clone(),
+            groups: s.preset_builtin_groups.clone(),
+        }
+    }
 }
 
 /// A library merged into the store.
@@ -293,7 +314,7 @@ impl Content {
             mask_tool_effects: prefs.mask_tool_effects,
             import: prefs.import,
             habits: prefs.habits,
-            marks: PresetMarks { at_import: p.at_import, hidden: p.hidden },
+            marks: PresetMarks { at_import: p.at_import, hidden: p.hidden, names: p.builtin_names, groups: p.builtin_groups },
             presets: p.user.into_iter().filter(|q| !q.builtin).collect(),
             folders: p.folders,
             favorites: p.favorites,
@@ -413,6 +434,30 @@ impl AppStore {
         self.warnings_reported = self.warnings.len();
         new
     }
+}
+
+/// The folders that may hold backups of the library in `dir` (each backup a folder of its own):
+/// `Backups/` and `backups/` in it, and the backup folder its catalog settings name, which may be
+/// elsewhere (another drive) and may keep each library's backups under the library's name.
+fn backup_roots(dir: &Path) -> Vec<PathBuf> {
+    #[allow(unused_mut)]
+    let mut roots = vec![dir.join("Backups"), dir.join("backups")];
+    // (the catalog's backup settings exist natively only; the web build has no folders to read)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let custom = lcc_catalog::library::CatalogSettings::load(dir).backup_root(dir);
+        if let Some(name) = dir.file_name() {
+            roots.push(custom.join(name));
+        }
+        roots.push(custom);
+    }
+    let mut out: Vec<PathBuf> = Vec::new();
+    for r in roots {
+        if !out.iter().any(|o| same_path(o, &r)) {
+            out.push(r);
+        }
+    }
+    out
 }
 
 fn unix_secs() -> u64 {
@@ -559,6 +604,9 @@ impl Habits {
             self.slide_titles = other.slide_titles.clone();
         }
         self.hold_view |= other.hold_view;
+        if self.grid_sort.is_none() {
+            self.grid_sort = other.grid_sort;
+        }
         self.dialogs.merge(other.dialogs.clone());
         let keyword_set = other.keyword_set.clone();
         let n = self.merge_named_presets(other);
@@ -699,6 +747,12 @@ pub(crate) fn merge_content(
     union(&mut mine.favorites, theirs.favorites, &preset_remap);
     union(&mut mine.marks.at_import, theirs.marks.at_import, &preset_remap);
     union(&mut mine.marks.hidden, theirs.marks.hidden, &preset_remap);
+    for (id, n) in theirs.marks.names {
+        mine.marks.names.entry(id).or_insert(n);
+    }
+    for (id, g) in theirs.marks.groups {
+        mine.marks.groups.entry(id).or_insert(g);
+    }
     union(&mut mine.profile_favorites, theirs.profile_favorites, &remap);
     let mut recent = std::mem::take(&mut mine.profile_recent);
     union(&mut recent, theirs.profile_recent, &remap);
@@ -797,7 +851,7 @@ impl Session {
             mask_tool_effects: self.mask_tool_effects.clone(),
             import: ImportDefaults { auto_folder: None, auto_copy: false, auto_album: None, ..self.import_defaults.clone() },
             habits: self.habits(),
-            marks: PresetMarks { at_import: self.preset_at_import.clone(), hidden: self.preset_hidden.clone() },
+            marks: PresetMarks::of(self),
             presets: self.presets.iter().filter(|p| !p.builtin).cloned().collect(),
             folders: self.preset_folders.clone(),
             favorites: self.presets.iter().filter(|p| p.builtin && p.favorite).map(|p| p.id.clone()).collect(),
@@ -823,6 +877,7 @@ impl Session {
             slide_overlays: self.slide_overlays.clone(),
             slide_titles: self.slide_titles.clone(),
             hold_view: self.hold_view,
+            grid_sort: self.uses_app_store().then_some(self.sort),
             dialogs: self.dialogs.clone(),
         }
     }
@@ -845,6 +900,9 @@ impl Session {
         self.slide_overlays = h.slide_overlays.sanitized();
         self.slide_titles = h.slide_titles.sanitized();
         self.hold_view = h.hold_view;
+        if let Some(sort) = h.grid_sort {
+            self.sort = sort;
+        }
         self.dialogs = h.dialogs.sanitized();
         self.lut_profiles = c.lut_profiles;
         let dir = self.profiles_dir();
@@ -868,6 +926,9 @@ impl Session {
         self.preset_folders = c.folders;
         self.preset_at_import = c.marks.at_import;
         self.preset_hidden = c.marks.hidden;
+        self.preset_builtin_names = c.marks.names;
+        self.preset_builtin_groups = c.marks.groups;
+        self.apply_builtin_edits();
         let known = |s: &Session, id: &String| crate::presets::profile(id).is_some() || s.lut_profiles.iter().any(|p| &p.id == id);
         let favs: Vec<String> = c.profile_favorites.into_iter().filter(|id| known(self, id)).collect();
         let recent: Vec<String> = c.profile_recent.into_iter().filter(|id| known(self, id)).take(crate::presets::RECENT_PROFILES).collect();
@@ -917,6 +978,8 @@ impl Session {
             if let Ok(Value::Object(mut o)) = serde_json::from_str::<Value>(&json) {
                 o.remove("atImport");
                 o.remove("hidden");
+                o.remove("builtinNames");
+                o.remove("builtinGroups");
                 json = serde_json::to_string_pretty(&o).unwrap_or(json);
             }
             (json, PresetsSaved::state_of(self))
@@ -1064,11 +1127,14 @@ impl Session {
             }
             libraries += 1;
             let mut sources = vec![dir.join("prefs.json")];
-            if let Ok(rd) = std::fs::read_dir(dir.join("Backups")) {
-                let mut b: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path().join("prefs.json")).collect();
-                b.sort();
-                sources.extend(b.into_iter().rev().take(MAX_BACKUPS));
+            for root in backup_roots(&dir) {
+                if let Ok(rd) = std::fs::read_dir(&root) {
+                    let mut b: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path().join("prefs.json")).collect();
+                    b.sort();
+                    sources.extend(b.into_iter().rev().take(MAX_BACKUPS));
+                }
             }
+            sources.dedup();
             for f in sources {
                 match parse_capped::<LibraryPrefs>(&f, MAX_PREFS_FILE) {
                     Ok(Some(p)) => {

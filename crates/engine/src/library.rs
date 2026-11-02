@@ -177,6 +177,11 @@ pub(crate) struct PresetsFile {
     pub at_import: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hidden: Vec<String>,
+    /// Built-in presets renamed or moved to another group in the Presets Manager.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub builtin_names: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub builtin_groups: std::collections::BTreeMap<String, String>,
     /// Favourite profiles, and the recently applied ones (newest first).
     pub profile_favorites: Vec<String>,
     pub profile_recent: Vec<String>,
@@ -397,6 +402,8 @@ pub(crate) fn presets_json(s: &Session) -> String {
         favorites: presets.iter().filter(|p| p.builtin && p.favorite).map(|p| p.id.clone()).collect(),
         at_import: s.preset_at_import.clone(),
         hidden: s.preset_hidden.clone(),
+        builtin_names: s.preset_builtin_names.clone(),
+        builtin_groups: s.preset_builtin_groups.clone(),
         profile_favorites: s.profile_favorites.clone(),
         profile_recent: s.profile_recent.clone(),
     };
@@ -708,6 +715,8 @@ impl Session {
             self.preset_folders = f.folders;
             self.preset_at_import = f.at_import;
             self.preset_hidden = f.hidden;
+            self.preset_builtin_names = f.builtin_names;
+            self.preset_builtin_groups = f.builtin_groups;
             for p in &mut self.presets {
                 p.favorite = p.builtin && f.favorites.contains(&p.id) || (!p.builtin && p.favorite);
             }
@@ -717,6 +726,7 @@ impl Session {
                     self.presets.push(u);
                 }
             }
+            self.apply_builtin_edits();
             let known = |id: &String| crate::presets::profile(id).is_some() || self.lut_profiles.iter().any(|p| &p.id == id);
             self.profile_favorites = f.profile_favorites.into_iter().filter(known).collect();
             self.profile_recent = f.profile_recent.into_iter().filter(known).take(crate::presets::RECENT_PROFILES).collect();
