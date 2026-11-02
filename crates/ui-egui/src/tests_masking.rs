@@ -2097,10 +2097,10 @@ fn a_fast_brush_stroke_shows_without_gaps_before_the_button_is_released() {
     let held = h.paint();
     let [r0, g0, b0] = h.app.ui.mask_overlay_color.map(|v| v as f32);
     let op = h.app.ui.mask_overlay_opacity / 100.0;
-    // along the centreline between the samples (away from the cursor ring at the last one), the
-    // overlay colour at full coverage over the photo
+    // along the centreline between the samples (away from the cursor's rings at the last one: the
+    // halo's reaches 1.7 × Size out at Feather 50), the overlay colour at full coverage over the photo
     let mut gaps = vec![];
-    for i in 1..=74 {
+    for i in 1..=70 {
         let x = a.0 + (c.0 - a.0) * i as f32 / 80.0;
         let p = px(&photo, x, a.1);
         let want = [p[0] + (r0 - p[0]) * op, p[1] + (g0 - p[1]) * op, p[2] + (b0 - p[2]) * op];
@@ -2109,7 +2109,7 @@ fn a_fast_brush_stroke_shows_without_gaps_before_the_button_is_released() {
             gaps.push((x, got, want));
         }
     }
-    assert!(gaps.is_empty(), "the live stroke has gaps: {} of 74 points, first {:?}", gaps.len(), gaps.first());
+    assert!(gaps.is_empty(), "the live stroke has gaps: {} of 70 points, first {:?}", gaps.len(), gaps.first());
     pointer(&mut h, json!([{"kind": "up", "x": c.0, "y": c.1}]));
     let d = develop(&h);
     let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };

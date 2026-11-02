@@ -624,6 +624,57 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 },
             ];
         }),
+        ("masks (Lightroom brush)", |s| {
+            use lcc_develop::BrushStroke;
+            // overlapping soft strokes add up, a hard one, an eraser and a legacy stroke in one component
+            let st = |pts: &[(f64, f64)], feather, erase, model| BrushStroke {
+                points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+                size: 0.03,
+                feather,
+                flow: 70.0,
+                density: 90.0,
+                erase,
+                model,
+                ..Default::default()
+            };
+            let lrc = lcc_develop::BRUSH_MODEL_LRC;
+            let strokes = vec![
+                st(&[(0.2, 0.3), (0.5, 0.35), (0.7, 0.3)], 100.0, false, lrc),
+                st(&[(0.3, 0.45), (0.6, 0.4)], 80.0, false, lrc),
+                st(&[(0.25, 0.6)], 0.0, false, lrc),
+                st(&[(0.45, 0.38)], 40.0, true, lrc),
+                st(&[(0.6, 0.7), (0.8, 0.65)], 50.0, false, lcc_develop::BRUSH_MODEL_LEGACY),
+            ];
+            s.masks = vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: -1.0, ..Default::default() },
+                ..Default::default()
+            }];
+        }),
+        ("masks (Lightroom auto mask brush)", |s| {
+            use lcc_develop::BrushStroke;
+            let st = |pts: &[(f64, f64)], auto_mask, erase| BrushStroke {
+                points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+                size: 0.04,
+                feather: 60.0,
+                flow: 90.0,
+                auto_mask,
+                erase,
+                model: lcc_develop::BRUSH_MODEL_LRC,
+                ..Default::default()
+            };
+            let strokes = vec![
+                st(&[(0.2, 0.55), (0.5, 0.6), (0.8, 0.5)], true, false),
+                st(&[(0.3, 0.5), (0.6, 0.55)], true, false),
+                st(&[(0.3, 0.2), (0.6, 0.25)], false, false),
+                st(&[(0.5, 0.58)], true, true),
+            ];
+            s.masks = vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -50.0, ..Default::default() },
+                ..Default::default()
+            }];
+        }),
         ("calibration", |s| {
             s.calibration.shadows_tint = 40.0;
             s.calibration.red_hue = 50.0;

@@ -1282,7 +1282,8 @@ pub enum MaskOp {
 pub struct BrushStroke {
     #[serde(deserialize_with = "capped::<MAX_STROKE_POINTS, _, _>")]
     pub points: Vec<Point>,
-    /// Radius as a fraction of the image's long edge.
+    /// Radius as a fraction of the image's long edge: the whole dab ([`BRUSH_MODEL_LEGACY`]) or its solid core
+    /// ([`BRUSH_MODEL_LRC`], Lightroom's Size; the halo reaches [`crate::brush_model::outer_ratio`] times it).
     pub size: f64,
     /// 0..100.
     pub feather: f64,
@@ -1295,9 +1296,29 @@ pub struct BrushStroke {
     /// end of a shorter list takes the last value.
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "capped::<MAX_STROKE_POINTS, _, _>")]
     pub pressure: Vec<f32>,
+    /// The brush model the stroke is painted with: [`BRUSH_MODEL_LEGACY`] (absent, strokes saved before
+    /// the app followed Lightroom: `size` is the whole footprint, Feather softens inward, strokes combine by
+    /// their maximum) or [`BRUSH_MODEL_LRC`] (Lightroom Classic's brush, [`crate::brush_model`]: `size` is the
+    /// solid core, Feather adds a halo outside it, dabs and strokes add up). Old strokes keep their look.
+    #[serde(skip_serializing_if = "is_legacy_brush")]
+    pub model: u8,
+}
+
+/// The brush model of strokes saved before the app followed Lightroom's ([`BrushStroke::model`]).
+pub const BRUSH_MODEL_LEGACY: u8 = 0;
+/// Lightroom Classic's brush model ([`crate::brush_model`]): new strokes and strokes imported from Lightroom.
+pub const BRUSH_MODEL_LRC: u8 = 1;
+
+fn is_legacy_brush(m: &u8) -> bool {
+    *m == BRUSH_MODEL_LEGACY
 }
 
 impl BrushStroke {
+    /// Whether the stroke follows Lightroom Classic's brush model (any model past the legacy one).
+    pub fn is_lrc(&self) -> bool {
+        self.model != BRUSH_MODEL_LEGACY
+    }
+
     /// The pressure at point `i` (0..1; 1 without pressure data, a hostile value clamped, NaN as 1).
     pub fn pressure_at(&self, i: usize) -> f32 {
         let p = self.pressure.get(i).or(self.pressure.last()).copied().unwrap_or(1.0);
@@ -1307,7 +1328,17 @@ impl BrushStroke {
 
 impl Default for BrushStroke {
     fn default() -> Self {
-        Self { points: Vec::new(), size: 0.03, feather: 50.0, flow: 100.0, density: 100.0, erase: false, auto_mask: false, pressure: Vec::new() }
+        Self {
+            points: Vec::new(),
+            size: 0.03,
+            feather: 50.0,
+            flow: 100.0,
+            density: 100.0,
+            erase: false,
+            auto_mask: false,
+            pressure: Vec::new(),
+            model: BRUSH_MODEL_LEGACY,
+        }
     }
 }
 

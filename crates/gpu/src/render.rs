@@ -1102,11 +1102,15 @@ fn prepare(cx: &mut Cx<'_>, lin: &Buf, plan: &Plan<'_>, req: &RenderRequest, pla
 /// Most brush dabs the mask kernel evaluates per pixel (more: the CPU rasterizes the brush).
 const MAX_DABS: usize = 4096;
 
-/// The `shape` kernel's brush data for `dabs`: stroke records (12 words: dab offset, dab count,
-/// r, hard, flow, density, erase, bbox x0 y0 x1 y1, auto) then the dab centres.
+/// Words per stroke record in [`brush_aux`].
+const STROKE_WORDS: usize = 16;
+
+/// The `shape` kernel's brush data for `dabs`: stroke records ([`STROKE_WORDS`] words: dab offset,
+/// dab count, r, hard, flow, density, erase, bbox x0 y0 x1 y1, auto, Lightroom model (1/0), its dab
+/// profile's a and p, unused) then the dab centres.
 fn brush_aux(dabs: &[&lcc_pipeline::masks::BrushDabs], erase: bool) -> Vec<f32> {
     let mut aux = Vec::new();
-    let mut off = 12 * dabs.len();
+    let mut off = STROKE_WORDS * dabs.len();
     for d in dabs {
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for q in &d.dabs {
@@ -1115,6 +1119,8 @@ fn brush_aux(dabs: &[&lcc_pipeline::masks::BrushDabs], erase: bool) -> Vec<f32> 
         aux.extend([off as f32, d.dabs.len() as f32, d.r as f32, d.hard as f32, d.flow, d.density, (erase && d.erase) as u8 as f32]);
         aux.extend([x0, y0, x1, y1].map(|v| v as f32));
         aux.push(d.auto as u8 as f32);
+        let (a, p) = d.lrc.unwrap_or((0.0, 0.0));
+        aux.extend([d.lrc.is_some() as u8 as f32, a as f32, p as f32, 0.0]);
         off += 2 * d.dabs.len();
     }
     for d in dabs {
@@ -1239,10 +1245,17 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
                                 let (sigma, eps) = lcc_pipeline::masks::auto_refine(d.r);
                                 guided_cross_max(cx, &prep.log_l, &stroke, w, h, sigma, eps)
                             });
-                            let op = if d.erase { 2 } else { 1 };
+                            // a Lightroom-model stroke adds up with the ones before it (`masks::combine_stroke`)
+                            let op = if d.erase {
+                                2
+                            } else if d.lrc.is_some() {
+                                4
+                            } else {
+                                1
+                            };
                             cx.run(
                                 "combine",
-                                &[n as u32, 0, 0, op],
+                                &[n as u32, d.density.to_bits(), 0, op],
                                 &[None, None, None, Some(refined.as_ref().unwrap_or(&stroke)), Some(&brush)],
                                 groups1(n),
                             );

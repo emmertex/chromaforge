@@ -502,12 +502,18 @@ pub fn color_range_tolerance(refine: f64) -> f32 {
     0.015 + 0.06 * (refine / 100.0).clamp(0.0, 1.0) as f32
 }
 
-/// A brush stroke resolved to output pixels: dab centres (spacing r/4 along the path), radius,
-/// hard-core radius, flow and density (0..1), and whether it erases.
+/// A brush stroke resolved to output pixels: dab centres, radius (where a dab ends), hard-core
+/// radius, flow and density (0..1), and whether it erases. A legacy stroke's dabs lie r/4 apart
+/// along the path, each solid inside `hard` and smoothly fading to `r`; a Lightroom-model stroke's
+/// ([`BrushDabs::lrc`]) every [`DAB_SPACING`] × r, each `exp(−(d/a)^p)` cut at `r`.
 pub struct BrushDabs {
     pub dabs: Vec<Point>,
     pub r: f64,
     pub hard: f64,
+    /// Lightroom's brush model ([`lcc_develop::BRUSH_MODEL_LRC`]): the dab profile's `a`
+    /// (pixels, at full pressure) and `p`; strokes add up instead of taking the maximum. `None`: the
+    /// legacy model.
+    pub lrc: Option<(f64, f64)>,
     pub flow: f32,
     pub density: f32,
     pub erase: bool,
@@ -528,6 +534,48 @@ impl BrushDabs {
             None => (self.r, self.hard, self.flow),
         }
     }
+
+    /// How much one dab of radius `r` and hard core `hard` (from [`BrushDabs::dab`]) paints at
+    /// distance `dd` from its centre, in this stroke's brush model.
+    #[inline]
+    pub fn alpha(&self, dd: f64, r: f64, hard: f64) -> f32 {
+        match self.lrc {
+            // pen pressure scales the whole dab
+            Some((a, p)) => lrc_dab_alpha(dd, r, if self.r > 0.0 { a * r / self.r } else { a }, p),
+            None => dab_alpha(dd, r, hard),
+        }
+    }
+
+    /// The coverage `o` after this stroke paints `a` there ([`combine_stroke`]).
+    #[inline]
+    pub fn combine(&self, o: f32, a: f32) -> f32 {
+        combine_stroke(o, a, self.erase, self.lrc.is_some(), self.density)
+    }
+}
+
+/// The coverage `o` after a stroke paints `a` there (`a` already capped by the stroke's density):
+/// an erasing stroke takes away, a legacy stroke keeps the larger of the two, a Lightroom-model
+/// stroke adds up the way its dabs do, up to its density (note 20: overlapping soft strokes blend
+/// into one shape instead of pinching where they meet).
+#[inline]
+pub fn combine_stroke(o: f32, a: f32, erase: bool, lrc: bool, density: f32) -> f32 {
+    if erase {
+        o * (1.0 - a)
+    } else if lrc {
+        o.max((o + a - o * a).min(density))
+    } else {
+        o.max(a)
+    }
+}
+
+/// A Lightroom-model dab ([`lcc_develop::brush_model`]) at distance `dd` from its centre:
+/// `exp(−(dd/a)^p)` up to the radius `r`, 0 beyond.
+#[inline]
+pub fn lrc_dab_alpha(dd: f64, r: f64, a: f64, p: f64) -> f32 {
+    if dd.is_nan() || dd > r || a <= 0.0 {
+        return 0.0;
+    }
+    (-(dd / a).powf(p)).exp() as f32
 }
 
 /// The radius of a dab of a brush of radius `r` (pixels) painted at pen pressure `p` (0..1): from a tenth of the
@@ -577,6 +625,9 @@ pub fn brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize) -> BrushDa
 /// Ask for one more than the threshold to tell "at it" from "past it": a result shorter than
 /// `max` is the whole stroke.
 pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max: usize) -> BrushDabs {
+    if s.is_lrc() {
+        return lrc_brush_dabs(s, frame, w, h, max);
+    }
     let to_out = frame.mask_to_out(w, h);
     let ppl = frame.px_per_long(w);
     let r = (s.size * ppl).max(0.5);
@@ -611,12 +662,117 @@ pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max
         dabs,
         r,
         hard,
+        lrc: None,
         flow: (s.flow / 100.0).clamp(0.0, 1.0) as f32,
         density: (s.density / 100.0).clamp(0.0, 1.0) as f32,
         erase: s.erase,
         auto: s.auto_mask,
         pressure,
     }
+}
+
+/// The dabs of a Lightroom-model stroke ([`lcc_develop::brush_model`]): `size` is the core
+/// radius `R0`, the dabs reach `R0 · outer_ratio(feather)` and lie every [`DAB_SPACING`] of that
+/// along the path ([`walk_dabs`]), as Lightroom saves them.
+fn lrc_brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max: usize) -> BrushDabs {
+    use lcc_develop::brush_model;
+    let to_out = frame.mask_to_out(w, h);
+    let ppl = frame.px_per_long(w);
+    let r0 = (s.size * ppl).max(0.5);
+    let r0 = if r0.is_finite() { r0 } else { 0.5 };
+    let r = r0 * brush_model::outer_ratio(s.feather);
+    let (a, p) = brush_model::profile(s.feather);
+    let mut dabs: Vec<Point> = Vec::new();
+    let mut pressure: Vec<f32> = Vec::new();
+    let with_pressure = !s.pressure.is_empty();
+    let mut walk = DabWalk::default();
+    let mut emitted = 0usize;
+    let mut ts: Vec<f64> = Vec::new();
+    let mut prev_p = 1.0;
+    for (i, q) in s.points.iter().enumerate() {
+        if dabs.len() >= max {
+            break;
+        }
+        let pq = s.pressure_at(i);
+        let had = walk.prev.is_some();
+        ts.clear();
+        if walk_dabs(&mut dabs, &mut emitted, &mut walk, to_out(*q), DAB_SPACING * r, &mut ts) {
+            if with_pressure {
+                let from = if had { prev_p } else { pq };
+                pressure.extend(ts.iter().map(|t| from + (pq - from) * *t as f32));
+            }
+            prev_p = pq;
+        }
+    }
+    dabs.truncate(max);
+    pressure.truncate(max);
+    BrushDabs {
+        dabs,
+        r,
+        hard: 0.0,
+        lrc: Some((a * r0, p)),
+        flow: (s.flow / 100.0).clamp(0.0, 1.0) as f32,
+        density: (s.density / 100.0).clamp(0.0, 1.0) as f32,
+        erase: s.erase,
+        auto: s.auto_mask,
+        pressure,
+    }
+}
+
+pub use lcc_develop::brush_model::DAB_SPACING;
+
+/// Where [`walk_dabs`] is along a stroke: the last sample taken and the path length still to go
+/// before the next dab.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DabWalk {
+    pub prev: Option<Point>,
+    pub left: f64,
+}
+
+/// Lay the dabs of a Lightroom-model stroke along the segment from the walk's last sample to `q`:
+/// the first sample is a dab, then one every `spacing` of path length (carried over from segment to
+/// segment), so the dabs lie evenly however the samples came in: a slow drag (samples a pixel
+/// apart) lays no more dabs than a fast one, and dabs saved `spacing` apart (Lightroom's) are laid
+/// where they were saved. `ts` receives, per dab laid, where it lies on the segment (0..1; the first
+/// sample's dab 1), for interpolating the pen pressure. A sample that didn't move (or isn't finite)
+/// is skipped; returns whether `q` was taken. A stroke holding [`MAX_STROKE_DABS`] (counting
+/// `emitted`) takes no more dabs.
+pub fn walk_dabs(dabs: &mut Vec<Point>, emitted: &mut usize, walk: &mut DabWalk, q: Point, spacing: f64, ts: &mut Vec<f64>) -> bool {
+    if !(q.x.is_finite() && q.y.is_finite()) {
+        return false;
+    }
+    let spacing = if spacing.is_finite() { spacing.max(0.5) } else { 0.5 };
+    let before = dabs.len();
+    match walk.prev {
+        None => {
+            if *emitted < MAX_STROKE_DABS {
+                dabs.push(q);
+                ts.push(1.0);
+            }
+            walk.left = spacing;
+        }
+        Some(prev) => {
+            let seg = prev.dist(q);
+            if seg.is_nan() || seg <= STATIONARY_PX {
+                return false;
+            }
+            // a hostile, huge segment lays at most 1 M dabs (and the stroke's budget)
+            let room = MAX_STROKE_DABS.saturating_sub(*emitted).min(1_000_000);
+            let mut t = walk.left;
+            // (a hair of slack: dabs saved exactly `spacing` apart land on the samples)
+            let end = seg + 1e-3 * spacing;
+            while t <= end && dabs.len() - before < room {
+                let k = (t / seg).min(1.0);
+                dabs.push(prev.lerp(q, k));
+                ts.push(k);
+                t += spacing;
+            }
+            walk.left = if t <= end { spacing } else { (t - seg).max(0.0) };
+        }
+    }
+    *emitted += dabs.len() - before;
+    walk.prev = Some(q);
+    true
 }
 
 /// Distance between consecutive dabs of a brush of radius `r` (pixels): a quarter of the radius,
@@ -755,7 +911,8 @@ pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
     q
 }
 
-/// Stamp brush strokes into `out` (max-combine; erase strokes subtract). Auto Mask strokes weight
+/// Stamp brush strokes into `out` ([`BrushDabs::combine`]: erase strokes subtract, Lightroom-model
+/// strokes add up, legacy ones take the maximum). Auto Mask strokes weight
 /// each dab by [`auto_similarity`] to the pixel under its centre and are refined with
 /// [`guided_cross`] on log luminance.
 fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, out: &mut Plane) {
@@ -764,7 +921,7 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
     }
     for s in strokes {
         let bd = brush_dabs(s, frame, w, h);
-        let (dens, erase, auto) = (bd.density, bd.erase, bd.auto);
+        let (dens, auto) = (bd.density, bd.auto);
         let mut stroke_alpha = Plane::new(w, h);
         for (k, d) in bd.dabs.iter().enumerate() {
             let (r, hard, flow) = bd.dab(k);
@@ -780,7 +937,7 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
                     if dd > r {
                         continue;
                     }
-                    let mut a = dab_alpha(dd, r, hard);
+                    let mut a = bd.alpha(dd, r, hard);
                     let i = y * w + x;
                     if let Some((rl, rch)) = refc {
                         a *= auto_similarity(log_l.data[i], chromaticity(img.data[i]), rl, rch);
@@ -798,10 +955,14 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
             stroke_alpha = stroke_alpha.zip_map(&q, f32::max);
         }
         for (o, a) in out.data.iter_mut().zip(&stroke_alpha.data) {
-            *o = if erase { *o * (1.0 - a) } else { o.max(*a) };
+            *o = bd.combine(*o, *a);
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests_brush_lrc.rs"]
+mod tests_brush_lrc;
 
 #[cfg(test)]
 mod tests {

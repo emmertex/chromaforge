@@ -3476,11 +3476,16 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     }
     // brush tool
     if app.ui.tool == "brush" {
-        let r = (app.ui.brush_size as f64 * long) as f32;
+        // Lightroom's brush: Size is the solid core, Feather adds a halo outside it
+        let r0 = (app.ui.brush_size as f64 * long) as f32;
+        let r = r0 * lcc_develop::brush_model::outer_ratio(app.ui.brush_feather as f64) as f32;
         if let Some(h) = resp.hover_pos() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::None);
-            p.circle_stroke(h, r, Stroke::new(1.0, Color32::WHITE));
-            p.circle_stroke(h, r * (1.0 - app.ui.brush_feather / 100.0).max(0.05), Stroke::new(1.0, Color32::from_white_alpha(120)));
+            // a bold circle round the core, a thin one where the halo ends
+            p.circle_stroke(h, r0, Stroke::new(2.0, Color32::WHITE));
+            if r > r0 + 0.5 {
+                p.circle_stroke(h, r, Stroke::new(1.0, Color32::from_white_alpha(150)));
+            }
         }
         if let Some(q) = resp.interact_pointer_pos()
             && (resp.drag_started() || resp.dragged() || resp.clicked())
@@ -3518,7 +3523,11 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                 clip,
                 scale: ui.ctx().pixels_per_point(),
                 r,
-                hard: r * (1.0 - (app.ui.brush_feather / 100.0).clamp(0.0, 1.0)),
+                hard: 0.0,
+                lrc: Some({
+                    let (a, pw) = lcc_develop::brush_model::profile(app.ui.brush_feather as f64);
+                    (a as f32 * r0, pw as f32)
+                }),
                 flow: (app.ui.brush_flow / 100.0).clamp(0.0, 1.0),
                 density: (app.ui.brush_density / 100.0).clamp(0.0, 1.0),
                 color: app.ui.mask_overlay_color,
