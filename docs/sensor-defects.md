@@ -101,9 +101,12 @@ selection in the background (activity row *Removing dust*):
    surroundings, a clear dip, a round blob).
 2. The camera body's **dust map** adds its spots for this photo's capture time and aperture — each re-checked on this
    photo: only where the place is smooth (never on subject detail); a spot seen only twice must show here.
-3. Each spot becomes a heal spot tagged *auto dust* — or **Even Out** (a flat-field lift: the spot keeps its own
-   texture and is divided by the shadow's estimated transmission) when that leaves it closer to its surroundings,
-   usually large faint shadows at wide apertures. Both are tried on the detection image; the closer one wins.
+3. Each spot becomes an **Even Out** spot tagged *auto dust* (a flat-field lift: the spot keeps its own pixels and
+   is divided by the shadow's estimated transmission — sand grains, pebbles and grain under the shadow stay as they
+   were), or a **Heal** spot when evening out would leave it more than three times further from its surroundings
+   than healing (both are tried on the detection image). Healing copies other pixels in: on the real files it brought
+   a pebble into a dust spot on wet sand, which is why Even Out is the default. A spot covers 2.8 sigma of the
+   shadow, its soft edge included.
 4. One undo step per photo. Running it again replaces the earlier auto-dust spots; a spot you move or resize becomes
    yours and stays.
 
