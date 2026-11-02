@@ -157,7 +157,6 @@ pub fn grade_linear(frame: &mut lcc_raster::Rgb32f, settings: &lcc_develop::Deve
 pub fn grade_gpu(frame: &mut lcc_raster::Rgb32f, video_settings: &lcc_develop::DevelopSettings) -> Option<()> {
     use lcc_pipeline::grade;
     let req = grade::grade_request(frame.width, frame.height, lcc_pipeline::Quality::Full);
-    // LUT profiles and refined / feathered masks have no GPU stage: the CPU grades those
     if !crate::media::gpu_renders_faithfully(video_settings, &req) {
         return None;
     }
