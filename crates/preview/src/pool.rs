@@ -44,6 +44,15 @@ struct Shared<S, R> {
     ended: Condvar,
 }
 
+/// Run by every worker thread as it starts (see [`set_worker_start`]).
+static WORKER_START: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+/// Have every job pool worker run `f` first, from now on (the desktop app lowers their priority so
+/// renders never starve the desktop). Set once; later calls change nothing and return `false`.
+pub fn set_worker_start(f: fn()) -> bool {
+    WORKER_START.set(f).is_ok()
+}
+
 /// How long dropping a pool waits for the jobs still running (see [`JobPool::shutdown`]).
 #[cfg(not(target_arch = "wasm32"))]
 const DROP_WAIT: Duration = Duration::from_secs(2);
@@ -127,6 +136,9 @@ impl<S: Copy + Eq + Hash + Send + 'static, R: Send + 'static> JobPool<S, R> {
                 let tx = self.tx.clone();
                 let spawned = std::thread::Builder::new().name(format!("lc-job-{i}")).spawn(move || {
                     let _ended = Ended(&shared);
+                    if let Some(f) = WORKER_START.get() {
+                        f();
+                    }
                     while let Some(e) = take(&shared, true) {
                         let t0 = std::time::Instant::now();
                         // the slot is free again when the job ends, also if it panics

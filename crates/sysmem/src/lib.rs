@@ -10,8 +10,11 @@
 //! and `sync_data` are `F_FULLFSYNC`, which SMB shares refuse with ENOTSUP while `fsync` works
 //! (upstream issue 1407).
 //!
-//! This is the workspace's only crate allowed `unsafe` (two FFI calls, in `macos`). Its API is safe;
-//! on failure or on other platforms `release_free_memory` simply releases nothing.
+//! [`lower_thread_priority`] runs the calling thread below normal priority (Windows'
+//! `SetThreadPriority`), so renders leave the desktop responsive.
+//!
+//! This is one of the workspace's few crates allowed `unsafe` (two FFI calls in `macos`, two in
+//! `windows`). Its API is safe; on failure or on other platforms each call simply does nothing.
 //!
 //! It also says how much memory the process may use ([`limits`], safe std-only code): physical RAM
 //! held to the process's cgroup limit on Linux, for the engine's memory budget and `cargo xtask ci`.
@@ -45,6 +48,46 @@ pub fn fsync(file: &std::fs::File) -> std::io::Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         file.sync_all()
+    }
+}
+
+/// Run the calling thread below normal priority, so background renders and the render workers'
+/// fan-out never take the processor from the desktop and other apps. Returns whether the priority
+/// changed; anywhere but Windows it is `false` and nothing happens (the fallback). Safe to call from
+/// any thread, any number of times.
+pub fn lower_thread_priority() -> bool {
+    #[cfg(windows)]
+    {
+        windows::lower()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows {
+    use std::ffi::c_void;
+
+    /// `THREAD_PRIORITY_BELOW_NORMAL` (processthreadsapi.h).
+    const BELOW_NORMAL: i32 = -1;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        /// The calling thread's pseudo handle (needs no closing).
+        fn GetCurrentThread() -> *mut c_void;
+        /// Nonzero on success.
+        fn SetThreadPriority(thread: *mut c_void, priority: i32) -> i32;
+    }
+
+    pub fn lower() -> bool {
+        // SAFETY: both are documented, thread-safe kernel32 functions. `GetCurrentThread` returns a
+        // constant pseudo handle for the calling thread (never null, never closed), which is what
+        // `SetThreadPriority` takes; the priority is a documented constant. Neither reads or writes
+        // memory we own, and a failure only leaves the priority as it was.
+        unsafe { SetThreadPriority(GetCurrentThread(), BELOW_NORMAL) != 0 }
     }
 }
 
@@ -104,6 +147,20 @@ mod tests {
         // The allocator must still work normally afterwards.
         let again = vec![7u8; 16 << 20];
         assert_eq!(again[again.len() - 1], 7);
+    }
+
+    #[test]
+    fn a_lowered_thread_keeps_working() {
+        let (changed, again, sum) = std::thread::spawn(|| {
+            let changed = super::lower_thread_priority();
+            let again = super::lower_thread_priority();
+            (changed, again, (0..1000u64).sum::<u64>())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(sum, 499_500);
+        assert_eq!(changed, cfg!(windows));
+        assert_eq!(again, cfg!(windows));
     }
 
     #[test]
