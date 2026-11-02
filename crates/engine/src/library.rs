@@ -1099,9 +1099,21 @@ impl Session {
         new
     }
 
-    /// The thumbnail disk cache budget in bytes ([`Session::cache_mb`], else the default).
+    /// The thumbnail disk cache budget in bytes ([`Session::cache_mb`], else the default, which
+    /// grows with the library: [`crate::media::default_disk_cache_bytes`]).
     pub fn cache_bytes(&self) -> u64 {
-        if self.cache_mb == 0 { crate::media::DISK_CACHE_BYTES } else { u64::from(self.cache_mb) << 20 }
+        if self.cache_mb == 0 { crate::media::default_disk_cache_bytes(self.catalog.len()) } else { u64::from(self.cache_mb) << 20 }
+    }
+
+    /// Bring the disk cache's budget up to date with the library (photos were added since it was
+    /// set): cheap, nothing is read or written. Called before previews are built.
+    pub fn fit_disk_cache(&mut self) {
+        let want = self.cache_bytes();
+        if let Some(d) = self.media.rendered.disk()
+            && d.budget() != want
+        {
+            d.set_budget(want);
+        }
     }
 
     /// Change the thumbnail disk cache budget (MB, 0 = default) in place: the cached thumbnails

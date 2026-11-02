@@ -1003,6 +1003,8 @@ mod in_the_loupe {
             let m = h.app.renderer.memory();
             (m["stageCaches"]["gpuBytes"].as_u64().unwrap() + m["stageCaches"]["cpuBytes"].as_u64().unwrap()) as usize
         };
+        // (the drag's drafts, not the refine of a still photo after each settle, are looked at)
+        h.app.still_refine.never = true;
         // (the drag window's cache is made by the first tick of a drag)
         h.app.session.begin_interaction("Exposure").unwrap();
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.05}}), T);

@@ -87,6 +87,16 @@ const THUMB_SOURCE_BYTES: usize = 384 << 20;
 const RENDERED_MEM_BYTES: usize = 128 << 20;
 /// Disk budget for the thumbnail cache.
 pub const DISK_CACHE_BYTES: u64 = 2 << 30;
+/// What one photo's previews take on disk, about: its standard preview (a 2048 px JPEG, ~1 MB)
+/// and its grid thumbnails. The default disk budget grows by this per photo of the library, so
+/// the built previews of a whole wedding do not prune each other while they are made.
+pub const DISK_CACHE_PER_PHOTO: u64 = 3 << 19;
+
+/// The default disk budget for a library of `photos`: [`DISK_CACHE_BYTES`], or room for every
+/// photo's previews ([`DISK_CACHE_PER_PHOTO`]) when that is more.
+pub fn default_disk_cache_bytes(photos: usize) -> u64 {
+    DISK_CACHE_BYTES.max((photos as u64).saturating_mul(DISK_CACHE_PER_PHOTO))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -609,7 +619,9 @@ impl Default for MediaCache {
 
 /// Memory for rendered previews out of the cache share.
 fn rendered_budget(share: usize) -> usize {
-    RENDERED_MEM_BYTES.min(share / 4)
+    // a quarter of the share, so a big budget keeps a whole shoot's previews, and at least
+    // RENDERED_MEM_BYTES where the share allows
+    (share / 4).max(RENDERED_MEM_BYTES.min(share / 2))
 }
 
 impl MediaCache {
@@ -996,6 +1008,28 @@ pub struct RenderJob {
     pub hdr_texels: Option<f32>,
 }
 
+/// A cached view render this much smaller than asked for still serves the loupe (rounding: a fit
+/// of the same frame into a box one pixel different).
+const VIEW_REUSE_SLACK: f64 = 0.01;
+
+/// `img` fitted into `max_w × max_h` (its aspect kept), when it is big enough to need no enlarging
+/// (within [`VIEW_REUSE_SLACK`]): as it is, or shrunk.
+pub fn fit_cached(img: &Rgba8, max_w: usize, max_h: usize) -> Option<Rgba8> {
+    let (w, h) = (img.width, img.height);
+    if w == 0 || h == 0 || max_w == 0 || max_h == 0 {
+        return None;
+    }
+    let s = (max_w as f64 / w as f64).min(max_h as f64 / h as f64);
+    if !s.is_finite() || s > 1.0 + VIEW_REUSE_SLACK {
+        return None;
+    }
+    let (nw, nh) = (((w as f64 * s).round() as usize).clamp(1, w), ((h as f64 * s).round() as usize).clamp(1, h));
+    if nw == w && nh == h {
+        return Some(img.clone());
+    }
+    Some(fit_for_display(img, nw, nh))
+}
+
 /// `img` shrunk to fit `max_w × max_h` with a Lanczos filter (see [`RenderJob::display_fit`]).
 pub fn fit_for_display(img: &Rgba8, max_w: usize, max_h: usize) -> Rgba8 {
     lcc_raster::resample::fit_rgba8(img, max_w.max(1), max_h.max(1), lcc_raster::resample::Filter::Lanczos3)
@@ -1031,6 +1065,28 @@ impl RenderJob {
         self.display_fit = Some((w, h));
         self.key ^= ((w as u64) << 32 | h as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         self
+    }
+
+    /// The view render kept for this job's photo and settings ([`Self::view_cache`]), fitted to the
+    /// size asked for, when it is at least that big (else `None`: render). Only for what the cached
+    /// view is: a full-quality, 8-bit, whole-frame sRGB render of the photo (no HDR, display
+    /// profile, transparency or slide).
+    pub fn cached_view(&self) -> Option<Rgba8> {
+        let (cache, key) = self.view_cache.as_ref()?;
+        if self.request.quality != Quality::Full
+            || self.request.depth != lcc_pipeline::OutputDepth::U8
+            || self.request.window.is_some()
+            || self.request.alpha
+            || self.request.display.is_some()
+            || self.display.is_some()
+            || self.hdr_texels.is_some()
+            || self.settings.hdr.enabled
+            || self.slide.is_some()
+        {
+            return None;
+        }
+        let img = cache.get_at(self.cache_generation, *key)?;
+        fit_cached(&img, self.request.max_w, self.request.max_h)
     }
 
     /// See [`Self::drawn_view_cache`].
@@ -1170,6 +1226,29 @@ impl RenderJob {
 
     /// The photo's render (without slide composition).
     fn run_photo(self) -> RenderResult {
+        // the loupe: a cached view render of these settings at least this big is the render (a
+        // built preview, or the render kept from an earlier visit, is not rendered again)
+        if let Some(mut image) = self.cached_view() {
+            if let Some((fw, fh)) = self.display_fit
+                && (image.width > fw.max(1) || image.height > fh.max(1))
+            {
+                image = fit_for_display(&image, fw, fh);
+            }
+            let histogram = Histogram::of_srgb8(&image);
+            return RenderResult {
+                request_id: self.request_id,
+                source_key: self.source_key,
+                photo: self.photo,
+                level: self.level,
+                key: self.key,
+                rendered: Ok(Rendered { image, histogram, deep: None, warnings: Vec::new(), coverage: None, alpha: None }),
+                gpu_fallback: None,
+                loaded: None,
+                quick: None,
+                display: None,
+                hdr_texels: None,
+            };
+        }
         if let Some((cache, key)) = &self.cache
             && let Some(img) = cache.get_at(self.cache_generation, *key)
         {
@@ -2478,6 +2557,36 @@ mod tests {
         // release finds the drag's last render)
         let at_rest = s.loupe_job(id, 1024, 1024, true).unwrap().with_display_fit(400, 400);
         assert_eq!(at_rest.clone().with_drawn_view_cache().key, at_rest.key);
+    }
+
+    // Given a photo whose view render of these settings is kept (a built preview, an earlier
+    // visit), when the loupe asks for it at that size or smaller, then it is the kept picture,
+    // fitted, with no render; a larger size, a draft or other settings render
+    #[test]
+    fn the_loupe_uses_a_kept_view_render_at_least_as_big() {
+        let mut s = crate::Session::with_demo();
+        let id = s.active().unwrap();
+        let job = s.loupe_job(id, 1024, 1024, true).unwrap();
+        let (cache, key) = job.view_cache.clone().expect("a loupe job keeps the view preview");
+        let plain = job.run().rendered.unwrap().image;
+        let t0 = std::time::Instant::now();
+        while cache.get_in_memory(key).is_none() && t0.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let same = s.loupe_job(id, 1024, 1024, true).unwrap();
+        assert!(same.cached_view().is_some(), "the kept render serves the same size");
+        assert_eq!(same.run().rendered.unwrap().image.data, plain.data);
+        let small = s.loupe_job(id, 512, 512, true).unwrap().cached_view().expect("and a smaller one");
+        assert!(small.width.max(small.height) <= 512);
+        assert!(s.loupe_job(id, 2048, 2048, true).unwrap().cached_view().is_none() || plain.width.max(plain.height) >= 2048, "a larger view renders");
+        assert!(s.loupe_job(id, 512, 512, true).unwrap().draft().cached_view().is_none(), "a draft renders");
+        s.execute("develop.set", &serde_json::json!({"values": {"light.exposure": 1.0}})).unwrap();
+        assert!(s.loupe_job(id, 512, 512, true).unwrap().cached_view().is_none(), "other settings render");
+        // the default disk budget makes room for every photo's previews, from a floor
+        assert_eq!(default_disk_cache_bytes(0), DISK_CACHE_BYTES);
+        assert!(default_disk_cache_bytes(50_000) > DISK_CACHE_BYTES && default_disk_cache_bytes(usize::MAX) == u64::MAX);
+        // hostile sizes
+        assert!(fit_cached(&plain, 0, 10).is_none() && fit_cached(&Rgba8::new(0, 0), 10, 10).is_none());
     }
 
     #[test]
