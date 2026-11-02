@@ -1929,13 +1929,9 @@ mod tests_albums_local;
 #[cfg(test)]
 mod tests_auto_mask_range;
 #[cfg(test)]
-mod tests_autosync_wb;
-#[cfg(test)]
 mod tests_autosync;
 #[cfg(test)]
-mod tests_mask_links;
-#[cfg(test)]
-mod tests_mask_next;
+mod tests_autosync_wb;
 #[cfg(test)]
 mod tests_camera_profile_defaults;
 #[cfg(test)]
@@ -2024,6 +2020,10 @@ mod tests_lightroom_history;
 mod tests_mask_effects;
 #[cfg(test)]
 mod tests_mask_geometry;
+#[cfg(test)]
+mod tests_mask_links;
+#[cfg(test)]
+mod tests_mask_next;
 #[cfg(test)]
 mod tests_merge;
 #[cfg(all(test, not(target_arch = "wasm32")))]

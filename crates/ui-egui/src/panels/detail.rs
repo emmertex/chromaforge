@@ -4615,7 +4615,8 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
     // (spot, is source, screen centre, radius) of everything that can be grabbed
     let mut grips: Vec<(usize, bool, Pos2, f32)> = Vec::new();
     // the spot under the pointer (its painted area or its source) shows its outline and both pins
-    let hot = resp.hover_pos().filter(|_| !painting && matches!(mode, ToolOverlay::Auto | ToolOverlay::Always)).and_then(|h| spot_at(d, map, long, h));
+    let hot =
+        resp.hover_pos().filter(|_| !painting && matches!(mode, ToolOverlay::Auto | ToolOverlay::Always)).and_then(|h| spot_at(d, map, long, h));
     for (i, s) in d.spots.iter().enumerate() {
         let r = (s.size * long) as f32;
         let sel = Some(i) == active;

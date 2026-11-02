@@ -320,14 +320,7 @@ fn there_is_no_unlink() {
 fn presets_paste_and_sync_link_the_masks_they_copy() {
     let (mut s, [a, b, c]) = photos::<3>();
     let settings = json!({"masks": [{"id": 1, "name": "Glow", "components": [{"shape": {"kind": "radial", "center": {"x": 0.5, "y": 0.5}, "rx": 0.2, "ry": 0.2, "angle": 0.0, "feather": 50.0, "invert": false}}], "adjust": {"exposure": 0.3}}]});
-    s.presets.push(lcc_develop::Preset {
-        id: "glow".into(),
-        name: "Glow".into(),
-        group: "Test".into(),
-        settings,
-        favorite: false,
-        builtin: false,
-    });
+    s.presets.push(lcc_develop::Preset { id: "glow".into(), name: "Glow".into(), group: "Test".into(), settings, favorite: false, builtin: false });
     s.execute("library.select", &json!({"ids": [a.0]})).unwrap();
     s.execute("preset.apply", &json!({"id": "glow"})).unwrap();
     assert!(masks(&s, a)[0].link.is_empty(), "one photo: nothing to link");
@@ -379,7 +372,6 @@ fn old_masks_read_unlinked() {
     let back: Mask = serde_json::from_value(serde_json::to_value(&linked).unwrap()).unwrap();
     assert_eq!(back.link, "00ff");
 }
-
 
 /// A ⇧-click range or ⌘-click that keeps the active photo keeps the selected mask; a click that
 /// moves the active photo selects the linked copy there (another id), and on a photo without it

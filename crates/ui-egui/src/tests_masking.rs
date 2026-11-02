@@ -2700,7 +2700,10 @@ fn the_mask_row_activates_its_top_component() {
     assert_eq!(h.app.session.active_mask, Some(brush));
     assert_eq!(h.app.ui.tool, "brush", "the row arms the brush on the mask's Brush");
     assert!(h.app.ui.mask_new.is_none(), "not for a new mask");
-    pointer(&mut h, json!([{"kind": "down", "x": 0.7, "y": 0.75}, {"kind": "drag", "x": 0.75, "y": 0.75}, {"kind": "drag", "x": 0.8, "y": 0.75}, {"kind": "up", "x": 0.8, "y": 0.75}]));
+    pointer(
+        &mut h,
+        json!([{"kind": "down", "x": 0.7, "y": 0.75}, {"kind": "drag", "x": 0.75, "y": 0.75}, {"kind": "drag", "x": 0.8, "y": 0.75}, {"kind": "up", "x": 0.8, "y": 0.75}]),
+    );
     let d = develop(&h);
     assert_eq!(d.masks.len(), 2, "no new mask");
     let n = d.masks.iter().find(|m| m.id == brush).map(|m| match &m.components[0].shape {
