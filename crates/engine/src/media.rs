@@ -1114,6 +1114,8 @@ pub struct RenderJob {
 pub const AUTO_DISK_CACHE_MIN: u64 = 20 << 30;
 /// The share of the cache drive's room (free space and what the cache holds) the automatic size takes.
 pub const AUTO_DISK_CACHE_SHARE: f64 = 0.15;
+/// The most of the drive's free space the automatic size may claim beyond what the cache holds.
+pub const AUTO_DISK_CACHE_FREE_SHARE: f64 = 0.5;
 /// What the automatic size always leaves free on the cache drive.
 const CACHE_DRIVE_RESERVE: u64 = 10 << 30;
 
@@ -1122,8 +1124,9 @@ const CACHE_DRIVE_RESERVE: u64 = 10 << 30;
 /// reopening the library rendered everything again. Now: a share ([`AUTO_DISK_CACHE_SHARE`]) of
 /// the room on the cache drive (`free` bytes plus the cache's own `used`), at least
 /// [`AUTO_DISK_CACHE_MIN`] and room for every photo of the library, never more than leaves
-/// [`CACHE_DRIVE_RESERVE`] (or half the room, on a small drive) free. `free` unknown: the
-/// minimum, or the library's room when that is more.
+/// [`CACHE_DRIVE_RESERVE`] (or half the room, on a small drive) free, and never growing by more
+/// than half of what is free ([`AUTO_DISK_CACHE_FREE_SHARE`]): on a nearly full drive the minimum
+/// gives way. `free` unknown: the minimum, or the library's room when that is more.
 pub fn automatic_disk_cache_bytes(photos: usize, free: Option<u64>, used: u64) -> u64 {
     let by_photos = default_disk_cache_bytes(photos);
     let Some(free) = free else { return by_photos.max(AUTO_DISK_CACHE_MIN) };
@@ -1131,7 +1134,8 @@ pub fn automatic_disk_cache_bytes(photos: usize, free: Option<u64>, used: u64) -
     let share = (room as f64 * AUTO_DISK_CACHE_SHARE) as u64;
     let want = by_photos.max(AUTO_DISK_CACHE_MIN).max(share);
     let cap = room.saturating_sub(CACHE_DRIVE_RESERVE).max(room / 2);
-    want.min(cap).max(DISK_CACHE_BYTES.min(room))
+    let most = used.saturating_add((free as f64 * AUTO_DISK_CACHE_FREE_SHARE) as u64);
+    want.min(cap).max(DISK_CACHE_BYTES.min(room)).min(most)
 }
 
 /// A cached view render this much smaller than asked for still serves the loupe (rounding: a fit
@@ -2792,6 +2796,15 @@ mod tests {
         assert_eq!(automatic_disk_cache_bytes(10, None, 0), AUTO_DISK_CACHE_MIN);
         assert_eq!(automatic_disk_cache_bytes(10, Some(1000 << 30), 0), 150 << 30);
         assert!(automatic_disk_cache_bytes(10, Some(12 << 30), 0) <= 6 << 30, "a nearly full drive keeps room");
+        // nearly full: the 20 GB minimum (and the 2 GB floor) give way to half of what is free,
+        // plus what the cache already holds
+        for (free, used) in [(5u64 << 30, 0u64), (1 << 30, 0), (3 << 30, 1 << 30), (0, 0), (100 << 20, 50 << 20)] {
+            for photos in [0, 10, 100_000] {
+                let auto = automatic_disk_cache_bytes(photos, Some(free), used);
+                assert!(auto <= used + free / 2, "{photos} photos, {free} free, {used} used: {auto}");
+            }
+        }
+        assert!(automatic_disk_cache_bytes(10, Some(5 << 30), 0) <= (5 << 30) / 2);
         for (n, free, used) in [(usize::MAX, Some(u64::MAX), u64::MAX), (0, Some(0), 0), (1, Some(1), 1)] {
             let _ = automatic_disk_cache_bytes(n, free, used);
         }
