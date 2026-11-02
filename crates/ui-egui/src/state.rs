@@ -441,6 +441,14 @@ pub struct AppSettings {
     /// The graphics interface GPU rendering uses (Settings ▸ Performance; applies at next launch).
     /// The window keeps the platform's own; `<PREFIX>_GPU_BACKEND` / `WGPU_BACKEND` win over it.
     pub gpu_backend: GpuBackend,
+    /// The graphics card for editing (Settings ▸ Performance): a card's key
+    /// (`lcc_gpu::cards::AdapterKey`), or empty for Automatic (the card the screen is connected to).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gpu_card: String,
+    /// The second graphics card, for exports, previews and thumbnails: empty for Automatic (another
+    /// card when there is one), `off`, or a card's key.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gpu_helper: String,
     /// Windows DirectComposition to prevent VRR flicker; opt-in, applies at next launch.
     pub compose_window: bool,
     /// An HDR (extended-range) window where the display offers one; off: always an SDR window.
@@ -649,6 +657,8 @@ impl Default for AppSettings {
             settings_tab: String::new(),
             gpu: true,
             gpu_backend: GpuBackend::Auto,
+            gpu_card: String::new(),
+            gpu_helper: String::new(),
             compose_window: false,
             hdr_display: true,
             preview_limit: 0,

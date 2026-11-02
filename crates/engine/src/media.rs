@@ -1339,7 +1339,10 @@ impl RenderJob {
     /// it, so a few such panics used to stop every render).
     pub fn run(self) -> RenderResult {
         let failed = self.failed(String::new());
-        crate::guard::catch("the render", || self.run_unguarded()).unwrap_or_else(|e| RenderResult { rendered: Err(e), ..failed })
+        // thumbnails go to the second graphics card when there is one: the editing card keeps the views
+        let thumb = self.cache.is_some();
+        let run = || crate::guard::catch("the render", || self.run_unguarded()).unwrap_or_else(|e| RenderResult { rendered: Err(e), ..failed });
+        if thumb { lcc_gpu::prefer_helper(run) } else { run() }
     }
 
     /// This job's result when it fails with `e`.
