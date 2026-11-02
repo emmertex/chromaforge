@@ -1,6 +1,9 @@
 # Content-aware and generative fill
 
-> **Last updated:** 2026-10-17 · **Change:** a fill is never sent in pieces: one request or none
+> **Last updated:** 2026-10-23 · **Change:** a paid fill is never lost (test note 5): a generated spot keeps its
+> stroke, Generate Again keeps earlier results, every generation can be restored, Retry fetches what the service
+> already made; the HTTPS client no longer corrupts slow uploads ("BadRecordMac"). Before (2026-10-17): a fill is
+> never sent in pieces: one request or none
 > ("The model can't take an area this large. Please select a smaller area."). Before (2026-10-16):
 > first real-account test (OpenAI): the HTTPS upload fixed, a Generative spot only marks its area until its result
 > arrives, the short consent dialog, errors with Retry, a card per service. Before: new page
@@ -123,6 +126,42 @@ price per variation; once an area is painted the estimate shows the requests and
 failed generation stays in the panel with what went wrong, **Retry** and **Dismiss** (and a
 toast); while one runs, a spinner and "Generating…" sit over the area on the photo.
 
+### A paid result is never lost
+
+Every generation is paid for, so LightCraft keeps it (test note 5: a fill "vanished" after the brush size,
+changed with the generated spot still selected, resized the spot, and a nudge moved it):
+
+- **Kept on disk first.** The patches (`genfill/<photo id>/<id>-<n>.lcpatch`) and a record of the generation
+  (`<id>.json`: the stroke it was made for, the service, the prompt, when) are written before the result shows.
+  LightCraft never deletes them.
+- **The spot keeps its stroke.** A spot that shows a generated fill is not moved or resized: the Size, Feather and
+  Opacity sliders (and `[` / `]`, a console dial) set the next stroke's brush; dragging its pin says "A generated
+  fill stays where it was made". A spot moved or resized by an earlier build shows **Put Back**
+  (`spot.putBack`), which returns it to the stroke its fill was made for (from the fill, or the photo's history).
+- **Generate Again keeps the earlier results.** They are offered with the variations ("Variation 2 of 3"), any
+  can be shown again (`spot.variation` `result` / `delta`); a spot keeps up to 32 generations.
+- **A finished generation always lands**, also when its spot was moved, resized or deleted while it ran (it goes
+  back on its stroke, or on a spot of its own).
+- **Restore.** "Fills made earlier for this photo, not on it now" lists every generation in the library that no
+  spot shows (a deleted spot, an older build), each with **Restore** (`genfill.results`, `spot.restoreGenerated`).
+- **Retry does not pay twice.** Black Forest Labs and fal accept a request, then the result is fetched from an
+  address they give. When fetching fails, LightCraft keeps that address: Retry (or Generate with the same
+  choices) within a few minutes fetches the result instead of sending a new paid request, and the error says so.
+
+### Connections
+
+Every request opens a new connection (none is reused). A broken connection while asking for a result or
+downloading it is followed by a new one (three tries); a paid request is sent again on its own only when it
+certainly never reached the service (the connection broke while it was being sent, or the service's TLS layer
+refused it with an alert). Otherwise the error says what happened, that it tried, and that a VPN, proxy or
+antivirus that inspects secure connections may be in the way.
+
+The "received fatal alert: BadRecordMac" of test note 5 was LightCraft's own: the client waited on the socket
+with 250 ms send timeouts and sent again after one, but on Windows a send that times out may already have sent
+part of its data, so a slow upload could repeat bytes inside an encrypted record and the service refused it.
+The sockets are non-blocking now (a send that can't go out sends nothing), tested against a local TLS server
+that reads slowly.
+
 Keys are kept in `genfill-keys.json` in LightCraft's settings folder (`%APPDATA%\LightCraft` on
 Windows, `~/Library/Application Support/LightCraft` on macOS, `~/.config/lightcraft` on Linux),
 written with owner-only permissions on macOS and Linux. They are never in the catalog, XMP, exports
@@ -238,5 +277,8 @@ loopback addresses are accepted there, so a key can't be sent elsewhere by mista
 | `genfill.consent` | `{provider, accept}` | records or withdraws consent |
 | `genfill.plan` | `{index?, provider?, variations?, prompt?, previewPath?}` | requests, cost, the crop, scale, warnings; sends nothing; an error for an area too large for one request |
 | `spot.generate` | `{index?, provider?, variations?, prompt?}` | generates (background in the app, activity row with ✕) |
-| `spot.variation` | `{index?, variant \| delta}` | which variation a spot shows |
+| `spot.variation` | `{index?, variant \| result \| delta}` | which result a spot shows (`result`, `delta`: across every generation kept) |
+| `spot.putBack` | `{index?}` | a moved or resized generated spot back where its fill was made |
+| `genfill.results` | `{}` | every generation in the library for the photo: id, service, prompt, when, the spot that keeps it |
+| `spot.restoreGenerated` | `{id}` | shows that generation again (its spot, or a new spot where it was made) |
 | `genfill.status`, `genfill.cancel` | `{}` | the running generation |

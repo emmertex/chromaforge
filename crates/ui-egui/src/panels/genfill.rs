@@ -25,6 +25,10 @@ pub struct GenfillUi {
     pub key_input: std::collections::BTreeMap<String, String>,
     /// The consent dialog's preview of the crop: (dialog key, texture, size).
     pub preview: Option<(u64, egui::TextureHandle, [usize; 2])>,
+    /// `genfill.providers`, and when it was read ([`providers`]).
+    pub providers: Option<(std::time::Instant, Vec<Value>)>,
+    /// `genfill.results` of a photo, when it was read and for what ([`not_on_photo`]).
+    pub results: Option<(std::time::Instant, u64, Vec<Value>)>,
 }
 
 // (no derived Debug: a key being typed must never end up in a debug dump)
@@ -34,8 +38,90 @@ impl std::fmt::Debug for GenfillUi {
     }
 }
 
+/// The providers and their key and consent status. Reading them reads the keys and consent files,
+/// so the panel (drawn every frame, at the pointer's rate while painting) keeps them for a second.
 fn providers(app: &mut LccApp) -> Vec<Value> {
-    app.session.execute("genfill.providers", &json!({})).ok().and_then(|v| v["providers"].as_array().cloned()).unwrap_or_default()
+    if let Some((at, list)) = &app.ui.genfill.providers
+        && at.elapsed() < std::time::Duration::from_secs(1)
+    {
+        return list.clone();
+    }
+    let list: Vec<Value> =
+        app.session.execute("genfill.providers", &json!({})).ok().and_then(|v| v["providers"].as_array().cloned()).unwrap_or_default();
+    app.ui.genfill.providers = Some((std::time::Instant::now(), list.clone()));
+    list
+}
+
+/// The generated fills in the library for `photo` that no spot keeps (each one paid for). Reading them lists a
+/// folder, so the panel keeps the answer for a couple of seconds.
+fn not_on_photo(app: &mut LccApp, photo: lcc_catalog::PhotoId) -> Vec<Value> {
+    let fresh = |at: &std::time::Instant| at.elapsed() < std::time::Duration::from_secs(2);
+    // read again at once when the photo or its spots' fills change
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        photo.0.hash(&mut h);
+        for sp in app.session.develop_of(photo).map(|d| d.spots.clone()).unwrap_or_default() {
+            sp.generated.map(|g| g.generations().into_iter().map(|g| g.id).collect::<Vec<_>>()).hash(&mut h);
+        }
+        h.finish()
+    };
+    let list = match &app.ui.genfill.results {
+        Some((at, k, list)) if *k == key && fresh(at) => list.clone(),
+        _ => {
+            let list: Vec<Value> =
+                app.session.execute("genfill.results", &json!({})).ok().and_then(|v| v["results"].as_array().cloned()).unwrap_or_default();
+            app.ui.genfill.results = Some((std::time::Instant::now(), key, list.clone()));
+            list
+        }
+    };
+    list.into_iter().filter(|r| r["spot"].is_null()).collect()
+}
+
+/// "5 min ago", "3 h ago", "2 days ago" for a time in seconds since 1970.
+fn ago(made: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let s = now.saturating_sub(made);
+    match s {
+        0..120 => crate::i18n::tr("just now").to_string(),
+        120..7200 => format!("{} {}", s / 60, crate::i18n::tr("min ago")),
+        7200..172_800 => format!("{} {}", s / 3600, crate::i18n::tr("h ago")),
+        _ => format!("{} {}", s / 86_400, crate::i18n::tr("days ago")),
+    }
+}
+
+/// Fills generated for this photo that are not on it any more (their spot was deleted, or they were made before
+/// spots kept every generation): each one can be put back. Paid results are never thrown away.
+fn earlier_fills(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    let Some(photo) = app.session.active() else { return };
+    let list = not_on_photo(app, photo);
+    if list.is_empty() {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(format!("{} {}", crate::i18n::tr("Fills made earlier for this photo, not on it now:"), list.len()))
+            .size(11.0)
+            .color(t.text_label),
+    );
+    for r in list.iter().take(6) {
+        let id = r["id"].as_str().unwrap_or_default().to_string();
+        let what = match r["prompt"].as_str().filter(|p| !p.is_empty()) {
+            Some(p) => p.chars().take(28).collect::<String>(),
+            None => crate::i18n::tr("Remove").to_string(),
+        };
+        let service = providers(app).iter().find(|p| p["id"] == r["provider"]).map(short_name).unwrap_or_default();
+        let line = [ago(r["made"].as_u64().unwrap_or(0)), what, service].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+        ui.horizontal(|ui| {
+            if text_button(ui, &format!("genfillRestore-{id}"), crate::i18n::tr("Restore"), false).clicked() {
+                match app.run("spot.restoreGenerated", json!({"id": id})) {
+                    Ok(_) => app.ui.genfill.results = None,
+                    Err(e) => app.toast_error(ui.ctx(), e.to_string()),
+                }
+            }
+            ui.add(egui::Label::new(RichText::new(line).size(11.0).color(t.text_dim)).truncate());
+        });
+    }
 }
 
 /// The provider's short name ("OpenAI" of "OpenAI (GPT Image)").
@@ -69,9 +155,11 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
     // only services with a key show here; Settings → Generative Fill sets them up
     let Some(current) = current(app, &configured) else {
         ui.label(
-            RichText::new(crate::i18n::tr("Replaces the painted area using an online image service, with your own account. No service is set up yet."))
-                .size(11.0)
-                .color(t.text_dim),
+            RichText::new(crate::i18n::tr(
+                "Replaces the painted area using an online image service, with your own account. No service is set up yet.",
+            ))
+            .size(11.0)
+            .color(t.text_dim),
         );
         if text_button(ui, "genfillSetUp", crate::i18n::tr("Set Up a Service…"), false).clicked() {
             app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "genfill".into() });
@@ -116,11 +204,15 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
     });
     let Some((index, sp)) = spot else {
         ui.label(
-            RichText::new(crate::i18n::tr_format!("Paint over what to replace, then click Generate. About ${usd} per variation.", usd = format!("{usd_each:.2}")))
-                .size(11.0)
-                .color(t.text_dim),
+            RichText::new(crate::i18n::tr_format!(
+                "Paint over what to replace, then click Generate. About ${usd} per variation.",
+                usd = format!("{usd_each:.2}")
+            ))
+            .size(11.0)
+            .color(t.text_dim),
         );
         error_box(app, ui, &t, None);
+        earlier_fills(app, ui, &t);
         return;
     };
     let Some(photo) = app.session.active() else { return };
@@ -167,7 +259,9 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
             );
         }
         if requests > u64::from(lcc_engine::genfill::MAX_REQUESTS) {
-            ui.label(RichText::new(crate::i18n::tr("Too many requests: ask for fewer variations or paint a smaller area.")).size(11.0).color(t.caution));
+            ui.label(
+                RichText::new(crate::i18n::tr("Too many requests: ask for fewer variations or paint a smaller area.")).size(11.0).color(t.caution),
+            );
         }
     }
     let running = app.session.genfill.running();
@@ -206,12 +300,14 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
     }
     // the variations of a generated spot, and what to know about it
     if let Some(g) = &sp.generated {
-        if g.variants > 1 {
+        // every result of every generation (Generate Again keeps the earlier, paid ones)
+        let (results, result) = g.results();
+        if results > 1 {
             ui.horizontal(|ui| {
                 if text_button(ui, "genfillPrev", "‹", false).clicked() {
                     let _ = app.run("spot.variation", json!({"index": index, "delta": -1}));
                 }
-                ui.label(RichText::new(crate::i18n::tr_format!("Variation {} of {}", g.variant + 1, g.variants)).color(t.text_label));
+                ui.label(RichText::new(crate::i18n::tr_format!("Variation {} of {}", result + 1, results)).color(t.text_label));
                 if text_button(ui, "genfillNext", "›", false).clicked() {
                     let _ = app.run("spot.variation", json!({"index": index, "delta": 1}));
                 }
@@ -219,10 +315,17 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
         }
         if sp.shown_gen().is_none() {
             ui.label(
-                RichText::new(crate::i18n::tr("The spot was moved or resized since it was generated: the photo shows through until you generate it again."))
-                    .size(11.0)
-                    .color(t.caution),
+                RichText::new(crate::i18n::tr(
+                    "The spot was moved or resized since it was generated, so its fill is hidden. Put Back shows it again.",
+                ))
+                .size(11.0)
+                .color(t.caution),
             );
+            if text_button(ui, "genfillPutBack", crate::i18n::tr("Put Back"), false).clicked()
+                && let Err(e) = app.run("spot.putBack", json!({"index": index}))
+            {
+                app.toast_error(ui.ctx(), e.to_string());
+            }
         } else if app.session.genfill_missing(photo, index) {
             ui.label(
                 RichText::new(crate::i18n::tr(
@@ -233,12 +336,16 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
             );
         } else if g.scale < 0.95 {
             ui.label(
-                RichText::new(crate::i18n::tr_format!("Generated at {}% of the photo's resolution: softer than the rest.", format!("{:.0}", g.scale * 100.0)))
-                    .size(11.0)
-                    .color(t.caution),
+                RichText::new(crate::i18n::tr_format!(
+                    "Generated at {}% of the photo's resolution: softer than the rest.",
+                    format!("{:.0}", g.scale * 100.0)
+                ))
+                .size(11.0)
+                .color(t.caution),
             );
         }
     }
+    earlier_fills(app, ui, &t);
 }
 
 /// A failed generation: what went wrong, Retry (for spot `retry`) and Dismiss. It stays until
@@ -247,7 +354,8 @@ fn error_box(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, retry: Option<(usi
     let Some(e) = last_error(app) else { return };
     egui::Frame::new().stroke(egui::Stroke::new(1.0, t.caution)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        let r = ui.add(egui::Label::new(RichText::new(crate::i18n::tr_format!("Generative Fill failed: {e}", e = e)).size(11.0).color(t.caution)).wrap());
+        let r =
+            ui.add(egui::Label::new(RichText::new(crate::i18n::tr_format!("Generative Fill failed: {e}", e = e)).size(11.0).color(t.caution)).wrap());
         register(ui.ctx(), "genfill:error", r.rect);
         ui.horizontal(|ui| {
             if let Some((index, provider)) = retry
@@ -267,7 +375,10 @@ fn error_box(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, retry: Option<(usi
 fn generate(app: &mut LccApp, ctx: &egui::Context, index: usize, provider: &Value) {
     let pid = provider["id"].as_str().unwrap_or("openai").to_string();
     if provider["configured"] != true {
-        app.toast(ctx, crate::i18n::tr_format!("Add your {} API key in Settings → Generative Fill first.", provider["name"].as_str().unwrap_or_default()));
+        app.toast(
+            ctx,
+            crate::i18n::tr_format!("Add your {} API key in Settings → Generative Fill first.", provider["name"].as_str().unwrap_or_default()),
+        );
         app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "genfill".into() });
         return;
     }
@@ -350,7 +461,10 @@ pub fn consent_body(app: &mut LccApp, ui: &mut egui::Ui, provider: &str, index: 
         ui.label(RichText::new(crate::i18n::tr(e)).color(t.caution));
     }
     if let Some(usd) = plan["usd"].as_f64() {
-        ui.label(RichText::new(crate::i18n::tr_format!("About ${usd}, billed to your {name} account.", usd = format!("{usd:.2}"), name = name)).color(t.text_label));
+        ui.label(
+            RichText::new(crate::i18n::tr_format!("About ${usd}, billed to your {name} account.", usd = format!("{usd:.2}"), name = name))
+                .color(t.text_label),
+        );
     }
     // a warning only when it matters
     if plan["soft"] == true {
@@ -458,7 +572,12 @@ fn provider_card(ui: &mut egui::Ui, t: &Tokens, p: &Value) {
     row(
         ui,
         "Trains on uploads:",
-        crate::i18n::tr(if p["policy"]["trainsByDefault"] == true { "Yes, unless you opt out where the service allows it (see Data policy)" } else { "No" }).to_string(),
+        crate::i18n::tr(if p["policy"]["trainsByDefault"] == true {
+            "Yes, unless you opt out where the service allows it (see Data policy)"
+        } else {
+            "No"
+        })
+        .to_string(),
     );
     if let Some(pv) = p["policy"]["provenance"].as_str().filter(|v| !v.is_empty()) {
         row(ui, "Marks added:", pv.to_string());
@@ -471,7 +590,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         ui,
         t,
         crate::i18n::tr(
-            "Generative Fill uses image services you pay for yourself. Create an API key in your account with the service and paste it here. Keys stay on this computer, in {app}'s settings folder: never in the catalog, XMP sidecars, exports or logs.",
+            "Generative Fill uses image services you pay for yourself. Create an API key in your account with the service and paste it here. Keys stay on this computer, in the app's settings folder: never in the catalog, XMP sidecars, exports or logs.",
         ),
     );
     super::settings::hint(
@@ -504,6 +623,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 || r.ending == Some(crate::text_field::Ending::Return);
             if save {
                 let key = app.ui.genfill.key_input.get(&id).cloned().unwrap_or_default();
+                app.ui.genfill.providers = None;
                 if !key.trim().is_empty() {
                     match app.run("genfill.setKey", json!({"provider": id, "key": key})) {
                         Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("API key saved")),
@@ -515,6 +635,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             }
             if p["keySource"] == "settings" && text_button(ui, &format!("genfillForgetKey-{id}"), crate::i18n::tr("Remove Key"), false).clicked() {
                 let _ = app.run("genfill.setKey", json!({"provider": id, "key": null}));
+                app.ui.genfill.providers = None;
             }
         });
         ui.horizontal(|ui| {
@@ -529,6 +650,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             }
             if p["consented"] == true && text_button(ui, &format!("genfillWithdraw-{id}"), crate::i18n::tr("Withdraw Consent"), false).clicked() {
                 let _ = app.run("genfill.consent", json!({"provider": id, "accept": false}));
+                app.ui.genfill.providers = None;
             }
         });
         if p["policy"]["trainsByDefault"] == true {
@@ -565,7 +687,13 @@ pub fn frame(app: &mut LccApp, ctx: &egui::Context) {
 /// On the photo while a spot is generating: a spinner and "Generating…" over the area, so it is
 /// clear the result is on its way (the photo shows through until it arrives; the outline is the
 /// Remove tool's own). `screen` maps normalized photo coordinates to the screen.
-pub fn canvas(app: &LccApp, ui: &egui::Ui, painter: &egui::Painter, screen: &dyn Fn(lcc_geom::Point) -> egui::Pos2, d: &lcc_develop::DevelopSettings) {
+pub fn canvas(
+    app: &LccApp,
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    screen: &dyn Fn(lcc_geom::Point) -> egui::Pos2,
+    d: &lcc_develop::DevelopSettings,
+) {
     let Some(job) = app.session.genfill.job.as_ref().filter(|_| app.session.genfill.running()) else { return };
     if app.session.active() != Some(job.photo) {
         return;

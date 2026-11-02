@@ -120,6 +120,20 @@ impl PatchSource for PhotoPatches {
     }
 }
 
+/// A session's own folder name (a new generation id).
+#[derive(Clone, Debug)]
+pub struct Scratch(pub String);
+
+impl Default for Scratch {
+    fn default() -> Self {
+        // (no process ids in the web build, nor generative fill)
+        #[cfg(not(target_arch = "wasm32"))]
+        return Scratch(new_id(0));
+        #[cfg(target_arch = "wasm32")]
+        return Scratch("web".into());
+    }
+}
+
 /// What the user agreed to, per provider (`provider id → date`).
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct ConsentFile {
@@ -204,6 +218,8 @@ pub struct GenfillState {
     /// does the same for a whole process). Only loopback addresses are accepted.
     pub mock: Option<String>,
     pub cache: Arc<PatchCache>,
+    /// This session's own folder name for a library that is not on disk ([`Session::genfill_dir`]).
+    pub scratch: Scratch,
     pub job: Option<Arc<Job>>,
     /// The last finished job's warnings or error, for the panel.
     pub last: Option<Result<Generated, String>>,
@@ -753,10 +769,15 @@ impl crate::Session {
     }
 
     /// The folder photo `id`'s patches are kept in: the library's `genfill/<id>`, or (a library
-    /// that is not on disk) a folder in the system's temporary folder.
+    /// that is not on disk) a folder of this session's in the system's temporary folder (photo ids of
+    /// libraries that are not on disk repeat, so their fills must not meet).
     pub fn genfill_dir(&self, id: PhotoId) -> PathBuf {
-        let root =
-            self.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join(DIR)).unwrap_or_else(|| std::env::temp_dir().join("lcc-genfill"));
+        let root = self
+            .library
+            .as_ref()
+            .filter(|l| l.on_disk)
+            .map(|l| l.dir.join(DIR))
+            .unwrap_or_else(|| std::env::temp_dir().join("lcc-genfill").join(&self.genfill.scratch.0));
         root.join(id.0.to_string())
     }
 

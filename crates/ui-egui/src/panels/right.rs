@@ -765,7 +765,10 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
     });
 
+    // with a spot selected the brush sliders edit that spot too, except a spot that shows a generated fill: it
+    // keeps the stroke its paid fill was made for, and the sliders are the next stroke's
     let sel = app.session.active_spot.and_then(|i| d.spots.get(i).map(|sp| (i, sp.clone())));
+    let bound = sel.as_ref().is_some_and(|(_, sp)| sp.shown_gen().is_none());
 
     let plain = |id: &'static str, label: &'static str, min: f64, max: f64, default: f64| lcc_develop::ControlSpec {
         id,
@@ -778,7 +781,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         decimals: 0,
         track: lcc_develop::Track::Plain,
     };
-    let (cur_size, cur_feather, cur_opacity) = if let Some((_, sp)) = &sel {
+    let (cur_size, cur_feather, cur_opacity) = if let Some((_, sp)) = sel.as_ref().filter(|_| bound) {
         (sp.size * 1000.0, sp.feather, sp.opacity)
     } else {
         ((app.ui.remove_size * 1000.0) as f64, app.ui.remove_feather as f64, app.ui.remove_opacity as f64)
@@ -798,7 +801,8 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 _ => app.ui.remove_opacity = v as f32,
             }
         }
-        if let Some((i, _)) = sel {
+        if let Some((i, _)) = sel.as_ref().filter(|_| bound) {
+            let i = *i;
             super::edit::apply_slider_out(app, &spec, out, |app, v| app.run("spot.update", json!({"index": i, key: v / scale})));
         }
     }
