@@ -355,9 +355,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
             crate::widgets::announce_selected(&resp, m.name.clone(), Some(m.id) == app.session.active_mask);
             register(ui.ctx(), format!("mask:{}", m.id), r);
-            if ui.rect_contains_pointer(r) {
-                hovered_row = Some(m.id);
-            }
+            // the mask's own row (name, eye, menu) is where its effect is judged, so the pointer on
+            // it shows no overlay; a component row under it shows the whole mask's
             ui.painter().rect_filled(
                 r,
                 4.0,
@@ -594,6 +593,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         let resp = ui.interact(r, egui::Id::new(("compRow", m.id, i)), Sense::click());
                         crate::widgets::announce_selected(&resp, label.clone(), comp_sel);
                         register(ui.ctx(), format!("component:{i}"), r);
+                        if ui.rect_contains_pointer(r) {
+                            hovered_row = Some(m.id);
+                        }
                         ui.painter().rect_filled(
                             r,
                             4.0,

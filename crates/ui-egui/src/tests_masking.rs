@@ -168,20 +168,20 @@ fn a_mask_shows_its_overlay_by_itself_only_without_settings() {
     let r = h.request("ui.clickWidget", json!({"id": format!("mask:{first}")}), T);
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.session.active_mask, Some(first));
-    assert!(shown(&h), "the pointer on the picked row shows what it selects");
-    pointer(&mut h, json!([{"kind": "move", "x": 0.1, "y": 0.9}])); // the pointer leaves the list
-    assert_eq!(h.app.ui.mask_hover, None);
+    // (the pointer on the mask's own row shows no overlay: there its effect is judged)
     rest(&mut h);
     assert!(!shown(&h), "picking a mask with settings shows its effect");
+    pointer(&mut h, json!([{"kind": "move", "x": 0.1, "y": 0.9}])); // the pointer leaves the list
+    assert_eq!(h.app.ui.mask_hover, None);
     for (cmd, params) in
         [("mask.addComponent", json!({"kind": "radial", "op": "add", "center": [0.6, 0.5], "rx": 0.1, "ry": 0.1})), ("mask.duplicate", json!({}))]
     {
         exec(&mut h, cmd, params);
         assert!(!shown(&h), "{cmd} on a mask with settings shows its effect");
     }
-    // hovering a mask's row shows it
+    // the pointer on one of its component rows (or its pin) shows it
     h.app.ui.mask_hover = Some(first);
-    assert!(shown(&h), "hovering the row shows the overlay");
+    assert!(shown(&h), "hovering a component row shows the overlay");
     h.app.ui.mask_hover = None;
     // O shows it to stay, through edits; a slider at work still hides it
     exec(&mut h, "view.maskOverlay", json!({"show": true}));
@@ -2728,4 +2728,28 @@ fn the_panel_sets_the_next_masks_settings_with_no_mask_selected() {
     exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.6}}));
     exec(&mut h, "mask.add", json!({"kind": "radial"}));
     assert_eq!(develop(&h).masks[0].adjust.exposure, 0.6);
+}
+
+/// The pointer on a mask's own row shows no overlay (that row is where its effect is judged with
+/// the eye); on one of its component rows it shows the whole mask's.
+#[test]
+fn a_masks_own_row_shows_no_overlay_a_component_row_does() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5]}));
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 1.0}}));
+    let mid = h.app.session.active_mask.expect("the mask");
+    h.step();
+    let at = |h: &Headless, id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("{id}"));
+    let row = at(&h, &format!("mask:{mid}"));
+    let r = h.request("ui.move", json!({"x": row.x, "y": row.y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.mask_hover, None, "the mask's own row: no overlay");
+    let comp = at(&h, "component:0");
+    let r = h.request("ui.move", json!({"x": comp.x, "y": comp.y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.mask_hover, Some(mid), "a component row shows the whole mask");
 }
