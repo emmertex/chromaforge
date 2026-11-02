@@ -608,9 +608,10 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     });
 }
 
-const REMOVE_MODES: [(Icon, &str, &str, &str); 4] = [
+const REMOVE_MODES: [(Icon, &str, &str, &str); 5] = [
     (Icon::Eraser, "Remove", "remove", "Heal with automatically chosen source"),
     (Icon::Sparkle, "Content-Aware", "fill", "Multi-scale synthesized fill"),
+    (Icon::Cloud, "Generative", "generate", "Filled by an online image model with your own API key"),
     (Icon::Bandage, "Heal", "heal", "Blend source texture with target tone"),
     (Icon::Stamp, "Clone", "clone", "Exact 1:1 pixel copy"),
 ];
@@ -749,6 +750,30 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         if let Some((i, _)) = sel {
             super::edit::apply_slider_out(app, &spec, out, |app, v| app.run("spot.update", json!({"index": i, key: v / scale})));
         }
+    }
+    // generative fill: for a generative spot, or with the Generative tool
+    let generative = sel.as_ref().is_some_and(|(_, sp)| sp.mode == lcc_develop::SpotMode::Generate);
+    if generative || (sel.is_none() && app.ui.tool == "generate") {
+        divider(ui);
+        padded(ui, |ui| super::genfill::remove_section(app, ui, sel.clone().filter(|_| generative)));
+    }
+    // a mask (an Object selection, a brushed area) can become a spot
+    if let Some(mid) = app.session.active_mask.filter(|m| d.masks.iter().any(|x| x.id == *m)) {
+        padded(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if text_button(ui, "spotFromMaskFill", crate::i18n::tr("Fill Selected Mask"), false)
+                    .on_hover_text(crate::i18n::tr(
+                        "Remove what the selected mask covers (an Object selection made with a click, a brushed area) with a content-aware fill",
+                    ))
+                    .clicked()
+                {
+                    let _ = app.run("spot.fromMask", json!({"mask": mid, "mode": "fill"}));
+                }
+                if text_button(ui, "spotFromMaskGenerate", crate::i18n::tr("Generate into Selected Mask"), false).clicked() {
+                    let _ = app.run("spot.fromMask", json!({"mask": mid, "mode": "generate"}));
+                }
+            });
+        });
     }
 
     // --- Dedicated Selected Spot Section ---

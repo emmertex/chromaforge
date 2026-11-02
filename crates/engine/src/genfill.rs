@@ -786,6 +786,20 @@ impl crate::Session {
         preview_crop(&src, &small).ok_or_else(|| "nothing to send".into())
     }
 
+    /// [`Session::genfill_preview`] by provider id (an error where generative fill isn't available).
+    pub fn genfill_preview_by_id(&mut self, id: PhotoId, index: usize, provider: &str) -> Result<(usize, usize, Vec<u8>, Vec<u8>), String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let pr = lcc_genfill::cloud::Provider::from_id(provider).ok_or("unknown provider")?;
+            self.genfill_preview(id, index, pr)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (id, index, provider);
+            Err("generative fill is not available in the web version".into())
+        }
+    }
+
     /// Accept (or withdraw) `provider`'s terms.
     pub fn genfill_consent(&mut self, provider: &str, accept: bool) -> Result<(), String> {
         let today: String = (self.clock)().chars().take(10).collect();

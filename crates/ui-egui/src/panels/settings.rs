@@ -37,6 +37,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("connections", "Connections"),
     ("sync", "Sync"),
     ("shortcuts", "Shortcuts"),
+    ("genfill", "Generative Fill"),
 ];
 
 /// The room Settings ▸ Slideshow wants: its settings column, the gap and the live preview.
@@ -103,6 +104,7 @@ pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &st
         "slideshow" => slideshow_tab(app, ui, t),
         "faces" => super::faces::settings_tab(app, ui, t),
         "denoise" => super::denoise::settings_tab(app, ui, t),
+        "genfill" => super::genfill::settings_tab(app, ui, t),
         "shortcuts" => shortcuts_tab(app, ui, t),
         #[cfg(not(target_arch = "wasm32"))]
         "connections" => super::connections::settings_tab(app, ui, t),

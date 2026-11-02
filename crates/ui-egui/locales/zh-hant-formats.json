@@ -1,7 +1,6 @@
 {
   " · aesthetic {:.1}": " · 審美 {:.1}",
   " · eyes {:.0}%": " · 睜眼 {:.0}%",
-
   " · {skipped} skipped (file exists)": " · 已略過 {skipped} 個（檔案已存在）",
   " · {} duplicate{} skipped": " · 已略過 {} 張重複照片{:.0}",
   " · {} failed: {}": " · {} 個失敗：{}",
@@ -316,5 +315,21 @@
   "{n} done": "完成 {n} 張",
   ", {n} failed": "，失敗 {n} 張",
   "{n} failed": "失敗 {n} 張",
-  "Show each photo ({n})": "顯示各張照片（{n}）"
+  "Show each photo ({n})": "顯示各張照片（{n}）",
+  "About ${usd} · {requests} request(s), billed to your {name} account": "約 ${usd} · {requests} 次請求，由你的 {name} 帳戶計費",
+  "Generating… {} of {}": "正在生成… {} / {}",
+  "Variation {} of {}": "變體 {} / {}",
+  "Generated at {}% of the photo's resolution: softer than the rest.": "以照片解析度的 {}% 生成：比其他部分更柔和。",
+  "Add your {} API key in Settings ▸ Generative Fill first.": "請先在 設定 → 生成式填充 中新增你的 {} API 金鑰。",
+  "{app} will upload a crop of this photo to {name}, using your API key. This is the first time you use {name}.": "{app} 將使用你的 API 金鑰把這張照片的裁切影像上傳到 {name}。這是你第一次使用 {name}。",
+  "Uploaded: only this {} × {} px crop (red: the area to fill) and its mask. Not the whole photo, not its metadata.": "上傳的只有這塊 {} × {} 像素的裁切影像（紅色：要填充的區域）及其遮色片。不包括整張照片，也不包括其中繼資料。",
+  "Uploaded: {} crops along the area (red: the area to fill) and their masks. Not the whole photo, not its metadata.": "上傳的是沿該區域的 {} 塊裁切影像（紅色：要填充的區域）及其遮色片。不包括整張照片，也不包括其中繼資料。",
+  "What {name} does with it:": "{name} 如何處理它：",
+  "Read {name}'s policy": "閱讀 {name} 的政策",
+  "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "費用：{} 次請求約 ${usd}，由 {name} 向你的帳戶計費。",
+  "Key saved ({})": "金鑰已儲存（{}）",
+  "Key from the environment variable {}": "來自環境變數 {} 的金鑰",
+  "{name} API key": "{name} API 金鑰",
+  "Generated {} variations": "已生成 {} 個變體",
+  "Generative Fill failed: {e}": "生成式填充失敗：{e}"
 }

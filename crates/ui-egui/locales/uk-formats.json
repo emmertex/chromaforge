@@ -315,5 +315,21 @@
   "{n} done": "готово: {n}",
   ", {n} failed": ", з помилкою: {n}",
   "{n} failed": "з помилкою: {n}",
-  "Show each photo ({n})": "Показати окремі фото ({n})"
+  "Show each photo ({n})": "Показати окремі фото ({n})",
+  "About ${usd} · {requests} request(s), billed to your {name} account": "Близько ${usd} · запитів: {requests}, оплата з вашого облікового запису {name}",
+  "Generating… {} of {}": "Створення… {} з {}",
+  "Variation {} of {}": "Варіант {} з {}",
+  "Generated at {}% of the photo's resolution: softer than the rest.": "Створено при {}% роздільності фото: м’якше за решту знімка.",
+  "Add your {} API key in Settings ▸ Generative Fill first.": "Спершу додайте API-ключ {} у «Налаштування → Генеративне заповнення».",
+  "{app} will upload a crop of this photo to {name}, using your API key. This is the first time you use {name}.": "{app} вивантажить фрагмент цього фото до {name} із вашим API-ключем. Ви використовуєте {name} уперше.",
+  "Uploaded: only this {} × {} px crop (red: the area to fill) and its mask. Not the whole photo, not its metadata.": "Вивантажується лише цей фрагмент {} × {} пкс (червоним — ділянка заповнення) і його маска. Не все фото й не його метадані.",
+  "Uploaded: {} crops along the area (red: the area to fill) and their masks. Not the whole photo, not its metadata.": "Вивантажується фрагментів уздовж ділянки: {} (червоним — ділянка заповнення) і їхні маски. Не все фото й не його метадані.",
+  "What {name} does with it:": "Що {name} робить із ним:",
+  "Read {name}'s policy": "Політика {name}",
+  "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "Вартість: близько ${usd} за запити ({}), оплата {name} з вашого облікового запису.",
+  "Key saved ({})": "Ключ збережено ({})",
+  "Key from the environment variable {}": "Ключ зі змінної середовища {}",
+  "{name} API key": "API-ключ {name}",
+  "Generated {} variations": "Створено варіантів: {}",
+  "Generative Fill failed: {e}": "Генеративне заповнення не вдалося: {e}"
 }

@@ -4641,6 +4641,8 @@ dependencies = [
  "lcc-colourfit",
  "lcc-denoise",
  "lcc-engine",
+ "lcc-genfill",
+ "lcc-inpaint",
  "lcc-mcp",
  "lcc-merge",
  "lcc-raster",

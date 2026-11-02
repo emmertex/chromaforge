@@ -316,5 +316,21 @@
   "{n} done": "{n} listas",
   ", {n} failed": ", {n} con error",
   "{n} failed": "{n} con error",
-  "Show each photo ({n})": "Mostrar cada foto ({n})"
+  "Show each photo ({n})": "Mostrar cada foto ({n})",
+  "About ${usd} · {requests} request(s), billed to your {name} account": "Unos ${usd} · {requests} solicitud(es), facturado a tu cuenta de {name}",
+  "Generating… {} of {}": "Generando… {} de {}",
+  "Variation {} of {}": "Variación {} de {}",
+  "Generated at {}% of the photo's resolution: softer than the rest.": "Generado al {}% de la resolución de la foto: más suave que el resto.",
+  "Add your {} API key in Settings ▸ Generative Fill first.": "Primero añade tu clave de API de {} en Ajustes → Relleno generativo.",
+  "{app} will upload a crop of this photo to {name}, using your API key. This is the first time you use {name}.": "{app} subirá un recorte de esta foto a {name} con tu clave de API. Es la primera vez que usas {name}.",
+  "Uploaded: only this {} × {} px crop (red: the area to fill) and its mask. Not the whole photo, not its metadata.": "Se sube solo este recorte de {} × {} px (en rojo: la zona a rellenar) y su máscara. No la foto completa ni sus metadatos.",
+  "Uploaded: {} crops along the area (red: the area to fill) and their masks. Not the whole photo, not its metadata.": "Se suben {} recortes a lo largo de la zona (en rojo: la zona a rellenar) y sus máscaras. No la foto completa ni sus metadatos.",
+  "What {name} does with it:": "Qué hace {name} con él:",
+  "Read {name}'s policy": "Leer la política de {name}",
+  "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "Coste: unos ${usd} por {} solicitud(es), facturado por {name} a tu cuenta.",
+  "Key saved ({})": "Clave guardada ({})",
+  "Key from the environment variable {}": "Clave de la variable de entorno {}",
+  "{name} API key": "Clave de API de {name}",
+  "Generated {} variations": "{} variaciones generadas",
+  "Generative Fill failed: {e}": "El relleno generativo falló: {e}"
 }

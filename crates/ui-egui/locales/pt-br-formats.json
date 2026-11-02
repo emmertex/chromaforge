@@ -315,5 +315,21 @@
   "{n} done": "{n} prontas",
   ", {n} failed": ", {n} com falha",
   "{n} failed": "{n} com falha",
-  "Show each photo ({n})": "Mostrar cada foto ({n})"
+  "Show each photo ({n})": "Mostrar cada foto ({n})",
+  "About ${usd} · {requests} request(s), billed to your {name} account": "Cerca de ${usd} · {requests} solicitação(ões), cobrado na sua conta {name}",
+  "Generating… {} of {}": "Gerando… {} de {}",
+  "Variation {} of {}": "Variação {} de {}",
+  "Generated at {}% of the photo's resolution: softer than the rest.": "Gerado com {}% da resolução da foto: mais suave que o restante.",
+  "Add your {} API key in Settings ▸ Generative Fill first.": "Primeiro adicione sua chave de API {} em Configurações → Preenchimento generativo.",
+  "{app} will upload a crop of this photo to {name}, using your API key. This is the first time you use {name}.": "O {app} enviará um recorte desta foto para {name} usando sua chave de API. É a primeira vez que você usa {name}.",
+  "Uploaded: only this {} × {} px crop (red: the area to fill) and its mask. Not the whole photo, not its metadata.": "Enviado: apenas este recorte de {} × {} px (em vermelho: a área a preencher) e sua máscara. Não a foto inteira, nem seus metadados.",
+  "Uploaded: {} crops along the area (red: the area to fill) and their masks. Not the whole photo, not its metadata.": "Enviados: {} recortes ao longo da área (em vermelho: a área a preencher) e suas máscaras. Não a foto inteira, nem seus metadados.",
+  "What {name} does with it:": "O que {name} faz com ele:",
+  "Read {name}'s policy": "Ler a política de {name}",
+  "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "Custo: cerca de ${usd} por {} solicitação(ões), cobrado por {name} na sua conta.",
+  "Key saved ({})": "Chave salva ({})",
+  "Key from the environment variable {}": "Chave da variável de ambiente {}",
+  "{name} API key": "Chave de API {name}",
+  "Generated {} variations": "{} variações geradas",
+  "Generative Fill failed: {e}": "O preenchimento generativo falhou: {e}"
 }

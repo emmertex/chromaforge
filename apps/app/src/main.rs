@@ -876,7 +876,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
 /// A session with no library yet (one opens later), with the folders face models and slideshow
 /// templates are kept in.
 fn unopened_session() -> Session {
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_connections().with_system_clock();
+    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_default_connections().with_system_clock();
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
     s.lens_db = lcc_engine::lens_download::LensSettings::load(lcc_engine::config::config_dir());
     s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
@@ -888,7 +888,7 @@ fn unopened_session() -> Session {
 /// the window lists the recent ones.
 fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool) -> (Session, Option<LibraryProblem>) {
     let (mut s, problem) = match launch {
-        Launch::Ask => (Session::new().with_fs().with_default_denoise_models().with_system_clock(), None),
+        Launch::Ask => (Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock(), None),
         Launch::Open { dir, .. } => open_library_session(in_memory, dir.clone(), seed_demo),
     };
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
@@ -910,18 +910,19 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
             if seed_demo { Session::with_demo() } else { Session::new() }
                 .with_fs()
                 .with_default_denoise_models()
+                .with_default_genfill()
                 .with_default_connections()
                 .with_system_clock(),
             None,
         );
     }
-    let unopened = || Session::new().with_fs().with_default_denoise_models().with_default_connections().with_system_clock();
+    let unopened = || Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_default_connections().with_system_clock();
     let Some(dir) = dir else {
         log::warn!("no library location (set --library or {})", lcc_brand::env_var("LIBRARY"));
         return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the library in. Choose a folder for it.")));
     };
     let t0 = std::time::Instant::now();
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_connections().with_system_clock();
+    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_default_connections().with_system_clock();
     match s.open_library(&dir, seed_demo) {
         Ok(r) => {
             let (replayed, torn) = (r.replayed, r.torn_bytes);

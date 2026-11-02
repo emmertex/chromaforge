@@ -315,5 +315,21 @@
   "{n} done": "{n} terminées",
   ", {n} failed": ", {n} en échec",
   "{n} failed": "{n} en échec",
-  "Show each photo ({n})": "Afficher chaque photo ({n})"
+  "Show each photo ({n})": "Afficher chaque photo ({n})",
+  "About ${usd} · {requests} request(s), billed to your {name} account": "Environ ${usd} · {requests} requête(s), facturé sur votre compte {name}",
+  "Generating… {} of {}": "Génération… {} sur {}",
+  "Variation {} of {}": "Variante {} sur {}",
+  "Generated at {}% of the photo's resolution: softer than the rest.": "Généré à {}% de la résolution de la photo : plus doux que le reste.",
+  "Add your {} API key in Settings ▸ Generative Fill first.": "Ajoutez d’abord votre clé API {} dans Réglages → Remplissage génératif.",
+  "{app} will upload a crop of this photo to {name}, using your API key. This is the first time you use {name}.": "{app} va envoyer un recadrage de cette photo à {name} avec votre clé API. C’est la première fois que vous utilisez {name}.",
+  "Uploaded: only this {} × {} px crop (red: the area to fill) and its mask. Not the whole photo, not its metadata.": "Envoyé : seulement ce recadrage de {} × {} px (en rouge : la zone à remplir) et son masque. Ni la photo entière, ni ses métadonnées.",
+  "Uploaded: {} crops along the area (red: the area to fill) and their masks. Not the whole photo, not its metadata.": "Envoyés : {} recadrages le long de la zone (en rouge : la zone à remplir) et leurs masques. Ni la photo entière, ni ses métadonnées.",
+  "What {name} does with it:": "Ce que {name} en fait :",
+  "Read {name}'s policy": "Lire la politique de {name}",
+  "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "Coût : environ ${usd} pour {} requête(s), facturé par {name} sur votre compte.",
+  "Key saved ({})": "Clé enregistrée ({})",
+  "Key from the environment variable {}": "Clé issue de la variable d’environnement {}",
+  "{name} API key": "Clé API {name}",
+  "Generated {} variations": "{} variantes générées",
+  "Generative Fill failed: {e}": "Échec du remplissage génératif : {e}"
 }

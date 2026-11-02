@@ -1,7 +1,6 @@
 {
   " · aesthetic {:.1}": " · 審美 {:.1}",
   " · eyes {:.0}%": " · 開眼 {:.0}%",
-
   " · {skipped} skipped (file exists)": "・{skipped}件は同名ファイルのためスキップ",
   " · {} duplicate{} skipped": "・重複{}枚をスキップ{:.0}",
   " · {} failed: {}": "・{}件失敗：{}",
@@ -316,5 +315,21 @@
   "{n} done": "{n}件完了",
   ", {n} failed": "、{n}件失敗",
   "{n} failed": "{n}件失敗",
-  "Show each photo ({n})": "各写真を表示（{n}）"
+  "Show each photo ({n})": "各写真を表示（{n}）",
+  "About ${usd} · {requests} request(s), billed to your {name} account": "約 ${usd}・{requests} 回のリクエスト、{name} アカウントに請求",
+  "Generating… {} of {}": "生成中… {} / {}",
+  "Variation {} of {}": "バリエーション {} / {}",
+  "Generated at {}% of the photo's resolution: softer than the rest.": "写真の解像度の {}% で生成：ほかの部分よりやわらかくなります。",
+  "Add your {} API key in Settings ▸ Generative Fill first.": "まず 設定 → 生成塗りつぶし で {} の API キーを追加してください。",
+  "{app} will upload a crop of this photo to {name}, using your API key. This is the first time you use {name}.": "{app} はあなたの API キーで、この写真の切り抜きを {name} にアップロードします。{name} を使うのは初めてです。",
+  "Uploaded: only this {} × {} px crop (red: the area to fill) and its mask. Not the whole photo, not its metadata.": "アップロードされるのは、この {} × {} px の切り抜き（赤：塗りつぶす範囲）とそのマスクだけです。写真全体やメタデータは送信されません。",
+  "Uploaded: {} crops along the area (red: the area to fill) and their masks. Not the whole photo, not its metadata.": "アップロードされるのは、範囲に沿った {} 枚の切り抜き（赤：塗りつぶす範囲）とそのマスクです。写真全体やメタデータは送信されません。",
+  "What {name} does with it:": "{name} での扱い：",
+  "Read {name}'s policy": "{name} のポリシーを読む",
+  "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "費用：{} 回のリクエストで約 ${usd}、{name} からあなたのアカウントに請求されます。",
+  "Key saved ({})": "キー保存済み（{}）",
+  "Key from the environment variable {}": "環境変数 {} のキー",
+  "{name} API key": "{name} の API キー",
+  "Generated {} variations": "{} 個のバリエーションを生成しました",
+  "Generative Fill failed: {e}": "生成塗りつぶしに失敗しました：{e}"
 }

@@ -832,6 +832,8 @@ impl LccApp {
         }
         // AI mask requests run on the model's worker; frames apply their results (never wait)
         session.segmenter.background = true;
+        // generative fills run on their own thread; frames apply them
+        session.genfill.background = true;
         Self {
             session,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2143,6 +2145,7 @@ impl LccApp {
         // …and the histogram sets this while the pointer rests on a clipping indicator
         self.clipping_preview = false;
         self.ai_mask_detail(&ctx);
+        crate::panels::genfill::frame(self, &ctx);
         self.place_names_outcome(&ctx);
         if self.ui.fullscreen {
             // full-screen preview: the photo alone on black
