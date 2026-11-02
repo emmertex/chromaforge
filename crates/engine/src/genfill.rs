@@ -240,6 +240,20 @@ pub struct Limits {
     pub max_side: usize,
     /// Fixed sizes (the crop is cut to the nearest aspect), or none.
     pub sizes: &'static [(u32, u32)],
+    /// A large area may go as up to this many tiles, each at a higher resolution than one crop
+    /// of the whole area would get (0: always one crop, the cheapest and softest).
+    pub tiles: usize,
+}
+
+/// Most tiles a large area is split into for a sharper result ([`Limits::tiles`]).
+pub const SHARP_TILES: usize = 8;
+
+impl Limits {
+    /// `provider`'s limits; `sharp`: allow [`SHARP_TILES`] tiles for a large area.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn for_provider(provider: lcc_genfill::cloud::Provider, sharp: bool) -> Limits {
+        Limits { max_side: provider.info().max_side as usize, sizes: provider.info().sizes, tiles: if sharp { SHARP_TILES } else { 0 } }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -375,6 +389,52 @@ pub fn plan(
     let (cw, ch) = (((sw as f64 / k).ceil() as usize).min(src_w), ((sh as f64 / k).ceil() as usize).min(src_h));
     let crop = crop_around(cw, ch, cx, cy);
     let scale = (sw as f64 / (crop[2] - crop[0]) as f64).min(sh as f64 / (crop[3] - crop[1]) as f64).min(1.0);
+    // a large area: tiles at a higher resolution, when that is clearly sharper (each tile sees the
+    // ones before it filled, so the area is built outward from its edge)
+    if lim.tiles > 1 && scale < 0.5 {
+        let near_hole =
+            |b: [usize; 4]| dabs.iter().any(|(x, y, r)| *x + r > b[0] as f64 && *x - r < b[2] as f64 && *y + r > b[1] as f64 && *y - r < b[3] as f64);
+        // the cores cover the hole and the part of its feather a result is pasted into
+        let grow = r + feather + ring * 0.5 + 2.0;
+        let (mut hx0, mut hy0, mut hx1, mut hy1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for (x, y, _) in &dabs {
+            (hx0, hy0, hx1, hy1) = (hx0.min(x - grow), hy0.min(y - grow), hx1.max(x + grow), hy1.max(y + grow));
+        }
+        let area = [clampx(hx0.floor()).max(rect[0]), clampy(hy0.floor()).max(rect[1]), clampx(hx1.ceil()).min(rect[2]), clampy(hy1.ceil()).min(rect[3])];
+        // tiles of the provider's size nearest the area's shape
+        let tile = send_for(area[2].saturating_sub(area[0]).max(1), area[3].saturating_sub(area[1]).max(1));
+        for s in [1.0, 0.85, 0.7, 0.6, 0.5, 0.42, 0.35, 0.3] {
+            if s < scale * 1.5 {
+                break;
+            }
+            let (tw, th) = (((tile.0 as f64 / s) as usize).min(src_w), ((tile.1 as f64 / s) as usize).min(src_h));
+            let (mx, my) = (tw / 8, th / 8);
+            let (stx, sty) = ((tw - 2 * mx).max(1), (th - 2 * my).max(1));
+            let mut tiles = Vec::new();
+            let mut ty = area[1];
+            while ty < area[3] && tiles.len() <= lim.tiles {
+                let mut tx = area[0];
+                while tx < area[2] && tiles.len() <= lim.tiles {
+                    let core = [tx, ty, (tx + stx).min(area[2]), (ty + sty).min(area[3])];
+                    if near_hole(core) {
+                        let crop = crop_around(tw, th, (core[0] + core[2]) as f64 / 2.0, (core[1] + core[3]) as f64 / 2.0);
+                        let send = if lim.sizes.is_empty() {
+                            (((crop[2] - crop[0]) as f64 * s).round().max(1.0) as usize, ((crop[3] - crop[1]) as f64 * s).round().max(1.0) as usize)
+                        } else {
+                            tile
+                        };
+                        tiles.push(Tile { crop, send, core });
+                    }
+                    tx += stx;
+                }
+                ty += sty;
+            }
+            if !tiles.is_empty() && tiles.len() <= lim.tiles {
+                let s = tiles.iter().map(|t| (t.send.0 as f64 / (t.crop[2] - t.crop[0]) as f64).min(t.send.1 as f64 / (t.crop[3] - t.crop[1]) as f64)).fold(1.0, f64::min);
+                return Ok(Plan { src_w, src_h, dabs, feather, ring, opacity: (spot.opacity / 100.0).clamp(0.0, 1.0) as f32, rect, tiles, scale: s.min(1.0) });
+            }
+        }
+    }
     Ok(Plan {
         src_w,
         src_h,
@@ -599,6 +659,8 @@ pub struct Work {
     pub header: lcc_pipeline::SourceInfo,
     pub prompt: String,
     pub variations: u32,
+    /// Tiles for a large area ([`Limits::tiles`]).
+    pub sharp: bool,
     pub dir: PathBuf,
     pub id: String,
 }
@@ -611,7 +673,7 @@ pub fn run(w: &Work, cancel: &AtomicBool, cache: &PatchCache, progress: &dyn Fn(
     let source = w.source.load_source()?;
     let src = source.image.clone();
     let info = source.info_or(w.header.clone());
-    let lim = Limits { max_side: w.provider.info().max_side as usize, sizes: w.provider.info().sizes };
+    let lim = Limits::for_provider(w.provider, w.sharp);
     let p = plan(&w.spot, &w.settings, info.lens.as_ref(), src.width, src.height, lim)?;
     let remove = w.prompt.trim().is_empty();
     let n = w.variations.clamp(1, MAX_VARIATIONS);
@@ -757,13 +819,14 @@ impl crate::Session {
         id: PhotoId,
         index: usize,
         provider: lcc_genfill::cloud::Provider,
+        sharp: bool,
     ) -> Result<(usize, usize, Vec<u8>, Vec<u8>), String> {
         let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
         let spot = p.develop.spots.get(index).cloned().ok_or("no such spot")?;
         let src = self.source_now(id, crate::media::SourceLevel::Preview)?;
         // the native plan, scaled to this source (so the framing is the one that will be sent)
         let (nw, nh) = (p.width.max(1) as usize, p.height.max(1) as usize);
-        let lim = Limits { max_side: provider.info().max_side as usize, sizes: provider.info().sizes };
+        let lim = Limits::for_provider(provider, sharp);
         let native = plan(&spot, &p.develop, p.embedded_lens.as_deref(), nw, nh, lim)?;
         let k = src.width as f64 / nw as f64;
         let sc = |v: usize, max: usize| ((v as f64 * k).round() as usize).min(max);
@@ -793,15 +856,15 @@ impl crate::Session {
     }
 
     /// [`Session::genfill_preview`] by provider id (an error where generative fill isn't available).
-    pub fn genfill_preview_by_id(&mut self, id: PhotoId, index: usize, provider: &str) -> Result<(usize, usize, Vec<u8>, Vec<u8>), String> {
+    pub fn genfill_preview_by_id(&mut self, id: PhotoId, index: usize, provider: &str, sharp: bool) -> Result<(usize, usize, Vec<u8>, Vec<u8>), String> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let pr = lcc_genfill::cloud::Provider::from_id(provider).ok_or("unknown provider")?;
-            self.genfill_preview(id, index, pr)
+            self.genfill_preview(id, index, pr, sharp)
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (id, index, provider);
+            let _ = (id, index, provider, sharp);
             Err("generative fill is not available in the web version".into())
         }
     }
@@ -822,6 +885,7 @@ impl crate::Session {
         provider: lcc_genfill::cloud::Provider,
         prompt: &str,
         variations: u32,
+        sharp: bool,
     ) -> Result<Option<Generated>, String> {
         use crate::activity::Cancel;
         let pid = provider.info().id;
@@ -853,6 +917,7 @@ impl crate::Session {
             header: crate::media::source_info(&p),
             prompt: prompt.trim().to_string(),
             variations: variations.clamp(1, MAX_VARIATIONS),
+            sharp,
             dir: self.genfill_dir(id),
             id: new_id(id.0),
         };
@@ -960,8 +1025,8 @@ mod tests {
         Spot { mode: SpotMode::Generate, points: vec![Point::new(x, y)], size, ..Default::default() }
     }
 
-    const OPENAI: Limits = Limits { max_side: 1536, sizes: &[(1024, 1024), (1536, 1024), (1024, 1536)] };
-    const FREE: Limits = Limits { max_side: 2048, sizes: &[] };
+    const OPENAI: Limits = Limits { max_side: 1536, sizes: &[(1024, 1024), (1536, 1024), (1024, 1536)], tiles: 0 };
+    const FREE: Limits = Limits { max_side: 2048, sizes: &[], tiles: 0 };
 
     #[test]
     fn a_small_hole_is_sent_at_native_size_with_context() {
@@ -993,6 +1058,31 @@ mod tests {
         for (x, y, _) in &w.dabs {
             assert!(w.tiles.iter().any(|t| (t.core[0] as f64..t.core[2] as f64).contains(x) && (t.core[1] as f64..t.core[3] as f64).contains(y)));
         }
+    }
+
+    /// A large area (the 20 % case from the first real test: people painted out of a portrait)
+    /// goes as a few tiles at a much higher resolution when tiles are allowed, every dab inside a
+    /// tile's core; without them, one soft crop.
+    #[test]
+    fn a_large_area_goes_as_sharper_tiles_when_allowed() {
+        let s = DevelopSettings::default();
+        let big = Spot { points: vec![Point::new(0.45, 0.4), Point::new(0.5, 0.5), Point::new(0.55, 0.6)], ..spot(0.0, 0.0, 0.09) };
+        let soft = plan(&big, &s, None, 5464, 8192, OPENAI).unwrap();
+        assert_eq!(soft.tiles.len(), 1);
+        assert!(soft.scale < 0.35, "{}", soft.scale);
+        let sharp = plan(&big, &s, None, 5464, 8192, Limits { tiles: SHARP_TILES, ..OPENAI }).unwrap();
+        assert!(sharp.tiles.len() > 1 && sharp.tiles.len() <= SHARP_TILES, "{}", sharp.tiles.len());
+        assert!(sharp.scale >= soft.scale * 1.5, "{} vs {}", sharp.scale, soft.scale);
+        for t in &sharp.tiles {
+            assert!(matches!(t.send, (1024, 1024) | (1536, 1024) | (1024, 1536)), "{:?}", t.send);
+            assert!(t.crop[2] <= 5464 && t.crop[3] <= 8192);
+        }
+        for (x, y, _) in &sharp.dabs {
+            assert!(sharp.tiles.iter().any(|t| (t.core[0] as f64..t.core[2] as f64).contains(x) && (t.core[1] as f64..t.core[3] as f64).contains(y)));
+        }
+        // a small hole is unaffected
+        let small = plan(&spot(0.5, 0.5, 0.02), &s, None, 6000, 4000, Limits { tiles: SHARP_TILES, ..OPENAI }).unwrap();
+        assert_eq!(small.tiles.len(), 1);
     }
 
     #[test]
