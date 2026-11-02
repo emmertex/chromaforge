@@ -320,5 +320,6 @@
   ", {n} failed": ", {n} ვერ შესრულდა",
   "{n} failed": "{n} ვერ შესრულდა",
   "Show each photo ({n})": "თითოეული ფოტოს ჩვენება ({n})",
-  "Adjustments: {n}": "კორექციები: {n}"
+  "Adjustments: {n}": "კორექციები: {n}",
+  "Finding “{text}”…": "ვეძებ „{text}“…"
 }

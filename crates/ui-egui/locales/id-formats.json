@@ -312,5 +312,6 @@
   "{n} done": "{n} selesai",
   ", {n} failed": ", {n} gagal",
   "{n} failed": "{n} gagal",
-  "Show each photo ({n})": "Tampilkan setiap foto ({n})"
+  "Show each photo ({n})": "Tampilkan setiap foto ({n})",
+  "Finding “{text}”…": "Mencari “{text}”…"
 }

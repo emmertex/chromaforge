@@ -311,5 +311,6 @@
   "{n} done": "{n} klara",
   ", {n} failed": ", {n} misslyckades",
   "{n} failed": "{n} misslyckades",
-  "Show each photo ({n})": "Visa varje foto ({n})"
+  "Show each photo ({n})": "Visa varje foto ({n})",
+  "Finding “{text}”…": "Söker ”{text}”…"
 }

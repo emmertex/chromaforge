@@ -320,5 +320,6 @@
   ", {n} failed": ", selhalo: {n}",
   "{n} failed": "selhalo: {n}",
   "Show each photo ({n})": "Zobrazit jednotlivé fotografie ({n})",
-  "Adjustments: {n}": "Úpravy: {n}"
+  "Adjustments: {n}": "Úpravy: {n}",
+  "Finding “{text}”…": "Hledám „{text}“…"
 }

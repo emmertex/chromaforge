@@ -320,5 +320,6 @@
   ", {n} failed": ", nieudane: {n}",
   "{n} failed": "nieudane: {n}",
   "Show each photo ({n})": "Pokaż poszczególne zdjęcia ({n})",
-  "Adjustments: {n}": "Korekty: {n}"
+  "Adjustments: {n}": "Korekty: {n}",
+  "Finding “{text}”…": "Szukam „{text}”…"
 }

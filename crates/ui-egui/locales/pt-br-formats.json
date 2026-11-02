@@ -315,5 +315,6 @@
   "{n} done": "{n} prontas",
   ", {n} failed": ", {n} com falha",
   "{n} failed": "{n} com falha",
-  "Show each photo ({n})": "Mostrar cada foto ({n})"
+  "Show each photo ({n})": "Mostrar cada foto ({n})",
+  "Finding “{text}”…": "Procurando “{text}”…"
 }

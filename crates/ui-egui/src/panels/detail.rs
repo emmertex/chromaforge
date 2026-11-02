@@ -1552,6 +1552,23 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     crate::space_hand::interact(app, ui, canvas, (main_area, img_rect), split.then(|| (areas[0], before_img)));
     // drawn and hit-tested above the loupe and its tools: clicks on it pan
     let nav = navigator(app, ui, canvas, img_rect, id);
+    // an AI mask on its way: what is being found, on the photo, with Cancel (no stand-in overlay)
+    if right == RightPanel::Masking
+        && let Some(m) = app.session.active_mask.and_then(|mid| d.masks.iter().find(|m| m.id == mid))
+        && let Some((comp, what)) = ai_computing(app, m)
+    {
+        let over = img_rect.intersect(canvas);
+        if ai_progress(ui, if over.is_positive() { over } else { canvas }, &what) {
+            let r = if m.components.len() <= 1 {
+                app.run("mask.delete", json!({"id": m.id}))
+            } else {
+                app.run("mask.component", json!({"id": m.id, "component": comp, "action": "delete"}))
+            };
+            if let Err(e) = r {
+                app.toast(ui.ctx(), e);
+            }
+        }
+    }
     // what is on screen isn't the render on its way (a stand-in, the last render after an edit,
     // a magnified frame under its window): say so once that has lasted a moment
     let whole: &[Slot] = if show_before && !split {
@@ -2171,6 +2188,50 @@ pub(crate) fn failed_pill(
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{text}: {error}")));
 }
 
+/// The selected mask `m`'s Object or Describe selection still being computed by the model: the
+/// component and what is being found. Meanwhile no overlay shows for the mask (it would look like
+/// the result).
+pub(crate) fn ai_computing(app: &LccApp, m: &lcc_develop::Mask) -> Option<(usize, String)> {
+    if !app.session.segmenter.busy() {
+        return None;
+    }
+    m.components.iter().enumerate().find_map(|(k, c)| {
+        let what = match &c.shape {
+            MaskShape::Prompt { text, seg: None, .. } => crate::i18n::tr_format!("Finding “{text}”…", text = text.trim()),
+            MaskShape::Object { seg: None, hint, .. } if !hint.is_empty() => crate::i18n::tr("Selecting the object…").to_string(),
+            _ => return None,
+        };
+        Some((k, what))
+    })
+}
+
+/// The AI mask's progress in the middle of the photo: a spinner, what is being found, and Cancel
+/// (widgets `canvas:aiProgress`, `canvas:aiCancel`). True when Cancel was clicked.
+fn ai_progress(ui: &mut egui::Ui, over: Rect, what: &str) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let p = ui.painter_at(over);
+    let g = p.layout_no_wrap(what.to_string(), t.font(13.0), Color32::WHITE);
+    let cancel_w = 64.0;
+    let size = vec2(34.0 + g.size().x + 12.0 + cancel_w + 10.0, 36.0);
+    let bg = Rect::from_center_size(over.center(), size);
+    p.rect_filled(bg, 8.0, Color32::from_black_alpha(185));
+    // the spinner: an arc going round
+    let c = pos2(bg.left() + 18.0, bg.center().y);
+    let a0 = ui.input(|i| i.time) as f32 * 5.0;
+    let arc: Vec<Pos2> = (0..=20).map(|k| c + egui::Vec2::angled(a0 + k as f32 / 20.0 * 4.4) * 7.0).collect();
+    p.add(egui::Shape::line(arc, Stroke::new(2.0, Color32::WHITE)));
+    p.galley(pos2(bg.left() + 34.0, bg.center().y - g.size().y / 2.0), g, Color32::WHITE);
+    register(ui.ctx(), "canvas:aiProgress", bg);
+    let br = Rect::from_min_size(pos2(bg.right() - cancel_w - 8.0, bg.top() + 6.0), vec2(cancel_w, bg.height() - 12.0));
+    let b = ui.interact(br, egui::Id::new("canvas-ai-cancel"), Sense::click());
+    crate::widgets::announce(&b, crate::i18n::tr("Cancel"));
+    register(ui.ctx(), "canvas:aiCancel", br);
+    p.rect_filled(br, 4.0, if b.hovered() { Color32::from_white_alpha(60) } else { Color32::from_white_alpha(30) });
+    p.text(br.center(), Align2::CENTER_CENTER, crate::i18n::tr("Cancel"), t.font(12.5), Color32::WHITE);
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    b.clicked()
+}
+
 fn quick_name(q: lcc_engine::media::QuickSource) -> &'static str {
     use lcc_engine::media::QuickSource;
     match q {
@@ -2422,6 +2483,7 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
         && app.ui.mask_overlay
         && let Some(m) = app.session.active_mask.and_then(|id| d.masks.iter().find(|m| m.id == id))
         && !m.components.is_empty()
+        && ai_computing(app, m).is_none()
     {
         return Overlay::Mask {
             id: m.id.min(u16::MAX as u32) as u16,

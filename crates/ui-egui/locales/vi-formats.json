@@ -311,5 +311,6 @@
   "{n} done": "{n} xong",
   ", {n} failed": ", {n} thất bại",
   "{n} failed": "{n} thất bại",
-  "Show each photo ({n})": "Hiện từng ảnh ({n})"
+  "Show each photo ({n})": "Hiện từng ảnh ({n})",
+  "Finding “{text}”…": "Đang tìm “{text}”…"
 }

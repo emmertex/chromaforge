@@ -321,5 +321,6 @@
   "{n} done": "{n} fertig",
   ", {n} failed": ", {n} fehlgeschlagen",
   "{n} failed": "{n} fehlgeschlagen",
-  "Show each photo ({n})": "Einzelne Fotos zeigen ({n})"
+  "Show each photo ({n})": "Einzelne Fotos zeigen ({n})",
+  "Finding “{text}”…": "Suche „{text}“…"
 }

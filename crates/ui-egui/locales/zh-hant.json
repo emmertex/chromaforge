@@ -2241,5 +2241,6 @@
   "Finding skin and faces to retouch": "正在尋找要修飾的皮膚和臉部",
   "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "按一下或在照片上拖曳以取色；⇧ 加入更多（最多 5 個），⌥-按一下移除一個，拖曳圖釘可移動它",
   "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "按一下照片以選取該處的亮度，或拖過一個區域以選取其亮度範圍；⇧ 擴大範圍",
-  "No colour picked": "未取色"
+  "No colour picked": "未取色",
+  "Selecting the object…": "正在選取物件…"
 }

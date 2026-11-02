@@ -316,5 +316,6 @@
   "{n} done": "{n}件完了",
   ", {n} failed": "、{n}件失敗",
   "{n} failed": "{n}件失敗",
-  "Show each photo ({n})": "各写真を表示（{n}）"
+  "Show each photo ({n})": "各写真を表示（{n}）",
+  "Finding “{text}”…": "「{text}」を探しています…"
 }

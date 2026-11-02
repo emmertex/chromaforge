@@ -311,5 +311,6 @@
   "{n} done": "{n} valmis",
   ", {n} failed": ", {n} epäonnistui",
   "{n} failed": "{n} epäonnistui",
-  "Show each photo ({n})": "Näytä jokainen kuva ({n})"
+  "Show each photo ({n})": "Näytä jokainen kuva ({n})",
+  "Finding “{text}”…": "Etsitään ”{text}”…"
 }

@@ -316,5 +316,6 @@
   "{n} done": "{n} listas",
   ", {n} failed": ", {n} con error",
   "{n} failed": "{n} con error",
-  "Show each photo ({n})": "Mostrar cada foto ({n})"
+  "Show each photo ({n})": "Mostrar cada foto ({n})",
+  "Finding “{text}”…": "Buscando «{text}»…"
 }

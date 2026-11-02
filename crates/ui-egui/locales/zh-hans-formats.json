@@ -322,5 +322,6 @@
   "{n} done": "完成 {n} 张",
   ", {n} failed": "，失败 {n} 张",
   "{n} failed": "失败 {n} 张",
-  "Show each photo ({n})": "显示各张照片（{n}）"
+  "Show each photo ({n})": "显示各张照片（{n}）",
+  "Finding “{text}”…": "正在查找“{text}”…"
 }

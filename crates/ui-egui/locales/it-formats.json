@@ -320,5 +320,6 @@
   ", {n} failed": ", {n} non riuscite",
   "{n} failed": "{n} non riuscite",
   "Show each photo ({n})": "Mostra ogni foto ({n})",
-  "Adjustments: {n}": "Regolazioni: {n}"
+  "Adjustments: {n}": "Regolazioni: {n}",
+  "Finding “{text}”…": "Cerco «{text}»…"
 }

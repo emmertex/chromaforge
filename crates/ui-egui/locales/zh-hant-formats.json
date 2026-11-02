@@ -316,5 +316,6 @@
   "{n} done": "完成 {n} 張",
   ", {n} failed": "，失敗 {n} 張",
   "{n} failed": "失敗 {n} 張",
-  "Show each photo ({n})": "顯示各張照片（{n}）"
+  "Show each photo ({n})": "顯示各張照片（{n}）",
+  "Finding “{text}”…": "正在尋找「{text}」…"
 }
