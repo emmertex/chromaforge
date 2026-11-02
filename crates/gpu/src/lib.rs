@@ -37,6 +37,8 @@ pub mod bm3d;
 #[cfg(not(target_arch = "wasm32"))]
 mod budget;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod cards;
+#[cfg(not(target_arch = "wasm32"))]
 mod ctx;
 #[cfg(not(target_arch = "wasm32"))]
 mod exit;
@@ -44,6 +46,8 @@ mod exit;
 pub mod faces;
 #[cfg(not(target_arch = "wasm32"))]
 mod gate;
+#[cfg(not(target_arch = "wasm32"))]
+mod helper;
 #[cfg(not(target_arch = "wasm32"))]
 mod init;
 #[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
@@ -85,10 +89,15 @@ pub fn as_batch<R>(f: impl FnOnce() -> R) -> R {
 pub fn in_one_turn<R>(src_px: usize, out_px: usize, f: impl FnOnce() -> R) -> R {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let Some(g) = existing_device().filter(|_| enabled()) else { return f() };
-        let vram = g.vram.unwrap_or(g.max_buffer);
         // (the HDR rendition's float output on top of the renders' own memory)
         let bytes = gate::job_bytes(src_px, out_px).saturating_add((out_px as u64).saturating_mul(16));
+        // batch work goes to the second card when there is one
+        if let Some(h) = batch_helper() {
+            let vram = h.vram.unwrap_or(h.max_buffer);
+            return gate::on_helper(|| gate::in_one_turn(bytes, vram, &shutting_down, f));
+        }
+        let Some(g) = existing_device().filter(|_| enabled()) else { return f() };
+        let vram = g.vram.unwrap_or(g.max_buffer);
         gate::in_one_turn(bytes, vram, &shutting_down, f)
     }
     #[cfg(target_arch = "wasm32")]
@@ -112,10 +121,16 @@ pub struct BatchTurn {
 pub fn try_batch_turn(src_px: usize, out_px: usize) -> Option<BatchTurn> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let bytes = gate::job_bytes(src_px, out_px).saturating_add((out_px as u64).saturating_mul(16));
+        // the second card's turn first, then the editing card's: both cards export at once
+        if let Some(h) = batch_helper()
+            && let Some(t) = gate::try_turn(bytes, h.vram.unwrap_or(h.max_buffer), true)
+        {
+            return Some(BatchTurn { _turn: Some(t) });
+        }
         let Some(g) = existing_device().filter(|_| enabled()) else { return Some(BatchTurn { _turn: None }) };
         let vram = g.vram.unwrap_or(g.max_buffer);
-        let bytes = gate::job_bytes(src_px, out_px).saturating_add((out_px as u64).saturating_mul(16));
-        gate::try_turn(bytes, vram).map(|t| BatchTurn { _turn: Some(t) })
+        gate::try_turn(bytes, vram, false).map(|t| BatchTurn { _turn: Some(t) })
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -237,6 +252,21 @@ pub fn simulate_device_loss(reason: &str) {
     mark_broken(0, reason);
 }
 
+/// Treat the second graphics card's device as lost (tests): it is not used again until it is
+/// chosen again; the editing card stays. `false` without one.
+#[doc(hidden)]
+pub fn simulate_helper_loss(reason: &str) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        helper::current().is_some_and(|g| helper::lose(g.generation, reason))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = reason;
+        false
+    }
+}
+
 /// Which device renders now (each one created gets the next number); `None` without one.
 #[doc(hidden)]
 pub fn device_generation() -> Option<u64> {
@@ -259,8 +289,11 @@ static LAST_FALLBACK: Mutex<Option<String>> = Mutex::new(None);
 /// 0: whichever device is in use.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn mark_broken(generation: u64, reason: &str) {
+    // (the second card's failure stops only it)
     #[cfg(not(target_arch = "wasm32"))]
-    slot::lose(generation, reason);
+    if !helper::lose(generation, reason) {
+        slot::lose(generation, reason);
+    }
     #[cfg(target_arch = "wasm32")]
     let _ = (generation, reason);
 }
@@ -515,32 +548,216 @@ pub(crate) fn device() -> Option<Arc<ctx::Gpu>> {
 /// forever (#3068).
 #[cfg(not(target_arch = "wasm32"))]
 fn new_device() -> Result<ctx::Gpu, String> {
-    // the window's device, when the host handed it over and it suits (only the first device:
-    // a replacement after a loss is one of our own)
-    let window = WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-    if let Some(w) = window {
-        let info = w.info.clone();
-        let adopted = if info.device_type == wgpu::DeviceType::Cpu {
-            Err(format!("software adapter ({}) skipped: the CPU pipeline is faster", info.name))
+    let Some(backends) = backend::compute_backends() else { return Err(format!("disabled by {}=off", lcc_brand::env_var("GPU_BACKEND"))) };
+    // the window's device, when the host offered it, the editing card is the screen's and this
+    // isn't a replacement after a loss (that is always one of our own)
+    let window = WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().filter(|_| slot::lost_reason().is_none());
+    init::create(backends, move || editing_device(backends, window))
+}
+
+/// The editing card's device ([`cards::resolve_card`]): on the window's device when it is that
+/// card and suits, else one of its own on it.
+#[cfg(not(target_arch = "wasm32"))]
+fn editing_device(backends: wgpu::Backends, window: Option<WindowDevice>) -> Result<ctx::Gpu, String> {
+    let instance = ctx::instance(backends);
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    let entries = remember_adapters(&adapters);
+    let saved = cards::card();
+    let res = cards::resolve_card(&entries, backend::wanted_adapter().as_deref(), saved.as_ref());
+    if let Some(k) = res.missing.as_ref().filter(|k| cards::first_report_of_missing(k)) {
+        slot::event(
+            EventKind::Lost,
+            format!("The graphics card chosen for editing ({}) isn't there; {} uses the automatic choice for now.", k.name, lcc_brand::DISPLAY_NAME),
+        );
+    }
+    let chosen = res.index.and_then(|i| entries.get(i).zip(adapters.get(i)));
+    *EDITING_CARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = chosen.map(|(e, _)| e.key.clone());
+    let on_screen = chosen.is_none_or(|(e, _)| e.drives_screen);
+    if let Some(w) = window.filter(|_| on_screen) {
+        if w.info.device_type == wgpu::DeviceType::Cpu {
+            *WINDOW_DECLINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(format!("software adapter ({}) skipped: the CPU pipeline is faster", w.info.name));
         } else {
-            // (building the kernels is a long call into the driver: on a thread of its own, under the
-            // crash sentinel and the creation deadline, as a device of our own)
-            init::create(wgpu::Backends::from(info.backend), move || ctx::Gpu::adopt(w.device, w.queue, w.info, w.vram))
-        };
-        match adopted {
-            Ok(g) => return Ok(g),
-            Err(e) => {
-                log::warn!("gpu: not rendering on the window's device ({e}); creating one");
-                *WINDOW_DECLINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
+            match ctx::Gpu::adopt(w.device, w.queue, w.info, w.vram) {
+                Ok(g) => {
+                    *WINDOW_DECLINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                    if chosen.is_none() {
+                        let key = cards::AdapterKey::of(&g.info, 1);
+                        *EDITING_CARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            entries.iter().find(|e| e.key.same_model(&key)).map(|e| e.key.clone());
+                    }
+                    return Ok(g);
+                }
+                Err(e) => {
+                    log::warn!("gpu: not rendering on the window's device ({e}); creating one");
+                    *WINDOW_DECLINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
+                }
             }
         }
     }
-    let Some(backends) = backend::compute_backends() else { return Err(format!("disabled by {}=off", lcc_brand::env_var("GPU_BACKEND"))) };
-    init::create(backends, move || ctx::Gpu::new(backends))
+    match chosen {
+        Some((_, a)) => ctx::Gpu::on_adapter(a),
+        // (no card chosen or the screen's unknown: wgpu's high-performance pick, which says why it
+        // can't render)
+        None => {
+            let g = ctx::Gpu::new(backends)?;
+            let key = cards::AdapterKey::of(&g.info, 1);
+            *EDITING_CARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                entries.iter().find(|e| e.key.same_model(&key)).map(|e| e.key.clone());
+            Ok(g)
+        }
+    }
+}
+
+/// The cards `adapters` are, as the settings list them (remembered for [`adapters`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn remember_adapters(adapters: &[wgpu::Adapter]) -> Vec<cards::AdapterEntry> {
+    let infos: Vec<_> =
+        adapters.iter().map(|a| (a.get_info(), a.limits().max_storage_buffers_per_shader_stage, lcc_gpumem::adapter_memory(a))).collect();
+    let entries = cards::entries_from(&infos, cards::screen().as_ref());
+    cards::set_listed(entries.clone());
+    entries
+}
+
+/// The editing card's key once its device was made (`None`: wgpu's own pick, or none yet).
+#[cfg(not(target_arch = "wasm32"))]
+static EDITING_CARD: Mutex<Option<cards::AdapterKey>> = Mutex::new(None);
+
+/// The graphics cards the app can list, as last seen (listed when the device is first made, or
+/// by [`refresh_adapters`]). Never waits for a driver.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn adapters() -> Vec<cards::AdapterEntry> {
+    cards::listed().unwrap_or_default()
+}
+
+/// List the graphics cards again (asks the drivers: not on the UI thread).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn refresh_adapters() -> Vec<cards::AdapterEntry> {
+    let Some(backends) = backend::compute_backends() else { return Vec::new() };
+    let instance = ctx::instance(backends);
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    remember_adapters(&adapters)
+}
+
+/// The graphics card for editing as the settings say (`""` or `auto`: Automatic, else a card's
+/// key, see [`cards::AdapterKey`]). A change applies at once: the new device is made on a thread
+/// of its own while renders stay on the current one, then they move over (and the second card is
+/// chosen again). `true` when the choice changed.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_card(setting: &str) -> bool {
+    let key = cards::AdapterKey::parse(setting);
+    if !cards::set_card(key) {
+        return false;
+    }
+    if slot::tried() && !env_disabled() {
+        SWITCHING.store(true, Ordering::Relaxed);
+        let spawned = std::thread::Builder::new().name("lc-gpu-card".into()).spawn(|| {
+            if let Some(_work) = exit::enter() {
+                slot::swap(new_device());
+                start_helper();
+            }
+            SWITCHING.store(false, Ordering::Relaxed);
+        });
+        if spawned.is_err() {
+            SWITCHING.store(false, Ordering::Relaxed);
+        }
+    }
+    true
+}
+
+/// A new editing card is being set up ([`set_card`]).
+#[cfg(not(target_arch = "wasm32"))]
+static SWITCHING: AtomicBool = AtomicBool::new(false);
+
+/// The editing card: (the saved choice, the card renders run on, whether a change is being set
+/// up). Keys are [`cards::AdapterKey`] text.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn card_status() -> (Option<String>, Option<String>, bool) {
+    let in_use = slot::current().and(EDITING_CARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+    (cards::card().map(|k| k.to_string()), in_use.map(|k| k.to_string()), SWITCHING.load(Ordering::Relaxed))
+}
+
+/// The second graphics card as the settings say (`""` Automatic, `off`, or a card's key; see
+/// [`cards::HelperChoice`]; `<PREFIX>_GPU_HELPER` wins). Applies at once. `true` when it changed.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_helper(setting: &str) -> bool {
+    if !cards::set_helper(cards::HelperChoice::parse_setting(setting)) {
+        return false;
+    }
+    if slot::tried() {
+        let _ = std::thread::Builder::new().name("lc-gpu-helper-pick".into()).spawn(start_helper);
+    }
+    true
+}
+
+/// Choose and set up the second card now (asks the drivers: not on the UI thread).
+#[cfg(not(target_arch = "wasm32"))]
+fn start_helper() {
+    if env_disabled() || !ENABLED.load(Ordering::Relaxed) {
+        helper::stop();
+        return;
+    }
+    let Some(backends) = backend::compute_backends() else { return helper::stop() };
+    let instance = ctx::instance(backends);
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    let entries = remember_adapters(&adapters);
+    let editing = EDITING_CARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let primary = editing.and_then(|k| entries.iter().position(|e| e.key == k));
+    let pins = backend::wanted_adapter().is_some();
+    let pick = cards::resolve_helper(&entries, primary, &cards::helper_choice(), pins);
+    helper::restart(pick.and_then(|i| adapters.into_iter().nth(i)));
+}
+
+/// Batch work on the second card now: (renders running, device bytes they hold, renders waiting).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn helper_usage() -> (usize, u64, usize) {
+    gate::helper_usage()
+}
+
+/// The second card: (`off`, `starting`, `ready`, `failed` or `lost`, its name or why not).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn helper_status() -> (&'static str, Option<String>) {
+    helper::status()
+}
+
+/// The second card's device for this thread's batch work, when there is one ready.
+#[cfg(not(target_arch = "wasm32"))]
+fn batch_helper() -> Option<Arc<ctx::Gpu>> {
+    if !allowed() || gate::cpu_only() || !(gate::is_batch() || PREFER_HELPER.try_with(|c| c.get()).unwrap_or(false)) {
+        return None;
+    }
+    helper::current()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// This thread's renders go to the second card when there is one ([`prefer_helper`]).
+    static PREFER_HELPER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with this thread's renders on the second graphics card when one is ready (thumbnails,
+/// grid previews: work that isn't the open photo's view), at its gate. Otherwise as without.
+pub fn prefer_helper<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = PREFER_HELPER.try_with(|c| c.set(self.0));
+            }
+        }
+        let _restore = Restore(PREFER_HELPER.with(|c| c.replace(true)));
+        f()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        f()
+    }
 }
 
 /// The window's device, handed over by [`adopt_window_device`] for the first device to use.
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
 struct WindowDevice {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -562,10 +779,11 @@ static WINDOW_DECLINED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new
 /// device that replaces a lost one is always one of its own (renders come back as pixels again).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn offer_window_device(device: wgpu::Device, queue: wgpu::Queue, adapter: &wgpu::Adapter) {
-    if env_disabled() || slot::tried() {
+    if env_disabled() {
         return;
     }
     let info = adapter.get_info();
+    cards::set_screen(cards::ScreenCard::of(&info));
     let vram = lcc_gpumem::adapter_memory(adapter);
     *WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(WindowDevice { device, queue, info, vram });
 }
@@ -632,7 +850,10 @@ pub fn warm_up() {
     #[cfg(not(target_arch = "wasm32"))]
     if !env_disabled() && ENABLED.load(Ordering::Relaxed) && !slot::tried() {
         let _ = std::thread::Builder::new().name("lc-gpu-init".into()).spawn(|| {
-            let _ = device();
+            if device().is_some() {
+                // the second card beside it (renders never wait for that)
+                start_helper();
+            }
         });
     }
 }
@@ -933,8 +1154,14 @@ fn try_render_inner(
             return Err(Fallback::NotTried);
         }
         let s = &*lcc_pipeline::settings_for(s, req);
-        // in flight until this returns; not tried once the process is ending (issue #620)
-        let gpu = device().ok_or(Fallback::NotTried)?;
+        // in flight until this returns; not tried once the process is ending (issue #620). Batch
+        // work goes to the second card when there is one (inside a turn: the turn's card)
+        let on_helper = if gate::in_turn() { gate::uses_helper() } else { batch_helper().is_some() };
+        let gpu = match on_helper.then(helper::current).flatten() {
+            Some(h) => h,
+            None => device().ok_or(Fallback::NotTried)?,
+        };
+        let on_helper = helper::is_helper(gpu.generation);
         // The plan (Upright, the masks' tone ranges, red eye, the settings resolved) is the
         // CPU's work: made before the turn, so an export waiting for the GPU never holds it with
         // the processor's part of its render.
@@ -949,7 +1176,8 @@ fn try_render_inner(
             }
         };
         let vram = gpu.vram.unwrap_or(gpu.max_buffer);
-        let _turn = gate::enter(gate::job_bytes(src.width.saturating_mul(src.height), out_px), vram, &shutting_down).ok_or(Fallback::NotTried)?;
+        let enter = || gate::enter(gate::job_bytes(src.width.saturating_mul(src.height), out_px), vram, &shutting_down);
+        let _turn = if on_helper { gate::on_helper(enter) } else { enter() }.ok_or(Fallback::NotTried)?;
         let _work = exit::enter().ok_or(Fallback::NotTried)?;
         let ext = stages.map(|c| c.extension::<GpuStages>());
         // stages cached on a device that was replaced are no use on this one
@@ -963,8 +1191,10 @@ fn try_render_inner(
         // Renders share the device's memory: wait for room instead of running out of it, and after
         // running out anyway (the size is an estimate) try once more with the device to this
         // render alone before the CPU takes over (upstream #1764).
+        // (each card's memory its own)
         static BUDGET: std::sync::OnceLock<budget::Budget> = std::sync::OnceLock::new();
-        let budget = BUDGET.get_or_init(|| budget::Budget::new(budget::initial(gpu.max_buffer)));
+        static HELPER_BUDGET: std::sync::OnceLock<budget::Budget> = std::sync::OnceLock::new();
+        let budget = if on_helper { &HELPER_BUDGET } else { &BUDGET }.get_or_init(|| budget::Budget::new(budget::initial(gpu.max_buffer)));
         let need = budget::footprint(src.width, src.height);
         let mut alone = false;
         let reason = loop {

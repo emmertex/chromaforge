@@ -487,19 +487,29 @@ fn module_source(m: &Module, consts: &str) -> String {
     s
 }
 
+/// A wgpu instance that loads only `backends`' drivers (`crate::backend`: never Vulkan on Windows
+/// unless asked), with the DX12 shader compiler and validation flags the renderer needs.
+pub(crate) fn instance(backends: wgpu::Backends) -> wgpu::Instance {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = backends;
+    // DX12 shaders compile with FXC (issue #471)
+    desc.backend_options = crate::backend::backend_options();
+    // no indirect-call validation pipeline: Intel Metal fails to compile it (#250)
+    desc.flags = crate::backend::instance_flags_from_env(desc.flags);
+    wgpu::Instance::new(desc)
+}
+
 impl Gpu {
     /// Create a device on the best available adapter (no software fallback), or why there is none.
     pub fn new(backends: wgpu::Backends) -> Result<Gpu, String> {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        // only these drivers are loaded (`crate::backend`: never Vulkan on Windows unless asked)
-        desc.backends = backends;
-        // DX12 shaders compile with FXC (issue #471)
-        desc.backend_options = crate::backend::backend_options();
-        // no indirect-call validation pipeline: Intel Metal fails to compile it (#250)
-        desc.flags = crate::backend::instance_flags_from_env(desc.flags);
-        let instance = wgpu::Instance::new(desc);
+        let instance = instance(backends);
         // the card `<PREFIX>_GPU_ADAPTER` names, else the high-performance one
         let adapter = crate::backend::pick_adapter(&instance, backends)?;
+        Gpu::on_adapter(&adapter)
+    }
+
+    /// Create a device on `adapter` (not a software one), or why it can't be.
+    pub fn on_adapter(adapter: &wgpu::Adapter) -> Result<Gpu, String> {
         let info = adapter.get_info();
         if info.device_type == wgpu::DeviceType::Cpu {
             log::info!("gpu: only a software adapter ({}), using the CPU pipeline", info.name);
@@ -517,7 +527,7 @@ impl Gpu {
             ..Default::default()
         }))
         .map_err(|e| format!("{}: device creation failed ({e})", info.name))?;
-        let vram = lcc_gpumem::adapter_memory(&adapter);
+        let vram = lcc_gpumem::adapter_memory(adapter);
         Gpu::with_device(device, queue, info, limits, vram, false)
     }
 

@@ -15,6 +15,10 @@
 //! between instead of waiting behind seconds of export work (with 14–16 exports queued at once
 //! the window drew no frame for 5 s, and resizing it failed with "Failed to wait for GPU to come
 //! idle").
+//!
+//! The second graphics card (`helper.rs`) has a gate of its own: its batch renders share its
+//! memory, never the editing card's, and nothing interactive runs there to wait for. A thread's
+//! renders use the second card's gate inside [`on_helper`].
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -36,6 +40,9 @@ struct State {
 
 static STATE: Mutex<State> = Mutex::new(State { held: 0, jobs: 0, interactive: 0, hold_until: None, waiting: 0 });
 static CV: Condvar = Condvar::new();
+/// The second card's gate.
+static HELPER_STATE: Mutex<State> = Mutex::new(State { held: 0, jobs: 0, interactive: 0, hold_until: None, waiting: 0 });
+static HELPER_CV: Condvar = Condvar::new();
 /// Device bytes batch renders may hold together (0: [`auto_limit`]).
 static LIMIT: AtomicU64 = AtomicU64::new(0);
 /// Most batch renders at once (0: no other limit than memory, at most [`MAX_JOBS`]).
@@ -51,7 +58,43 @@ pub const MAX_JOBS: usize = 4;
 const SHARE_PERCENT: u64 = 55;
 
 fn state() -> std::sync::MutexGuard<'static, State> {
-    STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    state_of(false)
+}
+
+/// The editing card's gate, or (`helper`) the second card's.
+fn state_of(helper: bool) -> std::sync::MutexGuard<'static, State> {
+    if helper { &HELPER_STATE } else { &STATE }.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn cv_of(helper: bool) -> &'static Condvar {
+    if helper { &HELPER_CV } else { &CV }
+}
+
+thread_local! {
+    /// This thread's renders run on the second card ([`on_helper`]).
+    static HELPER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with this thread's renders on the second card and its gate.
+pub(crate) fn on_helper<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = HELPER.try_with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(HELPER.with(|c| c.replace(true)));
+    f()
+}
+
+/// Whether this thread's renders run on the second card ([`on_helper`], or a turn taken there).
+pub(crate) fn uses_helper() -> bool {
+    HELPER.try_with(|c| c.get()).unwrap_or(false)
+}
+
+/// Whether this thread holds a turn for several renders ([`in_one_turn`], [`try_turn`]).
+pub(crate) fn in_turn() -> bool {
+    IN_TURN.try_with(|c| c.get()).unwrap_or(false)
 }
 
 thread_local! {
@@ -98,26 +141,36 @@ pub(crate) fn as_batch<R>(f: impl FnOnce() -> R) -> R {
 pub(crate) struct Turn {
     _permit: Option<Permit>,
     was: bool,
+    /// The thread's [`on_helper`] flag before the turn.
+    was_helper: bool,
 }
 
 impl Drop for Turn {
     fn drop(&mut self) {
-        let was = self.was;
+        let (was, helper) = (self.was, self.was_helper);
         let _ = IN_TURN.try_with(|c| c.set(was));
+        let _ = HELPER.try_with(|c| c.set(helper));
     }
 }
 
 /// [`in_one_turn`]'s turn if it is free now; `None` when it would have to wait for other
 /// exports (the caller renders on the CPU instead: exports on the GPU and the processor at once).
 /// Outside batch work, and inside a turn already taken, always a turn.
-pub(crate) fn try_turn(bytes: u64, vram: u64) -> Option<Turn> {
+/// With `helper`, the turn is the second card's, and the thread's renders run there until it is
+/// dropped.
+pub(crate) fn try_turn(bytes: u64, vram: u64, helper: bool) -> Option<Turn> {
     let was = IN_TURN.try_with(|c| c.get()).unwrap_or(false);
+    let was_helper = uses_helper();
     if !is_batch() || was {
-        return Some(Turn { _permit: None, was });
+        return Some(Turn { _permit: None, was, was_helper });
     }
-    let permit = enter(bytes, vram, &|| true)?;
+    let _ = HELPER.try_with(|c| c.set(helper));
+    let Some(permit) = enter(bytes, vram, &|| true) else {
+        let _ = HELPER.try_with(|c| c.set(was_helper));
+        return None;
+    };
     let _ = IN_TURN.try_with(|c| c.set(true));
-    Some(Turn { _permit: Some(permit), was })
+    Some(Turn { _permit: Some(permit), was, was_helper })
 }
 
 thread_local! {
@@ -167,6 +220,7 @@ pub(crate) fn set_limits(bytes: Option<u64>, jobs: Option<usize>) {
     LIMIT.store(bytes.unwrap_or(0), Ordering::Relaxed);
     JOBS.store(jobs.unwrap_or(0), Ordering::Relaxed);
     CV.notify_all();
+    HELPER_CV.notify_all();
 }
 
 /// The budget and the most jobs in force for a card with `vram` bytes.
@@ -195,6 +249,8 @@ pub(crate) struct Permit {
     batch: bool,
     /// Counted at the gate (not a render inside a turn already taken).
     held: bool,
+    /// At the second card's gate.
+    helper: bool,
 }
 
 impl Drop for Permit {
@@ -202,7 +258,7 @@ impl Drop for Permit {
         if !self.held {
             return;
         }
-        let mut s = state();
+        let mut s = state_of(self.helper);
         if self.batch {
             s.held = s.held.saturating_sub(self.bytes);
             s.jobs = s.jobs.saturating_sub(1);
@@ -210,7 +266,7 @@ impl Drop for Permit {
             s.interactive = s.interactive.saturating_sub(1);
         }
         drop(s);
-        CV.notify_all();
+        cv_of(self.helper).notify_all();
     }
 }
 
@@ -219,13 +275,14 @@ impl Drop for Permit {
 /// waiting (the app is closing): the render then runs on the CPU.
 pub(crate) fn enter(bytes: u64, vram: u64, stop: &dyn Fn() -> bool) -> Option<Permit> {
     // (a render inside a turn already taken: nothing more to hold)
+    let helper = uses_helper();
     if is_batch() && IN_TURN.try_with(|c| c.get()).unwrap_or(false) {
-        return Some(Permit { bytes: 0, batch: false, held: false });
+        return Some(Permit { bytes: 0, batch: false, held: false, helper });
     }
-    let mut s = state();
+    let mut s = state_of(helper);
     if !is_batch() {
         s.interactive += 1;
-        return Some(Permit { bytes, batch: false, held: true });
+        return Some(Permit { bytes, batch: false, held: true, helper });
     }
     let start = Instant::now();
     let mut waited = false;
@@ -243,7 +300,7 @@ pub(crate) fn enter(bytes: u64, vram: u64, stop: &dyn Fn() -> bool) -> Option<Pe
                 WAITS.fetch_add(1, Ordering::Relaxed);
                 WAITED_MS.fetch_add(start.elapsed().as_millis() as u64, Ordering::Relaxed);
             }
-            return Some(Permit { bytes, batch: true, held: true });
+            return Some(Permit { bytes, batch: true, held: true, helper });
         }
         if !waited {
             waited = true;
@@ -254,7 +311,7 @@ pub(crate) fn enter(bytes: u64, vram: u64, stop: &dyn Fn() -> bool) -> Option<Pe
             return None;
         }
         // (woken by a permit given back; the timeout re-checks a hold that ran out and `stop`)
-        s = CV.wait_timeout(s, Duration::from_millis(100)).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
+        s = cv_of(helper).wait_timeout(s, Duration::from_millis(100)).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
     }
 }
 
@@ -263,6 +320,12 @@ pub(crate) fn enter(bytes: u64, vram: u64, stop: &dyn Fn() -> bool) -> Option<Pe
 pub(crate) fn usage() -> (usize, u64, usize, u64, u64) {
     let s = state();
     (s.jobs, s.held, s.waiting, WAITS.load(Ordering::Relaxed), WAITED_MS.load(Ordering::Relaxed))
+}
+
+/// The second card's gate now: (batch renders running, device bytes they hold, renders waiting).
+pub(crate) fn helper_usage() -> (usize, u64, usize) {
+    let s = state_of(true);
+    (s.jobs, s.held, s.waiting)
 }
 
 /// Between a batch render's submissions: wait for its previous one (`prev`) to finish first, so
@@ -373,18 +436,44 @@ mod tests {
         let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         set_limits(Some(10 << 30), Some(1));
         as_batch(|| {
-            let t = try_turn(1 << 20, 0).expect("free");
+            let t = try_turn(1 << 20, 0, false).expect("free");
             assert_eq!(usage().0, 1);
             // the renders inside it don't queue again
             assert!(enter(1 << 20, 0, &|| true).is_some());
             assert_eq!(usage().0, 1);
             // another thread's photo finds it taken: no waiting
-            let other = std::thread::spawn(|| as_batch(|| try_turn(1 << 20, 0).is_none())).join().unwrap();
+            let other = std::thread::spawn(|| as_batch(|| try_turn(1 << 20, 0, false).is_none())).join().unwrap();
             assert!(other, "taken: the other photo renders on the CPU");
             drop(t);
             assert_eq!(usage().0, 0);
             assert!(!IN_TURN.with(|c| c.get()));
         });
+        set_limits(None, None);
+    }
+
+    /// The second card's batch renders have a gate of their own: a view rendering on the editing
+    /// card doesn't hold them back, and their memory isn't the editing card's.
+    #[test]
+    fn the_second_card_has_its_own_gate() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_limits(Some(10 << 30), Some(1));
+        let view = enter(9 << 30, 0, &|| false).unwrap();
+        let on_edit = as_batch(|| enter(1 << 20, 0, &|| true));
+        assert!(on_edit.is_none(), "the editing card's batch waits for the view");
+        let on_helper = as_batch(|| on_helper(|| enter(1 << 20, 0, &|| true)));
+        assert!(on_helper.is_some(), "the second card's doesn't");
+        assert_eq!(helper_usage().0, 1);
+        assert_eq!(usage().0, 0);
+        // a turn taken there keeps the thread's renders there until it is given back
+        drop(on_helper);
+        as_batch(|| {
+            let t = try_turn(1 << 20, 0, true).expect("free");
+            assert!(uses_helper() && in_turn());
+            drop(t);
+            assert!(!uses_helper() && !in_turn());
+        });
+        drop(view);
+        assert_eq!(helper_usage().0, 0);
         set_limits(None, None);
     }
 

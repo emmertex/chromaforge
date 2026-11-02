@@ -164,6 +164,23 @@ fn start_recovery(create: fn() -> Result<Gpu, String>) {
     }
 }
 
+/// Put `made` in place of the device in use (another graphics card was chosen for editing): renders
+/// move over to it; the old one goes once the renders on it finish. When it failed, the device in
+/// use stays.
+pub(crate) fn swap(made: Result<Gpu, String>) {
+    match made {
+        Ok(g) => {
+            let mut s = slot();
+            s.state = State::Ready(Arc::new(g));
+            s.lost = None;
+        }
+        Err(why) => {
+            log::warn!("gpu: the chosen graphics card can't render ({why}); the one in use stays");
+            event(EventKind::Lost, format!("The graphics card chosen for editing can't be used ({}); the one in use stays.", short(&why)));
+        }
+    }
+}
+
 /// Put a new device in place of the lost one, or count the failed attempt.
 fn replace(made: Result<Gpu, String>) {
     let mut s = slot();
