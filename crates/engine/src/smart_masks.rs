@@ -189,7 +189,55 @@ pub(crate) fn completed(s: &mut Session, id: PhotoId, mut d: DevelopSettings) ->
     if d.masks.iter().any(|m| m.uses_ai()) {
         let _ = s.complete_recipes(id, &mut d);
     }
+    if missing_seg(&d) && s.segmenter.background {
+        // computed on the AI worker after this command (`segment_poll`)
+        s.segmenter.wanted.push(id);
+    }
     d
+}
+
+/// Whether `d` has Object or Describe selections without a segmentation.
+fn missing_seg(d: &DevelopSettings) -> bool {
+    d.masks.iter().flat_map(|m| &m.components).any(|c| c.shape.stores_seg() && !c.shape.has_seg())
+}
+
+impl Session {
+    /// In the app (background mode): compute photo `id`'s missing AI selections at the next poll.
+    pub(crate) fn want_missing_masks(&mut self, id: PhotoId) {
+        if self.segmenter.background && self.develop_of(id).is_some_and(|d| missing_seg(&d)) && !self.segmenter.wanted.contains(&id) {
+            self.segmenter.wanted.push(id);
+        }
+    }
+
+    /// The app's Recompute AI Masks: the recipes are completed now (from the photo's metadata, no
+    /// pixels), the selections are queued on the AI worker as one batch with an activity row.
+    pub fn compute_masks_later(&mut self, id: PhotoId, force: bool) -> crate::Result<(Completed, usize)> {
+        let before = self.develop_of(id).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
+        let mut d = (*before).clone();
+        if force {
+            for m in &mut d.masks {
+                for c in &mut m.components {
+                    c.shape = c.shape.recipe();
+                    if let Some(a) = &mut c.anchor {
+                        a.bounds = None;
+                    }
+                }
+            }
+        }
+        let mut out = self.complete_recipes(id, &mut d);
+        if *before != d {
+            let op = self.develop_op(id, d, "Recompute AI Masks").ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
+            self.commit("Recompute AI Masks", op)?;
+        }
+        let queued = match self.segment_missing_later(id) {
+            Ok(n) => n,
+            Err(e) => {
+                out.notes.push(e);
+                0
+            }
+        };
+        Ok((out, queued))
+    }
 }
 
 #[cfg(test)]

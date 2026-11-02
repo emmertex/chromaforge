@@ -3,6 +3,7 @@
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Áp dụng từ lần khởi động sau. Nếu ứng dụng khởi động chậm khi bật GPU, hãy thử Vulkan: trên một số máy tính, nó chuẩn bị GPU nhanh hơn nhiều.",
   "Ask": "Hỏi",
   "Colour": "Màu",
+  "Computing AI masks": "Đang tính mặt nạ AI",
   "Copy recipe": "Sao chép công thức",
   "Don't ask again": "Không hỏi lại",
   "Edit Original": "Sửa bản gốc",

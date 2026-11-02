@@ -2,6 +2,7 @@
   "All Photographs": "Alla foton",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Gäller från nästa start. Om appen startar långsamt med GPU:n på, prova Vulkan: på vissa datorer förbereder det GPU:n mycket snabbare.",
   "Ask": "Fråga",
+  "Computing AI masks": "Beräknar AI-masker",
   "Copy recipe": "Kopiera recept",
   "Don't ask again": "Fråga inte igen",
   "Edit Original": "Redigera originalet",

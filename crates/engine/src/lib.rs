@@ -986,6 +986,8 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        // AI masks still computing for what was undone stop
+        self.segmenter.cancel_recompute(single_photo(&e.op, 0));
         self.pending_log.push(e.op);
         self.redo.push(UndoEntry {
             label: e.label.clone(),
@@ -1012,6 +1014,10 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        // a redone preset or paste computes the AI masks it brings again
+        if let Some(id) = single_photo(&e.op, 0) {
+            self.want_missing_masks(id);
+        }
         self.pending_log.push(e.op);
         self.undo.push(UndoEntry {
             label: e.label.clone(),

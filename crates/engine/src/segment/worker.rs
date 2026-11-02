@@ -71,6 +71,8 @@ pub struct Job {
     pub kind: Kind,
     pub tag: Tag,
     pub reply: mpsc::Sender<Outcome>,
+    /// Set when the job's batch was cancelled (Recompute AI Masks): skipped, not run.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 /// A finished request: the segmentation (`None`: nothing selected / nothing to report).
@@ -294,7 +296,8 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
         // counts the job as pending until just before its reply goes out: a caller woken by the
         // reply must not still see the worker busy with it
         let done = Done(if is_detail { &shared.detail } else { &shared.pending });
-        if queue.iter().any(|later| supersedes(later, &job)) {
+        let cancelled = job.cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst));
+        if cancelled || queue.iter().any(|later| supersedes(later, &job)) {
             drop(done);
             let _ = job.reply.send(Outcome { tag: job.tag, result: Ok(None), superseded: true, notice: None });
             continue;
@@ -526,7 +529,7 @@ mod tests {
     fn job(tag: Tag, reply: &mpsc::Sender<Outcome>) -> Job {
         // an empty folder: loading fails with an error (no model files)
         let dir = std::env::temp_dir().join(format!("lc-sam3-worker-none-{}", std::process::id()));
-        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone() }
+        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone(), cancel: None }
     }
 
     #[test]

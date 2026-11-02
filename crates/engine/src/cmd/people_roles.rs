@@ -61,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Recompute AI Masks",
             [],
             None,
-            "{id? | ids?: [photoId], force?: bool (false: only what is missing)} — complete each photo's mask recipes: People by name or role, gradients anchored to the people, Object and Describe selections (the segmenter, waited for) → {photos: [{id, changed, notes}]}",
+            "{id? | ids?: [photoId], force?: bool (false: only what is missing)} — complete each photo's mask recipes: People by name or role, gradients anchored to the people, Object and Describe selections (the segmenter: waited for in the CLI / MCP; in the app queued on the AI worker as one activity row, `aiMasks`, and `queued` says how many) → {photos: [{id, changed, notes, queued?}]}",
             always,
             |s, p| {
                 let c = "masks.recompute";
@@ -79,6 +79,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 for id in ids.into_iter().take(10_000) {
                     if s.catalog.photo(id).is_none() {
                         return Err(bad(c, format!("no photo {}", id.0)));
+                    }
+                    if s.segmenter.background {
+                        // the app: never waits for the model
+                        let (done, queued) = s.compute_masks_later(id, force)?;
+                        photos.push(json!({"id": id.0, "changed": done.changed, "notes": done.notes, "queued": queued}));
+                        continue;
                     }
                     let done = s.compute_masks(id, force)?;
                     photos.push(json!({"id": id.0, "changed": done.changed, "notes": done.notes}));

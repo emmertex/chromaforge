@@ -65,6 +65,9 @@ pub(crate) enum Tag {
     NewPrompt { photo: PhotoId, mask: Option<u32>, op: String, name: Option<String>, text: String },
     /// A zoomed-in pass for a component, computed from `shape` (without its detail).
     Detail { photo: PhotoId, mask: u32, comp: usize, shape: MaskShape },
+    /// Recompute AI Masks: the selection of component `comp` of mask `mask`, computed from
+    /// `shape` (the recipe, without a segmentation), for run `run`.
+    Recompute { run: u64, photo: PhotoId, mask: u32, comp: usize, shape: MaskShape },
 }
 
 /// The model input: 8-bit RGB.
@@ -131,6 +134,12 @@ pub struct Segmenter {
     pub subject: subject::Subject,
     pending: Option<PendingClicks>,
     messages: Vec<String>,
+    /// Photos whose Object / Describe selections should be computed at the next poll (a preset,
+    /// paste or redo brought them without a segmentation).
+    pub(crate) wanted: Vec<PhotoId>,
+    /// The running Recompute AI Masks batch (one activity row).
+    recompute: Option<RecomputeRun>,
+    run_seq: u64,
     #[cfg(feature = "sam")]
     worker: worker::Worker,
     #[cfg(feature = "sam")]
@@ -150,6 +159,9 @@ impl Default for Segmenter {
             subject: subject::Subject::default(),
             pending: None,
             messages: Vec::new(),
+            wanted: Vec::new(),
+            recompute: None,
+            run_seq: 0,
             #[cfg(feature = "sam")]
             worker: worker::Worker::default(),
             #[cfg(feature = "sam")]
@@ -160,7 +172,34 @@ impl Default for Segmenter {
     }
 }
 
+/// A Recompute AI Masks batch on the worker: its activity row (✕ sets `cancel`, which the worker
+/// checks before each job) and the selections still on their way.
+struct RecomputeRun {
+    id: u64,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    guard: crate::activity::TaskGuard,
+    photos: Vec<PhotoId>,
+    left: usize,
+    total: usize,
+}
+
 impl Segmenter {
+    /// Whether a Recompute AI Masks batch is computing.
+    pub fn recomputing(&self) -> bool {
+        self.recompute.is_some()
+    }
+
+    /// Stop the Recompute AI Masks batch (all of it, or only when it works on `photo`): queued
+    /// selections are skipped and late results dropped.
+    pub(crate) fn cancel_recompute(&mut self, photo: Option<PhotoId>) {
+        if self.recompute.as_ref().is_some_and(|r| photo.is_none_or(|p| r.photos.contains(&p)))
+            && let Some(r) = self.recompute.take()
+        {
+            r.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.wanted.retain(|w| photo.is_some_and(|p| p != *w));
+    }
+
     /// Whether this build can compute AI masks at all.
     pub const AVAILABLE: bool = cfg!(feature = "sam");
 
@@ -434,7 +473,7 @@ impl Session {
                 job
             }
         };
-        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply })
+        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply, cancel: None })
     }
 
     /// Send a request and wait for its result (CLI, MCP, tests; or when not in background mode).
@@ -600,13 +639,88 @@ impl Session {
         }
     }
 
+    /// Queue the Object and Describe selections of photo `id` that have no segmentation, as part of
+    /// the Recompute AI Masks batch (started when none runs). → how many were queued.
+    pub(crate) fn segment_missing_later(&mut self, id: PhotoId) -> Result<usize, String> {
+        let Some(d) = self.develop_of(id) else { return Ok(0) };
+        let todo: Vec<(u32, usize, MaskShape)> = d
+            .masks
+            .iter()
+            .flat_map(|m| m.components.iter().enumerate().map(move |(ci, c)| (m.id, ci, c.shape.clone())))
+            .filter(|(_, _, sh)| sh.stores_seg() && !sh.has_seg())
+            .collect();
+        if todo.is_empty() {
+            return Ok(0);
+        }
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            if self.segmenter.recompute.as_ref().is_some_and(|r| r.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
+                self.segmenter.recompute = None;
+            }
+            if self.segmenter.recompute.is_none() {
+                self.segmenter.run_seq = self.segmenter.run_seq.wrapping_add(1);
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let guard = self.activity.start_batch("aiMasks", "Computing AI masks", crate::activity::Cancel::Flag(cancel.clone()));
+                self.segmenter.recompute = Some(RecomputeRun { id: self.segmenter.run_seq, cancel, guard, photos: Vec::new(), left: 0, total: 0 });
+            }
+            let (run, cancel) = match &self.segmenter.recompute {
+                Some(r) => (r.id, r.cancel.clone()),
+                None => return Ok(0),
+            };
+            let mut queued = 0;
+            for (mask, comp, shape) in todo {
+                let kind = match &shape {
+                    MaskShape::Object { hint, exclude, .. } if !hint.is_empty() && hint.len() + exclude.len() <= MAX_CLICKS => {
+                        worker::Kind::Clicks(Self::model_clicks(&clicks_of(hint, exclude)))
+                    }
+                    MaskShape::Prompt { text, .. } if !text.trim().is_empty() => worker::Kind::Text(text.trim().to_string()),
+                    _ => continue,
+                };
+                let tag = Tag::Recompute { run, photo: id, mask, comp, shape };
+                let reply = self.segmenter.results.0.clone();
+                let mut job = self.segment_job(id, kind, tag, reply, None)?;
+                job.cancel = Some(cancel.clone());
+                self.segmenter.worker.submit(job)?;
+                queued += 1;
+            }
+            if let Some(r) = &mut self.segmenter.recompute {
+                r.left += queued;
+                r.total += queued;
+                if !r.photos.contains(&id) {
+                    r.photos.push(id);
+                }
+                r.guard.progress(u64::try_from(r.total - r.left).unwrap_or(0), u64::try_from(r.total).unwrap_or(0));
+                if r.left == 0 {
+                    self.segmenter.recompute = None;
+                }
+            }
+            Ok(queued)
+        }
+        #[cfg(not(feature = "sam"))]
+        Ok(0)
+    }
+
     /// Apply finished background requests (to masks that haven't changed since) and collect
     /// their messages. Cheap when nothing is pending: call it every frame.
     pub fn segment_poll(&mut self) -> Polled {
         #[cfg_attr(not(feature = "sam"), allow(unused_mut))]
         let mut polled = Polled { messages: std::mem::take(&mut self.segmenter.messages), ..Default::default() };
+        // presets, pastes and redos that brought selections without a segmentation
+        let wanted = std::mem::take(&mut self.segmenter.wanted);
+        for id in wanted.into_iter().take(10_000) {
+            if let Err(e) = self.segment_missing_later(id)
+                && !polled.messages.contains(&e)
+            {
+                polled.messages.push(e);
+            }
+        }
         #[cfg(feature = "sam")]
         {
+            // ✕ on the row: the worker skips the rest; the row goes now
+            if self.segmenter.recompute.as_ref().is_some_and(|r| r.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
+                self.segmenter.recompute = None;
+            }
             // (before draining: a worker that is idle now has sent everything)
             let idle = !self.segmenter.busy();
             let done: Vec<worker::Outcome> = self.segmenter.results.1.try_iter().collect();
@@ -616,6 +730,8 @@ impl Session {
             // clicks whose request was lost (the worker restarted) aren't pending forever
             if idle {
                 self.segmenter.pending = None;
+                // (nor is a batch whose replies were lost)
+                self.segmenter.recompute = None;
             }
         }
         polled
@@ -623,6 +739,9 @@ impl Session {
 
     #[cfg(feature = "sam")]
     fn apply_outcome(&mut self, o: worker::Outcome, polled: &mut Polled) {
+        if let Tag::Recompute { run, photo, mask, comp, shape } = o.tag {
+            return self.apply_recomputed(run, photo, mask, comp, &shape, o.superseded, o.result, o.notice, polled);
+        }
         if o.superseded {
             return;
         }
@@ -691,6 +810,7 @@ impl Session {
                     Err(e) => polled.messages.push(e.to_string()),
                 }
             }
+            Tag::Recompute { .. } => {}
             Tag::Detail { photo, mask, comp, shape } => {
                 let patch = match o.result {
                     Ok(Some(p)) => p,
@@ -712,6 +832,74 @@ impl Session {
                     Err(e) => log::warn!("AI mask detail: {e}"),
                 }
             }
+        }
+    }
+}
+
+impl Session {
+    /// A Recompute AI Masks result: stored in the component when it still is the selection it was
+    /// computed for (an undo or an edit since drops it), without an undo step of its own (undoing
+    /// the preset or paste that brought the mask takes it away with the mask).
+    #[cfg(feature = "sam")]
+    #[allow(clippy::too_many_arguments)]
+    fn apply_recomputed(
+        &mut self,
+        run: u64,
+        photo: PhotoId,
+        mask: u32,
+        comp: usize,
+        shape: &MaskShape,
+        skipped: bool,
+        result: Result<Option<SegMask>, String>,
+        notice: Option<String>,
+        polled: &mut Polled,
+    ) {
+        let Some(r) = self.segmenter.recompute.as_mut().filter(|r| r.id == run) else { return };
+        r.left = r.left.saturating_sub(1);
+        let name = self.develop_of(photo).and_then(|d| d.masks.iter().find(|m| m.id == mask).map(|m| m.name.clone())).unwrap_or_default();
+        let finished = self.segmenter.recompute.as_ref().is_some_and(|r| r.left == 0);
+        let report = |s: &mut Session, why: Option<&str>| {
+            if let Some(r) = &s.segmenter.recompute {
+                match why {
+                    Some(w) => r.guard.item_failed(w),
+                    None => r.guard.item_done(),
+                }
+            }
+        };
+        polled.messages.extend(notice);
+        match (skipped, result) {
+            (true, _) => {}
+            (false, Ok(Some(seg))) => {
+                let applied = self.develop_of(photo).and_then(|d| {
+                    let mut d = (*d).clone();
+                    let c = d.masks.iter_mut().find(|m| m.id == mask)?.components.get_mut(comp)?;
+                    if c.shape != *shape {
+                        return None; // undone or edited meanwhile
+                    }
+                    match &mut c.shape {
+                        MaskShape::Object { seg: s, .. } | MaskShape::Prompt { seg: s, .. } => *s = Some(seg),
+                        _ => return None,
+                    }
+                    Some(d)
+                });
+                if let Some(op) = applied.and_then(|d| self.develop_op(photo, d, "AI Masks")) {
+                    match self.apply_unrecorded(op) {
+                        Ok(()) => polled.changed = true,
+                        Err(e) => polled.messages.push(e.to_string()),
+                    }
+                }
+                report(self, None);
+            }
+            (false, Ok(None)) => report(self, Some(&format!("{name}: nothing matched"))),
+            (false, Err(e)) => {
+                report(self, Some(&format!("{name}: {e}")));
+                if !polled.messages.contains(&e) {
+                    polled.messages.push(e);
+                }
+            }
+        }
+        if finished {
+            self.segmenter.recompute = None;
         }
     }
 }
