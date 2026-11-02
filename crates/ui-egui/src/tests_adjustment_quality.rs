@@ -203,7 +203,17 @@ fn high_quality_adjustments_can_switch_during_a_drag_and_ignore_slow_verdicts() 
         let reply = h.request("ui.set", json!({"settings": {"highQualityAdjustmentPreviews": high}}), TIMEOUT);
         assert_eq!(reply["ok"], true, "{reply}");
         assert!(h.settle(TIMEOUT));
-        let job = latest(&work, Slot::Main);
+        // the job behind the picture shown (switching back to full quality may show the full
+        // render kept from before, with the same edit, instead of asking for it again)
+        let shown = h.app.renderer.textures.get(&Slot::Main).map(|t| t.key).expect("a loupe picture");
+        let job = work
+            .borrow()
+            .asked
+            .iter()
+            .rev()
+            .find(|(s, j)| *s == Slot::Main && j.key == shown)
+            .map(|(_, j)| j.clone())
+            .expect("the shown render's job");
         assert_eq!(job.request.quality, if high { Quality::Full } else { Quality::Draft });
         assert_eq!(job.display_fit.is_some(), high);
         assert!(h.app.session.interaction.is_some(), "changing quality must not end the drag");
