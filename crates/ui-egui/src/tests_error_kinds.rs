@@ -115,3 +115,31 @@ fn the_ai_models_dialog_offers_the_mediapipe_models() {
         assert!(shown(id), "the dialog lists {id}");
     }
 }
+
+/// The AI Models dialog lists every AI Denoise model the build can download (the own model with
+/// `own-model`) with its Download button, which shows the model's terms first.
+#[test]
+fn the_ai_models_dialog_lists_the_downloadable_denoise_models() {
+    let known: Vec<String> = lcc_denoise::known::all().into_iter().filter(|k| k.download.is_some()).map(|k| k.manifest.id).collect();
+    if known.is_empty() {
+        lcc_testkit::skip!(Feature, "a build without own-model or rawnind-model offers no denoise download");
+        return;
+    }
+    let mut h = demo();
+    let dir = std::env::temp_dir().join(format!("lc-ui-denoise-known-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    h.app.session.set_denoise_models_dir(Some(dir.join("denoise-models")));
+    h.app.run("dialog.aiModels", json!({})).unwrap();
+    h.step();
+    h.step();
+    for id in &known {
+        let w = format!("denoise:download:{id}");
+        assert!(h.app.widgets.iter().any(|(n, _)| n == &w), "the dialog lists {id}");
+        assert_eq!(h.request("ui.clickWidget", json!({"id": w}), std::time::Duration::from_secs(5))["ok"], true, "{id}");
+        h.step();
+        assert!(matches!(h.app.ui.dialog, Some(Dialog::DenoiseModel { accepted: false, .. })), "Download shows the terms first");
+        h.app.run("dialog.aiModels", json!({})).unwrap();
+        h.step();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

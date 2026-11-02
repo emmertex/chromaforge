@@ -118,7 +118,12 @@ Attribution-ShareAlike 3.0 licence (https://creativecommons.org/licenses/by-sa/3
 section names it. No lensfun code is used.
 
 AI denoise weights are not part of this software and are never distributed with it.
-The default build offers user-supplied models only. The optional rawnind-model
+The desktop app (own-model feature) offers the upstream project's own Bayer denoise model
+0.1.0 as an optional download after the user accepts its terms: a U-Net trained by
+OneSlips (https://github.com/OneSlips) with the tools in tools/denoise-train on CC0 raw
+samples from raw.pixls.us, its weights licensed MIT OR Apache-2.0, served by
+radfilms.com.au (the trainer's site) and pinned by size and SHA-256.
+The library's default build offers user-supplied models only. The optional rawnind-model
 feature offers a separately downloaded RawNIND UtNet2 Bayer checkpoint
 ("RawNIND" by Benoit Brummer), after the user accepts its terms. Its author
 dual-licenses the weights under GPL-3.0 and CC BY 4.0
