@@ -211,6 +211,12 @@ pub struct Buf {
 }
 
 impl Buf {
+    /// A buffer of `len` words on no device (tests of what holds buffers, without a GPU).
+    #[cfg(test)]
+    pub(crate) fn detached(len: usize) -> Buf {
+        Buf { buf: None, len }
+    }
+
     /// The generation of the device the buffer was made on ([`Gpu::generation`]).
     pub fn generation(&self) -> u64 {
         self.buf.as_ref().map_or(0, |b| b.1)

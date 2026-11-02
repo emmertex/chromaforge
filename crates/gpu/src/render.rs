@@ -23,6 +23,8 @@ pub struct GpuStages {
     entries: Mutex<Vec<Entry>>,
     /// The uploaded source (a view renders one photo at several sizes).
     source: Mutex<Option<(Arc<Rgb32f>, Arc<Buf>)>>,
+    /// Held by the render uploading `source` (never by a reader of it).
+    uploading: Mutex<()>,
     /// The device generation the buffers belong to (0: none yet; see [`GpuStages::adopt_generation`]).
     generation: std::sync::atomic::AtomicU64,
 }
@@ -74,17 +76,24 @@ impl GpuStages {
         }
     }
 
+    /// The uploaded copy of `src`, uploading it (`upload`) when the view has another photo's or none.
+    /// The upload (a conversion and a copy of up to [`RETAIN_SOURCE_BYTES`]) runs with the lock
+    /// released: the UI thread reads these stages' size every frame ([`Self::bytes`]), so it must
+    /// never wait for an upload.
     fn source(&self, src: &Arc<Rgb32f>, upload: impl FnOnce() -> Buf) -> Arc<Buf> {
-        let mut g = self.source.lock().unwrap_or_else(|e| e.into_inner());
-        match &*g {
-            Some((s, b)) if Arc::ptr_eq(s, src) => b.clone(),
-            _ => {
-                *g = None; // free the previous photo's buffer first
-                let b = Arc::new(upload());
-                *g = Some((src.clone(), b.clone()));
-                b
+        // (one upload at a time per view; only its renders wait here)
+        let _one = self.uploading.lock().unwrap_or_else(|e| e.into_inner());
+        let old = {
+            let mut g = self.source.lock().unwrap_or_else(|e| e.into_inner());
+            match &*g {
+                Some((s, b)) if Arc::ptr_eq(s, src) => return b.clone(),
+                _ => g.take(), // free the previous photo's buffer first
             }
-        }
+        };
+        drop(old);
+        let b = Arc::new(upload());
+        *self.source.lock().unwrap_or_else(|e| e.into_inner()) = Some((src.clone(), b.clone()));
+        b
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Entry>> {
@@ -527,26 +536,39 @@ static SOURCE_UPLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// stages; it is released with the buffer pool when the app idles.
 static SHARED_SOURCE: std::sync::Mutex<Option<(std::sync::Weak<Rgb32f>, Arc<Buf>)>> = std::sync::Mutex::new(None);
 
+/// The shared copy of `src` ([`SHARED_SOURCE`]), uploading it when it is another photo's. The
+/// conversion and upload (288 MB for 24 MP, up to seconds on a busy card) run with the lock
+/// released: the UI thread reads its size (`ui.inspect`) and frees it when idle, and waited for the
+/// whole upload (1.5 s when a view first zoomed to 100 %).
 fn shared_source(src: &Arc<Rgb32f>, generation: u64, upload: impl FnOnce() -> Buf) -> Arc<Buf> {
-    let mut g = SHARED_SOURCE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((weak, buf)) = &*g
-        && weak.upgrade().is_some_and(|s| Arc::ptr_eq(&s, src))
-        && buf.generation() == generation
-    {
-        return buf.clone();
-    }
-    // the previous photo's copy goes (on a render thread it is retired with the render's other
-    // buffers, so for a moment both exist)
-    *g = None;
+    // (one upload at a time: a second view of the photo waits for the first's copy instead of
+    // making its own; only renders wait here, never a reader of the size)
+    let _one = SHARED_UPLOAD.lock().unwrap_or_else(|e| e.into_inner());
+    let old = {
+        let mut g = SHARED_SOURCE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((weak, buf)) = &*g
+            && weak.upgrade().is_some_and(|s| Arc::ptr_eq(&s, src))
+            && buf.generation() == generation
+        {
+            return buf.clone();
+        }
+        // the previous photo's copy goes (on a render thread it is retired with the render's
+        // other buffers, so for a moment both exist)
+        g.take()
+    };
+    drop(old);
     SOURCE_UPLOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let buf = Arc::new(upload());
     // an upload that failed (out of memory, over the limit) holds a placeholder: this render
     // fails, and no other render may be handed it as the photo
     if !crate::ctx::failed() {
-        *g = Some((Arc::downgrade(src), buf.clone()));
+        *SHARED_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = Some((Arc::downgrade(src), buf.clone()));
     }
     buf
 }
+
+/// Held by the render uploading the shared source ([`shared_source`]), never by a reader.
+static SHARED_UPLOAD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Free the shared big source (see [`shared_source`]).
 pub(crate) fn release_shared_source() {
@@ -1432,6 +1454,68 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
 mod tests {
     use super::*;
     use lcc_develop::DevelopSettings;
+
+    /// Runs `upload_with` on a thread whose upload takes 800 ms, and returns how long `read` took
+    /// on this thread while that upload ran.
+    fn read_during_slow_upload(
+        upload_with: impl FnOnce(Box<dyn FnOnce() -> Buf + Send>) + Send + 'static,
+        read: impl FnOnce(),
+    ) -> std::time::Duration {
+        let (started, wait) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            upload_with(Box::new(move || {
+                let _ = started.send(());
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                Buf::detached(16)
+            }))
+        });
+        wait.recv().expect("the upload started");
+        let t = std::time::Instant::now();
+        read();
+        let took = t.elapsed();
+        worker.join().expect("the upload finished");
+        took
+    }
+
+    /// The UI thread reads a view's stage size every frame (`trim_stages`) and for `ui.inspect`;
+    /// it waited for the whole upload of the view's source. It never waits now.
+    #[test]
+    fn a_views_size_is_read_at_once_while_its_source_uploads() {
+        let stages = Arc::new(GpuStages::default());
+        let src = Arc::new(Rgb32f::new(4, 4));
+        let (s, src2) = (stages.clone(), src.clone());
+        let took = read_during_slow_upload(
+            move |upload| {
+                s.source(&src2, upload);
+            },
+            || {
+                let _ = stages.bytes();
+            },
+        );
+        assert!(took < std::time::Duration::from_millis(400), "the size waited {took:?} for the upload");
+        assert_eq!(stages.bytes(), 64, "the uploaded source counts once it is there");
+        let again = stages.source(&src, || Buf::detached(99));
+        assert_eq!(again.len, 16, "the same photo is not uploaded again");
+    }
+
+    /// The same for the one shared big source: `ui.inspect` blocked on it when a view first zoomed
+    /// to 100 %, and the idle trim (UI thread) takes it too.
+    #[test]
+    fn the_shared_sources_size_is_read_at_once_while_it_uploads() {
+        let src = Arc::new(Rgb32f::new(4, 4));
+        let src2 = src.clone();
+        let took = read_during_slow_upload(
+            move |upload| {
+                let _ = shared_source(&src2, 0, upload);
+            },
+            || {
+                let _ = shared_source_bytes();
+            },
+        );
+        assert!(took < std::time::Duration::from_millis(400), "the size waited {took:?} for the upload");
+        assert_eq!(shared_source(&src, 0, || Buf::detached(99)).len, 16, "kept for the photo's other views");
+        release_shared_source();
+    }
 
     #[test]
     fn coverage_mask_matches_per_pixel_decision() {
