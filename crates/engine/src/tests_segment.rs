@@ -485,6 +485,8 @@ fn update_ai_mask_replaces_what_the_mask_held() {
     let r = s.execute("masks.updateAi", &json!({})).unwrap();
     assert_eq!(r["photos"][0]["id"], id.0, "{r}");
     assert!(!s.develop_of(id).unwrap().masks[0].components[0].shape.has_seg());
+}
+
 /// With SAM 2.1 chosen for Object clicks, an Object mask without it is `ModelMissing(Sam2)`,
 /// while Describe still asks for SAM 3; `ai.models.*` list, refuse without consent and reject
 /// unknown ids.
