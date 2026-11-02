@@ -37,6 +37,14 @@ pub fn size_to_core(size: f64) -> f64 {
     0.002322 * s + 0.0000218 * s * s
 }
 
+/// [`size_to_core`]'s inverse: the Size (1..100) whose core is `core` (a fraction of the photo's long side at
+/// Fit). Brings a brush size saved as a photo fraction, before Size was a size on the screen, to the slider.
+pub fn core_to_size(core: f64) -> f64 {
+    let (a, b) = (0.0000218, 0.002322);
+    let c = if core.is_finite() { core.max(0.0) } else { 0.0 };
+    ((-b + (b * b + 4.0 * a * c).sqrt()) / (2.0 * a)).clamp(1.0, 100.0)
+}
+
 /// Monotone cubic (Fritsch–Carlson) through `(xs, ys)` at `x`, clamped to the ends. `xs` increasing.
 fn pchip(xs: &[f64; 6], ys: &[f64; 6], x: f64) -> f64 {
     let x = if x.is_finite() { x.clamp(xs[0], xs[5]) } else { xs[0] };
@@ -109,6 +117,22 @@ pub fn dab_value(r: f64, feather: f64) -> f64 {
     }
     let (a, p) = profile(feather);
     (-(r / a).powf(p)).exp()
+}
+
+#[cfg(test)]
+mod tests_core_to_size {
+    use super::*;
+
+    #[test]
+    fn core_to_size_undoes_size_to_core() {
+        for size in [1.0, 5.0, 12.0, 40.0, 100.0] {
+            assert!((core_to_size(size_to_core(size)) - size).abs() < 1e-6, "{size}");
+        }
+        for bad in [f64::NAN, f64::INFINITY, -1.0, 9.0] {
+            let s = core_to_size(bad);
+            assert!((1.0..=100.0).contains(&s), "{bad} → {s}");
+        }
+    }
 }
 
 #[cfg(test)]

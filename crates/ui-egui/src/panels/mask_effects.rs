@@ -77,15 +77,21 @@ pub fn apply(app: &mut LccApp, ctx: &egui::Context, name: &str, params: Value) {
 fn take_brush(app: &mut LccApp, b: &Value) {
     let Some(b) = b.as_object() else { return };
     let f = |k: &str| b.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+    let mut s = app.ui.brush_set(false);
+    // (a size an older build saved as a fraction of the photo becomes the Size that paints the same)
     if let Some(v) = f("size") {
-        app.ui.brush_size = (v as f32).clamp(0.002, 0.5);
+        s.size = crate::state::brush_size_of(v as f32);
     }
     if let Some(v) = f("feather") {
-        app.ui.brush_feather = (v as f32).clamp(0.0, 100.0);
+        s.feather = v as f32;
     }
     if let Some(v) = f("flow") {
-        app.ui.brush_flow = (v as f32).clamp(1.0, 100.0);
+        s.flow = v as f32;
     }
+    if let Some(v) = f("density") {
+        s.density = v as f32;
+    }
+    app.ui.set_brush_set(false, s);
     if let Some(v) = b.get("auto_mask").and_then(Value::as_bool) {
         app.ui.brush_auto_mask = v;
     }
@@ -95,7 +101,7 @@ fn take_brush(app: &mut LccApp, b: &Value) {
 
 /// The brush settings in use, as an effect carries them.
 fn brush_now(app: &LccApp) -> Value {
-    json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow, "auto_mask": app.ui.brush_auto_mask, "auto_range": app.ui.brush_auto_range})
+    json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow, "density": app.ui.brush_density, "auto_mask": app.ui.brush_auto_mask, "auto_range": app.ui.brush_auto_range})
 }
 
 /// Open the New Effect Preset dialog for the selected mask.

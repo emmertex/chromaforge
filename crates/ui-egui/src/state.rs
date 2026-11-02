@@ -878,8 +878,9 @@ pub enum KeywordingView {
     WillExport,
 }
 
-/// One of the Masking brush's A / B presets: each remembers its own size (fraction of the long
-/// edge), feather, flow and density (0..100), like Lightroom's brush A and B.
+/// One of the Masking brush's settings: Size (Lightroom's 1..100, a size on the screen,
+/// [`brush_core_points`]), Feather, Flow and Density (0..100). The A / B presets and the eraser's
+/// own settings are each one, like Lightroom's brush A, B and Erase.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrushPreset {
@@ -891,17 +892,43 @@ pub struct BrushPreset {
 
 impl Default for BrushPreset {
     fn default() -> Self {
-        Self { size: 0.04, feather: 50.0, flow: 60.0, density: 100.0 }
+        Self { size: BRUSH_SIZE_DEFAULT, feather: 50.0, flow: 60.0, density: 100.0 }
+    }
+}
+
+/// The brush Size slider's range and starting value: Lightroom's Size, a size on the screen.
+pub const BRUSH_SIZE_MIN: f32 = 1.0;
+pub const BRUSH_SIZE_MAX: f32 = 100.0;
+pub const BRUSH_SIZE_DEFAULT: f32 = 15.0;
+
+/// The radius of the brush's solid core, in screen points, at Size `size` (1..100): the same at every
+/// zoom, as in Lightroom (Size → core radius measured at Fit on a ~1000-point-wide photo,
+/// `lcc_develop::brush_model::size_to_core`).
+pub fn brush_core_points(size: f32) -> f32 {
+    (1000.0 * lcc_develop::brush_model::size_to_core(f64::from(size))) as f32
+}
+
+/// A brush Size read from settings, a preset or a script: Lightroom's 1..100. One below 1 is a size
+/// saved as a fraction of the photo (before Size was a size on the screen), brought to the Size
+/// that paints the same at Fit.
+pub fn brush_size_of(v: f32) -> f32 {
+    if !v.is_finite() || v <= 0.0 {
+        BRUSH_SIZE_DEFAULT
+    } else if v < BRUSH_SIZE_MIN {
+        lcc_develop::brush_model::core_to_size(f64::from(v)) as f32
+    } else {
+        v.min(BRUSH_SIZE_MAX)
     }
 }
 
 impl BrushPreset {
-    /// Clamp values restored from disk (NaN falls back to the default).
+    /// Clamp values restored from disk (NaN falls back to the default); a size saved as a photo
+    /// fraction becomes the screen Size that paints the same ([`brush_size_of`]).
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         let fix = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };
         Self {
-            size: fix(self.size, 0.002, 0.5, d.size),
+            size: brush_size_of(self.size),
             feather: fix(self.feather, 0.0, 100.0, d.feather),
             flow: fix(self.flow, 1.0, 100.0, d.flow),
             density: fix(self.density, 0.0, 100.0, d.density),
@@ -1261,6 +1288,8 @@ pub struct UiState {
     pub selected_guide: Option<(u64, usize)>,
     /// White Balance Selector: side of the averaged square, in preview pixels (1, 3, 5, 9, 15).
     pub wb_sample: u32,
+    /// The brush's Size (Lightroom's 1..100, a size on the screen: the core is [`brush_core_points`] at
+    /// every zoom; a stroke stores it in photo units as painted), Feather, Flow and Density.
     pub brush_size: f32,
     pub brush_feather: f32,
     pub brush_flow: f32,
@@ -1271,6 +1300,12 @@ pub struct UiState {
     /// The A and B brush presets; the slot in use is mirrored by the `brush_*` fields above and
     /// saved back when switching (`brush.preset`).
     pub brush_presets: [BrushPreset; 2],
+    /// The eraser's own Size, Feather, Flow and Density, used while erasing (Erase picked, or ⌥ /
+    /// Alt held to switch modes) and remembered beside the brush's.
+    pub erase_brush: BrushPreset,
+    /// ⌥ / Alt held over the photo with the brush this frame (it switches painting and erasing).
+    #[serde(skip)]
+    pub brush_alt: bool,
     pub brush_erase: bool,
     /// Brush Auto Mask: dabs stick to areas like the one under the brush centre.
     pub brush_auto_mask: bool,
@@ -2053,12 +2088,14 @@ impl Default for UiState {
             tool: String::new(),
             selected_guide: None,
             wb_sample: 5,
-            brush_size: 0.04,
+            brush_size: BRUSH_SIZE_DEFAULT,
             brush_feather: 50.0,
             brush_flow: 60.0,
             brush_density: 100.0,
             brush_slot: 0,
-            brush_presets: [BrushPreset::default(), BrushPreset { size: 0.012, feather: 20.0, flow: 100.0, density: 100.0 }],
+            brush_presets: [BrushPreset::default(), BrushPreset { size: 5.0, feather: 20.0, flow: 100.0, density: 100.0 }],
+            erase_brush: BrushPreset { flow: 100.0, ..BrushPreset::default() },
+            brush_alt: false,
             brush_erase: false,
             brush_auto_mask: false,
             brush_auto_range: 0.0,
@@ -2312,13 +2349,37 @@ impl UiState {
         self
     }
 
+    /// Whether the brush erases now: Erase picked, or ⌥ / Alt held to switch modes (the panel, the
+    /// cursor and the [ / ] keys then show and change the eraser's settings).
+    pub fn brush_erasing(&self) -> bool {
+        self.brush_erase != self.brush_alt
+    }
+
+    /// The brush's settings for painting (`erase` false) or erasing.
+    pub fn brush_set(&self, erase: bool) -> BrushPreset {
+        if erase {
+            self.erase_brush
+        } else {
+            BrushPreset { size: self.brush_size, feather: self.brush_feather, flow: self.brush_flow, density: self.brush_density }
+        }
+    }
+
+    /// Store `s` as the painting (`erase` false) or erasing settings, in the sliders' ranges.
+    pub fn set_brush_set(&mut self, erase: bool, s: BrushPreset) {
+        let s = BrushPreset { size: s.size.max(BRUSH_SIZE_MIN), ..s }.sanitized();
+        if erase {
+            self.erase_brush = s;
+        } else {
+            (self.brush_size, self.brush_feather, self.brush_flow, self.brush_density) = (s.size, s.feather, s.flow, s.density);
+        }
+    }
+
     /// Put the numeric and enumerated settings back in their valid ranges. Shared by loading a
     /// settings file ([`Self::sanitized`]) and `ui.set`, which merges values from a script.
     pub fn clamp_ranges(&mut self) {
         self.thumb_size = self.thumb_size.clamp(THUMB_SIZE_MIN, THUMB_SIZE_MAX);
         self.left_width = LEFT_WIDTH.clamp(self.left_width);
         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
-        self.brush_size = self.brush_size.clamp(0.002, 0.5);
         // a histogram mode or scale another build wrote (or a hand-edited file) is the default
         if lcc_raster::HistogramMode::parse(&self.histogram_mode).is_none() {
             self.histogram_mode = lcc_raster::HistogramMode::default().name().into();
@@ -2333,6 +2394,7 @@ impl UiState {
         self.brush_presets = self.brush_presets.map(BrushPreset::sanitized);
         let cur = BrushPreset { size: self.brush_size, feather: self.brush_feather, flow: self.brush_flow, density: self.brush_density }.sanitized();
         (self.brush_size, self.brush_feather, self.brush_flow, self.brush_density) = (cur.size, cur.feather, cur.flow, cur.density);
+        self.erase_brush = self.erase_brush.sanitized();
         if !crate::state::PREVIEW_LIMITS.contains(&self.settings.preview_limit) {
             self.settings.preview_limit = AppSettings::default().preview_limit;
         }

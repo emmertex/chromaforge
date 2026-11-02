@@ -3482,9 +3482,14 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     }
     // brush tool
     if app.ui.tool == "brush" {
-        // Lightroom's brush: Size is the solid core, Feather adds a halo outside it
-        let r0 = (app.ui.brush_size as f64 * long) as f32;
-        let r = r0 * lcc_develop::brush_model::outer_ratio(app.ui.brush_feather as f64) as f32;
+        // ⌥ / Alt switches painting and erasing, read every frame; the panel and the [ / ] keys
+        // follow it to the eraser's own settings
+        app.ui.brush_alt = ui.input(|i| i.modifiers.alt);
+        let set = app.ui.brush_set(app.ui.brush_erasing());
+        // Lightroom's brush: Size is the solid core, Feather adds a halo outside it, and Size is a
+        // size on the screen, the same at every zoom
+        let r0 = crate::state::brush_core_points(set.size);
+        let r = r0 * lcc_develop::brush_model::outer_ratio(set.feather as f64) as f32;
         if let Some(h) = resp.hover_pos() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::None);
             // a bold circle round the core, a thin one where the halo ends
@@ -3536,7 +3541,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             if sent == 0 {
                 let _ = app.run("develop.beginInteraction", json!({"label": "Brush"}));
             }
-            let params = brush_params(app, d, &points, &pressure, &erase, sent, false);
+            let params = brush_params(app, d, &points, &pressure, &erase, sent, false, long);
             let n = params["runs"].as_array().map_or(1, Vec::len);
             if app.run("mask.brushStroke", params).is_ok()
                 && let Some(Gesture::Brush { sent, .. }) = &mut app.gesture
@@ -3556,11 +3561,11 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                 r,
                 hard: 0.0,
                 lrc: Some({
-                    let (a, pw) = lcc_develop::brush_model::profile(app.ui.brush_feather as f64);
+                    let (a, pw) = lcc_develop::brush_model::profile(set.feather as f64);
                     (a as f32 * r0, pw as f32)
                 }),
-                flow: (app.ui.brush_flow / 100.0).clamp(0.0, 1.0),
-                density: (app.ui.brush_density / 100.0).clamp(0.0, 1.0),
+                flow: (set.flow / 100.0).clamp(0.0, 1.0),
+                density: (set.density / 100.0).clamp(0.0, 1.0),
                 color: app.ui.mask_overlay_color,
                 opacity: opacity.clamp(0.0, 1.0),
             };
@@ -3575,7 +3580,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             // a ⇧-click draws a straight line from where the last stroke ended, as in Lightroom
             let shift = resp.ctx.input(|i| i.modifiers.shift);
             let connect = shift && resp.clicked() && points.len() == 1;
-            let params = brush_params(app, d, &points, &pressure, &erase, sent, connect);
+            let params = brush_params(app, d, &points, &pressure, &erase, sent, connect, long);
             let made = app.run("mask.brushStroke", params);
             if sent > 0 {
                 let _ = app.run("develop.endInteraction", json!({}));
@@ -3735,7 +3740,10 @@ fn draw_new_gradient(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map
 /// `mask.brushStroke`'s parameters for brush gesture `points` (with its `pressure` and each point's
 /// `erase` mode): one stroke, or `runs` of one mode each joined without a gap; `sent` strokes
 /// sent live before are replaced (`continue`). The stroke goes into the selected mask's active
-/// Brush component, or makes a new mask while a tool is armed for one.
+/// Brush component, or makes a new mask while a tool is armed for one. Each run paints with its
+/// mode's settings (the eraser keeps its own); Size, a size on the screen, goes as the core's
+/// radius over the photo's on-screen long side `long` (points).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn brush_params(
     app: &LccApp,
     d: &DevelopSettings,
@@ -3744,6 +3752,7 @@ pub(crate) fn brush_params(
     erase: &[bool],
     sent: usize,
     connect: bool,
+    long: f64,
 ) -> serde_json::Value {
     let pt = |q: &Point| [q.x, q.y];
     let mut runs: Vec<(bool, Vec<[f64; 2]>, Vec<f32>)> = Vec::new();
@@ -3769,16 +3778,34 @@ pub(crate) fn brush_params(
             }
         }
     }
-    let mut params = json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow,
-           "density": app.ui.brush_density, "autoMask": app.ui.brush_auto_mask, "autoRange": app.ui.brush_auto_range, "connect": connect});
+    // the stroke's radius in photo units: the core's screen radius over the photo's screen size
+    let values = |erase: bool| {
+        let s = app.ui.brush_set(erase);
+        let size = f64::from(crate::state::brush_core_points(s.size)) / long.max(1.0);
+        json!({"size": size, "feather": s.feather, "flow": s.flow, "density": s.density})
+    };
+    let mut params = json!({"autoMask": app.ui.brush_auto_mask, "autoRange": app.ui.brush_auto_range, "connect": connect});
+    let merge = |into: &mut serde_json::Value, from: serde_json::Value| {
+        if let (Some(o), serde_json::Value::Object(f)) = (into.as_object_mut(), from) {
+            o.extend(f);
+        }
+    };
     match runs.as_slice() {
         [(mode, pts, pr)] => {
+            merge(&mut params, values(*mode));
             params["points"] = json!(pts);
             params["erase"] = json!(mode);
             params["pressure"] = json!(pr);
         }
         _ => {
-            params["runs"] = runs.iter().map(|(mode, pts, pr)| json!({"points": pts, "erase": mode, "pressure": pr})).collect();
+            params["runs"] = runs
+                .iter()
+                .map(|(mode, pts, pr)| {
+                    let mut r = json!({"points": pts, "erase": mode, "pressure": pr});
+                    merge(&mut r, values(*mode));
+                    r
+                })
+                .collect();
         }
     }
     if sent > 0 {

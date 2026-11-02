@@ -1830,14 +1830,17 @@ fn auto_range_slider(app: &mut LccApp, ui: &mut egui::Ui) {
 
 fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    // the eraser keeps its own settings: shown and changed while erasing (Erase picked, or ⌥ / Alt
+    // held to switch modes)
+    let erasing = app.ui.brush_erase != ui.input(|i| i.modifiers.alt);
     egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 0 }).show(ui, |ui| {
         // wraps at narrow panel widths (and long translations) rather than widening the panel
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(crate::i18n::tr("Brush")).font(t.semibold(13.0)));
-            if text_button(ui, "brushAdd", crate::i18n::tr("Add"), !app.ui.brush_erase).clicked() {
+            if text_button(ui, "brushAdd", crate::i18n::tr("Add"), !erasing).clicked() {
                 app.ui.brush_erase = false;
             }
-            if text_button(ui, "brushErase", crate::i18n::tr("Erase"), app.ui.brush_erase).clicked() {
+            if text_button(ui, "brushErase", crate::i18n::tr("Erase"), erasing).clicked() {
                 app.ui.brush_erase = true;
             }
             ui.add_space(8.0);
@@ -1871,21 +1874,25 @@ fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
             app.ui.brush_pressure = pressure;
         }
     });
+    let set = app.ui.brush_set(erasing);
     for (id, label, min, max, get) in [
-        ("ui.brushSize", "Size", 1.0, 100.0, (app.ui.brush_size * 400.0) as f64),
-        ("ui.brushFeather", "Feather", 0.0, 100.0, app.ui.brush_feather as f64),
-        ("ui.brushFlow", "Flow", 1.0, 100.0, app.ui.brush_flow as f64),
-        ("ui.brushDensity", "Density", 0.0, 100.0, app.ui.brush_density as f64),
+        ("ui.brushSize", "Size", 1.0, 100.0, set.size as f64),
+        ("ui.brushFeather", "Feather", 0.0, 100.0, set.feather as f64),
+        ("ui.brushFlow", "Flow", 1.0, 100.0, set.flow as f64),
+        ("ui.brushDensity", "Density", 0.0, 100.0, set.density as f64),
     ] {
         let s = ControlSpec { id, label, section: Section::Light, min, max, default: min, step: 1.0, decimals: 0, track: Track::Plain };
         let out = slider(ui, &s, get, true, None);
         if let Some(v) = out.value {
+            let mut s = app.ui.brush_set(erasing);
+            let v = v as f32;
             match id {
-                "ui.brushSize" => app.ui.brush_size = (v / 400.0) as f32,
-                "ui.brushFeather" => app.ui.brush_feather = v as f32,
-                "ui.brushDensity" => app.ui.brush_density = v as f32,
-                _ => app.ui.brush_flow = v as f32,
+                "ui.brushSize" => s.size = v,
+                "ui.brushFeather" => s.feather = v,
+                "ui.brushDensity" => s.density = v,
+                _ => s.flow = v,
             }
+            app.ui.set_brush_set(erasing, s);
         }
     }
 }

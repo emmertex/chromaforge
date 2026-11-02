@@ -107,6 +107,8 @@ fn subtract_brush_removes_sky_coverage_and_add_restores_it() {
 
     // Erase removes paint from the subtract component, restoring the underlying sky.
     h.app.ui.brush_erase = true;
+    // (the eraser keeps its own settings: the same as the brush's here)
+    h.app.ui.erase_brush = h.app.ui.brush_set(false);
     brush_at(&mut h, 0.5, 0.5);
     assert!(mask_coverage(&h, 0, 50, 50) > 0.99);
     click(&mut h, "button:maskPlus:1");
@@ -134,6 +136,8 @@ fn new_brush_starts_a_separate_mask_in_paint_mode() {
     assert_eq!(h.app.session.active_mask, Some(2));
     assert!(mask_coverage(&h, 1, 50, 50) > 0.99);
     h.app.ui.brush_erase = true;
+    // (the eraser keeps its own settings: the same as the brush's here)
+    h.app.ui.erase_brush = h.app.ui.brush_set(false);
     brush_at(&mut h, 0.5, 0.5);
     assert!(mask_coverage(&h, 1, 50, 50) < 0.01);
     exec(&mut h, "edit.undo", json!({}));
@@ -2596,5 +2600,63 @@ fn a_stroke_on_a_mask_with_settings_shows_live() {
     assert_eq!(strokes(&h), before + 1, "still one stroke");
     exec(&mut h, "edit.undo", json!({}));
     assert_eq!(strokes(&h), before, "one undo step");
+    h.settle(SETTLE);
+}
+
+/// The eraser keeps its own Size, Feather, Flow and Density: Erase (or ⌥ held) shows and changes
+/// them, the brush's stay as they were; `[` / `]` resize the set in use.
+#[test]
+fn the_eraser_keeps_its_own_settings() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.app.ui.brush_size = 20.0;
+    h.app.ui.erase_brush.size = 40.0;
+    h.step();
+    let size = |h: &Headless| h.app.ui.brush_set(h.app.ui.brush_erasing()).size;
+    assert_eq!(size(&h), 20.0);
+    click(&mut h, "button:brushErase");
+    assert!(h.app.ui.brush_erasing());
+    assert_eq!(size(&h), 40.0, "the eraser's own size");
+    exec(&mut h, "brush.larger", json!({}));
+    assert!((h.app.ui.erase_brush.size - 48.0).abs() < 1e-3, "] grows the eraser: {:?}", h.app.ui.erase_brush);
+    assert_eq!(h.app.ui.brush_size, 20.0, "and leaves the brush");
+    click(&mut h, "button:brushAdd");
+    assert_eq!(size(&h), 20.0);
+}
+
+/// Size is a size on the screen: a stroke stores the core's screen radius over the photo's screen
+/// size, and Sizes saved as photo fractions by older builds (settings, A / B, the eraser) migrate to
+/// the Size that paints the same at Fit.
+#[test]
+fn brush_size_is_a_screen_size_and_old_sizes_migrate() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.app.ui.brush_size = 20.0;
+    h.app.ui.brush_auto_mask = false;
+    brush_at(&mut h, 0.3, 0.3);
+    let size_of_last = |h: &Headless| match &develop(h).masks[0].components[0].shape {
+        MaskShape::Brush { strokes } => strokes.last().map(|s| s.size).unwrap_or(0.0),
+        _ => 0.0,
+    };
+    let at_fit = size_of_last(&h);
+    assert!(at_fit > 0.0);
+    let core = f64::from(crate::state::brush_core_points(20.0));
+    let img = h.app.image_rect.expect("the photo on screen");
+    let long = f64::from(img.width().max(img.height()));
+    assert!((at_fit - core / long).abs() < 1e-3, "the core's screen radius over the photo's screen size: {at_fit} vs {}", core / long);
+    // a settings file and presets from before
+    let mut old = crate::UiState::default();
+    old.brush_size = 0.04;
+    old.brush_presets[1].size = 0.012;
+    old.erase_brush.size = 0.04;
+    old.clamp_ranges();
+    assert!((14.0..=16.5).contains(&old.brush_size), "{}", old.brush_size);
+    assert!((4.0..=6.0).contains(&old.brush_presets[1].size), "{}", old.brush_presets[1].size);
+    assert_eq!(old.erase_brush.size, old.brush_size);
+    for bad in [f32::NAN, -3.0, 0.0, 1e9] {
+        old.brush_size = bad;
+        old.clamp_ranges();
+        assert!((1.0..=100.0).contains(&old.brush_size), "{bad} → {}", old.brush_size);
+    }
     h.settle(SETTLE);
 }
