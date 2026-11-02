@@ -47,7 +47,6 @@
   "about {} minutes": "environ {} minutes",
   "about {} seconds": "environ {} secondes",
   "by {author} · {id}": "par {author} · {id}",
-  "{added} added, {missing} missing, {changed} read from changed sidecars": "{added} ajoutée(s), {missing} manquante(s), {changed} relue(s) depuis des fichiers annexes modifiés",
   "{app} can't decode this raw variant yet ({}). You're editing the camera's embedded JPEG preview, which already includes the camera's picture style (e.g. Monochrome) and white balance.": "{app} ne peut pas encore décoder cette variante RAW ({}). Vous modifiez l’aperçu JPEG intégré de l’appareil photo, qui inclut déjà le style d’image (par ex. monochrome) et la balance des blancs de l’appareil.",
   "{app} could not open its window: {e}": "{app} n’a pas pu ouvrir sa fenêtre : {e}",
   "{app} could not open its window: {e}\n\nThe log file has the details: {path}": "{app} n’a pas pu ouvrir sa fenêtre : {e}\n\nConsultez le fichier journal pour plus de détails : {path}",
