@@ -26,6 +26,7 @@
   "It needs features this version of the app doesn't have:": "Den behöver funktioner som den här versionen av appen saknar:",
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "Håller bildkvaliteten jämn medan du justerar. Är en redigering för långsam för det uppdateras bilden snabbare medan ett reglage rör sig och blir skarp så snart det stannar.",
   "Linked": "Länkad",
+  "No roles yet. Give one with Set Role… under a People mask.": "Inga roller än. Ge en med Ange roll… under en Personer-mask.",
   "No supported photos found in this folder.": "Inga foton som stöds hittades i den här mappen.",
   "Not Linked": "Inte länkad",
   "Opens a copy of the original file, without your edits.": "Öppnar en kopia av originalfilen, utan dina justeringar.",
@@ -36,6 +37,8 @@
   "Raw files and generated photos can only be edited as a copy with adjustments.": "Raw-filer kan bara redigeras som en kopia med justeringar.",
   "Remove Hot Pixels": "Ta bort heta pixlar",
   "Renders a copy of the photo with your edits applied and opens it in the editor.": "Renderar en kopia av fotot med dina justeringar och öppnar den i redigeraren.",
+  "Roles": "Roller",
+  "Roles…": "Roller…",
   "Settings → External Editing → Edit In turns the question back on": "Inställningar → Extern redigering → Redigera i slår på frågan igen",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Visar fotot som SDR-skärmar och SDR-exporter visar det, så att du kan justera dess SDR-version",
   "Sublocation": "Delplats",
@@ -49,5 +52,6 @@
   "is in this week": "är denna vecka",
   "is in this year": "är detta år",
   "is today": "är idag",
-  "is yesterday": "är igår"
+  "is yesterday": "är igår",
+  "{n} photos": "{n} foton"
 }

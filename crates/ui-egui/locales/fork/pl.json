@@ -74,6 +74,7 @@
   "More Exports": "Więcej eksportów",
   "More Imports": "Więcej importów",
   "Multi-scale synthesized fill": "Wieloskalowe syntetyzowane wypełnienie",
+  "No roles yet. Give one with Set Role… under a People mask.": "Brak ról. Nadaj rolę przez Ustaw rolę… pod maską Osoby.",
   "No supported photos found in this folder.": "W tym folderze nie znaleziono obsługiwanych zdjęć.",
   "Not Linked": "Niepołączone",
   "One Row": "Jeden wiersz",
@@ -95,6 +96,8 @@
   "Remove Hot Pixels": "Usuń gorące piksele",
   "Rename Metadata Preset": "Zmień nazwę ustawienia metadanych",
   "Renders a copy of the photo with your edits applied and opens it in the editor.": "Tworzy kopię zdjęcia z Twoimi korektami i otwiera ją w edytorze.",
+  "Roles": "Role",
+  "Roles…": "Role…",
   "Rotate & Flip": "Obróć i odbij",
   "Screen Mode": "Tryb ekranu",
   "Settings → External Editing → Edit In turns the question back on": "Ustawienia → Edycja zewnętrzna → Edytuj w ponownie włącza pytanie",
@@ -119,5 +122,6 @@
   "is today": "jest dzisiaj",
   "is yesterday": "jest wczoraj",
   "{app} Export Presets": "Ustawienia eksportu {app}",
-  "{app} Metadata Presets": "Ustawienia metadanych {app}"
+  "{app} Metadata Presets": "Ustawienia metadanych {app}",
+  "{n} photos": "{n} zdjęć"
 }

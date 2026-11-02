@@ -47,6 +47,7 @@ pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
 pub mod map;
+mod mask_thumbs;
 pub mod menu_level;
 pub mod menubar;
 pub mod menus;

@@ -72,6 +72,7 @@
   "More Exports": "Další exporty",
   "More Imports": "Další importy",
   "Multi-scale synthesized fill": "Víceúrovňová syntetizovaná výplň",
+  "No roles yet. Give one with Set Role… under a People mask.": "Zatím žádné role. Přidělte ji pomocí Nastavit roli… pod maskou Lidé.",
   "No supported photos found in this folder.": "V této složce nebyly nalezeny žádné podporované fotografie.",
   "Not Linked": "Nepropojeno",
   "One Row": "Jeden řádek",
@@ -93,6 +94,8 @@
   "Remove Hot Pixels": "Odstranit horké pixely",
   "Rename Metadata Preset": "Přejmenovat předvolbu metadat",
   "Renders a copy of the photo with your edits applied and opens it in the editor.": "Vytvoří kopii fotky s vašimi úpravami a otevře ji v editoru.",
+  "Roles": "Role",
+  "Roles…": "Role…",
   "Rotate & Flip": "Otočit a převrátit",
   "Screen Mode": "Režim obrazovky",
   "Settings → External Editing → Edit In turns the question back on": "Nastavení → Externí úpravy → Upravit v znovu zapne dotaz",
@@ -117,5 +120,6 @@
   "is today": "je dnes",
   "is yesterday": "je včera",
   "{app} Export Presets": "Předvolby exportu {app}",
-  "{app} Metadata Presets": "Předvolby metadat {app}"
+  "{app} Metadata Presets": "Předvolby metadat {app}",
+  "{n} photos": "{n} fotografií"
 }

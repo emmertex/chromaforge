@@ -2360,3 +2360,34 @@ fn a_stale_ai_mask_shows_a_badge_and_offers_update() {
     h.settle(SETTLE);
     assert!(widgets_contain(&mut h, &format!("maskMenu:update:{m}")), "{}", h.request("ui.widgets", json!({"filter": "Menu"}), T));
 }
+
+/// The mask rows show thumbnails once the photo's small rendition is ready, and the Roles window
+/// lists who has which role and clears one.
+#[test]
+fn mask_rows_show_thumbnails_and_the_roles_window_clears_a_role() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "radial"}));
+    let m = develop(&h).masks[0].id;
+    let mut shown = false;
+    for _ in 0..100 {
+        h.settle(SETTLE);
+        if widgets_contain(&mut h, &format!("maskThumb:{m}")) {
+            shown = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(shown, "the mask's thumbnail shows");
+    assert!(widgets_contain(&mut h, "componentThumb:0"), "and its component's");
+    // the Roles window
+    let photo = h.app.session.active().expect("photo").0;
+    exec(&mut h, "people.setRole", json!({"role": "Bride", "person": "Sam", "scope": {"ids": [photo]}}));
+    h.app.ui.roles_window = true;
+    exec(&mut h, "mask.update", json!({"component": 0, "shape": {"kind": "people", "person": 0, "parts": ["Clothes"]}}));
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "window:roles"), "the window shows");
+    click(&mut h, "button:roleClear:0");
+    h.settle(SETTLE);
+    let roles = exec(&mut h, "people.roles", json!({}));
+    assert!(roles["roles"].as_array().is_some_and(Vec::is_empty), "{roles}");
+}

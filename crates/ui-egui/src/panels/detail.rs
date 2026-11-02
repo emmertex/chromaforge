@@ -2363,7 +2363,7 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
     }
     // the pointer on a mask's row in the list shows what that mask selects
     if app.ui.right == RightPanel::Masking
-        && let Some(m) = app.ui.mask_hover.and_then(|id| d.masks.iter().find(|m| m.id == id))
+        && let Some(m) = app.ui.mask_hover.or(app.ui.mask_pin_hover).and_then(|id| d.masks.iter().find(|m| m.id == id))
         && !m.components.is_empty()
     {
         return Overlay::Mask {
@@ -3383,6 +3383,15 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                 grips.push((m.id, ci, 0, q));
             }
         }
+    }
+    // the pointer resting on a mask's pin shows what that mask selects (as its row does)
+    let pin_hover = resp
+        .hover_pos()
+        .and_then(|q| grips.iter().filter(|g| g.2 == 0 && g.3.distance(q) < 10.0).min_by(|a, b| a.3.distance(q).total_cmp(&b.3.distance(q))))
+        .map(|g| g.0);
+    if app.ui.mask_pin_hover != pin_hover {
+        app.ui.mask_pin_hover = pin_hover;
+        ui.ctx().request_repaint();
     }
     // a right-click on a pin: the photo's menu is that mask's (`masking::photo_mask_menu`)
     if resp.secondary_clicked() {

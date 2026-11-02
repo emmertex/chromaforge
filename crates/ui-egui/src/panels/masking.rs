@@ -379,8 +379,18 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 app.ui.toggle_mask_collapsed(m.id);
             }
 
-            let icon = m.components.first().map(|c| kind_label(&c.shape).1).unwrap_or(Icon::Mask);
-            paint(ui.painter(), Rect::from_min_size(pos2(r.left() + 22.0, r.min.y + 7.0), vec2(16.0, 16.0)), icon, t.text_label);
+            // the mask's thumbnail (white on black over the photo); its kind's icon until it is ready
+            let thumb_r = Rect::from_min_size(pos2(r.left() + 21.0, r.min.y + 5.0), vec2(20.0, 20.0));
+            match crate::mask_thumbs::thumb(app, ui.ctx(), id, &d, m) {
+                Some(tex) => {
+                    crate::mask_thumbs::paint(ui.painter(), thumb_r, Some(&tex), if sel { t.text } else { t.text_dim.gamma_multiply(0.5) });
+                    register(ui.ctx(), format!("maskThumb:{}", m.id), thumb_r);
+                }
+                None => {
+                    let icon = m.components.first().map(|c| kind_label(&c.shape).1).unwrap_or(Icon::Mask);
+                    paint(ui.painter(), Rect::from_min_size(pos2(r.left() + 22.0, r.min.y + 7.0), vec2(16.0, 16.0)), icon, t.text_label);
+                }
+            }
             // a stale AI mask (copied, synced, a preset's): an amber badge on its icon; click to update
             let mut badge_clicked = false;
             if let Some(why) = mask_ai_status(m).filter(|_| !app.session.segmenter.recomputing()) {
@@ -582,8 +592,25 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             lcc_develop::MaskOp::Subtract => "− ",
                             lcc_develop::MaskOp::Intersect => "∩ ",
                         };
-                        let icon_r = Rect::from_min_size(r.min + vec2(6.0, 6.0), vec2(16.0, 16.0));
-                        paint(ui.painter(), icon_r, icon, if comp_sel { t.text } else { t.text_label });
+                        let icon_r = Rect::from_min_size(r.min + vec2(5.0, 5.0), vec2(18.0, 18.0));
+                        // the component's own thumbnail (made into a mask of its own)
+                        let alone = lcc_develop::Mask {
+                            components: vec![lcc_develop::MaskComponent { op: lcc_develop::MaskOp::Add, ..c.clone() }],
+                            on_photo: cur_m.on_photo,
+                            ..Default::default()
+                        };
+                        match crate::mask_thumbs::thumb(app, ui.ctx(), id, &cur_d, &alone) {
+                            Some(tex) => {
+                                crate::mask_thumbs::paint(
+                                    ui.painter(),
+                                    icon_r,
+                                    Some(&tex),
+                                    if comp_sel { t.text } else { t.text_dim.gamma_multiply(0.5) },
+                                );
+                                register(ui.ctx(), format!("componentThumb:{i}"), icon_r);
+                            }
+                            None => paint(ui.painter(), icon_r.shrink(1.0), icon, if comp_sel { t.text } else { t.text_label }),
+                        }
 
                         let text = format!("{op}{label}{}", if c.invert { crate::i18n::tr(" (inverted)") } else { "" });
                         let g = one_line(ui.painter(), &text, t.font(12.5), if comp_sel { t.text } else { t.text_dim }, r.width() - 28.0 - 52.0);
@@ -1294,7 +1321,14 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
         if text_button(ui, "maskSetRole", tr("Set Role…"), open).clicked() {
             app.ui.role_draft = if open { None } else { Some((String::new(), names.first().cloned().unwrap_or_default())) };
         }
+        let shown = app.ui.roles_window;
+        if text_button(ui, "maskRoles", tr("Roles…"), shown).clicked() {
+            app.ui.roles_window = !shown;
+        }
     });
+    if app.ui.roles_window {
+        roles_window(app, ui.ctx());
+    }
     // who has a role in this shoot (the photo's folder): "Bride" is Sam here
     let mut set: Option<(String, String)> = None;
     if let Some((role, person)) = app.ui.role_draft.as_mut() {
@@ -1328,6 +1362,80 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
         let shape = MaskShape::People { person: 0, parts: parts.clone(), who: w };
         let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
         let _ = app.run("masks.recompute", json!({"id": photo.0}));
+    }
+}
+
+/// What a role binding's scope covers, in words.
+fn scope_words(scope: &serde_json::Value) -> String {
+    let tr = crate::i18n::tr;
+    if let Some(f) = scope.get("folder").and_then(serde_json::Value::as_str) {
+        let name = std::path::Path::new(f).file_name().and_then(|n| n.to_str()).unwrap_or(f);
+        return format!("{} {name}", tr("Folder"));
+    }
+    if scope.get("album").is_some() {
+        return tr("Album").to_string();
+    }
+    let dates = scope.get("dates").unwrap_or(scope);
+    if let (Some(a), Some(b)) = (dates.get("from").and_then(serde_json::Value::as_str), dates.get("to").and_then(serde_json::Value::as_str)) {
+        return format!("{a} – {b}");
+    }
+    if let Some(n) = scope.get("photos").or_else(|| scope.get("ids")).and_then(serde_json::Value::as_array).map(Vec::len) {
+        return crate::i18n::tr_format!("{n} photos", n = n);
+    }
+    tr("Everywhere").to_string()
+}
+
+/// The Roles window: every role binding (who is the Bride, and where), the ones that apply to
+/// this photo first, each with Clear. Roles are set from a People mask's Set Role….
+fn roles_window(app: &mut LccApp, ctx: &egui::Context) {
+    let tr = crate::i18n::tr;
+    let r = app.run("people.roles", json!({})).unwrap_or_default();
+    let here: Vec<(String, String)> = r["here"]
+        .as_array()
+        .map(|v| v.iter().filter_map(|b| Some((b["role"].as_str()?.to_string(), b["person"].as_str()?.to_string()))).collect())
+        .unwrap_or_default();
+    let all: Vec<serde_json::Value> = r["roles"].as_array().cloned().unwrap_or_default();
+    let mut open = true;
+    let mut clear: Option<(String, serde_json::Value)> = None;
+    egui::Window::new(tr("Roles")).id(egui::Id::new("rolesWindow")).open(&mut open).collapsible(false).resizable(false).default_width(320.0).show(
+        ctx,
+        |ui| {
+            let t = Tokens::get(ui.ctx());
+            register(ui.ctx(), "window:roles", ui.max_rect());
+            if all.is_empty() {
+                ui.label(egui::RichText::new(tr("No roles yet. Give one with Set Role… under a People mask.")).color(t.text_dim));
+                return;
+            }
+            egui::Grid::new("rolesGrid").num_columns(4).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
+                for (i, b) in all.iter().take(500).enumerate() {
+                    let (role, person) = (b["role"].as_str().unwrap_or_default(), b["person"].as_str().unwrap_or_default());
+                    let applies = here.iter().any(|(r, p)| r == role && p == person);
+                    let colour = if applies { t.text } else { t.text_dim };
+                    ui.label(egui::RichText::new(role).color(colour).strong());
+                    ui.label(egui::RichText::new(person).color(colour));
+                    ui.label(egui::RichText::new(scope_words(&b["scope"])).color(t.text_dim).size(11.5));
+                    if text_button(ui, &format!("roleClear:{i}"), tr("Clear"), false).clicked() {
+                        // (as `people.clearRole` takes a scope: dates as {from, to}, photos as {ids})
+                        let sc = &b["scope"];
+                        let scope = match (sc.get("dates"), sc.get("photos")) {
+                            (Some(d), _) => d.clone(),
+                            (_, Some(p)) => json!({"ids": p}),
+                            _ => sc.clone(),
+                        };
+                        clear = Some((role.to_string(), scope));
+                    }
+                    ui.end_row();
+                }
+            });
+        },
+    );
+    if !open {
+        app.ui.roles_window = false;
+    }
+    if let Some((role, scope)) = clear
+        && let Err(e) = app.run("people.clearRole", json!({"role": role, "scope": scope}))
+    {
+        app.toast(ctx, e);
     }
 }
 

@@ -28,6 +28,7 @@
   "It needs features this version of the app doesn't have:": "Nó cần những tính năng mà phiên bản ứng dụng này không có:",
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "Giữ chất lượng ảnh nhất quán khi điều chỉnh. Nếu một chỉnh sửa quá chậm để làm vậy, ảnh sẽ cập nhật nhanh hơn khi thanh trượt đang di chuyển và sắc nét lại ngay khi dừng.",
   "Linked": "Đã liên kết",
+  "No roles yet. Give one with Set Role… under a People mask.": "Chưa có vai trò. Đặt vai trò bằng Đặt vai trò… dưới mặt nạ Người.",
   "No supported photos found in this folder.": "Không tìm thấy ảnh được hỗ trợ trong thư mục này.",
   "Not Linked": "Chưa liên kết",
   "Opens a copy of the original file, without your edits.": "Mở bản sao của tệp gốc, không kèm điều chỉnh của bạn.",
@@ -38,6 +39,8 @@
   "Raw files and generated photos can only be edited as a copy with adjustments.": "Tệp raw chỉ có thể sửa dưới dạng bản sao kèm điều chỉnh.",
   "Remove Hot Pixels": "Xóa điểm ảnh nóng",
   "Renders a copy of the photo with your edits applied and opens it in the editor.": "Tạo bản sao của ảnh kèm các điều chỉnh của bạn và mở nó trong trình sửa.",
+  "Roles": "Vai trò",
+  "Roles…": "Vai trò…",
   "Settings → External Editing → Edit In turns the question back on": "Cài đặt → Chỉnh sửa bên ngoài → Sửa trong bật lại câu hỏi",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Hiển thị ảnh như màn hình SDR và bản xuất SDR hiển thị, để điều chỉnh phiên bản SDR của ảnh",
   "Sublocation": "Vị trí phụ",
@@ -51,5 +54,6 @@
   "is in this week": "trong tuần này",
   "is in this year": "trong năm nay",
   "is today": "là hôm nay",
-  "is yesterday": "là hôm qua"
+  "is yesterday": "là hôm qua",
+  "{n} photos": "{n} ảnh"
 }

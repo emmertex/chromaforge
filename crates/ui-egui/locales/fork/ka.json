@@ -74,6 +74,7 @@
   "More Exports": "სხვა ექსპორტი",
   "More Imports": "სხვა იმპორტი",
   "Multi-scale synthesized fill": "მრავალმასშტაბიანი სინთეზირებული შევსება",
+  "No roles yet. Give one with Set Role… under a People mask.": "როლები ჯერ არ არის. მიანიჭეთ „როლის დაყენება…“-ით ადამიანების ნიღბის ქვეშ.",
   "No supported photos found in this folder.": "ამ საქაღალდეში მხარდაჭერილი ფოტოები ვერ მოიძებნა.",
   "Not Linked": "დაუკავშირებელი",
   "One Row": "ერთ მწკრივად",
@@ -95,6 +96,8 @@
   "Remove Hot Pixels": "ცხელი პიქსელების მოცილება",
   "Rename Metadata Preset": "მეტამონაცემების პრესეტის გადარქმევა",
   "Renders a copy of the photo with your edits applied and opens it in the editor.": "ქმნის ფოტოს კოპიოს თქვენი კორექციებით და ხსნის რედაქტორში.",
+  "Roles": "როლები",
+  "Roles…": "როლები…",
   "Rotate & Flip": "შემობრუნება და არეკვლა",
   "Screen Mode": "ეკრანის რეჟიმი",
   "Settings → External Editing → Edit In turns the question back on": "პარამეტრები → გარე რედაქტირება → რედაქტირება აპში კითხვას ისევ ჩართავს",
@@ -119,5 +122,6 @@
   "is today": "დღესაა",
   "is yesterday": "გუშინაა",
   "{app} Export Presets": "{app}-ის ექსპორტის პრესეტები",
-  "{app} Metadata Presets": "{app}-ის მეტამონაცემების პრესეტები"
+  "{app} Metadata Presets": "{app}-ის მეტამონაცემების პრესეტები",
+  "{n} photos": "{n} ფოტო"
 }

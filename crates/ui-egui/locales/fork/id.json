@@ -26,6 +26,7 @@
   "It needs features this version of the app doesn't have:": "Plug-in ini memerlukan fitur yang tidak ada di versi aplikasi ini:",
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "Menjaga kualitas gambar tetap sama saat menyesuaikan. Jika suntingan terlalu lambat untuk itu, gambar diperbarui lebih cepat selama penggeser bergerak dan menjadi tajam begitu berhenti.",
   "Linked": "Tertaut",
+  "No roles yet. Give one with Set Role… under a People mask.": "Belum ada peran. Beri satu dengan Atur Peran… di bawah masker Orang.",
   "No supported photos found in this folder.": "Tidak ada foto yang didukung ditemukan di folder ini.",
   "Not Linked": "Tidak tertaut",
   "Opens a copy of the original file, without your edits.": "Membuka salinan file asli, tanpa penyesuaian Anda.",
@@ -36,6 +37,8 @@
   "Raw files and generated photos can only be edited as a copy with adjustments.": "File raw hanya dapat diedit sebagai salinan dengan penyesuaian.",
   "Remove Hot Pixels": "Hapus piksel panas",
   "Renders a copy of the photo with your edits applied and opens it in the editor.": "Membuat salinan foto dengan penyesuaian Anda dan membukanya di editor.",
+  "Roles": "Peran",
+  "Roles…": "Peran…",
   "Settings → External Editing → Edit In turns the question back on": "Pengaturan → Pengeditan eksternal → Edit di mengaktifkan pertanyaan lagi",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Tampilkan foto seperti yang ditampilkan layar SDR dan ekspor SDR, untuk menyesuaikan versi SDR-nya",
   "Sublocation": "Sublokasi",
@@ -49,5 +52,6 @@
   "is in this week": "minggu ini",
   "is in this year": "tahun ini",
   "is today": "hari ini",
-  "is yesterday": "kemarin"
+  "is yesterday": "kemarin",
+  "{n} photos": "{n} foto"
 }
