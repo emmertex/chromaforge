@@ -1,6 +1,6 @@
 //! The parts of people the Retouch sections work on (Teeth so far), from the open MediaPipe models
 //! (Selfie Multiclass and Face Landmarker, as for Smooth Skin). Ported from OneSlips, fitted to
-//! Chromaforge's Smooth Skin design ([`super::skin`]) rather than the AI mask worker.
+//! the Smooth Skin design ([`super::skin`]) rather than the AI mask worker.
 //!
 //! What was found is kept in the photo's settings ([`RetouchAnalysis`]), so rendering and exporting
 //! never need a model. Like Smooth Skin's skin it is the photo's own data: in no settings group,

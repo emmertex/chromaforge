@@ -1,4 +1,4 @@
-//! Headless tests of the Retouch section (Smooth Skin, Find Blemishes), ported from OneSlips.
+//! Headless tests of the Retouch section (Smooth Skin, Find Blemishes, Teeth), ported from OneSlips.
 
 use std::time::Duration;
 
@@ -129,5 +129,37 @@ fn find_blemishes_offers_the_models_and_remembers_include_body_skin() {
         assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::AiModels { .. })), "{:?}", h.app.ui.dialog);
     }
     assert_eq!(h.app.session.develop_of(h.app.session.active().unwrap()).unwrap().spots.len(), spots, "nothing added without the models");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A part's sub-section (Teeth): its sliders, the person, its eye and Turn Off.
+#[test]
+fn teeth_section_sets_its_sliders_person_eye_and_turns_off() {
+    let (mut h, dir) = detail("teeth");
+    h.app.ui.right = crate::state::RightPanel::Edit;
+    h.settle(SETTLE);
+    let id = h.app.session.active().unwrap();
+    open_retouch(&mut h, "teeth");
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "button:retouchPerson-teeth-2"), "the person picker is there");
+    let r = h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "retouch.teethWhiten", "value": 35}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.app.ui.dialog = None;
+    h.settle(SETTLE);
+    let r = h.request("ui.clickWidget", json!({"id": "button:retouchPerson-teeth-2"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.app.ui.dialog = None;
+    h.settle(SETTLE);
+    let t = h.app.session.develop_of(id).unwrap().retouch.teeth;
+    assert_eq!((t.whiten, t.person), (35.0, 2));
+    let r = h.request("ui.clickWidget", json!({"id": "retouchEye:teeth"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(!h.app.session.develop_of(id).unwrap().retouch_section_on("teeth"));
+    let r = h.request("ui.clickWidget", json!({"id": "button:retouchOff-teeth"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.app.ui.dialog = None;
+    h.settle(SETTLE);
+    let t = h.app.session.develop_of(id).unwrap().retouch.teeth;
+    assert!(!t.active() && t.person == 2);
     let _ = std::fs::remove_dir_all(&dir);
 }

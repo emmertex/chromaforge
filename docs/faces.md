@@ -420,3 +420,23 @@ All or person 1 to 4 (counted from the left by their face). What the models foun
 exports never need a model) without an undo step of its own, and kept for the session, so undo and redo never run the
 models again; copy, paste, sync and presets carry the sliders, never another photo's skin. Each part of Retouch has its own
 eye for a before/after; the section's switch turns all of it off.
+
+## Teeth
+
+**Edit ▸ Retouch ▸ Teeth** (`retouch.set {section: "teeth", whiten?, brighten?, person?}`, `retouch.off`, `retouch.find`,
+`retouch.status`; ported from OneSlips) whitens and brightens the teeth the people and face models find (the People
+masks' `Teeth` part: the bright, unsaturated pixels inside the mouth opening), of everyone or of person 1 to 4.
+**Whiten** takes the yellow out (red over green and green over blue moved towards neutral, in log colour ratios) with a
+touch more brightness; **Brighten** lifts them by up to about half a stop. Both start at 0 (nothing changes) and stay
+gentle at 100. The change is blended in by the part's soft coverage, so nothing outside the teeth changes, on the
+scene-linear image right after Smooth Skin and before exposure, tone and colour; it is per pixel, so a preview and an
+export change the teeth alike (`crates/pipeline/src/retouch.rs`). The GPU renderer reads the scene-linear image back for
+it, as for Smooth Skin, so both renderers run the same code.
+
+The teeth found are stored with the photo (`retouch_analysis`, with the orientation they were found for) without an undo
+step, and kept for the session per photo, person, orientation and look, so undo and redo never run the models again. They
+are looked for when a slider first moves, settings are pasted, the person changes or the photo is turned: on their own
+thread with a row in the activity stack in the app, at once in the CLI and MCP (`crates/engine/src/segment/parts.rs`).
+Without the models the AI Models dialog offers them; nothing is downloaded on its own. The sliders and the person are
+develop controls (`retouch.teethWhiten`, `retouch.teethBrighten`, `retouch.teethPerson`) in the **Retouch** settings
+group; copy, paste, sync and presets never carry another photo's teeth. Teeth has its own eye for a before/after.

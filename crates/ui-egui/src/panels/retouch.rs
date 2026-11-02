@@ -1,6 +1,6 @@
 //! Portrait retouching (ported from OneSlips): the Edit panel's **Retouch** section, one
-//! sub-section per part of a person (Skin, Blemishes), each with its own eye for a before/after.
-//! They run `skin.*` and `spot.findBlemishes`; the open MediaPipe models they need are offered in
+//! sub-section per part of a person (Skin, Blemishes, Teeth), each with its own eye for a
+//! before/after. They run `skin.*`, `spot.findBlemishes` and `retouch.*`; the open MediaPipe models they need are offered in
 //! the AI Models dialog when missing (nothing is downloaded without the person's go-ahead).
 
 use egui::{Align2, RichText, Sense, pos2, vec2};
@@ -30,7 +30,105 @@ pub fn panel(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, id: Photo
         });
         ui.add_space(4.0);
     }
+    for (key, title, intro, missing) in PARTS {
+        if sub_header(app, ui, d, key, title, d.retouch.section_active(key), true) {
+            part_body(app, ui, d, id, key, intro, missing);
+        }
+    }
     ui.add_space(4.0);
+}
+
+/// The sections beyond Skin and Blemishes: (key, title, what it does, what to say when its part
+/// isn't in the photo).
+const PARTS: &[(&str, &str, &str, &str)] =
+    &[("teeth", "Teeth", "Whiter, brighter teeth: the yellow is taken out gently.", "No teeth were found in this photo.")];
+
+/// Where a section stands on this photo, in words (`None`: its parts were found, or it is off).
+fn part_status(app: &LccApp, d: &DevelopSettings, id: PhotoId, key: &str, missing: &str) -> Option<String> {
+    if !d.retouch.section_active(key) {
+        return None;
+    }
+    let a = d.retouch_analysis.as_ref().filter(|a| a.orientation == d.orientation);
+    let parts = d.retouch.section_parts(key);
+    let found: Vec<Option<bool>> = parts.iter().map(|r| a.and_then(|a| a.mask(*r)).map(|m| m.seg.is_some())).collect();
+    if found.contains(&Some(true)) {
+        return None;
+    }
+    if found.iter().all(Option::is_some) {
+        let person = parts.first().map_or(0, |r| r.person);
+        return Some(if person > 0 { tr("This person wasn't found in this photo.").to_string() } else { tr(missing).to_string() });
+    }
+    Some(if app.session.retouch_pending(id) {
+        tr("Finding teeth…").to_string()
+    } else if !lcc_engine::segment::Segmenter::AVAILABLE {
+        return None;
+    } else if missing_model(app).is_some() {
+        tr("Needs the MediaPipe people and face models (one-time downloads, Apache-2.0).").to_string()
+    } else {
+        tr("The teeth haven't been found yet.").to_string()
+    })
+}
+
+/// A part's sub-section body: what it does or where it stands, its sliders, the person, Turn Off.
+fn part_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, id: PhotoId, key: &str, intro: &str, missing: &str) {
+    let status = part_status(app, d, id, key, missing);
+    let pending = app.session.retouch_pending(id);
+    padded(ui, |ui| match &status {
+        Some(s) => {
+            note(ui, s);
+            if !pending && lcc_engine::segment::Segmenter::AVAILABLE {
+                let need = missing_model(app);
+                let (label, wid) =
+                    if need.is_some() { ("Download…", format!("retouchDownload-{key}")) } else { ("Find Again", format!("retouchFind-{key}")) };
+                if text_button(ui, &wid, label, false).clicked() {
+                    if need.is_some() {
+                        offer_models(app);
+                    } else {
+                        let r = app.run_typed("retouch.find", json!({}));
+                        report(app, ui.ctx(), r);
+                    }
+                }
+            }
+        }
+        None => note(ui, intro),
+    });
+    if pending {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+    }
+    for (sec, _, control) in lcc_develop::retouch::SLIDERS {
+        if *sec != key {
+            continue;
+        }
+        let before = d.retouch.section_active(key);
+        super::edit::control(app, ui, d, control, true);
+        // the first move of a slider needs the models: offer them when they are missing
+        let now = app.session.develop_of(id).is_some_and(|n| n.retouch.section_active(key));
+        if !before && now && lcc_engine::segment::Segmenter::AVAILABLE && missing_model(app).is_some() {
+            offer_models(app);
+        }
+    }
+    super::edit::sub_title(ui, "Person");
+    let people = [("All", "0"), ("1", "1"), ("2", "2"), ("3", "3"), ("4", "4")];
+    let person = lcc_develop::controls::get(d, &lcc_develop::retouch::person_control(key)).unwrap_or(0.0).clamp(0.0, 4.0) as usize;
+    let mut chosen = None;
+    padded(ui, |ui| chosen = segmented(ui, &format!("retouchPerson-{key}"), &people, Some(person), 5));
+    if let Some(i) = chosen {
+        let r = app.run_typed("retouch.set", json!({"section": key, "person": i}));
+        report(app, ui.ctx(), r);
+    }
+    padded(ui, |ui| {
+        note(ui, "People are counted from the left, by their face.");
+        if d.retouch.section_active(key) {
+            ui.add_space(4.0);
+            let r = ui.button(tr("Turn Off"));
+            register(ui.ctx(), format!("button:retouchOff-{key}"), r.rect);
+            if r.clicked() {
+                let r = app.run_typed("retouch.off", json!({"section": key}));
+                report(app, ui.ctx(), r);
+            }
+        }
+    });
+    ui.add_space(6.0);
 }
 
 /// The first open model Retouch needs that is not installed.

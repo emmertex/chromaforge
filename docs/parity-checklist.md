@@ -32,9 +32,9 @@ cited here still exists. Formerly docs/parity.md.
 | D. Search & filter (FILT) | 11 | 1 | 1 | 0 | 4/4 (100%) | 4/4 (100%) |
 | E. Metadata (META) | 5 | 1 | 0 | 0 | 2/2 (100%) | 2/2 (100%) |
 | F. Edit panel — global adjustments (EDIT) | 44 | 5 | 1 | 1 | 28/28 (100%) | 13/15 (87%) |
-| G. Profiles (PROF) | 7 | 3 | 3 | 0 | 3/4 (75%) | 3/4 (75%) |
+| G. Profiles (PROF) | 7 | 5 | 3 | 0 | 3/4 (75%) | 3/4 (75%) |
 | H. Crop & rotate (CROP) | 10 | 1 | 0 | 1 | 8/8 (100%) | 2/3 (67%) |
-| I. Remove / healing (REM) | 8 | 1 | 2 | 2 | 4/4 (100%) | 2/3 (67%) |
+| I. Remove / healing (REM) | 10 | 2 | 2 | 1 | 4/4 (100%) | 2/3 (67%) |
 | J. Red eye (EYE) | 2 | 0 | 0 | 0 | — | 1/1 (100%) |
 | K. Masking (MASK) | 16 | 5 | 6 | 0 | 7/8 (88%) | 8/8 (100%) |
 | L. Presets (PRE) | 6 | 0 | 1 | 1 | 2/2 (100%) | 2/2 (100%) |
@@ -54,9 +54,9 @@ cited here still exists. Formerly docs/parity.md.
 | Z. Keyboard shortcuts (desktop) | 77 | 5 | 2 | 1 | 48/52 (92%) | 24/26 (92%) |
 | Lightroom Classic extras | 104 | 20 | 3 | 0 | — | 35/39 (90%) |
 | IMM. Immich integration | 11 | 0 | 0 | 0 | — | 7/7 (100%) |
-| **Total** | 506 | 70 | 30 | 27 | 195/203 (96%) | 167/186 (90%) |
+| **Total** | 508 | 73 | 30 | 26 | 195/203 (96%) | 167/186 (90%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.3%** of 606 in-scope rows — P0 98.0% of 203 · P1 94.6% of 186 · P2 76.5% of 215.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.1%** of 611 in-scope rows — P0 98.0% of 203 · P1 94.6% of 186 · P2 76.5% of 219.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -359,7 +359,8 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-REM-REFLECT | Remove reflections | P2 | ⬜ | | |
 | LR-REM-DUST | Dust detection | P2 | ✅ | `cmd:spot.findDust`, `crates/pipeline/src/dust.rs`, `crates/engine/src/dust_map.rs` | Remove panel ▸ Remove Dust: soft dust shadows become Heal or Even Out spots (tagged, amber outlines), plus the camera body's known dust (per-body dust maps); a selection runs in the background; optional on import ([sensor-defects.md](sensor-defects.md)) |
 | LR-REM-BLEMISH | Find blemishes on faces (beyond Lightroom) | P2 | ✅ | `cmd:spot.findBlemishes`, `crates/pipeline/src/blemish.rs`, `crates/engine/src/cmd/retouch.rs`, `crates/engine/src/segment/skin.rs`, `crates/ui-egui/src/panels/retouch.rs` | Edit ▸ Retouch ▸ Blemishes ▸ Find Blemishes (ported from OneSlips): with the open MediaPipe people and face models installed (AI Models dialog, Apache-2.0, never bundled), small darker-or-redder round spots on the skin the people model finds, inside each face's outline with eyes, brows, lips and lower nose cut out by FaceMesh landmark polygons, become heal spots (one undo step); faces without landmarks or under 160 px and faces with more than 14 candidates (stubble, freckles) get none, at most 6 per face; Include body skin also searches shoulders, arms and back; runs in the background with an activity row. Classical detector on the models' skin and landmarks; not a Lightroom feature |
-| LR-RET-SMOOTH | Smooth skin (beyond Lightroom) | P2 | ✅ | `cmd:skin.smooth`, `cmd:skin.set`, `cmd:skin.find`, `cmd:skin.status`, `ctl:skin.amount`, `ctl:skin.shine`, `cmd:section.retouch`, `crates/pipeline/src/skin.rs`, `crates/engine/src/segment/skin.rs`, `crates/ui-egui/src/panels/retouch.rs` | Edit ▸ Retouch ▸ Skin (ported from OneSlips): frequency separation on the scene-linear skin the MediaPipe people model finds, bands measured in each face's eye distance (preview and export alike): Amount, Texture, Even Tone, Redness, Reduce Shine; Face / Body / Both; All or person 1–4. The analysis is stored with the photo without an undo step and kept for the session (undo/redo never rerun the models); copy, paste and sync carry the sliders, never another photo's skin; each Retouch part has its own eye. Not ported yet: Retouch ▸ Teeth and the other parts-of-people sections |
+| LR-RET-SMOOTH | Smooth skin (beyond Lightroom) | P2 | ✅ | `cmd:skin.smooth`, `cmd:skin.set`, `cmd:skin.find`, `cmd:skin.status`, `ctl:skin.amount`, `ctl:skin.shine`, `cmd:section.retouch`, `crates/pipeline/src/skin.rs`, `crates/engine/src/segment/skin.rs`, `crates/ui-egui/src/panels/retouch.rs` | Edit ▸ Retouch ▸ Skin (ported from OneSlips): frequency separation on the scene-linear skin the MediaPipe people model finds, bands measured in each face's eye distance (preview and export alike): Amount, Texture, Even Tone, Redness, Reduce Shine; Face / Body / Both; All or person 1–4. The analysis is stored with the photo without an undo step and kept for the session (undo/redo never rerun the models); copy, paste and sync carry the sliders, never another photo's skin; each Retouch part has its own eye. Teeth is its own row (LR-RET-TEETH) |
+| LR-RET-TEETH | Teeth whitening (beyond Lightroom) | P2 | ✅ | `cmd:retouch.set`, `cmd:retouch.off`, `cmd:retouch.find`, `cmd:retouch.status`, `ctl:retouch.teethWhiten`, `ctl:retouch.teethBrighten`, `ctl:retouch.teethPerson`, `crates/pipeline/src/retouch.rs`, `crates/engine/src/segment/parts.rs`, `crates/develop/src/retouch.rs`, `crates/ui-egui/src/panels/retouch.rs` | Edit ▸ Retouch ▸ Teeth (ported from OneSlips): Whiten (the yellow out, in log colour ratios) and Brighten on the teeth the MediaPipe models find; All or person 1–4; its own eye. The teeth found are stored with the photo (no undo step, never copied) and kept for the session; scene-linear after Smooth Skin, the same at any size; the GPU renderer reads back for it (CPU code on both). Other parts of people (eyes, lips, hair) not ported |
 | LR-REM-SYNC | Sync spots | P1 | ✅ | `cmd:develop.copy` (`groups`), `crates/develop/src/presets.rs` | |
 
 ## J. Red eye (EYE)
