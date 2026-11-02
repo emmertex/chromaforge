@@ -70,6 +70,7 @@ mod lightroom_smart;
 mod lightroom_sqlite;
 pub mod link;
 pub mod logging;
+pub mod machine_test;
 pub mod media;
 pub mod memory;
 pub mod merge;

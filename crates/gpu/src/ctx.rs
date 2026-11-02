@@ -317,7 +317,8 @@ pub(crate) struct Tracked(wgpu::Buffer, u64);
 
 impl Tracked {
     fn new(b: wgpu::Buffer, generation: u64) -> Tracked {
-        ALLOCATED.fetch_add(b.size(), Ordering::Relaxed);
+        let now = ALLOCATED.fetch_add(b.size(), Ordering::Relaxed).saturating_add(b.size());
+        PEAK.fetch_max(now, Ordering::Relaxed);
         Tracked(b, generation)
     }
 }
@@ -340,6 +341,14 @@ thread_local! {
 
 /// Bytes of device buffers that exist (in use, retired or pooled).
 static ALLOCATED: AtomicU64 = AtomicU64::new(0);
+/// The most [`ALLOCATED`] has been since [`reset_peak`].
+static PEAK: AtomicU64 = AtomicU64::new(0);
+
+/// Measure [`GpuMemory::peak`] again from what exists now.
+pub(crate) fn reset_peak() {
+    PEAK.store(ALLOCATED.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
 /// Bytes waiting in per-thread retired lists.
 static RETIRED_BYTES: AtomicU64 = AtomicU64::new(0);
 /// The generation the next device gets ([`Gpu::generation`]).
@@ -361,10 +370,17 @@ pub struct GpuMemory {
     pub pooled: u64,
     /// Of which buffers dropped since their thread's last submit (pooled at its next submit).
     pub retired: u64,
+    /// The most that existed at once since [`crate::reset_memory_peak`].
+    pub peak: u64,
 }
 
 pub(crate) fn memory() -> GpuMemory {
-    GpuMemory { allocated: ALLOCATED.load(Ordering::Relaxed), pooled: POOLED.load(Ordering::Relaxed), retired: RETIRED_BYTES.load(Ordering::Relaxed) }
+    GpuMemory {
+        allocated: ALLOCATED.load(Ordering::Relaxed),
+        pooled: POOLED.load(Ordering::Relaxed),
+        retired: RETIRED_BYTES.load(Ordering::Relaxed),
+        peak: PEAK.load(Ordering::Relaxed),
+    }
 }
 
 pub struct Gpu {

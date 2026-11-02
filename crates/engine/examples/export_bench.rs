@@ -16,55 +16,12 @@
 
 use std::time::Instant;
 
-use lcc_develop::{DevelopSettings, Mask, MaskComponent, MaskShape};
+use lcc_develop::DevelopSettings;
 use lcc_engine::catalog::PhotoId;
 use lcc_engine::export::{Destination, ExportOptions, export_batch};
-use lcc_geom::Point;
 
 fn wedding_settings(plain: bool, hdr: bool) -> DevelopSettings {
-    let mut s = DevelopSettings::default();
-    s.light.exposure = 0.35;
-    s.light.contrast = 12.0;
-    s.light.highlights = -45.0;
-    s.light.shadows = 35.0;
-    s.light.whites = 10.0;
-    s.light.blacks = -8.0;
-    s.effects.clarity = 8.0;
-    s.effects.texture = 5.0;
-    s.effects.dehaze = 4.0;
-    s.color.vibrance = 10.0;
-    s.detail.sharpen_amount = 40.0;
-    s.detail.nr_luminance = 15.0;
-    s.detail.nr_color = 25.0;
-    s.hdr.enabled = hdr;
-    if plain {
-        return s;
-    }
-    let mask = |id: u32, shape: MaskShape, f: fn(&mut Mask)| {
-        let mut m = Mask {
-            id,
-            name: format!("mask {id}"),
-            visible: true,
-            components: vec![MaskComponent { name: None, op: Default::default(), invert: false, shape }],
-            ..Default::default()
-        };
-        f(&mut m);
-        m
-    };
-    s.masks = vec![
-        mask(1, MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.35) }, |m| {
-            m.adjust.highlights = -30.0;
-            m.adjust.saturation = 10.0;
-        }),
-        mask(2, MaskShape::Radial { center: Point::new(0.5, 0.55), rx: 0.22, ry: 0.4, angle: 0.0, feather: 50.0, invert: false }, |m| {
-            m.adjust.exposure = 0.2;
-            m.adjust.clarity = 10.0;
-        }),
-        mask(3, MaskShape::Radial { center: Point::new(0.5, 0.45), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: true }, |m| {
-            m.adjust.exposure = -0.3
-        }),
-    ];
-    s
+    lcc_engine::machine_test::bench_settings(plain, hdr)
 }
 
 fn main() {
@@ -82,12 +39,36 @@ fn main() {
             .cloned()
             .collect()
     };
-    if files.is_empty() {
-        eprintln!("usage: export_bench [--cpu] [--sdr] [--plain] [--lanes N] [--runs N] FILES…");
+    if files.is_empty() && !flag("--test-machine") {
+        eprintln!(
+            "usage: export_bench [--cpu] [--sdr] [--plain] [--lanes N] [--runs N] [--gpu-jobs N] [--gpu-mb MB] FILES… | --test-machine [--quick] [FILES…]"
+        );
         std::process::exit(2);
     }
     if let Some(n) = value("--lanes") {
         lcc_engine::export::set_export_lanes(Some(n));
+    }
+    if flag("--test-machine") {
+        // "Test my machine" as the app runs it, with these files (none: the demo photos)
+        let t = Instant::now();
+        let o = lcc_engine::machine_test::TestOptions { paths: files.clone(), quick: flag("--quick"), ..Default::default() };
+        let r = lcc_engine::machine_test::run_test(&o, &mut |d, n, what| {
+            eprintln!("  {d}/{n} {what} ({:.0} s)", t.elapsed().as_secs_f64());
+            true
+        })
+        .expect("test");
+        for run in &r.runs {
+            println!(
+                "  {} lanes, {}: {:.1} photos/min ({} photos in {:.1} s)",
+                run.lanes,
+                if run.gpu { "GPU" } else { "CPU" },
+                run.photos_per_min,
+                run.photos,
+                run.seconds
+            );
+        }
+        println!("{}\n(test took {:.0} s)", r.summary, t.elapsed().as_secs_f64());
+        return;
     }
     let gpu = !flag("--cpu");
     lcc_engine::export::set_export_mix(flag("--mix"));

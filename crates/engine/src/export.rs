@@ -2117,6 +2117,8 @@ pub struct PreparedExport {
     /// When the GPU is busy with other photos it renders on the processor instead of waiting
     /// ([`export_mix`] when it was prepared).
     mix: bool,
+    /// Its renders may use the GPU ([`export_gpu`] when it was prepared).
+    gpu: bool,
 }
 
 struct RenderWork {
@@ -2194,7 +2196,16 @@ fn prepare_guarded(
         };
         // a decoded frame, its graded copy and the pipeline's planes, plus the encoder's frames
         let weight = px.saturating_mul(96);
-        return Ok(PreparedExport { photo: id, file_name, source_dir, work: Work::Video(Box::new(work)), guard, weight, mix: false });
+        return Ok(PreparedExport {
+            photo: id,
+            file_name,
+            source_dir,
+            work: Work::Video(Box::new(work)),
+            guard,
+            weight,
+            mix: false,
+            gpu: export_gpu(),
+        });
     }
     // HDR output only for photos edited in HDR; the rest of the batch exports as usual
     let sdr_opts;
@@ -2249,7 +2260,7 @@ fn prepare_guarded(
         };
         (work, weight)
     };
-    Ok(PreparedExport { photo: id, file_name, source_dir, work, guard, weight, mix: export_mix() })
+    Ok(PreparedExport { photo: id, file_name, source_dir, work, guard, weight, mix: export_mix(), gpu: export_gpu() })
 }
 
 /// The folder a photo's original is in, for [`DestinationMode::SameAsOriginal`]. None for a demo
@@ -2636,6 +2647,25 @@ pub fn export_batch(
     run_batch(items, o, to, write, exists, true, &mut |_, _| true)
 }
 
+/// [`export_batch`] with `lanes` photos side by side, on the GPU or not, the files thrown away
+/// (a benchmark: [`crate::machine_test`]). Changes nothing process-wide.
+pub(crate) fn export_batch_tuned(
+    session: &mut crate::Session,
+    ids: &[lcc_catalog::PhotoId],
+    o: &ExportOptions,
+    lanes: usize,
+    gpu: bool,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut items = prepare_batch(session, ids, o)?;
+    for it in &mut items {
+        it.gpu = gpu;
+    }
+    let lanes = lanes.clamp(1, MAX_EXPORT_LANES).min(items.len().max(1));
+    let to = Destination::default();
+    let mut sink = |_: &str, _: &[u8]| Ok(());
+    run_batch_with(items, &mut Placer::new(o, &to, &mut sink, &|_| false, true), &mut |_, _| true, lanes, None)
+}
+
 /// Write an exported or rendered file on disk: its folder is created if needed, and the file is
 /// replaced atomically ([`lcc_catalog::safe_file::write_atomic_nosync`]: a temp file
 /// renamed into place), so a failure part-way leaves any previous file intact and no truncated
@@ -2822,6 +2852,20 @@ const GAIN_MAP_BYTES_PER_PX: usize = 48;
 /// lanes; with it the lanes are threads of their own and this one only places the files, looking
 /// at `cancel` while it waits, so it can leave at once: lanes still in flight then stop at their
 /// next step on their own.
+/// Exports render on the GPU when there is one (`false`: on the processor; the install settings,
+/// when "Test my machine" found the processor alone faster).
+static EXPORT_GPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Let exports use the GPU or not (views and the rest of the app keep it either way).
+pub fn set_export_gpu(on: bool) {
+    EXPORT_GPU.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether exports use the GPU ([`set_export_gpu`]).
+pub fn export_gpu() -> bool {
+    EXPORT_GPU.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn run_batch_with(
     items: Vec<PreparedExport>,
     placer: &mut Placer<'_>,
@@ -2895,7 +2939,10 @@ fn run_gated(item: PreparedExport, stop: &dyn Fn() -> bool) -> Result<Exported, 
     let _held = crate::memory::export_gate().acquire(item.weight);
     let what = format!("exporting {}", item.file_name);
     // (its GPU renders take turns with the other photos' and stay behind the window's: `lcc_gpu::as_batch`)
-    crate::guard::catch(&what, || lcc_gpu::as_batch(|| item.run_until(stop))).and_then(|r| r)
+    // (on the processor when the GPU is turned off for exports: `set_export_gpu`)
+    let gpu = item.gpu;
+    let render = || lcc_gpu::as_batch(|| item.run_until(stop));
+    crate::guard::catch(&what, || if gpu { render() } else { lcc_gpu::on_cpu(render) }).and_then(|r| r)
 }
 
 /// The photos of a batch shared by its lanes: each lane takes the next one, at most

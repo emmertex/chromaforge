@@ -459,6 +459,22 @@ pub struct AppSettings {
     pub photocraft_file: EditFile,
     /// Memory the caches may hold together, in MB (0 = automatic; `app.memoryBudget`).
     pub memory_mb: u32,
+    /// Photos an export renders side by side (0 = automatic; `app.exportTuning`, "Test my machine").
+    #[serde(deserialize_with = "lenient")]
+    pub export_lanes: u32,
+    /// Exports render on the processor only (the GPU stays for the views); "Test my machine" sets
+    /// it when the processor alone was as fast.
+    #[serde(deserialize_with = "lenient")]
+    pub export_cpu_only: bool,
+    /// Device memory exports may use together on the GPU, MB (0 = automatic: 55 % of the card's).
+    #[serde(deserialize_with = "lenient")]
+    pub gpu_export_mb: u32,
+    /// Exports sharing the GPU at once (0 = automatic).
+    #[serde(deserialize_with = "lenient")]
+    pub gpu_export_jobs: u32,
+    /// The last "Test my machine" (Settings ▸ Performance): what it measured and chose.
+    #[serde(deserialize_with = "lenient")]
+    pub machine_test: Option<lcc_engine::machine_test::MachineReport>,
     /// Filmstrip: file names above the thumbnails.
     pub film_names: bool,
     /// Filmstrip: rating / flag / edited badges on the thumbnails.
@@ -626,6 +642,11 @@ impl Default for AppSettings {
             photocraft_path: String::new(),
             photocraft_file: EditFile { format: EditFormat::Psd, ..EditFile::default() },
             memory_mb: 0,
+            export_lanes: 0,
+            export_cpu_only: false,
+            gpu_export_mb: 0,
+            gpu_export_jobs: 0,
+            machine_test: None,
             film_names: true,
             film_badges: true,
             grid_badges: GridBadges::Auto,

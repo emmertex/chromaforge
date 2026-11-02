@@ -202,6 +202,19 @@ pub fn events_after(after: u64) -> Vec<GpuEvent> {
     slot::events_after(after)
 }
 
+/// Why the GPU last failed in this session (a lost device, a device error), even when a new device
+/// has replaced it since; `None` when it never did.
+pub fn last_loss() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        slot::last_loss()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+}
+
 /// Lost devices replaced so far in this session.
 pub fn recoveries() -> u32 {
     #[cfg(not(target_arch = "wasm32"))]
@@ -569,6 +582,13 @@ pub struct GpuMemory {
     pub allocated: u64,
     pub pooled: u64,
     pub retired: u64,
+    pub peak: u64,
+}
+
+/// Measure [`GpuMemory::peak`] from now on (a benchmark).
+pub fn reset_memory_peak() {
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx::reset_peak();
 }
 
 /// Device memory held by the renderer's buffers (zero without a device).
