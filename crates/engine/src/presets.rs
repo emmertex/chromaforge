@@ -479,6 +479,10 @@ pub fn builtin() -> Vec<Preset> {
             json!({"treatment": "bw", "grading": {"shadows": {"hue": 32.0, "sat": 22.0, "lum": 0.0}, "highlights": {"hue": 42.0, "sat": 18.0, "lum": 0.0}}, "curve": {"shadows": 10.0}}),
         ),
     ]
+    .into_iter()
+    // AI-mask recipes: Sun Kissed, Recover Blue Suit, Bring Sky Down…
+    .chain(crate::presets_smart::smart())
+    .collect()
 }
 
 #[derive(Clone, Debug, Serialize)]

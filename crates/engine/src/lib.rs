@@ -90,6 +90,7 @@ pub mod preset_import;
 pub mod preset_luminar;
 pub mod preset_xmp;
 pub mod presets;
+pub mod presets_smart;
 pub mod print;
 pub mod print_color;
 pub mod print_pdf;
