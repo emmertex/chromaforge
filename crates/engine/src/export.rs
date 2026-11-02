@@ -11,6 +11,24 @@ pub use lcc_pipeline::{DeepImage, DeepSamples, OutputDepth, OutputSpace};
 use lcc_raster::{Plane, Rgba8};
 use serde::{Deserialize, Serialize};
 
+/// Under `<PREFIX>_PROFILE`: print how long the step since the last lap took (`t` restarts),
+/// with the thread and the time since the first lap (photos side by side overlap or queue).
+fn lap(what: &str, t: &mut Option<std::time::Instant>) {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    if let Some(t) = t {
+        let now = std::time::Instant::now();
+        let at = now.duration_since(*EPOCH.get_or_init(|| *t)).as_secs_f64();
+        let thread = std::thread::current();
+        eprintln!("  export {what}: {:.1} ms [{} at {at:.1} s]", t.elapsed().as_secs_f64() * 1e3, thread.name().unwrap_or("main"));
+        *t = now;
+    }
+}
+
+/// A clock for [`lap`] when profiling (never read otherwise: `Instant::now` panics on wasm32).
+fn lap_clock() -> Option<std::time::Instant> {
+    lcc_pipeline::profiling().then(std::time::Instant::now)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExportFormat {
@@ -1673,8 +1691,10 @@ fn finish_deep_over<'a>(img: &'a DeepImage, alpha: Option<&mut Plane>, o: &Expor
 /// against the base as written, so its 8-bit rounding is handed back by the map.
 pub fn encode_gain_map_jpeg(sdr: &Rgba8, hdr: &DeepImage, o: &ExportOptions, meta: Option<&Metadata>) -> Result<Vec<u8>, String> {
     use lcc_codecs::gainmap;
+    let mut t = lap_clock();
     let base = finish_8bit(sdr, o);
     let hdr = finish_deep(hdr, o);
+    lap("gain map: output sharpening and watermark", &mut t);
     let DeepSamples::F32(hv) = &hdr.samples else {
         return Err("HDR export needs a float HDR render".into());
     };
@@ -1683,16 +1703,36 @@ pub fn encode_gain_map_jpeg(sdr: &Rgba8, hdr: &DeepImage, o: &ExportOptions, met
         return Err("HDR and SDR renders differ in size".into());
     }
     let space = o.effective_space();
-    let trc = space.trc();
-    let sdr_lin: Vec<[f32; 3]> = base.data.iter().map(|p| [0, 1, 2].map(|c| trc.decode(p[c] as f32 / 255.0))).collect();
+    let sdr_lin = linear_of_8bit(&base, space.trc());
     let hdr_lin: &[[f32; 3]] = hv.as_chunks::<3>().0;
+    lap("gain map: SDR to linear", &mut t);
     let (map, gm) = gainmap::compute(&sdr_lin, hdr_lin, w, h, space.luma(), &gainmap::GainMapOptions::default()).map_err(|e| e.to_string())?;
+    drop(sdr_lin);
+    lap("gain map: compute", &mut t);
     let profile = icc::write_named(named_space(space));
     let exif = meta.map(lcc_meta::write_exif);
     let xmp = meta.map(|m| lcc_meta::write_xmp(m, None));
     let em = EncodeMeta { icc: Some(&profile), exif: exif.as_deref(), xmp: xmp.as_deref(), ppi: Some(o.ppi) };
     let sub = if o.limit_kb.is_some() { ChromaSubsampling::S420 } else { ChromaSubsampling::S444 };
-    encode_jpeg_with_limit(o, |q| gainmap::encode_jpeg(&EncodeImage::rgba8(&base), &map, &gm, q, sub, &em))
+    let r = encode_jpeg_with_limit(o, |q| gainmap::encode_jpeg(&EncodeImage::rgba8(&base), &map, &gm, q, sub, &em));
+    lap("gain map: JPEG encode", &mut t);
+    r
+}
+
+/// The linear values of an 8-bit image encoded with `trc` (a table of the 256 levels: the same
+/// values as decoding each sample, in a fraction of the time), rows in parallel.
+fn linear_of_8bit(img: &Rgba8, trc: lcc_pipeline::OutputTrc) -> Vec<[f32; 3]> {
+    let lut: [f32; 256] = std::array::from_fn(|v| trc.decode(v as f32 / 255.0));
+    let at = |v: u8| lut.get(v as usize).copied().unwrap_or(0.0);
+    let mut out = vec![[0f32; 3]; img.data.len()];
+    let w = img.width.max(1);
+    lcc_raster::par_rows(&mut out, w, |y, row| {
+        let src = img.data.get(y.saturating_mul(w)..).unwrap_or(&[]);
+        for (o, p) in row.iter_mut().zip(src) {
+            *o = [at(p[0]), at(p[1]), at(p[2])];
+        }
+    });
+    out
 }
 
 /// The codecs' name of an output space (for its ICC profile).
@@ -2064,6 +2104,9 @@ fn prepare_guarded(
             return Err(format!("{label}: {why}"));
         }
         let hdr_job = if gain_map { Some(session.export_job(id, w, h, o.effective_space(), OutputDepth::F32Hdr)?) } else { None };
+        // a gain map also holds the HDR rendition (float), the SDR one in linear light and the
+        // stages the two renders share
+        let weight = if gain_map { weight.saturating_add(w.saturating_mul(h).saturating_mul(GAIN_MAP_BYTES_PER_PX)) } else { weight };
         (Work::Render(Box::new(RenderWork { job, hdr_job, meta, opts: o.clone() })), weight)
     } else {
         let lcc_catalog::Source::File { path } = &p.source else {
@@ -2166,17 +2209,39 @@ impl PreparedExport {
                 })
             }
             Work::Render(w) => {
-                let RenderWork { job, hdr_job, meta, opts } = *w;
-                let result = job.run();
+                let RenderWork { mut job, hdr_job, meta, opts } = *w;
+                let mut t = lap_clock();
+                // A gain map's HDR rendition is the same photo rendered a second time: it starts
+                // from the SDR render's decoded original and (when that rendered on the CPU) its
+                // white-balanced, denoised, retouched image and spatial planes, instead of
+                // decoding and redoing them.
+                let stages = hdr_job.as_ref().map(|_| std::sync::Arc::new(lcc_pipeline::StageCache::default()));
+                if let Some(st) = &stages {
+                    job.stages = Some(st.clone());
+                }
+                let mut result = job.run();
+                lap("render", &mut t);
+                let loaded = result.loaded.take();
                 let r = result.rendered?;
                 let gpu_fallback = result.gpu_fallback;
                 let bytes = match hdr_job {
-                    Some(hj) => {
+                    Some(mut hj) => {
+                        if let Some(src) = loaded {
+                            hj.source = crate::media::SourceRef::Loaded(Box::new(src));
+                        }
+                        if let Some(st) = stages {
+                            hj.stages = Some(st);
+                        }
                         let hr = hj.run().rendered?;
+                        lap("HDR render", &mut t);
                         let hdr = hr.deep.ok_or("the HDR render has no float samples")?;
                         encode_gain_map_jpeg(&r.image, &hdr, &opts, meta.as_ref())?
                     }
-                    None => encode_rendered(&r, &opts, meta.as_ref())?,
+                    None => {
+                        let b = encode_rendered(&r, &opts, meta.as_ref())?;
+                        lap("encode", &mut t);
+                        b
+                    }
                 };
                 Ok(Exported {
                     file_name,
@@ -2461,9 +2526,34 @@ pub fn export_parallelism(n: usize) -> usize {
     if cfg!(target_arch = "wasm32") {
         return 1;
     }
-    let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
-    (cores / 2).clamp(1, 12).min(n.max(1))
+    let lanes = export_lanes_override().unwrap_or_else(|| {
+        let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
+        (cores / 2).clamp(1, 12)
+    });
+    lanes.clamp(1, MAX_EXPORT_LANES).min(n.max(1))
 }
+
+/// The most photos an export renders side by side, whatever is asked.
+pub const MAX_EXPORT_LANES: usize = 64;
+
+/// Export lanes chosen by [`set_export_lanes`] (`0`: automatic).
+static LANES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Render `lanes` photos side by side in exports from now on (`None`: the automatic number). The
+/// environment's `<PREFIX>_EXPORT_LANES` still wins (for measurements).
+pub fn set_export_lanes(lanes: Option<usize>) {
+    LANES.store(lanes.unwrap_or(0).min(MAX_EXPORT_LANES), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The lanes asked for: `<PREFIX>_EXPORT_LANES`, else [`set_export_lanes`]'s; `None`: automatic.
+pub fn export_lanes_override() -> Option<usize> {
+    let env = lcc_brand::env("EXPORT_LANES").and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n > 0);
+    env.or(Some(LANES.load(std::sync::atomic::Ordering::Relaxed)).filter(|n| *n > 0))
+}
+
+/// Working memory a gain map JPEG adds per output pixel ([`encode_gain_map_jpeg`]): the float HDR
+/// rendition (12 B), the SDR one in linear light (12 B) and the stages its two renders share.
+const GAIN_MAP_BYTES_PER_PX: usize = 48;
 
 /// [`run_batch`] with `lanes` photos in flight (the calling thread is one of them).
 fn run_batch_with(
@@ -2784,6 +2874,40 @@ mod tests {
             *p = [(x * 2) as u8, (y * 3) as u8, ((x * y) % 255) as u8, 255];
         }
         img
+    }
+
+    /// The gain map's linear SDR (a table of the 256 levels) is each sample decoded on its own.
+    #[test]
+    fn the_linear_sdr_table_is_exact() {
+        let img = Rgba8::from_fn(23, 11, |x, y| [(x * 11) as u8, (y * 23) as u8, ((x + y) * 7) as u8, 255]);
+        for space in [OutputSpace::Srgb, OutputSpace::AdobeRgb, OutputSpace::ProPhoto, OutputSpace::Rec2020] {
+            let trc = space.trc();
+            let lin = linear_of_8bit(&img, trc);
+            assert_eq!(lin.len(), img.data.len());
+            for (p, l) in img.data.iter().zip(&lin) {
+                for c in 0..3 {
+                    assert_eq!(l[c].to_bits(), trc.decode(p[c] as f32 / 255.0).to_bits(), "{space:?}");
+                }
+            }
+        }
+    }
+
+    /// A batch's lanes come from the setting (the environment's override aside), never more than
+    /// the batch has photos.
+    #[test]
+    fn export_lanes_follow_the_setting() {
+        if lcc_brand::env("EXPORT_LANES").is_some() {
+            return;
+        }
+        set_export_lanes(Some(3));
+        assert_eq!(export_lanes_override(), Some(3));
+        assert_eq!(export_parallelism(10), 3);
+        assert_eq!(export_parallelism(2), 2);
+        set_export_lanes(Some(10_000));
+        assert_eq!(export_parallelism(1000), MAX_EXPORT_LANES);
+        set_export_lanes(None);
+        assert_eq!(export_lanes_override(), None);
+        assert!(export_parallelism(1000) >= 1);
     }
 
     /// Issue #1670: removing a redundant alpha channel preserves samples and metadata.
