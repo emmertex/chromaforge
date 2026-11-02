@@ -86,12 +86,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.detail", "Detail View", Some("D"), "View"),
     ("view.compare", "Compare", Some("Shift+C"), "View"),
     ("view.survey", "Survey", Some("N"), "View"),
-    ("view.eyeFocus", "Eye Focus Strip", None, "View"),
+    ("view.eyeFocus", "Eye Focus Strip", None, "View>Loupe Info"),
     ("view.people", "People", None, "View"),
     ("view.person", "Show Person", None, ""),
     ("view.faceBoxes", "Face Boxes", None, "View>Loupe Info"),
     ("view.focusPoint", "Show Focus Point", Some("Alt+F"), "View>Loupe Info"),
     ("view.zoomToFocus", "Zoom to Focus Point", None, "View>Loupe Info"),
+    ("view.spaceZoomsTo", "Space Zooms To", None, ""),
     ("view.reference", "Reference View", Some("Shift+R"), "View>Before/After"),
     ("photo.setReference", "Set as Reference Photo", None, ""),
     ("compare.swap", "Swap Compare Photos", None, "View"),
@@ -751,6 +752,16 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             // {on?}; no params toggles. The camera's focus point (Sony, from the file) over the photo.
             app.ui.settings.focus_point = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.settings.focus_point);
             Ok(json!({"on": app.ui.settings.focus_point}))
+        }
+        "view.spaceZoomsTo" => {
+            // {to: focusPoint|eye} → {to}; it also turns Zoom to Focus Point on
+            let to = p.get("to").and_then(Value::as_str).unwrap_or_default();
+            let Some(z) = crate::state::SpaceZoom::ALL.into_iter().find(|z| z.id() == to) else {
+                return Some(Err(format!("view.spaceZoomsTo: `to` is focusPoint or eye, not `{to}`")));
+            };
+            app.ui.settings.space_zoom = z;
+            app.ui.settings.zoom_to_focus = true;
+            Ok(json!({"to": z.id()}))
         }
         "view.zoomToFocus" => {
             // {on?}; no params toggles. Toggle Zoom (Z) centres on the focus point when there is one.

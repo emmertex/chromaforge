@@ -2645,8 +2645,7 @@ fn brush_size_is_a_screen_size_and_old_sizes_migrate() {
     let long = f64::from(img.width().max(img.height()));
     assert!((at_fit - core / long).abs() < 1e-3, "the core's screen radius over the photo's screen size: {at_fit} vs {}", core / long);
     // a settings file and presets from before
-    let mut old = crate::UiState::default();
-    old.brush_size = 0.04;
+    let mut old = crate::UiState { brush_size: 0.04, ..Default::default() };
     old.brush_presets[1].size = 0.012;
     old.erase_brush.size = 0.04;
     old.clamp_ranges();

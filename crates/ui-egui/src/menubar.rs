@@ -392,6 +392,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "view.focusPoint",
             "view.zoomToFocus",
             "view.faceBoxes",
+            "view.eyeFocus",
             "view.visualizeHdr",
             "view.hdrPreview",
             "---",

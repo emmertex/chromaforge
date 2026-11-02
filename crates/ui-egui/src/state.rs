@@ -507,6 +507,10 @@ pub struct AppSettings {
     /// View ▸ Zoom to Focus Point: Toggle Zoom (Z) centres the zoomed view on the camera's focus point
     /// when the photo has one (`view.zoomToFocus`).
     pub zoom_to_focus: bool,
+    /// View ▸ Space Zooms To: where Toggle Zoom (Space / Z) centres the zoomed photo while Zoom to
+    /// Focus Point is on (`view.spaceZoomsTo`).
+    #[serde(deserialize_with = "lenient")]
+    pub space_zoom: SpaceZoom,
     /// Double-clicking a grid photo opens it in Develop instead of the Library loupe (issue #144;
     /// off by default, as in Lightroom Classic).
     pub double_click_develop: bool,
@@ -647,6 +651,7 @@ impl Default for AppSettings {
             keyword_chips: KeywordChips::default(),
             focus_point: false,
             zoom_to_focus: true,
+            space_zoom: SpaceZoom::default(),
             double_click_develop: false,
             hide_filter_in_develop: false,
             user_presets_first: false,
@@ -876,6 +881,39 @@ pub enum KeywordingView {
     Keywords,
     Containing,
     WillExport,
+}
+
+/// Where Toggle Zoom (Space / Z) centres the zoomed photo (View ▸ Space Zooms To).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SpaceZoom {
+    /// The camera's focus point; without one, the main subject's sharpest open eye (else the
+    /// largest face).
+    #[default]
+    FocusPoint,
+    /// The main subject's sharpest open eye (else the largest face); without a face, the camera's
+    /// focus point.
+    Eye,
+}
+
+impl SpaceZoom {
+    pub const ALL: [SpaceZoom; 2] = [SpaceZoom::FocusPoint, SpaceZoom::Eye];
+
+    /// The id `view.spaceZoomsTo` takes.
+    pub fn id(self) -> &'static str {
+        match self {
+            SpaceZoom::FocusPoint => "focusPoint",
+            SpaceZoom::Eye => "eye",
+        }
+    }
+
+    /// The menu's words.
+    pub fn label(self) -> &'static str {
+        match self {
+            SpaceZoom::FocusPoint => "Camera Focus Point, Else the Eyes",
+            SpaceZoom::Eye => "Main Subject's Eyes, Else the Focus Point",
+        }
+    }
 }
 
 /// One of the Masking brush's settings: Size (Lightroom's 1..100, a size on the screen,

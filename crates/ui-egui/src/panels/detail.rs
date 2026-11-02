@@ -482,8 +482,28 @@ pub(crate) fn focus_box(photo: &lcc_catalog::Photo) -> Option<lcc_geom::Rect> {
 
 /// Where Toggle Zoom centres the view on the photo's focus point (`app.ui.pan`), if it has one in frame.
 pub(crate) fn focus_pan(app: &LccApp, id: PhotoId) -> Option<(f32, f32)> {
-    let r = focus_box(app.session.catalog.photo(id)?)?;
-    Some((((r.x0 + r.x1) / 2.0) as f32, ((r.y0 + r.y1) / 2.0) as f32))
+    let point = focus_box(app.session.catalog.photo(id)?).map(|r| (((r.x0 + r.x1) / 2.0) as f32, ((r.y0 + r.y1) / 2.0) as f32));
+    // the main subject's sharpest open eye, else the largest face, once the eye finder has looked
+    // at the photo (with the eye strip off too: `wants_eyes`)
+    let eye = app.session.eye_job(id).and_then(|j| app.eye_strip.report(j.key)).and_then(|r| r.zoom_target()).map(|[x, y]| (x, y));
+    space_target(app.ui.settings.space_zoom, point, eye)
+}
+
+/// Where Space zooms to from the camera's focus point and the main subject's eye (either may be
+/// missing), as View ▸ Space Zooms To says; `None`: where the photo was zoomed last.
+pub(crate) fn space_target(mode: crate::state::SpaceZoom, point: Option<(f32, f32)>, eye: Option<(f32, f32)>) -> Option<(f32, f32)> {
+    match mode {
+        crate::state::SpaceZoom::FocusPoint => point.or(eye),
+        crate::state::SpaceZoom::Eye => eye.or(point),
+    }
+}
+
+/// Whether Toggle Zoom on photo `id` may want its eyes found ([`focus_pan`]): Zoom to Focus Point
+/// on, and the eyes asked for first or no focus point recorded. The eyes are then looked for in the
+/// background while the photo is on screen, eye strip or not.
+pub(crate) fn wants_eyes(app: &LccApp, id: PhotoId) -> bool {
+    app.ui.settings.zoom_to_focus
+        && (app.ui.settings.space_zoom == crate::state::SpaceZoom::Eye || app.session.catalog.photo(id).is_some_and(|p| focus_box(p).is_none()))
 }
 
 /// Draw the camera's focus box over a photo drawn in `img` (View ▸ Focus Point): green corner
@@ -1428,6 +1448,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         let upcoming: Vec<PhotoId> =
             ids.iter().position(|p| *p == id).map(|i| ids.iter().skip(i + 1).take(crate::eye_strip::AHEAD).copied().collect()).unwrap_or_default();
         crate::eye_strip::show(app, ui, canvas, id, &upcoming);
+    } else if wants_eyes(app, id) {
+        // Space zooms to the eyes without the strip: they are found quietly for this photo
+        crate::eye_strip::find_quietly(app, id);
     }
     if let Some((bg, g)) = before_badge {
         p.rect_filled(bg, 4.0, Color32::from_black_alpha(160));
