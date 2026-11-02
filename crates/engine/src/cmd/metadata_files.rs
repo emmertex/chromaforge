@@ -92,6 +92,8 @@ fn lr_field(id: &str) -> Option<&'static str> {
         "rightsusageterms" | "usageterms" => "usageTerms",
         "copyrightinfourl" | "copyrighturl" => "copyrightUrl",
         "creator" | "artist" => "creator",
+        "cameraserialnumber" | "bodyserialnumber" => "cameraSerial",
+        "jobid" | "jobidentifier" | "transmissionreference" => "job",
         "creatorjobtitle" => "creatorJobTitle",
         "creatoraddress" => "creatorAddress",
         "creatorcity" => "creatorCity",
@@ -220,6 +222,8 @@ fn from_xmp(file: &str, text: &str) -> Option<std::result::Result<Found, String>
     put("usageTerms", m.usage_terms.as_ref());
     put("copyrightUrl", m.copyright_url.as_ref());
     put("creator", m.artist.as_ref());
+    put("cameraSerial", m.serial_number.as_ref());
+    put("job", m.job_identifier.as_ref());
     put("location", m.sublocation.as_ref());
     put("city", m.city.as_ref());
     put("state", m.state.as_ref());
@@ -253,6 +257,8 @@ fn from_xmp(file: &str, text: &str) -> Option<std::result::Result<Found, String>
         "xmpRights:UsageTerms",
         "xmpRights:WebStatement",
         "xmpRights:Marked",
+        "photoshop:TransmissionReference",
+        "exifEX:BodySerialNumber",
         "Iptc4xmpCore:Location",
         "photoshop:City",
         "photoshop:State",

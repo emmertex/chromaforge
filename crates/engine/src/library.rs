@@ -697,6 +697,7 @@ impl Session {
             self.selection.ids.retain(|id| self.catalog.photo(*id).is_some());
             self.selection.active = self.selection.active.filter(|id| self.catalog.photo(*id).is_some());
         }
+        self.sync_exported_ids();
         // not on Missing Photos: working that view out checks every original (minutes on a
         // sleeping NAS), and the app checks them in the background once it runs
         if self.selection.active.is_none()
@@ -930,6 +931,16 @@ impl Session {
     /// library or a lock.
     pub fn release_library_lock(&mut self) {
         drop(self.library.as_mut().and_then(|l| l.lock.take()));
+    }
+
+    /// Keep the Exported Files facet's hidden ids in step with the last export. Filter equality
+    /// ignores them, so this never makes an otherwise plain filter look active.
+    pub(crate) fn sync_exported_ids(&mut self) {
+        let ids = self.previous_export.clone();
+        self.filter.exported_ids.set(ids.clone());
+        if let Some(f) = self.shelved_filter.as_mut() {
+            f.exported_ids.set(ids);
+        }
     }
 
     fn view_json(&self) -> Vec<u8> {

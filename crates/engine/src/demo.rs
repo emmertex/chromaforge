@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use lcc_catalog::{Album, Flag, Meta, Op, Photo, Source};
+use lcc_catalog::{Album, CopyrightStatus, Flag, Meta, Op, Photo, Source};
 use lcc_develop::DevelopSettings;
 
 use crate::Session;
@@ -15,19 +15,44 @@ pub fn load(s: &mut Session) {
         let id = s.catalog.alloc_photo_id();
         let file = format!("LC{:05}.JPG", 1200 + sc.id * 7);
         let mut p = Photo::new(id, Source::Demo { scene: sc.id }, &file, "JPEG", sc.width, sc.height, "2026-09-28T09:30:00");
-        p.captured = Some(sc.meta.captured.clone());
+        // A few capture times carry a UTC offset, so the Timezone column has values too.
+        let zone = match sc.id % 3 {
+            0 => "",
+            1 => "+04:00",
+            _ => "-05:00",
+        };
+        p.captured = Some(format!("{}{zone}", sc.meta.captured));
         p.file_size = (sc.width as u64 * sc.height as u64) / 3;
+        let (city, state, country, gps) = match sc.id % 3 {
+            0 => ("Zayed City", "Abu Dhabi", "United Arab Emirates", Some((24.45, 54.6))),
+            1 => ("Muscat", "Muscat", "Oman", Some((23.59, 58.41))),
+            _ => ("Lisbon", "Lisbon", "Portugal", Some((38.72, -9.14))),
+        };
+        let fired = sc.id % 4 == 0;
+        let gps = (sc.id % 4 != 0).then_some(gps).flatten();
         p.meta = Meta {
             camera: sc.meta.camera.into(),
+            camera_serial: format!("BODY-{:03}", 100 + sc.id % 3),
             lens: sc.meta.lens.into(),
             focal_mm: Some(sc.meta.focal_mm),
             aperture: Some(sc.meta.aperture),
             shutter: sc.meta.shutter.into(),
             iso: Some(sc.meta.iso),
+            flash: (sc.id % 2 == 0).then_some(lcc_meta::Flash { fired, raw: if fired { 1 } else { 0 } }),
             location: sc.meta.location.into(),
+            city: city.into(),
+            state: state.into(),
+            country: country.into(),
+            gps,
             title: sc.name.clone(),
+            copyright_status: match sc.id % 3 {
+                0 => CopyrightStatus::Unknown,
+                1 => CopyrightStatus::Copyrighted,
+                _ => CopyrightStatus::PublicDomain,
+            },
             keywords: sc.meta.keywords.iter().map(|k| k.to_string()).collect(),
             creator: format!("{} Demo", lcc_brand::DISPLAY_NAME),
+            job: format!("Assignment {}", sc.id % 3 + 1),
             ..Default::default()
         };
         // one demo photo carries a camera focus point (as a Sony raw would), on the bloom's centre, so
@@ -112,6 +137,9 @@ pub fn load(s: &mut Session) {
                 photo_order: Vec::new(),
             },
         });
+    }
+    if let Ok(home) = lcc_geo::SavedLocation::new("Zayed City Studio", 24.45, 54.6, 2000.0, false) {
+        ops.push(Op::SetSavedLocation { name: home.name.clone(), location: Some(home) });
     }
     for op in ops {
         let _ = s.catalog.apply(op);

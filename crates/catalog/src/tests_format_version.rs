@@ -272,8 +272,8 @@ fn op_variants_are_versioned() {
             Op::SetHistoryCursor { .. } => 11,
         }
     }
-    /// v15: `Analysis.eyes_open` / `aesthetic` / `cull_score`.
-    const NEWEST_FIELDS: u32 = 15;
+    /// v16: `Meta.camera_serial` / `flash` / `job` (the comprehensive Metadata columns).
+    const NEWEST_FIELDS: u32 = 16;
     let newest = since(&Op::SetHistoryCursor { id: crate::PhotoId(1), cursor: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }

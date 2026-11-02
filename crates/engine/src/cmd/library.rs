@@ -552,7 +552,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Filter",
             [],
             None,
-            "partial Filter: {text?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
+            "partial Filter: {text?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range, facets?: {<a Metadata column id>: [chosen values]}}",
             always,
             |s, p| {
                 let mut v = serde_json::to_value(&s.filter).unwrap_or_default();
@@ -575,6 +575,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("library.filter", problems.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")));
                 }
                 s.filter = f;
+                s.sync_exported_ids();
                 s.shelved_filter = None;
                 Ok(json!({"count": s.visible().len()}))
             }
@@ -669,6 +670,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("library.clearFilter", "Clear Filters", ["Library", "Filters"], None, "{}", always, |s, _| {
             s.filter = Default::default();
+            s.sync_exported_ids();
             s.shelved_filter = None;
             Ok(json!({"count": s.visible().len()}))
         }),
@@ -690,6 +692,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     s.filter = f;
                 }
+                s.sync_exported_ids();
                 Ok(json!({"enabled": s.shelved_filter.is_none(), "count": s.visible().len()}))
             }
         ),
@@ -1231,7 +1234,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Info",
             [],
             None,
-            "{ids?, title?, headline?, caption?, descriptionWriter?, category?, supplementalCategories?: [..] | \"a, b\", subjectCode?: [..] | \"c, d\", altText?, extendedDescription?, copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, location?, city?, state?, country?, gps?: \"lat, lon\" | [lat, lon] | null, keywords?: [..], addKeywords?: [..], removeKeywords?: [..]}",
+            "{ids?, title?, headline?, caption?, descriptionWriter?, category?, supplementalCategories?: [..] | \"a, b\", subjectCode?: [..] | \"c, d\", altText?, extendedDescription?, copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, cameraSerial?, cameraSerialNumber?, flashFired?: bool|null, job?, jobIdentifier?, location?, city?, state?, country?, gps?: \"lat, lon\" | [lat, lon] | null, keywords?: [..], addKeywords?: [..], removeKeywords?: [..]}",
             has_selection,
             |s, p| {
                 let strs = |k: &str| {
@@ -1257,6 +1260,14 @@ pub fn specs() -> Vec<CommandSpec> {
                     },
                     Some(_) => return Err(bad("photo.setMeta", "gps is \"lat, lon\", [lat, lon] or null")),
                 };
+                let camera_serial = str_param(p, "cameraSerial").or_else(|| str_param(p, "cameraSerialNumber"));
+                let job = str_param(p, "job").or_else(|| str_param(p, "jobIdentifier"));
+                let flash: Option<Option<lcc_meta::Flash>> = match p.get("flashFired") {
+                    None => None,
+                    Some(Value::Null) => Some(None),
+                    Some(Value::Bool(b)) => Some(Some(lcc_meta::Flash { fired: *b, raw: if *b { 1 } else { 0 } })),
+                    Some(_) => return Err(bad("photo.setMeta", "flashFired is true or false (or null to clear it)")),
+                };
                 let status = match str_param(p, "copyrightStatus") {
                     Some(t) => Some(
                         CopyrightStatus::parse(t)
@@ -1273,6 +1284,15 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     if let Some(st) = status {
                         m.copyright_status = st;
+                    }
+                    if let Some(v) = camera_serial {
+                        m.camera_serial = v.to_string();
+                    }
+                    if let Some(v) = job {
+                        m.job = v.to_string();
+                    }
+                    if let Some(f) = flash {
+                        m.flash = f;
                     }
                     for (k, field) in [
                         ("title", &mut m.title),

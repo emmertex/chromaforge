@@ -362,3 +362,40 @@ fn picker_values_survive_changes_to_other_things() {
     app.session.catalog.apply(Op::SetMeta { id: PhotoId(2), meta: Box::new(meta) }).unwrap();
     assert_eq!(app.caches.filter_values(&app.session.catalog).cameras, ["ILCE-1", "NIKON Z 6_2", "nikon z 6_2"]);
 }
+
+/// Issue #777: a column header can take every field of the full Classic-style Metadata set.
+#[test]
+fn every_metadata_column_field_can_be_chosen() {
+    use crate::panels::filterbar::COLUMN_FIELDS;
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1600.0, 1000.0], 1.0);
+    h.app.ui.view = crate::state::ViewMode::PhotoGrid;
+    h.app.ui.filter_bar = true;
+    h.settle(SETTLE);
+    ok(&mut h, "ui.clickWidget", json!({"id": "button:filterColumns"}));
+    for &(field, _) in COLUMN_FIELDS {
+        let r = h.request("engine.execute", json!({"command": "view.filterColumns", "params": {"column": 0, "field": field}}), T);
+        assert_eq!(r["ok"], true, "{field}: {r}");
+        assert_eq!(h.app.ui.filter_columns[0], field);
+    }
+    // A Classic label is canonicalized too.
+    ok(&mut h, "engine.execute", json!({"command": "view.filterColumns", "params": {"column": 1, "field": "Camera Serial Number"}}));
+    assert_eq!(h.app.ui.filter_columns[1], "cameraSerial");
+}
+
+/// Issue #777: the grouped field menu has a search box, so a field near the end of the full list is
+/// one typed word away and clicking it retitles the column.
+#[test]
+fn the_grouped_field_menu_finds_a_workflow_column() {
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1600.0, 1000.0], 1.0);
+    h.app.ui.view = crate::state::ViewMode::PhotoGrid;
+    h.app.ui.filter_bar = true;
+    h.settle(SETTLE);
+    ok(&mut h, "ui.clickWidget", json!({"id": "button:filterColumns"}));
+    ok(&mut h, "ui.clickWidget", json!({"id": "dropdown:filterColumn0"}));
+    ok(&mut h, "ui.text", json!({"text": "Job"}));
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "filterColumnField:0:job"), "the Job row is offered");
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterColumnField:0:job"}));
+    assert_eq!(h.app.ui.filter_columns[0], "job");
+}

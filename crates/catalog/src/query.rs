@@ -1,6 +1,10 @@
 //! Filtering, search and sorting.
 
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt;
+
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{AlbumId, Catalog, ColorLabel, Flag, MediaKind, Photo, PhotoId};
 
@@ -22,6 +26,37 @@ pub enum MatchOp {
     #[default]
     Any,
     All,
+}
+
+/// The photos of the last export, kept as hidden filter state for the Exported Files column.
+/// Equality deliberately ignores them: an export alone is not a visible filter, and the engine
+/// refreshes them from `Session::previous_export` whenever it changes.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(transparent)]
+pub struct ExportedIds(Vec<PhotoId>);
+
+impl ExportedIds {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn contains(&self, id: &PhotoId) -> bool {
+        self.0.contains(id)
+    }
+
+    pub fn set(&mut self, ids: Vec<PhotoId>) {
+        self.0 = ids;
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl PartialEq for ExportedIds {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
 }
 
 /// What the grid shows. Empty/None fields don't filter.
@@ -107,6 +142,13 @@ pub struct Filter {
     /// Smart-album rules (all / any / none, nested groups; see [`crate::rules`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_set: Option<crate::RuleSet>,
+    /// Chosen values of the newer Metadata columns, by canonical field id (issue #777). Values in
+    /// one field combine with OR; different fields combine with AND.
+    #[serde(default, deserialize_with = "deserialize_facets", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub facets: BTreeMap<String, Vec<String>>,
+    /// Hidden ids for the Exported Files column; refreshed from the engine's last export.
+    #[serde(default, deserialize_with = "deserialize_exported_ids", skip_serializing_if = "ExportedIds::is_empty")]
+    pub exported_ids: ExportedIds,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -605,6 +647,213 @@ where
     Ok(Some(spec))
 }
 
+const MAX_FACET_KEYS: usize = 128;
+const MAX_FACET_KEY_CHARS: usize = 128;
+const MAX_FACET_VALUES: usize = 1000;
+const MAX_FACET_VALUE_CHARS: usize = 512;
+const MAX_EXPORTED_IDS: usize = 1_000_000;
+
+fn facet_value_text(s: &str) -> Option<String> {
+    let text: String = s.trim().chars().take(MAX_FACET_VALUE_CHARS).collect();
+    (!text.is_empty()).then_some(text)
+}
+
+/// A field's chosen values: null or an empty list clears it; one string is a single choice.
+struct FacetValues(Option<Vec<String>>);
+
+impl<'de> Deserialize<'de> for FacetValues {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ValuesVisitor;
+
+        impl<'de> Visitor<'de> for ValuesVisitor {
+            type Value = FacetValues;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("null, a string or a list of chosen metadata values")
+            }
+
+            fn visit_unit<E>(self) -> Result<FacetValues, E>
+            where
+                E: de::Error,
+            {
+                Ok(FacetValues(None))
+            }
+
+            fn visit_none<E>(self) -> Result<FacetValues, E>
+            where
+                E: de::Error,
+            {
+                Ok(FacetValues(None))
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<FacetValues, E>
+            where
+                E: de::Error,
+            {
+                Ok(FacetValues(Some(facet_value_text(v).into_iter().collect())))
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<FacetValues, E>
+            where
+                E: de::Error,
+            {
+                Ok(FacetValues(Some(facet_value_text(&v).into_iter().collect())))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<FacetValues, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut out: Vec<String> = Vec::new();
+                while let Some(raw) = seq.next_element::<String>()? {
+                    if out.len() >= MAX_FACET_VALUES {
+                        return Err(<A::Error as de::Error>::custom("too many values for one metadata field"));
+                    }
+                    if let Some(v) = facet_value_text(&raw)
+                        && !out.iter().any(|x| x.eq_ignore_ascii_case(&v))
+                    {
+                        out.push(v);
+                    }
+                }
+                Ok(FacetValues(Some(out)))
+            }
+        }
+
+        deserializer.deserialize_any(ValuesVisitor)
+    }
+}
+
+/// Reads `Filter::facets`: canonical field ids (or Classic's names), bounded lists, with unknown
+/// fields refused so a typo is an error rather than an empty grid.
+fn deserialize_facets<'de, D>(deserializer: D) -> Result<BTreeMap<String, Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct FacetsVisitor;
+
+    impl<'de> Visitor<'de> for FacetsVisitor {
+        type Value = BTreeMap<String, Vec<String>>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an object of metadata field names and chosen values")
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(BTreeMap::new())
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(BTreeMap::new())
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            let mut entries = 0usize;
+            while let Some(key) = map.next_key::<String>()? {
+                entries = entries.saturating_add(1);
+                if entries > MAX_FACET_KEYS {
+                    return Err(<A::Error as de::Error>::custom("too many metadata field filters"));
+                }
+                if key.len() > MAX_FACET_KEY_CHARS {
+                    return Err(<A::Error as de::Error>::custom("a metadata field name is too long"));
+                }
+                let canonical = crate::facets::canonical(&key)
+                    .ok_or_else(|| <A::Error as de::Error>::custom(format!("unknown metadata field {key:?}")))?;
+                let FacetValues(values) = map.next_value::<FacetValues>()?;
+                let Some(values) = values else {
+                    out.remove(canonical);
+                    continue;
+                };
+                if values.is_empty() {
+                    out.remove(canonical);
+                    continue;
+                }
+                let chosen = out.entry(canonical.to_string()).or_insert_with(Vec::new);
+                if chosen.len().saturating_add(values.len()) > MAX_FACET_VALUES {
+                    return Err(<A::Error as de::Error>::custom("too many values for one metadata field"));
+                }
+                for v in values {
+                    if !crate::facets::valid_value(canonical, &v) {
+                        return Err(<A::Error as de::Error>::custom(format!("value {v:?} is not one {canonical} lists")));
+                    }
+                    if !chosen.iter().any(|x| x.eq_ignore_ascii_case(&v)) {
+                        chosen.push(v);
+                    }
+                }
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_any(FacetsVisitor)
+}
+
+impl<'de> Deserialize<'de> for ExportedIds {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct IdsVisitor;
+
+        impl<'de> Visitor<'de> for IdsVisitor {
+            type Value = ExportedIds;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("null or a bounded list of photo ids")
+            }
+
+            fn visit_unit<E>(self) -> Result<ExportedIds, E>
+            where
+                E: de::Error,
+            {
+                Ok(ExportedIds::default())
+            }
+
+            fn visit_none<E>(self) -> Result<ExportedIds, E>
+            where
+                E: de::Error,
+            {
+                Ok(ExportedIds::default())
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<ExportedIds, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut out: Vec<PhotoId> = Vec::new();
+                while let Some(id) = seq.next_element::<u64>()? {
+                    if out.len() >= MAX_EXPORTED_IDS {
+                        return Err(<A::Error as de::Error>::custom("too many exported photo ids"));
+                    }
+                    out.push(PhotoId(id));
+                }
+                Ok(ExportedIds(out))
+            }
+        }
+
+        deserializer.deserialize_any(IdsVisitor)
+    }
+}
+
+fn deserialize_exported_ids<'de, D>(deserializer: D) -> Result<ExportedIds, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    <ExportedIds as Deserialize>::deserialize(deserializer)
+}
+
 /// A face-count condition: at least `min`, at most `max` (inclusive) when set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FaceSpec {
@@ -873,6 +1122,13 @@ impl Filter {
             (None, Some(b)) => v.push(format!("captured until {b}")),
             _ => {}
         }
+        for (field, values) in &self.facets {
+            if values.is_empty() {
+                continue;
+            }
+            let shown = values.iter().map(|v| if v.as_str() == crate::facets::NO_VALUE { "no value" } else { v.as_str() }).collect::<Vec<_>>().join(" or ");
+            v.push(format!("{} {shown}", crate::facets::label(field)));
+        }
         if let Some(fcs) = &self.faces {
             v.push(format!("faces {fcs}"));
         }
@@ -1064,6 +1320,22 @@ impl Filter {
             || !list_matches(&self.lenses, self.lens_op, &|l| p.meta.lens.to_lowercase().contains(&l.to_lowercase()))
         {
             return false;
+        }
+        for (field, wanted) in &self.facets {
+            if wanted.is_empty() {
+                continue;
+            }
+            let have = crate::facets::values(field, p, cat, self);
+            let ok = wanted.iter().any(|want| {
+                if want.as_str() == crate::facets::NO_VALUE {
+                    have.is_empty()
+                } else {
+                    have.iter().any(|v| v.eq_ignore_ascii_case(want.as_str()))
+                }
+            });
+            if !ok {
+                return false;
+            }
         }
         let mut tokens = search_tokens(&self.text).peekable();
         if tokens.peek().is_none() {

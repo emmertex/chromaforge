@@ -20,6 +20,8 @@ pub const FIELDS: &[&str] = &[
     "usageTerms",
     "copyrightUrl",
     "creator",
+    "cameraSerial",
+    "job",
     "creatorJobTitle",
     "creatorAddress",
     "creatorCity",
@@ -54,6 +56,8 @@ fn text_field<'a>(m: &'a mut Meta, k: &str) -> Option<&'a mut String> {
         "usageTerms" => &mut m.usage_terms,
         "copyrightUrl" => &mut m.copyright_url,
         "creator" => &mut m.creator,
+        "cameraSerial" => &mut m.camera_serial,
+        "job" => &mut m.job,
         "location" => &mut m.location,
         "city" => &mut m.city,
         "state" => &mut m.state,
@@ -106,7 +110,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
             let only: Vec<String> =
                 p.get("only").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_else(
                     || {
-                        ["copyright", "copyrightStatus", "usageTerms", "copyrightUrl", "creator", "location", "city", "state", "country"]
+                        ["copyright", "copyrightStatus", "usageTerms", "copyrightUrl", "creator", "cameraSerial", "job", "location", "city", "state", "country"]
                             .into_iter()
                             .chain(lcc_meta::CreatorContact::KEYS.iter().copied())
                             .map(String::from)
@@ -182,7 +186,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Metadata Preset",
             [],
             None,
-            "{name, fields?: {copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, title?, headline?, caption?, descriptionWriter?, category?, location?, city?, state?, country?, keywords?: [..]}, only?: [field] (from the active photo when `fields` is absent; default the copyright fields, creator and contact, place)} — adds or replaces",
+            "{name, fields?: {copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, cameraSerial?, job?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, title?, headline?, caption?, descriptionWriter?, category?, location?, city?, state?, country?, keywords?: [..]}, only?: [field] (from the active photo when `fields` is absent; default the copyright fields, creator, camera serial, job and place)} — adds or replaces",
             always,
             save
         ),

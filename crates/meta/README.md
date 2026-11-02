@@ -19,7 +19,9 @@ Photo metadata: EXIF, XMP (read + write), IPTC-IIM, and the containers that carr
 `Metadata` carries camera (make, model, serial, software), lens (make, model, serial, specification), capture
 (date-time with UTC offset and milliseconds, exposure time, f-number, ISO incl. extended ISO, focal length and
 35 mm equivalent, flash, exposure bias, program, metering, white balance), orientation, GPS, dimensions and the
-user fields (artist, copyright, title, caption, keywords, hierarchical keywords, rating −1…5, colour label).
+user fields (artist, copyright, title, caption, IPTC Job Identifier, keywords, hierarchical keywords, rating −1…5, colour label).
+The IPTC Job Identifier is read from and written back to XMP `photoshop:TransmissionReference`, and kept with the
+camera body serial and decoded flash state for the Library Filter's Metadata columns.
 
 JPEG ICC data is exposed only when its APP2 chunks form a complete, consistent, uniquely numbered sequence;
 malformed or truncated ICC sequences leave unrelated readable metadata available and produce no profile.

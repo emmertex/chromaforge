@@ -194,11 +194,18 @@ pub struct Meta {
     pub camera_make: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub camera_model: String,
+    /// EXIF body serial number (`exifEX:BodySerialNumber`), kept for the Camera Serial Number
+    /// column. Left out of the catalog JSON when empty, so older catalogs read unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub camera_serial: String,
     pub lens: String,
     pub focal_mm: Option<f32>,
     pub aperture: Option<f32>,
     pub shutter: String,
     pub iso: Option<u32>,
+    /// Exif `Flash`, decoded. Catalog format 16.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flash: Option<lcc_meta::Flash>,
     /// Place (sublocation, e.g. a landmark).
     pub location: String,
     pub city: String,
@@ -240,6 +247,10 @@ pub struct Meta {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub copyright_url: String,
     pub creator: String,
+    /// IPTC Job Identifier (`photoshop:TransmissionReference`), kept for the Job column. Catalog
+    /// format 16.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub job: String,
     /// The creator's contact details and job title (IPTC Core creator contact info).
     #[serde(default, skip_serializing_if = "lcc_meta::CreatorContact::is_empty")]
     pub contact: lcc_meta::CreatorContact,

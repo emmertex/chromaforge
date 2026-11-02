@@ -1848,6 +1848,8 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
         MetadataPolicy::All | MetadataPolicy::AllExceptCamera => {}
     }
     out.contact = m.contact.clone();
+    out.job_identifier = text(&m.job);
+    out.flash = m.flash;
     out.title = text(&m.title);
     out.headline = text(&m.headline);
     out.caption = text(&m.caption);
@@ -1884,6 +1886,7 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
         };
         out.make = make;
         out.model = model;
+        out.serial_number = text(&m.camera_serial);
         out.lens_model = text(&m.lens);
         out.focal_length = m.focal_mm.map(f64::from);
         out.f_number = m.aperture.map(f64::from);

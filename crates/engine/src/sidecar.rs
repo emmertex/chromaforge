@@ -188,6 +188,11 @@ pub struct SidecarData {
     pub usage_terms: Option<String>,
     pub copyright_url: Option<String>,
     pub creator: Option<String>,
+    /// EXIF body serial, flash state and IPTC Job Identifier, when the sidecar states them.
+    pub camera_serial: Option<String>,
+    /// `Some(Some(…))` states a flash value; `Some(None)` states that it was cleared.
+    pub flash: Option<Option<lcc_meta::Flash>>,
+    pub job: Option<String>,
     /// The creator's contact details, when the sidecar states any.
     pub contact: Option<lcc_meta::CreatorContact>,
     pub location: Option<String>,
@@ -260,6 +265,9 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         usage_terms: m.usage_terms.clone(),
         copyright_url: m.copyright_url.clone(),
         creator: m.artist.clone(),
+        camera_serial: m.serial_number.clone(),
+        flash: m.flash.map(Some),
+        job: m.job_identifier.clone(),
         contact: (!m.contact.is_empty()).then(|| m.contact.clone()),
         location: lc("location").or_else(|| m.sublocation.clone()),
         city: m.city.clone(),
@@ -431,6 +439,8 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
         (&sc.usage_terms, &mut m.usage_terms),
         (&sc.copyright_url, &mut m.copyright_url),
         (&sc.creator, &mut m.creator),
+        (&sc.camera_serial, &mut m.camera_serial),
+        (&sc.job, &mut m.job),
         (&sc.location, &mut m.location),
         (&sc.city, &mut m.city),
         (&sc.state, &mut m.state),
@@ -444,6 +454,9 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
         if let Some(v) = src {
             *dst = v.clone();
         }
+    }
+    if let Some(flash) = sc.flash {
+        m.flash = flash;
     }
     if !sc.supplemental_categories.is_empty() {
         m.supplemental_categories = sc.supplemental_categories.clone();
@@ -705,6 +718,9 @@ fn packet(p: &Photo, cat: &lcc_catalog::Catalog, remove_location: bool, gps: boo
     let keywords = lcc_catalog::keywords::to_file(&p.meta.keywords);
     let meta = lcc_meta::Metadata {
         software: Some(lcc_brand::DISPLAY_NAME.into()),
+        serial_number: nz(&p.meta.camera_serial),
+        flash: p.meta.flash,
+        job_identifier: nz(&p.meta.job),
         title: nz(&p.meta.title),
         headline: nz(&p.meta.headline),
         caption: nz(&p.meta.caption),

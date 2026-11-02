@@ -1506,6 +1506,7 @@ impl Session {
     /// Remember `ids` as the last export (the Previous Export source); saved with the view.
     pub fn record_export(&mut self, ids: &[PhotoId]) {
         self.previous_export = ids.iter().copied().filter(|id| self.catalog.photo(*id).is_some()).collect();
+        self.sync_exported_ids();
         // (a held or followed view of Previous Export starts over: its photos are not the catalog's to follow)
         self.base = None;
         self.visible_key = None;

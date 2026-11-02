@@ -600,6 +600,7 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         caption: first("dc:description"),
         description_writer: first("photoshop:CaptionWriter"),
         category: first("photoshop:Category"),
+        job_identifier: first("photoshop:TransmissionReference"),
         alt_text: first("Iptc4xmpCore:AltTextAccessibility"),
         extended_description: first("Iptc4xmpCore:ExtDescrAccessibility"),
         sublocation: first("Iptc4xmpCore:Location"),
@@ -843,6 +844,7 @@ pub fn write_xmp_filters(
     push("photoshop:Headline", meta.headline.clone());
     push("photoshop:CaptionWriter", meta.description_writer.clone());
     push("photoshop:Category", meta.category.clone());
+    push("photoshop:TransmissionReference", meta.job_identifier.clone());
     push("photoshop:City", meta.city.clone());
     push("photoshop:State", meta.state.clone());
     push("photoshop:Country", meta.country.clone());
@@ -1066,6 +1068,7 @@ mod tests {
             caption: Some("Line one\nline two".into()),
             description_writer: Some("Jane Doe".into()),
             category: Some("CAT".into()),
+            job_identifier: Some("J-777".into()),
             supplemental_categories: vec!["Sports".into(), "Nature".into()],
             subject_code: vec!["01001000".into(), "02002000".into()],
             alt_text: Some("A tree by the sea".into()),
@@ -1109,6 +1112,21 @@ mod tests {
         assert!((g.latitude - 48.858222).abs() < 1e-6 && (g.longitude + 2.2945).abs() < 1e-6, "{g:?}");
         got.gps = m.gps;
         assert_eq!(got, m);
+    }
+
+    /// The columns' camera-serial, flash and IPTC Job fields survive a sidecar round trip.
+    #[test]
+    fn camera_serial_flash_and_job_identifier_round_trip() {
+        let m = Metadata {
+            serial_number: Some("BODY-777".into()),
+            flash: Some(Flash { fired: true, raw: 0x59 }),
+            job_identifier: Some("J-777".into()),
+            ..Default::default()
+        };
+        let d = parse_xmp(&write_xmp(&m, None)).unwrap();
+        assert_eq!(d.metadata.serial_number.as_deref(), Some("BODY-777"));
+        assert_eq!(d.metadata.flash, m.flash);
+        assert_eq!(d.metadata.job_identifier.as_deref(), Some("J-777"));
     }
 
     #[test]

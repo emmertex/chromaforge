@@ -164,7 +164,7 @@ pub struct FilterChip {
 /// The chips for every constraint in the filter bar / search / sidebar (not the source itself).
 pub fn filter_chips(f: &Filter, cat: &Catalog) -> Vec<FilterChip> {
     use lcc_catalog::{MediaKind, RatingOp};
-    use serde_json::{Value::Null, json};
+    use serde_json::{Map, Value::Null, json};
     let mut v = Vec::new();
     let mut add = |label: String, clear: serde_json::Value| v.push(FilterChip { label, clear });
     if !f.text.trim().is_empty() {
@@ -250,6 +250,15 @@ pub fn filter_chips(f: &Filter, cat: &Catalog) -> Vec<FilterChip> {
         (Some(a), None) => add(format!("Captured from {a}"), json!({"dateFrom": Null})),
         (None, Some(b)) => add(format!("Captured until {b}"), json!({"dateTo": Null})),
         _ => {}
+    }
+    for (field, values) in &f.facets {
+        if values.is_empty() {
+            continue;
+        }
+        let shown = values.iter().map(|v| if v.as_str() == lcc_catalog::facets::NO_VALUE { "Unknown" } else { v.as_str() }).collect::<Vec<_>>().join(" or ");
+        let mut clear = Map::new();
+        clear.insert(field.clone(), json!([]));
+        add(format!("{}: {shown}", lcc_catalog::facets::label(field)), json!({"facets": clear}));
     }
     if let Some(rs) = f.rule_set.as_ref().filter(|r| !r.rules.is_empty()) {
         add(format!("Rules: {}", rs.describe_with(cat)), json!({"ruleSet": Null}));

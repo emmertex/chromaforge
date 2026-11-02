@@ -23,12 +23,14 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
         camera: lcc_catalog::camera_label(&camera_make, &camera_model),
         camera_make,
         camera_model,
+        camera_serial: m.serial_number.clone().unwrap_or_default(),
         // (a camera that writes no lens name, like Nikon's DSLRs, still says what range the lens covers)
         lens: m.lens_model.clone().or_else(|| m.lens_spec.and_then(lcc_meta::lens_spec_name)).unwrap_or_default(),
         focal_mm: m.focal_length.map(|f| f as f32),
         aperture: m.f_number.map(|f| f as f32),
         shutter,
         iso: m.iso,
+        flash: m.flash,
         location: m.sublocation.clone().unwrap_or_default(),
         city: m.city.clone().unwrap_or_default(),
         state: m.state.clone().unwrap_or_default(),
@@ -49,11 +51,13 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
         usage_terms: m.usage_terms.clone().unwrap_or_default(),
         copyright_url: m.copyright_url.clone().unwrap_or_default(),
         creator: m.artist.clone().unwrap_or_default(),
+        job: m.job_identifier.clone().unwrap_or_default(),
         contact: m.contact.clone(),
         // paths from `lr:hierarchicalSubject`, names from `dc:subject` that aren't their levels
         keywords: lcc_catalog::keywords::from_file(&m.keywords, &m.hierarchical_keywords),
         regions: m.regions.clone(),
         focus: m.focus.clone(),
+        ..Default::default()
     };
     (meta, m.capture_time.as_ref().map(|d| d.to_iso()))
 }

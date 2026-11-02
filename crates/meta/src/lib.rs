@@ -213,6 +213,8 @@ pub struct Metadata {
     pub description_writer: Option<String>,
     /// The legacy category code (`photoshop:Category`, IPTC-IIM 2:15; at most three characters).
     pub category: Option<String>,
+    /// IPTC Job Identifier (`photoshop:TransmissionReference`).
+    pub job_identifier: Option<String>,
     /// Accessibility text (`Iptc4xmpCore:AltTextAccessibility`).
     pub alt_text: Option<String>,
     /// Long accessibility description (`Iptc4xmpCore:ExtDescrAccessibility`).
@@ -296,6 +298,7 @@ impl Metadata {
             caption,
             description_writer,
             category,
+            job_identifier,
             alt_text,
             extended_description,
             sublocation,
@@ -344,6 +347,7 @@ impl Metadata {
             caption,
             description_writer,
             category,
+            job_identifier,
             artist,
             copyright,
             copyright_marked,

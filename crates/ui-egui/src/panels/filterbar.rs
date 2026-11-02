@@ -2,8 +2,9 @@
 //! edited state and camera / lens / keyword pickers (several values each, any of which matches) — every
 //! control drives `library.filter`.
 //! "Save as Smart Album…" keeps the current view as a live album; "Clear" resets the filter.
-//! The Metadata columns under it (issue #218, `view.filterColumns`) list each field's values among the photos in
-//! view with counts (`library.facets`); a click narrows the view (`library.facetPick`) and the columns cascade.
+//! The Metadata columns under it (issues #218 and #777, `view.filterColumns`) list each field's values among the
+//! photos in view with counts (`library.facets`); a click narrows the view (`library.facetPick`) and the columns
+//! cascade. The column picker offers the full Classic-style date, file, EXIF, GPS and workflow set.
 
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, vec2};
 use lcc_catalog::{ColorLabel, Flag, MediaKind, RatingOp};
@@ -439,17 +440,7 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
 /// The Metadata columns' height (points), under the filter bar's rows: a column's field, its search box and its values.
 pub const COLUMNS_HEIGHT: f32 = 198.0;
 /// The fields a Metadata column can list (`library.facetPick`'s fields), with their headers.
-pub const COLUMN_FIELDS: [(&str, &str); 9] = [
-    ("year", "Date"),
-    ("camera", "Camera"),
-    ("lens", "Lens"),
-    ("keyword", "Keyword"),
-    ("person", "People"),
-    ("label", "Label"),
-    ("flag", "Flag"),
-    ("rating", "Rating"),
-    ("kind", "File Type"),
-];
+pub use lcc_catalog::facets::LABELS as COLUMN_FIELDS;
 /// The columns first shown, as Lightroom Classic's Metadata filter starts.
 const DEFAULT_COLUMNS: [&str; 4] = ["year", "camera", "lens", "label"];
 /// Most columns side by side.
@@ -458,8 +449,9 @@ const MAX_COLUMNS: usize = 6;
 /// The filter bar's commands (`menus_fork`).
 pub const COMMANDS: &[crate::menus::UiCommand] = &[("view.filterColumns", "Metadata Filter Columns", None, "")];
 
-/// `view.filterColumns {show?: bool, column?: index, field?: name, count?: 1..6}` → `{columns}`: shows or hides the
-/// filter bar's Metadata columns (no argument toggles), sets the field one column lists, or the number of columns.
+/// `view.filterColumns {show?: bool, column?: index, field?: name or Classic label, count?: 1..6}` → `{columns}`:
+/// shows or hides the filter bar's Metadata columns (no argument toggles), sets the field one column lists, or the
+/// number of columns. Field names are canonicalized by the catalog's facet registry.
 pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     if id != "view.filterColumns" {
         return None;
@@ -484,8 +476,8 @@ fn filter_columns(app: &mut LccApp, p: &Value) -> Result<Value, String> {
         None | Some(Value::Null) => None,
         Some(v) => Some(
             v.as_str()
-                .filter(|f| COLUMN_FIELDS.iter().any(|(k, _)| k == f))
-                .ok_or_else(|| format!("{C}: field is one of {}", COLUMN_FIELDS.map(|(k, _)| k).join(", ")))?,
+                .and_then(lcc_catalog::facets::canonical)
+                .ok_or_else(|| format!("{C}: field is one of {}", COLUMN_FIELDS.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ")))?,
         ),
     };
     let column = index("column", 0..=MAX_COLUMNS - 1)?;
@@ -510,7 +502,7 @@ fn filter_columns(app: &mut LccApp, p: &Value) -> Result<Value, String> {
         app.ui.filter_columns = DEFAULT_COLUMNS.iter().map(|f| f.to_string()).collect();
     }
     if let Some(n) = count {
-        let spare: Vec<String> = COLUMN_FIELDS.iter().map(|(k, _)| k.to_string()).filter(|k| !app.ui.filter_columns.contains(k)).collect();
+        let spare: Vec<String> = COLUMN_FIELDS.iter().map(|(k, _)| (*k).to_string()).filter(|k| !app.ui.filter_columns.contains(k)).collect();
         let mut spare = spare.into_iter();
         app.ui.filter_columns.truncate(n);
         while app.ui.filter_columns.len() < n {
@@ -568,6 +560,30 @@ fn value_label(field: &str, value: &str) -> String {
         ("kind", "video") => tr("Videos"),
         ("rating", "0") => tr("Unrated"),
         ("rating", n) => n.parse::<usize>().map(|n| "★".repeat(n.min(5))).unwrap_or_else(|_| n.to_string()),
+        _ if value == lcc_catalog::facets::NO_VALUE => tr("Unknown"),
+        ("exported", "exported") => tr("Exported"),
+        ("exported", "notExported") => tr("Not Exported"),
+        ("edit", "edited") => tr("Edited"),
+        ("edit", "unedited") => tr("Unedited"),
+        ("flash", "fired") => tr("Fired"),
+        ("flash", "didNotFire") => tr("Did Not Fire"),
+        ("gpsData", "coordinates") => tr("Has GPS"),
+        ("gpsData", "noCoordinates") => tr("No GPS"),
+        ("copyrightStatus", v) => lcc_catalog::CopyrightStatus::parse(v).map(|s| tr(s.label())).unwrap_or_else(|| v.to_string()),
+        ("aperture", v) => format!("f/{v}"),
+        ("focal", v) => format!("{v} mm"),
+        ("iso", v) => format!("ISO {v}"),
+        ("shutter", v) => format!("{v} sec"),
+        ("month", v) => {
+            let mut parts = v.splitn(2, '-');
+            match (parts.next(), parts.next()) {
+                (Some(year), Some(month)) => {
+                    let name = month.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|i| lcc_catalog::dates::MONTHS.get(i)).copied();
+                    name.map(|name| format!("{} ({v})", tr(name))).unwrap_or_else(|| v.to_string())
+                }
+                _ => v.to_string(),
+            }
+        }
         _ => value.to_string(),
     }
 }
@@ -628,17 +644,54 @@ fn columns(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
         ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, t.divider), StrokeKind::Inside);
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(4.0)).layout(egui::Layout::top_down(egui::Align::Min)));
         c.spacing_mut().item_spacing.y = 1.0;
-        let title = COLUMN_FIELDS.iter().find(|(k, _)| k == field).map_or("Camera", |(_, l)| *l);
+        let title = lcc_catalog::facets::label(field);
         let head = crate::widgets::dropdown_within(&mut c, &format!("filterColumn{i}"), crate::i18n::tr(title), t.semibold(12.5), t.text, w - 8.0);
-        egui::Popup::menu(&head).id(egui::Id::new(("filterColumnField", i))).show(|ui| {
-            for (k, label) in COLUMN_FIELDS {
-                let resp = ui.selectable_label(k == field, crate::i18n::tr(label));
-                register(ui.ctx(), format!("filterColumnField:{i}:{k}"), resp.rect);
-                if resp.clicked() {
-                    retitle = Some((i, k));
-                }
+        let search_key = egui::Id::new(("filterColumnFieldSearch", i));
+        let opened = egui::Popup::menu(&head).id(egui::Id::new(("filterColumnField", i))).show(|ui| {
+            let previous: Option<String> = ui.data(|d| d.get_temp(search_key));
+            let just_opened = previous.is_none();
+            let mut query = previous.unwrap_or_default();
+            let widget = format!("field:filterColumnFieldSearch:{i}");
+            let search_box = crate::text_field::TextField::singleline(&widget, &mut query)
+                .hint(crate::i18n::tr("Search…"))
+                .width(220.0)
+                .font(t.font(12.0))
+                .begin_edit(just_opened)
+                .show(ui);
+            if !search_box.response.has_focus() && ui.memory(|m| m.focused().is_none()) {
+                search_box.response.request_focus();
             }
+            ui.data_mut(|d| d.insert_temp(search_key, query.clone()));
+            ui.separator();
+            let needle = query.to_lowercase();
+            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                let mut shown = 0usize;
+                for &(group, ids) in lcc_catalog::facets::GROUPS {
+                    let names: Vec<&str> = ids.iter().copied().filter(|k| lcc_catalog::facets::label(k).to_lowercase().contains(&needle)).collect();
+                    if names.is_empty() {
+                        continue;
+                    }
+                    ui.label(egui::RichText::new(crate::i18n::tr(group)).font(t.semibold(11.5)).color(t.text_dim));
+                    for k in names {
+                        let label = lcc_catalog::facets::label(k);
+                        let resp = ui.selectable_label(k == field.as_str(), crate::i18n::tr(label));
+                        register(ui.ctx(), format!("filterColumnField:{i}:{k}"), resp.rect);
+                        if resp.clicked() {
+                            retitle = Some((i, k));
+                            ui.close();
+                        }
+                        shown += 1;
+                    }
+                    ui.separator();
+                }
+                if shown == 0 && !needle.is_empty() {
+                    ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr("No matches")).font(t.font(12.0)).color(t.text_dim)));
+                }
+            });
         });
+        if opened.is_none() {
+            ui.data_mut(|d| d.remove::<String>(search_key));
+        }
         c.separator();
         // the sticky search box: it stays at the top while the values below scroll, and narrows them as it is
         // typed (issue #218); an emptied box shows every value again
@@ -714,7 +767,11 @@ fn columns(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
             }
             let none = data["none"].as_u64().unwrap_or(0);
             if none > 0 {
-                value_row(ui, format!("filterValue:{i}:{}", values.len() + 1), crate::i18n::tr("Unknown").to_string(), none, false, false);
+                let clickable = lcc_catalog::facets::is_generic(field);
+                let on = chosen.iter().any(|c| *c == lcc_catalog::facets::NO_VALUE);
+                if value_row(ui, format!("filterValue:{i}:{}", values.len() + 1), crate::i18n::tr("Unknown").to_string(), none, on, clickable) {
+                    picked = Some((field.clone(), json!(lcc_catalog::facets::NO_VALUE)));
+                }
             }
         });
     }

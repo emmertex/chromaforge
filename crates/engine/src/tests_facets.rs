@@ -1,22 +1,48 @@
 //! `library.facets` (issue #218): the values each metadata field takes among the photos in view, with counts.
 
-use lcc_catalog::Op;
+use lcc_catalog::{CopyrightStatus, Op};
 use serde_json::json;
 
 use crate::Session;
 
-/// The demo library with three photos given a camera and keywords of their own (the others keep theirs).
+/// The demo library with three photos carrying the full set of Metadata-column values.
 fn library() -> (Session, Vec<lcc_catalog::PhotoId>) {
     let mut s = Session::with_demo();
     let ids: Vec<_> = s.catalog.photos().filter(|p| p.in_library()).take(3).map(|p| p.id).collect();
-    for (id, camera, keywords) in
-        [(ids[0], "Facet Cam A", vec!["qq-one"]), (ids[1], "Facet Cam A", vec!["qq-one", "qq-two"]), (ids[2], "Facet Cam B", vec!["qq-two"])]
-    {
+    let rows = [
+        ("2026-04-12T10:00:00+04:00", "SN-A", Some(true), "J-777", "Ann", CopyrightStatus::Copyrighted, "Studio", "Zayed City", "Abu Dhabi", "United Arab Emirates", Some((24.45, 54.6)), "1/250", 2.8, 50.0, 100),
+        ("2026-04-12T11:00:00Z", "SN-A", Some(false), "J-778", "Bo", CopyrightStatus::PublicDomain, "Harbour", "Muscat", "Muscat", "Oman", Some((23.59, 58.41)), "1/125", 4.0, 35.0, 200),
+        ("2026-05-03T12:00:00-05:00", "SN-B", None, "", "Cy", CopyrightStatus::Unknown, "Tram", "Lisbon", "Lisbon", "Portugal", None, "1/60", 5.6, 24.0, 400),
+    ];
+    for (id, (captured, serial, flash, job, creator, status, location, city, state, country, gps, shutter, aperture, focal, iso)) in ids.iter().copied().zip(rows) {
         let mut m = s.catalog.photo(id).unwrap().meta.clone();
-        m.camera = camera.into();
-        m.keywords = keywords.into_iter().map(String::from).collect();
+        m.camera = if serial == "SN-A" { "Facet Cam A".into() } else { "Facet Cam B".into() };
+        m.camera_serial = serial.into();
+        m.flash = flash.map(|fired| lcc_meta::Flash { fired, raw: if fired { 1 } else { 0 } });
+        m.job = job.into();
+        m.creator = creator.into();
+        m.copyright_status = status;
+        m.location = location.into();
+        m.city = city.into();
+        m.state = state.into();
+        m.country = country.into();
+        m.gps = gps;
+        m.shutter = shutter.into();
+        m.aperture = Some(aperture);
+        m.focal_mm = Some(focal);
+        m.iso = Some(iso);
+        m.keywords = if id == ids[0] {
+            vec!["qq-one".into()]
+        } else if id == ids[1] {
+            vec!["qq-one".into(), "qq-two".into()]
+        } else {
+            vec!["qq-two".into()]
+        };
         s.catalog.apply(Op::SetMeta { id, meta: Box::new(m) }).unwrap();
+        s.catalog.apply(Op::SetCaptured { id, captured: Some(captured.into()) }).unwrap();
     }
+    let home = lcc_geo::SavedLocation::new("Studio", 24.45, 54.6, 1000.0, false).unwrap();
+    s.catalog.apply(Op::SetSavedLocation { name: home.name.clone(), location: Some(home) }).unwrap();
     (s, ids)
 }
 
@@ -129,8 +155,14 @@ fn bad_picks_are_refused() {
     let (mut s, _) = library();
     for p in [
         json!({}),
-        json!({"field": "iso", "value": "100"}),
         json!({"field": "shoe size", "value": "9"}),
+        json!({"field": "exported", "value": "maybe"}),
+        json!({"field": "flash", "value": "maybe"}),
+        json!({"field": "gpsData", "value": "maybe"}),
+        json!({"field": "copyrightStatus", "value": "maybe"}),
+        json!({"field": "month", "value": "2026-13"}),
+        json!({"field": "day", "value": "2026-02-30"}),
+        json!({"field": "timezone", "value": "Mars"}),
         json!({"field": "camera", "value": 3}),
         json!({"field": "camera", "value": "  "}),
         json!({"field": "rating", "value": "9"}),
@@ -145,4 +177,67 @@ fn bad_picks_are_refused() {
         assert!(s.execute("library.facetPick", &p).is_err(), "{p}");
         assert_eq!(s.filter, lcc_catalog::Filter::default(), "{p} left the filter alone");
     }
+}
+
+/// Issue #777: every group of Metadata columns counts its values and narrows the grid, including
+/// combinations of EXIF, copyright and place values, the export status and a column's Unknown row.
+#[test]
+fn comprehensive_metadata_columns_filter_together() {
+    let (mut s, ids) = library();
+    s.record_export(&[ids[0], ids[1]]);
+    let fields = [
+        "month", "day", "timezone", "exported", "edit", "cameraSerial", "focal", "shutter", "aperture", "iso", "flash", "gpsData",
+        "mapLocation", "location", "city", "state", "country", "creator", "copyrightStatus", "job",
+    ];
+    let r = s.execute("library.facets", &json!({"fields": fields})).unwrap();
+    for (field, value, count) in [
+        ("month", "2026-04", 2),
+        ("day", "2026-04-12", 2),
+        ("timezone", "UTC+04:00", 1),
+        ("cameraSerial", "SN-A", 2),
+        ("shutter", "1/250", 1),
+        ("aperture", "2.8", 1),
+        ("iso", "100", 1),
+        ("focal", "50", 1),
+        ("flash", "fired", 1),
+        ("gpsData", "coordinates", 2),
+        ("mapLocation", "Studio", 1),
+        ("city", "Zayed City", 1),
+        ("copyrightStatus", "copyrighted", 1),
+        ("job", "J-777", 1),
+        ("exported", "exported", 2),
+        ("edit", "unedited", 3),
+    ] {
+        assert!(values(&r, field).contains(&(value.to_string(), count)), "{field}: {value} / {count}: {:?}", values(&r, field));
+    }
+    assert_eq!(r["job"]["none"], 1, "one photo has no job identifier");
+
+    // Classic's own field name is accepted; choices in two columns AND together.
+    let r = s.execute("library.facetPick", &json!({"field": "shutterSpeed", "value": "1/250"})).unwrap();
+    assert_eq!(r["count"], 1, "{r}");
+    let r = s.execute("library.facetPick", &json!({"field": "city", "value": "Zayed City"})).unwrap();
+    assert_eq!(r["count"], 1, "{r}");
+    assert_eq!(s.visible().first().copied(), Some(ids[0]));
+    s.execute("library.facetPick", &json!({"field": "shutter"})).unwrap();
+    s.execute("library.facetPick", &json!({"field": "city"})).unwrap();
+    assert_eq!(s.filter, lcc_catalog::Filter::default());
+
+    // Exported Files, a numeric column and the Unknown row are real filters too.
+    let r = s.execute("library.facetPick", &json!({"field": "exported", "value": "exported"})).unwrap();
+    assert_eq!(r["count"], 2, "{r}");
+    s.execute("library.facetPick", &json!({"field": "exported"})).unwrap();
+    let r = s.execute("library.facetPick", &json!({"field": "iso", "value": "100"})).unwrap();
+    assert_eq!(r["count"], 1, "{r}");
+    s.execute("library.facetPick", &json!({"field": "iso"})).unwrap();
+    let r = s.execute("library.facetPick", &json!({"field": "job", "value": lcc_catalog::facets::NO_VALUE})).unwrap();
+    assert_eq!(r["count"], 1, "{r}");
+    assert_eq!(s.visible().first().copied(), Some(ids[2]));
+    s.execute("library.facetPick", &json!({"field": "job"})).unwrap();
+
+    // A filter patch and its removable chips use the same canonical field ids.
+    s.execute("library.filter", &json!({"facets": {"city": ["Zayed City"], "copyrightStatus": ["copyrighted"]}})).unwrap();
+    assert_eq!(s.visible().first().copied(), Some(ids[0]));
+    assert_eq!(crate::filter_chips(&s.filter, &s.catalog).len(), 2);
+    s.execute("library.clearFilter", &json!({})).unwrap();
+    assert_eq!(s.filter, lcc_catalog::Filter::default());
 }
