@@ -134,6 +134,9 @@ fn prefs(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(a) = p.get("autoRead").and_then(Value::as_bool) {
         s.xmp.auto_read = a;
     }
+    if let Some(a) = p.get("writeBrowsed").and_then(Value::as_bool) {
+        s.xmp.write_browsed = a;
+    }
     if let Some(n) = str_param(p, "naming") {
         s.xmp.naming = match n {
             "stem" => SidecarNaming::Stem,
@@ -190,7 +193,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "XMP Sidecar Preferences",
             [],
             None,
-            "{autoWrite?: bool, autoRead?: bool (default on: read sidecars other apps changed when the photo is unchanged in the catalog), naming?: stem (IMG_1.xmp, default) | full (IMG_1.CR3.xmp)} → current preferences (saved with the library)",
+            "{autoWrite?: bool, autoRead?: bool (default on: read sidecars other apps changed when the photo is unchanged in the catalog), naming?: stem (IMG_1.xmp, default) | full (IMG_1.CR3.xmp), writeBrowsed?: bool (auto-write also for photos only browsed in a folder, not added yet; default off: nothing is written into the folder until they are added)} → current preferences (saved with the library)",
             always,
             prefs
         ),

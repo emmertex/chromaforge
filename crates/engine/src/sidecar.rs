@@ -65,11 +65,15 @@ pub struct XmpPrefs {
     /// default: it only replaces values the catalog still holds as last synced, as one undo step,
     /// so no work done here is lost (`docs/xmp-interop.md` → Reading other apps' changes).
     pub auto_read: bool,
+    /// Auto-write also for photos only browsed in a folder (not added to the library yet). Off by
+    /// default: culling and edits made while browsing stay in the library and nothing is written
+    /// into the folder (a client's card or archive) until the photos are added.
+    pub write_browsed: bool,
 }
 
 impl Default for XmpPrefs {
     fn default() -> Self {
-        XmpPrefs { auto_write: false, naming: SidecarNaming::default(), auto_read: true }
+        XmpPrefs { auto_write: false, naming: SidecarNaming::default(), auto_read: true, write_browsed: false }
     }
 }
 
@@ -1520,11 +1524,13 @@ impl Session {
             return;
         }
         let owners = StemOwners::among(&self.catalog, &ids);
+        // photos only browsed (not added) get no sidecar unless asked: looking at a folder changes nothing in it
+        let browsed_too = self.xmp.write_browsed;
         #[cfg(not(target_arch = "wasm32"))]
         if self.sidecar_writer.is_some() && self.no_sidecar_repairs() {
             let stamp = (self.clock)();
             for id in ids {
-                let Some(p) = self.catalog.photo(id).filter(|p| file_path(p).is_some() && p.copy_of.is_none()) else { continue };
+                let Some(p) = self.catalog.photo(id).filter(|p| file_path(p).is_some() && p.copy_of.is_none() && (browsed_too || !p.local)) else { continue };
                 let original = PathBuf::from(file_path(p).unwrap_or_default());
                 let packets = Packets::of(p, &self.catalog);
                 let photo = Box::new((**p).clone());
@@ -1545,7 +1551,7 @@ impl Session {
         }
         let mut written = Vec::new();
         for id in ids {
-            if self.catalog.photo(id).is_some_and(|p| file_path(p).is_some() && p.copy_of.is_none()) {
+            if self.catalog.photo(id).is_some_and(|p| file_path(p).is_some() && p.copy_of.is_none() && (browsed_too || !p.local)) {
                 match self.save_sidecar_with(id, &owners) {
                     Ok(_) => {
                         self.unsaved_sidecars.remove(&id);

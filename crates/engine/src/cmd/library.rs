@@ -1225,6 +1225,37 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(r)
             }
         ),
+        cmd!(
+            "library.deleteRejected",
+            "Delete Rejected Photos",
+            ["Photo"],
+            None,
+            "{files?: keep (default) | recycle, confirm?: bool} — every rejected photo of the view in one go: keep removes them from the library to Recently Deleted (one undo step, the files stay on disk); recycle moves their files (and the sidecars that are theirs alone) to the system trash as Delete from Disk does, and needs confirm: true → {deleted, files}",
+            always,
+            |s, p| {
+                let files = str_param(p, "files").unwrap_or("keep");
+                if !matches!(files, "keep" | "recycle") {
+                    return Err(bad("library.deleteRejected", format!("unknown files `{files}` (keep|recycle)")));
+                }
+                let rejected: Vec<u64> = s
+                    .visible_cloned()
+                    .into_iter()
+                    .filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.flag == Flag::Reject))
+                    .map(|id| id.0)
+                    .collect();
+                if rejected.is_empty() {
+                    return Ok(json!({"deleted": 0, "files": files}));
+                }
+                let n = rejected.len();
+                if files == "recycle" {
+                    let confirm = bool_or(p, "confirm", false);
+                    s.execute("photo.deleteFromDisk", &json!({"ids": rejected, "confirm": confirm}))?;
+                } else {
+                    s.execute("photo.delete", &json!({"ids": rejected}))?;
+                }
+                Ok(json!({"deleted": n, "files": files}))
+            }
+        ),
         // ---- metadata
         cmd!(
             "photo.setMeta",
