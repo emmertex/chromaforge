@@ -109,7 +109,8 @@ fn the_ai_models_dialog_offers_the_mediapipe_models() {
     h.app.run("dialog.aiModels", json!({})).unwrap();
     h.step();
     h.step();
-    let shown = |id: &str| h.app.widgets.iter().any(|(w, _)| w == &format!("button:aiModelDownload-{id}") || w == &format!("link:aiModelLicense-{id}"));
+    let shown =
+        |id: &str| h.app.widgets.iter().any(|(w, _)| w == &format!("button:aiModelDownload-{id}") || w == &format!("link:aiModelLicense-{id}"));
     for id in ["sam3", "subject", "sam2", "people", "face"] {
         assert!(shown(id), "the dialog lists {id}");
     }
