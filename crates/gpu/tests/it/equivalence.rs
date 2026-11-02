@@ -17,6 +17,9 @@ const MAX_LSB: u8 = 3;
 fn gpu() -> bool {
     let ok = lcc_gpu::available();
     if !ok {
+        // no adapter (CI) skips; an adapter whose kernels don't build is a bug in them
+        let why = lcc_gpu::unavailable_reason().unwrap_or_default();
+        assert!(!why.contains("kernels failed to build"), "{why}");
         lcc_testkit::skip!(Gpu, "no GPU adapter");
     }
     // which card the comparisons ran on (`<PREFIX>_GPU_ADAPTER` picks one on a machine with two)
@@ -1377,5 +1380,96 @@ fn the_display_fit_on_the_device_matches_the_cpus() {
     let overlay = RenderRequest { overlay: lcc_pipeline::Overlay::Spots(50), ..req };
     if let Ok(r) = lcc_gpu::try_render_fitted(&src, &info, &s, &overlay, None, Some((640, 480))) {
         assert_eq!(r.image.width, whole.image.width, "an overlay is drawn on the CPU, after the fit there");
+    }
+}
+
+/// A non-trivial 3D LUT (cross-process look: lifted blacks, warm highlights).
+fn look_lut(n: usize, domain_max: f32) -> lcc_pipeline::lut::Lut3d {
+    let mut data = Vec::with_capacity(n * n * n);
+    for b in 0..n {
+        for g in 0..n {
+            for r in 0..n {
+                let c = [r, g, b].map(|v| v as f32 / (n - 1) as f32 * domain_max);
+                data.push([
+                    (0.06 + 0.9 * c[0].powf(0.9) + 0.05 * c[2]).min(1.0),
+                    (0.04 + 0.92 * c[1] * (1.0 - 0.1 * c[2])).min(1.0),
+                    (0.1 + 0.6 * c[2] + 0.2 * c[0] * c[1]).min(1.0),
+                ]);
+            }
+        }
+    }
+    lcc_pipeline::lut::Lut3d { size: n, data, domain_min: [0.0; 3], domain_max: [domain_max; 3], title: None }
+}
+
+/// LUT profiles render on the GPU (the table is applied after grain, blended by the amount).
+#[test]
+fn lut_profiles_match() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(1, 900, 600);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    lcc_pipeline::lut::register("lut:gpu-test-17", look_lut(17, 1.0));
+    lcc_pipeline::lut::register("lut:gpu-test-domain", look_lut(9, 1.2));
+    for (id, amount) in [("lut:gpu-test-17", 100.0), ("lut:gpu-test-17", 160.0), ("lut:gpu-test-domain", 60.0)] {
+        for (name, edit) in [("default", (|_| {}) as Edit), ("saturated", saturated as Edit)] {
+            let mut s = DevelopSettings::default();
+            edit(&mut s);
+            s.profile.id = id.into();
+            s.profile.amount = amount;
+            check(&format!("{id} {amount} {name}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
+        }
+    }
+    // the case is meaningful: the LUT changes the image
+    let s = DevelopSettings::default();
+    let looked = DevelopSettings { profile: lcc_develop::Profile { id: "lut:gpu-test-17".into(), amount: 100.0, ..s.profile.clone() }, ..s.clone() };
+    let gpu = |s: &DevelopSettings| lcc_gpu::render(&src, &raw, s, &RenderRequest::fit(320, 320), None).expect("gpu render").image;
+    assert!(diff(&gpu(&s), &gpu(&looked)).1 > 10, "the LUT applies");
+}
+
+/// Refine Edges (the cross guided filter, blended by √refine) and Feather (a Gaussian of the
+/// combined alpha) on a mask render on the GPU, before the mask's invert and amount.
+#[test]
+fn refine_edges_and_feather_match() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 900, 600);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    for (refine, feather) in [(15.0, 0.0), (60.0, 0.0), (100.0, 0.0), (0.0, 40.0), (50.0, 80.0)] {
+        let mut s = DevelopSettings::default();
+        typical(&mut s);
+        s.masks = vec![
+            Mask {
+                components: vec![MaskComponent {
+                    name: None,
+                    op: MaskOp::Add,
+                    invert: false,
+                    shape: MaskShape::Radial { center: Point::new(0.45, 0.55), rx: 0.3, ry: 0.2, angle: 10.0, feather: 30.0, invert: false },
+                }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 0.9, saturation: -30.0, ..Default::default() },
+                refine,
+                feather,
+                ..Default::default()
+            },
+            Mask {
+                components: vec![MaskComponent {
+                    name: None,
+                    op: MaskOp::Add,
+                    invert: false,
+                    shape: MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.5) },
+                }],
+                adjust: lcc_develop::LocalAdjustments { exposure: -0.7, amount: 70.0, ..Default::default() },
+                refine: refine / 2.0,
+                feather: feather / 2.0,
+                invert: true,
+                ..Default::default()
+            },
+        ];
+        check(&format!("refine {refine} feather {feather}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
+        let gpu = |s: &DevelopSettings| lcc_gpu::render(&src, &raw, s, &RenderRequest::fit(640, 640), None).expect("gpu render").image;
+        let plain = DevelopSettings { masks: s.masks.iter().map(|m| Mask { refine: 0.0, feather: 0.0, ..m.clone() }).collect(), ..s.clone() };
+        // (a light refine barely moves a soft radial edge; a strong one or a feather visibly does)
+        assert!(refine < 50.0 && feather == 0.0 || diff(&gpu(&s), &gpu(&plain)).1 > 3, "refine {refine} / feather {feather} change the mask");
     }
 }

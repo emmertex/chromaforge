@@ -1123,8 +1123,18 @@ fn brush_aux(dabs: &[&lcc_pipeline::masks::BrushDabs], erase: bool) -> Vec<f32> 
     aux
 }
 
-/// Cross guided filter (`masks::guided_cross`) of `p` steered by `guide`, max-combined with `p`.
-fn guided_cross_max(cx: &mut Cx<'_>, guide: &Buf, p: &Buf, w: usize, h: usize, sigma: f32, eps: f32) -> Buf {
+/// How [`guided_cross`] combines the filtered plane with its input.
+#[derive(Clone, Copy)]
+enum Combine {
+    /// The larger of the two (Auto Mask strokes).
+    Max,
+    /// The input moved towards the filtered plane by this much (Refine Edges).
+    Mix(f32),
+}
+
+/// Cross guided filter (`masks::guided_cross`) of `p` steered by `guide`, combined with `p`.
+#[allow(clippy::too_many_arguments)]
+fn guided_cross(cx: &mut Cx<'_>, guide: &Buf, p: &Buf, w: usize, h: usize, sigma: f32, eps: f32, how: Combine) -> Buf {
     let n = w * h;
     let (m0, m1) = (cx.gpu.buffer(2 * n), cx.gpu.buffer(2 * n));
     map(cx, "xguided_pre", n, &[0], [Some(guide), Some(p), None], &m0);
@@ -1134,7 +1144,11 @@ fn guided_cross_max(cx: &mut Cx<'_>, guide: &Buf, p: &Buf, w: usize, h: usize, s
     map(cx, "xguided_ab", n, &[eps.to_bits()], [Some(&b0), Some(&b1), None], &ab);
     let ab = gaussian(cx, &ab, w, h, 2, sigma);
     let q = cx.gpu.buffer(n);
-    map(cx, "xguided_apply", n, &[], [Some(guide), Some(&ab), Some(p)], &q);
+    let mode = match how {
+        Combine::Max => [0, 0],
+        Combine::Mix(k) => [1, k.to_bits()],
+    };
+    map(cx, "xguided_apply", n, &mode, [Some(guide), Some(&ab), Some(p)], &q);
     q
 }
 
@@ -1231,7 +1245,7 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
                             cx.run("shape", &q, &[Some(lin), Some(&prep.log_l), Some(&aux), Some(&stroke), Some(&brush)], groups2(w, h, [16, 16]));
                             let refined = d.auto.then(|| {
                                 let (sigma, eps) = lcc_pipeline::masks::auto_refine(d.r);
-                                guided_cross_max(cx, &prep.log_l, &stroke, w, h, sigma, eps)
+                                guided_cross(cx, &prep.log_l, &stroke, w, h, sigma, eps, Combine::Max)
                             });
                             let op = if d.erase { 2 } else { 1 };
                             cx.run(
@@ -1289,6 +1303,21 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
             if flip {
                 cx.run("finalize", &fk, &[None, None, None, None, Some(&alpha)], groups1(n));
             }
+        }
+        // Refine Edges and Feather (`masks::evaluate_one`): on the combined alpha, before the
+        // mask's invert and amount
+        if m.refine > 0.0 || m.feather > 0.0 {
+            let mut plane = cx.slice(&alpha, mi * n, n);
+            if m.refine > 0.0 {
+                let k = (m.refine / 100.0).clamp(0.0, 1.0) as f32;
+                let sigma = (0.04 * frame.output_long(w, h) as f32 * k).max(1.0);
+                plane = guided_cross(cx, &prep.log_l, &plane, w, h, sigma, 0.02, Combine::Mix(k.sqrt()));
+            }
+            if m.feather > 0.0 {
+                let k = (m.feather / 100.0).clamp(0.0, 1.0) as f32;
+                plane = gaussian(cx, &plane, w, h, 1, 0.02 * frame.output_long(w, h) as f32 * k);
+            }
+            cx.copy_into(&plane, &alpha, mi * n);
         }
         let amt = (m.adjust.amount / 100.0) as f32;
         cx.run(

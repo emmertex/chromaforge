@@ -1371,13 +1371,13 @@ fn develop_reporting_fitted(
     (rendered, fallback, full)
 }
 
-/// Whether the GPU pipeline renders `s` for `req` like the CPU does. LUT profiles, masks with
-/// Refine Edges or Feather and soft-proofing have no GPU stage: those render on the CPU. Every
-/// GPU caller (previews, exports, video frames) checks this first.
-pub fn gpu_renders_faithfully(s: &DevelopSettings, req: &RenderRequest) -> bool {
-    !lcc_pipeline::lut::is_lut_profile(&s.profile.id)
-        && !s.masks.iter().any(|m| m.visible && (m.refine > 0.0 || m.feather > 0.0))
-        && req.proof.is_none()
+/// Whether the GPU pipeline renders `s` for `req` like the CPU does. Every GPU caller (previews,
+/// exports, video frames) checks this first. Since GPU-FULL every 8-bit and HDR render does
+/// (`lcc_gpu::handles` declines the rest itself).
+pub fn gpu_renders_faithfully(_s: &DevelopSettings, _req: &RenderRequest) -> bool {
+    // LUT profiles, Refine Edges, mask Feather and matrix soft proofs all render on the GPU
+    // (an output-device proof's table is declined by `lcc_gpu::handles` itself)
+    true
 }
 
 fn develop_image(

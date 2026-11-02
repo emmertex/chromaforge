@@ -677,6 +677,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let k = pf(F_GRAIN_AMT) * g * (0.35 + 2.6 * lum * (1.0 - lum));
         e = e + k;
     }
+    // --- a LUT profile (`Lut3d::apply` on the SDR part, blended by the profile amount; in HDR the
+    // part above SDR white is carried over)
+    if (pu(F_LUT) != 0u) {
+        let c = clamp(e, vec3<f32>(0.0), vec3<f32>(1.0));
+        let m = lut_apply(c);
+        if (hdr) {
+            e = e + (m - c) * pf(F_LUT_AMT);
+        } else {
+            e = e + (m - e) * pf(F_LUT_AMT);
+        }
+    }
     if (warn == 1u) {
         e = vec3<f32>(1.0, 0.0, 0.0);
     } else if (warn == 2u) {
@@ -695,6 +706,36 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     e = vec3<f32>(out_encode(e.x), out_encode(e.y), out_encode(e.z));
     out[i] = enc8(e.x) | (enc8(e.y) << 8u) | (enc8(e.z) << 16u) | (255u << 24u);
+}
+
+// `Lut3d::apply` (trilinear) on the LUT profile's table in `aux` (red fastest).
+fn lut3_at(r: u32, g: u32, b: u32) -> vec3<f32> {
+    let n = pu(F_LUT_N);
+    let o = pu(F_LUT_OFF) + 3u * (r + n * (g + n * b));
+    return vec3<f32>(aux[o], aux[o + 1u], aux[o + 2u]);
+}
+
+fn lut_apply(c: vec3<f32>) -> vec3<f32> {
+    let n = pu(F_LUT_N);
+    let s = f32(n - 1u);
+    var idx = vec3<u32>(0u);
+    var fr = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        let lo = pf(F_LUT_MIN + k);
+        let span = max(pf(F_LUT_MAX + k) - lo, 1e-6);
+        let x = clamp((c[k] - lo) / span, 0.0, 1.0) * s;
+        let i = min(u32(floor(x)), n - 2u);
+        idx[k] = i;
+        fr[k] = x - f32(i);
+    }
+    let r = idx.x;
+    let g = idx.y;
+    let b = idx.z;
+    let c00 = mix(lut3_at(r, g, b), lut3_at(r + 1u, g, b), fr.x);
+    let c10 = mix(lut3_at(r, g + 1u, b), lut3_at(r + 1u, g + 1u, b), fr.x);
+    let c01 = mix(lut3_at(r, g, b + 1u), lut3_at(r + 1u, g, b + 1u), fr.x);
+    let c11 = mix(lut3_at(r, g + 1u, b + 1u), lut3_at(r + 1u, g + 1u, b + 1u), fr.x);
+    return mix(mix(c00, c10, fr.y), mix(c01, c11, fr.y), fr.z);
 }
 
 // `finish::hue_clip` (process V5): the brightest channel limited to `peak`, the darkest kept (all three `peak` when it

@@ -105,14 +105,20 @@ fn xguided_ab(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgrou
     dst[2u * i + 1u] = mp - k * mi;
 }
 
-// `max(p, clamp(a·guide + b, 0, 1))` (a: guide, b: blurred coefficients, c: the input p).
+// q = clamp(a·guide + b, 0, 1) (a: guide, b: blurred coefficients, c: the input p), then
+// P[1] = 0: max(p, q) (Auto Mask strokes); 1: p + (q − p)·P[2] (Refine Edges).
 @compute @workgroup_size(256)
 fn xguided_apply(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
     let i = lin_index(g, nw);
     if (i >= pu(0u)) {
         return;
     }
-    dst[i] = max(c[i], clamp(b[2u * i] * a[i] + b[2u * i + 1u], 0.0, 1.0));
+    let q = clamp(b[2u * i] * a[i] + b[2u * i + 1u], 0.0, 1.0);
+    if (pu(1u) == 0u) {
+        dst[i] = max(c[i], q);
+    } else {
+        dst[i] = c[i] + (q - c[i]) * pf(2u);
+    }
 }
 
 // White balance: 3×3 matrix (P[1] = has matrix, P[2..11] row-major), clamped at 0.
