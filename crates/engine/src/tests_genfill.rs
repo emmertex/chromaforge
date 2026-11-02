@@ -67,7 +67,7 @@ fn generate_needs_consent_and_a_key_and_never_shows_the_key() {
     let openai = listing["providers"].as_array().unwrap().iter().find(|p| p["id"] == "openai").unwrap().clone();
     assert_eq!(
         (openai["consented"].clone(), openai["keySource"].clone(), openai["keyHint"].clone()),
-        (json!(true), json!("settings"), json!("…6789"))
+        (json!(true), json!("settings"), json!("6789"))
     );
     // setKey is never journaled (the key stays out of every log)
     assert!(!s.journal.iter().any(|(_, p)| p.to_string().contains(KEY)));

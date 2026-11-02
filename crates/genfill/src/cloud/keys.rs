@@ -90,11 +90,11 @@ impl KeyStore {
         self.get(p).map_or(KeySource::None, |(_, s)| s)
     }
 
-    /// The key's last four characters (`…abcd`), to tell keys apart in Settings.
+    /// The key's last four characters (`abcd`), to tell keys apart in Settings. Plain ASCII: an
+    /// ellipsis here came out as mojibake ("â€¦") wherever the text was read as Latin-1.
     pub fn hint(&self, p: Provider) -> Option<String> {
         let (k, _) = self.get(p)?;
-        let tail: String = k.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
-        Some(format!("…{tail}"))
+        Some(k.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect())
     }
 
     /// Store (`Some`) or forget (`None`) the key for `p` in the settings file.
@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(store.status(Provider::Bfl), KeySource::None);
         store.set(Provider::Bfl, Some("  bfl-test-key-1234 ")).unwrap();
         assert_eq!(store.get(Provider::Bfl), Some(("bfl-test-key-1234".to_string(), KeySource::Settings)));
-        assert_eq!(store.hint(Provider::Bfl).as_deref(), Some("…1234"));
+        assert_eq!(store.hint(Provider::Bfl).as_deref(), Some("1234"));
         assert!(store.set(Provider::Bfl, Some("has space inside")).is_err());
         store.set(Provider::Bfl, None).unwrap();
         assert_eq!(store.status(Provider::Bfl), KeySource::None);
