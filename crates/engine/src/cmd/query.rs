@@ -297,12 +297,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "library.memory", "Memory Usage", [], None, "{} — bytes held by each cache (decoded sources, rendered previews, GPU buffers; heap when instrumented)", always, |s, _| {
             Ok(serde_json::to_value(s.memory_report()).unwrap_or_default())
         }),
-        cmd!(query "app.memoryBudget", "Memory Budget", [], None, "{mb?: number} — set the memory budget shared by the caches (default: a quarter of RAM, at most 1536 MB); returns the report", always, |s, p| {
+        cmd!(query "app.memoryBudget", "Memory Budget", [], None, "{mb?: number (0 = automatic)} — set the memory budget shared by the caches (automatic: a quarter of the computer's memory, at most 16 GB; by hand at most three quarters of it, `maxBudget`); returns the report", always, |s, p| {
             if let Some(mb) = p.get("mb").and_then(Value::as_f64) {
-                if !(64.0..=1_048_576.0).contains(&mb) {
-                    return Err(bad("app.memoryBudget", "mb must be 64..1048576"));
+                if mb == 0.0 {
+                    s.set_memory_budget(crate::memory::default_budget());
+                } else if !(64.0..=1_048_576.0).contains(&mb) {
+                    return Err(bad("app.memoryBudget", "mb must be 64..1048576, or 0 for automatic"));
+                } else {
+                    s.set_memory_budget((mb * 1048576.0) as usize);
                 }
-                s.set_memory_budget((mb * 1048576.0) as usize);
             }
             Ok(serde_json::to_value(s.memory_report()).unwrap_or_default())
         }),

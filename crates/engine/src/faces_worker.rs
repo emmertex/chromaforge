@@ -99,7 +99,12 @@ fn cap_from_env() -> Option<usize> {
 /// The most photos the memory budget can hold in progress at once: half of it (the rest is the window's, the caches',
 /// the renders'), a worker at a time. Raising the budget (`{ENV_PREFIX}_MEMORY_MB`) raises this.
 fn memory_workers() -> usize {
-    (crate::memory::budget() / 2 / WORKER_BYTES).max(1)
+    memory_workers_for(crate::memory::budget())
+}
+
+/// [`memory_workers`] for a budget of `budget` bytes.
+fn memory_workers_for(budget: usize) -> usize {
+    (budget / 2 / WORKER_BYTES).max(1)
 }
 
 /// Photos to work on at once at `pace` on this machine: by the processor's threads and the pace, and never more than
@@ -452,8 +457,12 @@ mod tests {
 
     #[test]
     fn memory_limits_the_workers_and_a_users_limit_replaces_it() {
-        // the default budget (a quarter of the RAM, at most 1.5 GiB) holds a few photos in progress, not dozens
-        assert!((1..=8).contains(&memory_workers()), "{}", memory_workers());
+        // a 1.5 GiB budget holds a few photos in progress, not dozens; a big one more; never none (the process's own
+        // budget follows the computer and `{ENV_PREFIX}_MEMORY_MB`, so the test gives its own)
+        assert!((1..=8).contains(&memory_workers_for(3 << 29)), "{}", memory_workers_for(3 << 29));
+        assert!(memory_workers_for(16 << 30) > memory_workers_for(3 << 29));
+        assert_eq!(memory_workers_for(0), 1);
+        assert!(memory_workers() >= 1);
         assert!(target_workers(Pace::Full) >= 1);
         assert_eq!(target_workers(Pace::Pause), 0);
     }

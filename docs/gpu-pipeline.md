@@ -429,7 +429,7 @@ A view's stages keep an uploaded source only up to 96 MB (a Preview-level source
 - Imports read raw headers only (`lcc_raw::probe_info`): no pixel data is decompressed,
   except the first rows a few vendor formats need for facts their headers lack (Nikon NEF: the
   first 128 rows for the masked trailing columns, issue #708).
-- One budget (`memory::budget`, default min(25 % of RAM, 1.5 GiB); `<PREFIX>_MEMORY_MB` or
+- One budget (`memory::budget`, default min(25 % of RAM, 16 GiB); by hand at most 75 % of RAM; `<PREFIX>_MEMORY_MB` or
   `app.memoryBudget {mb}`): half for the engine caches (decoded thumbnail / preview / full
   sources and rendered previews, evicted least recently used *across* them; the photo on screen
   stays), a quarter for decodes in flight (`memory::work_gate`: grid thumbnails, neighbour

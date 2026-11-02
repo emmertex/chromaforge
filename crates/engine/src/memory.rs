@@ -22,15 +22,43 @@ use serde::Serialize;
 /// batch may, in addition, hold up to twice the budget in photos rendering side by side
 /// ([`export_gate`]): transient memory, given back when the batch ends. Default:
 /// a quarter of the machine's RAM ([`total_ram`]: a container's or cgroup's memory limit when
-/// smaller), at most 1.5 GiB (`{ENV_PREFIX}_MEMORY_MB` overrides it).
+/// smaller), at most [`AUTO_MAX`] ([`auto_budget`]; `{ENV_PREFIX}_MEMORY_MB` overrides it, and a
+/// budget set by hand may go up to [`max_budget`]).
 pub fn default_budget() -> usize {
     if let Some(mb) = lcc_brand::env("MEMORY_MB").and_then(|v| v.trim().parse::<usize>().ok()).filter(|m| *m >= 64) {
-        return mb << 20;
+        return mb.min(1 << 20) << 20;
     }
-    let cap = 3usize << 29; // 1.5 GiB
-    match total_ram() {
-        Some(ram) => (ram / 4).clamp(256 << 20, cap),
-        None => cap,
+    auto_budget(total_ram())
+}
+
+/// The most the automatic budget takes. It was 1.5 GiB on every machine, so a 64 GB computer evicted
+/// decoded sources and previews almost at once and re-rendered every photo it went back to.
+pub const AUTO_MAX: usize = 16 << 30;
+
+/// The budget when it is unknown how much memory the computer has.
+const UNKNOWN_RAM_BUDGET: usize = 3 << 29; // 1.5 GiB
+
+/// The automatic budget for a computer with `ram` bytes: a quarter of it, at least 256 MiB, at most
+/// [`AUTO_MAX`] (8 GB → 2 GB, 32 GB → 8 GB, 64 GB and more → 16 GB).
+pub fn auto_budget(ram: Option<usize>) -> usize {
+    match ram {
+        Some(ram) => (ram / 4).clamp(256 << 20, AUTO_MAX),
+        None => UNKNOWN_RAM_BUDGET,
+    }
+}
+
+/// The most a budget chosen by hand may be ([`max_budget_of`] this computer's memory).
+pub fn max_budget() -> usize {
+    max_budget_of(total_ram())
+}
+
+/// The most a budget chosen by hand may be on a computer with `ram` bytes: three quarters of it (the
+/// rest for the system, the GPU driver, renders in progress and other apps), at least 512 MiB.
+/// Unknown memory: 1 TiB.
+pub fn max_budget_of(ram: Option<usize>) -> usize {
+    match ram {
+        Some(ram) => (ram / 4).saturating_mul(3).max(512 << 20),
+        None => 1 << 40,
     }
 }
 
@@ -252,6 +280,10 @@ pub struct MemoryReport {
     /// The memory budget (see [`budget`]) and the engine caches' share of it.
     pub budget: usize,
     pub cache_budget: usize,
+    /// The automatic budget on this computer ([`default_budget`]) and the most one set by hand may be
+    /// ([`max_budget`]).
+    pub auto_budget: usize,
+    pub max_budget: usize,
     /// Working memory of decodes / probes in flight and its limit ([`work_gate`]).
     pub work_bytes: usize,
     pub work_limit: usize,
@@ -310,6 +342,8 @@ impl crate::Session {
             gpu: gpu_usage(),
             budget: budget(),
             cache_budget: self.media.budget(),
+            auto_budget: default_budget(),
+            max_budget: max_budget(),
             work_bytes: work_gate().usage().0,
             work_limit: work_gate().usage().1,
             heap: heap_stats(),
@@ -318,7 +352,7 @@ impl crate::Session {
 
     /// Set the memory budget (bytes; process-wide) and apply this session's cache share.
     pub fn set_memory_budget(&mut self, bytes: usize) -> usize {
-        let b = set_budget(bytes);
+        let b = set_budget(bytes.min(max_budget()));
         self.media.set_budget(cache_share(b));
         b
     }
@@ -349,5 +383,24 @@ mod tests {
     #[ignore = "diagnostic: prints the RAM and default budget this process sees"]
     fn prints_the_default_budget() {
         println!("total_ram {:?} MiB, default_budget {} MiB", total_ram().map(|b| b >> 20), default_budget() >> 20);
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::{AUTO_MAX, auto_budget, max_budget_of};
+
+    /// The automatic budget grows with the computer's memory (it stopped at 1.5 GiB), up to a safe
+    /// ceiling; a budget set by hand may go further, but never past three quarters of it.
+    #[test]
+    fn the_budget_scales_with_the_memory_up_to_a_safe_ceiling() {
+        let gb = 1usize << 30;
+        assert!(auto_budget(Some(32 * gb)) > auto_budget(Some(8 * gb)));
+        assert_eq!(auto_budget(Some(512 * gb)), AUTO_MAX, "a safe ceiling");
+        assert!(auto_budget(Some(512 << 20)) >= 256 << 20, "a floor");
+        assert!(max_budget_of(Some(64 * gb)) < 64 * gb);
+        assert!(max_budget_of(Some(64 * gb)) > auto_budget(Some(64 * gb)));
+        assert!(max_budget_of(Some(usize::MAX)) < usize::MAX, "no overflow");
+        assert!(max_budget_of(None) >= 64 * gb);
     }
 }
