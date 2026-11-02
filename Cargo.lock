@@ -5041,6 +5041,7 @@ dependencies = [
 name = "lcc-inpaint"
 version = "26.45.0"
 dependencies = [
+ "png 0.18.1",
  "rayon",
 ]
 
