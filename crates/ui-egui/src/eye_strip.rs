@@ -342,7 +342,13 @@ fn thumbs(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, key: u64) {
             .eyes
             .iter()
             .enumerate()
-            .map(|(i, e)| ui.ctx().load_texture(format!("eye-{key}-{i}"), egui::ColorImage::from_rgba_unmultiplied([e.crop.width, e.crop.height], &e.crop.as_bytes()), egui::TextureOptions::NEAREST))
+            .map(|(i, e)| {
+                ui.ctx().load_texture(
+                    format!("eye-{key}-{i}"),
+                    egui::ColorImage::from_rgba_unmultiplied([e.crop.width, e.crop.height], &e.crop.as_bytes()),
+                    egui::TextureOptions::NEAREST,
+                )
+            })
             .collect();
         app.eye_strip.textures = Some((key, tex));
     }

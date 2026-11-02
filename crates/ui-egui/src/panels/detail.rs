@@ -3495,6 +3495,10 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                     record_pressure(pressure, points.len(), force);
                     points.push(n);
                 }
+                // a stroke starts with a press, not part-way through a drag: one ended for picking
+                // another mask or photo (`LccApp::cancel_brush_gesture`) paints nothing more until
+                // the button is let go
+                _ if !(resp.drag_started() || resp.clicked()) => {}
                 _ => {
                     let mut pressure = Vec::new();
                     record_pressure(&mut pressure, 0, force);

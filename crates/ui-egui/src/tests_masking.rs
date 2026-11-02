@@ -2391,3 +2391,52 @@ fn mask_rows_show_thumbnails_and_the_roles_window_clears_a_role() {
     let roles = exec(&mut h, "people.roles", json!({}));
     assert!(roles["roles"].as_array().is_some_and(Vec::is_empty), "{roles}");
 }
+
+/// Picking another mask or another photo while a Brush stroke is held ends the stroke: its release
+/// can't add to the picked mask or start a mask on the new photo, and the pointer still held paints
+/// nothing more until it is let go (ported from OneSlips 76d00a470, NOTES-1031-7).
+#[test]
+fn picking_another_mask_or_photo_mid_stroke_ends_the_stroke() {
+    let strokes = |h: &Headless, id: u32| -> usize {
+        develop(h)
+            .masks
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.components.iter().map(|c| if let MaskShape::Brush { strokes } = &c.shape { strokes.len() } else { 0 }).sum())
+            .unwrap_or(0)
+    };
+    for pick in ["mask", "photo"] {
+        let mut h = detail("panel.masking");
+        h.settle(SETTLE);
+        exec(&mut h, "tool.brush", json!({"new": true}));
+        h.app.ui.brush_auto_mask = false;
+        brush_at(&mut h, 0.2, 0.5);
+        let first = h.app.session.active_mask.expect("the first mask");
+        exec(&mut h, "tool.brush", json!({"new": true}));
+        brush_at(&mut h, 0.6, 0.5);
+        let second = h.app.session.active_mask.expect("the second mask");
+        assert_ne!(first, second);
+        pointer(&mut h, json!([{"kind": "down", "x": 0.6, "y": 0.7}, {"kind": "drag", "x": 0.65, "y": 0.7}, {"kind": "drag", "x": 0.7, "y": 0.7}]));
+        h.step();
+        assert!(matches!(h.app.gesture, Some(crate::panels::detail::Gesture::Brush { .. })), "{pick}: a stroke is held");
+        let photo = h.app.session.active().expect("a photo");
+        let (first_strokes, masks) = (strokes(&h, first), develop(&h).masks.len());
+        if pick == "mask" {
+            exec(&mut h, "mask.select", json!({"id": first}));
+        } else {
+            let other = h.app.session.visible_cloned().into_iter().find(|p| *p != photo).expect("another photo");
+            exec(&mut h, "library.select", json!({"ids": [other.0]}));
+        }
+        assert!(h.app.gesture.is_none(), "{pick}: the stroke ended");
+        pointer(&mut h, json!([{"kind": "drag", "x": 0.75, "y": 0.7}, {"kind": "drag", "x": 0.8, "y": 0.7}, {"kind": "up", "x": 0.8, "y": 0.7}]));
+        h.step();
+        h.step();
+        if pick == "mask" {
+            assert_eq!(strokes(&h, first), first_strokes, "the picked mask's strokes are untouched");
+            assert_eq!(develop(&h).masks.len(), masks, "no new mask");
+        } else {
+            assert!(develop(&h).masks.is_empty(), "no mask started on the new photo");
+        }
+        h.settle(SETTLE);
+    }
+}

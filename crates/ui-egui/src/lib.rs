@@ -30,8 +30,8 @@ mod drop_overlay;
 mod edit_in;
 mod enhance_pump;
 pub mod enhance_ui;
-pub mod eye_strip;
 pub mod export_task;
+pub mod eye_strip;
 mod focus_scan;
 pub mod folder_poll;
 mod frame_rate;
@@ -1022,6 +1022,11 @@ impl LccApp {
     /// (offer a model's download, treat a cancel as one) instead of reading the message.
     pub fn run_typed(&mut self, id: &str, params: Value) -> Result<Value, CommandError> {
         shortcuts::set_active(self.ui.settings.keymap_set);
+        // a brush stroke being painted belongs to the mask and photo it started on: picking another
+        // ends it first, so its release can't land on the one picked
+        if matches!(id, "mask.select" | "library.select") {
+            self.cancel_brush_gesture();
+        }
         if let Some(r) = edit_in::intercept(self, id, &params) {
             return r.map_err(CommandError::from);
         }
@@ -1407,6 +1412,15 @@ impl LccApp {
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(MIDI_IDLE - (now - last)));
             }
+        }
+    }
+
+    /// End a Brush stroke being painted, if one is: it is dropped (strokes reach the photo when
+    /// released), and the pointer still held paints nothing more until it is let go.
+    pub(crate) fn cancel_brush_gesture(&mut self) {
+        if matches!(self.gesture, Some(panels::detail::Gesture::Brush { .. })) {
+            self.gesture = None;
+            self.brush_live = None;
         }
     }
 
