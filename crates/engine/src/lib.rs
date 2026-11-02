@@ -98,6 +98,7 @@ pub mod print;
 pub mod print_color;
 pub mod print_pdf;
 pub mod profile_bodies;
+pub mod profile_edits;
 pub mod profile_refs;
 pub mod proof;
 #[cfg(not(target_arch = "wasm32"))]
@@ -437,6 +438,8 @@ pub struct Session {
     /// Profiles hidden from the menus and the browser by the Profile Manager (still listed there and in
     /// `profiles.list {all}`; photos using one keep it).
     pub profile_hidden: Vec<String>,
+    /// The Profile Manager's renames, regroupings, order and removed built-in looks.
+    pub profile_edits: profile_edits::ProfileEdits,
     /// The camera profile each camera body starts with (`profile_bodies::key` → `dcp:…`, `cal:…` or `lc`),
     /// applied to that body's raws at import ([`profile_bodies`]).
     pub body_profiles: std::collections::BTreeMap<String, String>,
@@ -721,6 +724,7 @@ impl Session {
             preset_builtin_groups: Default::default(),
             profile_recent: Vec::new(),
             profile_hidden: Vec::new(),
+            profile_edits: Default::default(),
             body_profiles: Default::default(),
             app_store: None,
             journal: Vec::new(),

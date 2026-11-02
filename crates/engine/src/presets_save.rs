@@ -35,6 +35,7 @@ pub(crate) struct Snapshot {
     builtin_names: std::collections::BTreeMap<String, String>,
     builtin_groups: std::collections::BTreeMap<String, String>,
     profile_hidden: Vec<String>,
+    profile_edits: crate::profile_edits::ProfileEdits,
     body_profiles: std::collections::BTreeMap<String, String>,
 }
 
@@ -57,6 +58,8 @@ struct FileRef<'a> {
     profile_recent: &'a [String],
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     profile_hidden: &'a [String],
+    #[serde(skip_serializing_if = "crate::profile_edits::ProfileEdits::is_empty")]
+    profile_edits: &'a crate::profile_edits::ProfileEdits,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     body_profiles: &'a std::collections::BTreeMap<String, String>,
 }
@@ -73,6 +76,7 @@ impl Snapshot {
             builtin_names: s.preset_builtin_names.clone(),
             builtin_groups: s.preset_builtin_groups.clone(),
             profile_hidden: s.profile_hidden.clone(),
+            profile_edits: s.profile_edits.clone(),
             body_profiles: s.body_profiles.clone(),
         }
     }
@@ -90,6 +94,7 @@ impl Snapshot {
             profile_favorites: &self.profile_favorites,
             profile_recent: &self.profile_recent,
             profile_hidden: &self.profile_hidden,
+            profile_edits: &self.profile_edits,
             body_profiles: &self.body_profiles,
         };
         serde_json::to_string_pretty(&f).unwrap_or_default()
@@ -260,6 +265,7 @@ mod tests {
             builtin_names: Default::default(),
             builtin_groups: Default::default(),
             profile_hidden: Vec::new(),
+            profile_edits: Default::default(),
             body_profiles: Default::default(),
         }
     }

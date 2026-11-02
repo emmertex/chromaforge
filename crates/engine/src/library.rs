@@ -188,6 +188,9 @@ pub(crate) struct PresetsFile {
     /// Profiles the Profile Manager hides.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     profile_hidden: Vec<String>,
+    /// The Profile Manager's renames, regroupings, order and removed looks.
+    #[serde(skip_serializing_if = "crate::profile_edits::ProfileEdits::is_empty")]
+    profile_edits: crate::profile_edits::ProfileEdits,
     /// Each camera body's camera profile.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     body_profiles: std::collections::BTreeMap<String, String>,
@@ -204,6 +207,7 @@ pub(crate) struct PresetsSaved {
     profile_favorites: Vec<String>,
     profile_recent: Vec<String>,
     profile_hidden: Vec<String>,
+    profile_edits: crate::profile_edits::ProfileEdits,
     body_profiles: std::collections::BTreeMap<String, String>,
     at_import: Vec<String>,
     hidden: Vec<String>,
@@ -221,6 +225,7 @@ impl PresetsSaved {
             profile_favorites: s.profile_favorites.clone(),
             profile_recent: s.profile_recent.clone(),
             profile_hidden: s.profile_hidden.clone(),
+            profile_edits: s.profile_edits.clone(),
             body_profiles: s.body_profiles.clone(),
             at_import: s.preset_at_import.clone(),
             hidden: s.preset_hidden.clone(),
@@ -237,6 +242,7 @@ impl PresetsSaved {
             || self.profile_favorites != s.profile_favorites
             || self.profile_recent != s.profile_recent
             || self.profile_hidden != s.profile_hidden
+            || self.profile_edits != s.profile_edits
             || self.body_profiles != s.body_profiles
             || self.at_import != s.preset_at_import
             || self.hidden != s.preset_hidden
@@ -749,6 +755,7 @@ impl Session {
             self.profile_recent = f.profile_recent.into_iter().filter(known).take(crate::presets::RECENT_PROFILES).collect();
             // (a hidden id this build doesn't know is kept: a LUT folder may come back)
             self.profile_hidden = f.profile_hidden.into_iter().take(10_000).collect();
+            self.profile_edits = f.profile_edits.bounded();
             self.body_profiles = f.body_profiles.into_iter().take(10_000).collect();
         }
         // view state

@@ -5,7 +5,6 @@
 use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use lcc_catalog::PhotoId;
 use lcc_develop::DevelopSettings;
-use lcc_engine::presets::{PROFILES, profile_groups};
 use serde_json::json;
 
 use super::presets::cover_uv;
@@ -102,6 +101,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     camera_profile_row(app, ui, &d, id);
     divider(ui);
+    let shown_groups = app.session.shown_groups();
     // (title, cell tag, imported LUT folder, profiles)
     let mut sections: Vec<(&str, &str, bool, Vec<(String, String, String)>)> = Vec::new();
     let favs: Vec<(String, String, String)> = app
@@ -113,31 +113,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     if !favs.is_empty() {
         sections.push(("Favorites", "fav", false, favs));
     }
-    for g in profile_groups() {
-        sections.push((
-            g,
-            "",
-            false,
-            PROFILES
-                .iter()
-                .filter(|p| p.group == g && !app.session.profile_hidden.iter().any(|h| h == p.id))
-                .map(|p| (p.id.to_string(), p.name.to_string(), p.group.to_string()))
-                .collect(),
-        ));
-    }
-    // imported LUT profile groups
-    let mut lut_groups: Vec<String> = app.session.lut_profiles.iter().map(|p| p.group.clone()).collect();
-    lut_groups.sort_unstable();
-    lut_groups.dedup();
-    for g in &lut_groups {
-        let profiles = app
-            .session
-            .lut_profiles
-            .iter()
-            .filter(|p| &p.group == g && !app.session.profile_hidden.contains(&p.id))
-            .map(|p| (p.id.clone(), p.name.clone(), p.group.clone()))
-            .collect();
-        sections.push((g.as_str(), "", true, profiles));
+    // every group with the Profile Manager's names, groups and order (hidden and removed ones left out)
+    for g in &shown_groups {
+        sections.push((g.name.as_str(), "", g.imported, g.profiles.iter().map(|p| (p.id.clone(), p.name.clone(), p.group.clone())).collect()));
     }
     // (a group whose profiles the Profile Manager all hides is left out)
     sections.retain(|s| !s.3.is_empty());

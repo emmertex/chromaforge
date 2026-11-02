@@ -253,18 +253,20 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "profiles.list", "List Profiles", [], None, "{all?: bool (also the profiles the Profile Manager hides)} — every profile (built-in, then imported LUTs marked `imported`) with its group and favourite flag", always, |s, p| {
             let favorite = |id: &str| s.profile_favorites.iter().any(|f| f == id);
             let all = p.get("all").and_then(Value::as_bool).unwrap_or(false);
-            let shown = |id: &str| all || !s.profile_hidden.iter().any(|h| h == id);
-            let builtin = crate::presets::PROFILES
-                .iter()
-                .filter(|p| shown(p.id))
-                .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(p.id)}));
-            // imported LUT profiles too (#618), marked as in `profiles.menu`
-            let imported = s
-                .lut_profiles
-                .iter()
-                .filter(|p| shown(&p.id))
-                .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(&p.id), "imported": true}));
-            Ok(Value::Array(builtin.chain(imported).collect()))
+            // the user's names, groups and order; imported LUT profiles marked as in `profiles.menu` (#618)
+            Ok(Value::Array(
+                s.all_profiles()
+                    .into_iter()
+                    .filter(|p| all || !p.hidden)
+                    .map(|p| {
+                        let mut v = json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(&p.id)});
+                        if p.kind == "lut" {
+                            v["imported"] = json!(true);
+                        }
+                        v
+                    })
+                    .collect(),
+            ))
         }),
         cmd!(query "profiles.menu", "Profile Menu", [], None, "{} — favourites, recent (newest first) and groups", always, |s, _| Ok(s.profile_menu())),
         cmd!(query "history.list", "List History", [], None, "{id?} — returns {history: labels oldest first, batches: per step the id of the edit of several photos it belongs to (null: this photo's own edit), cursor: index of the step the settings are at (later steps can be returned to), versions}", has_active, |s, p| {

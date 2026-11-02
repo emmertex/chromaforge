@@ -564,7 +564,6 @@ fn profile_menu(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, below:
 }
 
 fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, below: f32) {
-    use lcc_engine::presets::{PROFILES, profile_groups};
     let t = Tokens::get(ui.ctx());
     ui.set_min_width(200.0);
     let cur = d.profile.id.as_str();
@@ -594,35 +593,20 @@ fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, b
         }
         ui.separator();
     }
-    for g in profile_groups() {
-        let r = crate::widgets::menu_button(ui, crate::i18n::tr(g), |ui| {
+    // every group with the Profile Manager's names, groups and order (hidden and removed ones left out)
+    for g in app.session.shown_groups() {
+        // a built-in group is translated; an imported folder or the user's group keeps its name and its own widget id
+        let label = crate::i18n::builtin_label(&g.name, !g.imported).to_string();
+        let r = crate::widgets::menu_button(ui, label, |ui| {
             crate::menu_level::level(ui, 2, Some(below), |ui| {
                 ui.set_min_width(170.0);
-                for p in PROFILES.iter().filter(|p| p.group == g && !app.session.profile_hidden.iter().any(|h| h == p.id)) {
-                    item(ui, "group", p.id, p.name, &mut pick);
-                }
-            });
-        });
-        register(ui.ctx(), format!("profileMenu:groupMenu:{g}"), r.response.rect);
-        if r.inner.is_some() {
-            crate::menu_level::set_anchor(ui.ctx(), 2, r.response.rect);
-        }
-    }
-    // imported LUT profile groups
-    let mut lut_groups: Vec<String> = app.session.lut_profiles.iter().map(|p| p.group.clone()).collect();
-    lut_groups.sort_unstable();
-    lut_groups.dedup();
-    for g in &lut_groups {
-        // a folder's name as it is, and its own widget id even when it matches a built-in group
-        let r = crate::widgets::menu_button(ui, g.as_str(), |ui| {
-            crate::menu_level::level(ui, 2, Some(below), |ui| {
-                ui.set_min_width(170.0);
-                for p in app.session.lut_profiles.iter().filter(|p| &p.group == g && !app.session.profile_hidden.contains(&p.id)) {
+                for p in &g.profiles {
                     item(ui, "group", &p.id, &p.name, &mut pick);
                 }
             });
         });
-        register(ui.ctx(), format!("profileMenu:lutGroupMenu:{g}"), r.response.rect);
+        let wid = if g.imported { format!("profileMenu:lutGroupMenu:{}", g.name) } else { format!("profileMenu:groupMenu:{}", g.name) };
+        register(ui.ctx(), wid, r.response.rect);
         if r.inner.is_some() {
             crate::menu_level::set_anchor(ui.ctx(), 2, r.response.rect);
         }

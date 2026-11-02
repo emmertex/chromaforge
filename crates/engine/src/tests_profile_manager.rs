@@ -68,3 +68,67 @@ fn a_body_default_applies_at_import_while_the_photo_is_on_the_camera_default() {
     crate::import::apply_import_defaults(&s, &mut p);
     assert_eq!(p.develop.profile.camera, "lc");
 }
+
+#[test]
+fn profiles_are_renamed_regrouped_reordered_removed_and_restored() {
+    let mut s = Session::new();
+    let (a, b) = (crate::presets::PROFILES[0].id, crate::presets::PROFILES[2].id);
+    let list = |s: &mut Session| s.execute("profiles.list", &json!({})).unwrap().as_array().unwrap().clone();
+    let n = list(&mut s).len();
+    s.execute("profile.rename", &json!({"id": a, "name": "  My Colour "})).unwrap();
+    s.execute("profile.setGroup", &json!({"id": a, "group": "Mine"})).unwrap();
+    let menu = s.execute("profiles.menu", &json!({})).unwrap();
+    let mine = menu["groups"].as_array().unwrap().iter().find(|g| g["name"] == "Mine").unwrap().clone();
+    assert_eq!(mine["profiles"][0]["name"], "My Colour");
+    assert_eq!(mine["imported"], true, "the user's group is shown as named");
+    assert_eq!(s.profile_info(a), Some(("My Colour", "Mine")));
+    // b first
+    s.execute("profile.reorder", &json!({"ids": [b]})).unwrap();
+    assert_eq!(list(&mut s)[0]["id"], b);
+    // a removed built-in look leaves every list until restored
+    s.execute("profile.remove", &json!({"id": b})).unwrap();
+    assert_eq!(list(&mut s).len(), n - 1);
+    assert!(s.execute("profiles.manager", &json!({})).unwrap()["removed"].as_array().unwrap().iter().any(|r| r == b));
+    assert_eq!(s.execute("profile.restoreBuiltins", &json!({})).unwrap()["restored"], 1);
+    assert_eq!(list(&mut s).len(), n);
+    // a whole group: renamed, hidden, removed
+    let g = crate::presets::PROFILES[1].group;
+    let members = crate::presets::PROFILES.iter().filter(|p| p.group == g && p.id != a).count();
+    assert_eq!(s.execute("profile.groupRename", &json!({"group": g, "name": "Renamed"})).unwrap()["profiles"], members);
+    assert_eq!(s.execute("profile.groupHide", &json!({"group": "Renamed"})).unwrap()["hidden"], true);
+    assert_eq!(list(&mut s).len(), n - members);
+    s.execute("profile.groupHide", &json!({"group": "Renamed", "hidden": false})).unwrap();
+    assert_eq!(s.execute("profile.groupRemove", &json!({"group": "Renamed"})).unwrap()["removed"], members);
+    assert_eq!(list(&mut s).len(), n - members);
+    // clearing a name gives the profile its own back
+    s.execute("profile.rename", &json!({"id": a, "name": ""})).unwrap();
+    assert_eq!(s.profile_info(a).map(|x| x.0), Some(crate::presets::PROFILES[0].name));
+}
+
+#[test]
+fn hostile_profile_manager_requests_are_errors() {
+    let mut s = Session::new();
+    let a = crate::presets::PROFILES[0].id;
+    for (cmd, p) in [
+        ("profile.rename", json!({"id": "nope", "name": "x"})),
+        ("profile.rename", json!({"id": a})),
+        ("profile.rename", json!({"id": a, "name": 3})),
+        ("profile.rename", json!({"id": a, "name": "x".repeat(500)})),
+        ("profile.rename", json!({"id": a, "name": "a\u{0}b"})),
+        ("profile.setGroup", json!({"id": a, "group": ["x"]})),
+        ("profile.reorder", json!({"ids": "all"})),
+        ("profile.reorder", json!({"ids": [1, 2]})),
+        ("profile.reorder", json!({"ids": ["nope"]})),
+        ("profile.remove", json!({})),
+        ("profile.groupRename", json!({"group": "No Such Group", "name": "x"})),
+        ("profile.groupRename", json!({"group": crate::presets::PROFILES[0].group})),
+        ("profile.groupHide", json!({"group": ""})),
+        ("profile.groupRemove", json!({"group": null})),
+    ] {
+        assert!(s.execute(cmd, &p).is_err(), "{cmd} {p}");
+    }
+    assert!(s.profile_edits.is_empty(), "nothing changed");
+    // a hostile prefs file is cut to the limits
+    let big = crate::profile_edits::ProfileEdits { order: vec!["x".into(); 20_000], ..Default::default() }.bounded();
+    assert_eq!(big.order.len(), crate::profile_edits::MAX_ENTRIES);
+}
