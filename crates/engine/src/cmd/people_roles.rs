@@ -57,6 +57,36 @@ fn scope_json(sc: &Scope) -> Value {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
+            "masks.recompute",
+            "Recompute AI Masks",
+            [],
+            None,
+            "{id? | ids?: [photoId], force?: bool (false: only what is missing)} — complete each photo's mask recipes: People by name or role, gradients anchored to the people, Object and Describe selections (the segmenter, waited for) → {photos: [{id, changed, notes}]}",
+            always,
+            |s, p| {
+                let c = "masks.recompute";
+                let ids: Vec<PhotoId> = match p.get("ids") {
+                    Some(Value::Array(a)) => {
+                        a.iter().map(|v| v.as_u64().map(PhotoId).ok_or_else(|| bad(c, "`ids` are photo ids"))).collect::<Result<_>>()?
+                    }
+                    Some(_) => return Err(bad(c, "`ids` are photo ids")),
+                    None => {
+                        vec![p.get("id").and_then(Value::as_u64).map(PhotoId).or_else(|| s.active()).ok_or_else(|| bad(c, "no photo (give `id`)"))?]
+                    }
+                };
+                let force = super::bool_or(p, "force", false);
+                let mut photos = Vec::new();
+                for id in ids.into_iter().take(10_000) {
+                    if s.catalog.photo(id).is_none() {
+                        return Err(bad(c, format!("no photo {}", id.0)));
+                    }
+                    let done = s.compute_masks(id, force)?;
+                    photos.push(json!({"id": id.0, "changed": done.changed, "notes": done.notes}));
+                }
+                Ok(json!({"photos": photos}))
+            }
+        ),
+        cmd!(
             "people.setRole",
             "Set Role",
             [],

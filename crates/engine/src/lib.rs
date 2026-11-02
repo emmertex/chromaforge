@@ -110,6 +110,7 @@ pub mod slide_title;
 pub mod slideshow;
 pub mod slideshow_export;
 pub mod smart;
+pub mod smart_masks;
 pub mod source_report;
 pub mod sync;
 mod sync_same;

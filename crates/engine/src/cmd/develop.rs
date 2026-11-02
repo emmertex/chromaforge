@@ -1041,13 +1041,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 let prev =
                     s.previous_active.filter(|id| s.catalog.photo(*id).is_some_and(|ph| !ph.deleted)).ok_or_else(|| bad(c, "no previous photo"))?;
                 let groups = groups_param(p, c)?.unwrap_or_else(|| s.copy_groups.clone());
-                let partial = lcc_develop::extract_groups(&s.develop_of(prev).unwrap_or_default(), &groups);
+                let mut partial = lcc_develop::extract_groups(&s.develop_of(prev).unwrap_or_default(), &groups);
+                lcc_develop::presets::to_recipes(&mut partial);
                 let ids: Vec<PhotoId> = s.targets(p)?.into_iter().filter(|id| *id != prev).collect();
-                let ops = ids
-                    .iter()
-                    .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                    .filter_map(|(id, d)| s.develop_op(id, lcc_develop::apply_partial(&d, &partial, 1.0), "Paste from Previous"))
-                    .collect::<Vec<_>>();
+                let mut ops = Vec::new();
+                for id in ids {
+                    let Some(d) = s.develop_of(id) else { continue };
+                    let next = crate::smart_masks::completed(s, id, lcc_develop::apply_partial(&d, &partial, 1.0));
+                    ops.extend(s.develop_op(id, next, "Paste from Previous"));
+                }
                 let n = ops.len();
                 s.commit("Paste from Previous", Op::Batch { ops })?;
                 Ok(json!({"changed": n, "from": prev.0}))
@@ -1069,12 +1071,14 @@ pub fn specs() -> Vec<CommandSpec> {
                     let full = lcc_develop::apply_partial(&DevelopSettings::default(), &clip, 1.0);
                     clip = lcc_develop::extract_groups(&full, &only);
                 }
+                lcc_develop::presets::to_recipes(&mut clip);
                 let ids = s.targets(p)?;
-                let ops = ids
-                    .iter()
-                    .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                    .filter_map(|(id, d)| s.develop_op(id, lcc_develop::apply_partial(&d, &clip, 1.0), "Paste Settings"))
-                    .collect::<Vec<_>>();
+                let mut ops = Vec::new();
+                for id in ids {
+                    let Some(d) = s.develop_of(id) else { continue };
+                    let next = crate::smart_masks::completed(s, id, lcc_develop::apply_partial(&d, &clip, 1.0));
+                    ops.extend(s.develop_op(id, next, "Paste Settings"));
+                }
                 let n = ops.len();
                 s.commit("Paste Settings", Op::Batch { ops })?;
                 Ok(json!({"changed": n}))
@@ -1105,23 +1109,19 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let groups = groups_param(p, c)?.unwrap_or_else(|| if controls.is_empty() { SettingsGroup::default_copy() } else { Vec::new() });
                 let d = s.develop_of(id).unwrap_or_default();
-                let partial = lcc_develop::extract_groups(&d, &groups);
+                let mut partial = lcc_develop::extract_groups(&d, &groups);
+                lcc_develop::presets::to_recipes(&mut partial);
                 let values: Vec<(&str, f64)> = controls.iter().filter_map(|k| lcc_develop::controls::get(&d, k).map(|v| (*k, v))).collect();
-                let ops = s
-                    .selection
-                    .ids
-                    .clone()
-                    .into_iter()
-                    .filter(|x| *x != id)
-                    .filter_map(|x| s.develop_of(x).map(|d| (x, d)))
-                    .filter_map(|(x, dd)| {
-                        let mut nd = lcc_develop::apply_partial(&dd, &partial, 1.0);
-                        for (k, v) in &values {
-                            lcc_develop::controls::set(&mut nd, k, *v);
-                        }
-                        s.develop_op(x, nd, "Sync Settings")
-                    })
-                    .collect::<Vec<_>>();
+                let mut ops = Vec::new();
+                for x in s.selection.ids.clone().into_iter().filter(|x| *x != id) {
+                    let Some(dd) = s.develop_of(x) else { continue };
+                    let mut nd = lcc_develop::apply_partial(&dd, &partial, 1.0);
+                    for (k, v) in &values {
+                        lcc_develop::controls::set(&mut nd, k, *v);
+                    }
+                    let nd = crate::smart_masks::completed(s, x, nd);
+                    ops.extend(s.develop_op(x, nd, "Sync Settings"));
+                }
                 let n = ops.len();
                 s.commit("Sync Settings", Op::Batch { ops })?;
                 Ok(json!({"changed": n}))
@@ -1228,10 +1228,10 @@ pub fn specs() -> Vec<CommandSpec> {
             let amount = f64_or(p, "amount", 100.0).clamp(0.0, 200.0) / 100.0;
             // `id` names the preset here: the photos are `ids`, else the selection
             let ids = s.targets(&json!({"ids": p.get("ids")}))?;
-            let ops = ids
-                .iter()
-                .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                .filter_map(|(id, d)| {
+            let mut ops = Vec::new();
+            for id in ids {
+                let Some(d) = s.develop_of(id) else { continue };
+                {
                     // a hand-written preset may name one white balance number only, and then it means the same as
                     // a partial: bring the photo onto that scale first, with its own as-shot white, and put the
                     // result back on the scale the photo is edited on (issue #2910) — the merge `develop.merge` uses
@@ -1243,9 +1243,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     if on_kelvin_scale {
                         lcc_pipeline::local::normalize_wb(&mut next, &info);
                     }
-                    s.develop_op(id, next, &format!("Preset: {}", preset.name))
-                })
-                .collect::<Vec<_>>();
+                    let next = crate::smart_masks::completed(s, id, next);
+                    ops.extend(s.develop_op(id, next, &format!("Preset: {}", preset.name)));
+                }
+            }
             s.commit(&format!("Preset: {}", preset.name), Op::Batch { ops })?;
             ok()
         }),
