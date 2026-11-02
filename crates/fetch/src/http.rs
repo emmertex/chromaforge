@@ -288,7 +288,7 @@ fn connect_any(host: &str, addrs: &[SocketAddr], deadline: Instant, limits: &Lim
 }
 
 impl Stream {
-    fn connect(url: &Url, limits: &Limits) -> Result<Stream, HttpError> {
+    fn connect(url: &Url, limits: &Limits, tls: Option<Arc<rustls::ClientConfig>>) -> Result<Stream, HttpError> {
         // the lookup and the connection attempts share one connect timeout
         let deadline = Instant::now() + limits.connect;
         let (host, port) = (url.host.clone(), url.port);
@@ -301,7 +301,11 @@ impl Stream {
             return Ok(Stream::Plain(sock));
         }
         let name = rustls::pki_types::ServerName::try_from(url.host.clone()).map_err(|e| HttpError::Tls(format!("{}: {e}", url.host)))?;
-        let conn = rustls::ClientConnection::new(tls_config()?, name).map_err(|e| HttpError::Tls(e.to_string()))?;
+        let config = match tls {
+            Some(c) => c,
+            None => tls_config()?,
+        };
+        let conn = rustls::ClientConnection::new(config, name).map_err(|e| HttpError::Tls(e.to_string()))?;
         let mut s = Stream::Tls(Box::new(conn), sock);
         s.handshake(limits)?;
         Ok(s)
@@ -349,10 +353,22 @@ impl Stream {
                 Ok(())
             }
             Stream::Tls(conn, sock) => {
-                // buffered by rustls, then sent as TLS records
-                conn.writer().write_all(data).map_err(|e| HttpError::Tls(e.to_string()))?;
-                while conn.wants_write() {
-                    Self::retry(limits, || conn.write_tls(sock))?;
+                // rustls takes plaintext only up to its buffer limit (64 KiB by default): hand it what
+                // it accepts, send that as TLS records, repeat. (`writer().write_all` of a larger
+                // body failed with "failed to write whole buffer": the generative-fill upload.)
+                let mut rest = data;
+                while !rest.is_empty() {
+                    let n = conn.writer().write(rest).map_err(|e| HttpError::Tls(e.to_string()))?;
+                    rest = rest.get(n..).unwrap_or_default();
+                    if n == 0 && !conn.wants_write() {
+                        return Err(HttpError::Io("the secure connection accepted no more data".into()));
+                    }
+                    while conn.wants_write() {
+                        let sent = Self::retry(limits, || conn.write_tls(sock))?;
+                        if sent == 0 {
+                            return Err(HttpError::Io("connection closed while sending the request".into()));
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -579,6 +595,18 @@ pub const MAX_BODY: usize = 64 * 1024 * 1024;
 /// `Content-Length`; the caller names its `Content-Type` in `headers`), then read the status
 /// line and headers. Header values never appear in errors (they may hold an API key).
 pub fn request(method: &str, url: &Url, headers: &[(&str, String)], body: Option<&[u8]>, limits: &Limits) -> Result<Response, HttpError> {
+    request_with(method, url, headers, body, limits, None)
+}
+
+/// [`request`] with its own TLS configuration (tests: a local server's test certificate).
+fn request_with(
+    method: &str,
+    url: &Url,
+    headers: &[(&str, String)],
+    body: Option<&[u8]>,
+    limits: &Limits,
+    tls: Option<Arc<rustls::ClientConfig>>,
+) -> Result<Response, HttpError> {
     if method.is_empty() || !method.chars().all(|c| c.is_ascii_uppercase()) {
         return Err(HttpError::BadUrl("bad request method".into()));
     }
@@ -605,7 +633,7 @@ pub fn request(method: &str, url: &Url, headers: &[(&str, String)], body: Option
         req.push_str(&format!("Content-Length: {}\r\n", b.len()));
     }
     req.push_str("\r\n");
-    let mut stream = Stream::connect(url, limits)?;
+    let mut stream = Stream::connect(url, limits, tls)?;
     stream.write_all(req.as_bytes(), limits)?;
     if let Some(b) = body {
         for chunk in b.chunks(256 * 1024) {
@@ -868,5 +896,130 @@ mod tests {
         assert_eq!(got, "{\"method\":\"POST\",\"len\":700000,\"auth\":\"Bearer k\"}");
         server.join().unwrap();
         assert!(request("post", &url, &[], None, &limits).is_err());
+    }
+
+    /// A test CA and a `localhost` certificate it signed (P-256, valid until 2126), for a local TLS
+    /// server. Test-only keys, generated for this test.
+    const TEST_CA: &str = "-----BEGIN CERTIFICATE-----
+MIIBfzCCASagAwIBAgIUZDE/pE57rmhd0acTEfrqEISjuU4wCgYIKoZIzj0EAwIw
+HTEbMBkGA1UEAwwSTGlnaHRDcmFmdCB0ZXN0IENBMCAXDTI2MTAxNTE1NDM1OFoY
+DzIxMjYwOTIxMTU0MzU4WjAdMRswGQYDVQQDDBJMaWdodENyYWZ0IHRlc3QgQ0Ew
+WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASqLIAm3w+FWLuqWtaHSChon1F4wgWM
+vk9LWH6M/Nv8NIGDxQs3+4Wyc+A0ecQMBD+yDUi4DYE81P6JzmL4teSyo0IwQDAP
+BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUnYLuIFBi
+SxKnhbV9TVwVQTuK6PUwCgYIKoZIzj0EAwIDRwAwRAIgVGQ//6kzxXKKjW19kq7J
+CS9ECb+Ga7YSgTbfkL1iEb0CIErq01/VeRxRH7b8KDd1dIo7fYKWqxHjHy9tbD+I
+Jqfr
+-----END CERTIFICATE-----";
+    const TEST_LEAF: &str = "-----BEGIN CERTIFICATE-----
+MIIBuzCCAWKgAwIBAgIUbzPZ8rsInlnhpceWrVi3Y9nh9X8wCgYIKoZIzj0EAwIw
+HTEbMBkGA1UEAwwSTGlnaHRDcmFmdCB0ZXN0IENBMCAXDTI2MTAxNTE1NDM1OFoY
+DzIxMjYwOTIxMTU0MzU4WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjO
+PQIBBggqhkjOPQMBBwNCAATfwLLDsrJ+pxUuCMLz7sTkEYam3ozL8HKpaUfs1IO9
+3F/lJ7ksXCTdQsQ0QBmX6YThT4t3MerVJemDhM6GhmAjo4GGMIGDMAkGA1UdEwQC
+MAAwCwYDVR0PBAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBQGA1UdEQQNMAuC
+CWxvY2FsaG9zdDAdBgNVHQ4EFgQUk6UoMz3BYK3wFQ1ce8E3i25A0LQwHwYDVR0j
+BBgwFoAUnYLuIFBiSxKnhbV9TVwVQTuK6PUwCgYIKoZIzj0EAwIDRwAwRAIgT3Qr
+YnGdEvkqa1BtPbIjpHVOCFZqRoMyH2Px8e7wsE0CIE21rOdrZA0F67jx3GiWZoZq
+9s21ti7TrXHqy7sPWIl+
+-----END CERTIFICATE-----";
+    /// The leaf's PKCS#8 key, base64 (no PEM armour: it is a throwaway test key).
+    const TEST_LEAF_KEY: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgL88PP3vSOLZwBjDA\
+sQ6l5HDDBbhGkYuLCq/Hs2w/8suhRANCAATfwLLDsrJ+pxUuCMLz7sTkEYam3ozL\
+8HKpaUfs1IO93F/lJ7ksXCTdQsQ0QBmX6YThT4t3MerVJemDhM6GhmAj";
+
+    fn b64(s: &str) -> Vec<u8> {
+        let val = |c: u8| match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            _ => 63,
+        };
+        let digits: Vec<u8> = s.bytes().filter(|c| c.is_ascii_alphanumeric() || *c == b'+' || *c == b'/').map(val).collect();
+        let mut out = Vec::new();
+        for q in digits.chunks(4) {
+            let n = q.iter().enumerate().fold(0u32, |a, (i, d)| a | (u32::from(*d) << (18 - 6 * i)));
+            out.extend(n.to_be_bytes().iter().skip(1).take(q.len() - 1));
+        }
+        out
+    }
+
+    fn pem_der(pem: &str) -> Vec<u8> {
+        b64(&pem.lines().filter(|l| !l.starts_with("-----")).collect::<String>())
+    }
+
+    /// A body far over rustls's 64 KiB plaintext buffer goes out whole over TLS (it failed with
+    /// "failed to write whole buffer": the first real generative-fill upload).
+    #[test]
+    fn posts_a_large_body_over_tls() {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        let provider = Arc::new(rustls_rustcrypto::provider());
+        let server_cfg = rustls::ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(pem_der(TEST_LEAF)), CertificateDer::from(pem_der(TEST_CA))],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(b64(TEST_LEAF_KEY))),
+            )
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(CertificateDer::from(pem_der(TEST_CA))).unwrap();
+        let client_cfg = Arc::new(
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let (sock, _) = l.accept().unwrap();
+            let conn = rustls::ServerConnection::new(Arc::new(server_cfg)).unwrap();
+            let mut tls = rustls::StreamOwned::new(conn, sock);
+            let mut r = BufReader::new(&mut tls);
+            let mut first = String::new();
+            r.read_line(&mut first).unwrap();
+            let mut len = 0usize;
+            loop {
+                let mut h = String::new();
+                r.read_line(&mut h).unwrap();
+                if h.trim().is_empty() {
+                    break;
+                }
+                let (k, v) = h.split_once(':').unwrap();
+                if k.eq_ignore_ascii_case("content-length") {
+                    len = v.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0u8; len];
+            r.read_exact(&mut body).unwrap();
+            let sum: u64 = body.iter().enumerate().map(|(i, b)| (i as u64 % 251) * u64::from(*b)).sum();
+            let reply = format!("{{\"len\":{len},\"sum\":{sum}}}");
+            write!(tls, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+            tls.flush().unwrap();
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+        });
+        let cancel = AtomicBool::new(false);
+        let limits = Limits { connect: Duration::from_secs(5), stall: Duration::from_secs(20), cancel: &cancel };
+        // 6 MB, about what a 1536 × 1024 crop and its mask come to as PNGs
+        let body: Vec<u8> = (0..6_000_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+        let sum: u64 = body.iter().enumerate().map(|(i, b)| (i as u64 % 251) * u64::from(*b)).sum();
+        let url = Url::parse(&format!("https://localhost:{port}/v1/images/edits")).unwrap();
+        let mut r = request_with("POST", &url, &[("Content-Type", "application/octet-stream".into())], Some(&body), &limits, Some(client_cfg))
+            .unwrap();
+        assert_eq!(r.status, 200);
+        let got = String::from_utf8(r.read_to_end(1 << 20, &limits).unwrap()).unwrap();
+        assert_eq!(got, format!("{{\"len\":6000000,\"sum\":{sum}}}"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn the_tls_config_builds_with_the_pure_rust_provider() {
+        assert!(tls_config().is_ok());
     }
 }
