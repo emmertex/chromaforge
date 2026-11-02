@@ -167,7 +167,7 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
                 crate::i18n::tr_format!("Sent as one piece at {}% of the photo's resolution: softer than the rest.", pct)
             };
             ui.label(RichText::new(note).size(11.0).color(if plan["soft"] == true { t.caution } else { t.text_dim }));
-        } else if plan["soft"] == true {
+        } else if plan["soft"] == true && sp.generated.is_none() {
             ui.label(
                 RichText::new(crate::i18n::tr_format!("Generated at {}% of the photo's resolution: softer than the rest.", percent(&plan["scale"])))
                     .size(11.0)
@@ -183,7 +183,14 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
         if running {
             let st = app.session.execute("genfill.status", &json!({})).unwrap_or_default();
             ui.spinner();
-            ui.label(RichText::new(crate::i18n::tr_format!("Generating… {} of {}", st["done"], st["total"])).color(t.text_label));
+            // "n of m" only for several requests (tiles, variations)
+            let total = st["total"].as_u64().unwrap_or(0);
+            let text = if total > 1 {
+                crate::i18n::tr_format!("Generating… {} of {}", st["done"], total)
+            } else {
+                crate::i18n::tr("Generating…").to_string()
+            };
+            ui.label(RichText::new(text).color(t.text_label));
             if text_button(ui, "genfillCancel", crate::i18n::tr("Cancel"), false).clicked() {
                 let _ = app.run("genfill.cancel", json!({}));
             }
