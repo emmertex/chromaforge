@@ -1032,7 +1032,16 @@ impl Renderer {
             key,
             priority,
             Box::new(move || {
-                let run = || if background { lcc_engine::memory::in_background(|| job.run()) } else { job.run() };
+                // the neighbours prepared ahead take turns at the GPU behind the view's own renders
+                // and keep one short submission queued at a time, so the window's frames slot in
+                // between (`lcc_gpu::as_batch`); a thumbnail on screen does not wait for an
+                // export's turn
+                let prefetch = matches!(slot, Slot::Prefetch(_));
+                let run = || match (background, prefetch) {
+                    (true, true) => lcc_engine::memory::in_background(|| lcc_engine::gpu::as_batch(|| job.run())),
+                    (true, false) => lcc_engine::memory::in_background(|| job.run()),
+                    _ => job.run(),
+                };
                 Self::run_for(slot, run, &display, headroom)
             }),
         );
