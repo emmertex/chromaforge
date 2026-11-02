@@ -37,7 +37,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "store.gatherPresets",
             "Import Presets from Older Libraries",
-            ["File"],
+            ["File", "More Imports"],
             None,
             "{paths?: [library folders], force?: bool} — export presets, print templates and the other named presets of these libraries, the open one and every library merged before, read from each library's prefs.json and its backups' (once per library unless `force`), join the shared store: the same preset once, the same name with other content as \"name 2\"; nothing in the libraries is written → {libraries, files, count, skipped, problems}",
             always,

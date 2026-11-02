@@ -439,11 +439,13 @@ fn tool_strip_shows_only_the_active_modules_tools() {
     for id in ["versions", "activity", "more", "presets", "edit", "crop", "remove", "masking", "redeye", "keywords", "info"] {
         assert!(!has_widget(&h, &format!("icon:{id}")), "Library shows no {id} button");
     }
-    // History & Activity opens over Library's column by command, and closing it puts the column back
+    // History & Activity opens over Library's column by command, and closing it puts back exactly
+    // what the column showed (a panel toggle restores what was there)
+    let before = h.app.ui.right;
     run(&mut h, "panel.activity", json!({}));
     assert_eq!(h.app.ui.right, RightPanel::Activity, "History & Activity opens over the column");
     run(&mut h, "panel.activity", json!({}));
-    assert_eq!(h.app.ui.right, RightPanel::None, "again: Library's Classic column comes back");
+    assert_eq!(h.app.ui.right, before, "again: Library's column comes back as it was");
 }
 
 #[test]

@@ -408,6 +408,8 @@ fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
         // (Edit's panels under a Develop drawer, as in Lightroom Classic), any other panel hides
         let before = app.ui.toggle_return.take().and_then(|(opened, before)| (opened == p && before != p).then_some(before));
         app.ui.right = match before {
+            // a tool opened from another tool closes back to the panel under both
+            Some(before) if p.is_tool() && before.is_tool() => app.ui.leave_tool(),
             Some(before) => {
                 app.ui.tool_return = None;
                 before
