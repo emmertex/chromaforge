@@ -608,6 +608,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         crate::widgets::context_menu(&resp, |ui| component_row_menu(app, ui, m.id, i, &label, cur_m.components.len()));
 
                         range_controls(app, ui, i, &c.shape);
+                        if comp_sel && let MaskShape::People { .. } = &c.shape {
+                            who_picker(app, ui, id, i, &c.shape);
+                        }
                     }
 
                     // Core combination action bar and refinement sliders for the active mask
@@ -1027,6 +1030,71 @@ fn show_overlay_row(app: &mut LccApp, ui: &mut egui::Ui) {
 
 /// Controls for a range component: the selected range (two handles over a dark → light bar),
 /// Smoothness, and Show Luminance Map; colour ranges get Refine.
+/// Who a People component is about: everyone or the n-th person (as it was made), a person named
+/// on this photo, or a role of the shoot (`people.setRole`). Choosing one stores it in the mask's
+/// recipe and finds that person here (`masks.recompute`); on other photos presets, Paste and Sync
+/// find them again.
+fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, shape: &MaskShape) {
+    let MaskShape::People { person, parts, who } = shape else { return };
+    let tr = crate::i18n::tr;
+    let mut names: Vec<String> = app
+        .session
+        .catalog
+        .photo(photo)
+        .map(|p| {
+            p.meta
+                .regions
+                .iter()
+                .filter(|r| r.kind == lcc_meta::RegionKind::Face)
+                .filter_map(|r| r.name.clone())
+                .filter(|n| !n.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    let mut roles: Vec<String> = app.session.people_store().roles.iter().map(|b| b.role.clone()).collect();
+    roles.sort_by_key(|r| r.to_lowercase());
+    roles.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    let current = match who {
+        Some(lcc_develop::recipe::Who::Name(n)) => n.clone(),
+        Some(lcc_develop::recipe::Who::Role(r)) => format!("{} ({})", r, tr("role")),
+        None if *person > 0 => format!("{} {person}", tr("Person")),
+        None => tr("Everyone").to_string(),
+    };
+    let mut chosen: Option<Option<lcc_develop::recipe::Who>> = None;
+    ui.horizontal(|ui| {
+        ui.add_space(20.0);
+        ui.label(tr("Who"));
+        let r = egui::ComboBox::from_id_salt(("maskWho", comp)).selected_text(current).show_ui(ui, |ui| {
+            if ui.selectable_label(who.is_none() && *person == 0, tr("Everyone")).clicked() {
+                chosen = Some(None);
+            }
+            for n in &names {
+                let on = matches!(who, Some(lcc_develop::recipe::Who::Name(x)) if x.eq_ignore_ascii_case(n));
+                if ui.selectable_label(on, n).clicked() {
+                    chosen = Some(Some(lcc_develop::recipe::Who::Name(n.clone())));
+                }
+            }
+            if !roles.is_empty() {
+                ui.separator();
+            }
+            for r in &roles {
+                let on = matches!(who, Some(lcc_develop::recipe::Who::Role(x)) if x.eq_ignore_ascii_case(r));
+                if ui.selectable_label(on, r).clicked() {
+                    chosen = Some(Some(lcc_develop::recipe::Who::Role(r.clone())));
+                }
+            }
+        });
+        register(ui.ctx(), format!("maskWho:{comp}"), r.response.rect);
+    });
+    if let Some(w) = chosen {
+        let shape = MaskShape::People { person: 0, parts: parts.clone(), who: w };
+        let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
+        let _ = app.run("masks.recompute", json!({"id": photo.0}));
+    }
+}
+
 fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &MaskShape) {
     let t = Tokens::get(ui.ctx());
     let update = |app: &mut LccApp, shape: MaskShape| {

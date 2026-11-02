@@ -2257,3 +2257,19 @@ fn mask_point_color_eyedropper_answers_click_widget() {
     let rect = h.request("ui.widgets", json!({"filter": "maskPointColor"}), T);
     assert_eq!(h.app.ui.tool, "maskPointColor", "click answered {r}; widgets {rect}");
 }
+
+#[test]
+fn a_selected_people_component_offers_who_it_is_about() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "sky"}));
+    exec(&mut h, "mask.update", json!({"component": 0, "shape": {"kind": "people", "person": 0, "parts": ["Clothes"]}}));
+    let photo = h.app.session.active().expect("photo").0;
+    exec(&mut h, "people.setRole", json!({"role": "Groom", "person": "Alex", "scope": {"ids": [photo]}}));
+    let r = h.request("ui.clickWidget", json!({"id": "maskWho:0"}), T);
+    assert_eq!(r["ok"], true, "the Who picker shows under a selected People component: {r}");
+    // choosing a role goes into the recipe and is resolved here (no Groom face: everyone)
+    exec(&mut h, "mask.update", json!({"component": 0, "shape": {"kind": "people", "person": 0, "parts": ["Clothes"], "who": {"role": "Groom"}}}));
+    let done = exec(&mut h, "masks.recompute", json!({}));
+    assert!(done["photos"][0]["notes"].as_array().is_some_and(|n| n.iter().any(|t| t.as_str().is_some_and(|t| t.contains("Alex")))), "{done}");
+    assert!(matches!(develop(&h).masks[0].components[0].shape, MaskShape::People { person: 0, who: Some(_), .. }));
+}
