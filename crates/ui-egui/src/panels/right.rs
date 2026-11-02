@@ -608,12 +608,33 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     });
 }
 
+/// The Remove panel's tools: icon, label, tool id and what each is for, in plain words (its tooltip).
 const REMOVE_MODES: [(Icon, &str, &str, &str); 5] = [
-    (Icon::Eraser, "Remove", "remove", "Heal with automatically chosen source"),
-    (Icon::Sparkle, "Content-Aware", "fill", "Multi-scale synthesized fill"),
-    (Icon::Cloud, "Generative", "generate", "Filled by an online image model with your own API key"),
-    (Icon::Bandage, "Heal", "heal", "Blend source texture with target tone"),
-    (Icon::Stamp, "Clone", "clone", "Exact 1:1 pixel copy"),
+    (
+        Icon::Eraser,
+        "Remove",
+        "remove",
+        "Paint over a distraction and {app} decides what goes there: a click copies the best-matching area nearby and blends it in; a painted stroke is rebuilt from what surrounds it.",
+    ),
+    (
+        Icon::Sparkle,
+        "Content-Aware",
+        "fill",
+        "Rebuilds the painted area from small pieces of its surroundings, continuing lines and edges through it. For larger objects. No source to choose.",
+    ),
+    (
+        Icon::Cloud,
+        "Generative",
+        "generate",
+        "Replaces the painted area using an online image service, with your own account. Nothing is sent until you click Generate.",
+    ),
+    (
+        Icon::Bandage,
+        "Heal",
+        "heal",
+        "Copies the texture from a source and matches it to the colour and brightness around the area, so it blends in. Drag the source pin to choose the place.",
+    ),
+    (Icon::Stamp, "Clone", "clone", "Copies the source exactly as it is, colour and all, with a soft edge. Drag the source pin to choose the place."),
 ];
 
 fn mode_segmented_bar(ui: &mut egui::Ui, id: &str, active_key: &str) -> Option<&'static str> {
@@ -851,8 +872,8 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
 
-                // (Fill and Generative spots have no source)
-                if !matches!(sp.mode, lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate) {
+                // (Fill, Generative and Even Out spots, and a brushed Remove, have no source)
+                if sp.source_offset.is_some() && !matches!(sp.mode, lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate | lcc_develop::SpotMode::Flat) {
                     let tip_ref = crate::widgets::command_tooltip(ui, "Refresh Source", Some("/"));
                     let r_ref = crate::widgets::icon_button_named(
                         ui,

@@ -2360,5 +2360,10 @@
   "Marks added:": "添加的标记：",
   "Yes, unless you opt out where the service allows it (see Data policy)": "是，除非在服务允许时选择退出（见数据政策）",
   "Recommended for removing distractions from client photos: OpenAI (it does not train on what you send) or Stability AI with training switched off in your account. For realistic textures: FLUX Fill, but its terms allow training on uploads.": "推荐用于去除客户照片中的干扰物：OpenAI（不用你发送的内容训练），或在账户中关闭训练的 Stability AI。追求真实纹理：FLUX Fill，但其条款允许用上传内容训练。",
-  "The model can't take an area this large. Please select a smaller area.": "模型无法处理这么大的区域。请选择较小的区域。"
+  "The model can't take an area this large. Please select a smaller area.": "模型无法处理这么大的区域。请选择较小的区域。",
+  "Paint over a distraction and {app} decides what goes there: a click copies the best-matching area nearby and blends it in; a painted stroke is rebuilt from what surrounds it.": "涂抹干扰物，由 {app} 决定用什么填补：单击会复制附近最匹配的区域并融合；涂抹的笔触会根据周围内容重建。",
+  "Rebuilds the painted area from small pieces of its surroundings, continuing lines and edges through it. For larger objects. No source to choose.": "用周围的小块内容重建涂抹区域，并让线条和边缘延续过去。适合较大的物体。无需选择来源。",
+  "Replaces the painted area using an online image service, with your own account. Nothing is sent until you click Generate.": "使用你自己账户的在线图像服务替换涂抹区域。点击“生成”之前不会发送任何内容。",
+  "Copies the texture from a source and matches it to the colour and brightness around the area, so it blends in. Drag the source pin to choose the place.": "从来源复制纹理，并匹配区域周围的颜色和亮度，使其融为一体。拖动来源图钉可选择位置。",
+  "Copies the source exactly as it is, colour and all, with a soft edge. Drag the source pin to choose the place.": "按原样复制来源，包括颜色，边缘柔和。拖动来源图钉可选择位置。"
 }

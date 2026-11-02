@@ -6,6 +6,18 @@
 > arrives, the short consent dialog, errors with Retry, a card per service. Before: new page
 > (2026-10-14).
 
+## The Remove tools
+
+| Tool | What it does | Source |
+|---|---|---|
+| **Remove** | LightCraft decides: a click copies the best-matching area nearby and blends it in (as Heal), and chooses again when the spot is moved; a painted stroke is rebuilt from its surroundings (as Content-Aware) | its own |
+| **Content-Aware** | rebuilds the area from small pieces of its surroundings, continuing lines and edges (below) | none |
+| **Generative** | an online image model with your own account (below) | none |
+| **Heal** | the texture of a source, the colour and tone of the destination's surroundings: a gradient-domain (Poisson) blend, the membrane of the edge's difference, at any size of area | yours (a pin, starting at the best match) |
+| **Clone** | the source exactly as it is, with a soft edge | yours |
+
+Each button's tooltip says the same in a sentence.
+
 The Remove panel has two ways to replace an area with something new instead of copying one source:
 
 - **Content-Aware** (Fill): LightCraft's own patch synthesis, on this computer, no model.

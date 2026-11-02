@@ -3,8 +3,10 @@
 //! - **Clone** copies the source patch with a feathered edge.
 //! - **Heal** copies the source's *detail* and keeps the target's *tone*: result = src + blur(target − src)
 //!   (frequency separation — a fast, stable approximation of gradient-domain healing).
-//! - **Remove** is Heal with an automatically chosen source: candidate offsets on rings around the
-//!   spot are scored by how well the source's surrounding annulus matches the target's.
+//! - **Remove** picks its own way: a spot with a source (a click: the app chooses the best match
+//!   nearby, scored by how well the source's surrounding annulus matches the target's, and chooses
+//!   again when the spot moves) heals from it; a spot without one (a brushed stroke, which no single
+//!   source fits) is rebuilt from its surroundings like Fill ([`synthesises`]).
 //! - **Fill** (content-aware) rebuilds the spot from patches of its surroundings instead of one
 //!   source: PatchMatch-based completion ([`lcc_inpaint::complete`]), coarse to fine, so the
 //!   structure is chosen at a scale set by the spot's size (the same at preview and export size).
@@ -184,7 +186,7 @@ pub fn window_for_reads_checked(
                 (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
             }
             // the box `apply` works in: the stroke plus a radius, plus its padding
-            let e = (1.0 + f64::from(box_pad(spot.mode))) * r;
+            let e = (1.0 + f64::from(box_pad(spot))) * r;
             let t = [x0 - e, y0 - e, x1 + e, y1 + e];
             let s = match spot.source_offset {
                 Some(o) => {
@@ -256,8 +258,22 @@ pub fn window_for_reads_checked(
 /// The padding around a spot's stroke box that [`apply`] works in, in spot radii. Content-aware
 /// fill reads the spot's surroundings (2 radii); clone, heal and remove read their tone ring (1.5 radii).
 /// [`window_for_reads_checked`] grows a render window by the same amount.
-fn box_pad(mode: SpotMode) -> f32 {
-    if mode == SpotMode::Fill { 2.0 } else { 1.5 }
+fn box_pad(spot: &Spot) -> f32 {
+    if synthesises(spot) { 2.0 } else { 1.5 }
+}
+
+/// Whether `spot` is rebuilt from its surroundings (content-aware synthesis) rather than copied from
+/// one source: Fill, Generate (until its patch is there) and a Remove spot without a source.
+pub fn synthesises(spot: &Spot) -> bool {
+    matches!(spot.mode, SpotMode::Fill | SpotMode::Generate) || (spot.mode == SpotMode::Remove && spot.source_offset.is_none())
+}
+
+/// Whether a Remove spot's stroke is brushed (its points spread further than its radius): one
+/// source rarely fits such an area, so Remove rebuilds it from its surroundings instead.
+pub fn brushed(spot: &Spot) -> bool {
+    let Some(first) = spot.points.first() else { return false };
+    let r = if spot.size.is_finite() { spot.size.max(0.0) } else { 0.0 };
+    spot.points.iter().any(|p| (p.x - first.x).hypot(p.y - first.y) > r)
 }
 
 /// Even Out ([`SpotMode::Flat`]): per pixel and channel, the gain that lifts the box's smooth tone under the stroke
@@ -361,7 +377,7 @@ pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64,
             })
             .collect();
         let Some(&first) = pts.first() else { continue };
-        let fill = matches!(spot.mode, SpotMode::Fill | SpotMode::Generate);
+        let fill = synthesises(spot);
         let flat = spot.mode == SpotMode::Flat;
         let offset = match spot.source_offset {
             _ if fill || flat => (0.0, 0.0),
@@ -381,7 +397,7 @@ pub fn apply_skipping(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64,
             x1 = x1.max(p.0 + re);
             y1 = y1.max(p.1 + re);
         }
-        let pad = box_pad(spot.mode) * r;
+        let pad = box_pad(spot) * r;
         let (bx0, by0) = (((x0 - pad).floor().max(0.0)) as usize, ((y0 - pad).floor().max(0.0)) as usize);
         let (bx1, by1) = (((x1 + pad).ceil() as usize).min(w), ((y1 + pad).ceil() as usize).min(h));
         if bx1 <= bx0 || by1 <= by0 {
@@ -563,6 +579,36 @@ mod tests {
             assert_eq!(img.get(x + radius as usize, y), original.get(x + radius as usize, y), "radius stays unchanged at {w}px");
             assert!(img.data.iter().flatten().all(|v| v.is_finite()));
         }
+    }
+
+    /// The tools differ: a brushed Remove without a source is rebuilt from its surroundings (the
+    /// stripes run on through it, as with Content-Aware) and has no GPU kernel; a Remove with a source
+    /// heals from it (as Heal); Clone copies it as it is.
+    #[test]
+    fn remove_rebuilds_a_brushed_stroke_and_heals_a_click() {
+        let (w, h) = (200, 160);
+        let frame = Frame::new(w, h, &DevelopSettings::default(), true);
+        let stroke = Spot {
+            mode: SpotMode::Remove,
+            points: vec![Point::new(0.47, 0.5), Point::new(0.53, 0.5)],
+            size: 0.05,
+            feather: 0.0,
+            ..Default::default()
+        };
+        let mut img = striped_with_blot(w, h, 8);
+        apply(&mut img, std::slice::from_ref(&stroke), &frame, frame.px_per_long(w));
+        let mut err = 0.0f32;
+        for x in 90..110 {
+            let want = if (x / 8) % 2 == 0 { 0.2 } else { 0.7 };
+            err += (img.get(x, 80)[0] - want).abs();
+        }
+        assert!(err / 20.0 < 0.15, "mean error {}", err / 20.0);
+        // with a source: the same pixels as Heal from it
+        let click = Spot { points: vec![Point::new(0.5, 0.5)], source_offset: Some(Point::new(0.0, 0.3)), ..stroke };
+        let (mut a, mut b) = (striped_with_blot(w, h, 8), striped_with_blot(w, h, 8));
+        apply(&mut a, std::slice::from_ref(&click), &frame, frame.px_per_long(w));
+        apply(&mut b, &[Spot { mode: SpotMode::Heal, ..click.clone() }], &frame, frame.px_per_long(w));
+        assert_eq!(a.data, b.data);
     }
 
     /// Even Out lifts a soft dust shadow on a textured gradient and keeps the texture inside it.
