@@ -53,17 +53,22 @@ pub(crate) fn stem_of(name: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.into())
 }
 
-/// Keep the `fields` entries a metadata preset can hold (text; keywords a list of text; a known
-/// copyright status); the others are returned by name.
+/// Whether preset field `k` holds a list of text.
+fn is_list(k: &str) -> bool {
+    matches!(k, "keywords" | "supplementalCategories" | "subjectCode")
+}
+
+/// Keep the `fields` entries a metadata preset can hold (text; keywords, other categories and
+/// subject codes a list of text; a known copyright status); the others are returned by name.
 pub fn clean_fields(fields: &Map<String, Value>) -> (Map<String, Value>, Vec<String>) {
     let mut out = Map::new();
     let mut unmapped = Vec::new();
     for (k, v) in fields {
         let ok = FIELDS.contains(&k.as_str())
             && match (k.as_str(), v) {
-                ("keywords", Value::Array(a)) => a.iter().all(Value::is_string),
+                (k, Value::Array(a)) if is_list(k) => a.iter().all(Value::is_string),
                 ("copyrightStatus", Value::String(s)) => CopyrightStatus::parse(s).is_some(),
-                ("keywords" | "copyrightStatus", _) => false,
+                (k, _) if is_list(k) || k == "copyrightStatus" => false,
                 (_, Value::String(_)) => true,
                 _ => false,
             };
@@ -101,6 +106,11 @@ fn lr_field(id: &str) -> Option<&'static str> {
         "creatorworkphone" | "creatorphone" => "creatorPhone",
         "creatorworkemail" | "creatoremail" => "creatorEmail",
         "creatorworkwebsite" | "creatorwebsite" | "creatorurl" => "creatorWebsite",
+        "headline" => "headline",
+        "descriptionwriter" | "captionwriter" => "descriptionWriter",
+        "iptccategory" | "category" => "category",
+        "iptcothercategories" | "othercategories" | "supplementalcategories" => "supplementalCategories",
+        "iptcsubjectcode" | "subjectcode" => "subjectCode",
         "location" | "sublocation" => "location",
         "city" => "city",
         "state" | "stateprovince" | "province" => "state",
@@ -154,11 +164,11 @@ fn from_lrtemplate(file: &str, text: &str) -> Option<std::result::Result<Found, 
             _ => None,
         };
         match (field, v) {
-            ("keywords", Lua::Table(items, _)) => {
+            (f, Lua::Table(items, _)) if is_list(f) => {
                 let k: Vec<Value> = items.iter().filter_map(Lua::str).map(str::trim).filter(|s| !s.is_empty()).map(|s| json!(s)).collect();
                 fields.insert(field.into(), Value::Array(k));
             }
-            ("keywords", Lua::Str(s)) => {
+            (f, Lua::Str(s)) if is_list(f) => {
                 let k: Vec<Value> = s.split([',', ';']).map(str::trim).filter(|s| !s.is_empty()).map(|s| json!(s)).collect();
                 fields.insert(field.into(), Value::Array(k));
             }
