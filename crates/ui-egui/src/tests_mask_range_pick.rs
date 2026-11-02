@@ -135,3 +135,19 @@ fn a_hovered_spot_shows_both_pins() {
     pointer(&mut h, json!([{"kind": "move", "x": 0.3, "y": 0.5}]));
     assert!(widgets(&h, "spotSource:").contains(&"spotSource:0".to_string()), "the hovered spot's source pin, to move it");
 }
+
+/// Color Range arms like the other tools: the tile makes no mask until the first click on the
+/// photo, which makes it and picks the colour there.
+#[test]
+fn color_range_is_armed_until_the_first_click() {
+    let mut h = detail("panel.masking");
+    click(&mut h, "maskNew:colorRange");
+    h.step();
+    assert!(develop(&h).masks.is_empty(), "armed: no mask yet");
+    assert_eq!(h.app.session.active_mask, None);
+    pointer(&mut h, json!([{"kind": "down", "x": 0.4, "y": 0.4}, {"kind": "up", "x": 0.4, "y": 0.4}]));
+    let d = develop(&h);
+    assert_eq!(d.masks.len(), 1);
+    assert!(matches!(&d.masks[0].components[0].shape, MaskShape::ColorRange { samples, .. } if samples.len() == 1), "{:?}", d.masks[0]);
+    assert_eq!(h.app.ui.tool, "colorRange", "the picker stays on to add more");
+}

@@ -244,13 +244,16 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     let resp = if elided { resp.on_hover_text(label) } else { resp };
                     if resp.clicked() {
                         match *kind {
-                            "colorRange" => {
-                                // an empty colour range; clicking the photo samples it
-                                let _ = app.run("mask.add", json!({"kind": "colorRange"}));
-                                app.ui.tool = "colorRange".into();
-                                app.toast(ui.ctx(), crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more"));
-                            }
-                            "object" => start_object(app, ui.ctx(), "new"),
+                            // armed: the first click on the photo makes the mask and picks there
+                            "colorRange" => match arm_new(app, "colorRange") {
+                                Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more")),
+                                Err(e) => app.toast(ui.ctx(), e),
+                            },
+                            "object" if !needs_model(app, "object", "new") => match arm_new(app, "object") {
+                                Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out")),
+                                Err(e) => app.toast(ui.ctx(), e),
+                            },
+                            "object" => {}
                             "prompt" => start_describe(app, "new"),
                             "brush" | "linear" | "radial" => {
                                 let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
@@ -1962,7 +1965,7 @@ pub(crate) fn is_mask_tool(tool: &str) -> bool {
         || tool.starts_with("maskMixer:")
 }
 
-/// Arm mask tool `kind` (`brush`, `linear`, `radial`) for a new mask: no mask is selected, and the
+/// Arm mask tool `kind` (`brush`, `linear`, `radial`, `colorRange`, `object`) for a new mask: no mask is selected, and the
 /// first stroke or drag on the photo makes the mask (one masking mode at a time: a selected mask
 /// and a tool waiting for a new one are never at once).
 pub(crate) fn arm_new(app: &mut LccApp, kind: &str) -> Result<serde_json::Value, String> {

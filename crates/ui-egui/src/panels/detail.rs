@@ -3732,6 +3732,23 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             }
         }
     }
+    // Color Range and Object armed for a new mask: the first click (or drag) on the photo makes it,
+    // and the tool then picks or selects there as usual
+    if let Some((_, kind)) = app.ui.mask_new.clone().filter(|(_, k)| (k == "colorRange" || k == "object") && app.ui.tool == *k)
+        && (resp.clicked() || resp.drag_started())
+    {
+        match app.run_typed("mask.add", json!({"kind": kind})) {
+            Ok(_) => {
+                app.ui.mask_new = None;
+                app.ui.tool = kind;
+                app.ui.active_mask_component = Some(0);
+            }
+            Err(e) => {
+                app.ai_error(ui.ctx(), e, Some((kind.as_str(), "new")));
+                return;
+            }
+        }
+    }
     // Colour Range "Pick": the Masking panel owns the loupe's clicks (general_interaction
     // never runs while it is open), so the eyedropper is handled here too.
     if app.ui.tool == "colorRange" {
