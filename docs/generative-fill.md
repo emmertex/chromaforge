@@ -16,7 +16,7 @@
 | **Heal** | the texture of a source, the colour and tone of the destination's surroundings: a gradient-domain (Poisson) blend, the membrane of the edge's difference, at any size of area | yours (a pin, starting at the best match) |
 | **Clone** | the source exactly as it is, with a soft edge | yours |
 
-Each button's tooltip says the same in a sentence.
+Each button's tooltip says the same in a sentence. The panel opens on the tool used last.
 
 The Remove panel has two ways to replace an area with something new instead of copying one source:
 

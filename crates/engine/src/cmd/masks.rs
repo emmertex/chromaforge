@@ -963,7 +963,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Spot",
             [],
             None,
-            "{index? (the selected spot), move?: [dx,dy] (the target, normalized), source?: [dx,dy] (offset from the target), moveSource?: [dx,dy], size?, feather?, opacity?, mode?: remove|heal|clone|fill|flat, repick?: bool (a Remove spot chooses its source again; done by itself after a move outside a drag)} — moving or resizing a spot Remove Dust added makes it an ordinary spot",
+            "{index? (the selected spot), move?: [dx,dy] (the target, normalized), source?: [dx,dy] (offset from the target), moveSource?: [dx,dy], size?, feather?, opacity?, mode?: remove|heal|clone|fill|flat, repick?: bool (a Remove spot chooses its source again)} — moving or resizing a spot Remove Dust added makes it an ordinary spot",
             has_active,
             |s, p| {
                 let c = "spot.update";
@@ -1003,12 +1003,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 if p.get("move").is_some() || p.get("size").is_some() {
                     sp.auto = None;
                 }
-                // Remove picks its own source: a Remove spot moved (outside a drag, which
-                // asks with `repick` when it ends, so no pointer event searches) chooses again where it
-                // now is, unless this call set the source; Heal and Clone keep theirs
+                // Remove picks its own source: asked with `repick`, a Remove spot chooses again where it
+                // now is, unless this call set the source; Heal and Clone keep theirs (a dragged spot
+                // keeps its source, as it always has)
                 let given = p.get("source").is_some() || p.get("moveSource").is_some();
-                let moved = p.get("move").is_some() && s.interaction.is_none();
-                let repick = !given && (moved || bool_or(p, "repick", false)) && sp.mode == SpotMode::Remove && sp.source_offset.is_some();
+                let repick = !given && bool_or(p, "repick", false) && sp.mode == SpotMode::Remove && sp.source_offset.is_some();
                 if repick {
                     let spot = sp.clone();
                     if let Some(next) = pick_source(s, id, &dd, &spot, None)

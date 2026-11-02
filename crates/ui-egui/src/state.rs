@@ -1229,6 +1229,9 @@ pub struct UiState {
     pub selected_guide: Option<(u64, usize)>,
     /// White Balance Selector: side of the averaged square, in preview pixels (1, 3, 5, 9, 15).
     pub wb_sample: u32,
+    /// The Remove panel's tool last used ("remove", "fill", "generate", "heal", "clone"): the panel
+    /// opens on it again (this session).
+    pub remove_tool: String,
     pub brush_size: f32,
     pub brush_feather: f32,
     pub brush_flow: f32,
@@ -2014,6 +2017,7 @@ impl Default for UiState {
             tool: String::new(),
             selected_guide: None,
             wb_sample: 5,
+            remove_tool: "remove".into(),
             brush_size: 0.04,
             brush_feather: 50.0,
             brush_flow: 60.0,

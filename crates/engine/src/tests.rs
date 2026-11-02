@@ -2234,13 +2234,15 @@ fn remove_picks_its_own_source_and_heal_keeps_its_own() {
     assert_eq!(active_dev(&s).spots[b].source_offset, None, "a brushed stroke: rebuilt, no source");
     let heal = s.execute("spot.add", &json!({"mode": "heal", "points": [[0.2, 0.7]], "size": 0.02, "source": [0.1, 0.0]})).unwrap();
     let hi = heal["index"].as_u64().unwrap() as usize;
-    // moving: Heal keeps its offset; Remove chooses again where it now is
+    // moving: Heal keeps its offset (so does Remove: it chooses again only when asked)
     s.execute("spot.update", &json!({"index": hi, "move": [0.3, -0.2]})).unwrap();
     assert_eq!(active_dev(&s).spots[hi].source_offset, Some(lcc_geom::Point::new(0.1, 0.0)));
     let steps = |s: &mut Session| s.execute("history.list", &json!({})).unwrap()["history"].as_array().unwrap().len();
     s.execute("spot.update", &json!({"index": i, "move": [0.35, 0.3]})).unwrap();
     assert!(active_dev(&s).spots[i].source_offset.is_some());
-    // it already has the source it would pick there: asking again changes nothing (no undo step)
+    // asked, Remove chooses again where it now is; then it has that source: asking again changes
+    // nothing (no undo step), nor does asking Heal
+    s.execute("spot.update", &json!({"index": i, "repick": true})).unwrap();
     let n = steps(&mut s);
     s.execute("spot.update", &json!({"index": i, "repick": true})).unwrap();
     s.execute("spot.update", &json!({"index": hi, "repick": true})).unwrap();

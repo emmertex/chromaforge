@@ -609,7 +609,7 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
 }
 
 /// The Remove panel's tools: icon, label, tool id and what each is for, in plain words (its tooltip).
-const REMOVE_MODES: [(Icon, &str, &str, &str); 5] = [
+pub(crate) const REMOVE_MODES: [(Icon, &str, &str, &str); 5] = [
     (
         Icon::Eraser,
         "Remove",
@@ -698,6 +698,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         // Mode icon segmented bar
         if let Some(tool) = mode_segmented_bar(ui, "removeMode", &app.ui.tool) {
             app.ui.tool = tool.into();
+            app.ui.remove_tool = tool.into();
         }
         ui.add_space(6.0);
 
