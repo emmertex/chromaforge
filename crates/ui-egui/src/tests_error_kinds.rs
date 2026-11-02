@@ -95,3 +95,22 @@ fn a_missing_sam2_opens_the_ai_models_dialog() {
     h.step();
     assert!(matches!(h.app.ui.dialog, Some(Dialog::AiModels { .. })), "it stays open while shown");
 }
+
+/// In a build with AI masks, the AI Models dialog offers the open MediaPipe people and face
+/// models (Retouch, Find Blemishes, Detect Faces) next to SAM 3, BiRefNet and SAM 2.1: each has
+/// its Download button.
+#[test]
+fn the_ai_models_dialog_offers_the_mediapipe_models() {
+    if !Segmenter::AVAILABLE {
+        lcc_testkit::skip!(Feature, "a build without AI masks offers no models");
+        return;
+    }
+    let mut h = demo();
+    h.app.run("dialog.aiModels", json!({})).unwrap();
+    h.step();
+    h.step();
+    let shown = |id: &str| h.app.widgets.iter().any(|(w, _)| w == &format!("button:aiModelDownload-{id}") || w == &format!("link:aiModelLicense-{id}"));
+    for id in ["sam3", "subject", "sam2", "people", "face"] {
+        assert!(shown(id), "the dialog lists {id}");
+    }
+}
