@@ -140,9 +140,13 @@ pub struct Evaluated {
 }
 
 /// Whether `shape`'s alpha depends on the exposure: range masks select on exposed values, and so
-/// does the sky heuristic. Shapes not listed as independent count as dependent (a new shape is
-/// re-evaluated rather than wrongly reused).
-fn reads_exposure(shape: &MaskShape) -> bool {
+/// does the sky heuristic (not a sky from the source's matte). Shapes not listed as independent
+/// count as dependent (a new shape is re-evaluated rather than wrongly reused).
+fn reads_exposure(shape: &MaskShape, mattes: Option<&Mattes>) -> bool {
+    // a shape drawn from the source's matte (an AI sky or subject) reads only the matte
+    if mattes.is_some_and(|m| !m.for_shape(shape).is_empty()) {
+        return false;
+    }
     !matches!(
         shape,
         MaskShape::Linear { .. }
@@ -162,7 +166,7 @@ fn reads_exposure(shape: &MaskShape) -> bool {
 /// Refine Edges, Feather and amount, and the exposure where a shape selects on it — and nothing else, so
 /// a slider that does not touch the masks reuses them (a drag of a photo with AI masks re-ran
 /// them every tick: most of its render time).
-pub fn alpha_key(masks: &[Mask], ev: f32, w: usize, h: usize) -> u64 {
+pub fn alpha_key(masks: &[Mask], ev: f32, w: usize, h: usize, mattes: Option<&Mattes>) -> u64 {
     use std::fmt::Write;
     use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
     let mut parts = String::new();
@@ -172,7 +176,7 @@ pub fn alpha_key(masks: &[Mask], ev: f32, w: usize, h: usize) -> u64 {
         for c in &m.components {
             // (the whole component: a field added to it later counts too)
             let _ = write!(parts, "|{c:?}");
-            exposure |= reads_exposure(&c.shape);
+            exposure |= reads_exposure(&c.shape, mattes);
         }
         parts.push(';');
     }
@@ -855,30 +859,36 @@ mod tests {
         let comp = |shape| MaskComponent { name: None, op: MaskOp::Add, invert: false, shape };
         let linear = MaskShape::Linear { start: Point::new(0.2, 0.5), end: Point::new(0.8, 0.5) };
         let mut masks = vec![Mask { id: 1, components: vec![comp(linear)], ..Default::default() }];
-        let k = alpha_key(&masks, 0.0, 100, 50);
-        assert_eq!(alpha_key(&masks, 1.5, 100, 50), k, "a gradient does not read the exposure");
-        assert_ne!(alpha_key(&masks, 0.0, 100, 51), k, "size");
+        let k = alpha_key(&masks, 0.0, 100, 50, None);
+        assert_eq!(alpha_key(&masks, 1.5, 100, 50, None), k, "a gradient does not read the exposure");
+        assert_ne!(alpha_key(&masks, 0.0, 100, 51, None), k, "size");
         masks[0].adjust.exposure = 1.0;
-        assert_eq!(alpha_key(&masks, 0.0, 100, 50), k, "the mask's own sliders");
+        assert_eq!(alpha_key(&masks, 0.0, 100, 50, None), k, "the mask's own sliders");
         masks[0].adjust.amount = 50.0;
-        let k2 = alpha_key(&masks, 0.0, 100, 50);
+        let k2 = alpha_key(&masks, 0.0, 100, 50, None);
         assert_ne!(k2, k, "the amount scales the plane");
         masks[0].feather = 30.0;
-        let k2 = alpha_key(&masks, 0.0, 100, 50);
+        let k2 = alpha_key(&masks, 0.0, 100, 50, None);
         assert_ne!(k2, k, "feathered");
         masks[0].curve.master = vec![Point::new(0.0, 0.1), Point::new(1.0, 0.9)];
-        assert_eq!(alpha_key(&masks, 0.0, 100, 50), k2, "the mask's own curve");
+        assert_eq!(alpha_key(&masks, 0.0, 100, 50, None), k2, "the mask's own curve");
         masks[0].invert = true;
-        assert_ne!(alpha_key(&masks, 0.0, 100, 50), k2, "inverted");
+        assert_ne!(alpha_key(&masks, 0.0, 100, 50, None), k2, "inverted");
         masks.push(Mask {
             id: 2,
             components: vec![comp(MaskShape::LuminanceRange { lo: 0.2, hi: 0.8, lo_feather: 0.1, hi_feather: 0.1 })],
             ..Default::default()
         });
-        let k3 = alpha_key(&masks, 0.0, 100, 50);
-        assert_ne!(alpha_key(&masks, 0.5, 100, 50), k3, "a range mask reads the exposure");
+        let k3 = alpha_key(&masks, 0.0, 100, 50, None);
+        assert_ne!(alpha_key(&masks, 0.5, 100, 50, None), k3, "a range mask reads the exposure");
         masks[1].visible = false;
-        assert_eq!(alpha_key(&masks, 0.5, 100, 50), alpha_key(&masks, 0.0, 100, 50), "hidden masks count for nothing");
+        assert_eq!(alpha_key(&masks, 0.5, 100, 50, None), alpha_key(&masks, 0.0, 100, 50, None), "hidden masks count for nothing");
+        // the sky heuristic reads the exposure; a sky from the source's matte does not
+        let sky = vec![Mask { id: 3, components: vec![comp(MaskShape::Sky)], ..Default::default() }];
+        assert_ne!(alpha_key(&sky, 0.5, 100, 50, None), alpha_key(&sky, 0.0, 100, 50, None));
+        let mut mattes = Mattes::default();
+        mattes.push(MatteKind::Sky, Image { width: 4, height: 2, data: vec![255; 8] });
+        assert_eq!(alpha_key(&sky, 0.5, 100, 50, Some(&mattes)), alpha_key(&sky, 0.0, 100, 50, Some(&mattes)));
     }
     use lcc_develop::{DevelopSettings, MaskComponent};
 

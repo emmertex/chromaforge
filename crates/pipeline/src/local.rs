@@ -967,7 +967,7 @@ pub(crate) fn prepare(
         None => (None, 1.0),
     };
     let ev = s.light.exposure as f32;
-    let key = masks::alpha_key(&s.masks, ev, img.width, img.height);
+    let key = masks::alpha_key(&s.masks, ev, img.width, img.height, mattes.map(|m| &**m));
     let visible: Vec<_> = s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).collect();
     let masks = match &planes.masks {
         // the same masks on the same image: their planes, with the adjustments as they are now
