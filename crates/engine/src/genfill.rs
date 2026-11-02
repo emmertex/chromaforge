@@ -401,38 +401,59 @@ pub fn plan(
             (hx0, hy0, hx1, hy1) = (hx0.min(x - grow), hy0.min(y - grow), hx1.max(x + grow), hy1.max(y + grow));
         }
         let area = [clampx(hx0.floor()).max(rect[0]), clampy(hy0.floor()).max(rect[1]), clampx(hx1.ceil()).min(rect[2]), clampy(hy1.ceil()).min(rect[3])];
-        // tiles of the provider's size nearest the area's shape
-        let tile = send_for(area[2].saturating_sub(area[0]).max(1), area[3].saturating_sub(area[1]).max(1));
-        for s in [1.0, 0.85, 0.7, 0.6, 0.5, 0.42, 0.35, 0.3] {
-            if s < scale * 1.5 {
+        // tiles of each of the provider's sizes (the one that needs the fewest wins)
+        let shapes: Vec<(usize, usize)> =
+            if lim.sizes.is_empty() { vec![tile] } else { lim.sizes.iter().map(|&(a, b)| (a as usize, b as usize)).collect() };
+        // each tile is a paid request: the fewest tiles that reach half the photo's resolution (or,
+        // for a huge area, 1.5x one crop's), the sharper of equals
+        let floor = (scale * 1.5).max(0.5);
+        let floor = if floor > 1.0 { scale * 1.5 } else { floor };
+        let mut best: Option<(Vec<Tile>, f64)> = None;
+        for target in [floor, scale * 1.5] {
+            for (s, tile) in [1.0, 0.85, 0.7, 0.6, 0.5, 0.42, 0.35, 0.3].into_iter().flat_map(|s| shapes.iter().map(move |t| (s, *t))) {
+                if s < target {
+                    continue;
+                }
+                let (tw, th) = (((tile.0 as f64 / s) as usize).min(src_w), ((tile.1 as f64 / s) as usize).min(src_h));
+                let (mx, my) = (tw / 8, th / 8);
+                let (stx, sty) = ((tw - 2 * mx).max(1), (th - 2 * my).max(1));
+                let mut tiles = Vec::new();
+                let mut ty = area[1];
+                while ty < area[3] && tiles.len() <= lim.tiles {
+                    let mut tx = area[0];
+                    while tx < area[2] && tiles.len() <= lim.tiles {
+                        let core = [tx, ty, (tx + stx).min(area[2]), (ty + sty).min(area[3])];
+                        if near_hole(core) {
+                            let crop = crop_around(tw, th, (core[0] + core[2]) as f64 / 2.0, (core[1] + core[3]) as f64 / 2.0);
+                            let send = if lim.sizes.is_empty() {
+                                (((crop[2] - crop[0]) as f64 * s).round().max(1.0) as usize, ((crop[3] - crop[1]) as f64 * s).round().max(1.0) as usize)
+                            } else {
+                                tile
+                            };
+                            tiles.push(Tile { crop, send, core });
+                        }
+                        tx += stx;
+                    }
+                    ty += sty;
+                }
+                if tiles.is_empty() || tiles.len() > lim.tiles {
+                    continue;
+                }
+                let got = tiles
+                    .iter()
+                    .map(|t| (t.send.0 as f64 / (t.crop[2] - t.crop[0]) as f64).min(t.send.1 as f64 / (t.crop[3] - t.crop[1]) as f64))
+                    .fold(1.0, f64::min)
+                    .min(1.0);
+                if best.as_ref().is_none_or(|(b, bs)| tiles.len() < b.len() || (tiles.len() == b.len() && got > *bs)) {
+                    best = Some((tiles, got));
+                }
+            }
+            if best.is_some() {
                 break;
             }
-            let (tw, th) = (((tile.0 as f64 / s) as usize).min(src_w), ((tile.1 as f64 / s) as usize).min(src_h));
-            let (mx, my) = (tw / 8, th / 8);
-            let (stx, sty) = ((tw - 2 * mx).max(1), (th - 2 * my).max(1));
-            let mut tiles = Vec::new();
-            let mut ty = area[1];
-            while ty < area[3] && tiles.len() <= lim.tiles {
-                let mut tx = area[0];
-                while tx < area[2] && tiles.len() <= lim.tiles {
-                    let core = [tx, ty, (tx + stx).min(area[2]), (ty + sty).min(area[3])];
-                    if near_hole(core) {
-                        let crop = crop_around(tw, th, (core[0] + core[2]) as f64 / 2.0, (core[1] + core[3]) as f64 / 2.0);
-                        let send = if lim.sizes.is_empty() {
-                            (((crop[2] - crop[0]) as f64 * s).round().max(1.0) as usize, ((crop[3] - crop[1]) as f64 * s).round().max(1.0) as usize)
-                        } else {
-                            tile
-                        };
-                        tiles.push(Tile { crop, send, core });
-                    }
-                    tx += stx;
-                }
-                ty += sty;
-            }
-            if !tiles.is_empty() && tiles.len() <= lim.tiles {
-                let s = tiles.iter().map(|t| (t.send.0 as f64 / (t.crop[2] - t.crop[0]) as f64).min(t.send.1 as f64 / (t.crop[3] - t.crop[1]) as f64)).fold(1.0, f64::min);
-                return Ok(Plan { src_w, src_h, dabs, feather, ring, opacity: (spot.opacity / 100.0).clamp(0.0, 1.0) as f32, rect, tiles, scale: s.min(1.0) });
-            }
+        }
+        if let Some((tiles, s)) = best {
+            return Ok(Plan { src_w, src_h, dabs, feather, ring, opacity: (spot.opacity / 100.0).clamp(0.0, 1.0) as f32, rect, tiles, scale: s });
         }
     }
     Ok(Plan {
@@ -543,12 +564,110 @@ fn tile_mask(p: &Plan, field: &Plane, t: &Tile) -> Vec<u8> {
 /// One request's results for a tile: decoded to linear light at the crop's native size.
 fn receive(img: &lcc_genfill::cloud::Image, neutral: lcc_genfill::Neutral, t: &Tile) -> Option<Rgb32f> {
     let lin = neutral.decode(img.width, img.height, &img.rgb)?;
+    Some(to_native(lin, t))
+}
+
+/// A result at its crop's native size. Sent smaller, the model's own grain comes back enlarged as
+/// blotches: it is smoothed away (the photo's own grain is added when the patch renders).
+#[cfg(not(target_arch = "wasm32"))]
+fn to_native(lin: Rgb32f, t: &Tile) -> Rgb32f {
     let (cw, ch) = (t.crop[2] - t.crop[0], t.crop[3] - t.crop[1]);
-    Some(if (lin.width, lin.height) == (cw, ch) {
-        lin
-    } else {
-        lcc_raster::resample::resize(&lin, cw, ch, lcc_raster::resample::Filter::Mitchell)
-    })
+    if (lin.width, lin.height) == (cw, ch) {
+        return lin;
+    }
+    let up = lcc_raster::resample::resize(&lin, cw, ch, lcc_raster::resample::Filter::Mitchell);
+    let k = (t.send.0 as f64 / cw.max(1) as f64).min(t.send.1 as f64 / ch.max(1) as f64);
+    if k < 0.9 && k > 0.0 { lcc_raster::blur::gaussian(&up, (0.8 / k) as f32) } else { up }
+}
+
+/// The mask of one tile of several (255 = generate): every hole pixel in the crop that no earlier
+/// tile filled, so the model never sees the rest of the object it is removing.
+#[cfg(not(target_arch = "wasm32"))]
+fn tile_mask_open(p: &Plan, field: &Plane, t: &Tile, filled: &[bool]) -> Vec<u8> {
+    let (cw, ch) = ((t.crop[2] - t.crop[0]) as f64, (t.crop[3] - t.crop[1]) as f64);
+    let (sw, sh) = t.send;
+    let mut m = vec![0u8; sw * sh];
+    let [rx0, ry0, rx1, ry1] = p.rect;
+    let k = (cw / sw as f64).max(ch / sh as f64).max(1.0);
+    for y in 0..sh {
+        for x in 0..sw {
+            let (sx, sy) = (t.crop[0] as f64 + (x as f64 + 0.5) * cw / sw as f64, t.crop[1] as f64 + (y as f64 + 0.5) * ch / sh as f64);
+            let (ix, iy) = (sx as usize, sy as usize);
+            if ix < rx0 || iy < ry0 || ix >= rx1 || iy >= ry1 {
+                continue;
+            }
+            let i = (iy - ry0) * field.width + (ix - rx0);
+            let d = field.data.get(i).copied().unwrap_or(f32::MAX);
+            if f64::from(d) < k + 1.0
+                && !filled.get(i).copied().unwrap_or(false)
+                && let Some(v) = m.get_mut(y * sw + x)
+            {
+                *v = 255;
+            }
+        }
+    }
+    m
+}
+
+/// A tile's result in linear light at the crop's native size, its level and colour matched to
+/// what was sent where nothing was to change (each request drifts a little on its own; tiles
+/// side by side would show it).
+#[cfg(not(target_arch = "wasm32"))]
+fn receive_matched(img: &lcc_genfill::cloud::Image, neutral: lcc_genfill::Neutral, t: &Tile, sent: &Rgb32f, mask: &[u8]) -> Option<Rgb32f> {
+    let mut lin = neutral.decode(img.width, img.height, &img.rgb)?;
+    if (lin.width, lin.height) != (sent.width, sent.height) {
+        lin = lcc_raster::resample::resize(&lin, sent.width, sent.height, lcc_raster::resample::Filter::Mitchell);
+    }
+    let (mut a, mut b) = ([0f64; 3], [0f64; 3]);
+    for ((o, g), m) in sent.data.iter().zip(&lin.data).zip(mask) {
+        if *m == 0 {
+            for c in 0..3 {
+                a[c] += f64::from(o[c]);
+                b[c] += f64::from(g[c]);
+            }
+        }
+    }
+    let gain: Vec<f32> = (0..3).map(|c| if b[c] > 1e-6 && a[c] > 1e-6 { (a[c] / b[c]).clamp(0.5, 2.0) as f32 } else { 1.0 }).collect();
+    for v in &mut lin.data {
+        for (c, k) in gain.iter().enumerate() {
+            v[c] *= k;
+        }
+    }
+    Some(to_native(lin, t))
+}
+
+/// Paste one tile of several into the working patch: its core, and a band around it blended into
+/// what earlier tiles filled (no straight seams between tiles).
+#[cfg(not(target_arch = "wasm32"))]
+fn paste_tile(p: &Plan, field: &Plane, t: &Tile, res: &Rgb32f, gen_img: &mut Rgb32f, filled: &mut [bool]) {
+    let [rx0, ry0, rx1, ry1] = p.rect;
+    let reach = (p.feather + p.ring * 0.5) as f32;
+    let band = ((t.crop[2] - t.crop[0]).min(t.crop[3] - t.crop[1]) / 10).max(4);
+    let (bx0, by0) = (t.core[0].saturating_sub(band).max(t.crop[0]).max(rx0), t.core[1].saturating_sub(band).max(t.crop[1]).max(ry0));
+    let (bx1, by1) = ((t.core[2] + band).min(t.crop[2]).min(rx1), (t.core[3] + band).min(t.crop[3]).min(ry1));
+    for y in by0..by1 {
+        for x in bx0..bx1 {
+            let i = (y - ry0) * gen_img.width + (x - rx0);
+            if !field.data.get(i).is_some_and(|d| *d < reach) {
+                continue;
+            }
+            let Some(v) = res.data.get((y - t.crop[1]) * res.width + (x - t.crop[0])).copied() else { continue };
+            let out = t.core[0].saturating_sub(x).max(x.saturating_sub(t.core[2].saturating_sub(1))).max(t.core[1].saturating_sub(y)).max(y.saturating_sub(t.core[3].saturating_sub(1)));
+            let inside = x >= t.core[0] && x < t.core[2] && y >= t.core[1] && y < t.core[3];
+            let Some(g) = gen_img.data.get_mut(i) else { continue };
+            if inside {
+                *g = v;
+                if let Some(f) = filled.get_mut(i) {
+                    *f = true;
+                }
+            } else if filled.get(i).copied().unwrap_or(false) {
+                let w = 1.0 - out as f32 / band as f32;
+                for c in 0..3 {
+                    g[c] += (v[c] - g[c]) * w.clamp(0.0, 1.0);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -713,14 +832,17 @@ pub fn run(w: &Work, cancel: &AtomicBool, cache: &PatchCache, progress: &dyn Fn(
         gens.truncate(out.len().min(n as usize));
     } else {
         for g in gens.iter_mut() {
+            // the hole pixels earlier tiles filled (rect-sized)
+            let mut filled = vec![false; field.data.len()];
             for t in &p.tiles {
                 if cancel.load(Ordering::Relaxed) {
                     return Err("cancelled".into());
                 }
-                // each tile sees the tiles before it filled
+                // each tile sees the tiles before it filled, and none of what is still to be
+                // removed (else the model continues the object into its part)
                 let crop = cut_over(&src, Some((&p, &field, g)), t.crop, t.send);
                 neutral = lcc_genfill::Neutral::for_crop(&crop);
-                let mask = tile_mask(&p, &field, t);
+                let mask = tile_mask_open(&p, &field, t, &filled);
                 if !mask.iter().any(|m| *m > 0) {
                     continue;
                 }
@@ -733,10 +855,11 @@ pub fn run(w: &Work, cancel: &AtomicBool, cache: &PatchCache, progress: &dyn Fn(
                     variations: 1,
                     seed: seed.wrapping_add(u64::from(done)),
                 };
+                let mask = req.mask.clone();
                 let out = generate(w.provider, &w.key, &w.endpoint, &req, &ctl).map_err(|e| e.to_string())?;
                 let img = out.first().ok_or("the provider sent no image")?;
-                let res = receive(img, neutral, t).ok_or("the provider sent an unreadable image")?;
-                paste(&p, &field, t, &res, g);
+                let res = receive_matched(img, neutral, t, &crop, &mask).ok_or("the provider sent an unreadable image")?;
+                paste_tile(&p, &field, t, &res, g, &mut filled);
                 done += 1;
                 progress(done, total);
             }
