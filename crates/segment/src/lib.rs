@@ -58,6 +58,7 @@ mod nn;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod people;
 /// MediaPipe's pre- and post-processing (faces, landmarks), for the eye finder.
+#[cfg(not(target_arch = "wasm32"))]
 pub use lcc_tflite::mediapipe;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote;
