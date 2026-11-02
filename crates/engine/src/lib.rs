@@ -496,6 +496,8 @@ pub struct Session {
     pub slideshow_export: Option<std::sync::Arc<slideshow_export::ExportRun>>,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
+    /// The preview cache drive's free space as last looked up: (when, cache folder, bytes).
+    pub(crate) cache_drive_free: std::sync::Mutex<Option<(web_time::Instant, std::path::PathBuf, Option<u64>)>>,
     /// Develop defaults applied on import (persisted in prefs.json).
     pub import_defaults: import::ImportDefaults,
     /// The default camera profile per camera model (`""` = every camera; persisted in prefs.json,
@@ -694,6 +696,7 @@ impl Session {
             activity: Default::default(),
             video: Default::default(),
             preview_build: None,
+            cache_drive_free: std::sync::Mutex::new(None),
             slideshow_export: None,
             import_defaults: import::ImportDefaults::default(),
             camera_profile_defaults: Default::default(),

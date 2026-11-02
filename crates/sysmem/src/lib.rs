@@ -13,7 +13,10 @@
 //! [`lower_thread_priority`] runs the calling thread below normal priority (Windows'
 //! `SetThreadPriority`), so renders leave the desktop responsive.
 //!
-//! This is one of the workspace's few crates allowed `unsafe` (two FFI calls in `macos`, two in
+//! [`free_disk_space`] says how much room a drive has (Windows' `GetDiskFreeSpaceExW`; elsewhere
+//! POSIX `df`, no system call of our own), for the preview cache's automatic size.
+//!
+//! This is one of the workspace's few crates allowed `unsafe` (two FFI calls in `macos`, three in
 //! `windows`). Its API is safe; on failure or on other platforms each call simply does nothing.
 //!
 //! It also says how much memory the process may use ([`limits`], safe std-only code): physical RAM
@@ -66,6 +69,52 @@ pub fn lower_thread_priority() -> bool {
     }
 }
 
+/// Bytes free for this user on the drive that holds `path` (the folder itself, or the nearest
+/// folder above it that exists), `None` when it can't be told. Windows asks `GetDiskFreeSpaceExW`;
+/// other systems run POSIX `df -Pk`. Blocking (a few ms; `df` a process start): not for a UI frame.
+pub fn free_disk_space(path: &std::path::Path) -> Option<u64> {
+    let mut at = Some(path);
+    while let Some(p) = at {
+        if p.is_dir() {
+            break;
+        }
+        at = p.parent();
+    }
+    let dir = at.filter(|p| !p.as_os_str().is_empty())?;
+    #[cfg(windows)]
+    {
+        windows::free_space(dir)
+    }
+    #[cfg(all(not(windows), not(target_arch = "wasm32")))]
+    {
+        df_free(dir)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = dir;
+        None
+    }
+}
+
+/// `df -Pk dir`: the fourth column of its second line is the space available, in KiB.
+#[cfg(all(not(windows), not(target_arch = "wasm32")))]
+fn df_free(dir: &std::path::Path) -> Option<u64> {
+    let out = std::process::Command::new("df").arg("-Pk").arg(dir).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_df(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The available KiB of `df -P`'s output, in bytes.
+#[cfg_attr(any(windows, target_arch = "wasm32"), allow(dead_code))]
+fn parse_df(text: &str) -> Option<u64> {
+    let line = text.lines().nth(1)?;
+    // (a mount point may hold spaces; the numbers come before it)
+    let kib: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
+    kib.checked_mul(1024)
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows {
@@ -88,6 +137,27 @@ mod windows {
         // `SetThreadPriority` takes; the priority is a documented constant. Neither reads or writes
         // memory we own, and a failure only leaves the priority as it was.
         unsafe { SetThreadPriority(GetCurrentThread(), BELOW_NORMAL) != 0 }
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        /// Nonzero on success. `dir` is a NUL-terminated UTF-16 folder name; each out pointer may be null.
+        fn GetDiskFreeSpaceExW(dir: *const u16, free_to_caller: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
+    }
+
+    pub fn free_space(dir: &std::path::Path) -> Option<u64> {
+        use std::os::windows::ffi::OsStrExt;
+        if dir.as_os_str().encode_wide().any(|c| c == 0) {
+            return None;
+        }
+        let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let mut free = 0u64;
+        // SAFETY: `GetDiskFreeSpaceExW` is a documented, thread-safe kernel32 function. `wide` is a
+        // NUL-terminated UTF-16 string (no NUL inside, checked above) that lives for the whole call;
+        // `free` is a live, aligned u64 owned by this frame that it writes; the other two out
+        // pointers are null, which the function allows. Nothing is kept after it returns.
+        let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) } != 0;
+        ok.then_some(free)
     }
 }
 
@@ -132,6 +202,26 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::release_free_memory;
+
+    #[test]
+    fn the_free_space_of_the_drive_of_a_folder_is_known() {
+        let dir = std::env::temp_dir();
+        let free = super::free_disk_space(&dir);
+        assert!(free.is_some_and(|b| b > 0), "{free:?}");
+        // a folder that isn't there: the drive of the nearest one above it
+        assert_eq!(super::free_disk_space(&dir.join("no-such-folder/below")).is_some(), free.is_some());
+        assert_eq!(super::free_disk_space(std::path::Path::new("")), None);
+    }
+
+    // Given df's output, odd or cut short, the available bytes or nothing (never a panic)
+    #[test]
+    fn df_output_is_read_or_refused() {
+        let ok = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 1000 400 600 40% /my drive\n";
+        assert_eq!(super::parse_df(ok), Some(600 * 1024));
+        for bad in ["", "header only", "h\n/dev/x 1 2", "h\n/dev/x 1 2 -5 9%", "h\n/dev/x 1 2 99999999999999999999 1%"] {
+            assert_eq!(super::parse_df(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn freed_large_blocks_can_be_released_and_memory_stays_usable() {

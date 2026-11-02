@@ -1017,13 +1017,17 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     });
     heading(ui, t, crate::i18n::tr("Thumbnail cache"));
     let cur = (app.session.cache_bytes() >> 20) as u32;
+    // (0: Automatic, a share of the cache drive's free space)
+    let chosen = app.session.cache_mb;
     // a size of the user's own, in whole GB: a large library outgrows 8 GB (#3252)
     let custom_id = egui::Id::new("settings-cache-custom");
-    let mut custom = !CACHE_SIZES.contains(&cur) || ui.data(|d| d.get_temp::<bool>(custom_id)).unwrap_or(false);
+    let mut custom = (chosen != 0 && !CACHE_SIZES.contains(&chosen)) || ui.data(|d| d.get_temp::<bool>(custom_id)).unwrap_or(false);
     row(ui, t, crate::i18n::tr("Size limit"), |ui| {
-        let opts = [(512u32, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")];
-        // none of the five lit while a custom size is chosen
-        let mut v = if custom { 0 } else { cur };
+        let gb = app.session.automatic_cache_bytes().div_ceil(1 << 30);
+        let auto = format!("{} ({gb} GB)", crate::i18n::tr("Automatic"));
+        let opts = [(0u32, auto.as_str()), (512, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")];
+        // none of them lit while a custom size is chosen
+        let mut v = if custom { u32::MAX } else { chosen };
         if choices(ui, "settingsCache", &opts, &mut v) {
             custom = false;
             // a size typed earlier does not come back with Custom…

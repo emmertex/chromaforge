@@ -1008,6 +1008,30 @@ pub struct RenderJob {
     pub hdr_texels: Option<f32>,
 }
 
+/// The least the automatic preview cache takes where the drive has room for it.
+pub const AUTO_DISK_CACHE_MIN: u64 = 20 << 30;
+/// The share of the cache drive's room (free space and what the cache holds) the automatic size takes.
+pub const AUTO_DISK_CACHE_SHARE: f64 = 0.15;
+/// What the automatic size always leaves free on the cache drive.
+const CACHE_DRIVE_RESERVE: u64 = 10 << 30;
+
+/// The automatic preview cache size: a budget sized from the library alone (1.5 MB a photo) let a
+/// wedding's previews prune each other and every edit's previews replace the last ones, so
+/// reopening the library rendered everything again. Now: a share ([`AUTO_DISK_CACHE_SHARE`]) of
+/// the room on the cache drive (`free` bytes plus the cache's own `used`), at least
+/// [`AUTO_DISK_CACHE_MIN`] and room for every photo of the library, never more than leaves
+/// [`CACHE_DRIVE_RESERVE`] (or half the room, on a small drive) free. `free` unknown: the
+/// minimum, or the library's room when that is more.
+pub fn automatic_disk_cache_bytes(photos: usize, free: Option<u64>, used: u64) -> u64 {
+    let by_photos = default_disk_cache_bytes(photos);
+    let Some(free) = free else { return by_photos.max(AUTO_DISK_CACHE_MIN) };
+    let room = free.saturating_add(used);
+    let share = (room as f64 * AUTO_DISK_CACHE_SHARE) as u64;
+    let want = by_photos.max(AUTO_DISK_CACHE_MIN).max(share);
+    let cap = room.saturating_sub(CACHE_DRIVE_RESERVE).max(room / 2);
+    want.min(cap).max(DISK_CACHE_BYTES.min(room))
+}
+
 /// A cached view render this much smaller than asked for still serves the loupe (rounding: a fit
 /// of the same frame into a box one pixel different).
 const VIEW_REUSE_SLACK: f64 = 0.01;
@@ -2585,6 +2609,13 @@ mod tests {
         // the default disk budget makes room for every photo's previews, from a floor
         assert_eq!(default_disk_cache_bytes(0), DISK_CACHE_BYTES);
         assert!(default_disk_cache_bytes(50_000) > DISK_CACHE_BYTES && default_disk_cache_bytes(usize::MAX) == u64::MAX);
+        // the automatic size: a share of the drive, from 20 GB, never the drive's last 10 GB
+        assert_eq!(automatic_disk_cache_bytes(10, None, 0), AUTO_DISK_CACHE_MIN);
+        assert_eq!(automatic_disk_cache_bytes(10, Some(1000 << 30), 0), 150 << 30);
+        assert!(automatic_disk_cache_bytes(10, Some(12 << 30), 0) <= 6 << 30, "a nearly full drive keeps room");
+        for (n, free, used) in [(usize::MAX, Some(u64::MAX), u64::MAX), (0, Some(0), 0), (1, Some(1), 1)] {
+            let _ = automatic_disk_cache_bytes(n, free, used);
+        }
         // hostile sizes
         assert!(fit_cached(&plain, 0, 10).is_none() && fit_cached(&Rgba8::new(0, 0), 10, 10).is_none());
     }

@@ -703,7 +703,7 @@ impl Session {
         // photo ids are per library: drop decoded sources of the previous one
         self.media.clear_sources();
         if on_disk {
-            self.media.attach_disk_cache(&dir.join("thumbs"), self.cache_bytes());
+            self.media.attach_disk_cache(&dir.join("thumbs"), self.cache_bytes_in(&dir.join("thumbs")));
             self.tidy_thumbnail_cache();
         }
         let view_written = self.view_json();
@@ -1102,7 +1102,43 @@ impl Session {
     /// The thumbnail disk cache budget in bytes ([`Session::cache_mb`], else the default, which
     /// grows with the library: [`crate::media::default_disk_cache_bytes`]).
     pub fn cache_bytes(&self) -> u64 {
-        if self.cache_mb == 0 { crate::media::default_disk_cache_bytes(self.catalog.len()) } else { u64::from(self.cache_mb) << 20 }
+        match (self.cache_mb, self.media.rendered.disk()) {
+            (0, Some(d)) => self.cache_bytes_in(d.dir()),
+            (0, None) => crate::media::default_disk_cache_bytes(self.catalog.len()),
+            (mb, _) => u64::from(mb) << 20,
+        }
+    }
+
+    /// [`Self::cache_bytes`] for a cache in `dir`: Automatic is a share of its drive's free space
+    /// ([`crate::media::automatic_disk_cache_bytes`]; looked up at most once a minute).
+    pub fn cache_bytes_in(&self, dir: &std::path::Path) -> u64 {
+        if self.cache_mb != 0 {
+            return u64::from(self.cache_mb) << 20;
+        }
+        let used = self.media.rendered.disk().filter(|d| d.dir() == dir).and_then(|d| d.known_size()).unwrap_or(0);
+        crate::media::automatic_disk_cache_bytes(self.catalog.len(), self.cache_drive_free(dir), used)
+    }
+
+    /// What Automatic would make the preview cache now (Settings shows it), whatever is chosen.
+    pub fn automatic_cache_bytes(&self) -> u64 {
+        match self.media.rendered.disk() {
+            Some(d) => crate::media::automatic_disk_cache_bytes(self.catalog.len(), self.cache_drive_free(d.dir()), d.known_size().unwrap_or(0)),
+            None => crate::media::default_disk_cache_bytes(self.catalog.len()),
+        }
+    }
+
+    /// The free space of the drive holding `dir` (`None`: unknown), looked up again after a minute.
+    fn cache_drive_free(&self, dir: &std::path::Path) -> Option<u64> {
+        let mut known = self.cache_drive_free.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, d, free)) = known.as_ref()
+            && d == dir
+            && at.elapsed() < std::time::Duration::from_secs(60)
+        {
+            return *free;
+        }
+        let free = lcc_sysmem::free_disk_space(dir);
+        *known = Some((web_time::Instant::now(), dir.to_path_buf(), free));
+        free
     }
 
     /// Bring the disk cache's budget up to date with the library (photos were added since it was
