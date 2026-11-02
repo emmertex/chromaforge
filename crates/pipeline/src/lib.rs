@@ -697,7 +697,9 @@ pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
     local_tone::apply(img, info, p);
     local::white_balance(img, info, s);
     optics::defringe(img, s, p.px_per_long / optics::DEFRINGE_REF_LONG);
-    let skip: Vec<bool> = patches.iter().map(Option::is_some).collect();
+    // a Generative spot changes nothing until its patch is there (not generated yet, moved since,
+    // or its file is missing): no content-aware stand-in that looks like a poor AI result
+    let skip: Vec<bool> = s.spots.iter().zip(&patches).map(|(sp, p)| p.is_some() || sp.mode == lcc_develop::SpotMode::Generate).collect();
     let avoid = genpatch::avoid_boxes(info.avoid.as_deref().map_or(&[][..], Vec::as_slice), &p.frame, img.width, img.height);
     spots::apply_skipping(img, &s.spots, &p.frame, p.px_per_long, &skip, &avoid);
     redeye::apply(img, &p.eyes);

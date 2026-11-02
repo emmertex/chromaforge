@@ -1505,7 +1505,7 @@ pub enum SpotMode {
     Flat,
     /// Generative: the spot is filled by a cloud image model the user chose (their own API key),
     /// stored as a patch of the photo's own pixels ([`GenFill`]). Until it is generated (or when
-    /// its patch file is missing) it renders like [`SpotMode::Fill`].
+    /// it was moved since, or its patch file is missing) it changes nothing: it only marks the area.
     Generate,
 }
 

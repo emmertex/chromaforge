@@ -119,7 +119,7 @@ fn a_generated_patch_renders_under_later_white_balance_and_exposure() {
     // undo goes back to the first variation; moving the spot shows a content-aware fill instead
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(pixel(&mut s, 0.5, 0.5), warmer);
-    // a missing patch file: no crash, a Fill in its place, and the session knows
+    // a missing patch file: no crash, the photo's own pixels in its place, and the session knows
     std::fs::remove_file(s.genfill_dir(id).join(g.file_name(0))).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(3100));
     let missing = pixel(&mut s, 0.5, 0.5);

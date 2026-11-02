@@ -209,10 +209,10 @@ mod tests {
                 let (cx, cy) = (img.width / 2, img.height / 2);
                 let p = img.data[cy * img.width + cx];
                 assert!(p[0].abs_diff(p[1]) < 12, "{orientation:?} {w}: the red object is gone ({p:?})");
-                // without its patch file the spot falls back to a content-aware fill: also no red
+                // without its patch file the spot changes nothing (no content-aware stand-in)
                 let none = render(&src, &s, None, w);
                 let q = none.data[cy * none.width + cx];
-                assert!(q[0].abs_diff(q[1]) < 30, "{q:?}");
+                assert!(q[0] > q[1] + 60, "the red object is still there: {q:?}");
             }
         }
     }
