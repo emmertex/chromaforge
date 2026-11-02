@@ -278,6 +278,8 @@ mod tests_preset_folders;
 #[cfg(test)]
 mod tests_preset_import;
 #[cfg(test)]
+mod tests_presets_manager;
+#[cfg(test)]
 mod tests_preview_limit;
 #[cfg(test)]
 mod tests_print;

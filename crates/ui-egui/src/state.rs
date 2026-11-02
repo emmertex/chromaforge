@@ -1791,6 +1791,11 @@ pub enum Dialog {
         confirm_delete: bool,
         new_group: String,
     },
+    /// The Presets Manager (LR-PRE-MANAGE): the search, and the user preset whose Delete waits for a yes.
+    PresetsManager {
+        query: String,
+        confirm: Option<String>,
+    },
     /// Confirm deleting mask effect presets.
     DeleteEffects {
         names: Vec<String>,

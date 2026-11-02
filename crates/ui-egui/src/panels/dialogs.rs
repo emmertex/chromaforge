@@ -279,6 +279,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::LightroomDestination { .. } => "Import Lightroom Catalog",
         Dialog::SaveEffect { .. } => "New Effect Preset",
         Dialog::ManageEffects { .. } => "Manage Effect Presets",
+        Dialog::PresetsManager { .. } => "Presets Manager",
         Dialog::DeleteEffects { names } if names.len() == 1 => "Delete Effect Preset",
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
         Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Library",
@@ -361,6 +362,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::LightroomCatalog { .. } => 440.0,
             Dialog::LightroomDestination { .. } => 480.0,
             Dialog::ManageEffects { .. } => 560.0,
+            Dialog::PresetsManager { .. } => 640.0,
             // (the preset column beside a form: its label column, then the controls)
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
             Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } => 480.0,
@@ -1085,6 +1087,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         confirm = true;
                     }
                 }
+                Dialog::PresetsManager { query, confirm } => crate::panels::presets_manager::body(app, ui, query, confirm),
                 Dialog::ManageEffects { search, selected, rename, confirm_delete, new_group } => {
                     crate::panels::mask_effects::manage_body(app, ui, search, selected, rename, confirm_delete, new_group)
                 }
@@ -2179,9 +2182,13 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
             Ok(serde_json::Value::Null)
         }
-        Dialog::About | Dialog::Shortcuts | Dialog::ViewOptions | Dialog::Settings { .. } | Dialog::Update | Dialog::ManageEffects { .. } => {
-            Ok(serde_json::Value::Null)
-        }
+        Dialog::About
+        | Dialog::Shortcuts
+        | Dialog::ViewOptions
+        | Dialog::Settings { .. }
+        | Dialog::Update
+        | Dialog::ManageEffects { .. }
+        | Dialog::PresetsManager { .. } => Ok(serde_json::Value::Null),
     }
 }
 
@@ -3659,6 +3666,7 @@ fn only_shows(dlg: &Dialog) -> bool {
             | Dialog::AllMetadata { .. }
             | Dialog::WhatsNew
             | Dialog::ManageEffects { .. }
+            | Dialog::PresetsManager { .. }
             // the updater has its own buttons in the body; the footer only closes
             | Dialog::Update
     ) || matches!(dlg, Dialog::SynchronizeFolder { counts: Some(c), .. } if c.up_to_date())

@@ -56,9 +56,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     ui.label(egui::RichText::new(crate::i18n::tr_format!("{n} selected", n = n)).size(11.5).color(t.text_dim));
     // Saved Preset
     // Only the rows in view are built: a collection imported whole is thousands of presets.
-    let presets = &app.session.presets;
+    let session = &app.session;
     if let Some(p) = choice_row(ui, "qd-preset", "Saved Preset", "Choose…", |ui| {
-        crate::panels::presets::picker_rows(ui, "qd-preset", presets, None).map(|id| json!({"preset": id}))
+        crate::panels::presets::picker_rows(ui, "qd-preset", session, None).map(|id| json!({"preset": id}))
     }) {
         quick_set(app, ui, p);
     }

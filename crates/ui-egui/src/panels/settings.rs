@@ -470,7 +470,7 @@ fn preset_combo(app: &LccApp, ui: &mut egui::Ui, id: &str, current: Option<&str>
         if ui.selectable_label(current.is_none(), crate::i18n::tr(none_label)).clicked() {
             out = Some(None);
         }
-        if let Some(pid) = crate::panels::presets::picker_rows(ui, id, &app.session.presets, current) {
+        if let Some(pid) = crate::panels::presets::picker_rows(ui, id, &app.session, current) {
             out = Some(Some(pid));
         }
     });
@@ -578,7 +578,7 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                         if ui.selectable_label(current.is_none(), crate::i18n::tr("{app} Default")).clicked() {
                             pick = Some(json!({"camera": cam, "preset": null}));
                         }
-                        if let Some(pid) = crate::panels::presets::picker_rows(ui, &id, &app.session.presets, current) {
+                        if let Some(pid) = crate::panels::presets::picker_rows(ui, &id, &app.session, current) {
                             pick = Some(json!({"camera": cam, "preset": pid}));
                         }
                     });

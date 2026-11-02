@@ -1572,7 +1572,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
                 d.preset.clear();
             }
             let selected = (!d.preset.is_empty()).then_some(d.preset.as_str());
-            if let Some(pid) = crate::panels::presets::picker_rows(ui, "import-preset", &app.session.presets, selected) {
+            if let Some(pid) = crate::panels::presets::picker_rows(ui, "import-preset", &app.session, selected) {
                 d.preset = pid;
             }
         });

@@ -253,6 +253,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.faceModel", "Add Face Model…", None, ""),
     ("dialog.newSmartAlbum", "New Smart Collection from Filter…", Some("Cmd+Alt+N"), "Library"),
     ("dialog.createPreset", "Create Preset…", Some("Cmd+Shift+P"), "Photo>Develop Settings"),
+    ("dialog.presetsManager", "Manage Presets…", None, "Photo>Develop Settings"),
     ("dialog.autoStack", "Auto-Stack by Capture Time…", None, "Photo>Stack"),
     ("dialog.copySettings", "Choose Edit Settings to Copy…", Some("Cmd+Shift+C"), "Photo>Develop Settings"),
     ("dialog.pasteSettings", "Paste Selected Settings…", Some("Cmd+Shift+V"), "Photo>Develop Settings"),
@@ -1812,6 +1813,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "dialog.createPreset" => {
             app.ui.dialog = Some(Dialog::create_preset());
+            Ok(Value::Null)
+        }
+        "dialog.presetsManager" => {
+            let query = p.get("query").and_then(Value::as_str).unwrap_or("").to_string();
+            app.ui.dialog = Some(Dialog::PresetsManager { query, confirm: None });
             Ok(Value::Null)
         }
         "dialog.pasteSettings" => {

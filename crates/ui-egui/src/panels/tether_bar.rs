@@ -382,7 +382,7 @@ fn settings_window(app: &mut LccApp, ctx: &egui::Context) {
                         .unwrap_or_else(|| crate::i18n::tr("None").to_string());
                     egui::ComboBox::from_id_salt("tether-preset").selected_text(shown).width(260.0).show_ui(ui, |ui| {
                         ui.selectable_value(&mut form.preset, String::new(), crate::i18n::tr("None"));
-                        if let Some(id) = crate::panels::presets::picker_rows(ui, "tether-preset", &app.session.presets, Some(&form.preset)) {
+                        if let Some(id) = crate::panels::presets::picker_rows(ui, "tether-preset", &app.session, Some(&form.preset)) {
                             form.preset = id;
                         }
                     });

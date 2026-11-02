@@ -391,6 +391,12 @@ pub struct Session {
     pub preset_folders: Vec<String>,
     /// Favourite profile ids (persisted with the library, like preset favourites).
     pub profile_favorites: Vec<String>,
+    /// Presets marked At Import (`preset.forImport`): the import pickers list them first (LR-PRE-ONIMPORT).
+    /// Changing it bumps the preset list's generation, so it is saved and the pickers rebuild.
+    pub preset_at_import: Vec<String>,
+    /// Presets hidden from the Presets panel and the pickers (`preset.hide`), kept in the Presets
+    /// Manager (LR-PRE-MANAGE). Changing it bumps the preset list's generation.
+    pub preset_hidden: Vec<String>,
     /// Recently applied profile ids, newest first (at most [`presets::RECENT_PROFILES`]).
     pub profile_recent: Vec<String>,
     /// Executed commands (actions / debugging / replay).
@@ -638,6 +644,8 @@ impl Session {
             presets: presets::PresetList::new(presets::builtin()),
             preset_folders: Vec::new(),
             profile_favorites: Vec::new(),
+            preset_at_import: Vec::new(),
+            preset_hidden: Vec::new(),
             profile_recent: Vec::new(),
             journal: Vec::new(),
             workflow: Default::default(),
@@ -1931,6 +1939,8 @@ mod tests_plugin_library;
 mod tests_prefs;
 #[cfg(test)]
 mod tests_preset_interop;
+#[cfg(test)]
+mod tests_preset_marks;
 #[cfg(test)]
 mod tests_presets_scale;
 #[cfg(test)]

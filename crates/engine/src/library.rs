@@ -164,6 +164,11 @@ struct PresetsFile {
     user: Vec<Preset>,
     folders: Vec<String>,
     favorites: Vec<String>,
+    /// Presets marked At Import, and those hidden from the panel and pickers (any preset, built-in too).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    at_import: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hidden: Vec<String>,
     /// Favourite profiles, and the recently applied ones (newest first).
     profile_favorites: Vec<String>,
     profile_recent: Vec<String>,
@@ -356,6 +361,8 @@ fn presets_json(s: &Session) -> String {
         user: presets.iter().filter(|p| !p.builtin).cloned().collect(),
         folders: s.preset_folders.clone(),
         favorites: presets.iter().filter(|p| p.builtin && p.favorite).map(|p| p.id.clone()).collect(),
+        at_import: s.preset_at_import.clone(),
+        hidden: s.preset_hidden.clone(),
         profile_favorites: s.profile_favorites.clone(),
         profile_recent: s.profile_recent.clone(),
     };
@@ -664,6 +671,8 @@ impl Session {
         // presets
         if let Some(f) = settings.read::<PresetsFile>(files.as_mut(), "presets.json") {
             self.preset_folders = f.folders;
+            self.preset_at_import = f.at_import;
+            self.preset_hidden = f.hidden;
             for p in &mut self.presets {
                 p.favorite = p.builtin && f.favorites.contains(&p.id) || (!p.builtin && p.favorite);
             }

@@ -193,7 +193,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
         let current = active.and_then(|id| app.session.develop_of(id)).map(|d| (*d).clone());
         let thumbs = app.ui.preset_thumbs && active.is_some();
         let row_h = if thumbs { 54.0 } else { 26.0 };
-        let groups = grouped(ui.ctx(), &app.session.presets, &app.session.preset_folders, app.ui.settings.user_presets_first);
+        let groups = grouped(ui.ctx(), &app.session, app.ui.settings.user_presets_first);
         let mut all_user_folders = Vec::new();
         collect_all_user_folders(&groups, &mut all_user_folders);
         all_user_folders.sort();
@@ -321,15 +321,28 @@ fn show_folder_node(
 ) {
     let t = Tokens::get(ui.ctx());
     let (path, name, builtin, favorites) = (node.path.clone(), node.name.clone(), node.builtin, node.favorites);
-    let key = if favorites { "presetFavorites".to_string() } else { format!("preset:{path}") };
+    let at_import = favorites && path == AT_IMPORT;
+    let key = if at_import {
+        AT_IMPORT.to_string()
+    } else if favorites {
+        "presetFavorites".to_string()
+    } else {
+        format!("preset:{path}")
+    };
     let holds_current = holds_current_preset(node, app, last.as_ref().map(|l| l.id.as_str()), marked.as_deref());
     let open = app.ui.group_is_open(&key, holds_current || favorites);
     let indent = node.depth as f32 * 14.0;
 
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click_and_drag());
-    let label = if favorites { crate::i18n::tr("Favorites") } else { crate::i18n::builtin_label(&name, builtin && node.depth == 0) };
+    let label = if at_import {
+        crate::i18n::tr("At Import")
+    } else if favorites {
+        crate::i18n::tr("Favorites")
+    } else {
+        crate::i18n::builtin_label(&name, builtin && node.depth == 0)
+    };
     crate::widgets::announce(&resp, label.to_string());
-    register(ui.ctx(), if favorites { "presetFavorites".to_string() } else { format!("presetGroup:{path}") }, r);
+    register(ui.ctx(), if favorites { key.clone() } else { format!("presetGroup:{path}") }, r);
 
     let is_drop_target = (app.ui.dragging_preset.is_some()
         || app.ui.dragging_preset_group.as_ref().is_some_and(|g| g != &path && !path.starts_with(&format!("{g}/"))))
@@ -416,7 +429,17 @@ fn show_folder_node(
         let (pid, pname, fav) = (pr.id.clone(), crate::i18n::builtin_label(&pr.name, pr.builtin).to_string(), pr.favorite);
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click_and_drag());
         crate::widgets::announce(&resp, pname.clone());
-        register(ui.ctx(), if favorites { format!("presetFav:{pid}") } else { format!("preset:{pid}") }, r);
+        register(
+            ui.ctx(),
+            if node.path == AT_IMPORT {
+                format!("presetAtImport:{pid}")
+            } else if favorites {
+                format!("presetFav:{pid}")
+            } else {
+                format!("preset:{pid}")
+            },
+            r,
+        );
         let is_last = marked.as_deref() == Some(pid.as_str());
 
         if resp.drag_started() && !favorites {
@@ -476,6 +499,17 @@ fn show_folder_node(
             if ui.button(crate::i18n::tr(if fav { "Remove from Favorites" } else { "Add to Favorites" })).clicked() {
                 let _ = app.run("preset.favorite", json!({"id": pid}));
             }
+            let marked = app.session.preset_at_import.contains(&pid);
+            if ui.button(crate::i18n::tr(if marked { "Remove from At Import" } else { "Add to At Import" })).clicked() {
+                let _ = app.run("preset.forImport", json!({"id": pid}));
+            }
+            if ui.button(crate::i18n::tr("Hide")).clicked() {
+                let _ = app.run("preset.hide", json!({"id": pid, "hidden": true}));
+                app.toast(ui.ctx(), crate::i18n::tr("Hidden: Manage Presets… shows it again"));
+            }
+            if ui.button(crate::i18n::tr("Manage Presets…")).clicked() {
+                let _ = app.run("dialog.presetsManager", json!({}));
+            }
             if p_builtin {
                 return;
             }
@@ -510,6 +544,9 @@ fn show_folder_node(
     }
 }
 
+/// The path of the At Import group (a list like Favorites, not a folder).
+const AT_IMPORT: &str = "presetAtImport";
+
 /// The group new presets are saved into by default.
 const USER_PRESETS: &str = "User Presets";
 
@@ -517,7 +554,9 @@ const USER_PRESETS: &str = "User Presets";
 /// rebuilt only when the preset list changed (its generation). With `user_first` (Settings ▸
 /// Interface, issue #476; off by default, as in Lightroom Classic) the "User Presets" group comes
 /// right after Favorites; every other group keeps its usual place.
-fn grouped(ctx: &egui::Context, presets: &PresetList, custom_folders: &[String], user_first: bool) -> Arc<Vec<FolderNode>> {
+fn grouped(ctx: &egui::Context, session: &lcc_engine::Session, user_first: bool) -> Arc<Vec<FolderNode>> {
+    let (presets, custom_folders) = (&session.presets, &session.preset_folders);
+    let hidden = |id: &str| session.preset_hidden.iter().any(|h| h == id);
     let id = egui::Id::new("presets-grouped");
     if let Some((generation, first, groups)) = ctx.data(|d| d.get_temp::<(u64, bool, Arc<Vec<FolderNode>>)>(id))
         && generation == presets.generation()
@@ -529,6 +568,10 @@ fn grouped(ctx: &egui::Context, presets: &PresetList, custom_folders: &[String],
     let mut folder_data: BTreeMap<String, (bool, bool, Vec<usize>)> = BTreeMap::new();
 
     for (i, p) in presets.iter().enumerate() {
+        // hidden in the Presets Manager: out of the panel (LR-PRE-MANAGE)
+        if hidden(&p.id) {
+            continue;
+        }
         let (b, u, items) = folder_data.entry(p.group.clone()).or_insert_with(|| (false, false, Vec::new()));
         *b |= p.builtin;
         *u |= !p.builtin;
@@ -607,6 +650,24 @@ fn grouped(ctx: &egui::Context, presets: &PresetList, custom_folders: &[String],
         starred
     }
 
+    // the presets marked At Import, after Favorites (LR-PRE-ONIMPORT)
+    let at_import: Vec<usize> =
+        session.preset_at_import.iter().filter(|id| !hidden(id)).filter_map(|id| presets.iter().position(|p| p.id == *id)).collect();
+    if !at_import.is_empty() {
+        roots.insert(
+            0,
+            FolderNode {
+                name: "At Import".into(),
+                path: AT_IMPORT.into(),
+                builtin: false,
+                user: false,
+                favorites: true,
+                depth: 0,
+                items: at_import,
+                children: Vec::new(),
+            },
+        );
+    }
     let starred = collect_starred(&roots, presets);
     if !starred.is_empty() {
         roots.insert(
@@ -632,22 +693,25 @@ fn grouped(ctx: &egui::Context, presets: &PresetList, custom_folders: &[String],
 /// The presets as the rows of a picker (a combo box's list), in list order with a header row
 /// wherever the group changes. Only the rows in view are built (10 000+ presets made an open
 /// picker take seconds a frame). Returns the id of the preset clicked.
-pub fn picker_rows(ui: &mut egui::Ui, salt: &str, presets: &PresetList, selected: Option<&str>) -> Option<String> {
-    let id = egui::Id::new("preset-picker-rows");
-    let rows = match ui.ctx().data(|d| d.get_temp::<(u64, Arc<Vec<PickRow>>)>(id)) {
-        Some((generation, rows)) if generation == presets.generation() => rows,
+pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session, selected: Option<&str>) -> Option<String> {
+    let presets = &session.presets;
+    // a search over names and groups (LR-PRESET-PICKER), kept per picker while it is open
+    let qid = egui::Id::new(("preset-picker-query", salt));
+    let mut query = ui.ctx().data(|d| d.get_temp::<String>(qid)).unwrap_or_default();
+    if presets.len() > 12 {
+        crate::text_field::TextField::singleline(&format!("presetPickerSearch-{salt}"), &mut query)
+            .hint(crate::i18n::tr("Search presets"))
+            .width(ui.available_width().max(160.0))
+            .show(ui);
+        ui.ctx().data_mut(|d| d.insert_temp(qid, query.clone()));
+    }
+    let needle = query.trim().to_lowercase();
+    let id = egui::Id::new(("preset-picker-rows", salt));
+    let rows = match ui.ctx().data(|d| d.get_temp::<(u64, String, Arc<Vec<PickRow>>)>(id)) {
+        Some((generation, q, rows)) if generation == presets.generation() && q == needle => rows,
         _ => {
-            let mut rows = Vec::with_capacity(presets.len() + 16);
-            let mut group: Option<&str> = None;
-            for (i, p) in presets.iter().enumerate() {
-                if group != Some(p.group.as_str()) {
-                    group = Some(&p.group);
-                    rows.push(PickRow::Header(crate::i18n::builtin_label(&p.group, p.builtin).to_string()));
-                }
-                rows.push(PickRow::Preset(i));
-            }
-            let rows = Arc::new(rows);
-            ui.ctx().data_mut(|d| d.insert_temp(id, (presets.generation(), rows.clone())));
+            let rows = Arc::new(pick_rows(session, &needle));
+            ui.ctx().data_mut(|d| d.insert_temp(id, (presets.generation(), needle.clone(), rows.clone())));
             rows
         }
     };
@@ -676,6 +740,39 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, presets: &PresetList, selected
         },
     );
     out
+}
+
+/// The picker's rows: Favorites and At Import first (without a search), then every group in
+/// order; hidden presets are left out; a search keeps the presets whose name or group holds it.
+fn pick_rows(session: &lcc_engine::Session, needle: &str) -> Vec<PickRow> {
+    let presets = &session.presets;
+    let hidden = |id: &str| session.preset_hidden.iter().any(|h| h == id);
+    let mut rows = Vec::with_capacity(presets.len() + 16);
+    if needle.is_empty() {
+        let favorites: Vec<usize> = presets.iter().enumerate().filter(|(_, p)| p.favorite && !hidden(&p.id)).map(|(i, _)| i).collect();
+        if !favorites.is_empty() {
+            rows.push(PickRow::Header(crate::i18n::tr("Favorites").to_string()));
+            rows.extend(favorites.into_iter().map(PickRow::Preset));
+        }
+        let at_import: Vec<usize> =
+            session.preset_at_import.iter().filter(|id| !hidden(id)).filter_map(|id| presets.iter().position(|p| p.id == *id)).collect();
+        if !at_import.is_empty() {
+            rows.push(PickRow::Header(crate::i18n::tr("At Import").to_string()));
+            rows.extend(at_import.into_iter().map(PickRow::Preset));
+        }
+    }
+    let mut group: Option<&str> = None;
+    for (i, p) in presets.iter().enumerate() {
+        if hidden(&p.id) || !(needle.is_empty() || p.name.to_lowercase().contains(needle) || p.group.to_lowercase().contains(needle)) {
+            continue;
+        }
+        if group != Some(p.group.as_str()) {
+            group = Some(&p.group);
+            rows.push(PickRow::Header(crate::i18n::builtin_label(&p.group, p.builtin).to_string()));
+        }
+        rows.push(PickRow::Preset(i));
+    }
+    rows
 }
 
 #[derive(Clone)]
@@ -744,7 +841,7 @@ mod tests {
         assert!(warm < bw, "list order differs from panel order");
 
         let ctx = egui::Context::default();
-        let groups = grouped(&ctx, &session.presets, &session.preset_folders, false);
+        let groups = grouped(&ctx, &session, false);
         assert_eq!(groups[0].name, "Favorites");
         assert!(!groups[0].user && !groups[0].builtin, "not a Move to Group target");
         // B&W, then Color, then the user groups
@@ -760,7 +857,7 @@ mod tests {
         for id in ["lc.warm-glow", "lc.bw-selenium", "user.mine"] {
             session.execute("preset.favorite", &json!({"id": id})).unwrap();
         }
-        let groups = grouped(&ctx, &session.presets, &session.preset_folders, false);
+        let groups = grouped(&ctx, &session, false);
         assert_eq!(groups[0].name, "B&W", "no Favorites group without favourites");
     }
 
@@ -786,7 +883,7 @@ mod tests {
         session.presets.push(Preset { id: "user.a".into(), name: "A".into(), group: "Aaa Mine".into(), builtin: false, ..base });
         session.execute("preset.favorite", &json!({"id": "lc.warm-glow"})).unwrap();
         let ctx = egui::Context::default();
-        let names = |first| grouped(&ctx, &session.presets, &session.preset_folders, first).iter().map(|g| g.name.clone()).collect::<Vec<_>>();
+        let names = |first| grouped(&ctx, &session, first).iter().map(|g| g.name.clone()).collect::<Vec<_>>();
         let off = names(false);
         assert_ne!(off[1], "User Presets", "default order unchanged");
         let on = names(true);
@@ -825,7 +922,7 @@ mod tests {
         });
 
         let ctx = egui::Context::default();
-        let groups = grouped(&ctx, &session.presets, &session.preset_folders, false);
+        let groups = grouped(&ctx, &session, false);
 
         let mastin = groups.iter().find(|g| g.name == "Mastin Labs").expect("Mastin Labs folder at root");
         assert_eq!(mastin.depth, 0);

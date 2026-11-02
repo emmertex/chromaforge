@@ -256,6 +256,26 @@ fn named_photos(s: &Session, p: &Value, c: &str) -> Result<Option<Vec<PhotoId>>>
 }
 
 /// The user preset named by `p.id` (built-ins can't be changed).
+/// Turn a preset's mark (At Import, hidden) on, off (`key`) or over; bumps the preset list's
+/// generation so the mark is saved and the pickers rebuild.
+fn toggle_mark(s: &mut Session, p: &Value, c: &str, key: &str, list: impl Fn(&mut Session) -> &mut Vec<String>) -> Result<Value> {
+    let pid = str_param(p, "id").ok_or_else(|| bad(c, "missing id"))?.to_string();
+    if !s.presets.iter().any(|x| x.id == pid) {
+        return Err(bad(c, format!("unknown preset `{pid}`")));
+    }
+    let marks = list(s);
+    let was = marks.contains(&pid);
+    let on = bool_or(p, key, !was);
+    marks.retain(|x| *x != pid);
+    if on {
+        marks.push(pid);
+    }
+    s.presets.bump();
+    let mut out = serde_json::Map::new();
+    out.insert(key.to_string(), Value::Bool(on));
+    Ok(Value::Object(out))
+}
+
 fn user_preset<'a>(s: &'a mut Session, p: &Value, c: &str) -> Result<&'a mut Preset> {
     let pid = str_param(p, "id").ok_or_else(|| bad(c, "missing id"))?;
     let pr = s.presets.iter_mut().find(|x| x.id == pid).ok_or_else(|| bad(c, format!("unknown preset `{pid}`")))?;
@@ -1314,6 +1334,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 return Err(bad("preset.delete", "built-in presets can't be deleted"));
             }
             s.presets.remove(i);
+            s.preset_at_import.retain(|x| x.as_str() != pid);
+            s.preset_hidden.retain(|x| x.as_str() != pid);
             ok()
         }),
         cmd!("preset.favorite", "Favorite Preset", [], None, "{id, favorite?: bool}", always, |s, p| {
@@ -1322,6 +1344,24 @@ pub fn specs() -> Vec<CommandSpec> {
             pr.favorite = bool_or(p, "favorite", !pr.favorite);
             ok()
         }),
+        cmd!(
+            "preset.forImport",
+            "Mark Preset At Import",
+            [],
+            None,
+            "{id, on?: bool} — the import pickers list presets marked At Import first",
+            always,
+            |s, p| { toggle_mark(s, p, "preset.forImport", "on", |s| &mut s.preset_at_import) }
+        ),
+        cmd!(
+            "preset.hide",
+            "Hide Preset",
+            [],
+            None,
+            "{id, hidden?: bool} — out of the Presets panel and the pickers, kept in the Presets Manager",
+            always,
+            |s, p| { toggle_mark(s, p, "preset.hide", "hidden", |s| &mut s.preset_hidden) }
+        ),
         cmd!("preset.rename", "Rename Preset", [], None, "{id, name}", always, |s, p| {
             let c = "preset.rename";
             let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?.to_string();

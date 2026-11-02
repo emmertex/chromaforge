@@ -228,7 +228,7 @@ pub fn specs() -> Vec<CommandSpec> {
             ))
         }),
         cmd!(query "presets.list", "List Presets", [], None, "{}", always, |s, _| {
-            Ok(Value::Array(s.presets.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": p.favorite, "builtin": p.builtin})).collect()))
+            Ok(Value::Array(s.presets.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": p.favorite, "builtin": p.builtin, "atImport": s.preset_at_import.contains(&p.id), "hidden": s.preset_hidden.contains(&p.id)})).collect()))
         }),
         cmd!(query "presets.folders", "List Preset Folders", [], None, "{} — all preset folders (user, built-in, and empty folders)", always, |s, _| {
             let mut set = std::collections::BTreeSet::new();

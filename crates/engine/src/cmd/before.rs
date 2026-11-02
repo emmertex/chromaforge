@@ -82,12 +82,24 @@ pub fn specs() -> Vec<CommandSpec> {
             has_active,
             set_before
         ),
-        cmd!("beforeAfter.copyAfterToBefore", "Copy After's Settings to Before", ["View", "Before/After"], Some("Cmd+Alt+Shift+Left"), "{}", has_active, |s, _| {
-            set_before(s, &json!({"source": "current"}))
-        }),
-        cmd!("beforeAfter.copyBeforeToAfter", "Copy Before's Settings to After", ["View", "Before/After"], Some("Cmd+Alt+Shift+Right"), "{}", has_active, |s, _| {
-            before_to_after(s, false)
-        }),
+        cmd!(
+            "beforeAfter.copyAfterToBefore",
+            "Copy After's Settings to Before",
+            ["View", "Before/After"],
+            Some("Cmd+Alt+Shift+Left"),
+            "{}",
+            has_active,
+            |s, _| { set_before(s, &json!({"source": "current"})) }
+        ),
+        cmd!(
+            "beforeAfter.copyBeforeToAfter",
+            "Copy Before's Settings to After",
+            ["View", "Before/After"],
+            Some("Cmd+Alt+Shift+Right"),
+            "{}",
+            has_active,
+            |s, _| { before_to_after(s, false) }
+        ),
         cmd!("beforeAfter.swap", "Swap Before and After Settings", ["View", "Before/After"], Some("Cmd+Alt+Shift+Up"), "{}", has_active, |s, _| {
             before_to_after(s, true)
         }),

@@ -41,6 +41,7 @@ pub mod plugin_icon;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugins;
 pub mod presets;
+pub mod presets_manager;
 pub mod profiles;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod publish;

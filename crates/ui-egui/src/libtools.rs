@@ -466,7 +466,7 @@ fn value_editor(app: &mut LccApp, ui: &mut egui::Ui, painter: &Painter, next: &m
             let current = presets.iter().find(|m| m.id == painter.value).map(|m| m.name.clone()).unwrap_or_else(|| painter.value.clone());
             let r = egui::ComboBox::from_id_salt("painter-value")
                 .selected_text(current)
-                .show_ui(ui, |ui| crate::panels::presets::picker_rows(ui, "painter-value", presets, Some(&painter.value)));
+                .show_ui(ui, |ui| crate::panels::presets::picker_rows(ui, "painter-value", &app.session, Some(&painter.value)));
             crate::widgets::register(ui.ctx(), "painter:value", r.response.rect);
             if let Some(Some(id)) = r.inner {
                 *next = Some((kind, id));
