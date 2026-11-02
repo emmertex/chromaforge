@@ -11,6 +11,7 @@ mod before;
 pub(crate) mod browse;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod catalog;
+pub mod chart_profile;
 mod collections;
 mod color;
 pub(crate) mod convert;
@@ -250,6 +251,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(lut_profiles::specs());
         v.extend(lens_db::specs());
         v.extend(source::specs());
+        v.extend(chart_profile::specs());
         v.extend(dcp_profiles::specs());
         v.extend(profile_manager::specs());
         v.extend(mask_effects::specs());

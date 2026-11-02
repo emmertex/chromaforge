@@ -23,6 +23,7 @@ pub mod bounded_read;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
 pub mod change_report;
+pub mod chart_profiling;
 pub mod cmd;
 pub mod colour_export;
 pub mod config;
@@ -2079,6 +2080,8 @@ mod tests_camera_profile_defaults;
 mod tests_capture_sort;
 #[cfg(test)]
 mod tests_catalog_cmds;
+#[cfg(test)]
+mod tests_chart_profile;
 #[cfg(test)]
 mod tests_classic;
 #[cfg(test)]

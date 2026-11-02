@@ -4816,6 +4816,7 @@ dependencies = [
  "lcc-audio-out",
  "lcc-brand",
  "lcc-camdb",
+ "lcc-camprof",
  "lcc-catalog",
  "lcc-codecs",
  "lcc-color",
