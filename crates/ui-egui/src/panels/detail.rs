@@ -1409,7 +1409,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let hide_filter = app.ui.settings.hide_filter_in_develop && app.ui.module == crate::module::ModuleId::Develop;
     let pill = if !fullscreen && !hide_filter { filter_pill(app, ui, canvas) } else { None };
     info_overlay(app, &p, canvas, &photo, pill);
-    if app.ui.face_boxes {
+    if super::faces::face_boxes_shown(app) {
         // a name box left open on another photo is dropped
         if app.ui.name_edit.as_ref().is_some_and(|e| e.photo != id.0) {
             app.ui.name_edit = None;

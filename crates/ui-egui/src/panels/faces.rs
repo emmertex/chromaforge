@@ -16,6 +16,13 @@ use crate::LccApp;
 use crate::theme::Tokens;
 use crate::widgets::register;
 
+/// Whether the loupe draws the photo's face boxes: when switched on (View ▸ Face Boxes), and otherwise
+/// only while they are needed: a face being named, a photo opened from the People view. A hook for the
+/// People mask picker joins here when named people land.
+pub(crate) fn face_boxes_shown(app: &LccApp) -> bool {
+    app.ui.face_boxes || app.ui.name_edit.is_some() || app.ui.person_from.is_some()
+}
+
 /// How hard the background scan may work (the engine's `faces.pump` pace), from what the user is doing: nothing new
 /// while they drag, type or scroll; one photo at a time while they are around or the window is minimized; half the
 /// machine once they have been idle for a few seconds, or while another app has the keyboard but this window is still

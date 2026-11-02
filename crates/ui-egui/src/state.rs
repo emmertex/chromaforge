@@ -1072,7 +1072,12 @@ pub struct UiState {
     pub grid_info: String,
     /// Photo counts next to sources and albums in the left panel.
     pub show_counts: bool,
-    /// Face / pet boxes (read from XMP) over the photo in the loupe.
+    /// Face / pet boxes (read from XMP) over the photo in the loupe, switched on (View ▸ Face
+    /// Boxes). Off by default (they get in the way of looking at the photo); they also show while a
+    /// face is being named or a photo was opened from the People view
+    /// ([`crate::panels::faces::face_boxes_shown`]). A new key: earlier builds saved `faceBoxes: true`
+    /// without the user choosing it, so only a choice made since is kept.
+    #[serde(rename = "faceBoxesOn")]
     pub face_boxes: bool,
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
@@ -1948,7 +1953,7 @@ impl Default for UiState {
             show_filenames: true,
             grid_info: "filename".into(),
             show_counts: true,
-            face_boxes: true,
+            face_boxes: false,
             hdr_preview: true,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
