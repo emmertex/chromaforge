@@ -1074,13 +1074,89 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
     if !lcc_pipeline::skin_needs_cpu(s) {
         return img;
     }
-    // Smooth Skin and the retouch of people's parts (Teeth): the CPU's (the same code renders
-    // both, so they match; documented in docs/gpu-pipeline.md)
+    // Smooth Skin on the device when every bucket's region fits its buffers (`skin_gpu`)
+    let skin_done = skin_gpu(cx, &img, plan);
+    if skin_done && !lcc_pipeline::retouch::active(s) {
+        return img;
+    }
+    // the retouch of people's parts (and Smooth Skin when it didn't fit): the CPU's (the same code
+    // renders both, so they match)
     let mut host_img = cx.read_rgb(&img, w, h);
-    lcc_pipeline::retouch_people(&mut host_img, s, &plan.frame, plan.px_per_long);
+    lcc_pipeline::timed("smooth skin", || {
+        if !skin_done {
+            lcc_pipeline::skin::apply(&mut host_img, s, &plan.frame, plan.px_per_long);
+        }
+    });
+    lcc_pipeline::timed("retouch", || lcc_pipeline::retouch::apply(&mut host_img, s, &plan.frame, plan.px_per_long));
     let buf = cx.gpu.upload(rgb_words(&host_img));
     host.lin = Some(Arc::new(host_img));
     buf
+}
+
+/// Smooth Skin (`lcc_pipeline::skin`) on the device, in place on `img`, from the CPU's plan
+/// (coverage and regions): `true` when done, `false` when there is nothing to do or a region is
+/// over the device's buffer limit (the CPU does it then).
+fn skin_gpu(cx: &mut Cx<'_>, img: &Buf, plan: &Plan<'_>) -> bool {
+    use lcc_pipeline::skin;
+    let (w, h) = (plan.w, plan.h);
+    let Some(work) = skin::plan(w, h, &plan.settings, &plan.frame, plan.px_per_long) else { return false };
+    if work.buckets.iter().any(|b| !cx.gpu.fits(b.region[2] * b.region[3] * 4)) || !cx.gpu.fits(work.cover.data.len()) {
+        return false;
+    }
+    let t = profiling().then(std::time::Instant::now);
+    let cov = cx.gpu.upload(&work.cover.data);
+    let (ox, oy) = work.origin;
+    let (cw, ch) = (work.cover.width, work.cover.height);
+    let [kr, kg, kb, eps] = skin::LAB_CONSTANTS;
+    let consts = skin::combine_constants(&work.params);
+    for b in &work.buckets {
+        let [rx0, ry0, rw, rh] = b.region;
+        let groups = groups2(rw, rh, [16, 16]);
+        let mut p = vec![w as u32, rx0 as u32, ry0 as u32, rw as u32, rh as u32, ox as u32, oy as u32, cw as u32, ch as u32];
+        p.extend([skin::MIN_COVER, kr, kg, kb, eps].map(f32::to_bits));
+        let lab = cx.gpu.buffer(rw * rh * 4);
+        cx.run("skin_lab", &p, &[Some(img), Some(&cov), Some(&lab), None, None, None], groups);
+        let fine = gaussian(cx, &lab, rw, rh, 4, b.fine_sigma());
+        // the wide bands on reduced copies (`skin::Reduced`)
+        let band = |cx: &mut Cx<'_>, sigma: f64| -> (Buf, usize, usize, usize) {
+            let (f, blur) = skin::reduction(sigma);
+            if f == 1 {
+                return (gaussian(cx, &lab, rw, rh, 4, blur), 1, rw, rh);
+            }
+            let (dw, dh) = (rw.div_ceil(f), rh.div_ceil(f));
+            let small = cx.gpu.buffer(dw * dh * 4);
+            // (the unused writable binding gets a buffer of its own: the shared placeholder is bound read-only too)
+            let scratch = cx.gpu.buffer(1);
+            cx.run(
+                "skin_reduce",
+                &[rw as u32, rh as u32, f as u32, dw as u32, dh as u32],
+                &[Some(&scratch), None, Some(&small), Some(&lab), None, None],
+                groups2(dw, dh, [16, 16]),
+            );
+            (gaussian(cx, &small, dw, dh, 4, blur), f, dw, dh)
+        };
+        let (mid, mf, mw, mh) = band(cx, b.mid_sigma());
+        let (low, lf, lw, lh) = band(cx, b.low_sigma());
+        let mut mask = [0u32; 2];
+        for &m in &b.members {
+            if let Some(word) = mask.get_mut(m / 32) {
+                *word |= 1 << (m % 32);
+            }
+        }
+        let faces = work.faces.len().min(64);
+        let mut p = vec![w as u32, rx0 as u32, ry0 as u32, rw as u32, rh as u32, ox as u32, oy as u32, cw as u32, ch as u32];
+        p.extend([mf, mw, mh, lf, lw, lh].map(|v| v as u32));
+        p.extend([b.all as u32, faces as u32, mask[0], mask[1]]);
+        p.extend(consts.map(f32::to_bits));
+        p.extend([skin::MIN_COVER, skin::SHINE[0], skin::SHINE[1], kr, kg, kb, eps].map(f32::to_bits));
+        p.extend(work.faces.iter().take(64).flat_map(|f| [f.x as f32, f.y as f32, f.d as f32]).map(f32::to_bits));
+        cx.run("skin_combine", &p, &[Some(img), Some(&cov), Some(&lab), Some(&fine), Some(&mid), Some(&low)], groups);
+    }
+    if let Some(t) = t {
+        cx.sync();
+        eprintln!("    gpu smooth skin ({} buckets): {:.1} ms", work.buckets.len(), t.elapsed().as_secs_f64() * 1e3);
+    }
+    true
 }
 
 /// Defringe (`optics::defringe`) of the white-balanced image.

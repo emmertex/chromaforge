@@ -232,15 +232,22 @@ walks the drive.
   within 1 LSB (`the_display_fit_on_the_device_matches_the_cpus`). Overlays, a window that spots
   grew, HDR renders and a monitor profile's conversion keep the CPU fit. A render at rest reads the full
   image back with the fitted one, for the photo's view preview; a drag's updates cache the fitted one.
+- Smooth Skin (`skin` module: `skin_lab`, `skin_reduce`, `skin_combine`, with the box Gaussian on
+  4-channel bands) runs on the device from the CPU's plan (`skin::plan`: the coverage over the
+  skin's box, the faces grouped by size and each group's region), the same fast log / exp as the
+  CPU (`crates/gpu/tests/skin_gpu.rs`: max 1 LSB). Before, a photo with Smooth Skin had its whole
+  linear image read back, smoothed on the processor and uploaded again (a 45 MP export spent ~0.8 s
+  of its GPU turn on that). The retouch of people's parts still runs on the CPU (read back, uploaded),
+  and so does Smooth Skin when a region is over the device's buffer limit.
 - Per-stage hybrid: defringe and spot removal (rare, CPU-only for now) download the resampled image,
   run on the CPU and upload; heuristic mask shapes (Sky, Subject, Background, …), brushes with pen pressure and
   brushes of more than 65 536 dabs (or whose tile lists would pass 8 M words) are evaluated on the CPU and uploaded. The
   brush kernel bins each stroke's dabs into tiles of about a quarter radius, so a pixel looks only at the dabs that reach
   its tile instead of every dab of the stroke (a dress brushed over, zoomed to 100 %: tens of seconds before); sources over the buffer limit are resampled
-  on the CPU. Smooth Skin and Retouch ▸ Teeth (`lcc_pipeline::retouch_people`) read the
-  noise-reduced scene-linear image back, run the CPU's code and upload it again, so the two renderers
-  match by construction (`gpu_matches_cpu` case `retouch teeth (cpu stage)`); they are per-pixel
-  inside small masks, so a kernel of their own was not worth a second implementation yet.
+  on the CPU. Retouch ▸ Teeth (`lcc_pipeline::retouch::apply`) reads the
+  noise-reduced scene-linear image back, runs the CPU's code and uploads it again, so the two renderers
+  match by construction (`gpu_matches_cpu` case `retouch teeth (cpu stage)`); it is per-pixel inside
+  small masks, so a kernel of its own was not worth a second implementation yet.
 - Stage cache: `GpuStages` mirrors `StageCache` (same keys: source identity + `geo`, `lin_key`,
   per-plane radii) and lives in it as an extension, so the UI needs no change. The uploaded source is
   kept per view. A tone / colour / exposure drag re-runs one dispatch of `finish` plus the readback.

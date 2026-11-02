@@ -563,6 +563,26 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 }],
             });
         }),
+        ("smooth skin (gpu)", |s| {
+            // a face over the middle of the frame, its skin a soft ellipse: Smooth Skin runs on
+            // the device (the `skin` module, from skin::plan)
+            let side = 128;
+            let logits: Vec<f32> = (0..side * side)
+                .map(|i| {
+                    let (x, y) = (((i % side) as f64 + 0.5) / side as f64, ((i / side) as f64 + 0.5) / side as f64);
+                    let d = ((x - 0.5) / 0.18).powi(2) + ((y - 0.5) / 0.24).powi(2);
+                    (8.0 * (1.0 - d)).clamp(-12.0, 12.0) as f32
+                })
+                .collect();
+            s.skin = lcc_develop::SkinSmoothing { amount: 80.0, texture: -30.0, even_tone: 50.0, redness: 40.0, shine: 30.0, ..Default::default() };
+            s.skin_analysis = Some(lcc_develop::SkinAnalysis {
+                area: s.skin.area,
+                person: s.skin.person,
+                orientation: s.orientation,
+                seg: lcc_develop::SegMask::from_logits(side, &logits),
+                faces: vec![lcc_develop::SkinFace { x: 0.5, y: 0.45, eyes: 0.06 }],
+            });
+        }),
         ("spots + defringe (cpu stage)", |s| {
             s.spots = vec![Spot { points: vec![Point::new(0.3, 0.3)], size: 0.03, source_offset: Some(Point::new(0.1, 0.0)), ..Default::default() }];
             s.optics.defringe_purple_amount = 5.0;

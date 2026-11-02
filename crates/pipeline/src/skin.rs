@@ -195,9 +195,9 @@ impl Reduced {
     /// `src` blurred by `sigma` (pixels of `src`), computed at a reduction that keeps the blur
     /// at least about 3 reduced pixels wide.
     fn of(src: &Image<[f32; 4]>, sigma: f64) -> Reduced {
-        let factor = ((sigma / 3.0).floor() as usize).clamp(1, 32);
+        let (factor, blur) = reduction(sigma);
         let small = if factor == 1 { src.clone() } else { reduce(src, factor) };
-        Reduced { img: gaussian(&small, (sigma / factor as f64) as f32), factor }
+        Reduced { img: gaussian(&small, blur), factor }
     }
 
     /// Bilinear sample at full-resolution pixel `(x, y)` of the source.
@@ -259,11 +259,11 @@ fn norm(v: [f32; 4], fallback: [f32; 3]) -> [f32; 3] {
 }
 
 /// A face in output pixels: centre and eye distance.
-#[derive(Clone, Copy, Debug)]
-struct FacePx {
-    x: f64,
-    y: f64,
-    d: f64,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FacePx {
+    pub x: f64,
+    pub y: f64,
+    pub d: f64,
 }
 
 /// The face pixel `(x, y)` belongs to: the nearest in units of its own size (a big face's cheek
@@ -291,19 +291,86 @@ fn buckets(faces: &[FacePx]) -> Vec<Vec<usize>> {
     out
 }
 
-/// Apply Smooth Skin to `img` (the output-resolution, scene-linear image `frame` draws, before
-/// exposure), `ppl` output pixels per unit of the long edge. Does nothing when [`analysis`] is
-/// `None` or the stored skin is damaged.
-pub fn apply(img: &mut Rgb32f, s: &DevelopSettings, frame: &Frame, ppl: f64) {
-    let Some(a) = analysis(s) else { return };
-    let Some(grid) = SegGrid::new(&a.seg) else { return };
+/// What Smooth Skin does to one render, worked out before any pixel changes: the skin's coverage
+/// and the faces' groups with the region each one reads and writes. The CPU ([`apply`]) and the
+/// GPU renderer both work from it, so they change the same pixels.
+pub struct Work {
+    /// The skin's coverage over the box at `origin` of the image (1 / (1 + e^-logit)).
+    pub cover: Plane,
+    pub origin: (usize, usize),
+    pub faces: Vec<FacePx>,
+    pub params: Params,
+    pub buckets: Vec<Bucket>,
+}
+
+/// Faces of similar size, smoothed together.
+pub struct Bucket {
+    /// Indices into [`Work::faces`].
+    pub members: Vec<usize>,
+    /// Every face is a member (no pixel needs its owner looked up).
+    pub all: bool,
+    /// The members' eye distance (geometric mean, output pixels).
+    pub d: f64,
+    /// The region of the image the bucket reads and writes: `[x, y, w, h]`.
+    pub region: [usize; 4],
+}
+
+impl Bucket {
+    /// The blur of the fine band (pixels of the image).
+    pub fn fine_sigma(&self) -> f32 {
+        (FINE * self.d).max(0.0) as f32
+    }
+
+    /// The middle and low bands' blurs (pixels of the image).
+    pub fn mid_sigma(&self) -> f64 {
+        MIDDLE * self.d
+    }
+
+    pub fn low_sigma(&self) -> f64 {
+        LOW * self.d
+    }
+}
+
+/// How much a band blurred by `sigma` is reduced first (pixels of the image per pixel of the
+/// reduced copy, see [`Reduced`]), and the blur left for the reduced copy.
+pub fn reduction(sigma: f64) -> (usize, f32) {
+    let factor = ((sigma / 3.0).floor() as usize).clamp(1, 32);
+    (factor, (sigma / factor as f64) as f32)
+}
+
+/// The combine step's constants: `[amount, k_mid, k_low, k_chroma, tex, even, even_c, red, shine]`.
+pub fn combine_constants(p: &Params) -> [f32; 9] {
+    // how strong a swing still counts as small (log2 units): softening fades out above it
+    let k_mid = 0.04 + 0.08 * p.amount;
+    // (blotches are gentle; the light and shape of a face are not: the nose's shading, a warm and
+    // a cool side keep their contrast)
+    let k_low = 0.10;
+    let k_chroma = 0.12;
+    let tex = if p.texture < 0.0 { p.texture } else { 0.75 * p.texture };
+    let even = 0.65 * p.even;
+    let even_c = 0.6 * p.even;
+    [p.amount, k_mid, k_low, k_chroma, tex, even, even_c, p.red, p.shine]
+}
+
+/// Pixels with less skin coverage than this are left alone.
+pub const MIN_COVER: f32 = MIN_COVERAGE;
+/// Shine margin and strength (see [`SHINE_MARGIN`]).
+pub const SHINE: [f32; 2] = [SHINE_MARGIN, SHINE_STRENGTH];
+/// Luminance weights and the logs' offset (see [`to_lab`]).
+pub const LAB_CONSTANTS: [f32; 4] = [KR, KG, KB, EPS];
+
+/// Work out Smooth Skin for an image of `w × h` (the output-resolution, scene-linear image `frame`
+/// draws), `ppl` output pixels per unit of the long edge: `None` when it changes nothing (off, no
+/// skin, a damaged stored analysis).
+pub fn plan(w: usize, h: usize, s: &DevelopSettings, frame: &Frame, ppl: f64) -> Option<Work> {
+    let a = analysis(s)?;
+    let grid = SegGrid::new(&a.seg)?;
     let p = Params::of(&s.skin);
-    let (w, h) = (img.width, img.height);
     if w < 2 || h < 2 || !(ppl.is_finite() && ppl > 0.0) {
-        return;
+        return None;
     }
     // where the skin is, in output pixels
-    let Some(b) = grid.bounds_above(MIN_LOGIT) else { return };
+    let b = grid.bounds_above(MIN_LOGIT)?;
     let to_out = frame.norm_to_out(w, h);
     let corners = [Point::new(b[0], b[1]), Point::new(b[2], b[1]), Point::new(b[0], b[3]), Point::new(b[2], b[3])].map(|c| to_out.apply(c));
     let (bx0, bx1) = corners.iter().fold((f64::MAX, f64::MIN), |(lo, hi), c| (lo.min(c.x), hi.max(c.x)));
@@ -312,7 +379,7 @@ pub fn apply(img: &mut Rgb32f, s: &DevelopSettings, frame: &Frame, ppl: f64) {
     let clampy = |v: f64| if v.is_finite() { v.clamp(0.0, h as f64) as usize } else { 0 };
     let (sx0, sx1, sy0, sy1) = (clampx(bx0.floor() - 1.0), clampx(bx1.ceil() + 1.0), clampy(by0.floor() - 1.0), clampy(by1.ceil() + 1.0));
     if sx1 <= sx0 || sy1 <= sy0 {
-        return;
+        return None;
     }
     // the skin's coverage over that box
     let to_norm = frame.out_to_norm(w, h);
@@ -346,40 +413,72 @@ pub fn apply(img: &mut Rgb32f, s: &DevelopSettings, frame: &Frame, ppl: f64) {
         // skin without a face: measured as an average portrait's
         faces.push(FacePx { x: w as f64 / 2.0, y: h as f64 / 2.0, d: (NO_FACE_EYES * ppl).max(1.0) });
     }
-    for bucket in buckets(&faces) {
-        smooth_bucket(img, &cover, (sx0, sy0), &faces, &bucket, p);
+    let origin = (sx0, sy0);
+    let buckets = buckets(&faces).into_iter().filter_map(|members| bucket(&cover, origin, &faces, members, w, h)).collect();
+    Some(Work { cover, origin, faces, params: p, buckets })
+}
+
+/// The bucket of `members`: its size and the region it reads and writes (`None` when none of
+/// its pixels has skin).
+fn bucket(cover: &Plane, (ox, oy): (usize, usize), faces: &[FacePx], members: Vec<usize>, w: usize, h: usize) -> Option<Bucket> {
+    let d = members.iter().filter_map(|i| faces.get(*i)).map(|f| f.d.ln()).sum::<f64>() / members.len().max(1) as f64;
+    let d = d.exp();
+    let all = members.len() >= faces.len();
+    let mine = |x: usize, y: usize| all || owner(faces, x as f64 + 0.5, y as f64 + 0.5).is_some_and(|o| members.contains(&o));
+    // the pixels this bucket changes (rows side by side: one row's first and last such pixel)
+    let cw = cover.width.max(1);
+    let mut rows = vec![[usize::MAX, 0usize]; cover.height];
+    par_rows(&mut rows, 1, |y, out| {
+        let line = cover.data.get(y * cw..(y + 1) * cw).unwrap_or(&[]);
+        let (mut lo, mut hi) = (usize::MAX, 0usize);
+        for (x, c) in line.iter().enumerate() {
+            if *c >= MIN_COVERAGE && mine(ox + x, oy + y) {
+                lo = lo.min(ox + x);
+                hi = hi.max(ox + x + 1);
+            }
+        }
+        if let Some(o) = out.first_mut() {
+            *o = [lo, hi];
+        }
+    });
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+    for (y, r) in rows.iter().enumerate() {
+        if r[0] == usize::MAX {
+            continue;
+        }
+        (x0, x1) = (x0.min(r[0]), x1.max(r[1]));
+        (y0, y1) = (y0.min(oy + y), y1.max(oy + y + 1));
+    }
+    if x0 == usize::MAX {
+        return None;
+    }
+    // the room its widest band reads around them
+    let room = (3.0 * LOW * d).ceil() as usize;
+    let (rx0, ry0, rx1, ry1) = (x0.saturating_sub(room), y0.saturating_sub(room), (x1 + room).min(w), (y1 + room).min(h));
+    let (rw, rh) = (rx1.checked_sub(rx0)?, ry1.checked_sub(ry0)?);
+    if rw == 0 || rh == 0 {
+        return None;
+    }
+    Some(Bucket { members, all, d, region: [rx0, ry0, rw, rh] })
+}
+
+/// Apply Smooth Skin to `img` (the output-resolution, scene-linear image `frame` draws, before
+/// exposure), `ppl` output pixels per unit of the long edge. Does nothing when [`analysis`] is
+/// `None` or the stored skin is damaged.
+pub fn apply(img: &mut Rgb32f, s: &DevelopSettings, frame: &Frame, ppl: f64) {
+    let Some(work) = plan(img.width, img.height, s, frame, ppl) else { return };
+    for b in &work.buckets {
+        smooth_bucket(img, &work, b);
     }
 }
 
-/// Smooth the skin of the faces in `bucket` (indices into `faces`): `cover` is the skin's
-/// coverage over the box at `origin` of `img`.
-fn smooth_bucket(img: &mut Rgb32f, cover: &Plane, origin: (usize, usize), faces: &[FacePx], bucket: &[usize], p: Params) {
-    let (w, h) = (img.width, img.height);
-    let (ox, oy) = origin;
-    let d = bucket.iter().filter_map(|i| faces.get(*i)).map(|f| f.d.ln()).sum::<f64>() / bucket.len().max(1) as f64;
-    let d = d.exp();
-    let all = bucket.len() >= faces.len();
-    let mine = |x: usize, y: usize| all || owner(faces, x as f64 + 0.5, y as f64 + 0.5).is_some_and(|o| bucket.contains(&o));
-    // the pixels this bucket changes, and the room its widest band reads around them
-    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
-    for (k, c) in cover.data.iter().enumerate() {
-        if *c < MIN_COVERAGE {
-            continue;
-        }
-        let (x, y) = (ox + k % cover.width, oy + k / cover.width);
-        if mine(x, y) {
-            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
-        }
-    }
-    if x0 == usize::MAX {
-        return;
-    }
-    let room = (3.0 * LOW * d).ceil() as usize;
-    let (rx0, ry0, rx1, ry1) = (x0.saturating_sub(room), y0.saturating_sub(room), (x1 + room).min(w), (y1 + room).min(h));
-    let (rw, rh) = (rx1 - rx0, ry1 - ry0);
-    if rw == 0 || rh == 0 {
-        return;
-    }
+/// Smooth the skin of the faces in bucket `b` of `work`.
+fn smooth_bucket(img: &mut Rgb32f, work: &Work, b: &Bucket) {
+    let w = img.width;
+    let (cover, (ox, oy), faces, p) = (&work.cover, work.origin, &work.faces, work.params);
+    let [rx0, ry0, rw, rh] = b.region;
+    let ry1 = ry0 + rh;
+    let mine = |x: usize, y: usize| b.all || owner(faces, x as f64 + 0.5, y as f64 + 0.5).is_some_and(|o| b.members.contains(&o));
     let coverage = |x: usize, y: usize| -> f32 {
         if x < ox || y < oy {
             return 0.0;
@@ -408,18 +507,10 @@ fn smooth_bucket(img: &mut Rgb32f, cover: &Plane, origin: (usize, usize), faces:
     if let Some(t) = t {
         eprintln!("    skin bands' input ({rw}×{rh}): {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
     }
-    let fine = crate::timed("skin fine band", || gaussian(&lab, (FINE * d).max(0.0) as f32));
-    let mid = crate::timed("skin middle band", || Reduced::of(&lab, MIDDLE * d));
-    let low = crate::timed("skin low band", || Reduced::of(&lab, LOW * d));
-    // how strong a swing still counts as small (log2 units): softening fades out above it
-    let k_mid = 0.04 + 0.08 * p.amount;
-    // (blotches are gentle; the light and shape of a face are not: the nose's shading, a warm and
-    // a cool side keep their contrast)
-    let k_low = 0.10;
-    let k_chroma = 0.12;
-    let tex = if p.texture < 0.0 { p.texture } else { 0.75 * p.texture };
-    let even = 0.65 * p.even;
-    let even_c = 0.6 * p.even;
+    let fine = crate::timed("skin fine band", || gaussian(&lab, b.fine_sigma()));
+    let mid = crate::timed("skin middle band", || Reduced::of(&lab, b.mid_sigma()));
+    let low = crate::timed("skin low band", || Reduced::of(&lab, b.low_sigma()));
+    let [_, k_mid, k_low, k_chroma, tex, even, even_c, _, _] = combine_constants(&p);
     let rows = img.data.get_mut(ry0 * w..ry1 * w).unwrap_or(&mut []);
     let t = crate::profiling().then(std::time::Instant::now);
     par_rows(rows, w, |y, row| {

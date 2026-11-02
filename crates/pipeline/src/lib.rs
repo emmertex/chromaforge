@@ -674,8 +674,8 @@ fn grow_window(win: PixelWindow, reach: f64, full_w: usize, full_h: usize) -> Pi
     PixelWindow { x: x0, y: y0, w: x1.saturating_sub(x0).max(1), h: y1.saturating_sub(y0).max(1) }
 }
 
-/// Whether Smooth Skin or the retouch of people's parts (Teeth) changes this render (they run on
-/// the CPU, after noise reduction; the GPU renderer reads its scene-linear image back for them).
+/// Whether Smooth Skin or the retouch of people's parts (Teeth) changes this render (they run after noise
+/// reduction; the GPU renderer does Smooth Skin itself and the retouch on the CPU).
 pub fn skin_needs_cpu(s: &DevelopSettings) -> bool {
     skin::analysis(s).is_some() || retouch::active(s)
 }
@@ -1028,7 +1028,7 @@ pub fn profiling() -> bool {
 }
 
 /// Run `f`, printing its duration under `{ENV_PREFIX}_PROFILE`.
-pub(crate) fn timed<R>(what: &str, f: impl FnOnce() -> R) -> R {
+pub fn timed<R>(what: &str, f: impl FnOnce() -> R) -> R {
     if !profiling() {
         return f();
     }
