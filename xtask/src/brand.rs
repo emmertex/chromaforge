@@ -49,6 +49,8 @@ pub const LEGACY_FILES: &[&str] = &[
     "crates/preview/src/legacy.rs",
     // built-in slideshow templates carry the slideshow-template format tag (`crates/engine/src/legacy.rs`)
     "crates/engine/src/slideshow_templates/*.json",
+    // the intake ledger quotes upstream PR titles verbatim, and upstream titles name upstream
+    "docs/upstream-pr-reviews/ledger.md",
 ];
 
 #[derive(Clone, Debug, PartialEq)]

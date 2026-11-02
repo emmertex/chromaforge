@@ -83,8 +83,9 @@ calibration: M0–M13 took ≈ 25 active hours against an estimate of ≈ 110–
 ## Risks that coding hours alone don't retire
 
 - **AI features** (subject / sky / people masks, generative remove) need model weights with
-  licences we can ship; classical fallbacks first. No permissively licensed sky-segmentation or
-  raw-denoise model was found; we may need to train our own.
+  licences we can ship; classical fallbacks first. No permissively licensed sky-segmentation
+  model was found; we may need to train our own. For raw denoise, RawNIND's author licenses its
+  weights under CC BY 4.0 as well as GPL-3.0 (upstream #1760), so the Bayer model can be offered with credit.
 - **Camera colour and lens data** is a data problem: we never use Adobe's matrices, DCPs or LCPs
   (aggregate fits to Lightroom's output images of contributors' own photos are allowed, 2026-10-25).
   DNG-embedded data first, then our own calibration; long-tail coverage grows over time and needs
@@ -110,6 +111,7 @@ calibration: M0–M13 took ≈ 25 active hours against an estimate of ≈ 110–
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | patch | AI risks: a raw-denoise model with a licence we can ship exists (RawNIND, CC BY 4.0 as well as GPL-3.0, upstream #1760); sky segmentation still has none |
 | 2026-10-21 | minor | M15 status refreshed: every module built; CMYK printer profiles won't do; Flickr / SmugMug blocked on API keys, tethering on camera hardware |
 | 2026-10-10 | minor | Beta hours 340–600; full ready ~59% in the gate note |
 | 2026-10-10 | minor | Added the Alpha gate table (core-workflow gate from the revised standard): passes, stays alpha |
