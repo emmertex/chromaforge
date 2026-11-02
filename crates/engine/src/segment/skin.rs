@@ -25,7 +25,7 @@ const NOSE_TIP: usize = 1;
 const MOUTH_CORNERS: [usize; 2] = [61, 291];
 /// Long edge of the picture the models are given.
 #[cfg_attr(not(feature = "sam"), allow(dead_code))]
-const INPUT_EDGE: usize = 1024;
+pub(super) const INPUT_EDGE: usize = 1024;
 /// Analyses kept for the session (undo, redo, switching area back and forth).
 #[cfg_attr(not(feature = "sam"), allow(dead_code))]
 const CACHE: usize = 16;
@@ -185,7 +185,7 @@ pub(crate) fn analysis_of(area: SkinArea, person: u32, orientation: Orientation,
 }
 
 /// Photo ids whose settings `op` sets (batches nested at most 16 deep).
-fn developed(op: &Op, out: &mut Vec<PhotoId>, depth: usize) {
+pub(super) fn developed(op: &Op, out: &mut Vec<PhotoId>, depth: usize) {
     match op {
         Op::SetDevelop { id, .. } if !out.contains(id) => out.push(*id),
         Op::Batch { ops } if depth < 16 => ops.iter().for_each(|o| developed(o, out, depth + 1)),
@@ -194,17 +194,20 @@ fn developed(op: &Op, out: &mut Vec<PhotoId>, depth: usize) {
 }
 
 /// Settings `d` as the models see the photo: its look without masks or Smooth Skin.
-fn model_look(d: &DevelopSettings) -> DevelopSettings {
+pub(super) fn model_look(d: &DevelopSettings) -> DevelopSettings {
     let mut d = d.clone();
     d.masks.clear();
     d.skin = SkinSmoothing::default();
     d.skin_analysis = None;
+    // (nor the retouch of people's parts: the models see the people as they are)
+    d.retouch = Default::default();
+    d.retouch_analysis = None;
     d
 }
 
 /// The models, loaded once and kept (a new one is loaded when its folder changes).
 #[cfg(feature = "sam")]
-mod loaded {
+pub(super) mod loaded {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, PoisonError};
 
@@ -444,6 +447,8 @@ impl Session {
         if !super::Segmenter::AVAILABLE {
             return;
         }
+        // (and the Retouch parts: Teeth)
+        self.retouch_after(op);
         let mut ids = Vec::new();
         developed(op, &mut ids, 0);
         for id in ids {
@@ -475,6 +480,7 @@ impl Session {
 
     /// Apply the background skin requests that finished (called by [`Session::segment_poll`]).
     pub(crate) fn skin_poll(&mut self, polled: &mut super::Polled) {
+        self.retouch_poll(polled);
         #[cfg(feature = "sam")]
         {
             let done: Vec<SkinDone> = match &self.segmenter.skin.results {

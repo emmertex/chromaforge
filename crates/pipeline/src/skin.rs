@@ -155,7 +155,7 @@ pub(crate) fn fast_exp2(x: f32) -> f32 {
 /// Log luminance and log colour ratios of a scene-linear pixel; `None` for pixels the bands
 /// can't describe (not finite, or a channel at or below zero: out of gamut).
 #[inline]
-fn to_lab(p: [f32; 3]) -> Option<[f32; 3]> {
+pub(crate) fn to_lab(p: [f32; 3]) -> Option<[f32; 3]> {
     let [r, g, b] = p;
     if !(r > 0.0 && g > 0.0 && b > 0.0 && r.is_finite() && g.is_finite() && b.is_finite()) {
         return None;
@@ -168,7 +168,7 @@ fn to_lab(p: [f32; 3]) -> Option<[f32; 3]> {
 /// `p` with its log luminance moved by `dl` and its log colour ratios by `da`, `db` (all zero:
 /// `p` exactly).
 #[inline]
-fn shifted(p: [f32; 3], dl: f32, da: f32, db: f32) -> [f32; 3] {
+pub(crate) fn shifted(p: [f32; 3], dl: f32, da: f32, db: f32) -> [f32; 3] {
     let [r, g, b] = p;
     let y = KR * r + KG * g + KB * b;
     let (rg, bg) = (r / g * fast_exp2(da), b / g * fast_exp2(db));

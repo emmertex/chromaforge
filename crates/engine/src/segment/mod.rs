@@ -18,6 +18,7 @@
 #[cfg(feature = "sam")]
 mod download;
 pub mod models;
+mod parts;
 mod skin;
 pub mod subject;
 #[cfg(feature = "sam")]
@@ -146,6 +147,8 @@ pub struct Segmenter {
     messages: Vec<String>,
     /// Smooth Skin and Find Blemishes requests ([`skin`]).
     pub(crate) skin: skin::SkinJobs,
+    /// Retouch ▸ Teeth requests ([`parts`]).
+    pub(crate) parts: parts::RetouchJobs,
     #[cfg(feature = "sam")]
     worker: worker::Worker,
     #[cfg(feature = "sam")]
@@ -170,6 +173,7 @@ impl Default for Segmenter {
             pending: None,
             messages: Vec::new(),
             skin: skin::SkinJobs::default(),
+            parts: parts::RetouchJobs::default(),
             #[cfg(feature = "sam")]
             worker: worker::Worker::default(),
             #[cfg(feature = "sam")]

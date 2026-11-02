@@ -540,6 +540,26 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.calibration.blue_sat = 60.0;
             s.calibration.blue_hue = 25.0;
         }),
+        ("retouch teeth (cpu stage)", |s| {
+            // teeth found over the middle of the frame: the GPU reads its scene-linear image back
+            // for the retouch (lcc_pipeline::retouch_people), so both renderers run the same code
+            let side = 64;
+            let logits: Vec<f32> = (0..side * side)
+                .map(|i| {
+                    let (x, y) = ((i % side) as f64 / side as f64, (i / side) as f64 / side as f64);
+                    if (x - 0.5).hypot(y - 0.5) < 0.25 { 10.0 } else { -10.0 }
+                })
+                .collect();
+            s.retouch.teeth = lcc_develop::RetouchTeeth { person: 0, whiten: 80.0, brighten: 60.0 };
+            s.retouch_analysis = Some(lcc_develop::RetouchAnalysis {
+                orientation: Orientation::Normal,
+                masks: vec![lcc_develop::RetouchMask {
+                    part: lcc_develop::RetouchPart::Teeth,
+                    person: 0,
+                    seg: Some(lcc_develop::SegMask::from_logits(side, &logits)),
+                }],
+            });
+        }),
         ("spots + defringe (cpu stage)", |s| {
             s.spots = vec![Spot { points: vec![Point::new(0.3, 0.3)], size: 0.03, source_offset: Some(Point::new(0.1, 0.0)), ..Default::default() }];
             s.optics.defringe_purple_amount = 5.0;

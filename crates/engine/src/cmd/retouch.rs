@@ -1,4 +1,5 @@
-//! Portrait retouching: Find Blemishes (`spot.findBlemishes`) and Smooth Skin (`skin.*`). Ported from OneSlips.
+//! Portrait retouching: Find Blemishes (`spot.findBlemishes`), Smooth Skin (`skin.*`) and the other
+//! Retouch sections (`retouch.*`: Teeth). Ported from OneSlips.
 //!
 //! Both work from the skin and faces the open MediaPipe models find ([`crate::segment::SkinFound`]):
 //! Find Blemishes adds a heal spot on each small dark or red spot of the faces' skin (and of the
@@ -6,7 +7,8 @@
 //! Heal spots are applied before Smooth Skin, so it smooths the healed skin. In the desktop app the
 //! models run in the background; elsewhere the commands wait.
 
-use lcc_develop::{DevelopSettings, SkinArea, SkinSmoothing, Spot, SpotMode};
+use lcc_develop::retouch::{SLIDERS as RETOUCH_SLIDERS, person_control};
+use lcc_develop::{DevelopSettings, Retouch, SkinArea, SkinSmoothing, Spot, SpotMode};
 use lcc_geom::Point;
 use lcc_pipeline::blemish::{self, FaceBox, Options};
 use serde_json::{Value, json};
@@ -279,6 +281,153 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, _| {
                 let id = active(s, "skin.status")?;
                 Ok(status(s, id))
+            }
+        ),
+    ]
+}
+
+/// Where the Retouch sections stand on photo `id`, for `retouch.status` and the commands' replies.
+fn retouch_status(s: &Session, id: PhotoId) -> Value {
+    let Some(d) = s.develop_of(id) else { return Value::Null };
+    let a = d.retouch_analysis.as_ref().filter(|a| a.orientation == d.orientation);
+    let mut sections = serde_json::Map::new();
+    for key in Retouch::SECTIONS {
+        let parts: Vec<Value> = d
+            .retouch
+            .section_parts(key)
+            .into_iter()
+            .map(|r| {
+                let found = a.and_then(|a| a.mask(r)).map(|m| m.seg.is_some());
+                json!({"part": r.part, "person": r.person, "found": found})
+            })
+            .collect();
+        let mut v = json!({
+            "active": d.retouch.section_active(key),
+            "on": d.retouch_section_on(key),
+            "person": lcc_develop::controls::get(&d, &person_control(key)).unwrap_or(0.0),
+            "parts": parts,
+        });
+        for (sec, param, control) in RETOUCH_SLIDERS {
+            if *sec == key {
+                v[*param] = json!(lcc_develop::controls::get(&d, control).unwrap_or(0.0));
+            }
+        }
+        sections.insert(key.to_string(), v);
+    }
+    json!({"sections": sections, "looking": s.retouch_pending(id)})
+}
+
+/// Apply `f` to the active photo's settings (one undo step; the commit finds the parts it wants).
+/// What kept them from being found (a model to download) is the reply's `error`.
+fn retouch_edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettings)) -> Result<Value> {
+    let id = active(s, c)?;
+    let mut d = (*s.develop_of(id).ok_or_else(|| bad(c, "no such photo"))?).clone();
+    f(&mut d);
+    s.set_develop(id, d, label)?;
+    let error = s.retouch_ensure(id, false).err();
+    let mut v = retouch_status(s, id);
+    if let Some(e) = error {
+        v["error"] = json!(e.to_string());
+    }
+    Ok(v)
+}
+
+/// The section `retouch.*` commands name (`section`), checked.
+fn section_param<'a>(c: &str, p: &'a Value) -> Result<&'a str> {
+    let key = str_param(p, "section").ok_or_else(|| bad(c, "missing `section`"))?;
+    if Retouch::SECTIONS.contains(&key) { Ok(key) } else { Err(bad(c, format!("unknown section `{key}` ({})", Retouch::SECTIONS.join(", ")))) }
+}
+
+/// `retouch.*`: the Retouch sections beyond Skin (Teeth).
+pub fn retouch_specs() -> Vec<CommandSpec> {
+    vec![
+        cmd!(
+            "retouch.set",
+            "Set Retouch",
+            [],
+            None,
+            "{section: teeth, person?: 0 (everyone) | 1..4 (counted from the left by their face), …the section's sliders: teeth {whiten?: 0..100, brighten?: 0..100}} — change one Retouch section of the active photo (one undo step); the sliders are also develop controls (`retouch.teethWhiten`, `retouch.teethBrighten`, `retouch.teethPerson`). The parts it needs are found with the open MediaPipe models (in the background in the desktop app) → retouch.status",
+            has_active,
+            |s, p| {
+                let c = "retouch.set";
+                let key = section_param(c, p)?;
+                let person = match p.get("person") {
+                    Some(v) => Some(
+                        v.as_u64().filter(|n| *n <= u64::from(Retouch::MAX_PERSON)).ok_or_else(|| bad(c, "`person` is 0 (everyone) or 1 to 4"))?,
+                    ),
+                    None => None,
+                };
+                retouch_edit(s, c, "Retouch", |d| {
+                    for (sec, param, control) in RETOUCH_SLIDERS {
+                        if *sec == key
+                            && let Some(x) = p.get(*param).and_then(Value::as_f64).filter(|x| x.is_finite())
+                        {
+                            lcc_develop::controls::set(d, control, x);
+                        }
+                    }
+                    if let Some(n) = person {
+                        lcc_develop::controls::set(d, &person_control(key), n as f64);
+                    }
+                })
+            }
+        ),
+        cmd!(
+            "retouch.off",
+            "Turn Off Retouch",
+            [],
+            None,
+            "{section?: teeth} — set one Retouch section of the active photo (or, without `section`, every one but Skin) back to zero, keeping its person (one undo step) → retouch.status",
+            has_active,
+            |s, p| {
+                let c = "retouch.off";
+                let only = if p.get("section").is_some() { Some(section_param(c, p)?) } else { None };
+                retouch_edit(s, c, "Turn Off Retouch", |d| {
+                    for (sec, _, control) in RETOUCH_SLIDERS {
+                        if only.is_none_or(|k| k == *sec) {
+                            lcc_develop::controls::set(d, control, 0.0);
+                        }
+                    }
+                })
+            }
+        ),
+        cmd!(
+            "retouch.find",
+            "Find Retouch Parts",
+            [],
+            None,
+            "{} — look again for the parts the active photo's Retouch sections work on (after installing the models, or when the first try failed). In the desktop app it runs in the background → retouch.status",
+            has_active,
+            |s, _| {
+                let c = "retouch.find";
+                let id = active(s, c)?;
+                let d = s.develop_of(id).ok_or_else(|| bad(c, "no such photo"))?;
+                s.skin_models().map_err(|e| wrap(c, e))?;
+                if d.retouch_analysis.is_some() {
+                    // forget what was found, without an undo step: the next analysis replaces it
+                    let mut dd = (*d).clone();
+                    dd.retouch_analysis = None;
+                    let edited = s.catalog.photo(id).and_then(|ph| ph.edited.clone());
+                    let op = lcc_catalog::Op::SetDevelop { id, settings: std::sync::Arc::new(dd), label: "Find Teeth".into(), edited };
+                    s.apply_unrecorded(op)?;
+                }
+                let error = s.retouch_ensure(id, true).err();
+                let mut v = retouch_status(s, id);
+                if let Some(e) = error {
+                    v["error"] = json!(e.to_string());
+                }
+                Ok(v)
+            }
+        ),
+        cmd!(
+            query "retouch.status",
+            "Retouch Status",
+            [],
+            None,
+            "{} → {sections: {teeth: {active, on, person, whiten, brighten, parts: [{part, person, found: true|false|null (not looked for yet)}]}}, looking} for the active photo",
+            has_active,
+            |s, _| {
+                let id = active(s, "retouch.status")?;
+                Ok(retouch_status(s, id))
             }
         ),
     ]

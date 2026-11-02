@@ -239,6 +239,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(crop_aspects::specs());
         v.extend(masks::specs());
         v.extend(retouch::specs());
+        v.extend(retouch::retouch_specs());
         v.extend(genfill::specs());
         v.extend(organize::specs());
         v.extend(keywords::specs());

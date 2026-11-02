@@ -1001,9 +1001,10 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
     if !lcc_pipeline::skin_needs_cpu(s) {
         return img;
     }
-    // Smooth Skin: the CPU's (the same code renders both, so they match)
+    // Smooth Skin and the retouch of people's parts (Teeth): the CPU's (the same code renders
+    // both, so they match; documented in docs/gpu-pipeline.md)
     let mut host_img = cx.read_rgb(&img, w, h);
-    lcc_pipeline::skin::apply(&mut host_img, s, &plan.frame, plan.px_per_long);
+    lcc_pipeline::retouch_people(&mut host_img, s, &plan.frame, plan.px_per_long);
     let buf = cx.gpu.upload(rgb_words(&host_img));
     host.lin = Some(Arc::new(host_img));
     buf

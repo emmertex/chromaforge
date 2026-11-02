@@ -380,7 +380,7 @@ impl SegGrid {
         Some([self.r[0] + x0 as f64 / s * rw, self.r[1] + y0 as f64 / s * rh, self.r[0] + x1 as f64 / s * rw, self.r[1] + y1 as f64 / s * rh])
     }
 
-    fn contains(&self, n: Point) -> bool {
+    pub(crate) fn contains(&self, n: Point) -> bool {
         n.x >= self.r[0] && n.x <= self.r[2] && n.y >= self.r[1] && n.y <= self.r[3]
     }
 

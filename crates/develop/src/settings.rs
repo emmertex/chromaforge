@@ -315,6 +315,14 @@ pub struct DevelopSettings {
     /// settings group, so copy, paste, sync and presets never carry it).
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     pub skin_analysis: Option<SkinAnalysis>,
+    /// The Retouch sections beyond Smooth Skin (Teeth). Not written while off, so settings without
+    /// it keep their JSON and `hash64`.
+    #[serde(skip_serializing_if = "crate::Retouch::is_default", deserialize_with = "lenient")]
+    pub retouch: crate::Retouch,
+    /// The parts of people the models found for them on this photo (its own data, like
+    /// `skin_analysis`: in no settings group).
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub retouch_analysis: Option<crate::RetouchAnalysis>,
     /// Sensor repairs made on the raw data before it is developed (hot, dead and stuck pixels). Not written while
     /// it is the default (on), so settings from before it existed keep their JSON and hash.
     #[serde(skip_serializing_if = "Sensor::is_default")]
@@ -413,6 +421,8 @@ impl Default for DevelopSettings {
             calibration: Calibration::default(),
             skin: SkinSmoothing::default(),
             skin_analysis: None,
+            retouch: crate::Retouch::default(),
+            retouch_analysis: None,
             sensor: Sensor::default(),
             disabled_sections: Vec::new(),
             plugin_filters: Vec::new(),

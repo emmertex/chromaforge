@@ -235,7 +235,10 @@ walks the drive.
 - Per-stage hybrid: defringe and spot removal (rare, CPU-only for now) download the resampled image,
   run on the CPU and upload; heuristic mask shapes (Sky, Subject, Background, …) and brushes of more
   than 4096 dabs are evaluated on the CPU and uploaded; sources over the buffer limit are resampled
-  on the CPU.
+  on the CPU. Smooth Skin and Retouch ▸ Teeth (`lcc_pipeline::retouch_people`) read the
+  noise-reduced scene-linear image back, run the CPU's code and upload it again, so the two renderers
+  match by construction (`gpu_matches_cpu` case `retouch teeth (cpu stage)`); they are per-pixel
+  inside small masks, so a kernel of their own was not worth a second implementation yet.
 - Stage cache: `GpuStages` mirrors `StageCache` (same keys: source identity + `geo`, `lin_key`,
   per-plane radii) and lives in it as an extension, so the UI needs no change. The uploaded source is
   kept per view. A tone / colour / exposure drag re-runs one dispatch of `finish` plus the readback.
