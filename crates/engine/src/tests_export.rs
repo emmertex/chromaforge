@@ -1822,7 +1822,7 @@ fn an_export_encodes_outside_its_renders() {
     }
     let o = ExportOptions::from_json(&json!({"longEdge": 256, "hdr": true, "quality": 90}));
     let before = crate::export::ENCODES_IN_TURN.load(Ordering::Relaxed);
-    let files = crate::export::export_batch_lanes(&mut s, &ids, &o, 2).unwrap();
+    let files = crate::export::export_batch_lanes(&mut s, &ids, &o, 2, false).unwrap();
     assert_eq!(files.len(), 3, "{files:?}");
     assert!(files.iter().all(|f| f.get("error").is_none()), "{files:?}");
     assert_eq!(crate::export::ENCODES_IN_TURN.load(Ordering::Relaxed), before, "no encode inside a photo's renders");
@@ -1852,7 +1852,7 @@ fn photos_side_by_side_overlap_on_one_gpu_turn() {
             s.media.forget(id);
         }
         let t = std::time::Instant::now();
-        let files = crate::export::export_batch_lanes(&mut s, &batch, &o, lanes).unwrap();
+        let files = crate::export::export_batch_lanes(&mut s, &batch, &o, lanes, false).unwrap();
         assert!(files.iter().all(|f| f.get("error").is_none() && f.get("gpuFallback").is_none()), "{files:?}");
         t.elapsed().as_secs_f64()
     };
@@ -1912,3 +1912,37 @@ fn a_cancelled_export_stops_within_a_second() {
     assert!(files.len() < 12 && written == files.len(), "{} files, {written} written", files.len());
 }
 
+
+/// The GPU and the processor at once: with one export at a time on the card and the processor
+/// rendering the photos it has no room for, every photo comes out and none fails. Prints the time
+/// against the GPU alone.
+#[test]
+fn exports_render_on_the_gpu_and_the_processor_at_once() {
+    if !lcc_gpu::available() {
+        lcc_testkit::skip!(Gpu, "no GPU adapter ({})", lcc_gpu::unavailable_reason().unwrap_or_default());
+        return;
+    }
+    let mut s = Session::with_demo();
+    let ids: Vec<_> = s.catalog.photos().map(|p| p.id).take(4).collect();
+    for &id in &ids {
+        hdr_export_settings(&mut s, id);
+    }
+    let batch: Vec<_> = ids.iter().copied().cycle().take(8).collect();
+    let o = ExportOptions::from_json(&json!({"longEdge": 3000, "hdr": true, "quality": 90}));
+    lcc_gpu::set_batch_limits(None, Some(1));
+    let mut run = |mix: bool| {
+        for &id in &ids {
+            s.media.forget(id);
+        }
+        let t = std::time::Instant::now();
+        let files = crate::export::export_batch_lanes(&mut s, &batch, &o, 4, mix).unwrap();
+        assert_eq!(files.len(), 8);
+        assert!(files.iter().all(|f| f.get("error").is_none()), "{files:?}");
+        t.elapsed().as_secs_f64()
+    };
+    run(false); // warm up
+    let gpu = run(false);
+    let both = run(true);
+    lcc_gpu::set_batch_limits(None, None);
+    eprintln!("8 HDR exports, 4 lanes: GPU alone {gpu:.2} s, GPU + processor {both:.2} s");
+}

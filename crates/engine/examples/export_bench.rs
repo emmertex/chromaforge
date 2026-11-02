@@ -6,7 +6,8 @@
 //! `cargo run --release -p lcc-engine --example export_bench -- [--cpu] [--sdr] [--plain]
 //! [--lanes N] [--runs N] [--gpu-jobs N] [--gpu-mb MB] [--long-edge PX] [--limit-kb KB] FILES…`
 //!
-//! - `--cpu`: no GPU (as after a device failure); `--sdr`: plain JPEGs, no gain map; `--plain`:
+//! - `--cpu`: no GPU (as after a device failure); `--mix`: photos the busy GPU has no turn for
+//!   render on the processor; `--sdr`: plain JPEGs, no gain map; `--plain`:
 //!   no masks; `--lanes N`: photos side by side (default: the app's choice);
 //!   `--gpu-jobs N`, `--gpu-mb MB`: the batch limits at the GPU; `--long-edge PX`, `--limit-kb KB`:
 //!   resize and "Limit file size" as in the Export dialog.
@@ -89,6 +90,7 @@ fn main() {
         lcc_engine::export::set_export_lanes(Some(n));
     }
     let gpu = !flag("--cpu");
+    lcc_engine::export::set_export_mix(flag("--mix"));
     lcc_engine::gpu::set_enabled(gpu);
     let hdr = !flag("--sdr");
     let mut session = lcc_engine::Session::new().with_fs();

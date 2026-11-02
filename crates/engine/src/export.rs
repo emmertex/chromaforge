@@ -2114,6 +2114,9 @@ pub struct PreparedExport {
     /// Estimated working memory of [`Self::run`] (bytes), held from [`crate::memory::export_gate`]
     /// while it runs beside other photos of a batch.
     weight: usize,
+    /// When the GPU is busy with other photos it renders on the processor instead of waiting
+    /// ([`export_mix`] when it was prepared).
+    mix: bool,
 }
 
 struct RenderWork {
@@ -2191,7 +2194,7 @@ fn prepare_guarded(
         };
         // a decoded frame, its graded copy and the pipeline's planes, plus the encoder's frames
         let weight = px.saturating_mul(96);
-        return Ok(PreparedExport { photo: id, file_name, source_dir, work: Work::Video(Box::new(work)), guard, weight });
+        return Ok(PreparedExport { photo: id, file_name, source_dir, work: Work::Video(Box::new(work)), guard, weight, mix: false });
     }
     // HDR output only for photos edited in HDR; the rest of the batch exports as usual
     let sdr_opts;
@@ -2246,7 +2249,7 @@ fn prepare_guarded(
         };
         (work, weight)
     };
-    Ok(PreparedExport { photo: id, file_name, source_dir, work, guard, weight })
+    Ok(PreparedExport { photo: id, file_name, source_dir, work, guard, weight, mix: export_mix() })
 }
 
 /// The folder a photo's original is in, for [`DestinationMode::SameAsOriginal`]. None for a demo
@@ -2320,6 +2323,7 @@ impl PreparedExport {
     pub fn run_until(self, stop: &dyn Fn() -> bool) -> Result<Exported, String> {
         let check = || if stop() { Err(CANCELLED.to_string()) } else { Ok(()) };
         let file_name = self.file_name;
+        let mix = self.mix;
         match self.work {
             Work::Video(w) => {
                 let out = crate::export_video::run(*w)?;
@@ -2386,7 +2390,23 @@ impl PreparedExport {
                     };
                     Ok((r, hdr, gpu_fallback))
                 };
-                let (r, hdr, gpu_fallback) = if one_turn { lcc_gpu::in_one_turn(src_px, out_px, renders) } else { renders() }?;
+                let (r, hdr, gpu_fallback) = if mix {
+                    // the GPU and the processor at once: this photo takes the GPU when it is free,
+                    // else it renders on the processor rather than wait
+                    match lcc_gpu::try_batch_turn(src_px, out_px) {
+                        Some(_turn) => renders(),
+                        None => {
+                            if lcc_pipeline::profiling() {
+                                eprintln!("  export: the GPU is busy: rendering on the processor");
+                            }
+                            lcc_gpu::on_cpu(renders)
+                        }
+                    }
+                } else if one_turn {
+                    lcc_gpu::in_one_turn(src_px, out_px, renders)
+                } else {
+                    renders()
+                }?;
                 // 3. The encode, on this lane's thread after its turn (the next photo renders meanwhile)
                 check()?;
                 let bytes = match &hdr {
@@ -2689,8 +2709,11 @@ pub fn run_batch_cancellable(
 }
 
 /// [`export_batch`] with `lanes` photos side by side and nothing written (measurements, tests).
-pub(crate) fn export_batch_lanes(session: &mut crate::Session, ids: &[lcc_catalog::PhotoId], o: &ExportOptions, lanes: usize) -> Result<Vec<serde_json::Value>, String> {
-    let items = prepare_batch(session, ids, o)?;
+pub(crate) fn export_batch_lanes(session: &mut crate::Session, ids: &[lcc_catalog::PhotoId], o: &ExportOptions, lanes: usize, mix: bool) -> Result<Vec<serde_json::Value>, String> {
+    let mut items = prepare_batch(session, ids, o)?;
+    for it in &mut items {
+        it.mix = mix;
+    }
     let to = Destination::default();
     let mut write = |_: &str, _: &[u8]| Ok(());
     let lanes = lanes.clamp(1, MAX_EXPORT_LANES).min(items.len().max(1));
@@ -2767,6 +2790,21 @@ fn note_encode() {
     if IN_RENDERS.try_with(|c| c.get() > 0).unwrap_or(false) {
         ENCODES_IN_TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Exports render on the processor too while the GPU is busy with other photos. Off by default
+/// (OneSlips' "Test my machine" turns it on where it measured it faster; it is not on main yet).
+static EXPORT_MIX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Let photos of an export render on the processor while the GPU renders others ([`export_mix`]).
+pub fn set_export_mix(on: bool) {
+    EXPORT_MIX.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether exports use the processor and the GPU at once ([`set_export_mix`], or
+/// `<PREFIX>_EXPORT_MIX=1` for measurements).
+pub fn export_mix() -> bool {
+    EXPORT_MIX.load(std::sync::atomic::Ordering::Relaxed) || lcc_brand::env("EXPORT_MIX").is_some_and(|v| v.trim() == "1")
 }
 
 /// Working memory a gain map JPEG adds per output pixel ([`encode_gain_map_jpeg`]): the float HDR

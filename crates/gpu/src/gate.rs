@@ -93,6 +93,55 @@ pub(crate) fn as_batch<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// A turn taken without waiting ([`try_turn`]): this thread's renders run in it until it is
+/// dropped, as inside [`in_one_turn`].
+pub(crate) struct Turn {
+    _permit: Option<Permit>,
+    was: bool,
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        let was = self.was;
+        let _ = IN_TURN.try_with(|c| c.set(was));
+    }
+}
+
+/// [`in_one_turn`]'s turn if it is free now; `None` when it would have to wait for other
+/// exports (the caller renders on the CPU instead: exports on the GPU and the processor at once).
+/// Outside batch work, and inside a turn already taken, always a turn.
+pub(crate) fn try_turn(bytes: u64, vram: u64) -> Option<Turn> {
+    let was = IN_TURN.try_with(|c| c.get()).unwrap_or(false);
+    if !is_batch() || was {
+        return Some(Turn { _permit: None, was });
+    }
+    let permit = enter(bytes, vram, &|| true)?;
+    let _ = IN_TURN.try_with(|c| c.set(true));
+    Some(Turn { _permit: Some(permit), was })
+}
+
+thread_local! {
+    /// This thread's renders stay on the CPU ([`on_cpu`]).
+    static CPU_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with this thread's renders on the CPU (the GPU is busy with other photos).
+pub(crate) fn on_cpu<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = CPU_ONLY.try_with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(CPU_ONLY.with(|c| c.replace(true)));
+    f()
+}
+
+/// Whether this thread's renders stay on the CPU ([`on_cpu`]).
+pub(crate) fn cpu_only() -> bool {
+    CPU_ONLY.try_with(|c| c.get()).unwrap_or(false)
+}
+
 /// Are this thread's renders batch work?
 pub(crate) fn is_batch() -> bool {
     BATCH.try_with(|b| b.get()).unwrap_or(false)
@@ -317,6 +366,33 @@ mod tests {
         });
         assert_eq!(usage().0, 0);
         set_limits(None, None);
+    }
+
+    #[test]
+    fn a_turn_is_taken_only_when_free() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_limits(Some(10 << 30), Some(1));
+        as_batch(|| {
+            let t = try_turn(1 << 20, 0).expect("free");
+            assert_eq!(usage().0, 1);
+            // the renders inside it don't queue again
+            assert!(enter(1 << 20, 0, &|| true).is_some());
+            assert_eq!(usage().0, 1);
+            // another thread's photo finds it taken: no waiting
+            let other = std::thread::spawn(|| as_batch(|| try_turn(1 << 20, 0).is_none())).join().unwrap();
+            assert!(other, "taken: the other photo renders on the CPU");
+            drop(t);
+            assert_eq!(usage().0, 0);
+            assert!(!IN_TURN.with(|c| c.get()));
+        });
+        set_limits(None, None);
+    }
+
+    #[test]
+    fn renders_on_the_cpu_stay_there_inside_and_not_after() {
+        assert!(!cpu_only());
+        on_cpu(|| assert!(cpu_only()));
+        assert!(!cpu_only());
     }
 
     #[test]

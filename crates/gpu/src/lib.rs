@@ -95,6 +95,45 @@ pub fn in_one_turn<R>(src_px: usize, out_px: usize, f: impl FnOnce() -> R) -> R 
     }
 }
 
+/// A photo's turn at the GPU taken by [`try_batch_turn`], held until dropped.
+pub struct BatchTurn {
+    #[cfg(not(target_arch = "wasm32"))]
+    _turn: Option<gate::Turn>,
+}
+
+/// [`in_one_turn`]'s turn for a photo of `src_px` source and `out_px` output pixels, if it is free
+/// now: its renders then run in it until the result is dropped. `None` when it would have to
+/// wait for other exports: the caller renders the photo on the CPU instead ([`on_cpu`]), so the
+/// processor and the GPU export photos at once. Without a device (or outside batch work) there
+/// is nothing to wait for: always a turn.
+pub fn try_batch_turn(src_px: usize, out_px: usize) -> Option<BatchTurn> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(g) = existing_device().filter(|_| enabled()) else { return Some(BatchTurn { _turn: None }) };
+        let vram = g.vram.unwrap_or(g.max_buffer);
+        let bytes = gate::job_bytes(src_px, out_px).saturating_add((out_px as u64).saturating_mul(16));
+        gate::try_turn(bytes, vram).map(|t| BatchTurn { _turn: Some(t) })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (src_px, out_px);
+        Some(BatchTurn {})
+    }
+}
+
+/// Run `f` with this thread's renders on the CPU ([`try_render`] doesn't try the GPU): a photo
+/// whose turn at a busy GPU isn't free.
+pub fn on_cpu<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        gate::on_cpu(f)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        f()
+    }
+}
+
 /// Batch renders don't start for `d` from now: the window needs the GPU. Renders already running
 /// finish.
 pub fn hold_batch(d: std::time::Duration) {
@@ -726,7 +765,7 @@ fn try_render_with(
         let s: &DevelopSettings = &effective;
         let device_proof = req.proof.is_some_and(|p| lcc_pipeline::proof_profile(p.profile).is_some());
         // pixel-filter plug-ins run in the CPU pipeline
-        if !allowed() || !handles(req.depth, device_proof, req.overlay) || lcc_pipeline::plugin_filters::any_active(s) {
+        if !allowed() || gate::cpu_only() || !handles(req.depth, device_proof, req.overlay) || lcc_pipeline::plugin_filters::any_active(s) {
             return Err(Fallback::NotTried);
         }
         let s = &*lcc_pipeline::settings_for(s, req);
