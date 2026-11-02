@@ -2272,4 +2272,15 @@ fn a_selected_people_component_offers_who_it_is_about() {
     let done = exec(&mut h, "masks.recompute", json!({}));
     assert!(done["photos"][0]["notes"].as_array().is_some_and(|n| n.iter().any(|t| t.as_str().is_some_and(|t| t.contains("Alex")))), "{done}");
     assert!(matches!(develop(&h).masks[0].components[0].shape, MaskShape::People { person: 0, who: Some(_), .. }));
+    // Set Role: a role for this folder, and the component is about it
+    click(&mut h, "button:maskSetRole");
+    h.app.ui.role_draft = Some(("Bride".into(), "Sam".into()));
+    h.step();
+    h.step();
+    click(&mut h, "button:maskRoleSet");
+    let roles = exec(&mut h, "people.roles", json!({}));
+    assert!(roles["here"].as_array().is_some_and(|r| r.iter().any(|b| b["role"] == "Bride" && b["person"] == "Sam")), "{roles}");
+    assert!(
+        matches!(&develop(&h).masks[0].components[0].shape, MaskShape::People { who: Some(lcc_develop::recipe::Who::Role(r)), .. } if r == "Bride")
+    );
 }

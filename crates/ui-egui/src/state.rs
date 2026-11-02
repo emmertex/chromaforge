@@ -1187,6 +1187,9 @@ pub struct UiState {
     pub detail_due: Option<(f64, u32)>,
     /// A mask component being renamed inline: (mask id, component index, name).
     pub renaming_component: Option<(u32, usize, String)>,
+    /// The Set Role row under a People component, while open: (role, person).
+    #[serde(skip)]
+    pub role_draft: Option<(String, String)>,
     /// Close the window on the next frame (File → Quit).
     #[serde(skip)]
     pub quit: bool,
@@ -1989,6 +1992,7 @@ impl Default for UiState {
             detail_due: None,
             sam_downloading: false,
             renaming_component: None,
+            role_draft: None,
             quit: false,
             dragging_photos: None,
             reveal_album: None,

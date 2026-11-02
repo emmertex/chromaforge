@@ -1087,7 +1087,40 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
             }
         });
         register(ui.ctx(), format!("maskWho:{comp}"), r.response.rect);
+        let open = app.ui.role_draft.is_some();
+        if text_button(ui, "maskSetRole", tr("Set Role…"), open).clicked() {
+            app.ui.role_draft = if open { None } else { Some((String::new(), names.first().cloned().unwrap_or_default())) };
+        }
     });
+    // who has a role in this shoot (the photo's folder): "Bride" is Sam here
+    let mut set: Option<(String, String)> = None;
+    if let Some((role, person)) = app.ui.role_draft.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            crate::text_field::TextField::singleline("maskRoleName", role).hint(tr("Role")).width(110.0).show(ui);
+            crate::text_field::TextField::singleline("maskRolePerson", person).hint(tr("Person")).width(110.0).show(ui);
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            let ready = !role.trim().is_empty() && !person.trim().is_empty();
+            if ui.add_enabled_ui(ready, |ui| text_button(ui, "maskRoleSet", tr("Set for This Folder"), false)).inner.clicked() {
+                set = Some((role.trim().to_string(), person.trim().to_string()));
+            }
+        });
+    }
+    if let Some((role, person)) = set {
+        // the photo's folder; a photo outside any folder (demo, a phone import) keeps it to itself
+        let scope = if app.session.photo_context(photo).folder.is_some() { json!("folder") } else { json!({"ids": [photo.0]}) };
+        match app.run("people.setRole", json!({"role": role, "person": person, "id": photo.0, "scope": scope})) {
+            Ok(_) => {
+                app.ui.role_draft = None;
+                let shape = MaskShape::People { person: 0, parts: parts.clone(), who: Some(lcc_develop::recipe::Who::Role(role)) };
+                let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
+                let _ = app.run("masks.recompute", json!({"id": photo.0}));
+            }
+            Err(e) => app.toast(ui.ctx(), e),
+        }
+    }
     if let Some(w) = chosen {
         let shape = MaskShape::People { person: 0, parts: parts.clone(), who: w };
         let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
