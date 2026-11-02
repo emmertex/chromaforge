@@ -525,7 +525,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hot Pixel Map",
             [],
             None,
-            "{body?: bodyKey | \"all\" (default: the active photo's camera body), list?: bool} → {bodies: [{body, label, model, photos, pixels: {confirmed, candidates, hot, dead, stuck, fromDarkFrames}, dustPhotos, dust, list?}], folder, job} — what LightCraft remembers about a camera body's hot, dead and stuck pixels (bodies: the serial number, else file:XX from the file names)",
+            "{body?: bodyKey | \"all\" (default: the active photo's camera body), list?: bool} → {bodies: [{body, label, model, photos, pixels: {confirmed, candidates, hot, dead, stuck, fromDarkFrames}, dustPhotos, dust, list?}], folder, job} — what the app remembers about a camera body's hot, dead and stuck pixels (bodies: the serial number, else file:XX from the file names)",
             always,
             |s, p| status("pixels", s, p)
         ),
@@ -570,7 +570,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sensor Dust Map",
             [],
             None,
-            "{body?: bodyKey | \"all\", list?: bool} → {bodies: [{…, dust: {confirmed, suggested, windows}, list?: [{x, y, confirmed, windows, apertures}]}], job} — the dust LightCraft remembers per camera body (sensor positions, time windows, size per aperture)",
+            "{body?: bodyKey | \"all\", list?: bool} → {bodies: [{…, dust: {confirmed, suggested, windows}, list?: [{x, y, confirmed, windows, apertures}]}], job} — the dust the app remembers per camera body (sensor positions, time windows, size per aperture)",
             always,
             |s, p| status("dust", s, p)
         ),

@@ -1683,7 +1683,16 @@ pub struct Spot {
 
 impl Default for Spot {
     fn default() -> Self {
-        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None, generated: None, auto: None }
+        Self {
+            mode: SpotMode::Remove,
+            points: Vec::new(),
+            size: 0.02,
+            feather: 50.0,
+            opacity: 100.0,
+            source_offset: None,
+            generated: None,
+            auto: None,
+        }
     }
 }
 
@@ -1869,8 +1878,7 @@ impl SkinSmoothing {
     /// Most people Smooth Skin tells apart (Person 1 to 4, as the People mask offers).
     pub const MAX_PERSON: u32 = 4;
     /// The subtle starting point Smooth Skin is switched on with.
-    pub const SUBTLE: SkinSmoothing =
-        SkinSmoothing { amount: 35.0, texture: 0.0, even_tone: 25.0, redness: 20.0, area: SkinArea::Face, person: 0 };
+    pub const SUBTLE: SkinSmoothing = SkinSmoothing { amount: 35.0, texture: 0.0, even_tone: 25.0, redness: 20.0, area: SkinArea::Face, person: 0 };
 
     pub fn is_default(&self) -> bool {
         *self == SkinSmoothing::default()
@@ -1915,7 +1923,7 @@ impl SkinAnalysis {
     }
 }
 
-/// A value that doesn't read (damaged, or from a newer LightCraft) is its default: it costs that
+/// A value that doesn't read (damaged, or from a newer version) is its default: it costs that
 /// value, never the photo's other settings.
 fn lenient<'de, D: serde::Deserializer<'de>, T: Default + serde::de::DeserializeOwned>(d: D) -> Result<T, D::Error> {
     let v = serde_json::Value::deserialize(d)?;

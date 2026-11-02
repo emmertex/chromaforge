@@ -756,7 +756,9 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         let auto = d.spots.iter().filter(|sp| sp.auto.is_some()).count();
         if auto > 0 {
-            ui.label(egui::RichText::new(crate::i18n::tr_format!("{} spot(s) from Remove Dust (outlined in amber)", auto)).size(11.0).color(t.text_dim));
+            ui.label(
+                egui::RichText::new(crate::i18n::tr_format!("{} spot(s) from Remove Dust (outlined in amber)", auto)).size(11.0).color(t.text_dim),
+            );
         }
 
         if d.spots.is_empty() {
@@ -878,7 +880,9 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 ui.spacing_mut().item_spacing.x = 8.0;
 
                 // (Fill, Generative and Even Out spots, and a brushed Remove, have no source)
-                if sp.source_offset.is_some() && !matches!(sp.mode, lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate | lcc_develop::SpotMode::Flat) {
+                if sp.source_offset.is_some()
+                    && !matches!(sp.mode, lcc_develop::SpotMode::Fill | lcc_develop::SpotMode::Generate | lcc_develop::SpotMode::Flat)
+                {
                     let tip_ref = crate::widgets::command_tooltip(ui, "Refresh Source", Some("/"));
                     let r_ref = crate::widgets::icon_button_named(
                         ui,

@@ -40,7 +40,9 @@ fn settings_and_analysis_round_trip() {
 #[test]
 fn the_controls_clamp_their_ranges() {
     let mut s = DevelopSettings::default();
-    for (id, v, want) in [("skin.amount", 150.0, 100.0), ("skin.texture", -300.0, -100.0), ("skin.evenTone", -5.0, 0.0), ("skin.redness", f64::NAN, 0.0)] {
+    for (id, v, want) in
+        [("skin.amount", 150.0, 100.0), ("skin.texture", -300.0, -100.0), ("skin.evenTone", -5.0, 0.0), ("skin.redness", f64::NAN, 0.0)]
+    {
         assert!(controls::set(&mut s, id, v), "{id}");
         assert_eq!(controls::get(&s, id), Some(want), "{id}");
     }

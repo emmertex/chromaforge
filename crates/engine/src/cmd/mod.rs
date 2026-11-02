@@ -85,9 +85,9 @@ mod query;
 mod quick;
 pub mod recheck;
 pub mod reload;
+pub mod sensor;
 mod slideshow;
 pub(crate) mod source;
-pub mod sensor;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tether;

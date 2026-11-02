@@ -1878,12 +1878,8 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
     // Edit In versions (TIFF/PSD with an xmpMM:DerivedFrom link) stack on their source again
     crate::cmd::edit_in::stack_derived(s, &with_xmp);
     if s.import_defaults.remove_dust {
-        let raws: Vec<lcc_catalog::PhotoId> = report
-            .imported
-            .iter()
-            .map(|id| lcc_catalog::PhotoId(*id))
-            .filter(|id| s.catalog.photo(*id).is_some_and(|p| p.develops_raw()))
-            .collect();
+        let raws: Vec<lcc_catalog::PhotoId> =
+            report.imported.iter().map(|id| lcc_catalog::PhotoId(*id)).filter(|id| s.catalog.photo(*id).is_some_and(|p| p.develops_raw())).collect();
         crate::cmd::sensor::remove_dust_after_import(s, raws);
     }
     Ok(report)

@@ -1235,14 +1235,13 @@ fn genfill_mock(args: &[String]) -> Result<(), String> {
             let img: Vec<f32> = rgb.iter().map(|v| f32::from(*v) / 255.0).collect();
             let hole: Vec<bool> = mask.iter().map(|m| *m >= 128).collect();
             let p = lcc_inpaint::CompleteParams { seed: u64::from(var) + 1, ..Default::default() };
-            let out =
-                lcc_inpaint::complete(w, h, 3, &img, &hole, &p).unwrap_or_else(|| lcc_inpaint::membrane_fill(w, h, 3, &img, &hole));
+            let out = lcc_inpaint::complete(w, h, 3, &img, &hole, &p).unwrap_or_else(|| lcc_inpaint::membrane_fill(w, h, 3, &img, &hole));
             out.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect()
         }),
         other => return Err(format!("genfill-mock: --fill patchmatch|mean, not `{other}`")),
     };
-    let server = lcc_genfill::cloud::mock::MockServer::start(port, key.as_deref(), filler)
-        .map_err(|e| format!("genfill-mock: 127.0.0.1:{port}: {e}"))?;
+    let server =
+        lcc_genfill::cloud::mock::MockServer::start(port, key.as_deref(), filler).map_err(|e| format!("genfill-mock: 127.0.0.1:{port}: {e}"))?;
     eprintln!(
         "{} genfill-mock: listening on {} ({fill} fill{}); set {}={} for {}",
         lcc_brand::CLI_BINARY,

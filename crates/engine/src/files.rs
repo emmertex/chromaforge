@@ -1426,8 +1426,9 @@ pub fn fs_pair_loader() -> PairLoader {
 /// interactive loads (the loupe, exports) never wait — they are counted, so background work
 /// yields to them.
 pub fn fs_hooks() -> (FileLoader, FileProbe) {
-    let loader: FileLoader =
-        Arc::new(|path: &str, max_edge: usize, options: LoadOptions| fs_load(path, max_edge, |bytes| load_vec_with(bytes, max_edge, options.at(path))));
+    let loader: FileLoader = Arc::new(|path: &str, max_edge: usize, options: LoadOptions| {
+        fs_load(path, max_edge, |bytes| load_vec_with(bytes, max_edge, options.at(path)))
+    });
     let probe: FileProbe = Arc::new(|path: &str| {
         // a file still being copied in is left for a later scan (issue #123): its name or an open
         // writer says so before anything is read, its own header (below) after

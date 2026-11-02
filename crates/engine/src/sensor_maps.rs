@@ -1,6 +1,6 @@
-//! What LightCraft remembers about each camera body's sensor: its hot, dead and stuck pixels, and the dust on it.
+//! What the app remembers about each camera body's sensor: its hot, dead and stuck pixels, and the dust on it.
 //!
-//! **Where:** one JSON file per body in [`dir`] (`LCC_SENSOR_MAPS`, else `<config>/sensor-maps`), like the
+//! **Where:** one JSON file per body in [`dir`] (`<PREFIX>_SENSOR_MAPS`, else `<config>/sensor-maps`), like the
 //! camera profiles: a sensor belongs to a camera body, not to a library, so a map survives new libraries, re-imports
 //! and removed folders, and one body shooting into several libraries builds one map. The files hold positions,
 //! counts, dates and exposure figures — never image content. A damaged or hostile file is set aside (renamed
@@ -88,7 +88,7 @@ pub fn dir() -> Option<PathBuf> {
     }
     #[cfg(not(test))]
     {
-        std::env::var_os("LCC_SENSOR_MAPS").map(PathBuf::from).or_else(|| crate::config::config_dir().map(|d| d.join("sensor-maps")))
+        lcc_brand::env_os("SENSOR_MAPS").map(PathBuf::from).or_else(|| crate::config::config_dir().map(|d| d.join("sensor-maps")))
     }
 }
 

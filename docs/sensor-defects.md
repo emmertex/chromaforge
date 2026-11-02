@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-10-14 · **Change:** new (LR-PIX-MAP, LR-DUST-AUTO)
 
-LightCraft fixes two things a camera's sensor leaves on photos, and remembers both per camera body:
+Chromaforge fixes two things a camera's sensor leaves on photos, and remembers both per camera body:
 
 - **Hot, dead and stuck pixels** — single photosites that read too bright (hot: grows with exposure time and heat),
   always dark (dead) or always at full scale (stuck). Fixed automatically on the raw data, before demosaic.
@@ -60,7 +60,7 @@ corrected or learnt from that photo.
   inside the range it was seen at; after `max(150, 20 × its hits)` such misses it expires (remapped by a camera
   service, or recovered). Each entry keeps the exposure and ISO range and first/last capture time.
 - **Storage:** one JSON file per body in the settings folder, `<config>/sensor-maps/<body>.json`
-  (`LCC_SENSOR_MAPS` overrides the folder). Settings, not the catalog: a sensor belongs to a camera body, not a
+  (`<PREFIX>_SENSOR_MAPS` overrides the folder). Settings, not the catalog: a sensor belongs to a camera body, not a
   library — the map survives new libraries, re-imports and removed folders, and one body shooting into several
   libraries builds one map. Damaged files are renamed `.bad` and a new map starts. No image content is stored.
 - **Commands:** `camera.pixelMap.status {body?|"all", list?}`, `camera.pixelMap.rebuild {body?, ids?, clear?, wait?}`
@@ -116,7 +116,7 @@ photo alone); with Visualize Spots on they are drawn bolder, to review them agai
 ### Dust maps per body
 
 - Positions are kept in **sensor coordinates**: the developed area before the file's orientation and the user's
-  rotation, 0..1. A portrait shot or a photo turned in LightCraft gets its spots at the right place; crops never
+  rotation, 0..1. A portrait shot or a photo turned in Chromaforge gets its spots at the right place; crops never
   matter (spots live in the uncropped frame). Lens-correction warps are not undone (a few pixels at most).
 - **Confirmed** after 3 photos over 2 different 5-minute periods within one time window.
 - **Time windows:** dust moves when lenses change or the sensor cleans itself. A spot's window extends while it keeps
@@ -139,7 +139,7 @@ photo alone); with Visualize Spots on they are drawn bolder, to review them agai
   and syncing spots copies positions blindly to other photos.
 - Capture One's LCC (a reference shot through a diffuser per lens and aperture) removes dust by flat-field division,
   exactly but only with a calibration shot; it also has single-pixel noise sliders.
-- LightCraft learns both maps from ordinary photos (or a dark frame), re-checks every remembered dust spot on each
+- Chromaforge learns both maps from ordinary photos (or a dark frame), re-checks every remembered dust spot on each
   photo instead of copying it, and offers a flat-field style removal per spot.
 
 ## Limits

@@ -291,27 +291,6 @@
   every photo of the view again: at about 180,000 photos a batch cost the window a tenth of a second, over and over
   for as long as the import ran. Changing one photo's capture time or crop is quicker too.
 
-## 2026-10-16
-
-### Generative Fill
-- **The upload works.** Sending a crop to OpenAI failed with "secure connection failed: failed
-  to write whole buffer"; large uploads now go out whole. Tested with a real OpenAI account on
-  wedding photos.
-- **Painting only marks the area.** With the Generative tool, painting no longer runs a heal or a
-  content-aware fill that looked like a poor AI result: the photo stays as it is until the
-  generated result arrives, with a spinner over the area while it is on its way.
-- **Large areas stay sharper.** Instead of one crop at 20–30 % of the photo's resolution, a large
-  area is sent as a few tiles at about half resolution or more (**Sharper result for a large
-  area**, with the number of requests and the cost); untick it for one cheaper, softer crop.
-- **Variations** is 1 unless you choose more, and LightCraft remembers it; the price per
-  variation shows before you generate.
-- **Only the services you set up** appear in the Remove panel.
-- **A short, calm first-use dialog**: what is sent, its size and the cost, Generate or Cancel; the
-  data policy and watermarks are behind Details.
-- **Failures are clear**: the message stays in the Remove panel with Retry.
-- **Which service for what**: Settings ▸ Generative Fill has a card per service (best at, weak
-  spots, size and price, training on uploads, marks added) and a recommendation.
-
 ## 2026-10-15
 
 ### Photo Merge takes each photo once
@@ -538,21 +517,6 @@
   As Shot temperature and tint as its photos, and changing the white balance no longer turns it green. Sony ARW
   merges used to open at about 7000 K / +115 where the photos show 4000–5300 K / +8. HDRs merged before this keep
   their old white balance; merge them again.
-
-## 2026-10-14
-
-### Hot pixels and sensor dust, remembered per camera
-- Hot, dead and stuck pixels are fixed on raw photos automatically, before the photo is developed: the clear single
-  outliers each photo shows, and every pixel a camera has shown in photos of different scenes. LightCraft remembers
-  each camera body (by serial number, else the first two letters of its file names) and keeps learning as you browse,
-  so faint hot pixels that one photo can't prove are fixed once three photos agree. Stars, catchlights and glints on
-  water or sand are left alone. Detail ▸ Sensor ▸ *Fix hot and dead pixels* turns it off for a photo.
-- A dark frame (a raw with the lens cap on) gives a camera's hot pixels at once: `camera.pixelMap.calibrate`.
-- **Remove Dust** (was Find Dust Spots, in the Remove panel) works on a selection too, in the background. Its spots
-  are outlined amber in the Remove tool, and each one is healed or evened out, whichever matches its surroundings
-  better. It also remembers each camera's dust — where it sits on the sensor, how big it looks at each aperture, and
-  when it moved — and adds that dust to later photos where it shows on smooth areas. Settings ▸ Import can run it after
-  every import. See [sensor-defects.md](sensor-defects.md).
 
 ## 2026-10-13
 

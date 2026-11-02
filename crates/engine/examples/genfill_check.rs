@@ -1,6 +1,6 @@
 //! Real-photo checks for content-aware and generative fill. Generative goes to the in-process mock
-//! provider (LightCraft's own content-aware fill), or with `GENFILL_REAL=1` to the real provider
-//! (`PROVIDER`, default openai) with the key from `LCC_GENFILL_<PROVIDER>_KEY`: a paid
+//! provider (the app's own content-aware fill), or with `GENFILL_REAL=1` to the real provider
+//! (`PROVIDER`, default openai) with the key from `<PREFIX>_GENFILL_<PROVIDER>_KEY`: a paid
 //! request per run. `PROMPT` sets the prompt (empty: remove); `PLAN_ONLY=1` stops after the plan.
 //!
 //! ```text
@@ -106,7 +106,7 @@ fn main() {
                 println!("fill: {:.2} s (render included)", t.elapsed().as_secs_f64());
                 return;
             }
-            // GENFILL_REAL=1: the real provider, with the key from LCC_GENFILL_<PROVIDER>_KEY
+            // GENFILL_REAL=1: the real provider, with the key from <PREFIX>_GENFILL_<PROVIDER>_KEY
             // (every run is a paid request)
             let real = std::env::var("GENFILL_REAL").is_ok_and(|v| v == "1");
             let provider = std::env::var("PROVIDER").unwrap_or_else(|_| if real { "openai".into() } else { "stability".into() });
@@ -118,8 +118,7 @@ fn main() {
                     let img: Vec<f32> = rgb.iter().map(|v| f32::from(*v) / 255.0).collect();
                     let hole: Vec<bool> = mask.iter().map(|m| *m >= 128).collect();
                     let p = lcc_inpaint::CompleteParams { seed: u64::from(var) + 1, ..Default::default() };
-                    let out = lcc_inpaint::complete(w, h, 3, &img, &hole, &p)
-                        .unwrap_or_else(|| lcc_inpaint::membrane_fill(w, h, 3, &img, &hole));
+                    let out = lcc_inpaint::complete(w, h, 3, &img, &hole, &p).unwrap_or_else(|| lcc_inpaint::membrane_fill(w, h, 3, &img, &hole));
                     out.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect()
                 });
                 let mock = lcc_genfill::cloud::mock::MockServer::start(0, Some("mock-key-12345678"), filler).unwrap();
@@ -132,7 +131,8 @@ fn main() {
             s.execute("genfill.consent", &json!({"provider": provider, "accept": true})).unwrap();
             let prompt = std::env::var("PROMPT").unwrap_or_default();
             s.execute("spot.add", &json!({"mode": "generate", "points": pts, "size": size, "feather": 30})).unwrap();
-            let plan = s.execute("genfill.plan", &json!({"provider": provider, "prompt": prompt, "previewPath": format!("{prefix}-sent.png")})).unwrap();
+            let plan =
+                s.execute("genfill.plan", &json!({"provider": provider, "prompt": prompt, "previewPath": format!("{prefix}-sent.png")})).unwrap();
             println!("plan: {plan}");
             if std::env::var("PLAN_ONLY").is_ok() {
                 return;

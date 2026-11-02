@@ -185,7 +185,11 @@ fn off_another_orientation_or_damaged_data_change_nothing() {
     // hostile faces and sizes don't panic
     let mut weird = settings(SkinSmoothing { amount: 100.0, ..Default::default() }, 0.2, |_, _| true);
     if let Some(a) = weird.skin_analysis.as_mut() {
-        a.faces = vec![SkinFace { x: f64::NAN, y: 1e300, eyes: f64::INFINITY }, SkinFace { x: -5.0, y: 0.5, eyes: -1.0 }, SkinFace { x: 0.5, y: 0.5, eyes: 1e-12 }];
+        a.faces = vec![
+            SkinFace { x: f64::NAN, y: 1e300, eyes: f64::INFINITY },
+            SkinFace { x: -5.0, y: 0.5, eyes: -1.0 },
+            SkinFace { x: 0.5, y: 0.5, eyes: 1e-12 },
+        ];
     }
     let mut img = before.clone();
     smooth(&mut img, &weird);

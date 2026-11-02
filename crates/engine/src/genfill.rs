@@ -214,7 +214,7 @@ pub struct GenfillState {
     /// Run generations in the background and apply them in [`Session::genfill_poll`] (the app);
     /// otherwise `spot.generate` waits (CLI, MCP, tests).
     pub background: bool,
-    /// A local mock server to send to instead of the providers (tests; `LCC_GENFILL_MOCK`
+    /// A local mock server to send to instead of the providers (tests; `<PREFIX>_GENFILL_MOCK`
     /// does the same for a whole process). Only loopback addresses are accepted.
     pub mock: Option<String>,
     pub cache: Arc<PatchCache>,
@@ -533,14 +533,7 @@ fn paste(p: &Plan, field: &Plane, t: &Tile, res: &Rgb32f, gen_img: &mut Rgb32f) 
 
 #[cfg(not(target_arch = "wasm32"))]
 /// The finished patch of one variation: matched to the photo, with its blend weight.
-fn finish(
-    src: &Rgb32f,
-    p: &Plan,
-    field: &Plane,
-    mut gen_img: Rgb32f,
-    provider: &str,
-    neutral: lcc_genfill::Neutral,
-) -> Result<PatchLayer, String> {
+fn finish(src: &Rgb32f, p: &Plan, field: &Plane, mut gen_img: Rgb32f, provider: &str, neutral: lcc_genfill::Neutral) -> Result<PatchLayer, String> {
     let [rx0, ry0, rx1, ry1] = p.rect;
     let orig = Rgb32f::from_fn(rx1 - rx0, ry1 - ry0, |x, y| src.data.get((ry0 + y) * src.width + rx0 + x).copied().unwrap_or_default());
     let area: Vec<bool> = field.data.iter().map(|d| f64::from(*d) < p.feather).collect();
@@ -751,7 +744,7 @@ pub fn run(w: &Work, cancel: &AtomicBool, cache: &PatchCache, progress: &dyn Fn(
         ));
     }
     if w.endpoint.is_mock() {
-        warnings.push("made by the local mock server (LCC_GENFILL_MOCK), not a provider".into());
+        warnings.push("made by the local mock server (<PREFIX>_GENFILL_MOCK), not a provider".into());
     }
     Ok(Generated { fill, warnings })
 }

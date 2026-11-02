@@ -111,7 +111,7 @@ pub fn specs() -> Vec<CommandSpec> {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let list: Vec<Value> = lcc_genfill::cloud::ALL.iter().map(|p| provider_json(s, *p)).collect();
-                let mock = std::env::var("LCC_GENFILL_MOCK").is_ok_and(|v| !v.trim().is_empty());
+                let mock = lcc_brand::env("GENFILL_MOCK").is_some_and(|v| !v.trim().is_empty());
                 Ok(json!({"providers": list, "mock": mock, "running": s.genfill.running()}))
             }
             #[cfg(target_arch = "wasm32")]
@@ -273,7 +273,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"index": i, "shown": shown}))
             }
         ),
-        cmd!(query "genfill.results", "Generated Fills of This Photo", [], None, "{} — every generated fill kept in the library for the active photo, newest first (each a paid result; none is ever deleted by LightCraft) → {results: [{id, variants, provider, prompt, made (seconds since 1970), spot: index | null (the spot that keeps it), shown}]}", has_active, |s, _| {
+        cmd!(query "genfill.results", "Generated Fills of This Photo", [], None, "{} — every generated fill kept in the library for the active photo, newest first (each a paid result; none is ever deleted by the app) → {results: [{id, variants, provider, prompt, made (seconds since 1970), spot: index | null (the spot that keeps it), shown}]}", has_active, |s, _| {
             let c = "genfill.results";
             let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
             let list: Vec<Value> = s
@@ -365,13 +365,8 @@ fn spot_from_mask(s: &mut Session, id: crate::PhotoId, mid: u32, mode: SpotMode)
     let step = ((area as f64 / MAX_DABS as f64).sqrt().ceil() as usize).max(3);
     let r = step as f64 * 0.75;
     let p = s.catalog.photo(id).ok_or("no photo")?;
-    let frame = lcc_pipeline::geometry::Frame::with_lens(
-        p.width.max(1) as usize,
-        p.height.max(1) as usize,
-        &p.develop,
-        false,
-        p.embedded_lens.as_deref(),
-    );
+    let frame =
+        lcc_pipeline::geometry::Frame::with_lens(p.width.max(1) as usize, p.height.max(1) as usize, &p.develop, false, p.embedded_lens.as_deref());
     let to_norm = frame.out_to_norm(w, h);
     let mut points = Vec::new();
     for y in (step / 2..h).step_by(step) {

@@ -45,7 +45,7 @@ pub struct Policy {
     /// When this summary was checked against the provider's pages.
     pub checked: &'static str,
     /// What the provider puts in its results to mark them as AI-made (provenance metadata,
-    /// invisible watermarks), as far as it says. LightCraft keeps only the pixels it fills, so
+    /// invisible watermarks), as far as it says. The app keeps only the pixels it fills, so
     /// metadata such as C2PA does not reach the photo or its exports; a watermark in the pixels may.
     pub provenance: &'static str,
 }

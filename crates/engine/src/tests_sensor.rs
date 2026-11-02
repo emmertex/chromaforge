@@ -120,7 +120,7 @@ fn sensor_switch_and_auto_dust_spots_round_trip() {
     });
     let back = DevelopSettings::from_json(&s.to_json()).unwrap();
     assert_eq!(back, s);
-    // through a sidecar in LightCraft's own namespace
+    // through a sidecar in the app's own namespace
     let dir = temp_dir("sensor-xmp");
     let png = dir.join("p.png");
     let img = lcc_raster::Rgba8 { width: 40, height: 24, data: vec![[90, 100, 110, 255]; 960] };
@@ -279,11 +279,7 @@ fn remove_dust_tags_its_spots_and_replaces_them_when_run_again() {
             [b, b, (b as f32 * 1.15).min(255.0) as u8, 255]
         })
         .collect();
-    let png = lcc_codecs::encode_png(
-        &lcc_codecs::EncodeImage::rgba8(&lcc_raster::Rgba8 { width: w, height: h, data }),
-        &Default::default(),
-    )
-    .unwrap();
+    let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&lcc_raster::Rgba8 { width: w, height: h, data }), &Default::default()).unwrap();
     std::fs::write(dir.join("sky.png"), png).unwrap();
     let mut s = Session::new().with_fs();
     s.execute("library.import", &json!({"paths": [dir.join("sky.png").to_string_lossy()]})).unwrap();

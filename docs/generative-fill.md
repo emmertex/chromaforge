@@ -13,7 +13,7 @@
 
 | Tool | What it does | Source |
 |---|---|---|
-| **Remove** | LightCraft decides: a click copies the best-matching area nearby and blends it in (as Heal), and chooses again when the spot is moved; a painted stroke is rebuilt from its surroundings (as Content-Aware) | its own |
+| **Remove** | Chromaforge decides: a click copies the best-matching area nearby and blends it in (as Heal), and chooses again when the spot is moved; a painted stroke is rebuilt from its surroundings (as Content-Aware) | its own |
 | **Content-Aware** | rebuilds the area from small pieces of its surroundings, continuing lines and edges (below) | none |
 | **Generative** | an online image model with your own account (below) | none |
 | **Heal** | the texture of a source, the colour and tone of the destination's surroundings: a gradient-domain (Poisson) blend, the membrane of the edge's difference, at any size of area | yours (a pin, starting at the best match) |
@@ -23,7 +23,7 @@ Each button's tooltip says the same in a sentence. The panel opens on the tool u
 
 The Remove panel has two ways to replace an area with something new instead of copying one source:
 
-- **Content-Aware** (Fill): LightCraft's own patch synthesis, on this computer, no model.
+- **Content-Aware** (Fill): Chromaforge's own patch synthesis, on this computer, no model.
 - **Generative**: a cloud image model you choose and pay for (your own API key). Off until you set
   it up; nothing is sent until you click **Generate**.
 
@@ -70,19 +70,19 @@ of the long edge) is unchanged.
 | **OpenAI** (default) | gpt-image-1.5 edits | yes | 1024², 1536 × 1024, 1024 × 1536 | $0.13–0.20 / image (high quality) + input tokens | no (API); 30-day abuse retention |
 | Stability AI | Inpaint / Erase | yes | up to 3072 px a side | $0.05 | **yes, unless you switch it off** in your account |
 | Black Forest Labs | FLUX.1 Fill [pro] / Erase | yes | up to 2048 px | $0.05 | **terms allow it**; no images of anyone under 18 |
-| fal.ai | FLUX Fill / object removal | yes | up to 2048 px | $0.05 / MP | not stated; LightCraft asks fal not to store the request |
+| fal.ai | FLUX Fill / object removal | yes | up to 2048 px | $0.05 / MP | not stated; Chromaforge asks fal not to store the request |
 
 **Provenance marks.** OpenAI says images from its API carry C2PA provenance metadata *and* an invisible
 SynthID watermark (help center: "C2PA and SynthID in OpenAI-generated images"); Google's image models
 add SynthID; Black Forest Labs may embed C2PA Content Credentials and its terms forbid removing them;
 Stability's API docs say nothing (third parties report C2PA on its hosted images); fal depends on the
-model. **LightCraft keeps only the pixels** of the filled area: C2PA metadata in the returned PNG is
+model. **Chromaforge keeps only the pixels** of the filled area: C2PA metadata in the returned PNG is
 not read, so it is not in the patch, the photo or any export. A watermark hidden in the pixels
 (SynthID) may survive in the patch, weakened by the colour match and the added grain. The consent
-dialog says so. Writing LightCraft's own note that generative fill was used (XMP) is a follow-up.
+dialog says so. Writing Chromaforge's own note that generative fill was used (XMP) is a follow-up.
 
 Prices and policies were read from each provider's own pages on 2026-10-14; the consent dialog
-shows the summary and links the page. Adobe Firefly is not offered: LightCraft is a clean-room
+shows the summary and links the page. Adobe Firefly is not offered: Chromaforge is a clean-room
 alternative to Adobe's apps and uses no Adobe services or assets (and the API is enterprise-only).
 Google's Gemini image models have no pixel mask (prompt-only edits) and Replicate takes inline images
 only up to 256 KB; both are possible later.
@@ -111,7 +111,7 @@ comparison of the services needs the user's keys and test crops.
 
 1. Create an API key in your account with the provider (Settings ▸ Generative Fill ▸ *Get an API key*).
 2. Paste it in Settings ▸ Generative Fill and click **Save Key**. Or set
-   `LCC_GENFILL_<PROVIDER>_KEY` (e.g. `LCC_GENFILL_OPENAI_KEY`) before starting LightCraft.
+   `<PREFIX>_GENFILL_<PROVIDER>_KEY` (e.g. `<PREFIX>_GENFILL_OPENAI_KEY`) before starting Chromaforge.
 3. The first Generate with a provider opens a short dialog: the crop that will be uploaded (the
    area to fill lightly tinted), its size and the cost ("About $0.20, billed to your OpenAI
    account"), with **Generate** and **Cancel**. What the provider does with uploads, its
@@ -128,12 +128,12 @@ toast); while one runs, a spinner and "Generating…" sit over the area on the p
 
 ### A paid result is never lost
 
-Every generation is paid for, so LightCraft keeps it (test note 5: a fill "vanished" after the brush size,
+Every generation is paid for, so Chromaforge keeps it (test note 5: a fill "vanished" after the brush size,
 changed with the generated spot still selected, resized the spot, and a nudge moved it):
 
 - **Kept on disk first.** The patches (`genfill/<photo id>/<id>-<n>.lcpatch`) and a record of the generation
   (`<id>.json`: the stroke it was made for, the service, the prompt, when) are written before the result shows.
-  LightCraft never deletes them.
+  Chromaforge never deletes them.
 - **The spot keeps its stroke.** A spot that shows a generated fill is not moved or resized: the Size, Feather and
   Opacity sliders (and `[` / `]`, a console dial) set the next stroke's brush; dragging its pin says "A generated
   fill stays where it was made". A spot moved or resized by an earlier build shows **Put Back**
@@ -145,7 +145,7 @@ changed with the generated spot still selected, resized the spot, and a nudge mo
 - **Restore.** "Fills made earlier for this photo, not on it now" lists every generation in the library that no
   spot shows (a deleted spot, an older build), each with **Restore** (`genfill.results`, `spot.restoreGenerated`).
 - **Retry does not pay twice.** Black Forest Labs and fal accept a request, then the result is fetched from an
-  address they give. When fetching fails, LightCraft keeps that address: Retry (or Generate with the same
+  address they give. When fetching fails, Chromaforge keeps that address: Retry (or Generate with the same
   choices) within a few minutes fetches the result instead of sending a new paid request, and the error says so.
 
 ### Connections
@@ -156,19 +156,19 @@ certainly never reached the service (the connection broke while it was being sen
 refused it with an alert). Otherwise the error says what happened, that it tried, and that a VPN, proxy or
 antivirus that inspects secure connections may be in the way.
 
-The "received fatal alert: BadRecordMac" of test note 5 was LightCraft's own: the client waited on the socket
+The "received fatal alert: BadRecordMac" of test note 5 was Chromaforge's own: the client waited on the socket
 with 250 ms send timeouts and sent again after one, but on Windows a send that times out may already have sent
 part of its data, so a slow upload could repeat bytes inside an encrypted record and the service refused it.
 The sockets are non-blocking now (a send that can't go out sends nothing), tested against a local TLS server
 that reads slowly.
 
-Keys are kept in `genfill-keys.json` in LightCraft's settings folder (`%APPDATA%\LightCraft` on
-Windows, `~/Library/Application Support/LightCraft` on macOS, `~/.config/lightcraft` on Linux),
+Keys are kept in `genfill-keys.json` in Chromaforge's settings folder (`<settings_dir>` (per OS) on
+Windows, macOS and Linux),
 written with owner-only permissions on macOS and Linux. They are never in the catalog, XMP, exports
 or logs, never returned by a command (`genfill.providers` shows where a key comes from and its last
 four characters), and removed from any error a provider sends back. `genfill.setKey` and
 `spot.generate` are never journaled. Windows Credential Manager / macOS Keychain storage would need a
-native call, which LightCraft keeps in `crates/sysmem` only: a proposed follow-up.
+native call, which Chromaforge keeps in `crates/sysmem` only: a proposed follow-up.
 
 ### What is sent
 
@@ -195,11 +195,11 @@ Only a **context crop** around the spot, with the mask of the area to fill — n
 
 ### Where the patch goes: the photo's own pixels
 
-Image models read and write display-referred 8-bit RGB. LightCraft edits scene-linear camera data.
+Image models read and write display-referred 8-bit RGB. Chromaforge edits scene-linear camera data.
 A generated patch is brought back to the raw-level picture and placed **before every edit**:
 
 1. **Sending.** The crop is cut from the full-size source: the demosaicked raw, linear, at the
-   camera's as-shot white balance (LightCraft's raw development before any user edit). It goes
+   camera's as-shot white balance (Chromaforge's raw development before any user edit). It goes
    through a fixed, invertible transform (`lcc_genfill::encode`): one gain per generation
    (the crop's bright end near white), linear sRGB primaries, a flat log curve with two stops of
    highlight headroom, 8 bits. The look is flat, like a camera's log profile; models continue it in
@@ -226,7 +226,7 @@ A generated patch is brought back to the raw-level picture and placed **before e
    the photo's grain at every size, the same noise reduction removes it, and a photo developed from
    its AI-denoised picture (which has almost none) gets almost none.
 
-What changes a patch: only what is upstream of it — the raw decode itself (a new LightCraft version
+What changes a patch: only what is upstream of it — the raw decode itself (a new Chromaforge version
 that demosaics differently) and the AI Denoise amount (the patch keeps its pixels; only the noise
 added changes). The patch belongs to the stroke it was made for: moving or resizing the spot leaves the photo
 untouched there until it is generated again.
@@ -261,9 +261,9 @@ genfill_check` with `GENFILL_REAL=1` repeats such a test (each run is a paid req
 
 ### Trying it without an account
 
-`lcc-cli genfill-mock --port 18510` serves the four providers' request and response shapes on
-127.0.0.1 and fills holes with LightCraft's own content-aware fill. Start LightCraft with
-`LCC_GENFILL_MOCK=http://127.0.0.1:18510`, save any key, and Generate goes to the mock. Only
+`<cli> genfill-mock --port 18510` serves the four providers' request and response shapes on
+127.0.0.1 and fills holes with Chromaforge's own content-aware fill. Start Chromaforge with
+`<PREFIX>_GENFILL_MOCK=http://127.0.0.1:18510`, save any key, and Generate goes to the mock. Only
 loopback addresses are accepted there, so a key can't be sent elsewhere by mistake.
 
 ## Commands
