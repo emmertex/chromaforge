@@ -27,6 +27,7 @@
   "Generating… {} of {}": "Luodaan… {} / {}",
   "Generative Fill failed: {e}": "Generatiivinen täyttö epäonnistui: {e}",
   "Geotagged {n} photo(s)": "Geotagged {n} photo(s)",
+  "Healed {n} blemishes": "Korjattu {n} näppylää",
   "Imported {n} export preset{}": "Imported {n} export preset{}",
   "Imported {n} metadata preset{}": "Imported {n} metadata preset{}",
   "Installing it will {action}.": "Installing it will {action}.",

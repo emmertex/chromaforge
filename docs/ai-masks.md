@@ -178,6 +178,14 @@ path is unchanged) and its own multi-threaded CPU kernels (`sam2_kernels.rs`). I
   uses it yet, so the dialog doesn't offer it. The port (`depth.rs`, `dino.rs`, `grid.rs`) is
   OneSlips'. Its training data (SA-1B derivatives, Virtual KITTI 2) is a question to settle before
   it backs a mask.
+- **MediaPipe people** (Selfie Multiclass 256, 16 MB) and **MediaPipe faces** (Face Landmarker bundle, 3.8 MB, plus
+  BlazeFace full range, 1 MB, fetched with it from its own address) are Google's Apache-2.0 models from
+  `storage.googleapis.com/mediapipe-models` / `mediapipe-assets`, pinned by size and SHA-256 (`lcc_tflite::models`) and run
+  on the pure-Rust TFLite interpreter (`crates/tflite`, `lcc_segment::people`). The dialog offers both
+  (`ai.models.download {"id": "people" | "face"}`, mirrors via `<PREFIX>_PEOPLE_MIRRORS` / `<PREFIX>_FACE_MIRRORS`); they
+  back Retouch (Smooth Skin, Find Blemishes) and Detect Faces ([faces.md](faces.md)). Without them those fail with
+  `ModelMissing(People)` / `ModelMissing(FaceDetector)` and the app opens the AI Models dialog; nothing is downloaded
+  without the person's go-ahead.
 - Not ported: OneSlips' EoMT scene model (licence of its COCO training data pending a maintainer
   decision), their BiRefNet-portrait checkpoint (licence pending), and their SAM 2 speed work,
   which rewrites the segmentation helpers SAM 3 shares.

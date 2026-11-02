@@ -19,6 +19,7 @@
   "Finish or cancel installing {name} first": "Terminez ou annulez d’abord l’installation de {name}",
   "Folder “{}”": "Dossier « {} »",
   "Geotagged {n} photo(s)": "{n} photo(s) géolocalisée(s)",
+  "Healed {n} blemishes": "{n} imperfections corrigées",
   "Imported {n} export preset{}": "Paramètres d’exportation importés : {n}{:.0}",
   "Imported {n} metadata preset{}": "Paramètres de métadonnées importés : {n}{:.0}",
   "Installing it will {action}.": "L’installation va : {action}.",

@@ -21,6 +21,7 @@
   "Finish or cancel installing {name} first": "先に {name} のインストールを完了するかキャンセルしてください",
   "Folder “{}”": "フォルダ「{}」",
   "Geotagged {n} photo(s)": "{n} 枚の写真にジオタグを付けました",
+  "Healed {n} blemishes": "{n} か所のシミを修復しました",
   "Imported {n} export preset{}": "書き出しプリセットを {n} 件読み込みました{:.0}",
   "Imported {n} metadata preset{}": "メタデータプリセットを {n} 件読み込みました{:.0}",
   "In line for AI Denoise ({ahead} ahead)…": "AIノイズ除去の順番待ち（前に{ahead}件）…",

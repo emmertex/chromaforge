@@ -196,6 +196,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("section.detail", "Detail", Some("Cmd+5"), "Window>Edit Sections"),
     ("section.optics", "Lens Corrections", Some("Cmd+6"), "Window>Edit Sections"),
     ("section.calibration", "Calibration", Some("Cmd+9"), "Window>Edit Sections"),
+    ("section.retouch", "Retouch", None, "Window>Edit Sections"),
     // {on?}; no params toggles. Opening one Edit section closes the others.
     ("view.soloSections", "Solo Mode", None, "Window>Edit Sections"),
     ("tool.brush", "Brush", Some("B"), "Window>Tools"),

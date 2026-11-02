@@ -26,6 +26,7 @@
   "Generating… {} of {}": "Generování… {} z {}",
   "Generative Fill failed: {e}": "Generativní výplň selhala: {e}",
   "Geotagged {n} photo(s)": "Geotagováno fotek: {n}",
+  "Healed {n} blemishes": "Vyretušované nedokonalosti: {n}",
   "Imported {n} export preset{}": "Importované předvolby exportu: {n}{:.0}",
   "Imported {n} metadata preset{}": "Importované předvolby metadat: {n}{:.0}",
   "Installing it will {action}.": "Instalace provede: {action}.",

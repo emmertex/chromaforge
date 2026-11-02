@@ -49,6 +49,7 @@ pub mod profiles;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod publish;
 pub mod quick_develop;
+pub mod retouch;
 pub mod right;
 pub mod rules_editor;
 pub mod rules_move;

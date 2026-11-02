@@ -21,6 +21,7 @@
   "Finish or cancel installing {name} first": "Schließen Sie zuerst die Installation von {name} ab oder brechen Sie sie ab",
   "Folder “{}”": "Ordner „{}“",
   "Geotagged {n} photo(s)": "{n} Foto(s) geotaggt",
+  "Healed {n} blemishes": "{n} Hautunreinheiten behoben",
   "Imported {n} export preset{}": "Importierte Exportvorgaben: {n}{:.0}",
   "Imported {n} metadata preset{}": "Importierte Metadatenvorgaben: {n}{:.0}",
   "In line for AI Denoise ({ahead} ahead)…": "In der Warteschlange für KI-Entrauschen ({ahead} davor) …",

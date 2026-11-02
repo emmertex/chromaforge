@@ -27,6 +27,7 @@
   "Generating… {} of {}": "Genererar… {} av {}",
   "Generative Fill failed: {e}": "Generativ fyllning misslyckades: {e}",
   "Geotagged {n} photo(s)": "Geotagged {n} photo(s)",
+  "Healed {n} blemishes": "Läkte {n} hudfläckar",
   "Imported {n} export preset{}": "Imported {n} export preset{}",
   "Imported {n} metadata preset{}": "Imported {n} metadata preset{}",
   "Installing it will {action}.": "Installing it will {action}.",

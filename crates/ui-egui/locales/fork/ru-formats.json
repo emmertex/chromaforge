@@ -21,6 +21,7 @@
   "Finish or cancel installing {name} first": "Сначала завершите или отмените установку {name}",
   "Folder “{}”": "Папка «{}»",
   "Geotagged {n} photo(s)": "Геометки поставлены фото: {n}",
+  "Healed {n} blemishes": "Исправлено дефектов кожи: {n}",
   "Imported {n} export preset{}": "Импортировано наборов экспорта: {n}{:.0}",
   "Imported {n} metadata preset{}": "Импортировано наборов метаданных: {n}{:.0}",
   "In line for AI Denoise ({ahead} ahead)…": "В очереди на ИИ-шумоподавление (впереди: {ahead})…",

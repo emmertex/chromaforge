@@ -27,6 +27,7 @@
   "Generating… {} of {}": "Đang tạo… {} / {}",
   "Generative Fill failed: {e}": "Tô màu tạo sinh thất bại: {e}",
   "Geotagged {n} photo(s)": "Geotagged {n} photo(s)",
+  "Healed {n} blemishes": "Đã chữa {n} vết mụn",
   "Imported {n} export preset{}": "Imported {n} export preset{}",
   "Imported {n} metadata preset{}": "Imported {n} metadata preset{}",
   "Installing it will {action}.": "Installing it will {action}.",

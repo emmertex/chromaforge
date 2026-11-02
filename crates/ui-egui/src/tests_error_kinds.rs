@@ -30,10 +30,10 @@ fn ai_mask_errors_offer_the_model_by_kind() {
     h.app.ui.dialog = None;
     h.app.ai_error(&ctx, format!("{NOT_INSTALLED}: but this is some other failure"), None);
     assert_eq!(h.app.ui.dialog, None, "decided on the kind, not the words");
-    // another model missing is not SAM 3's
+    // another model missing is not SAM 3's: the face model is in the AI Models dialog
     let face = CommandError { message: "x".into(), kind: ErrorKind::ModelMissing(AiModel::FaceDetector) };
     h.app.ai_error(&ctx, face, None);
-    assert_eq!(h.app.ui.dialog, None);
+    assert!(!matches!(h.app.ui.dialog, Some(Dialog::SamModel { .. })), "{:?}", h.app.ui.dialog);
 }
 
 /// `run_typed` keeps the engine's kind for the code that decides, and `run` the same message.
@@ -43,8 +43,15 @@ fn run_typed_keeps_the_kind_and_run_the_message() {
     let dir = std::env::temp_dir().join(format!("lc-ui-error-kinds-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     h.app.session.face_models_dir = Some(dir.join("models"));
+    // (the app keeps the AI models and the face models in the same folder)
+    h.app.session.segmenter.models_root = Some(dir.join("models"));
     let typed = h.app.run_typed("faces.detect", json!({})).unwrap_err();
-    assert_eq!(typed.kind, ErrorKind::ModelMissing(AiModel::FaceDetector), "{typed}");
+    if Segmenter::AVAILABLE {
+        assert_eq!(typed.kind, ErrorKind::ModelMissing(AiModel::FaceDetector), "{typed}");
+    } else {
+        // a build without the open AI models has no face model to download
+        assert_ne!(typed.kind, ErrorKind::ModelMissing(AiModel::FaceDetector), "{typed}");
+    }
     h.app.ui.dialog = None;
     let text = h.app.run("faces.detect", json!({})).unwrap_err();
     assert_eq!(text, typed.message);

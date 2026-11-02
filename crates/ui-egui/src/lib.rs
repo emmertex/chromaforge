@@ -296,6 +296,8 @@ mod tests_recheck;
 #[cfg(test)]
 mod tests_rename_person;
 #[cfg(test)]
+mod tests_retouch;
+#[cfg(test)]
 mod tests_rules_editor;
 #[cfg(test)]
 mod tests_sam_setup;
@@ -1376,8 +1378,11 @@ impl LccApp {
         let e = e.into();
         if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
             self.offer_sam_download(then);
-        } else if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam2) {
-            // SAM 2.1 was chosen for Object masks: its download is in the AI Models dialog
+        } else if lcc_engine::segment::Segmenter::AVAILABLE
+            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::People | AiModel::FaceDetector))
+        {
+            // SAM 2.1 was chosen for Object masks, or Retouch needs the MediaPipe models: their downloads are in the
+            // AI Models dialog
             if self.ui.dialog.is_none() {
                 self.ui.dialog = Some(state::Dialog::AiModels { error: None });
             }

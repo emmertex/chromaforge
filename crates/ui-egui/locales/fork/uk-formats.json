@@ -19,6 +19,7 @@
   "Finish or cancel installing {name} first": "Спочатку завершіть або скасуйте встановлення {name}",
   "Folder “{}”": "Тека «{}»",
   "Geotagged {n} photo(s)": "Геомітки додано фото: {n}",
+  "Healed {n} blemishes": "Виправлено вад шкіри: {n}",
   "Imported {n} export preset{}": "Імпортовано наборів експорту: {n}{:.0}",
   "Imported {n} metadata preset{}": "Імпортовано наборів метаданих: {n}{:.0}",
   "Installing it will {action}.": "Під час встановлення: {action}.",

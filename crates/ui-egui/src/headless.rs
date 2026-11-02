@@ -1405,13 +1405,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Photo > Detect Faces without the detector offers the download: the terms first, nothing fetched before they are
-    /// accepted, and the model's row in Settings has its Download button.
+    /// Photo > Detect Faces without the face model offers its download (the AI Models dialog: size and licence first,
+    /// nothing fetched before the person asks), and Settings > Faces has a Download button for it.
     #[test]
-    fn detect_faces_without_the_detector_offers_the_download_and_fetches_nothing_before_acceptance() {
+    fn detect_faces_without_the_face_model_offers_its_download_and_fetches_nothing() {
         use crate::state::Dialog;
         let mut h = demo([1400.0, 900.0]);
         let dir = std::env::temp_dir().join(format!("lc-ui-detector-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        h.app.session.face_models_dir = Some(dir.join("models"));
+        h.app.session.segmenter.models_root = Some(dir.join("models"));
+
+        let r = h.app.run("faces.detect", json!({}));
+        assert!(r.is_err(), "no face model yet");
+        if !lcc_engine::segment::Segmenter::AVAILABLE {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert!(matches!(h.app.ui.dialog, Some(Dialog::AiModels { .. })), "the download is offered: {:?}", h.app.ui.dialog);
+        assert!(!dir.join("models").join("mediapipe-face-landmarker").exists(), "nothing is fetched by offering it");
+
+        // Settings > Faces shows the face model with a Download button
+        h.app.ui.dialog = Some(Dialog::Settings { tab: "faces".into() });
+        h.step();
+        // (the first request switches the widget list on, the next frame fills it)
+        h.request("ui.widgets", json!({}), Duration::from_secs(10));
+        h.step();
+        let w = h.request("ui.widgets", json!({"filter": "faces:"}), Duration::from_secs(10));
+        assert!(w.to_string().contains("faces:downloadFaceModel"), "{w}");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));

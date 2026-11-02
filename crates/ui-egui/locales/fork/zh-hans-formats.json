@@ -21,6 +21,7 @@
   "Finish or cancel installing {name} first": "请先完成或取消安装 {name}",
   "Folder “{}”": "文件夹“{0}”",
   "Geotagged {n} photo(s)": "已为 {n} 张照片添加地理标记",
+  "Healed {n} blemishes": "已修复 {n} 处瑕疵",
   "Imported {n} export preset{}": "已导入 {n} 个导出预设{:.0}",
   "Imported {n} metadata preset{}": "已导入 {n} 个元数据预设{:.0}",
   "In line for AI Denoise ({ahead} ahead)…": "正在排队等待 AI 降噪（前面还有 {ahead} 张）…",

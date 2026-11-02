@@ -1256,6 +1256,8 @@ pub struct UiState {
     pub remove_size: f32,
     pub remove_feather: f32,
     pub remove_opacity: f32,
+    /// Find Blemishes also looks on the body's skin (shoulders, arms, back).
+    pub blemish_body: bool,
     /// Generative fill choices of the Remove panel (prompt, estimate; not saved).
     #[serde(skip)]
     pub genfill: crate::panels::genfill::GenfillUi,
@@ -2058,6 +2060,7 @@ impl Default for UiState {
             remove_size: 0.02,
             remove_feather: 50.0,
             remove_opacity: 100.0,
+            blemish_body: false,
             genfill: Default::default(),
             genfill_provider: String::new(),
             genfill_variations: 1,

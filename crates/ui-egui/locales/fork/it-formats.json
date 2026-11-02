@@ -26,6 +26,7 @@
   "Generating… {} of {}": "Generazione… {} di {}",
   "Generative Fill failed: {e}": "Riempimento generativo non riuscito: {e}",
   "Geotagged {n} photo(s)": "{n} foto geotaggate",
+  "Healed {n} blemishes": "Imperfezioni corrette: {n}",
   "Imported {n} export preset{}": "Predefiniti di esportazione importati: {n}{:.0}",
   "Imported {n} metadata preset{}": "Predefiniti metadati importati: {n}{:.0}",
   "Installing it will {action}.": "L'installazione: {action}.",

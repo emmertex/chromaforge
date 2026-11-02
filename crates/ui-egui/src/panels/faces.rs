@@ -277,11 +277,28 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         app.session.execute("faces.models.downloads", &json!({})).map(|v| v["downloads"].as_array().cloned().unwrap_or_default()).unwrap_or_default();
     gpu_section(app, ui, t, &list["gpu"]);
     heading(ui, t, "Face detector");
-    for m in all.iter().filter(|m| m["role"] == "detector") {
-        model_row(app, ui, t, m, downloads.iter().find(|d| d["id"] == m["id"]), runtime);
+    // faces are found by the open MediaPipe face model (the one Retouch uses), not by a model of this list
+    let face_model = app.session.segmenter.open_model_installed("face");
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("MediaPipe Face Landmarker").color(t.text));
+        ui.label(RichText::new("Apache-2.0").color(t.text_dim));
+        if face_model {
+            ui.label(RichText::new(crate::i18n::tr("installed")).color(t.text_dim));
+        } else if lcc_engine::segment::Segmenter::AVAILABLE {
+            let r = ui.button(crate::i18n::tr("Download…"));
+            register(ui.ctx(), "faces:downloadFaceModel", r.rect);
+            if r.clicked() {
+                offer_detector(app);
+            }
+        }
+    });
+    if !face_model {
+        hint(ui, t, "Detect Faces (Photo menu), the face scan, Find Blemishes and Smooth Skin need it: a small one-time download.");
     }
-    if !all.iter().any(|m| m["role"] == "detector" && m["installed"] == true) {
-        hint(ui, t, "Detect Faces (Photo menu) needs it: a small one-time download.");
+    // a detector an older version installed (YuNet) is no longer used: listed so it can be removed
+    for m in all.iter().filter(|m| m["role"] == "detector" && m["installed"] == true) {
+        model_row(app, ui, t, m, None, runtime);
+        hint(ui, t, "No longer used: its training data (WIDER FACE) does not allow commercial use. You can remove it.");
     }
     heading(ui, t, "Recognition models");
     for m in all.iter().filter(|m| m["role"] == "embedder") {
@@ -300,10 +317,6 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     // what is wrong with the user's own catalog (catalog.json in the models folder), if anything
     for e in list["catalog"]["errors"].as_array().into_iter().flatten().filter_map(Value::as_str).take(3) {
         ui.add(egui::Label::new(RichText::new(format!("catalog.json: {e}")).font(t.font(11.5)).color(t.caution)).wrap());
-    }
-    if let Some(d) = all.iter().find(|m| m["role"] == "detector") {
-        ui.add_space(4.0);
-        hint(ui, t, &format!("Faces are found by {} ({}, included).", d["name"].as_str().unwrap_or("the detector"), mb(d["sizeBytes"].as_u64())));
     }
 }
 
@@ -540,9 +553,9 @@ pub fn open_download_dialog(app: &mut LccApp, m: &Value) {
 
 /// Photo ▸ Detect Faces without the detector: offer to download it (its terms first), the same as in Settings.
 pub fn offer_detector(app: &mut LccApp) {
-    let list = app.session.execute("faces.models.list", &json!({})).unwrap_or(Value::Null);
-    if let Some(m) = list["models"].as_array().and_then(|a| a.iter().find(|m| m["role"] == "detector" && m["installed"] != true)) {
-        open_download_dialog(app, m);
+    // the face model lives with the other AI models: their dialog names its size and licence first
+    if lcc_engine::segment::Segmenter::AVAILABLE && !app.session.segmenter.open_model_installed("face") {
+        app.ui.dialog = Some(crate::state::Dialog::AiModels { error: None });
     }
 }
 

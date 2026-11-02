@@ -37,7 +37,7 @@ fn the_edit_panel_is_lightroom_classics_develop_panels() {
     h.settle(SETTLE);
     assert_eq!(
         sections(&h),
-        ["light", "curve", "mixer", "grading", "detail", "optics", "geometry", "effects", "calibration", "pluginFilters"],
+        ["light", "curve", "mixer", "grading", "detail", "retouch", "optics", "geometry", "effects", "calibration", "pluginFilters"],
         "then the fork's Plug-in Filters"
     );
     let text = h.painted_text();

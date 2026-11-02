@@ -394,6 +394,8 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // portrait retouching (beyond Lightroom), below Detail
+    section(app, ui, &d, "retouch", "Retouch", |app, ui, d| super::retouch::panel(app, ui, d, id));
     // the lens database changed since this photo was looked up: look again (its correction and preview follow),
     // also while the Lens Corrections section is folded
     if d.optics.lens_profile && app.session.lens_profiles_stale(id) {

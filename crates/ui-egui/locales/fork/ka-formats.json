@@ -27,6 +27,7 @@
   "Generating… {} of {}": "გენერირება… {} / {}",
   "Generative Fill failed: {e}": "გენერაციული შევსება ვერ მოხერხდა: {e}",
   "Geotagged {n} photo(s)": "გეოტეგი მიენიჭა {n} ფოტოს",
+  "Healed {n} blemishes": "Healed {n} blemishes",
   "Imported {n} export preset{}": "იმპორტირებული ექსპორტის პრესეტები: {n}{:.0}",
   "Imported {n} metadata preset{}": "იმპორტირებული მეტამონაცემების პრესეტები: {n}{:.0}",
   "Installing it will {action}.": "ინსტალაცია: {action}.",

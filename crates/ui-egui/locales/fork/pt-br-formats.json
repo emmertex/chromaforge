@@ -21,6 +21,7 @@
   "Finish or cancel installing {name} first": "Conclua ou cancele primeiro a instalação de {name}",
   "Folder “{}”": "Pasta “{}”",
   "Geotagged {n} photo(s)": "{n} foto(s) georreferenciada(s)",
+  "Healed {n} blemishes": "{n} imperfeições corrigidas",
   "Imported {n} export preset{}": "Predefinições de exportação importadas: {n}{:.0}",
   "Imported {n} metadata preset{}": "Predefinições de metadados importadas: {n}{:.0}",
   "In line for AI Denoise ({ahead} ahead)…": "Na fila da remoção de ruído com IA ({ahead} à frente)…",
