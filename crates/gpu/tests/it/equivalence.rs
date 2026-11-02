@@ -1543,4 +1543,3 @@ fn defringe_matches() {
         }
     }
 }
-

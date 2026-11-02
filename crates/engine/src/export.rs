@@ -2709,7 +2709,13 @@ pub fn run_batch_cancellable(
 }
 
 /// [`export_batch`] with `lanes` photos side by side and nothing written (measurements, tests).
-pub(crate) fn export_batch_lanes(session: &mut crate::Session, ids: &[lcc_catalog::PhotoId], o: &ExportOptions, lanes: usize, mix: bool) -> Result<Vec<serde_json::Value>, String> {
+pub(crate) fn export_batch_lanes(
+    session: &mut crate::Session,
+    ids: &[lcc_catalog::PhotoId],
+    o: &ExportOptions,
+    lanes: usize,
+    mix: bool,
+) -> Result<Vec<serde_json::Value>, String> {
     let mut items = prepare_batch(session, ids, o)?;
     for it in &mut items {
         it.mix = mix;

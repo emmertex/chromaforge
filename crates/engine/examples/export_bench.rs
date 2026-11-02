@@ -120,7 +120,14 @@ fn main() {
     for run in 0..value("--runs").unwrap_or(1) {
         if run == 1 {
             let b = lcc_engine::gpu::batch_usage();
-            println!("gpu memory {:?} MB, batch limit {} MB / {} jobs, waits {} ({} ms)", lcc_engine::gpu::adapter_memory().map(|m| m >> 20), b.limit_bytes >> 20, b.limit_jobs, b.waits, b.waited_ms);
+            println!(
+                "gpu memory {:?} MB, batch limit {} MB / {} jobs, waits {} ({} ms)",
+                lcc_engine::gpu::adapter_memory().map(|m| m >> 20),
+                b.limit_bytes >> 20,
+                b.limit_jobs,
+                b.waits,
+                b.waited_ms
+            );
         }
         let t = Instant::now();
         let mut fell_back = 0;

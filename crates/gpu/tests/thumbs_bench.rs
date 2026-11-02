@@ -55,11 +55,7 @@ fn thumbnail_throughput() {
                 sc.spawn(move || {
                     for i in 0..per_thread {
                         let src = &sources[(k * per_thread + i) % sources.len()];
-                        let r = if gpu {
-                            lcc_gpu::render(src, info, s, &req, None)
-                        } else {
-                            Some(lcc_pipeline::render(src, info, s, &req))
-                        };
+                        let r = if gpu { lcc_gpu::render(src, info, s, &req, None) } else { Some(lcc_pipeline::render(src, info, s, &req)) };
                         assert!(r.is_some());
                     }
                 });

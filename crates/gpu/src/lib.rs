@@ -43,13 +43,13 @@ mod exit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod faces;
 #[cfg(not(target_arch = "wasm32"))]
+mod gate;
+#[cfg(not(target_arch = "wasm32"))]
 mod init;
 #[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
 pub mod nn;
 #[cfg(not(target_arch = "wasm32"))]
 mod params;
-#[cfg(not(target_arch = "wasm32"))]
-mod gate;
 #[cfg(not(target_arch = "wasm32"))]
 mod render;
 #[cfg(not(target_arch = "wasm32"))]

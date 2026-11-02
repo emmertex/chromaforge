@@ -1798,7 +1798,6 @@ fn the_hdr_rendition_from_the_sdr_renders_stages_is_the_same() {
     assert!(a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()), "the shared render differs");
 }
 
-
 /// Settings like a real HDR edit (tone, clarity, noise reduction, a radial mask) for the export
 /// turn tests.
 fn hdr_export_settings(s: &mut Session, id: lcc_catalog::PhotoId) {
@@ -1864,7 +1863,6 @@ fn photos_side_by_side_overlap_on_one_gpu_turn() {
     assert!(four < one, "4 lanes {four:.2} s vs 1 lane {one:.2} s: lanes must overlap");
 }
 
-
 /// A cancelled export stayed "cancelling" for minutes and kept exporting. It returns
 /// within about a second of the cancel and writes nothing more (its lanes stop at their next step).
 #[test]
@@ -1911,7 +1909,6 @@ fn a_cancelled_export_stops_within_a_second() {
     assert!(after < std::time::Duration::from_millis(1500), "returned {after:?} after the cancel");
     assert!(files.len() < 12 && written == files.len(), "{} files, {written} written", files.len());
 }
-
 
 /// The GPU and the processor at once: with one export at a time on the card and the processor
 /// rendering the photos it has no room for, every photo comes out and none fails. Prints the time
