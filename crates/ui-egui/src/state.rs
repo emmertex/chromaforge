@@ -944,6 +944,17 @@ pub enum KeywordChips {
 /// shown in, if any.
 pub type Toast = (String, f64, Option<lcc_catalog::ColorLabel>);
 
+/// A toast with a button (Undo…): its text, the button's label, the command the button runs and
+/// its parameters, and when it goes (app time, s). One at a time; a newer one replaces it.
+#[derive(Clone, Debug)]
+pub struct ToastAction {
+    pub text: String,
+    pub button: String,
+    pub command: String,
+    pub params: serde_json::Value,
+    pub until: f64,
+}
+
 /// The most toasts on screen at once: a newer one pushes the oldest out.
 pub const MAX_TOASTS: usize = 3;
 
@@ -1413,6 +1424,9 @@ pub struct UiState {
     /// Transient toast text, expiry (seconds of app time), and optional colour-label styling.
     #[serde(skip)]
     pub toasts: Vec<Toast>,
+    /// The toast with a button, if one is showing ([`ToastAction`]).
+    #[serde(skip)]
+    pub toast_action: Option<ToastAction>,
     /// The result of the last Find Missing Photos (it searches in the background).
     #[serde(skip)]
     pub last_find_missing: Option<serde_json::Value>,
@@ -1803,10 +1817,13 @@ pub enum Dialog {
         confirm_delete: bool,
         new_group: String,
     },
-    /// The Presets Manager (LR-PRE-MANAGE): the search, and the user preset whose Delete waits for a yes.
+    /// The Presets Manager (LR-PRE-MANAGE): the search; the row whose Delete (or Restore
+    /// Built-ins) waits for a yes (`preset:<id>`, `group:<path>`, `restore`); the row being renamed
+    /// in place and its text.
     PresetsManager {
         query: String,
         confirm: Option<String>,
+        rename: Option<(String, String)>,
     },
     /// Confirm deleting mask effect presets.
     DeleteEffects {
@@ -2120,6 +2137,7 @@ impl Default for UiState {
             compare: None,
             reference: None,
             toasts: Vec::new(),
+            toast_action: None,
             last_find_missing: None,
             last_find_missing_result: None,
             #[cfg(test)]

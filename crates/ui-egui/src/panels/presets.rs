@@ -557,8 +557,8 @@ const USER_PRESETS: &str = "User Presets";
 
 /// The presets by folder (hierarchical tree) after a Favorites group of the starred ones, if any;
 /// rebuilt only when the preset list changed (its generation). With `user_first` (Settings ▸
-/// Interface, issue #476; off by default, as in Lightroom Classic) the "User Presets" group comes
-/// right after Favorites; every other group keeps its usual place.
+/// Interface, issue #476; off by default, as in Lightroom Classic) the user's own groups come right
+/// after Favorites, "User Presets" first (LR-PRE-MANAGE); the built-in ones follow in their order.
 fn grouped(ctx: &egui::Context, session: &lcc_engine::Session, user_first: bool) -> Arc<Vec<FolderNode>> {
     let (presets, custom_folders) = (&session.presets, &session.preset_folders);
     let hidden = |id: &str| session.preset_hidden.iter().any(|h| h == id);
@@ -637,9 +637,9 @@ fn grouped(ctx: &egui::Context, session: &lcc_engine::Session, user_first: bool)
     }
 
     let mut roots = build_nodes(None, 0, &folder_data);
-    if user_first && let Some(i) = roots.iter().position(|n| n.path == USER_PRESETS) {
-        let node = roots.remove(i);
-        roots.insert(0, node);
+    // the user's own groups first ("User Presets" leading them), the built-in ones after
+    if user_first {
+        roots.sort_by_key(|n| (n.builtin || !n.user, n.path != USER_PRESETS));
     }
 
     fn collect_starred(nodes: &[FolderNode], presets: &PresetList) -> Vec<usize> {
@@ -695,11 +695,17 @@ fn grouped(ctx: &egui::Context, session: &lcc_engine::Session, user_first: bool)
     groups
 }
 
-/// The presets as the rows of a picker (a combo box's list), in list order with a header row
-/// wherever the group changes. Only the rows in view are built (10 000+ presets made an open
-/// picker take seconds a frame). Returns the id of the preset clicked.
+/// The presets as the rows of a picker (a combo box's list): a search over names and groups;
+/// Favorites and At Import first, then the user's own groups, then the built-in ones, each a
+/// header that folds (Favorites, At Import and the group of `selected` start open, the rest
+/// folded; a search opens what it finds). Each preset's star toggles it as a favourite in place,
+/// and resting on one shows a small render of the active photo with it beside the list
+/// ([`picker_frame`]: a variant thumbnail rendered in the background, never waited for). Only
+/// the rows in view are built (10 000+ presets made an open picker take seconds a frame).
+/// Returns the id of the preset clicked.
 pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session, selected: Option<&str>) -> Option<String> {
     let presets = &session.presets;
+    let t = Tokens::get(ui.ctx());
     // a search over names and groups (LR-PRESET-PICKER), kept per picker while it is open
     let qid = egui::Id::new(("preset-picker-query", salt));
     let mut query = ui.ctx().data(|d| d.get_temp::<String>(qid)).unwrap_or_default();
@@ -711,17 +717,23 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
         ui.ctx().data_mut(|d| d.insert_temp(qid, query.clone()));
     }
     let needle = query.trim().to_lowercase();
+    // which groups are open, by key (the picker's own, kept while the app runs)
+    let fid = egui::Id::new(("preset-picker-open", salt));
+    let mut folds: PickerFolds = ui.ctx().data(|d| d.get_temp(fid)).unwrap_or_default();
+    let selected_group = selected.and_then(|id| presets.iter().find(|p| p.id == id)).map(|p| p.group.clone());
     let id = egui::Id::new(("preset-picker-rows", salt));
-    let rows = match ui.ctx().data(|d| d.get_temp::<(u64, String, Arc<Vec<PickRow>>)>(id)) {
-        Some((generation, q, rows)) if generation == presets.generation() && q == needle => rows,
+    let key = (presets.generation(), needle.clone(), folds.generation, selected_group.clone());
+    let rows = match ui.ctx().data(|d| d.get_temp::<(PickKey, Arc<Vec<PickRow>>)>(id)) {
+        Some((k, rows)) if k == key => rows,
         _ => {
-            let rows = Arc::new(pick_rows(session, &needle));
-            ui.ctx().data_mut(|d| d.insert_temp(id, (presets.generation(), needle.clone(), rows.clone())));
+            let rows = Arc::new(pick_rows(session, &needle, &folds, selected_group.as_deref()));
+            ui.ctx().data_mut(|d| d.insert_temp(id, (key, rows.clone())));
             rows
         }
     };
     let row_h = ui.spacing().interact_size.y;
     let mut out = None;
+    let mut fold: Option<(String, bool)> = None;
     egui::ScrollArea::vertical().id_salt(("preset-picker", salt)).max_height(300.0).auto_shrink([false, true]).show_rows(
         ui,
         row_h,
@@ -730,60 +742,189 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
             for row in rows.get(range).unwrap_or_default() {
                 let size = vec2(ui.available_width(), row_h);
                 match row {
-                    PickRow::Header(g) => {
-                        ui.add_sized(size, egui::Label::new(egui::RichText::new(g).size(10.5).weak()));
+                    PickRow::Header { label, key, count, open } => {
+                        let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+                        register(ui.ctx(), format!("presetPickerGroup:{salt}:{key}"), r);
+                        crate::widgets::announce(&resp, label.clone());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(r, 3.0, t.hover.gamma_multiply(0.5));
+                        }
+                        let chevron = Rect::from_center_size(pos2(r.left() + 8.0, r.center().y), vec2(9.0, 9.0));
+                        paint(ui.painter(), chevron, if *open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
+                        let text = format!("{label}  ({count})");
+                        let g = crate::widgets::one_line(ui.painter(), &text, t.semibold(11.0), t.text_dim, r.width() - 22.0);
+                        ui.painter().galley(pos2(r.left() + 18.0, r.center().y - g.size().y / 2.0), g, t.text_dim);
+                        if resp.clicked() && needle.is_empty() {
+                            fold = Some((key.clone(), !open));
+                        }
                     }
                     PickRow::Preset(i) => {
                         let Some(p) = presets.get(*i) else { continue };
                         let label = crate::i18n::builtin_label(&p.name, p.builtin);
-                        if ui.add_sized(size, egui::Button::selectable(selected == Some(p.id.as_str()), label)).clicked() {
-                            out = Some(p.id.clone());
-                        }
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let w = (ui.available_width() - row_h - 2.0).max(40.0);
+                            let resp = ui.add_sized(vec2(w, row_h), egui::Button::selectable(selected == Some(p.id.as_str()), label).truncate());
+                            register(ui.ctx(), format!("presetPick:{salt}:{}", p.id), resp.rect);
+                            if resp.clicked() {
+                                out = Some(p.id.clone());
+                                // (pickers keep open for clicks inside: a choice closes them)
+                                ui.close();
+                            }
+                            if resp.hovered() {
+                                let frame = ui.ctx().cumulative_frame_nr();
+                                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(PICKER_HOVER), (frame, p.id.clone(), resp.rect)));
+                            }
+                            let star = crate::rating::favorite_button(
+                                ui,
+                                format!("presetPickStar:{salt}:{}", p.id),
+                                p.favorite,
+                                crate::i18n::tr("Favorite"),
+                            );
+                            if star.clicked() {
+                                ui.ctx().data_mut(|d| {
+                                    d.get_temp_mut_or_default::<Vec<(String, bool)>>(egui::Id::new(PICKER_STARS)).push((p.id.clone(), !p.favorite))
+                                });
+                            }
+                        });
                     }
                 }
             }
         },
     );
+    if let Some((key, open)) = fold {
+        folds.open.insert(key, open);
+        folds.generation = folds.generation.wrapping_add(1);
+        ui.ctx().data_mut(|d| d.insert_temp(fid, folds));
+    }
     out
 }
 
-/// The picker's rows: Favorites and At Import first (without a search), then every group in
-/// order; hidden presets are left out; a search keeps the presets whose name or group holds it.
-fn pick_rows(session: &lcc_engine::Session, needle: &str) -> Vec<PickRow> {
-    let presets = &session.presets;
-    let hidden = |id: &str| session.preset_hidden.iter().any(|h| h == id);
-    let mut rows = Vec::with_capacity(presets.len() + 16);
-    if needle.is_empty() {
-        let favorites: Vec<usize> = presets.iter().enumerate().filter(|(_, p)| p.favorite && !hidden(&p.id)).map(|(i, _)| i).collect();
-        if !favorites.is_empty() {
-            rows.push(PickRow::Header(crate::i18n::tr("Favorites").to_string()));
-            rows.extend(favorites.into_iter().map(PickRow::Preset));
-        }
-        let at_import: Vec<usize> =
-            session.preset_at_import.iter().filter(|id| !hidden(id)).filter_map(|id| presets.iter().position(|p| p.id == *id)).collect();
-        if !at_import.is_empty() {
-            rows.push(PickRow::Header(crate::i18n::tr("At Import").to_string()));
-            rows.extend(at_import.into_iter().map(PickRow::Preset));
+/// Where a picker leaves the preset the pointer rests on (frame, id, row) and the stars clicked
+/// this frame, for [`picker_frame`].
+const PICKER_HOVER: &str = "preset-picker-hover";
+const PICKER_STARS: &str = "preset-picker-stars";
+/// Long edge of the picker's hover render.
+const PICKER_PREVIEW_EDGE: usize = 192;
+
+/// After the frame's pickers: the stars clicked in them toggle (`preset.favorite`), and the preset
+/// the pointer rests on is shown on the active photo beside the list. The render is a variant
+/// thumbnail at the thumbnail level, made in the background ([`crate::render`]); until it is ready
+/// the box says so and the UI never waits.
+pub fn picker_frame(app: &mut LccApp, ctx: &egui::Context) {
+    let stars: Vec<(String, bool)> = ctx.data_mut(|d| d.remove_temp(egui::Id::new(PICKER_STARS))).unwrap_or_default();
+    for (id, on) in stars {
+        if let Err(e) = app.run("preset.favorite", json!({"id": id, "favorite": on})) {
+            app.toast_error(ctx, e);
         }
     }
-    let mut group: Option<&str> = None;
+    let Some((frame, pid, row)) = ctx.data(|d| d.get_temp::<(u64, String, Rect)>(egui::Id::new(PICKER_HOVER))) else { return };
+    if frame != ctx.cumulative_frame_nr() {
+        return;
+    }
+    let Some(active) = app.session.active() else { return };
+    let (Some(preset), Some(now)) = (app.session.presets.iter().find(|p| p.id == pid).cloned(), app.session.develop_of(active)) else {
+        return;
+    };
+    let look = preset.apply(&now, 1.0);
+    let tex = app.session.variant_job(active, &look, PICKER_PREVIEW_EDGE).and_then(|job| app.renderer.variant(job)).map(|t| (t.tex.id(), t.size));
+    let t = Tokens::get(ctx);
+    let side = 150.0;
+    let screen = ctx.content_rect();
+    // beside the list, on the side with room
+    let x = if row.right() + 12.0 + side <= screen.right() { row.right() + 12.0 } else { (row.left() - 12.0 - side).max(screen.left()) };
+    let y = row.top().clamp(screen.top(), (screen.bottom() - side).max(screen.top()));
+    egui::Area::new(egui::Id::new("preset-picker-preview")).order(egui::Order::Tooltip).interactable(false).fixed_pos(pos2(x, y)).show(ctx, |ui| {
+        egui::Frame::popup(ui.style()).fill(t.chrome).show(ui, |ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+            register(ui.ctx(), "presetPickerPreview", r);
+            ui.painter().rect_filled(r, 2.0, t.canvas);
+            match tex {
+                Some((id, size)) => {
+                    let fit = fit_rect(r, size);
+                    ui.painter().image(id, fit, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                }
+                None => {
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, crate::i18n::tr("Rendering…"), t.font(11.0), t.text_dim);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(60));
+                }
+            }
+        });
+    });
+}
+
+/// `size` fitted inside `r`, centred.
+fn fit_rect(r: Rect, size: [usize; 2]) -> Rect {
+    let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+    let k = (r.width() / w).min(r.height() / h);
+    Rect::from_center_size(r.center(), vec2(w * k, h * k))
+}
+
+/// A picker's open and folded groups.
+#[derive(Clone, Default)]
+struct PickerFolds {
+    open: std::collections::HashMap<String, bool>,
+    generation: u64,
+}
+
+type PickKey = (u64, String, u64, Option<String>);
+
+/// The picker's rows ([`picker_rows`]); hidden presets are left out.
+fn pick_rows(session: &lcc_engine::Session, needle: &str, folds: &PickerFolds, selected_group: Option<&str>) -> Vec<PickRow> {
+    let presets = &session.presets;
+    let hidden: std::collections::HashSet<&str> = session.preset_hidden.iter().map(String::as_str).collect();
+    let mut rows = Vec::with_capacity(presets.len() + 16);
+    let block = |rows: &mut Vec<PickRow>, key: String, label: String, items: Vec<usize>, default_open: bool| {
+        if items.is_empty() {
+            return;
+        }
+        let open = !needle.is_empty() || folds.open.get(&key).copied().unwrap_or(default_open);
+        rows.push(PickRow::Header { label, key, count: items.len(), open });
+        if open {
+            rows.extend(items.into_iter().map(PickRow::Preset));
+        }
+    };
+    if needle.is_empty() {
+        let favorites: Vec<usize> =
+            presets.iter().enumerate().filter(|(_, p)| p.favorite && !hidden.contains(p.id.as_str())).map(|(i, _)| i).collect();
+        block(&mut rows, "presetFavorites".into(), crate::i18n::tr("Favorites").to_string(), favorites, true);
+        let at_import: Vec<usize> = session
+            .preset_at_import
+            .iter()
+            .filter(|id| !hidden.contains(id.as_str()))
+            .filter_map(|id| presets.iter().position(|p| p.id == *id))
+            .collect();
+        block(&mut rows, AT_IMPORT.into(), crate::i18n::tr("At Import").to_string(), at_import, true);
+    }
+    // groups in list order, the user's own first
+    let mut groups: Vec<(&str, bool, bool, Vec<usize>)> = Vec::new();
     for (i, p) in presets.iter().enumerate() {
-        if hidden(&p.id) || !(needle.is_empty() || p.name.to_lowercase().contains(needle) || p.group.to_lowercase().contains(needle)) {
+        if hidden.contains(p.id.as_str()) || !(needle.is_empty() || p.name.to_lowercase().contains(needle) || p.group.to_lowercase().contains(needle))
+        {
             continue;
         }
-        if group != Some(p.group.as_str()) {
-            group = Some(&p.group);
-            rows.push(PickRow::Header(crate::i18n::builtin_label(&p.group, p.builtin).to_string()));
+        match groups.iter_mut().find(|g| g.0 == p.group) {
+            Some(g) => {
+                g.1 |= p.builtin;
+                g.2 |= !p.builtin;
+                g.3.push(i);
+            }
+            None => groups.push((&p.group, p.builtin, !p.builtin, vec![i])),
         }
-        rows.push(PickRow::Preset(i));
+    }
+    groups.sort_by_key(|g| !g.2);
+    for (g, builtin, user, items) in groups {
+        let label = crate::i18n::builtin_label(g, builtin && !user).to_string();
+        block(&mut rows, format!("preset:{g}"), label, items, selected_group == Some(g));
     }
     rows
 }
 
 #[derive(Clone)]
 enum PickRow {
-    /// A group's name (in the UI language for stock groups).
-    Header(String),
+    /// A group (its name in the UI language for stock groups), its fold key, how many presets
+    /// it shows and whether it is open.
+    Header { label: String, key: String, count: usize, open: bool },
     /// An index into the session's presets.
     Preset(usize),
 }

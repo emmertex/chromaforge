@@ -1829,7 +1829,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "dialog.presetsManager" => {
             let query = p.get("query").and_then(Value::as_str).unwrap_or("").to_string();
-            app.ui.dialog = Some(Dialog::PresetsManager { query, confirm: None });
+            app.ui.dialog = Some(Dialog::PresetsManager { query, confirm: None, rename: None });
             Ok(Value::Null)
         }
         "dialog.pasteSettings" => {

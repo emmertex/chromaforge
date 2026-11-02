@@ -153,7 +153,9 @@ fn choice_row(
                 .min_size(egui::vec2((ui.available_width() - 1.0).max(40.0), 20.0)),
         );
         register(ui.ctx(), format!("button:{id}"), r.rect);
-        egui::Popup::menu(&r).show(|ui| {
+        // (clicks inside keep it open: the preset picker's groups fold and its stars toggle; a
+        // choice closes it)
+        egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             if let Some(v) = menu(ui) {
                 out = Some(v);
                 ui.close();

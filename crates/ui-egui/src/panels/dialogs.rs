@@ -863,8 +863,33 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     field(ui, "Preset name", |ui| {
                         crate::widgets::named(ui.add(egui::TextEdit::singleline(name).hint_text(crate::i18n::tr("Preset name")).desired_width(f32::INFINITY)), crate::i18n::tr("Preset name"));
                     });
+                    // the user's groups in a list, and New Group… for a name typed in (LR-PRE-CREATE)
+                    let mut known_groups: Vec<String> =
+                        app.session.presets.iter().filter(|p| !p.builtin).map(|p| p.group.clone()).chain(app.session.preset_folders.iter().cloned()).collect();
+                    if !known_groups.iter().any(|g| g == lcc_engine::app_store::DEFAULT_PRESET_GROUP) {
+                        known_groups.push(lcc_engine::app_store::DEFAULT_PRESET_GROUP.to_string());
+                    }
+                    known_groups.sort_by_key(|g| g.to_lowercase());
+                    known_groups.dedup();
+                    // (an empty or new name is typed; one of the list's is picked from it)
+                    let typing = !known_groups.iter().any(|g| g == group.trim());
                     field(ui, "Group", |ui| {
-                        crate::widgets::named(ui.add(egui::TextEdit::singleline(group).hint_text(crate::i18n::tr("Group")).desired_width(f32::INFINITY)), crate::i18n::tr("Group"));
+                        if typing {
+                            let r = ui.add(egui::TextEdit::singleline(group).hint_text(crate::i18n::tr("New group name")).desired_width(f32::INFINITY));
+                            crate::widgets::register(ui.ctx(), "field:presetNewGroup", r.rect);
+                            crate::widgets::named(r, crate::i18n::tr("Group"));
+                        } else {
+                            let combo = egui::ComboBox::from_id_salt("presetGroupCombo").selected_text(group.as_str()).width(ui.available_width()).show_ui(ui, |ui| {
+                                for g in &known_groups {
+                                    ui.selectable_value(group, g.clone(), g.as_str());
+                                }
+                                ui.separator();
+                                if ui.selectable_label(false, crate::i18n::tr("New Group…")).clicked() {
+                                    group.clear();
+                                }
+                            });
+                            crate::widgets::register(ui.ctx(), "combo:presetGroup", combo.response.rect);
+                        }
                     });
                     let typed = group.trim().to_string();
                     let mut known = app.session.presets.iter().map(|p| p.group.clone()).chain(app.session.preset_folders.iter().cloned());
@@ -1098,7 +1123,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         confirm = true;
                     }
                 }
-                Dialog::PresetsManager { query, confirm } => crate::panels::presets_manager::body(app, ui, query, confirm),
+                Dialog::PresetsManager { query, confirm, rename } => crate::panels::presets_manager::body(app, ui, query, confirm, rename),
                 Dialog::ManageEffects { search, selected, rename, confirm_delete, new_group } => {
                     crate::panels::mask_effects::manage_body(app, ui, search, selected, rename, confirm_delete, new_group)
                 }
@@ -2122,7 +2147,8 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             if r.is_ok()
                 && let Some(ctx) = app.tasks.repaint.clone()
             {
-                app.toast_for(&ctx, crate::i18n::tr_format!("Updated “{name}”. Undo Update on the preset's menu puts it back.", name = name), 8.0);
+                let text = crate::i18n::tr_format!("Updated “{name}”", name = name);
+                app.toast_with_action(&ctx, text, crate::i18n::tr("Undo"), "preset.undoUpdate", json!({}), 10.0);
             }
             r
         }

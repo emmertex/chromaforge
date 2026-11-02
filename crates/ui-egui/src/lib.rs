@@ -1303,6 +1303,22 @@ impl LccApp {
         }
     }
 
+    /// A toast with a button that runs `command` with `params` (Undo after Update Preset…), for
+    /// `secs` seconds; a click runs it once and the toast goes.
+    pub fn toast_with_action(
+        &mut self,
+        ctx: &egui::Context,
+        text: impl Into<String>,
+        button: impl Into<String>,
+        command: &str,
+        params: Value,
+        secs: f64,
+    ) {
+        let until = ctx.input(|i| i.time) + secs;
+        self.ui.toast_action = Some(state::ToastAction { text: text.into(), button: button.into(), command: command.to_string(), params, until });
+        ctx.request_repaint();
+    }
+
     /// A toast that stays `secs` seconds (messages that say where to look or what to do next).
     pub fn toast_for(&mut self, ctx: &egui::Context, text: impl Into<String>, secs: f64) {
         let t = ctx.input(|i| i.time);
@@ -2251,6 +2267,7 @@ impl LccApp {
             catalog_ui::show(self, &ctx);
             panels::library_problem::show(self, &ctx);
             pick::poll(self, &ctx);
+            panels::presets::picker_frame(self, &ctx);
             panels::toast(self, &ctx);
             drop_overlay::show(self, &ctx);
             self.widgets = widgets::take_registry(&ctx);
@@ -2296,6 +2313,7 @@ impl LccApp {
         panels::left::album_drag_feedback(self, &ctx);
         panels::left::section_drag_feedback(self, &ctx);
         panels::keyword_list::drag_feedback(self, &ctx);
+        panels::presets::picker_frame(self, &ctx);
         panels::toast(self, &ctx);
         drop_overlay::show(self, &ctx);
         self.widgets = widgets::take_registry(&ctx);

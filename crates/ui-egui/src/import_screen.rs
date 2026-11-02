@@ -616,15 +616,20 @@ fn options(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             .find(|p| p.id == d.preset)
             .map(|p| crate::i18n::builtin_label(&p.name, p.builtin).to_string())
             .unwrap_or_else(|| crate::i18n::tr("None").into());
-        crate::widgets::combo_box("import-preset").selected_text(cur).height(300.0).show_ui(ui, |ui| {
-            if ui.selectable_label(d.preset.is_empty(), crate::i18n::tr("None")).clicked() {
-                d.preset.clear();
-            }
-            let selected = (!d.preset.is_empty()).then_some(d.preset.as_str());
-            if let Some(pid) = crate::panels::presets::picker_rows(ui, "import-preset", &app.session, selected) {
-                d.preset = pid;
-            }
-        });
+        crate::widgets::combo_box("import-preset")
+            .selected_text(cur)
+            .height(300.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(d.preset.is_empty(), crate::i18n::tr("None")).clicked() {
+                    d.preset.clear();
+                    ui.close();
+                }
+                let selected = (!d.preset.is_empty()).then_some(d.preset.as_str());
+                if let Some(pid) = crate::panels::presets::picker_rows(ui, "import-preset", &app.session, selected) {
+                    d.preset = pid;
+                }
+            });
     });
     // (always there: New Preset… makes one when there are none)
     form_row(ui, "Metadata", |ui| crate::import::metadata_preset_picker(app, ui, d));
