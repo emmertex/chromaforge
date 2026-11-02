@@ -102,6 +102,90 @@ impl Anchor {
     }
 }
 
+/// A component's kind in words ("Sky", "Linear Gradient", "Groom - Clothes, Hair").
+pub fn shape_name(shape: &MaskShape) -> String {
+    match shape {
+        MaskShape::Brush { .. } => "Brush".into(),
+        MaskShape::Linear { .. } => "Linear Gradient".into(),
+        MaskShape::Radial { .. } => "Radial Gradient".into(),
+        MaskShape::ColorRange { .. } => "Color Range".into(),
+        MaskShape::LuminanceRange { .. } => "Luminance Range".into(),
+        MaskShape::DepthRange { .. } => "Depth Range".into(),
+        MaskShape::Subject => "Subject".into(),
+        MaskShape::Sky => "Sky".into(),
+        MaskShape::Background => "Background".into(),
+        MaskShape::Object { .. } => "Object".into(),
+        MaskShape::Prompt { text, .. } => format!("“{}”", text.trim()),
+        MaskShape::Landscape { class, .. } => {
+            let c = match class.as_str() {
+                "naturalGround" | "natural ground" => "Natural Ground",
+                "artificialGround" | "artificial ground" => "Artificial Ground",
+                "sky" => "Sky",
+                "water" => "Water",
+                "vegetation" => "Vegetation",
+                "mountains" => "Mountains",
+                "architecture" => "Architecture",
+                other => other,
+            };
+            c.to_string()
+        }
+        MaskShape::People { person, parts, who, .. } => {
+            let who = match who {
+                Some(w) => w.label(),
+                None if *person > 0 => format!("Person {person}"),
+                None => "People".into(),
+            };
+            let parts: Vec<&str> = parts
+                .iter()
+                .map(String::as_str)
+                .filter(|p| !matches!(p.to_ascii_lowercase().as_str(), "person" | "entire person" | "entireperson"))
+                .collect();
+            if parts.is_empty() { who } else { format!("{who} - {}", parts.join(", ")) }
+        }
+    }
+}
+
+/// A mask's name from what it selects: its first component, then the others with their operation
+/// ("Background − Linear Gradient").
+pub fn content_name(m: &Mask) -> String {
+    let mut out = String::new();
+    for (k, c) in m.components.iter().enumerate() {
+        let n = shape_name(&c.shape);
+        let inv = if c.invert { " (inverted)" } else { "" };
+        if k == 0 {
+            out.push_str(&format!("{n}{inv}"));
+        } else {
+            let op = match c.op {
+                crate::MaskOp::Add => "+",
+                crate::MaskOp::Subtract => "−",
+                crate::MaskOp::Intersect => "∩",
+            };
+            out.push_str(&format!(" {op} {n}{inv}"));
+        }
+        if out.chars().count() > 80 {
+            break;
+        }
+    }
+    if out.is_empty() { "Mask".into() } else { out }
+}
+
+/// Whether `name` is a placeholder ("Mask 3", "Mask") that an automatic name may replace.
+pub fn generic_name(name: &str) -> bool {
+    let n = name.trim();
+    n.is_empty() || n == "Mask" || n.strip_prefix("Mask ").is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// A preset's name without a leading catalogue code and trailing filler ("P10 Sun Kissed" → "Sun
+/// Kissed", "P5 Enhance Portrait......" → "Enhance Portrait").
+pub fn short_preset_name(name: &str) -> String {
+    let n = name.trim().trim_end_matches(['.', ' ', '…']);
+    let mut words = n.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    let code = first.len() <= 5 && first.chars().any(|c| c.is_ascii_digit()) && first.chars().all(|c| c.is_ascii_alphanumeric());
+    let rest: Vec<&str> = words.collect();
+    if code && !rest.is_empty() { rest.join(" ") } else { n.to_string() }
+}
+
 impl MaskShape {
     /// Whether a model computes it per photo (Subject, Sky, Background, People, Landscape,
     /// Object, Describe).
@@ -248,6 +332,24 @@ mod tests {
         assert!(!m.same_recipe(&other));
         let json = serde_json::to_value(&other).unwrap();
         assert!(json.pointer("/components/0/shape/seg").is_none() && json.get("preset").is_none());
+    }
+
+    #[test]
+    fn masks_are_named_after_what_they_select() {
+        let comp = |op, shape| MaskComponent { anchor: None, name: None, op, invert: false, shape };
+        let m = Mask {
+            components: vec![
+                comp(MaskOp::Add, MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Role("Groom".into())) }),
+                comp(MaskOp::Subtract, MaskShape::Linear { start: Point::new(0.0, 0.0), end: Point::new(1.0, 1.0) }),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(content_name(&m), "Groom - Clothes − Linear Gradient");
+        assert_eq!(content_name(&Mask::default()), "Mask");
+        assert!(generic_name("Mask 3") && generic_name(" ") && !generic_name("Mask three") && !generic_name("Sky"));
+        assert_eq!(short_preset_name("P10 Sun Kissed"), "Sun Kissed");
+        assert_eq!(short_preset_name("P5 Enhance Portrait......"), "Enhance Portrait");
+        assert_eq!(short_preset_name("2026"), "2026");
     }
 
     #[test]

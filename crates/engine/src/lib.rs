@@ -1138,7 +1138,11 @@ impl Session {
     pub fn set_develop(&mut self, id: PhotoId, settings: DevelopSettings, label: &str) -> Result<()> {
         let now = (self.clock)();
         // Auto Sync carries the edit as asked; each photo then fits its own crop (review of #1990)
-        let requested = settings;
+        let mut requested = settings;
+        // an edit of a preset's provisional masks makes them the photographer's own
+        if let Some(before) = self.develop_of(id) {
+            lcc_develop::presets::settle_provisional(&before, &mut requested);
+        }
         let settings = Arc::new(self.fit_constrained_crop(id, requested.clone()));
         let crop_edited = self.develop_of(id).is_some_and(|d| d.crop.geometry != requested.crop.geometry);
         if let Some(i) = &mut self.interaction
