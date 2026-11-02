@@ -697,6 +697,8 @@ pub struct LccApp {
     pub(crate) hq_drag: region::HqDrag,
     /// The eye focus strip's results and crops (`view.eyeFocus`).
     pub(crate) eye_strip: eye_strip::EyeStrip,
+    /// Where the activity stack ended last frame (None: not shown), so overlays under it keep clear.
+    pub(crate) activity_bottom: Option<f32>,
     /// The eye job key of the photo the strip shows (for `ui.inspect`).
     pub(crate) eye_key: Option<u64>,
     /// The photo the loupe shows whole, and since when (host clock, s): after a short look its
@@ -905,6 +907,7 @@ impl LccApp {
             drag_scale: Default::default(),
             hq_drag: Default::default(),
             eye_strip: Default::default(),
+            activity_bottom: None,
             eye_key: None,
             whole_since: None,
             window_refused: None,

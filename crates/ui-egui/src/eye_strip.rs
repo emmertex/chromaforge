@@ -273,8 +273,10 @@ pub fn row_at(track: Rect, y: f32, rows_all: usize, rows_shown: usize) -> usize 
 /// Draw the strip across the top of `canvas` for photo `id` (`upcoming`: the photos likely next).
 pub fn show(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, id: PhotoId, upcoming: &[PhotoId]) {
     let t = Tokens::get(ui.ctx());
+    // the messages sit under the activity stack's cards ("Finding faces"), never behind them
+    let top = message_top(canvas, app.activity_bottom);
     let Some(model) = app.session.eye_model_dir() else {
-        needs_model(app, ui, canvas);
+        needs_model(app, ui, canvas, top);
         return;
     };
     let Some(job) = app.session.eye_job(id) else { return };
@@ -287,7 +289,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, id: PhotoId, upco
     let pill = |ui: &egui::Ui, text: String| {
         let p = ui.painter_at(canvas);
         let g = p.layout_no_wrap(text, t.font(12.0), Color32::from_gray(225));
-        let r = Rect::from_center_size(pos2(canvas.center().x, canvas.top() + 20.0), g.size() + vec2(20.0, 8.0));
+        let r = Rect::from_center_size(pos2(canvas.center().x, top + 20.0), g.size() + vec2(20.0, 8.0));
         p.rect_filled(r, 10.0, Color32::from_black_alpha(170));
         p.galley(r.min + vec2(10.0, 4.0), g, Color32::from_gray(225));
         register(ui.ctx(), "eyes:status", r);
@@ -341,12 +343,20 @@ pub fn reject_pump(app: &mut LccApp) {
     app.ui.show_toast((text, now + crate::TOAST_SECONDS, None));
 }
 
+/// The top the strip's messages are laid out from: the loupe's top, or under the activity stack.
+pub fn message_top(canvas: Rect, activity_bottom: Option<f32>) -> f32 {
+    match activity_bottom {
+        Some(b) if b.is_finite() && b + 4.0 > canvas.top() => (b + 4.0).min(canvas.bottom() - 40.0).max(canvas.top()),
+        _ => canvas.top(),
+    }
+}
+
 /// The "needs the model" strip, with its button.
-fn needs_model(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect) {
+fn needs_model(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, top: f32) {
     let t = Tokens::get(ui.ctx());
     let text = crate::i18n::tr("Eye focus needs the face AI model");
     let g = ui.painter().layout_no_wrap(text.to_string(), t.font(12.0), Color32::from_gray(225));
-    let r = Rect::from_center_size(pos2(canvas.center().x, canvas.top() + 22.0), vec2(g.size().x + 200.0, 30.0));
+    let r = Rect::from_center_size(pos2(canvas.center().x, top + 22.0), vec2(g.size().x + 200.0, 30.0));
     ui.painter_at(canvas).rect_filled(r, 8.0, Color32::from_black_alpha(170));
     ui.painter_at(canvas).galley(pos2(r.left() + 12.0, r.center().y - g.size().y / 2.0), g, Color32::from_gray(225));
     let b = Rect::from_min_max(pos2(r.right() - 176.0, r.top() + 4.0), pos2(r.right() - 6.0, r.bottom() - 4.0));
@@ -401,7 +411,7 @@ fn thumbs(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, key: u64) {
     let thumbs_w = cols.min(n.max(1)) as f32 * (w + gap) + gap;
     let band_w = thumbs_w.min(canvas.width() - 12.0).max(1.0);
     let band_h = rows_shown as f32 * row_h + gap * 0.5;
-    let band = Rect::from_min_size(pos2(canvas.center().x - band_w / 2.0, canvas.top() + 6.0), vec2(band_w, band_h));
+    let band = Rect::from_min_size(pos2(canvas.center().x - band_w / 2.0, message_top(canvas, app.activity_bottom) + 6.0), vec2(band_w, band_h));
     if scrollable {
         // the wheel over the band, a drag on it, or a press / drag on its bar move the rows
         let wheel = ui.input(|i| {
@@ -514,6 +524,18 @@ pub fn zoom_to(app: &mut LccApp, center: [f32; 2]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn messages_sit_under_the_activity_stack() {
+        let canvas = Rect::from_min_size(pos2(0.0, 40.0), vec2(800.0, 600.0));
+        assert_eq!(message_top(canvas, None), 40.0);
+        assert_eq!(message_top(canvas, Some(10.0)), 40.0);
+        let top = message_top(canvas, Some(120.0));
+        assert!(top >= 120.0, "{top}");
+        // never pushed off the loupe, junk ignored
+        assert!(message_top(canvas, Some(5000.0)) < canvas.bottom());
+        assert_eq!(message_top(canvas, Some(f32::NAN)), 40.0);
+    }
 
     #[test]
     fn thumbnails_shrink_to_fit_and_never_grow() {
