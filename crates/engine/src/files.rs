@@ -3093,7 +3093,8 @@ pub(crate) mod tests {
         assert!(!p.develops_raw());
         // rendered like the JPEG it is: relative white balance, display tone curve, no raw defaults
         assert_eq!(SourceInfo { native_long: None, ..crate::media::source_info(&p) }, SourceInfo::default());
-        assert_eq!(*p.develop, lcc_develop::DevelopSettings::default());
+        // (new photos start with Constrain Crop on, which is not an edit)
+        assert!(p.develop.is_unedited() && p.develop.geometry.constrain_crop, "{:?}", p.develop);
         assert!(s.render_job(id, 48, 48, false, true).unwrap().run().rendered.is_ok());
         // agents see it
         let q = s.execute("catalog.query", &json!({"filter": {}})).unwrap();

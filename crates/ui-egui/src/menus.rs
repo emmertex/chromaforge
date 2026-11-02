@@ -256,8 +256,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.faceModel", "Add Face Model…", None, ""),
     ("dialog.newSmartAlbum", "New Smart Collection from Filter…", Some("Cmd+Alt+N"), "Library"),
     ("dialog.createPreset", "Create Preset…", Some("Cmd+Shift+P"), "Photo>Develop Settings"),
+    ("dialog.presetsManager", "Manage Presets…", None, "Photo>Develop Settings"),
     ("dialog.autoStack", "Auto-Stack by Capture Time…", None, "Photo>Stack"),
     ("dialog.copySettings", "Choose Edit Settings to Copy…", Some("Cmd+Shift+C"), "Photo>Develop Settings"),
+    // {id}: Update Preset with Current Settings, pre-ticked with what the preset holds
+    ("dialog.updatePreset", "Update Preset with Current Settings…", None, ""),
     ("dialog.pasteSettings", "Paste Selected Settings…", Some("Cmd+Shift+V"), "Photo>Develop Settings"),
     ("dialog.syncSettings", "Sync Settings…", Some("Cmd+Shift+S"), "Photo>Develop Settings"),
     ("view.focusSearch", "Find…", Some("Cmd+F"), "Library"),
@@ -398,23 +401,28 @@ pub const UI_COMMANDS: &[UiCommand] = &[
 ];
 
 fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
+    app.ui.note_right();
     if app.ui.right == p && crate::docking::exposed(app, crate::docking::Panel::Tools) {
-        // Classic Develop: a tool's drawer closes back to the panels under it, as in Lightroom Classic
-        let drawer = app.ui.module == crate::module::ModuleId::Develop && p != RightPanel::Edit && p.is_edit_tool();
-        // toggled off: back to exactly what the right column showed before the toggle opened it,
-        // closed when it was closed
+        // toggled off: back to exactly what the right column showed before this toggle opened it
+        // (closed when it was closed); otherwise a tool closes back to the panel shown before it
+        // (Edit's panels under a Develop drawer, as in Lightroom Classic), any other panel hides
         let before = app.ui.toggle_return.take().and_then(|(opened, before)| (opened == p && before != p).then_some(before));
         app.ui.right = match before {
-            Some(before) => before,
-            None if drawer => RightPanel::Edit,
+            Some(before) => {
+                app.ui.tool_return = None;
+                before
+            }
+            None if p.is_tool() => app.ui.leave_tool(),
             None => RightPanel::None,
         };
+        app.ui.note_right();
         app.toast(ctx, crate::i18n::tr_format!("{name} Off", name = crate::i18n::tr(name)));
     } else {
         // a panel hidden behind another dock tab was not on show: nothing to come back to but it
         let before = if app.ui.right == p { RightPanel::None } else { app.ui.right };
         app.ui.toggle_return = Some((p, before));
         app.ui.right = p;
+        app.ui.note_right();
         // one panel at a time on the right: a tool takes Presets' place, and unfolds the side
         app.ui.presets = false;
         app.ui.right_collapsed = false;
@@ -1088,8 +1096,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                 },
             };
-            let tab = section_tab.or_else(|| p.get("tab").and_then(Value::as_str)).unwrap_or("general");
-            if !crate::panels::settings::TABS.iter().any(|(id, _)| *id == tab) {
+            // without a tab, the section shown last (else General)
+            let last = app.ui.settings.settings_tab.clone();
+            let last = if crate::settings_screen::known(&last) { last.as_str() } else { "general" };
+            let tab = section_tab.or_else(|| p.get("tab").and_then(Value::as_str)).unwrap_or(last);
+            if !crate::panels::settings::TABS.iter().any(|(id, _)| *id == tab) && !crate::settings_screen::known(tab) {
                 let tabs: Vec<&str> = crate::panels::settings::TABS.iter().map(|(id, _)| *id).collect();
                 return Some(Err(format!("unknown settings tab `{tab}` ({})", tabs.join("|"))));
             }
@@ -1667,7 +1678,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 app.end_midi_interaction();
                 let _ = app.session.end_interaction();
                 app.ui.tool.clear();
-                app.ui.right = Edit;
+                // back to the panel shown before the tool (hidden if it was)
+                app.ui.right = app.ui.leave_tool();
             }
             Ok(Value::Null)
         }
@@ -1867,12 +1879,26 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "dialog.createPreset" => {
-            app.ui.dialog = Some(Dialog::create_preset());
+            app.ui.dialog = Some(Dialog::create_preset(&app.session));
+            Ok(Value::Null)
+        }
+        "dialog.updatePreset" => {
+            let Some(id) = p.get("id").and_then(Value::as_str).map(str::to_string) else { return Some(Err("missing `id`".into())) };
+            let Some(preset) = app.session.presets.iter().find(|x| x.id == id) else { return Some(Err(format!("unknown preset `{id}`"))) };
+            if preset.builtin {
+                return Some(Err("built-in presets can't be changed".into()));
+            }
+            let (name, groups) = (preset.name.clone(), lcc_develop::SettingsPick::of_partial(&preset.settings).to_ids());
+            app.ui.dialog = Some(Dialog::UpdatePreset { id, name, groups });
+            Ok(Value::Null)
+        }
+        "dialog.presetsManager" => {
+            let query = p.get("query").and_then(Value::as_str).unwrap_or("").to_string();
+            app.ui.dialog = Some(Dialog::PresetsManager { query, confirm: None, rename: None });
             Ok(Value::Null)
         }
         "dialog.pasteSettings" => {
-            let groups =
-                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
+            let groups = app.session.dialogs.copy.to_ids();
             app.ui.dialog = Some(Dialog::PasteSettings { groups });
             Ok(Value::Null)
         }
@@ -1882,14 +1908,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "dialog.syncSettings" => {
-            let groups =
-                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
-            app.ui.dialog = Some(Dialog::SyncSettings { groups, controls: Vec::new() });
+            let groups = app.session.dialogs.copy.to_ids();
+            let _ = groups;
+            app.ui.dialog = Some(Dialog::SyncSettings { groups: app.session.dialogs.sync.to_ids(), controls: Vec::new() });
             Ok(Value::Null)
         }
         "dialog.copySettings" => {
-            let groups =
-                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
+            let groups = app.session.dialogs.copy.to_ids();
             app.ui.dialog = Some(Dialog::CopySettings { groups });
             Ok(Value::Null)
         }
@@ -2982,6 +3007,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "photo.editInPhotoCraft" | "photo.editInExternal" => app.session.active().is_some() && app.services.open_with.is_some(),
         "app.exportPrevious" => app.session.active().is_some() && app.session.last_export.is_some(),
         "dialog.pasteSettings" => app.session.active().is_some() && app.session.clipboard.is_some(),
+        "dialog.updatePreset" => app.session.active().is_some(),
         "dialog.syncSettings" => app.session.active().is_some() && app.session.selection.ids.len() > 1,
         "photo.openOriginalInExternal" => {
             // only a file type the app reads can be handed over (#2135); the extension alone

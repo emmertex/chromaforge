@@ -1,0 +1,3 @@
+## Presets
+
+- **Presets Manager, pickers and toasts:** rename built-in presets (`preset.rename`, `preset.move`; undone by `preset.restoreBuiltins`), group Rename / Hide All (`preset.hideGroup`) / Delete, drag and drop, Import / Export / New Group; folding pickers with stars and a background hover render; New Preset's group list with New Group…; toasts with an action button (Undo after Update Preset); Settings switch for `store.useLibrary`; the grid sort is a shared habit; `store.gatherPresets` reads the library's own backup folder; catalog backups include `prefs.json`. Thanks @OneSlips. (no PR)

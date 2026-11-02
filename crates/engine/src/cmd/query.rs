@@ -228,7 +228,7 @@ pub fn specs() -> Vec<CommandSpec> {
             ))
         }),
         cmd!(query "presets.list", "List Presets", [], None, "{}", always, |s, _| {
-            Ok(Value::Array(s.presets.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": p.favorite, "builtin": p.builtin})).collect()))
+            Ok(Value::Array(s.presets.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": p.favorite, "builtin": p.builtin, "atImport": s.preset_at_import.contains(&p.id), "hidden": s.preset_hidden.contains(&p.id)})).collect()))
         }),
         cmd!(query "presets.folders", "List Preset Folders", [], None, "{} — all preset folders (user, built-in, and empty folders)", always, |s, _| {
             let mut set = std::collections::BTreeSet::new();
@@ -267,11 +267,12 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Array(builtin.chain(imported).collect()))
         }),
         cmd!(query "profiles.menu", "Profile Menu", [], None, "{} — favourites, recent (newest first) and groups", always, |s, _| Ok(s.profile_menu())),
-        cmd!(query "history.list", "List History", [], None, "{id?} — returns {history: labels oldest first, cursor: index of the step the settings are at (later steps can be returned to), versions}", has_active, |s, p| {
+        cmd!(query "history.list", "List History", [], None, "{id?} — returns {history: labels oldest first, batches: per step the id of the edit of several photos it belongs to (null: this photo's own edit), cursor: index of the step the settings are at (later steps can be returned to), versions}", has_active, |s, p| {
             let id = photo_arg(s, p, "history.list")?;
             let ph = s.catalog.photo(id).ok_or_else(|| bad("history.list", "no such photo"))?;
             Ok(json!({
                 "history": ph.history.iter().map(|h| h.label.clone()).collect::<Vec<_>>(),
+                "batches": ph.history.iter().map(|h| h.batch).collect::<Vec<_>>(),
                 "cursor": ph.history_index(),
                 "versions": ph.versions.iter().map(|v| json!({"name": v.name, "created": v.created})).collect::<Vec<_>>(),
             }))

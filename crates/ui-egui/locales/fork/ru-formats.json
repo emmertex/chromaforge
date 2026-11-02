@@ -1,11 +1,14 @@
 {
   " · {queued} waiting": " · в очереди: {queued}",
   "Add {n} New Photos…": "Добавить новые фото ({n})…",
+  "Apply to {n} Selected Photos": "Применить к {n} выбранным фото",
+  "Built-in presets restored ({n} changes undone)": "Встроенные пресеты восстановлены (отменено изменений: {n})",
   "Collection imported: {n} photos found, {m} not in this library": "Коллекция импортирована: найдено фото: {n}, нет в библиотеке: {m}",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "Цветовое пространство: Rec. 2020 {curve} (HDR AVIF)",
   "Create Folder in “{name}”": "Создать папку в «{name}»",
   "Delete from Disk moves {n} files to the system trash.": "«Удалить с диска» перемещает файлы ({n}) в системную корзину.",
   "Delete these {count} photos from disk, or only remove them from the library?": "Удалить эти фото ({count}) с диска или только убрать их из библиотеки?",
+  "Delete {n} presets": "Удалить пресеты: {n}",
   "Denoising {name}: {done} of {total} tiles{}": "Шумоподавление {name}: фрагменты — {done} из {total}{}",
   "Discard 1:1 Previews ({scope})": "Удалить просмотры 1:1 ({scope})",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "Загружено названий мест: {n} (GeoNames, CC-BY 4.0)",
@@ -21,6 +24,7 @@
   "Finish or cancel installing {name} first": "Сначала завершите или отмените установку {name}",
   "Folder “{}”": "Папка «{}»",
   "Geotagged {n} photo(s)": "Геометки поставлены фото: {n}",
+  "Goes into the group “{group}” that exists already.": "Попадёт в уже существующую группу «{group}».",
   "Healed {n} blemishes": "Исправлено дефектов кожи: {n}",
   "Imported {n} export preset{}": "Импортировано наборов экспорта: {n}{:.0}",
   "Imported {n} metadata preset{}": "Импортировано наборов метаданных: {n}{:.0}",
@@ -36,6 +40,7 @@
   "Page {n}": "Страница {n}",
   "Page {n} (blank)": "Страница {n} (пустая)",
   "Page {page} of {pages}": "Страница {page} из {pages}",
+  "Preset {name} on {n} photos": "Пресет {name} на {n} фото",
   "Printed {n} page(s) to file": "Напечатано страниц в файл: {n}",
   "Remove {what} from the library for good?": "Окончательно удалить {what} из библиотеки?",
   "Running on the processor: {}.": "Работает на процессоре: {}.",
@@ -81,6 +86,8 @@
   "{n} photos relinked": "Перепривязано фото: {n}",
   "{n} photos shared: {u}": "Опубликовано фото: {n}: {u}",
   "{n} photos · {frames} frames · {secs} s": "Фото: {n} · кадров: {frames} · {secs} с",
+  "{n} presets from your other libraries were added.": "Добавлено пресетов из других ваших библиотек: {n}.",
+  "{n} presets, {h} hidden": "Пресетов: {n}, скрыто: {h}",
   "{n} printer(s) found": "Найдено принтеров: {n}",
   "{n} selected": "Выбрано: {n}",
   "{path} · {count} photos": "{path} · фото: {count}",
@@ -91,5 +98,7 @@
   "{} MB": "{} МБ",
   "{} keys": "Клавиши модуля {}",
   "{} of {} from {host}": "{} из {} с {host}",
-  "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}. Хранятся в папке «denoise» библиотеки; при достижении ограничения первыми удаляются самые старые изображения, которые не использует ни одно фото."
+  "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}. Хранятся в папке «denoise» библиотеки; при достижении ограничения первыми удаляются самые старые изображения, которые не использует ни одно фото.",
+  "“{name}” has its old settings again": "У «{name}» снова прежние настройки",
+  "“{name}” takes the active photo's settings. Its name, group, place and marks stay.": "«{name}» получает настройки активного фото. Название, группа, место и отметки сохраняются."
 }

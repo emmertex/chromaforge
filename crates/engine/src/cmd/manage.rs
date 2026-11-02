@@ -502,5 +502,41 @@ pub fn specs() -> Vec<CommandSpec> {
             s.save_prefs()?;
             Ok(json!({"deleted": name}))
         }),
+        // ---- what dialogs remember
+        cmd!(
+            "dialog.remember",
+            "Remember Dialog Choices",
+            [],
+            None,
+            "{dialog: id (at most 64 characters), choices: any JSON (at most 64 KB)} — keep a dialog's last choices across restarts and libraries; null forgets them",
+            always,
+            |s, p| {
+                let c = "dialog.remember";
+                let dialog =
+                    str_param(p, "dialog").map(str::trim).filter(|d| !d.is_empty() && d.len() <= 64).ok_or_else(|| bad(c, "missing `dialog`"))?;
+                let choices = p.get("choices").cloned().unwrap_or(Value::Null);
+                if choices.is_null() {
+                    if s.dialogs.other.remove(dialog).is_some() {
+                        s.save_prefs()?;
+                    }
+                    return Ok(json!({"dialog": dialog}));
+                }
+                if serde_json::to_vec(&choices).ok().is_none_or(|b| b.len() > crate::app_store::MAX_REMEMBERED_BYTES) {
+                    return Err(bad(c, "the choices are too large to remember"));
+                }
+                if !s.dialogs.other.contains_key(dialog) && s.dialogs.other.len() >= crate::app_store::MAX_REMEMBERED_DIALOGS {
+                    return Err(bad(c, "too many dialogs remembered"));
+                }
+                if s.dialogs.other.get(dialog) != Some(&choices) {
+                    s.dialogs.other.insert(dialog.to_string(), choices);
+                    s.save_prefs()?;
+                }
+                Ok(json!({"dialog": dialog}))
+            }
+        ),
+        cmd!(query "dialog.recall", "Recall Dialog Choices", [], None, "{dialog} → the choices dialog.remember kept (null: none)", always, |s, p| {
+            let dialog = str_param(p, "dialog").ok_or_else(|| bad("dialog.recall", "missing `dialog`"))?;
+            Ok(s.dialogs.other.get(dialog).cloned().unwrap_or(Value::Null))
+        }),
     ]
 }

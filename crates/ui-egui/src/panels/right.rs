@@ -71,7 +71,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             body = Rect::from_min_max(pos2(body.left(), bottom), body.max);
         }
         ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
-            let mut area = egui::ScrollArea::vertical().id_salt("right-scroll").auto_shrink([false, false]);
+            // each panel keeps its own scroll position: Edit is where it was after Masking or Crop
+            let mut area = egui::ScrollArea::vertical().id_salt(("right-scroll", app.ui.right)).auto_shrink([false, false]);
             if let Some(offset) = held {
                 area = area.vertical_scroll_offset(offset);
             }
@@ -782,6 +783,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         step: 1.0,
         decimals: 0,
         track: lcc_develop::Track::Plain,
+        shade: lcc_develop::Shade::Plain,
     };
     let (cur_size, cur_feather, cur_opacity) = if let Some((_, sp)) = sel.as_ref().filter(|_| bound) {
         (sp.size * 1000.0, sp.feather, sp.opacity)
@@ -955,6 +957,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         step: 1.0,
         decimals: 0,
         track: lcc_develop::Track::Plain,
+        shade: lcc_develop::Shade::Plain,
     };
     let out = slider(ui, &spec, app.ui.spots_threshold as f64, app.ui.visualize_spots, None);
     if let Some(v) = out.value {

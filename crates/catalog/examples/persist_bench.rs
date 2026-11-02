@@ -55,7 +55,7 @@ fn photo(c: &mut Catalog, i: u64) -> Photo {
         let s = Arc::new(d);
         p.develop = s.clone();
         p.edited = Some("2026-09-30T12:00:00".into());
-        p.history = vec![HistoryStep { label: "Exposure".into(), settings: s }];
+        p.history = vec![HistoryStep { label: "Exposure".into(), settings: s, batch: None }];
         p.rating = (i % 6) as u8;
     }
     p

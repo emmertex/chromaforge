@@ -12,8 +12,8 @@ pub mod retouch;
 pub mod segmask;
 pub mod settings;
 
-pub use controls::{CONTROLS, ControlSpec, Section, Track};
-pub use presets::{Preset, SettingsGroup, apply_partial, extract_groups};
+pub use controls::{CONTROLS, ControlSpec, Section, Shade, Track};
+pub use presets::{Preset, SettingItem, SettingsGroup, SettingsPick, apply_partial, extract_groups};
 pub use retouch::{MAX_RETOUCH_MASKS, PartRequest, Retouch, RetouchAnalysis, RetouchMask, RetouchPart, RetouchTeeth};
 pub use segmask::SegMask;
 pub use settings::*;
@@ -111,6 +111,8 @@ impl DevelopSettings {
         let d = DevelopSettings::default();
         a.wb = d.wb;
         a.process = d.process;
+        // (new photos start with Constrain Crop on: not an edit)
+        a.geometry.constrain_crop = d.geometry.constrain_crop;
         a == d
     }
 

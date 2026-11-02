@@ -22,7 +22,7 @@ pub enum ViewMode {
 }
 
 /// The right-hand tool/panel shown next to the tool strip.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RightPanel {
     #[default]
@@ -41,6 +41,12 @@ pub enum RightPanel {
 }
 
 impl RightPanel {
+    /// A tool that takes the panel's place while it is used (Crop, Remove, Masking, Red Eye): on
+    /// closing, the panel shown before it comes back ([`UiState::leave_tool`]).
+    pub fn is_tool(self) -> bool {
+        matches!(self, RightPanel::Crop | RightPanel::Remove | RightPanel::Masking | RightPanel::RedEye)
+    }
+
     pub fn is_edit_tool(self) -> bool {
         matches!(self, RightPanel::Edit | RightPanel::Profiles | RightPanel::Crop | RightPanel::Remove | RightPanel::Masking | RightPanel::RedEye)
     }
@@ -427,6 +433,9 @@ pub struct AppSettings {
     /// A click on the dimmed backdrop around a dialog closes it, like Esc (off: a stray click
     /// never throws away a dialog's choices).
     pub close_dialogs_outside: bool,
+    /// The Settings section shown last: Settings… opens there again (LR-PREF-WINDOW).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub settings_tab: String,
     /// GPU rendering allowed (`app.gpu`).
     pub gpu: bool,
     /// The graphics interface GPU rendering uses (Settings ▸ Performance; applies at next launch).
@@ -487,6 +496,13 @@ pub struct AppSettings {
     pub ui_font_size: UiFontSize,
     /// Panel sliders on one row or two (Settings ▸ Interface).
     pub slider_layout: crate::theme::SliderLayout,
+    /// The Compact layout (Settings ▸ General ▸ Layout, `view.compactLayout`): Classic's panels
+    /// drawn denser (one-line slider rows, short section headers, sharper corners). Off: Classic
+    /// as it always was. The Modern layout overrides it.
+    pub compact_layout: bool,
+    /// Auto Sync (Edit ▸ Auto Sync, `develop.autoSync`), remembered app-wide: it stays as left
+    /// whichever library is open and after a restart.
+    pub auto_sync: bool,
     /// Panel slider names and values compact or at the regular text size (Settings ▸ Interface).
     pub slider_text: crate::theme::SliderText,
     /// How dragging a slider and scrubbing its value follow the pointer (Settings ▸ Interface).
@@ -614,6 +630,7 @@ impl Default for AppSettings {
             confirm_delete: true,
             ask_before_move: true,
             close_dialogs_outside: false,
+            settings_tab: String::new(),
             gpu: true,
             gpu_backend: GpuBackend::Auto,
             compose_window: false,
@@ -639,6 +656,8 @@ impl Default for AppSettings {
             light_theme: LightTheme::Silver,
             ui_font_size: UiFontSize::default(),
             slider_layout: Default::default(),
+            compact_layout: false,
+            auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
             favorite_themes: Vec::new(),
@@ -925,6 +944,17 @@ pub enum KeywordChips {
 /// shown in, if any.
 pub type Toast = (String, f64, Option<lcc_catalog::ColorLabel>);
 
+/// A toast with a button (Undo…): its text, the button's label, the command the button runs and
+/// its parameters, and when it goes (app time, s). One at a time; a newer one replaces it.
+#[derive(Clone, Debug)]
+pub struct ToastAction {
+    pub text: String,
+    pub button: String,
+    pub command: String,
+    pub params: serde_json::Value,
+    pub until: f64,
+}
+
 /// The most toasts on screen at once: a newer one pushes the oldest out.
 pub const MAX_TOASTS: usize = 3;
 
@@ -965,6 +995,13 @@ pub struct UiState {
     /// toggle opens a panel.
     #[serde(skip)]
     pub toggle_return: Option<(RightPanel, RightPanel)>,
+    /// The panel on show before a tool panel ([`RightPanel::is_tool`]) took its place, put back
+    /// when the tool closes ([`RightPanel::None`]: the panel was hidden, and stays hidden).
+    #[serde(skip)]
+    pub tool_return: Option<RightPanel>,
+    /// The panel [`UiState::note_right`] last saw.
+    #[serde(skip)]
+    pub right_seen: RightPanel,
     /// The right panel (and Library's right column) is folded away by the tool strip's top button;
     /// the strip stays, and choosing any of its tools unfolds it.
     pub right_collapsed: bool,
@@ -1411,6 +1448,9 @@ pub struct UiState {
     /// Transient toast text, expiry (seconds of app time), and optional colour-label styling.
     #[serde(skip)]
     pub toasts: Vec<Toast>,
+    /// The toast with a button, if one is showing ([`ToastAction`]).
+    #[serde(skip)]
+    pub toast_action: Option<ToastAction>,
     /// The result of the last Find Missing Photos (it searches in the background).
     #[serde(skip)]
     pub last_find_missing: Option<serde_json::Value>,
@@ -1455,18 +1495,23 @@ pub struct UiState {
 /// Settings group ids (`SettingsGroup` serde names) a new preset includes by default: everything
 /// but crop, masks, spots and red eye.
 pub fn default_preset_groups() -> Vec<String> {
-    lcc_develop::SettingsGroup::default_copy().iter().filter_map(|g| serde_json::to_value(g).ok()?.as_str().map(str::to_string)).collect()
+    lcc_develop::SettingsPick::of_groups(lcc_develop::SettingsGroup::default_preset()).to_ids()
 }
 
 impl Dialog {
     /// A fresh Create Preset dialog.
-    pub fn create_preset() -> Dialog {
-        Dialog::CreatePreset { name: String::new(), group: "User Presets".into(), groups: default_preset_groups() }
+    /// Ticked and grouped as the last one was (the session's [`lcc_engine::app_store::DialogMemory`]).
+    pub fn create_preset(s: &lcc_engine::Session) -> Dialog {
+        Dialog::CreatePreset { name: String::new(), group: s.dialogs.preset_group.clone(), groups: s.dialogs.new_preset.to_ids() }
     }
 
     /// A fresh Create Preset dialog pre-filling `group`.
-    pub fn create_preset_in(group: Option<&str>) -> Dialog {
-        Dialog::CreatePreset { name: String::new(), group: group.unwrap_or("User Presets").into(), groups: default_preset_groups() }
+    pub fn create_preset_in(s: &lcc_engine::Session, group: Option<&str>) -> Dialog {
+        Dialog::CreatePreset {
+            name: String::new(),
+            group: group.map_or_else(|| s.dialogs.preset_group.clone(), str::to_string),
+            groups: s.dialogs.new_preset.to_ids(),
+        }
     }
 
     /// A fresh Create Preset Folder dialog.
@@ -1708,6 +1753,13 @@ pub enum Dialog {
         groups: Vec<String>,
         controls: Vec<String>,
     },
+    /// Update Preset with Current Settings: which settings preset `id` keeps (pre-ticked with what it
+    /// holds).
+    UpdatePreset {
+        id: String,
+        name: String,
+        groups: Vec<String>,
+    },
     /// Paste Selected Settings: which of the copied groups to paste.
     PasteSettings {
         groups: Vec<String>,
@@ -1797,6 +1849,14 @@ pub enum Dialog {
         rename: Option<(String, String)>,
         confirm_delete: bool,
         new_group: String,
+    },
+    /// The Presets Manager (LR-PRE-MANAGE): the search; the row whose Delete (or Restore
+    /// Built-ins) waits for a yes (`preset:<id>`, `group:<path>`, `restore`); the row being renamed
+    /// in place and its text.
+    PresetsManager {
+        query: String,
+        confirm: Option<String>,
+        rename: Option<(String, String)>,
     },
     /// Confirm deleting mask effect presets.
     DeleteEffects {
@@ -1955,6 +2015,8 @@ impl Default for UiState {
             right_width: RIGHT_WIDTH.default,
             right: RightPanel::Edit,
             toggle_return: None,
+            tool_return: None,
+            right_seen: RightPanel::Edit,
             right_collapsed: false,
             right_hidden: RightPanel::None,
             presets: false,
@@ -2130,6 +2192,7 @@ impl Default for UiState {
             compare: None,
             reference: None,
             toasts: Vec::new(),
+            toast_action: None,
             last_find_missing: None,
             last_find_missing_result: None,
             #[cfg(test)]
@@ -2194,6 +2257,30 @@ impl UiState {
             *slot = hidden;
         }
         self.grading_hidden = h.iter().any(|x| *x).then_some((photo, h));
+    }
+
+    /// Notes the panel on show: a tool panel opened from another panel (or from none) remembers
+    /// that one, to put it back when the tool closes; any other panel forgets it.
+    pub fn note_right(&mut self) {
+        if self.right == self.right_seen {
+            return;
+        }
+        if self.right.is_tool() {
+            if !self.right_seen.is_tool() {
+                self.tool_return = Some(self.right_seen);
+            }
+        } else {
+            self.tool_return = None;
+        }
+        self.right_seen = self.right;
+    }
+
+    /// The panel to show when the tool panel on show closes: the one shown before it, or none
+    /// when the panel was hidden (Edit when nothing is known).
+    pub fn leave_tool(&mut self) -> RightPanel {
+        self.note_right();
+        let back = self.tool_return.take().unwrap_or(RightPanel::Edit);
+        if back.is_tool() { RightPanel::Edit } else { back }
     }
 
     /// A right-panel section that folds by its title is folded shut.

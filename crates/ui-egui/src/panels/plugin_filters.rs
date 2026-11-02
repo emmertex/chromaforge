@@ -357,6 +357,7 @@ fn slider_spec(uid: u32, key: &str, lo: f64, hi: f64, def: f64, int: bool) -> Co
         step: 10f64.powi(-i32::from(decimals)),
         decimals,
         track: if lo < 0.0 && hi > 0.0 { Track::Centered } else { Track::Plain },
+        shade: lcc_develop::Shade::Plain,
     }
 }
 

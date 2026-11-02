@@ -136,6 +136,8 @@ mod tests_color_readout;
 #[cfg(test)]
 mod tests_colour_export;
 #[cfg(test)]
+mod tests_compact_layout;
+#[cfg(test)]
 mod tests_compare;
 #[cfg(test)]
 mod tests_copy_paste_dialogs;
@@ -143,6 +145,8 @@ mod tests_copy_paste_dialogs;
 mod tests_crop_aspects;
 #[cfg(test)]
 mod tests_crop_frame;
+#[cfg(test)]
+mod tests_crop_lock_kept;
 #[cfg(test)]
 mod tests_crop_rotate;
 #[cfg(test)]
@@ -270,6 +274,8 @@ mod tests_open_lightroom;
 #[cfg(test)]
 mod tests_osd;
 #[cfg(test)]
+mod tests_panel_restore;
+#[cfg(test)]
 mod tests_panels;
 #[cfg(test)]
 mod tests_preset_favorites;
@@ -277,6 +283,8 @@ mod tests_preset_favorites;
 mod tests_preset_folders;
 #[cfg(test)]
 mod tests_preset_import;
+#[cfg(test)]
+mod tests_presets_manager;
 #[cfg(test)]
 mod tests_preview_limit;
 #[cfg(test)]
@@ -306,6 +314,8 @@ mod tests_scroll;
 #[cfg(test)]
 mod tests_settings_profiles;
 #[cfg(test)]
+mod tests_settings_window;
+#[cfg(test)]
 mod tests_slider_drag;
 #[cfg(test)]
 mod tests_slider_reset;
@@ -315,6 +325,8 @@ mod tests_slideshow;
 mod tests_solo_sections;
 #[cfg(test)]
 mod tests_space_hand;
+#[cfg(test)]
+mod tests_space_hold;
 #[cfg(test)]
 mod tests_surface;
 #[cfg(test)]
@@ -331,6 +343,8 @@ mod tests_thumb_churn;
 mod tests_titlebar;
 #[cfg(test)]
 mod tests_tool_overlay;
+#[cfg(test)]
+mod tests_tool_pan;
 #[cfg(test)]
 mod tests_tool_row;
 #[cfg(test)]
@@ -858,7 +872,18 @@ impl LccApp {
 
     /// How panel sliders are laid out: always pills in the Modern layout, else as Settings say.
     pub(crate) fn slider_layout(&self) -> theme::SliderLayout {
-        if self.ui.modern.enabled { theme::SliderLayout::Pill } else { self.ui.settings.slider_layout }
+        if self.ui.modern.enabled {
+            theme::SliderLayout::Pill
+        } else if self.compact() {
+            theme::SliderLayout::OneRow
+        } else {
+            self.ui.settings.slider_layout
+        }
+    }
+
+    /// Whether the Compact layout is drawn: chosen, and the Modern layout is off.
+    pub(crate) fn compact(&self) -> bool {
+        self.ui.settings.compact_layout && !self.ui.modern.enabled
     }
 
     pub fn new(mut session: Session, services: Services) -> Self {
@@ -1064,7 +1089,25 @@ impl LccApp {
         } else {
             params
         };
+        // an edit of the crop on an untouched photo keeps the lock the tool shows
+        let commits = self.session.commits();
+        let stored_lock = touches_crop(id, &params, self.session.active()) && self.store_shown_crop_lock();
         let r = self.session.execute(id, &params).map_err(CommandError::from);
+        if stored_lock && self.session.interaction.is_none() {
+            let steps = usize::try_from(self.session.commits().wrapping_sub(commits)).unwrap_or(0);
+            match &r {
+                // the lock and the edit are one undo step, named after the edit
+                Ok(_) if steps >= 2 => {
+                    let label = self.session.undo.last().map(|e| e.label.clone()).unwrap_or_default();
+                    self.session.merge_undo(steps, &label);
+                }
+                // the edit was refused or changed nothing: take the lock back off as well
+                _ if steps == 1 && self.session.undo_step().is_ok() => {
+                    self.session.redo.pop();
+                }
+                _ => {}
+            }
+        }
         if let Ok(v) = &r {
             edit_in::after_command(self, id, v);
         }
@@ -1195,20 +1238,40 @@ impl LccApp {
 
     /// Called only after a crop gesture begins, inside its undo transaction.
     pub(crate) fn begin_crop(&mut self) -> Result<(), String> {
-        // nothing chosen yet: the photo's own shape, as `crop_tool_aspect` shows it
-        let aspect = self.ui.crop_default_aspect.clone().unwrap_or_else(|| serde_json::json!("original"));
-        if self.session.interaction.is_some()
-            && self.session.active().and_then(|id| self.session.develop_of(id)).is_some_and(|d| d.crop == lcc_develop::Crop::default())
-            && aspect != serde_json::json!("free")
-            // the remembered ratio, turned like the new photo's crop (as a named ratio is)
-            && let Err(e) = self.session.execute("crop.aspect", &serde_json::json!({"aspect": aspect, "orientation": "crop"}))
-        {
-            // A remembered value the command refuses (a hand-edited settings file) would refuse
-            // every crop drag on an untouched photo: forget it and let this drag go ahead.
-            self.ui.crop_default_aspect = None;
-            self.ui.status = e.to_string();
+        if self.session.interaction.is_some() {
+            self.store_shown_crop_lock();
         }
         Ok(())
+    }
+
+    /// Before an edit of an untouched photo's crop (a drag, the angle, Straighten, Auto, a flip):
+    /// store the ratio the tool shows locked into the crop itself. Until then the lock is only
+    /// shown (`crop_tool_aspect`), and the edit would leave the crop touched with no lock, which
+    /// reads as unlocked (nothing but the lock button and A unlocks it). Returns whether it
+    /// stored one (one undo step of its own outside an interaction, which the caller merges with
+    /// the edit). Only this photo: Auto Sync carries the edit, not a ratio fitted to this
+    /// photo's shape.
+    pub(crate) fn store_shown_crop_lock(&mut self) -> bool {
+        // nothing chosen yet: the photo's own shape, as `crop_tool_aspect` shows it
+        let aspect = self.ui.crop_default_aspect.clone().unwrap_or_else(|| serde_json::json!("original"));
+        let untouched = self.session.active().and_then(|id| self.session.develop_of(id)).is_some_and(|d| d.crop == lcc_develop::Crop::default());
+        if !untouched || aspect == serde_json::json!("free") {
+            return false;
+        }
+        let sync = std::mem::replace(&mut self.session.auto_sync, false);
+        // the remembered ratio, turned like the new photo's crop (as a named ratio is)
+        let r = self.session.execute("crop.aspect", &serde_json::json!({"aspect": aspect, "orientation": "crop"}));
+        self.session.auto_sync = sync;
+        match r {
+            Ok(_) => true,
+            Err(e) => {
+                // A remembered value the command refuses (a hand-edited settings file) would refuse
+                // every crop edit on an untouched photo: forget it and let this edit go ahead.
+                self.ui.crop_default_aspect = None;
+                self.ui.status = e.to_string();
+                false
+            }
+        }
     }
 
     /// Show a transient toast at the bottom of the canvas (like the reference app's HUD).
@@ -1293,6 +1356,22 @@ impl LccApp {
     /// Lock while it is on (as in other photo libraries).
     pub fn auto_advance_on(&self) -> bool {
         self.ui.auto_advance || self.ui.caps_lock
+    }
+
+    /// A toast with a button that runs `command` with `params` (Undo after Update Preset…), for
+    /// `secs` seconds; a click runs it once and the toast goes.
+    pub fn toast_with_action(
+        &mut self,
+        ctx: &egui::Context,
+        text: impl Into<String>,
+        button: impl Into<String>,
+        command: &str,
+        params: Value,
+        secs: f64,
+    ) {
+        let until = ctx.input(|i| i.time) + secs;
+        self.ui.toast_action = Some(state::ToastAction { text: text.into(), button: button.into(), command: command.to_string(), params, until });
+        ctx.request_repaint();
     }
 
     /// A toast that stays `secs` seconds (messages that say where to look or what to do next).
@@ -1570,6 +1649,7 @@ impl LccApp {
     pub fn sync_theme(&mut self, ctx: &egui::Context) {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
+        theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         let wanted = self.ui.settings.theme(self.system_theme(ctx));
@@ -1690,6 +1770,7 @@ impl LccApp {
     fn logic_inner(&mut self, ctx: &egui::Context) {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
+        theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         if !self.styled {
@@ -1945,6 +2026,7 @@ impl LccApp {
     fn apply_settings(&mut self, ctx: &egui::Context) {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
+        theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         if self.gpu_applied != Some(self.ui.settings.gpu) {
@@ -2055,6 +2137,7 @@ impl LccApp {
         // put back button releases the window integration dropped (OneSlips)
         self.pointer_repair.repair(raw);
         self.take_nav_buttons(raw);
+        drop_space_repeats(raw);
         modern::after_input(self, raw);
     }
 
@@ -2134,6 +2217,7 @@ impl LccApp {
     fn end_frame(&mut self, ctx: &egui::Context, t0: f64) {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
+        theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         self.text_focus = self.tasks.repaint.as_ref().is_some_and(|c| c.egui_wants_keyboard_input());
@@ -2173,7 +2257,31 @@ impl LccApp {
             settings.recent_opened.insert(path, (self.session.clock)());
             settings.recent_opened.retain(|p, _| settings.recent_libraries.contains(p));
         }
+        self.gather_shared_presets(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.window_title()));
+    }
+
+    /// LR-PREF-SHARED: the libraries of File ▸ Open Recent Library join the shared store (once each;
+    /// they are only read), and their named presets, backups' included, are gathered; says so when
+    /// that added some.
+    fn gather_shared_presets(&mut self, ctx: &egui::Context) {
+        if !self.session.uses_app_store() {
+            return;
+        }
+        let paths = self.ui.settings.recent_libraries.clone();
+        let mut n = 0;
+        match self.run("store.mergeLibraries", serde_json::json!({"paths": paths})) {
+            Ok(r) => n += r["merged"].as_array().into_iter().flatten().map(|m| m["presets"].as_u64().unwrap_or(0)).sum::<u64>(),
+            Err(e) => log::warn!("store: {e}"),
+        }
+        match self.run("store.gatherPresets", serde_json::json!({"paths": paths})) {
+            Ok(r) => n += r["count"].as_u64().unwrap_or(0),
+            Err(e) => log::warn!("store: {e}"),
+        }
+        if n > 0 {
+            let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
+            self.toast(ctx, msg);
+        }
     }
 
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).
@@ -2212,6 +2320,10 @@ impl LccApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.library_changed(&ctx);
+        // (a tool panel opened some other way still remembers the panel it took the place of)
+        self.ui.note_right();
+        // Auto Sync is remembered app-wide, however it was switched (menu, switch, console)
+        self.ui.settings.auto_sync = self.session.auto_sync;
         // panels set it again this frame while the pointer rests on a preset or profile
         self.hover_preview = None;
         // …and the histogram sets this while the pointer rests on a clipping indicator
@@ -2231,6 +2343,7 @@ impl LccApp {
             panels::library_problem::show(self, &ctx);
             pick::poll(self, &ctx);
             panels::surface_osd::show(self, &ctx);
+            panels::presets::picker_frame(self, &ctx);
             panels::toast(self, &ctx);
             drop_overlay::show(self, &ctx);
             self.widgets = widgets::take_registry(&ctx);
@@ -2277,6 +2390,7 @@ impl LccApp {
         panels::left::section_drag_feedback(self, &ctx);
         panels::keyword_list::drag_feedback(self, &ctx);
         panels::surface_osd::show(self, &ctx);
+        panels::presets::picker_frame(self, &ctx);
         panels::toast(self, &ctx);
         drop_overlay::show(self, &ctx);
         self.widgets = widgets::take_registry(&ctx);
@@ -2348,6 +2462,38 @@ fn sam_download_ended(download: &lcc_engine::segment::DownloadStatus) -> Option<
         None if download.finished => Some((crate::i18n::tr("The SAM 3 model is installed: Object and Describe masks are ready.").to_string(), true)),
         None => None,
     }
+}
+
+/// Whether command `id` edits the active photo's crop other than through its lock: the angle
+/// (slider, Straighten tool, pointer rotation, Auto), a crop drag, a flip. Such an edit first
+/// stores the lock the tool shows.
+fn touches_crop(id: &str, params: &Value, active: Option<lcc_catalog::PhotoId>) -> bool {
+    match id {
+        // (a swap of the orientation too: X keeps the lock the tool shows, 3:2 → 2:3)
+        "crop.straighten" | "crop.autoStraighten" | "crop.drag" | "crop.rotateAspect" => true,
+        // a rect given outright is the shape asked for (no lock is honoured there); an angle alone turns the crop
+        "crop.set" => params.get("rect").is_none_or(Value::is_null),
+        // a flip of other photos leaves the active one alone
+        "photo.flipHorizontal" | "photo.flipVertical" => match params.get("ids").and_then(Value::as_array) {
+            Some(ids) => active.is_some_and(|a| ids.iter().any(|v| v.as_u64() == Some(a.0))),
+            None => true,
+        },
+        _ if id.starts_with("develop.") => {
+            let crop_control = |c: &str| c.starts_with("crop.");
+            params.get("control").and_then(Value::as_str).is_some_and(crop_control)
+                || params.get("values").and_then(Value::as_object).is_some_and(|o| o.keys().any(|k| crop_control(k)))
+        }
+        _ => false,
+    }
+}
+
+/// Space is a modifier (held: the hand that pans; pressed: Toggle Zoom), like Shift or Alt, so
+/// holding it never fires again and again: the key's auto-repeat presses are dropped before
+/// anything sees them (shortcuts, a focused handle or button, the control channel), in the
+/// desktop and the touch layout alike. Only the key events go: the typed text (`Event::Text`)
+/// stays, so holding Space in a text box still types spaces.
+pub(crate) fn drop_space_repeats(raw: &mut egui::RawInput) {
+    raw.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Space, pressed: true, repeat: true, .. }));
 }
 
 /// A file `ui.dropFiles` delivers as dropped, as a real OS drop arrives in `raw.dropped_files`.

@@ -261,11 +261,25 @@ fn shortcuts_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 // ------------------------------------------------------------------------------------- General
 
 fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
-    // Modern (Android's default) or Classic; on either, this row switches back
+    // Modern (Android's default), Classic or Compact (Classic drawn denser); on each, this row switches back
     row(ui, t, crate::i18n::tr("Layout"), |ui| {
-        let mut modern = app.ui.modern.enabled;
-        if choices(ui, "settingsLayout", &[(false, "Classic – Advanced"), (true, "Modern – Simple")], &mut modern) {
-            let _ = app.run("view.modernLayout", json!({"on": modern}));
+        let now = if app.ui.modern.enabled {
+            1
+        } else if app.compact() {
+            2
+        } else {
+            0
+        };
+        let mut layout = now;
+        if choices(ui, "settingsLayout", &[(0, "Classic – Advanced"), (1, "Modern – Simple"), (2, "Compact – Dense")], &mut layout) {
+            let _ = match layout {
+                1 => app.run("view.modernLayout", json!({"on": true})),
+                2 => app.run("view.compactLayout", json!({"on": true})),
+                _ => {
+                    let _ = app.run("view.modernLayout", json!({"on": false}));
+                    app.run("view.compactLayout", json!({"on": false}))
+                }
+            };
         }
     });
     row(ui, t, crate::i18n::tr("Language"), |ui| {
@@ -463,14 +477,18 @@ fn preset_combo(app: &LccApp, ui: &mut egui::Ui, id: &str, current: Option<&str>
     };
     let text = current.map(name).unwrap_or_else(|| crate::i18n::tr(none_label).to_string());
     let mut out = None;
-    let r = crate::widgets::combo_box(id).width(240.0).selected_text(text).show_ui(ui, |ui| {
-        if ui.selectable_label(current.is_none(), crate::i18n::tr(none_label)).clicked() {
-            out = Some(None);
-        }
-        if let Some(pid) = crate::panels::presets::picker_rows(ui, id, &app.session.presets, current) {
-            out = Some(Some(pid));
-        }
-    });
+    let r = crate::widgets::combo_box(id).width(240.0).selected_text(text).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show_ui(
+        ui,
+        |ui| {
+            if ui.selectable_label(current.is_none(), crate::i18n::tr(none_label)).clicked() {
+                out = Some(None);
+                ui.close();
+            }
+            if let Some(pid) = crate::panels::presets::picker_rows(ui, id, &app.session, current) {
+                out = Some(Some(pid));
+            }
+        },
+    );
     register(ui.ctx(), format!("combo:{id}"), r.response.rect);
     out.filter(|v| v.as_deref() != current)
 }
@@ -534,6 +552,19 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         }
     });
     hint(ui, t, crate::i18n::tr("After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included)."));
+    let mut constrain = !d.crop_unconstrained;
+    row(ui, t, "", |ui| {
+        if check(ui, "settings.constrainCrop", &mut constrain, "Constrain crop by default") {
+            let _ = app.run("library.preferences", json!({"import": {"constrainCrop": constrain}}));
+        }
+    });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "New photos start with Constrain Crop on: the crop stays inside the photo after a rotation or lens correction. Photos already in the library keep theirs.",
+        ),
+    );
     if per {
         let cams = cameras(app);
         if cams.is_empty() {
@@ -562,17 +593,23 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                             .unwrap_or_else(|| pid.to_string()),
                     };
                     let id = format!("settingsCamera-{i}");
-                    let r = crate::widgets::combo_box(&id).width(240.0).selected_text(label).show_ui(ui, |ui| {
-                        if ui.selectable_label(current == Some(RAW_DEFAULT), crate::i18n::tr("Same as raw default")).clicked() {
-                            pick = Some(json!({"camera": cam, "remove": true}));
-                        }
-                        if ui.selectable_label(current.is_none(), crate::i18n::tr("{app} Default")).clicked() {
-                            pick = Some(json!({"camera": cam, "preset": null}));
-                        }
-                        if let Some(pid) = crate::panels::presets::picker_rows(ui, &id, &app.session.presets, current) {
-                            pick = Some(json!({"camera": cam, "preset": pid}));
-                        }
-                    });
+                    let r = crate::widgets::combo_box(&id)
+                        .width(240.0)
+                        .selected_text(label)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(current == Some(RAW_DEFAULT), crate::i18n::tr("Same as raw default")).clicked() {
+                                pick = Some(json!({"camera": cam, "remove": true}));
+                                ui.close();
+                            }
+                            if ui.selectable_label(current.is_none(), crate::i18n::tr("{app} Default")).clicked() {
+                                pick = Some(json!({"camera": cam, "preset": null}));
+                                ui.close();
+                            }
+                            if let Some(pid) = crate::panels::presets::picker_rows(ui, &id, &app.session, current) {
+                                pick = Some(json!({"camera": cam, "preset": pid}));
+                            }
+                        });
                     register(ui.ctx(), format!("combo:{id}"), r.response.rect);
                     if let Some(c) = pick {
                         let _ = app.run("library.preferences", json!({"camera": c}));
@@ -1290,6 +1327,35 @@ fn display_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     hint(ui, t, crate::i18n::tr("Profiles assigned in your desktop's colour settings are usually in ~/.local/share/icc."));
 }
 
+/// LR-PREF-SHARED: presets, profiles and the user's habits are the app's, shared by every library;
+/// a library can keep its own instead (`store.useLibrary`). Shown only with a library open and the
+/// shared store available (the desktop app).
+fn shared_store(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    let info = app.session.store_info();
+    if info["available"] != serde_json::Value::Bool(true) || app.session.library.is_none() {
+        return;
+    }
+    let mut own = info["libraryKeepsOwn"] == serde_json::Value::Bool(true);
+    if check(ui, "settings.libraryKeepsOwnStore", &mut own, "This library keeps its own presets, profiles and habits") {
+        match app.run("store.useLibrary", serde_json::json!({"keep": own})) {
+            Ok(_) => app.toast(
+                ui.ctx(),
+                crate::i18n::tr(if own {
+                    "This library now keeps its own presets"
+                } else {
+                    "This library now uses the presets every library shares"
+                }),
+            ),
+            Err(e) => app.toast_error(ui.ctx(), e),
+        }
+    }
+    hint(
+        ui,
+        t,
+        crate::i18n::tr("Off (the default): presets, profiles, export presets and your other habits are the same in every library on this computer."),
+    );
+}
+
 fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let system = app.system_theme(ui.ctx());
     appearance(ui, t, &mut app.ui.settings, system);
@@ -1323,6 +1389,7 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
     heading(ui, t, crate::i18n::tr("Presets"));
     check(ui, "settings.userPresetsFirst", &mut app.ui.settings.user_presets_first, "List User Presets first in the Presets panel");
+    shared_store(app, ui, t);
     heading(ui, t, crate::i18n::tr("Detail View"));
     check(ui, "settings.navigator", &mut app.ui.navigator, "Show the Navigator while zoomed in");
     check(ui, "settings.hideFilterInDevelop", &mut app.ui.settings.hide_filter_in_develop, "Hide filter text in Develop mode");

@@ -15,6 +15,7 @@
 extern crate lcc_denoise_core as lcc_denoise;
 
 pub mod activity;
+pub mod app_store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos;
 pub mod availability;
@@ -198,7 +199,8 @@ fn single_photo(op: &Op, depth: usize) -> Option<PhotoId> {
         | Op::SetVersions { id, .. }
         | Op::SetHistory { id, .. }
         | Op::PushHistory { id, .. }
-        | Op::SetHistoryCursor { id, .. } => Some(*id),
+        | Op::SetHistoryCursor { id, .. }
+        | Op::SetBefore { id, .. } => Some(*id),
         Op::Batch { ops } if depth < 8 => {
             let mut ids = ops.iter().map(|o| single_photo(o, depth + 1));
             let first = ids.next()??;
@@ -234,6 +236,9 @@ pub struct Interaction {
     /// Other photos edited live along with the active one (a multi-photo edit: each nudged from
     /// its own value as it goes), with their settings before. They join the same undo step.
     pub others: Vec<(PhotoId, Arc<DevelopSettings>)>,
+    /// With Auto Sync on, the other selected photos and their settings when the interaction began:
+    /// they follow the active photo live (each set to its value, as at the commit) and go back with it.
+    pub along: Vec<(PhotoId, Arc<DevelopSettings>)>,
 }
 
 /// The most photos an edit may touch for the view to follow it photo by photo; a larger edit is worked out whole.
@@ -401,13 +406,28 @@ pub struct Session {
     /// The photo that was active before the current one (Paste Settings from Previous).
     pub previous_active: Option<PhotoId>,
     /// Groups last used for Copy (Lightroom remembers them).
-    pub copy_groups: Vec<lcc_develop::SettingsGroup>,
+    /// What dialogs remember app-wide: Copy / Sync / New Preset ticks, New Preset's group, other
+    /// dialogs' last choices ([`app_store::DialogMemory`]; kept in the app store, else the library).
+    pub dialogs: app_store::DialogMemory,
+    /// The settings the last `preset.update` replaced (`preset.undoUpdate`).
+    pub preset_undo: Option<(String, serde_json::Value)>,
     /// Built-in then user presets; its generation tells savers and caches when it changed.
     pub presets: presets::PresetList,
     /// User-created preset folders (subfolders separated by `/`); empty ones stay until deleted.
     pub preset_folders: Vec<String>,
     /// Favourite profile ids (persisted with the library, like preset favourites).
     pub profile_favorites: Vec<String>,
+    /// Presets marked At Import (`preset.forImport`): the import pickers list them first (LR-PRE-ONIMPORT).
+    /// Changing it bumps the preset list's generation, so it is saved and the pickers rebuild.
+    pub preset_at_import: Vec<String>,
+    /// Presets hidden from the Presets panel and the pickers (`preset.hide`), kept in the Presets
+    /// Manager (LR-PRE-MANAGE). Changing it bumps the preset list's generation.
+    pub preset_hidden: Vec<String>,
+    /// Built-in presets the user renamed (id → name) or put in another group (id → group) in the
+    /// Presets Manager (LR-PRE-MANAGE); `preset.restoreBuiltins` lets go of both. Changing them
+    /// bumps the preset list's generation.
+    pub preset_builtin_names: std::collections::BTreeMap<String, String>,
+    pub preset_builtin_groups: std::collections::BTreeMap<String, String>,
     /// Recently applied profile ids, newest first (at most [`presets::RECENT_PROFILES`]).
     pub profile_recent: Vec<String>,
     /// Profiles hidden from the menus and the browser by the Profile Manager (still listed there and in
@@ -416,6 +436,9 @@ pub struct Session {
     /// The camera profile each camera body starts with (`profile_bodies::key` → `dcp:…`, `cal:…` or `lc`),
     /// applied to that body's raws at import ([`profile_bodies`]).
     pub body_profiles: std::collections::BTreeMap<String, String>,
+    /// The app-wide store of presets, profiles and habits shared by every library (`None`: each
+    /// library keeps its own; see [`app_store`]).
+    pub app_store: Option<app_store::AppStore>,
     /// Executed commands (actions / debugging / replay).
     pub journal: Vec<(String, Value)>,
     /// Actions and Edit In presets (P4.4/P4.5, [`cmd::actions`]).
@@ -496,9 +519,6 @@ pub struct Session {
     pub keyword_shortcut: Vec<String>,
     /// Keyword attributes (synonyms, export options, person) and keywords created before any
     /// photo has them, by keyword path (Keyword List).
-    /// Before/After: the "before" settings chosen per photo (this session; default: the photo's
-    /// import state). See `cmd/before.rs`.
-    pub before: std::collections::HashMap<PhotoId, Arc<DevelopSettings>>,
     /// File probes from the last import review (`library.importPreview`), reused by the import.
     pub import_probes: std::collections::HashMap<String, media::ProbeInfo>,
     /// The last Synchronize Folder scan, which `folder.synchronize` acts on while it is current
@@ -673,13 +693,19 @@ impl Session {
             browse: None,
             library_folder: None,
             previous_active: None,
-            copy_groups: lcc_develop::SettingsGroup::default_copy(),
+            dialogs: Default::default(),
+            preset_undo: None,
             presets: presets::PresetList::new(presets::builtin()),
             preset_folders: Vec::new(),
             profile_favorites: Vec::new(),
+            preset_at_import: Vec::new(),
+            preset_hidden: Vec::new(),
+            preset_builtin_names: Default::default(),
+            preset_builtin_groups: Default::default(),
             profile_recent: Vec::new(),
             profile_hidden: Vec::new(),
             body_profiles: Default::default(),
+            app_store: None,
             journal: Vec::new(),
             workflow: Default::default(),
             pending_log: Vec::new(),
@@ -715,7 +741,6 @@ impl Session {
             keyword_set: None,
             recent_keywords: Vec::new(),
             keyword_shortcut: Vec::new(),
-            before: Default::default(),
             import_probes: Default::default(),
             folder_changes: None,
             folder_watch: Default::default(),
@@ -823,6 +848,15 @@ impl Session {
                 self.auto_write_sidecars_since(log_start);
             }
         }
+        if self.depth == 0 && self.library.is_none() && self.app_store.is_some() {
+            // no library (`run --shared-settings`): the store is saved after each command
+            if let Err(e) = self.save_app_store() {
+                log::error!("store: {e}");
+                if r.is_ok() {
+                    return Err(e);
+                }
+            }
+        }
         if self.depth == 0 && self.library.is_some() {
             // Make the command durable before reporting success. When the command's own records
             // can't be appended, it fails with `NotSaved`: the change stays applied in memory and
@@ -893,6 +927,8 @@ impl Session {
     /// itself is refused here, whichever command, task or caller asked ([`Catalog::apply_new`]);
     /// undo, redo and opening a library bring back what was and are not held to that.
     pub fn commit(&mut self, label: &str, op: Op) -> Result<()> {
+        let mut op = op;
+        self.mark_batch(&mut op);
         let fwd = op.clone();
         let inv = self.apply_through(op, Catalog::apply_new)?;
         let upright = fwd.clone();
@@ -1246,7 +1282,12 @@ impl Session {
             && i.photo == id
         {
             i.crop_edited |= crop_edited;
-            return self.apply_silent(Op::SetDevelop { id, settings, label: label.into(), edited: Some(now) });
+            let (original, along) = (i.original.clone(), i.along.clone());
+            self.apply_silent(Op::SetDevelop { id, settings, label: label.into(), edited: Some(now) })?;
+            if !along.is_empty() {
+                self.live_sync(id, &original, &requested, label, &along)?;
+            }
+            return Ok(());
         }
         let own_auto = self.own_auto_wb(id, &requested, label);
         let mut ops = vec![self.develop_op(id, (*settings).clone(), label).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?];
@@ -1296,10 +1337,51 @@ impl Session {
     /// scale ([`sync_same`]): As Shot its own camera white, Auto its own (`own_auto`, worked out
     /// on its pixels), a Temp or Tint the same number, only the slider that moved.
     fn auto_sync_ops(&self, id: PhotoId, new: &DevelopSettings, label: &str, own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>) -> Vec<Op> {
+        let Some(old) = self.develop_of(id) else { return Vec::new() };
+        self.auto_sync_ops_from(id, &old, new, label, own_auto)
+    }
+
+    /// A live frame of an Auto Sync interaction (LR-AUTOSYNC-LIVE): the other selected photos go
+    /// back to their settings at the start and take the edit from `original` to `new` as the
+    /// commit will, previewed without an undo step.
+    fn live_sync(
+        &mut self,
+        id: PhotoId,
+        original: &DevelopSettings,
+        new: &DevelopSettings,
+        label: &str,
+        along: &[(PhotoId, Arc<DevelopSettings>)],
+    ) -> Result<()> {
+        for (x, d) in along {
+            self.apply_silent(Op::SetDevelop { id: *x, settings: d.clone(), label: label.into(), edited: None })?;
+        }
+        let ops = self.auto_sync_ops_from(id, original, new, label, &std::collections::HashMap::new());
+        let mut sets = Vec::new();
+        let mut stack = ops;
+        while let Some(op) = stack.pop() {
+            match op {
+                Op::Batch { ops } => stack.extend(ops),
+                op @ Op::SetDevelop { .. } => sets.push(op),
+                _ => {}
+            }
+        }
+        for op in sets {
+            self.apply_silent(op)?;
+        }
+        Ok(())
+    }
+
+    fn auto_sync_ops_from(
+        &self,
+        id: PhotoId,
+        old: &DevelopSettings,
+        new: &DevelopSettings,
+        label: &str,
+        own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>,
+    ) -> Vec<Op> {
         if !self.auto_sync_applies(id, label) {
             return Vec::new();
         }
-        let Some(old) = self.develop_of(id) else { return Vec::new() };
         let mut old_json = old.to_json();
         let mut new_json = new.to_json();
         // False is omitted from stored profile JSON. Keep it explicit for this comparison so
@@ -1325,6 +1407,10 @@ impl Session {
             }
         }
         let wb_changed = delta.get("wb").is_some();
+        // a crop goes on each photo fitted to its own frame (its tightness and place, in its own
+        // orientation), never the active photo's rectangle on a frame of another shape
+        let crop_changed = old.crop != new.crop;
+        let adims = cmd::develop::crop_dims(self, id);
         let ainfo = self.source_info(id);
         self.selection
             .ids
@@ -1336,7 +1422,10 @@ impl Session {
                 if wb_changed {
                     // each photo on its own scale: Kelvin on a raw with one, relative elsewhere
                     lcc_pipeline::local::normalize_wb(&mut synced, &self.source_info(x));
-                    sync_same::synced_wb(&ainfo, &old, new, &self.source_info(x), &d, own_auto.get(&x).copied(), &mut synced);
+                    sync_same::synced_wb(&ainfo, old, new, &self.source_info(x), &d, own_auto.get(&x).copied(), &mut synced);
+                }
+                if crop_changed {
+                    synced.crop = sync_same::synced_crop(&new.crop, adims, cmd::develop::crop_dims(self, x));
                 }
                 upright_jobs::as_recipe(&d, &mut synced);
                 let synced = self.fit_constrained_crop(x, synced);
@@ -1369,7 +1458,7 @@ impl Session {
         {
             return Some(op);
         }
-        let step = lcc_catalog::HistoryStep { label: label.into(), settings: settings.clone() };
+        let step = lcc_catalog::HistoryStep { label: label.into(), settings: settings.clone(), batch: None };
         Some(Op::Batch {
             ops: vec![Op::SetDevelop { id, settings, label: label.into(), edited: Some((self.clock)()) }, Op::PushHistory { id, step }],
         })
@@ -1403,8 +1492,14 @@ impl Session {
         let id = self.active().ok_or_else(|| EngineError::Other("no active photo".into()))?;
         let original = self.develop_of(id).unwrap_or_default();
         let mut seen = std::collections::HashSet::new();
-        let others = others.iter().filter(|x| **x != id && seen.insert(**x)).filter_map(|x| self.develop_of(*x).map(|d| (*x, d))).collect();
-        self.interaction = Some(Interaction { label: label.into(), photo: id, original, crop_edited: false, others });
+        let others: Vec<_> = others.iter().filter(|x| **x != id && seen.insert(**x)).filter_map(|x| self.develop_of(*x).map(|d| (*x, d))).collect();
+        // Auto Sync's live follow, unless the interaction already names the photos it edits along
+        let along = if others.is_empty() && self.auto_sync_applies(id, label) {
+            self.selection.ids.iter().filter(|x| **x != id).filter_map(|x| self.develop_of(*x).map(|d| (*x, d))).collect()
+        } else {
+            Vec::new()
+        };
+        self.interaction = Some(Interaction { label: label.into(), photo: id, original, crop_edited: false, others, along });
         Ok(())
     }
 
@@ -1413,6 +1508,10 @@ impl Session {
         let Some(i) = self.interaction.take() else { return Ok(()) };
         if !i.others.is_empty() {
             return self.end_multi_interaction(i);
+        }
+        // the photos that followed live go back; the commit below syncs them as one step with the active one
+        for (x, d) in &i.along {
+            self.apply_silent(Op::SetDevelop { id: *x, settings: d.clone(), label: i.label.clone(), edited: None })?;
         }
         let Some(cur) = self.develop_of(i.photo) else { return Ok(()) };
         if *cur == *i.original {
@@ -1470,7 +1569,7 @@ impl Session {
 
     pub fn cancel_interaction(&mut self) -> Result<()> {
         if let Some(i) = self.interaction.take() {
-            for (id, original) in i.others {
+            for (id, original) in i.others.into_iter().chain(i.along) {
                 self.apply_silent(Op::SetDevelop { id, settings: original, label: i.label.clone(), edited: None })?;
             }
             self.apply_silent(Op::SetDevelop { id: i.photo, settings: i.original, label: i.label, edited: None })?;
@@ -1911,6 +2010,14 @@ mod tests_album_remove;
 #[cfg(test)]
 mod tests_albums_local;
 #[cfg(test)]
+mod tests_app_store;
+#[cfg(test)]
+mod tests_autosync_crop;
+#[cfg(test)]
+mod tests_autosync_live;
+#[cfg(test)]
+mod tests_autosync_preset;
+#[cfg(test)]
 mod tests_autosync_wb;
 #[cfg(test)]
 mod tests_camera_profile_defaults;
@@ -2020,6 +2127,8 @@ mod tests_plugin_library;
 mod tests_prefs;
 #[cfg(test)]
 mod tests_preset_interop;
+#[cfg(test)]
+mod tests_preset_marks;
 #[cfg(test)]
 mod tests_presets_scale;
 #[cfg(test)]

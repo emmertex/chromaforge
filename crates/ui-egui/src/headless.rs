@@ -2230,15 +2230,16 @@ mod tests {
         // Create Preset with a group checklist: untick Light, keep Effects
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.5}}), t);
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "effects.clarity", "value": 25}}), t);
-        h.app.ui.dialog = Some(crate::state::Dialog::create_preset());
+        h.app.ui.dialog = Some(crate::state::Dialog::create_preset(&h.app.session));
         h.step();
         h.step();
         let r = h.request("ui.clickWidget", json!({"id": "presetInclude:light"}), t);
         assert_eq!(r["ok"], true, "{r}");
         match &h.app.ui.dialog {
             Some(crate::state::Dialog::CreatePreset { groups, .. }) => {
-                assert!(!groups.iter().any(|g| g == "light") && groups.iter().any(|g| g == "effects"), "{groups:?}");
-                assert!(!groups.iter().any(|g| g == "crop" || g == "masks"), "crop and masks off by default");
+                assert!(!groups.iter().any(|g| g.starts_with("light")) && groups.iter().any(|g| g == "effects.clarity"), "{groups:?}");
+                assert!(!groups.iter().any(|g| g == "whiteBalance"), "White Balance off by default");
+                assert!(!groups.iter().any(|g| g.starts_with("crop") || g == "masks"), "crop and masks off by default");
             }
             d => panic!("dialog: {d:?}"),
         }
@@ -4337,7 +4338,7 @@ mod tests {
         h.request("ui.key", json!({"key": "V", "cmd": true, "shift": true}), t);
         h.settle(SETTLE);
         let Some(crate::state::Dialog::PasteSettings { groups }) = &h.app.ui.dialog else { panic!("dialog not open: {:?}", h.app.ui.dialog) };
-        assert_eq!(groups, &["light", "color"]);
+        assert_eq!(lcc_develop::SettingsPick::from_ids(groups), lcc_develop::SettingsPick::from_ids(&["light", "color"]));
         let r = h.request("ui.clickWidget", json!({"id": "pasteGroup:color"}), t);
         assert_eq!(r["ok"], true, "{r}");
         h.settle(SETTLE);
@@ -4412,7 +4413,7 @@ mod tests {
         assert_eq!(h.request("ui.key", json!({"key": "S", "cmd": true, "shift": true}), t)["ok"], true);
         h.settle(SETTLE);
         assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::SyncSettings { .. })), "{:?}", h.app.ui.dialog);
-        for w in ["syncGroup:none", "syncControl:light.exposure"] {
+        for w in ["syncGroup:none", "syncGroup:open:light", "syncGroup:light.exposure"] {
             assert_eq!(h.request("ui.clickWidget", json!({"id": w}), t)["ok"], true, "{w}");
             h.settle(SETTLE);
         }

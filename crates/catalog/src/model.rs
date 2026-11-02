@@ -276,6 +276,12 @@ pub struct HistoryStep {
     pub label: String,
     #[serde(with = "crate::settings_ref")]
     pub settings: Arc<DevelopSettings>,
+    /// The edit this step belongs to when one edit changed several photos (Auto Sync, Sync
+    /// Settings, a preset or Quick Develop on a selection): the same id on each photo's step, so the
+    /// whole selection can go back to it. `None`: one photo's own edit, and every step written
+    /// before this existed (older builds read a step with it, ignoring the field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -353,6 +359,15 @@ pub struct Photo {
     /// unedited, and Reset returns to them.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::settings_ref::opt")]
     pub import_look: Option<Arc<DevelopSettings>>,
+    /// The settings the photo came into the library with, where the import changed them from
+    /// [`Photo::import_defaults`] (the import's presets or adjustments): where editing started,
+    /// so the Before view's default. Format version 16.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::settings_ref::opt")]
+    pub import_state: Option<Arc<DevelopSettings>>,
+    /// What the Before view shows when the user set it (Set Before: After's settings, a history
+    /// step, a version, Swap); `None`: the import state ([`Photo::before_base`]). Format version 16.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::settings_ref::opt")]
+    pub before: Option<Arc<DevelopSettings>>,
     /// Assisted culling scores (`None` until analysed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analysis: Option<Analysis>,
@@ -580,6 +595,8 @@ impl Photo {
             copy_of: None,
             copy_name: None,
             import_look: None,
+            import_state: None,
+            before: None,
             analysis: None,
             preview_only: None,
             preview_checked: String::new(),
@@ -625,6 +642,15 @@ impl Photo {
     pub fn relative_wb(&self) -> bool {
         self.develops_raw() && relative_wb_camera_as(&self.format, &self.meta.camera, &self.develop.profile.camera)
     }
+    /// The settings the Before view starts from: the one set by the user, else the photo as it
+    /// came into the library (its import state), else its import defaults.
+    pub fn before_base(&self) -> DevelopSettings {
+        match self.before.as_ref().or(self.import_state.as_ref()) {
+            Some(b) => (**b).clone(),
+            None => self.import_defaults(),
+        }
+    }
+
     /// The develop settings import gave this photo: [`Photo::camera_defaults`], or the user's
     /// default preset applied on top of them ([`Photo::import_look`]). Like the camera defaults,
     /// in the photo's own rendering process.
@@ -653,6 +679,9 @@ impl Photo {
             d.optics.lens_profile = true;
         }
         d.process = self.develop.process;
+        // Constrain Crop is the photo's own, like its process: new photos start with it as the
+        // import preference says, and its value is not an edit
+        d.geometry.constrain_crop = self.develop.geometry.constrain_crop;
         d
     }
     /// The file name's extension without the dot, as written (`CR2` for `IMG_0042.CR2`); empty

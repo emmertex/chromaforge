@@ -59,6 +59,7 @@ pub(crate) static REL_TEMP: ControlSpec = ControlSpec {
     step: 1.0,
     decimals: 0,
     track: Track::Temp,
+    shade: lcc_develop::Shade::Plain,
 };
 pub(crate) static REL_TINT: ControlSpec = ControlSpec {
     id: "wb.tintRel",
@@ -70,6 +71,7 @@ pub(crate) static REL_TINT: ControlSpec = ControlSpec {
     step: 1.0,
     decimals: 0,
     track: Track::Tint,
+    shade: lcc_develop::Shade::Plain,
 };
 
 pub(crate) fn k_to_rel(k: f64) -> f64 {
@@ -299,11 +301,19 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         register(ui.ctx(), "note:sdrSlidersHidden", r.rect);
                     });
                 }
-                for c in
-                    ["hdr.sdrBrightness", "hdr.sdrContrast", "hdr.sdrHighlights", "hdr.sdrShadows", "hdr.sdrWhites", "hdr.sdrClarity", "hdr.sdrBlend"]
-                {
-                    control(app, ui, d, c, sdr_shown);
-                }
+                crate::widgets::slider_group(ui, "sdrRendition", |ui| {
+                    for c in [
+                        "hdr.sdrBrightness",
+                        "hdr.sdrContrast",
+                        "hdr.sdrHighlights",
+                        "hdr.sdrShadows",
+                        "hdr.sdrWhites",
+                        "hdr.sdrClarity",
+                        "hdr.sdrBlend",
+                    ] {
+                        control(app, ui, d, c, sdr_shown);
+                    }
+                });
                 ui.add_space(6.0);
             }
         }
@@ -464,19 +474,21 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             app.ui.toggle_flyout("defringe");
         }
         if open {
-            sub_title(ui, crate::i18n::tr("Purple"));
-            control_as(app, ui, d, "optics.defringePurple", true, Some("Amount"));
-            let on = d.optics.defringe_purple_amount > 0.0;
-            control_as(app, ui, d, "optics.defringePurpleHueLo", on, Some("Hue Low"));
-            control_as(app, ui, d, "optics.defringePurpleHueHi", on, Some("Hue High"));
-            sub_title(ui, crate::i18n::tr("Green"));
-            control_as(app, ui, d, "optics.defringeGreen", true, Some("Amount"));
-            let on = d.optics.defringe_green_amount > 0.0;
-            control_as(app, ui, d, "optics.defringeGreenHueLo", on, Some("Hue Low"));
-            control_as(app, ui, d, "optics.defringeGreenHueHi", on, Some("Hue High"));
-            sub_title(ui, crate::i18n::tr("Lateral Chromatic Aberration"));
-            control_as(app, ui, d, "optics.caRed", true, Some("Red/Cyan"));
-            control_as(app, ui, d, "optics.caBlue", true, Some("Blue/Yellow"));
+            crate::widgets::slider_group(ui, "defringe", |ui| {
+                sub_title(ui, crate::i18n::tr("Purple"));
+                control_as(app, ui, d, "optics.defringePurple", true, Some("Amount"));
+                let on = d.optics.defringe_purple_amount > 0.0;
+                control_as(app, ui, d, "optics.defringePurpleHueLo", on, Some("Hue Low"));
+                control_as(app, ui, d, "optics.defringePurpleHueHi", on, Some("Hue High"));
+                sub_title(ui, crate::i18n::tr("Green"));
+                control_as(app, ui, d, "optics.defringeGreen", true, Some("Amount"));
+                let on = d.optics.defringe_green_amount > 0.0;
+                control_as(app, ui, d, "optics.defringeGreenHueLo", on, Some("Hue Low"));
+                control_as(app, ui, d, "optics.defringeGreenHueHi", on, Some("Hue High"));
+                sub_title(ui, crate::i18n::tr("Lateral Chromatic Aberration"));
+                control_as(app, ui, d, "optics.caRed", true, Some("Red/Cyan"));
+                control_as(app, ui, d, "optics.caBlue", true, Some("Blue/Yellow"));
+            });
         }
         ui.add_space(8.0);
     });

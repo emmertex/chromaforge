@@ -764,7 +764,9 @@ fn presets_versions_history_and_select_by() {
     assert_eq!(preset(&s).settings["light"]["exposure"], 1.25);
     assert!(preset(&s).settings.get("color").is_none(), "only the groups it already had");
     let builtin = s.presets.iter().find(|p| p.builtin).unwrap().id.clone();
-    assert!(s.execute("preset.rename", &json!({"id": builtin, "name": "x"})).is_err());
+    // built-ins can be renamed (LR-PRE-MANAGE) but never take new settings
+    assert!(s.execute("preset.rename", &json!({"id": builtin, "name": "x"})).is_ok());
+    assert!(s.execute("preset.update", &json!({"id": builtin})).is_err());
     // versions
     s.execute("version.create", &json!({"name": "A"})).unwrap();
     s.execute("version.rename", &json!({"index": 0, "name": "First"})).unwrap();
@@ -1011,13 +1013,13 @@ fn auto_sync_carries_only_the_changed_settings() {
         assert_eq!(s.develop_of(PhotoId(*id)).unwrap().light.exposure, 0.7, "photo {id}");
     }
     assert_eq!(s.develop_of(PhotoId(ids[1])).unwrap().light.contrast, 25.0, "untouched settings stay");
-    // a slider drag syncs once, on release
+    // a slider drag syncs live (LR-AUTOSYNC-LIVE) and commits once, on release
     let shadows: Vec<f64> = ids.iter().map(|id| s.develop_of(PhotoId(*id)).unwrap().light.shadows).collect();
     s.begin_interaction("Shadows").unwrap();
     let mut d = (*s.develop_of(PhotoId(ids[0])).unwrap()).clone();
     d.light.shadows = 40.0;
     s.set_develop(PhotoId(ids[0]), d, "Shadows").unwrap();
-    assert_eq!(s.develop_of(PhotoId(ids[2])).unwrap().light.shadows, shadows[2], "not while dragging");
+    assert_eq!(s.develop_of(PhotoId(ids[2])).unwrap().light.shadows, 40.0, "live while dragging");
     s.end_interaction().unwrap();
     assert_eq!(s.develop_of(PhotoId(ids[2])).unwrap().light.shadows, 40.0);
     // one undo step reverts every photo
@@ -1861,7 +1863,8 @@ fn develop_sync_validates_groups_and_rejects_malformed_with_zero_mutations() {
     // Reselect Photo A (active) and Photo B
     s.execute("library.select", &json!({"ids": [photo_a.0, photo_b.0], "active": photo_a.0})).unwrap();
 
-    // 4. Omitted groups preserves default behavior (all default copy groups synced)
+    // 4. Omitted groups: what Sync ticked last (remembered); with fresh memory, the default copy groups
+    s.dialogs = Default::default();
     s.execute("develop.sync", &json!({})).unwrap();
     let dev_after_omitted = (*s.develop_of(photo_b).unwrap()).clone();
     assert_eq!(dev_after_omitted.light.exposure, 1.0);
@@ -1934,7 +1937,8 @@ fn presets_validate_groups_on_create_and_update() {
     assert!(p.settings.get("light").is_some());
     assert!(p.settings.get("color").is_none());
 
-    // 3. preset.create with omitted groups uses default copy groups
+    // 3. preset.create with omitted groups: what New Preset ticked last; fresh memory = the defaults
+    s.dialogs = Default::default();
     let res_omitted = s.execute("preset.create", &json!({"name": "DefaultPreset"})).unwrap();
     let pid_omitted = res_omitted["id"].as_str().unwrap().to_string();
     let p_omitted = s.presets.iter().find(|p| p.id == pid_omitted).unwrap();

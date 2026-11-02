@@ -3918,3 +3918,89 @@ fn the_recipe_commands_are_listed_with_their_parameters() {
     let save = commands.iter().find(|c| c.id == "preset.saveRecipe").expect("preset.saveRecipe is a command");
     assert!(save.enabled && save.params.contains("recipe: [{id:") && save.params.contains("name"), "{}", save.params);
 }
+
+/// Constrain Crop is on for new photos (item 11 of the evening retest), without counting as an
+/// edit or hiding the camera preview; Settings ▸ Import can turn that off; a Lightroom sidecar
+/// keeps the value it always read (off), and photos already in the library keep theirs.
+#[test]
+fn new_photos_start_with_constrain_crop_on() {
+    let src = temp_dir("constrain");
+    write_png(&src.join("new.png"), 1);
+    write_png(&src.join("lr.png"), 2);
+    std::fs::write(
+        src.join("lr.xmp"),
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="0.5" crs:HasCrop="True" crs:CropLeft="0.1" crs:CropTop="0.1" crs:CropRight="0.9" crs:CropBottom="0.9" crs:CropAngle="3"/></rdf:RDF></x:xmpmeta>"#,
+    )
+    .unwrap();
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [src.to_string_lossy()], "mode": "add"})).unwrap();
+    assert_eq!(ids(&r, "imported"), 2, "{r}");
+    let by_name = |s: &Session, n: &str| s.catalog.photos().find(|p| p.file_name == n).cloned().unwrap();
+    let new = by_name(&s, "new.png");
+    assert!(new.develop.geometry.constrain_crop, "a new photo starts constrained");
+    assert!(!new.is_edited(), "which is not an edit");
+    assert!(crate::import::has_import_look(&new), "the camera preview still stands in for it");
+    let lr = by_name(&s, "lr.png");
+    assert!(!lr.develop.geometry.constrain_crop, "a Lightroom sidecar without the flag: off, as it always read");
+    assert!((lr.develop.crop.geometry.angle - 3.0).abs() < 1e-9, "its crop came along");
+    // the preference off: new photos start unconstrained
+    let p = s.execute("library.preferences", &json!({"import": {"constrainCrop": false}})).unwrap();
+    assert_eq!(p["import"]["cropUnconstrained"], true, "{p}");
+    write_png(&src.join("later.png"), 3);
+    s.execute("library.import", &json!({"paths": [src.join("later.png").to_string_lossy()], "mode": "add"})).unwrap();
+    assert!(!by_name(&s, "later.png").develop.geometry.constrain_crop);
+    // …and photos already in the library keep theirs either way
+    assert!(by_name(&s, "new.png").develop.geometry.constrain_crop);
+    s.execute("library.preferences", &json!({"import": {"constrainCrop": true}})).unwrap();
+    assert!(!by_name(&s, "later.png").develop.geometry.constrain_crop);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// The Before view starts from the photo as it came into the library (with the import's
+/// adjustments), and Set Before is kept with the photo when the library is opened again. A journal
+/// record of a hostile Set Before is refused, never a panic.
+#[test]
+fn before_is_the_import_state_and_set_before_is_kept() {
+    let root = temp_dir("before");
+    let (src, lib) = (root.join("src"), root.join("lib"));
+    write_png(&src.join("a.png"), 1);
+    write_png(&src.join("b.png"), 2);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src.join("a.png").to_string_lossy()]})).unwrap();
+    let a = s.catalog.photos().next().unwrap().id;
+    s.selection = crate::Selection { ids: vec![a], active: Some(a) };
+    s.execute("library.import", &json!({"paths": [src.join("b.png").to_string_lossy()], "recipe": [{"id": "light.exposure", "value": 0.7}]}))
+        .unwrap();
+    let b = s.catalog.photos().find(|p| p.id != a).unwrap().id;
+    s.selection = crate::Selection { ids: vec![b], active: Some(b) };
+    let before = |s: &Session| s.before_settings(s.catalog.photo(s.active().unwrap()).unwrap()).light.exposure;
+    assert_eq!(before(&s), 0.7, "the before is the photo as imported, with the import preset");
+    // an edit, then Set Before: kept with the photo
+    s.execute("develop.set", &json!({"values": {"light.exposure": 1.2}})).unwrap();
+    s.execute("beforeAfter.copyAfterToBefore", &json!({})).unwrap();
+    s.execute("develop.set", &json!({"values": {"light.exposure": -0.4}})).unwrap();
+    assert_eq!(before(&s), 1.2);
+    s.close_library().unwrap();
+    drop(s);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.selection = crate::Selection { ids: vec![b], active: Some(b) };
+    assert_eq!(before(&s), 1.2, "Set Before survives reopening the library");
+    // back to the import state, also undoable
+    s.execute("beforeAfter.resetBefore", &json!({})).unwrap();
+    assert_eq!(before(&s), 0.7);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(before(&s), 1.2);
+    for bad in [
+        json!({"op": "setBefore", "id": "x"}),
+        json!({"op": "setBefore", "id": b.0, "before": 7}),
+        json!({"op": "setBefore", "id": b.0, "before": {"light": {"exposure": "hot"}}}),
+    ] {
+        assert!(serde_json::from_value::<lcc_catalog::Op>(bad.clone()).is_err(), "{bad}");
+    }
+    // a Set Before for a photo that isn't there is an error
+    let missing = lcc_catalog::Op::SetBefore { id: lcc_catalog::PhotoId(u64::MAX), before: None };
+    assert!(s.commit("Set Before", missing).is_err());
+    let _ = std::fs::remove_dir_all(&root);
+}

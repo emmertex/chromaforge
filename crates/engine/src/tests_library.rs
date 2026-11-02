@@ -237,6 +237,20 @@ fn profile_favorites_and_recent_survive_reopen() {
 }
 
 #[test]
+fn preset_at_import_and_hidden_marks_survive_reopen() {
+    let dir = temp_dir("preset-marks");
+    let mut s = open(&dir, true);
+    let id = s.presets.first().unwrap().id.clone();
+    s.execute("preset.forImport", &json!({"id": id})).unwrap();
+    s.execute("preset.hide", &json!({"id": id})).unwrap();
+    drop(s);
+    let s = open(&dir, false);
+    assert_eq!(s.preset_at_import, std::slice::from_ref(&id));
+    assert_eq!(s.preset_hidden, [id]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_shown_library_folder_survives_reopen() {
     let dir = temp_dir("libfolder");
     let mut s = open(&dir, true);

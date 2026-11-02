@@ -2658,7 +2658,7 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             Some(Gesture::CropHandle { handle, .. }) => Some(usize::from(handle)),
             _ => None,
         };
-        let near = held.or_else(|| handles.iter().position(|h| h.distance(hq) < 12.0)).filter(|_| !rotating);
+        let near = held.or_else(|| crop_zone(&pts, hq, inside(hq)).filter(|&z| z < 8)).filter(|_| !rotating);
         let cursor = match near {
             Some(0 | 2) => egui::CursorIcon::ResizeNwSe,
             Some(1 | 3) => egui::CursorIcon::ResizeNeSw,
@@ -2681,14 +2681,24 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     // double-click inside the crop box applies the crop (same as Return / Done)
     if resp.double_clicked()
         && let Some(q) = resp.interact_pointer_pos()
-        && inside(q)
-        && !handles.iter().any(|h| h.distance(q) < 12.0)
+        && crop_zone(&pts, q, inside(q)) == Some(8)
     {
         let _ = app.run("tool.done", json!({}));
         return;
     }
     // egui reports a drag only once the pointer has moved a few px: the zone is where the button
-    // went down, where the cursor showed it, not where the pointer is by then
+    // went down, where the cursor showed it, not where the pointer is by then. It is taken at the
+    // press itself, from the box as drawn then: the box can still move under a held button on the
+    // tool's first frames (the view settling, a render arriving), and a corner grabbed then must
+    // stay grabbed
+    let zone_key = egui::Id::new("crop_press_zone");
+    if resp.is_pointer_button_down_on()
+        && ui.input(|i| i.pointer.primary_pressed())
+        && let Some(q) = ui.input(|i| i.pointer.press_origin())
+    {
+        let zone = crop_zone(&pts, q, inside(q));
+        ui.data_mut(|m| m.insert_temp(zone_key, zone));
+    }
     if resp.drag_started()
         && let Some(q) = ui.input(|i| i.pointer.press_origin()).or_else(|| resp.interact_pointer_pos())
     {
@@ -2704,9 +2714,10 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         let native_w = Frame { crop: d.crop.geometry, ..frame.clone() }.native_size().0 as f32;
         let k = pts[0].distance(pts[1]) / native_w.max(1e-3);
         let pinned = Some(CropLayout::Pinned { centre: box_centre, k });
-        let (gesture, layout) = match handles.iter().position(|h| h.distance(q) < 12.0) {
-            Some(h) => (Gesture::CropHandle { handle: h as u8, start, angle, map }, Some(CropLayout::Frozen(map))),
-            None if inside(q) => (Gesture::CropHandle { handle: 8, start, angle, map }, pinned),
+        let zone = ui.data_mut(|m| m.remove_temp::<Option<usize>>(zone_key)).unwrap_or_else(|| crop_zone(&pts, q, inside(q)));
+        let (gesture, layout) = match zone {
+            Some(8) => (Gesture::CropHandle { handle: 8, start, angle, map }, pinned),
+            Some(h) => (Gesture::CropHandle { handle: u8::try_from(h.min(8)).unwrap_or(8), start, angle, map }, Some(CropLayout::Frozen(map))),
             None => (Gesture::CropRotate { start_angle: angle, a0: (q - box_centre).angle() }, pinned),
         };
         app.gesture = Some(gesture);
@@ -2751,6 +2762,65 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if let Some(at) = readout_at {
         // the canvas (the loupe's own rect), not the photo: rotating happens in the margin around it
         angle_readout(ui, at, shown_angle, resp.rect);
+    }
+}
+
+/// How far (screen points) from a corner of the crop box a press grabs that corner.
+const CROP_CORNER_REACH: f32 = 14.0;
+/// How far (screen points) either side of an edge of the crop box a press grabs that edge, along
+/// its whole length.
+const CROP_EDGE_BAND: f32 = 10.0;
+
+/// What a press at `q` takes hold of in the crop box `pts` (its corners on screen, in
+/// `crop.drag`'s order): `Some(0..3)` a corner (resizes both sides), `Some(4..7)` an edge (top,
+/// right, bottom, left: anywhere along it resizes that side), `Some(8)` the box (moves the photo
+/// under it), `None` outside (rotates). `inside`: whether `q` is inside the box. An edge away
+/// from its middle handle used to rotate.
+fn crop_zone(pts: &[Pos2], q: Pos2, inside: bool) -> Option<usize> {
+    if pts.len() != 4 || !q.is_finite() {
+        return inside.then_some(8);
+    }
+    if let Some((i, _)) =
+        pts.iter().enumerate().map(|(i, c)| (i, c.distance(q))).filter(|(_, d)| *d < CROP_CORNER_REACH).min_by(|a, b| a.1.total_cmp(&b.1))
+    {
+        return Some(i);
+    }
+    let edge = (0..4)
+        .filter_map(|i| {
+            let (a, b) = (*pts.get(i)?, *pts.get((i + 1) % 4)?);
+            let ab = b - a;
+            let len2 = ab.length_sq();
+            if len2.is_nan() || len2 <= 0.0 {
+                return None;
+            }
+            let t = (q - a).dot(ab) / len2;
+            (0.0..=1.0).contains(&t).then(|| (i + 4, (a + ab * t).distance(q)))
+        })
+        .filter(|(_, d)| *d < CROP_EDGE_BAND)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((i, _)) = edge {
+        return Some(i);
+    }
+    inside.then_some(8)
+}
+
+#[cfg(test)]
+mod crop_zone_tests {
+    use super::*;
+
+    #[test]
+    fn edges_grab_along_their_whole_length_and_hostile_points_never_panic() {
+        let pts = [pos2(0.0, 0.0), pos2(200.0, 0.0), pos2(200.0, 100.0), pos2(0.0, 100.0)];
+        assert_eq!(crop_zone(&pts, pos2(2.0, 3.0), true), Some(0), "a corner");
+        assert_eq!(crop_zone(&pts, pos2(40.0, 4.0), true), Some(4), "the top edge, far from its middle");
+        assert_eq!(crop_zone(&pts, pos2(160.0, 104.0), false), Some(6), "just outside the bottom edge");
+        assert_eq!(crop_zone(&pts, pos2(100.0, 50.0), true), Some(8), "inside moves");
+        assert_eq!(crop_zone(&pts, pos2(300.0, 50.0), false), None, "outside rotates");
+        for q in [pos2(f32::NAN, 0.0), pos2(f32::INFINITY, 1.0)] {
+            assert_eq!(crop_zone(&pts, q, false), None);
+        }
+        assert_eq!(crop_zone(&[pos2(0.0, 0.0); 4], pos2(50.0, 50.0), true), Some(8), "a box of no size");
+        assert_eq!(crop_zone(&[], pos2(1.0, 1.0), false), None);
     }
 }
 
@@ -3528,7 +3598,26 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             app.ui.active_mask_component = Some(comp);
             let _ = app.run("develop.beginInteraction", json!({"label": "Edit Mask"}));
             app.gesture = Some(Gesture::MaskHandle { mask, comp, handle, original_shape });
+        } else if grip.is_none()
+            && app.ui.tool.is_empty()
+            && let (Some(img), Some(canvas)) = (app.image_rect, app.canvas_rect)
+            && zoomed(img, canvas)
+        {
+            // no tool armed and nothing grabbed: the drag pans the zoomed photo, as in the loupe
+            app.gesture = Some(Gesture::Pan { start: app.ui.pan, at: q });
+            pan_image(app, canvas, img, resp.drag_delta());
         }
+    } else if let Some(Gesture::Pan { .. }) = app.gesture {
+        if resp.dragged()
+            && let (Some(img), Some(canvas)) = (app.image_rect, app.canvas_rect)
+        {
+            pan_image(app, canvas, img, resp.drag_delta());
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+        if resp.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+            app.gesture = None;
+        }
+        return;
     }
     if resp.dragged()
         && let (Some(Gesture::MaskHandle { mask, comp, handle, original_shape }), Some(q)) = (app.gesture.clone(), resp.interact_pointer_pos())

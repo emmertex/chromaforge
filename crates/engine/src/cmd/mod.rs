@@ -21,7 +21,7 @@ mod cull;
 pub mod curves;
 pub mod dcp_profiles;
 pub(crate) mod denoise;
-mod develop;
+pub(crate) mod develop;
 mod edit;
 pub mod edit_in;
 mod enhance;
@@ -91,6 +91,7 @@ pub mod reload;
 pub mod sensor;
 mod slideshow;
 pub(crate) mod source;
+mod store;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tether;
@@ -277,6 +278,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(missing::specs());
         v.extend(recheck::specs());
         v.extend(sync::specs());
+        v.extend(store::specs());
         v.extend(metadata::specs());
         v.extend(metadata_files::specs());
         v.extend(export_preset_files::specs());

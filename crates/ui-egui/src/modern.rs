@@ -1172,6 +1172,7 @@ pub(crate) fn round_button(ui: &mut egui::Ui, rect: Rect, id: &str, icon: Icon, 
 /// The Modern layout's commands (`menus_fork` lists them).
 pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("view.modernLayout", "Modern Layout", None, "Window>Panels"),
+    ("view.compactLayout", "Compact Layout", None, "Window>Panels"),
     ("modern.chrome", "Show Modern Tools", None, ""),
     ("modern.group", "Open a Dock Group", None, ""),
     ("modern.dock", "Dock at the Side", None, ""),
@@ -1195,6 +1196,18 @@ pub(crate) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
                 app.ui.modern.menu = None;
             }
             Ok(json!({"on": app.ui.modern.enabled}))
+        }
+        // {on?}: the Compact layout (Classic drawn denser); on turns the Modern layout off
+        "view.compactLayout" => {
+            let on = flag(p, app.compact());
+            if on && app.ui.modern.enabled {
+                app.ui.modern.enabled = false;
+                crate::modern_dock::close(app);
+                stop_holding(app);
+                app.ui.modern.menu = None;
+            }
+            app.ui.settings.compact_layout = on;
+            Ok(json!({"on": on}))
         }
         "modern.chrome" => {
             app.ui.modern.chrome = flag(p, app.ui.modern.chrome);

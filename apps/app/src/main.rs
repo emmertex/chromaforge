@@ -931,7 +931,13 @@ fn surface_store() -> Option<Box<dyn lcc_ui_egui::surface::SurfaceStore>> {
 /// A session with no library yet (one opens later), with the folders face models and slideshow
 /// templates are kept in.
 fn unopened_session() -> Session {
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_default_connections().with_system_clock();
+    let mut s = Session::new()
+        .with_fs()
+        .with_default_denoise_models()
+        .with_default_genfill()
+        .with_default_connections()
+        .with_system_clock()
+        .with_default_app_store();
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
     s.lens_db = lcc_engine::lens_download::LensSettings::load(lcc_engine::config::config_dir());
     s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
@@ -943,7 +949,9 @@ fn unopened_session() -> Session {
 /// the window lists the recent ones.
 fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool) -> (Session, Option<LibraryProblem>) {
     let (mut s, problem) = match launch {
-        Launch::Ask => (Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock(), None),
+        Launch::Ask => {
+            (Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_app_store(), None)
+        }
         Launch::Open { dir, .. } => open_library_session(in_memory, dir.clone(), seed_demo),
     };
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
@@ -971,13 +979,22 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
             None,
         );
     }
-    let unopened = || Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_default_connections().with_system_clock();
+    // presets, profiles and habits are shared by every library (the settings folder's Library Store)
+    let unopened = || {
+        Session::new()
+            .with_fs()
+            .with_default_denoise_models()
+            .with_default_genfill()
+            .with_default_connections()
+            .with_system_clock()
+            .with_default_app_store()
+    };
     let Some(dir) = dir else {
         log::warn!("no library location (set --library or {})", lcc_brand::env_var("LIBRARY"));
         return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the library in. Choose a folder for it.")));
     };
     let t0 = std::time::Instant::now();
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_default_connections().with_system_clock();
+    let mut s = unopened();
     match s.open_library(&dir, seed_demo) {
         Ok(r) => {
             let (replayed, torn) = (r.replayed, r.torn_bytes);
@@ -1367,6 +1384,8 @@ fn main() -> eframe::Result {
                 app.hdr_display_sdr = !display.is_hdr();
                 if let Some(ui) = prefs {
                     app.ui = ui;
+                    // Auto Sync is the app's, remembered across libraries and restarts
+                    app.session.auto_sync = app.ui.settings.auto_sync;
                 }
                 catalog_hooks::remember_recent(&mut app, in_memory);
                 // the recent libraries to choose from (issue #1290), checked on a worker once shown

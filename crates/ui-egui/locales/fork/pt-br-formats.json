@@ -1,11 +1,14 @@
 {
   " · {queued} waiting": " · {queued} aguardando",
   "Add {n} New Photos…": "Adicionar {n} fotos novas…",
+  "Apply to {n} Selected Photos": "Aplicar a {n} fotos selecionadas",
+  "Built-in presets restored ({n} changes undone)": "Predefinições integradas restauradas ({n} alterações desfeitas)",
   "Collection imported: {n} photos found, {m} not in this library": "Coleção importada: {n} fotos encontradas, {m} não estão nesta biblioteca",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "Espaço de cor: Rec. 2020 {curve} (AVIF HDR)",
   "Create Folder in “{name}”": "Criar pasta em “{name}”",
   "Delete from Disk moves {n} files to the system trash.": "Excluir do disco move {n} arquivos para a lixeira do sistema.",
   "Delete these {count} photos from disk, or only remove them from the library?": "Excluir estas {count} fotos do disco ou apenas removê-las da biblioteca?",
+  "Delete {n} presets": "Excluir {n} predefinições",
   "Denoising {name}: {done} of {total} tiles{}": "Removendo ruído de {name}: bloco {done} de {total}{}",
   "Discard 1:1 Previews ({scope})": "Descartar pré-visualizações 1:1 ({scope})",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "{n} nomes de lugares baixados (GeoNames, CC-BY 4.0)",
@@ -21,6 +24,7 @@
   "Finish or cancel installing {name} first": "Conclua ou cancele primeiro a instalação de {name}",
   "Folder “{}”": "Pasta “{}”",
   "Geotagged {n} photo(s)": "{n} foto(s) georreferenciada(s)",
+  "Goes into the group “{group}” that exists already.": "Vai para o grupo “{group}”, que já existe.",
   "Healed {n} blemishes": "{n} imperfeições corrigidas",
   "Imported {n} export preset{}": "Predefinições de exportação importadas: {n}{:.0}",
   "Imported {n} metadata preset{}": "Predefinições de metadados importadas: {n}{:.0}",
@@ -36,6 +40,7 @@
   "Page {n}": "Página {n}",
   "Page {n} (blank)": "Página {n} (em branco)",
   "Page {page} of {pages}": "Página {page} de {pages}",
+  "Preset {name} on {n} photos": "Predefinição {name} em {n} fotos",
   "Printed {n} page(s) to file": "{n} página(s) impressa(s) em arquivo",
   "Remove {what} from the library for good?": "Remover {what} da biblioteca definitivamente?",
   "Running on the processor: {}.": "Executando no processador: {}.",
@@ -80,6 +85,8 @@
   "{n} photos relinked": "{n} fotos revinculadas",
   "{n} photos shared: {u}": "{n} fotos compartilhadas: {u}",
   "{n} photos · {frames} frames · {secs} s": "{n} fotos · {frames} quadros · {secs} s",
+  "{n} presets from your other libraries were added.": "{n} predefinições das suas outras bibliotecas foram adicionadas.",
+  "{n} presets, {h} hidden": "{n} predefinições, {h} ocultas",
   "{n} printer(s) found": "{n} impressora(s) encontrada(s)",
   "{n} selected": "{n} selecionadas",
   "{path} · {count} photos": "{path} · {count} fotos",
@@ -87,5 +94,7 @@
   "{p} photos, {f} files": "{p} fotos, {f} arquivos",
   "{} keys": "Teclas de {}",
   "{} of {} from {host}": "{} de {} de {host}",
-  "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}. Guardadas na pasta “denoise” da biblioteca; ao atingir o limite, as mais antigas que nenhuma foto usa saem primeiro."
+  "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}. Guardadas na pasta “denoise” da biblioteca; ao atingir o limite, as mais antigas que nenhuma foto usa saem primeiro.",
+  "“{name}” has its old settings again": "“{name}” voltou às configurações antigas",
+  "“{name}” takes the active photo's settings. Its name, group, place and marks stay.": "“{name}” recebe as configurações da foto ativa. Nome, grupo, posição e marcas continuam."
 }

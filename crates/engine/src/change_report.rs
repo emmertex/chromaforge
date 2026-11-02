@@ -163,7 +163,7 @@ mod tests {
         let d = Arc::new(lcc_develop::DevelopSettings::default());
         let ops = vec![
             Op::SetDevelop { id: PhotoId(1), settings: d.clone(), label: "Exposure".into(), edited: None },
-            Op::PushHistory { id: PhotoId(1), step: lcc_catalog::HistoryStep { label: "Exposure".into(), settings: d.clone() } },
+            Op::PushHistory { id: PhotoId(1), step: lcc_catalog::HistoryStep { label: "Exposure".into(), settings: d.clone(), batch: None } },
             Op::SetDevelop { id: PhotoId(2), settings: d, label: "Exposure".into(), edited: None },
         ];
         assert_eq!(summarize(&ops), Some((2, ChangeKind::Develop)), "history bookkeeping isn't a change of its own");

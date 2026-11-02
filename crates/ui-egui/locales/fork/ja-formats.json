@@ -1,11 +1,14 @@
 {
   " · {queued} waiting": " · 待機中 {queued}",
   "Add {n} New Photos…": "新しい写真 {n} 枚を追加…",
+  "Apply to {n} Selected Photos": "選択した {n} 枚の写真に適用",
+  "Built-in presets restored ({n} changes undone)": "内蔵プリセットを復元しました（{n} 件の変更を取り消し）",
   "Collection imported: {n} photos found, {m} not in this library": "コレクションを読み込みました: {n} 枚が見つかり、{m} 枚はこのライブラリにありません",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "カラースペース：Rec. 2020 {curve}（HDR AVIF）",
   "Create Folder in “{name}”": "「{name}」にフォルダーを作成",
   "Delete from Disk moves {n} files to the system trash.": "「ディスクから削除」は {n} 個のファイルをシステムのゴミ箱に移動します。",
   "Delete these {count} photos from disk, or only remove them from the library?": "これらの {count} 枚の写真をディスクから削除しますか？それともライブラリから取り除くだけにしますか？",
+  "Delete {n} presets": "{n} 個のプリセットを削除",
   "Denoising {name}: {done} of {total} tiles{}": "{name}のノイズを除去中：タイル {done}/{total}{}",
   "Discard 1:1 Previews ({scope})": "1:1プレビューを破棄（{scope}）",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "{n} 件の地名をダウンロードしました（GeoNames、CC-BY 4.0）",
@@ -21,6 +24,7 @@
   "Finish or cancel installing {name} first": "先に {name} のインストールを完了するかキャンセルしてください",
   "Folder “{}”": "フォルダ「{}」",
   "Geotagged {n} photo(s)": "{n} 枚の写真にジオタグを付けました",
+  "Goes into the group “{group}” that exists already.": "既存のグループ「{group}」に入ります。",
   "Healed {n} blemishes": "{n} か所のシミを修復しました",
   "Imported {n} export preset{}": "書き出しプリセットを {n} 件読み込みました{:.0}",
   "Imported {n} metadata preset{}": "メタデータプリセットを {n} 件読み込みました{:.0}",
@@ -36,6 +40,7 @@
   "Page {n}": "ページ {n}",
   "Page {n} (blank)": "ページ {n}（空白）",
   "Page {page} of {pages}": "{page} / {pages} ページ",
+  "Preset {name} on {n} photos": "プリセット {name} を {n} 枚の写真に",
   "Printed {n} page(s) to file": "{n} ページをファイルに印刷しました",
   "Remove {what} from the library for good?": "{what}をライブラリから完全に削除しますか？",
   "Running on the processor: {}.": "プロセッサーで実行中：{}。",
@@ -80,6 +85,8 @@
   "{n} photos relinked": "{n} 枚の写真を再リンク",
   "{n} photos shared: {u}": "{n} 枚の写真を共有しました: {u}",
   "{n} photos · {frames} frames · {secs} s": "{n} 枚の写真 · {frames} フレーム · {secs} 秒",
+  "{n} presets from your other libraries were added.": "他のライブラリから {n} 個のプリセットが追加されました。",
+  "{n} presets, {h} hidden": "{n} 個のプリセット、{h} 個は非表示",
   "{n} printer(s) found": "プリンター {n} 台が見つかりました",
   "{n} selected": "{n} 件を選択",
   "{path} · {count} photos": "{path} · {count} 枚",
@@ -87,5 +94,7 @@
   "{p} photos, {f} files": "写真 {p} 枚、ファイル {f} 個",
   "{} keys": "{} のキー",
   "{} of {} from {host}": "{host}から {}/{}",
-  "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}。ライブラリの「denoise」フォルダーに保存されます。上限に達すると、どの写真にも使われていない古いものから削除されます。"
+  "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.": "{} · {}。ライブラリの「denoise」フォルダーに保存されます。上限に達すると、どの写真にも使われていない古いものから削除されます。",
+  "“{name}” has its old settings again": "「{name}」は以前の設定に戻りました",
+  "“{name}” takes the active photo's settings. Its name, group, place and marks stay.": "「{name}」はアクティブな写真の設定を取り込みます。名前、グループ、位置、マークはそのままです。"
 }

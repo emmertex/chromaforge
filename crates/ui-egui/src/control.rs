@@ -376,16 +376,16 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
         "ui.key" => {
             let Some(k) = s("key").and_then(key_from) else { return err("unknown or missing `key`") };
             let m = modifiers(p);
-            // {action?: "press" | "down" | "up"}: down … up holds the key across other input (Space
-            // held over a drag); a press is both in one frame
-            let (down, up) = match s("action").unwrap_or("press") {
-                "press" => (true, true),
-                "down" => (true, false),
-                "up" => (false, true),
-                other => return err(format!("ui.key: action {other:?} (press, down or up)")),
-            };
-            for pressed in [down.then_some(true), up.then_some(false)].into_iter().flatten() {
-                app.synthetic.push(egui::Event::Key { key: k, physical_key: None, pressed, repeat: false, modifiers: m });
+            // {action?: "press" | "down" | "repeat" | "up"}: down … up holds the key across other
+            // input (Space held over a drag); a press is both in one frame; repeat is the system's
+            // auto-repeat while the key is held
+            let key = |pressed: bool, repeat: bool| egui::Event::Key { key: k, physical_key: None, pressed, repeat, modifiers: m };
+            match s("action").unwrap_or("press") {
+                "press" => app.synthetic.extend([key(true, false), key(false, false)]),
+                "down" => app.synthetic.push(key(true, false)),
+                "repeat" => app.synthetic.push(key(true, true)),
+                "up" => app.synthetic.push(key(false, false)),
+                other => return err(format!("ui.key: action {other:?} (press, down, repeat or up)")),
             }
             ctx.request_repaint();
             ok(Value::Null)
@@ -492,6 +492,9 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                     // a script's values get the same range checks as a settings file's
                     u.clamp_ranges();
                     u.toasts = app.ui.toasts.clone();
+                    // (and the panel a tool panel took the place of, to put back when it closes)
+                    u.tool_return = app.ui.tool_return;
+                    u.right_seen = app.ui.right_seen;
                     u.dialog = app.ui.dialog.clone();
                     u.status = app.ui.status.clone();
                     crate::docking::cancel_replaced_gesture(app, u.docking.as_ref());

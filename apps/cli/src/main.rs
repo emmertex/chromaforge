@@ -59,6 +59,8 @@ USAGE:
         --connect [ADDR]  drive the running app (`{bin} --control 7980`; default 127.0.0.1:7980)
         --script FILE|-   also run JSON lines {\"command\": id, \"params\": {…}} (or {\"method\": …})
         --keep-going      continue after a failed command
+        --shared-settings headless without --library: use the shared presets and profiles (the settings
+                          folder's Library Store), e.g. `run --shared-settings store.gatherPresets`; quit the app first
   {cli} run-action NAME [OPTIONS] [param=value…] [ids=[…]]
       Play a saved action (actions.list) on the selection, or on `ids`; OPTIONS as for `run`.
   {cli} sync-folder [OPTIONS] FOLDER
@@ -503,6 +505,8 @@ fn mcp(args: &[String]) -> Result<(), String> {
             let mut h = match &library {
                 Some(dir) => {
                     let mut h = Headless::default();
+                    // the presets and profiles every library shares (the settings folder's Library Store)
+                    h.session.use_default_app_store();
                     catalog_migrate::migrate_with_progress(dir)?;
                     let r = h.session.open_library(dir, demo).map_err(|e| library_error(dir, e))?;
                     eprintln!("{CLI} mcp: opened library {dir} ({r:?})");
@@ -689,6 +693,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut imports = Vec::new();
     let mut script: Option<String> = None;
     let mut keep_going = false;
+    let mut shared_settings = false;
     let mut i = 0;
     while i < args.len() && args[i].starts_with("--") {
         match args[i].as_str() {
@@ -709,6 +714,7 @@ fn run(args: &[String]) -> Result<(), String> {
             "--import" => imports.push(take_value(args, &mut i, "--import")?.to_string()),
             "--script" => script = Some(take_value(args, &mut i, "--script")?.to_string()),
             "--keep-going" => keep_going = true,
+            "--shared-settings" => shared_settings = true,
             a => return Err(format!("unknown option `{a}`")),
         }
         i += 1;
@@ -746,8 +752,8 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let mut backend: Box<dyn Backend> = match connect {
         Some(addr) => {
-            if demo || library.is_some() || !imports.is_empty() {
-                return Err("--demo, --library and --import apply to headless mode only".into());
+            if demo || library.is_some() || !imports.is_empty() || shared_settings {
+                return Err("--demo, --library, --shared-settings and --import apply to headless mode only".into());
             }
             Box::new(Remote::connect(&addr).map_err(|e| match e.kind() {
                 std::io::ErrorKind::PermissionDenied => format!("{APP} at {addr} refused the connection: {e}"),
@@ -758,12 +764,20 @@ fn run(args: &[String]) -> Result<(), String> {
             let mut h = match &library {
                 Some(dir) => {
                     let mut h = Headless::default();
+                    h.session.use_default_app_store();
                     catalog_migrate::migrate_with_progress(dir)?;
                     h.session.open_library(dir, demo).map_err(|e| library_error(dir, e))?;
                     library_warnings(&mut h.session, "lcc-cli");
                     h
                 }
                 None if demo => Headless::demo(),
+                None if shared_settings => {
+                    // the shared presets and profiles without a library (`store.*`, presets)
+                    let mut h = Headless::default();
+                    h.session.use_default_app_store();
+                    library_warnings(&mut h.session, "lcc-cli");
+                    h
+                }
                 None => Headless::default(),
             };
             if !imports.is_empty() {
@@ -1010,7 +1024,8 @@ fn snapshot(args: &[String]) -> Result<(), String> {
                 .with_default_face_models()
                 .with_default_lens_profiles()
                 .with_default_sam3_model()
-                .with_default_slide_templates();
+                .with_default_slide_templates()
+                .with_default_app_store();
             catalog_migrate::migrate_with_progress(dir)?;
             s.open_library(dir, false).map_err(|e| library_error(dir, e))?;
             s
