@@ -86,6 +86,7 @@ pub mod peers;
 pub mod preset_import;
 pub mod preset_luminar;
 pub mod presets;
+mod presets_save;
 pub mod print;
 pub mod print_color;
 pub mod print_pdf;
@@ -543,6 +544,12 @@ pub struct Session {
     /// (lcc-cli, a script) never ends in the middle of one.
     #[cfg(not(target_arch = "wasm32"))]
     pub apple_photos_background: bool,
+    /// Save `presets.json` on a background thread ([`presets_save`]), where the library's store
+    /// allows it: set by the desktop app (a 40 MB preset collection froze the UI for each save).
+    /// Off (the default): saves happen inside the command that changed the presets.
+    pub background_saves: bool,
+    /// The background saver, once started.
+    presets_saver: Option<presets_save::Saver>,
     /// Moves a file to the system trash (`photo.deleteFromDisk`). `None` in wasm and sessions without a filesystem.
     pub trash: Option<disk_delete::TrashFn>,
 }
@@ -708,6 +715,8 @@ impl Session {
             apple_photos_imports: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             apple_photos_background: false,
+            background_saves: false,
+            presets_saver: None,
             trash: None,
         }
     }
@@ -795,6 +804,36 @@ impl Session {
             }
         }
         r
+    }
+
+    /// Hand `presets.json` to the background saver ([`presets_save`]) when this session saves
+    /// in the background and `store` can be written from another thread; `known` is the hash
+    /// of what the file holds (0: unknown). Whether it was handed over (else: save it now).
+    pub(crate) fn save_presets_in_background(&mut self, store: &dyn lcc_catalog::Store, known: u64) -> bool {
+        if !self.background_saves {
+            return false;
+        }
+        let Some(writer) = store.background_writer() else { return false };
+        if self.presets_saver.is_none() {
+            self.presets_saver = presets_save::Saver::start();
+        }
+        let Some(saver) = self.presets_saver.as_ref() else { return false };
+        saver.save(presets_save::Snapshot::of(self), writer, "presets.json", known);
+        true
+    }
+
+    /// A background save of `presets.json` failed since the last call (its reason, once).
+    pub(crate) fn presets_save_failed(&self) -> Option<String> {
+        self.presets_saver.as_ref().and_then(presets_save::Saver::take_error)
+    }
+
+    /// Wait (bounded) for a background `presets.json` save in progress.
+    pub(crate) fn flush_presets(&self) {
+        if let Some(s) = &self.presets_saver
+            && !s.flush(std::time::Duration::from_secs(20))
+        {
+            log::warn!("presets: the background save is taking long; not waiting for it");
+        }
     }
 
     pub fn commands(&self) -> Vec<CommandInfo> {

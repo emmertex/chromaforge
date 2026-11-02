@@ -343,20 +343,31 @@ pub fn show(app: &mut crate::LccApp, ui: &mut egui::Ui) {
             Panel::Canvas => {
                 canvas = Some(ui.new_child(egui::UiBuilder::new().id_salt("photo-view").max_rect(ui.max_rect())));
             }
+            // (each panel is lapped: a slow frame's log names the one that cost it)
             Panel::Library => {
+                let mut lap = crate::now_ms();
                 crate::widgets::register(ui.ctx(), "panel:left_panel", ui.max_rect());
                 crate::panels::left::show(app, ui);
+                app.lap(&mut lap, "panel.library");
             }
             Panel::Tools => {
+                let mut lap = crate::now_ms();
                 crate::widgets::register(ui.ctx(), "panel:right_panel", ui.max_rect());
                 crate::panels::right::show(app, ui);
+                app.lap(&mut lap, "panel.tools");
             }
-            Panel::Presets => crate::panels::presets::show(app, ui, crate::module::DEVELOP_LEFT, false),
+            Panel::Presets => {
+                let mut lap = crate::now_ms();
+                crate::panels::presets::show(app, ui, crate::module::DEVELOP_LEFT, false);
+                app.lap(&mut lap, "panel.presets");
+            }
         },
     );
     if let Some(mut canvas) = canvas {
         let ui = &mut canvas;
+        let mut lap = crate::now_ms();
         crate::panels::bottombar::show(app, ui);
+        app.lap(&mut lap, "panel.bottombar");
         let bg = if matches!(
             app.ui.view,
             crate::state::ViewMode::Detail | crate::state::ViewMode::Compare | crate::state::ViewMode::Survey | crate::state::ViewMode::Reference
@@ -374,6 +385,7 @@ pub fn show(app: &mut crate::LccApp, ui: &mut egui::Ui) {
             crate::state::ViewMode::Reference => crate::panels::compare::show_reference(app, ui),
             crate::state::ViewMode::People => crate::panels::people::show(app, ui),
         });
+        app.lap(&mut lap, "panel.view");
     }
 
     let rendered = workspace;

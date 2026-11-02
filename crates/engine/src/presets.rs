@@ -30,9 +30,12 @@ pub struct PresetFile {
 /// Reads go through `Deref` (`iter`, `len`, `find`…) and keep the generation; `push`, `iter_mut`,
 /// `remove`… go through `DerefMut` and bump it, whether or not anything is then changed.
 /// Generations are unique across all lists in the process.
+///
+/// The items are shared copy-on-write: [`PresetList::snapshot`] hands the list to a background
+/// save without copying 40 MB on the UI thread; the next change then copies it once.
 #[derive(Clone, Debug)]
 pub struct PresetList {
-    items: Vec<Preset>,
+    items: std::sync::Arc<Vec<Preset>>,
     generation: u64,
 }
 
@@ -44,7 +47,12 @@ fn next_generation() -> u64 {
 
 impl PresetList {
     pub fn new(items: Vec<Preset>) -> PresetList {
-        PresetList { items, generation: next_generation() }
+        PresetList { items: std::sync::Arc::new(items), generation: next_generation() }
+    }
+
+    /// The presets as they are now, shared (no copy): a later change copies the list for itself.
+    pub fn snapshot(&self) -> std::sync::Arc<Vec<Preset>> {
+        self.items.clone()
     }
 
     /// Changes whenever the list may have changed.
@@ -74,7 +82,7 @@ impl std::ops::Deref for PresetList {
 impl std::ops::DerefMut for PresetList {
     fn deref_mut(&mut self) -> &mut Vec<Preset> {
         self.generation = next_generation();
-        &mut self.items
+        std::sync::Arc::make_mut(&mut self.items)
     }
 }
 
@@ -91,7 +99,7 @@ impl<'a> IntoIterator for &'a mut PresetList {
     type IntoIter = std::slice::IterMut<'a, Preset>;
     fn into_iter(self) -> Self::IntoIter {
         self.generation = next_generation();
-        self.items.iter_mut()
+        std::sync::Arc::make_mut(&mut self.items).iter_mut()
     }
 }
 

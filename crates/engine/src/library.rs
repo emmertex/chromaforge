@@ -203,7 +203,7 @@ impl PresetsSaved {
     }
 }
 
-fn bytes_hash(b: &[u8]) -> u64 {
+pub(crate) fn bytes_hash(b: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     b.hash(&mut h);
@@ -351,15 +351,8 @@ struct PrefsFile {
 fn presets_json(s: &Session) -> String {
     #[cfg(test)]
     PRESETS_SERIALIZED.with(|c| c.set(c.get() + 1));
-    let presets = &s.presets;
-    let f = PresetsFile {
-        user: presets.iter().filter(|p| !p.builtin).cloned().collect(),
-        folders: s.preset_folders.clone(),
-        favorites: presets.iter().filter(|p| p.builtin && p.favorite).map(|p| p.id.clone()).collect(),
-        profile_favorites: s.profile_favorites.clone(),
-        profile_recent: s.profile_recent.clone(),
-    };
-    serde_json::to_string_pretty(&f).unwrap_or_default()
+    // (borrowed: the 10 000+ presets of an imported collection are not copied to be written)
+    crate::presets_save::Snapshot::of(s).json()
 }
 
 /// Finish a background compaction that is done (cheap otherwise). A failed one lost nothing (the
@@ -844,9 +837,33 @@ impl Session {
             lib.unsaved_error = None;
         }
         self.sync_compaction_row();
+        // a background save that failed: the presets count as unsaved and are saved again now
+        if let Some(e) = self.presets_save_failed()
+            && let Some(lib) = self.library.as_mut()
+        {
+            log::error!("library: presets: {e}");
+            lib.presets_error = Some(format!("presets: {e}"));
+            lib.presets_saved = PresetsSaved::default();
+        }
         let due = self.library.as_ref().is_some_and(|l| l.presets_saved.differs(self) && !l.blocked.contains(&"presets.json"));
         if !due {
             return Ok(());
+        }
+        // off the UI thread when it can be (`presets_save`): the bytes are made and compared there
+        if let Some(lib) = self.library.take() {
+            let known = lib.presets_saved.hash;
+            let handed = self.save_presets_in_background(lib.files.as_ref(), known);
+            self.library = Some(lib);
+            if handed {
+                let mut state = PresetsSaved::state_of(self);
+                state.hash = known;
+                if let Some(lib) = self.library.as_mut() {
+                    lib.presets_saved = state;
+                    // (a failure of this save sets it again on the next persist)
+                    lib.presets_error = None;
+                }
+                return Ok(());
+            }
         }
         let presets = presets_json(self);
         let mut state = PresetsSaved::state_of(self);
@@ -918,6 +935,14 @@ impl Session {
         // the automatic sidecar writes still queued are made, and a failed one recorded, before the library goes
         self.flush_sidecar_writes();
         let persisted = self.persist();
+        // a presets.json save on its way finishes first (it is this library's), and a failed one
+        // is made here, in the close
+        self.flush_presets();
+        if self.presets_saver.is_some() {
+            let saves = std::mem::replace(&mut self.background_saves, false);
+            let _ = self.persist();
+            self.background_saves = saves;
+        }
         self.save_view();
         let unlogged = if persisted.is_err() { self.pending_log.len() as u64 } else { 0 };
         let Some(lib) = self.library.as_mut() else { return Ok(()) };

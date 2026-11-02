@@ -113,3 +113,26 @@ fn a_render_solving_a_fill_shows_in_the_activity_stack() {
     h.settle(T);
     assert!(!h.app.session.activity.list().iter().any(|r| r.kind == "fill"), "the row is gone once the render is in");
 }
+
+/// A frame that holds the UI thread for half a second is kept with what ran in it (commands,
+/// control requests, slow panels) and shown in `ui.inspect` → `perf.slowestFrame`; a quick one is not.
+#[test]
+fn a_slow_frame_is_kept_with_what_ran_in_it() {
+    let mut app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
+    app.perf.update_ms = 20.0;
+    app.note_ran("develop.set");
+    app.note_slow_frame(100);
+    assert!(app.slowest_frame.is_none(), "a quick frame is not slow");
+    app.note_ran("ui.inspect");
+    let mut lap = crate::now_ms() - 400.0;
+    app.lap(&mut lap, "panel.tools");
+    app.perf.update_ms = 900.0;
+    app.note_slow_frame(100);
+    let slow = app.slowest_frame.clone().expect("the slow frame is kept");
+    assert_eq!(slow.ms, 900.0);
+    assert!(slow.ran.iter().any(|r| r == "ui.inspect"));
+    assert!(slow.ran.iter().any(|r| r.starts_with("panel.tools")), "{:?}", slow.ran);
+    let mut h = Headless::new(app, [800.0, 600.0], 1.0);
+    let reply = h.request("ui.inspect", json!({}), T);
+    assert_eq!(reply["result"]["perf"]["slowestFrame"]["ms"], 900.0, "{reply}");
+}
