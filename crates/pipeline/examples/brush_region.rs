@@ -2,7 +2,7 @@
 //! item 28: a region render with a dress brushed over took 9–55 s; budget ~150 ms).
 //!
 //! `cargo run --release -p lcc-pipeline --example brush_region [-- --auto]`
-//! (`LIGHTCRAFT_PROFILE=1` prints the stages.)
+//! (`<PREFIX>_PROFILE=1` prints the stages.)
 
 use lcc_develop::{BrushStroke, DevelopSettings, Mask, MaskComponent, MaskOp, MaskShape};
 use lcc_geom::Point;
