@@ -1461,7 +1461,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         match right {
             RightPanel::Crop => crop_overlay(app, ui, &resp, &map, &frame, &d, id),
             RightPanel::Masking => mask_overlay(app, ui, &resp, &map, &d),
-            RightPanel::Remove => remove_overlay(app, ui, &resp, &map, &d),
+            RightPanel::Remove => {
+                remove_overlay(app, ui, &resp, &map, &d);
+                // a spot being generated: a spinner over it until the result arrives
+                crate::panels::genfill::canvas(app, ui, &ui.painter_at(app.canvas_rect.unwrap_or(map.rect)), &|q| map.screen(q), &d);
+            }
             RightPanel::RedEye => eye_overlay(app, ui, &resp, &map, &d),
             _ => {
                 // side by side / stacked: Before shows the same frame, so a click in its view (white
@@ -4199,6 +4203,7 @@ fn spot_keys(app: &mut LccApp, ui: &mut egui::Ui, map: &CanvasMap, d: &DevelopSe
             "heal" => "heal",
             "clone" => "clone",
             "fill" => "fill",
+            "generate" => "generate",
             _ => "remove",
         };
         let _ = app.run(

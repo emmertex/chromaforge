@@ -320,5 +320,15 @@
   ", {n} failed": ", {n} non riuscite",
   "{n} failed": "{n} non riuscite",
   "Show each photo ({n})": "Mostra ogni foto ({n})",
-  "Adjustments: {n}": "Regolazioni: {n}"
+  "Adjustments: {n}": "Regolazioni: {n}",
+  "Service: {name}": "Servizio: {name}",
+  "Paint over what to replace, then click Generate. About ${usd} per variation.": "Dipingi su ciò da sostituire, poi fai clic su Genera. Circa ${usd} per variante.",
+  "Sent as {} pieces at {}% of the photo's resolution.": "Inviato in {} parti al {}% della risoluzione della foto.",
+  "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Inviato in un’unica parte al {}% della risoluzione della foto: più morbido del resto.",
+  "Sends this {} × {} px area to {name}.": "Invia quest’area di {} × {} px a {name}.",
+  "Sends this area to {name}, in {} pieces.": "Invia quest’area a {name} in {} parti.",
+  "About ${usd}, billed to your {name} account.": "Circa ${usd}, addebitati sul tuo account {name}.",
+  "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "L’area è più grande di quanto {name} accetta a piena risoluzione: sarà più morbida del resto della foto ({}%).",
+  "up to {} px at full resolution, about ${usd} per fill": "fino a {} px a piena risoluzione, circa ${usd} per riempimento",
+  "Key saved (ends in {})": "Chiave salvata (termina con {})"
 }

@@ -337,5 +337,15 @@
   "{} fixed: {} known for camera {}, {} found in this photo": "{} исправлено: {} известно для камеры {}, {} найдено в этом фото",
   "Removing dust from {n} photos": "Удаление пыли с {n} фото",
   "Camera {}: {} known dust spots": "Камера {}: известных пятен пыли — {}",
-  "{} spot(s) from Remove Dust (outlined in amber)": "Пятен от «Удалить пыль»: {} (обведены янтарным)"
+  "{} spot(s) from Remove Dust (outlined in amber)": "Пятен от «Удалить пыль»: {} (обведены янтарным)",
+  "Service: {name}": "Сервис: {name}",
+  "Paint over what to replace, then click Generate. About ${usd} per variation.": "Закрасьте то, что нужно заменить, и нажмите «Создать». Около ${usd} за вариант.",
+  "Sent as {} pieces at {}% of the photo's resolution.": "Отправляется {} частями с {}% разрешения фото.",
+  "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Отправляется одной частью с {}% разрешения фото: мягче остального.",
+  "Sends this {} × {} px area to {name}.": "Отправляет эту область {} × {} px в {name}.",
+  "Sends this area to {name}, in {} pieces.": "Отправляет эту область в {name} {} частями.",
+  "About ${usd}, billed to your {name} account.": "Около ${usd}, оплата с вашего аккаунта {name}.",
+  "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "Область больше, чем {name} принимает в полном разрешении: она будет мягче остального фото ({}%).",
+  "up to {} px at full resolution, about ${usd} per fill": "до {} px в полном разрешении, около ${usd} за заливку",
+  "Key saved (ends in {})": "Ключ сохранён (заканчивается на {})"
 }

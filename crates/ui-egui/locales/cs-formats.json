@@ -320,5 +320,15 @@
   ", {n} failed": ", selhalo: {n}",
   "{n} failed": "selhalo: {n}",
   "Show each photo ({n})": "Zobrazit jednotlivé fotografie ({n})",
-  "Adjustments: {n}": "Úpravy: {n}"
+  "Adjustments: {n}": "Úpravy: {n}",
+  "Service: {name}": "Služba: {name}",
+  "Paint over what to replace, then click Generate. About ${usd} per variation.": "Namalujte, co nahradit, a klepněte na Generovat. Asi ${usd} za variantu.",
+  "Sent as {} pieces at {}% of the photo's resolution.": "Odešle se ve {} částech při {}% rozlišení fotografie.",
+  "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Odešle se jako jedna část při {}% rozlišení fotografie: měkčí než zbytek.",
+  "Sends this {} × {} px area to {name}.": "Odešle tuto oblast {} × {} px službě {name}.",
+  "Sends this area to {name}, in {} pieces.": "Odešle tuto oblast službě {name} ve {} částech.",
+  "About ${usd}, billed to your {name} account.": "Asi ${usd}, účtováno na váš účet {name}.",
+  "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "Oblast je větší, než {name} přijme v plném rozlišení: bude měkčí než zbytek fotografie ({}%).",
+  "up to {} px at full resolution, about ${usd} per fill": "až {} px v plném rozlišení, asi ${usd} za výplň",
+  "Key saved (ends in {})": "Klíč uložen (končí na {})"
 }

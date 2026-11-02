@@ -343,5 +343,15 @@
   "{} fixed: {} known for camera {}, {} found in this photo": "已修复 {} 个：相机已知 {} 个（{}），本照片中发现 {} 个",
   "Removing dust from {n} photos": "正在去除 {n} 张照片的灰尘",
   "Camera {}: {} known dust spots": "相机 {}：已知灰尘斑点 {} 个",
-  "{} spot(s) from Remove Dust (outlined in amber)": "来自“去除灰尘”的斑点 {} 个（琥珀色轮廓）"
+  "{} spot(s) from Remove Dust (outlined in amber)": "来自“去除灰尘”的斑点 {} 个（琥珀色轮廓）",
+  "Service: {name}": "服务：{name}",
+  "Paint over what to replace, then click Generate. About ${usd} per variation.": "涂抹要替换的部分，然后点击“生成”。每个变体约 ${usd}。",
+  "Sent as {} pieces at {}% of the photo's resolution.": "分 {} 块发送，为照片分辨率的 {}%。",
+  "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "作为一块发送，为照片分辨率的 {}%：比其余部分柔和。",
+  "Sends this {} × {} px area to {name}.": "将此 {} × {} px 区域发送到 {name}。",
+  "Sends this area to {name}, in {} pieces.": "将此区域分 {} 块发送到 {name}。",
+  "About ${usd}, billed to your {name} account.": "约 ${usd}，由你的 {name} 账户支付。",
+  "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "该区域超出 {name} 全分辨率的上限：会比照片其余部分柔和（{}%）。",
+  "up to {} px at full resolution, about ${usd} per fill": "全分辨率最高 {} px，每次填充约 ${usd}",
+  "Key saved (ends in {})": "密钥已保存（结尾为 {}）"
 }

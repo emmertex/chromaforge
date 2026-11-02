@@ -337,5 +337,15 @@
   "{} fixed: {} known for camera {}, {} found in this photo": "{} 個を補正（既知 {} 個・カメラ {}、この写真で検出 {} 個）",
   "Removing dust from {n} photos": "{n} 枚の写真からダストを除去中",
   "Camera {}: {} known dust spots": "カメラ {}: 既知のダスト {} 箇所",
-  "{} spot(s) from Remove Dust (outlined in amber)": "「ダストを除去」によるスポット {} 個（琥珀色の枠）"
+  "{} spot(s) from Remove Dust (outlined in amber)": "「ダストを除去」によるスポット {} 個（琥珀色の枠）",
+  "Service: {name}": "サービス：{name}",
+  "Paint over what to replace, then click Generate. About ${usd} per variation.": "置き換える部分を塗ってから「生成」をクリック。1 バリエーションあたり約 ${usd}。",
+  "Sent as {} pieces at {}% of the photo's resolution.": "{} 分割、写真の解像度の {}% で送信します。",
+  "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "1 枚、写真の解像度の {}% で送信します。ほかの部分より柔らかくなります。",
+  "Sends this {} × {} px area to {name}.": "この {} × {} px の範囲を {name} に送信します。",
+  "Sends this area to {name}, in {} pieces.": "この範囲を {} 分割して {name} に送信します。",
+  "About ${usd}, billed to your {name} account.": "約 ${usd}（{name} アカウントに請求）。",
+  "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "範囲が {name} のフル解像度の上限を超えています。写真のほかの部分より柔らかくなります（{}%）。",
+  "up to {} px at full resolution, about ${usd} per fill": "フル解像度で最大 {} px、1 回あたり約 ${usd}",
+  "Key saved (ends in {})": "キーを保存しました（末尾 {}）"
 }

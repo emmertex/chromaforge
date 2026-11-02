@@ -337,5 +337,15 @@
   "{} fixed: {} known for camera {}, {} found in this photo": "{} виправлено: {} відомо для камери {}, {} знайдено на цьому фото",
   "Removing dust from {n} photos": "Видалення пилу з {n} фото",
   "Camera {}: {} known dust spots": "Камера {}: відомих плям пилу — {}",
-  "{} spot(s) from Remove Dust (outlined in amber)": "Плям від «Видалити пил»: {} (обведені бурштиновим)"
+  "{} spot(s) from Remove Dust (outlined in amber)": "Плям від «Видалити пил»: {} (обведені бурштиновим)",
+  "Service: {name}": "Сервіс: {name}",
+  "Paint over what to replace, then click Generate. About ${usd} per variation.": "Зафарбуйте те, що треба замінити, і натисніть «Створити». Близько ${usd} за варіант.",
+  "Sent as {} pieces at {}% of the photo's resolution.": "Надсилається {} частинами з {}% роздільності фото.",
+  "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Надсилається однією частиною з {}% роздільності фото: м’якше за решту.",
+  "Sends this {} × {} px area to {name}.": "Надсилає цю ділянку {} × {} px до {name}.",
+  "Sends this area to {name}, in {} pieces.": "Надсилає цю ділянку до {name} {} частинами.",
+  "About ${usd}, billed to your {name} account.": "Близько ${usd}, оплата з вашого облікового запису {name}.",
+  "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "Ділянка більша, ніж {name} приймає в повній роздільності: вона буде м’якшою за решту фото ({}%).",
+  "up to {} px at full resolution, about ${usd} per fill": "до {} px у повній роздільності, близько ${usd} за заливку",
+  "Key saved (ends in {})": "Ключ збережено (закінчується на {})"
 }

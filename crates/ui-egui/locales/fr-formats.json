@@ -337,5 +337,15 @@
   "{} fixed: {} known for camera {}, {} found in this photo": "{} corrigé(s) : {} connu(s) pour l’appareil {}, {} trouvé(s) sur cette photo",
   "Removing dust from {n} photos": "Suppression de la poussière de {n} photos",
   "Camera {}: {} known dust spots": "Appareil {} : {} taches de poussière connues",
-  "{} spot(s) from Remove Dust (outlined in amber)": "{} tache(s) de « Supprimer la poussière » (contour ambre)"
+  "{} spot(s) from Remove Dust (outlined in amber)": "{} tache(s) de « Supprimer la poussière » (contour ambre)",
+  "Service: {name}": "Service : {name}",
+  "Paint over what to replace, then click Generate. About ${usd} per variation.": "Peignez ce qu’il faut remplacer, puis cliquez sur Générer. Environ ${usd} par variante.",
+  "Sent as {} pieces at {}% of the photo's resolution.": "Envoyé en {} morceaux à {}% de la résolution de la photo.",
+  "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Envoyé en un seul morceau à {}% de la résolution de la photo : plus doux que le reste.",
+  "Sends this {} × {} px area to {name}.": "Envoie cette zone de {} × {} px à {name}.",
+  "Sends this area to {name}, in {} pieces.": "Envoie cette zone à {name} en {} morceaux.",
+  "About ${usd}, billed to your {name} account.": "Environ ${usd}, facturés sur votre compte {name}.",
+  "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "La zone dépasse ce que {name} accepte en pleine résolution : elle sera plus douce que le reste de la photo ({}%).",
+  "up to {} px at full resolution, about ${usd} per fill": "jusqu’à {} px en pleine résolution, environ ${usd} par remplissage",
+  "Key saved (ends in {})": "Clé enregistrée (se termine par {})"
 }

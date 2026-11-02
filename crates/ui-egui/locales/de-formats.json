@@ -343,5 +343,15 @@
   "{} fixed: {} known for camera {}, {} found in this photo": "{} korrigiert: {} bekannt für Kamera {}, {} in diesem Foto gefunden",
   "Removing dust from {n} photos": "Staub wird aus {n} Fotos entfernt",
   "Camera {}: {} known dust spots": "Kamera {}: {} bekannte Staubflecken",
-  "{} spot(s) from Remove Dust (outlined in amber)": "{} Fleck(en) von „Staub entfernen“ (bernsteinfarben umrandet)"
+  "{} spot(s) from Remove Dust (outlined in amber)": "{} Fleck(en) von „Staub entfernen“ (bernsteinfarben umrandet)",
+  "Service: {name}": "Dienst: {name}",
+  "Paint over what to replace, then click Generate. About ${usd} per variation.": "Male über das, was ersetzt werden soll, dann klicke auf „Generieren“. Etwa ${usd} pro Variante.",
+  "Sent as {} pieces at {}% of the photo's resolution.": "Wird in {} Teilen mit {}% der Fotoauflösung gesendet.",
+  "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Wird als ein Teil mit {}% der Fotoauflösung gesendet: weicher als der Rest.",
+  "Sends this {} × {} px area to {name}.": "Sendet diesen Bereich von {} × {} px an {name}.",
+  "Sends this area to {name}, in {} pieces.": "Sendet diesen Bereich in {} Teilen an {name}.",
+  "About ${usd}, billed to your {name} account.": "Etwa ${usd}, abgerechnet über dein {name}-Konto.",
+  "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "Der Bereich ist größer, als {name} in voller Auflösung annimmt: Er wird weicher als der Rest des Fotos ({}%).",
+  "up to {} px at full resolution, about ${usd} per fill": "bis {} px in voller Auflösung, etwa ${usd} pro Füllung",
+  "Key saved (ends in {})": "Schlüssel gespeichert (endet auf {})"
 }

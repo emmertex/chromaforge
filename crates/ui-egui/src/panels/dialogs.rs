@@ -287,7 +287,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         // (nothing to download from in this build: the dialog explains the manual install)
         Dialog::SamModel { .. } if sam_by_hand(&app.session.segmenter) => "Install the SAM 3 Model",
         Dialog::SamModel { .. } => "Download the SAM 3 Model?",
-        Dialog::GenfillConsent { .. } => "Send a Crop for Generative Fill?",
+        Dialog::GenfillConsent { .. } => "Generative Fill",
         Dialog::About => "About {app}",
         Dialog::Update => "Check for Updates",
         Dialog::Shortcuts => "Keyboard Shortcuts",
@@ -1426,8 +1426,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::SamModel { .. } if sam_installed || sam_running || sam_nowhere => "",
                     Dialog::SamModel { error, .. } if error.is_some() || sam_failed => "Try Again",
                     Dialog::SamModel { .. } => "Download",
+                    Dialog::GenfillConsent { .. } => "Generate",
                     Dialog::RenamePerson { from, to, .. } if person_rename_plan(&app.session.catalog, from, to).needs_merge => "Merge",
-                    Dialog::GenfillConsent { .. } => "Agree and Generate",
                     _ if informational => "Close",
                     // the confirm button names its action (upstream #2075)
                     Dialog::Export { .. } => {
@@ -1912,7 +1912,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
     match dlg {
         Dialog::GenfillConsent { provider, index, prompt, variations } => {
             app.run("genfill.consent", json!({"provider": provider, "accept": true}))?;
-            app.run("spot.generate", json!({"index": index, "provider": provider, "prompt": prompt, "variations": variations}))
+            crate::panels::genfill::send(app, provider, *index, prompt, *variations)
         }
         Dialog::LightroomResult { first, .. } => {
             if let Some(first) = first {
@@ -1928,6 +1928,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
             Ok(serde_json::Value::Null)
         }
+
         Dialog::SamModel { then, .. } => {
             if app.session.segmenter.installed() {
                 // installed: start what the user was doing

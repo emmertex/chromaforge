@@ -320,5 +320,15 @@
   ", {n} failed": ", nieudane: {n}",
   "{n} failed": "nieudane: {n}",
   "Show each photo ({n})": "Pokaż poszczególne zdjęcia ({n})",
-  "Adjustments: {n}": "Korekty: {n}"
+  "Adjustments: {n}": "Korekty: {n}",
+  "Service: {name}": "Usługa: {name}",
+  "Paint over what to replace, then click Generate. About ${usd} per variation.": "Zamaluj to, co zastąpić, i kliknij Generuj. Około ${usd} za wariant.",
+  "Sent as {} pieces at {}% of the photo's resolution.": "Wysyłane w {} częściach przy {}% rozdzielczości zdjęcia.",
+  "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Wysyłane w jednej części przy {}% rozdzielczości zdjęcia: miększe niż reszta.",
+  "Sends this {} × {} px area to {name}.": "Wysyła ten obszar {} × {} px do {name}.",
+  "Sends this area to {name}, in {} pieces.": "Wysyła ten obszar do {name} w {} częściach.",
+  "About ${usd}, billed to your {name} account.": "Około ${usd}, na Twoje konto {name}.",
+  "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "Obszar jest większy, niż {name} przyjmuje w pełnej rozdzielczości: będzie miększy niż reszta zdjęcia ({}%).",
+  "up to {} px at full resolution, about ${usd} per fill": "do {} px w pełnej rozdzielczości, około ${usd} za wypełnienie",
+  "Key saved (ends in {})": "Klucz zapisany (kończy się na {})"
 }
