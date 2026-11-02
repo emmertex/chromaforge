@@ -2344,5 +2344,8 @@
   "Only a place at the top of Local can be removed from it": "Paikallisesta voi poistaa vain sen ylimmän tason paikan",
   "Copy Path": "Kopioi polku",
   "Path copied": "Polku kopioitu",
-  "Same Content as Another Photo": "Sama sisältö kuin toisella kuvalla"
+  "Same Content as Another Photo": "Sama sisältö kuin toisella kuvalla",
+  "This spot is too dark to read its colour: click a brighter neutral area": "Tämä kohta on liian tumma sen värin lukemiseen: napsauta kirkkaampaa neutraalia aluetta",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "Tämä kohta on liian kirkas sen värin lukemiseen: napsauta hieman tummempaa neutraalia aluetta",
+  "This spot can't be read": "Tätä kohtaa ei voi lukea"
 }

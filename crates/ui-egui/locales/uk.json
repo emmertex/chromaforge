@@ -2433,5 +2433,8 @@
   "AI Denoise from": "ШІ: усунення шуму від",
   "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).": "Нові raw-фото, зняті з цим ISO або вищим, отримують увімкнене усунення шуму ШІ, а їхні очищені зображення створюються у фоні після імпорту. Потрібна модель усунення шуму (Налаштування, ШІ: усунення шуму).",
   "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.": "Фото й попередні перегляди зберігаються в пам’яті, щоб фото, до яких ви повертаєтеся, з’являлися одразу. «Автоматично» використовує чверть пам’яті цього комп’ютера, до 16 ГБ. Для великих зйомок виберіть більше, але залиште трохи іншим програмам.",
-  "Finding skin and faces to retouch": "Пошук шкіри та облич для ретуші"
+  "Finding skin and faces to retouch": "Пошук шкіри та облич для ретуші",
+  "This spot is too dark to read its colour: click a brighter neutral area": "Це місце надто темне, щоб прочитати його колір: клацніть світлішу нейтральну ділянку",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "Це місце надто світле, щоб прочитати його колір: клацніть трохи темнішу нейтральну ділянку",
+  "This spot can't be read": "Це місце не вдається прочитати"
 }

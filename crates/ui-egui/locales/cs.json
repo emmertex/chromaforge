@@ -2464,5 +2464,8 @@
   "AI Denoise from": "Redukce šumu pomocí AI od",
   "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).": "Nové raw fotografie pořízené při tomto ISO nebo vyšším začínají se zapnutou redukcí šumu pomocí AI a jejich odšuměné obrázky se po importu vytvoří na pozadí. Potřebuje model pro odšumění (Nastavení, Redukce šumu pomocí AI).",
   "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.": "Fotografie a náhledy držené v paměti, aby se fotografie, ke kterým se vracíte, zobrazily hned. Automaticky použije čtvrtinu paměti počítače, nejvýše 16 GB. Pro velká focení zvolte víc, ale nechte něco i ostatním aplikacím.",
-  "Finding skin and faces to retouch": "Hledání pleti a tváří k retuši"
+  "Finding skin and faces to retouch": "Hledání pleti a tváří k retuši",
+  "This spot is too dark to read its colour: click a brighter neutral area": "Toto místo je příliš tmavé, aby šla přečíst jeho barva: klepněte na světlejší neutrální oblast",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "Toto místo je příliš světlé, aby šla přečíst jeho barva: klepněte na o něco tmavší neutrální oblast",
+  "This spot can't be read": "Toto místo nelze přečíst"
 }

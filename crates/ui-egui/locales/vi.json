@@ -2251,5 +2251,8 @@
   "Only a place at the top of Local can be removed from it": "Chỉ có thể gỡ khỏi Cục bộ một nơi ở cấp trên cùng của Cục bộ",
   "Copy Path": "Sao chép đường dẫn",
   "Path copied": "Đã sao chép đường dẫn",
-  "Same Content as Another Photo": "Cùng nội dung với ảnh khác"
+  "Same Content as Another Photo": "Cùng nội dung với ảnh khác",
+  "This spot is too dark to read its colour: click a brighter neutral area": "Điểm này quá tối để đọc màu: hãy nhấp vào một vùng trung tính sáng hơn",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "Điểm này quá sáng để đọc màu: hãy nhấp vào một vùng trung tính tối hơn một chút",
+  "This spot can't be read": "Không đọc được điểm này"
 }

@@ -2437,5 +2437,8 @@
   "AI Denoise from": "Reducción de ruido con IA desde",
   "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).": "Las fotos raw nuevas tomadas con este ISO o superior empiezan con la reducción de ruido con IA activada, y sus imágenes sin ruido se crean en segundo plano después de la importación. Necesita un modelo de reducción de ruido (Ajustes, Reducción de ruido con IA).",
   "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.": "Fotos y previsualizaciones guardadas en memoria, para que las fotos a las que vuelve se vean al instante. Automático usa una cuarta parte de la memoria de este ordenador, hasta 16 GB. Elija más para sesiones grandes, pero deje algo para otras aplicaciones.",
-  "Finding skin and faces to retouch": "Buscando piel y caras para retocar"
+  "Finding skin and faces to retouch": "Buscando piel y caras para retocar",
+  "This spot is too dark to read its colour: click a brighter neutral area": "Este punto es demasiado oscuro para leer su color: haz clic en una zona neutra más clara",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "Este punto es demasiado claro para leer su color: haz clic en una zona neutra algo más oscura",
+  "This spot can't be read": "Este punto no se puede leer"
 }

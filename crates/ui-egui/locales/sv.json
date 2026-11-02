@@ -2445,5 +2445,8 @@
   "Only a place at the top of Local can be removed from it": "Bara en plats högst upp i Lokalt kan tas bort därifrån",
   "Copy Path": "Kopiera sökväg",
   "Path copied": "Sökväg kopierad",
-  "Same Content as Another Photo": "Samma innehåll som ett annat foto"
+  "Same Content as Another Photo": "Samma innehåll som ett annat foto",
+  "This spot is too dark to read its colour: click a brighter neutral area": "Den här punkten är för mörk för att läsa dess färg: klicka på ett ljusare neutralt område",
+  "This spot is too bright to read its colour: click a slightly darker neutral area": "Den här punkten är för ljus för att läsa dess färg: klicka på ett något mörkare neutralt område",
+  "This spot can't be read": "Den här punkten går inte att läsa"
 }
