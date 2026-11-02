@@ -89,6 +89,7 @@ pub mod presets;
 pub mod print;
 pub mod print_color;
 pub mod print_pdf;
+pub mod profile_bodies;
 pub mod profile_refs;
 pub mod proof;
 #[cfg(not(target_arch = "wasm32"))]
@@ -390,6 +391,12 @@ pub struct Session {
     pub profile_favorites: Vec<String>,
     /// Recently applied profile ids, newest first (at most [`presets::RECENT_PROFILES`]).
     pub profile_recent: Vec<String>,
+    /// Profiles hidden from the menus and the browser by the Profile Manager (still listed there and in
+    /// `profiles.list {all}`; photos using one keep it).
+    pub profile_hidden: Vec<String>,
+    /// The camera profile each camera body starts with (`profile_bodies::key` → `dcp:…`, `cal:…` or `lc`),
+    /// applied to that body's raws at import ([`profile_bodies`]).
+    pub body_profiles: std::collections::BTreeMap<String, String>,
     /// Executed commands (actions / debugging / replay).
     pub journal: Vec<(String, Value)>,
     /// Actions and Edit In presets (P4.4/P4.5, [`cmd::actions`]).
@@ -641,6 +648,8 @@ impl Session {
             preset_folders: Vec::new(),
             profile_favorites: Vec::new(),
             profile_recent: Vec::new(),
+            profile_hidden: Vec::new(),
+            body_profiles: Default::default(),
             journal: Vec::new(),
             workflow: Default::default(),
             pending_log: Vec::new(),
@@ -1874,6 +1883,8 @@ mod tests_previews;
 mod tests_print;
 #[cfg(test)]
 mod tests_process;
+#[cfg(test)]
+mod tests_profile_manager;
 #[cfg(test)]
 mod tests_recheck;
 #[cfg(test)]

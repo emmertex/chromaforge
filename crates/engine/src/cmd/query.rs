@@ -250,12 +250,20 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(Value::Array(set.into_iter().map(Value::String).collect()))
         }),
-        cmd!(query "profiles.list", "List Profiles", [], None, "{} — every profile (built-in, then imported LUTs marked `imported`) with its group and favourite flag", always, |s, _| {
+        cmd!(query "profiles.list", "List Profiles", [], None, "{all?: bool (also the profiles the Profile Manager hides)} — every profile (built-in, then imported LUTs marked `imported`) with its group and favourite flag", always, |s, p| {
             let favorite = |id: &str| s.profile_favorites.iter().any(|f| f == id);
-            let builtin = crate::presets::PROFILES.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(p.id)}));
+            let all = p.get("all").and_then(Value::as_bool).unwrap_or(false);
+            let shown = |id: &str| all || !s.profile_hidden.iter().any(|h| h == id);
+            let builtin = crate::presets::PROFILES
+                .iter()
+                .filter(|p| shown(p.id))
+                .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(p.id)}));
             // imported LUT profiles too (#618), marked as in `profiles.menu`
-            let imported =
-                s.lut_profiles.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(&p.id), "imported": true}));
+            let imported = s
+                .lut_profiles
+                .iter()
+                .filter(|p| shown(&p.id))
+                .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(&p.id), "imported": true}));
             Ok(Value::Array(builtin.chain(imported).collect()))
         }),
         cmd!(query "profiles.menu", "Profile Menu", [], None, "{} — favourites, recent (newest first) and groups", always, |s, _| Ok(s.profile_menu())),

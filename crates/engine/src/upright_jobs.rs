@@ -10,15 +10,21 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::AtomicBool;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::Ordering;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, Sender};
 
 use lcc_catalog::{Op, PhotoId};
 use lcc_develop::{DevelopSettings, Upright};
 use lcc_geom::Homography;
 
 use crate::Session;
-use crate::activity::{Cancel, TaskGuard};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::activity::Cancel;
+use crate::activity::TaskGuard;
 use crate::media::SourceLevel;
 
 /// Whether settings `d` name an automatic Upright mode but hold no correction for it.
@@ -63,6 +69,7 @@ pub struct UprightJobs {
     /// Photos queued or being analysed, and for which mode.
     pending: HashMap<PhotoId, Upright>,
     rx: Option<Receiver<Found>>,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     tx: Option<Sender<Found>>,
     /// The batch's activity row, while photos are pending.
     guard: Option<TaskGuard>,

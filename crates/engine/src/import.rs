@@ -436,6 +436,16 @@ pub fn apply_import_defaults(s: &Session, p: &mut Photo) {
         p.develop = look.clone();
         p.import_look = Some(look);
     }
+    // the body's own camera profile, while the photo is on the camera's default (OneSlips, LR-PROF-BODY)
+    if p.develop.profile.camera.is_empty()
+        && let Some(id) = s.body_default(p).map(str::to_string)
+    {
+        let mut d = (*p.develop).clone();
+        d.profile.camera = id;
+        let look = std::sync::Arc::new(d);
+        p.develop = look.clone();
+        p.import_look = Some(look);
+    }
 }
 
 /// The web file picker's accept list, derived from [`EXTENSIONS`]. Each extension

@@ -560,10 +560,15 @@ impl Session {
                 .find(|p| p.id == id)
                 .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.contains(&p.id), "imported": true}))
         };
-        let list = |ids: &[String]| ids.iter().filter_map(|id| profile(id).map(item).or_else(|| lut_item(id))).collect::<Vec<_>>();
+        let shown = |id: &str| !self.profile_hidden.iter().any(|h| h == id);
+        let list =
+            |ids: &[String]| ids.iter().filter(|id| shown(id)).filter_map(|id| profile(id).map(item).or_else(|| lut_item(id))).collect::<Vec<_>>();
+        // (profiles the Profile Manager hides are left out; a group left empty goes too)
         let mut groups: Vec<Value> = profile_groups()
             .into_iter()
-            .map(|g| json!({"name": g, "profiles": PROFILES.iter().filter(|p| p.group == g).map(item).collect::<Vec<_>>()}))
+            .map(|g| (g, PROFILES.iter().filter(|p| p.group == g && shown(p.id)).map(item).collect::<Vec<_>>()))
+            .filter(|(_, l)| !l.is_empty())
+            .map(|(g, l)| json!({"name": g, "profiles": l}))
             .collect();
         // imported LUT profiles, by their groups
         let mut lut_groups: Vec<&str> = self.lut_profiles.iter().map(|p| p.group.as_str()).collect();
@@ -573,10 +578,12 @@ impl Session {
             let profiles: Vec<Value> = self
                 .lut_profiles
                 .iter()
-                .filter(|p| p.group == g)
+                .filter(|p| p.group == g && shown(&p.id))
                 .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.contains(&p.id), "imported": true}))
                 .collect();
-            groups.push(json!({"name": g, "profiles": profiles, "imported": true}));
+            if !profiles.is_empty() {
+                groups.push(json!({"name": g, "profiles": profiles, "imported": true}));
+            }
         }
         json!({
             "favorites": list(&self.profile_favorites),

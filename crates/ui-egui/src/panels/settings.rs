@@ -34,6 +34,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
     ("denoise", "AI Denoise"),
+    ("profiles", "Profiles"),
     ("connections", "Connections"),
     ("sync", "Sync"),
     ("shortcuts", "Shortcuts"),
@@ -103,6 +104,7 @@ pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &st
         "slideshow" => slideshow_tab(app, ui, t),
         "faces" => super::faces::settings_tab(app, ui, t),
         "denoise" => super::denoise::settings_tab(app, ui, t),
+        "profiles" => super::settings_profiles::settings_tab(app, ui, t),
         "shortcuts" => shortcuts_tab(app, ui, t),
         #[cfg(not(target_arch = "wasm32"))]
         "connections" => super::connections::settings_tab(app, ui, t),

@@ -51,6 +51,7 @@ pub mod rules_move;
 pub mod second;
 pub mod settings;
 pub mod settings_folders;
+pub mod settings_profiles;
 pub mod slide_layout;
 pub mod slide_overlays;
 pub mod slide_templates;

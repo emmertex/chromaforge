@@ -194,6 +194,10 @@ pub struct Meta {
     pub camera_make: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub camera_model: String,
+    /// The camera body's serial number (Exif `BodySerialNumber`, else `CameraSerialNumber`), which tells
+    /// two bodies of one model apart for their own camera profiles ([`Meta::camera_model`] says the model).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub camera_serial: String,
     pub lens: String,
     pub focal_mm: Option<f32>,
     pub aperture: Option<f32>,
