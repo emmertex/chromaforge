@@ -58,7 +58,10 @@ mod slot;
 pub mod video_lut;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use render::GpuStages;
+pub use render::{DisplayFrame, GpuStages};
+/// The wgpu the renderer is built on (the same crate eframe uses: hosts hand over its device).
+#[cfg(not(target_arch = "wasm32"))]
+pub use wgpu;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use slot::{EventKind, GpuEvent, MAX_RECOVERIES};
@@ -512,8 +515,100 @@ pub(crate) fn device() -> Option<Arc<ctx::Gpu>> {
 /// forever (#3068).
 #[cfg(not(target_arch = "wasm32"))]
 fn new_device() -> Result<ctx::Gpu, String> {
+    // the window's device, when the host handed it over and it suits (only the first device:
+    // a replacement after a loss is one of our own)
+    let window = WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    if let Some(w) = window {
+        let info = w.info.clone();
+        let adopted = if info.device_type == wgpu::DeviceType::Cpu {
+            Err(format!("software adapter ({}) skipped: the CPU pipeline is faster", info.name))
+        } else {
+            // (building the kernels is a long call into the driver: on a thread of its own, under the
+            // crash sentinel and the creation deadline, as a device of our own)
+            init::create(wgpu::Backends::from(info.backend), move || ctx::Gpu::adopt(w.device, w.queue, w.info, w.vram))
+        };
+        match adopted {
+            Ok(g) => return Ok(g),
+            Err(e) => {
+                log::warn!("gpu: not rendering on the window's device ({e}); creating one");
+                *WINDOW_DECLINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
+            }
+        }
+    }
     let Some(backends) = backend::compute_backends() else { return Err(format!("disabled by {}=off", lcc_brand::env_var("GPU_BACKEND"))) };
     init::create(backends, move || ctx::Gpu::new(backends))
+}
+
+/// The window's device, handed over by [`adopt_window_device`] for the first device to use.
+#[cfg(not(target_arch = "wasm32"))]
+struct WindowDevice {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    info: wgpu::AdapterInfo,
+    vram: Option<u64>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static WINDOW_DEVICE: std::sync::Mutex<Option<WindowDevice>> = std::sync::Mutex::new(None);
+/// Why the window's device was not used (it did not suit).
+#[cfg(not(target_arch = "wasm32"))]
+static WINDOW_DECLINED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Render on the window's device (eframe's) instead of a device of its own, so finished views can
+/// be drawn without reading them back ([`try_render_display`]). Builds the kernels on it (~0.4–2 s:
+/// call it off the UI thread), in place of [`warm_up`]. When that fails, or the window's device
+/// doesn't suit (a software adapter, too few storage buffers), a device of its own is created as
+/// before; `Err` says why the window's wasn't used. Does nothing once a device exists. A device
+/// that replaces a lost one is always one of our own (renders come back as pixels again).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn adopt_window_device(device: wgpu::Device, queue: wgpu::Queue, adapter: &wgpu::Adapter) -> Result<(), String> {
+    if env_disabled() || !ENABLED.load(Ordering::Relaxed) {
+        return Err("GPU rendering is off".into());
+    }
+    if slot::tried() {
+        return Err("a device of its own was created first".into());
+    }
+    let info = adapter.get_info();
+    let vram = lcc_gpumem::adapter_memory(adapter);
+    *WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(WindowDevice { device, queue, info, vram });
+    let g = self::device();
+    // (not taken: another thread made the first device meanwhile)
+    WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    if let Some(e) = WINDOW_DECLINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        return Err(e);
+    }
+    match g {
+        Some(g) if g.window => Ok(()),
+        Some(_) => Err("a device of its own was created first".into()),
+        None => Err(unavailable_reason().unwrap_or_else(|| "no GPU device".into())),
+    }
+}
+
+/// The pixels of a texture on `device` (a [`DisplayFrame`]'s, or any `Rgba8Unorm` texture with
+/// `COPY_SRC`): for a headless screenshot of a view drawn straight from the GPU, and for tests. The
+/// app never needs them to draw. Waits for the GPU (at most a few seconds); `Err` when the copy or
+/// the wait fails.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: usize,
+    height: usize,
+) -> Result<lcc_raster::Rgba8, String> {
+    ctx::read_texture(device, queue, texture, width, height)
+}
+
+/// Whether renders run on the window's device (and so can be handed over as textures).
+pub fn on_window_device() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        slot::current().is_some_and(|g| g.window)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
 }
 
 /// The device if it has been created, even one that failed (never creates one).
@@ -769,7 +864,47 @@ pub fn try_render_hdr_texels(
     Ok((r, texels))
 }
 
+/// [`try_render`] for the window: when the device is the window's ([`adopt_window_device`]) and the
+/// render allows it (8-bit, no overlay, no window that spots grew), the image stays on the device
+/// as a texture to draw (the second value; the result's image is then empty, 0 × 0, and its
+/// histogram is the render's). Otherwise the pixels, as from [`try_render`], and `None`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn try_render_display(
+    src: &Arc<Rgb32f>,
+    info: &SourceInfo,
+    s: &DevelopSettings,
+    req: &RenderRequest,
+    stages: Option<&StageCache>,
+) -> Result<(Rendered, Option<DisplayFrame>), Fallback> {
+    let mut frame = None;
+    let r = try_render_inner(src, info, s, req, stages, None, None, Some(&mut frame))?;
+    Ok((r, frame))
+}
+
 fn try_render_with(
+    src: &Arc<Rgb32f>,
+    info: &SourceInfo,
+    s: &DevelopSettings,
+    req: &RenderRequest,
+    stages: Option<&StageCache>,
+    fit: Option<Fit<'_>>,
+    texels: Option<(f32, &mut Vec<u16>)>,
+) -> Result<Rendered, Fallback> {
+    try_render_inner(
+        src,
+        info,
+        s,
+        req,
+        stages,
+        fit,
+        texels,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_render_inner(
     src: &Arc<Rgb32f>,
     info: &SourceInfo,
     s: &DevelopSettings,
@@ -777,6 +912,7 @@ fn try_render_with(
     stages: Option<&StageCache>,
     mut fit: Option<Fit<'_>>,
     mut texels: Option<(f32, &mut Vec<u16>)>,
+    #[cfg(not(target_arch = "wasm32"))] mut display: Option<&mut Option<DisplayFrame>>,
 ) -> Result<Rendered, Fallback> {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -831,7 +967,18 @@ fn try_render_with(
                 let errors = ctx::ErrorScopes::push(&gpu);
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let fit = fit.as_mut().map(|f| Fit { size: f.size, full: f.full.as_deref_mut() });
-                    render::render(&gpu, &plan, src, info, req, ext.as_deref(), fault, fit, texels.as_mut().map(|(h, t)| (*h, &mut **t)))
+                    render::render(
+                        &gpu,
+                        &plan,
+                        src,
+                        info,
+                        req,
+                        ext.as_deref(),
+                        fault,
+                        fit,
+                        texels.as_mut().map(|(h, t)| (*h, &mut **t)),
+                        display.as_deref_mut(),
+                    )
                 }));
                 (r, errors.pop())
             };
