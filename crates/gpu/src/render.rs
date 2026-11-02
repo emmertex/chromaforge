@@ -5,7 +5,6 @@
 use std::sync::{Arc, Mutex};
 
 use lcc_color::spline::Lut1;
-use lcc_develop::DevelopSettings;
 use lcc_geom::Orientation;
 use lcc_pipeline::finish::{FinishParams, MASK_TERMS, local_curve_luts, mask_terms};
 use lcc_pipeline::geometry::SampleMode;
@@ -626,9 +625,9 @@ pub(crate) fn profiling() -> bool {
 /// render failed: the reason is recorded with [`crate::ctx::fail`].
 pub fn render(
     gpu: &Gpu,
+    plan: &Plan<'_>,
     src: &Arc<Rgb32f>,
     info: &SourceInfo,
-    s: &DevelopSettings,
     req: &RenderRequest,
     stages: Option<&GpuStages>,
     fault: Option<crate::Fault>,
@@ -646,7 +645,6 @@ pub fn render(
         }
         None => cx.flush(),
     };
-    let plan = lcc_pipeline::plan(src, info, s, req);
     let (w, h) = (plan.w, plan.h);
     let Some(n) = w.checked_mul(h).filter(|n| n.checked_mul(12).is_some()) else {
         fail(FailKind::Limit, format!("{w}×{h} output is too large"));
@@ -1433,6 +1431,7 @@ fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Ho
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lcc_develop::DevelopSettings;
 
     #[test]
     fn coverage_mask_matches_per_pixel_decision() {

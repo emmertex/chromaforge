@@ -4,10 +4,12 @@
 //! photos side by side). Prints photos per minute.
 //!
 //! `cargo run --release -p lcc-engine --example export_bench -- [--cpu] [--sdr] [--plain]
-//! [--lanes N] [--runs N] FILES…`
+//! [--lanes N] [--runs N] [--gpu-jobs N] [--gpu-mb MB] [--long-edge PX] [--limit-kb KB] FILES…`
 //!
 //! - `--cpu`: no GPU (as after a device failure); `--sdr`: plain JPEGs, no gain map; `--plain`:
-//!   no masks; `--lanes N`: photos side by side (default: the app's choice).
+//!   no masks; `--lanes N`: photos side by side (default: the app's choice);
+//!   `--gpu-jobs N`, `--gpu-mb MB`: the batch limits at the GPU; `--long-edge PX`, `--limit-kb KB`:
+//!   resize and "Limit file size" as in the Export dialog.
 //! - `<PREFIX>_PROFILE=1` prints each render's stages on stderr.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -73,7 +75,7 @@ fn main() {
         args.iter()
             .filter(|a| {
                 let keep = !skip && !a.starts_with("--");
-                skip = matches!(a.as_str(), "--lanes" | "--runs");
+                skip = matches!(a.as_str(), "--lanes" | "--runs" | "--gpu-jobs" | "--gpu-mb" | "--long-edge" | "--limit-kb");
                 keep
             })
             .cloned()
@@ -96,7 +98,14 @@ fn main() {
     for &id in &ids {
         session.set_develop(id, settings.clone(), "bench").expect("settings");
     }
-    let o = ExportOptions { hdr, quality: 90, ..ExportOptions::default() };
+    let mut o = ExportOptions { hdr, quality: 90, ..ExportOptions::default() };
+    if let Some(edge) = value("--long-edge") {
+        o.resize = Some(lcc_engine::export::Resize::long_edge(edge as u32));
+    }
+    o.limit_kb = value("--limit-kb").map(|kb| kb as u32);
+    if value("--gpu-jobs").is_some() || value("--gpu-mb").is_some() {
+        lcc_engine::gpu::set_batch_limits(value("--gpu-mb").map(|mb| (mb as u64) << 20), value("--gpu-jobs"));
+    }
     let lanes = lcc_engine::export::export_parallelism(ids.len());
     println!(
         "{} photos, {lanes} lanes, {}, {}, {}, memory budget {} MB",

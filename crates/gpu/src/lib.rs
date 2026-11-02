@@ -732,6 +732,10 @@ fn try_render_with(
         let s = &*lcc_pipeline::settings_for(s, req);
         // in flight until this returns; not tried once the process is ending (issue #620)
         let gpu = device().ok_or(Fallback::NotTried)?;
+        // The plan (Upright, the masks' tone ranges, red eye, the settings resolved) is the
+        // CPU's work: made before the turn, so an export waiting for the GPU never holds it with
+        // the processor's part of its render.
+        let plan = lcc_pipeline::plan(src, info, s, req);
         // An export's turn at the GPU (see `gate.rs`): it waits while other exports use the card's
         // memory, while a view renders and while the window asked for room. Views never wait.
         let out_px = match req.window {
@@ -768,7 +772,7 @@ fn try_render_with(
                 let errors = ctx::ErrorScopes::push(&gpu);
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let fit = fit.as_mut().map(|f| Fit { size: f.size, full: f.full.as_deref_mut() });
-                    render::render(&gpu, src, info, s, req, ext.as_deref(), fault, fit, texels.as_mut().map(|(h, t)| (*h, &mut **t)))
+                    render::render(&gpu, &plan, src, info, req, ext.as_deref(), fault, fit, texels.as_mut().map(|(h, t)| (*h, &mut **t)))
                 }));
                 (r, errors.pop())
             };
