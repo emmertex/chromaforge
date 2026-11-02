@@ -1873,17 +1873,16 @@ pub fn bad_ids_entry(a: &[Value]) -> Option<String> {
 /// Automatic versions kept per photo.
 pub const AUTO_VERSIONS: usize = 20;
 
-/// A new mask link ([`lcc_develop::Mask::link`]): 16 hex digits from the time, the process, a
-/// counter and `salt`.
+/// A new mask link ([`lcc_develop::Mask::link`]): 16 hex digits from the process's random hash
+/// keys, a counter and `salt` (unique within a library in practice; no clock, so it builds for wasm).
 pub fn new_mask_link(salt: u64) -> String {
+    use std::hash::{BuildHasher, Hasher};
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let t = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default() as u64;
-    // a splitmix64 step mixes the parts into 64 well-spread bits
-    let mut x = t ^ u64::from(std::process::id()).rotate_left(32) ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ salt.rotate_left(17);
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    format!("{:016x}", x ^ (x >> 31))
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(n);
+    h.write_u64(salt);
+    format!("{:016x}", h.finish())
 }
 
 /// The parts of `new` that differ from `old` (objects recurse; anything else is taken whole).
