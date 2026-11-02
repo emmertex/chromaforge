@@ -3955,3 +3955,52 @@ fn new_photos_start_with_constrain_crop_on() {
     assert!(!by_name(&s, "later.png").develop.geometry.constrain_crop);
     let _ = std::fs::remove_dir_all(&src);
 }
+
+/// The Before view starts from the photo as it came into the library (with the import's
+/// adjustments), and Set Before is kept with the photo when the library is opened again. A journal
+/// record of a hostile Set Before is refused, never a panic.
+#[test]
+fn before_is_the_import_state_and_set_before_is_kept() {
+    let root = temp_dir("before");
+    let (src, lib) = (root.join("src"), root.join("lib"));
+    write_png(&src.join("a.png"), 1);
+    write_png(&src.join("b.png"), 2);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src.join("a.png").to_string_lossy()]})).unwrap();
+    let a = s.catalog.photos().next().unwrap().id;
+    s.selection = crate::Selection { ids: vec![a], active: Some(a) };
+    s.execute("library.import", &json!({"paths": [src.join("b.png").to_string_lossy()], "recipe": [{"id": "light.exposure", "value": 0.7}]}))
+        .unwrap();
+    let b = s.catalog.photos().find(|p| p.id != a).unwrap().id;
+    s.selection = crate::Selection { ids: vec![b], active: Some(b) };
+    let before = |s: &Session| s.before_settings(s.catalog.photo(s.active().unwrap()).unwrap()).light.exposure;
+    assert_eq!(before(&s), 0.7, "the before is the photo as imported, with the import preset");
+    // an edit, then Set Before: kept with the photo
+    s.execute("develop.set", &json!({"values": {"light.exposure": 1.2}})).unwrap();
+    s.execute("beforeAfter.copyAfterToBefore", &json!({})).unwrap();
+    s.execute("develop.set", &json!({"values": {"light.exposure": -0.4}})).unwrap();
+    assert_eq!(before(&s), 1.2);
+    s.close_library().unwrap();
+    drop(s);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.selection = crate::Selection { ids: vec![b], active: Some(b) };
+    assert_eq!(before(&s), 1.2, "Set Before survives reopening the library");
+    // back to the import state, also undoable
+    s.execute("beforeAfter.resetBefore", &json!({})).unwrap();
+    assert_eq!(before(&s), 0.7);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(before(&s), 1.2);
+    for bad in [
+        json!({"op": "setBefore", "id": "x"}),
+        json!({"op": "setBefore", "id": b.0, "before": 7}),
+        json!({"op": "setBefore", "id": b.0, "before": {"light": {"exposure": "hot"}}}),
+    ] {
+        assert!(serde_json::from_value::<lcc_catalog::Op>(bad.clone()).is_err(), "{bad}");
+    }
+    // a Set Before for a photo that isn't there is an error
+    let missing = lcc_catalog::Op::SetBefore { id: lcc_catalog::PhotoId(u64::MAX), before: None };
+    assert!(s.commit("Set Before", missing).is_err());
+    let _ = std::fs::remove_dir_all(&root);
+}

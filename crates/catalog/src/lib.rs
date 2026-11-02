@@ -144,6 +144,13 @@ pub enum Op {
         id: PhotoId,
         step: HistoryStep,
     },
+    /// What the Before view shows (see [`Photo::before`]; `None`: the import state). Format
+    /// version 16.
+    SetBefore {
+        id: PhotoId,
+        #[serde(default)]
+        before: Option<Arc<DevelopSettings>>,
+    },
     /// Move the History cursor (see [`Photo::history_cursor`]) without changing the steps.
     SetHistoryCursor {
         id: PhotoId,
@@ -906,6 +913,7 @@ impl Catalog {
             | Op::SetHistory { .. }
             | Op::PushHistory { .. }
             | Op::SetHistoryCursor { .. }
+            | Op::SetBefore { .. }
             | Op::SetVideoTrim { .. }
             | Op::SetVideoPoster { .. } => self.changes.now = Aspects::DEVELOP,
             // (not the photo itself, but what is kept beside it: filters test a photo's remote link state)
@@ -1046,6 +1054,10 @@ impl Catalog {
                 } else {
                     Op::Batch { ops: vec![Op::SetHistory { id, history: old }, Op::SetHistoryCursor { id, cursor: old_cursor }] }
                 }
+            }
+            Op::SetBefore { id, before } => {
+                let p = self.photo_mut(id)?;
+                Op::SetBefore { id, before: std::mem::replace(&mut p.before, before) }
             }
             Op::SetHistoryCursor { id, cursor } => {
                 let p = self.photo_mut(id)?;
@@ -1638,6 +1650,7 @@ fn changes_what_albums_test(op: &Op) -> bool {
         | Op::SetHistory { .. }
         | Op::PushHistory { .. }
         | Op::SetHistoryCursor { .. }
+        | Op::SetBefore { .. }
         | Op::RenameAlbum { .. }
         | Op::MoveAlbum { .. }
         | Op::SetAlbumOrder { .. }

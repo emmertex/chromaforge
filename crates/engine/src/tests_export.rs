@@ -1700,6 +1700,8 @@ fn opaque_sources_export_exactly_as_before() {
     let flat: Vec<u8> = img.data.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
     let rgb_png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::new(96, 64, 3, lcc_codecs::Samples::U8(&flat)), &Default::default());
     std::fs::write(&rgb, rgb_png.unwrap()).unwrap();
+    // (unconstrained, so the keystone brings in the grey outside the photo)
+    s.execute("library.preferences", &json!({"import": {"constrainCrop": false}})).unwrap();
     s.execute("library.import", &json!({"paths": [rgba.to_string_lossy(), rgb.to_string_lossy()]})).unwrap();
     let ids: Vec<_> = s.catalog.photos().map(|p| p.id).collect();
     assert_eq!(ids.len(), 2);

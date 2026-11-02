@@ -192,7 +192,8 @@ fn single_photo(op: &Op, depth: usize) -> Option<PhotoId> {
         | Op::SetVersions { id, .. }
         | Op::SetHistory { id, .. }
         | Op::PushHistory { id, .. }
-        | Op::SetHistoryCursor { id, .. } => Some(*id),
+        | Op::SetHistoryCursor { id, .. }
+        | Op::SetBefore { id, .. } => Some(*id),
         Op::Batch { ops } if depth < 8 => {
             let mut ids = ops.iter().map(|o| single_photo(o, depth + 1));
             let first = ids.next()??;
@@ -467,9 +468,6 @@ pub struct Session {
     pub keyword_shortcut: Vec<String>,
     /// Keyword attributes (synonyms, export options, person) and keywords created before any
     /// photo has them, by keyword path (Keyword List).
-    /// Before/After: the "before" settings chosen per photo (this session; default: the photo's
-    /// import state). See `cmd/before.rs`.
-    pub before: std::collections::HashMap<PhotoId, Arc<DevelopSettings>>,
     /// File probes from the last import review (`library.importPreview`), reused by the import.
     pub import_probes: std::collections::HashMap<String, media::ProbeInfo>,
     /// The last Synchronize Folder scan, which `folder.synchronize` acts on while it is current
@@ -672,7 +670,6 @@ impl Session {
             keyword_set: None,
             recent_keywords: Vec::new(),
             keyword_shortcut: Vec::new(),
-            before: Default::default(),
             import_probes: Default::default(),
             folder_changes: None,
             folder_watch: Default::default(),

@@ -1846,6 +1846,9 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                     p.edited = Some(now.clone());
                     p.history.push(lcc_catalog::HistoryStep { label: "Import adjustments".into(), settings: d, batch: None });
                 }
+                // the photo as the import leaves it, where that is not simply its import defaults:
+                // the Before view's default (`Photo::before_base`)
+                p.import_state = (*p.develop != p.import_defaults()).then(|| p.develop.clone());
                 report.imported.push(id.0);
                 p.local = opts.local;
                 if opts.local {

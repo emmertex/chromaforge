@@ -58,6 +58,7 @@
 //! | 13 | a cleared GPS position stays cleared in the sidecar (upstream PR #2088) | `Meta.gps_removed` |
 //! | 14 | persistent Ignore Faces (upstream PR #2416) | `RegionKind::IgnoredFace` |
 //! | 15 | assisted culling scores (upstream PR #2855) | `Analysis.eyes_open` / `aesthetic` / `cull_score` |
+//! | 16 | Before / After: the import state and Set Before kept with the photo | `Op::SetBefore`, `Photo.before`, `Photo.import_state` |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a
@@ -87,7 +88,7 @@ pub(crate) const FORMAT: &str = "lcc-catalog";
 pub(crate) const V4_FORMAT: &str = "lcc-catalog-db";
 /// The catalog format this build writes (and the newest it reads). See the module docs →
 /// *Format versions*; bump it whenever an [`Op`] variant or a serialized field is added.
-pub const VERSION: u32 = 15;
+pub const VERSION: u32 = 16;
 
 /// When [`Journal::wants_snapshot`] says it's time to compact the log.
 #[derive(Clone, Copy, Debug)]
