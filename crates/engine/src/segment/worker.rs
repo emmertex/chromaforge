@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use lcc_develop::SegMask;
 use lcc_segment::{
-    Encoded, Sam3,
+    Encoded, Sam2, Sam2Encoded, Sam3,
     remote::{self, Operation, Request, text_logits},
 };
 
@@ -257,6 +257,9 @@ impl Worker {
 struct State {
     model: Option<(PathBuf, Sam3)>,
     cache: Option<(u64, Encoded)>,
+    /// SAM 2.1, when the user chose it for Object clicks.
+    sam2: Option<(PathBuf, Sam2)>,
+    sam2_cache: Option<(u64, Sam2Encoded)>,
     remote: Option<remote::Client>,
 }
 
@@ -278,7 +281,7 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
             match rx.recv_timeout(idle) {
                 Ok(j) => queue.push_back(j),
                 Err(RecvTimeoutError::Timeout) => {
-                    if state.model.is_some() || state.remote.is_some() {
+                    if state.model.is_some() || state.sam2.is_some() || state.remote.is_some() {
                         state = State::default();
                         shared.loaded.store(false, Ordering::SeqCst);
                         log::info!("SAM 3 unloaded after {} minutes without use", idle.as_secs() / 60);
@@ -333,8 +336,9 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
         let result = result.map_err(Failure::message);
         if result.is_err() && !is_detail {
             state.cache = None;
+            state.sam2_cache = None;
         }
-        shared.loaded.store(state.model.is_some() || state.remote.is_some(), Ordering::SeqCst);
+        shared.loaded.store(state.model.is_some() || state.sam2.is_some() || state.remote.is_some(), Ordering::SeqCst);
         drop(done);
         let _ = job.reply.send(Outcome { tag: job.tag, result, superseded: false, notice });
     }
@@ -360,6 +364,8 @@ fn model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path, place
     if state.model.as_ref().is_none_or(|(d, _)| d != dir) {
         state.model = None;
         state.cache = None;
+        // one model at a time: SAM 2.1 is freed
+        (state.sam2, state.sam2_cache) = (None, None);
         let _busy = Flag::raise(&shared.encoding);
         let t = web_time::Instant::now();
         let m = match placement {
@@ -412,6 +418,75 @@ fn encoded<'a>(state: &'a mut State, shared: &Shared, job: &mut Job, placement: 
     }
 }
 
+/// SAM 2.1 for `dir`, loading it on `placement` when needed (SAM 3 is freed: one model at a time).
+fn sam2_model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path, placement: Placement) -> Result<&'a mut Sam2, Failure> {
+    if state.sam2.as_ref().is_none_or(|(d, _)| d != dir) {
+        (state.model, state.cache, state.sam2, state.sam2_cache) = (None, None, None, None);
+        let _busy = Flag::raise(&shared.encoding);
+        let t = web_time::Instant::now();
+        let m = match placement {
+            Placement::Gpu => Sam2::load(dir)?,
+            Placement::Cpu => Sam2::load_cpu(dir)?,
+        };
+        log::info!("SAM 2.1 loaded in {:?}", t.elapsed());
+        state.sam2 = Some((dir.to_path_buf(), m));
+        shared.loaded.store(true, Ordering::SeqCst);
+    }
+    state.sam2.as_mut().map(|(_, m)| m).ok_or_else(|| "the model did not load".into())
+}
+
+/// Object clicks (and their detail passes) with SAM 2.1; Describe needs SAM 3.
+fn sam2_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
+    let side = lcc_segment::SAM2_MASK_SIDE;
+    let encode = |m: &Sam2, input: &Input| -> Result<Sam2Encoded, Failure> {
+        let t = web_time::Instant::now();
+        let enc = m.encode(&input.rgb, input.w, input.h)?;
+        log::info!("SAM 2.1 encoded {}×{} in {:?}", input.w, input.h, t.elapsed());
+        Ok(enc)
+    };
+    let kind = std::mem::replace(&mut job.kind, Kind::Prepare);
+    if let Kind::Detail { prompt, region } = kind {
+        let Prompt::Clicks(clicks) = prompt else { return Err("Describe masks need the SAM 3 model".into()) };
+        let (rw, rh) = (region[2] - region[0], region[3] - region[1]);
+        if !(rw > 0.0 && rh > 0.0) {
+            return Ok(None);
+        }
+        let inside: Vec<lcc_segment::Click> = clicks
+            .iter()
+            .map(|c| ((c.at.x - region[0]) / rw, (c.at.y - region[1]) / rh, c.include))
+            .filter(|(x, y, _)| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
+            .map(|(x, y, positive)| lcc_segment::Click { x: x as f32, y: y as f32, positive })
+            .collect();
+        if !inside.iter().any(|c| c.positive) {
+            return Ok(None);
+        }
+        let input = render(job)?;
+        let m = sam2_model(state, shared, &job.dir, placement)?;
+        let enc = {
+            let _busy = Flag::raise(&shared.encoding);
+            encode(m, &input)?
+        };
+        let p = m.segment_clicks(&enc, &inside)?;
+        return Ok(Some(SegMask::from_logits_in(side, &p.logits, region)));
+    }
+    if let Kind::Text(_) = kind {
+        return Err("Describe masks need the SAM 3 model".into());
+    }
+    sam2_model(state, shared, &job.dir, placement)?;
+    if state.sam2_cache.as_ref().is_none_or(|(k, _)| *k != job.key) {
+        state.sam2_cache = None;
+        let input = render(job)?;
+        let _busy = Flag::raise(&shared.encoding);
+        let m = state.sam2.as_ref().map(|(_, m)| m).ok_or("the model did not load")?;
+        state.sam2_cache = Some((job.key, encode(m, &input)?));
+    }
+    let (Some((_, m)), Some((_, enc))) = (state.sam2.as_ref(), state.sam2_cache.as_ref()) else { return Err("the model is not ready".into()) };
+    match kind {
+        Kind::Clicks(clicks) => Ok(Some(SegMask::from_logits(side, &m.segment_clicks(enc, &clicks)?.logits))),
+        _ => Ok(None),
+    }
+}
+
 fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str) -> Result<Option<SegMask>, String> {
     let _busy = Flag::raise(&shared.encoding);
     if state.remote.is_none() {
@@ -460,6 +535,10 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
 }
 
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
+    // SAM 2.1 runs here even with a remote SAM 3 worker (which serves SAM 3 only)
+    if lcc_segment::is_sam2_dir(&job.dir) {
+        return sam2_job(state, shared, job, placement);
+    }
     if let Some(endpoint) = remote::configured() {
         let result = remote_job(state, shared, job, &endpoint);
         if result.is_err() {
@@ -635,6 +714,33 @@ mod tests {
         assert_eq!(out[0].notice, None);
         let missing = lcc_segment::Error::Missing(PathBuf::from("models"));
         assert!(matches!(Failure::from(missing), Failure::Other(_)));
+    }
+
+    #[test]
+    fn a_damaged_sam2_model_is_an_error_and_describe_asks_for_sam3() {
+        let dir = std::env::temp_dir().join(format!("lcc-sam2-damaged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), br#"{"model_type": "sam2_video"}"#).unwrap();
+        std::fs::write(dir.join("model.safetensors"), b"\x10\x00\x00\x00\x00\x00\x00\x00{not json at all}").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (jtx, jrx) = mpsc::channel();
+        let shared = Shared::default();
+        for kind in [Kind::Clicks(vec![lcc_segment::Click { x: 0.5, y: 0.5, positive: true }]), Kind::Text("sky".into()), Kind::Prepare] {
+            let mut j = job(Tag::Wait, &tx);
+            (j.kind, j.dir) = (kind, dir.clone());
+            jtx.send(j).unwrap();
+        }
+        shared.pending.store(3, Ordering::SeqCst);
+        drop(jtx);
+        run(&jrx, &shared, Duration::from_secs(60), Placement::Cpu);
+        let out: Vec<Outcome> = rx.try_iter().collect();
+        assert_eq!(out.len(), 3);
+        assert!(out[0].result.is_err() && out[2].result.is_err(), "damaged weights are errors");
+        assert!(out[1].result.as_ref().unwrap_err().contains("SAM 3"));
+        assert_eq!(shared.pending.load(Ordering::SeqCst), 0);
+        assert!(!shared.loaded.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

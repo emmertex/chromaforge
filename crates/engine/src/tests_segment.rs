@@ -485,4 +485,29 @@ fn update_ai_mask_replaces_what_the_mask_held() {
     let r = s.execute("masks.updateAi", &json!({})).unwrap();
     assert_eq!(r["photos"][0]["id"], id.0, "{r}");
     assert!(!s.develop_of(id).unwrap().masks[0].components[0].shape.has_seg());
+/// With SAM 2.1 chosen for Object clicks, an Object mask without it is `ModelMissing(Sam2)`,
+/// while Describe still asks for SAM 3; `ai.models.*` list, refuse without consent and reject
+/// unknown ids.
+#[test]
+fn object_clicks_follow_the_chosen_model() {
+    use crate::{AiModel, ErrorKind};
+    let root = tmp("choice");
+    let mut s = Session::with_demo();
+    s.segmenter.dir = Some(root.join("sam3"));
+    s.segmenter.models_root = Some(root.clone());
+    let st = s.execute("ai.models.status", &json!({})).unwrap();
+    assert_eq!(st["objectModelInUse"], "sam3");
+    assert!(st["models"].as_array().unwrap().iter().any(|m| m["id"] == "sam2"));
+    assert!(s.execute("ai.models.setObjectModel", &json!({"model": "sam5"})).is_err());
+    let r = s.execute("ai.models.setObjectModel", &json!({"model": "sam2"})).unwrap();
+    assert_eq!(r["objectModelInUse"], "sam2");
+    assert!(s.execute("ai.models.download", &json!({"id": "sam2"})).is_err(), "needs consent");
+    assert!(s.execute("ai.models.download", &json!({"id": "nope", "acknowledged": true})).is_err());
+    let e = s.execute("mask.add", &json!({"kind": "object"})).unwrap_err();
+    let p = s.execute("mask.add", &json!({"kind": "prompt", "text": "sky"})).unwrap_err();
+    if Segmenter::AVAILABLE {
+        assert_eq!(e.kind(), ErrorKind::ModelMissing(AiModel::Sam2), "{e}");
+        assert_eq!(p.kind(), ErrorKind::ModelMissing(AiModel::Sam3), "{p}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }

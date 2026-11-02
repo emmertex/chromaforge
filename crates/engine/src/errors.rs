@@ -13,6 +13,8 @@ pub enum AiModel {
     FaceDetector,
     /// SAM 3, behind Object and Describe masks (`segment.model.download`).
     Sam3,
+    /// SAM 2.1, behind Object masks when the user chose it (`ai.models.download {"id": "sam2"}`).
+    Sam2,
 }
 
 /// The kind of an [`EngineError`] (or of an error a frontend raised itself: [`ErrorKind::Other`]).
