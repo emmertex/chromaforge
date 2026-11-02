@@ -4115,10 +4115,6 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
         if resp.drag_stopped() {
             app.gesture = None;
             let _ = app.run("develop.endInteraction", json!({}));
-            // a moved Remove spot picks its source again where it now is (once, not per pointer event)
-            if !source {
-                let _ = app.run("spot.update", json!({"index": spot, "repick": true}));
-            }
         }
         return;
     }
@@ -4181,9 +4177,6 @@ fn spot_keys(app: &mut LccApp, ui: &mut egui::Ui, map: &CanvasMap, d: &DevelopSe
             let _ = app.run("develop.beginInteraction", json!({"label": "Edit Spot"}));
             let _ = app.run("spot.update", json!({"index": spot, if source { "moveSource" } else { "move" }: [dx, dy]}));
             let _ = app.run("develop.endInteraction", json!({}));
-            if !source {
-                let _ = app.run("spot.update", json!({"index": spot, "repick": true}));
-            }
         }
     }
     // where a new spot goes: the photo's centre at first, then wherever the arrows took it
