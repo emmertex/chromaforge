@@ -153,6 +153,39 @@ next to the files) and add that URL.
 Only the maintainer can decide that. Hugging Face's `facebook/sam3` is gated and can't be a
 default.
 
+## Object masks with SAM 2.1 (open licence)
+
+Object (click) masks can also run on **SAM 2.1 Hiera-Tiny** (Meta, Apache-2.0, ungated), ported to
+pure Rust by OneSlips (`crates/segment/src/hiera.rs`, `sam2.rs`). It reuses SAM 3's prompt encoder
+and mask decoder with SAM 2's 1024 px input and 64 × 64 grid (`Tracker::with_geometry`; SAM 3's
+path is unchanged) and its own multi-threaded CPU kernels (`sam2_kernels.rs`). Its masks are
+256 × 256 logits, stored with the mask like SAM 3's.
+
+- **Download:** the masking panel's **AI Models…** button (or `dialog.aiModels`) lists every AI mask
+  model with its size and licence and a Download button each; `ai.models.download {"id": "sam2",
+  "acknowledged": true}` does the same. The files (`config.json`, `model.safetensors`, 156 MB) come
+  from `facebook/sam2.1-hiera-tiny` on Hugging Face at a pinned commit, each checked against its size
+  and SHA-256, into `<settings_dir>/models/sam2.1-hiera-tiny`. `<PREFIX>_SAM2_MIRRORS` or
+  `sam2.1-hiera-tiny-mirrors.txt` add mirrors.
+- **Which model clicks use:** `ai.models.setObjectModel {"model": "auto" | "sam3" | "sam2"}`, or
+  the segmented control in the AI Models dialog. **Automatic** (the default) keeps SAM 3 when it is
+  installed, as before, and otherwise uses SAM 2.1 when that is installed. The choice is saved in
+  `<settings_dir>/models/ai-models.json`. **Describe** (text) always needs SAM 3.
+- With SAM 2.1 chosen and not installed, an Object mask fails with `ModelMissing(Sam2)` and the app
+  opens the AI Models dialog. A damaged download is an error, not a crash.
+- **Depth Anything V2 Small** (Apache-2.0, `depth-anything/Depth-Anything-V2-Small-hf`, 99 MB) is in
+  the same registry and downloadable by command (`ai.models.download {"id": "depth"}`), but nothing
+  uses it yet, so the dialog doesn't offer it. The port (`depth.rs`, `dino.rs`, `grid.rs`) is
+  OneSlips'. Its training data (SA-1B derivatives, Virtual KITTI 2) is a question to settle before
+  it backs a mask.
+- Not ported: OneSlips' EoMT scene model (licence of its COCO training data pending a maintainer
+  decision), their BiRefNet-portrait checkpoint (licence pending), and their SAM 2 speed work,
+  which rewrites the segmentation helpers SAM 3 shares.
+
+Tests: `cargo test -p lcc-segment` (kernels against candle, preprocessing, the registry);
+`tests/sam2_reference.rs` compares against Hugging Face `transformers` stage by stage when
+`<PREFIX>_SAM2_DIR` and `<PREFIX>_SAM2_REF` are set (skipped otherwise).
+
 ## Remote Metal inference
 
 Native builds with `sam` can keep the editor, RAW files, library, and exports local while
@@ -316,6 +349,10 @@ Therefore:
 | `segment.subject.status` | `{}` | the Subject / Background model (BiRefNet_lite): installed, in use, download progress → `{available, installed, active, dir, sizeBytes, license, licenseUrl, download}` |
 | `segment.subject.download` | `{acknowledged: true}` | download it (178 MB, MIT) in the background → `{started, installed, downloading}` |
 | `segment.subject.cancel` | `{}` | stop that download → `{cancelled}` |
+| `ai.models.status` | `{}` | every AI mask model (sam3, subject, sam2, depth) and the Object model choice → `{available, objectModel, objectModelInUse, models: [{id, title, purpose, installed, dir, sizeBytes, license, licenseUrl, offered, download}]}` |
+| `ai.models.download` | `{id, acknowledged: true}` | download that model in the background → `{started, installed, downloading}` |
+| `ai.models.cancel` | `{id}` | stop that download → `{cancelled}` |
+| `ai.models.setObjectModel` | `{model: auto\|sam3\|sam2}` | which model computes Object clicks (saved) → `{objectModel, objectModelInUse}` |
 
 `remote` reports the configured endpoint, not its health. `installed` describes local weights only.
 `download` is `{running, done, total, file, error, cancelled, finished}`: `cancelled` is true when the last
