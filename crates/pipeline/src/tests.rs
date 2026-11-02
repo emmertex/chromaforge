@@ -856,7 +856,6 @@ fn negative_channels_render_finite_everywhere() {
     assert!(auto::scene_log_mean(&src, &info, &pushed).is_none_or(f64::is_finite));
 }
 
-
 /// Note 4 of 2026-10-31: while a slider moved or a brush stroke rendered, the draft on screen had
 /// other large-scale tone than the final render (shadows lifted ~6/255 and lower contrast at 100 %,
 /// ~1/255 at fit), which then snapped in: drafts capped the Highlights / Shadows base at 24 px.

@@ -1543,7 +1543,6 @@ fn defringe_matches() {
     }
 }
 
-
 /// Note 4 of 2026-10-31: a slider draft on the GPU has the large-scale tone of the full render (the
 /// Highlights / Shadows base was narrower in drafts), for a slider drag and a mask stroke, in a
 /// 100 % window of a 6000 px frame and in a whole frame drawn 2000 px wide; and it matches the CPU's
