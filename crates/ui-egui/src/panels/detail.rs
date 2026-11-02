@@ -3296,9 +3296,13 @@ fn own_pin_at(grips: &[(u32, usize, u8, Pos2)], active: Option<u32>, q: Pos2) ->
     active.is_some_and(|a| grips.iter().any(|g| g.0 == a && g.2 == 0 && g.3.distance(q) < 10.0))
 }
 
-/// `shape` moved by `dn` (normalized); `handle` 1/2 = a linear gradient's start/end set to `at`.
+/// `shape` dragged from `at - dn` to `at` (normalized) by `handle`: 0 moves it; a radial
+/// gradient's 1..4 resize it, 5 and [`ROTATE`] turn it, 6 sets the feather (its inner ring), 9
+/// draws a new one; a linear gradient's 1 / 2 set its start / end, [`ROTATE`] turns it about its
+/// middle, [`LINE_START`] / [`LINE_END`] slide the start / end line along it.
 fn moved_shape(shape: &MaskShape, handle: u8, dn: Point, at: Point, map: &CanvasMap, alt: bool) -> MaskShape {
     let mv = |p: Point| Point::new(p.x + dn.x, p.y + dn.y);
+    let press = Point::new(at.x - dn.x, at.y - dn.y);
     match shape.clone() {
         MaskShape::Radial { center, rx, ry, angle, feather, invert } => match handle {
             1 | 3 => {
@@ -3331,18 +3335,49 @@ fn moved_shape(shape: &MaskShape, handle: u8, dn: Point, at: Point, map: &Canvas
                 }
                 MaskShape::Radial { center, rx: new_rx, ry: new_ry, angle, feather, invert }
             }
-            5 => {
-                let l = frame_long_norm(map);
-                let dx = (at.x - center.x) / l.0;
-                let dy = (at.y - center.y) / l.1;
-                let new_angle = dy.atan2(dx).to_degrees();
-                MaskShape::Radial { center, rx, ry, angle: new_angle, feather, invert }
+            // turning: by as much as the pointer went round the centre (on screen)
+            5 | ROTATE => {
+                let turn = screen_angle(map, at, center) - screen_angle(map, press, center);
+                let mut new_angle = angle + f64::from(turn).to_degrees();
+                if !new_angle.is_finite() {
+                    new_angle = angle;
+                }
+                MaskShape::Radial { center, rx, ry, angle: (new_angle + 180.0).rem_euclid(360.0) - 180.0, feather, invert }
+            }
+            // the feather ring: inside it the effect is full, so its size sets the feather
+            6 => {
+                let r = radial_r(shape, at, map).unwrap_or(1.0 - feather / 100.0);
+                let feather = ((1.0 - r) * 100.0).clamp(0.0, 100.0).round();
+                MaskShape::Radial { center, rx, ry, angle, feather, invert }
             }
             _ => MaskShape::Radial { center: mv(center), rx, ry, angle, feather, invert },
         },
         MaskShape::Linear { start, end } => match handle {
             1 => MaskShape::Linear { start: at, end },
             2 => MaskShape::Linear { start, end: at },
+            ROTATE => {
+                let mid = Point::new((start.x + end.x) / 2.0, (start.y + end.y) / 2.0);
+                let turn = screen_angle(map, at, mid) - screen_angle(map, press, mid);
+                if !turn.is_finite() {
+                    return MaskShape::Linear { start, end };
+                }
+                MaskShape::Linear { start: turned(map, start, mid, turn), end: turned(map, end, mid, turn) }
+            }
+            LINE_START | LINE_END => {
+                // only along the gradient: the line stays parallel, the fade gets wider or narrower
+                let (a, b) = (map.screen(start), map.screen(end));
+                let len = a.distance(b);
+                if len.is_nan() || len < 1.0 {
+                    return MaskShape::Linear { start, end };
+                }
+                let dir = (b - a) / len;
+                let shift = (map.screen(at) - map.screen(press)).dot(dir);
+                if handle == LINE_START {
+                    MaskShape::Linear { start: map.norm(a + dir * shift), end }
+                } else {
+                    MaskShape::Linear { start, end: map.norm(b + dir * shift) }
+                }
+            }
             _ => MaskShape::Linear { start: mv(start), end: mv(end) },
         },
         MaskShape::Brush { mut strokes } => {
@@ -3355,12 +3390,35 @@ fn moved_shape(shape: &MaskShape, handle: u8, dn: Point, at: Point, map: &Canvas
     }
 }
 
-/// Hit the geometric ellipse, independently of feather/inversion. Radii use long-edge units,
-/// so undo the same scaling and rotation used to draw its outline before testing containment.
-fn radial_body_contains(shape: &MaskShape, at: Point, map: &CanvasMap) -> bool {
-    let MaskShape::Radial { center, rx, ry, angle, .. } = shape else { return false };
+/// Where the radial gradient's feather handle sits on its inner ring (degrees, in the ellipse's own
+/// frame: up and to the right of the centre).
+const FEATHER_HANDLE_DEG: f64 = -45.0;
+
+/// The inner (feather) ring's size relative to the outer edge: the effect is full inside it and
+/// fades to nothing at the edge (`feather` 0..100, as the pipeline draws it).
+fn radial_inner(feather: f64) -> f64 {
+    if feather.is_finite() { (1.0 - feather / 100.0).clamp(0.0, 1.0) } else { 0.5 }
+}
+
+/// The point at `deg` on the ellipse `scale` times the radial gradient's, on screen.
+fn radial_point(map: &CanvasMap, center: Point, rx: f64, ry: f64, angle: f64, scale: f64, deg: f64) -> Pos2 {
+    let l = frame_long_norm(map);
+    let (s, co) = angle.to_radians().sin_cos();
+    let a = deg.to_radians();
+    let (x, y) = (scale * rx * a.cos(), scale * ry * a.sin());
+    map.screen(Point::new(center.x + (x * co - y * s) * l.0, center.y + (x * s + y * co) * l.1))
+}
+
+/// The radial gradient's ellipse scaled by `scale`, as a closed line on screen.
+fn radial_ring(map: &CanvasMap, center: Point, rx: f64, ry: f64, angle: f64, scale: f64) -> Vec<Pos2> {
+    (0..72).map(|i| radial_point(map, center, rx, ry, angle, scale, i as f64 * 5.0)).collect()
+}
+
+/// How far `at` (normalized) is from the radial gradient's centre, 1 on its edge.
+fn radial_r(shape: &MaskShape, at: Point, map: &CanvasMap) -> Option<f64> {
+    let MaskShape::Radial { center, rx, ry, angle, .. } = shape else { return None };
     if !rx.is_finite() || !ry.is_finite() || *rx <= 0.0 || *ry <= 0.0 {
-        return false;
+        return None;
     }
     let l = frame_long_norm(map);
     let dx = (at.x - center.x) / l.0;
@@ -3368,7 +3426,117 @@ fn radial_body_contains(shape: &MaskShape, at: Point, map: &CanvasMap) -> bool {
     let (s, co) = angle.to_radians().sin_cos();
     let x = (dx * co + dy * s) / rx;
     let y = (-dx * s + dy * co) / ry;
-    x * x + y * y <= 1.0
+    let r = (x * x + y * y).sqrt();
+    r.is_finite().then_some(r)
+}
+
+/// `p` turned by `turn` radians about `c`, on screen (so the photo's aspect doesn't skew it).
+fn turned(map: &CanvasMap, p: Point, c: Point, turn: f32) -> Point {
+    let (pq, cq) = (map.screen(p), map.screen(c));
+    let v = pq - cq;
+    let (s, co) = turn.sin_cos();
+    map.norm(cq + vec2(v.x * co - v.y * s, v.x * s + v.y * co))
+}
+
+/// The angle (radians, on screen) of `p` seen from `c`.
+fn screen_angle(map: &CanvasMap, p: Point, c: Point) -> f32 {
+    (map.screen(p) - map.screen(c)).angle()
+}
+
+/// The double-arrow cursor that resizes along `dir` (on screen).
+fn resize_cursor(dir: egui::Vec2) -> egui::CursorIcon {
+    let deg = dir.y.atan2(dir.x).to_degrees().rem_euclid(180.0);
+    match deg {
+        d if !(22.5..157.5).contains(&d) => egui::CursorIcon::ResizeHorizontal,
+        d if d < 67.5 => egui::CursorIcon::ResizeNwSe,
+        d if d < 112.5 => egui::CursorIcon::ResizeVertical,
+        _ => egui::CursorIcon::ResizeNeSw,
+    }
+}
+
+/// What a press at `q` on the selected gradient `shape` grabs when no handle is under it: a
+/// handle number for [`moved_shape`] (0 moves it), or `None` (nothing: the press is elsewhere).
+/// Radial: inside moves, just outside the edge rotates. Linear: the middle line rotates, the
+/// start and end lines move that line only (the fade's width), anywhere else moves the gradient.
+fn gradient_part(shape: &MaskShape, q: Pos2, map: &CanvasMap) -> Option<u8> {
+    match shape {
+        MaskShape::Radial { center, .. } => {
+            let r = radial_r(shape, map.norm(q), map)?;
+            if r <= 1.0 {
+                return Some(0);
+            }
+            // a band outside the edge, about 16 points wide on screen
+            let edge = map.screen(*center).distance(q) / r as f32;
+            (r <= 1.0 + f64::from(16.0 / edge.max(1.0))).then_some(ROTATE)
+        }
+        MaskShape::Linear { start, end } => {
+            let (a, b) = (map.screen(*start), map.screen(*end));
+            let len = a.distance(b);
+            if len.is_nan() || len < 1.0 {
+                return Some(0);
+            }
+            let dir = (b - a) / len;
+            // distance along the gradient from the start line, in points
+            let t = (q - a).dot(dir);
+            if (t - len / 2.0).abs() < 6.0 {
+                Some(ROTATE)
+            } else if t.abs() < 6.0 {
+                Some(LINE_START)
+            } else if (t - len).abs() < 6.0 {
+                Some(LINE_END)
+            } else {
+                Some(0)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// [`moved_shape`]'s handles beyond the ones drawn: turning a gradient about its centre, and
+/// moving a linear gradient's start or end line along it (the width of the fade, not its angle).
+const ROTATE: u8 = 7;
+const LINE_START: u8 = 11;
+const LINE_END: u8 = 12;
+
+/// The selected mask `m`'s gradient part under `q` when no handle is: (component, handle). A
+/// linear gradient's lines first, then a radial gradient's body or the band round it, then the
+/// first linear gradient as a whole (anywhere on the photo moves it).
+fn gradient_grab(m: &lcc_develop::Mask, q: Pos2, map: &CanvasMap, active: Option<usize>) -> Option<(usize, u8)> {
+    let linear = |c: &&lcc_develop::MaskComponent| matches!(c.shape, MaskShape::Linear { .. });
+    for (ci, c) in m.components.iter().enumerate().filter(|(_, c)| linear(c)) {
+        if let Some(h) = gradient_part(&c.shape, q, map).filter(|h| *h != 0) {
+            return Some((ci, h));
+        }
+    }
+    for (ci, c) in m.components.iter().enumerate().filter(|(_, c)| matches!(c.shape, MaskShape::Radial { .. })) {
+        if let Some(h) = gradient_part(&c.shape, q, map) {
+            return Some((ci, h));
+        }
+    }
+    // anywhere else drags the selected linear gradient (the active component, else the first)
+    active.filter(|&ci| m.components.get(ci).is_some_and(|c| linear(&c))).or_else(|| m.components.iter().position(|c| linear(&c))).map(|ci| (ci, 0))
+}
+
+/// The system cursor for dragging `handle` of `shape` from `q`; `None` for a turn (no system
+/// cursor shows that: the canvas draws its own).
+fn gradient_cursor(shape: &MaskShape, handle: u8, q: Pos2, map: &CanvasMap) -> Option<egui::CursorIcon> {
+    match (shape, handle) {
+        (_, 0) => Some(egui::CursorIcon::Move),
+        (MaskShape::Radial { .. }, 5 | ROTATE) | (MaskShape::Linear { .. }, ROTATE) => None,
+        (MaskShape::Radial { center, rx, ry, angle, .. }, h) => {
+            let deg = match h {
+                1 | 3 => 0.0,
+                2 | 4 => 90.0,
+                _ => FEATHER_HANDLE_DEG,
+            };
+            let c = map.screen(*center);
+            let dir = radial_point(map, *center, *rx, *ry, *angle, 1.0, deg) - c;
+            let dir = if dir.length() > 0.5 { dir } else { q - c };
+            Some(resize_cursor(dir))
+        }
+        (MaskShape::Linear { start, end }, _) => Some(resize_cursor(map.screen(*end) - map.screen(*start))),
+        _ => Some(egui::CursorIcon::Move),
+    }
 }
 
 /// Colour Range eyedropper: a click samples the colour under it for the selected mask's
@@ -3446,7 +3614,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         let stroke_a: u8 = if sel { 230 } else { 170 };
         for (ci, c) in m.components.iter().enumerate() {
             match &c.shape {
-                MaskShape::Radial { center, rx, ry, angle, .. } if show_outline => {
+                MaskShape::Radial { center, rx, ry, angle, feather, .. } if show_outline => {
                     let pts: Vec<Pos2> = (0..64)
                         .map(|i| {
                             let a = i as f64 / 64.0 * std::f64::consts::TAU;
@@ -3456,9 +3624,23 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                             map.screen(Point::new(center.x + (x * co - y * s) * l.0, center.y + (x * s + y * co) * l.1))
                         })
                         .collect();
-                    p.add(egui::Shape::closed_line(pts, Stroke::new(1.5, Color32::from_white_alpha(stroke_a))));
+                    p.add(egui::Shape::closed_line(pts, Stroke::new(1.0, Color32::from_white_alpha(stroke_a))));
 
                     if sel {
+                        // inside the edge, the feather ring (where the effect is full), with a
+                        // handle that sets the feather
+                        let inner = radial_inner(*feather);
+                        p.add(egui::Shape::dashed_line(
+                            &radial_ring(map, *center, *rx, *ry, *angle, inner),
+                            Stroke::new(1.0, Color32::from_white_alpha(170)),
+                            4.0,
+                            3.0,
+                        ));
+                        let fq = radial_point(map, *center, *rx, *ry, *angle, inner, FEATHER_HANDLE_DEG);
+                        p.circle_filled(fq, 4.0, Color32::from_black_alpha(90));
+                        p.circle_stroke(fq, 4.0, Stroke::new(1.5, Color32::WHITE));
+                        register(ui.ctx(), format!("maskHandle:{}:{ci}:6", m.id), Rect::from_center_size(fq, vec2(14.0, 14.0)));
+                        grips.push((m.id, ci, 6, fq));
                         let l = frame_long_norm(map);
                         for (i, a_deg) in [0.0_f64, 90.0_f64, 180.0_f64, 270.0_f64].into_iter().enumerate() {
                             let a_local = a_deg.to_radians();
@@ -3485,7 +3667,9 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                     let dir = (b - a).normalized();
                     let perp = vec2(-dir.y, dir.x) * 3000.0;
                     let (a1, a2): (u8, u8) = if sel { (230, 110) } else { (170, 80) };
-                    for (q, alpha) in [(a, a1), (b, a2)] {
+                    // start (full effect), the middle (50 %, with the pin) and the end (no effect)
+                    let mid = a.lerp(b, 0.5);
+                    for (q, alpha) in [(a, a1), (mid, a1.saturating_sub(70).max(80)), (b, a2)] {
                         p.line_segment([q - perp, q + perp], Stroke::new(1.0, Color32::from_white_alpha(alpha)));
                     }
                     if sel {
@@ -3739,6 +3923,43 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             })
             .copied()
     };
+    // what a press here grabs: a handle or pin, else a part of the selected mask's gradients
+    let active_comp = app.ui.active_mask_component;
+    let grab = |q: Pos2| {
+        hit(q).map(|(m, c, h, _)| (m, c, h)).or_else(|| {
+            let m = d.masks.iter().find(|m| Some(m.id) == active)?;
+            gradient_grab(m, q, &map.for_mask(m.on_photo), active_comp).map(|(ci, h)| (m.id, ci, h))
+        })
+    };
+    // the pointer says what a drag will do: move, resize (the edge, a line, the feather ring) or
+    // turn the gradient
+    let held = match &app.gesture {
+        Some(Gesture::MaskHandle { mask, comp, handle, .. }) => Some((*mask, *comp, *handle)),
+        _ => None,
+    };
+    if let Some(h) = resp.hover_pos().or_else(|| held.and_then(|_| ui.input(|i| i.pointer.latest_pos())))
+        && let Some((mid, ci, handle)) = held.or_else(|| grab(h))
+        && let Some(shape) = d.masks.iter().find(|m| m.id == mid).and_then(|m| m.components.get(ci)).map(|c| &c.shape)
+        && !app.ui.mask_adjusting_until.is_some_and(|t| std::time::Instant::now() < t)
+        && app.ui.mask_new.is_none()
+    {
+        let mmap = map.for_mask_id(d, Some(mid));
+        let map = &mmap;
+        match gradient_cursor(shape, handle, h, map) {
+            Some(cursor) => ui.ctx().set_cursor_icon(cursor),
+            None => {
+                let c = match shape {
+                    MaskShape::Radial { center, .. } => map.screen(*center),
+                    MaskShape::Linear { start, end } => map.screen(*start).lerp(map.screen(*end), 0.5),
+                    _ => h,
+                };
+                let away = h - c;
+                let turn = if away.length() > 0.5 { away.y.atan2(away.x) + std::f32::consts::FRAC_PI_2 } else { 0.0 };
+                rotate_cursor(ui, h, turn);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+            }
+        }
+    }
     if resp.clicked()
         && let Some(q) = resp.interact_pointer_pos()
         && let Some((mid, ci, ..)) = hit(q)
@@ -3751,23 +3972,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if resp.drag_started()
         && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
-        let grip = hit(q).map(|(m, c, h, _)| (m, c, h)).or_else(|| {
-            let m = d.masks.iter().find(|m| Some(m.id) == active)?;
-            // Handles take precedence; otherwise grab the selected radial component under
-            // the press, including components after the first in compound masks.
-            let mmap = map.for_mask(m.on_photo);
-            let at = mmap.norm(q);
-            if let Some(ci) = m.components.iter().position(|c| radial_body_contains(&c.shape, at, &mmap)) {
-                return Some((m.id, ci, 0));
-            }
-            // anywhere on the photo drags the selected linear gradient
-            let lin_idx = app
-                .ui
-                .active_mask_component
-                .filter(|&ci| m.components.get(ci).is_some_and(|c| matches!(c.shape, MaskShape::Linear { .. })))
-                .or_else(|| m.components.iter().position(|c| matches!(c.shape, MaskShape::Linear { .. })));
-            lin_idx.map(|ci| (m.id, ci, 0))
-        });
+        let grip = grab(q);
         if let Some((mask, comp, handle)) = grip
             && let Some(original_shape) = d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(comp)).map(|c| c.shape.clone())
         {
@@ -3982,6 +4187,7 @@ fn mask_handle_name(mask: &str, shape: &MaskShape, handle: u8) -> String {
         (MaskShape::Radial { .. }, 2) => "bottom edge",
         (MaskShape::Radial { .. }, 3) => "left edge",
         (MaskShape::Radial { .. }, 4) => "top edge",
+        (MaskShape::Radial { .. }, 6) => "feather",
         (MaskShape::Radial { .. }, _) => "rotation",
         (MaskShape::Linear { .. }, 1) => "start",
         (MaskShape::Linear { .. }, _) => "end",
@@ -5914,3 +6120,7 @@ mod info_overlay_tests {
         assert!(badges(&photo).is_some(), "a rejected photo shows its flag alone");
     }
 }
+
+#[cfg(test)]
+#[path = "detail_tools_tests.rs"]
+mod tools_tests;

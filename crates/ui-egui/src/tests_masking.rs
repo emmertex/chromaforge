@@ -468,8 +468,8 @@ fn all_masks_overlay_outlines_every_visible_mask_but_only_the_selected_one_is_dr
     h.settle(SETTLE);
 
     let handles_of = |h: &Headless, id: usize| h.app.widgets.iter().filter(|(w, _)| w.starts_with(&format!("maskHandle:{id}:"))).count();
-    // The selected mask keeps its 4 edge handles and its rotation grip.
-    assert_eq!(handles_of(&h, 2), 5, "the selected mask keeps its handles");
+    // The selected mask keeps its 4 edge handles, its rotation grip and its feather handle.
+    assert_eq!(handles_of(&h, 2), 6, "the selected mask keeps its handles");
     // The other visible mask draws its outline but registers no handle: it is not draggable.
     assert_eq!(handles_of(&h, 1), 0, "an unselected mask must not become draggable");
     // …while a mask with no components has nothing to outline and nothing to grab either.
