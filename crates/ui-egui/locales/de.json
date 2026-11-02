@@ -3568,5 +3568,6 @@
   "Removing dust": "Staub wird entfernt",
   "Fix Hot and Dead Pixels": "Heiße und tote Pixel korrigieren",
   "Remove dust on import": "Beim Import Staub entfernen",
-  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "Nach einem Import läuft „Staub entfernen“ im Hintergrund über die neuen Raw-Fotos (mit der Staubkarte ihrer Kamera)."
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "Nach einem Import läuft „Staub entfernen“ im Hintergrund über die neuen Raw-Fotos (mit der Staubkarte ihrer Kamera).",
+  "{app} keeps only the pixels of the area you fill: provenance metadata such as C2PA does not reach your photo or its exports. A watermark hidden in the pixels may.": "{app} übernimmt nur die Pixel des gefüllten Bereichs: Herkunftsmetadaten wie C2PA gelangen nicht in dein Foto oder seine Exporte. Ein in den Pixeln verborgenes Wasserzeichen kann erhalten bleiben."
 }

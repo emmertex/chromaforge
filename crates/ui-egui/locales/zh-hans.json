@@ -2331,5 +2331,6 @@
   "Removing dust": "正在去除灰尘",
   "Fix Hot and Dead Pixels": "修复热像素和坏点",
   "Remove dust on import": "导入时去除灰尘",
-  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "导入后，在后台对新的 RAW 照片运行“去除灰尘”（包括其相机的灰尘图）。"
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "导入后，在后台对新的 RAW 照片运行“去除灰尘”（包括其相机的灰尘图）。",
+  "{app} keeps only the pixels of the area you fill: provenance metadata such as C2PA does not reach your photo or its exports. A watermark hidden in the pixels may.": "{app} 只保留所填充区域的像素：C2PA 等来源元数据不会进入你的照片或其导出文件。隐藏在像素中的水印可能会保留。"
 }

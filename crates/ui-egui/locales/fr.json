@@ -3667,5 +3667,6 @@
   "Removing dust": "Suppression de la poussière",
   "Fix Hot and Dead Pixels": "Corriger les pixels chauds et morts",
   "Remove dust on import": "Supprimer la poussière à l’importation",
-  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "Après une importation, « Supprimer la poussière » s’applique en arrière-plan aux nouvelles photos raw (avec la carte de poussière de leur appareil)."
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "Après une importation, « Supprimer la poussière » s’applique en arrière-plan aux nouvelles photos raw (avec la carte de poussière de leur appareil).",
+  "{app} keeps only the pixels of the area you fill: provenance metadata such as C2PA does not reach your photo or its exports. A watermark hidden in the pixels may.": "{app} ne garde que les pixels de la zone remplie : les métadonnées de provenance comme C2PA n’arrivent ni dans votre photo ni dans ses exports. Un filigrane caché dans les pixels peut subsister."
 }

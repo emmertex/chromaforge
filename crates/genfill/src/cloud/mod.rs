@@ -43,6 +43,10 @@ pub struct Policy {
     pub trains_by_default: bool,
     /// When this summary was checked against the provider's pages.
     pub checked: &'static str,
+    /// What the provider puts in its results to mark them as AI-made (provenance metadata,
+    /// invisible watermarks), as far as it says. LightCraft keeps only the pixels it fills, so
+    /// metadata such as C2PA does not reach the photo or its exports; a watermark in the pixels may.
+    pub provenance: &'static str,
 }
 
 /// Static facts about a provider.
@@ -116,10 +120,11 @@ const OPENAI: Info = Info {
     usd_per_image: 0.2,
     key_url: "https://platform.openai.com/api-keys",
     policy: Policy {
-        summary: "OpenAI does not use API data to train its models unless you opt in. It keeps request logs for up to 30 days to check for abuse, and may keep an image longer if its safety systems flag it (zero retention needs OpenAI's approval). Results carry an invisible AI watermark (SynthID).",
+        summary: "OpenAI does not use API data to train its models unless you opt in. It keeps request logs for up to 30 days to check for abuse, and may keep an image longer if its safety systems flag it (zero retention needs OpenAI's approval).",
         url: "https://developers.openai.com/api/docs/guides/your-data",
         trains_by_default: false,
         checked: "2026-10-14",
+        provenance: "OpenAI says images from its API carry C2PA provenance metadata and an invisible SynthID watermark in the pixels.",
     },
     caveat: "The model redraws the whole crop; the app keeps only the area you painted. Your organisation may need to be verified to use GPT Image models.",
 };
@@ -139,6 +144,7 @@ const STABILITY: Info = Info {
         url: "https://stability.ai/privacy-center",
         trains_by_default: true,
         checked: "2026-10-14",
+        provenance: "Stability's API documentation does not say; others report C2PA Content Credentials on images from its hosted service.",
     },
     caveat: "Turn off model training in your Stability account before sending client photos.",
 };
@@ -158,6 +164,7 @@ const BFL: Info = Info {
         url: "https://bfl.ai/legal/flux-api-service-terms",
         trains_by_default: true,
         checked: "2026-10-14",
+        provenance: "Black Forest Labs may embed C2PA Content Credentials in results, and its terms forbid removing them.",
     },
     caveat: "Not for photos of children, and only with consent from the people shown.",
 };
@@ -177,6 +184,7 @@ const FAL: Info = Info {
         url: "https://fal.ai/docs/model-apis/data-retention",
         trains_by_default: false,
         checked: "2026-10-14",
+        provenance: "Depends on the model; fal does not document it (FLUX: Black Forest Labs may embed C2PA Content Credentials).",
     },
     caveat: "FLUX models are under Black Forest Labs' terms: not for photos of children.",
 };

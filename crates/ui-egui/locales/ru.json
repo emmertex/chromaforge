@@ -2479,5 +2479,6 @@
   "Removing dust": "Удаление пыли",
   "Fix Hot and Dead Pixels": "Исправлять горячие и битые пиксели",
   "Remove dust on import": "Удалять пыль при импорте",
-  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "После импорта «Удалить пыль» выполняется в фоне для новых raw-фото (с картой пыли их камеры)."
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "После импорта «Удалить пыль» выполняется в фоне для новых raw-фото (с картой пыли их камеры).",
+  "{app} keeps only the pixels of the area you fill: provenance metadata such as C2PA does not reach your photo or its exports. A watermark hidden in the pixels may.": "{app} берёт только пиксели заполняемой области: метаданные о происхождении, такие как C2PA, не попадают в фото и его экспорт. Водяной знак, скрытый в пикселях, может сохраниться."
 }

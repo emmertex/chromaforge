@@ -2481,5 +2481,6 @@
   "Removing dust": "ダストを除去中",
   "Fix Hot and Dead Pixels": "ホットピクセルとデッドピクセルを補正",
   "Remove dust on import": "読み込み時にダストを除去",
-  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "読み込み後、新しい RAW 写真に対して「ダストを除去」をバックグラウンドで実行します（カメラのダストマップも使用）。"
+  "After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included).": "読み込み後、新しい RAW 写真に対して「ダストを除去」をバックグラウンドで実行します（カメラのダストマップも使用）。",
+  "{app} keeps only the pixels of the area you fill: provenance metadata such as C2PA does not reach your photo or its exports. A watermark hidden in the pixels may.": "{app} が使うのは塗りつぶした範囲のピクセルだけです。C2PA などの来歴メタデータは写真や書き出しに含まれません。ピクセルに埋め込まれた透かしは残る場合があります。"
 }

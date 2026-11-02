@@ -52,7 +52,7 @@ pub fn provider_json(s: &Session, pr: lcc_genfill::cloud::Provider) -> Value {
         "removeModel": i.remove_model,
         "maxSide": i.max_side,
         "usdPerImage": i.usd_per_image,
-        "policy": {"summary": i.policy.summary, "url": i.policy.url, "trainsByDefault": i.policy.trains_by_default, "checked": i.policy.checked},
+        "policy": {"summary": i.policy.summary, "url": i.policy.url, "trainsByDefault": i.policy.trains_by_default, "checked": i.policy.checked, "provenance": i.policy.provenance},
         "caveat": i.caveat,
     })
 }
@@ -116,7 +116,7 @@ pub fn plan_json(
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "genfill.providers", "Generative Fill Providers", [], None, "{} → {providers: [{id, name, default, configured, keySource: none|settings|env, keyHint (last 4 characters), keyEnv, keyUrl, consented, maxSide, usdPerImage, policy: {summary, url, trainsByDefault, checked}, caveat}], mock: bool, running} — never the keys", |_| Ok(()), |s, _| {
+        cmd!(query "genfill.providers", "Generative Fill Providers", [], None, "{} → {providers: [{id, name, default, configured, keySource: none|settings|env, keyHint (last 4 characters), keyEnv, keyUrl, consented, maxSide, usdPerImage, policy: {summary, url, trainsByDefault, checked, provenance}, caveat}], mock: bool, running} — never the keys", |_| Ok(()), |s, _| {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let list: Vec<Value> = lcc_genfill::cloud::ALL.iter().map(|p| provider_json(s, *p)).collect();

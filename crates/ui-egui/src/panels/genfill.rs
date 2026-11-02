@@ -278,6 +278,16 @@ pub fn consent_body(app: &mut LccApp, ui: &mut egui::Ui, provider: &str, index: 
     ui.label(RichText::new(what).color(t.text_label));
     ui.label(RichText::new(crate::i18n::tr_format!("What {name} does with it:", name = name)).font(t.semibold(12.5)).color(t.text));
     ui.label(RichText::new(p["policy"]["summary"].as_str().unwrap_or_default()).color(t.text_label));
+    if let Some(pv) = p["policy"]["provenance"].as_str().filter(|v| !v.is_empty()) {
+        ui.label(RichText::new(pv).color(t.text_label));
+    }
+    ui.label(
+        RichText::new(crate::i18n::tr(
+            "LightCraft keeps only the pixels of the area you fill: provenance metadata such as C2PA does not reach your photo or its exports. A watermark hidden in the pixels may.",
+        ))
+        .size(11.0)
+        .color(t.text_dim),
+    );
     if let Some(c) = p["caveat"].as_str().filter(|c| !c.is_empty()) {
         ui.label(RichText::new(c).color(t.caution));
     }
