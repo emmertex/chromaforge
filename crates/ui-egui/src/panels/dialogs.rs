@@ -281,6 +281,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::ManageEffects { .. } => "Manage Effect Presets",
         Dialog::DeleteEffects { names } if names.len() == 1 => "Delete Effect Preset",
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
+        Dialog::DeleteRejected { .. } => "Delete Rejected Photos",
         Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Library",
         Dialog::RemoveFolder { .. } => "Remove Folder from Library",
         Dialog::SynchronizeFolder { .. } => "Synchronize Folder",
@@ -1150,6 +1151,22 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(what)).color(t.text_dim));
                 }
                 d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::body(app, ui, d),
+                Dialog::DeleteRejected { count, recycle } => {
+                    ui.label(crate::i18n::tr_format!("Delete the {n} rejected photos of this view?", n = count));
+                    ui.add_space(6.0);
+                    let keep = ui.radio_value(recycle, false, crate::i18n::tr("Remove from the library (to Recently Deleted; the files stay on disk)"));
+                    crate::widgets::register(ui.ctx(), "radio:rejectsKeep", keep.rect);
+                    if app.session.trash.is_some() {
+                        let bin = ui.radio_value(recycle, true, crate::i18n::tr("Remove, and move the files to the system trash"));
+                        crate::widgets::register(ui.ctx(), "radio:rejectsRecycle", bin.rect);
+                    }
+                    let note = if *recycle {
+                        "The files and their own XMP sidecars go to the system trash, where they can be put back; the photos leave the library."
+                    } else {
+                        "Edit ▸ Undo brings them back; Recently Deleted keeps them until it is emptied."
+                    };
+                    crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(note)).color(t.text_dim));
+                }
                 Dialog::RemoveFolder { name, count, path, disk } => {
                     ui.label(crate::i18n::tr_format!(
                         "Remove “{name}” and its {count} photo{} from the library?",
@@ -1416,6 +1433,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::KeywordTag { editing: None, .. } => "Create",
                     Dialog::KeywordTag { .. } => "Save",
                     Dialog::RemoveFolder { .. } => "Remove",
+                    Dialog::DeleteRejected { recycle: true, .. } => "Move to Trash",
+                    Dialog::DeleteRejected { .. } => "Remove",
                     Dialog::LightroomCatalog { .. } => "Import Lightroom Catalog…",
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
@@ -2157,6 +2176,21 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::DeleteEffects { names } => app.run("mask.deleteEffect", json!({"names": names})),
         Dialog::RemoveFolder { path, disk, .. } => app.run("library.removeFolder", json!({"path": path, "disk": disk})),
+        Dialog::DeleteRejected { recycle, .. } => {
+            let r = app.run("library.deleteRejected", json!({"files": if *recycle { "recycle" } else { "keep" }, "confirm": true}));
+            if let Ok(v) = &r {
+                let n = v["deleted"].as_u64().unwrap_or(0);
+                let text = if *recycle {
+                    crate::i18n::tr_format!("{n} rejected photos moved to the trash", n = n)
+                } else {
+                    crate::i18n::tr_format!("{n} rejected photos removed (Edit ▸ Undo brings them back)", n = n)
+                };
+                if let Some(ctx) = app.tasks.repaint.clone() {
+                    app.toast(&ctx, text);
+                }
+            }
+            r
+        }
         d @ Dialog::SynchronizeFolder { .. } => crate::sync::confirm(app, d),
         Dialog::NewPhotoDefault { name } => app.run("library.setImportDefault", json!({"name": name.trim()})),
         Dialog::Watermark { wm, preset_name } => {
@@ -3629,7 +3663,8 @@ pub fn confirm_style(dlg: &Dialog) -> ConfirmStyle {
         | Dialog::ConfirmPurge { .. }
         | Dialog::DeleteKeyword { .. }
         | Dialog::DeleteEffects { .. }
-        | Dialog::RemoveFolder { .. } => ConfirmStyle::Plain,
+        | Dialog::RemoveFolder { .. }
+        | Dialog::DeleteRejected { .. } => ConfirmStyle::Plain,
         _ if only_shows(dlg) => ConfirmStyle::Plain,
         _ => ConfirmStyle::Primary,
     }

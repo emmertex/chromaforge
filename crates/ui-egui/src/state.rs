@@ -1802,6 +1802,12 @@ pub enum Dialog {
         /// numbered per library, so in another one they name other photos.
         library: u64,
     },
+    /// Photo ▸ Delete Rejected Photos…: how many rejects the view has, and whether their files go
+    /// to the system trash too (`library.deleteRejected`).
+    DeleteRejected {
+        count: usize,
+        recycle: bool,
+    },
     /// Confirm taking a folder's photos out of the library (`library.removeFolder`).
     RemoveFolder {
         path: String,

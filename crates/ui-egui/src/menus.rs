@@ -3042,6 +3042,21 @@ pub fn delete_in_album(app: &mut LccApp, ctx: &egui::Context) -> bool {
 
 /// With Settings → General → "Confirm before deleting" on, open the confirmation dialog instead
 /// of deleting; true when it did (the dialog's OK runs `photo.delete`).
+/// Photo ▸ Delete Rejected Photos…: ask how (remove, or remove and trash the files), with the
+/// number of rejects the view has; with none, say so.
+pub fn ask_delete_rejected(app: &mut LccApp) -> Result<Value, String> {
+    let view = app.session.visible_cloned();
+    let count = view.iter().filter(|id| app.session.catalog.photo(**id).is_some_and(|p| p.flag == lcc_catalog::Flag::Reject)).count();
+    if count == 0 {
+        if let Some(ctx) = app.tasks.repaint.clone() {
+            app.toast(&ctx, crate::i18n::tr("No rejected photos here"));
+        }
+        return Ok(json!({"deleted": 0}));
+    }
+    app.ui.dialog = Some(Dialog::DeleteRejected { count, recycle: false });
+    Ok(json!({"asking": count}))
+}
+
 pub fn confirm_delete(app: &mut LccApp) -> bool {
     app.ui.settings.confirm_delete && open_delete_dialog(app)
 }

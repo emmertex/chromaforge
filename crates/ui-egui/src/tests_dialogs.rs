@@ -163,3 +163,24 @@ fn modal_dialogs_close_background_menus() {
     h.step();
     assert!(!egui::Popup::is_any_open(&h.view.ctx), "background menus cannot remain above the modal window");
 }
+
+/// Photo ▸ Delete Rejected Photos… always asks, with the number of rejects and how: removing them
+/// (the default, undoable) or trashing their files too. Ported from OneSlips' LR-DELETE-REJECTED.
+#[test]
+fn delete_rejected_photos_asks_how() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|p| p.0).collect();
+    h.app.session.execute("photo.flag", &json!({"ids": ids, "flag": "none"})).unwrap();
+    h.app.session.execute("photo.flag", &json!({"ids": [ids[0], ids[1]], "flag": "reject"})).unwrap();
+    let total = h.app.session.visible_cloned().len();
+    crate::menubar::run_item(&mut h.app, "library.deleteRejected", json!({})).unwrap();
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::DeleteRejected { count: 2, recycle: false })), "{:?}", h.app.ui.dialog);
+    h.step();
+    let r = h.request("ui.dialog.confirm", json!({}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(h.app.ui.dialog.is_none(), "{:?}", h.app.ui.dialog);
+    assert_eq!(h.app.session.visible_cloned().len(), total - 2);
+    crate::menubar::run_item(&mut h.app, "library.deleteRejected", json!({})).unwrap();
+    assert!(h.app.ui.dialog.is_none(), "nothing left to delete: no dialog");
+}
