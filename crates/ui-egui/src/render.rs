@@ -839,6 +839,14 @@ impl Renderer {
             self.native_frames.insert(slot, frame.clone());
         }
         let (size, histogram) = ([frame.width, frame.height], keep_waveform(slot, histogram));
+        // a full-quality whole frame shown so far is kept for a return to it (Crop on and off), as
+        // when pixels replace it
+        if slot == Slot::Main
+            && self.textures.get(&slot).is_some_and(|t| t.key != r.key && t.native.is_none() && self.full_views.contains(&t.key))
+            && let Some(t) = self.textures.remove(&slot)
+        {
+            self.keep_view(t);
+        }
         match self.textures.get_mut(&slot) {
             Some(t) => {
                 t.native = Some(id);
@@ -1007,6 +1015,12 @@ impl Renderer {
     /// Free a view slot's texture and stage cache (the view is no longer shown).
     pub fn release(&mut self, slot: Slot) {
         self.textures.remove(&slot);
+        self.native_frames.remove(&slot);
+        if let Some(id) = self.natives.remove(&slot)
+            && let Some(screen) = self.screen.as_mut()
+        {
+            screen.free(id);
+        }
         if slot == Slot::Main {
             self.kept_views.clear();
             self.full_views.clear();
@@ -2537,6 +2551,65 @@ mod thumbnail_tests {
         finish(&mut app, &work, &ctx, slot, result);
         let t = app.renderer.textures.get(&Slot::Main).unwrap();
         assert!(t.native.is_none() && t.pixels.is_some(), "pixels again");
+    }
+
+    /// A drag's GPU-drawn draft over a full render keeps that render for a return to it (Crop on and
+    /// off, an undo), and leaving the view frees the draft's GPU texture.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_gpu_drawn_draft_keeps_the_full_render_and_leaving_frees_its_texture() {
+        use lcc_engine::gpu::wgpu;
+        struct Counting(std::rc::Rc<std::cell::RefCell<Vec<egui::TextureId>>>);
+        impl ScreenTextures for Counting {
+            fn show(&mut self, _: &lcc_engine::media::ScreenFrame, id: Option<egui::TextureId>) -> Option<egui::TextureId> {
+                Some(id.unwrap_or(egui::TextureId::User(9)))
+            }
+            fn free(&mut self, id: egui::TextureId) {
+                self.0.borrow_mut().push(id);
+            }
+        }
+        let device = (|| {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = lcc_engine::gpu::backend::window_backends();
+            let instance = wgpu::Instance::new(desc);
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        })();
+        let Some((device, _queue)) = device else {
+            lcc_testkit::skip!(Gpu, "no GPU adapter");
+            return;
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let freed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (mut app, work, ctx) = fixture();
+        app.renderer.set_screen_textures(Box::new(Counting(freed.clone())));
+        let full = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap();
+        let full_key = full.key;
+        app.renderer.request(Slot::Main, full, 100);
+        let (slot, job) = take_job(&work);
+        let result = job.run();
+        finish(&mut app, &work, &ctx, slot, result);
+        // (a draft of another edit: its own key)
+        let mut draft = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap().draft();
+        draft.key ^= 0x5555;
+        app.renderer.request(Slot::Main, draft, 100);
+        let (slot, job) = take_job(&work);
+        let mut result = job.run();
+        result.frame = Some(lcc_engine::media::ScreenFrame { texture, width: 4, height: 4 });
+        finish(&mut app, &work, &ctx, slot, result);
+        assert_eq!(app.renderer.textures[&Slot::Main].id(), egui::TextureId::User(9), "the draft is drawn from the GPU");
+        assert!(app.renderer.kept_views.iter().any(|t| t.key == full_key), "the full render is kept");
+        app.renderer.release(Slot::Main);
+        assert_eq!(*freed.borrow(), vec![egui::TextureId::User(9)], "leaving the view frees the draft's texture");
     }
 
     /// With GPU-resident textures shown, a view's drafts ask to stay on the GPU; full renders and
