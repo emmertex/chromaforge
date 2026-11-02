@@ -90,6 +90,12 @@ ZhengPeng, licensed under the MIT License; translated to Rust on candle and rest
 BiRefNet_lite weights (MIT) are not part of this software: the app downloads them from the author's
 Hugging Face repository (ZhengPeng7/BiRefNet_lite) only when the user asks for them.
 
+crates/segment/src/hiera.rs and sam2.rs (ported by OneSlips, 2026) port the SAM 2 model code of
+Hugging Face Transformers (src/transformers/models/sam2), Copyright The HuggingFace Team and Meta
+Platforms, Inc., licensed under the Apache License 2.0, modified the same way. The SAM 2.1 weights
+(facebook/sam2.1-hiera-tiny, Apache License 2.0) are not part of this software; the app downloads
+them from Meta's Hugging Face repository only when the user asks for them.
+
 The lens profile database of the lensfun project (https://github.com/lensfun/lensfun, data/db,
 Copyright the lensfun contributors) is not part of this software and is never distributed with it.
 A user downloads it only when they choose to (Settings ▸ Import ▸ Lens profiles ▸ Download, which
