@@ -278,7 +278,7 @@ impl DustField {
                     x: f64::from(cx) / w as f64,
                     y: f64::from(cy) / h as f64,
                     // the heal covers the shadow's soft edge
-                    radius: f64::from(2.0 * s / long),
+                    radius: f64::from(2.8 * s / long),
                     strength: m.dip,
                     dip: m.dip,
                     texture: m.texture / m.dip,

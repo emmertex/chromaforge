@@ -123,7 +123,7 @@ fn choose(img: &Rgb32f, c: (f32, f32), r: f32) -> (SpotMode, Option<(f32, f32)>)
     let flat = score(SpotMode::Flat, None);
     // Even Out keeps what is under the shadow (dividing by its transmission is what removes dust); Heal copies other
     // pixels in, which can bring a pebble or a ripple along: it is taken only when Even Out is clearly worse
-    if flat <= heal * 1.5 { (SpotMode::Flat, None) } else { (SpotMode::Heal, src) }
+    if flat <= heal * 3.0 { (SpotMode::Flat, None) } else { (SpotMode::Heal, src) }
 }
 
 /// The spot for a dust shadow at `(x, y)` (0..1 of the photo) of radius `radius` (fraction of the long edge).
