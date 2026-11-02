@@ -56,6 +56,28 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 
 thread_local! {
     static BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// This thread holds a turn for several renders ([`in_one_turn`]): they don't queue again.
+    static IN_TURN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` (several batch renders, e.g. an export's SDR and HDR renditions of one photo, which
+/// share their device stages) in one turn needing `bytes`. Outside batch work it is just `f`.
+pub(crate) fn in_one_turn<R>(bytes: u64, vram: u64, stop: &dyn Fn() -> bool, f: impl FnOnce() -> R) -> R {
+    if !is_batch() || IN_TURN.try_with(|c| c.get()).unwrap_or(false) {
+        return f();
+    }
+    let turn = enter(bytes, vram, stop);
+    /// Puts the thread's flag back however `f` ends.
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = IN_TURN.try_with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(IN_TURN.with(|c| c.replace(turn.is_some())));
+    let r = f();
+    drop(turn);
+    r
 }
 
 /// Run `f` with this thread's GPU renders counted as batch work.
@@ -122,10 +144,15 @@ pub(crate) fn hold(d: Duration) {
 pub(crate) struct Permit {
     bytes: u64,
     batch: bool,
+    /// Counted at the gate (not a render inside a turn already taken).
+    held: bool,
 }
 
 impl Drop for Permit {
     fn drop(&mut self) {
+        if !self.held {
+            return;
+        }
         let mut s = state();
         if self.batch {
             s.held = s.held.saturating_sub(self.bytes);
@@ -142,10 +169,14 @@ impl Drop for Permit {
 /// work, else when it fits (see the module doc). `None` when `stop()` says to give up while
 /// waiting (the app is closing): the render then runs on the CPU.
 pub(crate) fn enter(bytes: u64, vram: u64, stop: &dyn Fn() -> bool) -> Option<Permit> {
+    // (a render inside a turn already taken: nothing more to hold)
+    if is_batch() && IN_TURN.try_with(|c| c.get()).unwrap_or(false) {
+        return Some(Permit { bytes: 0, batch: false, held: false });
+    }
     let mut s = state();
     if !is_batch() {
         s.interactive += 1;
-        return Some(Permit { bytes, batch: false });
+        return Some(Permit { bytes, batch: false, held: true });
     }
     let start = Instant::now();
     let mut waited = false;
@@ -163,7 +194,7 @@ pub(crate) fn enter(bytes: u64, vram: u64, stop: &dyn Fn() -> bool) -> Option<Pe
                 WAITS.fetch_add(1, Ordering::Relaxed);
                 WAITED_MS.fetch_add(start.elapsed().as_millis() as u64, Ordering::Relaxed);
             }
-            return Some(Permit { bytes, batch: true });
+            return Some(Permit { bytes, batch: true, held: true });
         }
         if !waited {
             waited = true;
@@ -266,6 +297,25 @@ mod tests {
         let p = as_batch(|| enter(1 << 20, 0, &|| false));
         assert!(p.is_some() && t.elapsed() >= Duration::from_millis(250), "waited for the hold: {:?}", t.elapsed());
         drop(p);
+        set_limits(None, None);
+    }
+
+    /// Renders inside one turn don't queue again: a gain map's two renditions run even with room
+    /// for one job only, and the turn is given back after.
+    #[test]
+    fn renders_in_one_turn_hold_it_once() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_limits(Some(1 << 30), Some(1));
+        as_batch(|| {
+            in_one_turn(1 << 20, 0, &|| false, || {
+                assert_eq!(usage().0, 1);
+                let a = enter(1 << 20, 0, &|| true).expect("inside the turn");
+                let b = enter(1 << 20, 0, &|| true).expect("inside the turn");
+                assert_eq!(usage().0, 1, "not counted again");
+                drop((a, b));
+            });
+        });
+        assert_eq!(usage().0, 0);
         set_limits(None, None);
     }
 
