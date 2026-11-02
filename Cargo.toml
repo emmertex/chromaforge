@@ -66,6 +66,7 @@ lcc-tether = { path = "crates/tether" }
 lcc-webgallery = { path = "crates/webgallery" }
 lcc-heif = { path = "crates/heif" }
 lcc-segment = { path = "crates/segment" }
+lcc-tflite = { path = "crates/tflite" }
 lcc-text = { path = "crates/text" }
 lcc-inpaint = { path = "crates/inpaint" }
 lcc-pdf = { path = "crates/pdf" }

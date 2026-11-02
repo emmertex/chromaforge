@@ -90,6 +90,19 @@ ZhengPeng, licensed under the MIT License; translated to Rust on candle and rest
 BiRefNet_lite weights (MIT) are not part of this software: the app downloads them from the author's
 Hugging Face repository (ZhengPeng7/BiRefNet_lite) only when the user asks for them.
 
+crates/segment/src/hiera.rs and sam2.rs (ported by OneSlips, 2026) port the SAM 2 model code of
+Hugging Face Transformers (src/transformers/models/sam2), Copyright The HuggingFace Team and Meta
+Platforms, Inc., licensed under the Apache License 2.0, modified the same way. The SAM 2.1 weights
+(facebook/sam2.1-hiera-tiny, Apache License 2.0) are not part of this software; the app downloads
+them from Meta's Hugging Face repository only when the user asks for them.
+
+crates/segment/src/dino.rs, depth.rs and grid.rs (ported by OneSlips, 2026) port the DINOv2,
+Depth Anything and DPT image-processor code of Hugging Face Transformers (models/dinov2,
+depth_anything and dpt), Copyright The HuggingFace Team, Meta Platforms, Inc. and the model
+authors, licensed under the Apache License 2.0, modified the same way. The Depth Anything V2 Small
+weights (depth-anything/Depth-Anything-V2-Small-hf, Apache License 2.0) are not part of this
+software; users download them separately.
+
 The lens profile database of the lensfun project (https://github.com/lensfun/lensfun, data/db,
 Copyright the lensfun contributors) is not part of this software and is never distributed with it.
 A user downloads it only when they choose to (Settings ▸ Import ▸ Lens profiles ▸ Download, which
@@ -154,3 +167,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+
+crates/tflite (lcc-tflite, Apache License 2.0) — a TensorFlow Lite interpreter written by OneSlips
+in 2026 from the TensorFlow Lite model schema (schema.fbs: field order, enum values, option
+defaults; Copyright The TensorFlow Authors, Apache License 2.0) and the documented behaviour of
+its builtin operators; no TensorFlow code was copied. Its MediaPipe landmark index lists are data
+from MediaPipe's face_landmarks_connections (Copyright 2023 The MediaPipe Authors, Apache License
+2.0). Ported into Chromaforge from OneSlips' fork.

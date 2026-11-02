@@ -1,8 +1,13 @@
 //! Point prompts (SAM 3's interactive "tracker" head, SAM 2 style): a prompt encoder for
 //! positive/negative clicks and a two-way-transformer mask decoder over the image features.
 //!
+//! The same module serves SAM 2 (`Sam2PromptEncoder` + `Sam2MaskDecoder`, which SAM 3's tracker
+//! reuses unchanged): only the input side and the embedding grid differ
+//! ([`Tracker::with_geometry`]).
+//!
 //! Modified work (Apache License 2.0, §4(b)): ported by the project contributors in 2026 from
-//! the Python/PyTorch SAM 3 code of Hugging Face Transformers (`models/sam3_tracker/modeling_sam3_tracker.py`), Copyright The HuggingFace
+//! the Python/PyTorch SAM 3 and SAM 2 code of Hugging Face Transformers (`models/sam3_tracker/modeling_sam3_tracker.py`,
+//! `models/sam2/modeling_sam2.py`), Copyright The HuggingFace
 //! Team and Meta Platforms, Inc.; translated to Rust on candle and restructured. See NOTICE.
 
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
@@ -14,7 +19,7 @@ use crate::{Result, nn::to_vec};
 
 const HIDDEN: usize = 256;
 const MASK_TOKENS: usize = 4;
-/// Low-resolution mask side (4 × the 72 grid).
+/// Low-resolution mask side of SAM 3 (4 × the 72 grid).
 pub const LOW_RES: usize = 288;
 
 /// The image features the decoder needs, computed once per image.
@@ -35,7 +40,8 @@ pub struct Click {
     pub positive: bool,
 }
 
-/// A predicted mask: 288 × 288 logits over the (squared) model input, and its quality.
+/// A predicted mask: low-resolution logits (4 × the grid per side) over the (squared) model
+/// input, and its quality.
 pub struct Prediction {
     pub logits: Vec<f32>,
     pub iou: f32,
@@ -96,8 +102,20 @@ impl TwoWayBlock {
     }
 }
 
+/// All four decoder outputs for one prompt: mask 0 is the single-mask output, 1..3 the
+/// alternatives.
+pub struct Decoded {
+    /// `[4, side, side]` logits.
+    pub masks: Tensor,
+    /// Predicted IoU of each mask.
+    pub iou: Vec<f32>,
+    pub object_score: f32,
+}
+
 pub struct Tracker {
     device: Device,
+    /// Side of the square model input (click coordinates are scaled to it).
+    image: usize,
     point_pe: Fourier,
     image_pe: Tensor,
     point_embed: Tensor,
@@ -122,20 +140,30 @@ fn read_vec(vb: &VarBuilder, shape: (usize, usize), name: &str) -> Result<Vec<f3
 }
 
 impl Tracker {
-    /// `vb` at `tracker_model`.
+    /// `vb` at `tracker_model` (SAM 3: 1008 input, 72 × 72 grid).
     pub fn new(vb: VarBuilder) -> Result<Self> {
+        Self::with_geometry(vb, IMAGE, GRID)
+    }
+
+    /// `vb` at the module holding `prompt_encoder`, `mask_decoder` and `shared_image_embedding`;
+    /// `image`: side of the model input; `grid`: side of the image-embedding grid (SAM 2: 1024, 64).
+    pub fn with_geometry(vb: VarBuilder, image: usize, grid: usize) -> Result<Self> {
+        if image == 0 || grid == 0 || grid > 1024 {
+            return Err(crate::Error::Model(format!("mask decoder geometry {image} / {grid}")));
+        }
         let device = vb.device().clone();
         let pe = vb.pp("prompt_encoder");
         let md = vb.pp("mask_decoder");
         let image_fourier = Fourier { pe: read_vec(&vb, (2, HIDDEN / 2), "shared_image_embedding.positional_embedding")? };
-        // image-wide positional embedding: pixel centres of the 72 × 72 grid
-        let mut grid = Vec::with_capacity(GRID * GRID * HIDDEN);
-        for r in 0..GRID {
-            for c in 0..GRID {
-                grid.extend(image_fourier.encode((c as f32 + 0.5) / GRID as f32, (r as f32 + 0.5) / GRID as f32));
+        // image-wide positional embedding: pixel centres of the grid (72 × 72 for SAM 3)
+        let n = grid;
+        let mut grid_pe = Vec::with_capacity(n * n * HIDDEN);
+        for r in 0..n {
+            for c in 0..n {
+                grid_pe.extend(image_fourier.encode((c as f32 + 0.5) / n as f32, (r as f32 + 0.5) / n as f32));
             }
         }
-        let image_pe = Tensor::from_vec(grid, (1, GRID * GRID, HIDDEN), &device)?;
+        let image_pe = Tensor::from_vec(grid_pe, (1, n * n, HIDDEN), &device)?;
         let t = md.pp("transformer");
         let mut blocks = Vec::new();
         for i in 0..2 {
@@ -183,6 +211,7 @@ impl Tracker {
             iou_head: FeedForward::new(HIDDEN, HIDDEN, MASK_TOKENS, 3, true, md.pp("iou_prediction_head"))?,
             obj_head: FeedForward::new(HIDDEN, HIDDEN, 1, 3, false, md.pp("pred_obj_score_head"))?,
             device,
+            image,
         })
     }
 
@@ -193,13 +222,14 @@ impl Tracker {
     }
 
     /// Sparse prompt embeddings `[1, n + 1, 256]` (a padding point closes the list).
-    fn embed_clicks(&self, clicks: &[Click]) -> Result<Tensor> {
+    pub fn embed_clicks(&self, clicks: &[Click]) -> Result<Tensor> {
         let point_embed = to_vec(&self.point_embed)?;
         let not_a_point = to_vec(&self.not_a_point)?;
         let mut rows = Vec::with_capacity((clicks.len() + 1) * HIDDEN);
         for c in clicks {
-            // the reference shifts pixel coordinates (in the 1008² input) by half a pixel
-            let (x, y) = ((c.x * IMAGE as f32 + 0.5) / IMAGE as f32, (c.y * IMAGE as f32 + 0.5) / IMAGE as f32);
+            // the reference shifts pixel coordinates (in the square input) by half a pixel
+            let side = self.image as f32;
+            let (x, y) = ((c.x * side + 0.5) / side, (c.y * side + 0.5) / side);
             let e = self.point_pe.encode(x, y);
             let label = usize::from(c.positive);
             rows.extend(e.iter().enumerate().map(|(i, v)| v + point_embed.get(label * HIDDEN + i).copied().unwrap_or(0.0)));
@@ -211,6 +241,24 @@ impl Tracker {
     /// Predict masks for `clicks`. `multimask`: the three alternatives (best by predicted IoU is
     /// returned), else the single-mask output with SAM 2's stability fallback.
     pub fn predict(&self, f: &Features, clicks: &[Click], multimask: bool) -> Result<Prediction> {
+        let Decoded { masks, iou, object_score } = self.decode(f, clicks)?;
+        let pick = |i: usize| -> Result<Prediction> {
+            Ok(Prediction { logits: to_vec(&masks.i(i)?)?, iou: iou.get(i).copied().unwrap_or(0.0), object_score })
+        };
+        let best_multi = || (1..MASK_TOKENS).max_by(|a, b| iou.get(*a).partial_cmp(&iou.get(*b)).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(1);
+        if multimask {
+            return pick(best_multi());
+        }
+        // single-mask output unless it is unstable (area changes > 2 % when the threshold moves ±0.05)
+        let single = masks.i(0)?;
+        let inter = single.gt(0.05)?.to_dtype(DType::F32)?.sum_all()?.to_scalar::<f32>()?;
+        let union = single.gt(-0.05)?.to_dtype(DType::F32)?.sum_all()?.to_scalar::<f32>()?;
+        let stability = if union > 0.0 { inter / union } else { 1.0 };
+        if stability >= 0.98 { pick(0) } else { pick(best_multi()) }
+    }
+
+    /// Run the decoder for `clicks`: all four masks with their predicted IoU and the object score.
+    pub fn decode(&self, f: &Features, clicks: &[Click]) -> Result<Decoded> {
         let sparse = self.embed_clicks(clicks)?;
         let tokens = Tensor::cat(&[self.output_tokens.unsqueeze(0)?, sparse], 1)?; // [1, T, 256]
         let image = f.image.broadcast_add(&self.no_mask)?; // dense prompt: "no mask"
@@ -236,18 +284,6 @@ impl Tracker {
         let masks = hyper.matmul(&up.reshape((b, uc, uh * uw))?)?.reshape((b, MASK_TOKENS, uh, uw))?;
         let iou = to_vec(&self.iou_head.forward(&iou_token)?)?;
         let object_score = to_vec(&self.obj_head.forward(&q.i((.., 0, ..))?)?)?.first().copied().unwrap_or(0.0);
-        let pick = |i: usize| -> Result<Prediction> {
-            Ok(Prediction { logits: to_vec(&masks.i((0, i))?)?, iou: iou.get(i).copied().unwrap_or(0.0), object_score })
-        };
-        let best_multi = || (1..MASK_TOKENS).max_by(|a, b| iou.get(*a).partial_cmp(&iou.get(*b)).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(1);
-        if multimask {
-            return pick(best_multi());
-        }
-        // single-mask output unless it is unstable (area changes > 2 % when the threshold moves ±0.05)
-        let single = masks.i((0, 0))?;
-        let inter = single.gt(0.05)?.to_dtype(DType::F32)?.sum_all()?.to_scalar::<f32>()?;
-        let union = single.gt(-0.05)?.to_dtype(DType::F32)?.sum_all()?.to_scalar::<f32>()?;
-        let stability = if union > 0.0 { inter / union } else { 1.0 };
-        if stability >= 0.98 { pick(0) } else { pick(best_multi()) }
+        Ok(Decoded { masks: masks.i(0)?, iou, object_score })
     }
 }

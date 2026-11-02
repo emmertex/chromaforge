@@ -33,16 +33,30 @@ mod clip;
 #[cfg(not(target_arch = "wasm32"))]
 mod cpu;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod depth;
+#[cfg(not(target_arch = "wasm32"))]
 mod detector;
 #[cfg(not(target_arch = "wasm32"))]
+mod dino;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod fetch;
+#[cfg(not(target_arch = "wasm32"))]
+mod grid;
+#[cfg(not(target_arch = "wasm32"))]
+mod hiera;
 pub mod mask;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod models;
 #[cfg(not(target_arch = "wasm32"))]
 mod neck;
 #[cfg(not(target_arch = "wasm32"))]
 mod nn;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote;
+#[cfg(not(target_arch = "wasm32"))]
+mod sam2;
+#[cfg(not(target_arch = "wasm32"))]
+mod sam2_kernels;
 pub mod tokenizer;
 #[cfg(not(target_arch = "wasm32"))]
 mod tracker;
@@ -61,7 +75,9 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use tracker::Click;
+pub use sam2::{SAM2_INPUT, SAM2_MASK_SIDE, Sam2, Sam2Encoded, is_sam2_dir};
+#[cfg(not(target_arch = "wasm32"))]
+pub use tracker::{Click, Decoded};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -69,6 +85,13 @@ pub enum Error {
     Model(String),
     #[error("SAM 3 model files not found in {0} (expected model.safetensors, vocab.json, merges.txt)")]
     Missing(PathBuf),
+    /// An error that names its model itself (the depth model).
+    #[error("{0}")]
+    Message(String),
+    #[error("SAM 2 model: {0}")]
+    Sam2(String),
+    #[error("SAM 2 model files not found in {0} (expected model.safetensors and config.json)")]
+    Sam2Missing(PathBuf),
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Candle(#[from] candle_core::Error),
@@ -280,7 +303,7 @@ fn hugging_face_format(weights: &weights::Weights) -> Result<()> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn sigmoid(x: f32) -> f32 {
+pub(crate) fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
