@@ -1318,7 +1318,7 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
             Ok(_) => {
                 app.ui.role_draft = None;
                 let shape = MaskShape::People { person: 0, parts: parts.clone(), who: Some(lcc_develop::recipe::Who::Role(role)) };
-                let _ = app.run("mask.updateAi", json!({"component": comp, "shape": shape}));
+                let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
                 let _ = app.run("masks.recompute", json!({"id": photo.0}));
             }
             Err(e) => app.toast(ui.ctx(), e),
@@ -1326,7 +1326,7 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
     }
     if let Some(w) = chosen {
         let shape = MaskShape::People { person: 0, parts: parts.clone(), who: w };
-        let _ = app.run("mask.updateAi", json!({"component": comp, "shape": shape}));
+        let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
         let _ = app.run("masks.recompute", json!({"id": photo.0}));
     }
 }
@@ -1334,7 +1334,7 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
 fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &MaskShape) {
     let t = Tokens::get(ui.ctx());
     let update = |app: &mut LccApp, shape: MaskShape| {
-        let _ = app.run("mask.updateAi", json!({"component": comp, "shape": shape}));
+        let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
     };
     match shape {
         MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather } => {
@@ -1406,7 +1406,7 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
             let out = slider(ui, &smooth, cur, true, None);
             apply_slider_out(app, &smooth, out, |app, v| {
                 let f = v / 100.0 * 0.5;
-                app.run("mask.updateAi", json!({"component": comp, "shape": MaskShape::LuminanceRange { lo, hi, lo_feather: f, hi_feather: f }}))
+                app.run("mask.update", json!({"component": comp, "shape": MaskShape::LuminanceRange { lo, hi, lo_feather: f, hi_feather: f }}))
             });
             let mut map = app.ui.mask_overlay && app.ui.mask_overlay_mode == "colorOnBw";
             let r = ui.checkbox(&mut map, crate::i18n::tr("Show Luminance Map"));
@@ -1452,7 +1452,7 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
             let out = slider(ui, &spec, *refine, true, None);
             let samples = samples.clone();
             apply_slider_out(app, &spec, out, |app, v| {
-                app.run("mask.updateAi", json!({"component": comp, "shape": MaskShape::ColorRange { samples: samples.clone(), refine: v }}))
+                app.run("mask.update", json!({"component": comp, "shape": MaskShape::ColorRange { samples: samples.clone(), refine: v }}))
             });
         }
         _ => {}
