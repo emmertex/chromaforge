@@ -310,8 +310,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 /// licence, under the same Download (terms first, then the activity stack), Use and Remove as Settings ▸ AI Denoise.
 pub fn ai_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let list = models(app, ui.ctx());
-    let known: Vec<Value> =
-        list["models"].as_array().map(|a| a.iter().filter(|m| m["known"] == true).cloned().collect()).unwrap_or_default();
+    let known: Vec<Value> = list["models"].as_array().map(|a| a.iter().filter(|m| m["known"] == true).cloned().collect()).unwrap_or_default();
     if list["dir"].is_null() || known.is_empty() {
         return;
     }

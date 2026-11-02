@@ -158,7 +158,7 @@ The upstream project's **Denoise (Bayer) 0.1.0** is a U-Net (7.8 M weights, 31 M
 contributors with the open tools in `tools/denoise-train` on 705 clean low-ISO raws from raw.pixls.us, each CC0, with
 synthetic sensor noise calibrated on real cameras (numbers only). Its weights are licensed **MIT OR Apache-2.0**, so
 any use, commercial work included, is allowed. The `own-model` Cargo feature offers it as a download (Settings ▸ AI
-Denoise); the desktop app turns that feature on. Its addresses are built from `[upstream]` in `brand.toml`
+Denoise, and the AI Models dialog, with its size and licence); the desktop app turns that feature on. Its addresses are built from `[upstream]` in `brand.toml`
 (`crates/denoise-core/src/known.rs`).
 
 It is downloaded from two sources, tried in order:
@@ -172,6 +172,11 @@ wrong file is never kept, whichever source sent it, and with both failing the me
 (31,091,398 bytes) and SHA-256 (`abd3c4cd…3247dea9`) are checked wherever the file comes from. There is no third
 source: `<PREFIX>_DENOISE_MODEL_URL` (an `https://` address) replaces both with that one address, for maintainers who
 host the same file themselves.
+
+With the file at hand, `<PREFIX>_TEST_OWN_DENOISE_MODEL=<file> cargo test --release -p lcc-engine --features denoise
+tests_denoise_own -- --nocapture` runs it for real: a noisy raw developed with it against the best manual Noise
+Reduction (the Rust form of `tools/denoise-train/eval_app.py`), the graphics card against the processor, a damaged copy
+(an error, never a panic), and with `--ignored` a 24 MP timing against the built-in denoiser.
 
 Measured upstream on held-out pictures (PSNR in tone space): ISO 800 43.4 dB, ISO 3200 42.4 dB, ISO 12800 40.6 dB, a
 dark ISO 25600 36.4 dB (demosaicing without noise reduction: 38.1 / 36.9 / 33.1 / 22.8 dB).
