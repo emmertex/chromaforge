@@ -149,8 +149,56 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path.display().to_string(), "count": chosen.len()}))
 }
 
+/// `preset.exportXmp`: Lightroom-style XMP preset files, one per preset.
+fn export_xmp(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "preset.exportXmp";
+    let folder = str_param(p, "folder").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(C, "missing folder"))?;
+    let folder = std::path::PathBuf::from(folder);
+    let mut ids = strings(p, "ids").unwrap_or_default();
+    if let Some(id) = str_param(p, "id") {
+        ids.push(id.to_string());
+    }
+    if ids.is_empty() {
+        return Err(bad(C, "give `id` or `ids`"));
+    }
+    let chosen: Vec<_> = s.presets.iter().filter(|x| ids.contains(&x.id)).cloned().collect();
+    if chosen.is_empty() {
+        return Err(bad(C, "no such presets"));
+    }
+    std::fs::create_dir_all(&folder).map_err(|e| crate::EngineError::Other(format!("{}: {e}", folder.display())))?;
+    let mut written = Vec::new();
+    let mut used = std::collections::HashSet::new();
+    for pr in chosen {
+        let (xmp, notes) = crate::preset_xmp::to_xmp(&pr);
+        let mut name = crate::presets::slug(&pr.name);
+        if name.is_empty() {
+            name = "preset".into();
+        }
+        // two presets with the same name don't overwrite each other
+        let mut stem = name.clone();
+        let mut n = 2;
+        while !used.insert(stem.clone()) {
+            stem = format!("{name}-{n}");
+            n += 1;
+        }
+        let path = folder.join(format!("{stem}.xmp"));
+        std::fs::write(&path, xmp).map_err(|e| crate::EngineError::Other(format!("{}: {e}", path.display())))?;
+        written.push(json!({"id": pr.id, "path": path.display().to_string(), "notes": notes}));
+    }
+    Ok(json!({"written": written}))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            "preset.exportXmp",
+            "Export Presets as XMP",
+            [],
+            None,
+            "{id | ids: [presetId], folder} — Lightroom-style .xmp presets: AI masks (Subject, Sky, Background, People parts), gradients, luminance ranges, the mask sliders, Curve and Point Color as Lightroom reads them; the full preset in lc:PresetSettings (read back on import) → {written: [{id, path, notes}]} (notes: what Lightroom can't hold)",
+            always,
+            export_xmp
+        ),
         cmd!(
             "preset.import",
             "Import Presets",

@@ -86,6 +86,7 @@ pub mod peer_exchange;
 pub mod peers;
 pub mod preset_import;
 pub mod preset_luminar;
+pub mod preset_xmp;
 pub mod presets;
 pub mod print;
 pub mod print_color;

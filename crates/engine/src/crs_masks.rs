@@ -64,6 +64,11 @@ const LOCAL: &[(&str, &str, f64)] = &[
     ("LocalClarity", "clarity", 100.0),
 ];
 
+/// The local slider fields (name without `crs:`, our `adjust` field, scale), newest process first.
+pub(crate) fn local_fields() -> impl Iterator<Item = (&'static str, &'static str, f64)> {
+    LOCAL.iter().copied()
+}
+
 /// Is `crs` (without the `crs:` prefix) a local slider field we map?
 pub(crate) fn is_local_field(crs: &str) -> bool {
     LOCAL.iter().any(|(k, _, _)| *k == crs)
@@ -201,6 +206,76 @@ fn radial_feather(m: &XmpValue, container: &str) -> f64 {
 
 /// One mask component of a correction in `container` → our component JSON; `Err(kind)` names an
 /// unsupported one.
+/// Lightroom's People parts by `MaskSubCategoryID`, as Lightroom Classic writes them in presets
+/// (read from presets made with it: face skin 2, iris and pupil 3, body skin 4, hair 5, lips 6,
+/// eye sclera 8, clothes 11, teeth 12). Other parts are recognised by the mask's name.
+fn people_part(id: i64) -> Option<&'static str> {
+    Some(match id {
+        2 => "Face Skin",
+        3 => "Iris and Pupil",
+        4 => "Body Skin",
+        5 => "Hair",
+        6 => "Lips",
+        8 => "Eye Sclera",
+        11 => "Clothes",
+        12 => "Teeth",
+        _ => return None,
+    })
+}
+
+/// A People part from a mask's name ("Person 1 - Face Skin", "Clothes", "Eyebrows 2").
+fn part_from_name(name: &str) -> Option<&'static str> {
+    let tail = name.rsplit(" - ").next().unwrap_or(name).trim();
+    let tail = tail.trim_end_matches(|c: char| c.is_ascii_digit() || c == ' ');
+    const PARTS: [&str; 11] =
+        ["Entire Person", "Face Skin", "Body Skin", "Hair", "Clothes", "Eyebrows", "Eye Sclera", "Iris and Pupil", "Lips", "Teeth", "Skin"];
+    PARTS.into_iter().find(|p| p.eq_ignore_ascii_case(tail))
+}
+
+/// A Landscape class from a mask's name ("Water 1", "Landscape - Vegetation").
+fn landscape_from_name(name: &str) -> Option<&'static str> {
+    let n = name.to_ascii_lowercase();
+    [
+        ("artificial ground", "artificial ground"),
+        ("natural ground", "natural ground"),
+        ("vegetation", "vegetation"),
+        ("mountain", "mountains"),
+        ("architecture", "architecture"),
+        ("water", "water"),
+    ]
+    .into_iter()
+    .find(|(k, _)| n.contains(k))
+    .map(|(_, v)| v)
+}
+
+/// A Lightroom AI mask (`Mask/Image`) → our shape. Lightroom keeps in presets what to select,
+/// not the pixels, and selects again on each photo; so do we (a recipe, computed per
+/// photo). People masks name "Person 1" after the photo the preset was made on: they become
+/// everyone's (Lightroom detects the people of each photo again).
+fn image_mask(m: &XmpValue) -> Result<Value, String> {
+    let sub = text(m, "crs:MaskSubType").unwrap_or("?");
+    let cat = text(m, "crs:MaskSubCategoryID").and_then(|c| c.trim().parse::<i64>().ok());
+    let name = text(m, "crs:MaskName").unwrap_or("");
+    Ok(match (sub, cat) {
+        ("1", _) => json!({"kind": "subject"}),
+        ("2", _) => json!({"kind": "sky"}),
+        ("0", Some(22)) => json!({"kind": "background"}),
+        ("0", _) if name.to_ascii_lowercase().starts_with("background") => json!({"kind": "background"}),
+        ("3", _) => {
+            let part = cat
+                .and_then(people_part)
+                .or_else(|| part_from_name(name))
+                .ok_or_else(|| format!("AI mask: People part {}", cat.map_or("?".into(), |c| c.to_string())))?;
+            json!({"kind": "people", "person": 0, "parts": [part]})
+        }
+        ("4", _) => return Err("AI mask: Objects (selected on the photo the preset was made on)".into()),
+        _ => match landscape_from_name(name) {
+            Some(class) => json!({"kind": "landscape", "class": class}),
+            None => return Err(format!("AI mask ({sub}{})", cat.map_or(String::new(), |c| format!("/{c}")))),
+        },
+    })
+}
+
 fn component(m: &XmpValue, container: &str, aspect: f64) -> Result<Value, String> {
     let what = text(m, "crs:What").unwrap_or("");
     let op = match num(m, "crs:MaskBlendMode").unwrap_or(0.0) as i64 {
@@ -260,11 +335,7 @@ fn component(m: &XmpValue, container: &str, aspect: f64) -> Result<Value, String
                 "erase": erase,
             }]})
         }
-        "Mask/Image" => match text(m, "crs:MaskSubType") {
-            Some("1") => json!({"kind": "subject"}),
-            Some("2") => json!({"kind": "sky"}),
-            other => return Err(format!("AI mask ({})", other.unwrap_or("?"))),
-        },
+        "Mask/Image" => image_mask(m)?,
         "Mask/RangeMask" => {
             let r = m.field("crs:CorrectionRangeMask").unwrap_or(m);
             match text(r, "crs:Type") {
