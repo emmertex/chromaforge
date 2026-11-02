@@ -6,15 +6,8 @@ use serde_json::json;
 use crate::{Result, Session};
 
 fn add(s: &mut Session, id: u64) -> Result<()> {
-    let photo = Photo::new(
-        PhotoId(id),
-        Source::File { path: format!("/app-select/{id:03}.jpg") },
-        &format!("{id:03}.jpg"),
-        "JPEG",
-        40,
-        30,
-        "2026-10-22",
-    );
+    let photo =
+        Photo::new(PhotoId(id), Source::File { path: format!("/app-select/{id:03}.jpg") }, &format!("{id:03}.jpg"), "JPEG", 40, 30, "2026-10-22");
     s.catalog.apply(Op::AddPhoto { photo: Box::new(photo) })?;
     Ok(())
 }
