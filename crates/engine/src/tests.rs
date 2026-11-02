@@ -1011,13 +1011,13 @@ fn auto_sync_carries_only_the_changed_settings() {
         assert_eq!(s.develop_of(PhotoId(*id)).unwrap().light.exposure, 0.7, "photo {id}");
     }
     assert_eq!(s.develop_of(PhotoId(ids[1])).unwrap().light.contrast, 25.0, "untouched settings stay");
-    // a slider drag syncs once, on release
+    // a slider drag syncs live (LR-AUTOSYNC-LIVE) and commits once, on release
     let shadows: Vec<f64> = ids.iter().map(|id| s.develop_of(PhotoId(*id)).unwrap().light.shadows).collect();
     s.begin_interaction("Shadows").unwrap();
     let mut d = (*s.develop_of(PhotoId(ids[0])).unwrap()).clone();
     d.light.shadows = 40.0;
     s.set_develop(PhotoId(ids[0]), d, "Shadows").unwrap();
-    assert_eq!(s.develop_of(PhotoId(ids[2])).unwrap().light.shadows, shadows[2], "not while dragging");
+    assert_eq!(s.develop_of(PhotoId(ids[2])).unwrap().light.shadows, 40.0, "live while dragging");
     s.end_interaction().unwrap();
     assert_eq!(s.develop_of(PhotoId(ids[2])).unwrap().light.shadows, 40.0);
     // one undo step reverts every photo

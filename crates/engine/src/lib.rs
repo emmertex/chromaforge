@@ -226,6 +226,9 @@ pub struct Interaction {
     /// photo shows was fitted by Constrain Crop, and the final commit starts again from the original
     /// crop, so Auto Sync carries the edit and not the active photo's fitted crop.
     pub crop_edited: bool,
+    /// With Auto Sync on, the other selected photos and their settings when the interaction began:
+    /// they follow the active photo live (each set to its value, as at the commit) and go back with it.
+    pub along: Vec<(PhotoId, Arc<DevelopSettings>)>,
 }
 
 /// The most photos an edit may touch for the view to follow it photo by photo; a larger edit is worked out whole.
@@ -1137,7 +1140,12 @@ impl Session {
             && i.photo == id
         {
             i.crop_edited |= crop_edited;
-            return self.apply_silent(Op::SetDevelop { id, settings, label: label.into(), edited: Some(now) });
+            let (original, along) = (i.original.clone(), i.along.clone());
+            self.apply_silent(Op::SetDevelop { id, settings, label: label.into(), edited: Some(now) })?;
+            if !along.is_empty() {
+                self.live_sync(id, &original, &requested, label, &along)?;
+            }
+            return Ok(());
         }
         let own_auto = self.own_auto_wb(id, &requested, label);
         let mut ops = vec![self.develop_op(id, (*settings).clone(), label).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?];
@@ -1187,10 +1195,51 @@ impl Session {
     /// scale ([`sync_same`]): As Shot its own camera white, Auto its own (`own_auto`, worked out
     /// on its pixels), a Temp or Tint the same number, only the slider that moved.
     fn auto_sync_ops(&self, id: PhotoId, new: &DevelopSettings, label: &str, own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>) -> Vec<Op> {
+        let Some(old) = self.develop_of(id) else { return Vec::new() };
+        self.auto_sync_ops_from(id, &old, new, label, own_auto)
+    }
+
+    /// A live frame of an Auto Sync interaction (LR-AUTOSYNC-LIVE): the other selected photos go
+    /// back to their settings at the start and take the edit from `original` to `new` as the
+    /// commit will, previewed without an undo step.
+    fn live_sync(
+        &mut self,
+        id: PhotoId,
+        original: &DevelopSettings,
+        new: &DevelopSettings,
+        label: &str,
+        along: &[(PhotoId, Arc<DevelopSettings>)],
+    ) -> Result<()> {
+        for (x, d) in along {
+            self.apply_silent(Op::SetDevelop { id: *x, settings: d.clone(), label: label.into(), edited: None })?;
+        }
+        let ops = self.auto_sync_ops_from(id, original, new, label, &std::collections::HashMap::new());
+        let mut sets = Vec::new();
+        let mut stack = ops;
+        while let Some(op) = stack.pop() {
+            match op {
+                Op::Batch { ops } => stack.extend(ops),
+                op @ Op::SetDevelop { .. } => sets.push(op),
+                _ => {}
+            }
+        }
+        for op in sets {
+            self.apply_silent(op)?;
+        }
+        Ok(())
+    }
+
+    fn auto_sync_ops_from(
+        &self,
+        id: PhotoId,
+        old: &DevelopSettings,
+        new: &DevelopSettings,
+        label: &str,
+        own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>,
+    ) -> Vec<Op> {
         if !self.auto_sync_applies(id, label) {
             return Vec::new();
         }
-        let Some(old) = self.develop_of(id) else { return Vec::new() };
         let mut old_json = old.to_json();
         let mut new_json = new.to_json();
         // False is omitted from stored profile JSON. Keep it explicit for this comparison so
@@ -1231,7 +1280,7 @@ impl Session {
                 if wb_changed {
                     // each photo on its own scale: Kelvin on a raw with one, relative elsewhere
                     lcc_pipeline::local::normalize_wb(&mut synced, &self.source_info(x));
-                    sync_same::synced_wb(&ainfo, &old, new, &self.source_info(x), &d, own_auto.get(&x).copied(), &mut synced);
+                    sync_same::synced_wb(&ainfo, old, new, &self.source_info(x), &d, own_auto.get(&x).copied(), &mut synced);
                 }
                 if crop_changed {
                     synced.crop = sync_same::synced_crop(&new.crop, adims, cmd::develop::crop_dims(self, x));
@@ -1293,13 +1342,22 @@ impl Session {
         }
         let id = self.active().ok_or_else(|| EngineError::Other("no active photo".into()))?;
         let original = self.develop_of(id).unwrap_or_default();
-        self.interaction = Some(Interaction { label: label.into(), photo: id, original, crop_edited: false });
+        let along = if self.auto_sync_applies(id, label) {
+            self.selection.ids.iter().filter(|x| **x != id).filter_map(|x| self.develop_of(*x).map(|d| (*x, d))).collect()
+        } else {
+            Vec::new()
+        };
+        self.interaction = Some(Interaction { label: label.into(), photo: id, original, crop_edited: false, along });
         Ok(())
     }
 
     /// Commit the interaction as one undo step (no-op if nothing changed).
     pub fn end_interaction(&mut self) -> Result<()> {
         let Some(i) = self.interaction.take() else { return Ok(()) };
+        // the photos that followed live go back; the commit below syncs them as one step with the active one
+        for (x, d) in &i.along {
+            self.apply_silent(Op::SetDevelop { id: *x, settings: d.clone(), label: i.label.clone(), edited: None })?;
+        }
         let Some(cur) = self.develop_of(i.photo) else { return Ok(()) };
         if *cur == *i.original {
             return Ok(());
@@ -1317,6 +1375,9 @@ impl Session {
 
     pub fn cancel_interaction(&mut self) -> Result<()> {
         if let Some(i) = self.interaction.take() {
+            for (x, d) in i.along {
+                self.apply_silent(Op::SetDevelop { id: x, settings: d, label: i.label.clone(), edited: None })?;
+            }
             self.apply_silent(Op::SetDevelop { id: i.photo, settings: i.original, label: i.label, edited: None })?;
         }
         Ok(())
@@ -1762,6 +1823,8 @@ mod tests_album_remove;
 mod tests_albums_local;
 #[cfg(test)]
 mod tests_autosync_crop;
+#[cfg(test)]
+mod tests_autosync_live;
 #[cfg(test)]
 mod tests_autosync_preset;
 #[cfg(test)]
