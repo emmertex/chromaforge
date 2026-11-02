@@ -297,6 +297,78 @@ fn multi_choice_facets_match_any_value_and_every_facet() {
     assert!(back.keywords.is_empty() && back.keyword.as_deref() == Some("cats"));
 }
 
+/// Issue #683: a metadata multi-select can demand all of its values (AND) instead of any of them (OR),
+/// per column: keywords, people, cameras and lenses each carry their own operator.
+#[test]
+fn metadata_multi_select_matches_all_values_in_and_mode() {
+    use lcc_meta::{Rect, Region, RegionKind};
+    let region = |name: &str| Region {
+        rect: Rect { x0: 0.4, y0: 0.4, x1: 0.6, y1: 0.6 },
+        kind: RegionKind::Face,
+        name: Some(name.to_string()),
+        description: None,
+    };
+    let mut c = Catalog::new();
+    let mut add = |name: &str, keywords: &[&str], camera: &str, lens: &str, people: &[&str]| {
+        let id = c.alloc_photo_id();
+        let mut p = Photo::new(id, Source::Demo { scene: 1 }, name, "JPEG", 6000, 4000, "2026-09-30T10:00:00");
+        p.meta.keywords = keywords.iter().map(|k| k.to_string()).collect();
+        p.meta.camera = camera.into();
+        p.meta.lens = lens.into();
+        p.meta.regions = people.iter().map(|n| region(n)).collect();
+        c.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        id
+    };
+    let both = add("both.jpg", &["landscape", "sunset"], "Z 8", "24-120", &["Amy", "Ben"]);
+    let only_kw = add("kw.jpg", &["landscape"], "Z 8", "20mm", &["Amy"]);
+    let other = add("other.jpg", &["portrait"], "D750", "50mm", &["Cleo"]);
+    let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let q = |f: Filter| {
+        let mut ids = c.query(&f, &Sort::default());
+        ids.sort();
+        ids
+    };
+
+    // OR stays the default, everywhere
+    assert_eq!(
+        q(Filter { keywords: strs(&["landscape", "portrait"]), ..Default::default() }),
+        vec![both, only_kw, other],
+        "the default is any of them"
+    );
+    // AND on keywords: only the photo tagged with both
+    assert_eq!(q(Filter { keywords: strs(&["landscape", "sunset"]), keyword_op: MatchOp::All, ..Default::default() }), vec![both]);
+    // AND on people
+    assert_eq!(q(Filter { people: strs(&["amy", "ben"]), person_op: MatchOp::All, ..Default::default() }), vec![both]);
+    assert_eq!(q(Filter { people: strs(&["amy", "ben"]), person_op: MatchOp::Any, ..Default::default() }), vec![both, only_kw]);
+    // AND on lenses; a value no photo combines with the others empties the result
+    assert_eq!(q(Filter { lenses: strs(&["24-120", "20mm"]), lens_op: MatchOp::All, ..Default::default() }), Vec::<PhotoId>::new());
+    // the operators of different lists apply independently
+    assert_eq!(
+        q(Filter {
+            keywords: strs(&["landscape", "portrait"]),
+            keyword_op: MatchOp::Any,
+            people: strs(&["amy", "ben"]),
+            person_op: MatchOp::All,
+            ..Default::default()
+        }),
+        vec![both]
+    );
+    // the summary says "and" in AND mode
+    let f = Filter { keywords: strs(&["landscape", "sunset"]), keyword_op: MatchOp::All, ..Default::default() };
+    assert!(f.describe().contains("keyword landscape and sunset"), "{}", f.describe());
+    // the operators serialize (camelCase); like ratingOp, the default is written too
+    let json = serde_json::to_value(&f).unwrap();
+    assert_eq!(json.get("keywordOp"), Some(&serde_json::json!("all")));
+    let plain = serde_json::to_value(Filter { keywords: strs(&["x"]), ..Default::default() }).unwrap();
+    assert_eq!(plain.get("keywordOp"), Some(&serde_json::json!("any")), "{plain}");
+    let back: Filter = serde_json::from_value(serde_json::json!({"people": ["amy"], "personOp": "all", "lensOp": "any"})).unwrap();
+    assert_eq!(back.person_op, MatchOp::All);
+    assert_eq!(back.lens_op, MatchOp::Any);
+    // cameras have no operator: a photo has only one camera
+    assert!(serde_json::from_value::<Filter>(serde_json::json!({"cameraOp": "all"})).is_err());
+    assert_eq!(back.keyword_op, MatchOp::Any, "an absent operator reads as OR");
+}
+
 /// A `captured` string that is not ASCII (the Lightroom importer copies `captureTime` into an
 /// `AddPhoto` op verbatim, and a JSON snapshot is valid UTF-8 whatever it holds) must not be
 /// sliced on a byte index in `date_groups`: grouping counts the well-formed dates and ignores

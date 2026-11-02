@@ -46,7 +46,6 @@
   "about {} minutes": "asi {} min",
   "about {} seconds": "asi {} s",
   "by {author} · {id}": "autor: {author} · {id}",
-  "{added} added, {missing} missing, {changed} read from changed sidecars": "{added} přidáno, {missing} chybí, {changed} načteno ze změněných souborů XMP",
   "{app} {version}": "{app} {version}",
   "{app} {version} is available (Help ▸ Check for Updates…)": "{app} {version} je k dispozici (Nápověda ▸ Zkontrolovat aktualizace…)",
   "{a} on map · {b} untagged": "{a} na mapě · {b} bez polohy",

@@ -55,7 +55,6 @@
   "about {} minutes": "unos {} minutos",
   "about {} seconds": "unos {} segundos",
   "by {author} · {id}": "de {author} · {id}",
-  "{added} added, {missing} missing, {changed} read from changed sidecars": "{added} añadidas, {missing} faltan, {changed} leídas de archivos auxiliares cambiados",
   "{app} can't decode this raw variant yet ({}). You're editing the camera's embedded JPEG preview, which already includes the camera's picture style (e.g. Monochrome) and white balance.": "{app} aún no puede decodificar esta variante RAW ({}). Se está editando la vista previa JPEG incrustada de la cámara, que ya incluye el estilo de imagen de la cámara (p. ej. Monocromo) y el balance de blancos.",
   "{app} could not open its window: {e}": "{app} no pudo abrir su ventana: {e}",
   "{app} could not open its window: {e}\n\nThe log file has the details: {path}": "{app} no pudo abrir su ventana: {e}\n\nLos detalles están en el archivo de registro: {path}",

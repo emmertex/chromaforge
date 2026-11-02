@@ -14,10 +14,10 @@ talk through first: [join the Discord](https://discord.gg/c3dfYATzsQ) and bring 
 - **Issues:** this repository's GitHub issues, bugs and feature requests alike.
 - **Check nobody has it yet.** Read the issue's comments for a claim and search the open pull requests for its number
   and its checklist id. Claims live in comments.
-- **Check upstream's work too.** Chromaforge no longer merges upstream: the maintainer reviews upstream's commits
-  each week and ports the useful ones ([`docs/upstream-merge.md`](docs/upstream-merge.md)). A bug fixed upstream may
-  already be ported, or due to be: search the log and the open pull requests for the upstream issue or pull request
-  number before you start.
+- **Check upstream's work too.** Chromaforge no longer merges upstream: each round reviews upstream's pull requests
+  and commits and ports the useful ones by hand ([`docs/upstream-pr-intake.md`](docs/upstream-pr-intake.md)), and
+  the whole round lands as one fork PR at a version release. A bug fixed upstream may already be ported, or due to
+  be: search the log and the open pull requests for the upstream issue or pull request number before you start.
 
 ## Claim it
 

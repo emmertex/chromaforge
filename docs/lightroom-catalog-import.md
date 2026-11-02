@@ -155,6 +155,16 @@ reimport to get a smart album). The report counts albums by their resulting kind
 `smartAlbums`, `smartAsStatic`, `smartKept` (existing smart albums left as they were) and `stacks`. Folder stacks become stacks in Lightroom's order
 and collapsed state; photos already in a stack keep it, so reimport doesn't duplicate them.
 
+A Chromaforge album nests only inside a folder (a Lightroom collection set), but Lightroom also
+keeps a saved print, book, slideshow or web gallery (and, in some catalogs, a collection) inside a
+plain or smart collection, and a parent can be system-only (Quick Collection, an unsaved creation:
+not imported) or gone from the catalog. Such an album joins the nearest collection set above it, or
+the top level, and the result names it under warnings; saved prints, books, slideshows and web
+galleries import as regular albums with the photos they hold. On reimport an album keeps the place
+the user gave it. A collection the catalog lists twice imports once; a different collection with
+the id of an earlier one is left out with a warning naming both, and the photos listed under that
+id go to the first.
+
 Lightroom's develop history (`Adobe_libraryImageDevelopHistoryStep`) becomes the photo's History,
 oldest first, each step named as in Lightroom and mapped like the current settings (so a step shows
 what the app can reproduce of it). When the newest step differs from the photo's settings, a final

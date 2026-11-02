@@ -353,7 +353,7 @@ pub(crate) fn copy_verified(src: &Path, dst: &Path, expect: Option<lcc_preview::
             out.write_all(b"partial")?;
             return Err(io::Error::other("write failed (injected)"));
         }
-        io::copy(&mut inp, &mut out)?;
+        copy_in_chunks(&mut inp, &mut out)?;
         #[cfg(test)]
         if injected(Fault::Slow) {
             COPY_THREADS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(std::thread::current().id());
@@ -380,6 +380,23 @@ pub(crate) fn copy_verified(src: &Path, dst: &Path, expect: Option<lcc_preview::
         let _ = fs::remove_file(dst);
     }
     r
+}
+
+/// Bytes per write of [`copy_in_chunks`]. `io::copy` from one `File` to another writes 8 KiB at a
+/// time on Windows, and on a network share every write waits for the server: 1.9 MB/s on gigabit
+/// SMB, against 17 MB/s in 1 MiB writes (upstream issue #3561).
+pub(crate) const COPY_CHUNK: usize = 1 << 20;
+
+/// Copy `from` into `to` in writes of about [`COPY_CHUNK`], however little each read returns.
+/// Returns the number of bytes copied. Still `io::copy`, through a [`io::BufWriter`] of that
+/// capacity: on Linux std sees through the `BufWriter` to the files and copies in the kernel
+/// (`copy_file_range`, `sendfile`), and where the kernel declines, the copy std falls back to
+/// fills the buffer, so the writes stay large.
+pub(crate) fn copy_in_chunks<W: Write>(from: &mut impl Read, to: &mut W) -> io::Result<u64> {
+    let mut out = io::BufWriter::with_capacity(COPY_CHUNK, to);
+    let n = io::copy(from, &mut out)?;
+    out.flush()?;
+    Ok(n)
 }
 
 /// [`lcc_preview::hash_bytes`] of a file's content, read in chunks.

@@ -30,6 +30,8 @@ pub const MIN_TOKEN: usize = 16;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Handshakes the worker runs at once; connections past that are closed.
 const MAX_HANDSHAKES: usize = 32;
+/// Pause after a failed accept before the worker listens again.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Serialize, Deserialize)]
 pub enum Operation {
@@ -263,40 +265,56 @@ fn predict(model: &mut Sam3, enc: &mut Encoded, operation: Operation) -> Result<
     }
 }
 
+/// The worker's accept loop: hand every connection to `handle`. A failed accept (out of file
+/// descriptors, a connection reset while queued) is logged, followed by a pause, and the loop
+/// goes on — one bad accept must not stop the worker (issue #2134). `retry_sleep` is injected so
+/// tests run without waiting.
+fn serve_connections<I, C, H, S>(incoming: I, mut handle: H, mut retry_sleep: S)
+where
+    I: IntoIterator<Item = io::Result<C>>,
+    H: FnMut(C),
+    S: FnMut(Duration),
+{
+    for connection in incoming {
+        match connection {
+            Ok(stream) => handle(stream),
+            Err(error) => {
+                eprintln!("SAM3 accept failed: {error}");
+                retry_sleep(ACCEPT_RETRY_DELAY);
+            }
+        }
+    }
+}
+
 /// Accept connections on `listener` and hand over those that complete the handshake. Handshakes
 /// run on their own threads (at most [`MAX_HANDSHAKES`]) with a short deadline, so a peer without
 /// the token can't hold the worker; the sessions themselves, which share the one model and device,
-/// are served one at a time by the receiver. A failed accept (out of file descriptors, a
-/// connection reset while queued) is logged and the loop goes on (issue #2134).
+/// are served one at a time by the receiver.
 pub fn accept_authenticated(listener: TcpListener, token: String) -> std::sync::mpsc::Receiver<TcpStream> {
     let (authed, sessions) = std::sync::mpsc::channel::<TcpStream>();
     let pending = Arc::new(AtomicUsize::new(0));
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let mut stream = match stream {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("SAM3 accept failed: {e}");
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
+        serve_connections(
+            listener.incoming(),
+            |mut stream| {
+                if pending.fetch_add(1, Ordering::SeqCst) >= MAX_HANDSHAKES {
+                    pending.fetch_sub(1, Ordering::SeqCst);
+                    return;
                 }
-            };
-            if pending.fetch_add(1, Ordering::SeqCst) >= MAX_HANDSHAKES {
-                pending.fetch_sub(1, Ordering::SeqCst);
-                continue;
-            }
-            let (token, authed, pending) = (token.clone(), authed.clone(), pending.clone());
-            std::thread::spawn(move || {
-                let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
-                let ok = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_ok()
-                    && stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).is_ok()
-                    && server_handshake(&mut stream, &token).inspect_err(|e| eprintln!("SAM3 {peer}: {e}")).is_ok();
-                pending.fetch_sub(1, Ordering::SeqCst);
-                if ok {
-                    let _ = authed.send(stream);
-                }
-            });
-        }
+                let (token, authed, pending) = (token.clone(), authed.clone(), pending.clone());
+                std::thread::spawn(move || {
+                    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+                    let ok = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_ok()
+                        && stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).is_ok()
+                        && server_handshake(&mut stream, &token).inspect_err(|e| eprintln!("SAM3 {peer}: {e}")).is_ok();
+                    pending.fetch_sub(1, Ordering::SeqCst);
+                    if ok {
+                        let _ = authed.send(stream);
+                    }
+                });
+            },
+            std::thread::sleep,
+        );
     });
     sessions
 }
@@ -452,5 +470,35 @@ mod tests {
             assert_ne!(base, other);
         }
         assert_ne!(random_hex(), random_hex());
+    }
+
+    fn accept_error<T>() -> io::Result<T> {
+        Err(io::Error::new(io::ErrorKind::ConnectionAborted, "injected accept failure"))
+    }
+
+    /// One failed accept before any client must not stop the worker (upstream #3023).
+    #[test]
+    fn sam_accept_error_before_client_keeps_serving() {
+        let mut handled = Vec::new();
+        serve_connections([accept_error(), Ok(1_u8)], |stream| handled.push(stream), |_| {});
+        assert_eq!(handled, [1]);
+    }
+
+    /// A failed accept between clients leaves the later ones served (upstream #3023).
+    #[test]
+    fn sam_accept_error_between_clients_keeps_serving() {
+        let mut handled = Vec::new();
+        serve_connections([Ok(1_u8), accept_error(), Ok(2_u8)], |stream| handled.push(stream), |_| {});
+        assert_eq!(handled, [1, 2]);
+    }
+
+    /// Repeated failures pause after each one instead of spinning (upstream #3023).
+    #[test]
+    fn sam_accept_repeated_errors_back_off() {
+        let mut handled = Vec::new();
+        let mut delays = Vec::new();
+        serve_connections([accept_error(), accept_error(), Ok(1_u8)], |stream| handled.push(stream), |delay| delays.push(delay));
+        assert_eq!(handled, [1]);
+        assert_eq!(delays, [ACCEPT_RETRY_DELAY, ACCEPT_RETRY_DELAY]);
     }
 }

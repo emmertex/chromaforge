@@ -10,10 +10,12 @@ use crate::icons::Icon;
 use crate::theme::Tokens;
 use crate::widgets::{icon_button, register};
 
-/// The + menu at the right end of the Folders header: Add Folder… (its photos join the library
-/// where they are), Create Folder….
+/// The + menu at the right end of the Folders header: Add Folder… (Import from Folder…, its photos
+/// added where they are), Create Folder…. Hosts with only the background picker (Android) get Add
+/// Folder… alone: their picker copies a picked folder into the app, no place to create one in.
 pub fn header_buttons(app: &mut LccApp, ui: &mut egui::Ui, header: Rect, viewport: Rect) {
-    if app.services.pick_folder.is_none() {
+    let can_create = app.services.pick_folder.is_some();
+    if !can_create && app.services.picker.is_none() {
         return;
     }
     let right = (header.left() + viewport.max.x).min(header.right()) - 26.0;
@@ -24,18 +26,20 @@ pub fn header_buttons(app: &mut LccApp, ui: &mut egui::Ui, header: Rect, viewpor
     );
     let plus = icon_button(&mut hdr, "folderAdd", Icon::Plus, vec2(22.0, 22.0), false, true, "Add Folder");
     egui::Popup::menu(&plus).show(|ui| {
-        if ui
-            .button(crate::i18n::tr("Add Folder…"))
-            .on_hover_text(crate::i18n::tr("Add the photos of a folder to the library where they are"))
-            .clicked()
-        {
-            let picked = app.services.pick_folder.as_mut().and_then(|f| f());
-            if let Some(path) = picked {
-                sync_and_report(app, ui.ctx(), &path);
+        // disabled while a Lightroom catalog import runs, as File ▸ Import from Folder… is
+        let enabled = crate::menus::ui_enabled(app, "file.addFolder");
+        let add = ui
+            .add_enabled(enabled, egui::Button::new(crate::i18n::tr("Add Folder…")))
+            .on_hover_text(crate::i18n::tr("Add the photos of a folder to the library where they are"));
+        register(ui.ctx(), "button:folderAddFolder", add.rect);
+        if add.clicked() {
+            // File ▸ Import from Folder…: the dialog and the scan run off the UI thread (#734)
+            if let Err(e) = app.run("file.addFolder", json!({})) {
+                app.toast(ui.ctx(), e);
             }
             ui.close();
         }
-        if ui.button(crate::i18n::tr("Create Folder…")).clicked() {
+        if can_create && ui.button(crate::i18n::tr("Create Folder…")).clicked() {
             let picked = app.services.pick_folder.as_mut().and_then(|f| f());
             if let Some(parent) = picked {
                 create_prompt(app, &parent);
@@ -54,28 +58,6 @@ fn create_prompt(app: &mut LccApp, parent: &str) {
         params: json!({"parent": parent}),
         key: "name".into(),
     });
-}
-
-/// Synchronise `path` (new files join the library, sidecars changed elsewhere are read) and say
-/// what happened.
-fn sync_and_report(app: &mut LccApp, ctx: &egui::Context, path: &str) {
-    match app.run("folder.sync", json!({"path": path, "readMetadata": true})) {
-        Ok(r) => {
-            let added = r["imported"].as_u64().unwrap_or(0);
-            let missing = r["missing"].as_array().map_or(0, Vec::len);
-            let changed = r["metadataChanged"].as_array().map_or(0, Vec::len);
-            app.toast(
-                ctx,
-                crate::i18n::tr_format!(
-                    "{added} added, {missing} missing, {changed} read from changed sidecars",
-                    added = added,
-                    missing = missing,
-                    changed = changed
-                ),
-            );
-        }
-        Err(e) => app.toast(ctx, e),
-    }
 }
 
 fn human_bytes(b: u64) -> String {

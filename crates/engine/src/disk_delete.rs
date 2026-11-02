@@ -30,7 +30,7 @@
 //! Sources: own design; the behaviour (Delete from Disk next to Remove) follows Lightroom
 //! Classic's delete dialog as observed in the running application.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -101,34 +101,130 @@ pub(crate) fn plan(cat: &Catalog, targets: &[PhotoId]) -> Plan {
     plan
 }
 
-/// The originals of `plan` that go to the trash (the set [`sidecars_of`] takes).
+/// The originals of `plan` that go to the trash (the set [`Folders`] takes).
 fn originals(plan: &Plan) -> HashSet<PathBuf> {
     plan.groups.iter().map(|g| g.original.clone()).collect()
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
-    // one file under two spellings on a case-insensitive volume (macOS, Windows): `test.xmp`
-    // and `test.XMP` would otherwise be listed, and trashed, as two sidecars
-    use crate::rename::MoveFs;
-    crate::rename::RealFs.same_file(a, b)
+/// One folder's listing, read once for a whole Delete from Disk. The sidecar and shared-stem
+/// questions for every file of the folder are answered from it, with no further file-system call.
+///
+/// Issue #692: listing the folder again for each file, and asking the file system about every
+/// entry each time, took half an hour for 800 photos in one folder on Windows. A listing read
+/// before the first file goes gives the same answers as a fresh one: everything that disappears
+/// meanwhile is among `leaving` or a sidecar, and neither counts as sharing a stem.
+#[derive(Debug, Default)]
+pub(crate) struct FolderIndex {
+    /// The folder could be listed; when it couldn't, every stem counts as shared, so no
+    /// `<stem>.xmp` goes (the `<file>.xmp` form isn't found either).
+    listed: bool,
+    /// The files, spelled as listed.
+    files: Vec<String>,
+    /// Every entry's spelling, files and folders alike.
+    spellings: HashSet<String>,
+    /// The entries that aren't sidecars (files and folders), by their stem compared without case.
+    by_stem: HashMap<String, Vec<String>>,
+    /// The names of the originals leaving from this folder.
+    leaving: Vec<String>,
 }
 
-/// The XMP sidecars of `original` that go with it: `<file>.xmp` always, `<stem>.xmp` only when no
-/// other file in the folder (besides `leaving`, the originals going too) shares its stem. Only
-/// existing files are listed.
-pub(crate) fn sidecars_of(original: &Path, leaving: &HashSet<PathBuf>) -> Vec<PathBuf> {
-    let (Some(name), Some(dir)) = (original.file_name(), original.parent()) else { return Vec::new() };
-    let listing = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
-    // list the folder rather than probe `.xmp` / `.XMP` / `.Xmp`: on a case-insensitive volume every
-    // probe finds the one file, while the listing names each file once, as it is spelled on disk
-    let Ok(entries) = std::fs::read_dir(listing) else { return Vec::new() };
-    let names: Vec<String> = entries.flatten().filter(|e| e.path().is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    let (whole, stem) = sidecar_names(&name.to_string_lossy(), &names);
-    let mut v: Vec<PathBuf> = whole.into_iter().map(|n| dir.join(n)).collect();
-    if !stem.is_empty() && !stem_shared(original, leaving) {
-        v.extend(stem.into_iter().map(|n| dir.join(n)));
+impl FolderIndex {
+    /// Lists `dir` (`""` means the current folder) once. The entries' types come with the listing
+    /// on most platforms; only a symbolic link needs a look at its target.
+    fn read(dir: &Path, leaving: &HashSet<PathBuf>) -> Self {
+        let listing = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+        let mut index = Self {
+            leaving: leaving
+                .iter()
+                .filter(|l| l.parent() == Some(dir))
+                .filter_map(|l| l.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .collect(),
+            ..Self::default()
+        };
+        let Ok(entries) = std::fs::read_dir(listing) else { return index };
+        index.listed = true;
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let is_file = match e.file_type() {
+                Ok(t) if !t.is_symlink() => t.is_file(),
+                _ => e.path().is_file(),
+            };
+            if is_file {
+                index.files.push(name.clone());
+            }
+            let as_path = Path::new(&name);
+            let is_sidecar = as_path.extension().is_some_and(|x| x.eq_ignore_ascii_case("xmp"));
+            if let Some(stem) = as_path.file_stem().filter(|_| !is_sidecar) {
+                index.by_stem.entry(stem.to_string_lossy().to_lowercase()).or_default().push(name.clone());
+            }
+            index.spellings.insert(name);
+        }
+        index
     }
-    v
+
+    /// Whether the listed entry `name` is the file `other` names: the same spelling, or the same
+    /// letters in another case while the folder doesn't list `other`'s spelling (one file under
+    /// two spellings on a case-insensitive volume; a case-sensitive folder holding `IMG.JPG` and
+    /// `img.jpg` lists both, and they are two files).
+    fn is_entry_of(&self, name: &str, other: &str) -> bool {
+        name == other || (name.to_lowercase() == other.to_lowercase() && !self.spellings.contains(other))
+    }
+
+    /// Another entry of the folder, not a sidecar and not among the originals leaving, has
+    /// `original`'s stem (compared without case). A folder that couldn't be listed counts as
+    /// shared: the sidecar stays.
+    fn stem_shared(&self, original: &str) -> bool {
+        if !self.listed {
+            return true;
+        }
+        let Some(stem) = Path::new(original).file_stem() else { return true };
+        self.by_stem
+            .get(&stem.to_string_lossy().to_lowercase())
+            .is_some_and(|names| names.iter().any(|n| !self.is_entry_of(n, original) && !self.leaving.iter().any(|l| self.is_entry_of(n, l))))
+    }
+
+    /// The XMP sidecars of `original` (a file of this folder) that go with it: `<file>.xmp`
+    /// always, `<stem>.xmp` only when no other file in the folder (besides the originals leaving)
+    /// shares its stem. Only listed files are named.
+    fn sidecars_of(&self, original: &Path) -> Vec<PathBuf> {
+        let (Some(name), Some(dir)) = (original.file_name(), original.parent()) else { return Vec::new() };
+        let name = name.to_string_lossy();
+        let (whole, stem) = sidecar_names(&name, &self.files);
+        let mut v: Vec<PathBuf> = whole.into_iter().map(|n| dir.join(n)).collect();
+        if !stem.is_empty() && !self.stem_shared(&name) {
+            v.extend(stem.into_iter().map(|n| dir.join(n)));
+        }
+        v
+    }
+}
+
+/// The folders of one Delete from Disk, each listed at most once (see [`FolderIndex`]).
+pub(crate) struct Folders {
+    leaving: HashSet<PathBuf>,
+    indexes: HashMap<PathBuf, FolderIndex>,
+}
+
+impl Folders {
+    /// `leaving`: the originals going to the trash (their stems don't count as shared).
+    pub(crate) fn new(leaving: HashSet<PathBuf>) -> Self {
+        Self { leaving, indexes: HashMap::new() }
+    }
+
+    /// The XMP sidecars that go with `original`, from its folder's listing (read on first use).
+    pub(crate) fn sidecars_of(&mut self, original: &Path) -> Vec<PathBuf> {
+        let Some(dir) = original.parent() else { return Vec::new() };
+        if !self.indexes.contains_key(dir) {
+            self.indexes.insert(dir.to_path_buf(), FolderIndex::read(dir, &self.leaving));
+        }
+        self.indexes.get(dir).map(|i| i.sidecars_of(original)).unwrap_or_default()
+    }
+
+    /// How many folders were listed so far.
+    #[cfg(test)]
+    pub(crate) fn listings(&self) -> usize {
+        self.indexes.len()
+    }
 }
 
 /// The entries of `names` (one folder's file names, as listed) that are `original`'s sidecars,
@@ -149,23 +245,6 @@ fn sidecar_names<'a>(original: &str, names: &'a [String]) -> (Vec<&'a str>, Vec<
     (w, st)
 }
 
-/// Another file in `original`'s folder, not a sidecar and not among `leaving`, has the same stem
-/// (compared without case). A folder that can't be listed counts as shared: the sidecar stays.
-fn stem_shared(original: &Path, leaving: &HashSet<PathBuf>) -> bool {
-    let Some(stem) = original.file_stem().map(|s| s.to_string_lossy().to_lowercase()) else { return true };
-    let dir = match original.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d,
-        _ => Path::new("."),
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else { return true };
-    entries.flatten().map(|e| e.path()).any(|p| {
-        !same_path(&p, original)
-            && !leaving.iter().any(|l| same_path(l, &p))
-            && p.file_stem().is_some_and(|s| s.to_string_lossy().to_lowercase() == stem)
-            && !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp"))
-    })
-}
-
 /// `photo.deleteFromDisk`: move the targets' files to the trash and take the photos out of the
 /// library (one undo step). See the module docs.
 pub(crate) fn delete_from_disk(s: &mut Session, p: &Value) -> Result<Value> {
@@ -180,7 +259,7 @@ pub(crate) fn delete_from_disk(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(crate::cmd::bad("photo.deleteFromDisk", "no photos to delete"));
     }
     let plan = plan(&s.catalog, &targets);
-    let leaving = originals(&plan);
+    let mut folders = Folders::new(originals(&plan));
     let shown = |path: &Path| path.to_string_lossy().to_string();
     let (mut remove, mut trashed, mut kept, mut failed) = (Vec::new(), Vec::new(), Vec::new(), Vec::<(String, String)>::new());
     let task = s.activity.start("deleteFromDisk", "Deleting from disk", crate::activity::Cancel::Yes);
@@ -211,8 +290,8 @@ pub(crate) fn delete_from_disk(s: &mut Session, p: &Value) -> Result<Value> {
             }
             Ok(_) => {}
         }
-        // looked up before the original goes, so the folder still shows which stems are shared
-        let sidecars = sidecars_of(&g.original, &leaving);
+        // from the folder's listing, read before its first file goes (see `FolderIndex`)
+        let sidecars = folders.sidecars_of(&g.original);
         if let Err(e) = trash(&g.original) {
             failed.push((shown(&g.original), e));
             continue;
@@ -327,7 +406,7 @@ mod tests {
         assert_eq!(p.groups.len(), 1);
         assert_eq!(p.groups[0].photos, vec![id]);
         assert_eq!(p.groups[0].original, file);
-        assert!(sidecars_of(&file, &originals(&p)).is_empty());
+        assert!(Folders::new(originals(&p)).sidecars_of(&file).is_empty());
         assert!(p.keep_file.is_empty());
         assert!(p.no_file.is_empty());
 
@@ -351,7 +430,7 @@ mod tests {
 
         // Alone without test.jpg: both test.cr3.xmp and test.xmp are sidecars
         let p = plan(&s.catalog, &[id_cr3]);
-        assert_eq!(sidecars_of(&cr3, &originals(&p)).len(), 2);
+        assert_eq!(Folders::new(originals(&p)).sidecars_of(&cr3).len(), 2);
 
         // Now add test.jpg on disk and in catalog
         std::fs::write(&jpg, b"jpeg").unwrap();
@@ -359,11 +438,13 @@ mod tests {
 
         // Only deleting CR3: test.xmp is shared with test.jpg, so only test.cr3.xmp goes
         let p_cr3_only = plan(&s.catalog, &[id_cr3]);
-        assert_eq!(sidecars_of(&cr3, &originals(&p_cr3_only)), vec![cr3_xmp.clone()]);
+        assert_eq!(Folders::new(originals(&p_cr3_only)).sidecars_of(&cr3), vec![cr3_xmp.clone()]);
 
         // Deleting both CR3 and JPG: test.xmp is included because all owners leave
         let p_both = plan(&s.catalog, &[id_cr3, id_jpg]);
-        let all_sidecars: Vec<PathBuf> = p_both.groups.iter().flat_map(|g| sidecars_of(&g.original, &originals(&p_both))).collect();
+        let mut folders = Folders::new(originals(&p_both));
+        let all_sidecars: Vec<PathBuf> = p_both.groups.iter().flat_map(|g| folders.sidecars_of(&g.original)).collect();
+        assert_eq!(folders.listings(), 1);
         assert!(all_sidecars.contains(&cr3_xmp));
         assert!(all_sidecars.contains(&stem_xmp));
     }
@@ -386,7 +467,7 @@ mod tests {
         let raw = tmp.path.join("img.cr3");
         std::fs::write(&raw, b"raw").unwrap();
         std::fs::write(tmp.path.join("img.cr3.xmp"), b"x").unwrap();
-        assert_eq!(sidecars_of(&raw, &HashSet::new()), vec![tmp.path.join("img.cr3.xmp")]);
+        assert_eq!(Folders::new(HashSet::new()).sidecars_of(&raw), vec![tmp.path.join("img.cr3.xmp")]);
     }
 
     #[test]
@@ -559,5 +640,108 @@ mod tests {
         assert_eq!(r["deleted"], 1);
         assert_eq!(r["cancelled"], 1);
         assert_eq!([ia, ib].iter().filter(|id| s.catalog.photo(**id).is_some()).count(), 1);
+    }
+
+    /// Issue #692: 800 photos in one folder took half an hour, the folder being listed (and every
+    /// entry stat-ed) again for each file. One Delete from Disk lists each folder once.
+    #[test]
+    fn delete_from_disk_lists_each_folder_once() {
+        let tmp = TempDir::new("once-per-folder");
+        let sub = tmp.path.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let mut s = Session::new();
+        let mut ids = Vec::new();
+        for i in 0..40 {
+            let dir = if i % 2 == 0 { &tmp.path } else { &sub };
+            let f = dir.join(format!("img_{i:03}.cr3"));
+            std::fs::write(&f, b"raw").unwrap();
+            std::fs::write(dir.join(format!("img_{i:03}.cr3.xmp")), b"x").unwrap();
+            std::fs::write(dir.join(format!("img_{i:03}.xmp")), b"x").unwrap();
+            ids.push(add_test_photo(&mut s, &f));
+        }
+        let plan = plan(&s.catalog, &ids);
+        let mut folders = Folders::new(originals(&plan));
+        let sidecars: Vec<PathBuf> = plan.groups.iter().flat_map(|g| folders.sidecars_of(&g.original)).collect();
+        assert_eq!(folders.listings(), 2, "one listing per folder");
+        assert_eq!(sidecars.len(), 80, "both sidecars of every file");
+
+        let trashed = Arc::new(Mutex::new(0usize));
+        let t = trashed.clone();
+        s.trash = Some(Arc::new(move |p: &Path| {
+            std::fs::remove_file(p).map_err(|e| e.to_string())?;
+            *t.lock().unwrap() += 1;
+            Ok(())
+        }));
+        s.selection = crate::Selection { ids: ids.clone(), active: ids.first().copied() };
+        let r = s.execute("photo.deleteFromDisk", &json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>(), "confirm": true})).unwrap();
+        assert_eq!(r["deleted"], 40);
+        assert_eq!(*trashed.lock().unwrap(), 120, "40 originals and 80 sidecars");
+        assert!(std::fs::read_dir(&sub).unwrap().next().is_none());
+    }
+
+    /// The listing answers the same way the file system did: one sidecar under two spellings
+    /// on a case-insensitive volume, a stem shared with a file that stays or leaves, a listed
+    /// original whose catalog path is spelled in another case, and a folder that can't be listed.
+    #[test]
+    fn folder_index_answers_like_the_file_system() {
+        let tmp = TempDir::new("index");
+        for n in ["IMG.CR3", "IMG.JPG", "IMG.xmp", "IMG.CR3.xmp", "alone.cr3", "alone.xmp", "pair.cr3", "pair.xmp"] {
+            std::fs::write(tmp.path.join(n), b"x").unwrap();
+        }
+        std::fs::create_dir_all(tmp.path.join("pair")).unwrap();
+        let cr3 = tmp.path.join("IMG.CR3");
+        let jpg = tmp.path.join("IMG.JPG");
+
+        // IMG.xmp may be the JPEG's too: it stays while the JPEG stays
+        let mut only_cr3 = Folders::new(HashSet::from([cr3.clone()]));
+        assert_eq!(only_cr3.sidecars_of(&cr3), vec![tmp.path.join("IMG.CR3.xmp")]);
+        // and goes when both leave, named once
+        let mut both = Folders::new(HashSet::from([cr3.clone(), jpg.clone()]));
+        assert_eq!(both.sidecars_of(&cr3), vec![tmp.path.join("IMG.CR3.xmp"), tmp.path.join("IMG.xmp")]);
+        assert_eq!(both.sidecars_of(&jpg), vec![tmp.path.join("IMG.xmp")]);
+        assert_eq!(both.listings(), 1);
+        // a catalog path spelled in another case still names the listed file, so it isn't
+        // "another file with the stem", and the sidecar goes; this folder lists one spelling
+        let respelled = tmp.path.join("img.cr3");
+        let mut other_case = Folders::new(HashSet::from([respelled.clone(), tmp.path.join("img.jpg")]));
+        let index = FolderIndex::read(&tmp.path, &other_case.leaving);
+        assert!(!index.stem_shared("img.cr3"));
+        assert_eq!(other_case.sidecars_of(&respelled).len(), 2);
+        // a folder named like the stem counts as sharing it, as it always did
+        let pair = tmp.path.join("pair.cr3");
+        assert!(Folders::new(HashSet::from([pair.clone()])).sidecars_of(&pair).is_empty());
+        // nothing else shares "alone"
+        let alone = tmp.path.join("alone.cr3");
+        assert_eq!(Folders::new(HashSet::from([alone.clone()])).sidecars_of(&alone), vec![tmp.path.join("alone.xmp")]);
+        // an unlistable folder: no sidecar is named, nothing panics
+        let missing = tmp.path.join("missing").join("x.cr3");
+        assert!(Folders::new(HashSet::from([missing.clone()])).sidecars_of(&missing).is_empty());
+        assert!(Folders::new(HashSet::new()).sidecars_of(Path::new("")).is_empty());
+    }
+
+    /// A case-sensitive folder listing both `IMG.JPG` and `img.jpg` holds two files: the one
+    /// leaving doesn't free the stem sidecar the other may use.
+    #[test]
+    fn folder_index_tells_two_spellings_apart() {
+        let names = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<Vec<String>>();
+        let index = FolderIndex {
+            listed: true,
+            files: names(&["IMG.JPG", "img.jpg", "img.xmp"]),
+            spellings: names(&["IMG.JPG", "img.jpg", "img.xmp"]).into_iter().collect(),
+            by_stem: HashMap::from([("img".to_string(), names(&["IMG.JPG", "img.jpg"]))]),
+            leaving: names(&["IMG.JPG"]),
+        };
+        assert!(index.stem_shared("IMG.JPG"));
+        // a case-insensitive volume lists one spelling: the catalog's other spelling is that file
+        let one = FolderIndex {
+            listed: true,
+            files: names(&["IMG.JPG", "img.xmp"]),
+            spellings: names(&["IMG.JPG", "img.xmp"]).into_iter().collect(),
+            by_stem: HashMap::from([("img".to_string(), names(&["IMG.JPG"]))]),
+            leaving: Vec::new(),
+        };
+        assert!(!one.stem_shared("img.jpg"));
+        // a folder that couldn't be listed keeps every stem sidecar
+        assert!(FolderIndex::default().stem_shared("img.jpg"));
     }
 }

@@ -451,7 +451,8 @@ impl MoveFs for RealFs {
         if self.exists(b) {
             return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} already exists", b.display())));
         }
-        // Streamed (a large raw or video is never read into memory whole), into a hidden name
+        // Streamed in 1 MiB writes (a large raw or video is never read into memory whole, and a
+        // network share isn't asked once per 8 KiB, upstream issue #3561), into a hidden name
         // beside `b` that only takes `b`'s name once complete: a share that drops mid-copy, so
         // the partial file can't be removed either, leaves no truncated file under the photo's
         // name for a retry to take for the photo.
@@ -465,7 +466,7 @@ impl MoveFs for RealFs {
         let copied = (|| {
             let mut from = std::fs::File::open(a)?;
             let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&partial)?;
-            std::io::copy(&mut from, &mut f)?;
+            crate::import_move::copy_in_chunks(&mut from, &mut f)?;
             lcc_catalog::safe_file::sync_file(&f, false)
         })();
         let placed = copied.and_then(|()| self.rename_no_replace(&partial, b));

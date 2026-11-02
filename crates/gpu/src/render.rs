@@ -1015,12 +1015,16 @@ fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
         img = out;
     }
     if let Some(nr) = col {
-        // luminance-weighted chromaticity: blur max(rgb, 0), take rgb / Y of the blur (`local::colour_nr`)
+        // luminance-weighted chromaticity: blur max(rgb, 0), take rgb / Y of the blur, and pull
+        // speckle outliers against the 3 × 3 median chromaticity all the way in
+        // (`local::colour_nr`, `local::SPECKLE_LO` / `SPECKLE_HI`)
         let clamped = cx.gpu.buffer(n * 3);
         map(cx, "clamp0_k", n, &[], [Some(&img), None, None], &clamped);
         let b = gaussian(cx, &clamped, w, h, 3, nr.sigma);
+        let med = cx.gpu.buffer(n * 3);
+        map(cx, "chroma_med", n, &[w as u32], [Some(&img), None, None], &med);
         let out = cx.gpu.buffer(n * 3);
-        map(cx, "nr_col", n, &[nr.t.to_bits()], [Some(&img), None, Some(&b)], &out);
+        map(cx, "nr_col", n, &[nr.t.to_bits(), local::SPECKLE_LO.to_bits(), local::SPECKLE_HI.to_bits()], [Some(&img), Some(&med), Some(&b)], &out);
         img = out;
     }
     img

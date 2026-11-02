@@ -287,6 +287,33 @@ fn an_old_sidecar_or_one_that_agrees_is_no_update() {
     assert!(paths(&r, "metadata").is_empty(), "{r}");
 }
 
+/// A sidecar's date is compared with the library's stamp as moments, not as wall clocks: the stamp
+/// carries its zone, and the file's date has none.
+#[test]
+fn a_sidecars_date_is_compared_with_the_stamps_zone() {
+    let now = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let stamped = |dir: &Scratch, secs: i64, zone: i64, suffix: &str| {
+        write_png(&dir.path("trip/a.png"), 1);
+        let stamp = format!("{}{suffix}", lcc_catalog::dates::civil(secs + zone * 3600));
+        let mut s = Session::new().with_fs();
+        s.clock = Box::new(move || stamp.clone());
+        s.execute("library.import", &json!({"paths": [dir.path("trip")]})).unwrap();
+        s
+    };
+    // imported just now, far west of UTC: the wall clock reads hours behind the sidecar saved an hour ago
+    let dir = Scratch::new("zone-west");
+    let mut s = stamped(&dir, now, -11, "-11:00");
+    write_sidecar(&dir.path("trip/a.png"), 4, Duration::from_secs(3600));
+    let r = scan(&mut s, &dir.path("trip"));
+    assert!(paths(&r, "metadata").is_empty(), "{r}");
+    // imported two hours ago, far east of UTC: the wall clock reads hours ahead of the sidecar saved since
+    let dir = Scratch::new("zone-east");
+    let mut s = stamped(&dir, now - 7200, 11, "+11:00");
+    write_sidecar(&dir.path("trip/a.png"), 4, Duration::from_secs(3600));
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(paths(&r, "metadata"), vec![dir.path("trip/a.png")], "{r}");
+}
+
 #[test]
 fn synchronizing_imports_new_files_and_leaves_the_rest_unless_asked() {
     let dir = Scratch::new("sync");
@@ -776,6 +803,37 @@ fn sidecar_namings_for_many_photos_agree_with_one_at_a_time() {
     let one_by_one: Vec<_> = ids.iter().map(|id| s.sidecar_naming(*id)).collect();
     assert_eq!(s.sidecar_namings(&ids), one_by_one);
     assert!(one_by_one.contains(&crate::sidecar::SidecarNaming::Full), "the case that matters is there");
+}
+
+/// The grid's thumbnail badges name a sidecar for every visible cell, every frame, so
+/// [`Session::sidecar_naming`] keeps the stems' owner table built and rebuilds it only when the
+/// catalog's revision changes (issue #742): a stem shared with a file that arrives later, or
+/// whose rival leaves, is named by the table as the catalog now stands, not by the one first
+/// built.
+#[test]
+fn sidecar_naming_follows_the_catalog_past_the_owner_table_it_caches() {
+    let dir = Scratch::new("naming-cache");
+    let mut s = library(&dir);
+    let add = |s: &mut Session, name: &str| {
+        let id = s.catalog.alloc_photo_id();
+        let p = lcc_catalog::Photo::new(id, lcc_catalog::Source::File { path: dir.path(&format!("trip/{name}")) }, name, "X", 6, 4, "2026-01-01");
+        s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        id
+    };
+    // alone, the JPEG owns its stem (this call builds and caches the owner table)
+    let jpg = add(&mut s, "IMG_1.JPG");
+    assert_eq!(s.sidecar_naming(jpg), crate::sidecar::SidecarNaming::Stem);
+    // the raw that arrives after the table was built takes the stem over: the table kept built
+    // must not keep naming the JPEG as the stem's owner
+    let raw = add(&mut s, "IMG_1.CR3");
+    assert_eq!(s.sidecar_naming(raw), crate::sidecar::SidecarNaming::Stem, "a raw owns its stem");
+    assert_eq!(s.sidecar_naming(jpg), crate::sidecar::SidecarNaming::Full, "the JPEG now writes IMG_1.JPG.xmp");
+    let ids = [jpg, raw];
+    let one_by_one: Vec<_> = ids.iter().map(|id| s.sidecar_naming(*id)).collect();
+    assert_eq!(s.sidecar_namings(&ids), one_by_one, "the table kept built agrees with a pass over the catalog");
+    // the raw gone, the JPEG has its stem back
+    s.catalog.apply(lcc_catalog::Op::RemovePhoto { id: raw }).unwrap();
+    assert_eq!(s.sidecar_naming(jpg), crate::sidecar::SidecarNaming::Stem, "the last file of a stem owns it again");
 }
 
 /// ✕ set after the listing, while the scan goes through the files: the probes a preceding scan

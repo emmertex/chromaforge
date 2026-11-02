@@ -96,7 +96,7 @@ search embeddings; generative remove runs in Adobe's cloud.
 | People (faces, body, hair, skin…) and Landscape masks | — | ⬜ |
 | Object / Describe masks | SAM 3 in pure Rust (Metal / CPU); opt-in 3.4 GB download, no mirror configured | 🟡 |
 | Depth range mask, Lens Blur | — | ⬜ |
-| AI Denoise | Bayer only, built-in classical denoiser out of the box, optional user-installed weights, pure-Rust CPU / GPU | 🟡 |
+| AI Denoise | Bayer only, built-in classical denoiser out of the box, optional weights (RawNIND: dual-licensed GPL-3.0 and CC BY 4.0, offered under CC BY 4.0, upstream #1760; or user-installed), pure-Rust CPU / GPU | 🟡 |
 | Raw Details, Super Resolution | — | ⬜ |
 | Generative remove, distractions, reflections | — (generative is out of scope: cloud) | ⬜ |
 | Dust detection | ✅ | ✅ |
@@ -300,6 +300,7 @@ P2 items 12–25 h; look tuning, performance, packaging, hardening 25–45 h.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | patch | AI Denoise row: RawNIND weights (CC BY 4.0, upstream #1760) are offered under a licence that permits any use with credit; the download stays opt-in (`rawnind-model`). Status and percentages unchanged |
 | 2026-10-26 | minor | AI Denoise runs without a model (built-in BM3D denoiser, upstream #2982); percentages unchanged: it is a classical filter and Bayer-only |
 | 2026-10-21 | minor | Merge and HDR: HDR 80% → 85% (HDR renders on the GPU, CPU oracle; gap 14 closed; X11 / XWayland SDR documented as a platform limit) |
 | 2026-10-20 | minor | Merge and HDR: HDR 70% → 80% (zoomed views, Before/After, Compare and second window in HDR; HDR Preview toggle; gap 14) |

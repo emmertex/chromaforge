@@ -1,6 +1,6 @@
 # Upstream candidates and our diff against upstream (U.5)
 
-> **Since 2026-10-25 the fork no longer merges upstream** (`docs/upstream-merge.md`): it reviews and cherry-picks
+> **Since 2026-10-25 the fork no longer merges upstream** (`docs/upstream-pr-intake.md`): it reviews and cherry-picks
 > upstream commits instead, so a small diff in shared files no longer saves merge work. This list stays for the
 > generic fixes worth offering upstream (`cargo xtask upstream-pr`).
 

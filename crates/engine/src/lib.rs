@@ -18,6 +18,7 @@ pub mod activity;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos;
 pub mod availability;
+pub mod bounded_read;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
 pub mod cmd;
@@ -107,6 +108,7 @@ pub mod slideshow_export;
 pub mod smart;
 pub mod source_report;
 pub mod sync;
+mod sync_same;
 pub mod text;
 pub mod timelapse;
 #[cfg(not(target_arch = "wasm32"))]
@@ -412,6 +414,10 @@ pub struct Session {
     pub(crate) plugin_library: String,
     /// XMP sidecar preferences (persisted with the library).
     pub xmp: sidecar::XmpPrefs,
+    /// The library's shared-stem owners with the catalog revision they were built at
+    /// ([`Session::stem_owners`]): one pass per catalog change, a hash lookup per photo
+    /// otherwise. Not saved.
+    pub(crate) stems: std::sync::Mutex<Option<(u64, std::sync::Arc<sidecar::StemOwners>)>>,
     /// Parameters of the last export (`app.export` params, minus targets), persisted in prefs.json.
     pub last_export: Option<serde_json::Value>,
     /// The photos of the last export (the Previous Export source), persisted in view.json.
@@ -486,6 +492,10 @@ pub struct Session {
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
     /// Develop defaults applied on import (persisted in prefs.json).
     pub import_defaults: import::ImportDefaults,
+    /// The default camera profile per camera model (`""` = every camera; persisted in prefs.json,
+    /// issue #723): the `profile.camera` choice photos of that camera start from when they choose
+    /// none. `lc` = the app's own colour, `dcp:<id>` an imported profile, `cal:<id>` a look.
+    pub camera_profile_defaults: std::collections::BTreeMap<String, String>,
     /// Disk budget of the library's thumbnail cache in MB (0 = default; persisted in prefs.json).
     pub cache_mb: u32,
     /// Slideshow playback settings (`slideshow.playback`; persisted in prefs.json).
@@ -587,6 +597,7 @@ impl Session {
             pending_sidecar_repairs: Vec::new(),
             interaction: None,
             skip_auto_write: false,
+            stems: Default::default(),
             folder_metadata: None,
             reload_tickets: Default::default(),
             unsaved_sidecars: Default::default(),
@@ -672,6 +683,7 @@ impl Session {
             preview_build: None,
             slideshow_export: None,
             import_defaults: import::ImportDefaults::default(),
+            camera_profile_defaults: Default::default(),
             cache_mb: 0,
             slideshow: slideshow::PlaybackSettings::default(),
             slide_layout: slide::SlideSettings::default(),
@@ -1128,8 +1140,9 @@ impl Session {
             i.crop_edited |= crop_edited;
             return self.apply_silent(Op::SetDevelop { id, settings, label: label.into(), edited: Some(now) });
         }
+        let own_auto = self.own_auto_wb(id, &requested, label);
         let mut ops = vec![self.develop_op(id, (*settings).clone(), label).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?];
-        ops.extend(self.auto_sync_ops(id, &requested, label));
+        ops.extend(self.auto_sync_ops(id, &requested, label, &own_auto));
         let op = if ops.len() == 1 { ops.remove(0) } else { Op::Batch { ops } };
         self.commit(label, op)
     }
@@ -1170,13 +1183,12 @@ impl Session {
     /// never spot removal or red eye (they belong to one photo's pixels), nor the rendering process
     /// (Sync doesn't carry it either), nor history / snapshot restores. Constrain Crop then fits each
     /// photo's own crop: the active photo's fitted crop is never copied over another's.
-    fn auto_sync_ops(&self, id: PhotoId, new: &DevelopSettings, label: &str) -> Vec<Op> {
-        if !self.auto_sync
-            || self.active() != Some(id)
-            || self.selection.ids.len() < 2
-            || label.starts_with("History:")
-            || label.starts_with("Restore ")
-        {
+    ///
+    /// White balance goes on each photo as the active photo's mode or value on the photo's own
+    /// scale ([`sync_same`]): As Shot its own camera white, Auto its own (`own_auto`, worked out
+    /// on its pixels), a Temp or Tint the same number, only the slider that moved.
+    fn auto_sync_ops(&self, id: PhotoId, new: &DevelopSettings, label: &str, own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>) -> Vec<Op> {
+        if !self.auto_sync_applies(id, label) {
             return Vec::new();
         }
         let Some(old) = self.develop_of(id) else { return Vec::new() };
@@ -1204,7 +1216,8 @@ impl Session {
                 o.insert("wb".into(), serde_json::json!(new.wb));
             }
         }
-        let wb = delta.get("wb").is_some();
+        let wb_changed = delta.get("wb").is_some();
+        let ainfo = self.source_info(id);
         self.selection
             .ids
             .iter()
@@ -1212,14 +1225,26 @@ impl Session {
             .filter_map(|x| self.develop_of(*x).map(|d| (*x, d)))
             .filter_map(|(x, d)| {
                 let mut synced = lcc_develop::apply_partial(&d, &delta, 1.0);
-                if wb {
+                if wb_changed {
                     // each photo on its own scale: Kelvin on a raw with one, relative elsewhere
                     lcc_pipeline::local::normalize_wb(&mut synced, &self.source_info(x));
+                    sync_same::synced_wb(&ainfo, &old, new, &self.source_info(x), &d, own_auto.get(&x).copied(), &mut synced);
                 }
                 let synced = self.fit_constrained_crop(x, synced);
                 (synced != *d).then(|| self.develop_op(x, synced, label)).flatten()
             })
             .collect()
+    }
+
+    /// Auto Sync carries an edit of photo `id` labelled `label` to the other selected photos: it is
+    /// on, `id` is the active photo of a selection of two or more, and the edit is not a History or
+    /// snapshot restore.
+    fn auto_sync_applies(&self, id: PhotoId, label: &str) -> bool {
+        self.auto_sync
+            && self.active() == Some(id)
+            && self.selection.ids.len() >= 2
+            && !label.starts_with("History:")
+            && !label.starts_with("Restore ")
     }
 
     /// The op that sets a photo's develop settings and appends a History entry (for batches).
@@ -1744,6 +1769,10 @@ mod tests_album_order;
 mod tests_album_remove;
 #[cfg(test)]
 mod tests_albums_local;
+#[cfg(test)]
+mod tests_autosync_wb;
+#[cfg(test)]
+mod tests_camera_profile_defaults;
 #[cfg(test)]
 mod tests_catalog_cmds;
 #[cfg(test)]

@@ -819,7 +819,8 @@ fn the_denoise_switch_validates_arguments_and_accepts_explicit_targets_without_s
     let d = x.s.develop_of(id).unwrap();
     assert!(!d.enhance.denoise_enabled() && d.denoise_amount() == 0.0);
     assert_eq!(x.s.execute("denoise.toggle", &json!({"id": id.0, "enabled": true})).unwrap()["amount"], 80.0);
-    assert!((x.s.develop_of(id).unwrap().denoise_amount() - 0.8).abs() < 1e-6);
+    let d = x.s.develop_of(id).unwrap();
+    assert!((d.denoise_amount() - lcc_develop::denoise_weight(d.process.process(), 0.8)).abs() < 1e-6);
     x.s.execute("develop.set", &json!({"control": "enhance.denoise", "value": 0.0})).unwrap();
     assert!(x.s.develop_of(id).unwrap().enhance.denoise_enabled(), "sliding to 0 leaves it on");
     assert_eq!(x.s.execute("denoise.toggle", &json!({"id": id.0, "enabled": true})).unwrap()["amount"], 0.0);
@@ -951,8 +952,10 @@ fn a_cancelled_batch_does_not_come_back_while_its_job_winds_down() {
     let mut x = setup("cancelrunning", true);
     // a model that does not load until let go: the job is running all that while
     let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-    let (g, runs) = (gate.clone(), x.runs.clone());
+    let loading = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (g, runs, l) = (gate.clone(), x.runs.clone(), loading.clone());
     x.s.denoise.loader = Arc::new(move |_, _| {
+        l.store(true, Ordering::SeqCst);
         let (open, wake) = &*g;
         let mut open = open.lock().unwrap();
         while !*open {
@@ -960,11 +963,19 @@ fn a_cancelled_batch_does_not_come_back_while_its_job_winds_down() {
         }
         Ok(Arc::new(Dim { runs: runs.clone() }) as Arc<dyn Model>)
     });
+    // the installation keeps the model it tested: without forgetting it the job never asks this loader
+    *x.s.denoise.active.as_ref().unwrap().model.lock().unwrap() = None;
     x.s.execute("denoise.settings", &json!({"auto": true})).unwrap();
     set_amount(&mut x.s, 100.0);
     x.s.execute("denoise.pump", &json!({"pace": "full"})).unwrap();
     let batches = |s: &Session| s.activity.list().into_iter().filter(|t| t.kind == "denoise" && t.batch).count();
     let batch = x.s.activity.list().into_iter().find(|t| t.kind == "denoise" && t.batch).expect("a batch row");
+    // cancel once the job waits for its model (a job told to stop before that, while it reads the file, ends at once)
+    let began = std::time::Instant::now();
+    while !loading.load(Ordering::SeqCst) {
+        assert!(began.elapsed() < std::time::Duration::from_secs(30), "the job never asked for its model");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     x.s.activity.cancel(batch.id).unwrap();
     for _ in 0..3 {
         x.s.execute("denoise.pump", &json!({"pace": "full"})).unwrap();
@@ -1100,4 +1111,70 @@ fn without_a_model_the_built_in_denoiser_makes_the_picture_by_itself() {
     let e = x.s.execute("denoise.models.install", &json!({"path": onnx.to_string_lossy(), "acknowledged": true})).unwrap_err().to_string();
     assert!(e.contains("builtin"), "{e}");
     let _ = std::fs::remove_dir_all(&x.dir);
+}
+
+/// The process's Denoise response, measured on a flat grey patch with near-Gaussian noise and a denoised twin that is a
+/// 9×9 box filter of it (a stand-in for the model that leaves about a ninth of the noise): V5's straight mix leaves half
+/// the noise at 50, V6's at most 0.3 of it, and the residual falls with every step of the slider.
+#[test]
+fn denoise_response_v6_is_mostly_clean_at_half_and_monotone() {
+    use lcc_develop::{DevelopSettings, Process};
+    use lcc_raster::Rgb32f;
+    let (w, h) = (128usize, 128usize);
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut rnd = || {
+        // sum of four uniforms: close enough to Gaussian, deterministic
+        (0..4)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+            })
+            .sum::<f32>()
+            * 0.05
+    };
+    let mut noisy = Rgb32f::new(w, h);
+    for p in noisy.data.iter_mut() {
+        *p = [0.18 + rnd(); 3];
+    }
+    let mut clean = noisy.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let (mut s, mut n) = (0.0f32, 0.0f32);
+            for yy in y.saturating_sub(4)..(y + 5).min(h) {
+                for xx in x.saturating_sub(4)..(x + 5).min(w) {
+                    s += noisy.data[yy * w + xx][0];
+                    n += 1.0;
+                }
+            }
+            clean.data[y * w + x] = [s / n; 3];
+        }
+    }
+    let sigma = |img: &Rgb32f| {
+        let m = img.data.iter().map(|p| p[0]).sum::<f32>() / img.data.len() as f32;
+        (img.data.iter().map(|p| (p[0] - m).powi(2)).sum::<f32>() / img.data.len() as f32).sqrt()
+    };
+    let s0 = sigma(&noisy);
+    let residual = |process: Process, slider: f64| {
+        let mut s = DevelopSettings { process: process.version(), ..DevelopSettings::default() };
+        s.enhance.denoise = slider;
+        s.enhance.denoise_on = Some(true);
+        let mut mixed = noisy.clone();
+        assert!(lcc_denoise_core::product::blend(&mut mixed, &clean, s.denoise_amount()));
+        sigma(&mixed) / s0
+    };
+    let mut report = String::new();
+    for slider in [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0] {
+        report += &format!("{slider:>4}: V5 {:.3}  V6 {:.3}\n", residual(Process::V5, slider), residual(Process::V6, slider));
+    }
+    eprintln!("residual sigma / original (denoised twin {:.3}):\n{report}", sigma(&clean) / s0);
+    assert!((residual(Process::V5, 50.0) - 0.55).abs() < 0.1, "V5 keeps its straight mix");
+    assert!(residual(Process::V6, 50.0) <= 0.3);
+    let mut last = f32::INFINITY;
+    for step in 0..=100 {
+        let r = residual(Process::V6, step as f64);
+        assert!(r <= last + 1e-4, "residual rises at {step}");
+        last = r;
+    }
 }

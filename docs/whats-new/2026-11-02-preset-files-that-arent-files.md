@@ -1,0 +1,2 @@
+### Preset and profile files that aren't files are refused
+- Importing a local-adjustment or develop preset, loading a camera profile (including a `.dcp`) and reading a printer profile checked the size the file reported and then read it whole. A pipe or a device reports 0 bytes, so naming one hung the import or read itself into memory until the process died; these reads now take regular files only and stop at their size limit.

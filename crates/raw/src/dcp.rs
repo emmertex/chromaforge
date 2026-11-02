@@ -265,8 +265,53 @@ pub fn calibrated_look_id(dcp: &Arc<Dcp>) -> Option<String> {
     reg.iter().flat_map(|c| c.looks.iter()).find(|(_, d)| Arc::ptr_eq(d, dcp)).map(|(id, _)| id.clone())
 }
 
-/// A camera's default profile: the person's own `.dcp` ([`for_camera`]), else its calibration's default look.
+/// The person's default camera-profile choices (a library preference, issue #723): `(camera,
+/// choice)`, `camera` empty for every camera, else the camera as "make model" (matched like a
+/// profile's `UniqueCameraModel`). A choice is a `profile.camera` value: `lc` (the app's own
+/// colour), `dcp:<id>`, `cal:<id>`; photos of that camera start from it when they choose none,
+/// ahead of the camera's active `.dcp` and its calibration's default look. Installed by the
+/// engine when a library opens and whenever the preference changes (the registry is per process).
+fn user_default_registry() -> &'static RwLock<Vec<(String, String)>> {
+    static R: OnceLock<RwLock<Vec<(String, String)>>> = OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// Install the person's default choices (replaces what a previous install put there).
+pub fn install_user_defaults(list: Vec<(String, String)>) {
+    *user_default_registry().write().unwrap_or_else(PoisonError::into_inner) =
+        list.into_iter().map(|(camera, choice)| (camera.trim().to_string(), choice.trim().to_string())).collect();
+}
+
+/// The installed default choices, `(camera, choice)`.
+pub fn user_defaults() -> Vec<(String, String)> {
+    user_default_registry().read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// The person's default choice for a camera: its own entry, else the global one (`camera` empty).
+fn user_default_for(make: Option<&str>, model: &str) -> Option<String> {
+    let reg = user_default_registry().read().unwrap_or_else(PoisonError::into_inner);
+    let own = reg.iter().rev().find(|(camera, _)| !camera.is_empty() && matches(camera, make, model));
+    let global = reg.iter().find(|(camera, _)| camera.is_empty());
+    own.or(global).map(|(_, choice)| choice.clone())
+}
+
+/// [`resolve`] for a choice without falling back to the camera's default: a gone or foreign
+/// profile id simply leaves the app's own colour (this is the person's own choice).
+fn choice_direct(choice: &str, make: Option<&str>, model: &str) -> Option<Arc<Dcp>> {
+    match choice {
+        "lc" | "" => None,
+        c if c.starts_with("dcp:") => library_get(c).filter(|d| matches(&d.model, make, model)),
+        c if c.starts_with("cal:") => calibrated_for(make, model).and_then(|cal| cal.looks.iter().find(|(id, _)| id == c).map(|(_, d)| d.clone())),
+        _ => None,
+    }
+}
+
+/// A camera's default profile: the person's choice ([`user_default_for`]) when one is set, else
+/// the person's own `.dcp` ([`for_camera`]), else its calibration's default look.
 fn default_for(make: Option<&str>, model: &str) -> Option<Arc<Dcp>> {
+    if let Some(choice) = user_default_for(make, model) {
+        return choice_direct(&choice, make, model);
+    }
     for_camera(make, model).or_else(|| {
         let c = calibrated_for(make, model)?;
         let id = c.default.as_ref()?;
@@ -580,5 +625,36 @@ mod tests {
         assert_eq!(resolve_camera("cal:darktable-default", two).unwrap().name, "DT");
         install_calibrated(Vec::new());
         assert!(!covers_camera(cam));
+
+        // the person's default choice (issue #723) outranks the camera's active `.dcp` and its
+        // calibration's default look; `lc` means the app's own colour even when a `.dcp` is
+        // active; a global choice (empty camera) covers the cameras without an entry of their own
+        // (one test with the rest: the registries are process-wide)
+        install(vec![parse(&tiny_dcp("PDCAM ONE")).unwrap()]);
+        install_library(vec![("dcp:mine".into(), {
+            let mut d = parse(&tiny_dcp("PDCAM ONE")).unwrap();
+            d.name = "Mine".into();
+            d
+        })]);
+        let pdcam = "PDCAM CO PDCAM ONE";
+        // without a choice: the active `.dcp`
+        assert_eq!(resolve_camera("", pdcam).unwrap().name, "Test Look");
+        install_user_defaults(vec![("PDCAM ONE".into(), "dcp:mine".into())]);
+        assert_eq!(resolve_camera("", pdcam).unwrap().name, "Mine");
+        // a gone profile id: the app's own colour, no fallback to the active `.dcp`
+        install_user_defaults(vec![("PDCAM ONE".into(), "dcp:gone".into())]);
+        assert!(resolve_camera("", pdcam).is_none());
+        // `lc`: the app's own colour
+        install_user_defaults(vec![("PDCAM ONE".into(), "lc".into())]);
+        assert!(resolve_camera("", pdcam).is_none());
+        // the global choice covers the cameras without their own entry
+        install_user_defaults(vec![("".into(), "lc".into())]);
+        assert!(resolve_camera("", pdcam).is_none());
+        install_user_defaults(vec![("PDCAM ONE".into(), "dcp:mine".into()), ("".into(), "lc".into())]);
+        assert_eq!(resolve_camera("", pdcam).unwrap().name, "Mine", "the camera's own entry wins over the global one");
+        install_user_defaults(Vec::new());
+        assert_eq!(resolve_camera("", pdcam).unwrap().name, "Test Look");
+        install_library(Vec::new());
+        install(Vec::new());
     }
 }

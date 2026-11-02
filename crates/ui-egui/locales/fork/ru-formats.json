@@ -56,7 +56,6 @@
   "about {} seconds": "около {} с",
   "by {author} · {id}": "автор {author} · {id}",
   "{:.1} MB": "{:.1} МБ",
-  "{added} added, {missing} missing, {changed} read from changed sidecars": "Добавлено: {added}, отсутствует: {missing}, прочитано из изменённых XMP: {changed}",
   "{app} can't decode this raw variant yet ({}). You're editing the camera's embedded JPEG preview, which already includes the camera's picture style (e.g. Monochrome) and white balance.": "{app} пока не умеет декодировать этот вариант RAW ({}). Вы редактируете встроенный в файл JPEG-просмотр камеры, в котором уже применены стиль изображения камеры (например, «Монохром») и баланс белого.",
   "{app} could not open its window: {e}": "{app} не удалось открыть окно: {e}",
   "{app} could not open its window: {e}\n\nThe log file has the details: {path}": "{app} не удалось открыть окно: {e}\n\nПодробности в файле журнала: {path}",

@@ -342,6 +342,50 @@ fn panorama_command_with_auto_crop() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// How strongly coloured a linear picture is: the mean spread between its channels, per unit of brightness.
+fn colourfulness(img: &lcc_raster::Rgb32f) -> f32 {
+    let (mut spread, mut level) = (0.0, 0.0);
+    for p in img.data.iter().filter(|p| p.iter().any(|v| *v > 0.0)) {
+        spread += p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
+        level += (p[0] + p[1] + p[2]) / 3.0;
+    }
+    spread / level
+}
+
+/// Issue #752: a merge of JPEGs holds their display RGB in the DNG, so the profile of the camera in their metadata
+/// (made for that camera's sensor RGB) must not develop it: OM-1 JPEGs came out oversaturated once the OM-1 had one.
+#[test]
+fn a_merge_of_jpegs_from_a_profiled_camera_keeps_their_colour() {
+    crate::camera_profiles::install_dcps();
+    let (make, model) = ("OM Digital Solutions", "OM-1");
+    assert!(lcc_raw::dcp::resolve("", Some(make), model).is_some(), "the camera needs a profile for this to test anything");
+    let meta = lcc_meta::Metadata { make: Some(make.into()), model: Some(model.into()), ..Default::default() };
+    let xmp = lcc_meta::write_xmp(&meta, None);
+    let dir = temp_dir("jpeg-colour");
+    let encode = |v: &lcc_raster::Rgb32f| {
+        let img = v.to_srgb8();
+        let encoded = lcc_codecs::EncodeMeta { xmp: Some(&xmp), ..Default::default() };
+        lcc_codecs::encode_jpeg(&lcc_codecs::EncodeImage::rgba8(&img), 95, lcc_codecs::ChromaSubsampling::S444, &encoded).unwrap()
+    };
+    let (sharp, views) = lcc_merge::synth::focus_bracket(480, 320, 3).unwrap();
+    let mut paths = Vec::new();
+    for (i, v) in views.iter().enumerate() {
+        let p = dir.join(format!("F_{i}.jpg"));
+        std::fs::write(&p, encode(v)).unwrap();
+        paths.push(p.to_string_lossy().to_string());
+    }
+    let mut s = Session::new().with_fs();
+    let ids = import(&mut s, paths);
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "autoSettings": false})).unwrap();
+    let dng = std::fs::read(r["path"].as_str().unwrap()).unwrap();
+    assert_eq!(lcc_raw::decode(&dng).unwrap().metadata.model.as_deref(), Some(model));
+    let (merged, _) = crate::files::load_bytes(&dng, 1024).unwrap();
+    let (source, _) = crate::files::load_bytes(&encode(&sharp), 1024).unwrap();
+    let (got, want) = (colourfulness(&merged), colourfulness(&source));
+    assert!((got / want - 1.0).abs() < 0.05, "merged colourfulness {got}, source {want}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// HDR for Each Bracket Set: two stacks of brackets → two merged DNGs, each next to its first photo; photos that form
 /// no set are refused.
 #[test]

@@ -196,6 +196,14 @@ pub struct SidecarData {
     pub country: Option<String>,
     pub alt_text: Option<String>,
     pub extended_description: Option<String>,
+    /// The IPTC Content fields other editors write (headline, description writer, legacy category).
+    pub headline: Option<String>,
+    pub description_writer: Option<String>,
+    pub category: Option<String>,
+    /// The supplemental (other) categories (`photoshop:SupplementalCategories`).
+    pub supplemental_categories: Vec<String>,
+    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`).
+    pub subject_code: Vec<String>,
     /// `exif:GPSLatitude` / `exif:GPSLongitude` (latitude, longitude): wins over a position embedded in the file.
     pub gps: Option<(f64, f64)>,
     pub keywords: Option<Vec<String>>,
@@ -259,6 +267,11 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         country: m.country.clone(),
         alt_text: m.alt_text.clone(),
         extended_description: m.extended_description.clone(),
+        headline: m.headline.clone(),
+        description_writer: m.description_writer.clone(),
+        category: m.category.clone(),
+        supplemental_categories: m.supplemental_categories.clone(),
+        subject_code: m.subject_code.clone(),
         gps: m.gps.map(|g| (g.latitude, g.longitude)),
         keywords: (!m.keywords.is_empty() || !m.hierarchical_keywords.is_empty())
             .then(|| lcc_catalog::keywords::from_file(&m.keywords, &m.hierarchical_keywords)),
@@ -424,10 +437,19 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
         (&sc.country, &mut m.country),
         (&sc.alt_text, &mut m.alt_text),
         (&sc.extended_description, &mut m.extended_description),
+        (&sc.headline, &mut m.headline),
+        (&sc.description_writer, &mut m.description_writer),
+        (&sc.category, &mut m.category),
     ] {
         if let Some(v) = src {
             *dst = v.clone();
         }
+    }
+    if !sc.supplemental_categories.is_empty() {
+        m.supplemental_categories = sc.supplemental_categories.clone();
+    }
+    if !sc.subject_code.is_empty() {
+        m.subject_code = sc.subject_code.clone();
     }
     if let Some(gps) = sc.gps {
         m.gps = Some(gps);
@@ -684,7 +706,12 @@ fn packet(p: &Photo, cat: &lcc_catalog::Catalog, remove_location: bool, gps: boo
     let meta = lcc_meta::Metadata {
         software: Some(lcc_brand::DISPLAY_NAME.into()),
         title: nz(&p.meta.title),
+        headline: nz(&p.meta.headline),
         caption: nz(&p.meta.caption),
+        description_writer: nz(&p.meta.description_writer),
+        category: nz(&p.meta.category),
+        supplemental_categories: p.meta.supplemental_categories.clone(),
+        subject_code: p.meta.subject_code.clone(),
         alt_text: nz(&p.meta.alt_text),
         extended_description: nz(&p.meta.extended_description),
         sublocation: nz(&p.meta.location),
@@ -1117,10 +1144,10 @@ fn rank_of(path: &str, kind: MediaKind, id: u64) -> Rank {
 pub(crate) struct StemOwners(HashMap<String, PhotoId>);
 
 impl StemOwners {
-    /// The owners of every shared stem in the library, each file's key made the long way: what
-    /// [`StemOwners::among`] must agree with for the photos it is asked about (this is how the
-    /// owners were worked out before, for every write).
-    #[cfg(test)]
+    /// The owners of every shared stem in the library: what [`Session::stem_owners`] keeps built,
+    /// so naming one photo is a hash lookup. The library is passed over once; each file's key is
+    /// made the long way (only [`StemOwners::where_wanted`] can reuse one buffer, filtering as it
+    /// goes). What [`StemOwners::among`] must agree with for the photos it is asked about.
     pub(crate) fn of(cat: &lcc_catalog::Catalog) -> StemOwners {
         let mut best: HashMap<String, (Rank, PhotoId, usize)> = HashMap::new();
         for p in cat.photos().filter(|p| p.copy_of.is_none()) {
@@ -1250,26 +1277,47 @@ pub(crate) fn namings_in(cat: &lcc_catalog::Catalog, naming: SidecarNaming, ids:
 }
 
 impl Session {
-    /// The sidecar naming for photo `id`: the library's, except under Stem naming when another
-    /// catalogued file shares the stem (`IMG_0001.CR3` + `IMG_0001.JPG`) and owns the stem
-    /// sidecar — a raw first, else the first by file name. The others use Full naming
-    /// (`IMG_0001.JPG.xmp`), so their metadata never overwrites each other.
-    /// [`Session::sidecar_naming`] for many photos, their stems' owners worked out once (per
-    /// photo that is a pass over the whole catalog).
+    /// The sidecar naming for many photos, their stems' owners worked out in one pass over the
+    /// catalog. For a photo asked about often — the grid's badges name a sidecar for every
+    /// visible cell, every frame — [`Session::sidecar_naming`] keeps the whole table built
+    /// instead.
     pub fn sidecar_namings(&self, ids: &[PhotoId]) -> Vec<SidecarNaming> {
         namings_in(&self.catalog, self.xmp.naming, ids)
     }
 
+    /// The sidecar naming for photo `id`: the library's, except under Stem naming when another
+    /// catalogued file shares the stem (`IMG_0001.CR3` + `IMG_0001.JPG`) and owns the stem
+    /// sidecar — a raw first, else the first by file name. The others use Full naming
+    /// (`IMG_0001.JPG.xmp`), so their metadata never overwrites each other.
     pub fn sidecar_naming(&self, id: PhotoId) -> SidecarNaming {
         match self.catalog.photo(id) {
-            Some(p) if self.xmp.naming == SidecarNaming::Stem => StemOwners::among(&self.catalog, &[id]).naming(p, self.xmp.naming),
+            Some(p) if self.xmp.naming == SidecarNaming::Stem => self.stem_owners().naming(p, self.xmp.naming),
             _ => self.xmp.naming,
         }
     }
 
+    /// The owners of every shared stem in the library, as the catalog stands at its current
+    /// revision: built in one pass the first time, kept until the next applied op bumps the
+    /// revision (a library loaded in this process takes a revision range of its own, so nothing
+    /// of the last one's survives). Working the owners out is that whole-library pass — the grid's
+    /// thumbnail badges made it per visible cell, per frame, which froze the UI on large libraries
+    /// (issue #742).
+    pub(crate) fn stem_owners(&self) -> std::sync::Arc<StemOwners> {
+        let mut cached = self.stems.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((rev, owners)) = cached.as_ref()
+            && *rev == self.catalog.revision
+        {
+            return owners.clone();
+        }
+        let owners = std::sync::Arc::new(StemOwners::of(&self.catalog));
+        *cached = Some((self.catalog.revision, owners.clone()));
+        owners
+    }
+
     /// Write the photo's XMP sidecar, merged into an existing one (see the module docs).
     pub fn save_sidecar(&mut self, id: PhotoId) -> Result<SidecarSaved> {
-        self.save_sidecar_with(id, &StemOwners::among(&self.catalog, &[id]))
+        let owners = self.stem_owners();
+        self.save_sidecar_with(id, &owners)
     }
 
     /// Where photo `id`'s sidecar goes: the preferred path and the spellings an existing packet may have (a shared stem

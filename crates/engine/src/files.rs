@@ -38,7 +38,12 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
         gps: m.gps.as_ref().map(|g| (g.latitude, g.longitude)),
         gps_removed: None,
         title: m.title.clone().unwrap_or_default(),
+        headline: m.headline.clone().unwrap_or_default(),
         caption: m.caption.clone().unwrap_or_default(),
+        description_writer: m.description_writer.clone().unwrap_or_default(),
+        category: m.category.clone().unwrap_or_default(),
+        supplemental_categories: m.supplemental_categories.clone(),
+        subject_code: m.subject_code.clone(),
         copyright: m.copyright.clone().unwrap_or_default(),
         copyright_status: lcc_catalog::CopyrightStatus::from_marked(m.copyright_marked),
         usage_terms: m.usage_terms.clone().unwrap_or_default(),
@@ -2499,7 +2504,8 @@ pub(crate) mod tests {
 
     /// Issue #523: fully clipped highlights are neutral in the white-balanced camera RGB, but a colour model that
     /// doesn't map that neutral to neutral tinted them. The tone map's roll-off to white hid the tint at Neutral;
-    /// Highlights -100, or the issue's edit (Exposure -0.88, Highlights -75…), showed it.
+    /// Highlights -100, or the issue's edit (Exposure -0.88, Highlights -75…), showed it. Highlights ease off towards
+    /// white (issue #1371), so the clipped light may stay white; what must hold is that it is neutral.
     #[test]
     fn clipped_highlights_stay_neutral_when_darkened() {
         use lcc_pipeline::{RenderRequest, render};
@@ -2527,7 +2533,6 @@ pub(crate) mod tests {
         for (name, s) in [("Highlights -100", h100), ("#523's edit", issue)] {
             let out = render(&img, &info, &s, &RenderRequest::fit(96, 64)).image;
             let p = out.get(28, 32);
-            assert!(p[1] < 250, "{name}: the clipped light is darkened ({p:?})");
             let spread = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
             assert!(spread <= 1, "{name}: clipped light {p:?} is not neutral");
         }

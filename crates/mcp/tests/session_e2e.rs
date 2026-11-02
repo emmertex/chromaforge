@@ -727,6 +727,10 @@ fn tether_cull_develop_publish_sync_print() {
         .map(|x| x["knownFingerprint"].clone())
         .unwrap_or(servers["servers"][0]["knownFingerprint"].clone());
     assert_eq!(fp.as_str(), Some(shown.as_str()), "{servers}");
+    // a web gallery goes to the same server: the upload logs in first, then renders and sends the site
+    let up = mcp.cmd("web.upload", json!({"server": "Gate SFTP", "ids": [c]}));
+    assert_eq!(up["photos"], 1, "{up}");
+    assert!(fs.lock().unwrap().files.contains_key("/upload/index.html"));
     // taken out of the collection: deleted on the server at the next publish
     let (gone_photo, gone_rel) = sent.iter().find(|(p, _)| *p == c).cloned().unwrap();
     mcp.cmd("album.removePhotos", json!({"id": sftp_coll, "ids": [gone_photo]}));

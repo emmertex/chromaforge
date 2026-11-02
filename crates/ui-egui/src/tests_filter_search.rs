@@ -35,12 +35,13 @@ fn typing_narrows_the_keyword_rows_and_keeps_any() {
     let target = keywords[0].clone();
     ok(&mut h, "ui.clickWidget", json!({"id": "dropdown:filter-keyword"}));
     let all = rows(&h, "keyword");
-    assert_eq!(all.len(), keywords.len() + 1, "every keyword and Any");
+    // every keyword, Any, and the column's two operator rows (Match any / Match all, issue #683)
+    assert_eq!(all.len(), keywords.len() + 3, "every keyword, Any and the operator rows");
     // no click into the box first: it has the focus when the dropdown opens
     ok(&mut h, "ui.text", json!({"text": target.to_uppercase()}));
     let narrowed = rows(&h, "keyword");
     let matching = keywords.iter().filter(|k| k.to_lowercase().contains(&target.to_lowercase())).count();
-    assert_eq!(narrowed.len(), matching + 1, "matches (any case) and Any: {narrowed:?}");
+    assert_eq!(narrowed.len(), matching + 3, "matches (any case), Any and the operator rows: {narrowed:?}");
     assert!(narrowed.contains(&"filterItem:keyword:0".to_string()), "the Any row stays");
     assert!(narrowed.len() < all.len());
     // closed and opened again: the search starts empty, and other pickers never saw it
@@ -48,7 +49,11 @@ fn typing_narrows_the_keyword_rows_and_keeps_any() {
     ok(&mut h, "ui.key", json!({"key": "Escape"}));
     ok(&mut h, "ui.clickWidget", json!({"id": "dropdown:filter-camera"}));
     let cameras = h.app.caches.filter_values(&h.app.session.catalog).cameras.len();
-    assert_eq!(rows(&h, "camera").len(), cameras + 1, "the camera picker isn't filtered by the keyword search");
+    assert_eq!(
+        rows(&h, "camera").len(),
+        cameras + 1,
+        "the camera picker (no operator rows: a photo has one camera) isn't filtered by the keyword search"
+    );
 }
 
 /// Issue #213: the keyword picker takes several keywords. It stays open while they are clicked, shows any of them,
@@ -79,6 +84,45 @@ fn the_keyword_picker_takes_several_keywords() {
     assert!(h.app.session.filter.keywords.is_empty() && h.app.session.filter.keyword.is_none());
     assert_eq!(h.app.session.visible_cloned().len(), all);
     assert!(rows(&h, "keyword").is_empty(), "Any keyword closes the list");
+}
+
+/// Issue #683: the keyword picker (and each Metadata column of a multi-value field) carries an OR / AND toggle:
+/// "Match all (AND)" switches the column's operator. The operator rows sit at the end of the picker's rows.
+#[test]
+fn the_keyword_picker_toggles_between_or_and_and() {
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1600.0, 1000.0], 1.0);
+    h.app.ui.view = crate::state::ViewMode::PhotoGrid;
+    h.app.ui.filter_bar = true;
+    h.settle(SETTLE);
+    let keywords = h.app.caches.filter_values(&h.app.session.catalog).keywords.clone();
+    assert!(keywords.len() >= 2, "the demo library has keywords: {keywords:?}");
+    ok(&mut h, "ui.clickWidget", json!({"id": "dropdown:filter-keyword"}));
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterItem:keyword:1"}));
+    assert_eq!(h.app.session.filter.keyword_op, lcc_catalog::MatchOp::Any, "OR is the default");
+    let or = h.app.session.visible_cloned().len();
+    // the operator rows are the picker's last two; type a search that keeps only a few rows, so the
+    // rows at the end are laid out (a long list culls the ones below the fold)
+    ok(&mut h, "ui.text", json!({"text": keywords[0]}));
+    let ids = |h: &Headless| -> Vec<u32> {
+        let mut v: Vec<u32> = rows(h, "keyword").iter().filter_map(|w| w.rsplit(':').next().and_then(|n| n.parse().ok())).collect();
+        v.sort_unstable();
+        v
+    };
+    let all_row = ids(&h).last().copied().unwrap();
+    ok(&mut h, "ui.clickWidget", json!({"id": format!("filterItem:keyword:{all_row}")}));
+    assert_eq!(h.app.session.filter.keyword_op, lcc_catalog::MatchOp::All, "the toggle switched to AND");
+    assert!(h.app.session.visible_cloned().len() <= or, "AND with one keyword matches no more than OR");
+    // back to OR
+    let any_row = all_row - 1;
+    ok(&mut h, "ui.clickWidget", json!({"id": format!("filterItem:keyword:{any_row}")}));
+    assert_eq!(h.app.session.filter.keyword_op, lcc_catalog::MatchOp::Any);
+    // "Any keyword" clears the choice and puts the operator back to OR, so the next pick doesn't start in AND
+    ok(&mut h, "ui.clickWidget", json!({"id": format!("filterItem:keyword:{all_row}")}));
+    assert_eq!(h.app.session.filter.keyword_op, lcc_catalog::MatchOp::All);
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterItem:keyword:0"}));
+    assert!(h.app.session.filter.keywords.is_empty(), "Any keyword clears the values");
+    assert_eq!(h.app.session.filter.keyword_op, lcc_catalog::MatchOp::Any, "and the operator");
 }
 
 /// Issue #218: the filter bar's Metadata columns list each field's values with counts; a click narrows the grid,

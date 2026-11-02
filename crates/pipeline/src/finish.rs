@@ -418,7 +418,7 @@ fn base_tone_at(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
     match s.process.process() {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), V5 the over-range colours
         // ([`hue_clip`]), not the tone map
-        Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 => match info.camera_tone.as_ref().filter(|_| raw) {
+        Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 => match info.camera_tone.as_ref().filter(|_| raw) {
             Some(curve) => ToneMap::camera_hdr(curve, l.contrast, l.whites, l.blacks, peak),
             None if raw => ToneMap::hdr(l.contrast, l.whites, l.blacks, peak),
             None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
@@ -696,8 +696,11 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
             let (hh, ss) = (hl + l_hl, sh + l_sh);
             if hh != 0.0 || ss != 0.0 {
                 let ws = 1.0 - smooth(-4.8, 0.3, base);
-                let wh = smooth(-1.0, 2.8, base);
-                delta += ss * 1.7 * ws * ws.sqrt() + hh * 1.7 * wh;
+                // Highlights reach down into the upper midtones and ease off towards white (fitted to
+                // Lightroom on a Sony A7 V raw, issue #1371); Shadows are a little gentler.
+                let wh = smooth(-2.4, 1.0, base) * (1.0 - 0.7 * smooth(1.4, 3.2, base));
+                let sg = if ss > 0.0 { 0.82 } else { 0.92 };
+                delta += ss * 1.7 * sg * ws * ws.sqrt() + hh * 0.85 * wh;
             }
             if l_wh != 0.0 {
                 delta += l_wh * 0.8 * smooth(0.5, 3.0, l1);
