@@ -288,6 +288,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::RemoveFolder { .. } => "Remove Folder from Library",
         Dialog::SynchronizeFolder { .. } => "Synchronize Folder",
         // (nothing to download from in this build: the dialog explains the manual install)
+        Dialog::ChartProfile { .. } => "Create Camera Profile from Color Chart",
         Dialog::SamModel { .. } if sam_by_hand(&app.session.segmenter) => "Install the SAM 3 Model",
         Dialog::SamModel { .. } => "Download the SAM 3 Model?",
         Dialog::AiModels { .. } => "AI Models",
@@ -359,6 +360,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         .default_width(if sheet { sheet_w(screen, insets) } else { match dlg {
             Dialog::Import { .. } => crate::import::DIALOG_SIZE[0],
             Dialog::SmartRules { .. } => 680.0,
+            Dialog::ChartProfile { .. } => 900.0,
             Dialog::AllMetadata { .. } => 620.0,
             Dialog::Update => 500.0,
             Dialog::Print => 1100.0,
@@ -989,6 +991,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 Dialog::Enhance { opts } => crate::enhance_ui::body(app, ui, opts),
                 Dialog::Import { opts } => crate::import::body(app, ui, opts),
                 Dialog::Settings { tab } => crate::panels::settings::body(app, ui, tab, settings_height),
+                Dialog::ChartProfile { opts } => crate::chart_profile::body(app, ui, opts),
                 Dialog::SamModel { error, .. } => sam_model_body(app, ui, error.as_deref()),
                 Dialog::AiModels { error } => crate::panels::ai_models::body(app, ui, error),
                 Dialog::GenfillConsent { provider, index, prompt, variations } => crate::panels::genfill::consent_body(app, ui, provider, *index, prompt, *variations),
@@ -1417,6 +1420,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 // no download location in this build: nothing to offer but the manual install
                 let sam_nowhere = sam_by_hand(sam);
                 let cancel = match &dlg {
+                    Dialog::ChartProfile { .. } => "Close",
                     Dialog::SamModel { .. } if sam_running || sam_installed || sam_nowhere => "Close",
                     Dialog::SamModel { .. } => "Not Now",
                     Dialog::LightroomResult { .. } => "Close",
@@ -1475,6 +1479,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
                     Dialog::SynchronizeFolder { .. } | Dialog::SyncSettings { .. } => "Synchronize",
+                    Dialog::ChartProfile { opts } if crate::chart_profile::is_built(app, opts) => "Profile created ✓",
+                    Dialog::ChartProfile { .. } => "Create Profile",
                     Dialog::SamModel { then: Some(_), .. } if sam_installed => "Continue",
                     Dialog::SamModel { .. } if sam_installed || sam_running || sam_nowhere => "",
                     Dialog::SamModel { error, .. } if error.is_some() || sam_failed => "Try Again",
@@ -1518,7 +1524,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             Dialog::DenoiseModel { accepted: false, .. } | Dialog::FaceModel { accepted: false, .. } | Dialog::SynchronizeFolder { counts: None, .. }
                         )
                             // smart-album rules that can't mean anything wait to be fixed
-                            && !matches!(&dlg, Dialog::SmartRules { id, rules, .. } if !rules.check_for(&app.session.catalog, id.map(lcc_catalog::AlbumId)).is_empty()));
+                            && !matches!(&dlg, Dialog::SmartRules { id, rules, .. } if !rules.check_for(&app.session.catalog, id.map(lcc_catalog::AlbumId)).is_empty())
+                            // a camera profile waits for its chart photos and their corners
+                            && !matches!(&dlg, Dialog::ChartProfile { opts } if !crate::chart_profile::can_build(app, opts)));
                 let primary = !informational && can_confirm && confirm_style(&dlg) == ConfirmStyle::Primary;
                 use crate::button::{Button, Kind};
                 // (each kind of dialog its own buttons: the keyboard's place doesn't carry from a
@@ -1824,7 +1832,9 @@ pub fn fmt_gap(v: f64) -> String {
 /// Whether a dialog stays open after its action succeeded (the SAM 3 dialog while the model
 /// downloads).
 pub fn keeps_open(app: &LccApp, dlg: &Dialog) -> bool {
-    matches!(dlg, Dialog::SamModel { .. }) && !app.session.segmenter.installed()
+    (matches!(dlg, Dialog::SamModel { .. }) && !app.session.segmenter.installed())
+        // the profile is built in the background and its report shown here
+        || matches!(dlg, Dialog::ChartProfile { .. })
 }
 
 /// No SAM 3 model, no download running and nowhere to download it from: installing it by hand is
@@ -1982,6 +1992,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             Ok(serde_json::Value::Null)
         }
 
+        Dialog::ChartProfile { opts } => crate::chart_profile::start_build(app, opts),
         Dialog::SamModel { then, .. } => {
             if app.session.segmenter.installed() {
                 // installed: start what the user was doing

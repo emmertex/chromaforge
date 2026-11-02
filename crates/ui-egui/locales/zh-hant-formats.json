@@ -367,5 +367,9 @@
   "About ${usd}, billed to your {name} account.": "約 ${usd}，由你的 {name} 帳戶支付。",
   "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "該區域超出 {name} 全解析度的上限：會比相片其餘部分柔和（{}%）。",
   "up to {} px at full resolution, about ${usd} per fill": "全解析度最高 {} px，每次填色約 ${usd}",
-  "Key saved (ends in {})": "金鑰已儲存（結尾為 {}）"
+  "Key saved (ends in {})": "金鑰已儲存（結尾為 {}）",
+  "The chart's greys measure about {cct:.0} K": "色卡灰塊測得約 {cct:.0} K",
+  "Both charts are set to {light}; set the second to {other}.": "兩張色卡都設為{light}；請將第二張設為{other}。",
+  "Used by {n} photos; they will update.": "{n} 張相片在使用；它們會隨之更新。",
+  "These charts come from two different camera bodies ({x}, {y})": "這些色卡來自兩台不同的機身（{x}、{y}）"
 }

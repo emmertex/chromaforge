@@ -18,6 +18,7 @@ pub mod catalog_ui;
 #[cfg(target_arch = "wasm32")]
 #[path = "catalog_ui_web.rs"]
 pub mod catalog_ui;
+pub mod chart_profile;
 pub mod color_readout;
 mod command_error;
 pub mod control;
@@ -129,6 +130,8 @@ mod tests_canvas_pan;
 mod tests_capture_time;
 #[cfg(test)]
 mod tests_catalog_ui;
+#[cfg(test)]
+mod tests_chart_profile;
 #[cfg(test)]
 mod tests_classic;
 #[cfg(test)]
@@ -822,6 +825,8 @@ pub struct LccApp {
     pub last_render_dng: Option<serde_json::Value>,
     /// Background file-system work of other commands (Find Missing Photos, auto import…).
     pub tasks: tasks::Tasks,
+    /// Create Camera Profile from Color Chart: its photos and last report.
+    pub chart_profile: chart_profile::ChartProfileState,
     /// The files of the last finished background export (`ui.inspect` → `export.last`).
     pub last_export_result: Option<Value>,
     /// The Modern layout's Settings and Export screens (`modern_sheets`).
@@ -1037,6 +1042,7 @@ impl LccApp {
             render_dng: None,
             last_render_dng: None,
             tasks: Default::default(),
+            chart_profile: Default::default(),
             last_export_result: None,
             modern_sheets: Default::default(),
             slideshow_export_reported: true,

@@ -214,6 +214,21 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // the Masking brush's A / B presets (each keeps its own size, feather, flow and density)
     ("brush.preset", "Switch Brush A / B", None, "Window>Tools"),
     ("dialog.newAlbum", "New Collection…", Some("Cmd+N"), "Library"),
+    // the active raw photo of a ColorChecker (a second selected one: the second chart, other light)
+    ("dialog.cameraProfile", "Create Camera Profile from Color Chart…", None, "Photo"),
+    // in the camera profile dialog: {id? | path?} the second chart photo; without either, the picker opens
+    ("cameraProfile.second", "Add Second Color Chart…", None, ""),
+    ("cameraProfile.removeSecond", "Remove Second Color Chart", None, ""),
+    // {allCameras?, close?}: the picker of library photos for the second chart
+    ("cameraProfile.pickSecond", "Choose Second Color Chart", None, ""),
+    // {slot?: 0 | 1}: look for the chart again / move the corners onto it / turn patch A01 a corner further
+    ("cameraProfile.find", "Find Color Chart Again", None, ""),
+    ("cameraProfile.align", "Align Corners to Color Chart", None, ""),
+    ("cameraProfile.turn", "Turn Color Chart", None, ""),
+    // {mode: fit | actual | in | out, slot?}: the chart view's zoom
+    ("cameraProfile.zoom", "Zoom Color Chart View", None, ""),
+    // {choice: replace | keepBoth | cancel, name?}: answer "a profile of that name is there"
+    ("cameraProfile.resolve", "Resolve Camera Profile Name", None, ""),
     ("dialog.newFolder", "New Collection Set…", Some("Cmd+Shift+N"), "Library"),
     ("dialog.smartAlbum", "New Smart Collection…", None, "Library"),
     ("view.photoCounts", "Show Photo Counts", None, "Window>Panels"),
@@ -1778,6 +1793,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             Ok(Value::Null)
         }
+        "dialog.cameraProfile" => crate::chart_profile::open(app),
+        "cameraProfile.second" => crate::chart_profile::choose_second(app, p),
+        "cameraProfile.removeSecond" => crate::chart_profile::remove_second(app),
+        "cameraProfile.pickSecond" => crate::chart_profile::pick_second(app, p),
+        "cameraProfile.zoom" => crate::chart_profile::zoom(app, p),
+        "cameraProfile.resolve" => crate::chart_profile::resolve_clash(app, p),
+        "cameraProfile.find" | "cameraProfile.align" | "cameraProfile.turn" => crate::chart_profile::adjust(app, id, p),
         "dialog.newFolder" => {
             app.ui.dialog = Some(Dialog::NewAlbum {
                 name: p.get("name").and_then(Value::as_str).unwrap_or("").into(),
