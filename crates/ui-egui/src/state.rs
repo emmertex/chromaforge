@@ -433,6 +433,10 @@ pub struct AppSettings {
     /// A click on the dimmed backdrop around a dialog closes it, like Esc (off: a stray click
     /// never throws away a dialog's choices).
     pub close_dialogs_outside: bool,
+    /// Settings ▸ Import ▸ "Import dropped photos without review": photos and folders dropped on the
+    /// window are added at once with the library's import settings (Settings ▸ Import) instead of
+    /// opening the import review. Off by default: a drop opens the review, as Lightroom does.
+    pub import_dropped_directly: bool,
     /// The Settings section shown last: Settings… opens there again (LR-PREF-WINDOW).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub settings_tab: String,
@@ -646,6 +650,7 @@ impl Default for AppSettings {
             confirm_delete: true,
             ask_before_move: true,
             close_dialogs_outside: false,
+            import_dropped_directly: false,
             settings_tab: String::new(),
             gpu: true,
             gpu_backend: GpuBackend::Auto,

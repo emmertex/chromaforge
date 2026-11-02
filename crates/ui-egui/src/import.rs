@@ -921,19 +921,38 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
 
 /// Start importing `paths` (files or folders) in the background, e.g. dropped on the window.
 pub fn start_paths(app: &mut LccApp, paths: Vec<String>) -> Result<Value, String> {
+    start_paths_with(app, paths, json!({"mode": "add"}))
+}
+
+/// [`start_paths`] with the import's own `library.import` params (the paths are added to them).
+fn start_paths_with(app: &mut LccApp, paths: Vec<String>, params: Value) -> Result<Value, String> {
     busy_synchronizing(app)?;
     if running(app) {
         return Err(crate::i18n::tr("An import is running").to_string());
     }
     let undo0 = app.session.undo.len();
     let total = paths.len();
-    app.import = Some(ImportTask::new(paths, json!({"mode": "add"}), undo0, false));
+    app.import = Some(ImportTask::new(paths, params, undo0, false));
     Ok(json!({"importing": total}))
+}
+
+/// The `library.import` params of a drop imported without review: added in place, with the
+/// library's import settings (its presets, camera defaults, creator and copyright apply to every
+/// import; the metadata preset is the one the review would start with).
+fn dropped_import_params(app: &LccApp) -> Value {
+    let mut p = json!({"mode": "add"});
+    if let Some(mp) = &app.session.import_defaults.metadata_preset
+        && app.session.metadata_presets.iter().any(|m| m.name.eq_ignore_ascii_case(mp))
+    {
+        p["metadataPreset"] = json!(mp);
+    }
+    p
 }
 
 /// Photos or folders dropped on the window. They are scanned and reviewed exactly as File ▸ Import
 /// from Folder… does (one walk with progress, then the review), or, with Settings ▸ Import ▸ Import
-/// dropped files without review, added at once on a worker thread. A drop while an import or any
+/// dropped photos without review, added at once on a worker thread with the library's import
+/// settings. A drop while an import or any
 /// scan runs is refused (a browse that finishes replaces `app.import`). Errors are shown, and a
 /// frame is asked for so the scan or import starts even if the window then sits idle (no input
 /// follows a drop).
@@ -949,11 +968,12 @@ pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
         app.toast(ctx, crate::i18n::tr("An import is running"));
         return;
     }
-    // a folder opens the import review; photo files are added at once
-    let r = if paths.iter().any(|p| std::path::Path::new(p).is_dir()) {
-        busy_synchronizing(app).and_then(|_| open(app, paths).map(|_| ()))
+    // the import review first, unless Settings ▸ Import says to add dropped photos at once
+    let r = if app.ui.settings.import_dropped_directly {
+        let params = dropped_import_params(app);
+        start_paths_with(app, paths, params).map(|_| ())
     } else {
-        start_paths(app, paths).map(|_| ())
+        busy_synchronizing(app).and_then(|_| open(app, paths).map(|_| ()))
     };
     if let Err(e) = r {
         log::warn!("drop: {e}");

@@ -781,6 +781,9 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 let _ = app.run("folder.watchPreferences", json!({"newFiles": p.as_str()}));
             }
         });
+        heading(ui, t, crate::i18n::tr("Drag and Drop"));
+        check(ui, "settings.importDropped", &mut app.ui.settings.import_dropped_directly, "Import dropped photos without review");
+        hint(ui, t, crate::i18n::tr("Off: photos and folders dropped on the window open the import review first."));
         heading(ui, t, crate::i18n::tr("Cameras and Cards"));
         let mut on_card = d.show_on_card;
         if check(ui, "settings.importOnCard", &mut on_card, "Show the import review when a camera or card is connected") {
