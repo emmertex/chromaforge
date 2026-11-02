@@ -372,7 +372,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Brush Stroke",
             [],
             None,
-            "{id?: maskId, component?: index, points: [[x,y],…] normalized, size?: the solid core's radius, fraction of long edge (0.03), feather?: 0..100, the soft halo outside the core, flow?, density?, erase?: bool, model?: 1 Lightroom's brush (default) | 0 the brush of strokes saved before it (size = the whole dab, feather inward), autoMask?: bool, pressure?: [p,…] pen pressure 0..1 per point (scales each dab's size and flow; omitted: full), connect?: bool — start from the last point of the mask's last stroke (⇧-click), size / feather / flow tapering from that stroke's to these} → {activeMask, connected}",
+            "{id?: maskId, component?: index, points: [[x,y],…] normalized, size?: the solid core's radius, fraction of long edge (0.03), feather?: 0..100, the soft halo outside the core, flow?, density?, erase?: bool, model?: 1 Lightroom's brush (default) | 0 the brush of strokes saved before it (size = the whole dab, feather inward), autoMask?: bool, autoRange?: -100 (tight) … 0 (default, Lightroom's limits) … 100 (wide), how different a pixel may be from the one under the dab and still take Auto Mask's paint (the limits scale by ½ … 2), kept with the stroke, pressure?: [p,…] pen pressure 0..1 per point (scales each dab's size and flow; omitted: full), connect?: bool — start from the last point of the mask's last stroke (⇧-click), size / feather / flow tapering from that stroke's to these} → {activeMask, connected}",
             has_active,
             |s, p| {
                 let pts: Vec<Point> = p
@@ -392,6 +392,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     density: f64_or(p, "density", d.density),
                     erase: bool_or(p, "erase", false),
                     auto_mask: bool_or(p, "autoMask", false),
+                    // fixed with the stroke: a later change of the slider leaves it as painted
+                    auto_range: f64_or(p, "autoRange", d.auto_range).clamp(-lcc_develop::AUTO_RANGE_MAX, lcc_develop::AUTO_RANGE_MAX),
                     pressure: pressure_list(p.get("pressure"), pts_len)?,
                     // new strokes paint with Lightroom's brush (notes 18/22)
                     model: if p.get("model").and_then(Value::as_u64) == Some(0) { BRUSH_MODEL_LEGACY } else { BRUSH_MODEL_LRC },

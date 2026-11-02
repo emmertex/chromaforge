@@ -519,6 +519,9 @@ pub struct BrushDabs {
     pub erase: bool,
     /// Auto Mask: paint only pixels like the one under each dab, then snap to edges.
     pub auto: bool,
+    /// How much a Lightroom-model stroke's Auto Mask widens its limits ([`BrushStroke::auto_range_scale`]); 1
+    /// for a legacy stroke.
+    pub auto_scale: f32,
     /// Pen pressure (0..1) of each dab, parallel to `dabs`; empty when the stroke has no pressure data (full pressure).
     pub pressure: Vec<f32>,
 }
@@ -667,6 +670,7 @@ pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max
         density: (s.density / 100.0).clamp(0.0, 1.0) as f32,
         erase: s.erase,
         auto: s.auto_mask,
+        auto_scale: 1.0,
         pressure,
     }
 }
@@ -715,6 +719,7 @@ fn lrc_brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max: usize
         density: (s.density / 100.0).clamp(0.0, 1.0) as f32,
         erase: s.erase,
         auto: s.auto_mask,
+        auto_scale: s.auto_range_scale(),
         pressure,
     }
 }
@@ -867,8 +872,16 @@ pub const AUTO_LRC_CHROMA: (f32, f32) = (0.17, 0.42);
 /// pixel-sharp (no edge refinement afterwards), as Lightroom's is.
 #[inline]
 pub fn auto_similarity_lrc(l: f32, ch: [f32; 3], rl: f32, rch: [f32; 3]) -> f32 {
-    let dl = (l - rl).abs();
-    let dc = ((ch[0] - rch[0]).powi(2) + (ch[1] - rch[1]).powi(2) + (ch[2] - rch[2]).powi(2)).sqrt();
+    auto_similarity_lrc_scaled(l, ch, rl, rch, 1.0)
+}
+
+/// [`auto_similarity_lrc`] with every limit times `scale` (the stroke's Auto Mask range,
+/// [`BrushStroke::auto_range_scale`]): the distances are divided by it, which is the same.
+#[inline]
+pub fn auto_similarity_lrc_scaled(l: f32, ch: [f32; 3], rl: f32, rch: [f32; 3], scale: f32) -> f32 {
+    let k = if scale.is_finite() && scale > 0.0 { 1.0 / scale } else { 1.0 };
+    let dl = (l - rl).abs() * k;
+    let dc = ((ch[0] - rch[0]).powi(2) + (ch[1] - rch[1]).powi(2) + (ch[2] - rch[2]).powi(2)).sqrt() * k;
     (1.0 - smooth(AUTO_LRC_EV.0, AUTO_LRC_EV.1, dl)) * (1.0 - smooth(AUTO_LRC_CHROMA.0, AUTO_LRC_CHROMA.1, dc))
 }
 
@@ -957,7 +970,7 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
                     let i = y * w + x;
                     if let Some((rl, rch)) = refc {
                         let (l, c) = (log_l.data[i], chromaticity(img.data[i]));
-                        a *= if bd.lrc.is_some() { auto_similarity_lrc(l, c, rl, rch) } else { auto_similarity(l, c, rl, rch) };
+                        a *= if bd.lrc.is_some() { auto_similarity_lrc_scaled(l, c, rl, rch, bd.auto_scale) } else { auto_similarity(l, c, rl, rch) };
                     }
                     let v = &mut stroke_alpha.data[i];
                     // flow accumulates within a stroke up to density

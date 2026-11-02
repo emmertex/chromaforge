@@ -675,6 +675,30 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 ..Default::default()
             }];
         }),
+        ("masks (Auto Mask range, note 1)", |s| {
+            // the same strokes tight, at the default and wide: each keeps its own range
+            let st = |pts: &[(f64, f64)], auto_range| BrushStroke {
+                points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+                size: 0.04,
+                feather: 60.0,
+                flow: 90.0,
+                auto_mask: true,
+                auto_range,
+                model: lcc_develop::BRUSH_MODEL_LRC,
+                ..Default::default()
+            };
+            let strokes = vec![
+                st(&[(0.2, 0.3), (0.8, 0.35)], -100.0),
+                st(&[(0.2, 0.55), (0.5, 0.6), (0.8, 0.5)], 0.0),
+                st(&[(0.2, 0.75), (0.8, 0.7)], 100.0),
+                st(&[(0.5, 0.45)], 37.0),
+            ];
+            s.masks = vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -50.0, ..Default::default() },
+                ..Default::default()
+            }];
+        }),
         ("calibration", |s| {
             s.calibration.shadows_tint = 40.0;
             s.calibration.red_hue = 50.0;

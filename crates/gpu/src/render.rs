@@ -1107,7 +1107,7 @@ const STROKE_WORDS: usize = 16;
 
 /// The `shape` kernel's brush data for `dabs`: stroke records ([`STROKE_WORDS`] words: dab offset,
 /// dab count, r, hard, flow, density, erase, bbox x0 y0 x1 y1, auto, Lightroom model (1/0), its dab
-/// profile's a and p, unused) then the dab centres.
+/// profile's a and p, Auto Mask range scale) then the dab centres.
 fn brush_aux(dabs: &[&lcc_pipeline::masks::BrushDabs], erase: bool) -> Vec<f32> {
     let mut aux = Vec::new();
     let mut off = STROKE_WORDS * dabs.len();
@@ -1120,7 +1120,7 @@ fn brush_aux(dabs: &[&lcc_pipeline::masks::BrushDabs], erase: bool) -> Vec<f32> 
         aux.extend([x0, y0, x1, y1].map(|v| v as f32));
         aux.push(d.auto as u8 as f32);
         let (a, p) = d.lrc.unwrap_or((0.0, 0.0));
-        aux.extend([d.lrc.is_some() as u8 as f32, a as f32, p as f32, 0.0]);
+        aux.extend([d.lrc.is_some() as u8 as f32, a as f32, p as f32, d.auto_scale]);
         off += 2 * d.dabs.len();
     }
     for d in dabs {

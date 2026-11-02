@@ -3548,7 +3548,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             // a ⇧-click draws a straight line from where the last stroke ended, as in Lightroom
             let connect = shift && resp.clicked() && pts.len() == 1;
             let mut params = json!({"points": pts, "size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow,
-                   "density": app.ui.brush_density, "erase": erase, "autoMask": app.ui.brush_auto_mask, "pressure": pressure, "connect": connect});
+                   "density": app.ui.brush_density, "erase": erase, "autoMask": app.ui.brush_auto_mask, "autoRange": app.ui.brush_auto_range, "pressure": pressure, "connect": connect});
             let is_brush = app
                 .ui
                 .active_mask_component

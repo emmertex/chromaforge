@@ -218,3 +218,84 @@ fn an_auto_mask_click_stops_sharply_at_an_edge_lightroom_blocks() {
         }
     }
 }
+
+/// A stroke's Auto Mask over a brightness step of `ev`, painted with Auto Mask range `range`, and the same
+/// stroke without Auto Mask.
+fn auto_over_step(ev: f32, range: f64) -> (Plane, Plane) {
+    let edge = 600usize;
+    let mut img = Rgb32f::new(W, H);
+    for (i, p) in img.data.iter_mut().enumerate() {
+        let v = if i % W < edge { 0.18 } else { 0.18 * (-ev).exp2() };
+        *p = [v, v, v];
+    }
+    let log_l = Plane { width: W, height: H, data: img.data.iter().map(|c| lcc_color::luminance_2020(*c).max(1e-6).log2()).collect() };
+    let render_auto = |auto_mask: bool| {
+        let s = BrushStroke { auto_mask, auto_range: range, ..stroke(&[(edge as f64 - 60.5, 500.5)], 100.0) };
+        shape_alpha(&MaskShape::Brush { strokes: vec![s] }, &frame(), W, H, &img, &log_l, 0.0, None)
+    };
+    (render_auto(true), render_auto(false))
+}
+
+// TEST-NOTES 2026-10-31 note 1: the Auto Mask range at its default is exactly the limits measured on Lightroom
+#[test]
+fn the_default_auto_mask_range_is_todays_limits() {
+    assert_eq!(BrushStroke::default().auto_range, 0.0);
+    assert_eq!(BrushStroke::default().auto_range_scale(), 1.0);
+    let grey = [1.0f32, 1.0, 1.0];
+    for i in 0..=400 {
+        let d = i as f32 * 0.005;
+        for (l, ch) in [(d, grey), (-d, grey), (0.0, [1.0 + d, 1.0, 1.0]), (d * 0.5, [1.0, 1.0 - d * 0.3, 1.0])] {
+            assert_eq!(auto_similarity_lrc_scaled(l, ch, 0.0, grey, 1.0).to_bits(), auto_similarity_lrc(l, ch, 0.0, grey).to_bits());
+        }
+    }
+    // and a stroke saved before the slider (no `auto_range`) renders as one at range 0, bit for bit
+    let s = BrushStroke { auto_mask: true, ..stroke(&[(540.0, 500.0)], 100.0) };
+    let mut json = serde_json::to_value(&s).unwrap();
+    assert!(json.get("auto_range").is_none(), "the default isn't written: {json}");
+    json.as_object_mut().unwrap().remove("auto_range");
+    let old: BrushStroke = serde_json::from_value(json).unwrap();
+    assert_eq!(old, s);
+    // the dab data carries the scale 1 to the rasterizer and the GPU (whose kernel multiplies by 1 / 1)
+    let d = brush_dabs(&old, &frame(), W, H);
+    assert_eq!(d.auto_scale, 1.0);
+}
+
+// Note 1: a tighter range stops at a smaller step, a wider one paints across a bigger one
+#[test]
+fn the_auto_mask_range_scales_the_limits() {
+    let edge = 600usize;
+    let y = 500;
+    let past = |a: &Plane| (edge + 1..edge + 40).map(|x| a.get(x, y)).fold(0.0f32, f32::max);
+    // 0.5 EV: passes by default, blocked at the tightest (limits 0.35 / 0.4 EV)
+    let (auto, plain) = auto_over_step(0.5, 0.0);
+    assert!((past(&auto) - past(&plain)).abs() < 1e-4, "0.5 EV passes at the default");
+    let (tight, _) = auto_over_step(0.5, -100.0);
+    assert_eq!(past(&tight), 0.0, "0.5 EV is blocked at the tightest");
+    // 1 EV: blocked by default, passes at the widest (limits 1.4 / 1.6 EV)
+    let (auto, plain) = auto_over_step(1.0, 0.0);
+    assert_eq!(past(&auto), 0.0, "1 EV is blocked at the default");
+    let (wide, _) = auto_over_step(1.0, 100.0);
+    assert!((past(&wide) - past(&plain)).abs() < 1e-4, "1 EV passes at the widest");
+    // the scale: ½ … 1 … 2, a hostile value clamped
+    let at = |v: f64| BrushStroke { auto_range: v, ..Default::default() }.auto_range_scale();
+    assert_eq!((at(-100.0), at(0.0), at(100.0)), (0.5, 1.0, 2.0));
+    assert_eq!((at(-1e9), at(1e9), at(f64::NAN), at(f64::INFINITY)), (0.5, 2.0, 1.0, 1.0));
+    // the chroma limits scale with it: 0.3 fades at the default, passes at the widest, is gone at the tightest
+    let grey = [1.0f32, 1.0, 1.0];
+    let c = [1.3f32, 1.0, 1.0];
+    let mid = auto_similarity_lrc_scaled(0.0, c, 0.0, grey, 1.0);
+    assert!(mid > 0.0 && mid < 1.0, "{mid}");
+    assert_eq!(auto_similarity_lrc_scaled(0.0, c, 0.0, grey, 2.0), 1.0);
+    assert_eq!(auto_similarity_lrc_scaled(0.0, c, 0.0, grey, 0.5), 0.0);
+}
+
+// Note 1: the range is saved with the stroke (sidecar / catalog JSON) and read back
+#[test]
+fn the_auto_mask_range_round_trips() {
+    for v in [-100.0, -37.0, 25.0, 100.0] {
+        let s = BrushStroke { auto_mask: true, auto_range: v, ..stroke(&[(500.0, 500.0)], 50.0) };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"auto_range\""), "{json}");
+        assert_eq!(serde_json::from_str::<BrushStroke>(&json).unwrap(), s);
+    }
+}

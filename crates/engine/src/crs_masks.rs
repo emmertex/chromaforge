@@ -1119,6 +1119,8 @@ mod brush_import_tests {
             assert!((feather - want).abs() < 0.5, "{got:?}");
         }
         assert!(s.iter().all(|s| s.model == BRUSH_MODEL_LRC && !s.auto_mask && !s.erase));
+        // Lightroom's strokes paint with the default Auto Mask range (note 1, 2026-10-31)
+        assert!(s.iter().all(|s| s.auto_range == 0.0));
         assert_eq!((s[2].flow, s[3].density), (50.0, 80.0));
     }
 

@@ -585,6 +585,44 @@ fn brush_strokes_carry_auto_mask() {
     h.settle(SETTLE);
 }
 
+/// The Auto Mask range slider sits under Auto Mask (shown while it is on), and
+/// each stroke keeps the range it was painted with.
+#[test]
+fn each_stroke_keeps_the_auto_mask_range_it_was_painted_with() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.step();
+    h.step();
+    let has = |h: &Headless| h.app.widgets.iter().any(|(w, _)| w == "slider:ui.brushAutoRange");
+    assert!(!has(&h), "no range without Auto Mask");
+    let r = h.request("ui.set", json!({"brushAutoMask": true}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(has(&h), "the range shows under Auto Mask");
+    assert_eq!(h.app.ui.brush_auto_range, 0.0, "it starts at Lightroom's limits");
+    let r = h.request("ui.dragWidget", json!({"id": "slider:ui.brushAutoRange", "dx": 40.0, "dy": 0.0, "steps": 6}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    let wide = h.app.ui.brush_auto_range;
+    assert!(wide > 0.0 && wide <= 100.0, "dragged wider: {wide}");
+    let stroke = |h: &mut Headless, y: f64| {
+        pointer(h, json!([{"kind": "down", "x": 0.3, "y": y}, {"kind": "drag", "x": 0.4, "y": y}, {"kind": "up", "x": 0.4, "y": y}]));
+        h.step();
+    };
+    stroke(&mut h, 0.4);
+    // tighter for the next stroke
+    let r = h.request("ui.set", json!({"brushAutoRange": -50.0}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    stroke(&mut h, 0.6);
+    let d = develop(&h);
+    let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };
+    let got: Vec<f64> = strokes.iter().map(|s| s.auto_range).collect();
+    assert_eq!(got.len(), 2, "{strokes:?}");
+    assert!((got[0] - f64::from(wide)).abs() < 1e-3 && got[1] == -50.0, "each as painted: {got:?}");
+    h.settle(SETTLE);
+}
+
 #[test]
 fn remove_spots_by_pointer_and_keyboard() {
     let mut h = detail("panel.remove");

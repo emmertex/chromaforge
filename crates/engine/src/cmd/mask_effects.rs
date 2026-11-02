@@ -48,11 +48,18 @@ pub struct BrushSettings {
     pub flow: f64,
     pub density: f64,
     pub auto_mask: bool,
+    /// Auto Mask range, −100 (tight) … 0 … +100 (wide) ([`lcc_develop::BrushStroke::auto_range`]).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub auto_range: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl Default for BrushSettings {
     fn default() -> Self {
-        Self { size: 0.04, feather: 50.0, flow: 100.0, density: 100.0, auto_mask: false }
+        Self { size: 0.04, feather: 50.0, flow: 100.0, density: 100.0, auto_mask: false, auto_range: 0.0 }
     }
 }
 
@@ -66,6 +73,7 @@ impl BrushSettings {
             flow: c(self.flow, 1.0, 100.0, d.flow),
             density: c(self.density, 1.0, 100.0, d.density),
             auto_mask: self.auto_mask,
+            auto_range: c(self.auto_range, -lcc_develop::AUTO_RANGE_MAX, lcc_develop::AUTO_RANGE_MAX, d.auto_range),
         }
     }
 }
@@ -615,7 +623,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Mask Effect",
             [],
             None,
-            "{name, id?, group?, fields?: \"all\" (default) | \"changed\" | [slider], amount?: bool (carry Amount), brush?: {size, feather, flow, density, auto_mask}} — the selected mask's sliders as an effect preset (replaces one of that name), saved with the library",
+            "{name, id?, group?, fields?: \"all\" (default) | \"changed\" | [slider], amount?: bool (carry Amount), brush?: {size, feather, flow, density, auto_mask, auto_range?}} — the selected mask's sliders as an effect preset (replaces one of that name), saved with the library",
             has_active,
             save_effect
         ),

@@ -89,11 +89,13 @@ fn take_brush(app: &mut LccApp, b: &Value) {
     if let Some(v) = b.get("auto_mask").and_then(Value::as_bool) {
         app.ui.brush_auto_mask = v;
     }
+    // (left out when it is the default)
+    app.ui.brush_auto_range = f("auto_range").unwrap_or(0.0).clamp(-lcc_develop::AUTO_RANGE_MAX, lcc_develop::AUTO_RANGE_MAX) as f32;
 }
 
 /// The brush settings in use, as an effect carries them.
 fn brush_now(app: &LccApp) -> Value {
-    json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow, "auto_mask": app.ui.brush_auto_mask})
+    json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow, "auto_mask": app.ui.brush_auto_mask, "auto_range": app.ui.brush_auto_range})
 }
 
 /// Open the New Effect Preset dialog for the selected mask.

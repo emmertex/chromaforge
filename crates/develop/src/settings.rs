@@ -1302,6 +1302,13 @@ pub struct BrushStroke {
     /// solid core, Feather adds a halo outside it, dabs and strokes add up). Old strokes keep their look.
     #[serde(skip_serializing_if = "is_legacy_brush")]
     pub model: u8,
+    /// Auto Mask range (−100 tight … 0 … +100 wide), fixed when the stroke is painted: how different a pixel
+    /// may be from the one under the dab and still take the paint. 0 (the default, strokes saved before the
+    /// slider and strokes imported from Lightroom) is the limits measured on Lightroom Classic; the range
+    /// scales them all together, by ½ at −100 and 2× at +100 ([`BrushStroke::auto_range_scale`]). Only a
+    /// Lightroom-model stroke with Auto Mask on uses it.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub auto_range: f64,
 }
 
 /// The brush model of strokes saved before the app followed Lightroom's ([`BrushStroke::model`]).
@@ -1324,7 +1331,17 @@ impl BrushStroke {
         let p = self.pressure.get(i).or(self.pressure.last()).copied().unwrap_or(1.0);
         if p.is_nan() { 1.0 } else { p.clamp(0.0, 1.0) }
     }
+
+    /// How much [`BrushStroke::auto_range`] widens Auto Mask's limits: `2^(range / 100)`, ½ (tight) … 1 … 2
+    /// (wide); a hostile value is clamped, NaN is 1.
+    pub fn auto_range_scale(&self) -> f32 {
+        let v = if self.auto_range.is_finite() { self.auto_range.clamp(-AUTO_RANGE_MAX, AUTO_RANGE_MAX) } else { 0.0 };
+        2f64.powf(v / AUTO_RANGE_MAX) as f32
+    }
 }
+
+/// The ends of [`BrushStroke::auto_range`]: −this is tightest, +this widest.
+pub const AUTO_RANGE_MAX: f64 = 100.0;
 
 impl Default for BrushStroke {
     fn default() -> Self {
@@ -1338,6 +1355,7 @@ impl Default for BrushStroke {
             auto_mask: false,
             pressure: Vec::new(),
             model: BRUSH_MODEL_LEGACY,
+            auto_range: 0.0,
         }
     }
 }

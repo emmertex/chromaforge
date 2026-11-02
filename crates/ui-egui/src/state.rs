@@ -1262,6 +1262,9 @@ pub struct UiState {
     pub brush_erase: bool,
     /// Brush Auto Mask: dabs stick to areas like the one under the brush centre.
     pub brush_auto_mask: bool,
+    /// Brush Auto Mask range, −100 (tight) … 0 (Lightroom's limits) … 100 (wide): kept with each stroke painted
+    /// ([`lcc_develop::BrushStroke::auto_range`]), so changing it leaves the strokes already painted.
+    pub brush_auto_range: f32,
     /// Brush Pen Pressure: a pen's pressure scales each dab's size and flow (a mouse paints at full pressure).
     pub brush_pressure: bool,
     /// Remove tool brush: size (fraction of the long edge), feather and opacity (0..100).
@@ -2043,6 +2046,7 @@ impl Default for UiState {
             brush_presets: [BrushPreset::default(), BrushPreset { size: 0.012, feather: 20.0, flow: 100.0, density: 100.0 }],
             brush_erase: false,
             brush_auto_mask: false,
+            brush_auto_range: 0.0,
             brush_pressure: true,
             remove_size: 0.02,
             remove_feather: 50.0,

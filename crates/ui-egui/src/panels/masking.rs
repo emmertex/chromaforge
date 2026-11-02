@@ -1814,6 +1814,28 @@ fn component_menu(app: &mut LccApp, ui: &mut egui::Ui, op: &str) {
     }
 }
 
+/// Auto Mask range: how different a pixel may be from the one under the brush and still take the
+/// paint, −100 (tight) … 0 (Lightroom's limits, a double-click goes back) … 100 (wide). Each stroke
+/// keeps the range it was painted with.
+fn auto_range_slider(app: &mut LccApp, ui: &mut egui::Ui) {
+    let max = lcc_develop::AUTO_RANGE_MAX;
+    let s = ControlSpec {
+        id: "ui.brushAutoRange",
+        label: "Auto Mask range",
+        section: Section::Light,
+        min: -max,
+        max,
+        default: 0.0,
+        step: 1.0,
+        decimals: 0,
+        track: Track::Centered,
+    };
+    let out = slider(ui, &s, f64::from(app.ui.brush_auto_range), true, None);
+    if let Some(v) = out.value.filter(|v| v.is_finite()) {
+        app.ui.brush_auto_range = v.clamp(-max, max) as f32;
+    }
+}
+
 fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 0 }).show(ui, |ui| {
@@ -1842,6 +1864,12 @@ fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
         {
             app.ui.brush_auto_mask = auto;
         }
+    });
+    // under Auto Mask, lined up with the brush's other sliders
+    if app.ui.brush_auto_mask {
+        auto_range_slider(app, ui);
+    }
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 0, bottom: 0 }).show(ui, |ui| {
         let mut pressure = app.ui.brush_pressure;
         if ui
             .checkbox(&mut pressure, crate::i18n::tr("Pen Pressure"))
