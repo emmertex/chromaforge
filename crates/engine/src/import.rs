@@ -122,6 +122,8 @@ pub struct ImportOptions {
     pub metadata_preset: Option<String>,
     /// Copy: raws are copied as DNG (Copy as DNG).
     pub convert_dng: bool,
+    /// The camera profile the raws get ([`crate::profile_bodies::ImportProfile`]); a sidecar's own wins.
+    pub camera_profile: crate::profile_bodies::ImportProfile,
     /// A batch-edit recipe: develop control id / value pairs (e.g. `light.exposure` → 0.5),
     /// applied to every imported photo *after* its XMP sidecar, camera default and import preset,
     /// as one more History step (`Import adjustments`). Only the named controls change; the recipe
@@ -1889,6 +1891,17 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                         warning.photo = Some(id.0);
                         warning
                     }));
+                }
+                // the camera profile chosen for this import (a sidecar that sets develop settings keeps its own)
+                if sidecar.as_ref().is_none_or(|sc| sc.develop.is_none())
+                    && let Some(id) = opts.camera_profile.for_photo(&p)
+                    && p.develop.profile.camera != id
+                {
+                    let mut d = (*p.develop).clone();
+                    d.profile.camera = id;
+                    let look = std::sync::Arc::new(d);
+                    p.develop = look.clone();
+                    p.import_look = Some(look);
                 }
                 if let Some(mp) = opts.metadata_preset.as_ref().and_then(|n| s.metadata_presets.iter().find(|m| m.name.eq_ignore_ascii_case(n))) {
                     crate::cmd::metadata::apply_to(&mut p.meta, &mp.fields);

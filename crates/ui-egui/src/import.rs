@@ -70,6 +70,9 @@ pub struct ImportDialog {
     pub new_album: String,
     /// Preset id ("" = none).
     pub preset: String,
+    /// The camera profile every raw of its camera gets ("" = automatic: each body's own; ported
+    /// from OneSlips, LR-PROF-IMPORT-APPLY).
+    pub camera_profile: String,
     /// An optional batch-edit recipe: develop control id → value (only controls moved off their
     /// default are kept), set on every photo this import adds, on top of its sidecar, camera
     /// default and preset (the `recipe` param of `library.import`).
@@ -876,6 +879,9 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
     if !d.preset.is_empty() {
         params["preset"] = json!(d.preset);
     }
+    if !d.camera_profile.is_empty() {
+        params["cameraProfile"] = json!({"all": d.camera_profile});
+    }
     let mut meta_preset = d.metadata_preset.clone();
     if d.creating_meta_preset && !d.new_meta_name.trim().is_empty() {
         let name = d.new_meta_name.trim().to_string();
@@ -1589,6 +1595,26 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
                     d.preset = pid;
                 }
             });
+    });
+    field(ui, "Camera Profile", |ui| {
+        // automatic: each body's own camera profile (Settings ▸ Profiles), else the camera's default;
+        // a profile chosen here goes on the raws of its camera only
+        let mut options: Vec<(String, String)> =
+            vec![(String::new(), crate::i18n::tr("Automatic").to_string()), ("lc".into(), crate::i18n::tr("Built-in colour").to_string())];
+        for (pid, p) in lcc_raw::dcp::library() {
+            let name = if p.name.is_empty() { pid.trim_start_matches("dcp:").to_string() } else { p.name.clone() };
+            options.push((pid, format!("{name} · {}", p.model)));
+        }
+        for c in lcc_raw::dcp::calibrated() {
+            options.extend(c.looks.iter().map(|(pid, p)| (pid.clone(), format!("{} · {}", p.name, p.model))));
+        }
+        let cur = options.iter().find(|(id, _)| *id == d.camera_profile).map(|(_, n)| n.clone()).unwrap_or_else(|| d.camera_profile.clone());
+        let combo = crate::widgets::combo_box("import-camera-profile").selected_text(cur).height(300.0).show_ui(ui, |ui| {
+            for (id, name) in &options {
+                ui.selectable_value(&mut d.camera_profile, id.clone(), name);
+            }
+        });
+        register(ui.ctx(), "combo:importCameraProfile", combo.response.rect);
     });
     field(ui, "Metadata", |ui| metadata_preset_picker(app, ui, d));
     field(ui, "Keywords", |ui| {

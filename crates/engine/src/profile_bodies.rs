@@ -34,6 +34,71 @@ pub fn key_of(p: &Photo) -> Option<String> {
     body(p).map(|b| key(model, &b))
 }
 
+/// The camera profile an import gives its raws (`library.import cameraProfile`; ported from OneSlips,
+/// LR-PROF-IMPORT-APPLY): each body's own default (automatic), one profile for every raw of its
+/// camera, or one per body (keys as `profiles.bodies` lists them) for this import only.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ImportProfile {
+    #[default]
+    Auto,
+    All(String),
+    PerBody(std::collections::BTreeMap<String, String>),
+}
+
+impl ImportProfile {
+    /// Parse `cameraProfile`: `"auto"` / absent, `{all: id}` or `{perBody: {body: id}}`; ids as
+    /// `develop.cameraProfile` takes them (`""`: the camera's default).
+    pub fn parse(v: Option<&serde_json::Value>) -> Result<Self, String> {
+        use serde_json::Value;
+        let check = |id: &Value| -> Result<String, String> {
+            let id = id.as_str().ok_or("a camera profile id must be a string")?.trim();
+            if !id.is_empty() && !known_profile(id) {
+                return Err(format!("unknown camera profile `{id}`"));
+            }
+            Ok(id.to_string())
+        };
+        match v {
+            None | Some(Value::Null) => Ok(Self::Auto),
+            Some(Value::String(s)) if s == "auto" => Ok(Self::Auto),
+            Some(Value::Object(o)) if o.len() == 1 && o.contains_key("all") => Ok(Self::All(check(&o["all"])?)),
+            Some(Value::Object(o)) if o.len() == 1 && o.contains_key("perBody") => {
+                let m = o["perBody"].as_object().ok_or("`perBody` must be {body: profile id}")?;
+                if m.len() > 10_000 {
+                    return Err("too many bodies".into());
+                }
+                let mut out = std::collections::BTreeMap::new();
+                for (k, id) in m {
+                    if k.trim().is_empty() || k.len() > 200 {
+                        return Err("a body key must be as profiles.bodies lists it".into());
+                    }
+                    out.insert(k.trim().to_string(), check(id)?);
+                }
+                Ok(Self::PerBody(out))
+            }
+            Some(_) => Err("`cameraProfile` is \"auto\", {all: profile id} or {perBody: {body: profile id}}".into()),
+        }
+    }
+
+    /// The camera profile photo `p` gets from this choice (`None`: the automatic one stays): never
+    /// one made for another camera model.
+    pub fn for_photo(&self, p: &Photo) -> Option<String> {
+        let id = match self {
+            Self::Auto => return None,
+            Self::All(id) => id.clone(),
+            Self::PerBody(m) => m.get(&key_of(p)?)?.clone(),
+        };
+        if !p.develops_raw() {
+            return None;
+        }
+        let camera = if p.meta.camera.trim().is_empty() { p.meta.camera_model.trim() } else { p.meta.camera.trim() };
+        let fits = id.is_empty()
+            || id == "lc"
+            || lcc_raw::dcp::library_get(&id).is_some_and(|d| lcc_raw::dcp::covers_model(&d.model, camera) || d.model == p.meta.camera_model)
+            || lcc_raw::dcp::calibrated_for_camera(camera).is_some_and(|c| c.looks.iter().any(|(i, _)| *i == id));
+        fits.then_some(id)
+    }
+}
+
 /// Whether `id` names a camera profile `develop.cameraProfile` accepts (other than the default "").
 pub fn known_profile(id: &str) -> bool {
     id == "lc" || lcc_raw::dcp::library_get(id).is_some() || lcc_raw::dcp::calibrated_look_exists(id)

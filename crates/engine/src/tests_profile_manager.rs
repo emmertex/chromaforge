@@ -132,3 +132,43 @@ fn hostile_profile_manager_requests_are_errors() {
     let big = crate::profile_edits::ProfileEdits { order: vec!["x".into(); 20_000], ..Default::default() }.bounded();
     assert_eq!(big.order.len(), crate::profile_edits::MAX_ENTRIES);
 }
+
+#[test]
+fn an_import_gives_its_raws_the_camera_profile_chosen_per_body_or_for_all() {
+    let dir = std::env::temp_dir().join(format!("lcc-import-bodyprof-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let corners = lcc_camprof::ChartCorners::from_rect(10.0, 10.0, 40.0, 30.0);
+    let write = |name: &str, serial: &str| {
+        let p = dir.join(name);
+        std::fs::write(&p, crate::chart_profiling::demo_chart_dng_of_body(64, 48, &corners, "D55", true, Some(serial)).unwrap()).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let (a, b) = (write("SA0001.dng", "SN1"), write("SB0001.dng", "SN2"));
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [a]})).unwrap();
+    let id = PhotoId(r["imported"][0].as_u64().unwrap());
+    let ph = s.catalog.photo(id).unwrap();
+    let key = crate::profile_bodies::key_of(ph).unwrap();
+    // (its serial, else the file names' key)
+    let (mine, theirs) = if key.ends_with("|SN1") { ("SN1", "SN2") } else { ("file:SA", "file:SB") };
+    assert!(key.ends_with(mine), "{key}");
+    // per body, for this import only: SN2's body gets the built-in colour, SN1 isn't named
+    s.execute("library.remove", &json!({"ids": [id.0]})).ok();
+    let other = key.replace(mine, theirs);
+    let r = s.execute("library.import", &json!({"paths": [b], "cameraProfile": {"perBody": {other: "lc"}}})).unwrap();
+    let idb = PhotoId(r["imported"][0].as_u64().unwrap());
+    assert_eq!(s.catalog.photo(idb).unwrap().develop.profile.camera, "lc");
+    assert!(s.body_profiles.is_empty(), "nothing is remembered for the body");
+    for bad in [
+        json!("manual"),
+        json!({"all": "nope"}),
+        json!({"all": 3}),
+        json!({"perBody": []}),
+        json!({"perBody": {"": "lc"}}),
+        json!({"all": "lc", "x": 1}),
+    ] {
+        assert!(s.execute("library.import", &json!({"paths": [b], "cameraProfile": bad})).is_err(), "{bad}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
