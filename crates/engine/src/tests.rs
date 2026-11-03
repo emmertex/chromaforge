@@ -194,7 +194,7 @@ fn albums_crud() {
     s.execute("album.delete", &json!({"id": f})).unwrap();
     assert!(s.catalog.album(lcc_catalog::AlbumId(a)).is_none());
     assert!(s.catalog.album(lcc_catalog::AlbumId(f)).is_none());
-    assert_eq!(s.catalog.photos().count(), 24, "album deletion keeps the photos");
+    assert_eq!(s.catalog.photos().count(), 24, "collection deletion keeps the photos");
 }
 
 /// Given an album and a folder, when something is created inside each, then only the folder

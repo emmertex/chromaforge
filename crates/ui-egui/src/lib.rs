@@ -1121,6 +1121,7 @@ impl LccApp {
     /// [`LccApp::run`], keeping what kind of error a refusal is: for code that decides on it
     /// (offer a model's download, treat a cancel as one) instead of reading the message.
     pub fn run_typed(&mut self, id: &str, params: Value) -> Result<Value, CommandError> {
+        let id = &*lcc_engine::canonical_id(id);
         self.note_ran(id);
         shortcuts::set_active(self.ui.settings.keymap_set);
         if let Some(r) = edit_in::intercept(self, id, &params) {

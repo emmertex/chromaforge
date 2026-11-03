@@ -1324,10 +1324,10 @@ fn albums_tree(app: &mut LccApp, ui: &mut egui::Ui, all: &AlbumKids, parent: Opt
             }
             if let Some(rules) = &a.smart {
                 // one tooltip: the rules, then what needs fixing in them
-                let mut tip = crate::i18n::tr_format!("Smart album: {}", crate::i18n::filter_label(rules, &app.session.catalog));
+                let mut tip = crate::i18n::tr_format!("Smart collection: {}", crate::i18n::filter_label(rules, &app.session.catalog));
                 if !problems.is_empty() {
                     tip.push_str("\n\n");
-                    tip.push_str(crate::i18n::tr("Some rules need fixing (Edit Smart Album…):"));
+                    tip.push_str(crate::i18n::tr("Some rules need fixing (Edit Smart Collection…):"));
                     for p in &problems {
                         tip.push('\n');
                         tip.push_str(&crate::i18n::problem_line(p));
@@ -1563,7 +1563,7 @@ fn album_drag_over(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, r
     opened
 }
 
-/// While an album that sits in a folder is dragged: the "Albums" header takes it back to the top
+/// While an album that sits in a folder is dragged: the "Collections" header takes it back to the top
 /// level (outlined, with a hint). The header stays in view however long the tree is, and nothing
 /// moves when it appears.
 fn top_level_drop_target(app: &mut LccApp, ui: &mut egui::Ui, header: Rect) {
@@ -1637,7 +1637,7 @@ fn drop_target(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, a: &A
                 if skipped > 0 {
                     msg.push_str(" · ");
                     msg.push_str(&crate::i18n::tr_format!(
-                        "{n} Local photo{} skipped: albums hold library photos (Add to My Photos first)",
+                        "{n} Local photo{} skipped: collections hold library photos (Add to My Photos first)",
                         if skipped == 1 { "" } else { "s" },
                         n = skipped
                     ));
@@ -1723,8 +1723,8 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
             && !a.is_smart()
             && !a.quick
             && ui
-                .button(crate::i18n::tr("Duplicate Album"))
-                .on_hover_text(crate::i18n::tr("Another album with the same photos, to arrange in its own order"))
+                .button(crate::i18n::tr("Duplicate Collection"))
+                .on_hover_text(crate::i18n::tr("Another collection with the same photos, to arrange in its own order"))
                 .clicked()
         {
             match app.run("album.duplicate", json!({"id": a.id.0})) {
@@ -1749,7 +1749,7 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
         if a.quick && ui.button(crate::i18n::tr("Clear Quick Collection")).clicked() {
             let _ = app.run("album.clearQuick", json!({}));
         }
-        if a.is_smart() && ui.button(crate::i18n::tr("Edit Smart Album…")).clicked() {
+        if a.is_smart() && ui.button(crate::i18n::tr("Edit Smart Collection…")).clicked() {
             // the same editor as `dialog.smartAlbum` (older smart albums keep their filter fields;
             // it works on the rule set, upgraded)
             let _ = app.run("dialog.smartAlbum", json!({"id": a.id.0}));
@@ -1767,12 +1767,12 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
                 let _ = app.run("library.selectAll", json!({}));
             };
             let has_photos = app.session.catalog.album_count(a.id) > 0;
-            if ui.add_enabled(has_photos, egui::Button::new(crate::i18n::tr("Export Album…"))).clicked() {
+            if ui.add_enabled(has_photos, egui::Button::new(crate::i18n::tr("Export Collection…"))).clicked() {
                 show_all(app);
                 let _ = app.run("dialog.export", json!({}));
             }
             ui.add_enabled_ui(has_photos, |ui| {
-                crate::widgets::menu_button(ui, crate::i18n::tr("Export Album with Preset"), |ui| {
+                crate::widgets::menu_button(ui, crate::i18n::tr("Export Collection with Preset"), |ui| {
                     for (p, _) in app.session.all_export_presets() {
                         if ui.button(&p.name).clicked() {
                             show_all(app);

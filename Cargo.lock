@@ -4858,6 +4858,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "pollster 1.0.1",
  "rayon",
+ "redb",
  "rustix 1.1.5",
  "serde",
  "serde_json",

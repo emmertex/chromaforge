@@ -144,7 +144,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
             "Add image/raw files to the library. Folders are scanned recursively for photos; relative paths resolve against the server's working directory. The first imported photo becomes active. Returns the new photo ids.",
             json!({
                 "paths": {"type": "array", "items": {"type": "string"}, "description": "Files and/or folders"},
-                "album": {"type": "integer", "description": "Also add to this album id"},
+                "album": {"type": "integer", "description": "Also add to this collection id"},
                 "mode": {"type": "string", "enum": ["add", "copy", "move"], "description": "add (default) = reference the files in place; copy = copy them into `destination` (default: the library's Originals/); move = as copy, then each original and its XMP sidecars are removed from the source once the copy is verified and catalogued (duplicates and failures keep their sources; `kept` lists sources left in place and why; undo leaves the moved files at the destination)"},
                 "destination": {"type": "string", "description": "Copy or move: destination folder"},
                 "organize": {"type": "string", "description": "Copy or move: folders inside the destination — date (YYYY/YYYY-MM-DD, default), month (YYYY/YYYY-MM), flat, or a folder template such as {date:%Y}/{date:%Y%m%d} (→ 2026/20260114; the template's / make the levels, tokens as for rename; relative, no ..). Dated by capture time, else the import time"},

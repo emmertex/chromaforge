@@ -462,7 +462,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::widgets::register(ui.ctx(), "field:cullSimilar", r.rect);
                     clamp_cull_burst(burst_gap, similarity);
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Lower it when a panning or moving burst splits into several groups.")).color(t.text_dim));
-                    crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Scores stay on the photos: filter or make smart albums with Focus, Eyes Open, Aesthetic and Cull Score.")).color(t.text_dim));
+                    crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Scores stay on the photos: filter or make smart collections with Focus, Eyes Open, Aesthetic and Cull Score.")).color(t.text_dim));
                 }
                 Dialog::WhatsNew => {
                     ui.scope(|ui| {
@@ -1955,8 +1955,8 @@ fn created_in(app: &mut LccApp, command: &str, params: serde_json::Value) -> Res
 pub(crate) fn album_entries(cat: &lcc_catalog::Catalog, editing: Option<u64>) -> Vec<crate::album_picker::AlbumEntry> {
     let editing = editing.map(lcc_catalog::AlbumId);
     crate::album_picker::entries_from(cat, |a| match editing {
-        Some(e) if a.id == e => Some(crate::i18n::tr("This is the album you're editing").to_string()),
-        Some(e) if cat.album_reaches(a.id, e) => Some(crate::i18n::tr("It tests this album, so testing it back would loop").to_string()),
+        Some(e) if a.id == e => Some(crate::i18n::tr("This is the collection you're editing").to_string()),
+        Some(e) if cat.album_reaches(a.id, e) => Some(crate::i18n::tr("It tests this collection, so testing it back would loop").to_string()),
         _ => None,
     })
 }
@@ -2146,7 +2146,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             if let Some(problem) = rules.check_for(&app.session.catalog, id.map(lcc_catalog::AlbumId)).first() {
                 return Err(problem.to_string());
             }
-            let name = if name.trim().is_empty() { "Smart Album".to_string() } else { name.trim().to_string() };
+            let name = if name.trim().is_empty() { "Smart Collection".to_string() } else { name.trim().to_string() };
             match id {
                 // the name and the rules together: one undo step, both or neither
                 Some(id) => app.run("album.setRules", json!({"id": id, "name": name, "replace": true, "rules": {"ruleSet": rules}})),
@@ -2154,7 +2154,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
         }
         Dialog::NewSmartAlbum { name, parent } => {
-            created_in(app, "album.createSmart", json!({"name": if name.trim().is_empty() { "Smart Album" } else { name }, "parent": parent}))
+            created_in(app, "album.createSmart", json!({"name": if name.trim().is_empty() { "Smart Collection" } else { name }, "parent": parent}))
         }
         Dialog::CreatePreset { name, group, groups } => {
             let mut p = pick_params(groups);
@@ -3291,12 +3291,12 @@ fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, prese
                 let r = crate::dialog_frame::checkbox(ui, &mut opts.add_to_photos, crate::i18n::tr("Add to Apple Photos"));
                 crate::widgets::register(ui.ctx(), "exportAddToPhotos", r.rect);
                 if opts.add_to_photos {
-                    field(ui, "Album", |ui| {
+                    field(ui, "Collection", |ui| {
                         crate::widgets::named(
                             ui.add(
                                 egui::TextEdit::singleline(&mut opts.photos_album).hint_text(crate::i18n::tr("none")).desired_width(f32::INFINITY),
                             ),
-                            crate::i18n::tr("Album"),
+                            crate::i18n::tr("Collection"),
                         )
                     });
                     crate::dialog_frame::note(

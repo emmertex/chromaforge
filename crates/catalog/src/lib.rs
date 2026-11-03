@@ -39,6 +39,8 @@ pub mod store;
 pub mod tally;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transfer;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod upgrade_backup;
 pub mod xmp_state;
 
 use std::collections::BTreeMap;
@@ -63,7 +65,7 @@ pub use xmp_state::{SidecarStat, XmpStamp, XmpStatus};
 pub enum CatalogError {
     #[error("no such photo {0:?}")]
     NoPhoto(PhotoId),
-    #[error("no such album {0:?}")]
+    #[error("no such collection {0:?}")]
     NoAlbum(AlbumId),
     #[error("no such stack {0:?}")]
     NoStack(StackId),
@@ -637,7 +639,7 @@ impl Catalog {
             path: Vec::new(),
             field: Some("album".into()),
             issue: rules::Issue::AlbumLoop,
-            message: format!("its album filter (album {}) would make this album include itself", a.0),
+            message: format!("its collection filter (collection {}) would make this collection include itself", a.0),
         })
     }
 
@@ -669,12 +671,12 @@ impl Catalog {
     /// Smart-album rules must not reference another smart album (no recursion) or deleted photos.
     fn validate_rules(&self, rules: &Filter) -> Result<()> {
         if rules.deleted {
-            return Err(CatalogError::Invalid("smart album rules can't select deleted photos".into()));
+            return Err(CatalogError::Invalid("smart collection rules can't select deleted photos".into()));
         }
         if let Some(a) = rules.album
             && self.albums.get(&a).is_some_and(Album::is_smart)
         {
-            return Err(CatalogError::Invalid("smart album rules can't reference another smart album".into()));
+            return Err(CatalogError::Invalid("smart collection rules can't reference another smart collection".into()));
         }
         Ok(())
     }
@@ -830,7 +832,7 @@ impl Catalog {
     pub fn apply_new(&mut self, op: Op) -> Result<Op> {
         if let Some((id, name)) = self.would_put_on_a_loop(&op) {
             return Err(CatalogError::Invalid(format!(
-                "smart album “{name}” (album {}) would include itself: its rules lead back to it through the albums they test",
+                "smart collection “{name}” (collection {}) would include itself: its rules lead back to it through the collections they test",
                 id.0
             )));
         }
@@ -1067,7 +1069,7 @@ impl Catalog {
             }
             Op::AddAlbum { album } => {
                 if self.albums.contains_key(&album.id) {
-                    return Err(CatalogError::Invalid(format!("album {:?} exists", album.id)));
+                    return Err(CatalogError::Invalid(format!("collection {:?} exists", album.id)));
                 }
                 if let Some(parent) = album.parent
                     && !self.albums.get(&parent).is_some_and(|a| a.folder)
@@ -1076,13 +1078,13 @@ impl Catalog {
                 }
                 if let Some(rules) = &album.smart {
                     if album.folder || !album.photos.is_empty() {
-                        return Err(CatalogError::Invalid("a smart album holds rules, not photos".into()));
+                        return Err(CatalogError::Invalid("a smart collection holds rules, not photos".into()));
                     }
                     self.validate_rules(rules)?;
                 }
                 let id = album.id;
                 // the largest id would leave no next one (a damaged log or a hostile op)
-                let next = id.0.checked_add(1).ok_or_else(|| CatalogError::Invalid(format!("album id {} is out of range", id.0)))?;
+                let next = id.0.checked_add(1).ok_or_else(|| CatalogError::Invalid(format!("collection id {} is out of range", id.0)))?;
                 self.next_album = self.next_album.max(next);
                 self.index.album_changed(id, Some(&album.photos));
                 self.albums.insert(id, album);
@@ -1137,7 +1139,7 @@ impl Catalog {
                 let a = self.albums.get_mut(&id).ok_or(CatalogError::NoAlbum(id))?;
                 if (a.folder || a.smart.is_some()) && !photos.is_empty() {
                     return Err(CatalogError::Invalid(
-                        if a.folder { "folders can't hold photos" } else { "smart albums update automatically" }.into(),
+                        if a.folder { "folders can't hold photos" } else { "smart collections update automatically" }.into(),
                     ));
                 }
                 // photos taken out leave the custom order: added again, they go at the end
@@ -1157,7 +1159,7 @@ impl Catalog {
             Op::SetAlbumPhotoOrder { id, order } => {
                 let a = self.album_mut(id)?;
                 if (a.folder || a.smart.is_some()) && !order.is_empty() {
-                    return Err(CatalogError::Invalid("only regular albums have a custom order".into()));
+                    return Err(CatalogError::Invalid("only regular collections have a custom order".into()));
                 }
                 let members: std::collections::HashSet<PhotoId> = a.photos.iter().copied().collect();
                 let mut seen = std::collections::HashSet::new();
@@ -1179,7 +1181,7 @@ impl Catalog {
                 }
                 let a = self.album_mut(id)?;
                 if creation.is_some() && (a.folder || a.smart.is_some()) {
-                    return Err(CatalogError::Invalid("folders and smart albums can't hold a creation".into()));
+                    return Err(CatalogError::Invalid("folders and smart collections can't hold a creation".into()));
                 }
                 Op::SetAlbumCreation { id, creation: std::mem::replace(&mut a.creation, creation) }
             }
@@ -1187,7 +1189,7 @@ impl Catalog {
                 self.validate_rules(&rules)?;
                 let a = self.album_mut(id)?;
                 let Some(old) = a.smart.as_mut() else {
-                    return Err(CatalogError::Invalid("not a smart album".into()));
+                    return Err(CatalogError::Invalid("not a smart collection".into()));
                 };
                 Op::SetAlbumRules { id, rules: std::mem::replace(old, rules) }
             }
@@ -1495,7 +1497,7 @@ impl Catalog {
         }
         for (id, a) in self.albums.iter_mut() {
             if a.id != *id {
-                changed.push(format!("album {} was filed as {}", a.id.0, id.0));
+                changed.push(format!("collection {} was filed as {}", a.id.0, id.0));
                 a.id = *id;
             }
         }
@@ -1575,7 +1577,7 @@ impl Catalog {
                 chains.insert(c, if ok { Chain::Ok } else { Chain::Bad });
             }
             if !ok && let Some(a) = self.albums.get_mut(&id) {
-                changed.push(format!("album {}: its folder {} is missing, not a folder or inside it: moved to the top level", id.0, p.0));
+                changed.push(format!("collection {}: its folder {} is missing, not a folder or inside it: moved to the top level", id.0, p.0));
                 a.parent = None;
             }
         }
@@ -1830,6 +1832,8 @@ mod tests_sort_cache;
 mod tests_tally;
 #[cfg(test)]
 mod tests_torn_append;
+#[cfg(test)]
+mod tests_upgrade_backup;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_v4;

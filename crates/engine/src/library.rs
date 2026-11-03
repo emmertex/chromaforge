@@ -791,6 +791,7 @@ impl Session {
         let store_with_library = prefs.store_with_library;
         let own_store = store_with_library || self.app_store.is_none();
         let frozen = if own_store { serde_json::Map::new() } else { read_frozen(files.as_mut()) };
+        let upgraded = upgrade_notice(&report);
         self.library = Some(Library {
             dir,
             on_disk,
@@ -805,7 +806,7 @@ impl Session {
             forgot_local: None,
             presets_saved,
             view_written,
-            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(settings.warnings).collect(),
+            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(upgraded).chain(settings.warnings).collect(),
             warnings_reported: 0,
             blocked: settings.blocked,
             lock: lock.take(),
@@ -1401,6 +1402,20 @@ impl Session {
 /// The warning for a library opened without its one-program-at-a-time lock (issue #171): its
 /// file system can't lock `catalog.lock` (some network shares). It opens anyway, as documented —
 /// refusing would lock the user out — but the user must learn that a second program could open it.
+/// What an upgrade of the library's catalog did and how to go back (`None` when it wasn't
+/// upgraded, or no copy was kept: a new or in-memory library).
+fn upgrade_notice(report: &LoadReport) -> Option<String> {
+    let (from, kept) = (report.upgraded_from?, report.upgrade_backup.as_ref()?);
+    Some(format!(
+        "This library's catalog was upgraded from format v{from} to v{}, so older versions of the app can't open the library \
+         itself any more. A copy of it as it was is kept, unchanged, in {}: to go back to an older version, quit, copy the files \
+         in that folder over the library's own (or open the folder in the older version). Changes made since the upgrade are \
+         not in the copy.",
+        lcc_catalog::journal::VERSION,
+        kept.display()
+    ))
+}
+
 fn unlocked_warning(lock: Option<&LibraryLock>) -> Option<String> {
     lock.filter(|l| !l.held()).map(|_| {
         "This library could not be locked (its catalog.lock file can't be locked where it is stored, e.g. on some network \

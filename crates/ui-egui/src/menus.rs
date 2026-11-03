@@ -2123,7 +2123,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     },
                 ),
                 ("Photos".to_string(), info["photos"].to_string()),
-                ("Albums".to_string(), info["albums"].to_string()),
+                ("Collections".to_string(), info["albums"].to_string()),
             ];
             if let Some(dir) = info["dir"].as_str().or(info["path"].as_str()) {
                 rows.push(("Library".into(), dir.to_string()));
@@ -3116,7 +3116,7 @@ pub fn delete_in_album(app: &mut LccApp, ctx: &egui::Context) -> bool {
     let lcc_engine::LibrarySource::Album(aid) = app.session.source else { return false };
     let Some(album) = app.session.catalog.album(aid) else { return false };
     if album.is_smart() {
-        app.toast(ctx, crate::i18n::tr("Smart albums update automatically: change their rules, or use Photo ▸ Delete Photo"));
+        app.toast(ctx, crate::i18n::tr("Smart collections update automatically: change their rules, or use Photo ▸ Delete Photo"));
         return true;
     }
     if app.session.selected().is_empty() {

@@ -399,6 +399,17 @@ one pixel.
   (clicks, keys, drags) has played out. Widget ids for `ui.clickWidget` come from `ui.widgets`
   (e.g. `button:upright-auto`). A 1600×1000 demo snapshot takes ~1–2 s (debug build).
 
+## Collection command ids
+
+The interface calls albums **Collections**, as Lightroom Classic does. The commands keep their
+`album.*` ids, and each also answers to its collection name: `collection.<name>` runs
+`album.<name>` (`collection.create`, `collection.addPhotos`, `collection.setRules`, …),
+`collections.list` runs `albums.list`, and `dialog.newCollection`, `dialog.smartCollection`,
+`dialog.newSmartCollection` open the `dialog.newAlbum`, `dialog.smartAlbum`,
+`dialog.newSmartAlbum` dialogs. Both spellings take the same params and give the same result; the
+journal, saved scripts, keymaps and the catalog keep the album ids, so older scripts and libraries
+work unchanged. `engine.commands` lists the album ids.
+
 ## Import album picker
 
 In the Import Photos review, `albumPicker:import-album` opens the destination picker.
