@@ -2093,6 +2093,8 @@ mod tests_crop_aspect;
 mod tests_crop_aspects;
 #[cfg(test)]
 mod tests_denoise;
+#[cfg(all(test, feature = "denoise"))]
+mod tests_denoise_own;
 #[cfg(test)]
 mod tests_edit_in;
 #[cfg(test)]

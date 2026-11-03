@@ -1,6 +1,7 @@
 //! The AI Models dialog (`dialog.aiModels`): every AI mask model with its size, licence and
 //! download, and which model computes Object masks (`ai.models.setObjectModel`). Each Download
-//! button sits next to the size and licence it agrees to; nothing downloads by itself.
+//! button sits next to the size and licence it agrees to; nothing downloads by itself. The
+//! downloadable AI Denoise models are listed too (`denoise::ai_models_section`).
 
 use serde_json::json;
 
@@ -61,6 +62,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
             }
         }
     }
+    crate::panels::denoise::ai_models_section(app, ui, &t);
     crate::dialog_frame::group_begin(ui, Some("Object masks use"));
     let current = app.session.segmenter.object_model().key();
     let items: Vec<(&str, &str)> = OBJECT_MODELS.iter().map(|(k, l)| (*l, *k)).collect();
