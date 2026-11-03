@@ -2207,7 +2207,8 @@ impl LccApp {
         let mb = self.ui.settings.memory_mb;
         // automatic at startup: leave the engine's default alone
         if self.memory_applied != Some(mb) && (mb > 0 || self.memory_applied.is_some()) {
-            let mb = if mb == 0 { (lcc_engine::memory::default_budget() >> 20) as u32 } else { mb };
+            // 0 asks for the automatic budget itself (rounding it to whole MB here would set a budget
+            // slightly below automatic)
             let _ = self.session.execute("app.memoryBudget", &serde_json::json!({"mb": mb}));
         }
         self.memory_applied = Some(mb);

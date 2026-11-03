@@ -26,14 +26,19 @@ use serde::Serialize;
 /// budget set by hand may go up to [`max_budget`]).
 pub fn default_budget() -> usize {
     if let Some(mb) = lcc_brand::env("MEMORY_MB").and_then(|v| v.trim().parse::<usize>().ok()).filter(|m| *m >= 64) {
-        return mb.min(1 << 20) << 20;
+        return mb.min(1 << 20).saturating_mul(1 << 20);
     }
     auto_budget(total_ram())
 }
 
 /// The most the automatic budget takes. It was 1.5 GiB on every machine, so a 64 GB computer evicted
 /// decoded sources and previews almost at once and re-rendered every photo it went back to.
-pub const AUTO_MAX: usize = 16 << 30;
+pub const AUTO_MAX: usize = clamp_to_usize(16 << 30);
+
+/// `bytes` as a `usize`, held to `usize::MAX` on 32-bit targets (wasm32).
+const fn clamp_to_usize(bytes: u64) -> usize {
+    if bytes > usize::MAX as u64 { usize::MAX } else { bytes as usize }
+}
 
 /// The budget when it is unknown how much memory the computer has.
 const UNKNOWN_RAM_BUDGET: usize = 3 << 29; // 1.5 GiB
@@ -58,7 +63,7 @@ pub fn max_budget() -> usize {
 pub fn max_budget_of(ram: Option<usize>) -> usize {
     match ram {
         Some(ram) => (ram / 4).saturating_mul(3).max(512 << 20),
-        None => 1 << 40,
+        None => clamp_to_usize(1 << 40),
     }
 }
 
