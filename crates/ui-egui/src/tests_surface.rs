@@ -775,6 +775,11 @@ fn an_old_file_merging_its_mask_pages_says_so_in_a_toast_not_the_problem_window(
     assert!(!h.painted_text().iter().any(|t| t.contains("Settings file problem")), "{:?}", h.painted_text());
     assert!(h.painted_text().iter().any(|t| t.contains("Console: Masking and Mask are now one Masks page")), "{:?}", h.painted_text());
     assert!(h.app.surface.load_error.is_none());
-    h.settle(T);
-    assert!(store.load().unwrap().is_some_and(|t| t.contains("\"version\": 4") || t.contains("\"version\":4")), "saved in the new form");
+    // the save runs in the background: under a loaded machine it can take longer than one settle
+    let saved = || store.load().unwrap().is_some_and(|t| t.contains("\"version\": 4") || t.contains("\"version\":4"));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !saved() && Instant::now() < deadline {
+        h.settle(T);
+    }
+    assert!(saved(), "saved in the new form");
 }

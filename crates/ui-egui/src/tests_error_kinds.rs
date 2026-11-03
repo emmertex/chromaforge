@@ -125,7 +125,9 @@ fn the_ai_models_dialog_lists_the_downloadable_denoise_models() {
         lcc_testkit::skip!(Feature, "a build without own-model or rawnind-model offers no denoise download");
         return;
     }
-    let mut h = demo();
+    // tall enough for the whole dialog: the denoise models follow the AI mask and MediaPipe ones
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1200.0, 1800.0], 1.0);
     let dir = std::env::temp_dir().join(format!("lc-ui-denoise-known-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     h.app.session.set_denoise_models_dir(Some(dir.join("denoise-models")));
@@ -137,7 +139,12 @@ fn the_ai_models_dialog_lists_the_downloadable_denoise_models() {
         assert!(h.app.widgets.iter().any(|(n, _)| n == &w), "the dialog lists {id}");
         assert_eq!(h.request("ui.clickWidget", json!({"id": w}), std::time::Duration::from_secs(5))["ok"], true, "{id}");
         h.step();
-        assert!(matches!(h.app.ui.dialog, Some(Dialog::DenoiseModel { accepted: false, .. })), "Download shows the terms first");
+        assert!(
+            matches!(h.app.ui.dialog, Some(Dialog::DenoiseModel { accepted: false, .. })),
+            "Download shows the terms first: {:?} {:?}",
+            h.app.ui.dialog,
+            h.app.widgets.iter().find(|(n, _)| n == &w)
+        );
         h.app.run("dialog.aiModels", json!({})).unwrap();
         h.step();
     }
