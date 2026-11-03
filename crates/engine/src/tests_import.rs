@@ -188,7 +188,8 @@ fn a_deleted_browse_record_still_counts_as_the_files_own() {
     let mut s = Session::new().with_fs();
     let r = s.execute("library.import", &json!({"paths": [f], "local": true})).unwrap();
     let id = r["imported"][0].as_u64().unwrap();
-    s.execute("photo.delete", &json!({"ids": [id]})).unwrap();
+    // (photo.delete leaves browsed photos alone now: a record trashed by an older build)
+    s.catalog.apply(lcc_catalog::Op::SetDeleted { id: lcc_catalog::PhotoId(id), deleted: true }).unwrap();
     let scan = s.execute("library.importPreview", &json!({"paths": [f]})).unwrap();
     assert_eq!(scan["candidates"][0]["duplicate"], "path", "{scan}");
     assert_eq!(scan["candidates"][0].get("local"), None, "{scan}");

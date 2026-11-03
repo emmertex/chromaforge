@@ -1869,7 +1869,7 @@ fn sidebar_section_header(app: &mut LccApp, ui: &mut egui::Ui, id: &str, title: 
 }
 
 /// Classic's Local panel: the folders on disk, shown in place without being imported, under a line saying so.
-fn local_body(app: &mut LccApp, ui: &mut egui::Ui) {
+pub(crate) fn local_body(app: &mut LccApp, ui: &mut egui::Ui) {
     let Some(now) = local_now(app, ui) else { return };
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {

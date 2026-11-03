@@ -179,7 +179,7 @@ pub(crate) const TEST_DEVICES: &str = "import-test-devices";
 
 /// The cards and cameras mounted now (their names and paths come from the system: untrusted, only
 /// shown and scanned). From the background scan; none until it has run once.
-fn devices(ctx: &egui::Context) -> Vec<(String, String)> {
+pub(crate) fn devices(ctx: &egui::Context) -> Vec<(String, String)> {
     #[cfg(test)]
     if let Some(v) = ctx.data(|d| d.get_temp::<Vec<(String, String)>>(egui::Id::new(TEST_DEVICES))) {
         return v;
@@ -466,6 +466,12 @@ fn options_column(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog, bes
 
 /// The option rows (in a dialog form, so their groups are cards).
 fn options(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
+    options_for(app, ui, d, false);
+}
+
+/// [`options`]; `tab`: the Import tab's settings, which have no scanned files (no duplicates or
+/// Recently Deleted rows) and no recipe (a browsed photo keeps its own adjustments).
+pub(crate) fn options_for(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog, tab: bool) {
     let t = Tokens::get(ui.ctx());
     use crate::dialog_frame::{form_row, group_begin, help};
     group_begin(ui, Some("How"));
@@ -588,6 +594,10 @@ fn options(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             register(ui.ctx(), "check:importDng", r.rect);
         }
     }
+    if tab {
+        apply_rows(app, ui, d, tab);
+        return;
+    }
     let mut skip = !d.import_duplicates;
     let r = crate::dialog_frame::checkbox(ui, &mut skip, crate::i18n::tr("Don't Import Suspected Duplicates"));
     register(ui.ctx(), "check:importSkipDuplicates", r.rect);
@@ -607,6 +617,12 @@ fn options(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
         });
         help(ui, "Some are in Recently Deleted: Restore keeps their edits; As new deletes the old record first.");
     }
+    apply_rows(app, ui, d, tab);
+}
+
+/// The Apply card: preset, metadata, keywords, recipe (not in the Import tab), album.
+fn apply_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog, tab: bool) {
+    use crate::dialog_frame::{form_row, group_begin};
     group_begin(ui, Some("Apply"));
     form_row(ui, "Preset", |ui| {
         let cur = app
@@ -646,7 +662,9 @@ fn options(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
                 .small(),
         );
     }
-    crate::import::recipe_section(app, ui, d);
+    if !tab {
+        crate::import::recipe_section(app, ui, d);
+    }
     let mut albums = crate::album_picker::entries_from(&app.session.catalog, |_| None);
     albums.retain(|a| a.folder || !a.smart);
     d.album = d.album.filter(|id| albums.iter().any(|a| a.id == *id && !a.folder));

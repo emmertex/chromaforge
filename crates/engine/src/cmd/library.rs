@@ -60,6 +60,12 @@ pub fn import_params(s: &Session, p: &Value) -> Result<ImportRequest> {
         Some(id) => Some(s.presets.iter().find(|x| x.id == id).cloned().ok_or_else(|| bad("library.import", format!("unknown preset `{id}`")))?),
         None => None,
     };
+    // `presets`: a stack, applied in order after `preset` (the Import tab's, OneSlips LR-IMP-WINDOW)
+    let presets = strs(p, "presets")
+        .iter()
+        .filter(|x| !x.is_empty())
+        .map(|id| s.presets.iter().find(|x| x.id == *id).cloned().ok_or_else(|| bad("library.import", format!("unknown preset `{id}`"))))
+        .collect::<Result<Vec<_>>>()?;
     let album = p.get("album").and_then(Value::as_u64);
     if let Some(a) = album
         && s.catalog.album(AlbumId(a)).is_none_or(|al| al.folder || al.is_smart())
@@ -97,6 +103,7 @@ pub fn import_params(s: &Session, p: &Value) -> Result<ImportRequest> {
         on_deleted,
         mode,
         preset,
+        presets,
         keywords: strs(p, "keywords"),
         destination: str_param(p, "destination").map(str::to_string),
         organize,
@@ -111,6 +118,21 @@ pub fn import_params(s: &Session, p: &Value) -> Result<ImportRequest> {
     };
     let album_name = str_param(p, "albumName").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
     Ok(ImportRequest { paths, opts, album, album_name })
+}
+
+/// Why a browsed photo can't be deleted (OneSlips LR-IMP-NODELETE).
+pub const BROWSED_NO_DELETE: &str =
+    "browsed photos are not in the library, so there is nothing to delete: their files are never touched (reject them, or forget the folder)";
+
+/// `ids` without the browsed (Local, not imported) photos: deleting never touches those (a mixed
+/// selection keeps going with the library's photos); refused when nothing else is left.
+fn not_browsed(s: &Session, ids: Vec<PhotoId>, c: &str) -> Result<Vec<PhotoId>> {
+    let n = ids.len();
+    let kept: Vec<PhotoId> = ids.into_iter().filter(|id| !s.catalog.photo(*id).is_some_and(|p| p.local)).collect();
+    if kept.is_empty() && n > 0 {
+        return Err(bad(c, BROWSED_NO_DELETE));
+    }
+    Ok(kept)
 }
 
 /// After a batch of an import was committed: the album (a new one named `album_name` when there
@@ -1185,15 +1207,23 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         // ---- delete / restore
-        cmd!("photo.delete", "Delete Photo", ["Photo"], Some("Delete"), "{ids?} — moves to Recently Deleted", has_selection, |s, p| {
-            let before = s.visible_cloned();
-            let targets = s.targets(p)?;
-            // an open drag ends first, as its own undo step (the selection moves on)
-            s.end_interaction()?;
-            let n = mark_deleted(s, &targets, "Delete")?;
-            select_after_deletion(s, &before);
-            Ok(json!({"changed": n}))
-        }),
+        cmd!(
+            "photo.delete",
+            "Delete Photo",
+            ["Photo"],
+            Some("Delete"),
+            "{ids?} — moves to Recently Deleted (browsed photos not in the library are left alone: reject them instead; a selection of nothing else is refused)",
+            has_selection,
+            |s, p| {
+                let before = s.visible_cloned();
+                let targets = not_browsed(s, s.targets(p)?, "photo.delete")?;
+                // an open drag ends first, as its own undo step (the selection moves on)
+                s.end_interaction()?;
+                let n = mark_deleted(s, &targets, "Delete")?;
+                select_after_deletion(s, &before);
+                Ok(json!({"changed": n}))
+            }
+        ),
         cmd!("photo.restore", "Restore", ["Photo"], None, "{ids?}", has_selection, |s, p| for_targets(s, p, "Restore", |id| Some(Op::SetDeleted {
             id,
             deleted: false
@@ -1216,25 +1246,36 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"deleted": ids.len()}))
             }
         ),
-        cmd!("photo.deletePermanently", "Delete Permanently", ["Photo"], None, "{ids?}", has_selection, |s, p| {
-            let before = s.visible_cloned();
-            let t = s.targets(p)?;
-            // before the inverse ops are taken, so undo brings the photo back with its edit
-            s.end_interaction()?;
-            let op = s.catalog.delete_photos_permanently_ops(&t);
-            s.commit("Delete Permanently", op)?;
-            select_after_deletion(s, &before);
-            Ok(json!({"deleted": t.len()}))
-        }),
+        cmd!(
+            "photo.deletePermanently",
+            "Delete Permanently",
+            ["Photo"],
+            None,
+            "{ids?} (browsed photos not in the library are left alone)",
+            has_selection,
+            |s, p| {
+                let before = s.visible_cloned();
+                let t = not_browsed(s, s.targets(p)?, "photo.deletePermanently")?;
+                // before the inverse ops are taken, so undo brings the photo back with its edit
+                s.end_interaction()?;
+                let op = s.catalog.delete_photos_permanently_ops(&t);
+                s.commit("Delete Permanently", op)?;
+                select_after_deletion(s, &before);
+                Ok(json!({"deleted": t.len()}))
+            }
+        ),
         cmd!(
             "photo.deleteFromDisk",
             "Delete from Disk",
             ["Photo", "File"],
             None,
-            "{ids?} — moves the photos' files to the system trash and removes them from the library",
+            "{ids?} — moves the photos' files to the system trash and removes them from the library (refused for browsed photos not in the library: their files are never touched)",
             has_selection,
             |s, p| {
                 let before = s.visible_cloned();
+                if s.targets(p)?.iter().any(|id| s.catalog.photo(*id).is_some_and(|ph| ph.local)) {
+                    return Err(bad("photo.deleteFromDisk", BROWSED_NO_DELETE));
+                }
                 let r = crate::disk_delete::delete_from_disk(s, p)?;
                 select_after_deletion(s, &before);
                 Ok(r)
@@ -1258,7 +1299,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 let rejected: Vec<u64> = s
                     .visible_cloned()
                     .into_iter()
-                    .filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.flag == Flag::Reject))
+                    // (browsed photos not in the library are never deleted: LR-IMP-NODELETE)
+                    .filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.flag == Flag::Reject && !ph.local))
                     .map(|id| id.0)
                     .collect();
                 if rejected.is_empty() {
@@ -2096,7 +2138,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Photos",
             ["File"],
             Some("Cmd+Shift+I"),
-            "{paths: [file or folder (recursive)], mode?: add|copy|move (add = reference the files in place; copy = into the library's Originals/YYYY/YYYY-MM-DD/; move = as copy, then each original and its XMP sidecars are removed from the source — only after the copy is verified (a hard link on the same volume, else copied, synced and compared byte for byte) and its catalog record is saved; failed, duplicate and unchecked files keep their sources; a taken name gets -1, -2…; undo removes the photos from the library but leaves the files at the destination), destination?: folder for copies / moves, organize?: date (YYYY/YYYY-MM-DD) | month (YYYY/YYYY-MM) | flat | a folder template, e.g. `{date:%Y}/{date:%Y%m%d}` → 2026/20260114 (the template's `/` make the folders, each level expanded with the rename tokens and made a safe folder name: never outside the destination; must be relative, no `..`; a level with missing metadata is `unknown`) — dated by capture time, else the import time, rename?: file-name template for copies, original extension added (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext}; photo.renameTokens explains each; blank = keep names), renameStart?: 1 (must fit this platform; later files are reported failed if the sequence runs out), metadataPreset?: name, dng?: bool (copy raws as DNG; copy only), local?: bool (browsing: the photos stay out of the library, like library.browse; not with move), album?: albumId, albumName?: new album, preset?: presetId, recipe?: [{id: a plain develop control (develop.controls; no white balance, geometry or crop), value}] (a batch-edit recipe: each control is set to its value, clamped to the control's range, on every photo this import adds, after its sidecar, camera default and preset, as one extra History step named Import adjustments; a photo the library already has — a duplicate, one restored from Recently Deleted, one joined from a browsed folder — is not changed; a control a recipe may not name is refused before anything is imported; preset.saveRecipe keeps a recipe for reuse), keywords?: [..], cameraProfile?: auto (default: each body's own camera profile, else the camera's default) | {all: camera profile id} (every raw of that profile's camera) | {perBody: {body (as profiles.bodies lists it): camera profile id}} — for this import only; a raw whose XMP sidecar sets develop settings keeps its own, onDeleted?: restore|skip|fresh (a file that is in Recently Deleted: restore (default) = bring the photo back with its edits — relinked to the file when its own is gone, skip = leave it there and say so, fresh = delete the trashed record and import the file as new), importDuplicates?: bool (false by default = Lightroom's Don't Import Suspected Duplicates: a file whose content the library already has is skipped; true imports it as a new photo — a path already in the library, or a photo in Recently Deleted, is still handled as above)} → {imported, duplicates: [{path, existing, reason, existingDeleted?}], restored?: [photoId], failed, warnings?: [{path, code: cameraProfile|uprightGeometry|unmappedXmp, profile?, mode?: off|auto|level|vertical|full|guided|unknown, fields?}], moved?: [{from, to, sidecars?}], kept?: [{path, reason}] (move: sources left in place and why), album?}",
+            "{paths: [file or folder (recursive)], mode?: add|copy|move (add = reference the files in place; copy = into the library's Originals/YYYY/YYYY-MM-DD/; move = as copy, then each original and its XMP sidecars are removed from the source — only after the copy is verified (a hard link on the same volume, else copied, synced and compared byte for byte) and its catalog record is saved; failed, duplicate and unchecked files keep their sources; a taken name gets -1, -2…; undo removes the photos from the library but leaves the files at the destination), destination?: folder for copies / moves, organize?: date (YYYY/YYYY-MM-DD) | month (YYYY/YYYY-MM) | flat | a folder template, e.g. `{date:%Y}/{date:%Y%m%d}` → 2026/20260114 (the template's `/` make the folders, each level expanded with the rename tokens and made a safe folder name: never outside the destination; must be relative, no `..`; a level with missing metadata is `unknown`) — dated by capture time, else the import time, rename?: file-name template for copies, original extension added (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext}; photo.renameTokens explains each; blank = keep names), renameStart?: 1 (must fit this platform; later files are reported failed if the sequence runs out), metadataPreset?: name, dng?: bool (copy raws as DNG; copy only), local?: bool (browsing: the photos stay out of the library, like library.browse; not with move), album?: albumId, albumName?: new album, preset?: presetId, presets?: [presetId] (a stack applied in order after `preset`, one History step each; a browsed photo joining the library gets the presets, keywords and metadata preset too, on top of its own culling and edits, and copied or moved its record follows its file), recipe?: [{id: a plain develop control (develop.controls; no white balance, geometry or crop), value}] (a batch-edit recipe: each control is set to its value, clamped to the control's range, on every photo this import adds, after its sidecar, camera default and preset, as one extra History step named Import adjustments; a photo the library already has — a duplicate, one restored from Recently Deleted, one joined from a browsed folder — is not changed; a control a recipe may not name is refused before anything is imported; preset.saveRecipe keeps a recipe for reuse), keywords?: [..], cameraProfile?: auto (default: each body's own camera profile, else the camera's default) | {all: camera profile id} (every raw of that profile's camera) | {perBody: {body (as profiles.bodies lists it): camera profile id}} — for this import only; a raw whose XMP sidecar sets develop settings keeps its own, onDeleted?: restore|skip|fresh (a file that is in Recently Deleted: restore (default) = bring the photo back with its edits — relinked to the file when its own is gone, skip = leave it there and say so, fresh = delete the trashed record and import the file as new), importDuplicates?: bool (false by default = Lightroom's Don't Import Suspected Duplicates: a file whose content the library already has is skipped; true imports it as a new photo — a path already in the library, or a photo in Recently Deleted, is still handled as above)} → {imported, duplicates: [{path, existing, reason, existingDeleted?}], restored?: [photoId], failed, warnings?: [{path, code: cameraProfile|uprightGeometry|unmappedXmp, profile?, mode?: off|auto|level|vertical|full|guided|unknown, fields?}], moved?: [{from, to, sidecars?}], kept?: [{path, reason}] (move: sources left in place and why), album?}",
             always,
             |s, p| {
                 let req = import_params(s, p)?;

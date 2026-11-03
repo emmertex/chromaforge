@@ -302,6 +302,16 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("merge.hdrPanoramaLast", "HDR Panorama with Last Settings", None, "Photo>Photo Merge"),
     ("merge.focusStackLast", "Focus Stack with Last Settings", None, "Photo>Photo Merge"),
     ("file.addPhotos", "Import Photos…", None, "File"),
+    // the workspace tabs (Settings ▸ Import ▸ Import as a tab; OneSlips LR-IMP-WINDOW)
+    ("view.importTab", "Import Tab", None, "View"),
+    ("view.libraryTab", "Library Tab", None, "View"),
+    // {what?: picks|selected|all}: the Import tab's big button
+    ("import.start", "Import from the Import Tab", None, ""),
+    // {take?, previews?, copy?, moveFiles?, destination?, organize?, rename?, preset?, presets?, keywords?, metadataPreset?, album?, newAlbum?…}
+    ("import.configure", "Import Tab Settings", None, ""),
+    ("import.settings", "Show Import Tab Settings", None, ""),
+    ("import.usePreset", "Use Import Preset", None, ""),
+    ("import.saveSettings", "Save Import Preset", None, ""),
     ("file.addFolder", "Import from Folder…", None, "File"),
     // {path?, into?: open | new, name?, location?}: asks where the catalog goes unless `into` (or
     // Settings) says (#2672, `lightroom_destination`)
@@ -651,6 +661,11 @@ fn color_mixer_layout(app: &mut LccApp, p: &Value) -> Result<Value, String> {
 pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     if matches!(id, "ui.dock" | "ui.dock.reset") {
         return Some(crate::docking::command(app, id == "ui.dock.reset", p));
+    }
+    if (id.starts_with("import.") || id.starts_with("view.") && id.ends_with("Tab"))
+        && let Some(r) = crate::import_tab::run(app, id, p)
+    {
+        return Some(r);
     }
     if matches!(id, "library.inspectLightroom" | "library.importLightroom") {
         // the app's own context: a fresh one's repaints reach no window and its clock starts at zero
@@ -2199,6 +2214,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     return Some(import_into_album(app, p, r));
                 }
             }
+            // Import as a tab (the default): Import… shows the Import tab; the review stays for
+            // files and folders given outright
+            if crate::import_tab::enabled(app) {
+                return Some(crate::import_tab::switch(app, crate::import_tab::Tab::Import));
+            }
             if !matches!(app.ui.dialog, Some(Dialog::Import { .. })) {
                 app.ui.dialog = Some(Dialog::Import { opts: Box::new(crate::import::ImportDialog::empty()) });
             }
@@ -2444,6 +2464,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     None => return Some(Err("no camera or memory card found".into())),
                 },
             };
+            // Import as a tab: the card's photos are browsed there, for culling before the import
+            if crate::import_tab::enabled(app) && p.get("path").is_none() && p.get("album").is_none() {
+                let dcim = std::path::Path::new(&path).join("DCIM");
+                let at = if dcim.is_dir() { dcim.to_string_lossy().to_string() } else { path };
+                return Some(crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &at, None)));
+            }
             let r = crate::import::open(app, vec![path]);
             // only the scan just started (an error means another scan is running)
             if r.is_ok()
@@ -2466,6 +2492,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 },
             };
             match path {
+                // a folder picked here (not given by a script): the Import tab browses it
+                Some(path) if crate::import_tab::enabled(app) && p.get("path").is_none() && p.get("album").is_none() => {
+                    crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &path, None))
+                }
                 Some(path) => {
                     let subfolders = p.get("subfolders").and_then(Value::as_bool).unwrap_or(true);
                     let r = crate::import::open_with_subfolders(app, vec![path], subfolders);
