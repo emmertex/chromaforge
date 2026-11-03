@@ -557,6 +557,38 @@ fn sam2_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placem
     }
 }
 
+/// Side of the class map a group's crops are pasted into.
+const CROWD_SIDE: usize = 1024;
+
+/// The class map `whole` of `input`, with a group's small people segmented again on their own
+/// crops ([`lcc_segment::people::PeopleModel::segment_people`]): in the whole photo's 256-cell
+/// map someone in a group of 29 is a few cells tall, too few for their clothes, hair or body, and
+/// for one person's mask. Unchanged when everyone is large enough, or (with a log line) when the
+/// crops fail.
+fn crowd_map(
+    model: Option<&lcc_segment::people::PeopleModel>,
+    input: &Input,
+    whole: Option<lcc_segment::people::PeopleMap>,
+    faces: &[lcc_segment::people::Face],
+) -> Option<lcc_segment::people::PeopleMap> {
+    let (Some(model), Some(map)) = (model, whole.as_ref()) else { return whole };
+    let boxes = lcc_segment::people::person_boxes(faces, input.w, input.h);
+    if boxes.is_empty() {
+        return whole;
+    }
+    let t = web_time::Instant::now();
+    match model.segment_people(&input.rgb, input.w, input.h, map, &boxes, CROWD_SIDE) {
+        Ok(m) => {
+            log::info!("people: {} small people cropped from {}×{} in {:?}", boxes.len(), input.w, input.h, t.elapsed());
+            Some(m)
+        }
+        Err(e) => {
+            log::warn!("people: the group's crops failed ({e}); using the whole photo's map");
+            whole
+        }
+    }
+}
+
 /// Every face on the photo with its appearance signature, left to right
 /// ([`lcc_segment::identity`]).
 fn faces_job(
@@ -577,6 +609,7 @@ fn faces_job(
     let mut faces = fm.faces_confirmed(&input.rgb, input.w, input.h, map.as_ref())?;
     faces.sort_by(|a, b| (a.detection.x0 + a.detection.x1).total_cmp(&(b.detection.x0 + b.detection.x1)));
     faces.truncate(64);
+    let map = crowd_map(pm.as_ref(), &input, map, &faces);
     // SAM 2.1's features of each person's body, when it is installed (appearance beyond colour)
     let emb = match sam2.filter(|_| !faces.is_empty()) {
         Some(dir) => {
@@ -718,6 +751,7 @@ fn people_job(
         let mut faces = fm.faces_confirmed(&input.rgb, input.w, input.h, map.as_ref())?;
         faces.sort_by(|a, b| (a.detection.x0 + a.detection.x1).total_cmp(&(b.detection.x0 + b.detection.x1)));
         faces.truncate(64);
+        let map = crowd_map(pm.as_ref(), &input, map, &faces);
         state.people_seen = Some((job.key, PeopleSeen { input, map, faces, instances: None }));
     }
     // one person of several: everyone's silhouette decides whose an overlapping pixel is
@@ -731,9 +765,14 @@ fn people_job(
     let (_, seen) = state.people_seen.as_ref().ok_or("the photo is not available")?;
     let instances = seen.instances.as_ref().and_then(Option::as_ref).filter(|_| person > 0);
     let g = lcc_segment::people::people_mask_with(&req, &seen.input.rgb, seen.input.w, seen.input.h, seen.map.as_ref(), &seen.faces, instances, None);
-    Ok(g.map(|g| match g.rect {
-        Some(r) => SegMask::from_logits_in(g.side, &g.logits, r),
-        None => SegMask::from_logits(g.side, &g.logits),
+    // nobody found (the models ran): an empty selection, not the saliency guess a mask without
+    // one falls back to
+    Ok(Some(match g {
+        Some(g) => match g.rect {
+            Some(r) => SegMask::from_logits_in(g.side, &g.logits, r),
+            None => SegMask::from_logits(g.side, &g.logits),
+        },
+        None => SegMask::from_logits(1, &[-16.0]),
     }))
 }
 

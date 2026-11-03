@@ -1101,6 +1101,15 @@ impl Instances {
         let y = ((v.clamp(0.0, 1.0) * s as f32) as usize).min(s - 1);
         self.owners.get(y * s + x).filter(|o| **o != matte::NOBODY).map(|o| usize::from(*o))
     }
+
+    /// How sure person `i`'s silhouette is of the point `(u, v)` (normalized), 0..1.
+    pub fn claim(&self, i: usize, u: f32, v: f32) -> f32 {
+        let s = self.side.max(1);
+        let x = ((u.clamp(0.0, 1.0) * s as f32) as usize).min(s - 1);
+        let y = ((v.clamp(0.0, 1.0) * s as f32) as usize).min(s - 1);
+        let l = self.people.get(i).and_then(|p| p.get(y * s + x)).copied().unwrap_or(f32::NEG_INFINITY);
+        if l.is_finite() { 1.0 / (1.0 + (-l.clamp(-30.0, 30.0)).exp()) } else { 0.0 }
+    }
 }
 
 /// The people of a class map as connected figures on a grid (cells where the map sees a person,
@@ -1415,7 +1424,13 @@ pub fn people_mask_with(
                     continue;
                 }
                 let value = if whole {
-                    1.0 - map.at(&[0], u, v)
+                    let person = 1.0 - map.at(&[0], u, v);
+                    // one person of several: their own silhouette where the class map, seeing the
+                    // whole photo at once, is too coarse for a small figure (a group of 29)
+                    match silhouette.filter(|o| req.person > 0 && chosen.contains(o)) {
+                        Some(o) => person.max(instances.map_or(0.0, |s| s.claim(o, u, v))),
+                        None => person,
+                    }
                 } else {
                     if let Some(s) = skin_cov.get_mut(cell) {
                         *s = map.at(&skin_classes, u, v);

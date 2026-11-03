@@ -114,10 +114,14 @@ fn one_person_of_several_is_their_own_silhouette() {
         for (k, p) in people.iter().enumerate() {
             eprintln!("{name}: person {} covers {} of 4096 cells", k + 1, p.iter().filter(|c| **c).count());
         }
-        // (on the 29-person group some people come back empty: recorded as a gap, see
-        // docs/ai-masks.md; most of those checked are selected)
-        let selected = people.iter().filter(|p| !p.is_empty()).count();
-        assert!(2 * selected >= people.len(), "{name}: only {selected} of {} people selected", people.len());
+        // everyone checked is selected, as a figure of their own size: Curie's two fill much of
+        // the frame; on Solvay's three rows of 29 each is a small figure, at least a face and
+        // shoulders (the group's people are segmented on their own crops)
+        let least = if name.contains("solvay") { 15 } else { 600 };
+        for (k, p) in people.iter().enumerate() {
+            let n = p.iter().filter(|c| **c).count();
+            assert!(n >= least, "{name}: person {} covers {n} cells, expected at least {least}", k + 1);
+        }
         for a in 0..people.len() {
             for b in a + 1..people.len() {
                 let o = shared(&people[a], &people[b]);
@@ -132,7 +136,6 @@ fn one_person_of_several_is_their_own_silhouette() {
 /// photo is found again by their look on a second import of the same picture, where nobody is
 /// named.
 #[test]
-#[ignore = "known gap 2026-11-03: the named Solvay face is not found again by its look (find_by_look → None); run with --ignored"]
 fn a_named_face_is_found_again_by_its_look() {
     for name in ["pd-one-lincoln-1863.jpg", "pd-glasses-gandhi-1931.jpg", "pd-two-curie-1895.jpg"] {
         let Some((mut s, id)) = open(name) else { return };

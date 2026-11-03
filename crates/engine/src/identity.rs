@@ -32,7 +32,9 @@ pub(crate) struct Appearance {
 const KEEP: usize = 512;
 /// A face whose look scores at least this (0..1) against a person's examples is taken for them …
 pub const PERSON_MATCH: f32 = 0.55;
-/// … when it leads the next face on the photo by this.
+/// … when it leads the next face on the photo by this share of its score (relative: with fewer
+/// cues — a greyscale group in matching suits has no hair or clothes colour to tell — every score
+/// is lower, the leader's included).
 pub const LOOK_MARGIN: f32 = 0.15;
 
 #[cfg_attr(not(feature = "sam"), allow(dead_code))]
@@ -212,7 +214,7 @@ impl Session {
                 })
                 .collect();
             looks.sort_by(|a, b| b.1.total_cmp(&a.1));
-            let best = looks.first().copied().filter(|(_, l)| *l >= PERSON_MATCH && *l - looks.get(1).map_or(0.0, |n| n.1) >= LOOK_MARGIN);
+            let best = looks.first().copied().filter(|(_, l)| *l >= PERSON_MATCH && *l - looks.get(1).map_or(0.0, |n| n.1) >= LOOK_MARGIN * *l);
             best.and_then(|(i, _)| u32::try_from(i).ok()).map(|i| i.saturating_add(1))
         }
         #[cfg(not(feature = "sam"))]
