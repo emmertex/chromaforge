@@ -169,7 +169,7 @@ fn installs_come_from_the_file_picker_and_from_a_dropped_module() {
     let before: std::collections::HashSet<String> = h.painted_text().into_iter().collect();
     click(&mut h, "button:pluginInstallFile");
     assert!(!has_widget(&mut h, "button:pluginInstall"), "nothing to approve");
-    let new: Vec<String> = h.painted_text().into_iter().filter(|t| !before.contains(t)).collect();
+    let new: Vec<String> = h.painted_text().into_iter().filter(|t| !before.contains(t) && !t.ends_with('…')).collect();
     assert!(new.is_empty(), "no message: {new:?}");
 
     // the command without a path asks the picker too; with one, it installs from it

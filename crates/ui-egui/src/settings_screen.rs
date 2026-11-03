@@ -407,13 +407,22 @@ pub(crate) fn reveal(h: &mut crate::headless::Headless, id: &str) {
         let Some(rows) = find(h, "settings:rows") else { panic!("Settings' rows are not on screen") };
         let dy = match find(h, id) {
             Some(w) if w.top() >= rows.top() + 4.0 && w.bottom() <= rows.bottom() - 4.0 => {
-                // in view and settled (a scroll glides on for a few frames)
-                for _ in 0..6 {
-                    h.step();
-                }
-                // still in view after settling (it may have moved a little) is enough to click
-                if find(h, id).is_some_and(|v| v.top() >= rows.top() && v.bottom() <= rows.bottom()) {
-                    return;
+                // in view; wait for a scroll's glide to stop (a layout may keep nudging it by a
+                // pixel or two, so "stopped" allows that), then it must still be in view
+                let mut last = w;
+                for _ in 0..30 {
+                    for _ in 0..3 {
+                        h.step();
+                    }
+                    let Some(now) = find(h, id) else { break };
+                    let still = (now.top() - last.top()).abs() <= 2.0;
+                    last = now;
+                    if still {
+                        if now.top() >= rows.top() + 4.0 && now.bottom() <= rows.bottom() - 4.0 {
+                            return;
+                        }
+                        break;
+                    }
                 }
                 continue;
             }
