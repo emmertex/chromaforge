@@ -1057,7 +1057,10 @@ fn gpu_card_rows(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     // (another card than the editing one; Automatic picks one when there is one)
     let (_, editing, switching) = gpu::card_status();
     let others: Vec<_> = cards.iter().enumerate().filter(|(_, e)| e.usable && editing.as_deref() != Some(e.key.to_string().as_str())).collect();
-    if others.is_empty() && app.ui.settings.gpu_helper.is_empty() {
+    // whether the row shows depends only on the cards listed, not on which one is editing yet: the
+    // editing card is known once its device is up, and a row that came and went then would move every
+    // control below it while the GPU starts
+    if cards.iter().filter(|e| e.usable).count() < 2 && app.ui.settings.gpu_helper.is_empty() {
         return;
     }
     row(ui, t, crate::i18n::tr("Second graphics card"), |ui| {
