@@ -642,14 +642,16 @@ pub fn install(
     let stem = id.trim_start_matches("dcp:");
     std::fs::create_dir_all(library).map_err(|e| bad(format!("{}: {e}", library.display())))?;
     let file = library.join(format!("{stem}.dcp"));
-    let tmp = file.with_extension("dcp.tmp");
-    std::fs::write(&tmp, &bytes).map_err(|e| bad(format!("{}: {e}", tmp.display())))?;
-    std::fs::rename(&tmp, &file).map_err(|e| bad(format!("{}: {e}", file.display())))?;
-    // the decoder's list of imported profiles gets this one (in place of the old version)
-    let mut list: Vec<(String, lcc_raw::dcp::Dcp)> =
-        lcc_raw::dcp::library().into_iter().filter(|(k, _)| k != &id).map(|(k, d)| (k, (*d).clone())).collect();
-    list.push((id.clone(), dcp.clone()));
-    lcc_raw::dcp::install_library(list);
+    // a profile written over is kept first (in `.replaced/`), and the old bytes go with the undo step
+    let old = if replaced && file.exists() {
+        let old = std::fs::read(&file).map_err(|e| bad(format!("{}: {e}", file.display())))?;
+        keep_replaced(library, stem, &old).map_err(|e| bad(format!("the profile it replaces could not be kept, so nothing was changed: {e}")))?;
+        Some(old)
+    } else {
+        None
+    };
+    write_atomic(&file, &bytes, &|p, b| std::fs::write(p, b)).map_err(|e| bad(format!("{}: {e}", file.display())))?;
+    register(&id, dcp.clone());
     let mut ops = Vec::new();
     let mut applied = Vec::new();
     for &photo in apply_to {
@@ -668,13 +670,13 @@ pub fn install(
         applied.push(photo.0);
     }
     if replaced {
-        let users: Vec<lcc_catalog::PhotoId> = s.catalog.photos().filter(|p| p.develop.profile.camera == id).map(|p| p.id).collect();
-        for u in users {
-            s.media.forget(u);
-        }
+        forget_users(s, &id);
     }
-    if !ops.is_empty() {
-        s.commit(C, crate::Op::Batch { ops })?;
+    if !ops.is_empty() || old.is_some() {
+        s.commit(if old.is_some() { "Replace Camera Profile" } else { C }, crate::Op::Batch { ops })?;
+        if let (Some(bytes), Some(e)) = (old, s.undo.last_mut()) {
+            e.profile = Some(ProfileSwap { id: id.clone(), file: file.clone(), bytes });
+        }
     }
     let mut set_bodies = Vec::new();
     for b in bodies {
@@ -690,6 +692,71 @@ pub fn install(
     Ok(
         json!({"id": id, "name": dcp.name, "cameraModel": dcp.model, "file": file.to_string_lossy(), "bodies": set_bodies, "applied": applied, "replaced": replaced}),
     )
+}
+
+/// A camera profile file and the bytes an undo or redo step puts back in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileSwap {
+    /// `dcp:…`
+    pub id: String,
+    pub file: std::path::PathBuf,
+    pub bytes: Vec<u8>,
+}
+
+/// Write `bytes` to `path` through a temporary file beside it, synced, then renamed over `path`:
+/// `path` is either the old file or the new one, never a part of either. `write` writes the
+/// temporary file (a test stands in a full disk); a failure leaves `path` as it was and removes
+/// the temporary file.
+pub fn write_atomic(path: &std::path::Path, bytes: &[u8], write: &dyn Fn(&std::path::Path, &[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+    let tmp = path.with_extension("dcp.tmp");
+    let done = write(&tmp, bytes).and_then(|()| std::fs::File::open(&tmp)?.sync_all()).and_then(|()| std::fs::rename(&tmp, path));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
+}
+
+/// Keep `old` (profile `stem`'s file before a Replace) as `<library>/.replaced/<stem> <time>.dcp`.
+fn keep_replaced(library: &std::path::Path, stem: &str, old: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    let dir = library.join(".replaced");
+    std::fs::create_dir_all(&dir)?;
+    let when = chrono::Local::now().format("%Y-%m-%d %H%M%S");
+    let mut to = dir.join(format!("{stem} {when}.dcp"));
+    let mut n = 2;
+    while to.exists() && n < 10_000 {
+        to = dir.join(format!("{stem} {when} {n}.dcp"));
+        n += 1;
+    }
+    write_atomic(&to, old, &|p, b| std::fs::write(p, b))?;
+    Ok(to)
+}
+
+/// Hand the decoder profile `id` (in place of an older version).
+fn register(id: &str, dcp: lcc_raw::dcp::Dcp) {
+    let mut list: Vec<(String, lcc_raw::dcp::Dcp)> =
+        lcc_raw::dcp::library().into_iter().filter(|(k, _)| k != id).map(|(k, d)| (k, (*d).clone())).collect();
+    list.push((id.to_string(), dcp));
+    lcc_raw::dcp::install_library(list);
+}
+
+/// The photos that develop with profile `id` are decoded again.
+fn forget_users(s: &mut crate::Session, id: &str) {
+    let users: Vec<lcc_catalog::PhotoId> = s.catalog.photos().filter(|p| p.develop.profile.camera == id).map(|p| p.id).collect();
+    for u in users {
+        s.media.forget(u);
+    }
+}
+
+/// Put `swap` in place (undo / redo of a Replace): its bytes back in its file, atomically, the
+/// decoder's copy and the photos using it refreshed → the swap that reverses it.
+pub(crate) fn apply_swap(s: &mut crate::Session, swap: &ProfileSwap) -> crate::Result<ProfileSwap> {
+    let err = |m: String| crate::EngineError::Other(format!("can't put the camera profile back: {m}"));
+    let dcp = lcc_raw::dcp::parse(&swap.bytes).map_err(err)?;
+    let now = std::fs::read(&swap.file).map_err(|e| err(format!("{}: {e}", swap.file.display())))?;
+    write_atomic(&swap.file, &swap.bytes, &|p, b| std::fs::write(p, b)).map_err(|e| err(format!("{}: {e}", swap.file.display())))?;
+    register(&swap.id, dcp);
+    forget_users(s, &swap.id);
+    Ok(ProfileSwap { id: swap.id.clone(), file: swap.file.clone(), bytes: now })
 }
 
 /// A ColorChecker photographed by a made-up camera, as a DNG (an RGGB mosaic `2 × width` by

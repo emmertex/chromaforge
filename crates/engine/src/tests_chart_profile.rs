@@ -132,3 +132,49 @@ fn hostile_chart_requests_are_errors() {
     assert!(cp::prepare(b"").is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn replace_keeps_the_old_profile_and_undo_puts_it_back() {
+    let dir = temp_dir("replace");
+    let path = dir.join("CHART.dng");
+    std::fs::write(&path, lit_dng("D55", false)).unwrap();
+    let mut s = Session::new();
+    let prep = cp::prepare_path(&path.to_string_lossy()).unwrap();
+    let req = cp::Request { illuminant: "D55".into(), ..Default::default() };
+    let photo = |natural| lcc_camprof::BuildOptions { name: "Swap Test".into(), natural, ..Default::default() };
+    let first = cp::build((&prep, &req), None, &photo(true)).unwrap().dcp;
+    let second = cp::build((&prep, &req), None, &photo(false)).unwrap().dcp;
+    let lib = dir.join("dcp");
+    let r = cp::install(&mut s, &lib, &first, &[], OnExists::Fail, &[]).unwrap();
+    let file = PathBuf::from(r["file"].as_str().unwrap());
+    let old = std::fs::read(&file).unwrap();
+    let r2 = cp::install(&mut s, &lib, &second, &[], OnExists::Replace, &[]).unwrap();
+    assert_eq!(r2["replaced"], true);
+    let new = std::fs::read(&file).unwrap();
+    assert_ne!(old, new, "written over");
+    // the old one is kept beside it
+    let kept: Vec<_> = std::fs::read_dir(lib.join(".replaced")).unwrap().flatten().map(|e| std::fs::read(e.path()).unwrap()).collect();
+    assert_eq!(kept, [old.clone()]);
+    // undo puts it back, redo the new one again
+    assert_eq!(s.undo_step().unwrap(), "Replace Camera Profile");
+    assert_eq!(std::fs::read(&file).unwrap(), old);
+    s.redo_step().unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), new);
+    assert!(!lib.join(format!("{}.tmp", file.file_name().unwrap().to_string_lossy())).exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_full_disk_mid_write_leaves_the_old_profile_intact() {
+    let dir = temp_dir("fulldisk");
+    let file = dir.join("p.dcp");
+    std::fs::write(&file, b"the old profile").unwrap();
+    let full = |p: &std::path::Path, b: &[u8]| -> std::io::Result<()> {
+        std::fs::write(p, &b[..b.len() / 2])?;
+        Err(std::io::Error::new(std::io::ErrorKind::StorageFull, "no space left on device"))
+    };
+    assert!(cp::write_atomic(&file, b"a new profile, longer", &full).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), b"the old profile");
+    assert!(!file.with_extension("dcp.tmp").exists(), "no half-written file is left behind");
+    let _ = std::fs::remove_dir_all(&dir);
+}

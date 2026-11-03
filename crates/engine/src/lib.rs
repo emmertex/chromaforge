@@ -186,6 +186,8 @@ pub struct UndoEntry {
     /// (whose `op` relinks the photos inside). Never overwrites; refused when `to` exists. An
     /// empty `to` removes the (empty) folder `from`, an empty `from` creates `to` (Create Folder).
     pub folder: Option<FolderMove>,
+    /// A camera profile file to put back (Replace Camera Profile): its bytes before the step.
+    pub profile: Option<chart_profiling::ProfileSwap>,
     /// Inverses of logged path corrections from a partially failed history step.
     pub(crate) retry_inverse: Vec<Op>,
     /// Sidecars still separated from their photo after a failed move or rollback.
@@ -992,7 +994,14 @@ impl Session {
         let inv = self.apply_through(op, Catalog::apply_new)?;
         let upright = fwd.clone();
         self.pending_log.push(fwd);
-        self.undo.push(UndoEntry { label: label.to_string(), op: inv, folder: None, retry_inverse: Vec::new(), retry_sidecars: Vec::new() });
+        self.undo.push(UndoEntry {
+            label: label.to_string(),
+            op: inv,
+            folder: None,
+            profile: None,
+            retry_inverse: Vec::new(),
+            retry_sidecars: Vec::new(),
+        });
         self.commits = self.commits.wrapping_add(1);
         if self.undo.len() > 1000 {
             let mut dropped = self.undo.remove(0);
@@ -1130,7 +1139,7 @@ impl Session {
         }
         let Some(entries) = self.undo.get(self.undo.len() - n..) else { return };
         // Folder moves and partially applied file steps stay on their own.
-        if entries.iter().any(|e| e.folder.is_some() || !e.retry_inverse.is_empty() || !e.retry_sidecars.is_empty()) {
+        if entries.iter().any(|e| e.folder.is_some() || e.profile.is_some() || !e.retry_inverse.is_empty() || !e.retry_sidecars.is_empty()) {
             return;
         }
         let tail = self.undo.split_off(self.undo.len() - n);
@@ -1139,6 +1148,7 @@ impl Session {
             label: label.to_string(),
             op: Op::Batch { ops },
             folder: None,
+            profile: None,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
         });
@@ -1165,9 +1175,22 @@ impl Session {
 
     pub(crate) fn undo_step_with(&mut self, fs: &dyn rename::MoveFs) -> Result<String> {
         let mut e = self.undo.pop().ok_or_else(|| EngineError::Other("nothing to undo".into()))?;
+        // a replaced camera profile's file goes back first (nothing else changes when that fails)
+        let swapped = match e.profile.as_ref().map(|sw| chart_profiling::apply_swap(self, sw)) {
+            Some(Err(err)) => {
+                self.undo.push(e);
+                return Err(err);
+            }
+            Some(Ok(back)) => Some(back),
+            None => None,
+        };
         let redo = match self.apply_with_files(&mut e, fs) {
             Ok(r) => r,
             Err(err) => {
+                // (the profile file goes back as it was)
+                if let Some(back) = &swapped {
+                    let _ = chart_profiling::apply_swap(self, back);
+                }
                 self.undo.push(e);
                 return Err(err);
             }
@@ -1180,6 +1203,7 @@ impl Session {
             label: e.label.clone(),
             op: redo,
             folder: e.folder.as_ref().map(FolderMove::reversed),
+            profile: swapped,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
         });
@@ -1194,9 +1218,22 @@ impl Session {
 
     pub(crate) fn redo_step_with(&mut self, fs: &dyn rename::MoveFs) -> Result<String> {
         let mut e = self.redo.pop().ok_or_else(|| EngineError::Other("nothing to redo".into()))?;
+        // a replaced camera profile's file goes back first (nothing else changes when that fails)
+        let swapped = match e.profile.as_ref().map(|sw| chart_profiling::apply_swap(self, sw)) {
+            Some(Err(err)) => {
+                self.redo.push(e);
+                return Err(err);
+            }
+            Some(Ok(back)) => Some(back),
+            None => None,
+        };
         let undo = match self.apply_with_files(&mut e, fs) {
             Ok(r) => r,
             Err(err) => {
+                // (the profile file goes back as it was)
+                if let Some(back) = &swapped {
+                    let _ = chart_profiling::apply_swap(self, back);
+                }
                 self.redo.push(e);
                 return Err(err);
             }
@@ -1209,6 +1246,7 @@ impl Session {
             label: e.label.clone(),
             op: undo,
             folder: e.folder.as_ref().map(FolderMove::reversed),
+            profile: swapped,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
         });
