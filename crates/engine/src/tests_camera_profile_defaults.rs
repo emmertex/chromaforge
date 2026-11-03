@@ -62,10 +62,20 @@ fn the_default_persists_with_the_library_and_reinstalls_on_reopen() {
         // the decoder's registry is per process: pretend a fresh start emptied it
         lcc_raw::dcp::install_user_defaults(Vec::new());
     }
-    let mut s = Session::new().with_fs();
-    s.open_library(&lib, false).unwrap();
-    assert_eq!(stored(&s), vec![("".to_string(), "lc".to_string()), ("NIKON Z 8".to_string(), "lc".to_string())]);
-    assert_eq!(lcc_raw::dcp::user_defaults(), stored(&s), "a reopened library hands its defaults to the decoder again");
-    s.close_library().unwrap();
+    // Any other test that opens a library installs that library's (empty) defaults in the same
+    // process-global registry, so a concurrent one can land between the reopen and the check:
+    // reopen a few times; a reopen that never installs the defaults fails every time.
+    let mut handed = false;
+    for _ in 0..5 {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        assert_eq!(stored(&s), vec![("".to_string(), "lc".to_string()), ("NIKON Z 8".to_string(), "lc".to_string())]);
+        handed = lcc_raw::dcp::user_defaults() == stored(&s);
+        s.close_library().unwrap();
+        if handed {
+            break;
+        }
+    }
+    assert!(handed, "a reopened library hands its defaults to the decoder again");
     let _ = std::fs::remove_dir_all(&lib);
 }

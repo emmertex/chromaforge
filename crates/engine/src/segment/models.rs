@@ -420,6 +420,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "sam")] // needs a build with AI masks
     fn auto_keeps_sam3_unless_only_sam2_is_installed() {
         let root = tmp("auto");
         let mut g = Segmenter { models_root: Some(root.clone()), dir: Some(root.join("sam3")), ..Segmenter::default() };
@@ -469,6 +470,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "sam")] // needs a build with AI masks
     fn status_lists_every_model_and_unknown_ids_are_errors() {
         let mut g = Segmenter::default();
         let ids: Vec<String> = g.model_status().into_iter().map(|m| m.id).collect();

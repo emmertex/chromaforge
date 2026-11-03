@@ -366,6 +366,7 @@ fn a_missing_model_is_model_missing_by_kind() {
 /// while Describe still asks for SAM 3; `ai.models.*` list, refuse without consent and reject
 /// unknown ids.
 #[test]
+#[cfg(feature = "sam")] // the SAM 2.1 entry and model errors exist only in a build with AI masks
 fn object_clicks_follow_the_chosen_model() {
     use crate::{AiModel, ErrorKind};
     let root = tmp("choice");
