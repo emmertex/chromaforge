@@ -289,7 +289,8 @@ fn rezip(src: &Path, dst: &Path, rename: impl Fn(&str) -> Option<String>, extra:
     let mut w = zip::ZipWriter::new(output);
     for i in 0..archive.len() {
         let entry = archive.by_index_raw(i).map_err(|e| format!("{}: {e}", src.display()))?;
-        let Some(name) = rename(entry.name()) else { continue };
+        let name = entry.name().map_err(|e| format!("{}: {e}", src.display()))?;
+        let Some(name) = rename(&name) else { continue };
         w.raw_copy_file_rename(entry, name).map_err(err)?;
     }
     let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);

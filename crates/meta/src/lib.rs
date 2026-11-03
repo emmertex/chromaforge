@@ -230,8 +230,8 @@ pub struct Metadata {
     /// The other (supplemental) categories (`photoshop:SupplementalCategories`, IPTC-IIM 2:20).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supplemental_categories: Vec<String>,
-    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`): each a numeric code from the IPTC Subject
-    /// Reference System (e.g. `01001000`), with no legacy IPTC-IIM equivalent.
+    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`, the reference number of IPTC-IIM 2:12): each
+    /// a numeric code from the IPTC Subject Reference System (e.g. `01001000`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subject_code: Vec<String>,
     /// Hierarchical keywords, `|`-separated paths (`lr:hierarchicalSubject` convention).

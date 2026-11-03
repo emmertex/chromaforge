@@ -15,7 +15,7 @@ default = []
 sftp = ["dep:russh", "dep:russh-sftp", "dep:tokio"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"], optional = true }
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"], optional = true }
 russh-sftp = { version = "3", optional = true }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "io-util"], optional = true }
 

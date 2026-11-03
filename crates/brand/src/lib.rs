@@ -127,16 +127,27 @@ pub fn migrate_legacy_settings() -> std::io::Result<Option<PathBuf>> {
 
 /// [`migrate_legacy_settings`] with explicit folders (for tests and tools).
 pub fn migrate_settings_from(current: &std::path::Path, legacy: &[PathBuf]) -> std::io::Result<Option<PathBuf>> {
-    if current.exists() {
+    if !is_unmigrated(current) {
         return Ok(None);
     }
     let Some(old) = legacy.iter().find(|d| d.is_dir() && d.as_path() != current) else { return Ok(None) };
+    let existed = current.exists();
     if let Err(e) = copy_dir(old, current) {
-        let _ = std::fs::remove_dir_all(current);
+        // a folder that already held the log file stays; only a fresh one is removed
+        if !existed {
+            let _ = std::fs::remove_dir_all(current);
+        }
         return Err(e);
     }
     std::fs::write(current.join(MIGRATED_MARKER), format!("{}\n", old.display()))?;
     Ok(Some(old.clone()))
+}
+
+/// True when `current` is absent, or holds nothing but the `logs` folder (a start that opened its log file
+/// before the copy ran must not hide the legacy settings) and was not already migrated.
+fn is_unmigrated(current: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(current) else { return !current.exists() };
+    entries.flatten().all(|e| e.file_name() == "logs")
 }
 
 fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
@@ -197,6 +208,26 @@ mod tests {
         assert!(new.join(MIGRATED_MARKER).exists());
         // second start: nothing to do
         assert_eq!(migrate_settings_from(&new, &[old]).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migration_runs_when_only_the_log_folder_exists() {
+        let base = std::env::temp_dir().join(format!("brand-mig-logs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let old = base.join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("settings.json"), "{}").unwrap();
+        let new = base.join("new");
+        std::fs::create_dir_all(new.join("logs")).unwrap();
+        std::fs::write(new.join("logs/app.log"), "x").unwrap();
+        assert!(migrate_settings_from(&new, std::slice::from_ref(&old)).unwrap().is_some());
+        assert!(new.join("settings.json").exists());
+        assert!(new.join("logs/app.log").exists());
+        // settings of its own: left alone
+        std::fs::write(old.join("other.json"), "{}").unwrap();
+        assert_eq!(migrate_settings_from(&new, &[old]).unwrap(), None);
+        assert!(!new.join("other.json").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 }
