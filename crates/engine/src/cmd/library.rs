@@ -1532,7 +1532,8 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             |s, p| {
                 let id = album_param(p, "id", "album.setRules")?;
-                let cur = s.catalog.album(id).and_then(|a| a.smart.as_deref().cloned()).ok_or_else(|| bad("album.setRules", "not a smart collection"))?;
+                let cur =
+                    s.catalog.album(id).and_then(|a| a.smart.as_deref().cloned()).ok_or_else(|| bad("album.setRules", "not a smart collection"))?;
                 let rules = if bool_or(p, "fromView", false) {
                     // the view is saved as it is, but never as a loop (showing A, which tests this
                     // album, and saving that view here would make it test itself)

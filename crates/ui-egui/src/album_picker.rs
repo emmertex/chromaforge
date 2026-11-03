@@ -205,7 +205,8 @@ impl<'a> AlbumPicker<'a> {
     pub fn show_with_choices(self, ui: &mut Ui, choices: impl FnOnce(&mut Ui) -> bool) -> Response {
         let AlbumPicker { id, value, entries, width, empty_text } = self;
         let chosen = value.filter(|v| entries.iter().any(|e| e.id == *v && !e.folder));
-        let text = chosen.map_or_else(|| empty_text.unwrap_or_else(|| crate::i18n::tr("Choose a collection…").to_string()), |c| path_label(entries, c));
+        let text =
+            chosen.map_or_else(|| empty_text.unwrap_or_else(|| crate::i18n::tr("Choose a collection…").to_string()), |c| path_label(entries, c));
         // the name, and a drop-down arrow painted at the right (the UI font has no arrow glyph)
         let mut button =
             ui.add_sized(vec2(width, ui.spacing().interact_size.y), egui::Button::new(text.as_str()).truncate().right_text(" ")).on_hover_text(text);

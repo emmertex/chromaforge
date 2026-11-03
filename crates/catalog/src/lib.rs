@@ -1831,9 +1831,9 @@ mod tests_sort_cache;
 #[cfg(test)]
 mod tests_tally;
 #[cfg(test)]
-mod tests_upgrade_backup;
-#[cfg(test)]
 mod tests_torn_append;
+#[cfg(test)]
+mod tests_upgrade_backup;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_v4;
