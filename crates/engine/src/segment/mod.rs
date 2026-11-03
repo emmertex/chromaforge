@@ -493,7 +493,7 @@ impl Session {
         // Describe (text) needs SAM 3; Object clicks use the model the user chose
         let text = matches!(&kind, worker::Kind::Text(_) | worker::Kind::Detail { prompt: Prompt::Text(_), .. });
         let concept = matches!(&kind, worker::Kind::Learn { .. } | worker::Kind::Find { .. });
-        let dir = if let worker::Kind::Faces { face, .. } = &kind {
+        let dir = if let worker::Kind::Faces { face, .. } | worker::Kind::People { face, .. } = &kind {
             face.clone()
         } else if concept {
             self.segmenter.require_sam2().map_err(|e| e.to_string())?
@@ -733,6 +733,22 @@ impl Session {
         }
     }
 
+    /// The People selection `person` / `parts` on photo `id` from MediaPipe's people models,
+    /// waiting for them; `Ok(None)` when they aren't installed (the pipeline's heuristic shows) or
+    /// nobody, or none of the parts, is there.
+    pub fn segment_people(&mut self, id: PhotoId, person: u32, parts: &[String]) -> Result<Option<SegMask>, String> {
+        let Some(face) = self.segmenter.people_models() else { return Ok(None) };
+        #[cfg(feature = "sam")]
+        {
+            self.segment_wait(id, worker::Kind::People { face, person, parts: parts.to_vec() }, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, face, person, parts);
+            Ok(None)
+        }
+    }
+
     /// Background mode: queue Object clicks for component `comp` of mask `mask`; the result
     /// (clicks and segmentation, one undo step) is applied by [`Session::segment_poll`].
     pub(crate) fn segment_clicks_later(&mut self, id: PhotoId, mask: u32, comp: usize, hint: Vec<Point>, exclude: Vec<Point>) -> Result<(), String> {
@@ -832,10 +848,17 @@ impl Session {
             .flat_map(|m| m.components.iter().enumerate().map(move |(ci, c)| (m.id, ci, c.shape.clone())))
             .filter(|(_, _, sh)| sh.stores_seg() && !sh.has_seg())
             .collect();
+        // People selections run on MediaPipe's people and faces models; without them the
+        // pipeline's heuristic shows (nothing to queue)
+        let people_face = self.segmenter.people_models();
+        let todo: Vec<(u32, usize, MaskShape)> =
+            todo.into_iter().filter(|(_, _, sh)| people_face.is_some() || !matches!(sh, MaskShape::People { .. })).collect();
         if todo.is_empty() {
             return Ok(0);
         }
-        self.segmenter.model_dir()?;
+        if todo.iter().any(|(_, _, sh)| !matches!(sh, MaskShape::People { .. })) {
+            self.segmenter.model_dir()?;
+        }
         #[cfg(feature = "sam")]
         {
             if self.segmenter.recompute.as_ref().is_some_and(|r| r.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
@@ -858,6 +881,10 @@ impl Session {
                         worker::Kind::Clicks(Self::model_clicks(&clicks_of(hint, exclude)))
                     }
                     MaskShape::Prompt { text, .. } if !text.trim().is_empty() => worker::Kind::Text(text.trim().to_string()),
+                    MaskShape::People { person, parts, .. } => match &people_face {
+                        Some(face) => worker::Kind::People { face: face.clone(), person: *person, parts: parts.clone() },
+                        None => continue,
+                    },
                     _ => continue,
                 };
                 let tag = Tag::Recompute { run, photo: id, mask, comp, shape };
@@ -1093,7 +1120,7 @@ impl Session {
                         return None; // undone or edited meanwhile
                     }
                     match &mut c.shape {
-                        MaskShape::Object { seg: s, .. } | MaskShape::Prompt { seg: s, .. } => *s = Some(seg),
+                        MaskShape::Object { seg: s, .. } | MaskShape::Prompt { seg: s, .. } | MaskShape::People { seg: s, .. } => *s = Some(seg),
                         _ => return None,
                     }
                     Some(d)

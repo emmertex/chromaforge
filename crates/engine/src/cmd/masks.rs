@@ -63,14 +63,34 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
         "prompt" => {
             MaskShape::Prompt { text: str_param(p, "text").unwrap_or_default().trim().to_string(), seg: seg_param(p), detail: vec![], edge: 0.0 }
         }
+        "people" => {
+            let parts: Vec<String> = p
+                .get("parts")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(|s| s.trim().to_string()).take(lcc_develop::MAX_PEOPLE_PARTS).collect())
+                .unwrap_or_default();
+            if let Some(odd) = parts.iter().find(|n| !PEOPLE_PARTS.iter().any(|k| k.eq_ignore_ascii_case(n))) {
+                return Err(bad(c, format!("unknown People part `{odd}` ({})", PEOPLE_PARTS.join("|"))));
+            }
+            let person = p.get("person").and_then(Value::as_u64).map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+            let who = match p.get("who") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| bad(c, format!("who: {e}")))?),
+            };
+            MaskShape::People { person, parts, who, seg: seg_param(p) }
+        }
         other => {
             return Err(bad(
                 c,
-                format!("unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt)"),
+                format!("unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt|people)"),
             ));
         }
     })
 }
+
+/// The People parts `mask.add {kind: "people"}` takes (Lightroom's names; none: Entire Person).
+const PEOPLE_PARTS: &[&str] =
+    &["Entire Person", "Face Skin", "Body Skin", "Eyebrows", "Eye Sclera", "Iris and Pupil", "Eyes", "Lips", "Teeth", "Hair", "Clothes"];
 
 /// `[[x, y], …]` normalized points under `key`.
 fn points(p: &Value, key: &str) -> Vec<Point> {
@@ -92,6 +112,8 @@ enum Later {
     Clicks(Vec<Point>, Vec<Point>),
     /// Background mode: the Describe selection is computed first; the mask is added when found.
     Text(String),
+    /// Background mode: the People selection is computed on the AI worker after the command.
+    People,
 }
 
 /// Compute the segmentation of a new AI shape (Object with clicks, Prompt) — or, in background
@@ -129,6 +151,12 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
             let found = segment(s, |s| s.segment_text(id, text))?;
             *seg = Some(found.ok_or_else(|| ai_err(format!("nothing matching “{text}” was found in this photo")))?);
         }
+        // the people models when installed, else the heuristic (no model needed)
+        MaskShape::People { seg: None, .. } if background => return Ok(Later::People),
+        // (a named person is resolved on the photo first: Recompute AI Masks)
+        MaskShape::People { person, parts, seg: seg @ None, who: None } => {
+            *seg = s.segment_people(id, *person, parts).map_err(ai_err)?;
+        }
         _ => {}
     }
     Ok(Later::Nothing)
@@ -136,6 +164,12 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
 
 /// Queue what a new AI component (component `comp` of mask `mask`) still needs.
 fn queue_later(s: &mut Session, later: Later, mask: u32, comp: usize, mut out: Value) -> Result<Value> {
+    if let Later::People = later {
+        if let Some(id) = s.active() {
+            s.want_missing_masks(id);
+        }
+        return Ok(out);
+    }
     if let Later::Clicks(hint, exclude) = later {
         let id = s.active().ok_or_else(|| ai_err("no active photo"))?;
         segment_object(s, |s| s.segment_clicks_later(id, mask, comp, hint, exclude))?;
@@ -421,7 +455,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create New Mask",
             [],
             None,
-            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; object/prompt: seg? a stored segmentation, no model needed), name?} — AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
+            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; people: person? (0 everyone, n the n-th from the left), parts? [Entire Person|Face Skin|Body Skin|Eyebrows|Eye Sclera|Iris and Pupil|Eyes|Lips|Teeth|Hair|Clothes], who? {name}|{role}; object/prompt/people: seg? a stored segmentation, no model needed), name?} — AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
             has_active,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();

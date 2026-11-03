@@ -160,11 +160,16 @@ impl Session {
                         self.segment_clicks(id, &clicks).map(Some)
                     }
                     MaskShape::Prompt { text, .. } => self.segment_text(id, text),
+                    // without the people models: the heuristic, no note
+                    MaskShape::People { person, parts, .. } => match self.segment_people(id, *person, parts) {
+                        Ok(None) => continue,
+                        r => r,
+                    },
                     _ => continue,
                 };
                 match res {
                     Ok(seg) => {
-                        if let Some(MaskShape::Object { seg: s, .. } | MaskShape::Prompt { seg: s, .. }) =
+                        if let Some(MaskShape::Object { seg: s, .. } | MaskShape::Prompt { seg: s, .. } | MaskShape::People { seg: s, .. }) =
                             d.masks.get_mut(mi).and_then(|m| m.components.get_mut(ci)).map(|c| &mut c.shape)
                         {
                             *s = seg;
@@ -306,7 +311,7 @@ mod tests {
         d.masks.push(Mask {
             id: 1,
             components: vec![
-                comp(MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Role("Bride".into())) }, None),
+                comp(MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Role("Bride".into())), seg: None }, None),
                 comp(
                     MaskShape::Linear { start: Point::new(0.5, 1.0), end: Point::new(0.5, 0.5) },
                     Some(Anchor {
@@ -315,7 +320,7 @@ mod tests {
                         bounds: None,
                     }),
                 ),
-                comp(MaskShape::People { person: 3, parts: vec![], who: Some(Who::Role("Groom".into())) }, None),
+                comp(MaskShape::People { person: 3, parts: vec![], who: Some(Who::Role("Groom".into())), seg: None }, None),
             ],
             ..Default::default()
         });

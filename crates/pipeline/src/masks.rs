@@ -239,6 +239,12 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
         s.data.iter_mut().for_each(|v| *v = 1.0 - *v);
         return s;
     }
+    // a People selection the people models computed on this photo (one person, their parts)
+    if let MaskShape::People { seg: Some(seg), .. } = shape {
+        let mut out = Plane::new(w, h);
+        sample_seg(Some(seg), &[], 1.0, frame, w, h, &mut out);
+        return out;
+    }
     let fitting = mattes.map(|m| m.for_shape(shape)).unwrap_or_default();
     if !fitting.is_empty() {
         return matte_alpha(&fitting, frame, w, h);
@@ -1486,9 +1492,25 @@ mod tests {
         assert!(subject.get(10, 50) > 0.99 && subject.get(190, 50) > 0.99 && subject.get(100, 50) < 0.01);
         let background = eval(&MaskShape::Background);
         assert!(background.get(100, 50) > 0.99 && background.get(10, 50) < 0.01);
-        let hair = eval(&MaskShape::People { person: 0, parts: vec!["Hair".into()], who: None });
+        let hair = eval(&MaskShape::People { person: 0, parts: vec!["Hair".into()], who: None, seg: None });
         assert!(hair.get(190, 50) > 0.99 && hair.get(10, 50) < 0.01);
-        let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()], who: None };
+        let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()], who: None, seg: None };
         assert_eq!(eval(&lips), shape_alpha(&lips, &f, w, h, &img, &l, 0.0, None));
+    }
+
+    #[test]
+    fn a_people_selection_the_models_computed_wins_over_mattes_and_the_heuristic() {
+        let (w, h) = (200, 100);
+        let img = Rgb32f::filled(w, h, [0.2; 3]);
+        let l = img.map(crate::local::log_lum);
+        let mut mattes = Mattes::default();
+        mattes.push(MatteKind::Skin, left_matte(w, h, 0.25));
+        // the right half of the photo selected
+        let side = 64;
+        let logits: Vec<f32> = (0..side * side).map(|i| if i % side >= side / 2 { 8.0 } else { -8.0 }).collect();
+        let seg = lcc_develop::SegMask::from_logits(side, &logits);
+        let shape = MaskShape::People { person: 1, parts: vec!["Face Skin".into()], who: None, seg: Some(seg) };
+        let a = shape_alpha(&shape, &frame(w, h), w, h, &img, &l, 0.0, Some(&mattes));
+        assert!(a.get(190, 50) > 0.9 && a.get(10, 50) < 0.1, "{} {}", a.get(190, 50), a.get(10, 50));
     }
 }

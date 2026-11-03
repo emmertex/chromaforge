@@ -64,6 +64,14 @@ pub enum Kind {
         face: PathBuf,
         sam2: Option<PathBuf>,
     },
+    /// A People selection (`person` 0: everyone, n: the n-th from the left; `parts` Lightroom's
+    /// names, none: the entire person) from MediaPipe's people model (Selfie Multiclass, beside
+    /// `face`) and its faces model in `face`. The photo's analysis is kept for the next part.
+    People {
+        face: PathBuf,
+        person: u32,
+        parts: Vec<String>,
+    },
     /// Panics (tests of the worker's recovery).
     #[cfg(test)]
     Panic,
@@ -287,6 +295,15 @@ struct State {
     extra: Option<serde_json::Value>,
     /// MediaPipe's faces and people models (their folder), for appearance signatures.
     faces: Option<(PathBuf, lcc_segment::people::FaceModel, Option<lcc_segment::people::PeopleModel>)>,
+    /// The last photo's people analysis (its look key): every part of it reuses it.
+    people_seen: Option<(u64, PeopleSeen)>,
+}
+
+/// One photo's people analysis: the model input, the class map and the faces (left to right).
+struct PeopleSeen {
+    input: Input,
+    map: Option<lcc_segment::people::PeopleMap>,
+    faces: Vec<lcc_segment::people::Face>,
 }
 
 /// Whether `later` makes `job` pointless (it asks for the same selection again).
@@ -545,11 +562,7 @@ fn faces_job(
     sam2: Option<PathBuf>,
     placement: Placement,
 ) -> Result<serde_json::Value, Failure> {
-    if state.faces.as_ref().is_none_or(|(d, ..)| d != face) {
-        let _busy = Flag::raise(&shared.encoding);
-        let m = lcc_segment::people::FaceModel::load(face)?;
-        state.faces = Some((face.to_path_buf(), m, crate::eyes::people_beside(face)));
-    }
+    ensure_faces(state, shared, face)?;
     let input = render(job)?;
     let (_, fm, pm) = state.faces.as_ref().ok_or("the faces model did not load")?;
     let map = match pm {
@@ -645,7 +658,9 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
                 }
             }
         }
-        Kind::Learn { .. } | Kind::Find { .. } | Kind::Faces { .. } => return Err("remembered objects and appearance run locally".into()),
+        Kind::Learn { .. } | Kind::Find { .. } | Kind::Faces { .. } | Kind::People { .. } => {
+            return Err("remembered objects, appearance and people run locally".into());
+        }
         #[cfg(test)]
         Kind::Panic | Kind::FailOnGpu { .. } => return Err("test panic request".into()),
     };
@@ -661,7 +676,55 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
     }))
 }
 
+/// Load MediaPipe's faces model in `face` (and the people model beside it) unless loaded.
+fn ensure_faces(state: &mut State, shared: &Shared, face: &std::path::Path) -> Result<(), Failure> {
+    if state.faces.as_ref().is_none_or(|(d, ..)| d != face) {
+        let _busy = Flag::raise(&shared.encoding);
+        let m = lcc_segment::people::FaceModel::load(face)?;
+        state.faces = Some((face.to_path_buf(), m, crate::eyes::people_beside(face)));
+        state.people_seen = None;
+    }
+    Ok(())
+}
+
+/// A [`Kind::People`] request: the selection as a stored segmentation (`None`: nobody, or none
+/// of the parts, is there).
+fn people_job(
+    state: &mut State,
+    shared: &Shared,
+    job: &mut Job,
+    face: &std::path::Path,
+    person: u32,
+    parts: &[String],
+) -> Result<Option<SegMask>, Failure> {
+    let req = lcc_segment::people::PeopleRequest::parse(person, parts).ok_or_else(|| Failure::Other(format!("unknown People part in {parts:?}")))?;
+    ensure_faces(state, shared, face)?;
+    if state.people_seen.as_ref().is_none_or(|(k, _)| *k != job.key || job.key == 0) {
+        let input = render(job)?;
+        let _busy = Flag::raise(&shared.encoding);
+        let (_, fm, pm) = state.faces.as_ref().ok_or("the faces model did not load")?;
+        let map = match pm {
+            Some(p) => Some(p.segment(&input.rgb, input.w, input.h)?),
+            None => None,
+        };
+        let mut faces = fm.faces_confirmed(&input.rgb, input.w, input.h, map.as_ref())?;
+        faces.sort_by(|a, b| (a.detection.x0 + a.detection.x1).total_cmp(&(b.detection.x0 + b.detection.x1)));
+        faces.truncate(64);
+        state.people_seen = Some((job.key, PeopleSeen { input, map, faces }));
+    }
+    let (_, seen) = state.people_seen.as_ref().ok_or("the photo is not available")?;
+    let g = lcc_segment::people::people_mask(&req, &seen.input.rgb, seen.input.w, seen.input.h, seen.map.as_ref(), &seen.faces);
+    Ok(g.map(|g| match g.rect {
+        Some(r) => SegMask::from_logits_in(g.side, &g.logits, r),
+        None => SegMask::from_logits(g.side, &g.logits),
+    }))
+}
+
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
+    if let Kind::People { face, person, parts } = &job.kind {
+        let (face, person, parts) = (face.clone(), *person, parts.clone());
+        return people_job(state, shared, job, &face, person, &parts);
+    }
     if let Kind::Faces { face, sam2 } = &job.kind {
         let (face, sam2) = (face.clone(), sam2.clone());
         state.extra = Some(faces_job(state, shared, job, &face, sam2, placement)?);
@@ -689,7 +752,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
             let p = m.segment_clicks(enc, &clicks)?;
             Ok(Some(SegMask::from_logits(side, &p.logits)))
         }
-        Kind::Learn { .. } | Kind::Find { .. } | Kind::Faces { .. } => {
+        Kind::Learn { .. } | Kind::Find { .. } | Kind::Faces { .. } | Kind::People { .. } => {
             Err("remembered objects need SAM 2.1 (Preferences ▸ AI Models ▸ Object model)".into())
         }
         Kind::Text(text) => {

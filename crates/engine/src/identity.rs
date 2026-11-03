@@ -264,7 +264,7 @@ mod tests {
             anchor: None,
             op: lcc_develop::MaskOp::Add,
             invert: false,
-            shape: lcc_develop::MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Name("Sam".into())) },
+            shape: lcc_develop::MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Name("Sam".into())), seg: None },
         });
         d.masks.push(m);
         let out = s.complete_recipes(b, &mut d);

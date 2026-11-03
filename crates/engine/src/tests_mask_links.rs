@@ -157,7 +157,7 @@ fn ai_parts_keep_their_own_shape_while_their_settings_sync() {
         anchor: None,
         op: MaskOp::Add,
         invert: false,
-        shape: MaskShape::People { person, parts: vec![], who: None },
+        shape: MaskShape::People { person, parts: vec![], who: None, seg: None },
     };
     let object = |x: f64| MaskComponent {
         name: None,

@@ -1469,6 +1469,10 @@ pub enum MaskShape {
         /// photo when the mask is computed; `None`: by `person` (position).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         who: Option<crate::recipe::Who>,
+        /// The selection the people models computed on this photo (`None`: not computed, or no
+        /// models installed: the pipeline's heuristic).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seg: Option<crate::SegMask>,
     },
     Landscape {
         class: String,

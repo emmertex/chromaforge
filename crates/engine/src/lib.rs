@@ -2040,6 +2040,8 @@ mod tests_move_to_share;
 #[cfg(test)]
 mod tests_organize;
 #[cfg(test)]
+mod tests_people_masks;
+#[cfg(test)]
 mod tests_persist;
 #[cfg(test)]
 mod tests_plugin_filters;

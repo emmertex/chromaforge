@@ -1314,7 +1314,7 @@ fn show_overlay_row(app: &mut LccApp, ui: &mut egui::Ui) {
 /// recipe and finds that person here (`masks.recompute`); on other photos presets, Paste and Sync
 /// find them again.
 fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, shape: &MaskShape) {
-    let MaskShape::People { person, parts, who } = shape else { return };
+    let MaskShape::People { person, parts, who, .. } = shape else { return };
     let tr = crate::i18n::tr;
     let mut names: Vec<String> = app
         .session
@@ -1400,7 +1400,7 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
         match app.run("people.setRole", json!({"role": role, "person": person, "id": photo.0, "scope": scope})) {
             Ok(_) => {
                 app.ui.role_draft = None;
-                let shape = MaskShape::People { person: 0, parts: parts.clone(), who: Some(lcc_develop::recipe::Who::Role(role)) };
+                let shape = MaskShape::People { person: 0, parts: parts.clone(), who: Some(lcc_develop::recipe::Who::Role(role)), seg: None };
                 let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
                 let _ = app.run("masks.recompute", json!({"id": photo.0}));
             }
@@ -1408,7 +1408,7 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
         }
     }
     if let Some(w) = chosen {
-        let shape = MaskShape::People { person: 0, parts: parts.clone(), who: w };
+        let shape = MaskShape::People { person: 0, parts: parts.clone(), who: w, seg: None };
         let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
         let _ = app.run("masks.recompute", json!({"id": photo.0}));
     }

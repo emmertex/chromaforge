@@ -207,13 +207,14 @@ impl MaskShape {
     pub fn has_seg(&self) -> bool {
         match self {
             MaskShape::Object { seg, detail, .. } | MaskShape::Prompt { seg, detail, .. } => seg.is_some() || !detail.is_empty(),
+            MaskShape::People { seg, .. } => seg.is_some(),
             _ => false,
         }
     }
 
-    /// Whether a computed segmentation is stored in the shape (Object, Describe).
+    /// Whether a computed segmentation is stored in the shape (Object, Describe, People).
     pub fn stores_seg(&self) -> bool {
-        matches!(self, MaskShape::Object { .. } | MaskShape::Prompt { .. })
+        matches!(self, MaskShape::Object { .. } | MaskShape::Prompt { .. } | MaskShape::People { .. })
     }
 
     /// The same selection without what a model computed for one photo.
@@ -222,6 +223,9 @@ impl MaskShape {
         if let MaskShape::Object { seg, detail, .. } | MaskShape::Prompt { seg, detail, .. } = &mut s {
             *seg = None;
             detail.clear();
+        }
+        if let MaskShape::People { seg, .. } = &mut s {
+            *seg = None;
         }
         s
     }
@@ -574,7 +578,7 @@ mod tests {
 
     #[test]
     fn recipes_drop_segmentations_and_keep_the_selection() {
-        let s = MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Role("Groom".into())) };
+        let s = MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Role("Groom".into())), seg: None };
         assert!(s.is_ai() && !s.has_seg());
         assert!(matches!(s.recipe(), MaskShape::People { who: Some(Who::Role(ref g)), .. } if g == "Groom"));
         let o = MaskShape::Object { hint: vec![Point::new(0.5, 0.5)], exclude: vec![], seg: Some(seg()), detail: vec![seg()], edge: 0.0 };
@@ -636,7 +640,7 @@ mod tests {
         let comp = |op, shape| MaskComponent { anchor: None, name: None, op, invert: false, shape };
         let m = Mask {
             components: vec![
-                comp(MaskOp::Add, MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Role("Groom".into())) }),
+                comp(MaskOp::Add, MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Role("Groom".into())), seg: None }),
                 comp(MaskOp::Subtract, MaskShape::Linear { start: Point::new(0.0, 0.0), end: Point::new(1.0, 1.0) }),
             ],
             ..Default::default()
