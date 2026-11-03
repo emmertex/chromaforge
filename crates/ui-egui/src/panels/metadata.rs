@@ -377,7 +377,7 @@ fn toolbar(app: &mut LccApp, ui: &mut egui::Ui, ids: &[u64]) {
                     hint: "Preset name".into(),
                     value: String::new(),
                     command: "metadata.savePreset".into(),
-                    params: json!({"only": ["title", "caption", "copyright", "copyrightStatus", "usageTerms", "copyrightUrl", "creator", "creatorJobTitle", "creatorAddress", "creatorCity", "creatorState", "creatorPostalCode", "creatorCountry", "creatorPhone", "creatorEmail", "creatorWebsite", "location", "city", "state", "country", "keywords"]}),
+                    params: json!({"only": ["title", "headline", "caption", "descriptionWriter", "category", "supplementalCategories", "subjectCode", "copyright", "copyrightStatus", "usageTerms", "copyrightUrl", "creator", "creatorJobTitle", "creatorAddress", "creatorCity", "creatorState", "creatorPostalCode", "creatorCountry", "creatorPhone", "creatorEmail", "creatorWebsite", "location", "city", "state", "country", "keywords"]}),
                     key: "name".into(),
                 });
             }

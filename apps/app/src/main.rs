@@ -1252,6 +1252,15 @@ fn main() -> eframe::Result {
             _ => files.push(a),
         }
     }
+    // first start under this name: copy the settings folder of a previous name (never moved). Before the
+    // log file opens, which creates the new settings folder.
+    if !in_memory && !lcc_brand::env_is_set("NO_PREFS") {
+        match lcc_brand::migrate_legacy_settings() {
+            Ok(Some(from)) => log::info!("settings copied from {}", from.display()),
+            Ok(None) => {}
+            Err(e) => log::warn!("could not copy the previous settings folder: {e}"),
+        }
+    }
     // The log file: opened after the arguments, so `--version`, `--help` and a usage error leave
     // no file behind. Records logged until now are written to it first.
     let mut log_file = None;
@@ -1267,14 +1276,6 @@ fn main() -> eframe::Result {
                 Err(e) => log::warn!("no log file: {e}"),
             },
             None => logger.no_file(),
-        }
-    }
-    // first start under this name: copy the settings folder of a previous name (never moved)
-    if !in_memory && !lcc_brand::env_is_set("NO_PREFS") {
-        match lcc_brand::migrate_legacy_settings() {
-            Ok(Some(from)) => log::info!("settings copied from {}", from.display()),
-            Ok(None) => {}
-            Err(e) => log::warn!("could not copy the previous settings folder: {e}"),
         }
     }
     // a Windows copy unpacked from the zip, before anything is opened: a version a zip update
