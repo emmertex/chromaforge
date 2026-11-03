@@ -128,7 +128,7 @@ impl Session {
 
     /// The faces of the photo with a known look, without computing anything.
     #[cfg_attr(not(feature = "sam"), allow(dead_code))]
-    pub(crate) fn known_appearance(&self, id: PhotoId) -> Option<Arc<Vec<FoundFace>>> {
+    pub fn known_appearance(&self, id: PhotoId) -> Option<Arc<Vec<FoundFace>>> {
         self.appearance.seen.get(&self.appearance_key(id)?).cloned()
     }
 

@@ -2810,3 +2810,22 @@ fn reset_settings_on_new_mask_is_saved_with_the_ui_settings() {
     assert!(h2.app.session.mask_reset_new, "the saved choice reaches the engine");
     h.settle(SETTLE);
 }
+
+/// Create New Mask ▸ People opens its picker under the tiles: a person (counted from the left
+/// without the face model) and parts make a People mask; Remembered opens the remembered objects.
+#[test]
+fn people_and_remembered_tiles_open_their_pickers() {
+    let mut h = detail("panel.masking");
+    click(&mut h, "maskNew:people");
+    assert!(h.app.ui.people_pick.is_some(), "the People picker is open");
+    h.app.ui.people_pick = Some((2, vec!["Clothes".into()]));
+    click(&mut h, "button:maskPeople:create");
+    assert!(h.app.ui.people_pick.is_none(), "closed after Create Mask");
+    let d = develop(&h);
+    let shape = d.masks.last().map(|m| m.components[0].shape.clone());
+    assert!(matches!(&shape, Some(MaskShape::People { person: 2, parts, .. }) if parts == &["Clothes".to_string()]), "{shape:?}");
+    click(&mut h, "maskNew:concept");
+    assert!(h.app.ui.concept_pick && h.app.ui.people_pick.is_none(), "one picker at a time");
+    click(&mut h, "button:maskConcept:cancel");
+    assert!(!h.app.ui.concept_pick);
+}

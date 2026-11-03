@@ -161,6 +161,7 @@ fn kind_icon(kind: &str) -> Icon {
         "prompt" => Icon::Describe,
         "people" => Icon::People,
         "landscape" => Icon::Landscape,
+        "concept" => Icon::Tag,
         _ => Icon::Mask,
     }
 }
@@ -221,12 +222,14 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.label(egui::RichText::new(crate::i18n::tr("Create New Mask")).font(t.semibold(13.0)).color(t.text_label));
         });
         ui.add_space(6.0);
-        let tiles: [(&str, &str); 10] = [
+        let tiles: [(&str, &str); 12] = [
             ("object", "Object"),
             ("prompt", "Describe"),
             ("subject", "Subject"),
             ("sky", "Sky"),
             ("background", "Background"),
+            ("people", "People"),
+            ("concept", "Remembered"),
             ("brush", "Brush"),
             ("linear", "Linear"),
             ("radial", "Radial"),
@@ -277,6 +280,15 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             },
                             "object" => {}
                             "prompt" => start_describe(app, "new"),
+                            // a picker under the tiles: who and which parts, or which object
+                            "people" => {
+                                app.ui.concept_pick = false;
+                                app.ui.people_pick = if app.ui.people_pick.is_some() { None } else { Some((0, Vec::new())) };
+                            }
+                            "concept" => {
+                                app.ui.people_pick = None;
+                                app.ui.concept_pick = !app.ui.concept_pick;
+                            }
                             "brush" | "linear" | "radial" => {
                                 let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
                             }
@@ -291,6 +303,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 }
             });
         });
+        super::mask_pickers::people_picker(app, ui, id);
+        super::mask_pickers::concept_picker(app, ui);
         describe_field(app, ui, true);
         let seg = &app.session.segmenter;
         let status = if seg.analyzing() {
@@ -1129,6 +1143,8 @@ fn mask_menu(app: &mut LccApp, ui: &mut egui::Ui, id: u32, name: &str, visible: 
         ui.close();
     }
     ui.separator();
+    super::mask_pickers::remember_item(app, ui, id);
+    ui.separator();
     let mut run = |ui: &mut egui::Ui, label: &str, enabled: bool, cmd: &str, p: serde_json::Value| {
         if ui.add_enabled(enabled, egui::Button::new(menu_label(label))).clicked() {
             let _ = app.run(cmd, p);
@@ -1369,8 +1385,10 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
         None => tr("Everyone").to_string(),
     };
     let mut chosen: Option<Option<lcc_develop::recipe::Who>> = None;
-    ui.horizontal(|ui| {
-        ui.add_space(20.0);
+    // (wrapped: in a narrow panel, Compact's above all, Set Role… and Roles… go to a second line
+    // instead of past the edge)
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(if crate::theme::compact(ui.ctx()) { 4.0 } else { 20.0 });
         ui.label(tr("Who"));
         let r = egui::ComboBox::from_id_salt(("maskWho", comp)).selected_text(current).show_ui(ui, |ui| {
             if ui.selectable_label(who.is_none() && *person == 0, tr("Everyone")).clicked() {

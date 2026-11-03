@@ -1377,6 +1377,15 @@ pub struct UiState {
     /// The Set Role row under a People component, while open: (role, person).
     #[serde(skip)]
     pub role_draft: Option<(String, String)>,
+    /// The People picker under Create New Mask, while open: (person, 0 = everyone; parts).
+    #[serde(skip)]
+    pub people_pick: Option<(u32, Vec<String>)>,
+    /// The photo whose faces the People picker asked the AI worker for (asked once), and when.
+    #[serde(skip)]
+    pub people_asked: Option<(lcc_catalog::PhotoId, web_time::Instant)>,
+    /// The Remembered picker under Create New Mask is open.
+    #[serde(skip)]
+    pub concept_pick: bool,
     /// The Roles window (who has which role, and where) is open.
     pub roles_window: bool,
     /// Close the window on the next frame (File → Quit).
@@ -2308,6 +2317,9 @@ impl Default for UiState {
             renaming_component: None,
             roles_window: false,
             role_draft: None,
+            people_pick: None,
+            people_asked: None,
+            concept_pick: false,
             quit: false,
             dragging_photos: None,
             reveal_album: None,

@@ -31,6 +31,7 @@ pub mod layout_overlay;
 pub mod left;
 pub mod library_problem;
 pub mod mask_effects;
+pub mod mask_pickers;
 pub mod masking;
 pub mod metadata;
 pub mod navigator;
