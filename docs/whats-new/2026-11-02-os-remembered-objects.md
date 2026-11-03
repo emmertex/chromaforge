@@ -1,0 +1,5 @@
+### Remembered objects and people's looks
+- **Remembered objects:** select a thing on a photo with any mask (a wedding dress, a suit, a bouquet), remember it under a name (`concepts.teach`), and `concepts.find` selects it on other photos as an Object mask named after it, which you can refine with clicks. It runs on the open SAM 2.1 model; what is learned stays in the library. Ported from OneSlips' fork.
+- **People's looks:** `people.learn` remembers how the people named on your photos look (clothes, hair, face proportions), so a People mask for "Sam" or "the Bride" finds them on a photo where nobody named them. A face named as someone else is never taken. Ported from OneSlips' fork.
+- A renamed mask keeps its name in your own preset; masks under their automatic name are named after the preset when it is applied.
+- Moving to another photo with a linked mask selected keeps the component you were editing, and a brush armed on it stays armed. "Reset settings on new mask" is remembered between sessions.
