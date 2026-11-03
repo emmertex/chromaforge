@@ -331,7 +331,9 @@ fn a_hostile_or_wrong_zip_changes_nothing() {
             continue;
         }
         let err = swap_in(&zip, &dir, "app.exe", "1", "2", &mut |_| panic!("{name}: nothing may start")).unwrap_err();
-        assert!(why.iter().any(|w| err.to_string().contains(w)), "{name}: {err}");
+        // Windows refuses names it can't hold as paths outside the folder, too
+        let held = why.contains(&"can't hold") && err.to_string().contains("outside its folder");
+        assert!(held || why.iter().any(|w| err.to_string().contains(w)), "{name}: {err}");
         assert_eq!(read(&dir.join("app.exe")), "old app", "{name}");
         assert!(!root.join("evil.txt").exists() && !dir.join("app.exe.update-old").exists(), "{name}");
         assert!(!manifest_path(&dir, "app.exe").exists(), "{name}");

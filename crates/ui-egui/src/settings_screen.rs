@@ -411,7 +411,8 @@ pub(crate) fn reveal(h: &mut crate::headless::Headless, id: &str) {
                 for _ in 0..6 {
                     h.step();
                 }
-                if find(h, id) == Some(w) {
+                // still in view after settling (it may have moved a little) is enough to click
+                if find(h, id).is_some_and(|v| v.top() >= rows.top() && v.bottom() <= rows.bottom()) {
                     return;
                 }
                 continue;
