@@ -933,6 +933,7 @@
   "Photo Info": "写真情報",
   "Photo Opacity": "写真の不透明度",
   "Photo Text": "写真テキスト",
+  "Photo analysis": "写真の解析",
   "Photo borders": "写真の境界線",
   "Photo menu. The filmstrip has the photo context menu too. Adding a file again that is in Recently Deleted no": "写真メニュー。フィルムストリップにも写真のコンテキストメニューがあります。最近削除した項目にあるファイルを再度追加すると",
   "Photo with Caption": "写真とキャプション",
@@ -1190,6 +1191,7 @@
   "Site Info": "サイト情報",
   "Site title": "サイトのタイトル",
   "Skip This Version": "このバージョンをスキップ",
+  "Sky, Landscape and People masks use": "空・風景・人物マスクに使うモデル",
   "Slider text": "スライダーの文字",
   "Sliders": "スライダー",
   "Slides": "スライド",
@@ -1299,6 +1301,7 @@
   "The key needs asset.read, asset.view and asset.download to link and import, album.read and person.read to browse, library.read for external libraries. It is kept in the key storage above, never in settings.": "リンクと読み込みには asset.read、asset.view、asset.download、閲覧には album.read と person.read、外部ライブラリには library.read の権限が必要です。キーは上のキー保管場所に保存され、設定には保存されません。",
   "The model is kept on this computer only. {app} never uploads or shares it.": "モデルはこのコンピューターにのみ保存されます。{app}がアップロードや共有をすることはありません。",
   "The passphrases differ.": "パスフレーズが一致しません。",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "写真の解析はダウンロード不要です。EoMT はインストールされると使われ、それまでは写真の解析が代わりに使われます。",
   "The place names list towns of 15,000 people or more: in a smaller one, City gets the nearest larger town.": "地名リストには人口 15,000 人以上の町が含まれます。それより小さい町では、「市区町村」に最寄りの大きな町が入ります。",
   "The port must be a number (1–65535)": "ポートは数値（1–65535）である必要があります",
   "The processor does the work.": "プロセッサーで処理します。",
@@ -1650,8 +1653,5 @@
   "{} photos updated, {} copies": "{} 枚の写真を更新、{} 件のコピー",
   "{} selected": "{} 枚を選択",
   "{} wants to sync its library “{}” with this library.": "{} がライブラリ「{}」をこのライブラリと同期しようとしています。",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-ドラッグで水平補正、⇧G でガイド付き Upright、変形中はグリッドを表示。",
-  "Sky, Landscape and People masks use": "空・風景・人物マスクに使うモデル",
-  "Photo analysis": "写真の解析",
-  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "写真の解析はダウンロード不要です。EoMT はインストールされると使われ、それまでは写真の解析が代わりに使われます。"
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-ドラッグで水平補正、⇧G でガイド付き Upright、変形中はグリッドを表示。"
 }

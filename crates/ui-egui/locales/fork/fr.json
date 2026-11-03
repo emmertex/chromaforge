@@ -887,6 +887,7 @@
   "Photo Info": "Informations sur la photo",
   "Photo Opacity": "Opacité de la photo",
   "Photo Text": "Texte de la photo",
+  "Photo analysis": "Analyse de la photo",
   "Photo borders": "Bordures des photos",
   "Photo menu. The filmstrip has the photo context menu too. Adding a file again that is in Recently Deleted no": "menu Photo. Le film fixe a aussi le menu contextuel de photo. Ajouter à nouveau un fichier qui se trouve dans Récemment supprimés ne",
   "Photo with Caption": "Photo avec légende",
@@ -1141,6 +1142,7 @@
   "Site Info": "Informations sur le site",
   "Site title": "Titre du site",
   "Skip This Version": "Ignorer cette version",
+  "Sky, Landscape and People masks use": "Les masques Ciel, Paysage et Personnes utilisent",
   "Slider text": "Texte des curseurs",
   "Sliders": "Curseurs",
   "Slides": "Diapositives",
@@ -1242,6 +1244,7 @@
   "The key needs asset.read, asset.view and asset.download to link and import, album.read and person.read to browse, library.read for external libraries. It is kept in the key storage above, never in settings.": "La clé nécessite asset.read, asset.view et asset.download pour lier et importer, album.read et person.read pour parcourir, library.read pour les bibliothèques externes. Elle est conservée dans le stockage des clés ci-dessus, jamais dans les réglages.",
   "The model is kept on this computer only. {app} never uploads or shares it.": "Le modèle est conservé uniquement sur cet ordinateur. {app} ne le téléverse ni ne le partage jamais.",
   "The passphrases differ.": "Les phrases secrètes diffèrent.",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "L’analyse de la photo ne demande aucun téléchargement. EoMT est utilisé dès qu’il est installé ; d’ici là, l’analyse de la photo le remplace.",
   "The place names list towns of 15,000 people or more: in a smaller one, City gets the nearest larger town.": "La liste des noms de lieux comprend les villes de 15 000 habitants ou plus : pour une plus petite, Ville reçoit la ville plus grande la plus proche.",
   "The port must be a number (1–65535)": "Le port doit être un nombre (1–65535)",
   "The server answers; the key works.": "Le serveur répond ; la clé fonctionne.",
@@ -1566,8 +1569,5 @@
   "{} photos updated, {} copies": "{} photos mises à jour, {} copies",
   "{} selected": "{} sélectionnées",
   "{} wants to sync its library “{}” with this library.": "{} souhaite synchroniser sa bibliothèque « {} » avec cette bibliothèque.",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-glisser pour redresser, ⇧G Upright guidé, une grille pendant la transformation.",
-  "Sky, Landscape and People masks use": "Les masques Ciel, Paysage et Personnes utilisent",
-  "Photo analysis": "Analyse de la photo",
-  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "L’analyse de la photo ne demande aucun téléchargement. EoMT est utilisé dès qu’il est installé ; d’ici là, l’analyse de la photo le remplace."
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-glisser pour redresser, ⇧G Upright guidé, une grille pendant la transformation."
 }

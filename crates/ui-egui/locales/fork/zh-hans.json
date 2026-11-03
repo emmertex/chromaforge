@@ -893,6 +893,7 @@
   "Photo Info": "照片信息",
   "Photo Opacity": "照片不透明度",
   "Photo Text": "照片文本",
+  "Photo analysis": "照片分析",
   "Photo borders": "照片边框",
   "Photo menu. The filmstrip has the photo context menu too. Adding a file again that is in Recently Deleted no": "照片菜单。胶片窗格也有照片上下文菜单。再次添加位于“最近删除”中的文件时不再",
   "Photo with Caption": "照片带题注",
@@ -1147,6 +1148,7 @@
   "Site Info": "站点信息",
   "Site title": "站点标题",
   "Skip This Version": "跳过此版本",
+  "Sky, Landscape and People masks use": "天空、风景和人物蒙版使用",
   "Slider text": "滑块文字",
   "Sliders": "滑块",
   "Slides": "幻灯片",
@@ -1248,6 +1250,7 @@
   "The key needs asset.read, asset.view and asset.download to link and import, album.read and person.read to browse, library.read for external libraries. It is kept in the key storage above, never in settings.": "密钥需要 asset.read、asset.view 和 asset.download 才能关联和导入，需要 album.read 和 person.read 才能浏览，需要 library.read 才能使用外部图库。密钥保存在上方的密钥存储中，绝不保存在设置里。",
   "The model is kept on this computer only. {app} never uploads or shares it.": "模型只保存在本机上。{app} 绝不会上传或分享它。",
   "The passphrases differ.": "两次输入的口令不一致。",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "照片分析无需下载。EoMT 安装后即会使用；在此之前由照片分析代替。",
   "The place names list towns of 15,000 people or more: in a smaller one, City gets the nearest larger town.": "地名列表包含人口 15,000 及以上的城镇：位于较小城镇时，“城市”将填入最近的较大城镇。",
   "The port must be a number (1–65535)": "端口必须是数字（1–65535）",
   "The server answers; the key works.": "服务器有响应；密钥可用。",
@@ -1572,8 +1575,5 @@
   "{} photos updated, {} copies": "已更新 {} 张照片，{} 个副本",
   "{} selected": "已选择 {} 张",
   "{} wants to sync its library “{}” with this library.": "{} 想将其图库“{}”与此图库同步。",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。",
-  "Sky, Landscape and People masks use": "天空、风景和人物蒙版使用",
-  "Photo analysis": "照片分析",
-  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "照片分析无需下载。EoMT 安装后即会使用；在此之前由照片分析代替。"
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。"
 }

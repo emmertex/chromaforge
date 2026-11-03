@@ -933,6 +933,7 @@
   "Photo Info": "Informações da foto",
   "Photo Opacity": "Opacidade da foto",
   "Photo Text": "Texto da foto",
+  "Photo analysis": "Análise da foto",
   "Photo borders": "Bordas das fotos",
   "Photo menu. The filmstrip has the photo context menu too. Adding a file again that is in Recently Deleted no": "menu Foto. A tira de filme também tem o menu de contexto da foto. Adicionar de novo um arquivo que está em Excluídos recentemente não",
   "Photo with Caption": "Foto com legenda",
@@ -1190,6 +1191,7 @@
   "Site Info": "Informações do site",
   "Site title": "Título do site",
   "Skip This Version": "Ignorar esta versão",
+  "Sky, Landscape and People masks use": "As máscaras de céu, paisagem e pessoas usam",
   "Slider text": "Texto dos controles deslizantes",
   "Sliders": "Controles deslizantes",
   "Slides": "Slides",
@@ -1297,6 +1299,7 @@
   "The key needs asset.read, asset.view and asset.download to link and import, album.read and person.read to browse, library.read for external libraries. It is kept in the key storage above, never in settings.": "A chave precisa de asset.read, asset.view e asset.download para vincular e importar, album.read e person.read para navegar e library.read para bibliotecas externas. Ela fica no armazenamento de chaves acima, nunca nas configurações.",
   "The model is kept on this computer only. {app} never uploads or shares it.": "O modelo fica apenas neste computador. O {app} nunca o envia nem o compartilha.",
   "The passphrases differ.": "As frases secretas não coincidem.",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "A análise da foto não precisa de download. O EoMT é usado assim que estiver instalado; até lá, a análise da foto o substitui.",
   "The place names list towns of 15,000 people or more: in a smaller one, City gets the nearest larger town.": "A lista de nomes de lugares inclui cidades com 15.000 habitantes ou mais: em uma menor, Cidade recebe a cidade maior mais próxima.",
   "The port must be a number (1–65535)": "A porta deve ser um número (1–65535)",
   "The processor does the work.": "O processador faz o trabalho.",
@@ -1650,8 +1653,5 @@
   "{} photos updated, {} copies": "{} fotos atualizadas, {} cópias",
   "{} selected": "{} selecionadas",
   "{} wants to sync its library “{}” with this library.": "{} quer sincronizar a biblioteca “{}” com esta biblioteca.",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastar para endireitar, ⇧G Upright guiado, uma grade ao transformar.",
-  "Sky, Landscape and People masks use": "As máscaras de céu, paisagem e pessoas usam",
-  "Photo analysis": "Análise da foto",
-  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "A análise da foto não precisa de download. O EoMT é usado assim que estiver instalado; até lá, a análise da foto o substitui."
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastar para endireitar, ⇧G Upright guiado, uma grade ao transformar."
 }

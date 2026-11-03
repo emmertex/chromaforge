@@ -1051,6 +1051,7 @@
   "Photo Info": "Сведения о фото",
   "Photo Opacity": "Непрозрачность фото",
   "Photo Text": "Текст фото",
+  "Photo analysis": "Анализ фото",
   "Photo borders": "Рамки фото",
   "Photo menu. The filmstrip has the photo context menu too. Adding a file again that is in Recently Deleted no": "меню Фото. В ленте тоже есть контекстное меню фото. Повторное добавление файла, находящегося в Недавно удалённых, больше не",
   "Photo with Caption": "Фото с подписью",
@@ -1360,6 +1361,7 @@
   "Site Info": "Сведения о сайте",
   "Site title": "Заголовок сайта",
   "Skip This Version": "Пропустить эту версию",
+  "Sky, Landscape and People masks use": "Маски неба, пейзажа и людей используют",
   "Slider text": "Текст ползунков",
   "Sliders": "Ползунки",
   "Slides": "Слайды",
@@ -1474,6 +1476,7 @@
   "The number at the end of the original name (IMG_0042 → 0042)": "Номер в конце исходного имени (IMG_0042 → 0042)",
   "The original extension is always added; {ext} only puts it inside the name as well.": "Исходное расширение добавляется всегда; {ext} лишь дополнительно вставляет его в имя.",
   "The passphrases differ.": "Парольные фразы не совпадают.",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "Анализу фото не нужна загрузка. EoMT используется, как только он установлен; до тех пор его заменяет анализ фото.",
   "The place names list towns of 15,000 people or more: in a smaller one, City gets the nearest larger town.": "Список названий мест включает населённые пункты от 15 000 жителей: для меньшего в поле «Город» попадает ближайший более крупный.",
   "The port must be a number (1–65535)": "Порт должен быть числом (1–65535)",
   "The server answers; the key works.": "Сервер отвечает, ключ работает.",
@@ -1867,8 +1870,5 @@
   "≥  at least": "≥  не менее",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-перетаскивание для выравнивания, ⇧G Upright по направляющим, сетка во время трансформации.",
   "日本語": "日本語",
-  "繁體中文（台灣）": "繁體中文（台灣）",
-  "Sky, Landscape and People masks use": "Маски неба, пейзажа и людей используют",
-  "Photo analysis": "Анализ фото",
-  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "Анализу фото не нужна загрузка. EoMT используется, как только он установлен; до тех пор его заменяет анализ фото."
+  "繁體中文（台灣）": "繁體中文（台灣）"
 }

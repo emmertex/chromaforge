@@ -830,6 +830,7 @@
   "Photo Info": "Відомості про фото",
   "Photo Opacity": "Непрозорість фото",
   "Photo Text": "Текст фото",
+  "Photo analysis": "Аналіз фото",
   "Photo borders": "Рамки фото",
   "Photo with Caption": "Фото з підписом",
   "Photo with Side Text": "Фото з бічним текстом",
@@ -1075,6 +1076,7 @@
   "Site Info": "Відомості про сайт",
   "Site title": "Заголовок сайту",
   "Skip This Version": "Пропустити цю версію",
+  "Sky, Landscape and People masks use": "Маски неба, пейзажу та людей використовують",
   "Slider text": "Текст повзунків",
   "Sliders": "Повзунки",
   "Slides": "Слайди",
@@ -1163,6 +1165,7 @@
   "The key needs asset.read, asset.view and asset.download to link and import, album.read and person.read to browse, library.read for external libraries. It is kept in the key storage above, never in settings.": "Ключу потрібні asset.read, asset.view і asset.download для зв’язування та імпорту, album.read і person.read для перегляду, library.read для зовнішніх бібліотек. Він зберігається в сховищі ключів вище, ніколи в налаштуваннях.",
   "The model is kept on this computer only. {app} never uploads or shares it.": "Модель зберігається лише на цьому комп’ютері. {app} ніколи не вивантажує й не поширює її.",
   "The passphrases differ.": "Парольні фрази відрізняються.",
+  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "Аналізу фото не потрібне завантаження. EoMT використовується, щойно його встановлено; доти його замінює аналіз фото.",
   "The place names list towns of 15,000 people or more: in a smaller one, City gets the nearest larger town.": "Список назв місць містить населені пункти від 15 000 мешканців: для меншого в полі «Місто» буде найближчий більший.",
   "The port must be a number (1–65535)": "Порт має бути числом (1–65535)",
   "The server answers; the key works.": "Сервер відповідає; ключ працює.",
@@ -1401,8 +1404,5 @@
   "{} photos linked, {} probable": "Зв’язано {} фото, {} імовірно",
   "{} photos updated, {} copies": "Оновлено фото: {}, копій: {}",
   "{} selected": "Вибрано: {}",
-  "{} wants to sync its library “{}” with this library.": "{} пропонує синхронізувати свою бібліотеку «{}» з цією бібліотекою.",
-  "Sky, Landscape and People masks use": "Маски неба, пейзажу та людей використовують",
-  "Photo analysis": "Аналіз фото",
-  "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.": "Аналізу фото не потрібне завантаження. EoMT використовується, щойно його встановлено; доти його замінює аналіз фото."
+  "{} wants to sync its library “{}” with this library.": "{} пропонує синхронізувати свою бібліотеку «{}» з цією бібліотекою."
 }
