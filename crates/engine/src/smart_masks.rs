@@ -97,12 +97,14 @@ impl Session {
         let aspect = self.photo_aspect(id);
         for m in &mut d.masks {
             for c in &mut m.components {
-                if let MaskShape::People { person, who: Some(who), .. } = &mut c.shape {
+                if let MaskShape::People { person, who: Some(who), seg, .. } = &mut c.shape {
                     let who = who.clone();
                     let (i, note) = self.person_index(id, &who, &faces);
                     out.notes.extend(note.map(|n| format!("{}: {n}", m.name)));
                     if *person != i {
+                        // someone else now: what was computed for the other person goes
                         *person = i;
+                        *seg = None;
                         out.changed += 1;
                     }
                 }

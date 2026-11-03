@@ -1067,6 +1067,19 @@ impl Session {
                 if learn && let Err(e) = self.learn_named_faces(photo, &faces) {
                     polled.messages.push(e);
                 }
+                // the looks are here: People masks by name or role are matched again (and
+                // computed for whoever they now find)
+                let by_who = self
+                    .develop_of(photo)
+                    .is_some_and(|d| d.masks.iter().flat_map(|m| &m.components).any(|c| matches!(c.shape, MaskShape::People { who: Some(_), .. })));
+                if by_who {
+                    match self.compute_masks_later(photo, false) {
+                        Ok((done, _)) => {
+                            polled.changed |= done.changed > 0;
+                        }
+                        Err(e) => polled.messages.push(e.to_string()),
+                    }
+                }
             }
             Tag::Learn { photo, name } => {
                 if let Err(e) = o.result {

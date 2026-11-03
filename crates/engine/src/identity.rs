@@ -264,12 +264,18 @@ mod tests {
             anchor: None,
             op: lcc_develop::MaskOp::Add,
             invert: false,
-            shape: lcc_develop::MaskShape::People { person: 0, parts: vec!["Clothes".into()], who: Some(Who::Name("Sam".into())), seg: None },
+            // computed for everyone before the looks were known
+            shape: lcc_develop::MaskShape::People {
+                person: 0,
+                parts: vec!["Clothes".into()],
+                who: Some(Who::Name("Sam".into())),
+                seg: Some(lcc_develop::SegMask::from_logits(8, &[4.0; 64])),
+            },
         });
         d.masks.push(m);
         let out = s.complete_recipes(b, &mut d);
         assert!(
-            matches!(d.masks[0].components[0].shape, lcc_develop::MaskShape::People { person: 2, .. }),
+            matches!(d.masks[0].components[0].shape, lcc_develop::MaskShape::People { person: 2, seg: None, .. }),
             "{:?} {:?}",
             d.masks[0].components[0].shape,
             out.notes
