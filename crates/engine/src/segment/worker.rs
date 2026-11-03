@@ -743,30 +743,8 @@ fn silhouettes(state: &mut State, shared: &Shared, dir: &std::path::Path, placem
     let seen = state.people_seen.take();
     let out = (|| -> Result<lcc_segment::people::Instances, Failure> {
         let (_, p) = seen.as_ref().ok_or("the photo is not available")?;
-        let (w, h) = (p.input.w.max(1) as f32, p.input.h.max(1) as f32);
-        let centre = |f: &lcc_segment::people::Face| {
-            let d = &f.detection;
-            (((d.x0 + d.x1) / 2.0 / w).clamp(0.0, 1.0), ((d.y0 + d.y1) / 2.0 / h).clamp(0.0, 1.0), ((d.y1 - d.y0) / h).max(0.0))
-        };
         let m = sam2_model(state, shared, dir, placement)?;
-        let enc = m.encode(&p.input.rgb, p.input.w, p.input.h)?;
-        let mut people = Vec::with_capacity(p.faces.len());
-        let mut seeds = Vec::with_capacity(p.faces.len());
-        for (k, f) in p.faces.iter().enumerate() {
-            let (cx, cy, fh) = centre(f);
-            seeds.push([cx, cy]);
-            // their face, chest and middle (below the frame: left out); the others' faces out
-            let mut clicks: Vec<lcc_segment::Click> =
-                [0.0, 1.6, 3.2].iter().map(|d| cy + d * fh).filter(|y| *y < 0.98).map(|y| lcc_segment::Click { x: cx, y, positive: true }).collect();
-            for (j, o) in p.faces.iter().enumerate() {
-                if j != k {
-                    let (ox, oy, _) = centre(o);
-                    clicks.push(lcc_segment::Click { x: ox, y: oy, positive: false });
-                }
-            }
-            people.push(m.segment_clicks_with(&enc, &clicks, false)?.logits);
-        }
-        Ok(lcc_segment::people::Instances::new(lcc_segment::SAM2_MASK_SIDE, people, &seeds))
+        Ok(person_silhouettes(m, &p.input.rgb, p.input.w, p.input.h, &p.faces)?)
     })();
     state.people_seen = seen;
     match out {
@@ -776,6 +754,41 @@ fn silhouettes(state: &mut State, shared: &Shared, dir: &std::path::Path, placem
             None
         }
     }
+}
+
+/// Everyone's silhouette on an 8-bit RGB picture `w × h` with SAM 2.1 `m`: for each face, clicks
+/// on it and down its body, the other faces left out. People masks and Retouch share it, so one
+/// person of several is the same pixels in both.
+pub(crate) fn person_silhouettes(
+    m: &Sam2,
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    faces: &[lcc_segment::people::Face],
+) -> Result<lcc_segment::people::Instances, lcc_segment::Error> {
+    let (wf, hf) = (w.max(1) as f32, h.max(1) as f32);
+    let centre = |f: &lcc_segment::people::Face| {
+        let d = &f.detection;
+        (((d.x0 + d.x1) / 2.0 / wf).clamp(0.0, 1.0), ((d.y0 + d.y1) / 2.0 / hf).clamp(0.0, 1.0), ((d.y1 - d.y0) / hf).max(0.0))
+    };
+    let enc = m.encode(rgb, w, h)?;
+    let mut people = Vec::with_capacity(faces.len());
+    let mut seeds = Vec::with_capacity(faces.len());
+    for (k, f) in faces.iter().enumerate() {
+        let (cx, cy, fh) = centre(f);
+        seeds.push([cx, cy]);
+        // their face, chest and middle (below the frame: left out); the others' faces out
+        let mut clicks: Vec<lcc_segment::Click> =
+            [0.0, 1.6, 3.2].iter().map(|d| cy + d * fh).filter(|y| *y < 0.98).map(|y| lcc_segment::Click { x: cx, y, positive: true }).collect();
+        for (j, o) in faces.iter().enumerate() {
+            if j != k {
+                let (ox, oy, _) = centre(o);
+                clicks.push(lcc_segment::Click { x: ox, y: oy, positive: false });
+            }
+        }
+        people.push(m.segment_clicks_with(&enc, &clicks, false)?.logits);
+    }
+    Ok(lcc_segment::people::Instances::new(lcc_segment::SAM2_MASK_SIDE, people, &seeds))
 }
 
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {

@@ -61,6 +61,7 @@ fn wanted(d: &DevelopSettings) -> Vec<PartRequest> {
 /// Each part of `parts` on an 8-bit RGB picture `w × h` (`seg: None` where it isn't there: no teeth
 /// showing, no such person).
 #[cfg(feature = "sam")]
+#[allow(clippy::too_many_arguments)]
 fn analyse(
     rgb: &[u8],
     w: usize,
@@ -69,18 +70,31 @@ fn analyse(
     people: &std::path::Path,
     face: &std::path::Path,
     scene: Option<&std::path::Path>,
+    sam2: Option<&std::path::Path>,
 ) -> Result<Vec<RetouchMask>, String> {
     use lcc_segment::people::{PeopleRequest, people_mask_with};
     let pm = super::skin::loaded::people(people)?;
     let fm = super::skin::loaded::face(face)?;
     let map = pm.segment(rgb, w, h).map_err(|e| e.to_string())?;
-    let faces = fm.faces(rgb, w, h).map_err(|e| e.to_string())?;
+    // the faces as People masks see them (confirmed by the people model, left to right), so
+    // "person 2" is the same person in Retouch and in a People mask
+    let mut faces = fm.faces_confirmed(rgb, w, h, Some(&map)).map_err(|e| e.to_string())?;
+    faces.sort_by(|a, b| (a.detection.x0 + a.detection.x1).total_cmp(&(b.detection.x0 + b.detection.x1)));
+    faces.truncate(64);
     let names: Vec<&str> = parts.iter().map(|r| r.part.people_name()).collect();
     let surfaces = scene.and_then(|dir| surfaces(&names, rgb, w, h, dir));
+    // Clothes of one person of several: everyone's SAM 2.1 silhouette decides whose an overlapping
+    // pixel is, as for a People mask (without SAM 2.1: the estimate from the faces, as before)
+    let one_of_several = faces.len() > 1 && parts.iter().any(|r| r.person > 0 && r.part.people_name().eq_ignore_ascii_case("clothes"));
+    let instances = sam2.filter(|_| one_of_several).and_then(|dir| {
+        let m = lcc_segment::Sam2::load_cpu(dir).map_err(|e| log::warn!("retouch: SAM 2.1 did not load ({e})")).ok()?;
+        super::worker::person_silhouettes(&m, rgb, w, h, &faces).map_err(|e| log::warn!("retouch: no silhouettes from SAM 2.1 ({e})")).ok()
+    });
     let mut out = Vec::with_capacity(parts.len());
     for r in parts {
         let req = PeopleRequest::parse(r.person, &[r.part.people_name().to_string()]).ok_or("unknown People part")?;
-        let seg = people_mask_with(&req, rgb, w, h, Some(&map), &faces, None, surfaces.as_ref()).map(|g| match g.rect {
+        let own = instances.as_ref().filter(|_| r.person > 0 && r.part.people_name().eq_ignore_ascii_case("clothes"));
+        let seg = people_mask_with(&req, rgb, w, h, Some(&map), &faces, own, surfaces.as_ref()).map(|g| match g.rect {
             Some(q) => lcc_develop::SegMask::from_logits_in(g.side, &g.logits, q),
             None => lcc_develop::SegMask::from_logits(g.side, &g.logits),
         });
@@ -158,7 +172,9 @@ impl Session {
             let img = job.run().rendered.map_err(crate::EngineError::Other)?.image;
             let rgb: Vec<u8> = img.data.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
             let scene = self.segmenter.scene_dir_in_use();
-            let masks = analyse(&rgb, img.width, img.height, &key.parts, &people, &face, scene.as_deref()).map_err(crate::EngineError::Other)?;
+            let sam2 = self.segmenter.require_sam2().ok();
+            let masks = analyse(&rgb, img.width, img.height, &key.parts, &people, &face, scene.as_deref(), sam2.as_deref())
+                .map_err(crate::EngineError::Other)?;
             self.parts_keep(key.clone(), look, &masks);
             Ok(masks)
         }
@@ -176,6 +192,7 @@ impl Session {
         #[cfg(feature = "sam")]
         {
             let scene = self.segmenter.scene_dir_in_use();
+            let sam2 = self.segmenter.require_sam2().ok();
             let results = self.segmenter.parts.results.get_or_insert_with(std::sync::mpsc::channel);
             let tx = results.0.clone();
             let key = key.clone();
@@ -189,7 +206,7 @@ impl Session {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let img = job.run().rendered?.image;
                     let rgb: Vec<u8> = img.data.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
-                    analyse(&rgb, img.width, img.height, &key.parts, &people, &face, scene.as_deref())
+                    analyse(&rgb, img.width, img.height, &key.parts, &people, &face, scene.as_deref(), sam2.as_deref())
                 }))
                 .unwrap_or_else(|_| Err("the AI model failed unexpectedly".into()));
                 let _ = tx.send(RetouchDone { key, look, result });
