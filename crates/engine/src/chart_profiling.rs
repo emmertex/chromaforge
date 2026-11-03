@@ -711,11 +711,31 @@ pub struct ProfileSwap {
 /// the temporary file.
 pub fn write_atomic(path: &std::path::Path, bytes: &[u8], write: &dyn Fn(&std::path::Path, &[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
     let tmp = path.with_extension("dcp.tmp");
-    let done = write(&tmp, bytes).and_then(|()| std::fs::File::open(&tmp)?.sync_all()).and_then(|()| std::fs::rename(&tmp, path));
+    // (the flush needs a handle with write access: on Windows `FlushFileBuffers` on a read-only one
+    // is "Access is denied"; the handle is closed before the rename)
+    let done = write(&tmp, bytes)
+        .and_then(|()| std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all())
+        .and_then(|()| rename_over(&tmp, path));
     if done.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     done
+}
+
+/// Rename `from` over `to`. Windows refuses for a moment while another process (a virus scanner,
+/// the search indexer) has `to` open, so it tries again briefly there before giving up; the old
+/// file stays in place until a rename succeeds.
+fn rename_over(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// Keep `old` (profile `stem`'s file before a Replace) as `<library>/.replaced/<stem> <time>.dcp`.
