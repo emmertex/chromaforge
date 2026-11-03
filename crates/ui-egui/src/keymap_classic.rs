@@ -214,13 +214,19 @@ pub(super) fn module_keys(module: crate::module::ModuleId) -> &'static [crate::m
     if active_set() == KeymapSet::Classic { crate::module::get(module).keymap() } else { &[] }
 }
 
+/// Whether a Tab pressed with `m` is the binding's (`bm`). On macOS Control is a key of its own
+/// (Command is the shortcut key), so Ctrl+Tab (Settings' next section) is not a bare Tab.
+fn same_tab_modifiers(bm: Modifiers, m: Modifiers) -> bool {
+    bm.shift == m.shift && bm.alt == m.alt && bm.command == m.command && (!cfg!(target_os = "macos") || bm.ctrl == m.ctrl)
+}
+
 /// Whether `keymap` (in the active set) binds Tab with modifiers `m` to a command: only such a
 /// Tab is held back from egui's focus navigation ([`deferred_tabs`]); an unbound one moves the focus.
 pub(crate) fn tab_bound(keymap: &Keymap, m: Modifiers) -> bool {
     bindable().iter().any(|b| {
         binding(keymap, b.id, b.default())
             .and_then(parse)
-            .is_some_and(|(bm, k)| k == Key::Tab && bm.shift == m.shift && bm.alt == m.alt && bm.command == m.command)
+            .is_some_and(|(bm, k)| k == Key::Tab && same_tab_modifiers(bm, m))
     })
 }
 
@@ -230,9 +236,7 @@ pub(super) fn deferred_tabs(deferred: &mut Vec<Modifiers>, keymap: &Keymap, fire
         for b in bindable() {
             if let Some(sc) = binding(keymap, b.id, b.default())
                 && let Some((bm, Key::Tab)) = parse(sc)
-                && bm.shift == m.shift
-                && bm.alt == m.alt
-                && bm.command == m.command
+                && same_tab_modifiers(bm, m)
             {
                 fire.push(b.id.to_string());
             }
