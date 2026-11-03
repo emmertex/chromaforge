@@ -633,7 +633,9 @@ pub fn install(
     let id = match id {
         Some(id) => id,
         None => {
-            let slug = crate::presets::slug(&format!("{}-{}", dcp.model, dcp.name));
+            // (a name that starts with the camera already says it)
+            let base = if dcp.name.starts_with(dcp.model.as_str()) { dcp.name.clone() } else { format!("{}-{}", dcp.model, dcp.name) };
+            let slug = crate::presets::slug(&base);
             let taken = |stem: &str| library.join(format!("{stem}.dcp")).exists() || lcc_raw::dcp::library_get(&format!("dcp:{stem}")).is_some();
             let stem = std::iter::once(slug.clone()).chain((2..10_000).map(|n| format!("{slug}-{n}"))).find(|s| !taken(s)).unwrap_or(slug);
             format!("dcp:{stem}")
