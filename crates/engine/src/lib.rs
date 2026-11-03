@@ -493,6 +493,8 @@ pub struct Session {
     pub print_templates: Vec<print::template::PrintTemplate>,
     /// Metadata presets (`metadata.*`), persisted in prefs.json.
     pub metadata_presets: Vec<cmd::metadata::MetadataPreset>,
+    /// Import presets: named sets of the Import tab's settings (persisted in prefs.json).
+    pub import_presets: Vec<cmd::import_tab::ImportPreset>,
     /// Saved filter-bar settings (`filter.*`), persisted in prefs.json.
     pub filter_presets: Vec<cmd::filters::FilterPreset>,
     /// The user's point-curve presets (`curve.*`; built-ins: [`cmd::curves::builtin_presets`]),
@@ -743,6 +745,7 @@ impl Session {
             print: Default::default(),
             print_templates: Vec::new(),
             metadata_presets: Vec::new(),
+            import_presets: Vec::new(),
             filter_presets: Vec::new(),
             curve_presets: Vec::new(),
             crop_aspects: Default::default(),
@@ -2147,6 +2150,8 @@ mod tests_import;
 mod tests_import_local;
 #[cfg(test)]
 mod tests_import_move;
+#[cfg(test)]
+mod tests_import_tab;
 #[cfg(test)]
 mod tests_keyword_list;
 #[cfg(all(test, not(target_arch = "wasm32")))]

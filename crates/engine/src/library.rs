@@ -346,6 +346,8 @@ struct PrefsFile {
     print_templates: Vec<crate::print::template::PrintTemplate>,
     /// Metadata presets.
     metadata_presets: Vec<crate::cmd::metadata::MetadataPreset>,
+    /// Import presets (the Import tab's settings, by name).
+    import_presets: Vec<crate::cmd::import_tab::ImportPreset>,
     /// Filter presets.
     filter_presets: Vec<crate::cmd::filters::FilterPreset>,
     /// Point-curve presets.
@@ -675,6 +677,7 @@ impl Session {
         self.export_presets = prefs.export_presets;
         self.print_templates = prefs.print_templates;
         self.metadata_presets = prefs.metadata_presets;
+        self.import_presets = prefs.import_presets;
         self.filter_presets = prefs.filter_presets;
         self.curve_presets = prefs.curve_presets;
         self.crop_aspects = prefs.crop_aspects.sanitized();
@@ -1147,6 +1150,7 @@ impl Session {
             export_presets: self.export_presets.clone(),
             print_templates: self.print_templates.clone(),
             metadata_presets: self.metadata_presets.clone(),
+            import_presets: self.import_presets.clone(),
             filter_presets: self.filter_presets.clone(),
             curve_presets: self.curve_presets.clone(),
             crop_aspects: self.crop_aspects.clone(),

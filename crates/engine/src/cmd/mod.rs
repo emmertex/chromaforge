@@ -39,6 +39,7 @@ mod genfill;
 pub mod geocode;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod immich;
+pub mod import_tab;
 pub mod keywords;
 mod lens_db;
 pub mod library;
@@ -275,6 +276,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(print::specs());
         v.extend(before::specs());
         v.extend(browse::specs());
+        v.extend(import_tab::specs());
         v.extend(folders::specs());
         v.extend(missing::specs());
         v.extend(recheck::specs());
