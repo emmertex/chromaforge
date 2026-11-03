@@ -165,6 +165,12 @@ pub fn keep_in_step(app: &mut LccApp) {
         app.ui.tab = Tab::Library;
         return;
     }
+    // Show Alternatives looks at a folder too, but in the Library tab, under its own bar
+    if app.session.alternatives.is_some() {
+        app.ui.tab = Tab::Library;
+        app.ui.import_was_browsing = false;
+        return;
+    }
     let browsing = app.session.source == LibrarySource::Folder;
     if browsing && app.ui.tab != Tab::Import {
         app.ui.tab = Tab::Import;
@@ -326,6 +332,22 @@ fn pane_id() -> egui::Id {
 
 /// The Import | Library switch, in the top bar (Classic, Compact) or the Modern library bar.
 /// Nothing when Import is not a tab.
+/// The width [`tabs`] takes in the top bar, its spacing before included (0 when the tabs are off),
+/// so the in-window menus and the search field leave it room.
+pub fn tabs_width(app: &LccApp, ui: &egui::Ui) -> f32 {
+    if !enabled(app) {
+        return 0.0;
+    }
+    let t = Tokens::get(ui.ctx());
+    let finger = crate::dialog_frame::finger_sized(ui);
+    let font = t.semibold(if finger { 14.0 } else { 12.5 });
+    6.0 + 4.0
+        + ["Import", "Library"]
+            .iter()
+            .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + 24.0)
+            .sum::<f32>()
+}
+
 pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
     if !enabled(app) {
         return;
@@ -346,6 +368,7 @@ pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
         let resp = ui.interact(r, ui.id().with(*wid), Sense::click());
         register(ui.ctx(), format!("button:{wid}"), r);
         let on = app.ui.tab == *tab;
+        crate::access::choice(&resp, label, on);
         if on {
             ui.painter().rect_filled(r, (h - 4.0) / 2.0, t.accent);
         } else if resp.hovered() {

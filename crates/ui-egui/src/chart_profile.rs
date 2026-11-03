@@ -1,4 +1,4 @@
-//! Photo ▸ Create Camera Profile from Color Chart… (LR-PROF-CREATE, LR-PROF-DUAL): the chart photo,
+//! Photo ▸ Develop Settings ▸ Create Camera Profile from Color Chart… (LR-PROF-CREATE, LR-PROF-DUAL): the chart photo,
 //! developed and oriented as the app shows it, with the patch grid found on it (corners can be
 //! dragged, with a magnifier; the view zooms and pans), the light, what to match and the name, an
 //! optional second chart photo under another light (picked from the library) for a dual-illuminant

@@ -1537,6 +1537,8 @@ mod tests {
         fn grid(view: ViewMode) -> crate::headless::Headless {
             let mut h = library();
             h.app.ui.view = view;
+            // the full menu bar (the Import | Library tabs would fold it at this width)
+            h.app.ui.settings.import_as_tab = false;
             h.app.session.execute("library.select", &json!({"ids": [1, 2, 3], "active": 2})).unwrap();
             for _ in 0..3 {
                 h.step();

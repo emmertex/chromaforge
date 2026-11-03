@@ -3433,6 +3433,7 @@ fn group_checklist(ui: &mut egui::Ui, tag: &str, ids: &mut Vec<String>, offered:
                     let icon = if open { crate::icons::Icon::ChevronDown } else { crate::icons::Icon::ChevronRight };
                     crate::icons::paint(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0)), icon, colour);
                     let arrow = arrow.on_hover_text(crate::i18n::tr(if open { "Hide the single settings" } else { "Show the single settings" }));
+                    crate::access::button(&arrow, if open { "Hide the single settings" } else { "Show the single settings" });
                     crate::widgets::register(ui.ctx(), format!("{tag}:open:{}", g.id()), arrow.rect);
                     if arrow.clicked() {
                         open = !open;

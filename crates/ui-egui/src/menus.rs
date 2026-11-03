@@ -219,7 +219,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("brush.preset", "Switch Brush A / B", None, "Window>Tools"),
     ("dialog.newAlbum", "New Collection…", Some("Cmd+N"), "Library"),
     // the active raw photo of a ColorChecker (a second selected one: the second chart, other light)
-    ("dialog.cameraProfile", "Create Camera Profile from Color Chart…", None, "Photo"),
+    ("dialog.cameraProfile", "Create Camera Profile from Color Chart…", None, "Photo>Develop Settings"),
     // in the camera profile dialog: {id? | path?} the second chart photo; without either, the picker opens
     ("cameraProfile.second", "Add Second Color Chart…", None, ""),
     ("cameraProfile.removeSecond", "Remove Second Color Chart", None, ""),
@@ -307,8 +307,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("merge.focusStackLast", "Focus Stack with Last Settings", None, "Photo>Photo Merge"),
     ("file.addPhotos", "Import Photos…", None, "File"),
     // the workspace tabs (Settings ▸ Import ▸ Import as a tab; OneSlips LR-IMP-WINDOW)
-    ("view.importTab", "Import Tab", None, "View"),
-    ("view.libraryTab", "Library Tab", None, "View"),
+    ("view.importTab", "Import Tab", None, "Window>Modules"),
+    ("view.libraryTab", "Library Tab", None, "Window>Modules"),
     // {what?: picks|selected|all}: the Import tab's big button
     ("import.start", "Import from the Import Tab", None, ""),
     // {take?, previews?, copy?, moveFiles?, destination?, organize?, rename?, preset?, presets?, keywords?, metadataPreset?, album?, newAlbum?…}
