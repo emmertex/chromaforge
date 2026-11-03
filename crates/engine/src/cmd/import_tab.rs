@@ -77,22 +77,64 @@ impl Session {
             .collect()
     }
 
-    /// Get just-imported photos ready unattended (FINISH-PER-PHOTO, PERF-PREVIEW-ONCE): their
-    /// previews, built once each, in the background with one activity row, from the photo on
-    /// screen outward. `previews` is `none`, `standard` or `full`.
+    /// Get just-imported photos ready unattended (FINISH-PER-PHOTO, PERF-PREVIEW-ONCE), from the
+    /// photo on screen outward: the AI masks their settings bring (an import preset's People,
+    /// Object or Describe masks) queued on the AI worker, their Smooth Skin's analysis, then their
+    /// previews, built once each. Each stage runs in the background with its own activity row
+    /// (Computing AI masks, Finding skin, the previews). `previews` is `none`, `standard` or `full`.
     pub fn finish_import(&mut self, ids: &[u64], previews: &str) -> Result<Value> {
         const C: &str = "library.finishImport";
         let size = match previews {
-            "none" => return Ok(json!({"running": false, "total": 0})),
-            "standard" => "standard",
-            "full" | "1:1" => "full",
+            "none" => None,
+            "standard" => Some("standard"),
+            "full" | "1:1" => Some("full"),
             other => return Err(bad(C, format!("unknown previews `{other}` (none|standard|full)"))),
         };
         let ordered = self.screen_outward_order(ids);
         if ordered.is_empty() {
             return Ok(json!({"running": false, "total": 0}));
         }
-        self.execute("library.buildPreviews", &json!({"size": size, "ids": ordered}))
+        let (masks, skin, notes) = self.finish_ai_stages(&ordered);
+        let mut out = match size {
+            Some(size) => self.execute("library.buildPreviews", &json!({"size": size, "ids": ordered}))?,
+            None => json!({"running": false, "total": 0}),
+        };
+        out["aiMasks"] = json!(masks);
+        out["skin"] = json!(skin);
+        if !notes.is_empty() {
+            out["notes"] = json!(notes);
+        }
+        Ok(out)
+    }
+
+    /// The AI stages of [`Session::finish_import`] for `ordered`: → (AI mask selections queued,
+    /// photos whose Smooth Skin is being analysed, one note per distinct reason a stage could not
+    /// run, such as a model that is not installed). Nothing here fails the finish.
+    fn finish_ai_stages(&mut self, ordered: &[u64]) -> (usize, usize, Vec<String>) {
+        let (mut masks, mut skin, mut notes) = (0usize, 0usize, Vec::<String>::new());
+        let mut note = |e: String| {
+            if !notes.contains(&e) && notes.len() < 8 {
+                notes.push(e);
+            }
+        };
+        if !crate::segment::Segmenter::AVAILABLE {
+            return (0, 0, notes);
+        }
+        for id in ordered.iter().copied().map(PhotoId) {
+            // (in the app the AI worker computes them; headless, the next edit or Update AI Mask does)
+            if self.segmenter.background {
+                match self.segment_missing_later(id) {
+                    Ok(n) => masks += n,
+                    Err(e) => note(e),
+                }
+            }
+            match self.skin_ensure(id, false) {
+                Ok(true) => skin += 1,
+                Ok(false) => {}
+                Err(e) => note(e.to_string()),
+            }
+        }
+        (masks, skin, notes)
     }
 
     /// `ids` (those still in the catalog, once each) ordered from the photo on screen outward: the
@@ -227,7 +269,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Finish Import",
             [],
             None,
-            "{ids? (default: the selection), previews?: none|standard (default)|full} — get photos ready unattended: their previews built once each in the background, from the photo on screen outward, with one activity row (library.buildPreviews) → {total, done, failed, running}",
+            "{ids? (default: the selection), previews?: none|standard (default)|full} — get photos ready unattended, from the photo on screen outward, each stage in the background with its own activity row: the AI masks their settings bring (on the AI worker), their Smooth Skin analysis, then their previews built once each (library.buildPreviews) → {total, done, failed, running, aiMasks, skin, notes?}",
             always,
             finish
         ),

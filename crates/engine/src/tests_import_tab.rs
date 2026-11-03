@@ -151,3 +151,24 @@ fn finishing_starts_at_the_photo_on_screen() {
     assert_eq!(r["running"], false);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Finishing also gets the photos' Smooth Skin (and AI masks) going; a model that is not there is
+/// a note in the answer, not a failed finish.
+#[test]
+fn finishing_runs_the_ai_stages_and_notes_a_missing_model() {
+    let (mut s, dir) = browsed("finish-ai", 2);
+    s.segmenter.models_root = Some(dir.join("no-models-here"));
+    let ids: Vec<u64> = s.visible_cloned().iter().map(|i| i.0).collect();
+    let id = lcc_catalog::PhotoId(ids[0]);
+    let mut d = (*s.develop_of(id).unwrap()).clone();
+    d.skin = lcc_develop::SkinSmoothing::SUBTLE;
+    s.set_develop(id, d, "Smooth Skin").unwrap();
+    let r = s.execute("library.finishImport", &json!({"ids": ids, "previews": "none"})).unwrap();
+    assert_eq!(r["running"], false, "{r}");
+    assert_eq!(r["skin"], 0, "{r}");
+    assert_eq!(r["aiMasks"], 0, "{r}");
+    if crate::segment::Segmenter::AVAILABLE {
+        assert!(r["notes"].as_array().is_some_and(|n| n.len() == 1), "one note for the missing model, not one per photo: {r}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
