@@ -10,11 +10,16 @@ use lcc_catalog::Photo;
 
 /// Photo `p`'s body: its serial, else `file:XX` from its file name (`None` when neither says).
 pub fn body(p: &Photo) -> Option<String> {
-    let serial = p.meta.camera_serial.trim();
+    body_from(&p.meta.camera_serial, &p.file_name)
+}
+
+/// A body from a serial number, else from a file name's first two characters (as [`body`]).
+pub fn body_from(serial: &str, file_name: &str) -> Option<String> {
+    let serial = serial.trim();
     if !serial.is_empty() {
         return Some(serial.to_string());
     }
-    let name = p.file_name.trim_start_matches('_');
+    let name = file_name.trim_start_matches('_');
     let key: String = name.chars().take(2).collect();
     (key.chars().count() == 2 && key.chars().all(|c| c.is_ascii_alphanumeric())).then(|| format!("file:{}", key.to_ascii_uppercase()))
 }
@@ -23,6 +28,78 @@ pub fn body(p: &Photo) -> Option<String> {
 /// another maker's camera is another body.
 pub fn key(model: &str, body: &str) -> String {
     format!("{}|{}", model.trim(), body.trim())
+}
+
+/// The key ([`key`]) of a raw with camera model `model` (else `camera`), serial `serial` and file
+/// name `file_name` (`None` without a model or a body).
+pub fn key_from(model: &str, camera: &str, serial: &str, file_name: &str) -> Option<String> {
+    let model = if model.trim().is_empty() { camera.trim() } else { model.trim() };
+    if model.is_empty() {
+        return None;
+    }
+    body_from(serial, file_name).map(|b| key(model, &b))
+}
+
+/// How many imported raws got one camera profile, and from which bodies.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ProfileCount {
+    pub name: String,
+    pub photos: usize,
+    pub bodies: Vec<String>,
+}
+
+/// A camera profile's name for people (`""`: the camera's default).
+pub fn profile_name(id: &str) -> String {
+    match id {
+        "" => "Camera default".into(),
+        "lc" => "Built-in colour".into(),
+        _ => lcc_raw::dcp::library_get(id)
+            .map(|d| d.name.clone())
+            .or_else(|| lcc_raw::dcp::calibrated().iter().find_map(|c| c.looks.iter().find(|(i, _)| i == id).map(|(_, d)| d.name.clone())))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| id.trim_start_matches("dcp:").to_string()),
+    }
+}
+
+/// One camera body among an import's raws, and the camera profile its raws will get.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanRow {
+    /// `model|body`, as `cameraProfile.perBody` takes it.
+    pub body: String,
+    pub camera: String,
+    /// The serial, or `file:XX`.
+    pub serial: String,
+    pub photos: usize,
+    /// The profile they get (`""`: the camera's default).
+    pub profile: String,
+    pub profile_name: String,
+    /// `auto` (the body's own default, else the camera's), `chosen` (perBody) or `all`.
+    pub how: &'static str,
+}
+
+/// The rows of `import.profilePlan`: the new raws of `candidates` by body, with what `choice` gives them.
+pub fn plan(s: &crate::Session, candidates: &[crate::import::ImportCandidate], choice: &ImportProfile) -> Vec<PlanRow> {
+    let mut rows: Vec<PlanRow> = Vec::new();
+    for c in candidates.iter().filter(|c| c.duplicate.is_none() && c.error.is_none() && c.existing.is_none()) {
+        let Some(body) = &c.body else { continue };
+        if let Some(r) = rows.iter_mut().find(|r| &r.body == body) {
+            r.photos += 1;
+            continue;
+        }
+        let auto = s.body_profiles.get(body).filter(|id| known_profile(id)).cloned().unwrap_or_default();
+        let (profile, how) = match choice {
+            ImportProfile::Auto => (auto, "auto"),
+            ImportProfile::All(id) => (id.clone(), "all"),
+            ImportProfile::PerBody(m) => match m.get(body) {
+                Some(id) => (id.clone(), "chosen"),
+                None => (auto, "auto"),
+            },
+        };
+        let serial = body.rsplit_once('|').map_or(body.as_str(), |(_, b)| b).to_string();
+        rows.push(PlanRow { body: body.clone(), camera: c.camera.clone(), serial, photos: 1, profile_name: profile_name(&profile), profile, how });
+    }
+    rows
 }
 
 /// Photo `p`'s key ([`key`]), for raws with a camera model.

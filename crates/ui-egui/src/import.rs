@@ -73,6 +73,8 @@ pub struct ImportDialog {
     /// The camera profile every raw of its camera gets ("" = automatic: each body's own; ported
     /// from OneSlips, LR-PROF-IMPORT-APPLY).
     pub camera_profile: String,
+    /// With `camera_profile` automatic: a profile per camera body for this import (body key → id).
+    pub per_body: std::collections::BTreeMap<String, String>,
     /// An optional batch-edit recipe: develop control id → value (only controls moved off their
     /// default are kept), set on every photo this import adds, on top of its sidecar, camera
     /// default and preset (the `recipe` param of `library.import`).
@@ -881,6 +883,8 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
     }
     if !d.camera_profile.is_empty() {
         params["cameraProfile"] = json!({"all": d.camera_profile});
+    } else if !d.per_body.is_empty() {
+        params["cameraProfile"] = json!({"perBody": d.per_body});
     }
     let mut meta_preset = d.metadata_preset.clone();
     if d.creating_meta_preset && !d.new_meta_name.trim().is_empty() {
@@ -1596,26 +1600,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
                 }
             });
     });
-    field(ui, "Camera Profile", |ui| {
-        // automatic: each body's own camera profile (Settings ▸ Profiles), else the camera's default;
-        // a profile chosen here goes on the raws of its camera only
-        let mut options: Vec<(String, String)> =
-            vec![(String::new(), crate::i18n::tr("Automatic").to_string()), ("lc".into(), crate::i18n::tr("Built-in colour").to_string())];
-        for (pid, p) in lcc_raw::dcp::library() {
-            let name = if p.name.is_empty() { pid.trim_start_matches("dcp:").to_string() } else { p.name.clone() };
-            options.push((pid, format!("{name} · {}", p.model)));
-        }
-        for c in lcc_raw::dcp::calibrated() {
-            options.extend(c.looks.iter().map(|(pid, p)| (pid.clone(), format!("{} · {}", p.name, p.model))));
-        }
-        let cur = options.iter().find(|(id, _)| *id == d.camera_profile).map(|(_, n)| n.clone()).unwrap_or_else(|| d.camera_profile.clone());
-        let combo = crate::widgets::combo_box("import-camera-profile").selected_text(cur).height(300.0).show_ui(ui, |ui| {
-            for (id, name) in &options {
-                ui.selectable_value(&mut d.camera_profile, id.clone(), name);
-            }
-        });
-        register(ui.ctx(), "combo:importCameraProfile", combo.response.rect);
-    });
+    camera_profile_section(app, ui, d, false);
     field(ui, "Metadata", |ui| metadata_preset_picker(app, ui, d));
     field(ui, "Keywords", |ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut d.keywords).hint_text(crate::i18n::tr("comma, separated")).desired_width(f32::INFINITY));
@@ -2109,6 +2094,76 @@ fn field<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R
         add(ui)
     })
     .inner
+}
+
+/// The camera profiles an import can give (id, label), for raws of `camera` (`None`: any camera).
+fn camera_profile_options(camera: Option<&str>) -> Vec<(String, String)> {
+    let mut options: Vec<(String, String)> =
+        vec![(String::new(), crate::i18n::tr("Automatic").to_string()), ("lc".into(), crate::i18n::tr("Built-in colour").to_string())];
+    for (pid, p) in lcc_raw::dcp::library() {
+        if camera.is_some_and(|c| !lcc_raw::dcp::covers_model(&p.model, c)) {
+            continue;
+        }
+        let name = if p.name.is_empty() { pid.trim_start_matches("dcp:").to_string() } else { p.name.clone() };
+        options.push((pid, format!("{name} · {}", p.model)));
+    }
+    let cals: Vec<_> = match camera {
+        Some(c) => lcc_raw::dcp::calibrated_for_camera(c).into_iter().collect(),
+        None => lcc_raw::dcp::calibrated(),
+    };
+    for c in cals {
+        options.extend(c.looks.iter().map(|(pid, p)| (pid.clone(), format!("{} · {}", p.name, p.model))));
+    }
+    options
+}
+
+fn profile_combo(ui: &mut egui::Ui, id: &str, options: &[(String, String)], value: &mut String) {
+    let cur = options.iter().find(|(o, _)| o == value).map(|(_, n)| n.clone()).unwrap_or_else(|| value.clone());
+    let combo = crate::widgets::combo_box(id.to_string()).selected_text(cur).height(300.0).show_ui(ui, |ui| {
+        for (o, name) in options {
+            ui.selectable_value(value, o.clone(), name);
+        }
+    });
+    register(ui.ctx(), format!("combo:{id}"), combo.response.rect);
+}
+
+/// Camera Profile: automatic (each body's own, else the camera's default) with a row per camera
+/// body found on the card to choose another for this import, or one profile for all raws of its
+/// camera (ported from OneSlips, LR-PROF-IMPORT-APPLY).
+pub(crate) fn camera_profile_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog, screen: bool) {
+    // (the full-screen Import and the dialog lay rows out their own way)
+    let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
+        if screen {
+            crate::dialog_frame::form_row(ui, label, |ui| add(ui));
+        } else {
+            field(ui, label, |ui| add(ui));
+        }
+    };
+    row(ui, "Camera Profile", &mut |ui| profile_combo(ui, "importCameraProfile", &camera_profile_options(None), &mut d.camera_profile));
+    if !d.camera_profile.is_empty() {
+        return;
+    }
+    let choice = lcc_engine::profile_bodies::ImportProfile::PerBody(d.per_body.clone());
+    let checked: Vec<_> = d.candidates.iter().zip(&d.checked).filter(|(_, c)| **c).map(|(c, _)| c.clone()).collect();
+    for body in lcc_engine::profile_bodies::plan(&app.session, &checked, &choice) {
+        let label = format!("{} · {} ({})", body.camera, body.serial.trim_start_matches("file:"), body.photos);
+        // (the body under the Camera Profile row: the label column is too narrow for it)
+        row(ui, "", &mut |ui: &mut egui::Ui| {
+            ui.label(egui::RichText::new(label.as_str()).color(Tokens::get(ui.ctx()).text_dim));
+            let mut v = d.per_body.get(&body.body).cloned().unwrap_or_default();
+            let mut options = camera_profile_options(Some(&body.camera));
+            if let Some(first) = options.first_mut() {
+                // automatic names what it gives this body
+                first.1 = format!("{} ({})", crate::i18n::tr("Automatic"), lcc_engine::profile_bodies::profile_name(&body.profile));
+            }
+            profile_combo(ui, &format!("importBodyProfile:{}", body.body), &options, &mut v);
+            if v.is_empty() {
+                d.per_body.remove(&body.body);
+            } else {
+                d.per_body.insert(body.body.clone(), v);
+            }
+        });
+    }
 }
 
 #[cfg(test)]

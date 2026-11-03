@@ -631,6 +631,7 @@ fn options(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
                 }
             });
     });
+    crate::import::camera_profile_section(app, ui, d, true);
     // (always there: New Preset… makes one when there are none)
     form_row(ui, "Metadata", |ui| crate::import::metadata_preset_picker(app, ui, d));
     form_row(ui, "Keywords", |ui| {

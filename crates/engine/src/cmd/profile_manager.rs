@@ -273,8 +273,24 @@ fn apply_body_defaults(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"changed": n}))
 }
 
+fn profile_plan(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "import.profilePlan";
+    let paths: Vec<String> = p
+        .get("paths")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad(C, "`paths` must be a list of files or folders"))?
+        .iter()
+        .map(|v| v.as_str().map(str::to_string).ok_or_else(|| bad(C, "`paths` must be a list of files or folders")))
+        .collect::<Result<_>>()?;
+    let choice = profile_bodies::ImportProfile::parse(p.get("cameraProfile")).map_err(|e| bad(C, e))?;
+    let candidates = crate::import::scan(s, &paths);
+    let rows = profile_bodies::plan(s, &candidates, &choice);
+    Ok(json!({"rows": rows, "photos": rows.iter().map(|r| r.photos).sum::<usize>()}))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(query "import.profilePlan", "Camera Profiles for Import", [], None, "{paths: [file or folder], cameraProfile?: as library.import} → {rows: [{body (model|serial or model|file:XX, as cameraProfile.perBody takes it), camera, serial, photos, profile (\"\": the camera's default), profileName, how: auto|chosen|all}], photos}: the camera profile each body's new raws would get", always, profile_plan),
         cmd!(query "profiles.manager", "Manage Profiles", [], None, "{} → {profiles: [{id, name, originalName, group, kind: look|lut, hidden, builtinLabel}] (the user's names, groups and order), removed: [built-in look ids], bodies (as profiles.bodies)}", always, manager),
         cmd!("profile.rename", "Rename Profile", [], None, "{id, name: string (\"\" or null: its own name again)} → {id, name}", always, rename),
         cmd!(

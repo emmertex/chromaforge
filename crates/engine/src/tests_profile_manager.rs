@@ -156,7 +156,16 @@ fn an_import_gives_its_raws_the_camera_profile_chosen_per_body_or_for_all() {
     // per body, for this import only: SN2's body gets the built-in colour, SN1 isn't named
     s.execute("library.remove", &json!({"ids": [id.0]})).ok();
     let other = key.replace(mine, theirs);
+    let plan = s.execute("import.profilePlan", &json!({"paths": [&b], "cameraProfile": {"perBody": {&other: "lc"}}})).unwrap();
+    assert_eq!(plan["rows"].as_array().unwrap().len(), 1, "{plan}");
+    assert_eq!(
+        (plan["rows"][0]["body"].as_str(), plan["rows"][0]["profile"].as_str(), plan["rows"][0]["how"].as_str()),
+        (Some(other.as_str()), Some("lc"), Some("chosen"))
+    );
+    assert!(s.execute("import.profilePlan", &json!({"paths": "x"})).is_err());
+    assert!(s.execute("import.profilePlan", &json!({"paths": [&b], "cameraProfile": 7})).is_err());
     let r = s.execute("library.import", &json!({"paths": [b], "cameraProfile": {"perBody": {other: "lc"}}})).unwrap();
+    assert_eq!(r["cameraProfiles"]["lc"]["photos"], 1, "{r}");
     let idb = PhotoId(r["imported"][0].as_u64().unwrap());
     assert_eq!(s.catalog.photo(idb).unwrap().develop.profile.camera, "lc");
     assert!(s.body_profiles.is_empty(), "nothing is remembered for the body");

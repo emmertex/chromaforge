@@ -154,7 +154,7 @@ fn replace_keeps_the_old_profile_and_undo_puts_it_back() {
     assert_ne!(old, new, "written over");
     // the old one is kept beside it
     let kept: Vec<_> = std::fs::read_dir(lib.join(".replaced")).unwrap().flatten().map(|e| std::fs::read(e.path()).unwrap()).collect();
-    assert_eq!(kept, [old.clone()]);
+    assert_eq!(kept, std::slice::from_ref(&old));
     // undo puts it back, redo the new one again
     assert_eq!(s.undo_step().unwrap(), "Replace Camera Profile");
     assert_eq!(std::fs::read(&file).unwrap(), old);

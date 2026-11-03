@@ -210,6 +210,13 @@ pub struct ImportCandidate {
     /// A raw variant that can't be decoded yet (why): it imports as preview only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_only: Option<String>,
+    /// A raw's camera body as `profiles.bodies` keys it (`model|serial`, else `model|file:XX`),
+    /// for the review's camera-profile rows ([`crate::profile_bodies::plan`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// A raw's camera (`Make Model`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub camera: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -251,6 +258,9 @@ pub struct ImportReport {
     /// Per-photo diagnostics from foreign XMP develop settings that could not be fully carried over.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ImportWarning>,
+    /// The camera profile each imported raw got, by profile: `{id ("" = the camera's default): {name, photos, bodies}}`.
+    #[serde(rename = "cameraProfiles", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub camera_profiles: std::collections::BTreeMap<String, crate::profile_bodies::ProfileCount>,
 }
 
 /// A structured diagnostic from foreign XMP develop settings.
@@ -1062,6 +1072,14 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
                 // as the import will date it (a sidecar's date, when there is one, still wins there)
                 c.captured = c.captured.or_else(|| info.file_modified.clone());
                 c.preview_only = info.preview_only.clone();
+                if info.kind == MediaKind::Raw {
+                    c.camera = if info.meta.camera.trim().is_empty() {
+                        info.meta.camera_model.trim().to_string()
+                    } else {
+                        info.meta.camera.trim().to_string()
+                    };
+                    c.body = crate::profile_bodies::key_from(&info.meta.camera_model, &info.meta.camera, &info.meta.camera_serial, &c.name);
+                }
                 if let Some(h) = &info.content_hash {
                     match seen_hash.get(h) {
                         Some(existing) => {
@@ -1902,6 +1920,19 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                     let look = std::sync::Arc::new(d);
                     p.develop = look.clone();
                     p.import_look = Some(look);
+                }
+                if p.develops_raw() {
+                    let id = p.develop.profile.camera.clone();
+                    let e = report.camera_profiles.entry(id.clone()).or_insert_with(|| crate::profile_bodies::ProfileCount {
+                        name: crate::profile_bodies::profile_name(&id),
+                        ..Default::default()
+                    });
+                    e.photos += 1;
+                    if let Some(b) = crate::profile_bodies::key_of(&p)
+                        && !e.bodies.contains(&b)
+                    {
+                        e.bodies.push(b);
+                    }
                 }
                 if let Some(mp) = opts.metadata_preset.as_ref().and_then(|n| s.metadata_presets.iter().find(|m| m.name.eq_ignore_ascii_case(n))) {
                     crate::cmd::metadata::apply_to(&mut p.meta, &mp.fields);

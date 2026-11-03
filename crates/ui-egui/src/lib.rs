@@ -211,6 +211,8 @@ mod tests_i18n_coverage;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_immich_ui;
 #[cfg(test)]
+mod tests_import_body_profiles;
+#[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
 mod tests_import_recipe;
