@@ -343,5 +343,6 @@
   "Both charts are set to {light}; set the second to {other}.": "Both charts are set to {light}; set the second to {other}.",
   "The chart's greys measure about {cct:.0} K": "The chart's greys measure about {cct:.0} K",
   "These charts come from two different camera bodies ({x}, {y})": "These charts come from two different camera bodies ({x}, {y})",
-  "Used by {n} photos; they will update.": "Used by {n} photos; they will update."
+  "Used by {n} photos; they will update.": "Used by {n} photos; they will update.",
+  "Finding “{text}”…": "ვეძებ „{text}“…"
 }

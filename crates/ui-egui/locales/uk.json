@@ -2864,5 +2864,11 @@
   "Light of the first chart": "Освітлення першої мішені",
   "Second chart (other light)": "Друга мішень (інше освітлення)",
   "Optional: a chart photo under another light, such as tungsten, makes a dual-illuminant profile.": "Необов'язково: знімок мішені за іншого світла, наприклад лампи розжарювання, дає профіль із двома джерелами.",
-  "Remove Second Chart": "Прибрати другу мішень"
+  "Remove Second Chart": "Прибрати другу мішень",
+  "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Клацніть або проведіть по фото, щоб узяти кольори; ⇧ додає ще (до 5), ⌥-клацання прибирає один, перетягніть мітку, щоб перемістити її",
+  "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Клацніть по фото, щоб узяти тон, або проведіть по області, щоб узяти її тони; ⇧ розширює діапазон",
+  "No colour picked": "Колір не вибрано",
+  "Selecting the object…": "Виділяю об’єкт…",
+  "Settings for the next mask": "Налаштування для наступної маски",
+  "Reset settings on new mask": "Скидати налаштування для нової маски"
 }

@@ -156,6 +156,7 @@ fn banded_full_size_render_matches() {
     s.vignette.amount = -30.0;
     s.masks = vec![Mask {
         components: vec![MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,
@@ -283,6 +284,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
         ("local sharpness", |s| {
             s.masks = vec![Mask {
                 components: vec![MaskComponent {
+                    anchor: None,
                     name: None,
                     op: MaskOp::Add,
                     invert: false,
@@ -330,6 +332,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.masks = vec![
                 Mask {
                     components: vec![MaskComponent {
+                        anchor: None,
                         name: None,
                         op: MaskOp::Add,
                         invert: false,
@@ -351,12 +354,14 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 Mask {
                     components: vec![
                         MaskComponent {
+                            anchor: None,
                             name: None,
                             op: MaskOp::Add,
                             invert: false,
                             shape: MaskShape::Radial { center: Point::new(0.4, 0.6), rx: 0.25, ry: 0.15, angle: 20.0, feather: 60.0, invert: false },
                         },
                         MaskComponent {
+                            anchor: None,
                             name: None,
                             op: MaskOp::Intersect,
                             invert: true,
@@ -387,6 +392,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.masks = vec![
                 Mask {
                     components: vec![MaskComponent {
+                        anchor: None,
                         name: None,
                         op: MaskOp::Add,
                         invert: false,
@@ -397,6 +403,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 },
                 Mask {
                     components: vec![MaskComponent {
+                        anchor: None,
                         name: None,
                         op: MaskOp::Add,
                         invert: false,
@@ -407,10 +414,11 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 },
                 Mask {
                     components: vec![MaskComponent {
+                        anchor: None,
                         name: None,
                         op: MaskOp::Add,
                         invert: false,
-                        shape: MaskShape::ColorRange { samples: vec![[0.6, -0.05, -0.08]], refine: 50.0 },
+                        shape: MaskShape::ColorRange { samples: vec![[0.6, -0.05, -0.08]], refine: 50.0, areas: Vec::new() },
                     }],
                     adjust: lcc_develop::LocalAdjustments { saturation: 40.0, tint: 20.0, ..Default::default() },
                     invert: true,
@@ -422,8 +430,9 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.masks = vec![
                 Mask {
                     components: vec![
-                        MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Sky },
+                        MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Sky },
                         MaskComponent {
+                            anchor: None,
                             name: None,
                             op: MaskOp::Subtract,
                             invert: false,
@@ -434,12 +443,12 @@ fn cases() -> Vec<(&'static str, Edit)> {
                     ..Default::default()
                 },
                 Mask {
-                    components: vec![MaskComponent { name: None, op: MaskOp::Intersect, invert: false, shape: MaskShape::Subject }],
+                    components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Intersect, invert: false, shape: MaskShape::Subject }],
                     adjust: lcc_develop::LocalAdjustments { exposure: 0.5, ..Default::default() },
                     ..Default::default()
                 },
                 Mask {
-                    components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: true, shape: MaskShape::Background }],
+                    components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: true, shape: MaskShape::Background }],
                     adjust: lcc_develop::LocalAdjustments { saturation: -60.0, ..Default::default() },
                     invert: true,
                     ..Default::default()
@@ -448,7 +457,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
         }),
         ("masks (inverted, add and subtract)", |s| {
             let radial = |x: f64| MaskShape::Radial { center: Point::new(x, 0.5), rx: 0.15, ry: 0.15, angle: 0.0, feather: 30.0, invert: false };
-            let comp = |op, x| MaskComponent { name: None, op, invert: false, shape: radial(x) };
+            let comp = |op, x| MaskComponent { anchor: None, name: None, op, invert: false, shape: radial(x) };
             s.masks = vec![
                 Mask {
                     components: vec![comp(MaskOp::Add, 0.3), comp(MaskOp::Add, 0.7), comp(MaskOp::Subtract, 0.3)],
@@ -468,7 +477,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
             let radial = MaskShape::Radial { center: Point::new(0.4, 0.6), rx: 0.3, ry: 0.25, angle: 0.0, feather: 50.0, invert: false };
             let linear = MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.7) };
             let m = |shape, adjust| Mask {
-                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
                 adjust,
                 ..Default::default()
             };
@@ -494,7 +503,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 st(&[(0.5, 0.58)], true, true),
             ];
             s.masks = vec![Mask {
-                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
                 adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -50.0, ..Default::default() },
                 ..Default::default()
             }];
@@ -503,7 +512,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
             use lcc_develop::{LocalAdjustments as L, PointCurves};
             let pts = |v: &[(f64, f64)]| v.iter().map(|p| Point::new(p.0, p.1)).collect::<Vec<_>>();
             let m = |shape, adjust, curve, invert| Mask {
-                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
                 adjust,
                 curve,
                 invert,
@@ -534,6 +543,175 @@ fn cases() -> Vec<(&'static str, Edit)> {
                     true,
                 ),
             ];
+        }),
+        ("masks (local point color)", |s| {
+            use lcc_develop::PointColor;
+            let radial = MaskShape::Radial { center: Point::new(0.45, 0.5), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: false };
+            let linear = MaskShape::Linear { start: Point::new(0.5, 0.1), end: Point::new(0.5, 0.8) };
+            let m = |shape, point_colors| Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
+                point_colors,
+                ..Default::default()
+            };
+            s.masks = vec![
+                m(
+                    radial,
+                    vec![
+                        PointColor {
+                            lum: 0.62,
+                            chroma: 0.09,
+                            hue: 60.0,
+                            hue_shift: 40.0,
+                            sat_shift: -30.0,
+                            lum_shift: 20.0,
+                            range: 80.0,
+                            ..Default::default()
+                        },
+                        PointColor { lum: 0.4, chroma: 0.01, hue: 0.0, lum_shift: -30.0, ..Default::default() },
+                    ],
+                ),
+                // a mask without samples in between: its record is empty
+                m(linear.clone(), Vec::new()),
+                m(
+                    linear,
+                    vec![PointColor { lum: 0.5, chroma: 0.12, hue: 270.0, variance: -60.0, sat_shift: 40.0, hue_range: 80.0, ..Default::default() }],
+                ),
+            ];
+        }),
+        ("masks on the photo under transform + distortion", |s| {
+            use lcc_develop::{BrushStroke, LocalAdjustments};
+            s.geometry.vertical = 35.0;
+            s.geometry.rotate = 4.0;
+            s.optics.distortion = 30.0;
+            let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
+            let adj = LocalAdjustments { exposure: 1.2, saturation: -40.0, ..Default::default() };
+            s.masks = vec![
+                Mask {
+                    components: vec![comp(MaskShape::Radial {
+                        center: Point::new(0.4, 0.45),
+                        rx: 0.25,
+                        ry: 0.2,
+                        angle: 20.0,
+                        feather: 50.0,
+                        invert: false,
+                    })],
+                    adjust: adj,
+                    ..Default::default()
+                },
+                Mask {
+                    components: vec![comp(MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.6) })],
+                    adjust: adj,
+                    ..Default::default()
+                },
+                Mask {
+                    components: vec![comp(MaskShape::Brush {
+                        strokes: vec![BrushStroke { points: vec![Point::new(0.2, 0.7), Point::new(0.7, 0.75)], size: 0.04, ..Default::default() }],
+                    })],
+                    adjust: adj,
+                    ..Default::default()
+                },
+            ];
+        }),
+        ("masks (local color mixer)", |s| {
+            use lcc_develop::{Hsl, Mixer, PointColor};
+            let radial = MaskShape::Radial { center: Point::new(0.45, 0.5), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: false };
+            let linear = MaskShape::Linear { start: Point::new(0.5, 0.1), end: Point::new(0.5, 0.8) };
+            let comp = |shape| vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }];
+            s.masks = vec![
+                // a mixer alone, strong in several bands
+                Mask {
+                    components: comp(radial),
+                    mixer: Mixer {
+                        red: Hsl { hue: 40.0, sat: -50.0, lum: 30.0 },
+                        yellow: Hsl { hue: -60.0, sat: 80.0, lum: -40.0 },
+                        blue: Hsl { hue: 30.0, sat: -100.0, lum: 50.0 },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                // a mixer with a Point Color sample after it
+                Mask {
+                    components: comp(linear),
+                    mixer: Mixer { green: Hsl { hue: 70.0, sat: 40.0, lum: -60.0 }, ..Default::default() },
+                    point_colors: vec![PointColor { lum: 0.5, chroma: 0.1, hue: 120.0, sat_shift: -40.0, range: 80.0, ..Default::default() }],
+                    ..Default::default()
+                },
+            ];
+        }),
+        ("masks (Lightroom brush)", |s| {
+            use lcc_develop::BrushStroke;
+            // overlapping soft strokes add up, a hard one, an eraser and a legacy stroke in one component
+            let st = |pts: &[(f64, f64)], feather, erase, model| BrushStroke {
+                points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+                size: 0.03,
+                feather,
+                flow: 70.0,
+                density: 90.0,
+                erase,
+                model,
+                ..Default::default()
+            };
+            let lrc = lcc_develop::BRUSH_MODEL_LRC;
+            let strokes = vec![
+                st(&[(0.2, 0.3), (0.5, 0.35), (0.7, 0.3)], 100.0, false, lrc),
+                st(&[(0.3, 0.45), (0.6, 0.4)], 80.0, false, lrc),
+                st(&[(0.25, 0.6)], 0.0, false, lrc),
+                st(&[(0.45, 0.38)], 40.0, true, lrc),
+                st(&[(0.6, 0.7), (0.8, 0.65)], 50.0, false, lcc_develop::BRUSH_MODEL_LEGACY),
+            ];
+            s.masks = vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: -1.0, ..Default::default() },
+                ..Default::default()
+            }];
+        }),
+        ("masks (Lightroom auto mask brush)", |s| {
+            use lcc_develop::BrushStroke;
+            let st = |pts: &[(f64, f64)], auto_mask, erase| BrushStroke {
+                points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+                size: 0.04,
+                feather: 60.0,
+                flow: 90.0,
+                auto_mask,
+                erase,
+                model: lcc_develop::BRUSH_MODEL_LRC,
+                ..Default::default()
+            };
+            let strokes = vec![
+                st(&[(0.2, 0.55), (0.5, 0.6), (0.8, 0.5)], true, false),
+                st(&[(0.3, 0.5), (0.6, 0.55)], true, false),
+                st(&[(0.3, 0.2), (0.6, 0.25)], false, false),
+                st(&[(0.5, 0.58)], true, true),
+            ];
+            s.masks = vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -50.0, ..Default::default() },
+                ..Default::default()
+            }];
+        }),
+        ("masks (Auto Mask range, note 1)", |s| {
+            // the same strokes tight, at the default and wide: each keeps its own range
+            let st = |pts: &[(f64, f64)], auto_range| BrushStroke {
+                points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+                size: 0.04,
+                feather: 60.0,
+                flow: 90.0,
+                auto_mask: true,
+                auto_range,
+                model: lcc_develop::BRUSH_MODEL_LRC,
+                ..Default::default()
+            };
+            let strokes = vec![
+                st(&[(0.2, 0.3), (0.8, 0.35)], -100.0),
+                st(&[(0.2, 0.55), (0.5, 0.6), (0.8, 0.5)], 0.0),
+                st(&[(0.2, 0.75), (0.8, 0.7)], 100.0),
+                st(&[(0.5, 0.45)], 37.0),
+            ];
+            s.masks = vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -50.0, ..Default::default() },
+                ..Default::default()
+            }];
         }),
         ("calibration", |s| {
             s.calibration.shadows_tint = 40.0;
@@ -588,6 +766,48 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.optics.defringe_purple_amount = 5.0;
         }),
     ]
+}
+
+/// A mask's local Point Color is drawn by the kernel, as the CPU draws it.
+#[test]
+fn local_point_colors_render_on_the_gpu() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 480, 320);
+    let (raw, req) = (SourceInfo { raw: true, ..Default::default() }, RenderRequest::fit(480, 480));
+    let mut s = DevelopSettings::default();
+    let edit = cases().into_iter().find(|(name, _)| *name == "masks (local point color)").map(|c| c.1).unwrap();
+    edit(&mut s);
+    check("local point color", &src, &raw, &s, &req);
+    let with = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    for m in &mut s.masks {
+        m.point_colors.clear();
+    }
+    let without = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    let (mean, max, _) = diff(&with, &without);
+    assert!(mean > 0.2 && max > 10, "the samples change the GPU render: mean {mean:.2}, max {max}");
+}
+
+/// A mask's local Color Mixer is drawn by the kernel, as the CPU draws it.
+#[test]
+fn local_color_mixers_render_on_the_gpu() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 480, 320);
+    let (raw, req) = (SourceInfo { raw: true, ..Default::default() }, RenderRequest::fit(480, 480));
+    let mut s = DevelopSettings::default();
+    let edit = cases().into_iter().find(|(name, _)| *name == "masks (local color mixer)").map(|c| c.1).unwrap();
+    edit(&mut s);
+    check("local color mixer", &src, &raw, &s, &req);
+    let with = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    for m in &mut s.masks {
+        m.mixer = Default::default();
+    }
+    let without = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    let (mean, max, _) = diff(&with, &without);
+    assert!(mean > 0.2 && max > 10, "the mixers change the GPU render: mean {mean:.2}, max {max}");
 }
 
 /// A mask's local Curve is drawn by the kernel (not left out, nor handed to the CPU), as the CPU draws it.
@@ -843,6 +1063,7 @@ fn highlights_shadows_base_matches_on_every_process() {
             check(&format!("{p:?} typical {w}"), &src, &raw, &s, &req);
             s.masks = vec![Mask {
                 components: vec![MaskComponent {
+                    anchor: None,
                     name: None,
                     op: MaskOp::Add,
                     invert: false,
@@ -896,6 +1117,7 @@ fn overlays_match() {
         Mask {
             id: 1,
             components: vec![MaskComponent {
+                anchor: None,
                 name: None,
                 op: MaskOp::Add,
                 invert: false,
@@ -905,13 +1127,20 @@ fn overlays_match() {
         },
         Mask {
             id: 2,
-            components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes: vec![stroke] } }],
+            components: vec![MaskComponent {
+                anchor: None,
+                name: None,
+                op: MaskOp::Add,
+                invert: false,
+                shape: MaskShape::Brush { strokes: vec![stroke] },
+            }],
             ..Default::default()
         },
         Mask {
             id: 3,
             visible: false,
             components: vec![MaskComponent {
+                anchor: None,
                 name: None,
                 op: MaskOp::Add,
                 invert: false,
@@ -1102,7 +1331,7 @@ fn a_zoomed_window_of_a_big_brush_matches_and_is_quick() {
         }
         DevelopSettings {
             masks: vec![Mask {
-                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
                 adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -40.0, ..Default::default() },
                 ..Default::default()
             }],
@@ -1550,6 +1779,7 @@ fn refine_edges_and_feather_match() {
         s.masks = vec![
             Mask {
                 components: vec![MaskComponent {
+                    anchor: None,
                     name: None,
                     op: MaskOp::Add,
                     invert: false,
@@ -1562,6 +1792,7 @@ fn refine_edges_and_feather_match() {
             },
             Mask {
                 components: vec![MaskComponent {
+                    anchor: None,
                     name: None,
                     op: MaskOp::Add,
                     invert: false,
@@ -1673,6 +1904,7 @@ fn a_gpu_draft_has_the_large_scale_tone_of_the_full_render() {
     typical(&mut stroke);
     stroke.masks.push(Mask {
         components: vec![MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,
@@ -1733,7 +1965,7 @@ fn cached_mask_planes_match_uncached() {
     let info = SourceInfo { raw: true, ..Default::default() };
     let cache = StageCache::default();
     let req = RenderRequest::fit(640, 640);
-    let comp = |shape| MaskComponent { name: None, op: MaskOp::Add, invert: false, shape };
+    let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
     let mut s = DevelopSettings::default();
     typical(&mut s);
     let radial = MaskShape::Radial { center: Point::new(0.5, 0.4), rx: 0.3, ry: 0.2, angle: 0.0, feather: 50.0, invert: false };

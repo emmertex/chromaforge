@@ -371,5 +371,6 @@
   "The chart's greys measure about {cct:.0} K": "チャートのグレーの測定値は約 {cct:.0} K",
   "Both charts are set to {light}; set the second to {other}.": "両方のチャートが{light}になっています。2枚目を{other}にしてください。",
   "Used by {n} photos; they will update.": "{n} 枚の写真が使用中です。更新されます。",
-  "These charts come from two different camera bodies ({x}, {y})": "これらのチャートは2台の異なるボディで撮影されています（{x}、{y}）"
+  "These charts come from two different camera bodies ({x}, {y})": "これらのチャートは2台の異なるボディで撮影されています（{x}、{y}）",
+  "Finding “{text}”…": "「{text}」を探しています…"
 }

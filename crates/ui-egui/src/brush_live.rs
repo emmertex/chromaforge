@@ -9,7 +9,9 @@
 
 use egui::{Color32, ColorImage, Pos2, Rect, TextureHandle, TextureOptions, pos2};
 use lcc_geom::Point;
-use lcc_pipeline::masks::{accumulate, dab_alpha, pressure_flow, pressure_radius, push_dabs_counted, push_pressures};
+use lcc_pipeline::masks::{
+    DAB_SPACING, DabWalk, accumulate, dab_alpha, lrc_dab_alpha, pressure_flow, pressure_radius, push_dabs_counted, push_pressures, walk_dabs,
+};
 
 /// The largest live-stroke buffer edge (pixels); a bigger canvas is painted at a lower resolution.
 const MAX_SIDE: usize = 4096;
@@ -25,6 +27,9 @@ pub struct LiveParams {
     /// Brush radius (screen points) and its hard core (no feather), as the pipeline computes them.
     pub r: f32,
     pub hard: f32,
+    /// Lightroom's brush model (`masks::BrushDabs::lrc`): the dab profile's `a` (screen points) and
+    /// `p`, with `r` where the halo ends; `None`, the legacy brush (`hard`).
+    pub lrc: Option<(f32, f32)>,
     /// Flow and density, 0..1.
     pub flow: f32,
     pub density: f32,
@@ -44,6 +49,8 @@ pub struct LiveStroke {
     /// Total dabs emitted across every stamp, including the first sample.
     emitted: usize,
     last: Option<Point>,
+    /// Where a Lightroom-model stroke's dab walk is (`masks::walk_dabs`).
+    walk: DabWalk,
     /// The pen pressure of the last stamped sample.
     last_pressure: f32,
     /// Buffer pixels painted since the last upload: (x0, y0, x1, y1), exclusive ends.
@@ -56,7 +63,19 @@ impl LiveStroke {
         let scale = buffer_scale(params.clip, params.scale);
         let params = LiveParams { scale, ..params };
         let (w, h) = buffer_size(params.clip, scale);
-        LiveStroke { params, w, h, alpha: vec![0.0; w * h], placed: 0, emitted: 0, last: None, last_pressure: 1.0, dirty: None, texture: None }
+        LiveStroke {
+            params,
+            w,
+            h,
+            alpha: vec![0.0; w * h],
+            placed: 0,
+            emitted: 0,
+            last: None,
+            walk: DabWalk::default(),
+            last_pressure: 1.0,
+            dirty: None,
+            texture: None,
+        }
     }
 
     /// Stroke coverage (0..1) at buffer pixel `(x, y)`; 0 outside.
@@ -80,18 +99,32 @@ impl LiveStroke {
         if new.is_empty() {
             return false;
         }
-        let LiveParams { clip, scale, r, hard, flow, density, .. } = self.params;
+        let LiveParams { clip, scale, r, hard, lrc, flow, density, .. } = self.params;
         let (r, hard) = ((r * scale) as f64, (hard * scale) as f64);
+        let lrc = lrc.map(|(a, p)| ((a * scale) as f64, p as f64));
         let mut dabs = Vec::new();
         let mut pressures = Vec::new();
+        let mut ts = Vec::new();
         let first = self.placed;
         for (k, q) in new.iter().enumerate() {
             let q = Point::new(((q.x - clip.left()) * scale) as f64, ((q.y - clip.top()) * scale) as f64);
             let before = dabs.len();
-            if push_dabs_counted(&mut dabs, &mut self.emitted, self.last, q, r) {
-                let pq = pressure.get(first + k).or(pressure.last()).copied().unwrap_or(1.0);
-                let from = if self.last.is_some() { self.last_pressure } else { pq };
-                push_pressures(&mut pressures, dabs.len() - before, from, pq);
+            let pq = pressure.get(first + k).or(pressure.last()).copied().unwrap_or(1.0);
+            let from = if self.last.is_some() { self.last_pressure } else { pq };
+            let taken = if lrc.is_some() {
+                // the committed stroke's dab walk (`masks::brush_dabs`)
+                ts.clear();
+                let taken = walk_dabs(&mut dabs, &mut self.emitted, &mut self.walk, q, DAB_SPACING * r, &mut ts);
+                pressures.extend(ts.iter().map(|t| from + (pq - from) * *t as f32));
+                taken
+            } else {
+                let taken = push_dabs_counted(&mut dabs, &mut self.emitted, self.last, q, r);
+                if taken {
+                    push_pressures(&mut pressures, dabs.len() - before, from, pq);
+                }
+                taken
+            };
+            if taken {
                 self.last = Some(q);
                 self.last_pressure = pq;
             }
@@ -119,7 +152,11 @@ impl LiveStroke {
                     if dd > r {
                         continue;
                     }
-                    *v = accumulate(*v, dab_alpha(dd, r, hard), flow, density);
+                    let a = match lrc {
+                        Some((a, p)) => lrc_dab_alpha(dd, r, if base.0 > 0.0 { a * r / base.0 } else { a }, p),
+                        None => dab_alpha(dd, r, hard),
+                    };
+                    *v = accumulate(*v, a, flow, density);
                 }
             }
             self.dirty = Some(match self.dirty {
@@ -218,6 +255,7 @@ mod tests {
             scale: 1.0,
             r: 10.0,
             hard: 5.0,
+            lrc: None,
             flow: 1.0,
             density: 1.0,
             color: [230, 30, 40],

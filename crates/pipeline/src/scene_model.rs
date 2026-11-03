@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(a.for_shape(&MaskShape::Sky), Some(&sel.sky));
         assert_eq!(a.for_shape(&MaskShape::Landscape { class: "Water".into() }), Some(&sel.water));
         assert_eq!(a.for_shape(&MaskShape::Landscape { class: "vegetation".into() }), Some(&sel.vegetation));
-        assert_eq!(a.for_shape(&MaskShape::People { person: 0, parts: vec![] }), Some(&sel.person));
+        assert_eq!(a.for_shape(&MaskShape::People { person: 0, parts: vec![], who: None, seg: None }), Some(&sel.person));
         assert_eq!(a.for_shape(&MaskShape::Subject), Some(&subject));
     }
 
@@ -126,7 +126,11 @@ mod tests {
     fn installing_a_model_moves_the_keys_of_masks_on_automatic_selections_only() {
         use lcc_develop::{Mask, MaskComponent};
         let mask = |shape| {
-            vec![Mask { id: 1, components: vec![MaskComponent { name: None, op: Default::default(), invert: false, shape }], ..Default::default() }]
+            vec![Mask {
+                id: 1,
+                components: vec![MaskComponent { anchor: None, name: None, op: Default::default(), invert: false, shape }],
+                ..Default::default()
+            }]
         };
         let sky = mask(MaskShape::Sky);
         let radial = mask(MaskShape::Radial { center: lcc_geom::Point::new(0.5, 0.5), rx: 0.2, ry: 0.2, angle: 0.0, feather: 50.0, invert: false });

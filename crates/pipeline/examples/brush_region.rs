@@ -66,5 +66,5 @@ pub fn dress(auto: bool) -> MaskComponent {
             .collect();
         strokes.push(BrushStroke { points, size: 0.02, auto_mask: auto, ..Default::default() });
     }
-    MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }
+    MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }
 }

@@ -86,6 +86,7 @@ impl DevelopSettings {
             || self.spots.iter().any(|sp| over(sp.points.len(), MAX_SPOT_POINTS))
             || self.masks.iter().any(|m| {
                 over(m.components.len(), MAX_MASK_COMPONENTS)
+                    || over(m.point_colors.len(), MAX_POINT_COLORS)
                     || m.components.iter().any(|comp| match &comp.shape {
                         MaskShape::Brush { strokes } => {
                             over(strokes.len(), MAX_STROKES)
@@ -116,6 +117,7 @@ impl DevelopSettings {
         }
         for m in &mut self.masks {
             m.components.truncate(MAX_MASK_COMPONENTS);
+            m.point_colors.truncate(MAX_POINT_COLORS);
             for comp in &mut m.components {
                 match &mut comp.shape {
                     MaskShape::Brush { strokes } => {
@@ -125,7 +127,10 @@ impl DevelopSettings {
                             st.pressure.truncate(MAX_STROKE_POINTS);
                         }
                     }
-                    MaskShape::ColorRange { samples, .. } => samples.truncate(MAX_COLOR_SAMPLES),
+                    MaskShape::ColorRange { samples, areas, .. } => {
+                        samples.truncate(MAX_COLOR_SAMPLES);
+                        areas.truncate(MAX_COLOR_SAMPLES);
+                    }
                     MaskShape::Object { hint, exclude, .. } => {
                         hint.truncate(MAX_PROMPT_POINTS);
                         exclude.truncate(MAX_PROMPT_POINTS);
@@ -1350,7 +1355,8 @@ pub enum MaskOp {
 pub struct BrushStroke {
     #[serde(deserialize_with = "capped::<MAX_STROKE_POINTS, _, _>")]
     pub points: Vec<Point>,
-    /// Radius as a fraction of the image's long edge.
+    /// Radius as a fraction of the image's long edge: the whole dab ([`BRUSH_MODEL_LEGACY`]) or its solid core
+    /// ([`BRUSH_MODEL_LRC`], Lightroom's Size; the halo reaches [`crate::brush_model::outer_ratio`] times it).
     pub size: f64,
     /// 0..100.
     pub feather: f64,
@@ -1363,20 +1369,88 @@ pub struct BrushStroke {
     /// end of a shorter list takes the last value.
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "capped::<MAX_STROKE_POINTS, _, _>")]
     pub pressure: Vec<f32>,
+    /// The brush model the stroke is painted with: [`BRUSH_MODEL_LEGACY`] (absent, strokes saved before
+    /// the app followed Lightroom: `size` is the whole footprint, Feather softens inward, strokes combine by
+    /// their maximum) or [`BRUSH_MODEL_LRC`] (Lightroom Classic's brush, [`crate::brush_model`]: `size` is the
+    /// solid core, Feather adds a halo outside it, dabs and strokes add up). Old strokes keep their look.
+    #[serde(skip_serializing_if = "is_legacy_brush")]
+    pub model: u8,
+    /// Auto Mask range (−100 tight … 0 … +100 wide), fixed when the stroke is painted: how different a pixel
+    /// may be from the one under the dab and still take the paint. 0 (the default, strokes saved before the
+    /// slider and strokes imported from Lightroom) is the limits measured on Lightroom Classic; the range
+    /// scales them all together, by ½ at −100 and 2× at +100 ([`BrushStroke::auto_range_scale`]). Only a
+    /// Lightroom-model stroke with Auto Mask on uses it.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub auto_range: f64,
+}
+
+/// The brush model of strokes saved before the app followed Lightroom's ([`BrushStroke::model`]).
+pub const BRUSH_MODEL_LEGACY: u8 = 0;
+/// Lightroom Classic's brush model ([`crate::brush_model`]): new strokes and strokes imported from Lightroom.
+pub const BRUSH_MODEL_LRC: u8 = 1;
+
+fn is_legacy_brush(m: &u8) -> bool {
+    *m == BRUSH_MODEL_LEGACY
 }
 
 impl BrushStroke {
+    /// Whether the stroke follows Lightroom Classic's brush model (any model past the legacy one).
+    pub fn is_lrc(&self) -> bool {
+        self.model != BRUSH_MODEL_LEGACY
+    }
+
     /// The pressure at point `i` (0..1; 1 without pressure data, a hostile value clamped, NaN as 1).
     pub fn pressure_at(&self, i: usize) -> f32 {
         let p = self.pressure.get(i).or(self.pressure.last()).copied().unwrap_or(1.0);
         if p.is_nan() { 1.0 } else { p.clamp(0.0, 1.0) }
     }
+
+    /// How much [`BrushStroke::auto_range`] widens Auto Mask's limits: `2^(range / 100)`, ½ (tight) … 1 … 2
+    /// (wide); a hostile value is clamped, NaN is 1.
+    pub fn auto_range_scale(&self) -> f32 {
+        let v = if self.auto_range.is_finite() { self.auto_range.clamp(-AUTO_RANGE_MAX, AUTO_RANGE_MAX) } else { 0.0 };
+        2f64.powf(v / AUTO_RANGE_MAX) as f32
+    }
 }
+
+/// The ends of [`BrushStroke::auto_range`]: −this is tightest, +this widest.
+pub const AUTO_RANGE_MAX: f64 = 100.0;
 
 impl Default for BrushStroke {
     fn default() -> Self {
-        Self { points: Vec::new(), size: 0.03, feather: 50.0, flow: 100.0, density: 100.0, erase: false, auto_mask: false, pressure: Vec::new() }
+        Self {
+            points: Vec::new(),
+            size: 0.03,
+            feather: 50.0,
+            flow: 100.0,
+            density: 100.0,
+            erase: false,
+            auto_mask: false,
+            pressure: Vec::new(),
+            model: BRUSH_MODEL_LEGACY,
+            auto_range: 0.0,
+        }
     }
+}
+
+/// The place of a colour range sample picked before its pins existed (no pin shows for it).
+pub const UNKNOWN_COLOR_AREA: [f64; 4] = [-1.0, -1.0, -1.0, -1.0];
+
+/// A colour range's pins: each place its samples were picked (`areas`, one per sample, see
+/// [`MaskShape::ColorRange`]) and the samples it gave (consecutive ones from the same place make
+/// one pin). Places not known (or not on the photo) have no pin.
+pub fn color_range_pins(areas: &[[f64; 4]]) -> Vec<([f64; 4], std::ops::Range<usize>)> {
+    let mut out: Vec<([f64; 4], std::ops::Range<usize>)> = Vec::new();
+    for (i, a) in areas.iter().enumerate() {
+        if !a.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+            continue;
+        }
+        match out.last_mut() {
+            Some((last, r)) if last == a && r.end == i => r.end = i + 1,
+            _ => out.push((*a, i..i + 1)),
+        }
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1405,6 +1479,12 @@ pub enum MaskShape {
         #[serde(deserialize_with = "capped::<MAX_COLOR_SAMPLES, _, _>")]
         samples: Vec<[f64; 3]>,
         refine: f64,
+        /// Where each of `samples` was picked (normalized `[x0, y0, x1, y1]`; a click is a point,
+        /// `x0 == x1`), one per sample: the photo shows a pin per picked place (an area dragged
+        /// gives up to three samples, one pin), which can be moved or removed. Empty for samples
+        /// picked before the pins existed (no pins then).
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "capped::<MAX_COLOR_SAMPLES, _, _>")]
+        areas: Vec<[f64; 4]>,
     },
     /// Luminance range (0..1 bounds with feathered falloff 0..1).
     LuminanceRange {
@@ -1455,9 +1535,24 @@ pub enum MaskShape {
         person: u32,
         #[serde(deserialize_with = "capped::<MAX_PEOPLE_PARTS, _, _>")]
         parts: Vec<String>,
+        /// Who it is about by name or role ("Sam", the Bride of this shoot), resolved on each
+        /// photo when the mask is computed; `None`: by `person` (position).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        who: Option<crate::recipe::Who>,
+        /// The selection the people models computed on this photo (`None`: not computed, or no
+        /// models installed: the pipeline's heuristic).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seg: Option<crate::SegMask>,
     },
     Landscape {
         class: String,
+    },
+    /// A remembered object ("Wedding dress"), taught by example (`concepts.*`) and found again on
+    /// each photo; `seg` what was found here (`None`: not yet, or not found: nothing selected).
+    Concept {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seg: Option<crate::SegMask>,
     },
 }
 
@@ -1466,6 +1561,10 @@ pub struct MaskComponent {
     /// A name given in the Masking panel (Rename); `None` shows the shape's kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// A gradient placed relative to a selection's box ("from the bottom of the couple"): the
+    /// recipe, resolved into `shape` on each photo when its AI masks are computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<crate::recipe::Anchor>,
     #[serde(default)]
     pub op: MaskOp,
     #[serde(default)]
@@ -1494,10 +1593,39 @@ pub struct Mask {
     /// no points, so masks without one keep their JSON (and every cached preview its `hash64`).
     #[serde(skip_serializing_if = "PointCurves::is_empty")]
     pub curve: PointCurves,
+    /// The local Point Color: up to [`MAX_POINT_COLORS`] samples, applied inside the mask after the
+    /// photo's colour tools, weighted by the mask. Not written while empty.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "capped::<MAX_POINT_COLORS, _, _>")]
+    pub point_colors: Vec<PointColor>,
+    /// The local Color Mixer: the global mixer's 8 bands, applied inside the mask after the photo's
+    /// colour tools and before the mask's Point Color, weighted by the mask. Not written while neutral.
+    #[serde(skip_serializing_if = "Mixer::is_neutral")]
+    pub mixer: Mixer,
+    /// Where its coordinates (gradients, brush strokes, Object clicks and AI selections) live:
+    /// `true`, on the photo as shot (user orientation, before lens corrections, Upright and
+    /// Transform), so the mask stays on the same content whatever those do; `false`, a mask from
+    /// before that, on the corrected frame. Read as `false` when absent; [`Mask::default`] (every
+    /// new mask) is `true`, and the next edit moves an old one there (`lcc_pipeline::mask_space`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub on_photo: bool,
+    /// The preset that added it (applying that preset again refreshes it instead of adding a copy).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// The linked group it belongs to: the copies of one mask applied to several photos in one go
+    /// (Auto Sync, a preset on a selection, Paste, Sync Settings, Paste from Previous) share it.
+    /// With Auto Sync on, an edit of one of them goes to its copies on the other selected photos
+    /// ([`crate::recipe::sync_masks`]); a copy on a photo that isn't selected, or any edit with Auto
+    /// Sync off, stays as it is. Empty: not linked (every mask from before links existed).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub link: String,
 }
 
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl Default for Mask {
@@ -1512,6 +1640,11 @@ impl Default for Mask {
             refine: 0.0,
             feather: 0.0,
             curve: PointCurves::default(),
+            point_colors: Vec::new(),
+            mixer: Mixer::default(),
+            on_photo: true,
+            preset: None,
+            link: String::new(),
         }
     }
 }

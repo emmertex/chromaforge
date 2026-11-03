@@ -1963,7 +1963,7 @@ fn set_tat(app: &mut LccApp, ctx: &egui::Context, tool: &str, active: bool) {
 pub(crate) const MIXER_ADJUST: [(&str, &str); 2] = [("HSL", "hsl"), ("Color", "color")];
 pub(crate) const MIXER_GROUPS: [(&str, &str); 4] = [("Hue", "hue"), ("Saturation", "sat"), ("Luminance", "lum"), ("All", "all")];
 /// The mixer bands' names, as the HSL sliders are labelled (parallel to `MIXER_BANDS`).
-const BAND_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"];
+pub(crate) const BAND_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"];
 
 /// A Color Mixer targeted adjustment (`tat:hue|sat|lum`) whose button the mixer's layout no longer
 /// shows is put down (a B&W photo shows Luminance's only, Point Color none, HSL the chosen group's
@@ -2059,7 +2059,7 @@ fn mixer(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 }
 
 /// A word tab (Hue, Saturation…): bright and underlined when it is the one shown.
-fn group_tab(ui: &mut egui::Ui, id: &str, label: &str, active: bool) -> egui::Response {
+pub(crate) fn group_tab(ui: &mut egui::Ui, id: &str, label: &str, active: bool) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let font = t.semibold(11.5);
     let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), t.text);
@@ -2139,7 +2139,7 @@ fn mixer_by_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 // ------------------------------------------------------------------------------ point color
 
 /// Display colour of an OkLCh sample (lightness, chroma, hue in degrees).
-fn oklch_color(l: f64, c: f64, h_deg: f64) -> Color32 {
+pub(crate) fn oklch_color(l: f64, c: f64, h_deg: f64) -> Color32 {
     use lcc_color::perceptual::{lch_to_lab, oklab_to_2020};
     let lin = oklab_to_2020(lch_to_lab([l as f32, c as f32, (h_deg as f32).to_radians()]));
     let s = lcc_color::REC2020.to_space(&lcc_color::SRGB).apply_f32(lin);

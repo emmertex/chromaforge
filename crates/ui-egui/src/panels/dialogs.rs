@@ -429,7 +429,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         }).color(t.text_dim),
                     );
                 }
-                Dialog::Cull { reject_below, pick_best, burst_gap, similarity } => {
+                Dialog::Cull { reject_below, pick_best, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
                     let n = app.session.selection.ids.len();
                     let scope = if n > 1 { crate::i18n::tr_format!("the {n} selected photos", n = n) } else { crate::i18n::tr_format!("the {} photos in view", app.session.visible_cloned().len()) };
                     ui.label(egui::RichText::new(crate::i18n::tr_format!("Scores {scope} for focus and exposure and finds similar shots taken within seconds of each other (bursts).", scope = scope)).color(t.text_label));
@@ -439,6 +439,37 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(if *reject_below > 0.0 { "Blurry photos below the score are flagged as rejects." } else { "0: nothing is rejected." })).color(t.text_dim));
                     let r = crate::dialog_frame::checkbox(ui, pick_best, crate::i18n::tr("Pick the sharpest photo of each burst"));
                     crate::widgets::register(ui.ctx(), "check:cullPick", r.rect);
+                    // the eyes, judged as the eye strip judges them
+                    let r = crate::dialog_frame::checkbox(ui, closed_eyes, crate::i18n::tr("Reject photos with closed eyes"));
+                    crate::widgets::register(ui.ctx(), "check:cullClosedEyes", r.rect);
+                    let r = crate::dialog_frame::checkbox(ui, blurry_eyes, crate::i18n::tr("Reject photos with blurry eyes"));
+                    crate::widgets::register(ui.ctx(), "check:cullBlurryEyes", r.rect);
+                    if *blurry_eyes {
+                        // how soft is too soft: the strip's red only, or its amber too
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            let r = ui.radio_value(soft_eyes, false, crate::i18n::tr("Only blurry eyes (red in the eye strip)"));
+                            crate::widgets::register(ui.ctx(), "radio:cullBlurryOnly", r.rect);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            let r = ui.radio_value(soft_eyes, true, crate::i18n::tr("Soft eyes too (amber in the eye strip)"));
+                            crate::widgets::register(ui.ctx(), "radio:cullSoftToo", r.rect);
+                        });
+                    }
+                    if *closed_eyes || *blurry_eyes {
+                        let mut main_only = !*everyone;
+                        let r = crate::dialog_frame::checkbox(ui, &mut main_only, crate::i18n::tr("Main subjects only (the largest faces), not the people behind them"));
+                        crate::widgets::register(ui.ctx(), "check:cullMainOnly", r.rect);
+                        *everyone = !main_only;
+                        crate::dialog_frame::note(
+                            ui,
+                            egui::RichText::new(crate::i18n::tr(
+                                "Looks at the subjects' eyes the way the eye strip does, about a second a photo, in the background. Picked photos are left alone.",
+                            ))
+                            .color(t.text_dim),
+                        );
+                    }
                     ui.add_space(6.0);
                     // the sliders drag over the usual range; their value fields take whatever
                     // `photo.analyze` accepts (a gap of 0 s to a day, a similarity of 0 to 1)
@@ -2148,9 +2179,14 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::install(app, info, *accepted),
         Dialog::FaceModel { path, info, accepted } => crate::panels::faces::install(app, path, info, *accepted),
         Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => Ok(serde_json::Value::Null),
-        Dialog::Cull { reject_below, pick_best, burst_gap, similarity } => {
+        Dialog::Cull { reject_below, pick_best, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
             app.ui.cull_burst = Some((*burst_gap, *similarity));
-            app.run("photo.analyze", cull_params(*reject_below, *pick_best, *burst_gap, *similarity))
+            let r = app.run("photo.analyze", cull_params(*reject_below, *pick_best, *burst_gap, *similarity));
+            if r.is_ok() && (*closed_eyes || *blurry_eyes) {
+                // the eyes take longer: judged in the background, the rejects come as one step
+                app.run("photo.rejectEyes", json!({"closed": closed_eyes, "blurry": blurry_eyes, "soft": soft_eyes, "mainOnly": !everyone}))?;
+            }
+            r
         }
         Dialog::SmartRules { id, name, rules, parent } => {
             // refused before anything changes (not even the name)

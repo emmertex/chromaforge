@@ -185,6 +185,7 @@ fn mask_brightens_only_inside() {
     let mut s = DevelopSettings::default();
     s.masks.push(Mask {
         components: vec![MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,
@@ -376,10 +377,11 @@ fn color_range_sampling_respects_disabled_sections() {
         s.masks.push(lcc_develop::Mask {
             id: 1,
             components: vec![lcc_develop::MaskComponent {
+                anchor: None,
                 name: None,
                 op: lcc_develop::MaskOp::Add,
                 invert: false,
-                shape: lcc_develop::MaskShape::ColorRange { samples: vec![sample], refine: 0.0 },
+                shape: lcc_develop::MaskShape::ColorRange { samples: vec![sample], refine: 0.0, areas: Vec::new() },
             }],
             ..Default::default()
         });
@@ -872,6 +874,7 @@ fn a_draft_has_the_large_scale_tone_of_the_full_render() {
     let mut stroke = typical_edits();
     stroke.masks.push(lcc_develop::Mask {
         components: vec![lcc_develop::MaskComponent {
+            anchor: None,
             name: None,
             op: lcc_develop::MaskOp::Add,
             invert: false,

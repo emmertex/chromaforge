@@ -2599,5 +2599,11 @@
   "New album…": "Nuovo album…",
   "Albums": "Album",
   "This is the album you're editing": "È l'album che stai modificando",
-  "It tests this album, so testing it back would loop": "Verifica questo album, quindi verificarlo a sua volta creerebbe un ciclo"
+  "It tests this album, so testing it back would loop": "Verifica questo album, quindi verificarlo a sua volta creerebbe un ciclo",
+  "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Fai clic o trascina sulla foto per prelevare i colori; ⇧ ne aggiunge altri (fino a 5), ⌥-clic ne toglie uno, trascina un segnaposto per spostarlo",
+  "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Fai clic sulla foto per prelevarne il tono, o trascina su un'area per prelevarne i toni; ⇧ allarga l'intervallo",
+  "No colour picked": "Nessun colore prelevato",
+  "Selecting the object…": "Seleziono l'oggetto…",
+  "Settings for the next mask": "Impostazioni per la prossima maschera",
+  "Reset settings on new mask": "Azzera le impostazioni a ogni nuova maschera"
 }

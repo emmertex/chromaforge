@@ -2868,5 +2868,11 @@
   "Light of the first chart": "Luz de la primera carta",
   "Second chart (other light)": "Segunda carta (otra luz)",
   "Optional: a chart photo under another light, such as tungsten, makes a dual-illuminant profile.": "Opcional: una foto de la carta con otra luz, como tungsteno, crea un perfil de dos iluminantes.",
-  "Remove Second Chart": "Quitar segunda carta"
+  "Remove Second Chart": "Quitar segunda carta",
+  "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "Haz clic o arrastra sobre la foto para tomar colores; ⇧ añade más (hasta 5), ⌥-clic quita uno, arrastra un pin para moverlo",
+  "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "Haz clic en la foto para tomar su tono, o arrastra sobre una zona para tomar sus tonos; ⇧ amplía el rango",
+  "No colour picked": "Ningún color tomado",
+  "Selecting the object…": "Seleccionando el objeto…",
+  "Settings for the next mask": "Ajustes para la próxima máscara",
+  "Reset settings on new mask": "Restablecer ajustes en cada máscara nueva"
 }

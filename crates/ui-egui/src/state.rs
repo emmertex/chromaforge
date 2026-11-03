@@ -557,6 +557,10 @@ pub struct AppSettings {
     /// View ▸ Zoom to Focus Point: Toggle Zoom (Z) centres the zoomed view on the camera's focus point
     /// when the photo has one (`view.zoomToFocus`).
     pub zoom_to_focus: bool,
+    /// View ▸ Space Zooms To: where Toggle Zoom (Space / Z) centres the zoomed photo while Zoom to
+    /// Focus Point is on (`view.spaceZoomsTo`).
+    #[serde(deserialize_with = "lenient")]
+    pub space_zoom: SpaceZoom,
     /// Double-clicking a grid photo opens it in Develop instead of the Library loupe (issue #144;
     /// off by default, as in Lightroom Classic).
     pub double_click_develop: bool,
@@ -710,6 +714,7 @@ impl Default for AppSettings {
             keyword_chips: KeywordChips::default(),
             focus_point: false,
             zoom_to_focus: true,
+            space_zoom: SpaceZoom::default(),
             double_click_develop: false,
             hide_filter_in_develop: false,
             user_presets_first: false,
@@ -941,8 +946,42 @@ pub enum KeywordingView {
     WillExport,
 }
 
-/// One of the Masking brush's A / B presets: each remembers its own size (fraction of the long
-/// edge), feather, flow and density (0..100), like Lightroom's brush A and B.
+/// Where Toggle Zoom (Space / Z) centres the zoomed photo (View ▸ Space Zooms To).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SpaceZoom {
+    /// The camera's focus point; without one, the main subject's sharpest open eye (else the
+    /// largest face).
+    #[default]
+    FocusPoint,
+    /// The main subject's sharpest open eye (else the largest face); without a face, the camera's
+    /// focus point.
+    Eye,
+}
+
+impl SpaceZoom {
+    pub const ALL: [SpaceZoom; 2] = [SpaceZoom::FocusPoint, SpaceZoom::Eye];
+
+    /// The id `view.spaceZoomsTo` takes.
+    pub fn id(self) -> &'static str {
+        match self {
+            SpaceZoom::FocusPoint => "focusPoint",
+            SpaceZoom::Eye => "eye",
+        }
+    }
+
+    /// The menu's words.
+    pub fn label(self) -> &'static str {
+        match self {
+            SpaceZoom::FocusPoint => "Camera Focus Point, Else the Eyes",
+            SpaceZoom::Eye => "Main Subject's Eyes, Else the Focus Point",
+        }
+    }
+}
+
+/// One of the Masking brush's settings: Size (Lightroom's 1..100, a size on the screen,
+/// [`brush_core_points`]), Feather, Flow and Density (0..100). The A / B presets and the eraser's
+/// own settings are each one, like Lightroom's brush A, B and Erase.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrushPreset {
@@ -954,17 +993,43 @@ pub struct BrushPreset {
 
 impl Default for BrushPreset {
     fn default() -> Self {
-        Self { size: 0.04, feather: 50.0, flow: 60.0, density: 100.0 }
+        Self { size: BRUSH_SIZE_DEFAULT, feather: 50.0, flow: 60.0, density: 100.0 }
+    }
+}
+
+/// The brush Size slider's range and starting value: Lightroom's Size, a size on the screen.
+pub const BRUSH_SIZE_MIN: f32 = 1.0;
+pub const BRUSH_SIZE_MAX: f32 = 100.0;
+pub const BRUSH_SIZE_DEFAULT: f32 = 15.0;
+
+/// The radius of the brush's solid core, in screen points, at Size `size` (1..100): the same at every
+/// zoom, as in Lightroom (Size → core radius measured at Fit on a ~1000-point-wide photo,
+/// `lcc_develop::brush_model::size_to_core`).
+pub fn brush_core_points(size: f32) -> f32 {
+    (1000.0 * lcc_develop::brush_model::size_to_core(f64::from(size))) as f32
+}
+
+/// A brush Size read from settings, a preset or a script: Lightroom's 1..100. One below 1 is a size
+/// saved as a fraction of the photo (before Size was a size on the screen), brought to the Size
+/// that paints the same at Fit.
+pub fn brush_size_of(v: f32) -> f32 {
+    if !v.is_finite() || v <= 0.0 {
+        BRUSH_SIZE_DEFAULT
+    } else if v < BRUSH_SIZE_MIN {
+        lcc_develop::brush_model::core_to_size(f64::from(v)) as f32
+    } else {
+        v.min(BRUSH_SIZE_MAX)
     }
 }
 
 impl BrushPreset {
-    /// Clamp values restored from disk (NaN falls back to the default).
+    /// Clamp values restored from disk (NaN falls back to the default); a size saved as a photo
+    /// fraction becomes the screen Size that paints the same ([`brush_size_of`]).
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         let fix = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };
         Self {
-            size: fix(self.size, 0.002, 0.5, d.size),
+            size: brush_size_of(self.size),
             feather: fix(self.feather, 0.0, 100.0, d.feather),
             flow: fix(self.flow, 1.0, 100.0, d.flow),
             density: fix(self.density, 0.0, 100.0, d.density),
@@ -1014,6 +1079,12 @@ pub struct UiState {
     pub docking: Option<crate::docking::Workspace>,
     #[serde(default = "crate::i18n::default_language")]
     pub language: crate::i18n::Locale,
+    /// The eye focus strip across the top of the loupe (`view.eyeFocus`): each person's sharper
+    /// eye at 100 %, with how sharp it is. On and off apart while browsing a folder to cull it (on
+    /// at first) and in the library (off at first); see `LccApp::eye_focus_on`.
+    #[serde(rename = "eyeFocusLibrary")]
+    pub eye_focus: bool,
+    pub eye_focus_import: bool,
     /// Android: the first-start question whether to add the camera roll was answered (either
     /// way); Settings ▸ Folders offers it again.
     pub camera_roll_asked: bool,
@@ -1149,9 +1220,30 @@ pub struct UiState {
     /// being adjusted.
     #[serde(skip)]
     pub mask_hover: Option<u32>,
+    /// The mask whose pin was right-clicked on the photo: the photo's menu is that mask's.
+    pub mask_menu_for: Option<u32>,
+    /// The mask whose pin the pointer rests on (its overlay shows, as for a hovered row).
+    pub mask_pin_hover: Option<u32>,
     /// Active mask component index within the currently selected mask.
     #[serde(skip)]
     pub active_mask_component: Option<usize>,
+    /// A mask tool armed for a new mask (photo, `mask.add` kind): no mask is selected, and the
+    /// mask is made by the first stroke or drag on the photo. Selecting a mask, another photo or
+    /// leaving Masking puts it away (one masking mode at a time).
+    #[serde(skip)]
+    pub mask_new: Option<(u64, String)>,
+    /// The photo the armed mask tool belongs to: another photo puts it away.
+    #[serde(skip)]
+    pub tool_photo: Option<u64>,
+    /// What was selected in Masks last frame (photo, mask, the component edited): on another photo
+    /// the engine selects the mask's linked copy, and the same component (and an armed brush on
+    /// it) carries over when it is the same kind.
+    #[serde(skip)]
+    pub mask_held: Option<(u64, u32, Option<usize>)>,
+    /// A linear or radial gradient being drawn by a drag of a tool armed for a new mask
+    /// (mask, component, the drag's start in image coordinates).
+    #[serde(skip)]
+    pub mask_drawing: Option<(u32, usize, lcc_geom::Point)>,
     /// Mask IDs whose sub-actions are collapsed in the masking panel.
     #[serde(default)]
     pub collapsed_masks: std::collections::HashSet<u32>,
@@ -1167,7 +1259,12 @@ pub struct UiState {
     pub grid_info: String,
     /// Photo counts next to sources and albums in the left panel.
     pub show_counts: bool,
-    /// Face / pet boxes (read from XMP) over the photo in the loupe.
+    /// Face / pet boxes (read from XMP) over the photo in the loupe, switched on (View ▸ Face
+    /// Boxes). Off by default (they get in the way of looking at the photo); they also show while a
+    /// face is being named or a photo was opened from the People view
+    /// ([`crate::panels::faces::face_boxes_shown`]). A new key: earlier builds saved `faceBoxes: true`
+    /// without the user choosing it, so only a choice made since is kept.
+    #[serde(rename = "faceBoxesOn")]
     pub face_boxes: bool,
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
@@ -1277,6 +1374,11 @@ pub struct UiState {
     pub detail_due: Option<(f64, u32)>,
     /// A mask component being renamed inline: (mask id, component index, name).
     pub renaming_component: Option<(u32, usize, String)>,
+    /// The Set Role row under a People component, while open: (role, person).
+    #[serde(skip)]
+    pub role_draft: Option<(String, String)>,
+    /// The Roles window (who has which role, and where) is open.
+    pub roles_window: bool,
     /// Close the window on the next frame (File → Quit).
     #[serde(skip)]
     pub quit: bool,
@@ -1331,6 +1433,8 @@ pub struct UiState {
     /// The Remove panel's tool last used ("remove", "fill", "generate", "heal", "clone"): the panel
     /// opens on it again (this session).
     pub remove_tool: String,
+    /// The brush's Size (Lightroom's 1..100, a size on the screen: the core is [`brush_core_points`] at
+    /// every zoom; a stroke stores it in photo units as painted), Feather, Flow and Density.
     pub brush_size: f32,
     pub brush_feather: f32,
     pub brush_flow: f32,
@@ -1341,9 +1445,24 @@ pub struct UiState {
     /// The A and B brush presets; the slot in use is mirrored by the `brush_*` fields above and
     /// saved back when switching (`brush.preset`).
     pub brush_presets: [BrushPreset; 2],
+    /// The eraser's own Size, Feather, Flow and Density, used while erasing (Erase picked, or ⌥ /
+    /// Alt held to switch modes) and remembered beside the brush's.
+    pub erase_brush: BrushPreset,
+    /// ⌥ / Alt held over the photo with the brush this frame (it switches painting and erasing).
+    #[serde(skip)]
+    pub brush_alt: bool,
     pub brush_erase: bool,
     /// Brush Auto Mask: dabs stick to areas like the one under the brush centre.
     pub brush_auto_mask: bool,
+    /// Masking's "Reset settings on new mask", saved with the UI settings (the engine holds it as
+    /// `Session::mask_reset_new` while the app runs).
+    pub mask_reset_new: bool,
+    /// The engine's `mask_reset_new` last frame: a change there came from a command.
+    #[serde(skip)]
+    pub mask_reset_seen: Option<bool>,
+    /// Brush Auto Mask range, −100 (tight) … 0 (Lightroom's limits) … 100 (wide): kept with each stroke painted
+    /// ([`lcc_develop::BrushStroke::auto_range`]), so changing it leaves the strokes already painted.
+    pub brush_auto_range: f32,
     /// Brush Pen Pressure: a pen's pressure scales each dab's size and flow (a mouse paints at full pressure).
     pub brush_pressure: bool,
     /// Remove tool brush: size (fraction of the long edge), feather and opacity (0..100).
@@ -1361,6 +1480,10 @@ pub struct UiState {
     pub genfill_variations: u32,
     /// Selected Point Color sample.
     pub point_color: usize,
+    /// Selected sample of the active mask's local Point Color.
+    pub mask_point_color: usize,
+    /// The active mask's Color Mixer group shown (`hue`, `sat`, `lum`).
+    pub mask_mixer_group: String,
     /// Point Color "Visualize range": the selected sample's range in colour, the rest grey.
     pub point_color_visualize: bool,
     /// Light panel "Visualize HDR": grey below SDR white, colour bands above (HDR edits).
@@ -1755,6 +1878,17 @@ pub enum Dialog {
         pick_best: bool,
         burst_gap: f32,
         similarity: f32,
+        /// Reject photos where a subject's eyes are closed / blurry (`photo.rejectEyes`).
+        #[serde(default)]
+        closed_eyes: bool,
+        #[serde(default)]
+        blurry_eyes: bool,
+        /// Soft eyes are rejected as well as blurry ones (`photo.rejectEyes` `soft`).
+        #[serde(default)]
+        soft_eyes: bool,
+        /// Everyone's eyes count, not only the main subjects' (`mainOnly: false`).
+        #[serde(default)]
+        everyone: bool,
     },
     /// Help ▸ System Info: (label, value) rows.
     DenoiseModel {
@@ -2065,6 +2199,8 @@ impl Default for UiState {
         UiState {
             window: None,
             docking: None,
+            eye_focus: false,
+            eye_focus_import: true,
             language: crate::i18n::default_language(),
             camera_roll_asked: false,
             preview_build_seen: None,
@@ -2073,8 +2209,14 @@ impl Default for UiState {
             luminance_map_restore: None,
             mask_overlay_pinned: false,
             mask_adjusting_until: None,
+            mask_pin_hover: None,
+            mask_menu_for: None,
             mask_hover: None,
             active_mask_component: None,
+            mask_new: None,
+            tool_photo: None,
+            mask_held: None,
+            mask_drawing: None,
             collapsed_masks: Default::default(),
             view: ViewMode::Detail,
             modern: crate::modern::ModernUi::default(),
@@ -2128,7 +2270,7 @@ impl Default for UiState {
             show_filenames: true,
             grid_info: "filename".into(),
             show_counts: true,
-            face_boxes: true,
+            face_boxes: false,
             hdr_preview: true,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
@@ -2164,6 +2306,8 @@ impl Default for UiState {
             detail_due: None,
             sam_downloading: false,
             renaming_component: None,
+            roles_window: false,
+            role_draft: None,
             quit: false,
             dragging_photos: None,
             reveal_album: None,
@@ -2182,14 +2326,19 @@ impl Default for UiState {
             selected_guide: None,
             wb_sample: 5,
             remove_tool: "remove".into(),
-            brush_size: 0.04,
+            brush_size: BRUSH_SIZE_DEFAULT,
             brush_feather: 50.0,
             brush_flow: 60.0,
             brush_density: 100.0,
             brush_slot: 0,
-            brush_presets: [BrushPreset::default(), BrushPreset { size: 0.012, feather: 20.0, flow: 100.0, density: 100.0 }],
+            brush_presets: [BrushPreset::default(), BrushPreset { size: 5.0, feather: 20.0, flow: 100.0, density: 100.0 }],
+            erase_brush: BrushPreset { flow: 100.0, ..BrushPreset::default() },
+            brush_alt: false,
             brush_erase: false,
             brush_auto_mask: false,
+            mask_reset_new: false,
+            mask_reset_seen: None,
+            brush_auto_range: 0.0,
             brush_pressure: true,
             remove_size: 0.02,
             remove_feather: 50.0,
@@ -2199,6 +2348,8 @@ impl Default for UiState {
             genfill_provider: String::new(),
             genfill_variations: 1,
             point_color: 0,
+            mask_point_color: 0,
+            mask_mixer_group: "hue".into(),
             point_color_visualize: false,
             hdr_visualize: false,
             hover_color: None,
@@ -2511,13 +2662,37 @@ impl UiState {
         self
     }
 
+    /// Whether the brush erases now: Erase picked, or ⌥ / Alt held to switch modes (the panel, the
+    /// cursor and the [ / ] keys then show and change the eraser's settings).
+    pub fn brush_erasing(&self) -> bool {
+        self.brush_erase != self.brush_alt
+    }
+
+    /// The brush's settings for painting (`erase` false) or erasing.
+    pub fn brush_set(&self, erase: bool) -> BrushPreset {
+        if erase {
+            self.erase_brush
+        } else {
+            BrushPreset { size: self.brush_size, feather: self.brush_feather, flow: self.brush_flow, density: self.brush_density }
+        }
+    }
+
+    /// Store `s` as the painting (`erase` false) or erasing settings, in the sliders' ranges.
+    pub fn set_brush_set(&mut self, erase: bool, s: BrushPreset) {
+        let s = BrushPreset { size: s.size.max(BRUSH_SIZE_MIN), ..s }.sanitized();
+        if erase {
+            self.erase_brush = s;
+        } else {
+            (self.brush_size, self.brush_feather, self.brush_flow, self.brush_density) = (s.size, s.feather, s.flow, s.density);
+        }
+    }
+
     /// Put the numeric and enumerated settings back in their valid ranges. Shared by loading a
     /// settings file ([`Self::sanitized`]) and `ui.set`, which merges values from a script.
     pub fn clamp_ranges(&mut self) {
         self.thumb_size = self.thumb_size.clamp(THUMB_SIZE_MIN, THUMB_SIZE_MAX);
         self.left_width = LEFT_WIDTH.clamp(self.left_width);
         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
-        self.brush_size = self.brush_size.clamp(0.002, 0.5);
         // a histogram mode or scale another build wrote (or a hand-edited file) is the default
         if lcc_raster::HistogramMode::parse(&self.histogram_mode).is_none() {
             self.histogram_mode = lcc_raster::HistogramMode::default().name().into();
@@ -2532,6 +2707,7 @@ impl UiState {
         self.brush_presets = self.brush_presets.map(BrushPreset::sanitized);
         let cur = BrushPreset { size: self.brush_size, feather: self.brush_feather, flow: self.brush_flow, density: self.brush_density }.sanitized();
         (self.brush_size, self.brush_feather, self.brush_flow, self.brush_density) = (cur.size, cur.feather, cur.flow, cur.density);
+        self.erase_brush = self.erase_brush.sanitized();
         if !crate::state::PREVIEW_LIMITS.contains(&self.settings.preview_limit) {
             self.settings.preview_limit = AppSettings::default().preview_limit;
         }

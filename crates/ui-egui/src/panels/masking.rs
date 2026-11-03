@@ -1,6 +1,6 @@
 //! The Masking panel: create masks, list them, edit components and local adjustments.
 
-use egui::{Rect, Sense, Stroke, pos2, vec2};
+use egui::{Align2, Rect, Sense, Stroke, pos2, vec2};
 use lcc_catalog::PhotoId;
 use lcc_develop::{ControlSpec, LocalAdjustments, MaskShape, Section, Track};
 use serde_json::json;
@@ -180,6 +180,7 @@ fn kind_label(s: &MaskShape) -> (&'static str, Icon) {
         MaskShape::Prompt { .. } => ("prompt", "Describe"),
         MaskShape::People { .. } => ("people", "People"),
         MaskShape::Landscape { .. } => ("landscape", "Landscape"),
+        MaskShape::Concept { .. } => ("object", "Object"),
     };
     (label, kind_icon(kind))
 }
@@ -265,20 +266,19 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     let resp = if elided { resp.on_hover_text(label) } else { resp };
                     if resp.clicked() {
                         match *kind {
-                            "colorRange" => {
-                                // an empty colour range; clicking the photo samples it
-                                let _ = app.run("mask.add", json!({"kind": "colorRange"}));
-                                app.ui.tool = "colorRange".into();
-                                app.toast(ui.ctx(), crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more"));
-                            }
-                            "object" => start_object(app, ui.ctx(), "new"),
+                            // armed: the first click on the photo makes the mask and picks there
+                            "colorRange" => match arm_new(app, "colorRange") {
+                                Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more")),
+                                Err(e) => app.toast(ui.ctx(), e),
+                            },
+                            "object" if !needs_model(app, "object", "new") => match arm_new(app, "object") {
+                                Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out")),
+                                Err(e) => app.toast(ui.ctx(), e),
+                            },
+                            "object" => {}
                             "prompt" => start_describe(app, "new"),
-                            "brush" => {
-                                let _ = app.run("tool.brush", json!({"new": true}));
-                            }
-                            "linear" | "radial" => {
-                                app.ui.tool = kind.to_string();
-                                let _ = app.run("mask.add", json!({"kind": kind}));
+                            "brush" | "linear" | "radial" => {
+                                let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
                             }
                             k => {
                                 let _ = app.run("mask.add", json!({"kind": k}));
@@ -377,9 +377,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
             crate::widgets::announce_selected(&resp, m.name.clone(), Some(m.id) == app.session.active_mask);
             register(ui.ctx(), format!("mask:{}", m.id), r);
-            if ui.rect_contains_pointer(r) {
-                hovered_row = Some(m.id);
-            }
+            // the mask's own row (name, eye, menu) is where its effect is judged, so the pointer on
+            // it shows no overlay; a component row under it shows the whole mask's
             ui.painter().rect_filled(
                 r,
                 4.0,
@@ -407,17 +406,57 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 app.ui.toggle_mask_collapsed(m.id);
             }
 
-            let icon = m.components.first().map(|c| kind_label(&c.shape).1).unwrap_or(Icon::Mask);
-            paint(ui.painter(), Rect::from_min_size(pos2(r.left() + 22.0, r.min.y + 7.0), vec2(16.0, 16.0)), icon, t.text_label);
+            // the mask's thumbnail (white on black over the photo); its kind's icon until it is ready
+            let thumb_r = Rect::from_min_size(pos2(r.left() + 21.0, r.min.y + 5.0), vec2(20.0, 20.0));
+            match crate::mask_thumbs::thumb(app, ui.ctx(), id, &d, m) {
+                Some(tex) => {
+                    crate::mask_thumbs::paint(ui.painter(), thumb_r, Some(&tex), if sel { t.text } else { t.text_dim.gamma_multiply(0.5) });
+                    register(ui.ctx(), format!("maskThumb:{}", m.id), thumb_r);
+                }
+                None => {
+                    let icon = m.components.first().map(|c| kind_label(&c.shape).1).unwrap_or(Icon::Mask);
+                    paint(ui.painter(), Rect::from_min_size(pos2(r.left() + 22.0, r.min.y + 7.0), vec2(16.0, 16.0)), icon, t.text_label);
+                }
+            }
+            // a stale AI mask (copied, synced, a preset's): an amber badge on its icon; click to update
+            let mut badge_clicked = false;
+            if let Some(why) = mask_ai_status(m).filter(|_| !app.session.segmenter.recomputing()) {
+                let br = Rect::from_center_size(pos2(r.left() + 37.0, r.min.y + 9.0), vec2(10.0, 10.0));
+                register(ui.ctx(), format!("maskStale:{}", m.id), br);
+                let badge = ui.interact(br.expand(2.0), egui::Id::new(("maskStale", m.id)), Sense::click());
+                crate::widgets::announce(&badge, crate::i18n::tr(why));
+                ui.painter().circle_filled(br.center(), 4.5, egui::Color32::from_rgb(240, 170, 40));
+                ui.painter().text(br.center(), Align2::CENTER_CENTER, "!", t.semibold(8.5), egui::Color32::BLACK);
+                let tip = if why == PICK_OBJECT {
+                    crate::i18n::tr(why).to_string()
+                } else {
+                    format!("{}\n{}", crate::i18n::tr(why), crate::i18n::tr("Click to update it."))
+                };
+                let badge = badge.on_hover_text(tip);
+                if badge.clicked() {
+                    badge_clicked = true;
+                    if why != PICK_OBJECT
+                        && let Err(e) = app.run("mask.updateAi", json!({"id": m.id}))
+                    {
+                        app.ai_error(ui.ctx(), e, None);
+                    }
+                }
+            }
             // a long name is cut short (with …) before the right buttons, the full name on hover
             let color = if m.visible { t.text } else { t.text_disabled };
             let right_room = if sel || ui.rect_contains_pointer(r) { 92.0 } else { 28.0 };
-            let g = one_line(ui.painter(), &m.name, t.font(13.0), color, r.width() - 44.0 - right_room);
+            // a mask from before automatic names ("Mask 1") shows what it selects
+            let shown = if lcc_develop::recipe::generic_name(&m.name) && !m.components.is_empty() {
+                lcc_develop::recipe::content_name(m)
+            } else {
+                m.name.clone()
+            };
+            let g = one_line(ui.painter(), &shown, t.font(13.0), color, r.width() - 44.0 - right_room);
             let elided = g.elided;
             let at = pos2(r.left() + 44.0, r.center().y - g.size().y / 2.0);
             register(ui.ctx(), format!("maskName:{}", m.id), Rect::from_min_size(at, g.size()));
             ui.painter().galley(at, g, color);
-            let resp = if elided { resp.on_hover_text(&m.name) } else { resp };
+            let resp = if elided { resp.on_hover_text(&shown) } else { resp };
 
             let right = r.right();
             let cy = r.center().y;
@@ -500,10 +539,25 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 egui::Popup::menu(&plus).show(|ui| component_menu(app, ui, "add"));
             }
 
-            if resp.clicked() && !eye_clicked && !bin_clicked && !minus_clicked && !plus_clicked && !chev_resp.clicked() && !popup_open_at_start {
-                let _ = app.run("mask.select", json!({"id": m.id}));
-                if app.ui.active_mask_component.is_none() {
-                    app.ui.active_mask_component = Some(0);
+            if resp.clicked()
+                && !eye_clicked
+                && !bin_clicked
+                && !minus_clicked
+                && !plus_clicked
+                && !badge_clicked
+                && !chev_resp.clicked()
+                && !popup_open_at_start
+            {
+                // the mask row: any new-mask tool is put away and the mask's top component is the
+                // one edited: a Brush arms the brush on it (paint adds strokes, ⌥ erases), a
+                // gradient shows its handles
+                disarm(app);
+                let top = if m.components.is_empty() { None } else { app.run("mask.editComponent", json!({"id": m.id, "component": 0})).ok() };
+                if top.is_none() {
+                    let _ = app.run("mask.select", json!({"id": m.id}));
+                    if app.ui.active_mask_component.is_none() {
+                        app.ui.active_mask_component = Some(0);
+                    }
                 }
             }
             if resp.double_clicked() {
@@ -561,6 +615,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         let resp = ui.interact(r, egui::Id::new(("compRow", m.id, i)), Sense::click());
                         crate::widgets::announce_selected(&resp, label.clone(), comp_sel);
                         register(ui.ctx(), format!("component:{i}"), r);
+                        if ui.rect_contains_pointer(r) {
+                            hovered_row = Some(m.id);
+                        }
                         ui.painter().rect_filled(
                             r,
                             4.0,
@@ -578,8 +635,25 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             lcc_develop::MaskOp::Subtract => "− ",
                             lcc_develop::MaskOp::Intersect => "∩ ",
                         };
-                        let icon_r = Rect::from_min_size(r.min + vec2(6.0, 6.0), vec2(16.0, 16.0));
-                        paint(ui.painter(), icon_r, icon, if comp_sel { t.text } else { t.text_label });
+                        let icon_r = Rect::from_min_size(r.min + vec2(5.0, 5.0), vec2(18.0, 18.0));
+                        // the component's own thumbnail (made into a mask of its own)
+                        let alone = lcc_develop::Mask {
+                            components: vec![lcc_develop::MaskComponent { op: lcc_develop::MaskOp::Add, ..c.clone() }],
+                            on_photo: cur_m.on_photo,
+                            ..Default::default()
+                        };
+                        match crate::mask_thumbs::thumb(app, ui.ctx(), id, &cur_d, &alone) {
+                            Some(tex) => {
+                                crate::mask_thumbs::paint(
+                                    ui.painter(),
+                                    icon_r,
+                                    Some(&tex),
+                                    if comp_sel { t.text } else { t.text_dim.gamma_multiply(0.5) },
+                                );
+                                register(ui.ctx(), format!("componentThumb:{i}"), icon_r);
+                            }
+                            None => paint(ui.painter(), icon_r.shrink(1.0), icon, if comp_sel { t.text } else { t.text_label }),
+                        }
 
                         let text = format!("{op}{label}{}", if c.invert { crate::i18n::tr(" (inverted)") } else { "" });
                         let g = one_line(ui.painter(), &text, t.font(12.5), if comp_sel { t.text } else { t.text_dim }, r.width() - 28.0 - 52.0);
@@ -613,22 +687,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         ui.painter().galley(at_dots, g_dots, if more.hovered() { t.text } else { t.text_dim });
                         egui::Popup::menu(&more).show(|ui| component_row_menu(app, ui, m.id, i, &label, cur_m.components.len()));
 
-                        if resp.clicked() && !comp_bin.clicked() && !more.clicked() && !popup_open_at_start {
-                            if !sel {
-                                let _ = app.run("mask.select", json!({"id": m.id}));
-                            }
-                            app.ui.active_mask_component = Some(i);
-                            match &c.shape {
-                                MaskShape::Brush { .. } => app.ui.tool = "brush".into(),
-                                MaskShape::Linear { .. } => app.ui.tool = "linear".into(),
-                                MaskShape::Radial { .. } => app.ui.tool = "radial".into(),
-                                MaskShape::ColorRange { .. } => app.ui.tool = "colorRange".into(),
-                                MaskShape::LuminanceRange { .. } => app.ui.tool = "luminanceRange".into(),
-                                MaskShape::DepthRange { .. } => app.ui.tool = "depthRange".into(),
-                                MaskShape::Object { .. } => app.ui.tool = "object".into(),
-                                MaskShape::Prompt { .. } => app.ui.tool = "prompt".into(),
-                                _ => {}
-                            }
+                        if resp.clicked()
+                            && !comp_bin.clicked()
+                            && !more.clicked()
+                            && !popup_open_at_start
+                            && let Err(e) = app.run("mask.editComponent", json!({"id": m.id, "component": i}))
+                        {
+                            app.toast(ui.ctx(), e);
                         }
                         if resp.double_clicked() {
                             app.ui.renaming_component = Some((m.id, i, label.clone()));
@@ -636,6 +701,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         crate::widgets::context_menu(&resp, |ui| component_row_menu(app, ui, m.id, i, &label, cur_m.components.len()));
 
                         range_controls(app, ui, i, &c.shape);
+                        if comp_sel && let MaskShape::People { .. } = &c.shape {
+                            who_picker(app, ui, id, i, &c.shape);
+                        }
                     }
 
                     // Core combination action bar and refinement sliders for the active mask
@@ -688,6 +756,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 show_overlay_row(app, ui);
             });
         }
+        // the brush armed for a new mask: its settings before the first stroke
+        if app.ui.tool == "brush" && app.ui.mask_new.is_some() {
+            divider(ui);
+            brush_settings(app, ui);
+        }
+        next_mask_settings(app, ui);
         return;
     };
     let Some(m) = d.masks.iter().find(|m| m.id == mid).cloned() else { return };
@@ -725,10 +799,233 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         if *key == "color" {
             divider(ui);
             grading_section(app, ui, &m.adjust);
+            // the mask's own Color Mixer and Point Color (a colour photo's tools, as globally)
+            if !crate::is_bw(&d) {
+                let open = app.ui.flyout_open("maskMixer");
+                if flyout_row(ui, "maskMixer", "Color Mixer", Icon::Target, open).clicked() {
+                    app.ui.toggle_flyout("maskMixer");
+                }
+                if open {
+                    mask_mixer(app, ui, &m);
+                }
+            }
+            if !crate::is_bw(&d) {
+                let open = app.ui.flyout_open("maskPointColor");
+                if flyout_row(ui, "maskPointColor", "Point Color", Icon::Picker, open).clicked() {
+                    app.ui.toggle_flyout("maskPointColor");
+                }
+                if open {
+                    mask_point_color(app, ui, &m);
+                }
+            }
         }
     }
     ui.add_space(30.0);
     let _ = Stroke::NONE;
+}
+
+/// With no mask selected: the effect menu and sliders for the next new mask (set the look first,
+/// then draw; `mask.adjust` / `mask.applyEffect` with no mask set them), and Reset Settings on New
+/// Mask.
+fn next_mask_settings(app: &mut LccApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    divider(ui);
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 0 }).show(ui, |ui| {
+        let r = ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr("Settings for the next mask")).color(t.text_dim)).wrap());
+        register(ui.ctx(), "maskNextSettings", r.rect);
+        let mut on = app.session.mask_reset_new;
+        let r = ui.checkbox(&mut on, crate::i18n::tr("Reset settings on new mask"));
+        register(ui.ctx(), "maskResetNew", r.rect);
+        if r.changed() {
+            let _ = app.run("mask.next", json!({"resetNew": on}));
+        }
+    });
+    // (id 0: no mask; the effect menu then sets the next mask's settings)
+    let shown = lcc_develop::Mask { id: 0, adjust: app.session.mask_next, ..Default::default() };
+    super::mask_effects::effect_row(app, ui, &shown);
+    for (key, title, ids) in GROUPS {
+        if !section_header(app, ui, key, title, group_changed(&shown.adjust, ids)) {
+            continue;
+        }
+        for s in LOCAL.iter().filter(|s| ids.contains(&s.id)) {
+            let v = local_get(&shown.adjust, s.id);
+            let out = slider(ui, s, v, true, None);
+            apply_slider_out(app, s, out, |app, v| app.run("mask.adjust", json!({"values": {s.id: v}})));
+        }
+    }
+}
+
+/// The mask Color Mixer's slider ids, per group (hue, sat, lum) and band (`MIXER_BANDS`' order).
+const MASK_MIXER_IDS: [[&str; 8]; 3] = [
+    [
+        "maskMixer.red.hue",
+        "maskMixer.orange.hue",
+        "maskMixer.yellow.hue",
+        "maskMixer.green.hue",
+        "maskMixer.aqua.hue",
+        "maskMixer.blue.hue",
+        "maskMixer.purple.hue",
+        "maskMixer.magenta.hue",
+    ],
+    [
+        "maskMixer.red.sat",
+        "maskMixer.orange.sat",
+        "maskMixer.yellow.sat",
+        "maskMixer.green.sat",
+        "maskMixer.aqua.sat",
+        "maskMixer.blue.sat",
+        "maskMixer.purple.sat",
+        "maskMixer.magenta.sat",
+    ],
+    [
+        "maskMixer.red.lum",
+        "maskMixer.orange.lum",
+        "maskMixer.yellow.lum",
+        "maskMixer.green.lum",
+        "maskMixer.aqua.lum",
+        "maskMixer.blue.lum",
+        "maskMixer.purple.lum",
+        "maskMixer.magenta.lum",
+    ],
+];
+
+/// The active mask's Color Mixer: Hue | Saturation | Luminance tabs, the group's targeted adjustment
+/// (tool `maskMixer:<group>`: drag up / down on the photo), a slider per colour (the photo mixer's
+/// specs) and Reset while anything is set.
+fn mask_mixer(app: &mut LccApp, ui: &mut egui::Ui, m: &lcc_develop::Mask) {
+    let groups = &super::edit::MIXER_GROUPS[..3];
+    if !groups.iter().any(|(_, k)| *k == app.ui.mask_mixer_group) {
+        app.ui.mask_mixer_group = "hue".into();
+    }
+    let key = app.ui.mask_mixer_group.clone();
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let tool = format!("maskMixer:{key}");
+            let active = app.ui.tool == tool;
+            if icon_button(
+                ui,
+                "maskMixerTargeted",
+                Icon::Target,
+                vec2(22.0, 22.0),
+                active,
+                true,
+                crate::i18n::tr("Targeted adjustment: drag up/down on the photo to adjust the colours there"),
+            )
+            .clicked()
+            {
+                app.ui.tool = if active { String::new() } else { tool };
+            }
+            for (label, k) in groups {
+                if super::edit::group_tab(ui, &format!("maskMixerGroup-{k}"), crate::i18n::tr(label), key == *k).clicked() {
+                    app.ui.mask_mixer_group = k.to_string();
+                    if app.ui.tool.starts_with("maskMixer:") {
+                        app.ui.tool.clear();
+                    }
+                }
+            }
+        });
+    });
+    let gi = groups.iter().position(|(_, k)| *k == key).unwrap_or(0);
+    let Some(ids) = MASK_MIXER_IDS.get(gi) else { return };
+    for ((band, name), wid) in lcc_develop::MIXER_BANDS.iter().zip(super::edit::BAND_NAMES).zip(ids) {
+        let Some(base) = lcc_develop::controls::find(&format!("mixer.{band}.{key}")) else { continue };
+        let spec = ControlSpec { id: wid, ..*base };
+        let hsl = m.mixer.bands().get(lcc_develop::MIXER_BANDS.iter().position(|b| b == band).unwrap_or(0)).copied().unwrap_or_default();
+        let v = match key.as_str() {
+            "sat" => hsl.sat,
+            "lum" => hsl.lum,
+            _ => hsl.hue,
+        };
+        let out = slider(ui, &spec, v, true, Some(name));
+        let field = format!("{band}.{key}");
+        apply_slider_out(app, &spec, out, |app, v| app.run("mask.mixer", json!({"id": m.id, "values": {field.clone(): v}})));
+    }
+    if !m.mixer.is_neutral() {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 8 }).show(ui, |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if text_button(ui, "maskMixerReset", crate::i18n::tr("Reset"), false).clicked() {
+                    let _ = app.run("mask.mixer", json!({"id": m.id, "reset": true}));
+                }
+            });
+        });
+    }
+}
+
+/// The local Point Color sliders: (widget id, the global control's field, the `mask.pointColorSet` key).
+const MASK_POINT_FIELDS: [(&str, &str, &str); 8] = [
+    ("maskPointColor.hueShift", "hueShift", "hue_shift"),
+    ("maskPointColor.satShift", "satShift", "sat_shift"),
+    ("maskPointColor.lumShift", "lumShift", "lum_shift"),
+    ("maskPointColor.variance", "variance", "variance"),
+    ("maskPointColor.range", "range", "range"),
+    ("maskPointColor.hueRange", "hueRange", "hue_range"),
+    ("maskPointColor.satRange", "satRange", "sat_range"),
+    ("maskPointColor.lumRange", "lumRange", "lum_range"),
+];
+
+/// The active mask's Point Color: its samples' swatches (+ the eyedropper, tool `maskPointColor`), the selected
+/// sample's shifts and range, and Delete; the same sliders as the photo's Point Color.
+fn mask_point_color(app: &mut LccApp, ui: &mut egui::Ui, m: &lcc_develop::Mask) {
+    let t = Tokens::get(ui.ctx());
+    let n = m.point_colors.len();
+    if app.ui.mask_point_color >= n && n > 0 {
+        app.ui.mask_point_color = n - 1;
+    }
+    let sel = app.ui.mask_point_color;
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 4 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            let active = app.ui.tool == "maskPointColor";
+            let full = n >= lcc_develop::MAX_POINT_COLORS;
+            if icon_button(ui, "maskPointColorPicker", Icon::Picker, vec2(26.0, 26.0), active, !full, crate::i18n::tr("Sample a colour on the photo"))
+                .clicked()
+            {
+                app.ui.tool = if active { String::new() } else { "maskPointColor".into() };
+            }
+            for (i, p) in m.point_colors.iter().enumerate() {
+                let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                crate::widgets::announce(&resp, format!("{} {}", crate::i18n::tr("Point Color"), i + 1));
+                register(ui.ctx(), format!("maskPointColor:{i}"), r);
+                ui.painter().rect_filled(r.shrink(2.0), 3.0, super::edit::oklch_color(p.lum, p.chroma, p.hue));
+                if i == sel {
+                    ui.painter().rect_stroke(r, 4.0, Stroke::new(1.5, t.text), egui::StrokeKind::Inside);
+                }
+                if resp.clicked() {
+                    app.ui.mask_point_color = i;
+                }
+            }
+        });
+    });
+    let Some(pc) = m.point_colors.get(sel).copied() else {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 8 }).show(ui, |ui| {
+            ui.label(egui::RichText::new(crate::i18n::tr("Pick a colour on the photo with the eyedropper.")).size(12.0).color(t.text_dim));
+        });
+        return;
+    };
+    for (wid, field, key) in MASK_POINT_FIELDS {
+        let Some(base) = lcc_develop::controls::find(&format!("pointColor.0.{field}")) else { continue };
+        let spec = ControlSpec { id: wid, ..*base };
+        let v = match key {
+            "hue_shift" => pc.hue_shift,
+            "sat_shift" => pc.sat_shift,
+            "lum_shift" => pc.lum_shift,
+            "variance" => pc.variance,
+            "range" => pc.range,
+            "hue_range" => pc.hue_range,
+            "sat_range" => pc.sat_range,
+            _ => pc.lum_range,
+        };
+        let out = slider(ui, &spec, v, true, None);
+        apply_slider_out(app, &spec, out, |app, v| app.run("mask.pointColorSet", json!({"id": m.id, "index": sel, "values": {key: v}})));
+    }
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 8 }).show(ui, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if text_button(ui, "maskPointColorDelete", crate::i18n::tr("Delete"), false).clicked() {
+                let _ = app.run("mask.pointColorDelete", json!({"id": m.id, "index": sel}));
+            }
+        });
+    });
 }
 
 /// The active mask's Amount slider, under a line naming the mask (its name, else "Mask N").
@@ -760,6 +1057,45 @@ fn menu_label(source: &str) -> &str {
     crate::i18n::tr(source)
 }
 
+/// The photo's right-click menu in Masking: a pin right-clicked opens its mask's menu (→ `true`:
+/// nothing else is shown); otherwise the selected AI mask can be updated from here too.
+pub(crate) fn photo_mask_menu(app: &mut LccApp, ui: &mut egui::Ui) -> bool {
+    let Some(d) = app.session.active().and_then(|p| app.session.develop_of(p)) else { return false };
+    if let Some((index, m)) = app.ui.mask_menu_for.and_then(|id| d.masks.iter().enumerate().find(|(_, m)| m.id == id)) {
+        mask_menu(app, ui, m.id, &m.name, m.visible, index, d.masks.len());
+        return true;
+    }
+    if let Some(m) = d.masks.iter().find(|m| Some(m.id) == app.session.active_mask).filter(|m| m.uses_ai()) {
+        let b = ui.button(menu_label("Update AI Mask"));
+        register(ui.ctx(), "photoMenu:updateAiMask", b.rect);
+        if b.clicked() {
+            if let Err(e) = app.run("mask.updateAi", json!({"id": m.id})) {
+                app.ai_error(ui.ctx(), e, None);
+            }
+            ui.close();
+        }
+        ui.separator();
+    }
+    false
+}
+
+/// What an AI mask's row badge and panel say when its AI selection isn't there for this photo: an
+/// Object without clicks here (copied or synced from another photo) is picked again, any other AI
+/// part not computed for this photo needs updating. `None`: up to date.
+pub(crate) fn mask_ai_status(m: &lcc_develop::Mask) -> Option<&'static str> {
+    if !m.uses_ai() || !m.needs_compute() {
+        return None;
+    }
+    let unpicked =
+        m.components.iter().any(|c| matches!(&c.shape, MaskShape::Object { hint, seg: None, detail, .. } if hint.is_empty() && detail.is_empty()));
+    Some(if unpicked { PICK_OBJECT } else { NEEDS_UPDATE })
+}
+
+/// See [`mask_ai_status`].
+pub(crate) const PICK_OBJECT: &str = "Pick the object on this photo: click it with the Object tool.";
+/// See [`mask_ai_status`].
+pub(crate) const NEEDS_UPDATE: &str = "This mask's AI selection wasn't computed for this photo yet.";
+
 /// The right-click menu of a mask in the Masks list.
 fn mask_menu(app: &mut LccApp, ui: &mut egui::Ui, id: u32, name: &str, visible: bool, index: usize, count: usize) {
     let mut run = |ui: &mut egui::Ui, label: &str, enabled: bool, cmd: &str, p: serde_json::Value| {
@@ -773,6 +1109,32 @@ fn mask_menu(app: &mut LccApp, ui: &mut egui::Ui, id: u32, name: &str, visible: 
     run(ui, "Invert Mask", true, "mask.invert", json!({"id": id}));
     run(ui, if visible { "Hide Mask" } else { "Show Mask" }, true, "mask.visible", json!({"id": id}));
     ui.separator();
+    // compute the mask's AI selections again from this photo (one mask, or every AI mask on it)
+    let photo = app.session.active();
+    let d = photo.and_then(|p| app.session.develop_of(p));
+    let ai = d.as_ref().and_then(|d| d.masks.iter().find(|m| m.id == id)).is_some_and(|m| m.uses_ai());
+    let any_ai = d.as_ref().is_some_and(|d| d.masks.iter().any(|m| m.uses_ai()));
+    let b = ui.add_enabled(ai, egui::Button::new(menu_label("Update AI Mask")));
+    register(ui.ctx(), format!("maskMenu:update:{id}"), b.rect);
+    if b.clicked() {
+        if let Err(e) = app.run("mask.updateAi", json!({"id": id})) {
+            app.ai_error(ui.ctx(), e, None);
+        }
+        ui.close();
+    }
+    if ui.add_enabled(any_ai, egui::Button::new(menu_label("Update All AI Masks"))).clicked() {
+        if let Some(p) = photo {
+            let _ = app.run("masks.updateAi", json!({"ids": [p.0]}));
+        }
+        ui.close();
+    }
+    ui.separator();
+    let mut run = |ui: &mut egui::Ui, label: &str, enabled: bool, cmd: &str, p: serde_json::Value| {
+        if ui.add_enabled(enabled, egui::Button::new(menu_label(label))).clicked() {
+            let _ = app.run(cmd, p);
+            ui.close();
+        }
+    };
     run(ui, "Move Up", index > 0, "mask.move", json!({"id": id, "delta": -1}));
     run(ui, "Move Down", index + 1 < count, "mask.move", json!({"id": id, "delta": 1}));
     ui.separator();
@@ -974,6 +1336,185 @@ fn show_overlay_row(app: &mut LccApp, ui: &mut egui::Ui) {
 
 /// Controls for a range component: the selected range (two handles over a dark → light bar),
 /// Smoothness, and Show Luminance Map; colour ranges get Refine.
+/// Who a People component is about: everyone or the n-th person (as it was made), a person named
+/// on this photo, or a role of the shoot (`people.setRole`). Choosing one stores it in the mask's
+/// recipe and finds that person here (`masks.recompute`); on other photos presets, Paste and Sync
+/// find them again.
+fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, shape: &MaskShape) {
+    let MaskShape::People { person, parts, who, .. } = shape else { return };
+    let tr = crate::i18n::tr;
+    let mut names: Vec<String> = app
+        .session
+        .catalog
+        .photo(photo)
+        .map(|p| {
+            p.meta
+                .regions
+                .iter()
+                .filter(|r| r.kind == lcc_meta::RegionKind::Face)
+                .filter_map(|r| r.name.clone())
+                .filter(|n| !n.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    let mut roles: Vec<String> = app.session.people_store().roles.iter().map(|b| b.role.clone()).collect();
+    roles.sort_by_key(|r| r.to_lowercase());
+    roles.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    let current = match who {
+        Some(lcc_develop::recipe::Who::Name(n)) => n.clone(),
+        Some(lcc_develop::recipe::Who::Role(r)) => format!("{} ({})", r, tr("role")),
+        None if *person > 0 => format!("{} {person}", tr("Person")),
+        None => tr("Everyone").to_string(),
+    };
+    let mut chosen: Option<Option<lcc_develop::recipe::Who>> = None;
+    ui.horizontal(|ui| {
+        ui.add_space(20.0);
+        ui.label(tr("Who"));
+        let r = egui::ComboBox::from_id_salt(("maskWho", comp)).selected_text(current).show_ui(ui, |ui| {
+            if ui.selectable_label(who.is_none() && *person == 0, tr("Everyone")).clicked() {
+                chosen = Some(None);
+            }
+            for n in &names {
+                let on = matches!(who, Some(lcc_develop::recipe::Who::Name(x)) if x.eq_ignore_ascii_case(n));
+                if ui.selectable_label(on, n).clicked() {
+                    chosen = Some(Some(lcc_develop::recipe::Who::Name(n.clone())));
+                }
+            }
+            if !roles.is_empty() {
+                ui.separator();
+            }
+            for r in &roles {
+                let on = matches!(who, Some(lcc_develop::recipe::Who::Role(x)) if x.eq_ignore_ascii_case(r));
+                if ui.selectable_label(on, r).clicked() {
+                    chosen = Some(Some(lcc_develop::recipe::Who::Role(r.clone())));
+                }
+            }
+        });
+        register(ui.ctx(), format!("maskWho:{comp}"), r.response.rect);
+        let open = app.ui.role_draft.is_some();
+        if text_button(ui, "maskSetRole", tr("Set Role…"), open).clicked() {
+            app.ui.role_draft = if open { None } else { Some((String::new(), names.first().cloned().unwrap_or_default())) };
+        }
+        let shown = app.ui.roles_window;
+        if text_button(ui, "maskRoles", tr("Roles…"), shown).clicked() {
+            app.ui.roles_window = !shown;
+        }
+    });
+    if app.ui.roles_window {
+        roles_window(app, ui.ctx());
+    }
+    // who has a role in this shoot (the photo's folder): "Bride" is Sam here
+    let mut set: Option<(String, String)> = None;
+    if let Some((role, person)) = app.ui.role_draft.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            crate::text_field::TextField::singleline("maskRoleName", role).hint(tr("Role")).width(110.0).show(ui);
+            crate::text_field::TextField::singleline("maskRolePerson", person).hint(tr("Person")).width(110.0).show(ui);
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            let ready = !role.trim().is_empty() && !person.trim().is_empty();
+            if ui.add_enabled_ui(ready, |ui| text_button(ui, "maskRoleSet", tr("Set for This Folder"), false)).inner.clicked() {
+                set = Some((role.trim().to_string(), person.trim().to_string()));
+            }
+        });
+    }
+    if let Some((role, person)) = set {
+        // the photo's folder; a photo outside any folder (demo, a phone import) keeps it to itself
+        let scope = if app.session.photo_context(photo).folder.is_some() { json!("folder") } else { json!({"ids": [photo.0]}) };
+        match app.run("people.setRole", json!({"role": role, "person": person, "id": photo.0, "scope": scope})) {
+            Ok(_) => {
+                app.ui.role_draft = None;
+                let shape = MaskShape::People { person: 0, parts: parts.clone(), who: Some(lcc_develop::recipe::Who::Role(role)), seg: None };
+                let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
+                let _ = app.run("masks.recompute", json!({"id": photo.0}));
+            }
+            Err(e) => app.toast(ui.ctx(), e),
+        }
+    }
+    if let Some(w) = chosen {
+        let shape = MaskShape::People { person: 0, parts: parts.clone(), who: w, seg: None };
+        let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
+        let _ = app.run("masks.recompute", json!({"id": photo.0}));
+    }
+}
+
+/// What a role binding's scope covers, in words.
+fn scope_words(scope: &serde_json::Value) -> String {
+    let tr = crate::i18n::tr;
+    if let Some(f) = scope.get("folder").and_then(serde_json::Value::as_str) {
+        let name = std::path::Path::new(f).file_name().and_then(|n| n.to_str()).unwrap_or(f);
+        return format!("{} {name}", tr("Folder"));
+    }
+    if scope.get("album").is_some() {
+        return tr("Album").to_string();
+    }
+    let dates = scope.get("dates").unwrap_or(scope);
+    if let (Some(a), Some(b)) = (dates.get("from").and_then(serde_json::Value::as_str), dates.get("to").and_then(serde_json::Value::as_str)) {
+        return format!("{a} – {b}");
+    }
+    if let Some(n) = scope.get("photos").or_else(|| scope.get("ids")).and_then(serde_json::Value::as_array).map(Vec::len) {
+        return crate::i18n::tr_format!("{n} photos", n = n);
+    }
+    tr("Everywhere").to_string()
+}
+
+/// The Roles window: every role binding (who is the Bride, and where), the ones that apply to
+/// this photo first, each with Clear. Roles are set from a People mask's Set Role….
+fn roles_window(app: &mut LccApp, ctx: &egui::Context) {
+    let tr = crate::i18n::tr;
+    let r = app.run("people.roles", json!({})).unwrap_or_default();
+    let here: Vec<(String, String)> = r["here"]
+        .as_array()
+        .map(|v| v.iter().filter_map(|b| Some((b["role"].as_str()?.to_string(), b["person"].as_str()?.to_string()))).collect())
+        .unwrap_or_default();
+    let all: Vec<serde_json::Value> = r["roles"].as_array().cloned().unwrap_or_default();
+    let mut open = true;
+    let mut clear: Option<(String, serde_json::Value)> = None;
+    egui::Window::new(tr("Roles")).id(egui::Id::new("rolesWindow")).open(&mut open).collapsible(false).resizable(false).default_width(320.0).show(
+        ctx,
+        |ui| {
+            let t = Tokens::get(ui.ctx());
+            register(ui.ctx(), "window:roles", ui.max_rect());
+            if all.is_empty() {
+                ui.label(egui::RichText::new(tr("No roles yet. Give one with Set Role… under a People mask.")).color(t.text_dim));
+                return;
+            }
+            egui::Grid::new("rolesGrid").num_columns(4).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
+                for (i, b) in all.iter().take(500).enumerate() {
+                    let (role, person) = (b["role"].as_str().unwrap_or_default(), b["person"].as_str().unwrap_or_default());
+                    let applies = here.iter().any(|(r, p)| r == role && p == person);
+                    let colour = if applies { t.text } else { t.text_dim };
+                    ui.label(egui::RichText::new(role).color(colour).strong());
+                    ui.label(egui::RichText::new(person).color(colour));
+                    ui.label(egui::RichText::new(scope_words(&b["scope"])).color(t.text_dim).size(11.5));
+                    if text_button(ui, &format!("roleClear:{i}"), tr("Clear"), false).clicked() {
+                        // (as `people.clearRole` takes a scope: dates as {from, to}, photos as {ids})
+                        let sc = &b["scope"];
+                        let scope = match (sc.get("dates"), sc.get("photos")) {
+                            (Some(d), _) => d.clone(),
+                            (_, Some(p)) => json!({"ids": p}),
+                            _ => sc.clone(),
+                        };
+                        clear = Some((role.to_string(), scope));
+                    }
+                    ui.end_row();
+                }
+            });
+        },
+    );
+    if !open {
+        app.ui.roles_window = false;
+    }
+    if let Some((role, scope)) = clear
+        && let Err(e) = app.run("people.clearRole", json!({"role": role, "scope": scope}))
+    {
+        app.toast(ctx, e);
+    }
+}
+
 fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &MaskShape) {
     let t = Tokens::get(ui.ctx());
     let update = |app: &mut LccApp, shape: MaskShape| {
@@ -981,7 +1522,16 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
     };
     match shape {
         MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather } => {
-            ui.label(egui::RichText::new(crate::i18n::tr("Select Luminance Range")).color(t.text_dim));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(crate::i18n::tr("Select Luminance Range")).color(t.text_dim));
+                let picking = app.ui.tool == "lumRange";
+                if text_button(ui, &format!("lumPick{comp}"), crate::i18n::tr("Pick"), picking)
+                    .on_hover_text(crate::i18n::tr("Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range"))
+                    .clicked()
+                {
+                    app.ui.tool = if picking { String::new() } else { "lumRange".into() };
+                }
+            });
             let (lo, hi) = (*lo, *hi);
             let w = ui.available_width().min(240.0);
             let (rect, resp) = ui.allocate_exact_size(vec2(w, 18.0), Sense::click_and_drag());
@@ -1068,15 +1618,47 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
                 }
             }
         }
-        MaskShape::ColorRange { samples, refine } => {
+        MaskShape::Radial { feather, .. } => {
+            // the softness of the edge, as the inner ring on the photo shows it (both stay in step)
+            let spec = ControlSpec {
+                id: "feather",
+                label: "Feather",
+                section: Section::Light,
+                min: 0.0,
+                max: 100.0,
+                default: 50.0,
+                step: 1.0,
+                decimals: 0,
+                track: Track::Plain,
+                shade: lcc_develop::Shade::Plain,
+            };
+            let out = slider(ui, &spec, *feather, true, None);
+            let base = shape.clone();
+            apply_slider_out(app, &spec, out, |app, v| {
+                let mut s = base.clone();
+                if let MaskShape::Radial { feather, .. } = &mut s {
+                    *feather = v.clamp(0.0, 100.0);
+                }
+                app.run("mask.update", json!({"component": comp, "shape": s}))
+            });
+        }
+        MaskShape::ColorRange { samples, refine, areas } => {
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr_format!("{} sample{}", samples.len(), if samples.len() == 1 { "" } else { "s" }))
-                        .color(t.text_dim),
-                );
+                // the picked colours, as swatches
+                for (i, s) in samples.iter().enumerate() {
+                    let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                    ui.painter().rect_filled(r, 2.0, super::range_pick::oklab_color(*s));
+                    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.button_border), egui::StrokeKind::Inside);
+                    register(ui.ctx(), format!("colorSwatch:{comp}:{i}"), r);
+                }
+                if samples.is_empty() {
+                    ui.label(egui::RichText::new(crate::i18n::tr("No colour picked")).color(t.text_dim));
+                }
                 let picking = app.ui.tool == "colorRange";
                 if text_button(ui, &format!("colorPick{comp}"), crate::i18n::tr("Pick"), picking)
-                    .on_hover_text(crate::i18n::tr("Click the photo to pick a colour; ⇧-click adds more (up to 5)"))
+                    .on_hover_text(crate::i18n::tr(
+                        "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it",
+                    ))
                     .clicked()
                 {
                     app.ui.tool = if picking { String::new() } else { "colorRange".into() };
@@ -1097,7 +1679,10 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
             let out = slider(ui, &spec, *refine, true, None);
             let samples = samples.clone();
             apply_slider_out(app, &spec, out, |app, v| {
-                app.run("mask.update", json!({"component": comp, "shape": MaskShape::ColorRange { samples: samples.clone(), refine: v }}))
+                app.run(
+                    "mask.update",
+                    json!({"component": comp, "shape": MaskShape::ColorRange { samples: samples.clone(), refine: v, areas: areas.clone() }}),
+                )
             });
         }
         _ => {}
@@ -1106,6 +1691,15 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
 
 /// The right-click / "…" menu of one component of the selected mask.
 fn component_row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: u32, k: usize, label: &str, count: usize) {
+    if app.session.active().and_then(|p| app.session.develop_of(p)).is_some_and(|d| d.masks.iter().any(|m| m.id == mask && m.uses_ai())) {
+        if ui.button(menu_label("Update AI Mask")).clicked() {
+            if let Err(e) = app.run("mask.updateAi", json!({"id": mask})) {
+                app.ai_error(ui.ctx(), e, None);
+            }
+            ui.close();
+        }
+        ui.separator();
+    }
     let mut run = |ui: &mut egui::Ui, text: &str, p: serde_json::Value| {
         if ui.button(menu_label(text)).clicked() {
             let mut p = p;
@@ -1117,6 +1711,7 @@ fn component_row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: u32, k: usize, 
     };
     run(ui, "Invert", json!({"action": "invert"}));
     run(ui, &crate::i18n::tr_format!("Duplicate \"{label}\"", label = label), json!({"action": "duplicate"}));
+
     if k > 0 {
         crate::widgets::menu_button(ui, crate::i18n::tr("Mode"), |ui| {
             for (op, text) in [("add", "Add"), ("subtract", "Subtract"), ("intersect", "Intersect")] {
@@ -1334,16 +1929,42 @@ fn component_menu(app: &mut LccApp, ui: &mut egui::Ui, op: &str) {
     }
 }
 
+/// Auto Mask range: how different a pixel may be from the one under the brush and still take the
+/// paint, −100 (tight) … 0 (Lightroom's limits, a double-click goes back) … 100 (wide). Each stroke
+/// keeps the range it was painted with.
+fn auto_range_slider(app: &mut LccApp, ui: &mut egui::Ui) {
+    let max = lcc_develop::AUTO_RANGE_MAX;
+    let s = ControlSpec {
+        id: "ui.brushAutoRange",
+        label: "Auto Mask range",
+        section: Section::Light,
+        min: -max,
+        max,
+        default: 0.0,
+        step: 1.0,
+        decimals: 0,
+        track: Track::Centered,
+        shade: lcc_develop::Shade::Plain,
+    };
+    let out = slider(ui, &s, f64::from(app.ui.brush_auto_range), true, None);
+    if let Some(v) = out.value.filter(|v| v.is_finite()) {
+        app.ui.brush_auto_range = v.clamp(-max, max) as f32;
+    }
+}
+
 fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    // the eraser keeps its own settings: shown and changed while erasing (Erase picked, or ⌥ / Alt
+    // held to switch modes)
+    let erasing = app.ui.brush_erase != ui.input(|i| i.modifiers.alt);
     egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 0 }).show(ui, |ui| {
         // wraps at narrow panel widths (and long translations) rather than widening the panel
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(crate::i18n::tr("Brush")).font(t.semibold(13.0)));
-            if text_button(ui, "brushAdd", crate::i18n::tr("Add"), !app.ui.brush_erase).clicked() {
+            if text_button(ui, "brushAdd", crate::i18n::tr("Add"), !erasing).clicked() {
                 app.ui.brush_erase = false;
             }
-            if text_button(ui, "brushErase", crate::i18n::tr("Erase"), app.ui.brush_erase).clicked() {
+            if text_button(ui, "brushErase", crate::i18n::tr("Erase"), erasing).clicked() {
                 app.ui.brush_erase = true;
             }
             ui.add_space(8.0);
@@ -1362,6 +1983,12 @@ fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
         {
             app.ui.brush_auto_mask = auto;
         }
+    });
+    // under Auto Mask, lined up with the brush's other sliders
+    if app.ui.brush_auto_mask {
+        auto_range_slider(app, ui);
+    }
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 0, bottom: 0 }).show(ui, |ui| {
         let mut pressure = app.ui.brush_pressure;
         if ui
             .checkbox(&mut pressure, crate::i18n::tr("Pen Pressure"))
@@ -1371,11 +1998,12 @@ fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
             app.ui.brush_pressure = pressure;
         }
     });
+    let set = app.ui.brush_set(erasing);
     for (id, label, min, max, get) in [
-        ("ui.brushSize", "Size", 1.0, 100.0, (app.ui.brush_size * 400.0) as f64),
-        ("ui.brushFeather", "Feather", 0.0, 100.0, app.ui.brush_feather as f64),
-        ("ui.brushFlow", "Flow", 1.0, 100.0, app.ui.brush_flow as f64),
-        ("ui.brushDensity", "Density", 0.0, 100.0, app.ui.brush_density as f64),
+        ("ui.brushSize", "Size", 1.0, 100.0, set.size as f64),
+        ("ui.brushFeather", "Feather", 0.0, 100.0, set.feather as f64),
+        ("ui.brushFlow", "Flow", 1.0, 100.0, set.flow as f64),
+        ("ui.brushDensity", "Density", 0.0, 100.0, set.density as f64),
     ] {
         let s = ControlSpec {
             id,
@@ -1391,12 +2019,15 @@ fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
         };
         let out = slider(ui, &s, get, true, None);
         if let Some(v) = out.value {
+            let mut s = app.ui.brush_set(erasing);
+            let v = v as f32;
             match id {
-                "ui.brushSize" => app.ui.brush_size = (v / 400.0) as f32,
-                "ui.brushFeather" => app.ui.brush_feather = v as f32,
-                "ui.brushDensity" => app.ui.brush_density = v as f32,
-                _ => app.ui.brush_flow = v as f32,
+                "ui.brushSize" => s.size = v,
+                "ui.brushFeather" => s.feather = v,
+                "ui.brushDensity" => s.density = v,
+                _ => s.flow = v,
             }
+            app.ui.set_brush_set(erasing, s);
         }
     }
 }
@@ -1408,6 +2039,150 @@ fn mask_icon(ui: &mut egui::Ui, id: &str, icon: Icon, label: &str, active: bool)
     let r = crate::widgets::icon_button_named(ui, id, icon, vec2(32.0, 28.0), active, true, name, name);
     crate::widgets::register(ui.ctx(), format!("button:{id}"), r.rect);
     r
+}
+
+/// The on-photo tools that belong to Masking (armed from its panel or a shortcut). Colour Range's
+/// eyedropper is not one: it also samples from Edit.
+pub(crate) fn is_mask_tool(tool: &str) -> bool {
+    matches!(tool, "brush" | "linear" | "radial" | "object" | "prompt" | "depthRange" | "luminanceRange" | "maskPointColor")
+        || tool.starts_with("maskMixer:")
+}
+
+/// Arm mask tool `kind` (`brush`, `linear`, `radial`, `colorRange`, `object`) for a new mask: no mask is selected, and the
+/// first stroke or drag on the photo makes the mask (one masking mode at a time: a selected mask
+/// and a tool waiting for a new one are never at once).
+pub(crate) fn arm_new(app: &mut LccApp, kind: &str) -> Result<serde_json::Value, String> {
+    let photo = app.session.active().ok_or_else(|| format!("tool.{kind}: no photo"))?;
+    app.cancel_brush_gesture();
+    app.run("mask.select", json!({"id": null}))?;
+    app.ui.active_mask_component = None;
+    app.ui.mask_new = Some((photo.0, kind.into()));
+    app.ui.mask_drawing = None;
+    app.ui.tool = kind.into();
+    app.ui.tool_photo = Some(photo.0);
+    app.ui.right = crate::state::RightPanel::Masking;
+    app.ui.view = crate::state::ViewMode::Detail;
+    Ok(json!({"armed": kind}))
+}
+
+/// Put every mask tool away: the tool on the photo and a tool waiting for a new mask.
+pub(crate) fn disarm(app: &mut LccApp) {
+    if is_mask_tool(&app.ui.tool) {
+        app.ui.tool.clear();
+    }
+    app.ui.mask_new = None;
+    app.ui.mask_drawing = None;
+}
+
+/// `mask.editComponent {id, component}`: make component `k` of mask `mid` the one edited on the
+/// photo. The mask is selected and any tool waiting for a new mask put away; a Brush component
+/// arms the brush on it (strokes add to it, erasing takes from it, by its own Add or Subtract),
+/// any other kind puts the brush away so its handles take the drags.
+pub(crate) fn edit_component(app: &mut LccApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let c = "mask.editComponent";
+    let photo = app.session.active().ok_or_else(|| format!("{c}: no photo"))?;
+    let mid = p.get("id").and_then(serde_json::Value::as_u64).and_then(|v| u32::try_from(v).ok()).or(app.session.active_mask);
+    let mid = mid.ok_or_else(|| format!("{c}: no mask selected"))?;
+    let k = p
+        .get("component")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or_else(|| format!("{c}: `component` must be a component index"))?;
+    let d = app.session.develop_of(photo).unwrap_or_default();
+    let m = d.masks.iter().find(|m| m.id == mid).ok_or_else(|| format!("{c}: no mask {mid}"))?;
+    let shape = &m.components.get(k).ok_or_else(|| format!("{c}: mask {mid} has no component {k}"))?.shape;
+    let brush = matches!(shape, MaskShape::Brush { .. });
+    app.cancel_brush_gesture();
+    disarm(app);
+    if app.session.active_mask != Some(mid) {
+        app.run("mask.select", json!({"id": mid}))?;
+    }
+    app.ui.active_mask_component = Some(k);
+    // the component's own tool on the photo (its handles, eyedropper or clicks)
+    let tool = match shape {
+        MaskShape::Brush { .. } => "brush",
+        MaskShape::Linear { .. } => "linear",
+        MaskShape::Radial { .. } => "radial",
+        MaskShape::ColorRange { .. } => "colorRange",
+        MaskShape::LuminanceRange { .. } => "luminanceRange",
+        MaskShape::DepthRange { .. } => "depthRange",
+        MaskShape::Object { .. } => "object",
+        MaskShape::Prompt { .. } => "prompt",
+        _ => "",
+    };
+    if !tool.is_empty() {
+        app.ui.right = crate::state::RightPanel::Masking;
+        app.ui.tool = tool.into();
+        app.ui.tool_photo = Some(photo.0);
+    }
+    if brush {
+        app.ui.brush_erase = false;
+    }
+    Ok(json!({"mask": mid, "component": k, "brush": brush}))
+}
+
+/// Leaving Masking or the loupe puts its tools away, checked once a frame whatever path left it:
+/// coming back never finds the brush armed (it hid the overlay elsewhere and made pin drags paint).
+/// One masking mode at a time: another photo puts the tools away, and so does a mask selected
+/// (its row, pin or a command) while a tool waits for a new mask.
+pub(crate) fn put_tools_away(app: &mut LccApp) {
+    sync_reset_new(app);
+    let photo = app.session.active().map(|p| p.0);
+    let left = app.ui.right != crate::state::RightPanel::Masking || app.ui.view != crate::state::ViewMode::Detail;
+    let armed = is_mask_tool(&app.ui.tool) || app.ui.mask_new.is_some();
+    let carried = carry_component(app, photo);
+    let other_photo = app.ui.tool_photo.is_some() && app.ui.tool_photo != photo && !carried;
+    let picked = app.ui.mask_new.is_some() && app.session.active_mask.is_some() && app.ui.mask_drawing.is_none();
+    if armed && (left || other_photo || picked) {
+        app.cancel_brush_gesture();
+        disarm(app);
+    }
+    if is_mask_tool(&app.ui.tool) {
+        if app.ui.tool_photo.is_none() || carried {
+            app.ui.tool_photo = photo;
+        }
+    } else {
+        app.ui.tool_photo = None;
+    }
+    app.ui.mask_held = photo.zip(app.session.active_mask).map(|(p, m)| (p, m, app.ui.active_mask_component));
+}
+
+/// Keep "Reset settings on new mask" in the saved UI settings: the saved choice goes to the engine
+/// at start, and a `mask.next {resetNew}` from any surface comes back to be saved.
+fn sync_reset_new(app: &mut LccApp) {
+    let now = app.session.mask_reset_new;
+    match app.ui.mask_reset_seen {
+        Some(seen) if seen != now => app.ui.mask_reset_new = now,
+        _ => app.session.mask_reset_new = app.ui.mask_reset_new,
+    }
+    app.ui.mask_reset_seen = Some(app.session.mask_reset_new);
+}
+
+/// Another photo with a mask selected: the engine selected its linked copy there (or none). The
+/// component edited on the photo before stays the one edited when the copy has one of the same
+/// kind at that place; otherwise none is. Returns whether a brush armed on it stays armed.
+fn carry_component(app: &mut LccApp, photo: Option<u64>) -> bool {
+    let Some((q, old_mid, comp)) = app.ui.mask_held else { return false };
+    let Some(p) = photo.filter(|p| *p != q) else { return false };
+    let Some(k) = comp else { return false };
+    let kind_of = |pid: u64, mid: u32| {
+        app.session
+            .develop_of(PhotoId(pid))
+            .and_then(|d| d.masks.iter().find(|m| m.id == mid).and_then(|m| m.components.get(k).map(|c| std::mem::discriminant(&c.shape))))
+    };
+    let before = kind_of(q, old_mid);
+    let now = app.session.active_mask.and_then(|mid| kind_of(p, mid));
+    if before.is_none() || before != now {
+        app.ui.active_mask_component = None;
+        return false;
+    }
+    app.ui.active_mask_component = Some(k);
+    let brush = app.session.develop_of(PhotoId(p)).is_some_and(|d| {
+        d.masks
+            .iter()
+            .any(|m| Some(m.id) == app.session.active_mask && m.components.get(k).is_some_and(|c| matches!(c.shape, MaskShape::Brush { .. })))
+    });
+    brush && app.ui.tool == "brush" && app.ui.mask_new.is_none()
 }
 
 #[cfg(test)]

@@ -86,11 +86,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.detail", "Detail View", Some("D"), "View"),
     ("view.compare", "Compare", Some("Shift+C"), "View"),
     ("view.survey", "Survey", Some("N"), "View"),
+    ("view.eyeFocus", "Eye Focus Strip", None, "View>Loupe Info"),
     ("view.people", "People", None, "View"),
     ("view.person", "Show Person", None, ""),
     ("view.faceBoxes", "Face Boxes", None, "View>Loupe Info"),
     ("view.focusPoint", "Show Focus Point", Some("Alt+F"), "View>Loupe Info"),
     ("view.zoomToFocus", "Zoom to Focus Point", None, "View>Loupe Info"),
+    ("view.spaceZoomsTo", "Space Zooms To", None, ""),
     ("view.reference", "Reference View", Some("Shift+R"), "View>Before/After"),
     ("photo.setReference", "Set as Reference Photo", None, ""),
     ("compare.swap", "Swap Compare Photos", None, "View"),
@@ -204,6 +206,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
     ("tool.none", "No Tool", None, ""),
+    // {id?, component}: the component edited on the photo (a Brush component arms the brush on it)
+    ("mask.editComponent", "Edit Mask Component", None, ""),
     // brush size / feather of the active brush (Masking brush, Remove tool and its selected spot)
     ("brush.smaller", "Decrease Brush Size", Some("["), "Window>Tools"),
     // the brush's Erase mode; {on} sets it (a console key holds it like Alt), none toggles
@@ -511,9 +515,12 @@ pub(crate) fn adjust_brush(app: &mut LccApp, k: f32, df: f32) -> Value {
         app.ui.remove_feather = (app.ui.remove_feather + df).clamp(0.0, 100.0);
         json!({"size": app.ui.remove_size, "feather": app.ui.remove_feather})
     } else {
-        app.ui.brush_size = (app.ui.brush_size * k).clamp(0.002, 0.5);
-        app.ui.brush_feather = (app.ui.brush_feather + df).clamp(0.0, 100.0);
-        json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather})
+        // the set in use: the eraser's while erasing; Size is a size on the screen (1..100)
+        let erase = app.ui.brush_erasing();
+        let s = app.ui.brush_set(erase);
+        app.ui.set_brush_set(erase, crate::state::BrushPreset { size: s.size * k, feather: s.feather + df, ..s });
+        let s = app.ui.brush_set(erase);
+        json!({"size": s.size, "feather": s.feather, "erase": erase})
     }
 }
 
@@ -721,6 +728,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
     // and a toast set by it was long over by the app's clock: it never showed)
     let ctx = app.tasks.repaint.clone().unwrap_or_default();
     let r: Result<Value, String> = match id {
+        "view.eyeFocus" => {
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(!app.eye_focus_on());
+            app.set_eye_focus(on);
+            Ok(json!({"on": on, "where": if app.importing() { "import" } else { "library" }}))
+        }
         "view.photoGrid" => {
             app.ui.view = ViewMode::PhotoGrid;
             Ok(Value::Null)
@@ -829,6 +841,16 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             // {on?}; no params toggles. The camera's focus point (Sony, from the file) over the photo.
             app.ui.settings.focus_point = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.settings.focus_point);
             Ok(json!({"on": app.ui.settings.focus_point}))
+        }
+        "view.spaceZoomsTo" => {
+            // {to: focusPoint|eye} → {to}; it also turns Zoom to Focus Point on
+            let to = p.get("to").and_then(Value::as_str).unwrap_or_default();
+            let Some(z) = crate::state::SpaceZoom::ALL.into_iter().find(|z| z.id() == to) else {
+                return Some(Err(format!("view.spaceZoomsTo: `to` is focusPoint or eye, not `{to}`")));
+            };
+            app.ui.settings.space_zoom = z;
+            app.ui.settings.zoom_to_focus = true;
+            Ok(json!({"to": z.id()}))
         }
         "view.zoomToFocus" => {
             // {on?}; no params toggles. Toggle Zoom (Z) centres on the focus point when there is one.
@@ -1707,6 +1729,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             Ok(Value::Null)
         }
+        "mask.editComponent" => crate::panels::masking::edit_component(app, p),
         "tool.done" => {
             // Return commits a tool panel (crop, remove, red eye, masking): back to Edit
             use RightPanel::*;
@@ -1764,15 +1787,18 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "guidedUpright".into();
                 }
                 "brush" => {
-                    // A new mask and Add/Subtract are selection operations, not the brush's
-                    // Erase mode. Paint positively into a component with the requested op.
-                    let create = if p.get("new").and_then(Value::as_bool) == Some(true) {
-                        Some(app.run("mask.add", json!({"kind": "brush"})))
-                    } else {
-                        p.get("op").map(|op| app.run("mask.addComponent", json!({"kind": "brush", "op": op})))
-                    };
-                    if let Some(result) = create {
-                        if let Err(e) = result {
+                    // A new mask is armed: the first stroke makes it. Add/Subtract are selection
+                    // operations, not the brush's Erase mode: paint positively into a new component.
+                    if p.get("new").and_then(Value::as_bool) == Some(true) {
+                        if let Err(e) = crate::panels::masking::arm_new(app, "brush") {
+                            return Some(Err(e));
+                        }
+                        app.ui.brush_erase = false;
+                        app.ui.mask_overlay = true;
+                        return Some(Ok(json!({"armed": "brush"})));
+                    }
+                    if let Some(op) = p.get("op") {
+                        if let Err(e) = app.run("mask.addComponent", json!({"kind": "brush", "op": op})) {
                             return Some(Err(e));
                         }
                         app.ui.brush_erase = false;
@@ -1788,10 +1814,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "brush".into();
                 }
                 "linear" | "radial" => {
-                    app.ui.right = RightPanel::Masking;
-                    app.ui.view = ViewMode::Detail;
-                    app.ui.tool = tool.into();
-                    return Some(app.session.execute("mask.add", &json!({"kind": tool})).map_err(|e| e.to_string()));
+                    // armed: a drag on the photo draws the gradient (a click places a default one)
+                    return Some(crate::panels::masking::arm_new(app, tool));
                 }
                 // W again puts the selector away without sampling (OneSlips, test notes 2026-10-25 note 13)
                 "wbPicker" if app.ui.tool == "wbPicker" && p.get("sample").is_none() => app.ui.tool.clear(),
@@ -2128,7 +2152,16 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "photo.openOriginalInExternal" => open_original_in(app, &ctx, p),
         "dialog.cull" => {
             let (burst_gap, similarity) = app.ui.cull_burst.unwrap_or((10.0, 0.93));
-            app.ui.dialog = Some(Dialog::Cull { reject_below: 0.0, pick_best: true, burst_gap, similarity });
+            app.ui.dialog = Some(Dialog::Cull {
+                reject_below: 0.0,
+                pick_best: true,
+                burst_gap,
+                similarity,
+                closed_eyes: false,
+                blurry_eyes: false,
+                soft_eyes: false,
+                everyone: false,
+            });
             Ok(Value::Null)
         }
         "app.whatsNew" => {

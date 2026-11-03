@@ -31,6 +31,8 @@ pub mod birefnet;
 #[cfg(not(target_arch = "wasm32"))]
 mod clip;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod concept;
+#[cfg(not(target_arch = "wasm32"))]
 mod cpu;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod depth;
@@ -44,6 +46,8 @@ pub mod fetch;
 mod grid;
 #[cfg(not(target_arch = "wasm32"))]
 mod hiera;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod identity;
 pub mod mask;
 /// Matte refinement on coverage grids (People masks).
 #[cfg(not(target_arch = "wasm32"))]
@@ -57,6 +61,9 @@ mod nn;
 /// People masks from MediaPipe's models, run by `lcc-tflite`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod people;
+/// MediaPipe's pre- and post-processing (faces, landmarks), for the eye finder.
+#[cfg(not(target_arch = "wasm32"))]
+pub use lcc_tflite::mediapipe;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote;
 #[cfg(not(target_arch = "wasm32"))]

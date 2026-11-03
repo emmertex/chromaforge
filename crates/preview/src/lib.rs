@@ -22,7 +22,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-pub use disk::{DiskCache, decode_jpeg, encode_jpeg};
+pub use disk::{DATA_EXT, DiskCache, decode_jpeg, encode_jpeg};
 pub use hash::{Hash128, Hasher128, hash_bytes};
 use lcc_raster::Rgba8;
 pub use lru::{Lru, next_tick};
@@ -141,6 +141,33 @@ impl PreviewCache {
     }
 
     /// `key` if it is held in memory (never reads the disk).
+    /// A small record kept on disk beside the thumbnails ([`DiskCache::get_data`]); `None` without
+    /// a disk cache, or once retired.
+    pub fn get_data(&self, key: Hash128) -> Option<Vec<u8>> {
+        if self.generation.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            return None;
+        }
+        self.disk.as_ref()?.get_data(key)
+    }
+
+    /// Keep a small record on disk beside the thumbnails ([`DiskCache::put_data`]): nothing
+    /// without a disk cache, or once retired.
+    pub fn put_data(&self, key: Hash128, bytes: &[u8]) {
+        if self.generation.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            return;
+        }
+        if let Some(d) = &self.disk {
+            d.put_data(key, bytes);
+        }
+    }
+
+    /// Drop a record that could not be read ([`DiskCache::remove_data`]).
+    pub fn remove_data(&self, key: Hash128) {
+        if let Some(d) = &self.disk {
+            d.remove_data(key);
+        }
+    }
+
     pub fn get_in_memory(&self, key: Hash128) -> Option<Arc<Rgba8>> {
         if self.generation.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
             return None;

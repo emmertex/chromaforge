@@ -3201,3 +3201,45 @@ fn info_toggled_off_brings_back_exactly_what_was_there() {
     exec(&mut h, "panel.info");
     assert_eq!(h.app.ui.right, RightPanel::None, "closed → I → I = closed");
 }
+
+/// Assisted Culling: the eyes are asked about; with "blurry eyes" ticked the dialog asks how soft is
+/// too soft, and whether only the main subjects count; the choices reach the dialog's state.
+#[test]
+fn assisted_culling_asks_about_the_eyes() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
+    exec(&mut h, "dialog.cull", json!({}));
+    assert!(!h.app.widgets.iter().any(|(w, _)| w == "radio:cullSoftToo"), "only once blurry eyes are asked for");
+    click(&mut h, "check:cullBlurryEyes");
+    click(&mut h, "radio:cullSoftToo");
+    click(&mut h, "check:cullMainOnly");
+    let Some(crate::state::Dialog::Cull { blurry_eyes, soft_eyes, everyone, closed_eyes, .. }) = h.app.ui.dialog.clone() else {
+        panic!("the dialog stays")
+    };
+    assert!(blurry_eyes && soft_eyes && everyone && !closed_eyes);
+}
+
+/// View ▸ Space Zooms To: the choice is kept with the settings, turns Zoom to Focus Point on, and
+/// a word it doesn't know is refused. Without a camera focus point Space zooms to the eyes; "eyes
+/// first" prefers them to the point.
+#[test]
+fn space_zooms_to_is_a_choice_in_the_view_menu() {
+    use crate::state::SpaceZoom;
+    let mut h = demo([1400.0, 900.0], json!({"view": "detail"}));
+    exec(&mut h, "view.zoomToFocus", json!({"on": false}));
+    exec(&mut h, "view.spaceZoomsTo", json!({"to": "eye"}));
+    assert_eq!(h.app.ui.settings.space_zoom, SpaceZoom::Eye);
+    assert!(h.app.ui.settings.zoom_to_focus);
+    let r = h.request("engine.execute", json!({"command": "view.spaceZoomsTo", "params": {"to": "nose"}}), T);
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(h.app.ui.settings.space_zoom, SpaceZoom::Eye);
+    let (point, eye) = (Some((0.2, 0.3)), Some((0.6, 0.4)));
+    use crate::panels::detail::space_target;
+    assert_eq!(space_target(SpaceZoom::FocusPoint, point, eye), point);
+    assert_eq!(space_target(SpaceZoom::FocusPoint, None, eye), eye, "no focus point: the eyes");
+    assert_eq!(space_target(SpaceZoom::Eye, point, eye), eye);
+    assert_eq!(space_target(SpaceZoom::Eye, point, None), point, "no face: the focus point");
+    assert_eq!(space_target(SpaceZoom::Eye, None, None), None);
+    // a settings file with a word it doesn't know reads as the default
+    let s: crate::state::AppSettings = serde_json::from_value(json!({"spaceZoom": "nose"})).expect("lenient");
+    assert_eq!(s.space_zoom, SpaceZoom::FocusPoint);
+}

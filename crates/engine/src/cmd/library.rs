@@ -393,8 +393,9 @@ fn step(s: &mut Session, d: isize) -> Result<Value> {
         None => 0,
     };
     s.end_interaction()?;
+    let (was, was_mask) = (s.selection.active, s.active_mask);
     s.selection = Selection::single(vis[next]);
-    s.active_mask = None;
+    s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
     s.active_spot = None;
     Ok(json!({"active": vis[next].0}))
 }
@@ -409,12 +410,17 @@ fn rotate(s: &mut Session, p: &Value, cw: bool) -> Result<Value> {
     let targets = s.targets(p)?;
     let mut ops = Vec::new();
     for id in targets {
-        if let Some(d) = s.develop_of(id) {
-            let mut d = (*d).clone();
+        if let Some(before) = s.develop_of(id) {
+            let mut d = (*before).clone();
             d.orientation = d.orientation.rotated(cw);
             // the crop lives in the oriented frame, so it turns with the image (else it keeps the old width and height and cuts the photo)
             let turn = lcc_geom::Orientation::Normal.rotated(cw);
             d.crop.geometry.rect = turn.map_norm_rect(d.crop.geometry.rect);
+            // and so do the masks: on the photo first (an old one), then turned with it
+            s.attach_masks(id, &before, &mut d);
+            for m in &mut d.masks {
+                lcc_pipeline::mask_space::turn(m, turn);
+            }
             d.crop.aspect = d.crop.aspect.map(|(w, h)| (h, w));
             ops.extend(s.develop_op(id, d, "Rotate"));
         }
@@ -846,6 +852,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("library.select", format!("no such photo {}", id.0)));
                 }
                 s.end_interaction()?;
+                let (was, was_mask) = (s.selection.active, s.active_mask);
                 match mode {
                     "replace" => {
                         // a repeated id is one photo: keep the first of each, in the order given
@@ -875,8 +882,12 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     other => return Err(bad("library.select", format!("unknown mode `{other}`"))),
                 }
-                s.active_mask = None;
-                s.active_spot = None;
+                // the selected mask stays: on the same active photo (a ⇧-click range, a ⌘-click),
+                // or its linked copy on the new one
+                s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
+                if s.selection.active != was {
+                    s.active_spot = None;
+                }
                 Ok(json!({"selected": s.selection.ids.len()}))
             }
         ),

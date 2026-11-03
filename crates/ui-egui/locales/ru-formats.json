@@ -371,5 +371,6 @@
   "The chart's greys measure about {cct:.0} K": "Серые поля мишени показывают около {cct:.0} K",
   "Both charts are set to {light}; set the second to {other}.": "Для обеих мишеней выбрано «{light}»; для второй выберите «{other}».",
   "Used by {n} photos; they will update.": "Используется в {n} снимках; они обновятся.",
-  "These charts come from two different camera bodies ({x}, {y})": "Эти мишени сняты двумя разными тушками ({x}, {y})"
+  "These charts come from two different camera bodies ({x}, {y})": "Эти мишени сняты двумя разными тушками ({x}, {y})",
+  "Finding “{text}”…": "Ищу «{text}»…"
 }

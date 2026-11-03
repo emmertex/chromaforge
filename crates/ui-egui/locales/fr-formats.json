@@ -371,5 +371,6 @@
   "The chart's greys measure about {cct:.0} K": "Les gris de la charte mesurent environ {cct:.0} K",
   "Both charts are set to {light}; set the second to {other}.": "Les deux chartes sont réglées sur {light} ; réglez la deuxième sur {other}.",
   "Used by {n} photos; they will update.": "Utilisé par {n} photos ; elles seront mises à jour.",
-  "These charts come from two different camera bodies ({x}, {y})": "Ces chartes viennent de deux boîtiers différents ({x}, {y})"
+  "These charts come from two different camera bodies ({x}, {y})": "Ces chartes viennent de deux boîtiers différents ({x}, {y})",
+  "Finding “{text}”…": "Recherche de « {text} »…"
 }

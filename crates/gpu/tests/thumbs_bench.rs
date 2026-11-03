@@ -23,6 +23,7 @@ fn preset_like() -> DevelopSettings {
     s.grading.shadows.sat = 30.0;
     s.masks = vec![Mask {
         components: vec![MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,

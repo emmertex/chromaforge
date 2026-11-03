@@ -342,6 +342,21 @@ pub fn to_partial(props: &Props, target: Target) -> Value {
         n(o, &format!("GrayMixer{crs}"), &format!("bw_mix.{band}"));
     }
 
+    // ---- Point Color (empty slots are all -1; variance is stored apart, one per sample)
+    if let Some(lines) = props.get("crs:PointColors") {
+        let var = crate::crs_point_color::variances(props.get("crs:ColorVariance").into_iter().flatten().map(String::as_str));
+        let samples = crate::crs_point_color::read(lines.iter().map(String::as_str), &var);
+        // read when every used slot was understood (a slot of another shape stays reported)
+        let used = lines.iter().filter(|l| !l.split(',').all(|n| n.trim().parse::<f64>().is_ok_and(|x| x == -1.0))).count();
+        if samples.len() == used.min(lcc_develop::MAX_POINT_COLORS) {
+            note("crs:PointColors");
+            note("crs:ColorVariance");
+        }
+        if !samples.is_empty() {
+            put(o, "point_colors", serde_json::to_value(&samples).unwrap_or(Value::Null));
+        }
+    }
+
     // ---- Tone curve: parametric regions + point curves
     n(o, "ParametricShadows", "curve.shadows");
     n(o, "ParametricDarks", "curve.darks");
@@ -623,7 +638,14 @@ pub fn has_saved_upright_transform(props: &Props) -> bool {
 pub fn preset_from_xmp(xmp: &str, fallback_name: &str) -> Option<Preset> {
     let d = lcc_meta::parse_xmp(xmp).ok()?;
     let props = &d.properties;
-    let settings = to_partial(props, Target::Any);
+    let mut settings = to_partial(props, Target::Any);
+    // a preset we exported: its own complete settings win over the crs: reading
+    if let Some(own) = first(props, crate::preset_xmp::LC_SETTINGS)
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .filter(serde_json::Value::is_object)
+    {
+        settings = own;
+    }
     if settings.as_object().is_none_or(Map::is_empty) {
         return None;
     }

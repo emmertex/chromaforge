@@ -373,7 +373,7 @@ pub fn bench_settings(plain: bool, hdr: bool) -> DevelopSettings {
             id,
             name: format!("mask {id}"),
             visible: true,
-            components: vec![MaskComponent { name: None, op: Default::default(), invert: false, shape }],
+            components: vec![MaskComponent { anchor: None, name: None, op: Default::default(), invert: false, shape }],
             ..Default::default()
         };
         f(&mut m);

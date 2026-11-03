@@ -376,5 +376,6 @@
   "The chart's greys measure about {cct:.0} K": "色卡灰块测得约 {cct:.0} K",
   "Both charts are set to {light}; set the second to {other}.": "两张色卡都设为{light}；请将第二张设为{other}。",
   "Used by {n} photos; they will update.": "{n} 张照片在使用；它们会随之更新。",
-  "These charts come from two different camera bodies ({x}, {y})": "这些色卡来自两台不同的机身（{x}、{y}）"
+  "These charts come from two different camera bodies ({x}, {y})": "这些色卡来自两台不同的机身（{x}、{y}）",
+  "Finding “{text}”…": "正在查找“{text}”…"
 }

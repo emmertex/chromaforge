@@ -353,5 +353,6 @@
   "Both charts are set to {light}; set the second to {other}.": "Obě tabulky mají nastaveno {light}; druhou nastavte na {other}.",
   "The chart's greys measure about {cct:.0} K": "Šedé pole tabulky měří asi {cct:.0} K",
   "These charts come from two different camera bodies ({x}, {y})": "Tyto tabulky pocházejí ze dvou různých těl fotoaparátu ({x}, {y})",
-  "Used by {n} photos; they will update.": "Používají ho fotografie ({n}); aktualizují se."
+  "Used by {n} photos; they will update.": "Používají ho fotografie ({n}); aktualizují se.",
+  "Finding “{text}”…": "Hledám „{text}“…"
 }

@@ -113,6 +113,12 @@ impl Sam2 {
         &self.device
     }
 
+    /// Side of the predicted masks: [`SAM2_MASK_SIDE`] for the released checkpoints (1/4 of the
+    /// 1024 input).
+    pub fn mask_side(&self) -> usize {
+        self.image / 4
+    }
+
     /// Run the image encoder on an RGB image (8-bit, row-major, `w × h`), stretched to the
     /// 1024 × 1024 input as the reference preprocessing does (antialiased bilinear, ImageNet
     /// mean and standard deviation).
@@ -184,6 +190,21 @@ impl Sam2Encoded {
     /// and the projected 256 × 256 and 128 × 128 levels (tests).
     pub fn features(&self) -> (&Tensor, &Tensor, &Tensor) {
         (&self.features.image, &self.features.s0, &self.features.s1)
+    }
+
+    /// The image embedding as plain numbers, channel-last: `(values, side, channels)` with
+    /// `values[(y * side + x) * channels + c]` over the stretched square image (64 × 64 × 256 for
+    /// the released checkpoints). Per-region descriptors for remembered objects
+    /// ([`crate::concept`]).
+    pub fn embedding(&self) -> Result<(Vec<f32>, usize, usize)> {
+        let (_, c, h, w) = self.features.image.dims4().map_err(|e| Error::Sam2(e.to_string()))?;
+        if h != w || c == 0 {
+            return Err(Error::Sam2(format!("unexpected embedding shape {c} × {h} × {w}")));
+        }
+        let hwc =
+            self.features.image.permute((0, 2, 3, 1)).and_then(|t| t.contiguous()).and_then(|t| t.flatten_all()).and_then(|t| t.to_vec1::<f32>());
+        let values = hwc.map_err(|e| Error::Sam2(e.to_string()))?;
+        Ok((values, h, c))
     }
 }
 

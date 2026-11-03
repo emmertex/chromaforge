@@ -1545,7 +1545,7 @@ fn ai_masks_without_the_model_explain_themselves() {
     let mut d = (*s.develop_of(id).unwrap()).clone();
     d.masks.push(lcc_develop::Mask {
         id: 1,
-        components: vec![lcc_develop::MaskComponent { name: None, op: lcc_develop::MaskOp::Add, invert: false, shape }],
+        components: vec![lcc_develop::MaskComponent { anchor: None, name: None, op: lcc_develop::MaskOp::Add, invert: false, shape }],
         ..Default::default()
     });
     s.set_develop(id, d, "test").unwrap();
@@ -2298,4 +2298,114 @@ fn tally_counts_the_view_without_its_mark_filter() {
     assert_eq!(s.visible_cloned().len(), 2);
     let t = s.tally();
     assert_eq!((t.picks, t.rejects, t.total), (2, 1, ids.len()), "the flag filter itself isn't counted in");
+}
+
+/// A stroke goes into the chosen Brush component of a mask (the one armed on the photo), not only
+/// the last one; a component that isn't a Brush, or isn't there, is an error and changes nothing.
+#[test]
+fn brush_strokes_go_into_the_chosen_brush_component() {
+    use lcc_develop::{MaskOp, MaskShape};
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "brush"})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2]]})).unwrap();
+    s.execute("mask.addComponent", &json!({"kind": "linear", "start": [0.1, 0.5], "end": [0.9, 0.5]})).unwrap();
+    s.execute("mask.addComponent", &json!({"kind": "brush", "op": "subtract"})).unwrap();
+    let counts = |s: &Session| {
+        active_dev(s).masks[0]
+            .components
+            .iter()
+            .map(|c| match &c.shape {
+                MaskShape::Brush { strokes } => strokes.len() as i32,
+                _ => -1,
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = counts(&s);
+    assert_eq!(before.iter().filter(|n| **n >= 0).count(), 2, "{before:?}");
+    let first = before.iter().position(|n| *n >= 0).unwrap();
+    let last = before.iter().rposition(|n| *n >= 0).unwrap();
+    let linear = before.iter().position(|n| *n < 0).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.3, 0.3]], "component": first})).unwrap();
+    assert_eq!(counts(&s)[first], before[first] + 1, "into the first Brush, not the last");
+    s.execute("mask.brushStroke", &json!({"points": [[0.4, 0.4]], "component": last, "erase": true})).unwrap();
+    assert_eq!(counts(&s)[last], before[last] + 1);
+    assert_eq!(active_dev(&s).masks[0].components[last].op, MaskOp::Subtract, "its own operation is kept");
+    let now = counts(&s);
+    for bad in [json!(linear), json!(9), json!(-1), json!("x")] {
+        assert!(s.execute("mask.brushStroke", &json!({"points": [[0.5, 0.5]], "component": bad})).is_err(), "{bad}");
+    }
+    assert_eq!(counts(&s), now, "a refused stroke changes nothing");
+}
+
+/// A gesture painted in parts (⌥ pressed and let go during it) arrives as `runs`, one stroke per
+/// mode; a live update (`continue`) replaces what the gesture sent last time (`replace` strokes),
+/// so the gesture stays as many strokes as it has runs. Hostile `runs` are errors.
+#[test]
+fn brush_stroke_runs_and_live_updates_replace_what_the_gesture_sent() {
+    use lcc_develop::MaskShape;
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "brush"})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.1, 0.1]]})).unwrap();
+    let strokes = |s: &Session| match &active_dev(s).masks[0].components[0].shape {
+        MaskShape::Brush { strokes } => strokes.clone(),
+        _ => panic!("brush"),
+    };
+    // the live stroke: first sent plain, then again as it grows
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2]], "size": 0.05})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2], [0.3, 0.3]], "size": 0.05, "continue": true})).unwrap();
+    assert_eq!(strokes(&s).len(), 2, "the live update replaced the stroke it grew from");
+    assert_eq!(strokes(&s)[1].points.len(), 2);
+    // ⌥ pressed part-way: two runs replace the one stroke sent so far
+    let runs = json!({"runs": [{"points": [[0.2, 0.2], [0.3, 0.3]]}, {"points": [[0.3, 0.3], [0.4, 0.4]], "erase": true, "size": 0.08}],
+        "size": 0.05, "continue": true});
+    s.execute("mask.brushStroke", &runs).unwrap();
+    let now = strokes(&s);
+    assert_eq!(now.len(), 3, "{now:?}");
+    assert!(!now[1].erase && now[2].erase, "each run keeps its mode");
+    assert_eq!((now[1].size, now[2].size), (0.05, 0.08), "a run's own value, else the top level's");
+    // the next update says how many it sent last time
+    let mut more = runs.clone();
+    more["replace"] = json!(2);
+    s.execute("mask.brushStroke", &more).unwrap();
+    assert_eq!(strokes(&s).len(), 3, "two replaced by two");
+    assert!(
+        s.execute("mask.brushStroke", &json!({"runs": [{"points": [[0.1, 0.1]]}], "replace": -4, "continue": true})).is_ok(),
+        "a bad count is one"
+    );
+    for bad in [json!({"runs": []}), json!({"runs": 3}), json!({"runs": [{"size": 0.1}]})] {
+        assert!(s.execute("mask.brushStroke", &bad).is_err(), "{bad}");
+    }
+}
+
+/// Masks are named after what they select ("Radial Gradient − Linear Gradient") and follow their
+/// components while the name is automatic; a name the photographer gives is kept.
+#[test]
+fn masks_get_automatic_names_until_renamed() {
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].name, "Radial Gradient");
+    s.execute("mask.addComponent", &json!({"kind": "linear", "op": "subtract"})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].name, "Radial Gradient − Linear Gradient");
+    s.execute("mask.rename", &json!({"name": "Face light"})).unwrap();
+    s.execute("mask.addComponent", &json!({"kind": "brush", "op": "add"})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].name, "Face light", "a given name is kept");
+    // a brush stroke into no mask makes one named after it
+    s.execute("mask.select", &json!({"id": null})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.5, 0.5]]})).unwrap();
+    assert_eq!(active_dev(&s).masks[1].name, "Brush");
+}
+
+#[test]
+fn a_renamed_mask_keeps_its_name_in_a_user_preset() {
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    s.execute("mask.add", &json!({"kind": "linear"})).unwrap();
+    s.execute("mask.rename", &json!({"name": "Warmth"})).unwrap();
+    let r = s.execute("preset.create", &json!({"name": "Glow", "groups": ["masks"]})).unwrap();
+    let pid = r["id"].as_str().unwrap().to_string();
+    s.execute("library.next", &json!({})).unwrap();
+    s.execute("preset.apply", &json!({"id": pid})).unwrap();
+    let names: Vec<String> = active_dev(&s).masks.iter().map(|m| m.name.clone()).collect();
+    assert!(names.iter().any(|n| n == "Warmth"), "the given name is kept: {names:?}");
+    assert!(names.iter().any(|n| n.starts_with("Glow")), "the automatic one is named after the preset: {names:?}");
 }

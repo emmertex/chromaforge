@@ -291,7 +291,7 @@ fn main() {
         // kept with the stages, so a global slider only re-runs the per-pixel stage
         use lcc_develop::{LocalAdjustments, Mask, MaskComponent, MaskOp, MaskShape};
         let mut m = s.clone();
-        let comp = |shape| MaskComponent { name: None, op: MaskOp::Add, invert: false, shape };
+        let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
         let radial = MaskShape::Radial { center: lcc_geom::Point::new(0.5, 0.4), rx: 0.3, ry: 0.2, angle: 0.0, feather: 50.0, invert: false };
         m.masks.push(Mask {
             id: 1,

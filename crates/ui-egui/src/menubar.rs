@@ -335,6 +335,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "develop.treatment",
             "develop.matchExposure",
             "develop.updateProcess",
+            "masks.updateAi",
             "---",
             "version.create",
             "dialog.createPreset",
@@ -391,6 +392,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "view.focusPoint",
             "view.zoomToFocus",
             "view.faceBoxes",
+            "view.eyeFocus",
             "view.visualizeHdr",
             "view.hdrPreview",
             "---",
@@ -687,6 +689,15 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             }));
             v.push(MenuNode::Separator);
             v.push(item("library.filter", json!({"rating": 0, "ratingOp": "atLeast"}), "None", None, f.rating_filters(), None));
+            v
+        }
+        // View ▸ Zoom: where Toggle Zoom (Space) centres while Zoom to Focus Point is on
+        "Zoom" => {
+            let mut v = vec![item("view.spaceZoomsTo", Value::Null, "Space Zooms To", None, false, None)];
+            v.extend(crate::state::SpaceZoom::ALL.into_iter().map(|z| {
+                let on = app.ui.settings.zoom_to_focus && app.ui.settings.space_zoom == z;
+                item("view.spaceZoomsTo", json!({"to": z.id()}), z.label(), None, true, Some(on))
+            }));
             v
         }
         "Set Rating" => (0..=5u8)
@@ -1066,7 +1077,10 @@ pub fn menu_bar(app: &LccApp) -> Vec<(String, Vec<MenuNode>)> {
         let mut items = Vec::new();
         let mut last = Vec::new();
         let sub = |name: &str, used: &mut [bool]| -> Vec<MenuNode> {
-            let mut children = expanded(app, name).unwrap_or_default();
+            // Zoom's generated choices (Space Zooms To) follow its commands
+            let after = name == "Zoom";
+            let generated = expanded(app, name).unwrap_or_default();
+            let mut children = if after { Vec::new() } else { generated.clone() };
             // the registry's items follow the generated ones in their own group
             children.push(MenuNode::Separator);
             let here = |e: &MenuEntry| e.menu.len() == 2 && e.menu[0] == *title && e.menu[1] == name;
@@ -1086,6 +1100,10 @@ pub fn menu_bar(app: &LccApp) -> Vec<(String, Vec<MenuNode>)> {
                     // commands that open a dialog go last, after a separator
                     if e.label.ends_with('…') { dialogs.push(node(app, e)) } else { children.push(node(app, e)) }
                 }
+            }
+            if after {
+                children.push(MenuNode::Separator);
+                children.extend(generated);
             }
             if !dialogs.is_empty() {
                 // Tethered Capture opens with Start Tethered Capture… (as in Classic); elsewhere
@@ -1490,6 +1508,32 @@ mod tests {
             MenuNode::Submenu { children, .. } => find(children, id),
             _ => None,
         })
+    }
+
+    /// View ▸ Zoom holds Space Zooms To: picking a choice checks it (and Zoom to Focus Point).
+    #[test]
+    fn space_zooms_to_lives_in_view_zoom() {
+        let mut a = app();
+        let zoom = |a: &LccApp| -> Vec<MenuNode> {
+            let bar = menu_bar(a);
+            let view = &bar.iter().find(|(t, _)| t == "View").expect("View menu").1;
+            view.iter()
+                .find_map(|n| match n {
+                    MenuNode::Submenu { label, children } if label == "Zoom" => Some(children.clone()),
+                    _ => None,
+                })
+                .expect("View ▸ Zoom")
+        };
+        let eye = |nodes: &[MenuNode]| {
+            nodes.iter().find_map(|n| match n {
+                MenuNode::Item { id, params, checked, .. } if id == "view.spaceZoomsTo" && params["to"] == "eye" => Some(*checked),
+                _ => None,
+            })
+        };
+        assert_eq!(eye(&zoom(&a)), Some(Some(false)));
+        run_item(&mut a, "view.spaceZoomsTo", json!({"to": "eye"})).unwrap();
+        assert_eq!(eye(&zoom(&a)), Some(Some(true)));
+        assert!(a.ui.settings.zoom_to_focus);
     }
 
     /// #2500: a direct-grid binding takes precedence over the borrowed cycle hint.

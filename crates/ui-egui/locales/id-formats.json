@@ -334,5 +334,6 @@
   "Both charts are set to {light}; set the second to {other}.": "Kedua kartu diatur ke {light}; atur yang kedua ke {other}.",
   "The chart's greys measure about {cct:.0} K": "Abu-abu kartu terukur sekitar {cct:.0} K",
   "These charts come from two different camera bodies ({x}, {y})": "Kartu-kartu ini berasal dari dua bodi kamera berbeda ({x}, {y})",
-  "Used by {n} photos; they will update.": "Dipakai oleh {n} foto; foto-foto itu akan diperbarui."
+  "Used by {n} photos; they will update.": "Dipakai oleh {n} foto; foto-foto itu akan diperbarui.",
+  "Finding “{text}”…": "Mencari “{text}”…"
 }

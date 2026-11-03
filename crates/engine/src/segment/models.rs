@@ -167,6 +167,12 @@ impl Segmenter {
         self.open_root().map(|r| r.join(m.dir_name))
     }
 
+    /// The faces model's folder when MediaPipe's people and faces models are both installed
+    /// (People masks run on them; otherwise on the pipeline's heuristic).
+    pub fn people_models(&self) -> Option<PathBuf> {
+        (self.open_model_installed("people") && self.open_model_installed("face")).then(|| self.open_model_dir("face")).flatten()
+    }
+
     /// Whether openly licensed model `key` is installed.
     pub fn open_model_installed(&self, key: &str) -> bool {
         match (reg::by_key(key), self.open_model_dir(key)) {
@@ -258,6 +264,12 @@ impl Segmenter {
         if self.object_model_in_use() != "sam2" {
             return self.require_model();
         }
+        self.require_sam2()
+    }
+
+    /// SAM 2.1's folder, when it is installed (remembered objects always run on it); otherwise
+    /// [`crate::EngineError::ModelMissing`] saying how to get it.
+    pub fn require_sam2(&self) -> crate::Result<PathBuf> {
         self.require_open_model("sam2", crate::AiModel::Sam2)
     }
 

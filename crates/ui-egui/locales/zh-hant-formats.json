@@ -371,5 +371,6 @@
   "The chart's greys measure about {cct:.0} K": "色卡灰塊測得約 {cct:.0} K",
   "Both charts are set to {light}; set the second to {other}.": "兩張色卡都設為{light}；請將第二張設為{other}。",
   "Used by {n} photos; they will update.": "{n} 張相片在使用；它們會隨之更新。",
-  "These charts come from two different camera bodies ({x}, {y})": "這些色卡來自兩台不同的機身（{x}、{y}）"
+  "These charts come from two different camera bodies ({x}, {y})": "這些色卡來自兩台不同的機身（{x}、{y}）",
+  "Finding “{text}”…": "正在尋找「{text}」…"
 }

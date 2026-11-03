@@ -32,6 +32,7 @@ mod edit_in;
 mod enhance_pump;
 pub mod enhance_ui;
 pub mod export_task;
+pub mod eye_strip;
 pub mod eyedropper;
 mod focus_scan;
 pub mod folder_poll;
@@ -51,6 +52,7 @@ pub mod lightroom_import;
 pub mod links;
 pub mod machine_test;
 pub mod map;
+mod mask_thumbs;
 pub mod menu_level;
 pub mod menubar;
 pub mod menus;
@@ -260,6 +262,8 @@ mod tests_loading_cell;
 #[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
+mod tests_mask_range_pick;
+#[cfg(test)]
 mod tests_mask_sections;
 #[cfg(test)]
 mod tests_masking;
@@ -384,7 +388,7 @@ pub use command_error::CommandError;
 pub use control::{ControlRequest, ControlResponse};
 pub use state::UiState;
 
-const TOAST_SECONDS: f64 = 1.4;
+pub(crate) const TOAST_SECONDS: f64 = 1.4;
 
 /// How long after a mask slider last moved its overlay stays hidden (ms).
 const MASK_ADJUST_HIDE_MS: u64 = 250;
@@ -784,6 +788,12 @@ pub struct LccApp {
     pub(crate) still_refine: region::StillRefine,
     /// High quality adjustment previews: whether a drag keeps full quality or falls back to drafts.
     pub(crate) hq_drag: region::HqDrag,
+    /// The eye focus strip's results and crops (`view.eyeFocus`).
+    pub(crate) eye_strip: eye_strip::EyeStrip,
+    /// Where the activity stack ended last frame (None: not shown), so overlays under it keep clear.
+    pub(crate) activity_bottom: Option<f32>,
+    /// The eye job key of the photo the strip shows (for `ui.inspect`).
+    pub(crate) eye_key: Option<u64>,
     /// The photo the loupe shows whole, and since when (host clock, s): after a short look its
     /// full-resolution source is decoded in the background, for a 1:1 zoom to start from.
     pub(crate) whole_since: Option<(lcc_catalog::PhotoId, f64)>,
@@ -1026,6 +1036,9 @@ impl LccApp {
             drag_scale: Default::default(),
             still_refine: Default::default(),
             hq_drag: Default::default(),
+            eye_strip: Default::default(),
+            activity_bottom: None,
+            eye_key: None,
             whole_since: None,
             window_refused: None,
             full_preview_loaded: None,
@@ -1128,6 +1141,26 @@ impl LccApp {
     }
 
     /// Run a UI or engine command by id. The single entry point for every frontend path.
+    /// Whether the photos shown are a folder being browsed to cull and import, not the library's.
+    pub fn importing(&self) -> bool {
+        self.session.source == lcc_engine::LibrarySource::Folder
+    }
+
+    /// Whether the eye focus strip shows here: it has its own switch while browsing a folder (on
+    /// at first: culling) and in the library (off at first: editing).
+    pub fn eye_focus_on(&self) -> bool {
+        if self.importing() { self.ui.eye_focus_import } else { self.ui.eye_focus }
+    }
+
+    /// Switch the eye focus strip on or off where the user is (a browsed folder or the library).
+    pub fn set_eye_focus(&mut self, on: bool) {
+        if self.importing() {
+            self.ui.eye_focus_import = on;
+        } else {
+            self.ui.eye_focus = on;
+        }
+    }
+
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         self.run_typed(id, params).map_err(|e| e.message)
     }
@@ -1138,6 +1171,11 @@ impl LccApp {
         let id = &*lcc_engine::canonical_id(id);
         self.note_ran(id);
         shortcuts::set_active(self.ui.settings.keymap_set);
+        // a brush stroke being painted belongs to the mask and photo it started on: picking another
+        // ends it first, so its release can't land on the one picked
+        if matches!(id, "mask.select" | "library.select") {
+            self.cancel_brush_gesture();
+        }
         if let Some(r) = edit_in::intercept(self, id, &params) {
             return r.map_err(CommandError::from);
         }
@@ -1596,6 +1634,19 @@ impl LccApp {
         }
     }
 
+    /// End a Brush stroke being painted, if one is: it is dropped (strokes reach the photo when
+    /// released), and the pointer still held paints nothing more until it is let go.
+    pub(crate) fn cancel_brush_gesture(&mut self) {
+        if let Some(panels::detail::Gesture::Brush { sent, .. }) = self.gesture {
+            self.gesture = None;
+            self.brush_live = None;
+            // a stroke sent live keeps what it painted so far, as one undo step
+            if sent > 0 {
+                let _ = self.run("develop.endInteraction", serde_json::json!({}));
+            }
+        }
+    }
+
     /// Close the open MIDI interaction, if any.
     pub(crate) fn end_midi_interaction(&mut self) {
         if self.midi_active.take().is_some() {
@@ -2048,6 +2099,8 @@ impl LccApp {
         panels::right::dust_pump(self, ctx);
         panels::faces::pump(self, ctx);
         focus_scan::pump(self, ctx);
+        eye_strip::reject_pump(self);
+        panels::masking::put_tools_away(self);
         enhance_pump::pump(self, ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);

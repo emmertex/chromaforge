@@ -400,10 +400,39 @@ pub fn caps_lock_from(events: &[egui::Event]) -> Option<bool> {
     seen
 }
 
+/// Ctrl+V (and ⇧Ctrl+V) when the system clipboard holds no text (empty, a screenshot, a copied
+/// file): the windowing layer turns the press into a Paste event only when there is text to paste
+/// and otherwise drops it, so the paste shortcuts did nothing until some text was copied. Its
+/// release still arrives: a V released with Ctrl / ⌘ held whose press never came is that press.
+/// Returns the modifiers it was pressed with. The state lives across frames (press and release may
+/// come in different frames).
+pub(crate) fn orphan_paste(ctx: &egui::Context) -> Option<Modifiers> {
+    let id = egui::Id::new("shortcuts-paste-pressed");
+    let mut pressed = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let mut orphan = None;
+    ctx.input(|i| {
+        for e in &i.events {
+            match e {
+                egui::Event::Paste(_) | egui::Event::Key { key: Key::V, pressed: true, .. } => pressed = true,
+                egui::Event::Key { key: Key::V, pressed: false, modifiers, .. } => {
+                    if !pressed && modifiers.command {
+                        orphan = Some(*modifiers);
+                    }
+                    pressed = false;
+                }
+                _ => {}
+            }
+        }
+    });
+    ctx.data_mut(|d| d.insert_temp(id, pressed));
+    orphan
+}
+
 pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     if let Some(on) = ctx.input(|i| caps_lock_from(&i.events)) {
         app.ui.caps_lock = on;
     }
+    let orphan = orphan_paste(ctx);
     // the Back / Forward presses were for this pass's shortcuts only, as a key press is
     let nav_buttons = std::mem::take(&mut app.nav_buttons);
     // Space held over a tool ends when the key is up, whoever has the keyboard by then
@@ -421,6 +450,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     // don't steal keys from text fields or from the keymap editor recording a shortcut
     if keyboard_owned(app, ctx) || app.recording_shortcut.is_some() || app.ui.name_edit.is_some() {
         return;
+    }
+    // a paste key press the windowing layer dropped (no text on the clipboard): run it as one
+    if let Some(modifiers) = orphan {
+        ctx.input_mut(|i| i.events.push(egui::Event::Key { key: Key::V, physical_key: None, pressed: true, repeat: false, modifiers }));
     }
     // a video in the loupe: Space plays / pauses, ←/→ step frames while paused
     crate::video_ui::handle_keys(app, ctx);

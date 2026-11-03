@@ -26,12 +26,14 @@ pub mod change_report;
 pub mod chart_profiling;
 pub mod cmd;
 pub mod colour_export;
+pub mod concepts_store;
 pub mod config;
 pub mod contact_sheet;
 pub mod control_auth;
 pub mod creations;
 pub mod crs;
 pub mod crs_masks;
+pub mod crs_point_color;
 pub(crate) mod decode_share;
 pub mod demo;
 pub mod denoise;
@@ -45,6 +47,10 @@ pub mod enhance;
 mod errors;
 pub mod export;
 pub mod export_video;
+pub mod eye_cull;
+pub mod eye_prep;
+pub mod eye_store;
+pub mod eyes;
 pub mod face_download;
 pub mod face_tiles;
 #[cfg(not(target_arch = "wasm32"))]
@@ -61,6 +67,7 @@ pub mod genfill;
 pub mod guard;
 pub mod hdr_texture;
 pub mod history_groups;
+pub mod identity;
 pub mod import;
 mod import_move;
 pub mod legacy;
@@ -90,10 +97,14 @@ mod pdf;
 pub mod peer_exchange;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peers;
+mod people_smart;
+pub mod people_store;
 pub mod preset_import;
 pub mod preset_luminar;
+pub mod preset_xmp;
 pub mod presets;
 mod presets_save;
+pub mod presets_smart;
 pub mod print;
 pub mod print_color;
 pub mod print_pdf;
@@ -117,6 +128,7 @@ pub mod slide_title;
 pub mod slideshow;
 pub mod slideshow_export;
 pub mod smart;
+pub mod smart_masks;
 pub mod source_report;
 pub mod sync;
 mod sync_same;
@@ -346,6 +358,10 @@ pub struct Session {
     /// Set by a command whose change must not rewrite the photo's XMP sidecar even with auto-write on
     /// (a catalog-only edit of data the sidecar writer does not emit); consumed when the command ends.
     pub(crate) skip_auto_write: bool,
+    /// The library's `people.json` (roles, appearance examples), loaded when first needed.
+    pub(crate) people: people_smart::PeopleState,
+    pub(crate) concepts: concepts_store::ConceptState,
+    pub(crate) appearance: identity::Appearance,
     /// The folder metadata save or read waiting for `folder.metadataPump` ([`cmd::folder_metadata`]); dropped when another library opens.
     pub(crate) folder_metadata: Option<cmd::folder_metadata::FolderMetadataJob>,
     /// The order of Reload from Disk runs, so an older one finishing late is dropped ([`cmd::reload`]).
@@ -403,6 +419,9 @@ pub struct Session {
     pub(crate) enhance: enhance::EnhanceJobs,
     /// Copied develop settings (partial JSON) for Paste.
     pub clipboard: Option<Value>,
+    /// The photo [`Session::clipboard`] was copied from: Paste links its masks with the pasted
+    /// copies.
+    pub clipboard_from: Option<PhotoId>,
     /// The folder on disk the [`LibrarySource::Folder`] view browses.
     pub browse: Option<Browse>,
     /// The folder the [`LibrarySource::LibraryFolder`] view shows: the library's photos imported
@@ -513,10 +532,24 @@ pub struct Session {
     /// The effect a new mask of each kind (`brush`, `linear`…) starts with: the one last applied
     /// to a mask of that kind.
     pub mask_tool_effects: std::collections::BTreeMap<String, String>,
+    /// The adjustments the next new mask starts with, whatever its tool: what was dialed in the
+    /// Masking panel while no mask was selected (or a tool armed before its first stroke), as
+    /// Lightroom Classic does. Edits of existing masks never change it. Kept across photos.
+    pub mask_next: lcc_develop::LocalAdjustments,
+    /// [`mask_next`](Self::mask_next) was dialed in since it was last zeroed.
+    pub mask_next_set: bool,
+    /// Reset Settings on New Mask: once a new mask took [`mask_next`](Self::mask_next), it goes back
+    /// to zero, so the next one starts at zero unless something is dialed in again.
+    pub mask_reset_new: bool,
     /// Saved colour-label name sets.
     pub label_sets: Vec<cmd::manage::LabelSet>,
     /// File-name templates saved by name (Rename Photos, Export), kept with the library's preferences.
     pub naming_presets: Vec<cmd::manage::NamingPreset>,
+    /// Reject Closed and Blurry Eyes running in the background, and what it has finished so far.
+    pub(crate) eye_cull: Option<Arc<eye_cull::EyeCullRun>>,
+    pub(crate) eye_cull_results: Vec<(PhotoId, std::result::Result<Arc<eyes::EyeReport>, String>)>,
+    /// The last `eyes.analyze` run in the background.
+    pub(crate) eye_prep: Option<Arc<eye_prep::EyePrep>>,
     /// Look-alike signatures by content key (Find Similar).
     pub signatures: std::collections::HashMap<String, [f32; 64]>,
     /// Imported `.cube` LUT profiles.
@@ -681,6 +714,9 @@ impl Session {
             change_seq: 0,
             silent_changes: 0,
             skip_auto_write: false,
+            people: Default::default(),
+            concepts: Default::default(),
+            appearance: Default::default(),
             stems: Default::default(),
             folder_metadata: None,
             reload_tickets: Default::default(),
@@ -713,6 +749,7 @@ impl Session {
             focus_scan: Default::default(),
             enhance: Default::default(),
             clipboard: None,
+            clipboard_from: None,
             meta_clipboard: None,
             browse: None,
             library_folder: None,
@@ -758,8 +795,14 @@ impl Session {
             crop_aspects: Default::default(),
             mask_effects: Vec::new(),
             mask_tool_effects: Default::default(),
+            mask_next: Default::default(),
+            mask_next_set: false,
+            mask_reset_new: false,
             label_sets: Vec::new(),
             naming_presets: Vec::new(),
+            eye_cull: None,
+            eye_cull_results: Vec::new(),
+            eye_prep: None,
             signatures: Default::default(),
             lut_profiles: Vec::new(),
             target_album: None,
@@ -1202,6 +1245,8 @@ impl Session {
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
         let applied = e.op.clone();
+        // AI masks still computing for what was undone stop
+        self.segmenter.cancel_recompute(single_photo(&e.op, 0));
         self.pending_log.push(e.op);
         self.redo.push(UndoEntry {
             label: e.label.clone(),
@@ -1245,6 +1290,10 @@ impl Session {
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
         let applied = e.op.clone();
+        // a redone preset or paste computes the AI masks it brings again
+        if let Some(id) = single_photo(&e.op, 0) {
+            self.want_missing_masks(id);
+        }
         self.pending_log.push(e.op);
         self.undo.push(UndoEntry {
             label: e.label.clone(),
@@ -1376,7 +1425,11 @@ impl Session {
     pub fn set_develop(&mut self, id: PhotoId, settings: DevelopSettings, label: &str) -> Result<()> {
         let now = (self.clock)();
         // Auto Sync carries the edit as asked; each photo then fits its own crop (review of #1990)
-        let requested = settings;
+        let mut requested = settings;
+        // an edit of a preset's provisional masks makes them the photographer's own
+        if let Some(before) = self.develop_of(id) {
+            lcc_develop::presets::settle_provisional(&before, &mut requested);
+        }
         let settings = Arc::new(self.fit_constrained_crop(id, requested.clone()));
         let crop_edited = self.develop_of(id).is_some_and(|d| d.crop.geometry != requested.crop.geometry);
         if let Some(i) = &mut self.interaction
@@ -1390,11 +1443,31 @@ impl Session {
             }
             return Ok(());
         }
+        // masks Auto Sync carries to the other selected photos are linked with their copies there
+        let mut settings = settings;
+        if self.auto_sync_applies(id, label) {
+            let links = self.link_edited_masks(id, &mut requested);
+            if !links.is_empty() {
+                let mut s = (*settings).clone();
+                for m in &mut s.masks {
+                    if let Some((_, l)) = links.iter().find(|(mid, _)| *mid == m.id) {
+                        m.link = l.clone();
+                    }
+                }
+                settings = Arc::new(s);
+            }
+        }
         let own_auto = self.own_auto_wb(id, &requested, label);
         let mut ops = vec![self.develop_op(id, (*settings).clone(), label).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?];
-        ops.extend(self.auto_sync_ops(id, &requested, label, &own_auto));
+        let (synced, compute) = self.auto_sync_ops(id, &requested, label, &own_auto);
+        ops.extend(synced);
         let op = if ops.len() == 1 { ops.remove(0) } else { Op::Batch { ops } };
-        self.commit(label, op)
+        self.commit(label, op)?;
+        // AI masks Auto Sync carried over are computed on each photo from its own pixels
+        for x in compute {
+            let _ = if self.segmenter.background { self.compute_masks_later(x, false).map(|_| ()) } else { self.compute_masks(x, false).map(|_| ()) };
+        }
+        Ok(())
     }
 
     /// "Constrain Crop" keeps the stored crop inside the warped photo, as Lightroom does (issue
@@ -1432,13 +1505,22 @@ impl Session {
     /// before its crop is fitted) over to the other selected photos: only the settings that changed;
     /// never spot removal or red eye (they belong to one photo's pixels), nor the rendering process
     /// (Sync doesn't carry it either), nor history / snapshot restores. Constrain Crop then fits each
-    /// photo's own crop: the active photo's fitted crop is never copied over another's.
+    /// photo's own crop: the active photo's fitted crop is never copied over another's. Masks are
+    /// merged into each photo's own ([`lcc_develop::recipe::sync_masks`]): AI selections travel as
+    /// recipes, never as the active photo's pixels. Also returns the photos whose AI masks now
+    /// need computing.
     ///
     /// White balance goes on each photo as the active photo's mode or value on the photo's own
     /// scale ([`sync_same`]): As Shot its own camera white, Auto its own (`own_auto`, worked out
     /// on its pixels), a Temp or Tint the same number, only the slider that moved.
-    fn auto_sync_ops(&self, id: PhotoId, new: &DevelopSettings, label: &str, own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>) -> Vec<Op> {
-        let Some(old) = self.develop_of(id) else { return Vec::new() };
+    fn auto_sync_ops(
+        &self,
+        id: PhotoId,
+        new: &DevelopSettings,
+        label: &str,
+        own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>,
+    ) -> (Vec<Op>, Vec<PhotoId>) {
+        let Some(old) = self.develop_of(id) else { return (Vec::new(), Vec::new()) };
         self.auto_sync_ops_from(id, &old, new, label, own_auto)
     }
 
@@ -1456,7 +1538,7 @@ impl Session {
         for (x, d) in along {
             self.apply_silent(Op::SetDevelop { id: *x, settings: d.clone(), label: label.into(), edited: None })?;
         }
-        let ops = self.auto_sync_ops_from(id, original, new, label, &std::collections::HashMap::new());
+        let (ops, _) = self.auto_sync_ops_from(id, original, new, label, &std::collections::HashMap::new());
         let mut sets = Vec::new();
         let mut stack = ops;
         while let Some(op) = stack.pop() {
@@ -1479,10 +1561,11 @@ impl Session {
         new: &DevelopSettings,
         label: &str,
         own_auto: &std::collections::HashMap<PhotoId, (f64, f64)>,
-    ) -> Vec<Op> {
+    ) -> (Vec<Op>, Vec<PhotoId>) {
         if !self.auto_sync_applies(id, label) {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
+        let masks_changed = old.masks != new.masks;
         let mut old_json = old.to_json();
         let mut new_json = new.to_json();
         // False is omitted from stored profile JSON. Keep it explicit for this comparison so
@@ -1492,13 +1575,10 @@ impl Session {
         // Compare actual HDR leaves even when persisted defaults omit the whole HDR object.
         old_json["hdr"] = serde_json::json!(old.hdr);
         new_json["hdr"] = serde_json::json!(new.hdr);
-        let Some(mut delta) = json_delta(&old_json, &new_json) else { return Vec::new() };
+        let mut delta = json_delta(&old_json, &new_json).unwrap_or_else(|| Value::Object(Default::default()));
         if let Some(o) = delta.as_object_mut() {
-            for k in ["spots", "red_eye", "version", "process"] {
+            for k in ["spots", "red_eye", "version", "process", "masks"] {
                 o.remove(k);
-            }
-            if o.is_empty() {
-                return Vec::new();
             }
             // White balance travels whole (mode, temperature, tint and the scale they were written on), as
             // Sync copies it: a lone `temp` landing on a photo still on the legacy relative scale (6500 K = as
@@ -1507,19 +1587,25 @@ impl Session {
                 o.insert("wb".into(), serde_json::json!(new.wb));
             }
         }
+        let settings_changed = delta.as_object().is_some_and(|o| !o.is_empty());
+        if !settings_changed && !masks_changed {
+            return (Vec::new(), Vec::new());
+        }
         let wb_changed = delta.get("wb").is_some();
         // a crop goes on each photo fitted to its own frame (its tightness and place, in its own
         // orientation), never the active photo's rectangle on a frame of another shape
         let crop_changed = old.crop != new.crop;
         let adims = cmd::develop::crop_dims(self, id);
         let ainfo = self.source_info(id);
-        self.selection
+        let mut compute = Vec::new();
+        let ops = self
+            .selection
             .ids
             .iter()
             .filter(|x| **x != id)
             .filter_map(|x| self.develop_of(*x).map(|d| (*x, d)))
             .filter_map(|(x, d)| {
-                let mut synced = lcc_develop::apply_partial(&d, &delta, 1.0);
+                let mut synced = if settings_changed { lcc_develop::apply_partial(&d, &delta, 1.0) } else { (*d).clone() };
                 if wb_changed {
                     // each photo on its own scale: Kelvin on a raw with one, relative elsewhere
                     lcc_pipeline::local::normalize_wb(&mut synced, &self.source_info(x));
@@ -1528,11 +1614,51 @@ impl Session {
                 if crop_changed {
                     synced.crop = sync_same::synced_crop(&new.crop, adims, cmd::develop::crop_dims(self, x));
                 }
+                if masks_changed {
+                    let (masks, needs) = lcc_develop::recipe::sync_masks(&old.masks, &new.masks, &d.masks, self.photo_aspect(x));
+                    synced.masks = masks;
+                    if needs {
+                        compute.push(x);
+                    }
+                }
                 upright_jobs::as_recipe(&d, &mut synced);
                 let synced = self.fit_constrained_crop(x, synced);
                 (synced != *d).then(|| self.develop_op(x, synced, label)).flatten()
             })
-            .collect()
+            .collect();
+        (ops, compute)
+    }
+
+    /// The mask that stays selected when the active photo goes from `from` (with mask `mask`
+    /// selected) to `to`: the same mask when the active photo stays; else its copy on `to`, the one
+    /// linked with it ([`lcc_develop::Mask::link`]). `None` when `to` has no such mask, or the mask
+    /// isn't linked.
+    pub fn carried_mask(&self, from: Option<PhotoId>, mask: Option<u32>, to: Option<PhotoId>) -> Option<u32> {
+        let (mask, to) = (mask?, to?);
+        let there = self.develop_of(to)?;
+        if from == Some(to) {
+            return there.masks.iter().any(|m| m.id == mask).then_some(mask);
+        }
+        let here = self.develop_of(from?)?;
+        let m = here.masks.iter().find(|m| m.id == mask)?;
+        if m.link.is_empty() {
+            return None;
+        }
+        there.masks.iter().find(|t| t.link == m.link).map(|t| t.id)
+    }
+
+    /// Give the masks of `new` that differ from photo `id`'s (added or edited) and aren't linked yet
+    /// a fresh link ([`lcc_develop::Mask::link`]); returns `(mask id, link)` of those.
+    fn link_edited_masks(&self, id: PhotoId, new: &mut DevelopSettings) -> Vec<(u32, String)> {
+        let Some(old) = self.develop_of(id) else { return Vec::new() };
+        let mut out = Vec::new();
+        for m in &mut new.masks {
+            if m.link.is_empty() && old.masks.iter().find(|o| o.id == m.id) != Some(&*m) {
+                m.link = new_mask_link(u64::from(m.id) ^ id.0);
+                out.push((m.id, m.link.clone()));
+            }
+        }
+        out
     }
 
     /// Auto Sync carries an edit of photo `id` labelled `label` to the other selected photos: it is
@@ -1549,6 +1675,17 @@ impl Session {
     /// The op that sets a photo's develop settings and appends a History entry (for batches).
     pub fn develop_op(&self, id: PhotoId, settings: DevelopSettings, label: &str) -> Option<Op> {
         let p = self.catalog.photo(id)?;
+        let mut settings = settings;
+        // old masks (on the corrected frame) go onto the photo, from the frame they were drawn on
+        if settings.masks.iter().any(|m| !m.on_photo) {
+            let before = match &self.interaction {
+                Some(i) if i.photo == id => Some(i.original.clone()),
+                _ => self.develop_of(id),
+            };
+            if let Some(b) = before {
+                self.attach_masks(id, &b, &mut settings);
+            }
+        }
         // a clip takes only the global grading controls and the crop: presets, paste and sync drop the rest
         let settings = Arc::new(if p.kind == lcc_catalog::MediaKind::Video { lcc_pipeline::grade::video_develop(&settings) } else { settings });
         // An edit made at a past History step (not a move between steps) rewrites the history:
@@ -1580,6 +1717,27 @@ impl Session {
         Some(Op::Batch { ops: vec![set, Op::SetHistory { id, history }, Op::SetHistoryCursor { id, cursor }] })
     }
 
+    /// Put the old masks of `d` (on the corrected frame, `Mask::on_photo` false) on photo `id`
+    /// before the warp, from the frame of `drawn` (the settings they were drawn under): they render
+    /// where they did, and from then on stay on their content when lens corrections, Upright or
+    /// Transform change.
+    pub fn attach_masks(&self, id: PhotoId, drawn: &DevelopSettings, d: &mut DevelopSettings) {
+        if d.masks.iter().all(|m| m.on_photo) {
+            return;
+        }
+        let Some(p) = self.catalog.photo(id) else { return };
+        let frame = lcc_pipeline::geometry::Frame::with_lens(
+            p.width.max(1) as usize,
+            p.height.max(1) as usize,
+            &drawn.effective(),
+            false,
+            p.embedded_lens.as_deref(),
+        );
+        for m in &mut d.masks {
+            lcc_pipeline::mask_space::attach(m, &frame);
+        }
+    }
+
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
         self.begin_interaction_with(label, &[])
     }
@@ -1591,6 +1749,13 @@ impl Session {
             self.end_interaction()?;
         }
         let id = self.active().ok_or_else(|| EngineError::Other("no active photo".into()))?;
+        // old masks go onto the photo before a drag moves the frame under them (they then stay on
+        // their content while it does, not only once it ends)
+        if let Some(d) = self.develop_of(id).filter(|d| d.masks.iter().any(|m| !m.on_photo)) {
+            let mut on = (*d).clone();
+            self.attach_masks(id, &d, &mut on);
+            self.apply_silent(Op::SetDevelop { id, settings: Arc::new(on), label: label.into(), edited: None })?;
+        }
         let original = self.develop_of(id).unwrap_or_default();
         let mut seen = std::collections::HashSet::new();
         let others: Vec<_> = others.iter().filter(|x| **x != id && seen.insert(**x)).filter_map(|x| self.develop_of(*x).map(|d| (*x, d))).collect();
@@ -2070,6 +2235,18 @@ pub fn bad_ids_entry(a: &[Value]) -> Option<String> {
 /// Automatic versions kept per photo.
 pub const AUTO_VERSIONS: usize = 20;
 
+/// A new mask link ([`lcc_develop::Mask::link`]): 16 hex digits from the process's random hash
+/// keys, a counter and `salt` (unique within a library in practice; no clock, so it builds for wasm).
+pub fn new_mask_link(salt: u64) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(n);
+    h.write_u64(salt);
+    format!("{:016x}", h.finish())
+}
+
 /// The parts of `new` that differ from `old` (objects recurse; anything else is taken whole).
 pub fn json_delta(old: &Value, new: &Value) -> Option<Value> {
     match (old, new) {
@@ -2113,6 +2290,10 @@ mod tests_albums_local;
 #[cfg(test)]
 mod tests_app_store;
 #[cfg(test)]
+mod tests_auto_mask_range;
+#[cfg(test)]
+mod tests_autosync;
+#[cfg(test)]
 mod tests_autosync_crop;
 #[cfg(test)]
 mod tests_autosync_live;
@@ -2132,6 +2313,8 @@ mod tests_chart_profile;
 mod tests_classic;
 #[cfg(test)]
 mod tests_color;
+#[cfg(test)]
+mod tests_concepts;
 #[cfg(test)]
 mod tests_constrain_crop;
 #[cfg(test)]
@@ -2154,6 +2337,8 @@ mod tests_enhance;
 mod tests_export;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_export_video;
+#[cfg(test)]
+mod tests_eye_store;
 #[cfg(test)]
 mod tests_face_models;
 #[cfg(test)]
@@ -2215,6 +2400,12 @@ mod tests_lightroom_history;
 #[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
+mod tests_mask_geometry;
+#[cfg(test)]
+mod tests_mask_links;
+#[cfg(test)]
+mod tests_mask_next;
+#[cfg(test)]
 mod tests_merge;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_ml;
@@ -2224,6 +2415,8 @@ mod tests_move_to_share;
 mod tests_naming;
 #[cfg(test)]
 mod tests_organize;
+#[cfg(test)]
+mod tests_people_masks;
 #[cfg(test)]
 mod tests_persist;
 #[cfg(test)]

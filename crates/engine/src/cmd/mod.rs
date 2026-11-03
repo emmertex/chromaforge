@@ -14,6 +14,7 @@ pub mod catalog;
 pub mod chart_profile;
 mod collections;
 mod color;
+mod concepts;
 pub(crate) mod convert;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod credentials;
@@ -58,6 +59,7 @@ mod ml;
 pub(crate) mod organize;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peers;
+mod people_roles;
 pub mod profile_manager;
 pub(crate) mod retouch;
 #[cfg(test)]
@@ -244,6 +246,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(retouch::specs());
         v.extend(retouch::retouch_specs());
         v.extend(genfill::specs());
+        v.extend(concepts::specs());
+        v.extend(people_roles::specs());
         v.extend(organize::specs());
         v.extend(keywords::specs());
         v.extend(manage::specs());

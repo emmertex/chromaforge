@@ -2671,5 +2671,11 @@
   "Light of the first chart": "第一張色卡的光源",
   "Second chart (other light)": "第二張色卡（另一種光源）",
   "Optional: a chart photo under another light, such as tungsten, makes a dual-illuminant profile.": "選用：在另一種光源（如鎢絲燈）下拍攝的色卡相片可產生雙光源描述檔。",
-  "Remove Second Chart": "移除第二張色卡"
+  "Remove Second Chart": "移除第二張色卡",
+  "Click or drag over the photo to pick colours; ⇧ adds more (up to 5), ⌥-click removes one, drag a pin to move it": "按一下或在照片上拖曳以取色；⇧ 加入更多（最多 5 個），⌥-按一下移除一個，拖曳圖釘可移動它",
+  "Click the photo to pick its tone, or drag over an area to pick its tones; ⇧ widens the range": "按一下照片以選取該處的亮度，或拖過一個區域以選取其亮度範圍；⇧ 擴大範圍",
+  "No colour picked": "未取色",
+  "Selecting the object…": "正在選取物件…",
+  "Settings for the next mask": "下一個遮色片的設定",
+  "Reset settings on new mask": "新增遮色片時重設設定"
 }

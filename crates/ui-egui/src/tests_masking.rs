@@ -107,6 +107,8 @@ fn subtract_brush_removes_sky_coverage_and_add_restores_it() {
 
     // Erase removes paint from the subtract component, restoring the underlying sky.
     h.app.ui.brush_erase = true;
+    // (the eraser keeps its own settings: the same as the brush's here)
+    h.app.ui.erase_brush = h.app.ui.brush_set(false);
     brush_at(&mut h, 0.5, 0.5);
     assert!(mask_coverage(&h, 0, 50, 50) > 0.99);
     click(&mut h, "button:maskPlus:1");
@@ -125,14 +127,17 @@ fn new_brush_starts_a_separate_mask_in_paint_mode() {
     h.app.ui.brush_erase = true;
     h.app.ui.mask_overlay = false;
     click(&mut h, "maskNew:brush");
-    assert_eq!(h.app.session.active_mask, Some(2));
+    assert_eq!(h.app.session.active_mask, None, "armed: the first stroke makes the mask");
     assert!(!h.app.ui.brush_erase);
     assert!(h.app.ui.mask_overlay);
     let r = h.request("ui.set", json!({"brushSize": 0.15, "brushFeather": 0.0, "brushFlow": 100.0}), T);
     assert_eq!(r["ok"], true, "{r}");
     brush_at(&mut h, 0.5, 0.5);
+    assert_eq!(h.app.session.active_mask, Some(2));
     assert!(mask_coverage(&h, 1, 50, 50) > 0.99);
     h.app.ui.brush_erase = true;
+    // (the eraser keeps its own settings: the same as the brush's here)
+    h.app.ui.erase_brush = h.app.ui.brush_set(false);
     brush_at(&mut h, 0.5, 0.5);
     assert!(mask_coverage(&h, 1, 50, 50) < 0.01);
     exec(&mut h, "edit.undo", json!({}));
@@ -163,20 +168,20 @@ fn a_mask_shows_its_overlay_by_itself_only_without_settings() {
     let r = h.request("ui.clickWidget", json!({"id": format!("mask:{first}")}), T);
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.session.active_mask, Some(first));
-    assert!(shown(&h), "the pointer on the picked row shows what it selects");
-    pointer(&mut h, json!([{"kind": "move", "x": 0.1, "y": 0.9}])); // the pointer leaves the list
-    assert_eq!(h.app.ui.mask_hover, None);
+    // (the pointer on the mask's own row shows no overlay: there its effect is judged)
     rest(&mut h);
     assert!(!shown(&h), "picking a mask with settings shows its effect");
+    pointer(&mut h, json!([{"kind": "move", "x": 0.1, "y": 0.9}])); // the pointer leaves the list
+    assert_eq!(h.app.ui.mask_hover, None);
     for (cmd, params) in
         [("mask.addComponent", json!({"kind": "radial", "op": "add", "center": [0.6, 0.5], "rx": 0.1, "ry": 0.1})), ("mask.duplicate", json!({}))]
     {
         exec(&mut h, cmd, params);
         assert!(!shown(&h), "{cmd} on a mask with settings shows its effect");
     }
-    // hovering a mask's row shows it
+    // the pointer on one of its component rows (or its pin) shows it
     h.app.ui.mask_hover = Some(first);
-    assert!(shown(&h), "hovering the row shows the overlay");
+    assert!(shown(&h), "hovering a component row shows the overlay");
     h.app.ui.mask_hover = None;
     // O shows it to stay, through edits; a slider at work still hides it
     exec(&mut h, "view.maskOverlay", json!({"show": true}));
@@ -463,8 +468,8 @@ fn all_masks_overlay_outlines_every_visible_mask_but_only_the_selected_one_is_dr
     h.settle(SETTLE);
 
     let handles_of = |h: &Headless, id: usize| h.app.widgets.iter().filter(|(w, _)| w.starts_with(&format!("maskHandle:{id}:"))).count();
-    // The selected mask keeps its 4 edge handles and its rotation grip.
-    assert_eq!(handles_of(&h, 2), 5, "the selected mask keeps its handles");
+    // The selected mask keeps its 4 edge handles, its rotation grip and its feather handle.
+    assert_eq!(handles_of(&h, 2), 6, "the selected mask keeps its handles");
     // The other visible mask draws its outline but registers no handle: it is not draggable.
     assert_eq!(handles_of(&h, 1), 0, "an unselected mask must not become draggable");
     // …while a mask with no components has nothing to outline and nothing to grab either.
@@ -582,6 +587,44 @@ fn brush_strokes_carry_auto_mask() {
     assert_eq!(strokes.len(), 2, "{strokes:?}");
     assert!(strokes[1].erase, "⌥ erases");
     assert!(!h.app.ui.brush_erase, "the brush mode is unchanged");
+    h.settle(SETTLE);
+}
+
+/// The Auto Mask range slider sits under Auto Mask (shown while it is on), and
+/// each stroke keeps the range it was painted with.
+#[test]
+fn each_stroke_keeps_the_auto_mask_range_it_was_painted_with() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.step();
+    h.step();
+    let has = |h: &Headless| h.app.widgets.iter().any(|(w, _)| w == "slider:ui.brushAutoRange");
+    assert!(!has(&h), "no range without Auto Mask");
+    let r = h.request("ui.set", json!({"brushAutoMask": true}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(has(&h), "the range shows under Auto Mask");
+    assert_eq!(h.app.ui.brush_auto_range, 0.0, "it starts at Lightroom's limits");
+    let r = h.request("ui.dragWidget", json!({"id": "slider:ui.brushAutoRange", "dx": 40.0, "dy": 0.0, "steps": 6}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    let wide = h.app.ui.brush_auto_range;
+    assert!(wide > 0.0 && wide <= 100.0, "dragged wider: {wide}");
+    let stroke = |h: &mut Headless, y: f64| {
+        pointer(h, json!([{"kind": "down", "x": 0.3, "y": y}, {"kind": "drag", "x": 0.4, "y": y}, {"kind": "up", "x": 0.4, "y": y}]));
+        h.step();
+    };
+    stroke(&mut h, 0.4);
+    // tighter for the next stroke
+    let r = h.request("ui.set", json!({"brushAutoRange": -50.0}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    stroke(&mut h, 0.6);
+    let d = develop(&h);
+    let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };
+    let got: Vec<f64> = strokes.iter().map(|s| s.auto_range).collect();
+    assert_eq!(got.len(), 2, "{strokes:?}");
+    assert!((got[0] - f64::from(wide)).abs() < 1e-3 && got[1] == -50.0, "each as painted: {got:?}");
     h.settle(SETTLE);
 }
 
@@ -1911,6 +1954,7 @@ fn adding_a_gradient_to_a_brush_mask_disarms_the_brush() {
         let mut h = detail("panel.masking");
         exec(&mut h, "tool.brush", json!({"new": true}));
         assert_eq!(h.app.ui.tool, "brush", "the brush is armed");
+        brush_at(&mut h, 0.5, 0.5);
         exec(&mut h, "mask.addComponent", json!({"kind": "radial", "op": op, "center": [0.5, 0.5], "rx": 0.22, "ry": 0.22}));
         assert!(h.app.ui.tool.is_empty(), "{op}: adding a radial component disarms the brush");
     }
@@ -1918,12 +1962,14 @@ fn adding_a_gradient_to_a_brush_mask_disarms_the_brush() {
     // a brush component of the brush's own kind keeps it armed
     let mut h = detail("panel.masking");
     exec(&mut h, "tool.brush", json!({"new": true}));
+    brush_at(&mut h, 0.5, 0.5);
     exec(&mut h, "mask.addComponent", json!({"kind": "brush", "op": "subtract"}));
     assert_eq!(h.app.ui.tool, "brush", "Subtract > Brush keeps the brush armed");
 
     // an omitted kind is a brush, as in the engine: the brush stays armed for painting
     let mut h = detail("panel.masking");
     exec(&mut h, "tool.brush", json!({"new": true}));
+    brush_at(&mut h, 0.5, 0.5);
     exec(&mut h, "mask.addComponent", json!({"op": "subtract"}));
     assert_eq!(h.app.ui.tool, "brush", "an omitted kind is a brush component and keeps the brush armed");
     assert!(matches!(develop(&h).masks[0].components[1].shape, MaskShape::Brush { .. }), "the engine adds a brush component when kind is omitted");
@@ -2101,10 +2147,10 @@ fn a_fast_brush_stroke_shows_without_gaps_before_the_button_is_released() {
     let held = h.paint();
     let [r0, g0, b0] = h.app.ui.mask_overlay_color.map(|v| v as f32);
     let op = h.app.ui.mask_overlay_opacity / 100.0;
-    // along the centreline between the samples (away from the cursor ring at the last one), the
-    // overlay colour at full coverage over the photo
+    // along the centreline between the samples (away from the cursor's rings at the last one: the
+    // halo's reaches 1.7 × Size out at Feather 50), the overlay colour at full coverage over the photo
     let mut gaps = vec![];
-    for i in 1..=74 {
+    for i in 1..=70 {
         let x = a.0 + (c.0 - a.0) * i as f32 / 80.0;
         let p = px(&photo, x, a.1);
         let want = [p[0] + (r0 - p[0]) * op, p[1] + (g0 - p[1]) * op, p[2] + (b0 - p[2]) * op];
@@ -2113,7 +2159,7 @@ fn a_fast_brush_stroke_shows_without_gaps_before_the_button_is_released() {
             gaps.push((x, got, want));
         }
     }
-    assert!(gaps.is_empty(), "the live stroke has gaps: {} of 74 points, first {:?}", gaps.len(), gaps.first());
+    assert!(gaps.is_empty(), "the live stroke has gaps: {} of 70 points, first {:?}", gaps.len(), gaps.first());
     pointer(&mut h, json!([{"kind": "up", "x": c.0, "y": c.1}]));
     let d = develop(&h);
     let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };
@@ -2204,4 +2250,563 @@ fn effect_dropdown_applies_saves_and_shows_the_matching_effect() {
     let a = develop(&h).masks.last().expect("a mask").adjust;
     assert_eq!((a.exposure, a.shadows, a.clarity, a.amount), (0.7, 25.0, 0.0, 50.0));
     assert_eq!(exec(&mut h, "mask.effects", json!({}))["current"], "Lift");
+}
+
+fn widgets_contain(h: &mut Headless, id: &str) -> bool {
+    h.request("ui.widgets", json!({}), T).to_string().contains(&format!("\"{id}\""))
+}
+
+/// The mask's Point Color flyout: the eyedropper samples into the active mask (not the photo), the
+/// swatch appears, and Delete removes it.
+#[test]
+fn mask_point_color_eyedropper_samples_into_the_mask() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "linear"}));
+    h.app.ui.toggle_flyout("maskPointColor");
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "icon:maskPointColorPicker"), "the flyout shows the eyedropper");
+    // (the eyedropper's button sets this tool)
+    h.app.ui.tool = "maskPointColor".into();
+    h.step();
+    brush_at(&mut h, 0.5, 0.1);
+    let d = develop(&h);
+    assert_eq!(d.masks[0].point_colors.len(), 1, "sampled into the mask");
+    assert!(d.point_colors.is_empty(), "not into the photo's Point Color");
+    assert!(h.app.ui.tool.is_empty(), "one sample per pick");
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "maskPointColor:0"), "the sample's swatch shows");
+    exec(&mut h, "mask.pointColorDelete", json!({"index": 0}));
+    assert!(develop(&h).masks[0].point_colors.is_empty());
+    h.settle(SETTLE);
+}
+
+/// `ui.clickWidget` on the Point Color flyout's eyedropper arms the tool, as a real click does.
+#[test]
+fn mask_point_color_eyedropper_answers_click_widget() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "linear"}));
+    h.app.ui.toggle_flyout("maskPointColor");
+    h.settle(SETTLE);
+    // laid out below the window's edge here: refused with a reason, not a silent ok
+    let r = h.request("ui.clickWidget", json!({"id": "icon:maskPointColorPicker"}), T);
+    if r["ok"] == false {
+        assert!(r.to_string().contains("outside the window"), "{r}");
+        // scroll the panel until the eyedropper is in view, then click it
+        let flyout = h.request("ui.widgets", json!({"filter": "flyout:maskPointColor"}), T);
+        let x = flyout["result"][0]["rect"][0].as_f64().unwrap_or(1000.0) + 20.0;
+        for _ in 0..20 {
+            h.request("ui.move", json!({"x": x, "y": 400.0}), T);
+            h.request("ui.scroll", json!({"dy": -200.0}), T);
+            h.settle(SETTLE);
+            let y = h.request("ui.widgets", json!({"filter": "icon:maskPointColorPicker"}), T)["result"][0]["rect"][1].as_f64().unwrap_or(f64::MAX);
+            if y < 600.0 {
+                break;
+            }
+        }
+        h.request("ui.clickWidget", json!({"id": "icon:maskPointColorPicker"}), T);
+        {}
+    }
+    h.settle(SETTLE);
+    let rect = h.request("ui.widgets", json!({"filter": "maskPointColor"}), T);
+    assert_eq!(h.app.ui.tool, "maskPointColor", "click answered {r}; widgets {rect}");
+}
+
+#[test]
+fn a_selected_people_component_offers_who_it_is_about() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "sky"}));
+    exec(&mut h, "mask.update", json!({"component": 0, "shape": {"kind": "people", "person": 0, "parts": ["Clothes"]}}));
+    let photo = h.app.session.active().expect("photo").0;
+    exec(&mut h, "people.setRole", json!({"role": "Groom", "person": "Alex", "scope": {"ids": [photo]}}));
+    let r = h.request("ui.clickWidget", json!({"id": "maskWho:0"}), T);
+    assert_eq!(r["ok"], true, "the Who picker shows under a selected People component: {r}");
+    // choosing a role goes into the recipe and is resolved here (no Groom face: everyone)
+    exec(&mut h, "mask.update", json!({"component": 0, "shape": {"kind": "people", "person": 0, "parts": ["Clothes"], "who": {"role": "Groom"}}}));
+    let done = exec(&mut h, "masks.recompute", json!({}));
+    assert!(done["photos"][0]["notes"].as_array().is_some_and(|n| n.iter().any(|t| t.as_str().is_some_and(|t| t.contains("Alex")))), "{done}");
+    assert!(matches!(develop(&h).masks[0].components[0].shape, MaskShape::People { person: 0, who: Some(_), .. }));
+    // Set Role: a role for this folder, and the component is about it
+    click(&mut h, "button:maskSetRole");
+    h.app.ui.role_draft = Some(("Bride".into(), "Sam".into()));
+    h.step();
+    h.step();
+    click(&mut h, "button:maskRoleSet");
+    let roles = exec(&mut h, "people.roles", json!({}));
+    assert!(roles["here"].as_array().is_some_and(|r| r.iter().any(|b| b["role"] == "Bride" && b["person"] == "Sam")), "{roles}");
+    assert!(
+        matches!(&develop(&h).masks[0].components[0].shape, MaskShape::People { who: Some(lcc_develop::recipe::Who::Role(r)), .. } if r == "Bride")
+    );
+}
+
+/// The mask's Color Mixer flyout: a slider per colour of the shown group, the group tabs, and the
+/// targeted adjustment, which edits the mask's mixer (not the photo's) on a vertical drag.
+#[test]
+fn mask_color_mixer_flyout_edits_the_masks_mixer() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "linear"}));
+    h.app.ui.toggle_flyout("maskMixer");
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "slider:maskMixer.red.hue"), "the Hue group's sliders show");
+    assert!(widgets_contain(&mut h, "icon:maskMixerTargeted"));
+    h.app.ui.mask_mixer_group = "sat".into();
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "slider:maskMixer.blue.sat"), "the Saturation group's sliders show");
+    // (the targeted button sets this tool)
+    h.app.ui.tool = "maskMixer:sat".into();
+    h.step();
+    pointer(
+        &mut h,
+        json!([{"kind": "down", "x": 0.5, "y": 0.2}, {"kind": "move", "x": 0.5, "y": 0.15}, {"kind": "move", "x": 0.5, "y": 0.1}, {"kind": "up", "x": 0.5, "y": 0.1}]),
+    );
+    let d = develop(&h);
+    assert!(!d.masks[0].mixer.is_neutral(), "the drag moved the mask's mixer");
+    assert!(d.mixer.is_neutral(), "not the photo's");
+    assert!(d.masks[0].mixer.bands().iter().all(|b| b.hue == 0.0 && b.lum == 0.0), "only Saturation moved");
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "button:maskMixerReset"), "Reset shows once something is set");
+}
+
+/// A stale AI mask (its selection not computed for this photo) shows a badge on its row; the mask
+/// list's menu and the photo's menu offer Update AI Mask.
+#[test]
+fn a_stale_ai_mask_shows_a_badge_and_offers_update() {
+    let mut h = detail("panel.masking");
+    let id = h.app.session.active().unwrap();
+    let mut d = develop(&h);
+    d.masks.push(lcc_develop::Mask {
+        id: 5,
+        components: vec![lcc_develop::MaskComponent {
+            anchor: None,
+            name: None,
+            op: lcc_develop::MaskOp::Add,
+            invert: false,
+            shape: lcc_develop::MaskShape::Prompt { text: "the sky".into(), seg: None, detail: vec![], edge: 0.0 },
+        }],
+        ..Default::default()
+    });
+    h.app.session.set_develop(id, d, "paste").unwrap();
+    exec(&mut h, "mask.select", json!({"id": 5}));
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "maskStale:5"), "the badge shows");
+    // a mask with its selection: no badge
+    let seg = serde_json::to_value(lcc_develop::SegMask::from_logits(4, &[5.0; 16])).unwrap();
+    exec(&mut h, "mask.add", json!({"kind": "prompt", "text": "sky", "seg": seg}));
+    h.settle(SETTLE);
+    let m = develop(&h).masks.last().unwrap().id;
+    assert!(!widgets_contain(&mut h, &format!("maskStale:{m}")));
+    // the photo's right-click menu offers Update AI Mask for the selected AI mask
+    exec(&mut h, "mask.select", json!({"id": 5}));
+    h.settle(SETTLE);
+    let canvas = h.app.canvas_rect.expect("the photo is on screen");
+    let corner = canvas.left_top() + egui::vec2(30.0, 30.0);
+    h.request("ui.click", json!({"x": corner.x, "y": corner.y, "button": "right"}), T);
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "photoMenu:updateAiMask"), "{}", h.request("ui.widgets", json!({"filter": "Menu"}), T));
+    h.request("ui.key", json!({"key": "Escape"}), T);
+    h.settle(SETTLE);
+    // a right-click on a mask's pin (the Describe mask's, at the centre) opens that mask's menu
+    let c = canvas.center();
+    h.request("ui.click", json!({"x": c.x, "y": c.y, "button": "right"}), T);
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, &format!("maskMenu:update:{m}")), "{}", h.request("ui.widgets", json!({"filter": "Menu"}), T));
+}
+
+/// The mask rows show thumbnails once the photo's small rendition is ready, and the Roles window
+/// lists who has which role and clears one.
+#[test]
+fn mask_rows_show_thumbnails_and_the_roles_window_clears_a_role() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "radial"}));
+    let m = develop(&h).masks[0].id;
+    let mut shown = false;
+    for _ in 0..100 {
+        h.settle(SETTLE);
+        if widgets_contain(&mut h, &format!("maskThumb:{m}")) {
+            shown = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(shown, "the mask's thumbnail shows");
+    assert!(widgets_contain(&mut h, "componentThumb:0"), "and its component's");
+    // the Roles window
+    let photo = h.app.session.active().expect("photo").0;
+    exec(&mut h, "people.setRole", json!({"role": "Bride", "person": "Sam", "scope": {"ids": [photo]}}));
+    h.app.ui.roles_window = true;
+    exec(&mut h, "mask.update", json!({"component": 0, "shape": {"kind": "people", "person": 0, "parts": ["Clothes"]}}));
+    h.settle(SETTLE);
+    assert!(widgets_contain(&mut h, "window:roles"), "the window shows");
+    click(&mut h, "button:roleClear:0");
+    h.settle(SETTLE);
+    let roles = exec(&mut h, "people.roles", json!({}));
+    assert!(roles["roles"].as_array().is_some_and(Vec::is_empty), "{roles}");
+}
+
+/// Picking another mask or another photo while a Brush stroke is held ends the stroke: its release
+/// can't add to the picked mask or start a mask on the new photo, and the pointer still held paints
+/// nothing more until it is let go (ported from OneSlips 76d00a470, NOTES-1031-7).
+#[test]
+fn picking_another_mask_or_photo_mid_stroke_ends_the_stroke() {
+    let strokes = |h: &Headless, id: u32| -> usize {
+        develop(h)
+            .masks
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.components.iter().map(|c| if let MaskShape::Brush { strokes } = &c.shape { strokes.len() } else { 0 }).sum())
+            .unwrap_or(0)
+    };
+    for pick in ["mask", "photo"] {
+        let mut h = detail("panel.masking");
+        h.settle(SETTLE);
+        exec(&mut h, "tool.brush", json!({"new": true}));
+        h.app.ui.brush_auto_mask = false;
+        brush_at(&mut h, 0.2, 0.5);
+        let first = h.app.session.active_mask.expect("the first mask");
+        exec(&mut h, "tool.brush", json!({"new": true}));
+        brush_at(&mut h, 0.6, 0.5);
+        let second = h.app.session.active_mask.expect("the second mask");
+        assert_ne!(first, second);
+        pointer(&mut h, json!([{"kind": "down", "x": 0.6, "y": 0.7}, {"kind": "drag", "x": 0.65, "y": 0.7}, {"kind": "drag", "x": 0.7, "y": 0.7}]));
+        h.step();
+        assert!(matches!(h.app.gesture, Some(crate::panels::detail::Gesture::Brush { .. })), "{pick}: a stroke is held");
+        let photo = h.app.session.active().expect("a photo");
+        let (first_strokes, masks) = (strokes(&h, first), develop(&h).masks.len());
+        if pick == "mask" {
+            exec(&mut h, "mask.select", json!({"id": first}));
+        } else {
+            let other = h.app.session.visible_cloned().into_iter().find(|p| *p != photo).expect("another photo");
+            exec(&mut h, "library.select", json!({"ids": [other.0]}));
+        }
+        assert!(h.app.gesture.is_none(), "{pick}: the stroke ended");
+        pointer(&mut h, json!([{"kind": "drag", "x": 0.75, "y": 0.7}, {"kind": "drag", "x": 0.8, "y": 0.7}, {"kind": "up", "x": 0.8, "y": 0.7}]));
+        h.step();
+        h.step();
+        if pick == "mask" {
+            assert_eq!(strokes(&h, first), first_strokes, "the picked mask's strokes are untouched");
+            assert_eq!(develop(&h).masks.len(), masks, "no new mask");
+        } else {
+            assert!(develop(&h).masks.is_empty(), "no mask started on the new photo");
+        }
+        h.settle(SETTLE);
+    }
+}
+
+/// Leaving Masking puts its tools away: back in Masking no brush is armed (it hid the overlay and
+/// made pin drags paint). Colour Range's eyedropper, used from Edit too, is left alone.
+#[test]
+fn leaving_masking_puts_the_brush_away() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "brush");
+    exec(&mut h, "panel.edit", json!({}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "", "the brush is put away");
+    exec(&mut h, "panel.masking", json!({}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "", "and not back");
+    // nor in a grid
+    exec(&mut h, "tool.brush", json!({}));
+    exec(&mut h, "view.gridToggle", json!({}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "");
+}
+
+/// One masking mode at a time: a tool armed for a new mask selects none and makes its mask on the
+/// first stroke or drag; selecting a mask, or another photo, puts the armed tool away.
+#[test]
+fn tools_arm_and_make_their_mask_on_the_first_stroke() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.2, 0.2], "rx": 0.05, "ry": 0.05}));
+    let first = h.app.session.active_mask.expect("a mask");
+    // Linear: armed, nothing made, then a drag draws it from the press to the release (one undo step)
+    exec(&mut h, "tool.linear", json!({}));
+    h.step();
+    assert_eq!((h.app.session.active_mask, develop(&h).masks.len()), (None, 1), "armed: no mask selected, none made");
+    pointer(
+        &mut h,
+        json!([{"kind": "down", "x": 0.5, "y": 0.3}, {"kind": "drag", "x": 0.5, "y": 0.4}, {"kind": "drag", "x": 0.5, "y": 0.6}, {"kind": "up", "x": 0.5, "y": 0.6}]),
+    );
+    let d = develop(&h);
+    assert_eq!(d.masks.len(), 2);
+    let MaskShape::Linear { start, end } = d.masks[1].components[0].shape.clone() else { panic!("linear") };
+    assert!(end.y - start.y > 0.15, "drawn by the drag: {start:?} → {end:?}");
+    exec(&mut h, "edit.undo", json!({}));
+    assert_eq!(develop(&h).masks.len(), 1, "one undo step takes the drawn gradient back");
+    // Radial: a click places one there
+    exec(&mut h, "tool.radial", json!({}));
+    brush_at(&mut h, 0.7, 0.6);
+    let MaskShape::Radial { center, .. } = develop(&h).masks[1].components[0].shape.clone() else { panic!("radial") };
+    assert!((center.x - 0.7).abs() < 0.05 && (center.y - 0.6).abs() < 0.05, "{center:?}");
+    // selecting a mask while a tool waits for a new one puts the tool away
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.step();
+    exec(&mut h, "mask.select", json!({"id": first}));
+    h.step();
+    assert_eq!((h.app.ui.tool.as_str(), h.app.ui.mask_new.is_none()), ("", true), "the selected mask wins");
+    // another photo puts an armed tool away
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.step();
+    let photo = h.app.session.active().expect("a photo");
+    let other = h.app.session.visible_cloned().into_iter().find(|p| *p != photo).expect("another photo");
+    exec(&mut h, "library.select", json!({"ids": [other.0]}));
+    h.step();
+    assert_eq!(h.app.ui.tool, "", "another photo disarms");
+    h.settle(SETTLE);
+}
+
+/// `mask.editComponent` makes one component the one edited on the photo: a Brush component arms the
+/// brush on it, so strokes go into it (not the mask's last Brush); bad arguments are errors.
+#[test]
+fn edit_component_arms_the_brush_on_that_component() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    brush_at(&mut h, 0.3, 0.3);
+    exec(&mut h, "mask.addComponent", json!({"kind": "linear", "op": "add", "start": [0.1, 0.5], "end": [0.9, 0.5]}));
+    exec(&mut h, "mask.addComponent", json!({"kind": "brush", "op": "subtract"}));
+    let mid = h.app.session.active_mask.expect("a mask");
+    let r = exec(&mut h, "mask.editComponent", json!({"id": mid, "component": 0}));
+    assert_eq!(r["brush"], true, "{r}");
+    assert_eq!((h.app.ui.tool.as_str(), h.app.ui.active_mask_component), ("brush", Some(0)));
+    brush_at(&mut h, 0.6, 0.6);
+    let d = develop(&h);
+    let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };
+    assert_eq!(strokes.len(), 2, "into the chosen component");
+    let r = exec(&mut h, "mask.editComponent", json!({"id": mid, "component": 1}));
+    assert_eq!((r["brush"].clone(), h.app.ui.tool.as_str()), (json!(false), "linear"), "the gradient's handles take the drags");
+    for bad in [json!({"id": mid, "component": 9}), json!({"id": 999, "component": 0}), json!({"id": mid}), json!({"id": mid, "component": "x"})] {
+        let r = h.request("engine.execute", json!({"command": "mask.editComponent", "params": bad}), T);
+        assert_eq!(r["ok"], false, "{bad}: {r}");
+    }
+    h.settle(SETTLE);
+}
+
+/// Painting a mask that has settings, with Auto Mask and the overlay off, sends the stroke live: its
+/// effect shows while the button is still held, and the whole stroke is one undo step.
+#[test]
+fn a_stroke_on_a_mask_with_settings_shows_live() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.app.ui.brush_auto_mask = false;
+    brush_at(&mut h, 0.2, 0.2);
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 1.0}}));
+    h.app.ui.mask_overlay = false;
+    h.app.ui.mask_overlay_pinned = false;
+    let strokes = |h: &Headless| match &develop(h).masks[0].components[0].shape {
+        MaskShape::Brush { strokes } => strokes.len(),
+        _ => 0,
+    };
+    let before = strokes(&h);
+    pointer(&mut h, json!([{"kind": "down", "x": 0.4, "y": 0.5}, {"kind": "drag", "x": 0.5, "y": 0.5}, {"kind": "drag", "x": 0.6, "y": 0.5}]));
+    h.step();
+    assert_eq!(strokes(&h), before + 1, "the stroke is on the mask before the button is let go");
+    pointer(&mut h, json!([{"kind": "drag", "x": 0.7, "y": 0.5}, {"kind": "up", "x": 0.7, "y": 0.5}]));
+    assert_eq!(strokes(&h), before + 1, "still one stroke");
+    exec(&mut h, "edit.undo", json!({}));
+    assert_eq!(strokes(&h), before, "one undo step");
+    h.settle(SETTLE);
+}
+
+/// The eraser keeps its own Size, Feather, Flow and Density: Erase (or ⌥ held) shows and changes
+/// them, the brush's stay as they were; `[` / `]` resize the set in use.
+#[test]
+fn the_eraser_keeps_its_own_settings() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.app.ui.brush_size = 20.0;
+    h.app.ui.erase_brush.size = 40.0;
+    h.step();
+    let size = |h: &Headless| h.app.ui.brush_set(h.app.ui.brush_erasing()).size;
+    assert_eq!(size(&h), 20.0);
+    click(&mut h, "button:brushErase");
+    assert!(h.app.ui.brush_erasing());
+    assert_eq!(size(&h), 40.0, "the eraser's own size");
+    exec(&mut h, "brush.larger", json!({}));
+    assert!((h.app.ui.erase_brush.size - 48.0).abs() < 1e-3, "] grows the eraser: {:?}", h.app.ui.erase_brush);
+    assert_eq!(h.app.ui.brush_size, 20.0, "and leaves the brush");
+    click(&mut h, "button:brushAdd");
+    assert_eq!(size(&h), 20.0);
+}
+
+/// Size is a size on the screen: a stroke stores the core's screen radius over the photo's screen
+/// size, and Sizes saved as photo fractions by older builds (settings, A / B, the eraser) migrate to
+/// the Size that paints the same at Fit.
+#[test]
+fn brush_size_is_a_screen_size_and_old_sizes_migrate() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    h.app.ui.brush_size = 20.0;
+    h.app.ui.brush_auto_mask = false;
+    brush_at(&mut h, 0.3, 0.3);
+    let size_of_last = |h: &Headless| match &develop(h).masks[0].components[0].shape {
+        MaskShape::Brush { strokes } => strokes.last().map(|s| s.size).unwrap_or(0.0),
+        _ => 0.0,
+    };
+    let at_fit = size_of_last(&h);
+    assert!(at_fit > 0.0);
+    let core = f64::from(crate::state::brush_core_points(20.0));
+    let img = h.app.image_rect.expect("the photo on screen");
+    let long = f64::from(img.width().max(img.height()));
+    assert!((at_fit - core / long).abs() < 1e-3, "the core's screen radius over the photo's screen size: {at_fit} vs {}", core / long);
+    // a settings file and presets from before
+    let mut old = crate::UiState { brush_size: 0.04, ..Default::default() };
+    old.brush_presets[1].size = 0.012;
+    old.erase_brush.size = 0.04;
+    old.clamp_ranges();
+    assert!((14.0..=16.5).contains(&old.brush_size), "{}", old.brush_size);
+    assert!((4.0..=6.0).contains(&old.brush_presets[1].size), "{}", old.brush_presets[1].size);
+    assert_eq!(old.erase_brush.size, old.brush_size);
+    for bad in [f32::NAN, -3.0, 0.0, 1e9] {
+        old.brush_size = bad;
+        old.clamp_ranges();
+        assert!((1.0..=100.0).contains(&old.brush_size), "{bad} → {}", old.brush_size);
+    }
+    h.settle(SETTLE);
+}
+
+/// The brush's centre says what a stroke does: a cross while it paints, a minus while it erases
+/// (Erase picked or ⌥ held); the Object tool shows a minus while ⌥ leaves things out.
+#[test]
+fn brush_and_object_cursors_show_erasing() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    let has = |h: &Headless, w: &str| h.app.widgets.iter().any(|(id, _)| id == w);
+    pointer(&mut h, json!([{"kind": "move", "x": 0.5, "y": 0.5}]));
+    h.step();
+    assert!(has(&h, "brushCursor:paint") && !has(&h, "brushCursor:erase"));
+    let r = h.request("ui.pointer", json!({"events": [{"kind": "down", "x": 0.52, "y": 0.5}], "alt": true}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(has(&h, "brushCursor:erase"), "⌥ held: the stroke would erase");
+    pointer(&mut h, json!([{"kind": "up", "x": 0.52, "y": 0.5}]));
+    h.app.ui.brush_erase = true;
+    pointer(&mut h, json!([{"kind": "move", "x": 0.5, "y": 0.5}]));
+    h.step();
+    assert!(has(&h, "brushCursor:erase"), "Erase picked");
+    h.app.ui.tool = "object".into();
+    let r = h.request("ui.pointer", json!({"events": [{"kind": "down", "x": 0.5, "y": 0.5}], "alt": true}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(has(&h, "objectCursor:exclude"));
+}
+
+/// Clicking a mask's row edits its top component: a Brush mask arms the brush on it (a stroke goes
+/// into that mask, no new one), a gradient's row shows its handles.
+#[test]
+fn the_mask_row_activates_its_top_component() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "brush"}));
+    let brush = h.app.session.active_mask.expect("the brush mask");
+    exec(&mut h, "mask.brushStroke", json!({"points": [[0.3, 0.3], [0.4, 0.3]], "size": 0.02}));
+    exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.3], "end": [0.5, 0.6]}));
+    let lin = h.app.session.active_mask.expect("the gradient");
+    h.step();
+    click(&mut h, &format!("mask:{brush}"));
+    h.step();
+    assert_eq!(h.app.session.active_mask, Some(brush));
+    assert_eq!(h.app.ui.tool, "brush", "the row arms the brush on the mask's Brush");
+    assert!(h.app.ui.mask_new.is_none(), "not for a new mask");
+    pointer(
+        &mut h,
+        json!([{"kind": "down", "x": 0.7, "y": 0.75}, {"kind": "drag", "x": 0.75, "y": 0.75}, {"kind": "drag", "x": 0.8, "y": 0.75}, {"kind": "up", "x": 0.8, "y": 0.75}]),
+    );
+    let d = develop(&h);
+    assert_eq!(d.masks.len(), 2, "no new mask");
+    let n = d.masks.iter().find(|m| m.id == brush).map(|m| match &m.components[0].shape {
+        MaskShape::Brush { strokes } => strokes.len(),
+        _ => 0,
+    });
+    assert_eq!(n, Some(2), "the stroke went into the selected brush mask");
+    click(&mut h, &format!("mask:{lin}"));
+    h.step();
+    assert_eq!(h.app.session.active_mask, Some(lin));
+    assert_eq!(h.app.ui.active_mask_component, Some(0));
+    assert_ne!(h.app.ui.tool, "brush", "a gradient on top arms no brush");
+}
+
+/// With no mask selected the panel shows the settings for the next mask: what is dialed in there
+/// goes to the next new mask, whatever its tool.
+#[test]
+fn the_panel_sets_the_next_masks_settings_with_no_mask_selected() {
+    let mut h = detail("panel.masking");
+    h.step();
+    assert!(h.app.widgets.iter().any(|(id, _)| id == "maskNextSettings"), "the next mask's settings show");
+    click(&mut h, "maskResetNew");
+    assert!(h.app.session.mask_reset_new, "Reset settings on new mask turns on");
+    click(&mut h, "maskResetNew");
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.6}}));
+    exec(&mut h, "mask.add", json!({"kind": "radial"}));
+    assert_eq!(develop(&h).masks[0].adjust.exposure, 0.6);
+}
+
+/// The pointer on a mask's own row shows no overlay (that row is where its effect is judged with
+/// the eye); on one of its component rows it shows the whole mask's.
+#[test]
+fn a_masks_own_row_shows_no_overlay_a_component_row_does() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5]}));
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 1.0}}));
+    let mid = h.app.session.active_mask.expect("the mask");
+    h.step();
+    let at = |h: &Headless, id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("{id}"));
+    let row = at(&h, &format!("mask:{mid}"));
+    let r = h.request("ui.move", json!({"x": row.x, "y": row.y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.mask_hover, None, "the mask's own row: no overlay");
+    let comp = at(&h, "component:0");
+    let r = h.request("ui.move", json!({"x": comp.x, "y": comp.y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.mask_hover, Some(mid), "a component row shows the whole mask");
+}
+
+/// The selected mask follows its linked copy to another photo: the component edited there stays
+/// the one edited, and a brush armed on it stays armed; a photo without the copy has none.
+#[test]
+fn the_edited_component_and_armed_brush_carry_to_the_linked_copy() {
+    let mut h = detail("panel.masking");
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    let (a, b, e) = (ids[0], ids[1], ids[2]);
+    exec(&mut h, "library.select", json!({"ids": [b]}));
+    exec(&mut h, "mask.add", json!({"kind": "radial"}));
+    exec(&mut h, "library.select", json!({"ids": [a, b], "active": a}));
+    exec(&mut h, "develop.autoSync", json!({"on": true}));
+    exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.3], "end": [0.5, 0.6]}));
+    exec(&mut h, "mask.addComponent", json!({"kind": "brush"}));
+    exec(&mut h, "develop.autoSync", json!({"on": false}));
+    let on_a = h.app.session.active_mask.expect("selected");
+    let link = develop(&h).masks.iter().find(|m| m.id == on_a).map(|m| m.link.clone()).expect("mask");
+    assert!(!link.is_empty());
+    exec(&mut h, "mask.editComponent", json!({"id": on_a, "component": 1}));
+    assert_eq!((h.app.ui.tool.as_str(), h.app.ui.active_mask_component), ("brush", Some(1)));
+    exec(&mut h, "library.select", json!({"ids": [b]}));
+    h.step();
+    let on_b = develop(&h).masks.iter().find(|m| m.link == link).map(|m| m.id).expect("b's copy");
+    assert_eq!(h.app.session.active_mask, Some(on_b));
+    assert_eq!((h.app.ui.tool.as_str(), h.app.ui.active_mask_component), ("brush", Some(1)), "the brush stays armed on the copy's Brush");
+    exec(&mut h, "library.select", json!({"ids": [e]}));
+    h.step();
+    assert_eq!(h.app.session.active_mask, None);
+    assert_ne!(h.app.ui.tool.as_str(), "brush", "no copy: the brush is put away");
+    h.settle(SETTLE);
+}
+
+/// "Reset settings on new mask" is saved with the UI settings: a saved choice reaches the engine,
+/// and a `mask.next` from a command comes back to be saved.
+#[test]
+fn reset_settings_on_new_mask_is_saved_with_the_ui_settings() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.next", json!({"resetNew": true}));
+    h.step();
+    assert!(h.app.ui.mask_reset_new, "a command's choice is saved");
+    let saved = serde_json::to_string(&h.app.ui).unwrap();
+    let mut back: crate::UiState = serde_json::from_str(&saved).unwrap();
+    assert!(back.mask_reset_new);
+    back.mask_reset_new = true;
+    let mut h2 = detail("panel.masking");
+    h2.app.ui = back;
+    h2.step();
+    assert!(h2.app.session.mask_reset_new, "the saved choice reaches the engine");
+    h.settle(SETTLE);
 }

@@ -334,5 +334,6 @@
   "Both charts are set to {light}; set the second to {other}.": "Cả hai bảng đều đặt ở {light}; hãy đặt bảng thứ hai ở {other}.",
   "The chart's greys measure about {cct:.0} K": "Các ô xám của bảng đo được khoảng {cct:.0} K",
   "These charts come from two different camera bodies ({x}, {y})": "Các bảng này đến từ hai thân máy khác nhau ({x}, {y})",
-  "Used by {n} photos; they will update.": "Được {n} ảnh dùng; chúng sẽ được cập nhật."
+  "Used by {n} photos; they will update.": "Được {n} ảnh dùng; chúng sẽ được cập nhật.",
+  "Finding “{text}”…": "Đang tìm “{text}”…"
 }

@@ -78,7 +78,13 @@ fn settings(points: usize) -> DevelopSettings {
             ..Default::default()
         };
         s.masks.push(Mask {
-            components: vec![MaskComponent { name: None, op: Default::default(), invert: false, shape: MaskShape::Brush { strokes: vec![stroke] } }],
+            components: vec![MaskComponent {
+                anchor: None,
+                name: None,
+                op: Default::default(),
+                invert: false,
+                shape: MaskShape::Brush { strokes: vec![stroke] },
+            }],
             ..Default::default()
         });
     }

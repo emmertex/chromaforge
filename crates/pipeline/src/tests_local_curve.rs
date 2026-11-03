@@ -17,7 +17,12 @@ fn ramp() -> Rgb32f {
 /// Settings with one mask of `shape`, with the local Curve `curve` and Amount `amount`.
 fn masked(shape: MaskShape, curve: PointCurves, amount: f64) -> DevelopSettings {
     let mut s = DevelopSettings::default();
-    let mut m = Mask { id: 1, components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }], curve, ..Default::default() };
+    let mut m = Mask {
+        id: 1,
+        components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
+        curve,
+        ..Default::default()
+    };
     m.adjust.amount = amount;
     s.masks.push(m);
     s
@@ -154,7 +159,7 @@ fn cached_mask_planes_render_what_a_fresh_render_does() {
         let v = 0.05 + 0.6 * x as f32 / W as f32;
         [v, v * 0.9, v * (0.5 + y as f32 / H as f32)]
     }));
-    let comp = |shape| MaskComponent { name: None, op: MaskOp::Add, invert: false, shape };
+    let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
     let mut s = masked(left(), PointCurves::default(), 100.0);
     s.masks[0].adjust.exposure = 0.8;
     s.masks.push(Mask {

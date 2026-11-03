@@ -664,27 +664,107 @@ impl Preset {
     pub fn from_settings(id: &str, name: &str, group: &str, s: &DevelopSettings, groups: &[SettingsGroup]) -> Preset {
         Preset { id: id.into(), name: name.into(), group: group.into(), settings: extract_groups(s, groups), favorite: false, builtin: false }
     }
-    /// Apply at `amount` (1.0 = 100 %). Masks in the preset are added to the photo's own (ones it
-    /// already has are skipped), their effect scaled by the amount.
+
+    /// Apply at `amount` (1.0 = 100 %), as Lightroom Classic does: the preset's settings are set
+    /// (only those it has; everything else stays) and its masks are **added** to the photo's own,
+    /// their effect scaled by the amount. Masks are recipes: what a model computed for the photo
+    /// the preset was made on (Object, Describe) is dropped and computed for each photo
+    /// ([`crate::Mask::needs_compute`]).
+    ///
+    /// The masks the latest preset application added are provisional (tagged with that preset's
+    /// id): applying the same preset again right away replaces them (no doubling); applying any
+    /// other preset first makes them the photographer's own (untagged), so the next application
+    /// of the first preset adds a fresh set. Editing a provisional mask makes it the
+    /// photographer's own too ([`settle_provisional`]). A mask with a placeholder name ("Mask 2")
+    /// is named after the preset, or after the preset and what it selects when it brings several.
     pub fn apply(&self, s: &DevelopSettings, amount: f64) -> DevelopSettings {
-        let Some(masks) = self.settings.get("masks").and_then(Value::as_array).filter(|m| !m.is_empty()) else {
-            return apply_partial(s, &self.settings, amount);
-        };
+        let masks: Vec<crate::Mask> = self
+            .settings
+            .get("masks")
+            .and_then(Value::as_array)
+            .map(|m| m.iter().filter_map(|m| serde_json::from_value::<crate::Mask>(m.clone()).ok()).collect())
+            .unwrap_or_default();
         let mut rest = self.settings.clone();
         if let Some(o) = rest.as_object_mut() {
             o.remove("masks");
         }
         let mut out = apply_partial(s, &rest, amount);
-        for m in masks {
-            let Ok(mut m) = serde_json::from_value::<crate::Mask>(m.clone()) else { continue };
-            if out.masks.iter().any(|q| q.name == m.name && q.components == m.components) {
-                continue;
+        if masks.is_empty() {
+            return out;
+        }
+        // the same preset again: its own (still provisional) masks make room for the new ones
+        out.masks.retain(|m| m.preset.as_deref() != Some(self.id.as_str()));
+        // whatever an earlier application left is the photographer's now
+        for m in &mut out.masks {
+            m.preset = None;
+        }
+        let short = crate::recipe::short_preset_name(&self.name);
+        let several = masks.len() > 1;
+        for mut m in masks {
+            if crate::recipe::generic_name(&m.name) {
+                let own = crate::recipe::content_name(&m);
+                m.name = match (short.is_empty(), several) {
+                    (true, _) => own,
+                    (false, true) => format!("{short} - {own}"),
+                    (false, false) => short.clone(),
+                };
             }
-            m.id = out.next_mask_id();
+            // above every id the photo had, so a fresh mask never takes the id of the one it replaces
+            let top = s.masks.iter().chain(&out.masks).map(|m| m.id).max().unwrap_or(0);
+            m.id = top.checked_add(1).unwrap_or_else(|| out.next_mask_id());
+            m.preset = Some(self.id.clone());
+            m.strip_ai(crate::recipe::RECIPE_ASPECT);
             m.adjust.amount = (m.adjust.amount * amount).clamp(0.0, 200.0);
             out.masks.push(m);
         }
         out
+    }
+
+    /// Whether it carries masks with AI selections (applying it computes them on each photo).
+    pub fn has_ai_masks(&self) -> bool {
+        self.settings
+            .get("masks")
+            .and_then(Value::as_array)
+            .is_some_and(|m| m.iter().filter_map(|m| serde_json::from_value::<crate::Mask>(m.clone()).ok()).any(|m| m.uses_ai()))
+    }
+
+    /// Whether it has masks and no other settings (a "mask-only" preset such as Bring Sky Down).
+    pub fn mask_only(&self) -> bool {
+        self.settings.as_object().is_some_and(|o| o.contains_key("masks") && o.len() == 1)
+    }
+}
+
+/// `partial`'s masks as recipes: no segmentation computed for one photo, no Object clicks (they
+/// point at that photo's pixels: the object is picked again on each photo), no provisional tag
+/// (what presets, copy and paste carry).
+pub fn to_recipes(partial: &mut Value) {
+    let Some(masks) = partial.get_mut("masks").and_then(Value::as_array_mut) else { return };
+    for m in masks.iter_mut() {
+        if let Ok(mut mask) = serde_json::from_value::<crate::Mask>(m.clone()) {
+            mask.for_other_photo(crate::recipe::RECIPE_ASPECT);
+            mask.preset = None;
+            if let Ok(v) = serde_json::to_value(mask) {
+                *m = v;
+            }
+        }
+    }
+}
+
+/// After an edit of `before` into `after`: when the photographer changed one of the masks the
+/// latest preset application added, all of that application's masks become theirs (untagged), so
+/// applying that preset again adds rather than replaces.
+pub fn settle_provisional(before: &DevelopSettings, after: &mut DevelopSettings) {
+    let touched = after.masks.iter().filter(|m| m.preset.is_some()).any(|m| {
+        before.masks.iter().find(|b| b.id == m.id).is_some_and(|b| {
+            let mut b = b.clone();
+            b.preset.clone_from(&m.preset);
+            b != *m
+        })
+    });
+    if touched {
+        for m in &mut after.masks {
+            m.preset = None;
+        }
     }
 }
 
@@ -692,6 +772,40 @@ impl Preset {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn presets_add_masks_and_the_same_preset_again_replaces_its_own() {
+        let mask = json!({"name": "Mask 1", "components": [{"shape": {"kind": "sky"}}], "adjust": {"exposure": -0.5}});
+        let p = Preset {
+            id: "p".into(),
+            name: "P3 Bring Sky Down".into(),
+            group: String::new(),
+            settings: json!({"masks": [mask]}),
+            favorite: false,
+            builtin: false,
+        };
+        let q = Preset { id: "q".into(), ..p.clone() };
+        assert!(p.has_ai_masks() && p.mask_only());
+        let once = p.apply(&DevelopSettings::default(), 1.0);
+        assert_eq!(once.masks.len(), 1);
+        assert_eq!(once.masks[0].name, "Bring Sky Down");
+        assert_eq!(once.masks[0].preset.as_deref(), Some("p"));
+        let again = p.apply(&once, 0.5);
+        assert_eq!(again.masks.len(), 1, "the same preset again replaces its provisional masks");
+        assert_ne!(again.masks[0].id, once.masks[0].id);
+        // another preset in between makes the first one's masks the photographer's
+        let other = q.apply(&once, 1.0);
+        assert!(other.masks.iter().filter(|m| m.preset.is_none()).count() == 1);
+        assert_eq!(p.apply(&other, 1.0).masks.len(), 3);
+        // an edit of a provisional mask settles them all
+        let mut edited = once.clone();
+        edited.masks[0].adjust.exposure = 1.0;
+        settle_provisional(&once, &mut edited);
+        assert!(edited.masks[0].preset.is_none());
+        let mut same = once.clone();
+        settle_provisional(&once, &mut same);
+        assert!(same.masks[0].preset.is_some());
+    }
 
     #[test]
     fn extract_and_apply_roundtrip() {
