@@ -180,5 +180,18 @@ fn a_named_face_is_found_again_by_its_look() {
     let found = s.find_by_look(again, "Physicist C");
     eprintln!("solvay again: Physicist C is face {found:?} (named: 3)");
     assert_eq!(found, Some(3), "the same face on the same picture");
+    // Recognize People suggests them for that face, and names it with Apply as one undo step
+    let r = s.execute("people.recognize", &json!({"ids": [again.0]})).unwrap();
+    eprintln!("solvay again: recognize {r}");
+    assert!(r["suggestions"].as_array().is_some_and(|a| a.iter().any(|x| x["name"] == "Physicist C" && x["face"] == 2)), "{r}");
+    let steps = s.undo.len();
+    let r = s.execute("people.recognize", &json!({"ids": [again.0], "apply": true})).unwrap();
+    assert!(r["named"].as_u64().unwrap_or(0) >= 1, "{r}");
+    assert_eq!(s.undo.len(), steps + 1, "one undo step");
+    let named = s.catalog.photo(again).unwrap().meta.regions.iter().any(|r| r.name.as_deref() == Some("Physicist C"));
+    assert!(named, "the face is named on the second photo");
+    // the unnamed faces group by look
+    let r = s.execute("people.cluster", &json!({"ids": [id.0, again.0]})).unwrap();
+    assert!(r["clusters"].as_array().is_some_and(|c| !c.is_empty()), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }

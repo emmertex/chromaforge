@@ -59,6 +59,7 @@ mod ml;
 pub(crate) mod organize;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peers;
+mod people_recognize;
 mod people_roles;
 pub mod profile_manager;
 pub(crate) mod retouch;
@@ -248,6 +249,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(genfill::specs());
         v.extend(concepts::specs());
         v.extend(people_roles::specs());
+        v.extend(people_recognize::specs());
         v.extend(organize::specs());
         v.extend(keywords::specs());
         v.extend(manage::specs());
