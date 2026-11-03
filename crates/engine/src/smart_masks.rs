@@ -270,6 +270,12 @@ impl Session {
     /// The app's Recompute AI Masks: the recipes are completed now (from the photo's metadata, no
     /// pixels), the selections are queued on the AI worker as one batch with an activity row.
     pub fn compute_masks_later(&mut self, id: PhotoId, force: bool) -> crate::Result<(Completed, usize)> {
+        self.compute_masks_later_as(id, force, true)
+    }
+
+    /// [`Session::compute_masks_later`]; `recorded: false` for the app's own re-match (the looks
+    /// arrived): saved, but no undo step of its own.
+    pub(crate) fn compute_masks_later_as(&mut self, id: PhotoId, force: bool, recorded: bool) -> crate::Result<(Completed, usize)> {
         let before = self.develop_of(id).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
         let mut d = (*before).clone();
         if force {
@@ -278,7 +284,11 @@ impl Session {
         let mut out = self.complete_recipes(id, &mut d);
         if *before != d {
             let op = self.develop_op(id, d, "Recompute AI Masks").ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
-            self.commit("Recompute AI Masks", op)?;
+            if recorded {
+                self.commit("Recompute AI Masks", op)?;
+            } else {
+                self.apply_unrecorded(op)?;
+            }
         }
         let queued = match self.segment_missing_later(id) {
             Ok(n) => n,
@@ -365,5 +375,34 @@ mod tests {
         let r = s.execute("masks.recompute", &json!({})).expect("recompute");
         assert!(r["photos"][0]["changed"].as_u64().is_some(), "{r}");
         assert!(s.execute("masks.recompute", &json!({"ids": ["x"]})).is_err());
+    }
+
+    /// The app's own re-match (a photo's looks arrived) completes the recipe, saved, without an
+    /// undo step of its own: Undo still takes back what the user did.
+    #[test]
+    fn the_automatic_rematch_adds_no_undo_step() {
+        let mut s = Session::with_demo();
+        let id = s.active().expect("demo photo");
+        let mut meta = s.catalog.photo(id).expect("photo").meta.clone();
+        meta.regions = vec![face(0.6, "Sam"), face(0.2, "Alex")];
+        s.commit("faces", lcc_catalog::Op::SetMeta { id, meta: Box::new(meta) }).expect("meta");
+        let mut d = (*s.develop_of(id).expect("develop")).clone();
+        d.masks.push(Mask {
+            id: 1,
+            components: vec![MaskComponent {
+                anchor: None,
+                name: None,
+                op: MaskOp::Add,
+                invert: false,
+                shape: MaskShape::People { person: 0, parts: vec![], who: Some(Who::Name("Sam".into())), seg: None },
+            }],
+            ..Default::default()
+        });
+        s.set_develop(id, d, "People mask").expect("set");
+        let steps = s.undo.len();
+        s.compute_masks_later_as(id, false, false).expect("re-match");
+        let d = s.develop_of(id).expect("develop");
+        assert!(matches!(d.masks[0].components[0].shape, MaskShape::People { person: 2, .. }), "matched: {:?}", d.masks[0].components[0].shape);
+        assert_eq!(s.undo.len(), steps, "no undo step of its own");
     }
 }

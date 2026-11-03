@@ -1099,7 +1099,8 @@ impl Session {
                     .develop_of(photo)
                     .is_some_and(|d| d.masks.iter().flat_map(|m| &m.components).any(|c| matches!(c.shape, MaskShape::People { who: Some(_), .. })));
                 if by_who {
-                    match self.compute_masks_later(photo, false) {
+                    // (the app's own doing: no undo step of its own)
+                    match self.compute_masks_later_as(photo, false, false) {
                         Ok((done, _)) => {
                             polled.changed |= done.changed > 0;
                         }
