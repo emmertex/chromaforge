@@ -544,6 +544,9 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             if let Some(Err(e)) = s("path").map(|path| app.session.check_write_target(path)) {
                 return err(e);
             }
+            // views drawn straight from the GPU become pixels first: a window capture over native
+            // textures stopped the window presenting (Linux / X11, RADV)
+            app.renderer.views_to_pixels();
             ctx.request_repaint();
             Outcome::Screenshot { path: s("path").map(str::to_string), headless: p.get("headless").and_then(Value::as_bool).unwrap_or(false) }
         }

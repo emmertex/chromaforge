@@ -1504,7 +1504,8 @@ impl RenderJob {
                         && (self.display.is_none() || self.request.display.is_none())
                         && self.slide.is_none()
                         && straight.is_none()
-                        && (self.view_cache.is_none() || self.drawn_view_cache) =>
+                        // (a draft is never kept as the view preview)
+                        && (self.view_cache.is_none() || self.drawn_view_cache || self.request.quality != Quality::Full) =>
                     {
                         match on_screen(src, &info, &self.settings, &self.request, stages) {
                             Some(OnScreen::Frame(frame, histogram)) => {

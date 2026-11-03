@@ -816,6 +816,29 @@ impl Renderer {
         }
     }
 
+    /// Replace every view drawn straight from the GPU with its pixels, read back once (a screenshot:
+    /// capturing native textures stopped the window presenting on Linux / X11). A view whose pixels
+    /// can't be read keeps its GPU texture. GPU-resident drafts go on afterwards.
+    pub fn views_to_pixels(&mut self) {
+        let Some(screen) = self.screen.as_ref() else { return };
+        let mut done = Vec::new();
+        for (slot, t) in self.textures.iter_mut() {
+            let (Some(_), Some(frame)) = (t.native, self.native_frames.get(slot)) else { continue };
+            let Some(img) = screen.read(frame) else { continue };
+            let img = Arc::new(img);
+            t.tex.set(img.clone(), egui::TextureOptions::LINEAR);
+            t.pixels = Some(img);
+            t.native = None;
+            done.push(*slot);
+        }
+        for slot in done {
+            self.native_frames.remove(&slot);
+            if let (Some(id), Some(screen)) = (self.natives.remove(&slot), self.screen.as_mut()) {
+                screen.free(id);
+            }
+        }
+    }
+
     /// Show the GPU-resident render `frame` (histogram `histogram`) in `slot`. `false` when it
     /// can't be shown: GPU-resident renders are then turned off and the view renders pixels again.
     fn show_frame(
