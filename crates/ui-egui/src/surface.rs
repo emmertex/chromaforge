@@ -234,9 +234,10 @@ pub fn value(app: &LccApp, target: &str) -> Option<f64> {
             serde_json::to_value(adjust).ok()?.get(field)?.as_f64()
         }
         TargetKind::Ui => Some(match target {
-            "ui.brushSize" => f64::from(app.ui.brush_size) * 400.0,
-            "ui.brushFeather" => f64::from(app.ui.brush_feather),
-            "ui.brushFlow" => f64::from(app.ui.brush_flow),
+            // the set in use: the eraser's while erasing; Size is the on-screen 1–100 size
+            "ui.brushSize" => f64::from(app.ui.brush_set(app.ui.brush_erasing()).size),
+            "ui.brushFeather" => f64::from(app.ui.brush_set(app.ui.brush_erasing()).feather),
+            "ui.brushFlow" => f64::from(app.ui.brush_set(app.ui.brush_erasing()).flow),
             "ui.removeSize" => f64::from(app.ui.remove_size) * 1000.0,
             "ui.removeFeather" => f64::from(app.ui.remove_feather),
             "ui.removeOpacity" => f64::from(app.ui.remove_opacity),
@@ -264,9 +265,16 @@ fn set_ui_value(app: &mut LccApp, target: &str, v: f64) {
     let Some(spec) = ls::targets::target_spec(target) else { return };
     let v = spec.clamp(v) as f32;
     match target {
-        "ui.brushSize" => app.ui.brush_size = (v / 400.0).clamp(0.002, 0.5),
-        "ui.brushFeather" => app.ui.brush_feather = v,
-        "ui.brushFlow" => app.ui.brush_flow = v,
+        "ui.brushSize" | "ui.brushFeather" | "ui.brushFlow" => {
+            let erase = app.ui.brush_erasing();
+            let mut s = app.ui.brush_set(erase);
+            match target {
+                "ui.brushSize" => s.size = v,
+                "ui.brushFeather" => s.feather = v,
+                _ => s.flow = v,
+            }
+            app.ui.set_brush_set(erase, s);
+        }
         "ui.removeSize" => {
             app.ui.remove_size = (v / 1000.0).clamp(0.001, 0.25);
             if app.session.active_spot.is_some() {
