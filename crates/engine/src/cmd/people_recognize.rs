@@ -3,7 +3,7 @@
 //! named on other photos (`people.learn`), and grouping the unnamed faces of a shoot. Appearance
 //! only holds within a shoot, so the examples of the photo's own folder are used first.
 //!
-//! Ported from OneSlips' fork (own design there), on Chromaforge's appearance cache
+//! Ported from OneSlips' fork (own design there), on the app's own appearance cache
 //! ([`Session::photo_appearance`]).
 #![cfg_attr(not(feature = "sam"), allow(dead_code, unused_imports))]
 

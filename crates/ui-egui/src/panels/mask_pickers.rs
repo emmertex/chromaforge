@@ -2,7 +2,7 @@
 //! who a People mask is for (everyone, or one of the faces found on the photo, by name when it
 //! has one) and which parts; a remembered object (`concepts.*`) to select on this photo.
 //!
-//! Behaviour ported from OneSlips' fork (`smart_people.rs`), drawn in Chromaforge's own widgets.
+//! Behaviour ported from OneSlips' fork (`smart_people.rs`), drawn in the app's own widgets.
 
 use lcc_catalog::PhotoId;
 use serde_json::json;
