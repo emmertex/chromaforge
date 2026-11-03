@@ -5420,8 +5420,11 @@ mod tests {
             let px = |s: Slot| h.app.renderer.textures[&s].pixels.as_ref().unwrap().pixels.clone();
             seen.push((px(Slot::Thumb(id)), px(Slot::Main)));
         }
-        assert!(seen[0].0 == seen[1].0, "thumbnail differs with an HDR display");
-        assert!(seen[0].1 == seen[1].1, "the loupe's 8-bit render differs with an HDR display");
+        // a thumbnail or render may come from the GPU in one session and the CPU in the other (whichever
+        // is ready first); those agree within 2 levels, so allow that rounding and nothing more
+        let close = |a: &[u8], b: &[u8]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 2);
+        assert!(close(&seen[0].0, &seen[1].0), "thumbnail differs with an HDR display");
+        assert!(close(&seen[0].1, &seen[1].1), "the loupe's 8-bit render differs with an HDR display");
     }
 
     /// Settings ▸ Display / `app.displayProfile`: previews are shown through the monitor profile
