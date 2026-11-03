@@ -160,6 +160,7 @@ impl Session {
                         self.segment_clicks(id, &clicks).map(Some)
                     }
                     MaskShape::Prompt { text, .. } => self.segment_text(id, text),
+                    MaskShape::Concept { name, .. } => self.segment_concept(id, name),
                     // without the people models: the heuristic, no note
                     MaskShape::People { person, parts, .. } => match self.segment_people(id, *person, parts) {
                         Ok(None) => continue,
@@ -169,8 +170,12 @@ impl Session {
                 };
                 match res {
                     Ok(seg) => {
-                        if let Some(MaskShape::Object { seg: s, .. } | MaskShape::Prompt { seg: s, .. } | MaskShape::People { seg: s, .. }) =
-                            d.masks.get_mut(mi).and_then(|m| m.components.get_mut(ci)).map(|c| &mut c.shape)
+                        if let Some(
+                            MaskShape::Object { seg: s, .. }
+                            | MaskShape::Prompt { seg: s, .. }
+                            | MaskShape::People { seg: s, .. }
+                            | MaskShape::Concept { seg: s, .. },
+                        ) = d.masks.get_mut(mi).and_then(|m| m.components.get_mut(ci)).map(|c| &mut c.shape)
                         {
                             *s = seg;
                             out.changed += 1;

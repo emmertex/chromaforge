@@ -79,10 +79,19 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             };
             MaskShape::People { person, parts, who, seg: seg_param(p) }
         }
+        "concept" => {
+            let name = str_param(p, "name").map(str::trim).unwrap_or_default();
+            if name.is_empty() || name.chars().count() > 200 {
+                return Err(bad(c, "concept: `name` is a remembered object's name (concepts.list)"));
+            }
+            MaskShape::Concept { name: name.to_string(), seg: seg_param(p) }
+        }
         other => {
             return Err(bad(
                 c,
-                format!("unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt|people)"),
+                format!(
+                    "unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt|people|concept)"
+                ),
             ));
         }
     })
@@ -112,8 +121,9 @@ enum Later {
     Clicks(Vec<Point>, Vec<Point>),
     /// Background mode: the Describe selection is computed first; the mask is added when found.
     Text(String),
-    /// Background mode: the People selection is computed on the AI worker after the command.
-    People,
+    /// Background mode: the People or remembered-object selection is computed on the AI worker
+    /// after the command (Recompute AI Masks).
+    Recompute,
 }
 
 /// Compute the segmentation of a new AI shape (Object with clicks, Prompt) — or, in background
@@ -152,7 +162,18 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
             *seg = Some(found.ok_or_else(|| ai_err(format!("nothing matching “{text}” was found in this photo")))?);
         }
         // the people models when installed, else the heuristic (no model needed)
-        MaskShape::People { seg: None, .. } if background => return Ok(Later::People),
+        MaskShape::People { seg: None, .. } if background => return Ok(Later::Recompute),
+        MaskShape::Concept { name, seg: None } if background => {
+            s.segmenter.require_sam2()?;
+            if !s.concept_store().get(name).is_some_and(|c| !c.examples.is_empty()) {
+                return Err(ai_err(format!("no remembered object called “{name}” with examples")));
+            }
+            return Ok(Later::Recompute);
+        }
+        MaskShape::Concept { name, seg: seg @ None } => {
+            s.segmenter.require_sam2()?;
+            *seg = Some(s.segment_concept(id, name).map_err(ai_err)?.ok_or_else(|| ai_err(format!("“{name}” wasn't found on this photo")))?);
+        }
         // (a named person is resolved on the photo first: Recompute AI Masks)
         MaskShape::People { person, parts, seg: seg @ None, who: None } => {
             *seg = s.segment_people(id, *person, parts).map_err(ai_err)?;
@@ -164,7 +185,7 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
 
 /// Queue what a new AI component (component `comp` of mask `mask`) still needs.
 fn queue_later(s: &mut Session, later: Later, mask: u32, comp: usize, mut out: Value) -> Result<Value> {
-    if let Later::People = later {
+    if let Later::Recompute = later {
         if let Some(id) = s.active() {
             s.want_missing_masks(id);
         }
@@ -455,7 +476,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create New Mask",
             [],
             None,
-            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; people: person? (0 everyone, n the n-th from the left), parts? [Entire Person|Face Skin|Body Skin|Eyebrows|Eye Sclera|Iris and Pupil|Eyes|Lips|Teeth|Hair|Clothes], who? {name}|{role}; object/prompt/people: seg? a stored segmentation, no model needed), name?} — AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
+            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; concept: name (a remembered object, found on each photo); people: person? (0 everyone, n the n-th from the left), parts? [Entire Person|Face Skin|Body Skin|Eyebrows|Eye Sclera|Iris and Pupil|Eyes|Lips|Teeth|Hair|Clothes], who? {name}|{role}; object/prompt/people: seg? a stored segmentation, no model needed), name?} — AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
             has_active,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();

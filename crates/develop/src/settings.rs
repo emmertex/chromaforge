@@ -1477,6 +1477,13 @@ pub enum MaskShape {
     Landscape {
         class: String,
     },
+    /// A remembered object ("Wedding dress"), taught by example (`concepts.*`) and found again on
+    /// each photo; `seg` what was found here (`None`: not yet, or not found: nothing selected).
+    Concept {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seg: Option<crate::SegMask>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -239,8 +239,9 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
         s.data.iter_mut().for_each(|v| *v = 1.0 - *v);
         return s;
     }
-    // a People selection the people models computed on this photo (one person, their parts)
-    if let MaskShape::People { seg: Some(seg), .. } = shape {
+    // a People selection the people models computed on this photo (one person, their parts), a
+    // remembered object found on it
+    if let MaskShape::People { seg: Some(seg), .. } | MaskShape::Concept { seg: Some(seg), .. } = shape {
         let mut out = Plane::new(w, h);
         sample_seg(Some(seg), &[], 1.0, frame, w, h, &mut out);
         return out;
@@ -335,6 +336,8 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
         // not computed yet (no clicks, or a build without the model): nothing selected
         MaskShape::Object { hint, .. } if hint.is_empty() => {}
         MaskShape::Prompt { .. } => {}
+        // a remembered object not found (yet) on this photo: nothing selected
+        MaskShape::Concept { .. } => {}
         MaskShape::Subject | MaskShape::Object { .. } | MaskShape::People { .. } => {
             // Saliency heuristic: centre-weighted local contrast (replaced by the segmenter in M12).
             let m = frame.out_to_norm(w, h);

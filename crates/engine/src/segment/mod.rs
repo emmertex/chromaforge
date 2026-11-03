@@ -641,6 +641,34 @@ impl Session {
         }
     }
 
+    /// The examples of remembered object `name`, for the worker.
+    #[cfg(feature = "sam")]
+    fn concept_examples(&mut self, name: &str) -> Result<Vec<lcc_segment::concept::Example>, String> {
+        let examples: Vec<serde_json::Value> =
+            self.concept_store().get(name).map(|c| c.examples.clone()).ok_or_else(|| format!("no remembered object called “{name}”"))?;
+        let examples: Vec<lcc_segment::concept::Example> = examples.into_iter().filter_map(|e| serde_json::from_value(e).ok()).collect();
+        if examples.is_empty() {
+            return Err(format!("“{name}” has no examples yet: teach it on a photo first"));
+        }
+        Ok(examples)
+    }
+
+    /// Remembered object `name` on photo `id` (a `MaskShape::Concept` recipe), waiting for SAM 2.1;
+    /// `Ok(None)` when it isn't found there.
+    pub fn segment_concept(&mut self, id: PhotoId, name: &str) -> Result<Option<SegMask>, String> {
+        self.segmenter.require_sam2().map_err(|e| e.to_string())?;
+        #[cfg(feature = "sam")]
+        {
+            let examples = self.concept_examples(name)?;
+            self.segment_wait(id, worker::Kind::Find { examples }, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, name);
+            Err("remembered objects need the AI models, which this build doesn't have".into())
+        }
+    }
+
     /// A found remembered object becomes an Object selection (its seeds are the clicks), as a new
     /// mask named after it or a component of `mask`.
     #[cfg(feature = "sam")]
@@ -882,6 +910,10 @@ impl Session {
                         worker::Kind::Clicks(Self::model_clicks(&clicks_of(hint, exclude)))
                     }
                     MaskShape::Prompt { text, .. } if !text.trim().is_empty() => worker::Kind::Text(text.trim().to_string()),
+                    MaskShape::Concept { name, .. } => match self.concept_examples(name) {
+                        Ok(examples) if self.segmenter.require_sam2().is_ok() => worker::Kind::Find { examples },
+                        _ => continue,
+                    },
                     MaskShape::People { person, parts, .. } => match &people_face {
                         Some(face) => worker::Kind::People {
                             face: face.clone(),
@@ -1126,7 +1158,10 @@ impl Session {
                         return None; // undone or edited meanwhile
                     }
                     match &mut c.shape {
-                        MaskShape::Object { seg: s, .. } | MaskShape::Prompt { seg: s, .. } | MaskShape::People { seg: s, .. } => *s = Some(seg),
+                        MaskShape::Object { seg: s, .. }
+                        | MaskShape::Prompt { seg: s, .. }
+                        | MaskShape::People { seg: s, .. }
+                        | MaskShape::Concept { seg: s, .. } => *s = Some(seg),
                         _ => return None,
                     }
                     Some(d)

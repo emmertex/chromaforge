@@ -116,6 +116,7 @@ pub fn shape_name(shape: &MaskShape) -> String {
         MaskShape::Background => "Background".into(),
         MaskShape::Object { .. } => "Object".into(),
         MaskShape::Prompt { text, .. } => format!("“{}”", text.trim()),
+        MaskShape::Concept { name, .. } => name.trim().to_string(),
         MaskShape::Landscape { class, .. } => {
             let c = match class.as_str() {
                 "naturalGround" | "natural ground" => "Natural Ground",
@@ -199,6 +200,7 @@ impl MaskShape {
                 | MaskShape::Landscape { .. }
                 | MaskShape::Object { .. }
                 | MaskShape::Prompt { .. }
+                | MaskShape::Concept { .. }
         )
     }
 
@@ -207,14 +209,14 @@ impl MaskShape {
     pub fn has_seg(&self) -> bool {
         match self {
             MaskShape::Object { seg, detail, .. } | MaskShape::Prompt { seg, detail, .. } => seg.is_some() || !detail.is_empty(),
-            MaskShape::People { seg, .. } => seg.is_some(),
+            MaskShape::People { seg, .. } | MaskShape::Concept { seg, .. } => seg.is_some(),
             _ => false,
         }
     }
 
     /// Whether a computed segmentation is stored in the shape (Object, Describe, People).
     pub fn stores_seg(&self) -> bool {
-        matches!(self, MaskShape::Object { .. } | MaskShape::Prompt { .. } | MaskShape::People { .. })
+        matches!(self, MaskShape::Object { .. } | MaskShape::Prompt { .. } | MaskShape::People { .. } | MaskShape::Concept { .. })
     }
 
     /// The same selection without what a model computed for one photo.
@@ -224,7 +226,7 @@ impl MaskShape {
             *seg = None;
             detail.clear();
         }
-        if let MaskShape::People { seg, .. } = &mut s {
+        if let MaskShape::People { seg, .. } | MaskShape::Concept { seg, .. } = &mut s {
             *seg = None;
         }
         s

@@ -162,6 +162,7 @@ fn kind_label(s: &MaskShape) -> (&'static str, Icon) {
         MaskShape::Prompt { .. } => ("prompt", "Describe"),
         MaskShape::People { .. } => ("people", "People"),
         MaskShape::Landscape { .. } => ("landscape", "Landscape"),
+        MaskShape::Concept { .. } => ("object", "Object"),
     };
     (label, kind_icon(kind))
 }
