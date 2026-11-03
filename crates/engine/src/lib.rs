@@ -2415,6 +2415,8 @@ mod tests_move_to_share;
 mod tests_naming;
 #[cfg(test)]
 mod tests_organize;
+#[cfg(all(test, feature = "sam"))]
+mod tests_people_corpus;
 #[cfg(test)]
 mod tests_people_masks;
 #[cfg(test)]
