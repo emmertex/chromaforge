@@ -176,6 +176,9 @@ fn the_tab_works_in_compact_and_modern_layouts() {
         h.settle(SETTLE);
         assert!(has_widget(&mut h, "panel:importTab"), "{layout} {size:?}");
         assert!(has_widget(&mut h, "importGo"), "{layout} {size:?}");
+        if layout == "modern" {
+            assert!(has_widget(&mut h, "button:importBackToLibrary"), "{size:?}: a way back to the library");
+        }
         if size[0] < 900.0 {
             assert!(has_widget(&mut h, "button:importPane-settings"), "{layout} {size:?}: the settings a tap away");
         } else {

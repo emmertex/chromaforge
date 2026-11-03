@@ -536,6 +536,10 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
     };
     let mut row = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(10.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
     row.spacing_mut().item_spacing.x = 8.0;
+    // Modern draws no top bar over the tab: the way back to the library is here
+    if crate::modern::on(app) && crate::widgets::text_button(&mut row, "importBackToLibrary", crate::i18n::tr("‹ Library"), false).clicked() {
+        let _ = app.run("view.libraryTab", json!({}));
+    }
     if !wide {
         for (p, label, wid) in [(Pane::Sources, "Sources", "importPane-sources"), (Pane::Settings, "Settings", "importPane-settings")] {
             let on = *pane == p;
