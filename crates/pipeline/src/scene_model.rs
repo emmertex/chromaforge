@@ -123,6 +123,23 @@ mod tests {
     }
 
     #[test]
+    fn installing_a_model_moves_the_keys_of_masks_on_automatic_selections_only() {
+        use lcc_develop::{Mask, MaskComponent};
+        let mask = |shape| {
+            vec![Mask { id: 1, components: vec![MaskComponent { name: None, op: Default::default(), invert: false, shape }], ..Default::default() }]
+        };
+        let sky = mask(MaskShape::Sky);
+        let radial = mask(MaskShape::Radial { center: lcc_geom::Point::new(0.5, 0.5), rx: 0.2, ry: 0.2, angle: 0.0, feather: 50.0, invert: false });
+        let (k_sky, k_radial) = (crate::masks::alpha_key(&sky, 0.0, 64, 48, None), crate::masks::alpha_key(&radial, 0.0, 64, 48, None));
+        let before = crate::auto_mask::model_generation();
+        set_scene_model(Some(Arc::new(|_: &[u8], _: usize, _: usize| None)));
+        set_scene_model(None);
+        assert!(crate::auto_mask::model_generation() > before);
+        assert_ne!(crate::masks::alpha_key(&sky, 0.0, 64, 48, None), k_sky, "a Sky mask re-renders");
+        assert_eq!(crate::masks::alpha_key(&radial, 0.0, 64, 48, None), k_radial, "a radial mask keeps its cache");
+    }
+
+    #[test]
     fn malformed_selections_are_not_used() {
         assert!(!usable(&Plane { width: 4, height: 3, data: vec![0.0; 5] }));
         assert!(!usable(&plane(0, 0, 0.0)));

@@ -194,9 +194,14 @@ path is unchanged) and its own multi-threaded CPU kernels (`sam2_kernels.rs`). I
   and installed (`ai.models.download {"id": "scene"}`, mirrors via `<PREFIX>_SCENE_MIRRORS`). It runs
   once per photo at 640 px, with an activity row; a failure falls back to the analysis. Embedded
   sky mattes (HEIC) still win over it. The model was trained on COCO, whose annotations are
-  CC BY 4.0: the dialog and `NOTICE` credit it (maintainer decision 2026-11-03). The port
-  (`scene.rs`) is OneSlips'; `people::Surfaces::from_scene` (floors, walls and chairs are never
-  Clothes) comes with it but isn't wired into Retouch's people masks yet.
+  CC BY 4.0: the dialog and `NOTICE` credit it (maintainer decision 2026-11-03). Switching
+  it (or installing the Subject model) re-renders the photos whose masks use an automatic
+  selection at once (`auto_mask::model_generation` is in their render and mask keys). The port
+  (`scene.rs`) is OneSlips'. With EoMT chosen, Retouch's people parts pass its floors, walls and
+  chairs (`people::Surfaces::from_scene`) to the People mask, so they are never Clothes (Retouch
+  asks only for Teeth so far, so the scene model runs only once a Clothes part is asked for). On six
+  CC0 corpus raws (1600 px, 32-thread CPU, no GPU on Linux: candle uses Metal on macOS only) it
+  takes about 2.4 s per photo after a 0.1 s load.
 - Not ported: their BiRefNet-portrait checkpoint (licence pending) and their SAM 2 speed work,
   which rewrites the segmentation helpers SAM 3 shares.
 

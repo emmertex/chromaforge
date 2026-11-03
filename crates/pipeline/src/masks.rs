@@ -171,17 +171,21 @@ pub fn alpha_key(masks: &[Mask], ev: f32, w: usize, h: usize, mattes: Option<&Ma
     use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
     let mut parts = String::new();
     let mut exposure = false;
+    let mut automatic = false;
     for m in masks.iter().filter(|m| m.visible && !m.components.is_empty()) {
         let _ = write!(parts, "{}|{}|{}|{}|{}", m.id, m.invert, m.refine.to_bits(), m.feather.to_bits(), m.adjust.amount.to_bits());
         for c in &m.components {
             // (the whole component: a field added to it later counts too)
             let _ = write!(parts, "|{c:?}");
             exposure |= reads_exposure(&c.shape, mattes);
+            automatic |= crate::auto_mask::wants(&c.shape);
         }
         parts.push(';');
     }
     let ev = if exposure { ev.to_bits() } else { 0 };
-    BuildHasherDefault::<DefaultHasher>::default().hash_one((parts, w, h, ev))
+    // (a mask on an automatic selection changes when a model is installed or removed)
+    let models = if automatic { crate::auto_mask::model_generation() } else { 0 };
+    BuildHasherDefault::<DefaultHasher>::default().hash_one((parts, w, h, ev, models))
 }
 
 #[inline]

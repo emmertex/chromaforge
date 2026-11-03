@@ -209,10 +209,15 @@ impl Segmenter {
         if self.scene_model == SceneModel::Eomt && self.open_model_installed("scene") { "eomt" } else { "analysis" }
     }
 
+    /// The scene model's folder when it is chosen and installed (Retouch's Clothes uses it too).
+    pub fn scene_dir_in_use(&self) -> Option<PathBuf> {
+        (self.scene_model_in_use() == "eomt").then(|| self.open_model_dir("scene")).flatten()
+    }
+
     /// Install the chosen scene model for the pipeline when its files are in place, or go back
     /// to the photo analysis (idempotent).
     pub fn scene_sync(&mut self, activity: &crate::activity::Activity) {
-        let want = (self.scene_model_in_use() == "eomt").then(|| self.open_model_dir("scene")).flatten();
+        let want = self.scene_dir_in_use();
         self.scene.sync(want, activity);
     }
 

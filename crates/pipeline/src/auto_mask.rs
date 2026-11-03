@@ -175,9 +175,19 @@ pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<A
     a
 }
 
-/// Forget the cached analyses (a model was installed or removed).
+/// Forget the cached analyses (a model was installed or removed) and move [`model_generation`] on.
 pub(crate) fn clear_cache() {
     CACHE.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    MODEL_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+static MODEL_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Changes whenever the Subject or the scene model is installed or removed: render and mask
+/// caches mix it into their keys for photos whose masks use an automatic selection, so those
+/// re-render at once with the new model.
+pub fn model_generation() -> u64 {
+    MODEL_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A segmentation model for the Subject (and, inverted, Background) selection: given the whole
@@ -200,7 +210,7 @@ pub const MODEL_EDGE: usize = 1024;
 pub fn set_subject_model(m: Option<Arc<SubjectModel>>) {
     *SUBJECT_MODEL.write().unwrap_or_else(PoisonError::into_inner) = m;
     SUBJECT_CACHE.lock().unwrap_or_else(PoisonError::into_inner).clear();
-    CACHE.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    clear_cache();
 }
 
 /// Whether a subject model is installed.

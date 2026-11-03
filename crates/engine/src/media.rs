@@ -1847,7 +1847,13 @@ impl crate::Session {
         let content = source_key.0 as u64;
         // Temporary "before" settings must not replace the photo's cached develop hash.
         let settings_hash = if before || uncropped { settings.hash64() } else { self.media.settings_hashes.get(id, &settings) };
-        let salt = self.media.denoise_salt(id, &settings);
+        // (AI masks on an automatic selection re-render when the Subject or scene model changes)
+        let models = if lcc_pipeline::auto_mask::needed(&settings) {
+            lcc_pipeline::auto_mask::model_generation().wrapping_add(1).wrapping_mul(0x2545_f491_4f6c_dd1d)
+        } else {
+            0
+        };
+        let salt = self.media.denoise_salt(id, &settings) ^ models;
         let key = settings_hash
             ^ ((max_w as u64) << 40)
             ^ ((max_h as u64) << 20)
