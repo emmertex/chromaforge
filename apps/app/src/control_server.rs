@@ -912,7 +912,7 @@ mod tests {
         let (tx, _rx) = channel::<ControlRequest>();
         let server = std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
-            serve(s, &tx, &egui::Context::default(), TOKEN, &timeouts());
+            serve(s, &tx, &egui::Context::default(), Some(TOKEN), &timeouts());
         });
         let mut c = TcpStream::connect(addr).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
