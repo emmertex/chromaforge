@@ -1543,7 +1543,14 @@ fn main() -> eframe::Result {
                 // the GPU renderer on the window's device, when GPU rendering is on
                 // (<PREFIX>_GPU_WINDOW=0: a device of its own, renders read back - for comparison or a
                 // driver that misbehaves with compute and drawing on one device)
-                let window_device = lcc_brand::env("GPU_WINDOW").is_none_or(|v| v.trim() != "0");
+                // Not on an HDR window for now: with the renderer on the window's device, turning an
+                // edit's HDR on stopped the Wayland window drawing (RADV, 2026-11-03; fine with a
+                // device of its own). `<PREFIX>_GPU_WINDOW=1` offers it anyway, `0` never.
+                let window_device = match lcc_brand::env("GPU_WINDOW").as_deref().map(str::trim) {
+                    Some("0") => false,
+                    Some("1") => true,
+                    _ => !display.is_hdr(),
+                };
                 let window_textures = cc.wgpu_render_state.as_ref().filter(|_| gpu_on && window_device).map(offer_window_device);
                 Ok(Box::new(App(
                     app,

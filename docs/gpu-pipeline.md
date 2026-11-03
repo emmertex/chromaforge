@@ -477,6 +477,9 @@ doesn't suit (software adapter, too few storage buffers, kernels that don't buil
 declined and the renderer makes one of its own, as before; a device that replaces a lost one is
 always its own. A headless `ui.screenshot` reads a GPU-drawn view back (`lcc_gpu::read_texture`).
 
+- Not offered on an HDR window for now: with the renderer on the window's device, turning an
+  edit's HDR on stopped the Wayland window drawing (Radeon 8060S / RADV, 2026-11-03; no error
+  logged; fine with a device of its own). `<PREFIX>_GPU_WINDOW=1` offers it anyway.
 - `<PREFIX>_GPU_WINDOW=0`: never offer the window's device (a device of its own, renders read
   back): to compare, or for a driver that misbehaves with compute and drawing on one device.
   `<PREFIX>_GPU_LIMITS` caps the adopted device as it caps one of its own.
