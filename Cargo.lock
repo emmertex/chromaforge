@@ -4583,7 +4583,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-camprof"
-version = "26.45.0"
+version = "26.45.1"
 dependencies = [
  "lcc-color",
  "lcc-raw",
@@ -4933,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-genfill"
-version = "26.45.0"
+version = "26.45.1"
 dependencies = [
  "lcc-brand",
  "lcc-color",
@@ -5378,7 +5378,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-surface"
-version = "26.45.0"
+version = "26.45.1"
 dependencies = [
  "lcc-develop",
  "miniz_oxide 0.8.9",
@@ -5425,7 +5425,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-tflite"
-version = "26.45.0"
+version = "26.45.1"
 dependencies = [
  "candle-core",
  "lcc-brand",
