@@ -23,6 +23,7 @@ pub(crate) mod camera_preview;
 pub mod camera_profiles;
 pub mod cmd;
 pub mod colour_export;
+pub mod concepts_store;
 pub mod config;
 pub mod contact_sheet;
 pub mod control_auth;
@@ -325,6 +326,7 @@ pub struct Session {
     pub(crate) skip_auto_write: bool,
     /// The library's `people.json` (roles, appearance examples), loaded when first needed.
     pub(crate) people: people_smart::PeopleState,
+    pub(crate) concepts: concepts_store::ConceptState,
     /// The folder metadata save or read waiting for `folder.metadataPump` ([`cmd::folder_metadata`]); dropped when another library opens.
     pub(crate) folder_metadata: Option<cmd::folder_metadata::FolderMetadataJob>,
     /// The order of Reload from Disk runs, so an older one finishing late is dropped ([`cmd::reload`]).
@@ -627,6 +629,7 @@ impl Session {
             interaction: None,
             skip_auto_write: false,
             people: Default::default(),
+            concepts: Default::default(),
             stems: Default::default(),
             folder_metadata: None,
             reload_tickets: Default::default(),
@@ -1939,6 +1942,8 @@ mod tests_catalog_cmds;
 mod tests_classic;
 #[cfg(test)]
 mod tests_color;
+#[cfg(test)]
+mod tests_concepts;
 #[cfg(test)]
 mod tests_constrain_crop;
 #[cfg(test)]

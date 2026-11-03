@@ -47,6 +47,16 @@ pub enum Kind {
         prompt: Prompt,
         region: [f64; 4],
     },
+    /// Learn an example of a remembered object from what `mask` selects on the photo
+    /// (`concepts.teach`; SAM 2.1). The outcome's `extra` is the example.
+    Learn {
+        mask: Box<lcc_develop::Mask>,
+    },
+    /// Find a remembered object taught by `examples` on the photo (SAM 2.1). The outcome's
+    /// `extra` is `{seeds: [[x, y], …], score}`, the clicks the selection grew from.
+    Find {
+        examples: Vec<lcc_segment::concept::Example>,
+    },
     /// Panics (tests of the worker's recovery).
     #[cfg(test)]
     Panic,
@@ -83,6 +93,9 @@ pub struct Outcome {
     pub superseded: bool,
     /// Something the user should know besides the result ([`GPU_FAILED`]).
     pub notice: Option<String>,
+    /// What a job gives besides a selection (a learned example, the clicks a found object grew
+    /// from).
+    pub extra: Option<serde_json::Value>,
 }
 
 /// The notice of the job after which the model runs on the CPU.
@@ -260,7 +273,11 @@ struct State {
     /// SAM 2.1, when the user chose it for Object clicks.
     sam2: Option<(PathBuf, Sam2)>,
     sam2_cache: Option<(u64, Sam2Encoded)>,
+    /// The model input `sam2_cache` was encoded from (remembered objects read its colours).
+    sam2_input: Option<Input>,
     remote: Option<remote::Client>,
+    /// The running job's [`Outcome::extra`].
+    extra: Option<serde_json::Value>,
 }
 
 /// Whether `later` makes `job` pointless (it asks for the same selection again).
@@ -302,7 +319,7 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
         let cancelled = job.cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst));
         if cancelled || queue.iter().any(|later| supersedes(later, &job)) {
             drop(done);
-            let _ = job.reply.send(Outcome { tag: job.tag, result: Ok(None), superseded: true, notice: None });
+            let _ = job.reply.send(Outcome { tag: job.tag, result: Ok(None), superseded: true, notice: None, extra: None });
             continue;
         }
         // what a retry on the CPU needs (running the job takes them)
@@ -334,13 +351,14 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
             }
         }
         let result = result.map_err(Failure::message);
+        let extra = state.extra.take();
         if result.is_err() && !is_detail {
             state.cache = None;
             state.sam2_cache = None;
         }
         shared.loaded.store(state.model.is_some() || state.sam2.is_some() || state.remote.is_some(), Ordering::SeqCst);
         drop(done);
-        let _ = job.reply.send(Outcome { tag: job.tag, result, superseded: false, notice });
+        let _ = job.reply.send(Outcome { tag: job.tag, result, superseded: false, notice, extra });
     }
 }
 
@@ -474,17 +492,68 @@ fn sam2_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placem
     }
     sam2_model(state, shared, &job.dir, placement)?;
     if state.sam2_cache.as_ref().is_none_or(|(k, _)| *k != job.key) {
-        state.sam2_cache = None;
+        (state.sam2_cache, state.sam2_input) = (None, None);
         let input = render(job)?;
         let _busy = Flag::raise(&shared.encoding);
         let m = state.sam2.as_ref().map(|(_, m)| m).ok_or("the model did not load")?;
         state.sam2_cache = Some((job.key, encode(m, &input)?));
+        state.sam2_input = Some(input);
     }
     let (Some((_, m)), Some((_, enc))) = (state.sam2.as_ref(), state.sam2_cache.as_ref()) else { return Err("the model is not ready".into()) };
+    let input = state.sam2_input.as_ref().ok_or("the photo is not available")?;
     match kind {
         Kind::Clicks(clicks) => Ok(Some(SegMask::from_logits(side, &m.segment_clicks(enc, &clicks)?.logits))),
+        Kind::Learn { mask } => {
+            let alpha = mask_alpha(&mask, input, 128);
+            let (emb, es, dim) = enc.embedding()?;
+            let (aw, ah) = (alpha.width.max(1), alpha.height.max(1));
+            let at = |u: f32, v: f32| {
+                let x = ((u * aw as f32) as usize).min(aw - 1);
+                let y = ((v * ah as f32) as usize).min(ah - 1);
+                alpha.data.get(y * aw + x).copied().unwrap_or(0.0)
+            };
+            let ex = lcc_segment::concept::learn(&emb, es, dim, at, &input.rgb, input.w, input.h);
+            state.extra = ex.and_then(|e| serde_json::to_value(e).ok());
+            Ok(None)
+        }
+        Kind::Find { examples } => {
+            let Some(found) = lcc_segment::concept::find(m, enc, &examples, &input.rgb, input.w, input.h)? else { return Ok(None) };
+            let seeds: Vec<[f32; 2]> = found.seeds.iter().map(|(x, y)| [*x, *y]).collect();
+            state.extra = Some(serde_json::json!({"seeds": seeds, "score": found.score}));
+            Ok(Some(SegMask::from_logits(found.mask_side, &found.logits)))
+        }
         _ => Ok(None),
     }
+}
+
+/// The alpha of `mask` over the model input, on a grid of about `edge` cells on the long side
+/// (the mask's coordinates are the uncropped photo's, which the input is).
+pub(crate) fn mask_alpha(mask: &lcc_develop::Mask, input: &Input, edge: usize) -> lcc_raster::Plane {
+    let (w, h) = (input.w.max(1), input.h.max(1));
+    let s = edge.max(8) as f64 / w.max(h) as f64;
+    let (gw, gh) = (((w as f64 * s).round() as usize).max(1), ((h as f64 * s).round() as usize).max(1));
+    let lin = |v: u8| {
+        let c = f32::from(v) / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    let px = |x: usize, y: usize| -> [f32; 3] {
+        let (sx, sy) = ((x * w / gw).min(w - 1), (y * h / gh).min(h - 1));
+        let i = (sy * w + sx) * 3;
+        match input.rgb.get(i..i + 3) {
+            Some([r, g, b]) => [lin(*r), lin(*g), lin(*b)],
+            _ => [0.0; 3],
+        }
+    };
+    let img = lcc_raster::Rgb32f::from_fn(gw, gh, px);
+    let log_l = lcc_raster::Plane::from_fn(gw, gh, |x, y| {
+        let p = img.data.get(y * gw + x).copied().unwrap_or_default();
+        (0.2627 * p[0] + 0.678 * p[1] + 0.0593 * p[2]).max(1e-6).log2()
+    });
+    let frame = lcc_pipeline::geometry::Frame::new(gw, gh, &lcc_develop::DevelopSettings::default(), false);
+    let mut m = mask.clone();
+    m.visible = true;
+    m.adjust.amount = 100.0;
+    lcc_pipeline::masks::evaluate_one(&m, &frame, gw, gh, &img, &log_l, 0.0, None)
 }
 
 fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str) -> Result<Option<SegMask>, String> {
@@ -519,6 +588,7 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
                 }
             }
         }
+        Kind::Learn { .. } | Kind::Find { .. } => return Err("remembered objects run on SAM 2.1 locally".into()),
         #[cfg(test)]
         Kind::Panic | Kind::FailOnGpu { .. } => return Err("test panic request".into()),
     };
@@ -557,6 +627,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
             let p = m.segment_clicks(enc, &clicks)?;
             Ok(Some(SegMask::from_logits(side, &p.logits)))
         }
+        Kind::Learn { .. } | Kind::Find { .. } => Err("remembered objects need SAM 2.1 (Preferences ▸ AI Models ▸ Object model)".into()),
         Kind::Text(text) => {
             let (m, enc) = encoded(state, shared, job, placement)?;
             Ok(text_logits(m, enc, &text)?.map(|l| SegMask::from_logits(side, &l)))

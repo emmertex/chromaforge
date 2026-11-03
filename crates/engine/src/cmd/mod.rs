@@ -12,6 +12,7 @@ pub(crate) mod browse;
 pub mod catalog;
 mod collections;
 mod color;
+mod concepts;
 pub(crate) mod convert;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod credentials;
@@ -232,6 +233,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(curves::specs());
         v.extend(crop_aspects::specs());
         v.extend(masks::specs());
+        v.extend(concepts::specs());
         v.extend(people_roles::specs());
         v.extend(organize::specs());
         v.extend(keywords::specs());

@@ -31,6 +31,8 @@ pub mod birefnet;
 #[cfg(not(target_arch = "wasm32"))]
 mod clip;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod concept;
+#[cfg(not(target_arch = "wasm32"))]
 mod cpu;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod depth;
