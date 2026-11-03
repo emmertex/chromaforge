@@ -223,11 +223,7 @@ fn same_tab_modifiers(bm: Modifiers, m: Modifiers) -> bool {
 /// Whether `keymap` (in the active set) binds Tab with modifiers `m` to a command: only such a
 /// Tab is held back from egui's focus navigation ([`deferred_tabs`]); an unbound one moves the focus.
 pub(crate) fn tab_bound(keymap: &Keymap, m: Modifiers) -> bool {
-    bindable().iter().any(|b| {
-        binding(keymap, b.id, b.default())
-            .and_then(parse)
-            .is_some_and(|(bm, k)| k == Key::Tab && same_tab_modifiers(bm, m))
-    })
+    bindable().iter().any(|b| binding(keymap, b.id, b.default()).and_then(parse).is_some_and(|(bm, k)| k == Key::Tab && same_tab_modifiers(bm, m)))
 }
 
 /// Tab presses held back from egui's focus navigation fire the commands bound to them.

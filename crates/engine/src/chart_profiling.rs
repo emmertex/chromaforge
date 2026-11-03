@@ -713,9 +713,8 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8], write: &dyn Fn(&std::p
     let tmp = path.with_extension("dcp.tmp");
     // (the flush needs a handle with write access: on Windows `FlushFileBuffers` on a read-only one
     // is "Access is denied"; the handle is closed before the rename)
-    let done = write(&tmp, bytes)
-        .and_then(|()| std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all())
-        .and_then(|()| rename_over(&tmp, path));
+    let done =
+        write(&tmp, bytes).and_then(|()| std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()).and_then(|()| rename_over(&tmp, path));
     if done.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
