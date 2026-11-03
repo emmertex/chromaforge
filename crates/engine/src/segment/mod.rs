@@ -74,6 +74,16 @@ pub(crate) enum Tag {
     /// A remembered object found on `photo`: a new mask (`mask: None`) or a component combined by
     /// `op`, named after it.
     Concept { photo: PhotoId, mask: Option<u32>, op: String, name: String },
+    /// The faces of `photo` (look `key`) with their appearance signatures; `learn`: remember the
+    /// named ones in `people.json`.
+    Faces { photo: PhotoId, key: u64, learn: bool },
+}
+
+/// Where the models for appearance signatures are ([`crate::identity`]).
+#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+pub(crate) struct FacesKind {
+    pub face: PathBuf,
+    pub sam2: Option<PathBuf>,
 }
 
 /// The model input: 8-bit RGB.
@@ -483,7 +493,9 @@ impl Session {
         // Describe (text) needs SAM 3; Object clicks use the model the user chose
         let text = matches!(&kind, worker::Kind::Text(_) | worker::Kind::Detail { prompt: Prompt::Text(_), .. });
         let concept = matches!(&kind, worker::Kind::Learn { .. } | worker::Kind::Find { .. });
-        let dir = if concept {
+        let dir = if let worker::Kind::Faces { face, .. } = &kind {
+            face.clone()
+        } else if concept {
             self.segmenter.require_sam2().map_err(|e| e.to_string())?
         } else if text {
             self.segmenter.model_dir()?
@@ -534,6 +546,27 @@ impl Session {
             }
             Err(_) => Err("the AI model took too long; try again".into()),
         }
+    }
+
+    /// The look key of photo `id` (what [`Session::segment_key`] gives).
+    pub(crate) fn segment_key_of(&self, id: PhotoId) -> Option<u64> {
+        self.segment_key(id).map(|(k, _)| k)
+    }
+
+    /// The faces of photo `id` with their signatures: waited for (→ the worker's list), or in
+    /// background mode queued (→ `None`; [`Session::segment_poll`] keeps them).
+    #[cfg(feature = "sam")]
+    pub(crate) fn segment_faces(&mut self, id: PhotoId, kind: FacesKind, learn: bool) -> Result<Option<serde_json::Value>, String> {
+        let key = self.segment_key_of(id).ok_or("no such photo")?;
+        let tag = Tag::Faces { photo: id, key, learn };
+        let kind = worker::Kind::Faces { face: kind.face, sam2: kind.sam2 };
+        if self.segmenter.background {
+            self.segment_queue(id, kind, tag, None)?;
+            return Ok(None);
+        }
+        let o = self.segment_wait_outcome(id, kind, tag)?;
+        o.result?;
+        Ok(Some(o.extra.unwrap_or_else(|| serde_json::json!([]))))
     }
 
     /// [`Session::segment_wait`] with the whole outcome (a learned example, a found object's seeds).
@@ -961,6 +994,15 @@ impl Session {
                 }
             }
             Tag::Recompute { .. } => {}
+            Tag::Faces { photo, key, learn } => {
+                if let Err(e) = o.result {
+                    return polled.messages.push(e);
+                }
+                let faces = self.keep_appearance(key, &o.extra.unwrap_or_default());
+                if learn && let Err(e) = self.learn_named_faces(photo, &faces) {
+                    polled.messages.push(e);
+                }
+            }
             Tag::Learn { photo, name } => {
                 if let Err(e) = o.result {
                     return polled.messages.push(e);

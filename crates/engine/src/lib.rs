@@ -61,6 +61,7 @@ pub mod fonts;
 pub mod guard;
 pub mod hdr_texture;
 pub mod history_groups;
+pub mod identity;
 pub mod import;
 mod import_move;
 pub mod legacy;
@@ -327,6 +328,7 @@ pub struct Session {
     /// The library's `people.json` (roles, appearance examples), loaded when first needed.
     pub(crate) people: people_smart::PeopleState,
     pub(crate) concepts: concepts_store::ConceptState,
+    pub(crate) appearance: identity::Appearance,
     /// The folder metadata save or read waiting for `folder.metadataPump` ([`cmd::folder_metadata`]); dropped when another library opens.
     pub(crate) folder_metadata: Option<cmd::folder_metadata::FolderMetadataJob>,
     /// The order of Reload from Disk runs, so an older one finishing late is dropped ([`cmd::reload`]).
@@ -630,6 +632,7 @@ impl Session {
             skip_auto_write: false,
             people: Default::default(),
             concepts: Default::default(),
+            appearance: Default::default(),
             stems: Default::default(),
             folder_metadata: None,
             reload_tickets: Default::default(),

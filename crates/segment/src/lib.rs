@@ -46,6 +46,8 @@ pub mod fetch;
 mod grid;
 #[cfg(not(target_arch = "wasm32"))]
 mod hiera;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod identity;
 pub mod mask;
 /// Matte refinement on coverage grids (People masks).
 #[cfg(not(target_arch = "wasm32"))]

@@ -187,6 +187,31 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "people.learn",
+            "Learn People's Looks",
+            [],
+            None,
+            "{ids?} — remember how the people named on the photos (their named Face regions) look (clothes, hair, face proportions; MediaPipe faces, SAM 2.1 when installed), so People masks by name find them on photos where nobody named them; kept in people.json → {learned, pending} (the app: computed in the background)",
+            super::has_selection,
+            |s, p| {
+                let c = "people.learn";
+                let ids = s.targets(p)?;
+                if ids.len() > 10_000 {
+                    return Err(bad(c, "at most 10000 photos at a time"));
+                }
+                let task = (ids.len() > 1).then(|| s.activity.start("people", "Learning people's looks", crate::activity::Cancel::No));
+                let (mut learned, mut pending) = (0, 0);
+                for id in ids {
+                    match s.photo_appearance(id, true).map_err(|e| bad(c, e))? {
+                        Some(faces) => learned += s.learn_named_faces(id, &faces).map_err(|e| bad(c, e))?,
+                        None => pending += 1,
+                    }
+                }
+                drop(task);
+                Ok(json!({"learned": learned, "pending": pending}))
+            }
+        ),
+        cmd!(
             "people.forgetAll",
             "Forget All Roles and Appearance Data",
             [],

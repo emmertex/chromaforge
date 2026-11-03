@@ -57,6 +57,13 @@ pub enum Kind {
     Find {
         examples: Vec<lcc_segment::concept::Example>,
     },
+    /// The photo's faces with their appearance signatures (MediaPipe faces in `face`, its people
+    /// model beside it when installed, SAM 2.1's features from `sam2` when given). The outcome's
+    /// `extra` is `[{rect: [x0, y0, x1, y1] normalized, signature}]`, left to right.
+    Faces {
+        face: PathBuf,
+        sam2: Option<PathBuf>,
+    },
     /// Panics (tests of the worker's recovery).
     #[cfg(test)]
     Panic,
@@ -278,6 +285,8 @@ struct State {
     remote: Option<remote::Client>,
     /// The running job's [`Outcome::extra`].
     extra: Option<serde_json::Value>,
+    /// MediaPipe's faces and people models (their folder), for appearance signatures.
+    faces: Option<(PathBuf, lcc_segment::people::FaceModel, Option<lcc_segment::people::PeopleModel>)>,
 }
 
 /// Whether `later` makes `job` pointless (it asks for the same selection again).
@@ -526,6 +535,54 @@ fn sam2_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placem
     }
 }
 
+/// Every face on the photo with its appearance signature, left to right
+/// ([`lcc_segment::identity`]).
+fn faces_job(
+    state: &mut State,
+    shared: &Shared,
+    job: &mut Job,
+    face: &std::path::Path,
+    sam2: Option<PathBuf>,
+    placement: Placement,
+) -> Result<serde_json::Value, Failure> {
+    if state.faces.as_ref().is_none_or(|(d, ..)| d != face) {
+        let _busy = Flag::raise(&shared.encoding);
+        let m = lcc_segment::people::FaceModel::load(face)?;
+        state.faces = Some((face.to_path_buf(), m, crate::eyes::people_beside(face)));
+    }
+    let input = render(job)?;
+    let (_, fm, pm) = state.faces.as_ref().ok_or("the faces model did not load")?;
+    let map = match pm {
+        Some(p) => Some(p.segment(&input.rgb, input.w, input.h)?),
+        None => None,
+    };
+    let mut faces = fm.faces_confirmed(&input.rgb, input.w, input.h, map.as_ref())?;
+    faces.sort_by(|a, b| (a.detection.x0 + a.detection.x1).total_cmp(&(b.detection.x0 + b.detection.x1)));
+    faces.truncate(64);
+    // SAM 2.1's features of each person's body, when it is installed (appearance beyond colour)
+    let emb = match sam2.filter(|_| !faces.is_empty()) {
+        Some(dir) => {
+            let m = sam2_model(state, shared, &dir, placement)?;
+            let enc = m.encode(&input.rgb, input.w, input.h)?;
+            enc.embedding().ok()
+        }
+        None => None,
+    };
+    let (w, h) = (input.w.max(1) as f32, input.h.max(1) as f32);
+    let out: Vec<serde_json::Value> = (0..faces.len())
+        .filter_map(|i| {
+            let mut sig = lcc_segment::identity::signature(&faces, i, map.as_ref(), &input.rgb, input.w, input.h)?;
+            if let Some((e, side, dim)) = &emb {
+                (sig.body, sig.face) = lcc_segment::identity::features(e, *side, *dim, &faces, i, map.as_ref(), input.w, input.h);
+            }
+            let d = &faces.get(i)?.detection;
+            let rect = [d.x0 / w, d.y0 / h, d.x1 / w, d.y1 / h].map(|v| f64::from(v.clamp(0.0, 1.0)));
+            Some(serde_json::json!({"rect": rect, "signature": sig}))
+        })
+        .collect();
+    Ok(serde_json::Value::Array(out))
+}
+
 /// The alpha of `mask` over the model input, on a grid of about `edge` cells on the long side
 /// (the mask's coordinates are the uncropped photo's, which the input is).
 pub(crate) fn mask_alpha(mask: &lcc_develop::Mask, input: &Input, edge: usize) -> lcc_raster::Plane {
@@ -588,7 +645,7 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
                 }
             }
         }
-        Kind::Learn { .. } | Kind::Find { .. } => return Err("remembered objects run on SAM 2.1 locally".into()),
+        Kind::Learn { .. } | Kind::Find { .. } | Kind::Faces { .. } => return Err("remembered objects and appearance run locally".into()),
         #[cfg(test)]
         Kind::Panic | Kind::FailOnGpu { .. } => return Err("test panic request".into()),
     };
@@ -605,6 +662,11 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
 }
 
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
+    if let Kind::Faces { face, sam2 } = &job.kind {
+        let (face, sam2) = (face.clone(), sam2.clone());
+        state.extra = Some(faces_job(state, shared, job, &face, sam2, placement)?);
+        return Ok(None);
+    }
     // SAM 2.1 runs here even with a remote SAM 3 worker (which serves SAM 3 only)
     if lcc_segment::is_sam2_dir(&job.dir) {
         return sam2_job(state, shared, job, placement);
@@ -627,7 +689,9 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
             let p = m.segment_clicks(enc, &clicks)?;
             Ok(Some(SegMask::from_logits(side, &p.logits)))
         }
-        Kind::Learn { .. } | Kind::Find { .. } => Err("remembered objects need SAM 2.1 (Preferences ▸ AI Models ▸ Object model)".into()),
+        Kind::Learn { .. } | Kind::Find { .. } | Kind::Faces { .. } => {
+            Err("remembered objects need SAM 2.1 (Preferences ▸ AI Models ▸ Object model)".into())
+        }
         Kind::Text(text) => {
             let (m, enc) = encoded(state, shared, job, placement)?;
             Ok(text_logits(m, enc, &text)?.map(|l| SegMask::from_logits(side, &l)))

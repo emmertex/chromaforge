@@ -81,7 +81,11 @@ impl Session {
         };
         match faces.iter().position(|(_, n)| n.as_deref().is_some_and(|n| n.trim().eq_ignore_ascii_case(name.trim()))) {
             Some(i) => (u32::try_from(i).map_or(0, |i| i.saturating_add(1)), None),
-            None => (0, Some(format!("{name} isn't named on this photo, so the mask covers everyone"))),
+            // nobody is named so here: the face that looks like them (people.learn)
+            None => match self.find_by_look(id, &name) {
+                Some(i) => (i, None),
+                None => (0, Some(format!("{name} isn't named on this photo, so the mask covers everyone"))),
+            },
         }
     }
 
