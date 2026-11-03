@@ -330,5 +330,9 @@
   "Show page {name}": "Visa sidan {name}",
   "Switch to profile {name}": "Byt till profilen {name}",
   "This action doesn't use: {keys}. Choose Preset above to put a preset on this key.": "Den här åtgärden använder inte: {keys}. Välj Förinställning ovan för att lägga en förinställning på tangenten.",
-  "Undo: {what}": "Ångra: {what}"
+  "Undo: {what}": "Ångra: {what}",
+  "Both charts are set to {light}; set the second to {other}.": "Båda korten är inställda på {light}; ställ in det andra på {other}.",
+  "The chart's greys measure about {cct:.0} K": "Kortets grått mäter cirka {cct:.0} K",
+  "These charts come from two different camera bodies ({x}, {y})": "Dessa kort kommer från två olika kamerahus ({x}, {y})",
+  "Used by {n} photos; they will update.": "Används av {n} foton; de uppdateras."
 }

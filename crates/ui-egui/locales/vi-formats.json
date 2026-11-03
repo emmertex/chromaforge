@@ -330,5 +330,9 @@
   "Show page {name}": "Hiện trang {name}",
   "Switch to profile {name}": "Chuyển sang hồ sơ {name}",
   "This action doesn't use: {keys}. Choose Preset above to put a preset on this key.": "Hành động này không dùng: {keys}. Chọn Thiết lập sẵn ở trên để gán một thiết lập sẵn cho phím này.",
-  "Undo: {what}": "Hoàn tác: {what}"
+  "Undo: {what}": "Hoàn tác: {what}",
+  "Both charts are set to {light}; set the second to {other}.": "Cả hai bảng đều đặt ở {light}; hãy đặt bảng thứ hai ở {other}.",
+  "The chart's greys measure about {cct:.0} K": "Các ô xám của bảng đo được khoảng {cct:.0} K",
+  "These charts come from two different camera bodies ({x}, {y})": "Các bảng này đến từ hai thân máy khác nhau ({x}, {y})",
+  "Used by {n} photos; they will update.": "Được {n} ảnh dùng; chúng sẽ được cập nhật."
 }

@@ -2219,18 +2219,26 @@ pub(crate) fn camera_profile_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mu
         let label = format!("{} · {} ({})", body.camera, body.serial.trim_start_matches("file:"), body.photos);
         // (the body under the Camera Profile row: the label column is too narrow for it)
         row(ui, "", &mut |ui: &mut egui::Ui| {
-            ui.label(egui::RichText::new(label.as_str()).color(Tokens::get(ui.ctx()).text_dim));
-            let mut v = d.per_body.get(&body.body).cloned().unwrap_or_default();
-            let mut options = camera_profile_options(Some(&body.camera));
-            if let Some(first) = options.first_mut() {
-                // automatic names what it gives this body
-                first.1 = format!("{} ({})", crate::i18n::tr("Automatic"), lcc_engine::profile_bodies::profile_name(&body.profile));
-            }
-            profile_combo(ui, &format!("importBodyProfile:{}", body.body), &options, &mut v);
-            if v.is_empty() {
-                d.per_body.remove(&body.body);
+            let mut body_row = |ui: &mut egui::Ui| {
+                ui.label(egui::RichText::new(label.as_str()).color(Tokens::get(ui.ctx()).text_dim));
+                let mut v = d.per_body.get(&body.body).cloned().unwrap_or_default();
+                let mut options = camera_profile_options(Some(&body.camera));
+                if let Some(first) = options.first_mut() {
+                    // automatic names what it gives this body
+                    first.1 = format!("{} ({})", crate::i18n::tr("Automatic"), lcc_engine::profile_bodies::profile_name(&body.profile));
+                }
+                profile_combo(ui, &format!("importBodyProfile:{}", body.body), &options, &mut v);
+                if v.is_empty() {
+                    d.per_body.remove(&body.body);
+                } else {
+                    d.per_body.insert(body.body.clone(), v);
+                }
+            };
+            // (a narrow settings column: the body's name above its menu)
+            if screen {
+                ui.vertical(|ui| body_row(ui));
             } else {
-                d.per_body.insert(body.body.clone(), v);
+                body_row(ui);
             }
         });
     }
