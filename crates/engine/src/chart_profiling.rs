@@ -722,7 +722,20 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8], write: &dyn Fn(&std::p
 fn keep_replaced(library: &std::path::Path, stem: &str, old: &[u8]) -> std::io::Result<std::path::PathBuf> {
     let dir = library.join(".replaced");
     std::fs::create_dir_all(&dir)?;
-    let when = chrono::Local::now().format("%Y-%m-%d %H%M%S");
+    // (the clock as the import dates things; `:` is not allowed in file names everywhere)
+    let when: String = crate::import::system_clock()
+        .chars()
+        .take(19)
+        .map(|c| {
+            if c == ':' {
+                '-'
+            } else if c == 'T' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
     let mut to = dir.join(format!("{stem} {when}.dcp"));
     let mut n = 2;
     while to.exists() && n < 10_000 {
