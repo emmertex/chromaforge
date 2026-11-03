@@ -34,6 +34,8 @@ pub const FIELDS: &[&str] = &[
     "state",
     "country",
     "keywords",
+    "supplementalCategories",
+    "subjectCode",
 ];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -62,7 +64,26 @@ fn text_field<'a>(m: &'a mut Meta, k: &str) -> Option<&'a mut String> {
     })
 }
 
-/// Apply preset `fields` to `m`: text fields replace, keywords are added.
+fn list_field<'a>(m: &'a mut Meta, k: &str) -> Option<&'a mut Vec<String>> {
+    match k {
+        "supplementalCategories" => Some(&mut m.supplemental_categories),
+        "subjectCode" => Some(&mut m.subject_code),
+        _ => None,
+    }
+}
+
+/// A preset's list of text, each once, or `None` when `v` isn't a list.
+fn text_list(v: &Value) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for s in v.as_array()?.iter().filter_map(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+        if !out.iter().any(|x| x == s) {
+            out.push(s.to_string());
+        }
+    }
+    Some(out)
+}
+
+/// Apply preset `fields` to `m`: text fields and lists replace, keywords are added.
 pub fn apply_to(m: &mut Meta, fields: &Value) {
     for (k, v) in fields.as_object().into_iter().flatten() {
         if k == "copyrightStatus" {
@@ -75,6 +96,8 @@ pub fn apply_to(m: &mut Meta, fields: &Value) {
                     m.keywords.push(kw.to_string());
                 }
             }
+        } else if let (Some(f), Some(l)) = (list_field(m, k), text_list(v)) {
+            *f = l;
         } else if let (Some(f), Some(t)) = (text_field(m, k), v.as_str()) {
             *f = t.to_string();
         }
@@ -122,6 +145,10 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
                 } else if k == "copyrightStatus" {
                     if !m.copyright_status.is_unknown() {
                         o.insert(k.clone(), json!(m.copyright_status.id()));
+                    }
+                } else if let Some(v) = list_field(&mut m, k) {
+                    if !v.is_empty() {
+                        o.insert(k.clone(), json!(v.clone()));
                     }
                 } else if let Some(v) = text_field(&mut m, k).filter(|v| !v.trim().is_empty()) {
                     o.insert(k.clone(), json!(v.clone()));
@@ -182,7 +209,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Metadata Preset",
             [],
             None,
-            "{name, fields?: {copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, title?, headline?, caption?, descriptionWriter?, category?, location?, city?, state?, country?, keywords?: [..]}, only?: [field] (from the active photo when `fields` is absent; default the copyright fields, creator and contact, place)} — adds or replaces",
+            "{name, fields?: {copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, title?, headline?, caption?, descriptionWriter?, category?, location?, city?, state?, country?, keywords?: [..], supplementalCategories?: [..], subjectCode?: [..]}, only?: [field] (from the active photo when `fields` is absent; default the copyright fields, creator and contact, place)} — adds or replaces",
             always,
             save
         ),
@@ -192,7 +219,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Metadata Preset",
             [],
             None,
-            "{name, ids?} — text fields replace, keywords are added; one undo step",
+            "{name, ids?} — text fields and lists replace, keywords are added; one undo step",
             always,
             apply
         ),
