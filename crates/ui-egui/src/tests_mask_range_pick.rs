@@ -151,3 +151,38 @@ fn color_range_is_armed_until_the_first_click() {
     assert!(matches!(&d.masks[0].components[0].shape, MaskShape::ColorRange { samples, .. } if samples.len() == 1), "{:?}", d.masks[0]);
     assert_eq!(h.app.ui.tool, "colorRange", "the picker stays on to add more");
 }
+
+/// Object, with SAM 2.1 installed (`<PREFIX>_SAM2_DIR` = its folder): armed until the first
+/// click on the photo, which makes the mask and selects what was clicked.
+#[test]
+fn object_is_armed_until_the_first_click_and_selects_there() {
+    let Some(dir) = lcc_brand::env_os("SAM2_DIR").map(std::path::PathBuf::from) else {
+        lcc_testkit::skip!(Model, "set {} to SAM 2.1's folder", lcc_brand::env_var("SAM2_DIR"));
+        return;
+    };
+    if !lcc_engine::segment::Segmenter::AVAILABLE {
+        lcc_testkit::skip!(Model, "a build without AI masks (--features lcc-engine/sam)");
+        return;
+    }
+    let mut h = detail("panel.masking");
+    h.app.session.segmenter.models_root = dir.parent().map(std::path::PathBuf::from);
+    h.app.session.segmenter.dir = h.app.session.segmenter.models_root.as_ref().map(|r| r.join("sam3"));
+    exec(&mut h, "ai.models.setObjectModel", json!({"model": "sam2"}));
+    click(&mut h, "maskNew:object");
+    h.step();
+    assert!(develop(&h).masks.is_empty(), "armed: no mask yet");
+    assert_eq!(h.app.ui.tool, "object");
+    pointer(&mut h, json!([{"kind": "down", "x": 0.5, "y": 0.5}, {"kind": "up", "x": 0.5, "y": 0.5}]));
+    let t = std::time::Instant::now();
+    loop {
+        h.step();
+        let d = develop(&h);
+        if let Some(MaskShape::Object { seg: Some(_), hint, .. }) = d.masks.first().and_then(|m| m.components.first()).map(|c| &c.shape) {
+            assert_eq!(hint.len(), 1, "the click is the object's");
+            break;
+        }
+        assert!(t.elapsed() < Duration::from_secs(180), "no selection came back: {:?}", d.masks);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(develop(&h).masks.len(), 1);
+}

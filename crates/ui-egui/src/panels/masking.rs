@@ -2136,7 +2136,9 @@ fn carry_component(app: &mut LccApp, photo: Option<u64>) -> bool {
     }
     app.ui.active_mask_component = Some(k);
     let brush = app.session.develop_of(PhotoId(p)).is_some_and(|d| {
-        d.masks.iter().any(|m| Some(m.id) == app.session.active_mask && m.components.get(k).is_some_and(|c| matches!(c.shape, MaskShape::Brush { .. })))
+        d.masks
+            .iter()
+            .any(|m| Some(m.id) == app.session.active_mask && m.components.get(k).is_some_and(|c| matches!(c.shape, MaskShape::Brush { .. })))
     });
     brush && app.ui.tool == "brush" && app.ui.mask_new.is_none()
 }
