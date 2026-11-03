@@ -71,6 +71,9 @@ pub enum Kind {
         face: PathBuf,
         person: u32,
         parts: Vec<String>,
+        /// SAM 2.1, when installed: one person of several follows their own silhouette where
+        /// people overlap (an arm round someone stays its owner's).
+        sam2: Option<PathBuf>,
     },
     /// Panics (tests of the worker's recovery).
     #[cfg(test)]
@@ -304,6 +307,8 @@ struct PeopleSeen {
     input: Input,
     map: Option<lcc_segment::people::PeopleMap>,
     faces: Vec<lcc_segment::people::Face>,
+    /// Everyone's SAM 2.1 silhouette, once asked for (`Some(None)`: SAM 2.1 couldn't give them).
+    instances: Option<Option<lcc_segment::people::Instances>>,
 }
 
 /// Whether `later` makes `job` pointless (it asks for the same selection again).
@@ -689,6 +694,7 @@ fn ensure_faces(state: &mut State, shared: &Shared, face: &std::path::Path) -> R
 
 /// A [`Kind::People`] request: the selection as a stored segmentation (`None`: nobody, or none
 /// of the parts, is there).
+#[allow(clippy::too_many_arguments)]
 fn people_job(
     state: &mut State,
     shared: &Shared,
@@ -696,6 +702,8 @@ fn people_job(
     face: &std::path::Path,
     person: u32,
     parts: &[String],
+    sam2: Option<&std::path::Path>,
+    placement: Placement,
 ) -> Result<Option<SegMask>, Failure> {
     let req = lcc_segment::people::PeopleRequest::parse(person, parts).ok_or_else(|| Failure::Other(format!("unknown People part in {parts:?}")))?;
     ensure_faces(state, shared, face)?;
@@ -710,20 +718,70 @@ fn people_job(
         let mut faces = fm.faces_confirmed(&input.rgb, input.w, input.h, map.as_ref())?;
         faces.sort_by(|a, b| (a.detection.x0 + a.detection.x1).total_cmp(&(b.detection.x0 + b.detection.x1)));
         faces.truncate(64);
-        state.people_seen = Some((job.key, PeopleSeen { input, map, faces }));
+        state.people_seen = Some((job.key, PeopleSeen { input, map, faces, instances: None }));
+    }
+    // one person of several: everyone's silhouette decides whose an overlapping pixel is
+    let crowd = person > 0 && state.people_seen.as_ref().is_some_and(|(_, p)| p.faces.len() > 1 && p.instances.is_none());
+    if let Some(dir) = sam2.filter(|_| crowd) {
+        let found = silhouettes(state, shared, dir, placement);
+        if let Some((_, p)) = state.people_seen.as_mut() {
+            p.instances = Some(found);
+        }
     }
     let (_, seen) = state.people_seen.as_ref().ok_or("the photo is not available")?;
-    let g = lcc_segment::people::people_mask(&req, &seen.input.rgb, seen.input.w, seen.input.h, seen.map.as_ref(), &seen.faces);
+    let instances = seen.instances.as_ref().and_then(Option::as_ref).filter(|_| person > 0);
+    let g = lcc_segment::people::people_mask_with(&req, &seen.input.rgb, seen.input.w, seen.input.h, seen.map.as_ref(), &seen.faces, instances, None);
     Ok(g.map(|g| match g.rect {
         Some(r) => SegMask::from_logits_in(g.side, &g.logits, r),
         None => SegMask::from_logits(g.side, &g.logits),
     }))
 }
 
+/// Everyone's silhouette on the analysed photo (SAM 2.1; for each face: clicks on it and down
+/// its body, the other faces left out); `None` (with a log line) when SAM 2.1 can't give them.
+fn silhouettes(state: &mut State, shared: &Shared, dir: &std::path::Path, placement: Placement) -> Option<lcc_segment::people::Instances> {
+    let seen = state.people_seen.take();
+    let out = (|| -> Result<lcc_segment::people::Instances, Failure> {
+        let (_, p) = seen.as_ref().ok_or("the photo is not available")?;
+        let (w, h) = (p.input.w.max(1) as f32, p.input.h.max(1) as f32);
+        let centre = |f: &lcc_segment::people::Face| {
+            let d = &f.detection;
+            (((d.x0 + d.x1) / 2.0 / w).clamp(0.0, 1.0), ((d.y0 + d.y1) / 2.0 / h).clamp(0.0, 1.0), ((d.y1 - d.y0) / h).max(0.0))
+        };
+        let m = sam2_model(state, shared, dir, placement)?;
+        let enc = m.encode(&p.input.rgb, p.input.w, p.input.h)?;
+        let mut people = Vec::with_capacity(p.faces.len());
+        let mut seeds = Vec::with_capacity(p.faces.len());
+        for (k, f) in p.faces.iter().enumerate() {
+            let (cx, cy, fh) = centre(f);
+            seeds.push([cx, cy]);
+            // their face, chest and middle (below the frame: left out); the others' faces out
+            let mut clicks: Vec<lcc_segment::Click> =
+                [0.0, 1.6, 3.2].iter().map(|d| cy + d * fh).filter(|y| *y < 0.98).map(|y| lcc_segment::Click { x: cx, y, positive: true }).collect();
+            for (j, o) in p.faces.iter().enumerate() {
+                if j != k {
+                    let (ox, oy, _) = centre(o);
+                    clicks.push(lcc_segment::Click { x: ox, y: oy, positive: false });
+                }
+            }
+            people.push(m.segment_clicks_with(&enc, &clicks, false)?.logits);
+        }
+        Ok(lcc_segment::people::Instances::new(lcc_segment::SAM2_MASK_SIDE, people, &seeds))
+    })();
+    state.people_seen = seen;
+    match out {
+        Ok(i) => Some(i),
+        Err(e) => {
+            log::warn!("people: no silhouettes from SAM 2.1 ({})", e.message());
+            None
+        }
+    }
+}
+
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
-    if let Kind::People { face, person, parts } = &job.kind {
-        let (face, person, parts) = (face.clone(), *person, parts.clone());
-        return people_job(state, shared, job, &face, person, &parts);
+    if let Kind::People { face, person, parts, sam2 } = &job.kind {
+        let (face, person, parts, sam2) = (face.clone(), *person, parts.clone(), sam2.clone());
+        return people_job(state, shared, job, &face, person, &parts, sam2.as_deref(), placement);
     }
     if let Kind::Faces { face, sam2 } = &job.kind {
         let (face, sam2) = (face.clone(), sam2.clone());

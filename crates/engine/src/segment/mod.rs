@@ -740,7 +740,8 @@ impl Session {
         let Some(face) = self.segmenter.people_models() else { return Ok(None) };
         #[cfg(feature = "sam")]
         {
-            self.segment_wait(id, worker::Kind::People { face, person, parts: parts.to_vec() }, None)
+            let sam2 = self.segmenter.require_sam2().ok();
+            self.segment_wait(id, worker::Kind::People { face, person, parts: parts.to_vec(), sam2 }, None)
         }
         #[cfg(not(feature = "sam"))]
         {
@@ -882,7 +883,12 @@ impl Session {
                     }
                     MaskShape::Prompt { text, .. } if !text.trim().is_empty() => worker::Kind::Text(text.trim().to_string()),
                     MaskShape::People { person, parts, .. } => match &people_face {
-                        Some(face) => worker::Kind::People { face: face.clone(), person: *person, parts: parts.clone() },
+                        Some(face) => worker::Kind::People {
+                            face: face.clone(),
+                            person: *person,
+                            parts: parts.clone(),
+                            sam2: self.segmenter.require_sam2().ok(),
+                        },
                         None => continue,
                     },
                     _ => continue,
