@@ -838,6 +838,8 @@ pub struct LccApp {
     preview_window: Option<bool>,
     /// The GPU preference last applied (`app.gpu`), to apply Settings changes once.
     gpu_applied: Option<bool>,
+    /// The graphics cards (for editing, second) last handed to the renderer.
+    gpu_cards_applied: Option<(String, String)>,
     /// Say once, when the GPU device has been tried, that no graphics processor was found
     /// ([`panels::notices::gpu_notice`]). The desktop app sets it; headless sessions and tests don't.
     pub gpu_notice: bool,
@@ -1045,6 +1047,7 @@ impl LccApp {
             window_is_fullscreen: false,
             preview_window: None,
             gpu_applied: None,
+            gpu_cards_applied: None,
             gpu_notice: false,
             startup_update_check: false,
             hdr_display_sdr: false,
@@ -2116,6 +2119,16 @@ impl LccApp {
         theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
+        // the cards first: the device warmed up below is made on the chosen one
+        let cards = (self.ui.settings.gpu_card.clone(), self.ui.settings.gpu_helper.clone());
+        if self.gpu_cards_applied.as_ref() != Some(&cards) {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                lcc_engine::gpu::set_card(&cards.0);
+                lcc_engine::gpu::set_helper(&cards.1);
+            }
+            self.gpu_cards_applied = Some(cards);
+        }
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);
             // not the `app.gpu` command: its answer (`available`, `adapter`) waits for the device, and

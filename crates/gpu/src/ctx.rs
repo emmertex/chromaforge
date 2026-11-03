@@ -100,6 +100,11 @@ const MODULES: &[Module] = &[
         entries: &["skin_lab", "skin_reduce", "skin_combine"],
     },
     Module {
+        src: include_str!("wgsl/present.wgsl"),
+        bindings: &[("px", false, "u32"), ("dst", true, "u32"), ("count", true, "atomic<u32>")],
+        entries: &["unwritten", "pad_rows"],
+    },
+    Module {
         src: include_str!("wgsl/geom.wgsl"),
         bindings: &[("src", false, "f32"), ("dst", true, "f32"), ("coverage", false, "u32")],
         entries: &["orient", "sample_affine", "sample_warp"],
@@ -414,6 +419,8 @@ pub struct Gpu {
     /// This device is lost: wgpu's `poll` panics from then on, so [`Gpu::poll`] stops calling it.
     /// Other failures leave the device usable for releasing its buffers.
     lost: Arc<AtomicBool>,
+    /// The device is the window's (eframe's): renders can hand it textures to draw directly.
+    pub window: bool,
 }
 
 /// WGSL constants shared by every module (generated from the CPU pipeline's values).
@@ -480,19 +487,29 @@ fn module_source(m: &Module, consts: &str) -> String {
     s
 }
 
+/// A wgpu instance that loads only `backends`' drivers (`crate::backend`: never Vulkan on Windows
+/// unless asked), with the DX12 shader compiler and validation flags the renderer needs.
+pub(crate) fn instance(backends: wgpu::Backends) -> wgpu::Instance {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = backends;
+    // DX12 shaders compile with FXC (issue #471)
+    desc.backend_options = crate::backend::backend_options();
+    // no indirect-call validation pipeline: Intel Metal fails to compile it (#250)
+    desc.flags = crate::backend::instance_flags_from_env(desc.flags);
+    wgpu::Instance::new(desc)
+}
+
 impl Gpu {
     /// Create a device on the best available adapter (no software fallback), or why there is none.
     pub fn new(backends: wgpu::Backends) -> Result<Gpu, String> {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        // only these drivers are loaded (`crate::backend`: never Vulkan on Windows unless asked)
-        desc.backends = backends;
-        // DX12 shaders compile with FXC (issue #471)
-        desc.backend_options = crate::backend::backend_options();
-        // no indirect-call validation pipeline: Intel Metal fails to compile it (#250)
-        desc.flags = crate::backend::instance_flags_from_env(desc.flags);
-        let instance = wgpu::Instance::new(desc);
+        let instance = instance(backends);
         // the card `<PREFIX>_GPU_ADAPTER` names, else the high-performance one
         let adapter = crate::backend::pick_adapter(&instance, backends)?;
+        Gpu::on_adapter(&adapter)
+    }
+
+    /// Create a device on `adapter` (not a software one), or why it can't be.
+    pub fn on_adapter(adapter: &wgpu::Adapter) -> Result<Gpu, String> {
         let info = adapter.get_info();
         if info.device_type == wgpu::DeviceType::Cpu {
             log::info!("gpu: only a software adapter ({}), using the CPU pipeline", info.name);
@@ -503,17 +520,48 @@ impl Gpu {
             log::info!("gpu: {} has too few storage buffers per stage", info.name);
             return Err(format!("{} has too few storage buffers per shader stage ({} < 10)", info.name, limits.max_storage_buffers_per_shader_stage));
         }
-        if let Some((binding, buffer)) = limits_override() {
-            limits.max_storage_buffer_binding_size = limits.max_storage_buffer_binding_size.min(binding);
-            limits.max_buffer_size = limits.max_buffer_size.min(buffer);
-            log::info!("gpu: {}: storage bindings ≤ {} MiB, buffers ≤ {} MiB", lcc_brand::env_var("GPU_LIMITS"), binding >> 20, buffer >> 20);
-        }
+        limits = capped(limits, limits_override());
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some(lcc_brand::BINARY),
             required_limits: limits.clone(),
             ..Default::default()
         }))
         .map_err(|e| format!("{}: device creation failed ({e})", info.name))?;
+        let vram = lcc_gpumem::adapter_memory(adapter);
+        Gpu::with_device(device, queue, info, limits, vram, false)
+    }
+
+    /// The renderer on the window's device ([`crate::adopt_window_device`]), within its limits
+    /// lowered by `<PREFIX>_GPU_LIMITS` as a device of its own would be.
+    pub fn adopt(device: wgpu::Device, queue: wgpu::Queue, info: wgpu::AdapterInfo, vram: Option<u64>) -> Result<Gpu, String> {
+        Gpu::adopt_capped(device, queue, info, vram, limits_override())
+    }
+
+    /// [`Gpu::adopt`] with the limits override given (`<PREFIX>_GPU_LIMITS`, parsed).
+    fn adopt_capped(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        info: wgpu::AdapterInfo,
+        vram: Option<u64>,
+        cap: Option<(u64, u64)>,
+    ) -> Result<Gpu, String> {
+        let limits = capped(device.limits(), cap);
+        Gpu::with_device(device, queue, info, limits, vram, true)
+    }
+
+    /// The renderer on an existing device: the window's (`window`, see [`crate::adopt_window_device`])
+    /// or one [`Gpu::new`] created with `limits`. Builds the kernels (~0.4–2 s: not on the UI thread).
+    pub fn with_device(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        info: wgpu::AdapterInfo,
+        limits: wgpu::Limits,
+        vram: Option<u64>,
+        window: bool,
+    ) -> Result<Gpu, String> {
+        if limits.max_storage_buffers_per_shader_stage < 10 {
+            return Err(format!("{} has too few storage buffers per shader stage ({} < 10)", info.name, limits.max_storage_buffers_per_shader_stage));
+        }
         let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
         let lost = Arc::new(AtomicBool::new(false));
         // Errors outside a render's error scopes (see `ErrorScopes`): log, and replace the device.
@@ -556,9 +604,15 @@ impl Gpu {
             })
             .collect();
         let max_buffer = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
-        log::info!("gpu: {} ({:?}), {} kernels in {build_ms} ms, buffers ≤ {} MiB", info.name, info.backend, kernels.len(), max_buffer >> 20);
-        let vram = lcc_gpumem::adapter_memory(&adapter);
-        Ok(Gpu { device, queue, info, kernels, dummy, free: Default::default(), max_buffer, generation, vram, lost })
+        log::info!(
+            "gpu: {} ({:?}), {} kernels in {build_ms} ms, buffers ≤ {} MiB{}",
+            info.name,
+            info.backend,
+            kernels.len(),
+            max_buffer >> 20,
+            if window { ", the window's device" } else { "" }
+        );
+        Ok(Gpu { device, queue, info, kernels, dummy, free: Default::default(), max_buffer, generation, vram, lost, window })
     }
 
     /// A buffer of `len` 32-bit values with undefined contents (a recycled one when possible).
@@ -889,6 +943,81 @@ const READBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60)
 /// `<n>` = n MiB storage bindings and 2n MiB buffers. Returns (binding bytes, buffer bytes).
 fn limits_override() -> Option<(u64, u64)> {
     parse_limits(&lcc_brand::env("GPU_LIMITS")?)
+}
+
+/// `limits` lowered to `cap` ([`limits_override`]: storage binding bytes, buffer bytes).
+fn capped(mut limits: wgpu::Limits, cap: Option<(u64, u64)>) -> wgpu::Limits {
+    if let Some((binding, buffer)) = cap {
+        limits.max_storage_buffer_binding_size = limits.max_storage_buffer_binding_size.min(binding);
+        limits.max_buffer_size = limits.max_buffer_size.min(buffer);
+        log::info!("gpu: {}: storage bindings ≤ {} MiB, buffers ≤ {} MiB", lcc_brand::env_var("GPU_LIMITS"), binding >> 20, buffer >> 20);
+    }
+    limits
+}
+
+/// See [`crate::read_texture`].
+pub(crate) fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: usize,
+    height: usize,
+) -> Result<lcc_raster::Rgba8, String> {
+    if width == 0 || height == 0 {
+        return Err("an empty texture".into());
+    }
+    let (Ok(w32), Ok(h32)) = (u32::try_from(width), u32::try_from(height)) else { return Err("texture too large".into()) };
+    if w32 > texture.width() || h32 > texture.height() || texture.format() != wgpu::TextureFormat::Rgba8Unorm {
+        return Err("not an 8-bit view texture of that size".into());
+    }
+    // texture copies take rows of a multiple of 256 bytes
+    let stride = width.checked_mul(4).ok_or("texture too large")?.next_multiple_of(256);
+    let size = stride.checked_mul(height).ok_or("texture too large")?;
+    let (Ok(stride32), Ok(size64)) = (u32::try_from(stride), u64::try_from(size)) else { return Err("texture too large".into()) };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("view readback"),
+        size: size64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("view readback") });
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride32), rows_per_image: Some(h32) },
+        },
+        wgpu::Extent3d { width: w32, height: h32, depth_or_array_layers: 1 },
+    );
+    queue.submit([enc.finish()]);
+    if let Some(e) = pollster::block_on(scope.pop()) {
+        return Err(format!("texture copy failed: {e}"));
+    }
+    let slice = staging.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    let wait = std::time::Duration::from_secs(10);
+    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(wait) }).map_err(|e| format!("{e}"))?;
+    match rx.recv_timeout(wait) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(format!("{e}")),
+        Err(e) => return Err(format!("map callback: {e}")),
+    }
+    let bytes = slice.get_mapped_range().map_err(|e| format!("{e:?}"))?;
+    let mut data = Vec::with_capacity(width * height);
+    for row in bytes.chunks(stride).take(height) {
+        let row = row.get(..width * 4).ok_or("short readback row")?;
+        data.extend(row.as_chunks::<4>().0.iter().copied());
+    }
+    drop(bytes);
+    staging.unmap();
+    if data.len() != width * height {
+        return Err("incomplete readback".into());
+    }
+    Ok(lcc_raster::Rgba8 { width, height, data })
 }
 
 fn parse_limits(v: &str) -> Option<(u64, u64)> {
@@ -1226,6 +1355,53 @@ mod tests {
         assert!(e.contains("lost"), "{e}");
         drop(held);
         println!("CHILD: survived");
+    }
+
+    /// ``<PREFIX>_GPU_LIMITS`` caps the window's device as it caps a device of its own (review of
+    /// PR #1065: adopting the window's device skipped it, so a 1024 × 1024 RGB float buffer — 12 MiB —
+    /// was taken under an 8 MiB cap).
+    #[test]
+    fn the_limits_override_caps_an_adopted_device() {
+        let big = wgpu::Limits { max_storage_buffer_binding_size: 1 << 30, max_buffer_size: 1 << 31, ..wgpu::Limits::default() };
+        let c = super::capped(big.clone(), super::parse_limits("8"));
+        assert_eq!((c.max_storage_buffer_binding_size, c.max_buffer_size), (8 << 20, 16 << 20));
+        let c = super::capped(big.clone(), None);
+        assert_eq!((c.max_storage_buffer_binding_size, c.max_buffer_size), (1 << 30, 1 << 31));
+
+        let Some((device, queue, info)) = test_device() else {
+            lcc_testkit::skip!(Gpu, "no GPU adapter");
+            return;
+        };
+        let full = device.limits().max_storage_buffer_binding_size.min(device.limits().max_buffer_size);
+        if full <= 12 << 20 {
+            lcc_testkit::skip!(Gpu, "the adapter's buffers are already ≤ 12 MiB");
+            return;
+        }
+        let g = super::Gpu::adopt_capped(device, queue, info, None, super::parse_limits("8")).expect("kernels build");
+        assert!(g.window);
+        assert_eq!(g.limit(), 8 << 20, "the cap applies to the adopted device");
+        assert!(1024 * 1024 * 3 * 4 > g.limit(), "a 12 MiB buffer is over it");
+    }
+
+    /// A device as eframe makes the window's (the adapter's own limits).
+    fn test_device() -> Option<(wgpu::Device, wgpu::Queue, wgpu::AdapterInfo)> {
+        let backends = crate::backend::compute_backends()?;
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = backends;
+        desc.backend_options = crate::backend::backend_options();
+        let instance = wgpu::Instance::new(desc);
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        let info = adapter.get_info();
+        if info.device_type == wgpu::DeviceType::Cpu {
+            return None;
+        }
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("test window"),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .ok()?;
+        Some((device, queue, info))
     }
 
     #[test]

@@ -5477,6 +5477,7 @@ dependencies = [
  "lcc-updater",
  "lcc-webgallery",
  "log",
+ "pollster 1.0.1",
  "resvg",
  "serde",
  "serde_json",

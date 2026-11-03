@@ -460,7 +460,7 @@ fn show_folder_node(
             if let Some(job) = app.session.variant_job(id, s, THUMB_EDGE)
                 && let Some(tex) = app.renderer.variant(job)
             {
-                ui.painter().image(tex.tex.id(), tr, cover_uv(tr, tex.size), Color32::WHITE);
+                ui.painter().image(tex.id(), tr, cover_uv(tr, tex.size), Color32::WHITE);
             }
             text_x = tr.right() + 10.0;
         }
@@ -827,7 +827,7 @@ pub fn picker_frame(app: &mut LccApp, ctx: &egui::Context) {
         return;
     };
     let look = preset.apply(&now, 1.0);
-    let tex = app.session.variant_job(active, &look, PICKER_PREVIEW_EDGE).and_then(|job| app.renderer.variant(job)).map(|t| (t.tex.id(), t.size));
+    let tex = app.session.variant_job(active, &look, PICKER_PREVIEW_EDGE).and_then(|job| app.renderer.variant(job)).map(|t| (t.id(), t.size));
     let t = Tokens::get(ctx);
     let side = 150.0;
     let screen = ctx.content_rect();

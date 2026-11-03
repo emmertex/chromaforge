@@ -1005,6 +1005,80 @@ fn gpu_backend_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
 }
 
+/// Settings ▸ Performance: the graphics card for editing and the second card (exports, previews,
+/// thumbnails). The cards are those listed when the GPU started; a change applies at once.
+#[cfg(not(target_arch = "wasm32"))]
+fn gpu_card_rows(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    use lcc_engine::gpu;
+    let cards = gpu::adapters();
+    if cards.is_empty() {
+        return;
+    }
+    let label = |e: &gpu::cards::AdapterEntry| {
+        let mut l = e.name.clone();
+        if cards.iter().filter(|c| c.key.same_model(&e.key)).count() > 1 {
+            l = format!("{l} #{}", e.key.index);
+        }
+        if e.drives_screen {
+            l = crate::i18n::tr_format!("{card} (screen)", card = l);
+        }
+        l
+    };
+    let name_of = |setting: &str| cards.iter().find(|e| gpu::cards::AdapterKey::parse(setting).is_some_and(|k| k == e.key)).map(label);
+    let auto = crate::i18n::tr("Automatic").to_string();
+    row(ui, t, crate::i18n::tr("Graphics card for editing"), |ui| {
+        let current = name_of(&app.ui.settings.gpu_card).unwrap_or_else(|| auto.clone());
+        let combo = crate::widgets::combo_box("settingsGpuCard").selected_text(current).width(260.0).show_ui(ui, |ui| {
+            let r = ui.selectable_value(&mut app.ui.settings.gpu_card, String::new(), auto.as_str());
+            register(ui.ctx(), "button:settingsGpuCard-auto", r.rect);
+            for (i, e) in cards.iter().enumerate() {
+                let r = ui.add_enabled_ui(e.usable, |ui| ui.selectable_value(&mut app.ui.settings.gpu_card, e.key.to_string(), label(e))).inner;
+                let r = match &e.why_not {
+                    Some(why) => r.on_disabled_hover_text(why),
+                    None => r,
+                };
+                register(ui.ctx(), format!("button:settingsGpuCard-{i}"), r.rect);
+            }
+        });
+        register(ui.ctx(), "combo:settingsGpuCard", combo.response.rect);
+    });
+    // (another card than the editing one; Automatic picks one when there is one)
+    let (_, editing, switching) = gpu::card_status();
+    let others: Vec<_> = cards.iter().enumerate().filter(|(_, e)| e.usable && editing.as_deref() != Some(e.key.to_string().as_str())).collect();
+    if others.is_empty() && app.ui.settings.gpu_helper.is_empty() {
+        return;
+    }
+    row(ui, t, crate::i18n::tr("Second graphics card"), |ui| {
+        let off = crate::i18n::tr("Off").to_string();
+        let current = match app.ui.settings.gpu_helper.as_str() {
+            "" => auto.clone(),
+            "off" => off.clone(),
+            k => name_of(k).unwrap_or_else(|| auto.clone()),
+        };
+        let combo = crate::widgets::combo_box("settingsGpuHelper").selected_text(current).width(260.0).show_ui(ui, |ui| {
+            let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, String::new(), auto.as_str());
+            register(ui.ctx(), "button:settingsGpuHelper-auto", r.rect);
+            let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, "off".to_string(), off.as_str());
+            register(ui.ctx(), "button:settingsGpuHelper-off", r.rect);
+            for (i, e) in &others {
+                let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, e.key.to_string(), label(e));
+                register(ui.ctx(), format!("button:settingsGpuHelper-{i}"), r.rect);
+            }
+        });
+        register(ui.ctx(), "combo:settingsGpuHelper", combo.response.rect);
+    });
+    let status = match gpu::helper_status() {
+        _ if switching => crate::i18n::tr("Setting up the chosen graphics card…").to_string(),
+        ("ready", Some(name)) => crate::i18n::tr_format!("Exports, previews and thumbnails also use {card}.", card = name),
+        ("starting", _) => crate::i18n::tr("Second graphics card: starting…").to_string(),
+        ("failed" | "lost", Some(why)) => crate::i18n::tr_format!("Second graphics card not used: {why}", why = why),
+        _ => crate::i18n::tr("Exports, previews and thumbnails use the graphics card for editing.").to_string(),
+    };
+    crate::dialog_frame::in_control_column(ui, |ui| {
+        ui.add(egui::Label::new(RichText::new(&status).size(11.0).color(t.text_dim)).truncate()).on_hover_text(&status);
+    });
+}
+
 /// The largest thumbnail cache Custom… offers (1 TB).
 const MAX_CACHE_GB: u32 = 1024;
 
@@ -1082,6 +1156,8 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     check(ui, "settings.composeWindow", &mut app.ui.settings.compose_window, "Prevent G-SYNC/FreeSync flicker (applies at next launch)");
     check(ui, "settings.gpu", &mut app.ui.settings.gpu, "Use the GPU for rendering");
     gpu_backend_row(app, ui, t);
+    #[cfg(not(target_arch = "wasm32"))]
+    gpu_card_rows(app, ui, t);
     check(ui, "settings.hdrDisplay", &mut app.ui.settings.hdr_display, "HDR display where the screen supports it (applies at next launch)");
     // `available` waits for a device still being created: say so instead of blocking the frame
     let status = if gpu::enabled() && !gpu::ready() {

@@ -278,6 +278,20 @@ impl<'a> Cx<'a> {
         enc.copy_buffer_to_buffer(src.raw(), 0, dst.raw(), (offset * 4) as u64, (src.len * 4) as u64);
     }
 
+    /// Copy `w × h` texels from `b` (rows of `stride` 32-bit texels, a multiple of 64) into
+    /// `texture` (recorded).
+    pub fn copy_to_texture(&mut self, b: &Buf, stride: usize, texture: &wgpu::Texture, w: usize, h: usize) {
+        let enc = self.enc.get_or_insert_with(|| self.gpu.encoder());
+        enc.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: b.raw(),
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some((stride * 4) as u32), rows_per_image: Some(h as u32) },
+            },
+            wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        );
+    }
+
     pub fn read_rgb(&mut self, b: &Buf, w: usize, h: usize) -> Rgb32f {
         Rgb32f { width: w, height: h, data: self.read(b, w * h * 3) }
     }
@@ -672,8 +686,34 @@ pub(crate) fn profiling() -> bool {
     *ON.get_or_init(|| lcc_brand::env_is_set("PROFILE"))
 }
 
+/// A finished render on the window's device, ready to draw: an `Rgba8Unorm` texture (the 8-bit
+/// output, sRGB-curve encoded, as egui's own textures) that never went through host memory.
+#[derive(Clone, Debug)]
+pub struct DisplayFrame {
+    pub texture: wgpu::Texture,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// Whether a render of this plan can end in a texture instead of a readback: the device is the
+/// window's, the output is 8-bit, nothing is drawn over the image on the CPU (overlays) or cut
+/// from it (a window that spots grew), and the texture fits the device.
+fn can_display(gpu: &Gpu, plan: &Plan<'_>, req: &RenderRequest) -> bool {
+    let max = gpu.device.limits().max_texture_dimension_2d as usize;
+    gpu.window
+        && req.depth == lcc_pipeline::OutputDepth::U8
+        && req.overlay == lcc_pipeline::Overlay::None
+        && plan.keep.is_none()
+        && plan.w <= max
+        && plan.h <= max
+        && plan.w.saturating_mul(plan.h) > 0
+}
+
 /// Render on `gpu`, reusing `stages` (if given). `None` (or a result the caller discards) when the
-/// render failed: the reason is recorded with [`crate::ctx::fail`].
+/// render failed: the reason is recorded with [`crate::ctx::fail`]. With `display` and when
+/// [`can_display`], the image stays on the device: the frame goes into `display` and the result's
+/// image is empty (0 × 0; its histogram and coverage are the render's).
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     gpu: &Gpu,
     plan: &Plan<'_>,
@@ -684,6 +724,7 @@ pub fn render(
     fault: Option<crate::Fault>,
     fit: Option<crate::Fit<'_>>,
     texels: Option<(f32, &mut Vec<u16>)>,
+    display: Option<&mut Option<DisplayFrame>>,
 ) -> Option<Rendered> {
     let mut t = profiling().then(std::time::Instant::now);
     // Each stage is submitted on its own; under `{ENV_PREFIX}_PROFILE` also waited for, so the
@@ -838,6 +879,20 @@ pub fn render(
             ],
             groups2(w, rows.min(h - y0), [16, 16]),
         );
+    }
+    if let Some(slot) = display.filter(|_| can_display(gpu, plan, req)) {
+        let coverage = plan.frame.coverage(src.width, src.height, w, h).map(Arc::new);
+        let (frame, histogram) = to_texture(&mut cx, &out, w, h, coverage.as_deref())?;
+        lap("finish + present", &mut t, &mut cx);
+        *slot = Some(frame);
+        return Some(Rendered {
+            image: Rgba8 { width: 0, height: 0, data: Vec::new() },
+            histogram,
+            deep: None,
+            warnings: Vec::new(),
+            coverage,
+            alpha: None,
+        });
     }
     // the alpha a mask overlay shows: copied out before the readback below submits
     let overlay_mask = req.overlay.mask(s).map(|m| {
@@ -1031,6 +1086,50 @@ fn histogram_words(words: &[u32]) -> Histogram {
         wave,
         hdr: None,
     }
+}
+
+/// The finished output `out` (`w × h` packed RGBA8, then room for the histogram) as a texture on
+/// the device, with its histogram; the same checks as a readback (every pixel written, not
+/// entirely black), done on the device: only the histogram and a pixel count come back.
+fn to_texture(cx: &mut Cx<'_>, out: &Buf, w: usize, h: usize, coverage: Option<&lcc_raster::Coverage>) -> Option<(DisplayFrame, Histogram)> {
+    let n = w * h;
+    let hist = histogram_on_gpu(cx, out, w, (0, 0, w, h), coverage);
+    let count = cx.zeroed(1);
+    cx.run("unwritten", &[n as u32], &[Some(out), None, Some(&count)], groups1(n));
+    // texture copies take rows of a multiple of 256 bytes: pad them unless they already are
+    let stride = w.next_multiple_of(64);
+    let padded = (stride != w).then(|| {
+        let b = cx.gpu.buffer(stride * h);
+        cx.run("pad_rows", &[w as u32, h as u32, stride as u32], &[Some(out), Some(&b), None], groups2(w, h, [16, 16]));
+        b
+    });
+    let texture = cx.gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("view"),
+        size: wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        // (COPY_SRC: a screenshot or a test can read it back)
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    cx.copy_to_texture(padded.as_ref().unwrap_or(out), stride, &texture, w, h);
+    let words: Vec<u32> = cx.read(&hist, HIST_WORDS);
+    let left = cx.read::<u32>(&count, 1).first().copied().unwrap_or(0);
+    if crate::ctx::failed() {
+        return None;
+    }
+    if left > 0 {
+        fail(FailKind::Fatal, format!("the GPU returned an incomplete image ({left} of {n} pixels unwritten)"));
+        return None;
+    }
+    let histogram = histogram_words(&words);
+    if n >= 4096 && histogram.total > 0 && [&histogram.r, &histogram.g, &histogram.b].iter().all(|c| c.first() == Some(&histogram.total)) {
+        fail(FailKind::Blank, "the GPU result is entirely black; rendering it on the CPU to be sure".into());
+        return None;
+    }
+    Some((DisplayFrame { texture, width: w, height: h }, histogram))
 }
 
 /// Pixels whose alpha is not 255 (cheap: no early exit, so it vectorizes).

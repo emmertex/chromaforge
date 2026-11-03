@@ -1836,7 +1836,7 @@ pub(crate) fn candidate_cell(app: &mut LccApp, ui: &mut egui::Ui, d: &mut Import
         let s = ((img.width() - 8.0) / tw as f32).min((img.height() - 8.0) / th as f32);
         let fit = Rect::from_center_size(img.center(), vec2(tw as f32 * s, th as f32 * s));
         let tint = if ok { Color32::WHITE } else { Color32::from_gray(110) };
-        p.image(tex.tex.id(), fit, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+        p.image(tex.id(), fit, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
     }
     let on = d.checked[i] && ok;
     if on {
