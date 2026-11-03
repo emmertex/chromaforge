@@ -11,6 +11,9 @@ use crate::theme::Tokens;
 /// The Object model choices: (command value, label).
 const OBJECT_MODELS: &[(&str, &str)] = &[("auto", "Automatic"), ("sam3", "SAM 3"), ("sam2", "SAM 2.1")];
 
+/// The Sky / Landscape / People model choices: (command value, label).
+const SCENE_MODELS: &[(&str, &str)] = &[("analysis", "Photo analysis"), ("eomt", "EoMT")];
+
 pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
     let t = Tokens::get(ui.ctx());
     ui.label(crate::i18n::tr("AI masks use models that aren't part of {app}. Each is a one-time download; everything else works without them."));
@@ -29,6 +32,9 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
             ))
             .color(t.text_label),
         );
+        if let Some(credit) = &m.credit {
+            ui.label(egui::RichText::new(credit).color(t.text_dim));
+        }
         let r = ui.link(crate::i18n::tr("Read the licence")).on_hover_text(&m.license_url);
         crate::widgets::register(ui.ctx(), format!("link:aiModelLicense-{}", m.id), r.rect);
         if r.clicked() {
@@ -76,6 +82,23 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
         ui,
         egui::RichText::new(crate::i18n::tr("Automatic uses SAM 3 when it is installed, otherwise SAM 2.1. Describe masks always use SAM 3."))
             .color(t.text_dim),
+    );
+    crate::dialog_frame::group_end(ui);
+    crate::dialog_frame::group_begin(ui, Some("Sky, Landscape and People masks use"));
+    let current = app.session.segmenter.scene_model().key();
+    let items: Vec<(&str, &str)> = SCENE_MODELS.iter().map(|(k, l)| (*l, *k)).collect();
+    let active = SCENE_MODELS.iter().position(|(k, _)| *k == current);
+    if let Some(i) = crate::widgets::segmented(ui, "aiSceneModel", &items, active, SCENE_MODELS.len())
+        && let Some((k, _)) = SCENE_MODELS.get(i)
+    {
+        *error = app.run("ai.models.setSceneModel", json!({"model": k})).err();
+    }
+    crate::dialog_frame::note(
+        ui,
+        egui::RichText::new(crate::i18n::tr(
+            "The photo analysis needs no download. EoMT is used once it is installed; until then the photo analysis stands in.",
+        ))
+        .color(t.text_dim),
     );
     crate::dialog_frame::group_end(ui);
     if let Some(e) = error.as_deref() {

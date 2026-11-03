@@ -63,6 +63,9 @@ pub mod remote;
 mod sam2;
 #[cfg(not(target_arch = "wasm32"))]
 mod sam2_kernels;
+/// Scene understanding: EoMT-S COCO panoptic segmentation (Sky, People, Landscape masks).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod scene;
 pub mod tokenizer;
 #[cfg(not(target_arch = "wasm32"))]
 mod tracker;

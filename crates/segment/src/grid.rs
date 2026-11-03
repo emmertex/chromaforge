@@ -24,7 +24,6 @@ pub const MAX_SIDE: usize = 1 << 16;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Filter {
     /// Triangle (Pillow `BILINEAR`), support 1.
-    #[allow(dead_code)] // for the EoMT scene model (not ported: licence pending)
     Bilinear,
     /// Keys cubic with a = −0.5 (Pillow `BICUBIC`, torchvision antialiased bicubic), support 2.
     Bicubic,
@@ -176,7 +175,7 @@ pub fn round_even(x: f64) -> usize {
 /// A `w × h` probability grid covering the whole image, resampled bilinearly to `side × side`
 /// (the image stretched to a square; output cell centres at `(i + 0.5) / side`) and converted to
 /// logits `ln(p / (1 − p))`, with `p` clamped to `[1e-4, 1 − 1e-4]`.
-#[allow(dead_code)] // for the EoMT scene model (not ported: licence pending)
+#[allow(dead_code)] // the scene grid as a square mask; the scene masks here sample the grid directly
 pub fn to_square_logits(probs: &[f32], w: usize, h: usize, side: usize) -> Vec<f32> {
     let n = side.saturating_mul(side);
     let p_lo: f32 = 1e-4;

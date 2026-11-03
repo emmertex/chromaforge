@@ -682,7 +682,6 @@ const SURFACE_CUT: (f32, f32) = (0.45, 0.75);
 /// How far the strongest surface class must lead the strongest other class (a person, a boat, a
 /// tent…) for the cell to count as a surface: not at all below the first margin, fully above the
 /// second.
-#[allow(dead_code)] // used by `Surfaces::from_scene`, which comes with the scene model
 const SURFACE_WINS: (f32, f32) = (-0.05, 0.10);
 
 /// Floors, grounds, walls, tables… (EoMT's COCO-panoptic "stuff" a garment is never part of), where
@@ -725,7 +724,40 @@ pub fn is_surface(label: &str) -> bool {
 }
 
 impl Surfaces {
-    // (`Surfaces::from_scene`, built from the scene model, comes with that model's port)
+    /// From a scene segmentation: the surfaces' summed probability where the scene isn't a person
+    /// and a surface is what the scene model sees there most. A large white gown that EoMT
+    /// doesn't take for a person spreads its probability over boat, tent, water, wall… (a
+    /// sum of surfaces can then pass the cut while no single one is more than a guess); a floor,
+    /// a wall or a table is the clear winner where it is one.
+    pub fn from_scene(scene: &crate::scene::Scene) -> Surfaces {
+        let surface_ids = crate::scene::class_ids(is_surface);
+        let surf = scene.class_probability(&surface_ids);
+        let person = scene.class_probability(&crate::scene::class_ids(|l| l == "person"));
+        let n = scene.width.saturating_mul(scene.height);
+        let classes = scene.probs.len().checked_div(n).unwrap_or(0);
+        // per cell: the strongest surface class and the strongest other class
+        let mut best_surface = vec![0f32; n];
+        let mut best_other = vec![0f32; n];
+        for k in 0..classes {
+            let Some(plane) = scene.probs.get(k * n..(k + 1) * n) else { break };
+            let best = if surface_ids.contains(&k) { &mut best_surface } else { &mut best_other };
+            for (b, p) in best.iter_mut().zip(plane) {
+                if p.is_finite() {
+                    *b = b.max(*p);
+                }
+            }
+        }
+        let probs = surf
+            .iter()
+            .zip(&person)
+            .zip(best_surface.iter().zip(&best_other))
+            .map(|((s, p), (bs, bo))| {
+                let v = s * (1.0 - p) * matte::smoothstep(SURFACE_WINS.0, SURFACE_WINS.1, bs - bo);
+                if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+            })
+            .collect();
+        Surfaces { width: scene.width, height: scene.height, probs }
+    }
 
     /// From a `width × height` probability grid over the photo (tests, and a cached analysis).
     pub fn from_grid(width: usize, height: usize, probs: Vec<f32>) -> Surfaces {
@@ -2193,5 +2225,125 @@ mod tests {
         assert_eq!(Surfaces::from_grid(4, 4, vec![1.0; 3]).at(0.5, 0.5), 0.0);
         assert_eq!(Surfaces::from_grid(2, 2, vec![1.0; 4]).at(f32::NAN, 0.5), 0.0);
         assert!(is_surface("floor-wood") && is_surface("wall-brick") && is_surface("grass-merged") && !is_surface("person"));
+    }
+
+    /// Regression (test notes 2026-10-25, note 12): the bride seated in an armchair, its dark back
+    /// rising above her shoulders; the people model's blurred "clothes" spills onto the chair back
+    /// and Clothes tinted it. The scene model sees a chair there: never clothes; her dress stays.
+    #[test]
+    fn the_chair_back_behind_a_seated_bride_is_not_clothes() {
+        use crate::scene::{CLASSES, Scene, class_ids};
+        let (w, h) = (200usize, 200usize);
+        // 0 the wall, 3 her face (x 88..112, y 44..66), 4 her dress (x 70..130, y 66..190), 5 the
+        // chair back (x 50..150, y 30..66, and its sides down to y 150)
+        let at = |x: usize, y: usize| -> u8 {
+            if (88..112).contains(&x) && (44..66).contains(&y) {
+                3
+            } else if (70..130).contains(&x) && (66..190).contains(&y) {
+                4
+            } else if (50..150).contains(&x) && (30..66).contains(&y) || ((50..70).contains(&x) || (130..150).contains(&x)) && (30..150).contains(&y)
+            {
+                5
+            } else {
+                0
+            }
+        };
+        let mut rgb = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                let p = match at(x, y) {
+                    3 => [222, 170, 142],
+                    4 => [236, 236, 238],
+                    5 => [38, 30, 28],
+                    _ => [150, 146, 140],
+                };
+                rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&p);
+            }
+        }
+        // the people model: the dress is clothes, and so (its blur) is the chair back
+        let side = 64;
+        let mut probs = vec![0f32; side * side * 6];
+        for j in 0..side {
+            for i in 0..side {
+                let (x, y) = ((i * w + w / 2) / side, (j * h + h / 2) / side);
+                let class = match at(x, y) {
+                    3 => 3,
+                    4 | 5 => 4,
+                    _ => 0,
+                };
+                probs[(j * side + i) * 6 + class] = 1.0;
+            }
+        }
+        let map = PeopleMap { side, probs };
+        // the scene model: the chair where it shows, the person over the dress and face
+        let (sw, sh) = (40usize, 40usize);
+        let n = sw * sh;
+        let id = |name: &str| class_ids(|l| l == name)[0];
+        let mut sp = vec![0f32; CLASSES * n];
+        for c in 0..n {
+            let (x, y) = ((c % sw) * w / sw + 2, (c / sw) * h / sh + 2);
+            match at(x, y) {
+                5 => sp[id("chair") * n + c] = 0.9,
+                3 | 4 => sp[id("person") * n + c] = 0.95,
+                _ => sp[id("wall-other-merged") * n + c] = 0.9,
+            }
+        }
+        let surfaces = Surfaces::from_scene(&Scene { width: sw, height: sh, probs: sp, instances: Vec::new() });
+        let req = PeopleRequest::parse(0, &["Clothes".into()]).unwrap();
+        let m = people_mask_with(&req, &rgb, w, h, Some(&map), &[], None, Some(&surfaces)).unwrap();
+        for (x, y) in [(100, 40), (60, 50), (140, 50), (60, 110)] {
+            assert!(clothes_at(&m, x, y) < 0.5, "the chair at {x},{y} is not clothes: {}", clothes_at(&m, x, y));
+        }
+        for (x, y) in [(100, 100), (85, 150), (115, 180)] {
+            assert!(clothes_at(&m, x, y) > 0.5, "the dress at {x},{y} is clothes: {}", clothes_at(&m, x, y));
+        }
+    }
+
+    /// Regression (test notes 2026-10-24, note 17): the scene model doesn't see a big white gown as
+    /// a person and spreads it over guesses (boat, water, building, tent); their surfaces summed
+    /// passed the cut and the whole gown, train and veil left Clothes. A surface counts only where
+    /// one is the scene model's clear winner: the gown stays to the hem, the floor below goes.
+    #[test]
+    fn a_gown_the_scene_model_only_guesses_at_stays_clothes() {
+        use crate::scene::{CLASSES, Scene, class_ids};
+        let (rgb, map) = bride_on_a_floor([224, 168, 140]);
+        let (sw, sh) = (40usize, 40usize);
+        let n = sw * sh;
+        let id = |name: &str| class_ids(|l| l == name)[0];
+        let mut probs = vec![0f32; CLASSES * n];
+        let mut set = |class: usize, c: usize, p: f32| probs[class * n + c] = p;
+        for c in 0..n {
+            let (x, y) = ((c % sw) * 200 / sw, (c / sw) * 200 / sh);
+            if y >= 172 {
+                // the deck: floor, sure of it
+                set(id("floor-wood"), c, 1.0);
+                set(id("boat"), c, 0.35);
+            } else if y >= 60 && (40..160).contains(&x) {
+                // the gown: guesses, the strongest a thing
+                set(id("boat"), c, 0.47);
+                set(id("water-other"), c, 0.37);
+                set(id("building-other-merged"), c, 0.14);
+                set(id("fence-merged"), c, 0.12);
+                set(id("tent"), c, 0.12);
+            }
+        }
+        let scene = Scene { width: sw, height: sh, probs, instances: Vec::new() };
+        let surfaces = Surfaces::from_scene(&scene);
+        assert!(surfaces.at(0.5, 0.95) > 0.9, "the floor is a surface: {}", surfaces.at(0.5, 0.95));
+        assert!(surfaces.at(0.5, 0.6) < 0.05, "the gown is not: {}", surfaces.at(0.5, 0.6));
+        let req = PeopleRequest::parse(0, &["Clothes".into()]).unwrap();
+        let m = people_mask_with(&req, &rgb, 200, 200, Some(&map), &[], None, Some(&surfaces)).unwrap();
+        for (x, y) in [(70, 120), (100, 140), (130, 165), (100, 100)] {
+            assert!(clothes_at(&m, x, y) > 0.5, "the gown at {x},{y} is clothes: {}", clothes_at(&m, x, y));
+        }
+        for (x, y) in [(70, 185), (100, 190)] {
+            assert!(clothes_at(&m, x, y) < 0.5, "the floor at {x},{y} is not clothes: {}", clothes_at(&m, x, y));
+        }
+        // a dining table in front of the couple is a surface too, and the chair or sofa they sit
+        // on; a malformed scene is none
+        assert!(is_surface("chair") && is_surface("couch") && is_surface("bench"));
+        assert!(is_surface("dining table") && !is_surface("boat"));
+        let empty = Surfaces::from_scene(&Scene { width: 3, height: 3, probs: vec![f32::NAN; 5], instances: Vec::new() });
+        assert_eq!(empty.at(0.5, 0.5), 0.0);
     }
 }

@@ -45,6 +45,7 @@ pub mod plugin_filters;
 pub mod profiles;
 pub mod redeye;
 pub mod retouch;
+pub mod scene_model;
 pub mod skin;
 pub mod source_stage;
 pub mod spots;

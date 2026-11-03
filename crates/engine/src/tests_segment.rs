@@ -388,3 +388,20 @@ fn object_clicks_follow_the_chosen_model() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Installing or removing the Subject or scene model re-renders the photos whose AI masks use an
+/// automatic selection (their render key moves on), and only those.
+#[test]
+fn a_model_change_re_renders_ai_masks_at_once() {
+    let mut s = Session::with_demo();
+    let plain = s.catalog.photos().map(|p| p.id).find(|p| Some(*p) != s.active()).unwrap();
+    let id = s.active().unwrap();
+    assert_ne!(id, plain);
+    s.execute("mask.add", &json!({"kind": "sky"})).unwrap();
+    let key = |s: &mut Session, id| s.render_job(id, 400, 300, false, true).unwrap().key;
+    let (k_sky, k_plain) = (key(&mut s, id), key(&mut s, plain));
+    lcc_pipeline::scene_model::set_scene_model(Some(std::sync::Arc::new(|_: &[u8], _: usize, _: usize| None)));
+    lcc_pipeline::scene_model::set_scene_model(None);
+    assert_ne!(key(&mut s, id), k_sky, "the Sky mask renders afresh");
+    assert_eq!(key(&mut s, plain), k_plain, "a photo without AI masks keeps its render");
+}

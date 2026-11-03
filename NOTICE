@@ -110,6 +110,16 @@ authors, licensed under the Apache License 2.0, modified the same way. The Depth
 weights (depth-anything/Depth-Anything-V2-Small-hf, Apache License 2.0) are not part of this
 software; users download them separately.
 
+crates/segment/src/scene.rs (ported by OneSlips, 2026) ports the EoMT model and image-processor
+code of Hugging Face Transformers (models/eomt), Copyright The HuggingFace Team and the EoMT
+authors (Tommie Kerssies et al., "Your ViT is Secretly an Image Segmentation Model", CVPR 2025),
+licensed under the Apache License 2.0, modified the same way. The EoMT-S COCO panoptic weights
+(tue-mps/coco_panoptic_eomt_small_640_2x, MIT License, Copyright the EoMT authors) are not part
+of this software; the app downloads them from the authors' Hugging Face repository only when the
+user asks for them. The model was trained on the COCO dataset (https://cocodataset.org): COCO
+annotations Copyright the COCO Consortium, licensed under the Creative Commons Attribution 4.0
+License (CC BY 4.0).
+
 The lens profile database of the lensfun project (https://github.com/lensfun/lensfun, data/db,
 Copyright the lensfun contributors) is not part of this software and is never distributed with it.
 A user downloads it only when they choose to (Settings ▸ Import ▸ Lens profiles ▸ Download, which
