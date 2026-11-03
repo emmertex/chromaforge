@@ -55,8 +55,7 @@ fn has_widget(h: &mut Headless, name: &str) -> bool {
     for _ in 0..3 {
         h.step();
     }
-    let found = h.app.widgets.iter().any(|(n, _)| n == name);
-    found
+    h.app.widgets.iter().any(|(n, _)| n == name)
 }
 
 #[test]

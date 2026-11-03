@@ -88,7 +88,7 @@ impl Session {
             "full" | "1:1" => "full",
             other => return Err(bad(C, format!("unknown previews `{other}` (none|standard|full)"))),
         };
-        let ordered = self.from_screen_outward(ids);
+        let ordered = self.screen_outward_order(ids);
         if ordered.is_empty() {
             return Ok(json!({"running": false, "total": 0}));
         }
@@ -97,7 +97,7 @@ impl Session {
 
     /// `ids` (those still in the catalog, once each) ordered from the photo on screen outward: the
     /// one shown first, then its neighbours in the view on both sides, then the rest in order.
-    pub(crate) fn from_screen_outward(&mut self, ids: &[u64]) -> Vec<u64> {
+    pub(crate) fn screen_outward_order(&mut self, ids: &[u64]) -> Vec<u64> {
         let mut seen = std::collections::HashSet::new();
         let ids: Vec<u64> = ids.iter().copied().filter(|i| self.catalog.photo(PhotoId(*i)).is_some() && seen.insert(*i)).collect();
         let Some(active) = self.active() else { return ids };

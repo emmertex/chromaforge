@@ -142,7 +142,7 @@ fn finishing_starts_at_the_photo_on_screen() {
     let ids: Vec<u64> = s.visible_cloned().iter().map(|i| i.0).collect();
     assert_eq!(ids.len(), 5);
     s.execute("library.select", &json!({"ids": [ids[3]], "active": ids[3]})).unwrap();
-    let order = s.from_screen_outward(&ids);
+    let order = s.screen_outward_order(&ids);
     assert_eq!(order.first(), Some(&ids[3]), "the photo on screen first: {order:?}");
     let near: Vec<u64> = order.iter().skip(1).take(2).copied().collect();
     assert!(near.contains(&ids[2]) && near.contains(&ids[4]), "then its neighbours both ways: {order:?}");
