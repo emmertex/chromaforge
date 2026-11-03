@@ -42,6 +42,8 @@ fn the_second_device_renders_alike_and_its_loss_leaves_the_editing_card() {
     assert_eq!(before.0, 0);
     assert!(on_second.image.data == on_editing.image.data, "both devices render the same pixels");
     assert_eq!(on_second.histogram, on_editing.histogram);
+    // AI models go to the second card (here the same one)
+    assert_eq!(lcc_gpu::ai_card(), lcc_gpu::adapters().iter().find(|e| e.usable).map(|e| e.name.clone()));
     // a photo's turn on the second device: its renders run there
     let turn = lcc_gpu::as_batch(|| lcc_gpu::try_batch_turn(900 * 600, 900 * 600)).expect("a free turn");
     assert_eq!(lcc_gpu::helper_usage().0, 1, "the turn is the second device's");

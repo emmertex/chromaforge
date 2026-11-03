@@ -486,6 +486,12 @@ always its own. A headless `ui.screenshot` reads a GPU-drawn view back (`lcc_gpu
   own included) are logged and replace the render device (one of its own) instead of wgpu's
   default panic.
 
+AI models (the denoise network and AI masks' kernels in `nn.rs`, the face models in `faces.rs`)
+make their device on the second graphics card when one is chosen or found, else on the editing
+card (`lcc_gpu::ai_adapter`; `ai_card()` says which). Each AI device is made once and given up on
+alone. Models that arrive later (SAM 2.1 / EoMT masks, MediaPipe people) should make their device
+through `ai_adapter` too. Not ported from OneSlips' DUAL-GPU-5: one denoise photo per card at once.
+
 ## Open items
 - WebGPU in the browser build (async init, single device per canvas).
 - Defringe and spot removal kernels; Sky/Subject heuristics (replaced by the segmenter in M12).
