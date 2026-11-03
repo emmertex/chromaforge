@@ -2200,8 +2200,22 @@ pub(crate) fn camera_profile_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mu
         return;
     }
     let choice = lcc_engine::profile_bodies::ImportProfile::PerBody(d.per_body.clone());
-    let checked: Vec<_> = d.candidates.iter().zip(&d.checked).filter(|(_, c)| **c).map(|(c, _)| c.clone()).collect();
-    for body in lcc_engine::profile_bodies::plan(&app.session, &checked, &choice) {
+    let rows = if screen && crate::import_tab::showing(app) {
+        // the Import tab: the browsed photos it would import now (its Take)
+        let take = app.ui.settings.import_tab.take();
+        let (picks, selected, all) = app.session.import_targets();
+        let ids = match take {
+            lcc_engine::cmd::import_tab::Take::Picks => picks,
+            lcc_engine::cmd::import_tab::Take::Selected => selected,
+            lcc_engine::cmd::import_tab::Take::All => all,
+        };
+        let photos: Vec<&lcc_catalog::Photo> = ids.iter().filter_map(|id| app.session.catalog.photo(*id).map(|p| &**p)).collect();
+        lcc_engine::profile_bodies::plan_photos(&app.session, &photos, &choice)
+    } else {
+        let checked: Vec<_> = d.candidates.iter().zip(&d.checked).filter(|(_, c)| **c).map(|(c, _)| c.clone()).collect();
+        lcc_engine::profile_bodies::plan(&app.session, &checked, &choice)
+    };
+    for body in rows {
         let label = format!("{} · {} ({})", body.camera, body.serial.trim_start_matches("file:"), body.photos);
         // (the body under the Camera Profile row: the label column is too narrow for it)
         row(ui, "", &mut |ui: &mut egui::Ui| {

@@ -80,24 +80,36 @@ pub struct PlanRow {
 
 /// The rows of `import.profilePlan`: the new raws of `candidates` by body, with what `choice` gives them.
 pub fn plan(s: &crate::Session, candidates: &[crate::import::ImportCandidate], choice: &ImportProfile) -> Vec<PlanRow> {
+    let bodies = candidates
+        .iter()
+        .filter(|c| c.duplicate.is_none() && c.error.is_none() && c.existing.is_none())
+        .filter_map(|c| Some((c.body.clone()?, c.camera.clone())));
+    plan_bodies(s, bodies, choice)
+}
+
+/// [`plan`] for photos already read (the Import tab's browsed photos): a row per body.
+pub fn plan_photos(s: &crate::Session, photos: &[&Photo], choice: &ImportProfile) -> Vec<PlanRow> {
+    plan_bodies(s, photos.iter().filter_map(|p| Some((key_of(p)?, p.meta.camera.clone()))), choice)
+}
+
+fn plan_bodies(s: &crate::Session, bodies: impl Iterator<Item = (String, String)>, choice: &ImportProfile) -> Vec<PlanRow> {
     let mut rows: Vec<PlanRow> = Vec::new();
-    for c in candidates.iter().filter(|c| c.duplicate.is_none() && c.error.is_none() && c.existing.is_none()) {
-        let Some(body) = &c.body else { continue };
-        if let Some(r) = rows.iter_mut().find(|r| &r.body == body) {
+    for (body, camera) in bodies {
+        if let Some(r) = rows.iter_mut().find(|r| r.body == body) {
             r.photos += 1;
             continue;
         }
-        let auto = s.body_profiles.get(body).filter(|id| known_profile(id)).cloned().unwrap_or_default();
+        let auto = s.body_profiles.get(&body).filter(|id| known_profile(id)).cloned().unwrap_or_default();
         let (profile, how) = match choice {
             ImportProfile::Auto => (auto, "auto"),
             ImportProfile::All(id) => (id.clone(), "all"),
-            ImportProfile::PerBody(m) => match m.get(body) {
+            ImportProfile::PerBody(m) => match m.get(&body) {
                 Some(id) => (id.clone(), "chosen"),
                 None => (auto, "auto"),
             },
         };
         let serial = body.rsplit_once('|').map_or(body.as_str(), |(_, b)| b).to_string();
-        rows.push(PlanRow { body: body.clone(), camera: c.camera.clone(), serial, photos: 1, profile_name: profile_name(&profile), profile, how });
+        rows.push(PlanRow { serial, body, camera, photos: 1, profile_name: profile_name(&profile), profile, how });
     }
     rows
 }

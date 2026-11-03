@@ -186,3 +186,47 @@ fn the_tab_works_in_compact_and_modern_layouts() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// The Import tab's settings column has the per-body Camera Profile rows the import review has
+/// (for the photos it would take), and the choice made there reaches the imported raws.
+#[test]
+fn the_tab_offers_a_camera_profile_per_body_and_imports_with_it() {
+    let dir = std::env::temp_dir().join(format!("lc-ui-importtab-bodies-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let corners = lcc_engine::chart_profiling::camprof::ChartCorners::from_rect(10.0, 10.0, 40.0, 30.0);
+    for (name, serial) in [("SA0001.dng", "SN1"), ("SB0001.dng", "SN2")] {
+        let bytes = lcc_engine::chart_profiling::demo_chart_dng_of_body(64, 48, &corners, "D55", true, Some(serial)).unwrap();
+        std::fs::write(dir.join(name), bytes).unwrap();
+    }
+    for layout in ["classic", "compact", "modern"] {
+        let mut h = app([1400.0, 900.0], layout);
+        // (raws are read with the file system's probe)
+        h.app.session = lcc_engine::Session::new().with_fs();
+        exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+        exec(&mut h, "import.configure", json!({"take": "all", "previews": "none"}));
+        h.step_until(SETTLE, |h| h.app.session.catalog.photos().filter(|p| p.local && lcc_engine::profile_bodies::key_of(p).is_some()).count() == 2);
+        let ids = h.app.session.visible_cloned();
+        let keys: Vec<String> = ids.iter().filter_map(|id| lcc_engine::profile_bodies::key_of(h.app.session.catalog.photo(*id)?)).collect();
+        assert_eq!(keys.len(), 2, "{layout}: two bodies ({} photos)", ids.len());
+        for k in &keys {
+            assert!(has_widget(&mut h, &format!("combo:importBodyProfile:{k}")), "{layout}: a row for {k}");
+        }
+        if layout != "classic" {
+            continue;
+        }
+        h.app.ui.settings.import_tab.opts.per_body.insert(keys[0].clone(), "lc".into());
+        exec(&mut h, "import.start", json!({}));
+        h.step_until(SETTLE, |h| h.app.import.is_none());
+        let profile = |h: &Headless, k: &str| {
+            let id = ids
+                .iter()
+                .find(|id| h.app.session.catalog.photo(**id).and_then(|p| lcc_engine::profile_bodies::key_of(p)).as_deref() == Some(k))
+                .unwrap();
+            h.app.session.catalog.photo(*id).unwrap().develop.profile.camera.clone()
+        };
+        assert_eq!(profile(&h, &keys[0]), "lc", "the body's choice");
+        assert_eq!(profile(&h, &keys[1]), "", "the other body: automatic");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

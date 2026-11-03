@@ -127,6 +127,9 @@ pub struct ImportOptions {
     pub convert_dng: bool,
     /// The camera profile the raws get ([`crate::profile_bodies::ImportProfile`]); a sidecar's own wins.
     pub camera_profile: crate::profile_bodies::ImportProfile,
+    /// A preset's own camera profile replaces the body's (`presetProfile`). Off (the default): a raw
+    /// keeps its camera profile through the preset stack (OneSlips, LR-IMP-PROFILE).
+    pub preset_profile: bool,
     /// A batch-edit recipe: develop control id / value pairs (e.g. `light.exposure` → 0.5),
     /// applied to every imported photo *after* its XMP sidecar, camera default and import preset,
     /// as one more History step (`Import adjustments`). Only the named controls change; the recipe
@@ -2063,8 +2066,14 @@ fn apply_settings(s: &Session, p: &mut Photo, opts: &ImportOptions, now: &str) {
             p.meta.keywords.push(k);
         }
     }
+    // the camera profile before the presets: a preset doesn't take it away unless the import says so
+    let body = (!opts.preset_profile && p.develops_raw()).then(|| p.develop.profile.camera.clone()).filter(|c| !c.is_empty());
     for preset in opts.preset.iter().chain(&opts.presets) {
-        let d = std::sync::Arc::new(preset.apply(&p.develop, 1.0));
+        let mut d = preset.apply(&p.develop, 1.0);
+        if let Some(cal) = &body {
+            d.profile.camera.clone_from(cal);
+        }
+        let d = std::sync::Arc::new(d);
         let label = format!("Preset: {}", preset.name);
         p.develop = d.clone();
         p.edited = Some(now.to_string());
@@ -2079,6 +2088,17 @@ fn promote_ops(s: &Session, id: PhotoId, opts: &ImportOptions, now: &str, ops: &
     let Some(old) = s.catalog.photo(id) else { return };
     let mut p = (**old).clone();
     let history0 = p.history.len();
+    if old.edited.is_none() && p.develops_raw() {
+        // browsed before its body had the profile it has now (set in the Import panel, say), or
+        // with a choice made for this import: the profile as it is at import (OneSlips, LR-IMP-PROFILE)
+        if let Some(id) = opts.camera_profile.for_photo(&p).or_else(|| s.body_default(&p).map(str::to_string))
+            && p.develop.profile.camera != id
+        {
+            let mut d = (*p.develop).clone();
+            d.profile.camera = id;
+            p.develop = std::sync::Arc::new(d);
+        }
+    }
     apply_settings(s, &mut p, opts, now);
     if p.develop != old.develop {
         let label = p.history.last().map(|h| h.label.clone()).unwrap_or_else(|| "Import".into());

@@ -181,3 +181,42 @@ fn an_import_gives_its_raws_the_camera_profile_chosen_per_body_or_for_all() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The Import tab imports browsed photos (OneSlips LR-IMP-PROFILE, 21c4b5644): an unedited browsed raw
+/// takes the per-body choice made for the import, and a body default set after the folder was
+/// browsed; a photo edited while browsing keeps its own.
+#[test]
+fn browsed_raws_take_the_import_profile_choice_and_a_later_body_default() {
+    let dir = std::env::temp_dir().join(format!("lcc-import-browsed-bodyprof-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let card = dir.join("card");
+    std::fs::create_dir_all(&card).unwrap();
+    let corners = lcc_camprof::ChartCorners::from_rect(10.0, 10.0, 40.0, 30.0);
+    for (name, serial) in [("SA0001.dng", "SN1"), ("SB0001.dng", "SN2"), ("SC0001.dng", "SN2")] {
+        std::fs::write(card.join(name), crate::chart_profiling::demo_chart_dng_of_body(64, 48, &corners, "D55", true, Some(serial)).unwrap())
+            .unwrap();
+    }
+    let mut s = Session::new().with_fs();
+    s.open_library(dir.join("lib"), true).unwrap();
+    s.execute("library.browse", &json!({"path": card.to_string_lossy()})).unwrap();
+    let id_of = |s: &Session, n: &str| s.catalog.photos().find(|p| p.file_name == n).unwrap().id;
+    let (a, b, c) = (id_of(&s, "SA0001.dng"), id_of(&s, "SB0001.dng"), id_of(&s, "SC0001.dng"));
+    assert!(s.catalog.photo(a).unwrap().develop.profile.camera.is_empty(), "no body default while browsing");
+    let key_b = crate::profile_bodies::key_of(s.catalog.photo(b).unwrap()).unwrap();
+    // a body default for A's body, set after browsing
+    s.execute("profile.setBodyDefault", &json!({"id": "lc", "photo": a.0})).unwrap();
+    let path = |s: &Session, id: PhotoId| match &s.catalog.photo(id).unwrap().source {
+        Source::File { path } => path.clone(),
+        _ => unreachable!(),
+    };
+    s.execute("library.import", &json!({"paths": [path(&s, a)]})).unwrap();
+    assert!(!s.catalog.photo(a).unwrap().local);
+    assert_eq!(s.catalog.photo(a).unwrap().develop.profile.camera, "lc", "the body's default as it is at import");
+    // C was edited while browsing: it keeps its own
+    s.selection = crate::Selection::single(c);
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.5})).unwrap();
+    s.execute("library.import", &json!({"paths": [path(&s, b), path(&s, c)], "cameraProfile": {"perBody": {key_b: "lc"}}})).unwrap();
+    assert_eq!(s.catalog.photo(b).unwrap().develop.profile.camera, "lc", "the import's per-body choice");
+    assert!(s.catalog.photo(c).unwrap().develop.profile.camera.is_empty(), "an edited photo keeps its profile");
+    let _ = std::fs::remove_dir_all(&dir);
+}
