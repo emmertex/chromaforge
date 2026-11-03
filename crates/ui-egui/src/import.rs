@@ -70,6 +70,8 @@ pub struct ImportDialog {
     pub new_album: String,
     /// Preset id ("" = none).
     pub preset: String,
+    /// The Import tab's preset stack (ids, applied in order after `preset`).
+    pub presets: Vec<String>,
     /// An optional batch-edit recipe: develop control id → value (only controls moved off their
     /// default are kept), set on every photo this import adds, on top of its sidecar, camera
     /// default and preset (the `recipe` param of `library.import`).
@@ -283,6 +285,54 @@ impl ImportDialog {
     }
     /// The `organize` param of `library.import` (`None` = the default, by day); an unusable
     /// custom folder template is an error.
+    /// The `library.import` parameters these options give (without `paths`, the album and a
+    /// metadata preset still being created: [`start`] adds those).
+    pub fn params(&self) -> Result<Value, String> {
+        let mode = match (self.copy, self.move_files) {
+            (false, _) => "add",
+            (true, false) => "copy",
+            (true, true) => "move",
+        };
+        let mut params = json!({"mode": mode, "keywords": self.keywords()});
+        if !self.recipe.is_empty() {
+            params["recipe"] = recipe_items(&self.recipe);
+        }
+        if !self.on_deleted.is_empty() {
+            params["onDeleted"] = json!(self.on_deleted);
+        }
+        if self.import_duplicates {
+            params["importDuplicates"] = json!(true);
+        }
+        if !self.preset.is_empty() {
+            params["preset"] = json!(self.preset);
+        }
+        if !self.presets.is_empty() {
+            params["presets"] = json!(self.presets);
+        }
+        if !self.metadata_preset.is_empty() {
+            params["metadataPreset"] = json!(self.metadata_preset);
+        }
+        if let Some(a) = self.album {
+            params["album"] = json!(a);
+        }
+        if self.copy {
+            if !self.destination.trim().is_empty() {
+                params["destination"] = json!(self.destination.trim());
+            }
+            if let Some(o) = self.organize_param()? {
+                params["organize"] = json!(o);
+            }
+            if !self.rename.trim().is_empty() {
+                params["rename"] = json!(self.rename.trim());
+                params["renameStart"] = json!(1);
+            }
+            if self.dng && !self.move_files {
+                params["dng"] = json!(true);
+            }
+        }
+        Ok(params)
+    }
+
     pub fn organize_param(&self) -> Result<Option<String>, String> {
         match self.organize.as_str() {
             "" => Ok(None),
@@ -350,12 +400,22 @@ pub struct ImportTask {
     run: Option<ImportRun>,
     /// The import's row in the activity stack (its ✕ and `activity.cancel` set the run's cancel flag).
     guard: Option<lcc_engine::activity::TaskGuard>,
+    /// The Import tab's: once the photos are in, their previews are built unattended
+    /// (`none` | `standard` | `full`: `library.finishImport`).
+    pub finish_previews: Option<String>,
+    /// The photos this import added or restored, in order (for the finishing).
+    ids: Vec<u64>,
 }
 
 impl ImportTask {
     /// An import of `paths` (files or folders) with `library.import` params (without `paths`).
     pub fn new(paths: Vec<String>, params: Value, undo0: usize, browse: bool) -> Self {
         ImportTask { total: paths.len(), queue: paths, params, undo0, browse, ..Default::default() }
+    }
+
+    /// Reading a folder for the Local view (not an import into the library).
+    pub fn is_browse(&self) -> bool {
+        self.browse
     }
 
     /// An Auto Import (see [`ImportTask::auto`]).
@@ -498,14 +558,14 @@ impl ImportRun {
 /// A folder scan running on a worker thread (a network share can take minutes to read; the
 /// window must keep answering meanwhile).
 pub struct ScanTask {
-    progress: std::sync::Arc<ScanProgress>,
+    pub(crate) progress: std::sync::Arc<ScanProgress>,
     rx: std::sync::mpsc::Receiver<ScanOutput>,
     /// Open the review with "copy into the library" checked (a camera / card).
     pub copy: bool,
     /// Open the review with this album chosen (an album's context menu ▸ Import…).
     pub album: Option<u64>,
     /// Browsing a folder (Local): the photos are read in place instead of opening the review.
-    browse: bool,
+    pub(crate) browse: bool,
     /// What is being scanned (the review's source).
     sources: Vec<String>,
     /// The scan's row in the activity stack (its ✕ and `activity.cancel` set `progress.cancel`).
@@ -855,26 +915,9 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
         let r = app.session.execute("album.create", &json!({"name": d.new_album.trim()})).map_err(|e| e.to_string())?;
         album = r["id"].as_u64();
     }
-    let mode = match (d.copy, d.move_files) {
-        (false, _) => "add",
-        (true, false) => "copy",
-        (true, true) => "move",
-    };
-    let mut params = json!({"mode": mode, "keywords": d.keywords()});
-    if !d.recipe.is_empty() {
-        params["recipe"] = recipe_items(&d.recipe);
-    }
-    if !d.on_deleted.is_empty() {
-        params["onDeleted"] = json!(d.on_deleted);
-    }
-    if d.import_duplicates {
-        params["importDuplicates"] = json!(true);
-    }
+    let mut params = d.params()?;
     if let Some(a) = album {
         params["album"] = json!(a);
-    }
-    if !d.preset.is_empty() {
-        params["preset"] = json!(d.preset);
     }
     let mut meta_preset = d.metadata_preset.clone();
     if d.creating_meta_preset && !d.new_meta_name.trim().is_empty() {
@@ -897,21 +940,6 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
     }
     if !meta_preset.is_empty() {
         params["metadataPreset"] = json!(meta_preset);
-    }
-    if d.copy {
-        if !d.destination.trim().is_empty() {
-            params["destination"] = json!(d.destination.trim());
-        }
-        if let Some(o) = d.organize_param()? {
-            params["organize"] = json!(o);
-        }
-        if !d.rename.trim().is_empty() {
-            params["rename"] = json!(d.rename.trim());
-            params["renameStart"] = json!(1);
-        }
-        if d.dng && !d.move_files {
-            params["dng"] = json!(true);
-        }
     }
     let total = queue.len();
     app.import = Some(ImportTask::new(queue, params, undo0, false));
@@ -1052,6 +1080,7 @@ fn commit_batch(app: &mut LccApp, task: &mut ImportTask, prepared: lcc_engine::i
             for k in v["kept"].as_array().into_iter().flatten() {
                 log::warn!("import: kept {}: {}", k["path"].as_str().unwrap_or(""), k["reason"].as_str().unwrap_or(""));
             }
+            task.ids.extend(["imported", "restored"].iter().flat_map(|k| v[*k].as_array().into_iter().flatten().filter_map(Value::as_u64)));
             if task.first.is_none() {
                 task.first = ["imported", "restored"].iter().find_map(|k| v[*k].as_array().and_then(|a| a.first()).and_then(Value::as_u64));
             }
@@ -1076,6 +1105,13 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
         crate::i18n::tr_format!("Add {} Photo{}", task.imported, if task.imported == 1 { "" } else { "s" })
     };
     app.session.merge_undo(steps, &label);
+    // the Import tab's: the new photos' previews, built in the background (one activity row)
+    if let Some(previews) = task.finish_previews.as_deref()
+        && !task.ids.is_empty()
+        && let Err(e) = app.session.finish_import(&task.ids, previews)
+    {
+        log::warn!("import: finishing: {e}");
+    }
     if task.auto {
         if !task.warnings.is_empty() {
             let line = crate::import_report::record(app, task.imported + task.restored, &task.warnings, false);

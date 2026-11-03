@@ -510,6 +510,18 @@ fn cameras(app: &LccApp) -> Vec<String> {
 
 fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let d = app.session.import_defaults.clone();
+    // (browsing folders needs a file system: the web keeps the import review)
+    if !cfg!(target_arch = "wasm32") {
+        heading(ui, t, crate::i18n::tr("Import Window"));
+        check(ui, "settings.importAsTab", &mut app.ui.settings.import_as_tab, "Import as a tab");
+        hint(
+            ui,
+            t,
+            crate::i18n::tr(
+                "On: Import is a tab beside Library, where a card or folder is culled before its picks are imported. Off: Import… opens the import review.",
+            ),
+        );
+    }
     heading(ui, t, crate::i18n::tr("Raw defaults"));
     hint(ui, t, crate::i18n::tr("Settings new raw photos start from. Changing them doesn't touch photos already in the library."));
     row(ui, t, crate::i18n::tr("Raw photos"), |ui| {

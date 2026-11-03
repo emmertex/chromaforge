@@ -1658,6 +1658,8 @@ fn disks_are_bars_over_their_folders() {
 fn choosing_a_library_folder_replaces_whatever_was_shown() {
     use lcc_engine::LibrarySource;
     let mut h = folders_app(&["/pics/trip/a.jpg", "/pics/home/b.jpg"]);
+    // (a browsed folder in the Library tab's own view: Import as a tab off)
+    h.app.ui.settings.import_as_tab = false;
     click(&mut h, "libraryFolderToggle:/pics");
     for before in [LibrarySource::Picks, LibrarySource::Folder, LibrarySource::RecentlyDeleted, LibrarySource::Missing] {
         h.app.session.source = before;
@@ -2636,6 +2638,8 @@ fn recognise_faces_stays_off_until_a_model_is_chosen() {
 #[test]
 fn local_photos_cannot_be_added_to_albums_until_they_join_my_photos() {
     let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid", "leftPanel": true}));
+    // (dragging browsed photos onto the library's albums: Import as a tab off)
+    h.app.ui.settings.import_as_tab = false;
     let album = h.app.session.execute("album.create", &json!({"name": "Trip", "addSelected": false})).unwrap()["id"].as_u64().unwrap();
     let album_id = lcc_catalog::AlbumId(album);
     let dir = std::env::temp_dir().join(format!("lc-ui-albums-local-{}", std::process::id()));

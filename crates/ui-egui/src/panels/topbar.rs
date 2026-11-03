@@ -84,6 +84,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 {
                     let _ = app.run("view.leftPanel", json!({}));
                 }
+                // Import | Library (Settings ▸ Import ▸ Import as a tab)
+                if crate::import_tab::enabled(app) {
+                    ui.add_space(6.0);
+                    crate::import_tab::tabs(app, ui);
+                }
                 if !app.native_menu {
                     // no native menu bar (web, Windows, Linux): menus in the top bar
                     ui.add_space(10.0);

@@ -723,6 +723,9 @@ fn import_menu(app: &mut LccApp, ui: &egui::Ui, right_top: Pos2) {
     if app.services.camera_roll.is_some() {
         items.push(("modern:import:cameraRoll", "Camera Roll", "file.addCameraRoll"));
     }
+    if crate::import_tab::enabled(app) {
+        items.push(("modern:import:tab", "Import Tab", "view.importTab"));
+    }
     let size = vec2(220.0, BUTTON * items.len() as f32 + 8.0);
     let min = pos2(right_top.x - size.x, right_top.y);
     let mut chosen = None;

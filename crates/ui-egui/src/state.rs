@@ -433,6 +433,12 @@ pub struct AppSettings {
     /// A click on the dimmed backdrop around a dialog closes it, like Esc (off: a stray click
     /// never throws away a dialog's choices).
     pub close_dialogs_outside: bool,
+    /// Settings ▸ Import ▸ "Import as a tab" (OneSlips, LR-IMP-WINDOW): Import is a workspace tab
+    /// beside Library, where a browsed folder or card is culled and then imported. On by default;
+    /// off, Import… opens the import review (the dialog) as before.
+    pub import_as_tab: bool,
+    /// The Import tab's settings, kept between sessions ([`crate::import_tab::ImportSettings`]).
+    pub import_tab: crate::import_tab::ImportSettings,
     /// The Settings section shown last: Settings… opens there again (LR-PREF-WINDOW).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub settings_tab: String,
@@ -646,6 +652,8 @@ impl Default for AppSettings {
             confirm_delete: true,
             ask_before_move: true,
             close_dialogs_outside: false,
+            import_as_tab: true,
+            import_tab: Default::default(),
             settings_tab: String::new(),
             gpu: true,
             gpu_backend: GpuBackend::Auto,
@@ -1009,6 +1017,15 @@ pub struct UiState {
     /// The Modern layout (fork-owned; see [`crate::modern`]). Saved as `touch` before it replaced the touch layout.
     #[serde(alias = "touch")]
     pub modern: crate::modern::ModernUi,
+    /// The workspace tab on show, Import or Library (with Settings ▸ Import ▸ Import as a tab).
+    #[serde(skip)]
+    pub tab: crate::import_tab::Tab,
+    /// The library view the Library tab goes back to when the Import tab browsed a folder.
+    #[serde(skip)]
+    pub library_source: Option<lcc_engine::LibrarySource>,
+    /// The view showed a browsed folder last frame ([`crate::import_tab::keep_in_step`]).
+    #[serde(skip)]
+    pub import_was_browsing: bool,
     pub left_panel: bool,
     pub right: RightPanel,
     /// The panel a toggle (a panel key or button: I, M, R, Q…) opened, with what the right column showed
@@ -2042,6 +2059,9 @@ impl Default for UiState {
             collapsed_masks: Default::default(),
             view: ViewMode::Detail,
             modern: crate::modern::ModernUi::default(),
+            tab: Default::default(),
+            library_source: None,
+            import_was_browsing: false,
             left_panel: false,
             left_width: LEFT_WIDTH.default,
             right_width: RIGHT_WIDTH.default,

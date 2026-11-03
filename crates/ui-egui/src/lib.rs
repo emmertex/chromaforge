@@ -43,6 +43,7 @@ pub mod icons;
 pub mod import;
 pub mod import_report;
 mod import_screen;
+pub mod import_tab;
 pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;
@@ -217,6 +218,8 @@ mod tests_import_report;
 mod tests_import_scan_note;
 #[cfg(test)]
 mod tests_import_screen;
+#[cfg(test)]
+mod tests_import_tab;
 #[cfg(test)]
 mod tests_info_dialogs;
 #[cfg(test)]
@@ -2488,7 +2491,17 @@ impl LccApp {
         // Order matters: earlier panels take the full edge (top bar spans the window; the tool strip,
         // right panels and left panel run to the bottom; the bottom bar sits between them).
         let touch = modern::on(self);
-        let m = if touch { modern::edges(self, ui, &ctx) } else { shell::edges(self, ui, &ctx) };
+        // the Import tab (Settings ▸ Import ▸ Import as a tab) takes the window under the top bar
+        import_tab::keep_in_step(self);
+        let importing = import_tab::showing(self);
+        let m = if importing && !touch {
+            panels::topbar::show(self, ui);
+            module::get(self.ui.module)
+        } else if touch {
+            modern::edges(self, ui, &ctx)
+        } else {
+            shell::edges(self, ui, &ctx)
+        };
         let t = theme::Tokens::get(&ctx);
         let bg = if matches!(self.ui.view, state::ViewMode::Detail | state::ViewMode::Compare | state::ViewMode::Survey | state::ViewMode::Reference)
         {
@@ -2496,9 +2509,15 @@ impl LccApp {
         } else {
             t.grid_bg
         };
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(bg))
-            .show(ui, |ui| if touch { modern::center(self, ui, m) } else { m.center(ui, self) });
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| {
+            if importing {
+                import_tab::show(self, ui)
+            } else if touch {
+                modern::center(self, ui, m)
+            } else {
+                m.center(ui, self)
+            }
+        });
         module::lights_out(self, &ctx);
         help_overlay::show(self, &ctx);
         panels::second::show(self, &ctx);
