@@ -11,7 +11,7 @@
 //! background (the activity stack shows it), switches to the Library tab where they come in, and
 //! then builds their previews unattended (`library.finishImport`).
 //!
-//! The layout follows OneSlips' Import tab; the look is Chromaforge's (its tokens, buttons and
+//! The layout follows OneSlips' Import tab; the look is this app's own (its tokens, buttons and
 //! cards). On a narrow window (Compact, Modern on a phone) the three columns become one, with the
 //! sources and the settings a tap away in the bar. Ported by hand from OneSlips dd7bb41aa,
 //! db061a0a7, 437ed003f, 6e4fa44d0, 12d31e4fc.
