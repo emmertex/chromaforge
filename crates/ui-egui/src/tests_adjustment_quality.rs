@@ -104,7 +104,7 @@ fn high_quality_adjustment_preference_round_trips_and_defaults_off() {
 
 #[test]
 fn high_quality_adjustment_setting_is_available_in_rendering_preferences() {
-    let (mut h, _) = detail([640, 480], 1.0);
+    let (mut h, _) = detail([1024, 768], 1.0);
     h.app.ui.settings.high_quality_adjustment_previews = false;
     h.app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "performance".into() });
     h.step();
