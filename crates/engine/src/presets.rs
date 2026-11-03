@@ -545,10 +545,14 @@ pub const RECENT_PROFILES: usize = 5;
 impl Session {
     /// A profile by id, looking up built-in profiles first and imported LUT profiles second.
     pub fn profile_info(&self, id: &str) -> Option<(&str, &str)> {
-        if let Some(p) = profile(id) {
-            return Some((p.name, p.group));
-        }
-        self.lut_profiles.iter().find(|p| p.id == id).map(|p| (p.name.as_str(), p.group.as_str()))
+        let (name, group) = match profile(id) {
+            Some(p) => (p.name, p.group),
+            None => self.lut_profiles.iter().find(|p| p.id == id).map(|p| (p.name.as_str(), p.group.as_str()))?,
+        };
+        // the Profile Manager's name and group for it
+        let name = self.profile_edits.names.get(id).map(String::as_str).unwrap_or(name);
+        let group = self.profile_edits.groups.get(id).map(String::as_str).unwrap_or(group);
+        Some((name, group))
     }
 
     /// Remember `id` as the most recently applied profile.
@@ -568,31 +572,40 @@ impl Session {
                 .find(|p| p.id == id)
                 .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.contains(&p.id), "imported": true}))
         };
-        let shown = |id: &str| !self.profile_hidden.iter().any(|h| h == id);
-        let list =
-            |ids: &[String]| ids.iter().filter(|id| shown(id)).filter_map(|id| profile(id).map(item).or_else(|| lut_item(id))).collect::<Vec<_>>();
-        // (profiles the Profile Manager hides are left out; a group left empty goes too)
-        let mut groups: Vec<Value> = profile_groups()
-            .into_iter()
-            .map(|g| (g, PROFILES.iter().filter(|p| p.group == g && shown(p.id)).map(item).collect::<Vec<_>>()))
-            .filter(|(_, l)| !l.is_empty())
-            .map(|(g, l)| json!({"name": g, "profiles": l}))
-            .collect();
-        // imported LUT profiles, by their groups
-        let mut lut_groups: Vec<&str> = self.lut_profiles.iter().map(|p| p.group.as_str()).collect();
-        lut_groups.sort_unstable();
-        lut_groups.dedup();
-        for g in lut_groups {
-            let profiles: Vec<Value> = self
-                .lut_profiles
-                .iter()
-                .filter(|p| p.group == g && shown(&p.id))
-                .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.contains(&p.id), "imported": true}))
-                .collect();
-            if !profiles.is_empty() {
-                groups.push(json!({"name": g, "profiles": profiles, "imported": true}));
+        let shown = |id: &str| !self.profile_hidden.iter().any(|h| h == id) && !self.profile_edits.removed.iter().any(|r| r == id);
+        let renamed = |mut v: Value| {
+            if let Some(n) = v.get("id").and_then(Value::as_str).and_then(|id| self.profile_edits.names.get(id)).cloned() {
+                v["name"] = json!(n);
             }
-        }
+            v
+        };
+        let list = |ids: &[String]| {
+            ids.iter().filter(|id| shown(id)).filter_map(|id| profile(id).map(item).or_else(|| lut_item(id))).map(renamed).collect::<Vec<_>>()
+        };
+        // (profiles the Profile Manager hides or removed are left out; a group left empty goes too)
+        let groups: Vec<Value> = self
+            .shown_groups()
+            .into_iter()
+            .map(|g| {
+                let profiles: Vec<Value> = g
+                    .profiles
+                    .iter()
+                    .map(|p| {
+                        let mut v =
+                            json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.iter().any(|f| f == &p.id)});
+                        if p.kind == "lut" {
+                            v["imported"] = json!(true);
+                        }
+                        v
+                    })
+                    .collect();
+                let mut v = json!({"name": g.name, "profiles": profiles});
+                if g.imported {
+                    v["imported"] = json!(true);
+                }
+                v
+            })
+            .collect();
         json!({
             "favorites": list(&self.profile_favorites),
             "recent": list(&self.profile_recent),

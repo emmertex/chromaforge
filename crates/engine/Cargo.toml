@@ -33,6 +33,8 @@ lcc-preview = { workspace = true }
 lcc-codecs = { workspace = true }
 lcc-raw = { workspace = true }
 lcc-camdb = { workspace = true }
+lcc-camprof = { workspace = true }
+lcc-tiff = { workspace = true }
 lcc-denoise-core = { workspace = true }
 lcc-denoise = { workspace = true, optional = true }
 lcc-meta = { workspace = true }

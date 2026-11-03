@@ -4582,6 +4582,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lcc-camprof"
+version = "26.45.0"
+dependencies = [
+ "lcc-color",
+ "lcc-raw",
+]
+
+[[package]]
 name = "lcc-catalog"
 version = "26.45.0"
 dependencies = [
@@ -4808,6 +4816,7 @@ dependencies = [
  "lcc-audio-out",
  "lcc-brand",
  "lcc-camdb",
+ "lcc-camprof",
  "lcc-catalog",
  "lcc-codecs",
  "lcc-color",

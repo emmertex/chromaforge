@@ -339,5 +339,9 @@
   "Undo: {what}": "Undo: {what}",
   "on {n} photos": "on {n} photos",
   "{n} stars": "{n} stars",
-  "This action doesn't use: {keys}. Choose Preset above to put a preset on this key.": "ეს მოქმედება არ იყენებს: {keys}. კლავიშზე პრესეტის დასაყენებლად ზემოთ აირჩიეთ „პრესეტი“."
+  "This action doesn't use: {keys}. Choose Preset above to put a preset on this key.": "ეს მოქმედება არ იყენებს: {keys}. კლავიშზე პრესეტის დასაყენებლად ზემოთ აირჩიეთ „პრესეტი“.",
+  "Both charts are set to {light}; set the second to {other}.": "Both charts are set to {light}; set the second to {other}.",
+  "The chart's greys measure about {cct:.0} K": "The chart's greys measure about {cct:.0} K",
+  "These charts come from two different camera bodies ({x}, {y})": "These charts come from two different camera bodies ({x}, {y})",
+  "Used by {n} photos; they will update.": "Used by {n} photos; they will update."
 }

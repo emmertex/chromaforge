@@ -68,3 +68,116 @@ fn a_body_default_applies_at_import_while_the_photo_is_on_the_camera_default() {
     crate::import::apply_import_defaults(&s, &mut p);
     assert_eq!(p.develop.profile.camera, "lc");
 }
+
+#[test]
+fn profiles_are_renamed_regrouped_reordered_removed_and_restored() {
+    let mut s = Session::new();
+    let (a, b) = (crate::presets::PROFILES[0].id, crate::presets::PROFILES[2].id);
+    let list = |s: &mut Session| s.execute("profiles.list", &json!({})).unwrap().as_array().unwrap().clone();
+    let n = list(&mut s).len();
+    s.execute("profile.rename", &json!({"id": a, "name": "  My Colour "})).unwrap();
+    s.execute("profile.setGroup", &json!({"id": a, "group": "Mine"})).unwrap();
+    let menu = s.execute("profiles.menu", &json!({})).unwrap();
+    let mine = menu["groups"].as_array().unwrap().iter().find(|g| g["name"] == "Mine").unwrap().clone();
+    assert_eq!(mine["profiles"][0]["name"], "My Colour");
+    assert_eq!(mine["imported"], true, "the user's group is shown as named");
+    assert_eq!(s.profile_info(a), Some(("My Colour", "Mine")));
+    // b first
+    s.execute("profile.reorder", &json!({"ids": [b]})).unwrap();
+    assert_eq!(list(&mut s)[0]["id"], b);
+    // a removed built-in look leaves every list until restored
+    s.execute("profile.remove", &json!({"id": b})).unwrap();
+    assert_eq!(list(&mut s).len(), n - 1);
+    assert!(s.execute("profiles.manager", &json!({})).unwrap()["removed"].as_array().unwrap().iter().any(|r| r == b));
+    assert_eq!(s.execute("profile.restoreBuiltins", &json!({})).unwrap()["restored"], 1);
+    assert_eq!(list(&mut s).len(), n);
+    // a whole group: renamed, hidden, removed
+    let g = crate::presets::PROFILES[1].group;
+    let members = crate::presets::PROFILES.iter().filter(|p| p.group == g && p.id != a).count();
+    assert_eq!(s.execute("profile.groupRename", &json!({"group": g, "name": "Renamed"})).unwrap()["profiles"], members);
+    assert_eq!(s.execute("profile.groupHide", &json!({"group": "Renamed"})).unwrap()["hidden"], true);
+    assert_eq!(list(&mut s).len(), n - members);
+    s.execute("profile.groupHide", &json!({"group": "Renamed", "hidden": false})).unwrap();
+    assert_eq!(s.execute("profile.groupRemove", &json!({"group": "Renamed"})).unwrap()["removed"], members);
+    assert_eq!(list(&mut s).len(), n - members);
+    // clearing a name gives the profile its own back
+    s.execute("profile.rename", &json!({"id": a, "name": ""})).unwrap();
+    assert_eq!(s.profile_info(a).map(|x| x.0), Some(crate::presets::PROFILES[0].name));
+}
+
+#[test]
+fn hostile_profile_manager_requests_are_errors() {
+    let mut s = Session::new();
+    let a = crate::presets::PROFILES[0].id;
+    for (cmd, p) in [
+        ("profile.rename", json!({"id": "nope", "name": "x"})),
+        ("profile.rename", json!({"id": a})),
+        ("profile.rename", json!({"id": a, "name": 3})),
+        ("profile.rename", json!({"id": a, "name": "x".repeat(500)})),
+        ("profile.rename", json!({"id": a, "name": "a\u{0}b"})),
+        ("profile.setGroup", json!({"id": a, "group": ["x"]})),
+        ("profile.reorder", json!({"ids": "all"})),
+        ("profile.reorder", json!({"ids": [1, 2]})),
+        ("profile.reorder", json!({"ids": ["nope"]})),
+        ("profile.remove", json!({})),
+        ("profile.groupRename", json!({"group": "No Such Group", "name": "x"})),
+        ("profile.groupRename", json!({"group": crate::presets::PROFILES[0].group})),
+        ("profile.groupHide", json!({"group": ""})),
+        ("profile.groupRemove", json!({"group": null})),
+    ] {
+        assert!(s.execute(cmd, &p).is_err(), "{cmd} {p}");
+    }
+    assert!(s.profile_edits.is_empty(), "nothing changed");
+    // a hostile prefs file is cut to the limits
+    let big = crate::profile_edits::ProfileEdits { order: vec!["x".into(); 20_000], ..Default::default() }.bounded();
+    assert_eq!(big.order.len(), crate::profile_edits::MAX_ENTRIES);
+}
+
+#[test]
+fn an_import_gives_its_raws_the_camera_profile_chosen_per_body_or_for_all() {
+    let dir = std::env::temp_dir().join(format!("lcc-import-bodyprof-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let corners = lcc_camprof::ChartCorners::from_rect(10.0, 10.0, 40.0, 30.0);
+    let write = |name: &str, serial: &str| {
+        let p = dir.join(name);
+        std::fs::write(&p, crate::chart_profiling::demo_chart_dng_of_body(64, 48, &corners, "D55", true, Some(serial)).unwrap()).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let (a, b) = (write("SA0001.dng", "SN1"), write("SB0001.dng", "SN2"));
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [a]})).unwrap();
+    let id = PhotoId(r["imported"][0].as_u64().unwrap());
+    let ph = s.catalog.photo(id).unwrap();
+    let key = crate::profile_bodies::key_of(ph).unwrap();
+    // (its serial, else the file names' key)
+    let (mine, theirs) = if key.ends_with("|SN1") { ("SN1", "SN2") } else { ("file:SA", "file:SB") };
+    assert!(key.ends_with(mine), "{key}");
+    // per body, for this import only: SN2's body gets the built-in colour, SN1 isn't named
+    s.execute("library.remove", &json!({"ids": [id.0]})).ok();
+    let other = key.replace(mine, theirs);
+    let plan = s.execute("import.profilePlan", &json!({"paths": [&b], "cameraProfile": {"perBody": {&other: "lc"}}})).unwrap();
+    assert_eq!(plan["rows"].as_array().unwrap().len(), 1, "{plan}");
+    assert_eq!(
+        (plan["rows"][0]["body"].as_str(), plan["rows"][0]["profile"].as_str(), plan["rows"][0]["how"].as_str()),
+        (Some(other.as_str()), Some("lc"), Some("chosen"))
+    );
+    assert!(s.execute("import.profilePlan", &json!({"paths": "x"})).is_err());
+    assert!(s.execute("import.profilePlan", &json!({"paths": [&b], "cameraProfile": 7})).is_err());
+    let r = s.execute("library.import", &json!({"paths": [b], "cameraProfile": {"perBody": {other: "lc"}}})).unwrap();
+    assert_eq!(r["cameraProfiles"]["lc"]["photos"], 1, "{r}");
+    let idb = PhotoId(r["imported"][0].as_u64().unwrap());
+    assert_eq!(s.catalog.photo(idb).unwrap().develop.profile.camera, "lc");
+    assert!(s.body_profiles.is_empty(), "nothing is remembered for the body");
+    for bad in [
+        json!("manual"),
+        json!({"all": "nope"}),
+        json!({"all": 3}),
+        json!({"perBody": []}),
+        json!({"perBody": {"": "lc"}}),
+        json!({"all": "lc", "x": 1}),
+    ] {
+        assert!(s.execute("library.import", &json!({"paths": [b], "cameraProfile": bad})).is_err(), "{bad}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

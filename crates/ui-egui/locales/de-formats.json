@@ -372,5 +372,9 @@
   "About ${usd}, billed to your {name} account.": "Etwa ${usd}, abgerechnet über dein {name}-Konto.",
   "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "Der Bereich ist größer, als {name} in voller Auflösung annimmt: Er wird weicher als der Rest des Fotos ({}%).",
   "up to {} px at full resolution, about ${usd} per fill": "bis {} px in voller Auflösung, etwa ${usd} pro Füllung",
-  "Key saved (ends in {})": "Schlüssel gespeichert (endet auf {})"
+  "Key saved (ends in {})": "Schlüssel gespeichert (endet auf {})",
+  "The chart's greys measure about {cct:.0} K": "Die Graufelder der Karte messen etwa {cct:.0} K",
+  "Both charts are set to {light}; set the second to {other}.": "Beide Karten stehen auf {light}; stellen Sie die zweite auf {other}.",
+  "Used by {n} photos; they will update.": "Von {n} Fotos verwendet; sie werden aktualisiert.",
+  "These charts come from two different camera bodies ({x}, {y})": "Diese Karten stammen von zwei verschiedenen Kameragehäusen ({x}, {y})"
 }

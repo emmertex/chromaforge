@@ -367,5 +367,9 @@
   "About ${usd}, billed to your {name} account.": "Environ ${usd}, facturés sur votre compte {name}.",
   "The area is larger than {name} takes at full resolution: it will be softer than the rest of the photo ({}%).": "La zone dépasse ce que {name} accepte en pleine résolution : elle sera plus douce que le reste de la photo ({}%).",
   "up to {} px at full resolution, about ${usd} per fill": "jusqu’à {} px en pleine résolution, environ ${usd} par remplissage",
-  "Key saved (ends in {})": "Clé enregistrée (se termine par {})"
+  "Key saved (ends in {})": "Clé enregistrée (se termine par {})",
+  "The chart's greys measure about {cct:.0} K": "Les gris de la charte mesurent environ {cct:.0} K",
+  "Both charts are set to {light}; set the second to {other}.": "Les deux chartes sont réglées sur {light} ; réglez la deuxième sur {other}.",
+  "Used by {n} photos; they will update.": "Utilisé par {n} photos ; elles seront mises à jour.",
+  "These charts come from two different camera bodies ({x}, {y})": "Ces chartes viennent de deux boîtiers différents ({x}, {y})"
 }

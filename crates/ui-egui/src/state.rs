@@ -1830,6 +1830,10 @@ pub enum Dialog {
     /// Object and Describe masks need the SAM 3 model, which isn't installed: offer to download
     /// it (size, licence, progress). `then`: the AI mask to start once it is there (`kind`
     /// object|prompt, `op` new|add|subtract|intersect).
+    /// Create Camera Profile from Color Chart; the photos and the report live in the app.
+    ChartProfile {
+        opts: crate::chart_profile::ChartProfileDialog,
+    },
     SamModel {
         then: Option<(String, String)>,
         /// Why the download couldn't start (shown in the dialog).

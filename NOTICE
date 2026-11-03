@@ -196,3 +196,13 @@ defaults; Copyright The TensorFlow Authors, Apache License 2.0) and the document
 its builtin operators; no TensorFlow code was copied. Its MediaPipe landmark index lists are data
 from MediaPipe's face_landmarks_connections (Copyright 2023 The MediaPipe Authors, Apache License
 2.0). Ported into Chromaforge from OneSlips' fork.
+
+crates/camprof (lcc-camprof) ports the camera-profiling engine of RADcamProfiles
+(https://github.com/OneSlips/RADcamProfiles, commit dd8003f, crates/engine), Copyright (c) 2026 RAD Films -
+Roman Alurkoff (@OneSlips), licensed under the MIT License and relicensed under the MIT License or the
+Apache License 2.0 by its author. It is clean-room, own work, confirmed by the author 2026-11-03: no DCamProf
+or other GPL code was used, and its data is public or the author's own. The port was modified by the
+Chromaforge contributors (2026); each ported file says so. It carries the CIE 1931 2-degree colour-matching
+functions and the CIE standard illuminants A, D50, D55, D65, D75 and E (CIE 015:2018 / ISO/CIE 11664
+published tables), and the published reference values (CIELAB D50) of the X-Rite ColorChecker 24 as made
+before November 2014. See assets/ATTRIBUTION.md.
