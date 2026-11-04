@@ -1502,6 +1502,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let map = crop_view.map_or_else(|| CanvasMap::new(&frame, img_rect), |v| v.map);
     let hide_filter = app.ui.settings.hide_filter_in_develop && app.ui.module == crate::module::ModuleId::Develop;
     let pill = if !fullscreen && !hide_filter { filter_pill(app, ui, canvas) } else { None };
+    if !fullscreen {
+        all_masks_pill(app, ui, canvas, img_rect);
+    }
     info_overlay(app, &p, canvas, &photo, pill);
     if super::faces::face_boxes_shown(app) {
         // a name box left open on another photo is dropped
@@ -2003,6 +2006,29 @@ fn filter_pill(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect) -> Option<Rect
     Some(r)
 }
 
+/// While All Mask Overlays is on (Ctrl+Shift+O), a pill at the top of the photo says so and how
+/// to leave it; a click turns it off (widget `loupe:allMasks`). Styled as the filter pill.
+fn all_masks_pill(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, over: Rect) {
+    if !app.ui.mask_overlay_all || app.ui.right != RightPanel::Masking {
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    let p = ui.painter_at(canvas);
+    let text = crate::i18n::tr("All masks shown · O to hide");
+    let g = p.layout_no_wrap(text.to_string(), t.font(12.0), Color32::from_gray(225));
+    let size = vec2(g.size().x + 20.0, FILTER_PILL_HEIGHT);
+    let over = if over.is_positive() { over.intersect(canvas) } else { canvas };
+    let r = Rect::from_min_size(pos2(over.center().x - size.x / 2.0, over.top() + FILTER_PILL_INSET), size);
+    let resp = ui.interact(r, egui::Id::new("loupe-all-masks-pill"), Sense::click());
+    crate::widgets::announce(&resp, text);
+    register(ui.ctx(), "loupe:allMasks", r);
+    p.rect_filled(r, 10.0, Color32::from_black_alpha(if resp.hovered() { 225 } else { 185 }));
+    p.galley(pos2(r.left() + 10.0, r.center().y - g.size().y / 2.0), g, Color32::from_gray(225));
+    if resp.on_hover_text(crate::i18n::tr("Click to hide the overlay")).clicked() {
+        let _ = app.run("view.maskOverlay", json!({"show": false}));
+    }
+}
+
 /// A raw shown from its embedded JPEG (issue #10): a pill at the canvas' top centre saying so;
 /// hovering it explains (registered as `notice:previewOnly:loupe`).
 fn preview_only_pill(ui: &mut egui::Ui, canvas: Rect, reason: &str, top: f32) {
@@ -2476,9 +2502,23 @@ pub(crate) fn mask_has_settings(m: &lcc_develop::Mask) -> bool {
     m.adjust != lcc_develop::LocalAdjustments::default() || !m.curve.is_identity()
 }
 
+/// Whether a mask is being shaped on the photo right now: a handle, the gradient or the pin
+/// dragged, a brush stroke, a colour or tone area or a colour pin on its way. It counts as
+/// adjusting: hovering shows no overlay meanwhile, and a mask with settings shows its effect.
+pub(crate) fn mask_gesture(app: &LccApp) -> bool {
+    matches!(app.gesture, Some(Gesture::MaskHandle { .. } | Gesture::Brush { .. } | Gesture::RangeArea { .. } | Gesture::ColorPin { .. }))
+}
+
 pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) -> lcc_pipeline::Overlay {
     use lcc_pipeline::{MaskView, Overlay};
     if app.ui.fullscreen {
+        return Overlay::None;
+    }
+    // A mask gesture (a brush stroke, a handle drag, …) on a mask with settings is adjusting too:
+    // nothing covers the photo, not even O or All, so the effect can be judged while painting. A
+    // mask without settings keeps showing what it selects (there is no effect to see yet).
+    let gesture = app.ui.right == RightPanel::Masking && mask_gesture(app);
+    if gesture && app.session.active_mask.and_then(|id| d.masks.iter().find(|m| m.id == id)).is_some_and(mask_has_settings) {
         return Overlay::None;
     }
     // While a mask slider is at work nothing covers the photo: its effect is what is being judged.
@@ -2496,6 +2536,7 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
     }
     // the pointer on a mask's row in the list shows what that mask selects
     if app.ui.right == RightPanel::Masking
+        && !gesture
         && let Some(m) = app.ui.mask_hover.or(app.ui.mask_pin_hover).and_then(|id| d.masks.iter().find(|m| m.id == id))
         && !m.components.is_empty()
     {
@@ -3984,7 +4025,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         // stroke goes to the mask live); the red stroke is for a mask without settings, or with the
         // overlay on
         let target = if app.ui.mask_new.is_some() { None } else { d.masks.iter().find(|m| Some(m.id) == active) };
-        let live = !app.ui.brush_auto_mask && !app.ui.mask_overlay && target.is_some_and(|m| m.adjust != lcc_develop::LocalAdjustments::default());
+        let live = !app.ui.brush_auto_mask && target.is_some_and(mask_has_settings);
         if live
             && resp.dragged()
             && let Some(Gesture::Brush { points, pressure, erase, sent }) = &app.gesture

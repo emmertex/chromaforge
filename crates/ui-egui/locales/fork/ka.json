@@ -1,6 +1,7 @@
 {
   "Address": "მისამართი",
   "All files": "ყველა ფაილი",
+  "All masks shown · O to hide": "ყველა ნიღაბი ნაჩვენებია · O დასამალად",
   "Allow Access to All Files…": "ყველა ფაილზე წვდომის დაშვება…",
   "Also the contributors to": "ასევე მონაწილეები:",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "გამოიყენება შემდეგი გაშვებიდან. თუ GPU-ით აპი ნელა ეშვება, სცადეთ Vulkan: ზოგიერთ კომპიუტერზე ის GPU-ს გაცილებით სწრაფად ამზადებს.",
@@ -11,6 +12,7 @@
   "Blend source texture with target tone": "წყაროს ტექსტურის შერწყმა სამიზნე ტონთან",
   "Blue/Yellow": "ლურჯი/ყვითელი",
   "Catalog": "კატალოგი",
+  "Click to hide the overlay": "დააწკაპუნეთ ზედდების დასამალად",
   "Click to update it.": "დააწკაპუნეთ განსაახლებლად.",
   "Click to zoom": "დააწკაპეთ გასადიდებლად",
   "Colour": "ფერი",
