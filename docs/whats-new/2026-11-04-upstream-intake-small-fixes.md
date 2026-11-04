@@ -11,3 +11,4 @@
 - Lens databases, HEIC images and Object selections with absurd contents (huge name copies, thousands of tiles or clicks) are refused or capped instead of slowing the app down, and moving a photo no longer copies a sidecar that is really a link to another file.
 - The app no longer writes through a link planted under a temporary file name (denoise cache, camera profiles, slideshow export, drive check).
 - A folder given through a link to the library can no longer be moved out of it, and a render keeps at most as many mask planes as fit in 8 GB (at least 16 masks).
+- Lens databases, Luminar looks and photos with thousands of keywords or `&` characters in their metadata no longer make the app slow, and absurd image sizes are refused when encoding.
