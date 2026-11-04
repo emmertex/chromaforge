@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Map, Value, json};
 
 use crate::backend::Backend;
-use crate::base64::base64_encode;
+use crate::base64::{base64_decode, base64_encode};
 use crate::headless::{encode_image, expand_paths};
 
 /// Prefix of the tools generated from the command registry.
@@ -508,14 +508,18 @@ impl Drop for TempPng {
     }
 }
 
-/// Read a PNG the backend wrote, optionally downscale / re-encode as JPEG, and wrap it as image
-/// content (+ a text block with the metadata).
+/// Read a PNG the backend wrote, then [`image_bytes_result`].
 fn image_result(file: &std::path::Path, max: Option<u32>, format: &str, save_to: Option<&str>, meta: Value) -> ToolResult {
     let bytes = match std::fs::read(file) {
         Ok(b) => b,
         Err(e) => return ToolResult::error(format!("cannot read rendered image {}: {e}", file.display())),
     };
     let _ = std::fs::remove_file(file);
+    image_bytes_result(bytes, max, format, save_to, meta)
+}
+
+/// Optionally downscale / re-encode a PNG as JPEG, and wrap it as image content (+ a text block with the metadata).
+fn image_bytes_result(bytes: Vec<u8>, max: Option<u32>, format: &str, save_to: Option<&str>, meta: Value) -> ToolResult {
     let jpeg = matches!(format, "jpeg" | "jpg");
     let (w, h) = (meta["width"].as_u64().unwrap_or(0) as u32, meta["height"].as_u64().unwrap_or(0) as u32);
     let too_big = max.is_some_and(|m| w.max(h) > m);
@@ -587,18 +591,33 @@ fn render_photo(b: &mut dyn Backend, args: &Value) -> ToolResult {
         },
     };
     let Some(id) = id else { return ToolResult::error("no active photo: import or select one, or pass `id`") };
+    let format = args.get("format").and_then(Value::as_str).unwrap_or("png");
+    let save_to = args.get("path").and_then(Value::as_str);
+    // The PNG comes back in the reply: with `--connect` the app may run on another machine, where a temp file path
+    // means nothing here (upstream #3312).
+    let mut meta = match b.call("ui.render", json!({"id": id, "size": size, "inline": true})) {
+        Ok(m) => m,
+        Err(e) => return ToolResult::error(e),
+    };
+    meta["id"] = json!(id);
+    if let Some(png) = meta.as_object_mut().and_then(|m| m.remove("png")) {
+        return match png.as_str().and_then(base64_decode) {
+            Some(bytes) => image_bytes_result(bytes, None, format, save_to, meta),
+            None => ToolResult::error("ui.render returned an invalid base64 PNG"),
+        };
+    }
+    // An app from before `inline` renders without writing anything: ask again with a temp file.
     let tmp = match TempPng::new("render") {
         Ok(t) => t,
         Err(e) => return ToolResult::error(e),
     };
     let path = tmp.file.to_string_lossy().to_string();
-    let meta = match b.call("ui.render", json!({"id": id, "size": size, "path": path})) {
+    let mut meta = match b.call("ui.render", json!({"id": id, "size": size, "path": path})) {
         Ok(m) => m,
         Err(e) => return ToolResult::error(e),
     };
-    let mut meta = meta;
     meta["id"] = json!(id);
-    image_result(&tmp.file, None, args.get("format").and_then(Value::as_str).unwrap_or("png"), args.get("path").and_then(Value::as_str), meta)
+    image_result(&tmp.file, None, format, save_to, meta)
 }
 
 fn screenshot(b: &mut dyn Backend, args: &Value) -> ToolResult {

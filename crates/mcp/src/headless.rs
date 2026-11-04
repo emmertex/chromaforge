@@ -201,6 +201,10 @@ impl Backend for Headless {
                         write_image(Path::new(path), &img, 92)?;
                         Ok(json!({"path": path, "width": img.width, "height": img.height}))
                     }
+                    None if p.get("inline").and_then(Value::as_bool).unwrap_or(false) => {
+                        let png = encode_image("png", &img, 92)?;
+                        Ok(json!({"width": img.width, "height": img.height, "png": lcc_engine::base64::encode(&png)}))
+                    }
                     None => Ok(json!({"width": img.width, "height": img.height})),
                 }
             }
