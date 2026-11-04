@@ -23,6 +23,8 @@ use crate::lightroom_catalog::{CatalogImport, CatalogPhoto, Original, Row, SkipR
 
 /// Deepest collection or keyword chain followed; deeper (or cyclic) chains are cut there.
 const MAX_DEPTH: usize = 64;
+/// Most keywords kept for one photo; a longer keyword field is cut there.
+const MAX_KEYWORDS: usize = 10_000;
 
 /// Whether `path` is a Capture One catalog: its `.cocatalogdb` database, or a folder (a `.cocatalog`
 /// package, or the plain folder Windows shows) that holds one.
@@ -224,20 +226,25 @@ fn without_order(entry: &str) -> &str {
 /// keyword of the catalog's keyword tree gets its parents from the tree; anything else is kept as
 /// written.
 fn keyword_paths(field: &str, tree: &HashMap<i64, Row>, by_name: &HashMap<String, Vec<i64>>) -> Vec<String> {
+    // (in time linear in the field: a hostile field can hold millions of entries)
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for entry in field.split([',', '\n', '\r']).map(without_order).map(str::trim).filter(|n| !n.is_empty()) {
+        if out.len() >= MAX_KEYWORDS {
+            break;
+        }
         let path = if entry.contains('|') {
             entry.split('|').map(str::trim).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("|")
         } else {
             tree_path(entry, tree, by_name)
         };
-        if !path.is_empty() && !out.contains(&path) {
+        if !path.is_empty() && seen.insert(path.clone()) {
             out.push(path);
         }
     }
     // keep only the deepest keywords: `Animals` goes when `Animals|Birds` is there too
-    let all = out.clone();
-    out.retain(|p| !all.iter().any(|q| q.len() > p.len() && q.starts_with(p.as_str()) && q.as_bytes().get(p.len()) == Some(&b'|')));
+    let parents: HashSet<String> = out.iter().flat_map(|p| p.match_indices('|').filter_map(|(i, _)| p.get(..i)).map(str::to_string)).collect();
+    out.retain(|p| !parents.contains(p));
     out
 }
 
@@ -312,9 +319,10 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
     let mut unlabelled: BTreeMap<&'static str, usize> = BTreeMap::new();
     for image in &images {
         active(cancel)?;
-        let Some(image_pk) = int(image, "Z_PK") else { continue };
+        // (Core Data keys are positive; 0 would read as "no master" below)
+        let Some(image_pk) = int(image, "Z_PK").filter(|pk| *pk > 0) else { continue };
         if number(image, "ZISTRASHED") != 0 {
-            trashed += 1;
+            trashed = trashed.saturating_add(1);
             continue;
         }
         let file_name = text(image, "ZIMAGEFILENAME");
@@ -347,7 +355,7 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
         }
         let mut master = 0;
         for (n, variant) in image_variants.iter().enumerate() {
-            let Some(variant_pk) = int(variant, "Z_PK") else { continue };
+            let Some(variant_pk) = int(variant, "Z_PK").filter(|pk| *pk > 0) else { continue };
             // Metadata hangs off a layer: the combined layer is what Capture One shows, the
             // adjustment and default layers fill in what it leaves empty.
             let chain: Vec<&Row> =
@@ -364,7 +372,8 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
             let label = match meta_int("ZCOLOR_TAG_INDEX").map(colour_tag) {
                 Some(Ok(name)) => name,
                 Some(Err(Some(colour))) => {
-                    *unlabelled.entry(colour).or_default() += 1;
+                    let count = unlabelled.entry(colour).or_default();
+                    *count = count.saturating_add(1);
                     ""
                 }
                 _ => "",
@@ -387,7 +396,7 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
             if master != 0
                 && let Some(obj) = row.as_object_mut()
             {
-                obj.insert("copyName".into(), json!(format!("Variant {}", n + 1)));
+                obj.insert("copyName".into(), json!(format!("Variant {}", n.saturating_add(1))));
             }
             let image_row: Row = serde_json::from_value(row).map_err(|e| e.to_string())?;
             let uuid = text(variant, "ZVARIANTUUID");
@@ -712,5 +721,207 @@ mod tests {
             assert!(read_with_progress(&p, &cancel, &AtomicUsize::new(0), &AtomicUsize::new(0)).is_err());
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a hostile catalog must give: an error, or an import of what it can (`Some(n)`: that many
+    /// photos), never a panic or a hang.
+    enum Want {
+        Error,
+        Photos(usize),
+        Either,
+    }
+
+    /// Hostile catalogs, table by table, read and imported into a library: missing tables, NULL and
+    /// wrongly typed columns, cyclic collection and keyword parents, huge numbers, empty names.
+    #[test]
+    fn hostile_catalogs_import_what_they_can_or_fail_without_panicking() {
+        let loc = || json!({"Z_PK": 1, "ZISRELATIVE": 1, "ZRELATIVEPATH": "./Originals"});
+        let image = |extra: Value| {
+            let mut i = json!({"Z_PK": 1, "ZIMAGEFILENAME": "a.NEF", "ZIMAGELOCATION": 1});
+            if let (Some(i), Some(extra)) = (i.as_object_mut(), extra.as_object()) {
+                i.extend(extra.clone());
+            }
+            i
+        };
+        let variant = |pk: i64, image: i64| json!({"Z_PK": pk, "ZIMAGE": image, "ZCOMBINEDSETTINGS": 10});
+        let base = || vec![("ZPATHLOCATION", vec![loc()]), ("ZIMAGE", vec![image(json!({}))]), ("ZVARIANT", vec![variant(7, 1)])];
+        let with = |mut tables: Vec<(&'static str, Vec<Value>)>, more: Vec<(&'static str, Vec<Value>)>| {
+            for (name, rows) in more {
+                tables.retain(|(n, _)| *n != name);
+                tables.push((name, rows));
+            }
+            tables
+        };
+        let album = |pk: i64, parent: i64, ent: i64| json!({"Z_PK": pk, "Z_ENT": ent, "ZPARENT": parent, "ZNAME": format!("c{pk}")});
+        let entities = || ("ZENTITIES", vec![json!({"Z_ENT": 2, "ZNAME": "AlbumCollection"}), json!({"Z_ENT": 7, "ZNAME": "ProjectCollection"})]);
+        let cases: Vec<(&str, Vec<(&str, Vec<Value>)>, Want)> = vec![
+            ("no Capture One tables at all", vec![("ZOTHER", vec![json!({"Z_PK": 1})])], Want::Error),
+            ("no ZPATHLOCATION", vec![("ZIMAGE", vec![image(json!({}))]), ("ZVARIANT", vec![variant(7, 1)])], Want::Error),
+            ("no ZVARIANT", vec![("ZPATHLOCATION", vec![loc()]), ("ZIMAGE", vec![image(json!({}))])], Want::Error),
+            ("only the required tables", base(), Want::Photos(1)),
+            ("empty tables", vec![("ZPATHLOCATION", vec![]), ("ZIMAGE", vec![]), ("ZVARIANT", vec![])], Want::Either),
+            ("every image column NULL", with(base(), vec![("ZIMAGE", vec![json!({"Z_PK": null, "ZIMAGEFILENAME": null})])]), Want::Photos(0)),
+            (
+                "wrongly typed image columns",
+                with(
+                    base(),
+                    vec![(
+                        "ZIMAGE",
+                        vec![image(
+                            json!({"Z_PK": "one", "ZIMAGELOCATION": "first", "ZWIDTH": "wide", "ZEXP_DATE": "yesterday", "ZISTRASHED": "no"}),
+                        )],
+                    )],
+                ),
+                Want::Photos(0),
+            ),
+            (
+                "wrongly typed metadata",
+                with(
+                    base(),
+                    vec![(
+                        "ZVARIANTMETADATA",
+                        vec![
+                            json!({"Z_PK": 1, "ZLAYER": 10, "ZBASIC_RATING": "five", "ZCOLOR_TAG_INDEX": 1.0e300, "ZCONTENT_KEYWORDS": 42, "ZSTATUS_TITLE": 7}),
+                        ],
+                    )],
+                ),
+                Want::Photos(1),
+            ),
+            (
+                "huge numbers",
+                with(
+                    base(),
+                    vec![
+                        ("ZIMAGE", vec![image(json!({"Z_PK": i64::MAX, "ZWIDTH": i64::MAX, "ZHEIGHT": -i64::MAX, "ZEXP_DATE": 1.0e300}))]),
+                        ("ZVARIANT", vec![json!({"Z_PK": i64::MAX, "ZIMAGE": i64::MAX, "ZINDEX": i64::MIN, "ZCOMBINEDSETTINGS": i64::MAX})]),
+                        ("ZVARIANTMETADATA", vec![json!({"Z_PK": 1, "ZLAYER": i64::MAX, "ZBASIC_RATING": i64::MAX, "ZCOLOR_TAG_INDEX": i64::MIN})]),
+                    ],
+                ),
+                Want::Photos(1),
+            ),
+            (
+                "negative and zero keys",
+                with(base(), vec![("ZIMAGE", vec![image(json!({"Z_PK": 0}))]), ("ZVARIANT", vec![variant(0, 0), variant(-3, 0)])]),
+                Want::Photos(0),
+            ),
+            (
+                "a variant shared by two images",
+                with(
+                    base(),
+                    vec![
+                        ("ZIMAGE", vec![image(json!({})), image(json!({"Z_PK": 2, "ZIMAGEFILENAME": "b.NEF"}))]),
+                        ("ZVARIANT", vec![variant(7, 1), variant(7, 2)]),
+                    ],
+                ),
+                Want::Either,
+            ),
+            (
+                "empty names",
+                with(
+                    base(),
+                    vec![
+                        ("ZIMAGE", vec![image(json!({"ZIMAGEFILENAME": ""})), image(json!({"Z_PK": 2, "ZIMAGEFILENAME": "b.NEF"}))]),
+                        ("ZVARIANT", vec![variant(7, 1), variant(8, 2)]),
+                        ("ZVARIANTMETADATA", vec![json!({"Z_PK": 1, "ZLAYER": 10, "ZCONTENT_KEYWORDS": "||,|,,||9, | ,"})]),
+                        ("ZKEYWORD", vec![json!({"Z_PK": 1, "ZNAME": ""})]),
+                        entities(),
+                        ("ZCOLLECTION", vec![album(1, -1, 7), json!({"Z_PK": 2, "Z_ENT": 2, "ZPARENT": 1, "ZNAME": ""})]),
+                        ("ZDOCUMENTCONTENT", vec![json!({"Z_PK": 1, "ZROOTCOLLECTION": 1})]),
+                    ],
+                ),
+                Want::Photos(1),
+            ),
+            (
+                "cyclic collection parents",
+                with(
+                    base(),
+                    vec![
+                        entities(),
+                        // a self-parented album, a two-collection loop with an album under it, and a project under the loop
+                        ("ZCOLLECTION", vec![album(1, -1, 7), album(2, 2, 2), album(3, 4, 7), album(4, 3, 7), album(5, 3, 2), album(6, 5, 7)]),
+                        ("ZDOCUMENTCONTENT", vec![json!({"Z_PK": 1, "ZROOTCOLLECTION": 1})]),
+                        (
+                            "ZIMAGEINCOLLECTION",
+                            vec![json!({"Z_PK": 1, "ZCOLLECTION": 5, "ZIMAGE": 1}), json!({"Z_PK": 2, "ZCOLLECTION": 2, "ZIMAGE": 1})],
+                        ),
+                    ],
+                ),
+                Want::Photos(1),
+            ),
+            (
+                "cyclic keyword parents",
+                with(
+                    base(),
+                    vec![
+                        (
+                            "ZKEYWORD",
+                            vec![
+                                json!({"Z_PK": 1, "ZNAME": "a", "ZPARENT": 1}),
+                                json!({"Z_PK": 2, "ZNAME": "b", "ZPARENT": 3}),
+                                json!({"Z_PK": 3, "ZNAME": "c", "ZPARENT": 2}),
+                            ],
+                        ),
+                        ("ZVARIANTMETADATA", vec![json!({"Z_PK": 1, "ZLAYER": 10, "ZCONTENT_KEYWORDS": "a,b,c"})]),
+                    ],
+                ),
+                Want::Photos(1),
+            ),
+            (
+                "locations with hostile paths",
+                with(
+                    base(),
+                    vec![(
+                        "ZPATHLOCATION",
+                        vec![
+                            json!({"Z_PK": 1, "ZISRELATIVE": 1, "ZRELATIVEPATH": "../../../../../../../../../../../../.."}),
+                            json!({"Z_PK": 2, "ZWINROOT": "\\\\?\\UNC\\", "ZMACROOT": 5}),
+                        ],
+                    )],
+                ),
+                Want::Either,
+            ),
+        ];
+        let dir = std::env::temp_dir().join(format!("c1-hostile-tables-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, (what, tables, want)) in cases.into_iter().enumerate() {
+            let db = dir.join(format!("case{n}.cocatalogdb"));
+            std::fs::write(&db, sqlite(&tables)).unwrap();
+            let cancel = AtomicBool::new(false);
+            let read = read_with_progress(&db, &cancel, &AtomicUsize::new(0), &AtomicUsize::new(0));
+            let mut s = crate::Session::new();
+            let imported = crate::lightroom_catalog::import(&mut s, &db, false);
+            match want {
+                Want::Error => assert!(read.is_err() && imported.is_err(), "{what}: should fail, read {:?}", read.map(|r| r.photos.len())),
+                Want::Photos(count) => {
+                    let photos = read.unwrap_or_else(|e| panic!("{what}: {e}")).photos.len();
+                    assert_eq!(photos, count, "{what}");
+                    assert!(imported.is_ok(), "{what}: {imported:?}");
+                }
+                Want::Either => {}
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A keyword field with millions of entries takes linear time and keeps at most
+    /// [`MAX_KEYWORDS`]; a keyword tree deeper than [`MAX_DEPTH`] is cut there.
+    #[test]
+    fn a_huge_keyword_field_and_a_deep_tree_stay_bounded() {
+        let (tree, names) = (HashMap::new(), HashMap::new());
+        let field: String = (0..2_000_000).map(|i| format!("k{i}|x||{i},")).collect();
+        let started = std::time::Instant::now();
+        assert_eq!(keyword_paths(&field, &tree, &names).len(), MAX_KEYWORDS);
+        assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
+        // `s0`, `s0|s1`, … `s0|…|s29`, over and over: only the deepest stays
+        let chain: Vec<String> = (1..=30).map(|d| (0..d).map(|j| format!("s{j}")).collect::<Vec<_>>().join("|")).collect();
+        let parents: String = (0..50_000).map(|i| format!("{},", chain[i % 30])).collect();
+        assert_eq!(keyword_paths(&parents, &tree, &names), vec![chain[29].clone()]);
+        // a chain of 1,000 keywords, each the child of the one before
+        let tree =
+            by_pk((1..=1000).map(|i| serde_json::from_value(json!({"Z_PK": i, "ZNAME": format!("n{i}"), "ZPARENT": i - 1})).unwrap()).collect());
+        let mut names: HashMap<String, Vec<i64>> = HashMap::new();
+        names.insert("n1000".into(), vec![1000]);
+        assert_eq!(keyword_paths("n1000", &tree, &names)[0].matches('|').count(), MAX_DEPTH - 1);
     }
 }
