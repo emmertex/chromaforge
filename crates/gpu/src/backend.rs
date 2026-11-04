@@ -195,9 +195,13 @@ pub fn instance_flags(flags: wgpu::InstanceFlags, env: Option<&str>) -> wgpu::In
     }
 }
 
-/// [`instance_flags`] with `WGPU_VALIDATION_INDIRECT_CALL` read from the environment.
+/// [`instance_flags`] with wgpu's environment variables applied to `flags` (`WGPU_VALIDATION`, `WGPU_DEBUG`,
+/// `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER`…, see `wgpu::InstanceFlags::with_env`) and
+/// `WGPU_VALIDATION_INDIRECT_CALL` read from the environment. The compute devices pass wgpu's defaults here,
+/// so this is where those variables reach them: a Vulkan driver that reports no conformance version, like
+/// Mesa's Dozen (the only one on WSL2), is listed only with `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=1`.
 pub fn instance_flags_from_env(flags: wgpu::InstanceFlags) -> wgpu::InstanceFlags {
-    instance_flags(flags, std::env::var("WGPU_VALIDATION_INDIRECT_CALL").ok().as_deref())
+    instance_flags(flags.with_env(), std::env::var("WGPU_VALIDATION_INDIRECT_CALL").ok().as_deref())
 }
 
 /// The graphics card `<PREFIX>_GPU_ADAPTER` asks for: (part of) its name, trimmed and in lower
