@@ -12,3 +12,4 @@
 - The app no longer writes through a link planted under a temporary file name (denoise cache, camera profiles, slideshow export, drive check).
 - A folder given through a link to the library can no longer be moved out of it, and a render keeps at most as many mask planes as fit in 8 GB (at least 16 masks).
 - Lens databases, Luminar looks and photos with thousands of keywords or `&` characters in their metadata no longer make the app slow, and absurd image sizes are refused when encoding.
+- Files you name (ICC profiles, print and slideshow templates, watermarks, track logs, photos) are read only when they are regular files within a size limit, and a huge imported keyword list is refused instead of using gigabytes of memory.
