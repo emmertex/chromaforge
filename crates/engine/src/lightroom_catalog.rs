@@ -4000,6 +4000,29 @@ mod tests {
         assert!(warnings.iter().any(|warning| warning.contains("optional_history")));
     }
 
+    /// A Lightroom catalog's Apple ProRAW edit keeps the look's parameters as a nested table
+    /// (`Look = { Name = "Apple ProRaw", Parameters = { ProfileGainTableMap = 100 } }`): the raw's own
+    /// local tone mapping comes over, so the photo renders as bright as in Lightroom.
+    #[test]
+    fn apple_proraw_look_turns_on_the_camera_local_tone_mapping() {
+        let settings = |gain: u32| {
+            format!(
+                "s = {{ CameraProfile = \"Apple Embedded Color Profile\", Exposure2012 = 0.4, Contrast2012 = 10, Vibrance = 30, \
+                 Look = {{ Name = \"Apple ProRaw\", Amount = 1, UUID = \"D866CAE82BD24C3F896B6762BDDA6C50\", \
+                 Parameters = {{ Version = \"18.5.1\", ProcessVersion = \"15.4\", ConvertToGrayscale = false, ProfileGainTableMap = {gain} }} }} }}"
+            )
+        };
+        let map = |s: &str| mapped_settings(s, crate::crs::Target::RawAbsolute, 1.5, Orientation::Normal, 1.5).unwrap();
+        let (partial, _) = map(&settings(100));
+        assert_eq!(partial["profile"]["camera_local_tone"], true, "{partial}");
+        assert_eq!(partial["light"]["exposure"], 0.4);
+        let (partial, _) = map(&settings(0));
+        assert_eq!(partial["profile"]["camera_local_tone"], false, "{partial}");
+        // an edit without the look leaves the option alone
+        let (partial, _) = map("s = { Exposure2012 = 0.4 }");
+        assert!(partial.pointer("/profile/camera_local_tone").is_none(), "{partial}");
+    }
+
     /// Issue #1234: develop settings are streamed into the photos, and a develop table that can't be read fails the
     /// import with a clear error instead of a warning that every photo arrives unedited.
     #[test]
