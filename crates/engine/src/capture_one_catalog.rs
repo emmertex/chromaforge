@@ -224,13 +224,15 @@ fn without_order(entry: &str) -> &str {
 /// every keyword with its full path, and the parents of an assigned keyword as entries of their own;
 /// those parents are dropped, as the library implies them from the path. A bare name that is one
 /// keyword of the catalog's keyword tree gets its parents from the tree; anything else is kept as
-/// written.
-fn keyword_paths(field: &str, tree: &HashMap<i64, Row>, by_name: &HashMap<String, Vec<i64>>) -> Vec<String> {
+/// written. The flag says the field held more than [`MAX_KEYWORDS`] and was cut there.
+fn keyword_paths(field: &str, tree: &HashMap<i64, Row>, by_name: &HashMap<String, Vec<i64>>) -> (Vec<String>, bool) {
     // (in time linear in the field: a hostile field can hold millions of entries)
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut cut = false;
     for entry in field.split([',', '\n', '\r']).map(without_order).map(str::trim).filter(|n| !n.is_empty()) {
         if out.len() >= MAX_KEYWORDS {
+            cut = true;
             break;
         }
         let path = if entry.contains('|') {
@@ -245,7 +247,7 @@ fn keyword_paths(field: &str, tree: &HashMap<i64, Row>, by_name: &HashMap<String
     // keep only the deepest keywords: `Animals` goes when `Animals|Birds` is there too
     let parents: HashSet<String> = out.iter().flat_map(|p| p.match_indices('|').filter_map(|(i, _)| p.get(..i)).map(str::to_string)).collect();
     out.retain(|p| !parents.contains(p));
-    out
+    (out, cut)
 }
 
 /// The path of a bare keyword name through the catalog's keyword tree, or the name itself when the
@@ -317,6 +319,7 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
     let mut skipped = Vec::new();
     let mut trashed = 0usize;
     let mut unlabelled: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut keywords_cut = 0usize;
     for image in &images {
         active(cancel)?;
         // (Core Data keys are positive; 0 would read as "no master" below)
@@ -399,6 +402,10 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
                 obj.insert("copyName".into(), json!(format!("Variant {}", n.saturating_add(1))));
             }
             let image_row: Row = serde_json::from_value(row).map_err(|e| e.to_string())?;
+            let (keywords, cut) = meta("ZCONTENT_KEYWORDS").map(|k| keyword_paths(&k, &keyword_tree, &keyword_names)).unwrap_or_default();
+            if cut {
+                keywords_cut = keywords_cut.saturating_add(1);
+            }
             let uuid = text(variant, "ZVARIANTUUID");
             photos.push(CatalogPhoto {
                 source_id: variant_pk,
@@ -407,7 +414,7 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
                 image: image_row,
                 settings: String::new(),
                 xmp: iptc_xmp(&meta),
-                keywords: meta("ZCONTENT_KEYWORDS").map(|k| keyword_paths(&k, &keyword_tree, &keyword_names)).unwrap_or_default(),
+                keywords,
                 history: Vec::new(),
                 snapshots: Vec::new(),
                 original: original.clone(),
@@ -420,6 +427,11 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
     }
     if trashed > 0 {
         warnings.push(format!("{trashed} image(s) in Capture One's catalog trash were left out"));
+    }
+    if keywords_cut > 0 {
+        warnings.push(format!(
+            "{keywords_cut} photo(s) had more than {MAX_KEYWORDS} keywords in Capture One; only the first {MAX_KEYWORDS} of each were imported"
+        ));
     }
     for (colour, count) in unlabelled {
         warnings.push(format!("{count} photo(s) had Capture One's {colour} colour tag, which has no label here; imported without a label"));
@@ -681,14 +693,14 @@ mod tests {
         for (pk, k) in &tree {
             names.entry(text(k, "ZNAME").to_lowercase()).or_default().push(*pk);
         }
-        assert_eq!(keyword_paths("trees, Rivers,Loop", &tree, &names), vec!["Nature|Trees", "Rivers", "Loop"]);
-        assert_eq!(keyword_paths("a | b|", &tree, &names), vec!["a|b"]);
+        assert_eq!(keyword_paths("trees, Rivers,Loop", &tree, &names).0, vec!["Nature|Trees", "Rivers", "Loop"]);
+        assert_eq!(keyword_paths("a | b|", &tree, &names).0, vec!["a|b"]);
     }
 
     #[test]
     fn keyword_field_drops_order_suffixes_and_implied_parents() {
         let (tree, names) = (HashMap::new(), HashMap::new());
-        let paths = |field: &str| keyword_paths(field, &tree, &names);
+        let paths = |field: &str| keyword_paths(field, &tree, &names).0;
         // as Capture One 16 writes it: every keyword's full path, its parents too, and a position
         assert_eq!(paths("Animals||2,Animals|Birds||3,Animals|Birds|Owls||4,Weather||0,Night||1"), vec!["Animals|Birds|Owls", "Weather", "Night"]);
         assert_eq!(paths("Weather|Snow||0,Weather||1,Animals||2,Animals|Fish||3"), vec!["Weather|Snow", "Animals|Fish"]);
@@ -911,17 +923,21 @@ mod tests {
         let (tree, names) = (HashMap::new(), HashMap::new());
         let field: String = (0..2_000_000).map(|i| format!("k{i}|x||{i},")).collect();
         let started = std::time::Instant::now();
-        assert_eq!(keyword_paths(&field, &tree, &names).len(), MAX_KEYWORDS);
+        let (kept, cut) = keyword_paths(&field, &tree, &names);
+        assert_eq!((kept.len(), cut), (MAX_KEYWORDS, true), "cut at the cap, and said so");
         assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
         // `s0`, `s0|s1`, … `s0|…|s29`, over and over: only the deepest stays
         let chain: Vec<String> = (1..=30).map(|d| (0..d).map(|j| format!("s{j}")).collect::<Vec<_>>().join("|")).collect();
         let parents: String = (0..50_000).map(|i| format!("{},", chain[i % 30])).collect();
-        assert_eq!(keyword_paths(&parents, &tree, &names), vec![chain[29].clone()]);
+        assert_eq!(keyword_paths(&parents, &tree, &names), (vec![chain[29].clone()], false), "repeats are no reason to cut");
+        // exactly the cap is no cut
+        let full: String = (0..MAX_KEYWORDS).map(|i| format!("k{i},")).collect();
+        assert!(!keyword_paths(&full, &tree, &names).1, "exactly the cap is no cut");
         // a chain of 1,000 keywords, each the child of the one before
         let tree =
             by_pk((1..=1000).map(|i| serde_json::from_value(json!({"Z_PK": i, "ZNAME": format!("n{i}"), "ZPARENT": i - 1})).unwrap()).collect());
         let mut names: HashMap<String, Vec<i64>> = HashMap::new();
         names.insert("n1000".into(), vec![1000]);
-        assert_eq!(keyword_paths("n1000", &tree, &names)[0].matches('|').count(), MAX_DEPTH - 1);
+        assert_eq!(keyword_paths("n1000", &tree, &names).0[0].matches('|').count(), MAX_DEPTH - 1);
     }
 }
