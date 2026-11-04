@@ -1,3 +1,0 @@
-## Performance
-
-- **Drafts drawn straight from the GPU, two graphics cards:** the desktop app offers the window's GPU device to the renderer, so a slider drag's drafts stay on the graphics card as textures (no readback, conversion or re-upload; not yet on HDR windows; `<PREFIX>_GPU_WINDOW=0` / `=1` override). Settings ▸ Performance chooses the graphics card for editing (Automatic: the screen's) and a second graphics card that takes exports, previews built ahead and thumbnails, with a gate and memory budget of its own, and AI models make their device there; its loss leaves the editing card alone (`app.gpu` `card`, `helper`, `adapters`). Thanks @OneSlips. (no PR)
