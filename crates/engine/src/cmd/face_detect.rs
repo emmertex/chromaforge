@@ -325,7 +325,9 @@ fn finish(s: &mut Session, o: Options, found: Vec<(lcc_catalog::PhotoId, std::re
                 continue;
             }
         };
-        if o.apply && let Some(photo) = s.catalog.photo(id) {
+        if o.apply
+            && let Some(photo) = s.catalog.photo(id)
+        {
             let mut meta = photo.meta.clone();
             meta.regions.retain(|r| !is_detected(r));
             let fresh: Vec<&Face> = faces.iter().filter(|f| !overlaps_existing(f, &meta.regions)).collect();

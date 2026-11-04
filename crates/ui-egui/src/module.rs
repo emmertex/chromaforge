@@ -1333,11 +1333,8 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
             // Import is the first entry (Settings ▸ Import ▸ Import as a tab); it is a tab, not a module
             let tab = crate::import_tab::enabled(app);
             let importing = crate::import_tab::showing(app);
-            let shown: Vec<Option<ModuleId>> = tab
-                .then_some(None)
-                .into_iter()
-                .chain(ModuleId::ALL.into_iter().filter(|m| !app.ui.hidden_modules.contains(m)).map(Some))
-                .collect();
+            let shown: Vec<Option<ModuleId>> =
+                tab.then_some(None).into_iter().chain(ModuleId::ALL.into_iter().filter(|m| !app.ui.hidden_modules.contains(m)).map(Some)).collect();
             let label_of = |m: &Option<ModuleId>| m.map_or("Import", |m| m.label());
             let sizes: Vec<(Option<ModuleId>, f32)> = shown
                 .iter()

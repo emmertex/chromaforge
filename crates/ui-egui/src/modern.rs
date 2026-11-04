@@ -688,45 +688,59 @@ fn library_bar(app: &mut LccApp, ui: &mut egui::Ui, form: Form) {
 /// Library's second bar: delete, flag and rating for the selected photos, and the Info card.
 fn actions_bar(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let (rating, flag) = app.session.active().and_then(|id| app.session.catalog.photo(id)).map_or((0, lcc_catalog::Flag::None), |p| (p.rating, p.flag));
+    let (rating, flag) =
+        app.session.active().and_then(|id| app.session.catalog.photo(id)).map_or((0, lcc_catalog::Flag::None), |p| (p.rating, p.flag));
     let has = app.session.active().is_some();
-    egui::Panel::top("modern-actions-bar").exact_size(BAR_H).frame(egui::Frame::NONE.fill(t.chrome).stroke(egui::Stroke::new(1.0, t.divider))).show(ui, |ui| {
-        let r = ui.max_rect();
-        let y = r.center().y - BUTTON / 2.0;
-        let mut x = r.left() + MARGIN - 4.0;
-        let mut next = |w: f32| {
-            let rect = Rect::from_min_size(pos2(x, y), vec2(w, BUTTON));
-            x += w;
-            rect
-        };
-        let gap = BUTTON * 0.25;
-        let mut run: Option<(&str, Value)> = None;
-        if round_button(ui, next(BUTTON), "modern:delete", Icon::Trash, "Delete Photo", false, has).clicked() {
-            run = Some(("photo.delete", json!({})));
-        }
-        let picked = flag == lcc_catalog::Flag::Pick;
-        let icon = if picked { Icon::FlagPickFilled } else { Icon::FlagPick };
-        if round_button(ui, next(BUTTON), "modern:flag", icon, "Flag as Pick", picked, has).clicked() {
-            run = Some(("photo.flag", json!({"flag": if picked { "none" } else { "pick" }})));
-        }
-        let _ = next(gap);
-        for n in 1..=5u8 {
-            let on = rating >= n;
-            if round_button(ui, next(BUTTON * 0.8), &format!("modern:star{n}"), if on { Icon::StarFilled } else { Icon::Star }, "Rating", false, has).clicked() {
-                run = Some(("photo.rate", json!({"rating": if rating == n { 0 } else { n }})));
+    egui::Panel::top("modern-actions-bar").exact_size(BAR_H).frame(egui::Frame::NONE.fill(t.chrome).stroke(egui::Stroke::new(1.0, t.divider))).show(
+        ui,
+        |ui| {
+            let r = ui.max_rect();
+            let y = r.center().y - BUTTON / 2.0;
+            let mut x = r.left() + MARGIN - 4.0;
+            let mut next = |w: f32| {
+                let rect = Rect::from_min_size(pos2(x, y), vec2(w, BUTTON));
+                x += w;
+                rect
+            };
+            let gap = BUTTON * 0.25;
+            let mut run: Option<(&str, Value)> = None;
+            if round_button(ui, next(BUTTON), "modern:delete", Icon::Trash, "Delete Photo", false, has).clicked() {
+                run = Some(("photo.delete", json!({})));
             }
-        }
-        // Info at the right
-        let info = Rect::from_min_size(pos2(r.right() - 8.0 - BUTTON, y), Vec2::splat(BUTTON));
-        if round_button(ui, info, "modern:infoButton", Icon::Info, "Info", app.ui.modern.info, true).clicked() {
-            app.ui.modern.info = !app.ui.modern.info;
-        }
-        if let Some((id, p)) = run
-            && let Err(e) = app.run(id, p)
-        {
-            app.ui.status = e;
-        }
-    });
+            let picked = flag == lcc_catalog::Flag::Pick;
+            let icon = if picked { Icon::FlagPickFilled } else { Icon::FlagPick };
+            if round_button(ui, next(BUTTON), "modern:flag", icon, "Flag as Pick", picked, has).clicked() {
+                run = Some(("photo.flag", json!({"flag": if picked { "none" } else { "pick" }})));
+            }
+            let _ = next(gap);
+            for n in 1..=5u8 {
+                let on = rating >= n;
+                if round_button(
+                    ui,
+                    next(BUTTON * 0.8),
+                    &format!("modern:star{n}"),
+                    if on { Icon::StarFilled } else { Icon::Star },
+                    "Rating",
+                    false,
+                    has,
+                )
+                .clicked()
+                {
+                    run = Some(("photo.rate", json!({"rating": if rating == n { 0 } else { n }})));
+                }
+            }
+            // Info at the right
+            let info = Rect::from_min_size(pos2(r.right() - 8.0 - BUTTON, y), Vec2::splat(BUTTON));
+            if round_button(ui, info, "modern:infoButton", Icon::Info, "Info", app.ui.modern.info, true).clicked() {
+                app.ui.modern.info = !app.ui.modern.info;
+            }
+            if let Some((id, p)) = run
+                && let Err(e) = app.run(id, p)
+            {
+                app.ui.status = e;
+            }
+        },
+    );
 }
 
 /// The Library / Develop switch at the top centre of `bar`.

@@ -357,7 +357,10 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
         ],
     ),
     ("Photo", "Rotate & Flip", &["photo.rotateLeft", "photo.rotateRight", "---", "photo.flipHorizontal", "photo.flipVertical"]),
-    ("File", "Libraries", &[
+    (
+        "File",
+        "Libraries",
+        &[
             "app.newLibrary",
             "app.openLibrary",
             "---",
@@ -367,7 +370,8 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "file.restoreLibrary",
             "catalog.checkIntegrity",
             "library.compact",
-        ]),
+        ],
+    ),
     (
         "File",
         "More Imports",

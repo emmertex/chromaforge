@@ -39,7 +39,11 @@ fn smooth_skin_section_switches_on_offers_the_models_and_sets_skin_and_person() 
     h.settle(SETTLE);
     assert_eq!(h.app.session.develop_of(id).unwrap().skin, SkinSmoothing::SUBTLE);
     if lcc_engine::segment::Segmenter::AVAILABLE {
-        assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::Settings { tab }) if tab == "ai"), "the missing model is offered: {:?}", h.app.ui.dialog);
+        assert!(
+            matches!(&h.app.ui.dialog, Some(crate::state::Dialog::Settings { tab }) if tab == "ai"),
+            "the missing model is offered: {:?}",
+            h.app.ui.dialog
+        );
         h.app.ui.dialog = None;
         h.settle(SETTLE);
     }
