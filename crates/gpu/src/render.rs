@@ -908,8 +908,7 @@ pub fn render(
     // on the CPU, instead of one synchronous readback per mask (which stalls the pipeline N times).
     let all_overlay_alphas: Option<Vec<Plane>> = if matches!(req.overlay, lcc_pipeline::Overlay::AllMasks { .. }) {
         masks.as_ref().map(|all| {
-            let list: Vec<_> =
-                s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).take(lcc_pipeline::masks::max_masks(w, h)).collect();
+            let list: Vec<_> = s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).take(lcc_pipeline::masks::max_masks(w, h)).collect();
             if list.is_empty() {
                 return Vec::new();
             }
@@ -1550,7 +1549,8 @@ fn masks(
 ) -> (Option<Arc<Buf>>, Vec<[f32; MASK_TERMS]>, Vec<Option<[Lut1; 3]>>) {
     let s = &*plan.settings;
     // as the CPU path keeps them: the first `max_masks`, so over-cap documents render the same
-    let list: Vec<_> = s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).take(lcc_pipeline::masks::max_masks(plan.w, plan.h)).collect();
+    let list: Vec<_> =
+        s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).take(lcc_pipeline::masks::max_masks(plan.w, plan.h)).collect();
     if list.is_empty() {
         return (None, Vec::new(), Vec::new());
     }

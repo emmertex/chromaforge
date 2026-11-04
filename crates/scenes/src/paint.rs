@@ -536,7 +536,15 @@ fn forest(p: &P, x: f32, v: f32) -> C {
         let ground = 0.5 + fi * 0.1;
         let depth = 1.0 - fi / 5.0;
         let col = mix(mix(hex(0x0c1c10), hex(0x1c3020), depth), fog, depth.powf(0.8) * 0.88);
-        if pine(&P { seed: p.seed.wrapping_add(i.wrapping_mul(17)), aspect: p.aspect }, x * (1.0 - fi * 0.08) + fi * 3.1, v, ground, 0.22 + fi * 0.07, 0.85).is_some()
+        if pine(
+            &P { seed: p.seed.wrapping_add(i.wrapping_mul(17)), aspect: p.aspect },
+            x * (1.0 - fi * 0.08) + fi * 3.1,
+            v,
+            ground,
+            0.22 + fi * 0.07,
+            0.85,
+        )
+        .is_some()
             || v > ground
         {
             c = col;
