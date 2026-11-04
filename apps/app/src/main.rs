@@ -878,6 +878,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
 fn unopened_session() -> Session {
     let mut s = Session::new().with_fs().with_default_denoise_models().with_default_connections().with_system_clock();
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
+    s.ml_models_dir = lcc_engine::config::default_ml_models_dir();
     s.lens_db = lcc_engine::lens_download::LensSettings::load(lcc_engine::config::config_dir());
     s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
     s
@@ -892,6 +893,7 @@ fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool) -> (Session, 
         Launch::Open { dir, .. } => open_library_session(in_memory, dir.clone(), seed_demo),
     };
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
+    s.ml_models_dir = lcc_engine::config::default_ml_models_dir();
     s.lens_db = lcc_engine::lens_download::LensSettings::load(lcc_engine::config::config_dir());
     s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
     // Control requests are answered on the UI thread: Add to Apple Photos must not wait there

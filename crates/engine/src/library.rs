@@ -564,9 +564,10 @@ impl Session {
         self.folder_metadata = None;
         self.denoise.library_changed();
         self.media.denoise.clear();
-        // what was learned about the old library's faces is saved, and none of it carries over (photo ids are per library)
+        // what was learned about the old library's faces and ML embeddings is saved, and none of it carries over (photo ids are per library)
         #[cfg(not(target_arch = "wasm32"))]
         self.faces.library_changed();
+        self.ml.library_changed();
         let (mut journal, mut catalog, report) = Journal::open(catalog)?;
         // A loaded catalog counts revisions from 0, like every other one. Caches (sidebar counts,
         // keyword tree, the grid's list…) are keyed on the revision, so give each library loaded
@@ -894,8 +895,9 @@ impl Session {
             return Ok(());
         }
         let _ = self.end_interaction();
-        // the automatic sidecar writes still queued are made, and a failed one recorded, before the library goes
+        // the automatic sidecar writes and ML embeddings still queued are saved before the library goes
         self.flush_sidecar_writes();
+        self.ml.save_store_now();
         let persisted = self.persist();
         self.save_view();
         let unlogged = if persisted.is_err() { self.pending_log.len() as u64 } else { 0 };

@@ -334,6 +334,8 @@ pub struct Session {
     pub(crate) filter_analyses: cmd::plugin_filters::Analyses,
     /// Where the host keeps face models (one folder each); `None` where there is no file system (the web).
     pub face_models_dir: Option<std::path::PathBuf>,
+    /// Where the host keeps shared AI / ML models (CLIP embeddings, scoring/culling/orientation heads); `None` on the web.
+    pub ml_models_dir: Option<std::path::PathBuf>,
     /// Face model downloads started this session (the staged files wait in `<face_models_dir>/.downloads`).
     pub face_downloads: face_download::Downloads,
     /// Settings ▸ Lens profiles: the lens database folder and its download ([`lens_download`]).
@@ -609,6 +611,7 @@ impl Session {
             ml: Default::default(),
             filter_analyses: Default::default(),
             face_models_dir: None,
+            ml_models_dir: None,
             face_downloads: Default::default(),
             lens_db: Default::default(),
             lens_seen: Default::default(),
@@ -828,8 +831,9 @@ impl Session {
         // Retain only cache IDs while the catalog consumes the operation. Cloning an import
         // batch here also cloned every photo, although commit already keeps the journal copy.
         let mut invalidated = Vec::new();
-        // photos whose file was replaced: the faces made from the old pixels go too (issue #1524)
+        // photos whose file was replaced: the faces and ML embeddings made from the old pixels go too (issue #1524)
         let mut replaced = Vec::new();
+        let mut added_photo = false;
         let mut pending = vec![&op];
         while let Some(op) = pending.pop() {
             match op {
@@ -840,7 +844,10 @@ impl Session {
                 Op::SetFile { id, .. } | Op::Relink { id, .. } | Op::RemovePhoto { id } => invalidated.push(*id),
                 // a video's decoded source is its poster frame: a new poster time (or new stream facts) needs a new one
                 Op::SetVideoPoster { id, .. } | Op::SetVideoMeta { id, .. } => invalidated.push(*id),
-                Op::AddPhoto { photo } => invalidated.push(photo.id),
+                Op::AddPhoto { photo } => {
+                    invalidated.push(photo.id);
+                    added_photo = true;
+                }
                 Op::Batch { ops } => pending.extend(ops),
                 _ => {}
             }
@@ -848,6 +855,12 @@ impl Session {
         let inv = apply(&mut self.catalog, op)?;
         for id in invalidated {
             self.media.forget(id);
+        }
+        if added_photo {
+            self.ml.photo_added();
+        }
+        for id in &replaced {
+            self.ml.content_replaced(*id);
         }
         #[cfg(not(target_arch = "wasm32"))]
         for id in replaced {
