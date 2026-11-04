@@ -462,12 +462,17 @@ fn clear_and_rescan(s: &mut Session, p: &Value) -> Result<Value> {
     let t = Instant::now();
     let started = detect(s, &Value::Object(params))?;
     log::info!("faces: rescan started in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
-    let t = Instant::now();
-    for id in ids {
-        s.faces.content_replaced(id);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let t = Instant::now();
+        for id in ids {
+            s.faces.content_replaced(id);
+        }
+        log::info!("faces: scan state cleared in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        s.faces.epoch = s.faces.epoch.wrapping_add(1);
     }
-    log::info!("faces: scan state cleared in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
-    s.faces.epoch = s.faces.epoch.wrapping_add(1);
+    #[cfg(target_arch = "wasm32")]
+    let _ = ids;
     Ok(started)
 }
 
