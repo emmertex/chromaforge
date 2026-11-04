@@ -720,6 +720,14 @@ fn token_matches(p: &Photo, tok: &str, kept: Option<&[Box<str>]>) -> bool {
             Some((_, v)) => x == v as f32,
             None => false,
         };
+        // only the words the field is documented with; any other value matches nothing
+        let boolean = |s: &str| -> Option<bool> {
+            match s {
+                "true" | "yes" => Some(true),
+                "false" | "no" => Some(false),
+                _ => None,
+            }
+        };
         return match field {
             "rating" | "stars" => cmp(p.rating as f64, val),
             "flag" => Flag::parse(val) == Some(p.flag),
@@ -733,13 +741,13 @@ fn token_matches(p: &Photo, tok: &str, kept: Option<&[Box<str>]>) -> bool {
             "person" | "who" => has_person(p, val),
             "faces" | "face" | "facecount" => matches_face_spec(p.face_count(), val),
             "type" | "kind" => format!("{:?}", p.kind).eq_ignore_ascii_case(val),
-            "video" => (val == "true" || val == "yes") == (p.kind == MediaKind::Video),
-            "edited" => (val == "true" || val == "yes") == p.is_edited(),
+            "video" => boolean(val).is_some_and(|video| video == (p.kind == MediaKind::Video)),
+            "edited" => boolean(val).is_some_and(|edited| edited == p.is_edited()),
             "date" => p.captured.as_deref().is_some_and(|c| {
                 // the token is lower-cased, the stored time has an upper-case `T`
                 crate::dates::capture_start(c).get(..val.len()).is_some_and(|head| head.eq_ignore_ascii_case(val))
             }),
-            "copy" | "virtual" => (val == "true" || val == "yes") == p.copy_of.is_some(),
+            "copy" | "virtual" => boolean(val).is_some_and(|copy| copy == p.copy_of.is_some()),
             "name" | "file" => p.file_name.to_lowercase().contains(val),
             // a plug-in metadata field by its key (`job:J-77`), whichever plug-in has it; and, as
             // it isn't a known field, a plain word with the colon in it ("10:30", "Re:")

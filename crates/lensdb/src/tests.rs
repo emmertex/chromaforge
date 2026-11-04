@@ -498,3 +498,22 @@ fn direct_profile_api_rejects_invalid_calibration_and_preserves_shot_fallback() 
         assert_eq!(profile.correction(&Shot { crop_factor: crop, ..shot(24.0) }).unwrap(), expected);
     }
 }
+
+#[test]
+fn teleconverter_combo_does_not_inherit_base_profile() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<lensdatabase version="2">
+  <lens>
+    <maker>Nikon</maker>
+    <model>NIKKOR Z 400mm f/4.5 VR S</model>
+    <mount>Z</mount>
+    <calibration>
+      <distortion model="poly3" focal="400" k1="0.001" />
+    </calibration>
+  </lens>
+</lensdatabase>"#;
+    let db = LensDb::parse(xml).unwrap();
+    assert!(db.find_lens(Some("Nikon"), "NIKKOR Z 400mm f/4.5 VR S", None).is_some());
+    assert!(db.find_lens(Some("Nikon"), "NIKKOR Z 400mm f/4.5 VR S Z TC", None).is_none());
+    assert!(db.find_lens(Some("Nikon"), "NIKKOR Z 400mm f/4.5 VR S Z TC-1.4x", None).is_none());
+}
