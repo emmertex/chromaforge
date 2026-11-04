@@ -3,12 +3,29 @@ name = "lcc-ml"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Background ML inference (L3): device selection with CPU fallback and one shared job queue for the AI features"
+description = "Background ML inference (L3): device selection with CPU fallback, shared job queue, CLIP encoder and embedding store for the AI features"
 
 [lints]
 workspace = true
 
 [dependencies]
+lcc-brand = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 web-time = { workspace = true }
+
+# native ML inference (candle CPU/Metal) and checkpoint downloads
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+lcc-fetch = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { workspace = true, features = ["metal"] }
+candle-nn = { workspace = true, features = ["metal"] }
+
+[dev-dependencies]
+lcc-testkit = { workspace = true }

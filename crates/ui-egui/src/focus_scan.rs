@@ -1,6 +1,5 @@
-//! Keeps the engine's focus-point reader going (`focus.pump`): it reads the camera's focus point for photos imported
-//! before it was read, a few KB of each file, at the pace the face scan uses (nothing new while the user drags, types or
-//! scrolls). Its progress is its row in the activity stack.
+//! Keeps the engine's focus-point reader (`focus.pump`) and shared ML indexer (`ml.pump`) going at the pace the face
+//! scan uses (nothing new while the user drags, types or scrolls). Their progress is their rows in the activity stack.
 
 use serde_json::json;
 
@@ -12,13 +11,28 @@ const BUSY_SECS: f64 = 0.25;
 /// Called every frame. Idle, it costs a comparison and wakes nothing; reading, it asks again every [`BUSY_SECS`].
 pub fn pump(app: &mut LccApp, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
-    if now < app.caches.focus_next_pump {
-        return;
-    }
     let pace = crate::panels::faces::background_pace(app, ctx, now);
-    let Ok(v) = app.session.execute("focus.pump", &json!({"pace": pace})) else { return };
-    if v["active"] == true {
+    if now >= app.caches.focus_next_pump
+        && let Ok(v) = app.session.execute("focus.pump", &json!({"pace": pace}))
+        && v["active"] == true
+    {
         app.caches.focus_next_pump = now + BUSY_SECS;
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(BUSY_SECS));
+    }
+    if now >= app.caches.ml_next_pump
+        && let Ok(v) = app.session.execute("ml.pump", &json!({"pace": pace}))
+    {
+        let busy = v["active"] == true && (v["pendingPhotos"].as_u64().unwrap_or(0) > 0 || v["inFlight"].as_u64().unwrap_or(0) > 0);
+        app.caches.ml_next_pump = now
+            + if busy {
+                0.05
+            } else if v["active"] == true {
+                1.0
+            } else {
+                0.0
+            };
+        if busy {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
     }
 }

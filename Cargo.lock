@@ -5140,7 +5140,15 @@ dependencies = [
 name = "lcc-ml"
 version = "26.45.1"
 dependencies = [
+ "candle-core",
+ "candle-nn",
+ "lcc-brand",
+ "lcc-fetch",
+ "lcc-testkit",
  "log",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "web-time",
 ]
