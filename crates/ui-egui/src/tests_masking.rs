@@ -1891,6 +1891,7 @@ fn ai_masks_without_the_model_offer_the_download() {
             Ok(())
         }));
         h.step();
+        crate::settings_screen::reveal(&mut h, "button:samFolder");
         let r = h.request("ui.clickWidget", json!({"id": "button:samFolder"}), T);
         assert_eq!(r["ok"], true, "{r}");
         assert!(dir.is_dir(), "the model folder is created to be shown");
