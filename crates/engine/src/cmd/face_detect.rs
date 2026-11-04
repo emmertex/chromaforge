@@ -343,7 +343,10 @@ fn finish(s: &mut Session, o: Options, found: Vec<(lcc_catalog::PhotoId, std::re
     }
     let applied = !ops.is_empty();
     if applied {
+        let t = Instant::now();
+        let n = ops.len();
         s.commit("Detect Faces", Op::Batch { ops })?;
+        log::info!("faces: detected faces added to {n} photos in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
         // regions are not written to XMP, so a sidecar must not be rewritten for this
         s.skip_auto_write = true;
     }
@@ -370,6 +373,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
     use std::sync::atomic::{AtomicBool, Ordering};
     let o = options(p);
     let detector = detector(s).map_err(|e| e.into_error(C))?;
+    let t0 = Instant::now();
     let ids = s.targets(p)?;
     if p.get("wait").and_then(Value::as_bool).unwrap_or(false) {
         let started = Instant::now();
@@ -412,6 +416,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
             drop(task);
         })
         .map_err(|e| bad(C, format!("could not start ({e})")))?;
+    log::info!("faces: {total} photos queued in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
     s.face_detect = Some(Arc::new(DetectRun { rx: Mutex::new(rx), cancel, options: o, total, started: Instant::now() }));
     s.face_detect_results.clear();
     Ok(json!({"done": false, "photos": total}))
@@ -436,7 +441,10 @@ fn pump(s: &mut Session, _: &Value) -> Result<Value> {
     };
     s.face_detect = None;
     let found = std::mem::take(&mut s.face_detect_results);
+    log::info!("faces: detection of {} photos ran {:.1} s", found.len(), run.started.elapsed().as_secs_f64());
+    let t = Instant::now();
     let mut out = finish(s, run.options, found, run.started.elapsed().as_secs_f64() * 1000.0)?;
+    log::info!("faces: results taken in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
     out["active"] = json!(false);
     out["done"] = json!(true);
     out["cancelled"] = json!(cancelled);
@@ -449,10 +457,14 @@ fn clear_and_rescan(s: &mut Session, p: &Value) -> Result<Value> {
     let ids: Vec<lcc_catalog::PhotoId> = if p.get("ids").is_some() || s.selection.ids.len() > 1 { s.targets(p)? } else { s.visible_cloned() };
     let mut params = p.as_object().cloned().unwrap_or_default();
     params.insert("ids".into(), json!(ids.iter().map(|i| i.0).collect::<Vec<_>>()));
+    let t = Instant::now();
     let started = detect(s, &Value::Object(params))?;
+    log::info!("faces: rescan started in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+    let t = Instant::now();
     for id in ids {
         s.faces.content_replaced(id);
     }
+    log::info!("faces: scan state cleared in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
     s.faces.epoch = s.faces.epoch.wrapping_add(1);
     Ok(started)
 }
