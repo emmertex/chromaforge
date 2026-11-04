@@ -255,6 +255,7 @@ fn preview_covering(bytes: &[u8], min_edge: Option<u32>) -> Option<Vec<u8>> {
     if let Some(p) = crate::vendor::orf::preview(bytes) {
         found.push(p);
     }
+    bound_candidates(&mut found, bytes.len());
     let largest = found.iter().copied().filter(|s| is_dct_jpeg(s) || is_jxl(s)).max_by_key(|s| s.len());
     let best = min_edge
         .zip(largest)
@@ -265,6 +266,26 @@ fn preview_covering(bytes: &[u8], min_edge: Option<u32>) -> Option<Vec<u8>> {
     best.or_else(|| format.filter(|f| !f.is_supported() || *f == crate::RawFormat::Erf).and_then(|_| scan_for_jpeg(bytes)))
         // Hasselblad 3FR / FFF carry no JPEG, only uncompressed RGB images: one wrapped as a baseline TIFF
         .or_else(|| (format == Some(crate::RawFormat::CfaTiff)).then(|| crate::vendor::hasselblad::rgb_preview(&tiff, bytes)).flatten())
+}
+
+/// The bytes of candidate previews a header walk may cover in all: 8 times the file, at least 1 MiB.
+fn scan_budget(file_len: usize) -> usize {
+    file_len.saturating_mul(8).max(1 << 20)
+}
+
+/// Drops candidate ranges that repeat an earlier one and those past a shared budget of [`scan_budget`] bytes: the
+/// header walks of many directory entries pointing at one long JPEG-like range would otherwise each cost its length.
+fn bound_candidates(found: &mut Vec<&[u8]>, file_len: usize) {
+    let mut seen = std::collections::HashSet::new();
+    let mut left = scan_budget(file_len);
+    found.retain(|s| {
+        let fresh = seen.insert((s.as_ptr() as usize, s.len()));
+        let fits = s.len() <= left;
+        if fresh && fits {
+            left -= s.len();
+        }
+        fresh && fits
+    });
 }
 
 /// The end of the DCT JPEG whose SOI is at `soi` (exclusive index after its EOI) and its component count,
@@ -988,5 +1009,20 @@ mod tests {
         let mut f = b"FOVb\x02\0\x02\0".to_vec();
         f.extend_from_slice(&mosaic);
         assert_eq!(embedded_preview(&f), None);
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    #[test]
+    fn repeated_and_over_budget_candidates_are_dropped() {
+        let data = vec![0u8; 4 << 20];
+        let mut found: Vec<&[u8]> = vec![&data[..], &data[..], &data[..]];
+        super::bound_candidates(&mut found, data.len());
+        assert_eq!(found.len(), 1);
+        // overlapping but unequal ranges stop at the shared budget (8 x the file, at least 1 MiB)
+        let mut found: Vec<&[u8]> = (1..=64).map(|i| &data[i..]).collect();
+        super::bound_candidates(&mut found, data.len());
+        assert!(found.len() <= 8 && found.iter().map(|s| s.len()).sum::<usize>() <= 8 * data.len());
     }
 }

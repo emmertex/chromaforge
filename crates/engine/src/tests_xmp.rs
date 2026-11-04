@@ -2335,3 +2335,30 @@ fn opening_another_library_refuses_while_a_sidecar_write_is_stuck() {
     s.set_background_sidecar_writes(false);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// Upstream #2993: a JPEG carrying its develop settings in embedded `crs:` XMP, with no sidecar, imports with them;
+/// settings marked as already applied to the pixels are not applied again; a sidecar wins over the embedded packet.
+#[test]
+fn embedded_jpeg_develop_settings_apply_on_import() {
+    let packet = |extra: &str| {
+        format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+      <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+        xmp:Rating="3" crs:HasSettings="True" crs:Contrast2012="+30" {extra}/>
+      </rdf:RDF></x:xmpmeta>"#
+        )
+    };
+    let src = temp_dir("jpeg-xmp-import-develop");
+    write_jpeg_xmp(&src.join("edited.jpg"), &packet(""));
+    write_jpeg_xmp(&src.join("rendered.jpg"), &packet(r#"crs:AlreadyApplied="True""#));
+    write_jpeg_xmp(&src.join("both.jpg"), &packet(r#"xmp:Label="Red""#));
+    std::fs::write(src.join("both.xmp"), packet("").replace(r#"crs:Contrast2012="+30""#, r#"crs:Contrast2012="-20""#)).unwrap();
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    assert_eq!(r["imported"].as_array().unwrap().len(), 3, "{r}");
+    let by_name = |name: &str| s.catalog.photos().find(|p| p.file_name == name).unwrap().clone();
+    assert_eq!(by_name("edited.jpg").develop.light.contrast, 30.0, "the embedded settings apply");
+    assert_eq!(by_name("rendered.jpg").develop.light.contrast, 0.0, "already in the pixels");
+    assert_eq!(by_name("both.jpg").develop.light.contrast, -20.0, "the sidecar wins over the embedded packet");
+    let _ = std::fs::remove_dir_all(&src);
+}

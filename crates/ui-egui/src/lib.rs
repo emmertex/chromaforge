@@ -318,6 +318,8 @@ mod tests_rating;
 #[cfg(test)]
 mod tests_recheck;
 #[cfg(test)]
+mod tests_remote_render;
+#[cfg(test)]
 mod tests_rename_person;
 #[cfg(test)]
 mod tests_render_storms;
@@ -1803,6 +1805,7 @@ impl LccApp {
         if theme::current(ctx) != Some(wanted) {
             theme::apply_kind(ctx, wanted);
         }
+        theme::refresh_window_on_first_focus(ctx);
     }
 
     /// Draw the UI into an offscreen context at the window's size; with `capture`, rasterize it

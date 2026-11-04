@@ -161,11 +161,35 @@ fn burst_params(p: &Value) -> Result<(f64, f32)> {
 
 /// Find Similar: photos that look like `id` (signatures from thumbnail-level sources, cached by
 /// content), most similar first; the view is filtered to them.
+/// Cache the signatures of `ids` that are not cached yet (by content key). The thumbnail-level sources are decoded
+/// side by side, each once, a few photos at a time ([`Session::sources_now`] holds them all until it returns);
+/// a photo that can't be read gets none and is tried again by the caller (upstream #3613).
+fn compute_signatures(s: &mut Session, ids: impl Iterator<Item = PhotoId>) {
+    let mut keys = std::collections::HashSet::new();
+    let mut todo = Vec::new();
+    for id in ids {
+        let Some(p) = s.catalog.photo(id) else { continue };
+        let key = crate::media::content_key(p);
+        if s.signatures.contains_key(&key) || !keys.insert(key) {
+            continue;
+        }
+        todo.push(id);
+    }
+    let batch = std::thread::available_parallelism().map_or(4, |n| n.get()).saturating_mul(2).max(4);
+    for chunk in todo.chunks(batch) {
+        for (id, loaded) in s.sources_now(chunk, crate::media::SourceLevel::Thumb) {
+            let (Ok((image, _)), Some(key)) = (loaded, s.catalog.photo(id).map(|p| crate::media::content_key(p))) else { continue };
+            s.signatures.insert(key, lcc_pipeline::cull::signature(&image));
+        }
+    }
+}
+
 fn find_similar(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "library.findSimilar";
     let id = s.photo_or_active(p, C)?;
     let min = p.get("similarity").and_then(Value::as_f64).unwrap_or(0.8) as f32;
     let all: Vec<PhotoId> = s.catalog.photos().filter(|q| q.in_library()).map(|q| q.id).collect();
+    compute_signatures(s, std::iter::once(id).chain(all.iter().copied()));
     let sig = |s: &mut Session, id: PhotoId| -> Option<[f32; 64]> {
         let key = s.catalog.photo(id).map(|p| crate::media::content_key(p))?;
         if let Some(v) = s.signatures.get(&key) {

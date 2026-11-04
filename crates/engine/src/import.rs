@@ -1487,12 +1487,15 @@ impl ImportJob {
                 plan.slots.push(Slot::Item(PreparedItem::Duplicate { path, existing: *existing, reason: "content", hash: Some(h.clone()) }));
                 continue;
             }
-            // the XMP sidecar (or a raw's embedded XMP), read before copying: its capture time files
-            // and names the copy when the file itself has none
+            // the XMP sidecar (or the XMP embedded in a raw or a JPEG, as the probe found it), read before
+            // copying: its capture time files and names the copy when the file itself has none. A sidecar
+            // found keeps precedence even when it can't be read, as on a manual reread
+            // (`sidecar::read_packet`): the embedded values don't apply (upstream #3607).
             let raw = info.kind == MediaKind::Raw;
-            let packet = crate::sidecar::find_sidecar_for_import(&stems, self.naming, &path, &mut listing)
-                .and_then(|f| std::fs::read_to_string(f).ok())
-                .or_else(|| info.xmp.clone().filter(|_| raw));
+            let packet = match crate::sidecar::find_sidecar_for_import(&stems, self.naming, &path, &mut listing) {
+                Some(f) => std::fs::read_to_string(&f).inspect_err(|e| log::warn!("import {path}: sidecar {}: {e}", f.display())).ok(),
+                None => info.xmp.clone(),
+            };
             let target = crate::crs::Target::for_file(info.kind, &info.format, info.preview_only.is_some(), &info.meta.camera);
             let sidecar = packet.and_then(|x| match crate::sidecar::parse_sidecar(&x, target) {
                 Ok(sc) => Some(sc),

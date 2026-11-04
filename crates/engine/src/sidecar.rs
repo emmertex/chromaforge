@@ -1022,6 +1022,11 @@ pub(crate) fn file_path(p: &Photo) -> Option<&str> {
     }
 }
 
+/// The XMP packet embedded in a JPEG's header, read as [`read_packet`] reads it from the file.
+pub(crate) fn jpeg_header_xmp(bytes: &[u8]) -> Option<String> {
+    read_jpeg_xmp(&mut std::io::Cursor::new(bytes), JPEG_XMP_HEADER_SPAN, JPEG_XMP_HEADER_STEPS)
+}
+
 /// The XMP packet that describes a photo on disk: its sidecar, else embedded raw/DNG or JPEG XMP.
 pub fn read_packet(original: &str, kind: MediaKind, naming: SidecarNaming) -> Option<(String, PathBuf)> {
     if let Some(sc) = find_sidecar(original, naming) {

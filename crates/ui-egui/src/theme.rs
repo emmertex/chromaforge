@@ -733,6 +733,25 @@ pub fn current(ctx: &egui::Context) -> Option<ThemeKind> {
     ctx.data(|d| d.get_temp::<ThemeKind>(theme_id()))
 }
 
+/// Windows only: tell the window its theme again, the first time it has focus. A first theme that
+/// reaches a focused window as it comes up changes the title's colour but not the caption's, so
+/// with the app dark on a light system the title is white on a light caption (it looks blank),
+/// and light on dark is dark on dark, until focus next moves (upstream #3381). The same command
+/// repaints the caption once the window is up. A window that opens without focus shows the right
+/// colours from the start.
+pub fn refresh_window_on_first_focus(ctx: &egui::Context) {
+    let done = egui::Id::new("window-theme-refreshed");
+    if !cfg!(target_os = "windows") || !ctx.input(|i| i.focused) || ctx.data(|d| d.get_temp::<bool>(done)).is_some() {
+        return;
+    }
+    ctx.data_mut(|d| d.insert_temp(done, true));
+    let theme = match ctx.theme() {
+        egui::Theme::Dark => egui::SystemTheme::Dark,
+        egui::Theme::Light => egui::SystemTheme::Light,
+    };
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(theme));
+}
+
 /// Style `ctx` with the default theme.
 pub fn apply(ctx: &egui::Context) {
     apply_kind(ctx, ThemeKind::default());

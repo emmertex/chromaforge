@@ -43,11 +43,13 @@ const fn clamp_to_usize(bytes: u64) -> usize {
 /// The budget when it is unknown how much memory the computer has.
 const UNKNOWN_RAM_BUDGET: usize = 3 << 29; // 1.5 GiB
 
-/// The automatic budget for a computer with `ram` bytes: a quarter of it, at least 256 MiB, at most
-/// [`AUTO_MAX`] (8 GB → 2 GB, 32 GB → 8 GB, 64 GB and more → 16 GB).
+/// The automatic budget for a computer with `ram` bytes: a quarter of it, at most [`AUTO_MAX`] (8 GB → 2 GB,
+/// 32 GB → 8 GB, 64 GB and more → 16 GB). No floor: under a small cgroup limit (128 MiB) a floor above the quarter
+/// would let the caches alone outgrow the limit, and the kernel kills the process (upstream #3072); at least a byte,
+/// since 0 means "not computed yet" to [`budget`].
 pub fn auto_budget(ram: Option<usize>) -> usize {
     match ram {
-        Some(ram) => (ram / 4).clamp(256 << 20, AUTO_MAX),
+        Some(ram) => (ram / 4).clamp(1, AUTO_MAX),
         None => UNKNOWN_RAM_BUDGET,
     }
 }
@@ -464,7 +466,9 @@ mod budget_tests {
         let gb = 1usize << 30;
         assert!(auto_budget(Some(32 * gb)) > auto_budget(Some(8 * gb)));
         assert_eq!(auto_budget(Some(512 * gb)), AUTO_MAX, "a safe ceiling");
-        assert!(auto_budget(Some(512 << 20)) >= 256 << 20, "a floor");
+        // no floor: under a small cgroup limit the caches must not outgrow the limit (upstream #3072)
+        assert_eq!(auto_budget(Some(128 << 20)), 32 << 20, "a quarter of a 128 MiB limit");
+        assert_eq!(auto_budget(Some(0)), 1, "never the 0 that means not computed");
         assert!(max_budget_of(Some(64 * gb)) < 64 * gb);
         assert!(max_budget_of(Some(64 * gb)) > auto_budget(Some(64 * gb)));
         assert!(max_budget_of(Some(usize::MAX)) < usize::MAX, "no overflow");

@@ -53,6 +53,10 @@ fn source_path(p: &Photo) -> Option<&str> {
 struct Reader {
     db: Database,
 }
+/// Expanded XMP packets kept from one catalog, all rows together (each is bounded on its own).
+const MAX_XMP_TOTAL: usize = 1 << 30;
+/// Keyword paths kept for the photos of one catalog, all together.
+const MAX_KEYWORD_BYTES: usize = 256 << 20;
 /// Most bytes of history-step or snapshot settings decoded from one table. They are archived, and an archive holds at
 /// most [`crate::lightroom_archive::MAX_ARCHIVE_BYTES`] of JSON, so this keeps all a catalog can archive while a
 /// hostile one can't make the reader allocate without bound (each row alone may decode to 16 MiB).
@@ -222,19 +226,45 @@ impl Reader {
 
     /// `Adobe_AdditionalMetadata`, streamed into image id -> row with its (decompressed) `xmp` packet.
     fn xmp_table(&self, cancel: &AtomicBool) -> Result<(HashMap<i64, Row>, Vec<String>), String> {
+        self.xmp_table_within(cancel, MAX_XMP_TOTAL)
+    }
+
+    /// [`Self::xmp_table`] with the packets of all rows together held to `max_total` decoded bytes: a packet past it
+    /// is left off its row (named in the warnings), so one oversized catalog keeps the packets that fit and every
+    /// row's other columns (upstream #3674).
+    fn xmp_table_within(&self, cancel: &AtomicBool, max_total: usize) -> Result<(HashMap<i64, Row>, Vec<String>), String> {
         let mut warnings = Vec::new();
         let mut out = HashMap::new();
+        let mut xmp_total = 0usize;
         self.each_row("Adobe_AdditionalMetadata", false, false, cancel, |mut r, blobs| {
             let image = number(&r, "image");
+            let blobs_had_xmp = blobs.iter().any(|(column, _)| *column == "xmp");
             for (column, bytes) in blobs {
                 if column != "xmp" {
                     continue;
                 }
-                match decode_compressed(&bytes, "XMP") {
-                    Ok(packet) => {
+                // the declared size (the decode checks it) against what is left, before inflating
+                let declared = bytes.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()).map_or(0, |s| u32::from_be_bytes(s) as usize);
+                let over = |n: usize| n <= 16 << 20 && xmp_total.saturating_add(n) > max_total;
+                let decoded = if over(declared) { Ok(None) } else { decode_compressed(&bytes, "XMP").map(Some) };
+                match decoded {
+                    Ok(Some(packet)) if !over(packet.len()) => {
+                        xmp_total += packet.len();
                         r.insert(column.to_string(), Value::String(packet));
                     }
+                    Ok(_) => warnings.push(format!("image {image}: the XMP packets together exceed {} MiB; this one is left out", max_total >> 20)),
                     Err(error) => warnings.push(format!("image {image}: {error}")),
+                }
+            }
+            // a text packet counts toward the total like a decoded one
+            if let Some(len) = r.get("xmp").and_then(Value::as_str).map(str::len)
+                && !blobs_had_xmp
+            {
+                if xmp_total.saturating_add(len) > max_total {
+                    r.remove("xmp");
+                    warnings.push(format!("image {image}: the XMP packets together exceed {} MiB; this one is left out", max_total >> 20));
+                } else {
+                    xmp_total += len;
                 }
             }
             out.insert(image, r);
@@ -707,25 +737,42 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
     done.fetch_add(1, Ordering::Relaxed);
     let keyword_rows: HashMap<_, _> = optional_table("AgLibraryKeyword", &mut warnings)?.into_iter().map(|r| (number(&r, "id_local"), r)).collect();
     let mut keywords: HashMap<i64, Vec<String>> = HashMap::new();
+    // each keyword's path is resolved once, however many photos carry it
+    let mut paths: HashMap<i64, Option<String>> = HashMap::new();
+    let mut keyword_bytes = 0usize;
     for r in optional_table("AgLibraryKeywordImage", &mut warnings)? {
         ensure_read_active(cancel)?;
-        let mut parts = Vec::new();
-        let mut at = number(&r, "tag");
-        let mut seen = HashSet::new();
-        while at != 0 {
-            if parts.len() >= 64 || !seen.insert(at) {
-                return Err("cyclic or overly deep keyword hierarchy".into());
+        let tag = number(&r, "tag");
+        let path = match paths.get(&tag) {
+            Some(p) => p.clone(),
+            None => {
+                let mut parts = Vec::new();
+                let mut at = tag;
+                let mut seen = HashSet::new();
+                while at != 0 {
+                    // every ancestor visited counts towards the depth, named or not
+                    if seen.len() >= 64 || !seen.insert(at) {
+                        return Err("cyclic or overly deep keyword hierarchy".into());
+                    }
+                    let Some(k) = keyword_rows.get(&at) else { break };
+                    let name = text(k, "name");
+                    if !name.is_empty() {
+                        parts.push(name.to_string());
+                    }
+                    at = number(k, "parent");
+                }
+                parts.reverse();
+                let p = (!parts.is_empty()).then(|| parts.join("|"));
+                paths.insert(tag, p.clone());
+                p
             }
-            let Some(k) = keyword_rows.get(&at) else { break };
-            let name = text(k, "name");
-            if !name.is_empty() {
-                parts.push(name.to_string());
+        };
+        if let Some(p) = path {
+            keyword_bytes = keyword_bytes.saturating_add(p.len());
+            if keyword_bytes > MAX_KEYWORD_BYTES {
+                return Err("the catalog's keyword assignments together exceed 256 MB".into());
             }
-            at = number(k, "parent");
-        }
-        parts.reverse();
-        if !parts.is_empty() {
-            keywords.entry(number(&r, "image")).or_default().push(parts.join("|"));
+            keywords.entry(number(&r, "image")).or_default().push(p);
         }
     }
     let mut root_paths = HashMap::new();
@@ -3842,6 +3889,21 @@ mod tests {
         assert!(rows.is_empty());
         assert!(warnings.iter().any(|warning| warning.contains("optional_history")));
     }
+    /// Upstream #3674: text XMP packets count toward the catalog-wide total too; one past it is left off its row.
+    #[test]
+    fn text_xmp_counts_toward_the_total_cap() {
+        use SqlValue::{Integer as I, Null as N, Text as T};
+        let rows = vec![vec![N, I(1), T("<x:xmpmeta/>".into())], vec![N, I(2), T("<x:xmpmeta/>".into())]];
+        let bytes = native_catalog_rows(&[("Adobe_AdditionalMetadata", "id_local INTEGER PRIMARY KEY, image, xmp", rows)], None);
+        let reader = Reader { db: Database::open_with_wal(bytes, &[]).unwrap() };
+        let cancel = AtomicBool::new(false);
+        let (rows, warnings) = reader.xmp_table_within(&cancel, 12 + 5).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.values().filter(|r| r.contains_key("xmp")).count(), 1);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("exceed"), "{warnings:?}");
+    }
+
     #[test]
     fn reads_native_sqlite_tables_without_lightroom_or_external_processes() {
         let fixture = sparse_catalog_fixture(false);

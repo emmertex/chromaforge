@@ -1342,6 +1342,51 @@ fn find_similar_filters_to_look_alikes() {
     assert!(s.visible_cloned().len() > vis.len());
 }
 
+/// Upstream issue #3545: the first Find Similar decoded every library photo one after another on the calling thread.
+/// The decodes now run side by side, once per file, and the matches stay the same.
+#[test]
+fn find_similar_decodes_the_library_in_parallel_once_per_file() {
+    use lcc_catalog::{Photo, PhotoId, Source};
+    use std::sync::{Arc, Mutex};
+    let mut s = Session::new();
+    for i in 1..=16u64 {
+        let name = format!("sim{i}.jpg");
+        s.catalog
+            .apply(lcc_catalog::Op::AddPhoto {
+                photo: Box::new(Photo::new(PhotoId(i), Source::File { path: name.clone() }, &name, "JPEG", 64, 48, "")),
+            })
+            .unwrap();
+    }
+    let seen: Arc<Mutex<Vec<(String, std::thread::ThreadId)>>> = Arc::default();
+    let log = seen.clone();
+    s.media.file_loader = Some(Arc::new(move |path: &str, _max_edge: usize, _options| {
+        log.lock().unwrap().push((path.to_string(), std::thread::current().id()));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        // odd photos are bright on top, even ones bright at the bottom
+        let odd = path.trim_start_matches("sim").trim_end_matches(".jpg").parse::<u64>().unwrap() % 2 == 1;
+        let img = lcc_raster::Rgb32f::from_fn(64, 48, |x, y| {
+            let v = if odd { 1.0 - y as f32 / 48.0 } else { y as f32 / 48.0 } * 0.8 + x as f32 / 640.0;
+            [v, v * 0.9, v * 0.7]
+        });
+        Ok((img, lcc_pipeline::SourceInfo::default()))
+    }));
+    let r = s.execute("library.findSimilar", &json!({"id": 1})).unwrap();
+    let mut hits: Vec<u64> = r["photos"].as_array().unwrap().iter().map(|h| h["id"].as_u64().unwrap()).collect();
+    hits.sort_unstable();
+    assert_eq!(hits, [1, 3, 5, 7, 9, 11, 13, 15], "{r}");
+    let loads = seen.lock().unwrap().clone();
+    let mut paths: Vec<&str> = loads.iter().map(|l| l.0.as_str()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    assert_eq!((loads.len(), paths.len()), (16, 16), "each file decoded once");
+    if std::thread::available_parallelism().map_or(1, |n| n.get()) > 1 {
+        let threads: std::collections::HashSet<_> = loads.iter().map(|l| l.1).collect();
+        assert!(threads.len() > 1, "the library was decoded on {} thread(s)", threads.len());
+    }
+    s.execute("library.findSimilar", &json!({"id": 2})).unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 16, "signatures are cached: a second Find Similar decodes nothing");
+}
+
 #[test]
 fn find_similar_with_no_hits_shows_no_photos() {
     let mut s = demo();
@@ -1395,6 +1440,17 @@ fn rating_exactly_or_at_most_zero_shows_the_unrated_photos() {
     s.execute("library.filter", &json!({"rating": 0, "ratingOp": "atLeast"})).unwrap();
     assert_eq!(s.visible_cloned().len(), ids.len(), "at least no stars is every photo");
     assert!(crate::filter_chips(&s.filter, &s.catalog).is_empty());
+}
+
+/// Upstream #3433: a smart album of rated photos, viewed with "= no stars", saves "= 0" rather than the album's own stars.
+#[test]
+fn smart_album_view_keeps_the_rating_operator_of_the_filter_bar() {
+    let mut s = demo();
+    let r = s.execute("album.createSmart", &json!({"name": "Rated", "rules": {"rating": 3}})).unwrap();
+    s.execute("library.source", &json!({"kind": "album", "id": r["id"]})).unwrap();
+    s.execute("library.filter", &json!({"rating": 0, "ratingOp": "exactly"})).unwrap();
+    let saved = s.view_rules();
+    assert_eq!((saved.rating, saved.rating_op), (0, lcc_catalog::RatingOp::Exactly));
 }
 
 #[test]

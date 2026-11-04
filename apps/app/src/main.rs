@@ -996,12 +996,12 @@ fn unopened_session() -> Session {
 /// The library session with the folders face models (`<config>/models`) and slideshow templates
 /// (`<config>/slideshow-templates`) are kept in. With [`Launch::Ask`] no library is opened yet:
 /// the window lists the recent ones.
-fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool) -> (Session, Option<LibraryProblem>) {
+fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool, may_create: bool) -> (Session, Option<LibraryProblem>) {
     let (mut s, problem) = match launch {
         Launch::Ask => {
             (Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_app_store(), None)
         }
-        Launch::Open { dir, .. } => open_library_session(in_memory, dir.clone(), seed_demo),
+        Launch::Open { dir, .. } => open_library_session(in_memory, dir.clone(), seed_demo, may_create),
     };
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
     s.lens_db = lcc_engine::lens_download::LensSettings::load(lcc_engine::config::config_dir());
@@ -1018,7 +1018,7 @@ fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool) -> (Session, 
 /// If the library can't be opened the session is empty and in memory — never seeded with the
 /// demo photos, never written anywhere — and the problem is returned: the window then says so
 /// and offers Try Again / Choose Another Library… / Continue Without Saving / Quit (issue #100).
-fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_demo: bool) -> (Session, Option<LibraryProblem>) {
+fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_demo: bool, may_create: bool) -> (Session, Option<LibraryProblem>) {
     if in_memory {
         return (
             if seed_demo { Session::with_demo() } else { Session::new() }
@@ -1044,6 +1044,18 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
         log::warn!("no library location (set --library or {})", lcc_brand::env_var("LIBRARY"));
         return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the library in. Choose a folder for it.")));
     };
+    // a library the settings remember (or the default location) is opened, never created: on a drive that isn't
+    // connected its folder is missing, and opening it would make an empty library there, with demo photos, that
+    // the user then edits and adds to instead of the real one (upstream #3322). `--library` may create.
+    if !may_create && !lcc_engine::library::is_library(&lcc_engine::library::resolve_dir(&dir).unwrap_or_else(|_| dir.clone())) {
+        log::warn!("the remembered library {} isn't there; not creating one", dir.display());
+        let mut problem = LibraryProblem::new(
+            dir.to_string_lossy(),
+            format!("{}: no library found here (is its drive connected, or was it moved or renamed?)", dir.display()),
+        );
+        problem.never_create = true;
+        return (unopened(), Some(problem));
+    }
     let t0 = std::time::Instant::now();
     let mut s = unopened();
     match s.open_library(&dir, seed_demo) {
@@ -1198,15 +1210,34 @@ fn publish_control_token(port: u16, token: &str, supplied: bool) {
 /// The emergency crash log, `<binary>-panics.log` beside the other logs in the user's own settings
 /// folder (an isolated profile's with `<PREFIX>_CONFIG_DIR`). Never the shared temp folder, where
 /// another user on the machine could create the file first or point it at one of the user's files.
-/// `None` (standard error only) where no logs are kept.
-fn panic_log_path() -> Option<std::path::PathBuf> {
+/// `None` (standard error only) where no logs are kept, and in a `--memory` session, which saves nothing (upstream
+/// #2572). `args` are the program's arguments, read before they are parsed (the panic hook is installed first to catch
+/// a panic while parsing); they are `OsString`s, so an argument that isn't UTF-8 can't panic here.
+fn panic_log_path(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    if in_memory_session(args) {
+        return None;
+    }
     log_dir().map(|d| d.join(format!("{}-panics.log", lcc_brand::BINARY)))
+}
+
+/// Whether the arguments ask for a `--memory` (or `--demo`) session. The values of `--control` and `--library` are
+/// skipped, as the parser takes them.
+fn in_memory_session(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    let mut args = args.into_iter();
+    while let Some(a) = args.next() {
+        if a == "--control" || a == "--library" {
+            args.next();
+        } else if a == "--memory" || a == "--demo" {
+            return true;
+        }
+    }
+    false
 }
 
 fn main() -> eframe::Result {
     // First, so every start-up record is kept for the log file (`logging`).
     let logger = logging::install();
-    lcc_engine::guard::install_hook(panic_log_path());
+    lcc_engine::guard::install_hook(panic_log_path(std::env::args_os().skip(1)));
     if let Some(logger) = logger {
         logging::record_panics(logger);
     }
@@ -1313,6 +1344,8 @@ fn main() -> eframe::Result {
     // never opened as this app's own.
     let mut prefs = prefs;
     let explicit = library_dir.or_else(|| lcc_brand::env_os("LIBRARY").filter(|p| !p.is_empty()).map(Into::into));
+    // only a library named on the command line or in the environment may be created at launch
+    let explicit_given = explicit.is_some();
     let plan = lcc_ui_egui::panels::library_problem::launch_plan(in_memory, explicit.clone(), None, prefs.as_ref().map(|u| &u.settings), None);
     let (library_dir, welcome) = if in_memory || plan == Launch::Ask {
         (explicit, None)
@@ -1416,7 +1449,7 @@ fn main() -> eframe::Result {
                 let (mut session, mut problem) = if upgrade.is_some() || welcome.is_some() {
                     (unopened_session(), None)
                 } else {
-                    open_session(in_memory, &launch, seed_demo && files.is_empty())
+                    open_session(in_memory, &launch, seed_demo && files.is_empty(), explicit_given)
                 };
                 // AI masks: the SAM 3 checkpoint (facebook/sam3) in <config>/models/sam3, or <PREFIX>_SAM3_DIR
                 // (never required: without it, AI masks offer to download it; see docs/ai-masks.md)
@@ -1722,11 +1755,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Upstream #3322: a library the settings remember that is not there (an unmounted drive) is reported and not
+    /// created; one named on the command line is created; a library that is there opens either way.
+    #[test]
+    fn a_remembered_library_that_is_missing_is_not_created() {
+        let dir = std::env::temp_dir().join(format!("lcc-remembered-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = dir.join("unmounted").join("Library");
+        let (_, problem) = open_library_session(false, Some(lib.clone()), true, false);
+        let problem = problem.expect("a problem is reported");
+        assert!(problem.never_create && problem.error.contains("no library found"), "{}", problem.error);
+        assert!(!lib.exists() && !dir.exists(), "nothing was created where the library should be");
+        // named on the command line: created
+        let (s, problem) = open_library_session(false, Some(lib.clone()), false, true);
+        assert!(problem.is_none() && lcc_engine::library::is_library(&lib));
+        drop(s);
+        // there now: opened as a remembered library too
+        let (_, problem) = open_library_session(false, Some(lib.clone()), false, false);
+        assert!(problem.is_none(), "{:?}", problem.map(|p| p.error));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Issue #236: the window answers control requests on its UI thread, so the desktop session
     /// adds to Apple Photos on a worker (headless sessions wait instead).
     #[test]
     fn the_desktop_session_adds_to_apple_photos_in_the_background() {
-        let (s, problem) = open_session(true, &Launch::Open { dir: None, alt_asks: false }, false);
+        let (s, problem) = open_session(true, &Launch::Open { dir: None, alt_asks: false }, false, true);
         assert!(problem.is_none());
         assert!(s.apple_photos_background);
         assert!(!lcc_engine::Session::new().apple_photos_background);
@@ -1737,7 +1791,7 @@ mod tests {
     /// removed entry is kept), unlike the failed-library window's temporary session.
     #[test]
     fn asking_at_launch_opens_nothing_and_still_saves_the_settings() {
-        let (s, problem) = open_session(false, &Launch::Ask, true);
+        let (s, problem) = open_session(false, &Launch::Ask, true, true);
         assert!(problem.is_none() && s.library.is_none() && s.catalog.is_empty());
         assert!(s.apple_photos_background, "the same desktop session as an opened one");
 
@@ -2288,6 +2342,27 @@ mod config_path_tests {
     #[test]
     fn panic_log_stays_in_the_settings_folder() {
         let name = format!("{}-panics.log", lcc_brand::BINARY);
-        assert_eq!(panic_log_path(), log_dir().map(|d| d.join(name)));
+        assert_eq!(panic_log_path(std::iter::empty()), log_dir().map(|d| d.join(name)));
+    }
+
+    /// A `--memory` session keeps no panic log (it saves nothing); an option's value that reads `--memory` is not the
+    /// flag; an argument that isn't UTF-8 doesn't stop the check.
+    #[test]
+    fn in_memory_sessions_are_spotted_before_parsing() {
+        let args = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        assert!(in_memory_session(args(&["--memory"])));
+        assert!(in_memory_session(args(&["photo.jpg", "--demo"])));
+        assert!(in_memory_session(args(&["--control", "7980", "--memory"])));
+        assert!(!in_memory_session(args(&[])));
+        assert!(!in_memory_session(args(&["--no-demo", "photo.jpg"])));
+        assert!(!in_memory_session(args(&["--library", "--memory"])));
+        assert!(!in_memory_session(args(&["--control", "--demo"])));
+        assert_eq!(panic_log_path(args(&["--memory"])), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let odd = std::ffi::OsString::from_vec(vec![0x66, 0xff, 0x6f]);
+            assert!(in_memory_session([odd, "--demo".into()]));
+        }
     }
 }

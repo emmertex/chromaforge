@@ -1300,9 +1300,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 let targets: Vec<PhotoId> = s.selection.ids.iter().copied().filter(|x| *x != id).collect();
                 let link_source = link_copied_masks(s, &mut partial, Some(id), &targets, "Sync Settings");
                 let mut ops = Vec::new();
+                // a crop goes on as what it means on each photo's own frame (upstream #3572; as Auto Sync does)
+                let with_crop = partial.get("crop").is_some();
+                let adims = crop_dims(s, id);
                 for x in s.selection.ids.clone().into_iter().filter(|x| *x != id) {
                     let Some(dd) = s.develop_of(x) else { continue };
                     let mut nd = lcc_develop::apply_partial(&dd, &partial, 1.0);
+                    if with_crop {
+                        nd.crop = crate::sync_same::synced_crop(&d.crop, adims, crop_dims(s, x));
+                    }
                     for (k, v) in &values {
                         lcc_develop::controls::set(&mut nd, k, *v);
                     }
