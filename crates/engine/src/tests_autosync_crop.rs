@@ -94,3 +94,39 @@ fn a_synced_crop_never_gets_the_other_orientation() {
         }
     }
 }
+
+/// Upstream #3572: Sync Settings with the Crop group puts the crop on a photo of another frame shape as what it means
+/// there (as Auto Sync does), not as the source's raw rectangle and ratio lock.
+#[test]
+fn sync_settings_crop_follows_the_target_photos_orientation() {
+    use lcc_catalog::{Op, PhotoId};
+    use serde_json::json;
+    let mut s = crate::Session::with_demo();
+    let ids: Vec<u64> = s.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    let (land, vert) = (PhotoId(ids[0]), PhotoId(ids[1]));
+    for (id, w, h) in [(land, 6000u32, 4000u32), (vert, 4000, 6000)] {
+        let p = s.catalog.photo(id).unwrap().clone();
+        s.catalog
+            .apply(Op::SetContent {
+                id,
+                width: w,
+                height: h,
+                file_size: p.file_size,
+                content_hash: p.content_hash.clone(),
+                preview_only: p.preview_only.clone(),
+                preview_checked: p.preview_checked.clone(),
+            })
+            .unwrap();
+    }
+    s.execute("library.select", &json!({"ids": [land.0]})).unwrap();
+    let mut d = (*s.develop_of(land).unwrap()).clone();
+    d.crop = crop_on(6000.0, 4000.0, 1.5, 0.8, (0.5, 0.5), 0.0, Some((3, 2)), (false, false));
+    s.set_develop(land, d, "crop").unwrap();
+    s.execute("library.select", &json!({"ids": [land.0, vert.0], "active": land.0})).unwrap();
+    s.execute("develop.sync", &json!({"groups": ["crop"]})).unwrap();
+    let c = s.develop_of(vert).unwrap().crop;
+    assert_eq!(c.aspect, Some((2, 3)), "the lock is turned to the vertical photo");
+    let r = c.geometry.rect_px(4000.0, 6000.0);
+    assert!(r.height() > r.width(), "a vertical crop on a vertical photo, got {} x {}", r.width(), r.height());
+    assert!(c.geometry.is_within_image(4000.0, 6000.0));
+}
