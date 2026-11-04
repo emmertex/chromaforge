@@ -6,3 +6,6 @@
 - The web app caps its render workers and plans a library restore before writing; `web --serve` only serves plain files inside the site.
 - Exporting to one explicit file path now follows the Conflict setting (unique by default, so an existing file is no longer replaced unless you ask): sidecars keep the chosen name, and a folder or a catalogued original as the path is refused.
 - A JPEG that carries its develop settings in embedded XMP (and has no sidecar) now imports with them; Find Similar decodes the library in parallel; very long, narrow images resize without using gigabytes; and Lightroom catalogs with huge XMP packets or keyword lists are read within limits.
+- Exporting an Original with Remove Location now refuses a file whose embedded XMP still holds GPS coordinates, even malformed ones.
+- A smart album viewed with "no stars" in the filter bar keeps that rating rule, Sync Settings with the Crop group puts a crop on each photo as what it means on that photo's frame, and the automatic memory budget no longer exceeds a small container's memory limit.
+- A `--memory` session writes no panic log.
