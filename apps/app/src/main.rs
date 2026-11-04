@@ -1198,15 +1198,34 @@ fn publish_control_token(port: u16, token: &str, supplied: bool) {
 /// The emergency crash log, `<binary>-panics.log` beside the other logs in the user's own settings
 /// folder (an isolated profile's with `<PREFIX>_CONFIG_DIR`). Never the shared temp folder, where
 /// another user on the machine could create the file first or point it at one of the user's files.
-/// `None` (standard error only) where no logs are kept.
-fn panic_log_path() -> Option<std::path::PathBuf> {
+/// `None` (standard error only) where no logs are kept, and in a `--memory` session, which saves nothing (upstream
+/// #2572). `args` are the program's arguments, read before they are parsed (the panic hook is installed first to catch
+/// a panic while parsing); they are `OsString`s, so an argument that isn't UTF-8 can't panic here.
+fn panic_log_path(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    if in_memory_session(args) {
+        return None;
+    }
     log_dir().map(|d| d.join(format!("{}-panics.log", lcc_brand::BINARY)))
+}
+
+/// Whether the arguments ask for a `--memory` (or `--demo`) session. The values of `--control` and `--library` are
+/// skipped, as the parser takes them.
+fn in_memory_session(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    let mut args = args.into_iter();
+    while let Some(a) = args.next() {
+        if a == "--control" || a == "--library" {
+            args.next();
+        } else if a == "--memory" || a == "--demo" {
+            return true;
+        }
+    }
+    false
 }
 
 fn main() -> eframe::Result {
     // First, so every start-up record is kept for the log file (`logging`).
     let logger = logging::install();
-    lcc_engine::guard::install_hook(panic_log_path());
+    lcc_engine::guard::install_hook(panic_log_path(std::env::args_os().skip(1)));
     if let Some(logger) = logger {
         logging::record_panics(logger);
     }
@@ -2288,6 +2307,27 @@ mod config_path_tests {
     #[test]
     fn panic_log_stays_in_the_settings_folder() {
         let name = format!("{}-panics.log", lcc_brand::BINARY);
-        assert_eq!(panic_log_path(), log_dir().map(|d| d.join(name)));
+        assert_eq!(panic_log_path(std::iter::empty()), log_dir().map(|d| d.join(name)));
+    }
+
+    /// A `--memory` session keeps no panic log (it saves nothing); an option's value that reads `--memory` is not the
+    /// flag; an argument that isn't UTF-8 doesn't stop the check.
+    #[test]
+    fn in_memory_sessions_are_spotted_before_parsing() {
+        let args = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        assert!(in_memory_session(args(&["--memory"])));
+        assert!(in_memory_session(args(&["photo.jpg", "--demo"])));
+        assert!(in_memory_session(args(&["--control", "7980", "--memory"])));
+        assert!(!in_memory_session(args(&[])));
+        assert!(!in_memory_session(args(&["--no-demo", "photo.jpg"])));
+        assert!(!in_memory_session(args(&["--library", "--memory"])));
+        assert!(!in_memory_session(args(&["--control", "--demo"])));
+        assert_eq!(panic_log_path(args(&["--memory"])), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let odd = std::ffi::OsString::from_vec(vec![0x66, 0xff, 0x6f]);
+            assert!(in_memory_session([odd, "--demo".into()]));
+        }
     }
 }
