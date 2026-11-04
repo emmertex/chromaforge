@@ -1,7 +1,9 @@
 {
   "All Photographs": "Kaikki kuvat",
+  "All masks shown · O to hide": "Kaikki maskit näkyvissä · O piilottaa",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Tulee voimaan seuraavalla käynnistyksellä. Jos sovellus käynnistyy hitaasti GPU päällä, kokeile Vulkania: joillakin tietokoneilla se valmistelee GPU:n paljon nopeammin.",
   "Ask": "Kysy",
+  "Click to hide the overlay": "Piilota peittokuva napsauttamalla",
   "Click to update it.": "Päivitä napsauttamalla.",
   "Computing AI masks": "Lasketaan tekoälymaskeja",
   "Copy recipe": "Kopioi resepti",

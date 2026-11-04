@@ -1203,7 +1203,9 @@ pub struct UiState {
     /// need [`mask_pins`](Self::mask_pins).
     pub tool_overlay: ToolOverlay,
     /// Masking: show every visible mask's region as one overlay at once (Ctrl+Shift+O / Cmd+Shift+O),
-    /// instead of just the selected mask's ([`mask_overlay`]).
+    /// instead of just the selected mask's ([`mask_overlay`]). A look, not a setting: not kept
+    /// between sessions, so the overlay never comes back by itself.
+    #[serde(skip)]
     pub mask_overlay_all: bool,
     /// The overlay (on, mode) to go back to when Show Luminance Map is turned off.
     #[serde(skip)]

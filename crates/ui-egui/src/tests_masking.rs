@@ -2829,3 +2829,52 @@ fn people_and_remembered_tiles_open_their_pickers() {
     click(&mut h, "button:maskConcept:cancel");
     assert!(!h.app.ui.concept_pick);
 }
+
+/// OneSlips' overlay rule: a brush stroke on a mask with settings counts as adjusting, so no
+/// overlay covers the photo while it is painted, not even one switched on with O.
+#[test]
+fn no_mask_overlay_covers_the_photo_while_a_brush_stroke_is_painted() {
+    use lcc_pipeline::Overlay;
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    pointer(
+        &mut h,
+        json!([{"kind": "down", "x": 0.3, "y": 0.4}, {"kind": "drag", "x": 0.32, "y": 0.4}, {"kind": "drag", "x": 0.4, "y": 0.4}, {"kind": "up", "x": 0.4, "y": 0.4}]),
+    );
+    h.settle(SETTLE);
+    assert!(!develop(&h).masks.is_empty(), "the stroke made a mask");
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.6}}));
+    h.app.ui.mask_adjusting_until = None;
+    exec(&mut h, "view.maskOverlay", json!({"show": true}));
+    exec(&mut h, "tool.brush", json!({}));
+    let overlay = |h: &Headless| crate::panels::detail::view_overlay(&h.app, &develop(h), false);
+    assert!(matches!(overlay(&h), Overlay::Mask { .. }), "O shows the overlay at rest");
+    pointer(&mut h, json!([{"kind": "down", "x": 0.3, "y": 0.6}, {"kind": "drag", "x": 0.32, "y": 0.6}, {"kind": "drag", "x": 0.45, "y": 0.6}]));
+    assert!(matches!(h.app.gesture, Some(crate::panels::detail::Gesture::Brush { .. })), "still painting");
+    assert_eq!(overlay(&h), Overlay::None, "nothing covers the photo while brushing");
+    pointer(&mut h, json!([{"kind": "up", "x": 0.45, "y": 0.6}]));
+    h.app.ui.mask_adjusting_until = None;
+    assert!(matches!(overlay(&h), Overlay::Mask { .. }), "the overlay O switched on comes back after the stroke");
+}
+
+/// O turns off whatever overlay shows, All Mask Overlays (Ctrl+Shift+O) included, and a pill on the
+/// photo says while All shows.
+#[test]
+fn o_turns_off_the_all_masks_overlay() {
+    use lcc_pipeline::Overlay;
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.2], "end": [0.5, 0.7]}));
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.5}}));
+    h.app.ui.mask_adjusting_until = None;
+    exec(&mut h, "view.maskOverlayAll", json!({}));
+    h.settle(SETTLE);
+    let overlay = |h: &Headless| crate::panels::detail::view_overlay(&h.app, &develop(h), false);
+    assert!(matches!(overlay(&h), Overlay::AllMasks { .. }), "Ctrl+Shift+O shows every mask");
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "loupe:allMasks"), "a pill says All shows");
+    exec(&mut h, "view.maskOverlay", json!({}));
+    h.settle(SETTLE);
+    assert!(!h.app.ui.mask_overlay_all);
+    assert_eq!(overlay(&h), Overlay::None, "O hid the All overlay");
+    assert!(!h.app.widgets.iter().any(|(w, _)| w == "loupe:allMasks"), "the pill goes with it");
+}

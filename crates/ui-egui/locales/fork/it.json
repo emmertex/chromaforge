@@ -1,6 +1,7 @@
 {
   "Address": "Indirizzo",
   "All files": "Tutti i file",
+  "All masks shown · O to hide": "Tutte le maschere visibili · O per nascondere",
   "Allow Access to All Files…": "Consenti l’accesso a tutti i file…",
   "Also the contributors to": "Anche i collaboratori di",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Si applica al prossimo avvio. Se l’app si avvia lentamente con la GPU attiva, prova Vulkan: su alcuni computer prepara la GPU molto più velocemente.",
@@ -12,6 +13,7 @@
   "Blend source texture with target tone": "Fondi la texture di origine con il tono di destinazione",
   "Blue/Yellow": "Blu/giallo",
   "Catalog": "Catalogo",
+  "Click to hide the overlay": "Fai clic per nascondere la sovrapposizione",
   "Click to update it.": "Fai clic per aggiornarla.",
   "Click to zoom": "Fai clic per ingrandire",
   "Compact": "Compatto",

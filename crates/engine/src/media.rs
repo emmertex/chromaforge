@@ -2243,8 +2243,18 @@ impl crate::Session {
 
     /// The embedded preview of an unedited raw (path, loader), when the app installed a loader.
     fn embedded_of(&self, p: &Photo) -> Option<(String, PreviewLoader)> {
+        self.embedded_stand_in_of(p).filter(|_| crate::import::has_import_look(p))
+    }
+
+    /// The embedded preview of any raw (path, loader), when the app installed a loader: the
+    /// cheapest full picture of the photo, shown until the app's render of it arrives. A photo
+    /// with any setting changed (a body's default camera profile picked for a whole folder is
+    /// enough) otherwise had no picture in the grid, the filmstrip or the loupe until a full raw
+    /// render, seconds a photo for a 45 MP CR3. Only an unedited raw's is its final picture
+    /// ([`Self::embedded_thumb_is_final`]); for the others a render replaces it.
+    fn embedded_stand_in_of(&self, p: &Photo) -> Option<(String, PreviewLoader)> {
         match (&p.source, &self.media.preview_loader) {
-            (Source::File { path }, Some(l)) if p.kind == MediaKind::Raw && crate::import::has_import_look(p) => Some((path.clone(), l.clone())),
+            (Source::File { path }, Some(l)) if p.kind == MediaKind::Raw => Some((path.clone(), l.clone())),
             _ => None,
         }
     }
@@ -2299,7 +2309,8 @@ impl crate::Session {
     }
 
     /// Something to show in the loupe right away for `id` (see [`QuickJob`]): its cached view
-    /// render, else the embedded preview of an unedited raw, else a cached or fresh thumbnail.
+    /// render, else the embedded preview of a raw (edited or not: a stand-in until the render
+    /// arrives), else a cached or fresh thumbnail.
     pub fn quick_view_job(&mut self, id: PhotoId, max_edge: usize, apply_crop: bool) -> Option<QuickJob> {
         let p = self.catalog.photo(id)?.clone();
         let small = self.thumb_job(id, THUMB_SIZES[THUMB_SIZES.len() - 1])?;
@@ -2311,7 +2322,7 @@ impl crate::Session {
         }
         let h = Hasher128::new().str(&pixels_key(&p)).str("quick").u64(p.develop.hash64()).u64(apply_crop as u64).finish();
         let key = h.0 as u64;
-        let embedded = self.embedded_of(&p).map(|(path, l)| (path, l, max_edge.clamp(1, SourceLevel::Preview.max_edge())));
+        let embedded = self.embedded_stand_in_of(&p).map(|(path, l)| (path, l, max_edge.clamp(1, SourceLevel::Preview.max_edge())));
         let embedded_cache = embedded
             .as_ref()
             .map(|(_, _, edge)| (self.media.rendered.clone(), Hasher128::new().str(&pixels_key(&p)).str("embedded").u64(*edge as u64).finish()));
@@ -2327,15 +2338,17 @@ impl crate::Session {
         })
     }
 
-    /// A first grid thumbnail for an unedited raw: the cached render for `job` (the real
+    /// A first grid thumbnail for a raw: the cached render for `job` (the real
     /// thumbnail job, from [`Self::thumb_job`]) if there is one — then the result carries
     /// [`QuickSource::Cached`] and `job.key` and is final — else its embedded preview, else `job`
     /// itself: the grid queues no render behind an unedited raw's quick thumbnail
     /// ([`Self::embedded_thumb_is_final`]), so a preview that can't be read must not leave the
-    /// cell empty (issue #1448). `None` for other photos (render them directly).
+    /// cell empty (issue #1448). For an edited raw the camera JPEG is only a stand-in: the grid
+    /// renders the real thumbnail behind it ([`Self::embedded_thumb_is_final`]). `None` for other
+    /// photos (render them directly).
     pub fn quick_thumb_job(&mut self, job: &RenderJob) -> Option<QuickJob> {
         let p = self.catalog.photo(job.photo)?.clone();
-        let (path, l) = self.embedded_of(&p)?;
+        let (path, l) = self.embedded_stand_in_of(&p)?;
         let edge = job.request.max_w.max(job.request.max_h);
         Some(QuickJob {
             request_id: 0,
@@ -2579,6 +2592,30 @@ mod thumbnail_hash_tests {
         s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
         s
     }
+    /// An edited raw (here: exposure; a body's default camera profile picked for a folder is enough)
+    /// still shows its camera JPEG first, in the grid and the loupe, until its
+    /// render replaces it; only an unedited raw's is final.
+    #[test]
+    fn an_edited_raw_still_shows_its_camera_preview_first() {
+        let mut s = crate::Session::new();
+        s.media.preview_loader =
+            Some(Arc::new(|_: &str, edge: usize| Some(Rgba8 { width: edge.min(8), height: 2, data: vec![[9, 8, 7, 255]; edge.min(8) * 2] })));
+        let mut raw = Photo::new(PhotoId(1), Source::File { path: "a.cr3".into() }, "a.cr3", "CR3", 6000, 4000, "2026-01-01");
+        raw.kind = MediaKind::Raw;
+        let mut d = raw.camera_defaults();
+        d.light.exposure = 0.3;
+        raw.develop = Arc::new(d);
+        s.catalog.apply(Op::AddPhoto { photo: Box::new(raw) }).unwrap();
+        let p = s.catalog.photo(PhotoId(1)).unwrap().clone();
+        assert!(!s.embedded_thumb_is_final(&p), "its render replaces the camera JPEG");
+        let q = s.quick_view_job(PhotoId(1), 64, true).unwrap();
+        assert!(q.embedded.is_some(), "the loupe's stand-in is the camera JPEG");
+        assert_eq!(q.run().quick, Some(QuickSource::Embedded));
+        let thumb = s.thumb_job(PhotoId(1), 256).unwrap();
+        let q = s.quick_thumb_job(&thumb).expect("the grid's stand-in");
+        assert_eq!(q.run().quick, Some(QuickSource::Embedded));
+    }
+
     #[test]
     fn hashes_match_uncached_keys_and_are_not_recomputed_for_sizes_metadata_or_before() {
         let mut s = session();
