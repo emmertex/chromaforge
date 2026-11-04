@@ -3486,4 +3486,3 @@ pub(crate) mod tests {
         assert!((ratio - 0.5).abs() < 0.01, "ISO 50 / ISO 100 = {ratio}");
     }
 }
-

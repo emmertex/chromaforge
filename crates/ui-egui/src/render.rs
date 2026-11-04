@@ -749,7 +749,8 @@ impl Renderer {
         let Some((old, size, key)) = self.embedded_thumbs.get(&photo.id) else { return false };
         let slot = Slot::ThumbQuick(photo.id);
         // a queued stand-in at another priority isn't settled yet: the grid moves it (both ways)
-        let requeue = self.pending.get(&slot).is_some_and(|&(k, p)| k == *key && p != crate::panels::grid::stand_in_priority(priority) && self.is_queued(slot));
+        let requeue =
+            self.pending.get(&slot).is_some_and(|&(k, p)| k == *key && p != crate::panels::grid::stand_in_priority(priority) && self.is_queued(slot));
         old.as_ptr() == Arc::as_ptr(photo) && *size >= bucket && !requeue && !self.request_needed(slot, *key, priority)
     }
 

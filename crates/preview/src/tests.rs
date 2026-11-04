@@ -1067,7 +1067,6 @@ fn a_slow_first_count_never_holds_up_the_size_shown() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// Notes 1 and 4 of 2026-10-22: with every worker busy with a long render, a cheap stand-in (a
 /// raw's embedded JPEG) waited for one of them to end; the fast lane runs it at once.
 #[test]
