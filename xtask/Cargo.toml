@@ -28,4 +28,4 @@ ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
 getrandom = "0.3"
 # `cargo xtask android package`: assembling the APK / AAB (stored entries only: aapt2 compresses its own)
-zip = { version = "7", default-features = false }
+zip = { version = "9", default-features = false }

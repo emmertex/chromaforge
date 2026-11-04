@@ -119,7 +119,89 @@ pub const TOKENS: &[TokenHelp] = &[
     TokenHelp { tag: "{title}", aliases: &[], meaning: "Title metadata" },
     TokenHelp { tag: "{creator}", aliases: &[], meaning: "Creator metadata" },
     TokenHelp { tag: "{ext}", aliases: &[], meaning: "Original extension without the dot" },
+    TokenHelp {
+        tag: "{text:Couple initials}",
+        aliases: &[],
+        meaning: "Your own text, asked each time you rename or export (the label after : is the question)",
+    },
 ];
+
+/// Longest text typed for a `{text:…}` tag (characters).
+pub const MAX_TEXT: usize = 120;
+
+/// The labels of the `{text:Label}` tags in `template`, each once, in order.
+pub fn text_labels(template: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = template;
+    while let Some(i) = rest.find('{') {
+        let Some(j) = rest[i..].find('}') else { break };
+        let tok = &rest[i + 1..i + j];
+        if let Some((name, label)) = tok.split_once(':')
+            && name.trim().eq_ignore_ascii_case("text")
+        {
+            let label = label.trim().to_string();
+            if !out.contains(&label) {
+                out.push(label);
+            }
+        }
+        rest = &rest[i + j + 1..];
+    }
+    out
+}
+
+/// `template` with each `{text:Label}` replaced by `texts[Label]` (trimmed, braces dropped, at most
+/// [`MAX_TEXT`] characters); a label without a text gives nothing. The other tags stay for
+/// [`expand_tokens`].
+pub fn fill_texts(template: &str, texts: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(i) = rest.find('{') {
+        out.push_str(&rest[..i]);
+        let Some(j) = rest[i..].find('}') else {
+            out.push_str(&rest[i..]);
+            rest = "";
+            break;
+        };
+        let tok = &rest[i + 1..i + j];
+        match tok.split_once(':') {
+            Some((name, label)) if name.trim().eq_ignore_ascii_case("text") => {
+                let v = texts(label.trim()).unwrap_or_default();
+                out.extend(v.trim().chars().filter(|c| !matches!(c, '{' | '}')).take(MAX_TEXT));
+            }
+            _ => out.push_str(&rest[i..i + j + 1]),
+        }
+        rest = &rest[i + j + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The texts a command was given for a template's `{text:…}` tags (`texts: {label: text}`): every
+/// label must have one, or the error names the missing ones.
+pub fn texts_param(template: &str, texts: Option<&serde_json::Value>) -> std::result::Result<std::collections::BTreeMap<String, String>, String> {
+    let labels = text_labels(template);
+    let mut out = std::collections::BTreeMap::new();
+    let given = texts.and_then(serde_json::Value::as_object);
+    if texts.is_some_and(|t| !t.is_null() && !t.is_object()) {
+        return Err("`texts` must be an object of label: text".into());
+    }
+    let mut missing = Vec::new();
+    for l in labels {
+        match given.and_then(|g| g.get(&l)).and_then(serde_json::Value::as_str).map(str::trim).filter(|v| !v.is_empty()) {
+            Some(v) => {
+                out.insert(l, v.to_string());
+            }
+            None => missing.push(l),
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "type the text for {} (texts: {{label: text}})",
+            missing.iter().map(|l| format!("“{l}”")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    Ok(out)
+}
 
 /// The `%` directives of `{date:…}`.
 pub const DATE_DIRECTIVES: &[(&str, &str)] = &[
@@ -166,7 +248,7 @@ pub fn sample_photo() -> Photo {
 
 /// The token as expanded for [`sample_photo`] (sequence number 1), for the help's example column.
 pub fn token_example(tag: &str) -> String {
-    expand_tokens(tag, &sample_photo(), 1, 1)
+    expand_tokens(&fill_texts(tag, &|_| Some("R+A".into())), &sample_photo(), 1, 1)
 }
 
 /// Why a folder template (`{date:%Y}/{date:%Y%m%d}`) can't be used, if it can't: it must be
@@ -312,6 +394,8 @@ pub fn expand_tokens_with(
                 "title" => p.meta.title.clone(),
                 "creator" => p.meta.creator.clone(),
                 "ext" => ext.to_string(),
+                // (a text not filled in by `fill_texts`: nothing)
+                "text" if arg.is_some() => String::new(),
                 _ => format!("{{{tok}}}"),
             },
         };
@@ -367,6 +451,9 @@ pub(crate) trait MoveFs {
     fn packet_version(&self, path: &Path) -> std::io::Result<PacketVersion> {
         use std::io::Read;
         let mut file = std::fs::File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::other(format!("{} is not a regular file", path.display())));
+        }
         let mut hash = lcc_preview::Hasher128::new();
         let mut len = 0u64;
         let mut buffer = [0u8; 16 * 1024];
@@ -451,7 +538,8 @@ impl MoveFs for RealFs {
         if self.exists(b) {
             return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} already exists", b.display())));
         }
-        // Streamed (a large raw or video is never read into memory whole), into a hidden name
+        // Streamed in 1 MiB writes (a large raw or video is never read into memory whole, and a
+        // network share isn't asked once per 8 KiB, upstream issue #3561), into a hidden name
         // beside `b` that only takes `b`'s name once complete: a share that drops mid-copy, so
         // the partial file can't be removed either, leaves no truncated file under the photo's
         // name for a retry to take for the photo.
@@ -462,10 +550,16 @@ impl MoveFs for RealFs {
             .map(|k| b.with_file_name(format!(".{name}.lc-partial-{}-{k}", std::process::id())))
             .find(|p| !self.exists(p))
             .ok_or_else(|| std::io::Error::other(format!("no free temporary name beside {}", b.display())))?;
+        // a sidecar found beside the photo by its name is copied only when it is a plain file: a
+        // link there would have its target's contents copied into a new, readable file (upstream #3677)
+        let checked = std::fs::symlink_metadata(a)?;
+        if !checked.is_file() {
+            return Err(std::io::Error::other(format!("{} is not a regular file", a.display())));
+        }
         let copied = (|| {
-            let mut from = std::fs::File::open(a)?;
+            let mut from = open_regular(a, &checked)?;
             let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&partial)?;
-            std::io::copy(&mut from, &mut f)?;
+            crate::import_move::copy_in_chunks(&mut from, &mut f)?;
             lcc_catalog::safe_file::sync_file(&f, false)
         })();
         let placed = copied.and_then(|()| self.rename_no_replace(&partial, b));
@@ -495,6 +589,33 @@ impl MoveFs for RealFs {
 
 /// Move `a` to `b` on another volume: copy (never replacing), compare the copy with the original
 /// byte for byte, and only then remove the original. A copy that doesn't match is removed.
+/// Opens `a` for reading and checks the open handle is the regular file `checked` (the
+/// `symlink_metadata` of `a` taken before): the path check alone can be outrun by a swap for a
+/// link, whose target the open would follow.
+fn open_regular(a: &Path, checked: &std::fs::Metadata) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // FILE_FLAG_OPEN_REPARSE_POINT: a symbolic link is opened itself, and then refused below
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, 0x0020_0000);
+    let file = options.open(a)?;
+    let opened = file.metadata()?;
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt;
+        (opened.dev(), opened.ino()) == (checked.dev(), checked.ino())
+    };
+    #[cfg(not(unix))]
+    let same = {
+        let _ = checked;
+        true
+    };
+    if !opened.is_file() || !same {
+        return Err(std::io::Error::other(format!("{} is not a regular file", a.display())));
+    }
+    Ok(file)
+}
+
 fn move_across_volumes(fs: &RealFs, a: &Path, b: &Path) -> std::io::Result<()> {
     fs.copy_no_replace(a, b)?;
     if !same_contents(a, b).unwrap_or(false) {
@@ -1770,7 +1891,7 @@ pub(crate) mod tests {
             for tag in std::iter::once(&t.tag).chain(t.aliases) {
                 let v = expand_tokens(tag, &p, 1, 1);
                 assert!(!v.contains('{'), "{tag} is not a known token (expanded to {v:?})");
-                assert!(!v.is_empty(), "{tag}: the sample photo should give an example");
+                assert!(!token_example(tag).is_empty(), "{tag}: the sample photo should give an example");
             }
         }
         assert_eq!(token_example("{seq:3}"), "001");
@@ -1834,5 +1955,26 @@ pub(crate) mod tests {
         assert_eq!(expand("{folder}{name}{num}", &p, 1), "beach.NEF");
         // a bare {seq} is padded to the caller's width
         assert_eq!(expand_tokens("{seq}|{seq:2}", &p, 7, 3), "007|07");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod open_regular_tests {
+    use super::open_regular;
+
+    #[test]
+    fn a_link_swapped_in_after_the_check_is_not_followed() {
+        let dir = std::env::temp_dir().join(format!("open-regular-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (file, other, link) = (dir.join("a.xmp"), dir.join("secret"), dir.join("link.xmp"));
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::write(&other, b"secret").unwrap();
+        let checked = std::fs::symlink_metadata(&file).unwrap();
+        assert!(open_regular(&file, &checked).is_ok());
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&other, &link).unwrap();
+        std::fs::rename(&link, &file).unwrap();
+        assert!(open_regular(&file, &checked).is_err(), "the link's target must not be opened");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

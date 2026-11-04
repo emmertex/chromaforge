@@ -37,14 +37,13 @@ fn the_list_knows_the_known_models_and_is_honest_about_the_runtime() {
     let l = s.execute("faces.models.list", &json!({})).unwrap();
     assert_eq!(l["enabled"], false);
     assert_eq!(l["runtime"], cfg!(not(target_arch = "wasm32")));
-    assert_eq!(find(&l, "yunet-2023mar")["installed"], false, "nothing ships with the app");
+    assert!(find(&l, "yunet-2023mar").is_null(), "YuNet is retired: not offered");
     assert_eq!(find(&l, "auraface-v1")["installed"], false);
     assert_eq!(find(&l, "auraface-v1")["licence"]["commercial"], "yes");
     assert_eq!(find(&l, "sface-2021dec")["licence"]["commercial"], "unknown");
     // speed is a ratio to a ResNet-100 model, in words, for models that are not installed yet too; never milliseconds
     assert_eq!(find(&l, "sface-2021dec")["speedText"], "6.9× faster than a ResNet-100 model");
     assert_eq!(find(&l, "auraface-v1")["speedText"], "Same speed as a ResNet-100 model");
-    assert_eq!(find(&l, "yunet-2023mar")["speedText"], Value::Null, "nobody timed the detector against it");
     // a build with no folder lists too, and cannot install
     let mut web = Session::new();
     assert!(web.execute("faces.models.list", &json!({})).is_ok());
@@ -175,29 +174,52 @@ fn hostile_ids_unsupported_models_and_odd_folders_are_handled() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A demo session with the real YuNet installed, for the tests that need it: `LC_YUNET_MODEL=<the .onnx file>` (what
-/// Settings > Faces downloads; nothing is committed). Without it those tests say so and pass.
-fn demo_with_yunet() -> Option<Session> {
-    let Some(file) = std::env::var_os("LC_YUNET_MODEL") else {
-        lcc_testkit::skip!(Model, "LC_YUNET_MODEL is not set");
+/// A demo session with the real MediaPipe face model, for the tests that need it: `LC_AI_MODELS_TEST_DIR=<a
+/// models folder holding it>` (what the AI Models dialog downloads; nothing is committed). Without it those tests say so
+/// and pass.
+fn demo_with_face_model() -> Option<Session> {
+    let Some(root) = std::env::var_os("LC_AI_MODELS_TEST_DIR") else {
+        lcc_testkit::skip!(Model, "LC_AI_MODELS_TEST_DIR is not set");
         return None;
     };
-    let dir = temp("yunet");
     let mut s = Session::with_demo();
-    s.face_models_dir = Some(dir.join("models"));
-    let r = s.execute("faces.models.install", &json!({"path": file.to_string_lossy(), "acknowledged": true}));
-    assert!(r.is_ok(), "{r:?}");
+    s.segmenter.models_root = Some(root.into());
+    crate::cmd::face_detect::detector(&s).ok()?;
     Some(s)
 }
 
+/// A YuNet an older version installed is listed as retired (so it can be removed) and never used to find faces; no
+/// detector can be installed any more.
 #[test]
-fn installing_the_detector_does_not_choose_it_as_the_recogniser_or_switch_recognition_on() {
-    let Some(mut s) = demo_with_yunet() else { return };
+fn an_old_yunet_install_is_listed_retired_never_used_and_can_be_removed() {
+    let d = temp("old-yunet");
+    let mut s = session(&d);
+    // what an older version left: the model, its manifest and the user's acceptance
+    let home = d.join("models").join("yunet-2023mar");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("model.onnx"), lcc_faces::synthetic::tiny_detector_model()).unwrap();
+    let mut m = lcc_faces::known::yunet();
+    m.sha256 = lcc_faces::synthetic::tiny_detector_manifest().sha256;
+    std::fs::write(home.join("face-model.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+    std::fs::write(home.join("installed.json"), b"{}").unwrap();
     let l = s.execute("faces.models.list", &json!({})).unwrap();
-    assert_eq!(find(&l, "yunet-2023mar")["installed"], true);
-    assert_eq!(l["enabled"], false, "{l}");
-    assert!(l["embedder"].is_null(), "{l}");
-    assert!(s.execute("faces.models.test", &json!({"id": "yunet-2023mar"})).is_err(), "a detector has no recognition self-test");
+    let row = find(&l, "yunet-2023mar");
+    assert_eq!((row["installed"].clone(), row["retired"].clone(), row["downloadHost"].clone()), (json!(true), json!(true), Value::Null), "{row}");
+    assert!(row["provenance"].as_str().unwrap().contains("CC BY-NC-ND"));
+    assert!(s.execute("faces.models.select", &json!({"id": "yunet-2023mar"})).is_err(), "a detector is not a recogniser");
+    // finding faces asks for the open face model, not for it
+    let e = s.execute("faces.detect", &json!({"ids": []})).unwrap_err().to_string();
+    assert!(!e.contains("YuNet"), "{e}");
+    // installing a detector (YuNet's file, or another) is refused
+    let file = d.join("yunet.onnx");
+    std::fs::write(&file, lcc_faces::synthetic::tiny_detector_model()).unwrap();
+    let e = s.execute("faces.models.install", &json!({"path": file.to_string_lossy(), "acknowledged": true})).unwrap_err().to_string();
+    assert!(e.contains("MediaPipe") || e.contains("cannot be used"), "{e}");
+    // removing it works like any model's
+    assert_eq!(s.execute("faces.models.remove", &json!({"id": "yunet-2023mar"})).unwrap()["removed"], "yunet-2023mar");
+    assert!(!home.exists());
+    assert!(find(&s.execute("faces.models.list", &json!({})).unwrap(), "yunet-2023mar").is_null());
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -208,21 +230,16 @@ fn detect_without_the_model_says_where_to_get_it() {
     let e = s.execute("faces.detect", &json!({})).unwrap_err();
     assert_ne!(e.kind(), crate::ErrorKind::ModelMissing(crate::AiModel::FaceDetector), "nothing to download into: {e}");
     s.face_models_dir = Some(d.join("models"));
+    s.segmenter.models_root = Some(d.join("models"));
     let e = s.execute("faces.detect", &json!({})).unwrap_err();
-    // the app offers the download on the kind (#1046), the person reads the message
-    assert_eq!(e.kind(), crate::ErrorKind::ModelMissing(crate::AiModel::FaceDetector), "{e}");
-    assert!(
-        e.to_string().starts_with("invalid parameters for `faces.detect`: ") && e.to_string().contains("Settings > Faces"),
-        "the `error` text clients see is unchanged: {e}"
-    );
-    // a detector that is there but unusable also points to Settings > Faces, and is not a missing one
-    let home = d.join("models").join(lcc_faces::known::YUNET_ID);
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(home.join("model.onnx"), b"not a model").unwrap();
-    std::fs::write(home.join("face-model.json"), b"{}").unwrap();
-    let e = s.execute("faces.detect", &json!({})).unwrap_err();
-    assert!(e.to_string().contains("Settings > Faces"), "{e}");
-    assert_eq!(e.kind(), crate::ErrorKind::BadParams, "{e}");
+    if crate::segment::Segmenter::AVAILABLE {
+        // the app offers the download on the kind (#1046), the person reads the message
+        assert_eq!(e.kind(), crate::ErrorKind::ModelMissing(crate::AiModel::FaceDetector), "{e}");
+        let e = e.to_string();
+        assert!(e.starts_with("invalid parameters for `faces.detect`: ") && e.contains("ai.models.download") && e.contains("face"), "{e}");
+    } else {
+        assert_ne!(e.kind(), crate::ErrorKind::ModelMissing(crate::AiModel::FaceDetector), "nothing to download in this build: {e}");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -231,16 +248,16 @@ fn the_detector_and_the_recognisers_can_be_downloaded_and_the_download_is_refuse
     let d = temp("dl-refusals");
     let mut s = session(&d);
     let l = s.execute("faces.models.list", &json!({})).unwrap();
-    for (id, host) in [("yunet-2023mar", "github.com"), ("sface-2021dec", "github.com"), ("auraface-v1", "huggingface.co")] {
+    for (id, host) in [("sface-2021dec", "github.com"), ("auraface-v1", "huggingface.co")] {
         assert_eq!(find(&l, id)["downloadHost"], host, "{id}");
     }
-    // without the user's acceptance, for an id nobody knows, and without a folder: nothing starts
-    assert!(s.execute("faces.models.download", &json!({"id": "yunet-2023mar"})).is_err());
-    assert!(s.execute("faces.models.download", &json!({"id": "yunet-2023mar", "acknowledged": false})).is_err());
-    for id in ["nope", "", "../yunet-2023mar"] {
+    // without the user's acceptance, for an id nobody knows, without a folder, and for retired YuNet: nothing starts
+    assert!(s.execute("faces.models.download", &json!({"id": "sface-2021dec"})).is_err());
+    assert!(s.execute("faces.models.download", &json!({"id": "sface-2021dec", "acknowledged": false})).is_err());
+    for id in ["nope", "", "../sface-2021dec", "yunet-2023mar"] {
         assert!(s.execute("faces.models.download", &json!({"id": id, "acknowledged": true})).is_err(), "{id}");
     }
-    assert!(Session::new().execute("faces.models.download", &json!({"id": "yunet-2023mar", "acknowledged": true})).is_err());
+    assert!(Session::new().execute("faces.models.download", &json!({"id": "sface-2021dec", "acknowledged": true})).is_err());
     assert_eq!(s.execute("faces.models.downloads", &json!({})).unwrap()["downloads"], json!([]));
     assert!(!d.join("models").join(".downloads").exists(), "a refused download touches nothing");
     let _ = std::fs::remove_dir_all(&d);
@@ -290,7 +307,7 @@ fn detect_replaces_only_earlier_detections_and_is_one_undo_step() {
         name: name.map(str::to_string),
         description: description.map(str::to_string),
     };
-    let Some(mut s) = demo_with_yunet() else { return };
+    let Some(mut s) = demo_with_face_model() else { return };
     let id = s.active().unwrap();
     let mut meta = s.catalog.photo(id).unwrap().meta.clone();
     meta.regions =
@@ -307,7 +324,7 @@ fn detect_replaces_only_earlier_detections_and_is_one_undo_step() {
     // a real run (the default) drops the earlier detection (the demo has no faces) and keeps the others
     let r = s.execute("faces.detect", &json!({})).unwrap();
     assert_eq!(r["applied"], true);
-    assert_eq!(r["detector"], "YuNet 2023mar");
+    assert_eq!(r["detector"], "MediaPipe Face Landmarker");
     let photo = r["photos"].as_array().unwrap().iter().find(|p| p["id"] == id.0).unwrap();
     assert_eq!(photo["faces"].as_array().unwrap().len(), 0, "the procedural demo photos have no faces");
     let names: Vec<_> = s.catalog.photo(id).unwrap().meta.regions.iter().map(|r| (r.name.clone(), r.description.clone())).collect();
@@ -322,38 +339,6 @@ fn detect_replaces_only_earlier_detections_and_is_one_undo_step() {
     }
     let mut empty = Session::new();
     assert!(empty.execute("faces.detect", &json!({})).is_err());
-}
-
-/// Opt-in, needs the internet: `cargo test -p lcc-engine real_download -- --ignored --nocapture`. Downloads YuNet
-/// from its pinned address the way the app does, waits for it to be installed, then finds faces with it.
-#[test]
-#[ignore = "downloads from github.com"]
-fn real_download_of_yunet_installs_it_and_detects() {
-    let d = temp("real-download");
-    let mut s = Session::with_demo();
-    s.face_models_dir = Some(d.join("models"));
-    let started = s.execute("faces.models.download", &json!({"id": "yunet-2023mar", "acknowledged": true})).unwrap();
-    assert_eq!(started["from"], "github.com");
-    let t0 = std::time::Instant::now();
-    loop {
-        let r = s.execute("faces.models.downloads", &json!({})).unwrap();
-        let row = r["downloads"][0].clone();
-        match row["state"].as_str() {
-            Some("installed") => break,
-            Some("running") | Some("done") => {}
-            _ => panic!("{r}"),
-        }
-        assert!(t0.elapsed() < std::time::Duration::from_secs(120), "{r}");
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    println!("downloaded and installed in {:?}", t0.elapsed());
-    let l = s.execute("faces.models.list", &json!({})).unwrap();
-    assert_eq!(find(&l, "yunet-2023mar")["installed"], true);
-    let r = s.execute("faces.detect", &json!({"apply": false})).unwrap();
-    assert_eq!(r["detector"], "YuNet 2023mar");
-    // asking again once installed is refused
-    assert!(s.execute("faces.models.download", &json!({"id": "yunet-2023mar", "acknowledged": true})).is_err());
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// Opt-in, needs the internet: the recognisers are big, so this only checks that bytes start to arrive (through the

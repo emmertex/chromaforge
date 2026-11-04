@@ -3,11 +3,17 @@
 
 use lcc_color::spline::Lut1;
 use lcc_develop::VignetteStyle;
-use lcc_pipeline::colorops::POINT_WORDS;
+use lcc_pipeline::colorops::{MIXER_WORDS, POINT_WORDS};
 use lcc_pipeline::finish::{CURVE_LUT_N, FinishParams, MASK_TERMS, srgb_lut};
 
 /// Entries per tone-curve table (`lcc_pipeline::finish` builds them at this size).
 pub const CURVE_N: u32 = CURVE_LUT_N as u32;
+
+/// Words per mask in the local colour records: the number of Point Color samples, whether the mask
+/// has a Color Mixer, the mixer's [`MIXER_WORDS`], then up to 8 samples of [`POINT_WORDS`].
+pub const LOCAL_POINT_WORDS: usize = 2 + MIXER_WORDS + 8 * POINT_WORDS;
+/// Offset of the first Point Color sample in a local colour record.
+pub const LOCAL_POINT_SAMPLES: usize = 2 + MIXER_WORDS;
 
 /// Field name and number of 32-bit words.
 const FIELDS: &[(&str, usize)] = &[
@@ -20,6 +26,9 @@ const FIELDS: &[(&str, usize)] = &[
     ("CURVES", 1),
     // the masks' local Curves: a slot per mask (its table set, or −1), then the table sets
     ("LCURVE_OFF", 1),
+    // the masks' local Point Color: one record of `LOCAL_POINT_WORDS` per mask in `aux`
+    ("LPOINTS", 1),
+    ("LPOINT_OFF", 1),
     ("LCURVES", 1),
     ("GAIN", 1),
     ("EV", 1),
@@ -72,7 +81,41 @@ const FIELDS: &[(&str, usize)] = &[
     // the window's offset in the whole output and the whole output's size (pixels)
     ("VIG_VIEW", 4),
     ("GRAIN", 1),
+    // 0 = value noise (processes V1–V6: GRAIN_AMT, GRAIN_SC, GRAIN_ROUGH), 1 = particles (V7)
+    ("GRAIN_MODEL", 1),
     ("GRAIN_AMT", 1),
+    ("GRAIN_AMP", 1),
+    ("GRAIN_INV_R", 1),
+    ("GRAIN_S", 1),
+    ("GRAIN_INV_S", 1),
+    ("GRAIN_SPREAD", 1),
+    ("GRAIN_ASPECT", 1),
+    ("GRAIN_LUMP", 1),
+    ("GRAIN_CLUMP_E", 1),
+    ("GRAIN_CLUMP_D", 1),
+    ("GRAIN_AREA", 1),
+    ("GRAIN_SUPPORT", 1),
+    ("GRAIN_SUB_REACH", 1),
+    ("GRAIN_CELL", 1),
+    ("GRAIN_KAPPA", 1),
+    ("GRAIN_K_HH", 1),
+    ("GRAIN_K_AH", 1),
+    ("GRAIN_AREA_REF", 1),
+    ("GRAIN_KAPPA_REF", 1),
+    ("GRAIN_K_HH_REF", 1),
+    ("GRAIN_K_AH_REF", 1),
+    ("GRAIN_HALO", 1),
+    ("GRAIN_HALO_IN", 1),
+    ("GRAIN_HALO_OUT", 1),
+    ("GRAIN_HALO_MEAN", 1),
+    ("GRAIN_TILT", 1),
+    ("GRAIN_WF", 1),
+    ("GRAIN_WN", 1),
+    ("GRAIN_NOISE_E", 1),
+    ("GRAIN_NOISE_N", 1),
+    ("GRAIN_COLOR", 1),
+    ("GRAIN_GAMMA", 1),
+    ("GRAIN_PPL", 1),
     ("GRAIN_SC", 1),
     ("GRAIN_ROUGH", 1),
     ("GRAIN_SEED", 1),
@@ -96,6 +139,13 @@ const FIELDS: &[(&str, usize)] = &[
     ("PROOF_OUT", 9),
     ("PROOF_DEST_WARN", 1),
     ("PROOF_DISP_WARN", 1),
+    // a LUT profile (`finish`'s `lut`): its table in `aux` at LUT_OFF (size³ rgb, red fastest), amount, domain
+    ("LUT", 1),
+    ("LUT_OFF", 1),
+    ("LUT_N", 1),
+    ("LUT_AMT", 1),
+    ("LUT_MIN", 3),
+    ("LUT_MAX", 3),
     // first row of a band dispatch (the kernel runs over rows Y0.., see `render`)
     ("Y0", 1),
 ];
@@ -197,6 +247,35 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     for l in curves.iter().take(masks.len()).flatten().flatten() {
         aux.extend_from_slice(&l.v);
     }
+    // the LUT profile's table, when it is well formed (size ≥ 2, size³ entries)
+    let lut_off = aux.len();
+    let lut = fp.lut.as_ref().filter(|(l, _)| l.size >= 2 && l.size.checked_pow(3) == Some(l.data.len()));
+    if let Some((l, _)) = lut {
+        aux.extend(l.data.iter().flatten());
+    }
+    // local Color Mixer and Point Color: one record per mask (each list used only when it lines up
+    // with the masks, as on the CPU)
+    let points_ok = fp.local_points.len() == masks.len();
+    let mixers_ok = fp.local_mixers.len() == masks.len();
+    let lpoints = !masks.is_empty() && ((points_ok && !fp.local_points.is_empty()) || (mixers_ok && !fp.local_mixers.is_empty()));
+    let lpoint_off = aux.len();
+    if lpoints {
+        for m in 0..masks.len() {
+            let mut rec = [0.0f32; LOCAL_POINT_WORDS];
+            let points: &[lcc_pipeline::colorops::PointK] = if points_ok { fp.local_points.get(m).map_or(&[], Vec::as_slice) } else { &[] };
+            rec[0] = points.len().min(8) as f32;
+            if let Some(mk) = fp.local_mixers.get(m).copied().flatten().filter(|_| mixers_ok) {
+                rec[1] = 1.0;
+                for (slot, v) in rec.iter_mut().skip(2).zip(mk.words()) {
+                    *slot = v;
+                }
+            }
+            for (slot, v) in rec.iter_mut().skip(LOCAL_POINT_SAMPLES).zip(points.iter().take(8).flat_map(|k| k.words())) {
+                *slot = v;
+            }
+            aux.extend_from_slice(&rec);
+        }
+    }
 
     let mut p = Block::new();
     p.u("W", fp.w as u32);
@@ -208,6 +287,8 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     p.b("CURVES", fp.curves.is_some());
     p.u("LCURVE_OFF", lcurve_off as u32);
     p.b("LCURVES", next > 0.0);
+    p.b("LPOINTS", lpoints);
+    p.u("LPOINT_OFF", lpoint_off as u32);
     p.f("REFINE_SAT", fp.refine_sat);
     p.f("GAIN", fp.gain);
     p.f("EV", fp.ev);
@@ -292,12 +373,59 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         p.b("PROOF_DEST_WARN", pp.dest_warning);
         p.b("PROOF_DISP_WARN", pp.display_warning);
     }
+    if let Some((l, amount)) = lut {
+        p.b("LUT", true);
+        p.u("LUT_OFF", lut_off as u32);
+        p.u("LUT_N", l.size as u32);
+        p.f("LUT_AMT", *amount);
+        p.fs("LUT_MIN", &l.domain_min);
+        p.fs("LUT_MAX", &l.domain_max);
+    }
+    let grain_on = fp.grain.is_some() || fp.particles.is_some();
     if let Some((amt, cell, rough, seed)) = fp.grain {
-        p.b("GRAIN", true);
         p.f("GRAIN_AMT", amt);
         p.f("GRAIN_SC", fp.px_per_long as f32 / cell);
         p.f("GRAIN_ROUGH", rough);
         p.u("GRAIN_SEED", seed);
+    }
+    if let Some(g) = &fp.particles {
+        p.u("GRAIN_MODEL", 1);
+        p.f("GRAIN_AMP", g.amp);
+        p.f("GRAIN_INV_R", g.inv_r);
+        p.f("GRAIN_S", g.s);
+        p.f("GRAIN_INV_S", g.inv_s);
+        p.f("GRAIN_SPREAD", g.spread);
+        p.f("GRAIN_ASPECT", g.aspect);
+        p.f("GRAIN_LUMP", g.lump);
+        p.f("GRAIN_CLUMP_E", g.clump_extra);
+        p.f("GRAIN_CLUMP_D", g.clump_d);
+        p.f("GRAIN_AREA", g.area);
+        p.f("GRAIN_SUPPORT", g.support);
+        p.f("GRAIN_SUB_REACH", g.sub_reach);
+        p.f("GRAIN_CELL", g.cell);
+        p.f("GRAIN_KAPPA", g.kappa);
+        p.f("GRAIN_K_HH", g.k_hh);
+        p.f("GRAIN_K_AH", g.k_ah);
+        p.f("GRAIN_AREA_REF", g.area_ref);
+        p.f("GRAIN_KAPPA_REF", g.kappa_ref);
+        p.f("GRAIN_K_HH_REF", g.k_hh_ref);
+        p.f("GRAIN_K_AH_REF", g.k_ah_ref);
+        p.f("GRAIN_HALO", g.halo);
+        p.f("GRAIN_HALO_IN", g.halo_in);
+        p.f("GRAIN_HALO_OUT", g.halo_out);
+        p.f("GRAIN_HALO_MEAN", g.halo_mean);
+        p.f("GRAIN_TILT", g.tilt);
+        p.f("GRAIN_WF", g.w_field);
+        p.f("GRAIN_WN", g.w_noise);
+        p.f("GRAIN_NOISE_E", g.noise_e);
+        p.f("GRAIN_NOISE_N", g.noise_n);
+        p.f("GRAIN_COLOR", g.color);
+        p.f("GRAIN_GAMMA", g.gamma);
+        p.f("GRAIN_PPL", g.px_per_long);
+        p.u("GRAIN_SEED", g.seed);
+    }
+    if grain_on {
+        p.b("GRAIN", true);
         let long = fp.ow.max(fp.oh);
         let [a, b, c, d, e, f] = fp.out_to_norm.0;
         let (kx, ky) = (fp.ow / long, fp.oh / long);

@@ -258,6 +258,21 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if !runtime {
         hint(ui, t, "This build cannot run other denoise models.");
     }
+    hint(ui, t, "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.");
+    hint(ui, t, "Denoise models are downloaded and chosen under Settings ▸ AI Models.");
+    if ui.link(tr("Open AI Models")).clicked() {
+        let _ = app.run("app.settings", json!({"tab": "ai"}));
+    }
+    work_section(app, ui, t, &list);
+}
+
+/// Models a person brings themselves: Install from file…, and the ones installed that way (Settings ▸ AI Models).
+pub fn other_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    let list = models(app, ui.ctx());
+    if list["dir"].is_null() {
+        return;
+    }
+    let runtime = list["runtime"].as_bool() == Some(true);
     let all: Vec<Value> = list["models"].as_array().cloned().unwrap_or_default();
     let downloads = app
         .session
@@ -295,15 +310,37 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             _ => {}
         }
     }
-    for m in &all {
+    // the models this app can download are listed with the other AI models; only the user's own are here
+    for m in all.iter().filter(|m| m["known"] != true) {
         let dl = downloads.iter().find(|d| d["id"] == m["id"]);
         model_row(app, ui, t, m, dl, runtime);
     }
     if all.iter().all(|m| m["selected"] != true) && all.iter().any(|m| m["installed"] == true) {
         hint(ui, t, "The built-in denoiser is in use: press Use on a model to use that instead.");
     }
-    hint(ui, t, "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.");
-    work_section(app, ui, t, &list);
+}
+
+/// The AI Models dialog's AI Denoise group: each denoise model the app knows how to download, with its size and
+/// licence, under the same Download (terms first, then the activity stack), Use and Remove as Settings ▸ AI Denoise.
+pub fn ai_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    let list = models(app, ui.ctx());
+    let known: Vec<Value> = list["models"].as_array().map(|a| a.iter().filter(|m| m["known"] == true).cloned().collect()).unwrap_or_default();
+    if list["dir"].is_null() || known.is_empty() {
+        return;
+    }
+    let runtime = list["runtime"].as_bool() == Some(true);
+    let downloads = app
+        .session
+        .execute("denoise.models.downloads", &json!({}))
+        .map(|v| v["downloads"].as_array().cloned().unwrap_or_default())
+        .unwrap_or_default();
+    crate::dialog_frame::group_begin(ui, Some("AI Denoise"));
+    ui.label(tr("Cleans noise out of raw photos (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used."));
+    for m in &known {
+        let dl = downloads.iter().find(|d| d["id"] == m["id"]);
+        model_row(app, ui, t, m, dl, runtime);
+    }
+    crate::dialog_frame::group_end(ui);
 }
 
 /// What the cache holds, its limit, and what is being made.
@@ -582,7 +619,7 @@ pub fn install(app: &mut LccApp, info: &Value, accepted: bool) -> Result<Value, 
     };
     if r.is_ok() {
         app.caches.denoise.dl_watch.push(id);
-        app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "denoise".into() });
+        app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "ai".into() });
     }
     r
 }

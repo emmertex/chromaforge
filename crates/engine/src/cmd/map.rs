@@ -10,14 +10,18 @@ use lcc_geo::{LatLon, SavedLocation};
 use super::{CommandSpec, always, bad, bool_or, cmd, f64_or, has_selection, str_param};
 use crate::Result;
 
-/// Which photos the map shows.
+/// The Location Filter bar: which photos the Map module's filmstrip shows (Lightroom Classic's
+/// Visible on Map / Tagged / Untagged / None, plus a saved location). The pins are the filtered
+/// photos that have a position.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LocationFilter {
-    /// Every photo with a position.
+    /// Every photo (the bar's None).
     All,
-    /// Only photos with a position (same pins as All; counts differ).
+    /// Photos positioned inside the map view (see [`in_view`]); as pins, the same as Tagged.
+    Visible,
+    /// Only photos with a position.
     Tagged,
-    /// Photos without a position (no pins: the filmstrip shows them).
+    /// Photos without a position (no pins: only the filmstrip shows them).
     Untagged,
     /// Photos inside a saved location.
     Location(String),
@@ -26,7 +30,8 @@ pub enum LocationFilter {
 impl LocationFilter {
     pub fn parse(s: &str) -> Option<LocationFilter> {
         Some(match s {
-            "" | "all" | "visible" => LocationFilter::All,
+            "" | "all" | "none" => LocationFilter::All,
+            "visible" => LocationFilter::Visible,
             "tagged" => LocationFilter::Tagged,
             "untagged" => LocationFilter::Untagged,
             _ => LocationFilter::Location(s.strip_prefix("location:")?.to_string()),
@@ -36,6 +41,7 @@ impl LocationFilter {
     pub fn key(&self) -> String {
         match self {
             LocationFilter::All => "all".into(),
+            LocationFilter::Visible => "visible".into(),
             LocationFilter::Tagged => "tagged".into(),
             LocationFilter::Untagged => "untagged".into(),
             LocationFilter::Location(n) => format!("location:{n}"),
@@ -43,8 +49,29 @@ impl LocationFilter {
     }
 }
 
+/// The map view as a rectangle of positions. `west > east` when the view crosses the antimeridian.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bounds {
+    pub south: f64,
+    pub north: f64,
+    pub west: f64,
+    pub east: f64,
+}
+
+impl Bounds {
+    /// The whole world.
+    pub const WORLD: Bounds = Bounds { south: -90.0, north: 90.0, west: -180.0, east: 180.0 };
+
+    pub fn contains(&self, p: LatLon) -> bool {
+        let lat = p.lat >= self.south && p.lat <= self.north;
+        let lon = if self.west <= self.east { p.lon >= self.west && p.lon <= self.east } else { p.lon >= self.west || p.lon <= self.east };
+        lat && lon
+    }
+}
+
 /// The photos in view (the current source and filter) that pass `filter`, with their positions
-/// (`None` for untagged).
+/// (`None` for untagged). `Visible` keeps every positioned photo here: the pins of a view are the
+/// same whatever its edges, and the filmstrip asks [`in_view`] with them.
 pub fn filtered(s: &mut crate::Session, filter: &LocationFilter) -> Vec<(PhotoId, Option<LatLon>)> {
     let ids = s.visible().to_vec();
     let place = match filter {
@@ -56,12 +83,26 @@ pub fn filtered(s: &mut crate::Session, filter: &LocationFilter) -> Vec<(PhotoId
             let gps = s.catalog.photo(id)?.meta.gps.map(|(a, b)| LatLon::new(a, b)).filter(|p| p.is_valid());
             let keep = match filter {
                 LocationFilter::All => true,
-                LocationFilter::Tagged => gps.is_some(),
+                LocationFilter::Visible | LocationFilter::Tagged => gps.is_some(),
                 LocationFilter::Untagged => gps.is_none(),
                 LocationFilter::Location(_) => place.as_ref().is_some_and(|l| gps.is_some_and(|g| l.contains(g))),
             };
             keep.then_some((id, gps))
         })
+        .collect()
+}
+
+/// The photos the Map module's filmstrip shows: the photos in view that pass `filter`, where
+/// `Visible` keeps the photos positioned inside `view` (`None` before the map has drawn: any
+/// position).
+pub fn in_view(s: &mut crate::Session, filter: &LocationFilter, view: Option<Bounds>) -> Vec<PhotoId> {
+    filtered(s, filter)
+        .into_iter()
+        .filter(|(_, gps)| match (filter, view) {
+            (LocationFilter::Visible, Some(b)) => gps.is_some_and(|g| b.contains(g)),
+            _ => true,
+        })
+        .map(|(id, _)| id)
         .collect()
 }
 
@@ -148,8 +189,8 @@ fn delete_location(s: &mut crate::Session, p: &Value) -> Result<Value> {
 
 fn pins(s: &mut crate::Session, p: &Value) -> Result<Value> {
     const C: &str = "map.pins";
-    let filter =
-        LocationFilter::parse(str_param(p, "filter").unwrap_or("all")).ok_or_else(|| bad(C, "filter is all|tagged|untagged|location:<name>"))?;
+    let filter = LocationFilter::parse(str_param(p, "filter").unwrap_or("all"))
+        .ok_or_else(|| bad(C, "filter is all|visible|tagged|untagged|location:<name>"))?;
     let zoom = f64_or(p, "zoom", 3.0);
     if !zoom.is_finite() {
         return Err(bad(C, "zoom must be a number"));
@@ -372,7 +413,7 @@ fn apply_given(s: &mut crate::Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     let mut v = vec![
-        cmd!(query "map.pins", "Map Pins", [], None, "{zoom?: 0–20 (3), cellPx?: cluster cell in screen px (48), filter?: all|tagged|untagged|location:<name>} → {tagged, untagged, clusters: [{lat, lon, count, ids}], fit: {lat, lon, zoom}} — the photos in view (current source and filter) as map pins, grid-clustered for the zoom", always, pins),
+        cmd!(query "map.pins", "Map Pins", [], None, "{zoom?: 0–20 (3), cellPx?: cluster cell in screen px (48), filter?: all|visible|tagged|untagged|location:<name> (visible: the same pins as tagged)} → {tagged, untagged, clusters: [{lat, lon, count, ids}], fit: {lat, lon, zoom}} — the photos in view (current source and filter) as map pins, grid-clustered for the zoom", always, pins),
         cmd!(
             "map.geotag",
             "Geotag",
@@ -451,6 +492,28 @@ mod tests {
         assert!(s.execute("map.pins", &json!({"filter": "bogus"})).is_err());
         s.execute("map.geotag", &json!({"ids": [ids[0].0], "clear": true})).unwrap();
         assert!(s.catalog.photo(ids[0]).unwrap().meta.gps.is_none());
+    }
+
+    /// Fork #783: the filmstrip's list follows the Location Filter; Visible on Map keeps the photos
+    /// inside the view, across the antimeridian too.
+    #[test]
+    fn in_view_follows_the_location_filter() {
+        let (mut s, ids) = session_with(3);
+        s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 48.8566, "lon": 2.3522})).unwrap();
+        s.execute("map.geotag", &json!({"ids": [ids[1].0], "lat": -17.7, "lon": 178.0})).unwrap();
+        let n = ids.len();
+        assert_eq!(in_view(&mut s, &LocationFilter::All, None).len(), n);
+        assert_eq!(in_view(&mut s, &LocationFilter::Tagged, None), vec![ids[0], ids[1]]);
+        assert_eq!(in_view(&mut s, &LocationFilter::Untagged, None).len(), n - 2);
+        assert_eq!(in_view(&mut s, &LocationFilter::Visible, None), vec![ids[0], ids[1]]);
+        let paris = Bounds { south: 48.0, north: 49.0, west: 2.0, east: 3.0 };
+        assert_eq!(in_view(&mut s, &LocationFilter::Visible, Some(paris)), vec![ids[0]]);
+        let pacific = Bounds { south: -30.0, north: 0.0, west: 170.0, east: -170.0 };
+        assert_eq!(in_view(&mut s, &LocationFilter::Visible, Some(pacific)), vec![ids[1]]);
+        assert_eq!(in_view(&mut s, &LocationFilter::Visible, Some(Bounds::WORLD)), vec![ids[0], ids[1]]);
+        assert_eq!(LocationFilter::parse("visible").map(|f| f.key()), Some("visible".into()));
+        assert_eq!(LocationFilter::parse("none"), Some(LocationFilter::All));
+        assert_eq!(s.execute("map.pins", &json!({"filter": "visible"})).unwrap()["tagged"], 2);
     }
 
     #[test]

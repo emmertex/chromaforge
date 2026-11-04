@@ -549,6 +549,7 @@ const BOUNDARY_WARP: lcc_develop::ControlSpec = lcc_develop::ControlSpec {
     step: 1.0,
     decimals: 0,
     track: lcc_develop::Track::Plain,
+    shade: lcc_develop::Shade::Plain,
 };
 const BRACKET: lcc_develop::ControlSpec = lcc_develop::ControlSpec {
     id: "merge.bracket",
@@ -560,6 +561,7 @@ const BRACKET: lcc_develop::ControlSpec = lcc_develop::ControlSpec {
     step: 1.0,
     decimals: 0,
     track: lcc_develop::Track::Plain,
+    shade: lcc_develop::Shade::Plain,
 };
 
 fn num(ui: &mut egui::Ui, spec: &lcc_develop::ControlSpec, v: &mut f64) -> bool {

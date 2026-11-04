@@ -188,7 +188,8 @@ fn a_deleted_browse_record_still_counts_as_the_files_own() {
     let mut s = Session::new().with_fs();
     let r = s.execute("library.import", &json!({"paths": [f], "local": true})).unwrap();
     let id = r["imported"][0].as_u64().unwrap();
-    s.execute("photo.delete", &json!({"ids": [id]})).unwrap();
+    // (photo.delete leaves browsed photos alone now: a record trashed by an older build)
+    s.catalog.apply(lcc_catalog::Op::SetDeleted { id: lcc_catalog::PhotoId(id), deleted: true }).unwrap();
     let scan = s.execute("library.importPreview", &json!({"paths": [f]})).unwrap();
     assert_eq!(scan["candidates"][0]["duplicate"], "path", "{scan}");
     assert_eq!(scan["candidates"][0].get("local"), None, "{scan}");
@@ -684,6 +685,41 @@ fn browsing_a_folder_lists_its_photos_without_adding_them() {
     assert_eq!(s.visible_cloned().len(), 3);
     assert_eq!(s.catalog.photos().count(), 3);
     assert!(s.execute("library.browse", &serde_json::json!({"path": dir.join("a.png").to_string_lossy()})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// PERF-CULL-1: the Local view reads only what the library lacks, in the sort's file-time order
+/// for the date sorts, so the first screen is read first; other sorts follow their key.
+#[test]
+fn browsing_queues_unknown_files_in_the_order_the_view_shows_them() {
+    use lcc_catalog::{Sort, SortKey};
+    let dir = temp_dir("browse-order");
+    let set_time = |p: &Path, secs: u64| {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        std::fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
+    };
+    for (name, seed, secs) in [("a.png", 1u8, 300u64), ("b.png", 2, 100), ("c.png", 3, 200)] {
+        write_png(&dir.join(name), seed);
+        set_time(&dir.join(name), 1_700_000_000 + secs);
+    }
+    let mut s = Session::new().with_fs();
+    let known = dir.join("b.png").to_string_lossy().to_string();
+    s.execute("library.import", &json!({"paths": [known.clone()]})).unwrap();
+    let files: Vec<String> = ["a.png", "b.png", "c.png", "gone.png"].iter().map(|n| dir.join(n).to_string_lossy().to_string()).collect();
+    let (input, _) = crate::import::ScanInput::new(&mut s, &[]);
+    let names = |v: Vec<String>| v.iter().map(|f| Path::new(f).file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>();
+    // newest first, the file already in the library left out, an unreadable one last
+    // the listing keeps the known file, so a browse doesn't forget its record
+    let all = crate::import::browse_candidates(&input, files.clone(), &Sort::default());
+    assert!(all.iter().any(|c| c.path == known && c.duplicate.is_some()));
+    let q = crate::import::browse_queue(&input, files.clone(), &Sort { ascending: false, ..Sort::default() });
+    assert_eq!(names(q), ["a.png", "c.png", "gone.png"]);
+    let q = crate::import::browse_queue(&input, files.clone(), &Sort { ascending: true, ..Sort::default() });
+    assert_eq!(names(q), ["c.png", "a.png", "gone.png"]);
+    let q = crate::import::browse_queue(&input, files.clone(), &Sort { key: SortKey::FileName, ascending: false, ..Sort::default() });
+    assert_eq!(names(q), ["gone.png", "c.png", "a.png"]);
+    let q = crate::import::browse_queue(&input, files, &Sort { key: SortKey::Rating, ..Sort::default() });
+    assert_eq!(names(q), ["a.png", "c.png", "gone.png"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1439,7 +1475,7 @@ fn smart_previews_keep_the_decoder_facts_offline_edits_need() {
     // an AI mask uses the mattes that came with the file
     let mut sky = DevelopSettings::default();
     sky.masks.push(Mask {
-        components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Sky }],
+        components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Sky }],
         adjust: LocalAdjustments { exposure: 2.0, ..Default::default() },
         ..Default::default()
     });
@@ -3917,4 +3953,90 @@ fn the_recipe_commands_are_listed_with_their_parameters() {
     assert!(import.params.contains("no white balance, geometry or crop") && import.params.contains("is not changed"), "{}", import.params);
     let save = commands.iter().find(|c| c.id == "preset.saveRecipe").expect("preset.saveRecipe is a command");
     assert!(save.enabled && save.params.contains("recipe: [{id:") && save.params.contains("name"), "{}", save.params);
+}
+
+/// Constrain Crop is on for new photos (item 11 of the evening retest), without counting as an
+/// edit or hiding the camera preview; Settings ▸ Import can turn that off; a Lightroom sidecar
+/// keeps the value it always read (off), and photos already in the library keep theirs.
+#[test]
+fn new_photos_start_with_constrain_crop_on() {
+    let src = temp_dir("constrain");
+    write_png(&src.join("new.png"), 1);
+    write_png(&src.join("lr.png"), 2);
+    std::fs::write(
+        src.join("lr.xmp"),
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="0.5" crs:HasCrop="True" crs:CropLeft="0.1" crs:CropTop="0.1" crs:CropRight="0.9" crs:CropBottom="0.9" crs:CropAngle="3"/></rdf:RDF></x:xmpmeta>"#,
+    )
+    .unwrap();
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [src.to_string_lossy()], "mode": "add"})).unwrap();
+    assert_eq!(ids(&r, "imported"), 2, "{r}");
+    let by_name = |s: &Session, n: &str| s.catalog.photos().find(|p| p.file_name == n).cloned().unwrap();
+    let new = by_name(&s, "new.png");
+    assert!(new.develop.geometry.constrain_crop, "a new photo starts constrained");
+    assert!(!new.is_edited(), "which is not an edit");
+    assert!(crate::import::has_import_look(&new), "the camera preview still stands in for it");
+    let lr = by_name(&s, "lr.png");
+    assert!(!lr.develop.geometry.constrain_crop, "a Lightroom sidecar without the flag: off, as it always read");
+    assert!((lr.develop.crop.geometry.angle - 3.0).abs() < 1e-9, "its crop came along");
+    // the preference off: new photos start unconstrained
+    let p = s.execute("library.preferences", &json!({"import": {"constrainCrop": false}})).unwrap();
+    assert_eq!(p["import"]["cropUnconstrained"], true, "{p}");
+    write_png(&src.join("later.png"), 3);
+    s.execute("library.import", &json!({"paths": [src.join("later.png").to_string_lossy()], "mode": "add"})).unwrap();
+    assert!(!by_name(&s, "later.png").develop.geometry.constrain_crop);
+    // …and photos already in the library keep theirs either way
+    assert!(by_name(&s, "new.png").develop.geometry.constrain_crop);
+    s.execute("library.preferences", &json!({"import": {"constrainCrop": true}})).unwrap();
+    assert!(!by_name(&s, "later.png").develop.geometry.constrain_crop);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// The Before view starts from the photo as it came into the library (with the import's
+/// adjustments), and Set Before is kept with the photo when the library is opened again. A journal
+/// record of a hostile Set Before is refused, never a panic.
+#[test]
+fn before_is_the_import_state_and_set_before_is_kept() {
+    let root = temp_dir("before");
+    let (src, lib) = (root.join("src"), root.join("lib"));
+    write_png(&src.join("a.png"), 1);
+    write_png(&src.join("b.png"), 2);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src.join("a.png").to_string_lossy()]})).unwrap();
+    let a = s.catalog.photos().next().unwrap().id;
+    s.selection = crate::Selection { ids: vec![a], active: Some(a) };
+    s.execute("library.import", &json!({"paths": [src.join("b.png").to_string_lossy()], "recipe": [{"id": "light.exposure", "value": 0.7}]}))
+        .unwrap();
+    let b = s.catalog.photos().find(|p| p.id != a).unwrap().id;
+    s.selection = crate::Selection { ids: vec![b], active: Some(b) };
+    let before = |s: &Session| s.before_settings(s.catalog.photo(s.active().unwrap()).unwrap()).light.exposure;
+    assert_eq!(before(&s), 0.7, "the before is the photo as imported, with the import preset");
+    // an edit, then Set Before: kept with the photo
+    s.execute("develop.set", &json!({"values": {"light.exposure": 1.2}})).unwrap();
+    s.execute("beforeAfter.copyAfterToBefore", &json!({})).unwrap();
+    s.execute("develop.set", &json!({"values": {"light.exposure": -0.4}})).unwrap();
+    assert_eq!(before(&s), 1.2);
+    s.close_library().unwrap();
+    drop(s);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.selection = crate::Selection { ids: vec![b], active: Some(b) };
+    assert_eq!(before(&s), 1.2, "Set Before survives reopening the library");
+    // back to the import state, also undoable
+    s.execute("beforeAfter.resetBefore", &json!({})).unwrap();
+    assert_eq!(before(&s), 0.7);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(before(&s), 1.2);
+    for bad in [
+        json!({"op": "setBefore", "id": "x"}),
+        json!({"op": "setBefore", "id": b.0, "before": 7}),
+        json!({"op": "setBefore", "id": b.0, "before": {"light": {"exposure": "hot"}}}),
+    ] {
+        assert!(serde_json::from_value::<lcc_catalog::Op>(bad.clone()).is_err(), "{bad}");
+    }
+    // a Set Before for a photo that isn't there is an error
+    let missing = lcc_catalog::Op::SetBefore { id: lcc_catalog::PhotoId(u64::MAX), before: None };
+    assert!(s.commit("Set Before", missing).is_err());
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -30,16 +30,16 @@ pub(crate) fn setup(d: &std::path::Path, dim: u64) -> (Session, String) {
     (s, id)
 }
 
-/// Installs the real YuNet from `LC_YUNET_MODEL=<the .onnx file>` (what Settings > Faces downloads; nothing is
-/// committed) and says whether it did: the parts of a test that need to find faces run only then.
-pub(crate) fn install_yunet(s: &mut Session) -> bool {
-    let Some(file) = std::env::var_os("LC_YUNET_MODEL") else {
-        lcc_testkit::skip!(Model, "LC_YUNET_MODEL is not set, so the face-finding part is not checked");
+/// Points the session at the real MediaPipe face model from `LC_AI_MODELS_TEST_DIR=<a models folder holding
+/// it>` (what the AI Models dialog downloads; nothing is committed) and says whether it is there: the parts of a test that
+/// need to find faces run only then.
+pub(crate) fn install_face_model(s: &mut Session) -> bool {
+    let Some(root) = std::env::var_os("LC_AI_MODELS_TEST_DIR") else {
+        lcc_testkit::skip!(Model, "LC_AI_MODELS_TEST_DIR is not set, so the face-finding part is not checked");
         return false;
     };
-    let r = s.execute("faces.models.install", &json!({"path": file.to_string_lossy(), "acknowledged": true}));
-    assert!(r.is_ok(), "{r:?}");
-    true
+    s.segmenter.models_root = Some(root.into());
+    crate::cmd::face_detect::detector(s).is_ok()
 }
 
 pub(crate) fn region(x: f64, name: Option<&str>) -> Region {
@@ -126,7 +126,7 @@ fn naming_a_face_is_undoable_and_makes_it_yours() {
     let (mut s, _) = setup(&d, 64);
     let (a, _) = two_photos(&s);
     let mut detected = region(0.1, None);
-    detected.description = Some("Detected by YuNet 2023mar".into());
+    detected.description = Some("Detected by MediaPipe Face Landmarker".into());
     set_regions(&mut s, a, vec![detected, region(0.5, None)]);
     let undo = s.undo.len();
     let r = s.execute("faces.setName", &json!({"id": a.0, "index": 0, "name": "  Ann  "})).unwrap();
@@ -135,7 +135,7 @@ fn naming_a_face_is_undoable_and_makes_it_yours() {
     assert_eq!((regions[0].name.as_deref(), regions[0].description.as_deref()), (Some("Ann"), None), "a named detection loses its detected marker");
     assert_eq!(s.undo.len(), undo + 1);
     // a new detection run now leaves it alone
-    if install_yunet(&mut s) {
+    if install_face_model(&mut s) {
         s.execute("faces.detect", &json!({"id": a.0})).unwrap();
         assert_eq!(s.catalog.photo(a).unwrap().meta.regions.iter().filter(|r| r.name.as_deref() == Some("Ann")).count(), 1);
     }
@@ -260,7 +260,7 @@ fn the_background_pump_saves_what_it_embeds_for_the_next_launch() {
     // installing switches recognition on: nothing else is asked for
     s.execute("faces.models.install", &json!({"path": model.to_string_lossy(), "acknowledged": true})).unwrap();
     // without the detector (not bundled) photos without faces are left unsearched
-    let searching = install_yunet(&mut s);
+    let searching = install_face_model(&mut s);
     let (a, b) = two_photos(&s);
     set_regions(&mut s, a, vec![region(0.1, Some("Ann")), region(0.5, None)]);
     set_regions(&mut s, b, vec![region(0.3, None)]);
@@ -357,7 +357,7 @@ fn many_faces_are_named_in_one_undo_step() {
     let d = temp("namemany");
     let (mut s, _) = setup(&d, 64);
     let (a, b) = two_photos(&s);
-    let detected = |x: f64| Region { description: Some("Detected by YuNet 2023mar".into()), ..region(x, None) };
+    let detected = |x: f64| Region { description: Some("Detected by MediaPipe Face Landmarker".into()), ..region(x, None) };
     set_regions(&mut s, a, vec![detected(0.1), region(0.5, None)]);
     set_regions(&mut s, b, vec![detected(0.3)]);
     let undo = s.undo.len();

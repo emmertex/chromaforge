@@ -270,11 +270,12 @@ fn op_variants_are_versioned() {
             Op::SetAlbumPhotoOrder { .. } => 9,
             Op::SetVideoMeta { .. } | Op::SetVideoTrim { .. } | Op::SetVideoPoster { .. } => 10,
             Op::SetHistoryCursor { .. } => 11,
+            Op::SetBefore { .. } => 16,
         }
     }
     /// v15: `Analysis.eyes_open` / `aesthetic` / `cull_score`.
     const NEWEST_FIELDS: u32 = 15;
-    let newest = since(&Op::SetHistoryCursor { id: crate::PhotoId(1), cursor: None });
+    let newest = since(&Op::SetBefore { id: crate::PhotoId(1), before: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }
 

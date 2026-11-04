@@ -100,7 +100,7 @@ icons! {
     Picker,
     /// A curved line with an arrow at both ends: drag to rotate, either way (the crop tool's pointer).
     RotateDrag,
-    /// Targeted adjustment: a ring with a centre dot and up/down arrows (drag vertically).
+    /// Targeted adjustment: a picker with an up/down arrow beside it (pick on the photo, drag vertically).
     Target,
     /// Community chat : a speech bubble with three dots. Our own
     /// generic drawing, not any service's logo.
@@ -768,11 +768,12 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<
             pen.line(&[(19.2, 9.6), (17.0, 11.9), (13.9, 11.0)]);
         }
         Target => {
-            pen.circle(8.0, 10.0, 5.0);
-            pen.dot(8.0, 10.0, 1.3);
-            pen.line(&[(15.5, 3.5), (15.5, 16.5)]);
-            pen.line(&[(13.5, 5.5), (15.5, 3.5), (17.5, 5.5)]);
-            pen.line(&[(13.5, 14.5), (15.5, 16.5), (17.5, 14.5)]);
+            // the picker (pick a colour or tone on the photo) with an up/down arrow beside it (drag up or down there)
+            pen.line(&[(2.5, 15.5), (8.5, 9.5)]);
+            pen.closed(&[(8.0, 6.0), (12.0, 10.0), (14.0, 8.0), (10.0, 4.0)]);
+            pen.line(&[(16.5, 10.5), (16.5, 18.0)]);
+            pen.line(&[(14.8, 12.2), (16.5, 10.5), (18.2, 12.2)]);
+            pen.line(&[(14.8, 16.3), (16.5, 18.0), (18.2, 16.3)]);
         }
         Chat => {
             // rounded bubble with a tail at the lower left

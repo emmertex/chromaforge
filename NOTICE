@@ -58,6 +58,13 @@ Foundation project licensed under the Apache License 2.0, and from the CIE 1931 
 functions it ships (CIE, CC-BY-4.0). The matrices were fitted by the LightCraft contributors
 (2026) with tools/spectral_camera_table.py. See assets/ATTRIBUTION.md.
 
+crates/surface (lightcraft-surface), the control-surface support in crates/ui-egui and
+apps/lightcraft, and the icons in assets/surface-icons port TactileBridge, Portions Copyright (c)
+2026 RAD Films - Roman Alurkoff, contributed under the MIT License: its control-surface engine
+(dial acceleration and tuning, coalescing, echo suppression, tool-following layouts, Auto Sync),
+its settings design and defaults, its curated layouts and profiles, and its hand-drawn icon pack
+(assets/surface-icons/LICENSE.txt). Each ported file says so. No Capture One material is included.
+
 crates/inpaint (lightcraft-inpaint) ports the inpainting (PatchMatch completion) and Poisson membrane
 fill code of PhotoCraft (https://github.com/storytold/photocraft, crates/algo/src/inpaint.rs and
 poisson.rs), Copyright the PhotoCraft contributors, licensed under the MIT License or the Apache
@@ -90,6 +97,29 @@ ZhengPeng, licensed under the MIT License; translated to Rust on candle and rest
 BiRefNet_lite weights (MIT) are not part of this software: the app downloads them from the author's
 Hugging Face repository (ZhengPeng7/BiRefNet_lite) only when the user asks for them.
 
+crates/segment/src/hiera.rs and sam2.rs (ported by OneSlips, 2026) port the SAM 2 model code of
+Hugging Face Transformers (src/transformers/models/sam2), Copyright The HuggingFace Team and Meta
+Platforms, Inc., licensed under the Apache License 2.0, modified the same way. The SAM 2.1 weights
+(facebook/sam2.1-hiera-tiny, Apache License 2.0) are not part of this software; the app downloads
+them from Meta's Hugging Face repository only when the user asks for them.
+
+crates/segment/src/dino.rs, depth.rs and grid.rs (ported by OneSlips, 2026) port the DINOv2,
+Depth Anything and DPT image-processor code of Hugging Face Transformers (models/dinov2,
+depth_anything and dpt), Copyright The HuggingFace Team, Meta Platforms, Inc. and the model
+authors, licensed under the Apache License 2.0, modified the same way. The Depth Anything V2 Small
+weights (depth-anything/Depth-Anything-V2-Small-hf, Apache License 2.0) are not part of this
+software; users download them separately.
+
+crates/segment/src/scene.rs (ported by OneSlips, 2026) ports the EoMT model and image-processor
+code of Hugging Face Transformers (models/eomt), Copyright The HuggingFace Team and the EoMT
+authors (Tommie Kerssies et al., "Your ViT is Secretly an Image Segmentation Model", CVPR 2025),
+licensed under the Apache License 2.0, modified the same way. The EoMT-S COCO panoptic weights
+(tue-mps/coco_panoptic_eomt_small_640_2x, MIT License, Copyright the EoMT authors) are not part
+of this software; the app downloads them from the authors' Hugging Face repository only when the
+user asks for them. The model was trained on the COCO dataset (https://cocodataset.org): COCO
+annotations Copyright the COCO Consortium, licensed under the Creative Commons Attribution 4.0
+License (CC BY 4.0).
+
 The lens profile database of the lensfun project (https://github.com/lensfun/lensfun, data/db,
 Copyright the lensfun contributors) is not part of this software and is never distributed with it.
 A user downloads it only when they choose to (Settings ▸ Import ▸ Lens profiles ▸ Download, which
@@ -98,11 +128,18 @@ Attribution-ShareAlike 3.0 licence (https://creativecommons.org/licenses/by-sa/3
 section names it. No lensfun code is used.
 
 AI denoise weights are not part of this software and are never distributed with it.
-The default build offers user-supplied models only. The optional rawnind-model
-feature offers a separately downloaded RawNIND UtNet2 Bayer checkpoint under
-GPL-3.0 (https://www.gnu.org/licenses/gpl-3.0.html), after the user accepts its terms.
-Commercial use is subject to those terms, including applicable source, licence and
-notice obligations on redistribution. Enabling that offer in releases remains a
+The desktop app (own-model feature) offers the upstream project's own Bayer denoise model
+0.1.0 as an optional download after the user accepts its terms: a U-Net trained by
+OneSlips (https://github.com/OneSlips) with the tools in tools/denoise-train on CC0 raw
+samples from raw.pixls.us, its weights licensed MIT OR Apache-2.0, served by
+radfilms.com.au (the trainer's site) and pinned by size and SHA-256.
+The library's default build offers user-supplied models only. The optional rawnind-model
+feature offers a separately downloaded RawNIND UtNet2 Bayer checkpoint
+("RawNIND" by Benoit Brummer), after the user accepts its terms. Its author
+dual-licenses the weights under GPL-3.0 and CC BY 4.0
+(https://github.com/trougnouf/rawnind_jddc); this software uses them under CC BY 4.0
+(https://creativecommons.org/licenses/by/4.0/), which allows any use, commercial use
+included, with credit to the author. Enabling that offer in releases remains a
 maintainer decision. The ONNX reader and CPU/GPU executor are our Rust implementation;
 no darktable, RawSpeed, LibRaw or other GPL decoder/runtime code is included.
 
@@ -152,3 +189,20 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+
+crates/tflite (lcc-tflite, Apache License 2.0) — a TensorFlow Lite interpreter written by OneSlips
+in 2026 from the TensorFlow Lite model schema (schema.fbs: field order, enum values, option
+defaults; Copyright The TensorFlow Authors, Apache License 2.0) and the documented behaviour of
+its builtin operators; no TensorFlow code was copied. Its MediaPipe landmark index lists are data
+from MediaPipe's face_landmarks_connections (Copyright 2023 The MediaPipe Authors, Apache License
+2.0). Ported into Chromaforge from OneSlips' fork.
+
+crates/camprof (lcc-camprof) ports the camera-profiling engine of RADcamProfiles
+(https://github.com/OneSlips/RADcamProfiles, commit dd8003f, crates/engine), Copyright (c) 2026 RAD Films -
+Roman Alurkoff (@OneSlips), licensed under the MIT License and relicensed under the MIT License or the
+Apache License 2.0 by its author. It is clean-room, own work, confirmed by the author 2026-11-03: no DCamProf
+or other GPL code was used, and its data is public or the author's own. The port was modified by the
+Chromaforge contributors (2026); each ported file says so. It carries the CIE 1931 2-degree colour-matching
+functions and the CIE standard illuminants A, D50, D55, D65, D75 and E (CIE 015:2018 / ISO/CIE 11664
+published tables), and the published reference values (CIELAB D50) of the X-Rite ColorChecker 24 as made
+before November 2014. See assets/ATTRIBUTION.md.

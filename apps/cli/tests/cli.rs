@@ -103,6 +103,7 @@ fn cli_inspects_and_imports_large_sparse_lightroom_catalog() {
 
     let library = directory.join("disposable-app-library");
     let import = Command::new(BIN)
+        .env(lcc_brand::env_var("NO_PREFS"), "1")
         .args(["run", "--library", library.to_str().expect("library path"), "library.importLightroom", &format!("path={}", catalog.display())])
         .env(lcc_brand::env_var("NO_PREFS"), "1")
         .env(lcc_brand::env_var("GPU"), "0")
@@ -118,6 +119,7 @@ fn cli_inspects_and_imports_large_sparse_lightroom_catalog() {
     let imported_id = imported[0]["result"]["mapping"]["1"].as_u64().expect("imported photo identity");
 
     let reimport = Command::new(BIN)
+        .env(lcc_brand::env_var("NO_PREFS"), "1")
         .args(["run", "--library", library.to_str().expect("library path"), "library.importLightroom", &format!("path={}", catalog.display())])
         .env(lcc_brand::env_var("NO_PREFS"), "1")
         .env(lcc_brand::env_var("GPU"), "0")
@@ -134,6 +136,7 @@ fn cli_inspects_and_imports_large_sparse_lightroom_catalog() {
     );
 
     let persisted = Command::new(BIN)
+        .env(lcc_brand::env_var("NO_PREFS"), "1")
         .args(["run", "--library", library.to_str().expect("library path"), "library.info"])
         .env(lcc_brand::env_var("NO_PREFS"), "1")
         .env(lcc_brand::env_var("GPU"), "0")
@@ -1065,7 +1068,16 @@ fn run_script_params_must_be_objects() {
 }
 
 fn run_cli(args: &[&str], stdin: Option<&str>) -> (bool, Vec<Value>, String) {
-    let mut child = Command::new(BIN).arg("run").args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // (never the user's shared presets and profiles)
+    let mut child = Command::new(BIN)
+        .env(lcc_brand::env_var("NO_PREFS"), "1")
+        .arg("run")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     if let Some(text) = stdin {
         child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
     }
@@ -1186,8 +1198,14 @@ fn a_library_open_in_another_process_is_refused() {
     let lib = tmp("locked-lib");
     let _ = std::fs::remove_dir_all(&lib);
     let lib_s = lib.to_str().unwrap();
-    let mut holder =
-        Command::new(BIN).args(["mcp", "--library", lib_s]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut holder = Command::new(BIN)
+        .env(lcc_brand::env_var("NO_PREFS"), "1")
+        .args(["mcp", "--library", lib_s])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut err = BufReader::new(holder.stderr.take().unwrap());
     let mut line = String::new();
     while !line.contains("opened library") {
@@ -1516,4 +1534,30 @@ fn sync_folder_and_open_url_hand_offs() {
     assert_eq!(lines[0]["result"]["imported"], 1, "{lines:?}");
     let (ok, _, err) = run(&["open-url", "--library", lib, &format!("{}://sync?path=%zz", lcc_brand::URL_SCHEME)]);
     assert!(!ok && !err.contains("panicked"), "{err}");
+}
+
+/// `run --shared-settings`: store commands without a library, in the settings folder's Library
+/// Store; an older library's export preset only in a backup is gathered, the backup only read.
+#[test]
+fn shared_settings_gathers_presets_without_a_library() {
+    let root = tmp("shared-settings");
+    let _ = std::fs::remove_dir_all(&root);
+    let (config, old) = (root.join("config"), root.join("old-lib"));
+    let backup = old.join("Backups").join("2026-01-01");
+    std::fs::create_dir_all(&backup).unwrap();
+    let prefs = br#"{"exportPresets": [{"name": "Archive", "params": {}}]}"#;
+    std::fs::write(backup.join("prefs.json"), prefs).unwrap();
+    let o = Command::new(BIN)
+        .env(lcc_brand::env_var("CONFIG_DIR"), &config)
+        .env_remove(lcc_brand::env_var("NO_PREFS"))
+        .args(["run", "--shared-settings", "store.gatherPresets", &serde_json::json!({"paths": [old.to_string_lossy()]}).to_string()])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out} {}", String::from_utf8_lossy(&o.stderr));
+    assert!(out.contains("\"count\":1"), "{out}");
+    let shared = std::fs::read_to_string(config.join("Library Store").join("shared.json")).unwrap();
+    assert!(shared.contains("Archive"));
+    assert_eq!(std::fs::read(backup.join("prefs.json")).unwrap(), prefs);
+    let _ = std::fs::remove_dir_all(&root);
 }

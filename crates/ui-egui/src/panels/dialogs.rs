@@ -1,6 +1,6 @@
 //! Modal dialogs (new album, rename, create preset, choose settings to copy, export, about, shortcuts).
 
-use lcc_develop::{ControlSpec, Section, SettingsGroup, Track};
+use lcc_develop::{ControlSpec, Section, SettingsGroup, SettingsPick, Track};
 use serde_json::json;
 
 use crate::LccApp;
@@ -259,6 +259,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::SmartRules { .. } => "Edit Smart Collection",
         Dialog::AutoStack { .. } => "Auto-Stack by Capture Time",
         Dialog::CreatePreset { .. } => "Create Preset",
+        Dialog::UpdatePreset { .. } => "Update Preset with Current Settings",
         Dialog::CreatePresetFolder { .. } => "Create Preset Folder",
         Dialog::CopySettings { .. } => "Choose Edit Settings to Copy",
         Dialog::PasteSettings { .. } => "Paste Selected Settings",
@@ -279,14 +280,19 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::LightroomDestination { .. } => "Import Lightroom Catalog",
         Dialog::SaveEffect { .. } => "New Effect Preset",
         Dialog::ManageEffects { .. } => "Manage Effect Presets",
+        Dialog::PresetsManager { .. } => "Presets Manager",
         Dialog::DeleteEffects { names } if names.len() == 1 => "Delete Effect Preset",
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
+        Dialog::DeleteRejected { .. } => "Delete Rejected Photos",
         Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Library",
         Dialog::RemoveFolder { .. } => "Remove Folder from Library",
         Dialog::SynchronizeFolder { .. } => "Synchronize Folder",
         // (nothing to download from in this build: the dialog explains the manual install)
+        Dialog::ChartProfile { .. } => "Create Camera Profile from Color Chart",
         Dialog::SamModel { .. } if sam_by_hand(&app.session.segmenter) => "Install the SAM 3 Model",
         Dialog::SamModel { .. } => "Download the SAM 3 Model?",
+        Dialog::AiModels { .. } => "AI Models",
+        Dialog::GenfillConsent { .. } => "Generative Fill",
         Dialog::About => "About {app}",
         Dialog::Update => "Check for Updates",
         Dialog::Shortcuts => "Keyboard Shortcuts",
@@ -354,6 +360,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         .default_width(if sheet { sheet_w(screen, insets) } else { match dlg {
             Dialog::Import { .. } => crate::import::DIALOG_SIZE[0],
             Dialog::SmartRules { .. } => 680.0,
+            Dialog::ChartProfile { .. } => 900.0,
             Dialog::AllMetadata { .. } => 620.0,
             Dialog::Update => 500.0,
             Dialog::Print => 1100.0,
@@ -361,6 +368,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::LightroomCatalog { .. } => 440.0,
             Dialog::LightroomDestination { .. } => 480.0,
             Dialog::ManageEffects { .. } => 560.0,
+            Dialog::PresetsManager { .. } => 640.0,
             // (the preset column beside a form: its label column, then the controls)
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
             Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } => 480.0,
@@ -421,7 +429,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         }).color(t.text_dim),
                     );
                 }
-                Dialog::Cull { reject_below, pick_best, burst_gap, similarity } => {
+                Dialog::Cull { reject_below, pick_best, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
                     let n = app.session.selection.ids.len();
                     let scope = if n > 1 { crate::i18n::tr_format!("the {n} selected photos", n = n) } else { crate::i18n::tr_format!("the {} photos in view", app.session.visible_cloned().len()) };
                     ui.label(egui::RichText::new(crate::i18n::tr_format!("Scores {scope} for focus and exposure and finds similar shots taken within seconds of each other (bursts).", scope = scope)).color(t.text_label));
@@ -431,6 +439,37 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(if *reject_below > 0.0 { "Blurry photos below the score are flagged as rejects." } else { "0: nothing is rejected." })).color(t.text_dim));
                     let r = crate::dialog_frame::checkbox(ui, pick_best, crate::i18n::tr("Pick the sharpest photo of each burst"));
                     crate::widgets::register(ui.ctx(), "check:cullPick", r.rect);
+                    // the eyes, judged as the eye strip judges them
+                    let r = crate::dialog_frame::checkbox(ui, closed_eyes, crate::i18n::tr("Reject photos with closed eyes"));
+                    crate::widgets::register(ui.ctx(), "check:cullClosedEyes", r.rect);
+                    let r = crate::dialog_frame::checkbox(ui, blurry_eyes, crate::i18n::tr("Reject photos with blurry eyes"));
+                    crate::widgets::register(ui.ctx(), "check:cullBlurryEyes", r.rect);
+                    if *blurry_eyes {
+                        // how soft is too soft: the strip's red only, or its amber too
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            let r = ui.radio_value(soft_eyes, false, crate::i18n::tr("Only blurry eyes (red in the eye strip)"));
+                            crate::widgets::register(ui.ctx(), "radio:cullBlurryOnly", r.rect);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            let r = ui.radio_value(soft_eyes, true, crate::i18n::tr("Soft eyes too (amber in the eye strip)"));
+                            crate::widgets::register(ui.ctx(), "radio:cullSoftToo", r.rect);
+                        });
+                    }
+                    if *closed_eyes || *blurry_eyes {
+                        let mut main_only = !*everyone;
+                        let r = crate::dialog_frame::checkbox(ui, &mut main_only, crate::i18n::tr("Main subjects only (the largest faces), not the people behind them"));
+                        crate::widgets::register(ui.ctx(), "check:cullMainOnly", r.rect);
+                        *everyone = !main_only;
+                        crate::dialog_frame::note(
+                            ui,
+                            egui::RichText::new(crate::i18n::tr(
+                                "Looks at the subjects' eyes the way the eye strip does, about a second a photo, in the background. Picked photos are left alone.",
+                            ))
+                            .color(t.text_dim),
+                        );
+                    }
                     ui.add_space(6.0);
                     // the sliders drag over the usual range; their value fields take whatever
                     // `photo.analyze` accepts (a gap of 0 s to a day, a similarity of 0 to 1)
@@ -456,7 +495,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::widgets::register(ui.ctx(), "field:cullSimilar", r.rect);
                     clamp_cull_burst(burst_gap, similarity);
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Lower it when a panning or moving burst splits into several groups.")).color(t.text_dim));
-                    crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Scores stay on the photos: filter or make smart albums with Focus, Eyes Open, Aesthetic and Cull Score.")).color(t.text_dim));
+                    crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Scores stay on the photos: filter or make smart collections with Focus, Eyes Open, Aesthetic and Cull Score.")).color(t.text_dim));
                 }
                 Dialog::WhatsNew => {
                     ui.scope(|ui| {
@@ -717,7 +756,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         confirm = true;
                     }
                 }
-                Dialog::Rename { template, start } => {
+                Dialog::Rename { template, start, texts } => {
                     let n = app.session.selected().len();
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr_format!("{n} photo{}", if n == 1 { "" } else { "s" }, n = n)).color(t.text_dim));
                     let template_id = egui::Id::new("rename-template");
@@ -732,22 +771,15 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         crate::import::tag_help(ui, "renameTemplate", template, template_id);
                     }
                     crate::import::unknown_tags_warning(ui, template);
-                    field(ui, "Presets", |ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for (i, (label, tpl)) in
-                            [("Name", "{name}"), ("Date–Name", "{date}_{name}"), ("Title–Seq", "{title}-{seq:3}"), ("Custom–Seq", "Photo-{seq:3}")].iter().enumerate()
-                        {
-                            if crate::widgets::text_button(ui, &format!("renamePreset-{i}"), label, template == tpl).clicked() {
-                                *template = tpl.to_string();
-                            }
-                        }
-                    });
+                    naming_presets_row(app, ui, "rename", template);
+                    text_tag_fields(ui, "rename", template, texts);
                     field(ui, "Start at", |ui| ui.add(egui::DragValue::new(start).range(0..=999_999)));
                     ui.label(
                         egui::RichText::new(crate::i18n::tr("Tags: see Tags beside the template. Files are renamed on disk (with their XMP sidecars); existing names get -1, -2…"))
                             .color(t.text_dim),
                     );
-                    let (preview, total) = rename_preview(app, ui.ctx(), template, *start as usize);
+                    let filled = lcc_engine::rename::fill_texts(template, &|l| texts.get(l).cloned());
+                    let (preview, total) = rename_preview(app, ui.ctx(), &filled, *start as usize);
                     match &preview {
                         Some(rows) => {
                             egui::Grid::new("rename-preview").num_columns(3).spacing([8.0, 2.0]).show(ui, |ui| {
@@ -860,11 +892,46 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     field(ui, "Preset name", |ui| {
                         crate::widgets::named(ui.add(egui::TextEdit::singleline(name).hint_text(crate::i18n::tr("Preset name")).desired_width(f32::INFINITY)), crate::i18n::tr("Preset name"));
                     });
+                    // the user's groups in a list, and New Group… for a name typed in (LR-PRE-CREATE)
+                    let mut known_groups: Vec<String> =
+                        app.session.presets.iter().filter(|p| !p.builtin).map(|p| p.group.clone()).chain(app.session.preset_folders.iter().cloned()).collect();
+                    if !known_groups.iter().any(|g| g == lcc_engine::app_store::DEFAULT_PRESET_GROUP) {
+                        known_groups.push(lcc_engine::app_store::DEFAULT_PRESET_GROUP.to_string());
+                    }
+                    known_groups.sort_by_key(|g| g.to_lowercase());
+                    known_groups.dedup();
+                    // (an empty or new name is typed; one of the list's is picked from it)
+                    let typing = !known_groups.iter().any(|g| g == group.trim());
                     field(ui, "Group", |ui| {
-                        crate::widgets::named(ui.add(egui::TextEdit::singleline(group).hint_text(crate::i18n::tr("Group")).desired_width(f32::INFINITY)), crate::i18n::tr("Group"));
+                        if typing {
+                            let r = ui.add(egui::TextEdit::singleline(group).hint_text(crate::i18n::tr("New group name")).desired_width(f32::INFINITY));
+                            crate::widgets::register(ui.ctx(), "field:presetNewGroup", r.rect);
+                            crate::widgets::named(r, crate::i18n::tr("Group"));
+                        } else {
+                            let combo = egui::ComboBox::from_id_salt("presetGroupCombo").selected_text(group.as_str()).width(ui.available_width()).show_ui(ui, |ui| {
+                                for g in &known_groups {
+                                    ui.selectable_value(group, g.clone(), g.as_str());
+                                }
+                                ui.separator();
+                                if ui.selectable_label(false, crate::i18n::tr("New Group…")).clicked() {
+                                    group.clear();
+                                }
+                            });
+                            crate::widgets::register(ui.ctx(), "combo:presetGroup", combo.response.rect);
+                        }
                     });
+                    let typed = group.trim().to_string();
+                    let mut known = app.session.presets.iter().map(|p| p.group.clone()).chain(app.session.preset_folders.iter().cloned());
+                    if let Some(same) = known.find(|g| g.trim().eq_ignore_ascii_case(&typed) && *g != typed) {
+                        crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr_format!("Goes into the group “{group}” that exists already.", group = same)).small().color(t.text_dim));
+                    }
                     crate::dialog_frame::group_begin(ui, Some(crate::i18n::tr("Settings to include")));
-                    let _ = group_checklist(ui, "presetInclude", groups);
+                    let _ = group_checklist(ui, "presetInclude", groups, None);
+                }
+                Dialog::UpdatePreset { name, groups, .. } => {
+                    crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr_format!("“{name}” takes the active photo's settings. Its name, group, place and marks stay.", name = name)).color(t.text_dim));
+                    crate::dialog_frame::group_begin(ui, Some(crate::i18n::tr("Settings to keep in the preset")));
+                    let _ = group_checklist(ui, "presetUpdate", groups, None);
                 }
                 Dialog::CreatePresetFolder { name, parent } => {
                     if let Some(par) = parent.as_ref() {
@@ -878,7 +945,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     });
                 }
                 Dialog::CopySettings { groups } => {
-                    let _ = group_checklist(ui, "copyGroup", groups);
+                    let _ = group_checklist(ui, "copyGroup", groups, None);
                 }
                 Dialog::SyncSettings { groups, controls } => {
                     let n = app.session.selection.ids.len().saturating_sub(1);
@@ -886,10 +953,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         egui::RichText::new(crate::i18n::tr_format!("The checked settings of the active photo are copied to {n} other selected photo(s)", n = n))
                             .color(t.text_dim),
                     );
-                    if group_checklist(ui, "syncGroup", groups).is_some() {
-                        controls.clear();
-                    }
-                    basic_tone_checklist(ui, groups, controls);
+                    // (single controls are ticks of the tree now)
+                    controls.clear();
+                    let _ = group_checklist(ui, "syncGroup", groups, None);
                 }
                 Dialog::PasteSettings { groups } => {
                     let n = app.session.selected().len();
@@ -897,7 +963,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         egui::RichText::new(crate::i18n::tr_format!("Paste into {n} photo{} — only settings that were copied are pasted", if n == 1 { "" } else { "s" }, n = n))
                             .color(t.text_dim),
                     );
-                    let _ = group_checklist(ui, "pasteGroup", groups);
+                    let copied = app.session.dialogs.copy.clone();
+                    let _ = group_checklist(ui, "pasteGroup", groups, Some(&copied));
                 }
                 Dialog::SlideshowExport { settings } => slideshow_export_body(app, ui, settings),
                 Dialog::ContactSheet { options } => {
@@ -955,7 +1022,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 Dialog::Enhance { opts } => crate::enhance_ui::body(app, ui, opts),
                 Dialog::Import { opts } => crate::import::body(app, ui, opts),
                 Dialog::Settings { tab } => crate::panels::settings::body(app, ui, tab, settings_height),
+                Dialog::ChartProfile { opts } => crate::chart_profile::body(app, ui, opts),
                 Dialog::SamModel { error, .. } => sam_model_body(app, ui, error.as_deref()),
+                Dialog::AiModels { error } => crate::panels::ai_models::body(app, ui, error),
+                Dialog::GenfillConsent { provider, index, prompt, variations } => crate::panels::genfill::consent_body(app, ui, provider, *index, prompt, *variations),
                 Dialog::KeywordTag {
                     editing,
                     name,
@@ -1085,6 +1155,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         confirm = true;
                     }
                 }
+                Dialog::PresetsManager { query, confirm, rename } => crate::panels::presets_manager::body(app, ui, query, confirm, rename),
                 Dialog::ManageEffects { search, selected, rename, confirm_delete, new_group } => {
                     crate::panels::mask_effects::manage_body(app, ui, search, selected, rename, confirm_delete, new_group)
                 }
@@ -1150,6 +1221,22 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(what)).color(t.text_dim));
                 }
                 d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::body(app, ui, d),
+                Dialog::DeleteRejected { count, recycle } => {
+                    ui.label(crate::i18n::tr_format!("Delete the {n} rejected photos of this view?", n = count));
+                    ui.add_space(6.0);
+                    let keep = ui.radio_value(recycle, false, crate::i18n::tr("Remove from the library (to Recently Deleted; the files stay on disk)"));
+                    crate::widgets::register(ui.ctx(), "radio:rejectsKeep", keep.rect);
+                    if app.session.trash.is_some() {
+                        let bin = ui.radio_value(recycle, true, crate::i18n::tr("Remove, and move the files to the system trash"));
+                        crate::widgets::register(ui.ctx(), "radio:rejectsRecycle", bin.rect);
+                    }
+                    let note = if *recycle {
+                        "The files and their own XMP sidecars go to the system trash, where they can be put back; the photos leave the library."
+                    } else {
+                        "Edit ▸ Undo brings them back; Recently Deleted keeps them until it is emptied."
+                    };
+                    crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(note)).color(t.text_dim));
+                }
                 Dialog::RemoveFolder { name, count, path, disk } => {
                     ui.label(crate::i18n::tr_format!(
                         "Remove “{name}” and its {count} photo{} from the library?",
@@ -1364,6 +1451,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 // no download location in this build: nothing to offer but the manual install
                 let sam_nowhere = sam_by_hand(sam);
                 let cancel = match &dlg {
+                    Dialog::ChartProfile { .. } => "Close",
                     Dialog::SamModel { .. } if sam_running || sam_installed || sam_nowhere => "Close",
                     Dialog::SamModel { .. } => "Not Now",
                     Dialog::LightroomResult { .. } => "Close",
@@ -1416,14 +1504,19 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::KeywordTag { editing: None, .. } => "Create",
                     Dialog::KeywordTag { .. } => "Save",
                     Dialog::RemoveFolder { .. } => "Remove",
+                    Dialog::DeleteRejected { recycle: true, .. } => "Move to Trash",
+                    Dialog::DeleteRejected { .. } => "Remove",
                     Dialog::LightroomCatalog { .. } => "Import Lightroom Catalog…",
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
                     Dialog::SynchronizeFolder { .. } | Dialog::SyncSettings { .. } => "Synchronize",
+                    Dialog::ChartProfile { opts } if crate::chart_profile::is_built(app, opts) => "Profile created ✓",
+                    Dialog::ChartProfile { .. } => "Create Profile",
                     Dialog::SamModel { then: Some(_), .. } if sam_installed => "Continue",
                     Dialog::SamModel { .. } if sam_installed || sam_running || sam_nowhere => "",
                     Dialog::SamModel { error, .. } if error.is_some() || sam_failed => "Try Again",
                     Dialog::SamModel { .. } => "Download",
+                    Dialog::GenfillConsent { .. } => "Generate",
                     Dialog::RenamePerson { from, to, .. } if person_rename_plan(&app.session.catalog, from, to).needs_merge => "Merge",
                     _ if informational => "Close",
                     // the confirm button names its action (upstream #2075)
@@ -1462,7 +1555,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             Dialog::DenoiseModel { accepted: false, .. } | Dialog::FaceModel { accepted: false, .. } | Dialog::SynchronizeFolder { counts: None, .. }
                         )
                             // smart-album rules that can't mean anything wait to be fixed
-                            && !matches!(&dlg, Dialog::SmartRules { id, rules, .. } if !rules.check_for(&app.session.catalog, id.map(lcc_catalog::AlbumId)).is_empty()));
+                            && !matches!(&dlg, Dialog::SmartRules { id, rules, .. } if !rules.check_for(&app.session.catalog, id.map(lcc_catalog::AlbumId)).is_empty())
+                            // a camera profile waits for its chart photos and their corners
+                            && !matches!(&dlg, Dialog::ChartProfile { opts } if !crate::chart_profile::can_build(app, opts)));
                 let primary = !informational && can_confirm && confirm_style(&dlg) == ConfirmStyle::Primary;
                 use crate::button::{Button, Kind};
                 // (each kind of dialog its own buttons: the keyboard's place doesn't carry from a
@@ -1768,7 +1863,9 @@ pub fn fmt_gap(v: f64) -> String {
 /// Whether a dialog stays open after its action succeeded (the SAM 3 dialog while the model
 /// downloads).
 pub fn keeps_open(app: &LccApp, dlg: &Dialog) -> bool {
-    matches!(dlg, Dialog::SamModel { .. }) && !app.session.segmenter.installed()
+    (matches!(dlg, Dialog::SamModel { .. }) && !app.session.segmenter.installed())
+        // the profile is built in the background and its report shown here
+        || matches!(dlg, Dialog::ChartProfile { .. })
 }
 
 /// No SAM 3 model, no download running and nowhere to download it from: installing it by hand is
@@ -1778,7 +1875,7 @@ fn sam_by_hand(sam: &lcc_engine::segment::Segmenter) -> bool {
 }
 
 /// The model installation guide.
-const SAM_HELP: &str = lcc_brand::REPOSITORY;
+pub(crate) const SAM_HELP: &str = lcc_brand::REPOSITORY;
 
 /// Open the configured SAM 3 folder itself; revealing a file opens its parent instead.
 pub(crate) fn show_model_folder(app: &mut LccApp) -> Result<serde_json::Value, String> {
@@ -1899,14 +1996,18 @@ fn created_in(app: &mut LccApp, command: &str, params: serde_json::Value) -> Res
 pub(crate) fn album_entries(cat: &lcc_catalog::Catalog, editing: Option<u64>) -> Vec<crate::album_picker::AlbumEntry> {
     let editing = editing.map(lcc_catalog::AlbumId);
     crate::album_picker::entries_from(cat, |a| match editing {
-        Some(e) if a.id == e => Some(crate::i18n::tr("This is the album you're editing").to_string()),
-        Some(e) if cat.album_reaches(a.id, e) => Some(crate::i18n::tr("It tests this album, so testing it back would loop").to_string()),
+        Some(e) if a.id == e => Some(crate::i18n::tr("This is the collection you're editing").to_string()),
+        Some(e) if cat.album_reaches(a.id, e) => Some(crate::i18n::tr("It tests this collection, so testing it back would loop").to_string()),
         _ => None,
     })
 }
 
 pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Value, String> {
     match dlg {
+        Dialog::GenfillConsent { provider, index, prompt, variations } => {
+            app.run("genfill.consent", json!({"provider": provider, "accept": true}))?;
+            crate::panels::genfill::send(app, provider, *index, prompt, *variations)
+        }
         Dialog::LightroomResult { first, .. } => {
             if let Some(first) = first {
                 app.run("library.source", json!({"kind": "all"}))?;
@@ -1921,6 +2022,8 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
             Ok(serde_json::Value::Null)
         }
+
+        Dialog::ChartProfile { opts } => crate::chart_profile::start_build(app, opts),
         Dialog::SamModel { then, .. } => {
             if app.session.segmenter.installed() {
                 // installed: start what the user was doing
@@ -1989,7 +2092,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             };
             app.run("photo.rename", json!({"ids": [*id], "template": template}))
         }
-        Dialog::Rename { template, start } => app.run("photo.rename", json!({"template": template, "start": start})),
+        Dialog::Rename { template, start, texts } => app.run("photo.rename", json!({"template": template, "start": start, "texts": texts})),
         Dialog::RenameKeyword { from, to } => app.run("keyword.rename", json!({"from": from, "to": to})),
         Dialog::RenamePerson { from, to, merge } => app.run("faces.renamePerson", json!({"from": from, "to": to.trim(), "merge": merge})),
         Dialog::KeywordTag {
@@ -2075,17 +2178,22 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
         Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::install(app, info, *accepted),
         Dialog::FaceModel { path, info, accepted } => crate::panels::faces::install(app, path, info, *accepted),
-        Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::WhatsNew => Ok(serde_json::Value::Null),
-        Dialog::Cull { reject_below, pick_best, burst_gap, similarity } => {
+        Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => Ok(serde_json::Value::Null),
+        Dialog::Cull { reject_below, pick_best, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
             app.ui.cull_burst = Some((*burst_gap, *similarity));
-            app.run("photo.analyze", cull_params(*reject_below, *pick_best, *burst_gap, *similarity))
+            let r = app.run("photo.analyze", cull_params(*reject_below, *pick_best, *burst_gap, *similarity));
+            if r.is_ok() && (*closed_eyes || *blurry_eyes) {
+                // the eyes take longer: judged in the background, the rejects come as one step
+                app.run("photo.rejectEyes", json!({"closed": closed_eyes, "blurry": blurry_eyes, "soft": soft_eyes, "mainOnly": !everyone}))?;
+            }
+            r
         }
         Dialog::SmartRules { id, name, rules, parent } => {
             // refused before anything changes (not even the name)
             if let Some(problem) = rules.check_for(&app.session.catalog, id.map(lcc_catalog::AlbumId)).first() {
                 return Err(problem.to_string());
             }
-            let name = if name.trim().is_empty() { "Smart Album".to_string() } else { name.trim().to_string() };
+            let name = if name.trim().is_empty() { "Smart Collection".to_string() } else { name.trim().to_string() };
             match id {
                 // the name and the rules together: one undo step, both or neither
                 Some(id) => app.run("album.setRules", json!({"id": id, "name": name, "replace": true, "rules": {"ruleSet": rules}})),
@@ -2093,16 +2201,26 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
         }
         Dialog::NewSmartAlbum { name, parent } => {
-            created_in(app, "album.createSmart", json!({"name": if name.trim().is_empty() { "Smart Album" } else { name }, "parent": parent}))
+            created_in(app, "album.createSmart", json!({"name": if name.trim().is_empty() { "Smart Collection" } else { name }, "parent": parent}))
         }
-        Dialog::CreatePreset { name, group, groups } => app.run(
-            "preset.create",
-            json!({
-                "name": if name.trim().is_empty() { "My Preset" } else { name },
-                "group": if group.trim().is_empty() { "User Presets" } else { group },
-                "groups": groups,
-            }),
-        ),
+        Dialog::CreatePreset { name, group, groups } => {
+            let mut p = pick_params(groups);
+            p["name"] = json!(if name.trim().is_empty() { "My Preset" } else { name.trim() });
+            p["group"] = json!(if group.trim().is_empty() { "User Presets" } else { group.trim() });
+            app.run("preset.create", p)
+        }
+        Dialog::UpdatePreset { id, name, groups } => {
+            let mut p = pick_params(groups);
+            p["id"] = json!(id);
+            let r = app.run("preset.update", p);
+            if r.is_ok()
+                && let Some(ctx) = app.tasks.repaint.clone()
+            {
+                let text = crate::i18n::tr_format!("Updated “{name}”", name = name);
+                app.toast_with_action(&ctx, text, crate::i18n::tr("Undo"), "preset.undoUpdate", json!({}), 10.0);
+            }
+            r
+        }
         Dialog::CreatePresetFolder { name, parent } => {
             let n = name.trim();
             if n.is_empty() { Ok(serde_json::Value::Null) } else { app.run("preset.createGroup", json!({"name": n, "parent": parent})) }
@@ -2111,21 +2229,11 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::Timelapse { .. } => app.run("app.timelapse", crate::timelapse_ui::dialog_params(dlg).unwrap_or_default()),
         Dialog::SlideshowExport { settings } => app.run("app.slideshowExport", json!(settings)),
         Dialog::Print => app.run("app.print", json!({})),
-        Dialog::CopySettings { groups } => app.run("develop.copy", json!({"groups": groups})),
-        Dialog::PasteSettings { groups } => app.run("develop.paste", json!({"groups": groups})),
-        Dialog::SyncSettings { groups, controls } => app.run("develop.sync", json!({"groups": groups, "controls": controls})),
-        Dialog::Export { opts, full_size, resize, limit_kb, dir, .. } => {
-            let mut p = export_dialog_params(opts, *full_size, resize, *limit_kb);
-            // (Choose folder later: `app.export` asks for it)
-            if opts.destination_mode != lcc_engine::export::DestinationMode::ChooseLater {
-                p["dir"] = json!(dir);
-            }
-            p["background"] = json!(true);
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(d) = crate::panels::plugins::chosen_destination() {
-                p["pluginDestination"] = d;
-            }
-            app.run("app.export", p)
+        Dialog::CopySettings { groups } => app.run("develop.copy", pick_params(groups)),
+        Dialog::PasteSettings { groups } => app.run("develop.paste", pick_params(groups)),
+        Dialog::SyncSettings { groups, .. } => app.run("develop.sync", pick_params(groups)),
+        Dialog::Export { opts, full_size, resize, limit_kb, dir, preset_name } => {
+            start_export(app, opts, *full_size, resize, *limit_kb, dir, preset_name)
         }
         Dialog::Merge { opts } => crate::merge::start_final(app, opts),
         Dialog::Enhance { opts } => crate::enhance_ui::confirm(app, opts),
@@ -2157,6 +2265,21 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::DeleteEffects { names } => app.run("mask.deleteEffect", json!({"names": names})),
         Dialog::RemoveFolder { path, disk, .. } => app.run("library.removeFolder", json!({"path": path, "disk": disk})),
+        Dialog::DeleteRejected { recycle, .. } => {
+            let r = app.run("library.deleteRejected", json!({"files": if *recycle { "recycle" } else { "keep" }, "confirm": true}));
+            if let Ok(v) = &r {
+                let n = v["deleted"].as_u64().unwrap_or(0);
+                let text = if *recycle {
+                    crate::i18n::tr_format!("{n} rejected photos moved to the trash", n = n)
+                } else {
+                    crate::i18n::tr_format!("{n} rejected photos removed (Edit ▸ Undo brings them back)", n = n)
+                };
+                if let Some(ctx) = app.tasks.repaint.clone() {
+                    app.toast(&ctx, text);
+                }
+            }
+            r
+        }
         d @ Dialog::SynchronizeFolder { .. } => crate::sync::confirm(app, d),
         Dialog::NewPhotoDefault { name } => app.run("library.setImportDefault", json!({"name": name.trim()})),
         Dialog::Watermark { wm, preset_name } => {
@@ -2168,9 +2291,13 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
             Ok(serde_json::Value::Null)
         }
-        Dialog::About | Dialog::Shortcuts | Dialog::ViewOptions | Dialog::Settings { .. } | Dialog::Update | Dialog::ManageEffects { .. } => {
-            Ok(serde_json::Value::Null)
-        }
+        Dialog::About
+        | Dialog::Shortcuts
+        | Dialog::ViewOptions
+        | Dialog::Settings { .. }
+        | Dialog::Update
+        | Dialog::ManageEffects { .. }
+        | Dialog::PresetsManager { .. } => Ok(serde_json::Value::Null),
     }
 }
 
@@ -2198,8 +2325,43 @@ pub fn prompt(app: &mut LccApp, title: &str, hint: &str, value: &str, command: &
         Some(Dialog::TextPrompt { title: title.into(), hint: hint.into(), value: value.into(), command: command.into(), params, key: key.into() });
 }
 
+/// Starts the export the Export dialog (or the Export module) is set up for: saves a preset name
+/// typed in the name field, then runs `app.export` in the background.
+pub(crate) fn start_export(
+    app: &mut LccApp,
+    opts: &lcc_engine::export::ExportOptions,
+    full_size: bool,
+    resize: &lcc_engine::export::Resize,
+    limit_kb: u32,
+    dir: &str,
+    preset_name: &str,
+) -> Result<serde_json::Value, String> {
+    // a name typed in the preset name field is saved by Export too (the Add button is easy to miss)
+    if !preset_name.trim().is_empty() {
+        let params = preset_params(opts, full_size, resize, limit_kb, dir);
+        let saved = app.run("export.savePreset", json!({"name": preset_name.trim(), "params": params}));
+        if let Some(ctx) = app.tasks.repaint.clone() {
+            match saved {
+                Ok(_) => app.toast(&ctx, crate::i18n::tr_format!("Saved export preset “{}”", preset_name.trim())),
+                Err(e) => app.toast(&ctx, e),
+            }
+        }
+    }
+    let mut p = export_dialog_params(opts, full_size, resize, limit_kb);
+    // (Choose folder later: `app.export` asks for it)
+    if opts.destination_mode != lcc_engine::export::DestinationMode::ChooseLater {
+        p["dir"] = json!(dir);
+    }
+    p["background"] = json!(true);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(d) = crate::panels::plugins::chosen_destination() {
+        p["pluginDestination"] = d;
+    }
+    app.run("app.export", p)
+}
+
 /// The Export dialog's choices as `app.export` params (without the folder).
-fn export_dialog_params(
+pub(crate) fn export_dialog_params(
     opts: &lcc_engine::export::ExportOptions,
     full_size: bool,
     resize: &lcc_engine::export::Resize,
@@ -2211,13 +2373,13 @@ fn export_dialog_params(
 }
 
 /// The Export dialog's fields, borrowed from [`Dialog::Export`].
-struct ExportForm<'a> {
-    opts: &'a mut lcc_engine::export::ExportOptions,
-    full_size: &'a mut bool,
-    resize: &'a mut lcc_engine::export::Resize,
-    preset_name: &'a mut String,
-    limit_kb: &'a mut u32,
-    dir: &'a mut String,
+pub(crate) struct ExportForm<'a> {
+    pub(crate) opts: &'a mut lcc_engine::export::ExportOptions,
+    pub(crate) full_size: &'a mut bool,
+    pub(crate) resize: &'a mut lcc_engine::export::Resize,
+    pub(crate) preset_name: &'a mut String,
+    pub(crate) limit_kb: &'a mut u32,
+    pub(crate) dir: &'a mut String,
 }
 
 /// The Export dialog's preset list column, in points.
@@ -2311,7 +2473,7 @@ fn preset_params(
 /// click; below, a name with Add (save the dialog's settings as a preset), Rename (the user preset
 /// picked, to the name typed) and Remove, then Import… (Lightroom Classic export presets,
 /// `.lcexport`) and Export… (the user presets as `.lcexport`).
-fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, max_h: f32) {
+pub(crate) fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, max_h: f32) {
     let ExportForm { opts, full_size, resize, preset_name, limit_kb, dir } = f;
     let t = Tokens::get(ui.ctx());
     let picked_id = egui::Id::new("export-preset-picked");
@@ -2649,7 +2811,7 @@ fn label_of<V: PartialEq + Copy>(options: &[(V, &str)], value: V) -> String {
 
 /// The Export dialog's settings, in Lightroom Classic's order (see [`export_body`]). `presets_here`:
 /// no preset column beside them (a narrow window), so the Preset menu and the save row are here.
-fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, presets_here: bool) {
+pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, presets_here: bool) {
     use lcc_engine::export::{
         Conflict as K, DestinationMode as D, ExportFormat as F, MetadataPolicy as M, OutputSpace as C, ResizeMode as R, SharpenAmount as A,
         SharpenFor as S,
@@ -2799,6 +2961,9 @@ fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, prese
             crate::import::tag_help(ui, "exportNaming", &mut opts.naming, naming_id);
         }
         crate::import::unknown_tags_warning(ui, &opts.naming);
+        naming_presets_row(app, ui, "export", &mut opts.naming);
+        let naming = opts.naming.clone();
+        text_tag_fields(ui, "export", &naming, &mut opts.texts);
         if opts.naming.contains("{seq") {
             let mut v = opts.start_number as f64;
             if num(ui, &START_NUMBER, &mut v) {
@@ -3187,12 +3352,12 @@ fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, prese
                 let r = crate::dialog_frame::checkbox(ui, &mut opts.add_to_photos, crate::i18n::tr("Add to Apple Photos"));
                 crate::widgets::register(ui.ctx(), "exportAddToPhotos", r.rect);
                 if opts.add_to_photos {
-                    field(ui, "Album", |ui| {
+                    field(ui, "Collection", |ui| {
                         crate::widgets::named(
                             ui.add(
                                 egui::TextEdit::singleline(&mut opts.photos_album).hint_text(crate::i18n::tr("none")).desired_width(f32::INFINITY),
                             ),
-                            crate::i18n::tr("Album"),
+                            crate::i18n::tr("Collection"),
                         )
                     });
                     crate::dialog_frame::note(
@@ -3237,21 +3402,81 @@ fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, prese
 
 // ------------------------------------------------------------------------------------------ dialog widgets
 
-/// Two columns of settings-group checkboxes (Copy Settings, Create Preset) plus All / None.
-/// Returns `Some(true)` after Check All, `Some(false)` after Check None.
-fn group_checklist(ui: &mut egui::Ui, tag: &str, groups: &mut Vec<String>) -> Option<bool> {
-    let key_of = |g: &SettingsGroup| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+/// The per-setting tree of Copy Settings, Paste Selected, Sync, New Preset and Update Preset
+/// (LR-PRE-CREATE; Lightroom's checklist): a box per settings group that ticks the whole group and
+/// shows a partial state when only some of its settings are ticked, and under it (opened with the
+/// arrow) a box per setting. `ids` holds the ticked leaves ([`SettingsPick::to_ids`]); `offered`
+/// limits the boxes that can be ticked (Paste Selected: what was copied). Widget ids: `<tag>:<group>`,
+/// `<tag>:<setting>`, `<tag>:open:<group>`, `<tag>:all`, `<tag>:none`. → `Some(true/false)` when
+/// Check All / Check None was pressed.
+fn group_checklist(ui: &mut egui::Ui, tag: &str, ids: &mut Vec<String>, offered: Option<&SettingsPick>) -> Option<bool> {
+    // (ids from an older ui.json may name whole groups: one tick per setting from here on)
+    let normal = SettingsPick::from_ids(ids).to_ids();
+    if normal != *ids {
+        *ids = normal;
+    }
+    let can = |id: &str| offered.is_none_or(|o| o.has(id));
+    let leaves =
+        |g: SettingsGroup| -> Vec<&'static str> { if g.items().is_empty() { vec![g.id()] } else { g.items().iter().map(|i| i.id).collect() } };
+    let set = |ids: &mut Vec<String>, id: &str, on: bool| {
+        if on {
+            if !ids.iter().any(|x| x == id) {
+                ids.push(id.to_string());
+            }
+        } else {
+            ids.retain(|x| x != id);
+        }
+    };
+    let t = Tokens::get(ui.ctx());
     ui.columns(2, |cols| {
-        for (i, g) in SettingsGroup::ALL.iter().enumerate() {
-            let key = key_of(g);
-            let mut on = groups.contains(&key);
-            let r = cols[i % 2].checkbox(&mut on, crate::i18n::tr(g.label()));
-            crate::widgets::register(&r.ctx, format!("{tag}:{key}"), r.rect);
-            if r.changed() {
-                if on {
-                    groups.push(key);
+        // top to bottom, then the second column, in the panels' order
+        let half = SettingsGroup::ALL.len().div_ceil(2);
+        for (i, g) in SettingsGroup::ALL.into_iter().enumerate() {
+            let Some(ui) = cols.get_mut(usize::from(i >= half)) else { continue };
+            let mine: Vec<&str> = leaves(g).into_iter().filter(|id| can(id)).collect();
+            let ticked = mine.iter().filter(|id| ids.iter().any(|x| x == *id)).count();
+            let open_id = egui::Id::new(("settings-tree-open", tag, g.id()));
+            let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if g.items().is_empty() {
+                    ui.add_space(18.0);
                 } else {
-                    groups.retain(|x| *x != key);
+                    let (rect, arrow) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+                    let colour = if arrow.hovered() { t.text } else { t.text_dim };
+                    let icon = if open { crate::icons::Icon::ChevronDown } else { crate::icons::Icon::ChevronRight };
+                    crate::icons::paint(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0)), icon, colour);
+                    let arrow = arrow.on_hover_text(crate::i18n::tr(if open { "Hide the single settings" } else { "Show the single settings" }));
+                    crate::access::button(&arrow, if open { "Hide the single settings" } else { "Show the single settings" });
+                    crate::widgets::register(ui.ctx(), format!("{tag}:open:{}", g.id()), arrow.rect);
+                    if arrow.clicked() {
+                        open = !open;
+                        ui.data_mut(|d| d.insert_temp(open_id, open));
+                    }
+                }
+                let mut on = !mine.is_empty() && ticked == mine.len();
+                let partial = ticked > 0 && ticked < mine.len();
+                let r = ui.add_enabled(!mine.is_empty(), egui::Checkbox::new(&mut on, crate::i18n::tr(g.label())).indeterminate(partial));
+                crate::widgets::register(ui.ctx(), format!("{tag}:{}", g.id()), r.rect);
+                if r.changed() {
+                    // a partly ticked group ticks all of it, as in Lightroom
+                    let on = partial || on;
+                    for id in &mine {
+                        set(ids, id, on);
+                    }
+                }
+            });
+            if open {
+                for it in g.items() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(38.0);
+                        let mut on = ids.iter().any(|x| x == it.id);
+                        let r = ui.add_enabled(can(it.id), egui::Checkbox::new(&mut on, crate::i18n::tr(it.label)));
+                        crate::widgets::register(ui.ctx(), format!("{tag}:{}", it.id), r.rect);
+                        if r.changed() {
+                            set(ids, it.id, on);
+                        }
+                    });
                 }
             }
         }
@@ -3260,41 +3485,25 @@ fn group_checklist(ui: &mut egui::Ui, tag: &str, groups: &mut Vec<String>) -> Op
         let all = ui.small_button(crate::i18n::tr("Check All"));
         crate::widgets::register(ui.ctx(), format!("{tag}:all"), all.rect);
         if all.clicked() {
-            *groups = SettingsGroup::ALL.iter().map(key_of).collect();
+            *ids = SettingsGroup::ALL.into_iter().flat_map(leaves).filter(|id| can(id)).map(str::to_string).collect();
             return Some(true);
         }
         let none = ui.small_button(crate::i18n::tr("Check None"));
         crate::widgets::register(ui.ctx(), format!("{tag}:none"), none.rect);
         if none.clicked() {
-            groups.clear();
+            ids.clear();
             return Some(false);
         }
+        ui.label(egui::RichText::new(crate::i18n::tr("Open a group with its arrow to pick single settings.")).small().color(t.text_dim));
         None
     })
     .inner
 }
 
-/// Synchronize Settings' Basic Tone controls, one by one (Lightroom Classic lists them under Basic):
-/// with Light checked they all go and show checked; with it unchecked, only the ticked ones.
-fn basic_tone_checklist(ui: &mut egui::Ui, groups: &[String], controls: &mut Vec<String>) {
-    const TONE: [&str; 6] = ["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks"];
-    let whole = groups.iter().any(|g| g == "light");
-    ui.add_space(4.0);
-    ui.label(crate::i18n::tr("Basic Tone"));
-    ui.horizontal_wrapped(|ui| {
-        for id in TONE {
-            let Some(spec) = lcc_develop::controls::find(id) else { continue };
-            let mut on = whole || controls.iter().any(|c| c == id);
-            let r = ui.add_enabled(!whole, egui::Checkbox::new(&mut on, crate::i18n::tr(spec.label)));
-            crate::widgets::register(ui.ctx(), format!("syncControl:{id}"), r.rect);
-            if r.changed() {
-                controls.retain(|c| c != id);
-                if on {
-                    controls.push(id.to_string());
-                }
-            }
-        }
-    });
+/// The ticked leaves of the tree as the command parameters (`groups`, `settings`).
+fn pick_params(ids: &[String]) -> serde_json::Value {
+    let pick = SettingsPick::from_ids(ids);
+    json!({"groups": pick.groups, "settings": pick.settings})
 }
 
 /// Width of the label column in dialogs.
@@ -3303,7 +3512,7 @@ const LABEL_W: f32 = 78.0;
 const FORM_LABEL_W: f32 = 112.0;
 
 const fn spec(id: &'static str, label: &'static str, min: f64, max: f64, default: f64, step: f64) -> ControlSpec {
-    ControlSpec { id, label, section: Section::Light, min, max, default, step, decimals: 0, track: Track::Plain }
+    ControlSpec { id, label, section: Section::Light, min, max, default, step, decimals: 0, track: Track::Plain, shade: lcc_develop::Shade::Plain }
 }
 const QUALITY: ControlSpec = spec("export.quality", "Quality", 1.0, 100.0, 90.0, 1.0);
 const VIDEO_QUALITY: ControlSpec = spec("export.videoQuality", "Video quality", 1.0, 100.0, 80.0, 1.0);
@@ -3514,7 +3723,7 @@ fn choices<V: PartialEq + Copy>(ui: &mut egui::Ui, label: &str, id: &str, option
 /// Dialogs that Return confirms with nothing focused (those with text fields confirm from the
 /// field: `dialog_field`).
 fn return_confirms(dlg: &Dialog) -> bool {
-    matches!(dlg, Dialog::CopySettings { .. } | Dialog::PasteSettings { .. } | Dialog::SyncSettings { .. })
+    matches!(dlg, Dialog::CopySettings { .. } | Dialog::PasteSettings { .. } | Dialog::SyncSettings { .. } | Dialog::UpdatePreset { .. })
 }
 
 struct PersonRenamePlan {
@@ -3569,6 +3778,101 @@ fn person_rename_plan(cat: &lcc_catalog::Catalog, from: &str, to: &str) -> Perso
 /// selected, so typing replaces it. It takes the focus back only while nothing else has it: taking
 /// it back every frame would keep Tab from ever reaching the dialog's buttons and check boxes.
 /// True when Return confirms the dialog; Esc cancels the dialog (`show`).
+/// Naming presets: the built-in templates, then the ones saved (right-click one to delete it), a
+/// "+ Number" that puts `{seq}` at the end, and Save as Preset… for the template typed.
+fn naming_presets_row(app: &mut LccApp, ui: &mut egui::Ui, tag: &str, template: &mut String) {
+    let presets: Vec<(String, String, bool)> = lcc_engine::cmd::manage::builtin_naming_presets()
+        .into_iter()
+        .map(|p| (p.name, p.template, true))
+        .chain(app.session.naming_presets.iter().map(|p| (p.name.clone(), p.template.clone(), false)))
+        .collect();
+    let mut delete: Option<String> = None;
+    let save_id = egui::Id::new(("naming-save-as", tag));
+    let mut save_as: Option<String> = ui.data(|d| d.get_temp(save_id));
+    field(ui, "Presets", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (i, (name, tpl, builtin)) in presets.iter().enumerate() {
+                let r =
+                    crate::widgets::text_button(ui, &format!("{tag}Preset-{i}"), crate::i18n::tr(name), template == tpl).on_hover_text(tpl.as_str());
+                if r.clicked() {
+                    *template = tpl.clone();
+                }
+                if !builtin {
+                    r.context_menu(|ui| {
+                        if ui.button(crate::i18n::tr("Delete Preset")).clicked() {
+                            delete = Some(name.clone());
+                            ui.close();
+                        }
+                    });
+                }
+            }
+            let numbered = template.contains("{seq") || template.contains("{n}") || template.contains("{n:");
+            if crate::widgets::text_button(ui, &format!("{tag}Number"), crate::i18n::tr("+ Number"), false)
+                .on_hover_text(crate::i18n::tr("Add {seq}: 1, 2, 3… in the order the photos are shown"))
+                .clicked()
+                && !numbered
+            {
+                let t = template.trim_end();
+                let sep = if t.is_empty() || t.ends_with(['_', '-', ' ', '.']) { "" } else { "_" };
+                *template = format!("{t}{sep}{{seq}}");
+            }
+            if crate::widgets::text_button(ui, &format!("{tag}NamingSaveAs"), crate::i18n::tr("Save as Preset…"), save_as.is_some()).clicked() {
+                save_as = if save_as.is_some() { None } else { Some(String::new()) };
+            }
+        });
+    });
+    if let Some(name) = delete
+        && let Err(e) = app.run("naming.deletePreset", json!({"name": name}))
+    {
+        app.toast(ui.ctx(), e);
+    }
+    if let Some(name) = save_as.as_mut() {
+        let mut save = false;
+        field(ui, "Preset name", |ui| {
+            let r = crate::text_field::TextField::singleline(&format!("field:{tag}NamingPresetName"), name)
+                .hint(crate::i18n::tr("Preset name"))
+                .width(220.0)
+                .show(ui);
+            let named = !name.trim().is_empty() && !template.trim().is_empty();
+            if (crate::widgets::text_button(ui, &format!("{tag}NamingSave"), crate::i18n::tr("Save"), false).clicked()
+                || r.ending == Some(crate::text_field::Ending::Return))
+                && named
+            {
+                save = true;
+            }
+        });
+        if save {
+            match app.run("naming.savePreset", json!({"name": name.trim(), "template": template.trim()})) {
+                Ok(_) => save_as = None,
+                Err(e) => app.toast(ui.ctx(), e),
+            }
+        }
+    }
+    ui.data_mut(|d| match save_as {
+        Some(v) => {
+            d.insert_temp(save_id, v);
+        }
+        None => d.remove::<String>(save_id),
+    });
+}
+
+/// A text field for each `{text:Label}` of `template`, asked at each rename or export.
+fn text_tag_fields(ui: &mut egui::Ui, tag: &str, template: &str, texts: &mut std::collections::BTreeMap<String, String>) {
+    let labels = lcc_engine::rename::text_labels(template);
+    texts.retain(|k, _| labels.contains(k));
+    for (i, label) in labels.iter().enumerate() {
+        let mut v = texts.get(label).cloned().unwrap_or_default();
+        field(ui, label, |ui| {
+            crate::text_field::TextField::singleline(&format!("field:{tag}Text-{i}"), &mut v)
+                .hint(crate::i18n::tr("typed for this time only"))
+                .width(220.0)
+                .show(ui);
+        });
+        texts.insert(label.clone(), v);
+    }
+}
+
 fn dialog_field(ui: &mut egui::Ui, widget: &str, text: &mut String, hint: &str) -> bool {
     let r = crate::text_field::TextField::singleline(widget, text).hint(crate::i18n::tr(hint)).width(f32::INFINITY).select_on_focus(true).show(ui);
     // (and takes it back when nothing has it: after a click on the dialog's background or a check box,
@@ -3629,7 +3933,8 @@ pub fn confirm_style(dlg: &Dialog) -> ConfirmStyle {
         | Dialog::ConfirmPurge { .. }
         | Dialog::DeleteKeyword { .. }
         | Dialog::DeleteEffects { .. }
-        | Dialog::RemoveFolder { .. } => ConfirmStyle::Plain,
+        | Dialog::RemoveFolder { .. }
+        | Dialog::DeleteRejected { .. } => ConfirmStyle::Plain,
         _ if only_shows(dlg) => ConfirmStyle::Plain,
         _ => ConfirmStyle::Primary,
     }
@@ -3648,6 +3953,9 @@ fn only_shows(dlg: &Dialog) -> bool {
             | Dialog::AllMetadata { .. }
             | Dialog::WhatsNew
             | Dialog::ManageEffects { .. }
+            // each model has its own Download button in the body
+            | Dialog::AiModels { .. }
+            | Dialog::PresetsManager { .. }
             // the updater has its own buttons in the body; the footer only closes
             | Dialog::Update
     ) || matches!(dlg, Dialog::SynchronizeFolder { counts: Some(c), .. } if c.up_to_date())

@@ -108,6 +108,12 @@ pub fn default_denoise_models_dir() -> Option<PathBuf> {
     lcc_brand::env_os("DENOISE_MODELS").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| config_dir().map(|d| d.join("denoise-models")))
 }
 
+/// Where shared AI / ML models (CLIP embeddings, aesthetic/culling/orientation heads) are kept:
+/// `{ENV_PREFIX}_ML_MODELS` if set, else `<config>/ml-models`.
+pub fn default_ml_models_dir() -> Option<PathBuf> {
+    lcc_brand::env_os("ML_MODELS").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| config_dir().map(|d| d.join("ml-models")))
+}
+
 /// Where the SAM 3 model is kept: `$<PREFIX>_SAM3_DIR` if set, else `<config>/models/sam3`.
 pub fn default_sam3_dir() -> Option<PathBuf> {
     sam3_dir(lcc_brand::env_os("SAM3_DIR"), config_dir())
@@ -136,12 +142,22 @@ impl Session {
             .map(PathBuf::from)
             .or_else(|| config_dir().map(|d| d.join("models").join("birefnet")));
         self.segmenter.subject.sync(&self.activity);
+        // the openly licensed models (SAM 2.1, Depth Anything): `<config>/models/<model>`
+        self.segmenter.models_root = config_dir().map(|d| d.join("models"));
+        self.segmenter.load_prefs();
+        self.segmenter.scene_sync(&self.activity);
         self
     }
 
     /// Keep face models in the shared default folder ([`default_face_models_dir`]).
     pub fn with_default_face_models(mut self) -> Self {
         self.face_models_dir = default_face_models_dir();
+        self
+    }
+
+    /// Keep shared AI / ML models in the shared default folder ([`default_ml_models_dir`]).
+    pub fn with_default_ml_models(mut self) -> Self {
+        self.ml_models_dir = default_ml_models_dir();
         self
     }
 

@@ -51,7 +51,9 @@ pub struct HeaderRead {
 pub fn read_header(len: u64, read_at: &mut dyn FnMut(u64, &mut [u8]) -> io::Result<()>) -> io::Result<HeaderRead> {
     let mut reader = Reader { len, read_at, bytes: 0 };
     let head = reader.fetch(0, HEADER_PREFIX.min(len))?;
-    let focus = if head.starts_with(&[0xff, 0xd8]) {
+    let focus = if crate::cr3::is_cr3(&head) {
+        cr3(&mut reader, head)?
+    } else if head.starts_with(&[0xff, 0xd8]) {
         jpeg(&mut reader, &head)?
     } else if matches!(Tiff::sniff(&head), Some((_, false))) {
         tiff(&mut reader, head)?
@@ -82,6 +84,38 @@ impl Reader<'_> {
         self.bytes = self.bytes.saturating_add(n);
         Ok(buf)
     }
+}
+
+/// A CR3's point: its `moov` box (metadata, `CMT1`…`CMT4`, at the start of the file: about 35 KB
+/// on an R5 C) read whole and decoded as a whole-file read would.
+fn cr3(reader: &mut Reader<'_>, head: Vec<u8>) -> io::Result<Option<FocusPoint>> {
+    // the top-level boxes up to `moov`: 32-bit sizes (a 64-bit or zero size there is not a layout we know)
+    let mut at = 0u64;
+    let mut end = None;
+    for _ in 0..8 {
+        let Ok(start) = usize::try_from(at) else { break };
+        let Some(b) = start.checked_add(8).and_then(|stop| head.get(start..stop)) else { break };
+        let (Some(&[s0, s1, s2, s3]), Some(kind)) = (b.get(..4), b.get(4..8)) else { break };
+        let size = u64::from(u32::from_be_bytes([s0, s1, s2, s3]));
+        if size < 8 {
+            break;
+        }
+        if kind == b"moov" {
+            end = Some(at.saturating_add(size));
+            break;
+        }
+        at = at.saturating_add(size);
+    }
+    let Some(end) = end.filter(|e| *e <= MAX_HEADER_BYTES && *e <= reader.len) else { return Ok(None) };
+    let bytes = if end <= head.len() as u64 {
+        head
+    } else {
+        let mut all = head;
+        let more = reader.fetch(all.len() as u64, end)?;
+        all.extend_from_slice(&more);
+        all
+    };
+    Ok(crate::extract(&bytes).focus)
 }
 
 /// A file whose focus data would take more than [`MAX_HEADER_BYTES`] to read.

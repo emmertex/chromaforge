@@ -67,13 +67,19 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             // The field stops short of the filter icon and the seven icons on the right; centred,
             // it is twice the room between the window's centre and them.
             let mut sw = 640.0f32.min(2.0 * (full.right() - 310.0 - bar.center().x)).max(190.0);
+            let mut cx = bar.center().x;
             if !app.native_menu {
                 // leave room for the in-window menus left of the (centred) search field
                 let menus_right = full.left() + 140.0 + crate::menubar::bar_width(ui) + 24.0;
-                sw = sw.min(2.0 * (bar.center().x - menus_right)).max(190.0);
+                sw = sw.min(2.0 * (cx - menus_right)).max(190.0);
+                // the Import | Library tabs leave the menus no room beside a centred field: the
+                // field moves right of them, while it still fits before the icons
+                if cx - sw / 2.0 < menus_right && menus_right + sw <= full.right() - 310.0 {
+                    cx = menus_right + sw / 2.0;
+                }
             }
-            let search_left = bar.center().x - sw / 2.0;
-            let sr = Rect::from_center_size(pos2(bar.center().x, full.center().y), vec2(sw, 28.0));
+            let search_left = cx - sw / 2.0;
+            let sr = Rect::from_center_size(pos2(cx, full.center().y), vec2(sw, 28.0));
             if app.integrated_titlebar {
                 window_handle(app, ui, bar, sr);
             }
@@ -203,7 +209,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             for (id, icon, tip, cmd) in [
                 ("cloud", Icon::Cloud, cloud_tip, ""),
                 ("help", Icon::Help, "Keyboard shortcuts", "app.shortcuts"),
-                ("share", Icon::Share, "Export", "dialog.export"),
+                ("share", Icon::Share, "Export", "file.export"),
                 ("import", Icon::Plus, import_tip.as_str(), "dialog.import"),
             ] {
                 let r = Rect::from_center_size(pos2(x, full.center().y), vec2(28.0, 28.0));

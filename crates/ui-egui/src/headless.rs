@@ -334,6 +334,12 @@ impl Headless {
         self.view.painted_text()
     }
 
+    /// The channel requests reach the app on (a transport in a test feeds it, like the desktop
+    /// app's control server).
+    pub fn control_sender(&self) -> Sender<ControlRequest> {
+        self.control.clone()
+    }
+
     /// `app.quit` was requested.
     pub fn quit_requested(&self) -> bool {
         self.quit
@@ -399,6 +405,7 @@ impl Headless {
             || self.app.session.denoise_busy()
             || self.app.session.segmenter.busy()
             || self.app.session.segmenter.analyzing()
+            || self.app.session.genfill.running()
             || !self.app.tasks.is_empty()
             || !self.app.synthetic.is_empty()
             || !self.events.is_empty()
@@ -586,10 +593,11 @@ mod tests {
         assert!(h.app.session.develop_of(id).is_some_and(|d| d.enhance.denoise_enabled()));
         assert_eq!(h.app.session.execute("denoise.status", &json!({})).unwrap()["model"]["id"], "builtin");
         // Settings still offers installing a model of one's own.
-        h.app.ui.dialog = Some(Dialog::Settings { tab: "denoise".into() });
+        h.app.ui.dialog = Some(Dialog::Settings { tab: "ai".into() });
         h.settle(SETTLE);
         let listed = h.app.session.execute("denoise.models.list", &json!({})).unwrap();
         assert_eq!(listed["models"].as_array().unwrap().len(), lcc_denoise::known::all().len(), "{listed}");
+        crate::settings_screen::reveal(&mut h, "denoise:installFile");
         assert!(widgets(&mut h).contains("\"denoise:installFile\""));
         h.app.ui.dialog = None;
         // a photo that is not raw: no offer
@@ -667,13 +675,14 @@ mod tests {
         std::fs::write(dir.join("model.json"), br#"{"name": "rawdenoise", "scale": 2}"#).unwrap();
         let picked = onnx.to_string_lossy().into_owned();
         h.app.services.pick_denoise_model = Some(Box::new(move || vec![picked.clone()]));
-        h.app.ui.dialog = Some(Dialog::Settings { tab: "denoise".into() });
+        h.app.ui.dialog = Some(Dialog::Settings { tab: "ai".into() });
         h.settle(SETTLE);
+        crate::settings_screen::reveal(&mut h, "denoise:installFile");
         let r = h.request("ui.clickWidget", json!({"id": "denoise:installFile"}), t);
         assert_eq!(r["ok"], true, "{r}");
         h.step();
         h.step();
-        assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "denoise".into() }));
+        assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "ai".into() }));
         let painted = h.painted_text();
         assert!(
             painted
@@ -1289,6 +1298,43 @@ mod tests {
         h.settle(SETTLE);
     }
 
+    /// Face boxes are off by default in the loupe; they show when switched on, and a choice saved
+    /// since is kept (an older file's `faceBoxes: true` was never the user's choice).
+    #[test]
+    fn face_boxes_are_off_by_default_and_show_when_switched_on() {
+        use lcc_catalog::Op;
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        assert!(!h.app.ui.face_boxes, "off by default");
+        let id = h.app.session.active().unwrap();
+        let mut meta = h.app.session.catalog.photo(id).unwrap().meta.clone();
+        meta.regions = vec![lcc_meta::Region {
+            rect: lcc_geom::Rect { x0: 0.3, y0: 0.2, x1: 0.55, y1: 0.6 },
+            kind: lcc_meta::RegionKind::Face,
+            name: Some("Person A".into()),
+            description: None,
+        }];
+        h.app.session.commit("setup", Op::SetMeta { id, meta: Box::new(meta) }).unwrap();
+        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        h.settle(SETTLE);
+        let boxes = |h: &mut Headless| {
+            h.request("ui.pointer", json!({"events": [{"kind": "move", "x": 0.42, "y": 0.4}]}), t);
+            h.step();
+            h.step();
+            h.app.widgets.iter().any(|(w, _)| w.starts_with("regionLabel:"))
+        };
+        assert!(!boxes(&mut h), "no face box over the photo by default");
+        let r = h.request("engine.execute", json!({"command": "view.faceBoxes", "params": {}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(boxes(&mut h), "View ▸ Face Boxes switches them on");
+        let saved = serde_json::to_value(&h.app.ui).unwrap();
+        assert_eq!(saved["faceBoxesOn"], true);
+        let back: crate::state::UiState = serde_json::from_value(saved).unwrap();
+        assert!(back.face_boxes);
+        let old: crate::state::UiState = serde_json::from_value(json!({"faceBoxes": true})).unwrap();
+        assert!(!old.face_boxes, "an older build's default is not the user's choice");
+    }
+
     /// Naming a face in the loupe: point at an unnamed face, click its "Add name" label, type, Enter. Needs the
     /// recognition runtime only for the background indexer, so the naming itself is tested whatever the build.
     #[test]
@@ -1307,6 +1353,9 @@ mod tests {
         }];
         h.app.session.commit("setup", Op::SetMeta { id, meta: Box::new(meta) }).unwrap();
         h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        // face boxes are off by default: switched on here
+        let r = h.request("engine.execute", json!({"command": "view.faceBoxes", "params": {"show": true}}), t);
+        assert_eq!(r["ok"], true, "{r}");
         h.settle(SETTLE);
         // pointing at the box shows the invitation; clicking it opens the name box
         h.request("ui.pointer", json!({"events": [{"kind": "move", "x": 0.42, "y": 0.4}]}), t);
@@ -1380,7 +1429,7 @@ mod tests {
         let listed = h.app.run("faces.models.list", json!({})).unwrap();
         assert!(listed["models"].as_array().unwrap().iter().any(|m| m["installed"] == true && m["known"] == false), "{listed}");
         // installed, in use and recognition on: back in Settings ▸ Faces, where the scan can be watched
-        assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "faces".into() }));
+        assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "ai".into() }));
         assert_eq!(listed["enabled"], true);
         h.app.ui.dialog = None;
 
@@ -1398,38 +1447,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Photo > Detect Faces without the detector offers the download: the terms first, nothing fetched before they are
-    /// accepted, and the model's row in Settings has its Download button.
+    /// Photo > Detect Faces without the face model offers its download (the AI Models dialog: size and licence first,
+    /// nothing fetched before the person asks), and Settings > Faces has a Download button for it.
     #[test]
-    fn detect_faces_without_the_detector_offers_the_download_and_fetches_nothing_before_acceptance() {
+    fn detect_faces_without_the_face_model_offers_its_download_and_fetches_nothing() {
         use crate::state::Dialog;
         let mut h = demo([1400.0, 900.0]);
         let dir = std::env::temp_dir().join(format!("lc-ui-detector-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
+        h.app.session.segmenter.models_root = Some(dir.join("models"));
 
         let r = h.app.run("faces.detect", json!({}));
-        assert!(r.is_err(), "no detector yet");
-        let Some(dlg) = h.app.ui.dialog.clone() else { panic!("the download was not offered") };
-        let Dialog::FaceModel { info, accepted, .. } = &dlg else { panic!("{dlg:?}") };
-        assert!(!accepted);
-        assert_eq!((info["download"].as_str(), info["host"].as_str()), (Some("yunet-2023mar"), Some("github.com")));
-        assert_eq!(info["model"]["licence"]["name"], "MIT");
-        // OK without accepting the terms starts nothing
-        assert!(crate::panels::dialogs::confirm_dialog(&mut h.app, &dlg).is_err());
-        assert!(h.app.session.face_downloads.snapshot().is_empty());
-        assert!(!dir.join("models").join(".downloads").exists());
-        assert!(h.app.caches.faces_dl_watch.is_empty());
+        assert!(r.is_err(), "no face model yet");
+        if !lcc_engine::segment::Segmenter::AVAILABLE {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert!(matches!(&h.app.ui.dialog, Some(Dialog::Settings { tab }) if tab == "ai"), "the download is offered: {:?}", h.app.ui.dialog);
+        assert!(!dir.join("models").join("mediapipe-face-landmarker").exists(), "nothing is fetched by offering it");
 
-        // Settings > Faces shows the detector with a Download button
-        h.app.ui.dialog = Some(Dialog::Settings { tab: "faces".into() });
+        // Settings > Faces shows the face model with a Download button
+        h.app.ui.dialog = Some(Dialog::Settings { tab: "ai".into() });
         h.step();
         // (the first request switches the widget list on, the next frame fills it)
         h.request("ui.widgets", json!({}), Duration::from_secs(10));
         h.step();
         let w = h.request("ui.widgets", json!({"filter": "faces:"}), Duration::from_secs(10));
-        assert!(w.to_string().contains("faces:download:yunet-2023mar"), "{w}");
+        assert!(w.to_string().contains("faces:downloadFaceModel"), "{w}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1444,10 +1490,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
-        h.request("engine.execute", json!({"command": "app.settings", "params": {"tab": "faces"}}), t);
+        h.request("engine.execute", json!({"command": "app.settings", "params": {"tab": "ai"}}), t);
         h.settle(SETTLE);
         h.step();
         let runtime = h.app.session.execute("faces.models.list", &json!({})).unwrap()["runtime"] == true;
+        if runtime {
+            crate::settings_screen::reveal(&mut h, "faces:download:sface-2021dec");
+        }
         let r = h.request("ui.clickWidget", json!({"id": "faces:download:sface-2021dec"}), t);
         if !runtime {
             assert_eq!(r["ok"], false, "a build that cannot run the model offers no download: {r}");
@@ -1515,6 +1564,8 @@ mod tests {
         h.app.ui.dialog = None;
 
         // the loupe's name box offers it too, and its button leaves for Settings with the box closed
+        // (face boxes are off by default)
+        h.request("engine.execute", json!({"command": "view.faceBoxes", "params": {"show": true}}), t);
         h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
         h.settle(SETTLE);
         h.request("ui.pointer", json!({"events": [{"kind": "move", "x": 0.42, "y": 0.4}]}), t);
@@ -2201,15 +2252,16 @@ mod tests {
         // Create Preset with a group checklist: untick Light, keep Effects
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.5}}), t);
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "effects.clarity", "value": 25}}), t);
-        h.app.ui.dialog = Some(crate::state::Dialog::create_preset());
+        h.app.ui.dialog = Some(crate::state::Dialog::create_preset(&h.app.session));
         h.step();
         h.step();
         let r = h.request("ui.clickWidget", json!({"id": "presetInclude:light"}), t);
         assert_eq!(r["ok"], true, "{r}");
         match &h.app.ui.dialog {
             Some(crate::state::Dialog::CreatePreset { groups, .. }) => {
-                assert!(!groups.iter().any(|g| g == "light") && groups.iter().any(|g| g == "effects"), "{groups:?}");
-                assert!(!groups.iter().any(|g| g == "crop" || g == "masks"), "crop and masks off by default");
+                assert!(!groups.iter().any(|g| g.starts_with("light")) && groups.iter().any(|g| g == "effects.clarity"), "{groups:?}");
+                assert!(!groups.iter().any(|g| g == "whiteBalance"), "White Balance off by default");
+                assert!(!groups.iter().any(|g| g.starts_with("crop") || g == "masks"), "crop and masks off by default");
             }
             d => panic!("dialog: {d:?}"),
         }
@@ -3680,6 +3732,80 @@ mod tests {
         assert_ne!(h.app.session.active(), Some(first), "advanced");
     }
 
+    /// A slider drag that ends just past the window's edge (the integration drops that release)
+    /// doesn't keep the slider captured: back over the photo the slider stays put, and a click
+    /// on the photo zooms as usual (the Grain sliders at the bottom of the panel made it easy).
+    #[test]
+    fn a_slider_released_outside_the_window_lets_go() {
+        let mut h = demo([1300.0, 1600.0]);
+        let t = Duration::from_secs(10);
+        h.request("ui.set", json!({"view": "detail", "right": "edit"}), t);
+        let r = h.request("engine.execute", json!({"command": "develop.set", "params": {"values": {"grain.amount": 40.0}}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        h.app.ui.open_sections = vec!["effects".to_string()];
+        h.settle(SETTLE);
+        let amount = |h: &Headless| h.app.session.develop_of(h.app.session.active().unwrap()).unwrap().grain.amount;
+        let slider = h.app.widgets.iter().find(|(id, _)| id == "slider:grain.amount").map(|(_, r)| *r).expect("the Grain slider");
+        let canvas = h.app.canvas_rect.expect("the photo").center();
+        assert!(matches!(h.app.ui.zoom, crate::state::Zoom::Fit));
+        // drag the slider, then off the bottom of the window, where the button goes up unseen
+        let (a, b) = (slider.center(), slider.center() + egui::vec2(40.0, 0.0));
+        let edge = egui::pos2(b.x, 1599.0);
+        let m = egui::Modifiers::NONE;
+        h.app.synthetic.extend([
+            egui::Event::PointerMoved(a),
+            egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: m },
+            egui::Event::PointerMoved(b),
+            egui::Event::PointerMoved(edge),
+            egui::Event::PointerGone,
+        ]);
+        h.settle(SETTLE);
+        let dragged = amount(&h);
+        assert!(dragged > 40.0, "the drag moved the slider ({dragged})");
+        // back over the photo, and click it
+        h.app.synthetic.push(egui::Event::PointerMoved(canvas + egui::vec2(5.0, 0.0)));
+        h.settle(SETTLE);
+        // (without the repair egui still drags the slider here: the ↔ cursor sticks and the
+        // drag's undo step stays open)
+        assert_eq!(h.view.ctx.dragged_id(), None, "nothing is dragged once the pointer is back");
+        assert!(h.app.session.interaction.is_none(), "the drag's undo step is closed");
+        assert_ne!(h.last_cursor, egui::CursorIcon::ResizeHorizontal, "the slider's cursor is gone");
+        h.app.synthetic.extend([
+            egui::Event::PointerMoved(canvas),
+            egui::Event::PointerButton { pos: canvas, button: egui::PointerButton::Primary, pressed: true, modifiers: m },
+            egui::Event::PointerButton { pos: canvas, button: egui::PointerButton::Primary, pressed: false, modifiers: m },
+        ]);
+        h.settle(SETTLE);
+        assert_eq!(amount(&h), dragged, "the slider let go");
+        assert!(!matches!(h.app.ui.zoom, crate::state::Zoom::Fit), "the click on the photo zoomed in");
+    }
+
+    /// On process V7 the Effects panel's grain sliders include colour grain, the tone response, size
+    /// variation, clumping and the seed, which drive the photo's settings like any develop control.
+    #[test]
+    fn grain_colour_and_response_sliders() {
+        // tall enough for the Effects panel's last slider without scrolling
+        let mut h = demo([1300.0, 1600.0]);
+        let t = Duration::from_secs(10);
+        h.request("ui.set", json!({"view": "detail", "right": "edit"}), t);
+        let r = h.request("engine.execute", json!({"command": "develop.set", "params": {"values": {"grain.amount": 40.0}}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        // only the Effects section open, so its sliders are on screen
+        h.app.ui.open_sections = vec!["effects".to_string()];
+        h.settle(SETTLE);
+        let grain = |h: &Headless| h.app.session.develop_of(h.app.session.active().unwrap()).unwrap().grain;
+        for (id, text) in
+            [("grain.response", "-30"), ("grain.color", "25"), ("grain.sizeVariation", "70"), ("grain.clumping", "80"), ("grain.seed", "7")]
+        {
+            assert_eq!(h.request("ui.clickWidget", json!({"id": format!("sliderValue:{id}")}), t)["ok"], true, "{id} is in the panel");
+            h.request("ui.text", json!({"text": text}), t);
+            h.request("ui.key", json!({"key": "Enter"}), t);
+            h.step();
+        }
+        let g = grain(&h);
+        assert_eq!((g.amount, g.color, g.response, g.size_variation, g.clumping, g.seed), (40.0, 25.0, -30.0, 70.0, 80.0, 7));
+    }
+
     /// Click a slider's value and type one (issue #322): Return sets it as one undo step, Esc
     /// keeps the old value, and the keys typed don't reach the shortcuts (1 = one star).
     #[test]
@@ -4234,7 +4360,7 @@ mod tests {
         h.request("ui.key", json!({"key": "V", "cmd": true, "shift": true}), t);
         h.settle(SETTLE);
         let Some(crate::state::Dialog::PasteSettings { groups }) = &h.app.ui.dialog else { panic!("dialog not open: {:?}", h.app.ui.dialog) };
-        assert_eq!(groups, &["light", "color"]);
+        assert_eq!(lcc_develop::SettingsPick::from_ids(groups), lcc_develop::SettingsPick::from_ids(&["light", "color"]));
         let r = h.request("ui.clickWidget", json!({"id": "pasteGroup:color"}), t);
         assert_eq!(r["ok"], true, "{r}");
         h.settle(SETTLE);
@@ -4309,7 +4435,7 @@ mod tests {
         assert_eq!(h.request("ui.key", json!({"key": "S", "cmd": true, "shift": true}), t)["ok"], true);
         h.settle(SETTLE);
         assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::SyncSettings { .. })), "{:?}", h.app.ui.dialog);
-        for w in ["syncGroup:none", "syncControl:light.exposure"] {
+        for w in ["syncGroup:none", "syncGroup:open:light", "syncGroup:light.exposure"] {
             assert_eq!(h.request("ui.clickWidget", json!({"id": w}), t)["ok"], true, "{w}");
             h.settle(SETTLE);
         }
@@ -4938,7 +5064,7 @@ mod tests {
                         let tex = if h.app.loupe_shown.is_some_and(|(_, source)| source == "hdr") {
                             egui::TextureId::User(700)
                         } else {
-                            h.app.renderer.textures[&Slot::Main].tex.id()
+                            h.app.renderer.textures[&Slot::Main].id()
                         };
                         h.view
                             .painted_shapes()
@@ -4963,10 +5089,20 @@ mod tests {
                     assert_eq!(Some(still), h.app.image_rect);
                     h.app.run("develop.beginInteraction", json!({"label": "Exposure"})).unwrap();
                     assert!(h.settle(SETTLE));
-                    let draft_size = shown_size(&h);
-                    assert_ne!(still_size, draft_size, "the test exercises a real texture-size transition");
                     assert_eq!(bounds(&h), still, "drag: {native:?}, {ppp}x, HDR {hdr}");
                     h.app.run("develop.set", json!({"values": {"light.exposure": 0.25}})).unwrap();
+                    // (a drag drafts once it changes the photo, not when it begins, and the full
+                    // render replaces the draft soon after: watch the frames in between)
+                    let mut drafted = false;
+                    for _ in 0..2000 {
+                        h.step();
+                        if shown_size(&h) != still_size {
+                            drafted = true;
+                            assert_eq!(bounds(&h), still, "draft: {native:?}, {ppp}x, HDR {hdr}");
+                            break;
+                        }
+                    }
+                    assert!(drafted, "the test exercises a real texture-size transition");
                     assert!(h.settle(SETTLE));
                     assert_eq!(bounds(&h), still, "update: {native:?}, {ppp}x, HDR {hdr}");
                     h.app.run("develop.endInteraction", json!({})).unwrap();
@@ -5289,8 +5425,13 @@ mod tests {
             let px = |s: Slot| h.app.renderer.textures[&s].pixels.as_ref().unwrap().pixels.clone();
             seen.push((px(Slot::Thumb(id)), px(Slot::Main)));
         }
-        assert!(seen[0].0 == seen[1].0, "thumbnail differs with an HDR display");
-        assert!(seen[0].1 == seen[1].1, "the loupe's 8-bit render differs with an HDR display");
+        // a thumbnail or render may come from the GPU in one session and the CPU in the other (whichever
+        // is ready first); those agree within 2 levels, so allow that rounding and nothing more
+        let close = |a: &[egui::Color32], b: &[egui::Color32]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_array().iter().zip(y.to_array()).all(|(p, q)| p.abs_diff(q) <= 2))
+        };
+        assert!(close(&seen[0].0, &seen[1].0), "thumbnail differs with an HDR display");
+        assert!(close(&seen[0].1, &seen[1].1), "the loupe's 8-bit render differs with an HDR display");
     }
 
     /// Settings ▸ Display / `app.displayProfile`: previews are shown through the monitor profile
@@ -5460,12 +5601,12 @@ mod tests {
         h.step();
         h.step();
         assert!(custom_field(h) && h.app.session.cache_mb == 16384, "16 GB stays, shown as custom");
-        crate::settings_screen::reveal(h, "button:settingsCache-3");
-        h.request("ui.clickWidget", json!({"id": "button:settingsCache-3"}), t);
+        crate::settings_screen::reveal(h, "button:settingsCache-4");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-4"}), t);
         h.step();
         assert!(!custom_field(h) && h.app.session.cache_mb == 4096);
-        crate::settings_screen::reveal(h, "button:settingsCache-0");
-        h.request("ui.clickWidget", json!({"id": "button:settingsCache-0"}), t);
+        crate::settings_screen::reveal(h, "button:settingsCache-1");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
         assert_eq!(h.app.session.cache_mb, 512);
     }
 
@@ -5485,8 +5626,8 @@ mod tests {
         };
         // 3 typed, then 1 GB chosen: Custom… again starts from 1 GB, and the 3 is not saved behind it
         type_size(h, "3");
-        crate::settings_screen::reveal(h, "button:settingsCache-1");
-        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
+        crate::settings_screen::reveal(h, "button:settingsCache-2");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-2"}), t);
         h.step();
         assert_eq!(h.app.session.cache_mb, 1024);
         crate::settings_screen::reveal(h, "button:settingsCacheCustom");
@@ -5502,8 +5643,8 @@ mod tests {
         h.step();
         assert_eq!(h.app.session.cache_mb, 5120, "saved when the section is left");
         h.request("ui.clickWidget", json!({"id": "button:settingsTab-performance"}), t);
-        crate::settings_screen::reveal(h, "button:settingsCache-0");
-        h.request("ui.clickWidget", json!({"id": "button:settingsCache-0"}), t);
+        crate::settings_screen::reveal(h, "button:settingsCache-1");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
         assert_eq!(h.app.session.cache_mb, 512);
     }
 
@@ -5544,9 +5685,15 @@ mod tests {
         assert_eq!(h.app.ui.settings.grid_badges, crate::state::GridBadges::Always);
         // Performance: the thumbnail cache size goes to the library preferences
         h.request("ui.clickWidget", json!({"id": "button:settingsTab-performance"}), t);
+        crate::settings_screen::reveal(&mut h, "button:settingsCache-1");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
+        assert_eq!(h.app.session.cache_mb, 512);
+        // Automatic: a share of the cache drive's free space
         crate::settings_screen::reveal(&mut h, "button:settingsCache-0");
         h.request("ui.clickWidget", json!({"id": "button:settingsCache-0"}), t);
-        assert_eq!(h.app.session.cache_mb, 512);
+        assert_eq!(h.app.session.cache_mb, 0);
+        crate::settings_screen::reveal(&mut h, "button:settingsCache-1");
+        h.request("ui.clickWidget", json!({"id": "button:settingsCache-1"}), t);
         custom_cache_size(&mut h, t);
         custom_cache_size_pending(&mut h, t);
         crate::settings_screen::reveal(&mut h, "button:settingsPreview-3");
@@ -5851,9 +5998,10 @@ mod tests {
         h.request("ui.move", json!({"x": anchor.x, "y": anchor.y}), t);
         for (tool, expected) in [
             ("", egui::CursorIcon::Grab),
-            ("wbPicker", egui::CursorIcon::Crosshair),
-            ("colorRange", egui::CursorIcon::Crosshair),
-            ("pointColor", egui::CursorIcon::Crosshair),
+            // the colour pickers hide the system pointer: the eyedropper is painted instead
+            ("wbPicker", egui::CursorIcon::None),
+            ("colorRange", egui::CursorIcon::None),
+            ("pointColor", egui::CursorIcon::None),
             ("tat:curve", egui::CursorIcon::ResizeVertical),
         ] {
             h.app.ui.tool = tool.into();

@@ -33,6 +33,8 @@ lcc-preview = { workspace = true }
 lcc-codecs = { workspace = true }
 lcc-raw = { workspace = true }
 lcc-camdb = { workspace = true }
+lcc-camprof = { workspace = true }
+lcc-tiff = { workspace = true }
 lcc-denoise-core = { workspace = true }
 lcc-denoise = { workspace = true, optional = true }
 lcc-meta = { workspace = true }
@@ -42,6 +44,7 @@ lcc-faces = { workspace = true }
 lcc-ml = { workspace = true }
 miniz_oxide = { workspace = true }
 lcc-merge = { workspace = true }
+lcc-genfill = { workspace = true }
 lcc-geocode = { workspace = true }
 lcc-psd = { workspace = true }
 lcc-actions = { workspace = true }
@@ -60,6 +63,7 @@ harfrust = { version = "0.12", default-features = false, features = ["std"] }
 unicode-normalization = "0.1"
 unicode-segmentation = "1.13"
 lcc-segment = { workspace = true, optional = true }
+lcc-tflite = { workspace = true, optional = true }
 # video clips: probe and poster frames (every call is `Unsupported` on wasm32)
 lcc-video = { workspace = true }
 lcc-audio-out = { workspace = true }
@@ -67,6 +71,7 @@ lcc-audio-out = { workspace = true }
 # model downloads run natively only (the web build fetches no models)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lcc-fetch = { workspace = true }
+lcc-genfill = { workspace = true, features = ["cloud"] }
 # capture-time parsing for face recognition (native only)
 chrono = { workspace = true }
 # auto updates: the release feed, the download, and starting the install
@@ -98,7 +103,7 @@ rustix = { workspace = true }
 # the BSDs PulseAudio; on Linux this adds cpal's libasound fallback, see docs/video.md).
 audio-out = ["lcc-audio-out/audio-out"]
 # AI masks with SAM 3 (Object / Describe). Off for the web and CLI builds.
-sam = ["dep:lcc-segment"]
+sam = ["dep:lcc-segment", "dep:lcc-tflite"]
 denoise = ["dep:lcc-denoise", "lcc-denoise/runtime", "lcc-gpu/denoise"]
 rawnind-model = ["denoise", "lcc-denoise/rawnind-model", "lcc-denoise-core/rawnind-model"]
 # The upstream project's own denoise model offered as a download (MIT OR Apache-2.0 weights, CC0 training data).
@@ -111,6 +116,10 @@ test-support = []
 [dev-dependencies]
 # tests record why they skip (`cargo xtask ci` lists the skips)
 lcc-testkit = { workspace = true }
+# the catalog-upgrade test marks a store as an older build left it
+redb = { workspace = true }
+# genfill_check example: the mock provider fills with content-aware fill
+lcc-inpaint = { workspace = true }
 # HDR JPEG XL tests read the file's colour encoding
 jxl-oxide = { workspace = true }
 # the updater's end-to-end test builds a release with a real checksum, signed with a throwaway key

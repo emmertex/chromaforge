@@ -99,13 +99,22 @@ fn band_weights(h: f32) -> array<f32, 8> {
 // `PointK::apply` for Point Color sample `k` (OkLCh in, OkLCh out).
 fn point_color(k: u32, lch: vec3<f32>) -> vec3<f32> {
     let o = F_PC + k * POINT_WORDS;
-    let sl = pf(o);
-    let sc = pf(o + 1u);
-    let sh = pf(o + 2u);
-    let var_k = pf(o + 6u);
-    let wh_ = pf(o + 7u);
-    let wc_ = pf(o + 8u);
-    let wl_ = pf(o + 9u);
+    var w: array<f32, POINT_WORDS>;
+    for (var j = 0u; j < POINT_WORDS; j++) {
+        w[j] = pf(o + j);
+    }
+    return point_apply(w, lch, 1.0);
+}
+
+// `PointK::apply_scaled`: the sample's words `pw` (`PointK::words`) at `strength`.
+fn point_apply(pw: array<f32, POINT_WORDS>, lch: vec3<f32>, strength: f32) -> vec3<f32> {
+    let sl = pw[0];
+    let sc = pw[1];
+    let sh = pw[2];
+    let var_k = pw[6];
+    let wh_ = pw[7];
+    let wc_ = pw[8];
+    let wl_ = pw[9];
     var l = lch.x;
     var c = lch.y;
     var h = lch.z;
@@ -118,15 +127,72 @@ fn point_color(k: u32, lch: vec3<f32>) -> vec3<f32> {
     }
     let wc = 1.0 - sstep(0.5 * wc_, wc_, abs(c - sc));
     let wl = 1.0 - sstep(0.5 * wl_, wl_, abs(l - sl));
-    let w = wh * wc * wl;
+    let w = wh * wc * wl * strength;
     if (w <= 0.0) {
         return lch;
     }
-    h += w * (var_k * wrap_angle(h - sh) + pf(o + 3u));
+    h += w * (var_k * wrap_angle(h - sh) + pw[3]);
     c += w * var_k * (c - sc);
-    c = max(c * (1.0 + w * pf(o + 4u)), 0.0);
-    l += w * (var_k * (l - sl) + pf(o + 5u));
+    c = max(c * (1.0 + w * pw[4]), 0.0);
+    l += w * (var_k * (l - sl) + pw[5]);
     return vec3<f32>(l, c, h);
+}
+
+// `colorops::mixer_apply` for the mixer whose words (`MixerK::words`) start at `aux[o]`, at `strength`.
+fn local_mixer(o: u32, lch: vec3<f32>, strength: f32) -> vec3<f32> {
+    let w = band_weights(lch.z);
+    var dh = 0.0;
+    var ds = 0.0;
+    var dl = 0.0;
+    for (var i = 0u; i < 8u; i++) {
+        dh += w[i] * aux[o + i];
+        ds += w[i] * aux[o + 8u + i];
+        dl += w[i] * aux[o + 16u + i];
+    }
+    let chroma_w = min(lch.y / 0.12, 1.0);
+    let h = lch.z + dh * strength * chroma_w;
+    let c = lch.y * max(1.0 + ds * strength, 0.0);
+    let l = lch.x + dl * strength * chroma_w * sqrt(max(lch.x, 0.05));
+    return vec3<f32>(l, c, h);
+}
+
+// `finish::local_point_colors`: each mask's Color Mixer, then its Point Color samples at the mask's opacity (at most 1).
+fn local_point_colors(d: vec3<f32>, i: u32, n: u32) -> vec3<f32> {
+    var lch = vec3<f32>(0.0);
+    var any = false;
+    for (var m = 0u; m < pu(F_NMASK); m++) {
+        let rec = pu(F_LPOINT_OFF) + m * LOCAL_POINT_WORDS;
+        let np = min(u32(aux[rec]), 8u);
+        let has_mixer = aux[rec + 1u] != 0.0;
+        if (np == 0u && !has_mixer) {
+            continue;
+        }
+        let a = min(masks[m * n + i], 1.0);
+        if (a <= 0.0) {
+            continue;
+        }
+        if (!any) {
+            let lab = oklab(d);
+            let c0 = sqrt(lab.y * lab.y + lab.z * lab.z);
+            // (atan2(0, 0) is undefined in WGSL: a neutral pixel's hue is 0, as on the CPU)
+            lch = vec3<f32>(lab.x, c0, select(atan2(lab.z, lab.y), 0.0, c0 == 0.0));
+            any = true;
+        }
+        if (has_mixer) {
+            lch = local_mixer(rec + 2u, lch, a);
+        }
+        for (var k = 0u; k < np; k++) {
+            var w: array<f32, POINT_WORDS>;
+            for (var j = 0u; j < POINT_WORDS; j++) {
+                w[j] = aux[rec + LOCAL_POINT_SAMPLES + k * POINT_WORDS + j];
+            }
+            lch = point_apply(w, lch, a);
+        }
+    }
+    if (!any) {
+        return d;
+    }
+    return oklab_inv(vec3<f32>(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z)));
 }
 
 // `ColorOps::apply`.
@@ -240,9 +306,9 @@ fn refine_saturation(before: vec3<f32>, after: vec3<f32>, refine: f32) -> vec3<f
 }
 
 fn ghash(i: i32, j: i32, seed: u32) -> f32 {
-    var v = (bitcast<u32>(i) * GRAIN_H0) ^ (bitcast<u32>(j) * GRAIN_H1) ^ (seed * GRAIN_H2);
+    var v = (bitcast<u32>(i) * GRAIN_VH0) ^ (bitcast<u32>(j) * GRAIN_VH1) ^ (seed * GRAIN_VH2);
     v ^= v >> 13u;
-    v = v * GRAIN_H3;
+    v = v * GRAIN_VH3;
     v ^= v >> 15u;
     return f32(v & 0xffffu) / 32768.0 - 1.0;
 }
@@ -259,6 +325,307 @@ fn grain_noise(x: f32, y: f32, seed: u32) -> f32 {
     let a = ghash(i, j, seed) + (ghash(i + 1, j, seed) - ghash(i, j, seed)) * u;
     let b = ghash(i, j + 1, seed) + (ghash(i + 1, j + 1, seed) - ghash(i, j + 1, seed)) * u;
     return a + (b - a) * v;
+}
+
+// --- film grain: a port of `lcc_pipeline::grain` (keep in step with it)
+fn gpcg(v: u32) -> u32 {
+    let s = v * 747796405u + 2891336453u;
+    let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+fn gcell(i: i32, j: i32, salt: u32) -> u32 {
+    return gpcg((bitcast<u32>(i) * GRAIN_H0) ^ (bitcast<u32>(j) * GRAIN_H1) ^ salt);
+}
+
+fn gsub_hash(h: u32, j: u32) -> u32 {
+    return gpcg(h ^ ((j + 1u) * 0x9e3779b9u));
+}
+
+fn gunit(v: u32) -> f32 {
+    return (f32(v >> 8u) + 0.5) * (1.0 / 16777216.0);
+}
+
+fn gunit16(v: u32) -> f32 {
+    return (f32(v & 0xffffu) + 0.5) * (1.0 / 65536.0);
+}
+
+fn gunit8(v: u32) -> f32 {
+    return (f32(v & 0xffu) + 0.5) * (1.0 / 256.0);
+}
+
+fn gunit4(v: u32) -> f32 {
+    return (f32(v & 15u) + 0.5) * (1.0 / 16.0);
+}
+
+// `coverage_std_at`: the standard deviation of the field (coverage less halo) at coverage `p`
+fn grain_std_at(p: f32, area: f32, kappa: f32, k_hh: f32, k_ah: f32) -> f32 {
+    let c = pf(F_GRAIN_CELL);
+    let q = 1.0 - p;
+    let t = -log(q) / area * c * c;
+    let fw = min(t, 1.0);
+    let mu = -log(q) * (1.0 - fw / (6.0 * max(t, 1e-12)));
+    return sqrt(max(q * q * (exp(kappa * mu) - 1.0 + mu * (k_hh - 2.0 * k_ah)), 0.0));
+}
+
+fn grain_per_cell(p: f32) -> f32 {
+    let c = pf(F_GRAIN_CELL);
+    return -log(1.0 - p) / pf(F_GRAIN_AREA) * c * c;
+}
+
+fn grain_std(p: f32) -> f32 {
+    return grain_std_at(p, pf(F_GRAIN_AREA), pf(F_GRAIN_KAPPA), pf(F_GRAIN_K_HH), pf(F_GRAIN_K_AH));
+}
+
+fn grain_sub_count(h: u32) -> u32 {
+    let e = pf(F_GRAIN_CLUMP_E);
+    if (e <= 0.0) {
+        return 1u;
+    }
+    let extra = floor(gunit(gpcg(h ^ GRAIN_H3)) * (2.0 * e + 1.0));
+    return 1u + min(u32(max(extra, 0.0)), GRAIN_MAX_SUB - 1u);
+}
+
+fn grain_sub_offset(hj: u32) -> vec2<f32> {
+    let o = gpcg(hj ^ GRAIN_H0);
+    let d = pf(F_GRAIN_CLUMP_D);
+    return vec2<f32>(d * (gunit8(o) + gunit8(o >> 8u) - 1.0), d * (gunit8(o >> 16u) + gunit8(o >> 24u) - 1.0));
+}
+
+// radius and density of grain `hj`
+fn grain_sub_size(hj: u32) -> vec2<f32> {
+    let rad = gpcg(hj ^ GRAIN_H3);
+    let z = 2.0 * (gunit8(rad) + gunit8(rad >> 8u) + gunit8(rad >> 16u)) - 3.0;
+    return vec2<f32>(exp(pf(F_GRAIN_SPREAD) * z), 0.25 + 0.75 * gunit8(rad >> 24u));
+}
+
+// the halo of a clump of weight `w` at squared distance `d2` from its centre (`clump_halo`)
+fn grain_clump_halo(w: f32, d2: f32) -> f32 {
+    let u = d2 * pf(F_GRAIN_HALO_OUT);
+    if (u >= 1.0 || w == 0.0) {
+        return 0.0;
+    }
+    let v = d2 * pf(F_GRAIN_HALO_IN);
+    var inner = 0.0;
+    if (v < 1.0) {
+        inner = (1.0 - v) * (1.0 - v);
+    }
+    return pf(F_GRAIN_HALO) * w * ((1.0 - u) * (1.0 - u) - inner);
+}
+
+// coverage of grain `hj` at offset (dx, dy) from its centre: radius, density, elongation,
+// orientation, lobed outline, soft edge (0 beyond its reach)
+fn grain_sub_cover(hj: u32, dx: f32, dy: f32, d2: f32) -> f32 {
+    let s = pf(F_GRAIN_S);
+    let lump = pf(F_GRAIN_LUMP);
+    let ro = grain_sub_size(hj);
+    let r0 = ro.x;
+    let o = ro.y;
+    let shp = gpcg(hj ^ GRAIN_H1);
+    let a = 2.0 * gunit8(shp) - 1.0;
+    let b = 2.0 * gunit8(shp >> 8u) - 1.0;
+    let n = sqrt(a * a + b * b);
+    var ux = 1.0;
+    var uy = 0.0;
+    if (n > 1e-3) {
+        ux = a / n;
+        uy = b / n;
+    }
+    let asp = 1.0 + pf(F_GRAIN_ASPECT) * gunit4(shp >> 16u);
+    let rr = r0 * sqrt(asp) * (1.0 + lump);
+    let reach = sqrt(rr * rr + s * s) + s;
+    if (d2 >= reach * reach) {
+        return 0.0;
+    }
+    let d = sqrt(d2);
+    var r = r0;
+    if (d > 1e-6) {
+        let inv_d = 1.0 / d;
+        let c = dx * inv_d;
+        let sn = dy * inv_d;
+        if (asp > 1.0) {
+            let cu = c * ux + sn * uy;
+            let cw = sn * ux - c * uy;
+            r = r / sqrt(cu * cu * (1.0 / asp) + cw * cw * asp);
+        }
+        if (lump > 0.0) {
+            let m = 0.5 + f32((shp >> 28u) & 15u) * (1.0 / 30.0);
+            let p2 = GRAIN_PHASES[(shp >> 20u) & 15u];
+            let p3 = GRAIN_PHASES[(shp >> 24u) & 15u];
+            let c2 = c * c - sn * sn;
+            let s2 = 2.0 * c * sn;
+            let c3 = c * (4.0 * c * c - 3.0);
+            let s3 = sn * (3.0 - 4.0 * sn * sn);
+            r = r * (1.0 + lump * (0.6 * m * (p2.x * c2 + p2.y * s2) + 0.4 * m * (p3.x * c3 + p3.y * s3)));
+        }
+    }
+    return o * grain_profile(d, r, s, pf(F_GRAIN_INV_S));
+}
+
+// a disc of radius `r` softened by the edge width `s`, at distance `d` from its centre
+fn grain_profile(d: f32, r: f32, s: f32, inv_s: f32) -> f32 {
+    let rho2 = r * r + s * s;
+    let tau = (d - sqrt(rho2)) * inv_s;
+    if (tau >= 1.0) {
+        return 0.0;
+    }
+    var prof = 1.0;
+    if (tau > -1.0) {
+        prof = (1.0 - tau) * (1.0 - tau) * (2.0 + tau) * 0.25;
+    }
+    return r * r / (rho2 + s * s * 0.2) * prof;
+}
+
+// coverage (the union of its grains) and halo (a ring around its centre) of clump `h` at offset
+// (dx, dy) from its centre
+fn grain_clump_cover(h: u32, dx: f32, dy: f32) -> vec2<f32> {
+    let sr = pf(F_GRAIN_SUB_REACH);
+    let count = grain_sub_count(h);
+    var t = 1.0;
+    var w = 0.0;
+    let has_halo = pf(F_GRAIN_HALO) > 0.0;
+    for (var j = 0u; j < count; j++) {
+        let hj = gsub_hash(h, j);
+        if (has_halo) {
+            let ro = grain_sub_size(hj);
+            w += ro.y * ro.x * ro.x;
+        }
+        let off = grain_sub_offset(hj);
+        let ex = dx - off.x;
+        let ey = dy - off.y;
+        let d2 = ex * ex + ey * ey;
+        if (d2 >= sr * sr) {
+            continue;
+        }
+        t *= 1.0 - grain_sub_cover(hj, ex, ey, d2);
+    }
+    return vec2<f32>(1.0 - t, grain_clump_halo(w, dx * dx + dy * dy));
+}
+
+fn grain_field(x: f32, y: f32, p: f32, seed: u32) -> f32 {
+    let t = grain_per_cell(p);
+    let fw = max(min(t, 1.0), 1e-6);
+    let end = t + 0.5 * fw;
+    let r = pf(F_GRAIN_SUPPORT);
+    let c = pf(F_GRAIN_CELL);
+    // the cells within reach, as a start and a bounded count (never a loop up to i32::MAX)
+    let fi0 = floor((x - r) / c);
+    let fj0 = floor((y - r) / c);
+    let i0 = i32(clamp(fi0, -2.0e9, 2.0e9));
+    let j0 = i32(clamp(fj0, -2.0e9, 2.0e9));
+    let ni = min(u32(max(floor((x + r) / c) - fi0, 0.0)), u32(GRAIN_MAX_REACH));
+    let nj = min(u32(max(floor((y + r) / c) - fj0, 0.0)), u32(GRAIN_MAX_REACH));
+    let e_end = exp(-end);
+    let e_full = exp(fw - end);
+    let salt = gpcg(seed);
+    var keep = 1.0;
+    var hs = 0.0;
+    for (var dj = 0u; dj <= nj; dj++) {
+        let j = j0 + i32(dj);
+        let dy = y - clamp(y, f32(j) * c, (f32(j) + 1.0) * c);
+        for (var di = 0u; di <= ni; di++) {
+            let i = i0 + i32(di);
+            let dx = x - clamp(x, f32(i) * c, (f32(i) + 1.0) * c);
+            if (dx * dx + dy * dy >= r * r) {
+                continue;
+            }
+            let base = gcell(i, j, salt);
+            var prod = 1.0;
+            for (var k = 0u; k < GRAIN_MAX_PER_CELL; k++) {
+                let h = gpcg(base + k);
+                prod *= gunit(h);
+                if (prod <= e_end) {
+                    break;
+                }
+                let pos = gpcg(h ^ GRAIN_H2);
+                let cx = (f32(i) + gunit16(pos)) * c;
+                let cy = (f32(j) + gunit16(pos >> 16u)) * c;
+                let ex = x - cx;
+                let ey = y - cy;
+                if (ex * ex + ey * ey >= r * r) {
+                    continue;
+                }
+                let ah = grain_clump_cover(h, ex, ey);
+                if (ah.x == 0.0 && ah.y == 0.0) {
+                    continue;
+                }
+                var f = 1.0;
+                if (prod < e_full) {
+                    f = clamp((end + log(prod)) / fw, 0.0, 1.0);
+                }
+                keep *= 1.0 - f * ah.x;
+                hs += f * ah.y;
+            }
+        }
+    }
+    // less the halo's deviation from its mean, on the light the grains let through
+    var halo_mean = 0.0;
+    if (pf(F_GRAIN_HALO) > 0.0) {
+        halo_mean = -log(1.0 - p) * pf(F_GRAIN_HALO_MEAN);
+    }
+    return 1.0 - keep - (1.0 - p) * (hs - halo_mean);
+}
+
+fn grain_gauss(ix: i32, iy: i32, seed: u32) -> f32 {
+    let h = gcell(ix, iy, gpcg(seed ^ 0x5bd1e995u));
+    let sum = (h & 0xffu) + ((h >> 8u) & 0xffu) + ((h >> 16u) & 0xffu) + (h >> 24u);
+    return ((f32(sum) + 2.0) * (1.0 / 256.0) - 2.0) * 1.7320508;
+}
+
+fn grain_layer(gx: f32, gy: f32, p: f32, seed: u32) -> f32 {
+    var d = 0.0;
+    let wf = pf(F_GRAIN_WF);
+    let wn = pf(F_GRAIN_WN);
+    if (wf > 0.0) {
+        let ir = pf(F_GRAIN_INV_R);
+        d += wf * (p - grain_field(gx * ir, gy * ir, p, seed));
+    }
+    if (wn > 0.0) {
+        let ppl = pf(F_GRAIN_PPL);
+        let ix = i32(floor(gx * ppl));
+        let iy = i32(floor(gy * ppl));
+        var n = grain_gauss(ix, iy, seed);
+        let e = pf(F_GRAIN_NOISE_E);
+        if (e != 0.0) {
+            // correlated with its four neighbours (`GrainParams::noise`)
+            let around = grain_gauss(ix - 1, iy, seed) + grain_gauss(ix + 1, iy, seed) + grain_gauss(ix, iy - 1, seed) + grain_gauss(ix, iy + 1, seed);
+            n = (n - e * around) * pf(F_GRAIN_NOISE_N);
+        }
+        d -= wn * grain_std(p) * n;
+    }
+    return d;
+}
+
+fn grain_apply(gx: f32, gy: f32, lum: f32) -> vec3<f32> {
+    let l = clamp(lum, 0.0, 1.0);
+    let gamma = pf(F_GRAIN_GAMMA);
+    var shade = max(1.0 - l, 1e-7);
+    if (gamma != 1.0) {
+        shade = pow(shade, gamma);
+    }
+    let p = GRAIN_P_MIN + (GRAIN_P_MAX - GRAIN_P_MIN) * shade;
+    let seed = pu(F_GRAIN_SEED);
+    // equally strong at every tone (at the reference resolution), tilted by the response
+    let tilt = pf(F_GRAIN_TILT);
+    var tw = 1.0;
+    if (tilt != 0.0) {
+        tw = exp(tilt * (l - 0.5));
+    }
+    let sd_ref = grain_std_at(p, pf(F_GRAIN_AREA_REF), pf(F_GRAIN_KAPPA_REF), pf(F_GRAIN_K_HH_REF), pf(F_GRAIN_K_AH_REF));
+    let amp = pf(F_GRAIN_AMP) * tw / max(sd_ref, 1e-4);
+    let color = pf(F_GRAIN_COLOR);
+    if (color <= 0.0) {
+        let lv = amp * grain_layer(gx, gy, p, seed);
+        return vec3<f32>(lv, lv, lv);
+    }
+    // one shared layer and a dye layer per channel: √(1 − c)·mono + √c·dye
+    let wm = sqrt(max(1.0 - color, 0.0));
+    let wc = sqrt(color);
+    let m = wm * amp * grain_layer(gx, gy, p, seed);
+    let rr = wc * amp * grain_layer(gx, gy, p, seed ^ GRAIN_SALT_R);
+    let gg = wc * amp * grain_layer(gx, gy, p, seed ^ GRAIN_SALT_G);
+    let bb = wc * amp * grain_layer(gx, gy, p, seed ^ GRAIN_SALT_B);
+    return vec3<f32>(m + rr, m + gg, m + bb);
 }
 
 fn enc8(v: f32) -> u32 {
@@ -445,11 +812,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let sg = select(0.92, 0.82, ss > 0.0);
         delta += ss * 1.7 * sg * ws * sqrt(ws) + hh * 0.85 * wh;
     }
-    if (lt[6] != 0.0) {
-        delta += lt[6] * 0.8 * sstep(0.5, 3.0, l1);
-    }
-    if (lt[7] != 0.0) {
-        delta += lt[7] * 0.8 * (1.0 - sstep(-6.0, -1.5, l1));
+    // local Whites / Blacks, each mask on its own tone range (lcc_pipeline::finish::MASK_TONE,
+    // LOCAL_WB_EV)
+    if (lt[6] != 0.0 || lt[7] != 0.0) {
+        for (var m = 0u; m < nm; m++) {
+            let a = masks[m * n + i];
+            if (a <= 0.0) {
+                continue;
+            }
+            let t = pu(F_MASK_OFF) + m * MASK_TERMS;
+            let wh = aux[t + 6u];
+            let bl = aux[t + 7u];
+            if (wh != 0.0) {
+                let wt = sstep(aux[t + MASK_TONE], aux[t + MASK_TONE + 1u], l1);
+                delta += a * wh * 1.5 * wt * sqrt(wt);
+            }
+            if (bl != 0.0) {
+                let bt = 1.0 - sstep(aux[t + MASK_TONE + 2u], aux[t + MASK_TONE + 3u], l1);
+                delta += a * bl * 1.5 * bt;
+            }
+        }
     }
     if (lt[3] != 0.0) {
         delta += lt[3] * 0.14 * clamp(l1, -6.0, 4.0);
@@ -537,6 +919,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // --- colour
     d = color_ops(d, lt[11], lt[12]);
+    if (pu(F_LPOINTS) != 0u) {
+        d = local_point_colors(d, i, n);
+    }
     if (tint_on) {
         let lab = oklab(d);
         d = oklab_inv(vec3<f32>(lab.x, lab.y + tint_dir.x * 0.08 * tint_amt, lab.z + tint_dir.y * 0.08 * tint_amt));
@@ -665,17 +1050,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let py = f32(y) + 0.5;
         let gx = pf(F_GRAIN_AFF) * px + pf(F_GRAIN_AFF + 2u) * py + pf(F_GRAIN_AFF + 4u);
         let gy = pf(F_GRAIN_AFF + 1u) * px + pf(F_GRAIN_AFF + 3u) * py + pf(F_GRAIN_AFF + 5u);
-        let sc = pf(F_GRAIN_SC);
-        let rough = pf(F_GRAIN_ROUGH);
-        let seed = pu(F_GRAIN_SEED);
-        var g = grain_noise(gx * sc, gy * sc, seed);
-        g = g * (1.0 - rough * 0.5) + grain_noise(gx * sc * 2.3, gy * sc * 2.3, seed ^ 0x55u) * rough * 0.7;
-        var lum = 0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z;
-        if (hdr) {
-            lum = clamp(lum, 0.0, 1.0);
+        if (pu(F_GRAIN_MODEL) == 0u) {
+            // processes V1–V6: value noise (frozen)
+            let sc = pf(F_GRAIN_SC);
+            let rough = pf(F_GRAIN_ROUGH);
+            let seed = pu(F_GRAIN_SEED);
+            var g = grain_noise(gx * sc, gy * sc, seed);
+            g = g * (1.0 - rough * 0.5) + grain_noise(gx * sc * 2.3, gy * sc * 2.3, seed ^ 0x55u) * rough * 0.7;
+            var lum = 0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z;
+            if (hdr) {
+                lum = clamp(lum, 0.0, 1.0);
+            }
+            let k = pf(F_GRAIN_AMT) * g * (0.35 + 2.6 * lum * (1.0 - lum));
+            e = e + k;
+        } else {
+            // process V7: clumps of particles (`lcc_pipeline::grain`)
+            let lum = 0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z;
+            e = e + grain_apply(gx, gy, lum);
         }
-        let k = pf(F_GRAIN_AMT) * g * (0.35 + 2.6 * lum * (1.0 - lum));
-        e = e + k;
+    }
+    // --- a LUT profile (`Lut3d::apply` on the SDR part, blended by the profile amount; in HDR the
+    // part above SDR white is carried over)
+    if (pu(F_LUT) != 0u) {
+        let c = clamp(e, vec3<f32>(0.0), vec3<f32>(1.0));
+        let m = lut_apply(c);
+        if (hdr) {
+            e = e + (m - c) * pf(F_LUT_AMT);
+        } else {
+            e = e + (m - e) * pf(F_LUT_AMT);
+        }
     }
     if (warn == 1u) {
         e = vec3<f32>(1.0, 0.0, 0.0);
@@ -695,6 +1098,36 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     e = vec3<f32>(out_encode(e.x), out_encode(e.y), out_encode(e.z));
     out[i] = enc8(e.x) | (enc8(e.y) << 8u) | (enc8(e.z) << 16u) | (255u << 24u);
+}
+
+// `Lut3d::apply` (trilinear) on the LUT profile's table in `aux` (red fastest).
+fn lut3_at(r: u32, g: u32, b: u32) -> vec3<f32> {
+    let n = pu(F_LUT_N);
+    let o = pu(F_LUT_OFF) + 3u * (r + n * (g + n * b));
+    return vec3<f32>(aux[o], aux[o + 1u], aux[o + 2u]);
+}
+
+fn lut_apply(c: vec3<f32>) -> vec3<f32> {
+    let n = pu(F_LUT_N);
+    let s = f32(n - 1u);
+    var idx = vec3<u32>(0u);
+    var fr = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        let lo = pf(F_LUT_MIN + k);
+        let span = max(pf(F_LUT_MAX + k) - lo, 1e-6);
+        let x = clamp((c[k] - lo) / span, 0.0, 1.0) * s;
+        let i = min(u32(floor(x)), n - 2u);
+        idx[k] = i;
+        fr[k] = x - f32(i);
+    }
+    let r = idx.x;
+    let g = idx.y;
+    let b = idx.z;
+    let c00 = mix(lut3_at(r, g, b), lut3_at(r + 1u, g, b), fr.x);
+    let c10 = mix(lut3_at(r, g + 1u, b), lut3_at(r + 1u, g + 1u, b), fr.x);
+    let c01 = mix(lut3_at(r, g, b + 1u), lut3_at(r + 1u, g, b + 1u), fr.x);
+    let c11 = mix(lut3_at(r, g + 1u, b + 1u), lut3_at(r + 1u, g + 1u, b + 1u), fr.x);
+    return mix(mix(c00, c10, fr.y), mix(c01, c11, fr.y), fr.z);
 }
 
 // `finish::hue_clip` (process V5): the brightest channel limited to `peak`, the darkest kept (all three `peak` when it

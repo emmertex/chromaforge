@@ -93,7 +93,11 @@ fn stored_hash(p: &Photo) -> Option<&str> {
 /// The content hash of the file at `path` (as import computes it), if it can be read. Read in
 /// pieces: the file is whatever is on the disk, of any size.
 fn file_hash(path: &str) -> Option<String> {
-    hash_reader(std::fs::File::open(path).ok()?)
+    use std::io::Read;
+    // the opened file must be regular (a FIFO or device would never end), and no more than its size at open is read
+    let file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok().filter(|m| m.is_file())?;
+    hash_reader(file.take(meta.len()))
 }
 
 /// The content hash of what `r` gives, read in pieces (the hash import computes of the whole).

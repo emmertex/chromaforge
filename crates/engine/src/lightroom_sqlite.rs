@@ -813,6 +813,7 @@ impl Database {
     fn parse_schema(&self, cancel: &std::sync::atomic::AtomicBool) -> Result<SchemaInfo, String> {
         check_cancelled(cancel)?;
         let mut tables = Vec::new();
+        let mut roots = HashSet::new();
         let mut aliases = HashMap::new();
         let mut rows = Vec::new();
         let mut state =
@@ -849,7 +850,7 @@ impl Database {
             if column_names.len() > MAX_COLUMNS {
                 continue;
             }
-            if tables.iter().any(|table: &LiveTable| table.rootpage == rootpage) {
+            if !roots.insert(rootpage) {
                 continue;
             }
             if let Some(index) = alias {
@@ -1103,6 +1104,7 @@ fn parse_create_table(sql: &str) -> Result<(Vec<String>, Option<usize>), String>
     let mut alias = None;
     let mut integer_columns = HashSet::new();
     let mut table_primary = None;
+    let mut names = HashSet::new();
     let mut start = 0usize;
     let mut nested = 0usize;
     for i in 0..=body.len() {
@@ -1118,7 +1120,12 @@ fn parse_create_table(sql: &str) -> Result<(Vec<String>, Option<usize>), String>
                 }
             } else {
                 let name = part.first().and_then(Token::identifier).ok_or("column name is not an identifier")?;
-                if columns.iter().any(|old| old == name) {
+                if columns.len() >= MAX_COLUMNS {
+                    return Err("CREATE TABLE has too many columns".into());
+                }
+                // SQLite column names are ASCII case-insensitive, so "a" and "A" clash (looked up in a set, not
+                // scanned against every earlier name: upstream #3674)
+                if !names.insert(name.to_ascii_lowercase()) {
                     return Err("duplicate SQLite column name".into());
                 }
                 let index = columns.len();
@@ -2371,5 +2378,21 @@ mod tests {
             Ok(())
         });
         assert!(walked.is_err() && rows > 0 && rows < 100, "{walked:?} after {rows} rows");
+    }
+}
+
+#[cfg(test)]
+mod column_limit_tests {
+    use super::*;
+
+    /// Upstream #3674: a CREATE TABLE past the column limit is refused while parsing, and column names clash
+    /// case-insensitively.
+    #[test]
+    fn a_create_table_past_the_column_limit_is_refused_while_parsing() {
+        let cols: Vec<String> = (0..=MAX_COLUMNS).map(|i| format!("c{i} TEXT")).collect();
+        let sql = format!("CREATE TABLE t ({})", cols.join(", "));
+        assert!(parse_create_table(&sql).unwrap_err().contains("too many columns"));
+        assert!(parse_create_table("CREATE TABLE t (a TEXT, a INTEGER)").unwrap_err().contains("duplicate"));
+        assert!(parse_create_table("CREATE TABLE t (a TEXT, A INTEGER)").unwrap_err().contains("duplicate"));
     }
 }

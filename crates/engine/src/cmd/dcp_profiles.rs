@@ -76,7 +76,7 @@ fn activate(c: &str, active_dir: &Path, file: &Path) -> Result<lcc_raw::dcp::Dcp
     Ok(dcp)
 }
 
-fn import(_s: &mut Session, p: &Value) -> Result<Value> {
+pub(super) fn import(_s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "camera.importDcp";
     let paths: Vec<String> =
         p.get("paths").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();

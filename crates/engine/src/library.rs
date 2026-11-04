@@ -144,6 +144,14 @@ pub struct Library {
     /// Keeps other processes out of this library while it's open (last: released after the
     /// journal's background snapshot has landed).
     lock: Option<LibraryLock>,
+    /// The library keeps its own presets, profiles and habits (its prefs.json says so, or there is
+    /// no app store); otherwise the app store holds them ([`crate::app_store`]).
+    pub own_store: bool,
+    /// The library asked to keep its own (`storeWithLibrary` in prefs.json).
+    pub store_with_library: bool,
+    /// While the app store holds them: the library's own copies of those prefs.json keys, as read,
+    /// written back unchanged.
+    frozen: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Where a library's files live (see [`Session::open_library_in`]).
@@ -160,13 +168,32 @@ pub struct LibraryStores {
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
-struct PresetsFile {
-    user: Vec<Preset>,
-    folders: Vec<String>,
-    favorites: Vec<String>,
+pub(crate) struct PresetsFile {
+    pub user: Vec<Preset>,
+    pub folders: Vec<String>,
+    pub favorites: Vec<String>,
+    /// Presets marked At Import, and those hidden from the panel and pickers (any preset, built-in too).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub at_import: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<String>,
+    /// Built-in presets renamed or moved to another group in the Presets Manager.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub builtin_names: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub builtin_groups: std::collections::BTreeMap<String, String>,
     /// Favourite profiles, and the recently applied ones (newest first).
-    profile_favorites: Vec<String>,
-    profile_recent: Vec<String>,
+    pub profile_favorites: Vec<String>,
+    pub profile_recent: Vec<String>,
+    /// Profiles the Profile Manager hides.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    profile_hidden: Vec<String>,
+    /// The Profile Manager's renames, regroupings, order and removed looks.
+    #[serde(skip_serializing_if = "crate::profile_edits::ProfileEdits::is_empty")]
+    profile_edits: crate::profile_edits::ProfileEdits,
+    /// Each camera body's camera profile.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    body_profiles: std::collections::BTreeMap<String, String>,
 }
 
 /// The state presets.json was last written (or read) from. Saving checks the preset list's
@@ -174,36 +201,57 @@ struct PresetsFile {
 /// collection presets.json is ~40 MB, and serializing it after every command made each slider
 /// tick take seconds.
 #[derive(Default)]
-struct PresetsSaved {
+pub(crate) struct PresetsSaved {
     generation: u64,
     folders: Vec<String>,
     profile_favorites: Vec<String>,
     profile_recent: Vec<String>,
+    profile_hidden: Vec<String>,
+    profile_edits: crate::profile_edits::ProfileEdits,
+    body_profiles: std::collections::BTreeMap<String, String>,
+    at_import: Vec<String>,
+    hidden: Vec<String>,
+    builtin_names: std::collections::BTreeMap<String, String>,
+    builtin_groups: std::collections::BTreeMap<String, String>,
     /// Hash of the bytes written: a list borrowed mutably but left as it was isn't rewritten.
     hash: u64,
 }
 
 impl PresetsSaved {
-    fn state_of(s: &Session) -> PresetsSaved {
+    pub(crate) fn state_of(s: &Session) -> PresetsSaved {
         PresetsSaved {
             generation: s.presets.generation(),
             folders: s.preset_folders.clone(),
             profile_favorites: s.profile_favorites.clone(),
             profile_recent: s.profile_recent.clone(),
+            profile_hidden: s.profile_hidden.clone(),
+            profile_edits: s.profile_edits.clone(),
+            body_profiles: s.body_profiles.clone(),
+            at_import: s.preset_at_import.clone(),
+            hidden: s.preset_hidden.clone(),
+            builtin_names: s.preset_builtin_names.clone(),
+            builtin_groups: s.preset_builtin_groups.clone(),
             hash: 0,
         }
     }
 
     /// `s` changed its presets or profile lists since this state.
-    fn differs(&self, s: &Session) -> bool {
+    pub(crate) fn differs(&self, s: &Session) -> bool {
         self.generation != s.presets.generation()
             || self.folders != s.preset_folders
             || self.profile_favorites != s.profile_favorites
             || self.profile_recent != s.profile_recent
+            || self.profile_hidden != s.profile_hidden
+            || self.profile_edits != s.profile_edits
+            || self.body_profiles != s.body_profiles
+            || self.at_import != s.preset_at_import
+            || self.hidden != s.preset_hidden
+            || self.builtin_names != s.preset_builtin_names
+            || self.builtin_groups != s.preset_builtin_groups
     }
 }
 
-fn bytes_hash(b: &[u8]) -> u64 {
+pub(crate) fn bytes_hash(b: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     b.hash(&mut h);
@@ -238,12 +286,26 @@ struct ViewFile {
 }
 
 impl Library {
+    /// A small file of the library's own (`people.json`): `None` when missing.
+    pub(crate) fn read_file(&mut self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
+        self.files.read(name)
+    }
+
+    /// Replace a small file of the library's own atomically.
+    pub(crate) fn write_file(&mut self, name: &str, data: &[u8]) -> std::io::Result<()> {
+        self.files.write_atomic(name, data)
+    }
+
     pub fn journal(&self) -> &Journal {
         &self.journal
     }
     #[cfg(test)]
     pub(crate) fn journal_mut(&mut self) -> &mut Journal {
         &mut self.journal
+    }
+    /// presets.json is written at the next persist, whatever it holds.
+    pub(crate) fn forget_presets_saved(&mut self) {
+        self.presets_saved = PresetsSaved::default();
     }
     pub fn thumbs_dir(&self) -> PathBuf {
         self.dir.join("thumbs")
@@ -300,6 +362,8 @@ struct PrefsFile {
     print_templates: Vec<crate::print::template::PrintTemplate>,
     /// Metadata presets.
     metadata_presets: Vec<crate::cmd::metadata::MetadataPreset>,
+    /// Import presets (the Import tab's settings, by name).
+    import_presets: Vec<crate::cmd::import_tab::ImportPreset>,
     /// Filter presets.
     filter_presets: Vec<crate::cmd::filters::FilterPreset>,
     /// Point-curve presets.
@@ -312,6 +376,8 @@ struct PrefsFile {
     mask_tool_effects: std::collections::BTreeMap<String, String>,
     /// Colour-label name sets.
     label_sets: Vec<crate::cmd::manage::LabelSet>,
+    /// File-name templates saved by name (Rename Photos, Export).
+    naming_presets: Vec<crate::cmd::manage::NamingPreset>,
     /// Imported LUT profiles.
     lut_profiles: Vec<crate::cmd::lut_profiles::LutProfile>,
     /// Keyword sets, the one in use, recent keywords.
@@ -346,20 +412,35 @@ struct PrefsFile {
     hold_view: bool,
     /// Folder polling (issue #123).
     folder_watch: crate::folder_watch::WatchPrefs,
+    /// Keep presets, profiles and habits with this library instead of the app store
+    /// ([`crate::app_store`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    store_with_library: bool,
+    /// What dialogs remember (while the library keeps its own; else in the app store).
+    #[serde(skip_serializing_if = "crate::app_store::DialogMemory::is_default", deserialize_with = "crate::app_store::lenient_dialogs")]
+    dialogs: crate::app_store::DialogMemory,
 }
 
-fn presets_json(s: &Session) -> String {
+/// The keys of `store`'s prefs.json the app store holds, as they are on disk.
+fn read_frozen(store: &mut dyn Store) -> serde_json::Map<String, serde_json::Value> {
+    let mut frozen = serde_json::Map::new();
+    if let Ok(Some(raw)) = store.read("prefs.json")
+        && let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(&raw)
+    {
+        for k in crate::app_store::SHARED_PREFS_KEYS {
+            if let Some(v) = map.get(k) {
+                frozen.insert(k.to_string(), v.clone());
+            }
+        }
+    }
+    frozen
+}
+
+pub(crate) fn presets_json(s: &Session) -> String {
     #[cfg(test)]
     PRESETS_SERIALIZED.with(|c| c.set(c.get() + 1));
-    let presets = &s.presets;
-    let f = PresetsFile {
-        user: presets.iter().filter(|p| !p.builtin).cloned().collect(),
-        folders: s.preset_folders.clone(),
-        favorites: presets.iter().filter(|p| p.builtin && p.favorite).map(|p| p.id.clone()).collect(),
-        profile_favorites: s.profile_favorites.clone(),
-        profile_recent: s.profile_recent.clone(),
-    };
-    serde_json::to_string_pretty(&f).unwrap_or_default()
+    // (borrowed: the 10 000+ presets of an imported collection are not copied to be written)
+    crate::presets_save::Snapshot::of(s).json()
 }
 
 /// Finish a background compaction that is done (cheap otherwise). A failed one lost nothing (the
@@ -564,9 +645,10 @@ impl Session {
         self.folder_metadata = None;
         self.denoise.library_changed();
         self.media.denoise.clear();
-        // what was learned about the old library's faces is saved, and none of it carries over (photo ids are per library)
+        // what was learned about the old library's faces and ML embeddings is saved, and none of it carries over (photo ids are per library)
         #[cfg(not(target_arch = "wasm32"))]
         self.faces.library_changed();
+        self.ml.library_changed();
         let (mut journal, mut catalog, report) = Journal::open(catalog)?;
         // A loaded catalog counts revisions from 0, like every other one. Caches (sidebar counts,
         // keyword tree, the grid's list…) are keyed on the revision, so give each library loaded
@@ -612,12 +694,15 @@ impl Session {
         self.export_presets = prefs.export_presets;
         self.print_templates = prefs.print_templates;
         self.metadata_presets = prefs.metadata_presets;
+        self.import_presets = prefs.import_presets;
         self.filter_presets = prefs.filter_presets;
         self.curve_presets = prefs.curve_presets;
         self.crop_aspects = prefs.crop_aspects.sanitized();
         self.mask_effects = prefs.mask_effects;
         self.mask_tool_effects = prefs.mask_tool_effects;
         self.label_sets = prefs.label_sets;
+        self.naming_presets =
+            prefs.naming_presets.into_iter().filter(|p| !p.name.trim().is_empty()).take(crate::cmd::manage::MAX_NAMING_PRESETS).collect();
         self.lut_profiles = prefs.lut_profiles;
         crate::cmd::lut_profiles::register_all(self, on_disk.then(|| dir.join("Profiles")).as_deref());
         self.keyword_sets = prefs.keyword_sets;
@@ -646,6 +731,7 @@ impl Session {
         self.slide_titles = prefs.slide_titles.sanitized();
         self.forget_local_days = prefs.forget_local_days.unwrap_or(lcc_catalog::DEFAULT_FORGET_DAYS);
         self.hold_view = prefs.hold_view;
+        self.dialogs = prefs.dialogs.clone();
         self.folder_watch = prefs.folder_watch.sanitized();
         // (a damaged file only costs a fresh start: the next poll records the listings again)
         let watch: crate::folder_watch::WatchState = files
@@ -664,6 +750,10 @@ impl Session {
         // presets
         if let Some(f) = settings.read::<PresetsFile>(files.as_mut(), "presets.json") {
             self.preset_folders = f.folders;
+            self.preset_at_import = f.at_import;
+            self.preset_hidden = f.hidden;
+            self.preset_builtin_names = f.builtin_names;
+            self.preset_builtin_groups = f.builtin_groups;
             for p in &mut self.presets {
                 p.favorite = p.builtin && f.favorites.contains(&p.id) || (!p.builtin && p.favorite);
             }
@@ -673,9 +763,14 @@ impl Session {
                     self.presets.push(u);
                 }
             }
+            self.apply_builtin_edits();
             let known = |id: &String| crate::presets::profile(id).is_some() || self.lut_profiles.iter().any(|p| &p.id == id);
             self.profile_favorites = f.profile_favorites.into_iter().filter(known).collect();
             self.profile_recent = f.profile_recent.into_iter().filter(known).take(crate::presets::RECENT_PROFILES).collect();
+            // (a hidden id this build doesn't know is kept: a LUT folder may come back)
+            self.profile_hidden = f.profile_hidden.into_iter().take(10_000).collect();
+            self.profile_edits = f.profile_edits.bounded();
+            self.body_profiles = f.body_profiles.into_iter().take(10_000).collect();
         }
         // view state
         if let Some(v) = settings.read::<ViewFile>(files.as_mut(), "view.json") {
@@ -710,10 +805,14 @@ impl Session {
         // photo ids are per library: drop decoded sources of the previous one
         self.media.clear_sources();
         if on_disk {
-            self.media.attach_disk_cache(&dir.join("thumbs"), self.cache_bytes());
+            self.media.attach_disk_cache(&dir.join("thumbs"), self.cache_bytes_in(&dir.join("thumbs")));
             self.tidy_thumbnail_cache();
         }
         let view_written = self.view_json();
+        let store_with_library = prefs.store_with_library;
+        let own_store = store_with_library || self.app_store.is_none();
+        let frozen = if own_store { serde_json::Map::new() } else { read_frozen(files.as_mut()) };
+        let upgraded = upgrade_notice(&report);
         self.library = Some(Library {
             dir,
             on_disk,
@@ -728,11 +827,18 @@ impl Session {
             forgot_local: None,
             presets_saved,
             view_written,
-            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(settings.warnings).collect(),
+            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(upgraded).chain(settings.warnings).collect(),
             warnings_reported: 0,
             blocked: settings.blocked,
             lock: lock.take(),
+            own_store,
+            store_with_library,
+            frozen,
         });
+        if !own_store {
+            // the store's presets, profiles and habits (this library's joined it the first time)
+            self.adopt_app_store(&self.library.as_ref().map(|l| l.dir.clone()).unwrap_or_default(), on_disk);
+        }
         // forget untouched Local records of folders not browsed for a while (journaled at once)
         if self.forget_local_days > 0 {
             let plan = self.forget_local(false, None);
@@ -794,7 +900,17 @@ impl Session {
     pub fn persist(&mut self) -> Result<()> {
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         if !self.pending_log.is_empty() {
-            if let Err(e) = lib.journal.append(&self.pending_log) {
+            let mut appended = lib.journal.append(&self.pending_log);
+            if appended.is_err() && lib.journal.lost() > 0 && self.interaction.is_none() {
+                // a log write failed after earlier changes were handed over (natively the log is
+                // written by a thread of its own): a snapshot now saves them and the queued ones
+                let queued = self.pending_log.len() as u64;
+                if lib.journal.snapshot_with_unlogged(&self.catalog, queued).is_ok() && lib.journal.lost() == 0 {
+                    log::warn!("library: a catalog log write failed; a snapshot saved every change");
+                    appended = Ok(());
+                }
+            }
+            if let Err(e) = appended {
                 // the ops stay queued (and applied in memory): the next persist retries them
                 let reason = e.to_string();
                 log::error!("library: {} change(s) not written to disk: {reason}", self.pending_log.len());
@@ -810,6 +926,13 @@ impl Session {
             self.pending_log.clear();
             lib.last_error = None;
         }
+        if self.pending_log.is_empty()
+            && let Err(e) = lib.journal.check_log()
+        {
+            // a log write on its thread failed: the snapshot below saves what it lost
+            lib.last_error = Some(e.to_string());
+            lib.unsaved_error = Some(e.to_string());
+        }
         poll_compaction(lib);
         // Never snapshot mid-interaction: the catalog then holds an uncommitted preview value.
         // The snapshot is written by a worker thread (natively); appends go on meanwhile.
@@ -822,10 +945,48 @@ impl Session {
             log::error!("library: compaction: {e}");
             lib.last_error = Some(format!("compaction: {e}"));
         }
+        if self.pending_log.is_empty() && lib.journal.lost() == 0 && lib.unsaved_error.is_some() && lib.retry_at.is_none() {
+            // what a failed log write lost is in the snapshot now
+            lib.unsaved_error = None;
+        }
         self.sync_compaction_row();
+        if self.uses_app_store() {
+            // the presets live in the app store: the library's presets.json stays as it was
+            if let Err(e) = self.save_app_store() {
+                log::error!("store: {e}");
+                if let Some(lib) = self.library.as_mut() {
+                    lib.last_error = Some(e.to_string());
+                }
+            }
+            return Ok(());
+        }
+        // a background save that failed: the presets count as unsaved and are saved again now
+        if let Some(e) = self.presets_save_failed()
+            && let Some(lib) = self.library.as_mut()
+        {
+            log::error!("library: presets: {e}");
+            lib.presets_error = Some(format!("presets: {e}"));
+            lib.presets_saved = PresetsSaved::default();
+        }
         let due = self.library.as_ref().is_some_and(|l| l.presets_saved.differs(self) && !l.blocked.contains(&"presets.json"));
         if !due {
             return Ok(());
+        }
+        // off the UI thread when it can be (`presets_save`): the bytes are made and compared there
+        if let Some(lib) = self.library.take() {
+            let known = lib.presets_saved.hash;
+            let handed = self.save_presets_in_background(lib.files.as_ref(), known);
+            self.library = Some(lib);
+            if handed {
+                let mut state = PresetsSaved::state_of(self);
+                state.hash = known;
+                if let Some(lib) = self.library.as_mut() {
+                    lib.presets_saved = state;
+                    // (a failure of this save sets it again on the next persist)
+                    lib.presets_error = None;
+                }
+                return Ok(());
+            }
         }
         let presets = presets_json(self);
         let mut state = PresetsSaved::state_of(self);
@@ -894,14 +1055,28 @@ impl Session {
             return Ok(());
         }
         let _ = self.end_interaction();
-        // the automatic sidecar writes still queued are made, and a failed one recorded, before the library goes
+        // the automatic sidecar writes and ML embeddings still queued are saved before the library goes
         self.flush_sidecar_writes();
+        self.ml.save_store_now();
         let persisted = self.persist();
+        // a presets.json save on its way finishes first (it is this library's), and a failed one
+        // is made here, in the close
+        self.flush_presets();
+        if self.presets_saver.is_some() {
+            let saves = std::mem::replace(&mut self.background_saves, false);
+            let _ = self.persist();
+            self.background_saves = saves;
+        }
         self.save_view();
         let unlogged = if persisted.is_err() { self.pending_log.len() as u64 } else { 0 };
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
-        let before = lib.journal.seq();
+        // (ops a failed log write lost count with the queued ones: the snapshot saves both)
+        let before = lib.journal.seq().saturating_add(lib.journal.lost());
         let snapshot = lib.journal.snapshot_with_unlogged(&self.catalog, unlogged);
+        if snapshot.is_err() {
+            // at least everything handed to the log's thread is written and synced
+            let _ = lib.journal.flush();
+        }
         if unlogged > 0 && lib.journal.seq() == before + unlogged {
             // the snapshot holds the queued ops: they are saved, never append them again
             log::info!("library: {unlogged} queued change(s) saved in the closing snapshot");
@@ -913,13 +1088,28 @@ impl Session {
         let result = match (persisted, snapshot) {
             (_, Ok(())) => Ok(()),
             // neither the log nor the snapshot took the queued ops
-            (Err(EngineError::NotSaved(e)), Err(s)) if lib.journal.seq() == before => Err(EngineError::NotSaved(format!("{e}; snapshot: {s}"))),
+            (Err(EngineError::NotSaved(e)), Err(s)) if lib.journal.seq().saturating_add(lib.journal.lost()) == before => {
+                Err(EngineError::NotSaved(format!("{e}; snapshot: {s}")))
+            }
             (_, Err(s)) => Err(s.into()),
         };
         if result.is_ok() {
             self.library_identity = std::sync::Arc::new(());
         }
         result
+    }
+
+    /// Wait until every change handed to the catalog log is durable (natively the log is written
+    /// by a thread of its own). An error: a write failed and the changes it lost are saved by
+    /// the next save (a snapshot). A no-op without a library.
+    pub fn flush_catalog(&mut self) -> Result<()> {
+        let Some(lib) = self.library.as_mut() else { return Ok(()) };
+        lib.journal.flush().map_err(|e| {
+            let reason = e.to_string();
+            lib.last_error = Some(reason.clone());
+            lib.unsaved_error = Some(reason.clone());
+            EngineError::NotSaved(reason)
+        })
     }
 
     /// Let go of the open library's lock (and with it the owner note, `catalog.lock.owner`) while
@@ -972,19 +1162,22 @@ impl Session {
 
     /// Save the library preferences (no-op for in-memory sessions).
     pub fn save_prefs(&mut self) -> Result<()> {
-        let v = serde_json::to_vec_pretty(&PrefsFile {
+        let store = self.save_app_store();
+        let v = serde_json::to_value(PrefsFile {
             xmp: self.xmp,
             last_export: self.last_export.clone(),
             last_merge: self.last_merge.clone(),
             export_presets: self.export_presets.clone(),
             print_templates: self.print_templates.clone(),
             metadata_presets: self.metadata_presets.clone(),
+            import_presets: self.import_presets.clone(),
             filter_presets: self.filter_presets.clone(),
             curve_presets: self.curve_presets.clone(),
             crop_aspects: self.crop_aspects.clone(),
             mask_effects: self.mask_effects.clone(),
             mask_tool_effects: self.mask_tool_effects.clone(),
             label_sets: self.label_sets.clone(),
+            naming_presets: self.naming_presets.clone(),
             lut_profiles: self.lut_profiles.clone(),
             keyword_sets: self.keyword_sets.clone(),
             keyword_set: self.keyword_set.clone(),
@@ -1004,9 +1197,35 @@ impl Session {
             slide_titles: self.slide_titles.clone(),
             hold_view: self.hold_view,
             folder_watch: self.folder_watch,
-        })
-        .unwrap_or_default();
-        let Some(lib) = self.library.as_mut() else { return Ok(()) };
+            store_with_library: self.library.as_ref().is_some_and(|l| l.store_with_library),
+            dialogs: self.dialogs.clone(),
+        });
+        // while the app store holds them, the library's own copies are written back as read
+        let v = match (v, self.library.as_ref()) {
+            (Ok(serde_json::Value::Object(mut map)), Some(lib)) if !lib.own_store => {
+                for k in crate::app_store::SHARED_PREFS_KEYS {
+                    match lib.frozen.get(k) {
+                        Some(old) => map.insert(k.to_string(), old.clone()),
+                        None => map.remove(k),
+                    };
+                }
+                // auto import stays with the library
+                let mut import = lib.frozen.get("import").cloned().unwrap_or_else(|| serde_json::json!({}));
+                if let serde_json::Value::Object(im) = &mut import {
+                    im.insert("autoFolder".into(), serde_json::to_value(&self.import_defaults.auto_folder).unwrap_or_default());
+                    im.insert("autoCopy".into(), serde_json::Value::Bool(self.import_defaults.auto_copy));
+                    im.insert("autoAlbum".into(), serde_json::to_value(&self.import_defaults.auto_album).unwrap_or_default());
+                }
+                map.insert("import".into(), import);
+                serde_json::to_vec_pretty(&serde_json::Value::Object(map)).unwrap_or_default()
+            }
+            (Ok(v), _) => serde_json::to_vec_pretty(&v).unwrap_or_default(),
+            (Err(_), _) => Vec::new(),
+        };
+        let Some(lib) = self.library.as_mut() else { return store };
+        if v.is_empty() {
+            return Err(EngineError::Other("prefs: couldn't be serialized".into()));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if lib.on_disk {
             let mut cs = lcc_catalog::library::CatalogSettings::load(&lib.dir);
@@ -1021,21 +1240,71 @@ impl Session {
                 "prefs: prefs.json couldn't be read when the library opened, so it isn't overwritten; reopen the library to save preferences".into(),
             ));
         }
-        lib.files.write_atomic("prefs.json", &v).map_err(|e| EngineError::Other(format!("prefs: {e}")))
+        lib.files.write_atomic("prefs.json", &v).map_err(|e| EngineError::Other(format!("prefs: {e}")))?;
+        store
     }
 
     /// Warnings about the open library not handed out yet: its settings files, and a lock that
     /// couldn't be taken (the UI shows each once; the CLI and MCP print them on stderr).
     pub fn take_library_warnings(&mut self) -> Vec<String> {
-        let Some(lib) = self.library.as_mut() else { return vec![] };
-        let new = lib.settings_warnings[lib.warnings_reported..].to_vec();
+        let mut out = self.take_store_warnings();
+        let Some(lib) = self.library.as_mut() else { return out };
+        out.extend(lib.settings_warnings.get(lib.warnings_reported..).unwrap_or_default().iter().cloned());
         lib.warnings_reported = lib.settings_warnings.len();
-        new
+        out
     }
 
-    /// The thumbnail disk cache budget in bytes ([`Session::cache_mb`], else the default).
+    /// The thumbnail disk cache budget in bytes ([`Session::cache_mb`], else the default, which
+    /// grows with the library: [`crate::media::default_disk_cache_bytes`]).
     pub fn cache_bytes(&self) -> u64 {
-        if self.cache_mb == 0 { crate::media::DISK_CACHE_BYTES } else { u64::from(self.cache_mb) << 20 }
+        match (self.cache_mb, self.media.rendered.disk()) {
+            (0, Some(d)) => self.cache_bytes_in(d.dir()),
+            (0, None) => crate::media::default_disk_cache_bytes(self.catalog.len()),
+            (mb, _) => u64::from(mb) << 20,
+        }
+    }
+
+    /// [`Self::cache_bytes`] for a cache in `dir`: Automatic is a share of its drive's free space
+    /// ([`crate::media::automatic_disk_cache_bytes`]; looked up at most once a minute).
+    pub fn cache_bytes_in(&self, dir: &std::path::Path) -> u64 {
+        if self.cache_mb != 0 {
+            return u64::from(self.cache_mb) << 20;
+        }
+        let used = self.media.rendered.disk().filter(|d| d.dir() == dir).and_then(|d| d.known_size()).unwrap_or(0);
+        crate::media::automatic_disk_cache_bytes(self.catalog.len(), self.cache_drive_free(dir), used)
+    }
+
+    /// What Automatic would make the preview cache now (Settings shows it), whatever is chosen.
+    pub fn automatic_cache_bytes(&self) -> u64 {
+        match self.media.rendered.disk() {
+            Some(d) => crate::media::automatic_disk_cache_bytes(self.catalog.len(), self.cache_drive_free(d.dir()), d.known_size().unwrap_or(0)),
+            None => crate::media::default_disk_cache_bytes(self.catalog.len()),
+        }
+    }
+
+    /// The free space of the drive holding `dir` (`None`: unknown), looked up again after a minute.
+    fn cache_drive_free(&self, dir: &std::path::Path) -> Option<u64> {
+        let mut known = self.cache_drive_free.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, d, free)) = known.as_ref()
+            && d == dir
+            && at.elapsed() < std::time::Duration::from_secs(60)
+        {
+            return *free;
+        }
+        let free = lcc_sysmem::free_disk_space(dir);
+        *known = Some((web_time::Instant::now(), dir.to_path_buf(), free));
+        free
+    }
+
+    /// Bring the disk cache's budget up to date with the library (photos were added since it was
+    /// set): cheap, nothing is read or written. Called before previews are built.
+    pub fn fit_disk_cache(&mut self) {
+        let want = self.cache_bytes();
+        if let Some(d) = self.media.rendered.disk()
+            && d.budget() != want
+        {
+            d.set_budget(want);
+        }
     }
 
     /// Change the thumbnail disk cache budget (MB, 0 = default) in place: the cached thumbnails
@@ -1156,6 +1425,23 @@ impl Session {
 /// The warning for a library opened without its one-program-at-a-time lock (issue #171): its
 /// file system can't lock `catalog.lock` (some network shares). It opens anyway, as documented —
 /// refusing would lock the user out — but the user must learn that a second program could open it.
+/// What an upgrade of the library's catalog did and how to go back (`None` when it wasn't
+/// upgraded, or no copy was kept: a new or in-memory library).
+pub const UPGRADE_NOTICE_START: &str = "This library's catalog was upgraded";
+
+/// See [`UPGRADE_NOTICE_START`]: the text always begins with it, so the UI can title it as news, not a problem.
+fn upgrade_notice(report: &LoadReport) -> Option<String> {
+    let (from, kept) = (report.upgraded_from?, report.upgrade_backup.as_ref()?);
+    Some(format!(
+        "{UPGRADE_NOTICE_START} from format v{from} to v{}, so older versions of the app can't open the library \
+         itself any more. A copy of it as it was is kept, unchanged, in {}: to go back to an older version, quit, copy the files \
+         in that folder over the library's own (or open the folder in the older version). Changes made since the upgrade are \
+         not in the copy.",
+        lcc_catalog::journal::VERSION,
+        kept.display()
+    ))
+}
+
 fn unlocked_warning(lock: Option<&LibraryLock>) -> Option<String> {
     lock.filter(|l| !l.held()).map(|_| {
         "This library could not be locked (its catalog.lock file can't be locked where it is stored, e.g. on some network \

@@ -6,13 +6,17 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod brush_model;
 pub mod controls;
 pub mod presets;
+pub mod recipe;
+pub mod retouch;
 pub mod segmask;
 pub mod settings;
 
-pub use controls::{CONTROLS, ControlSpec, Section, Track};
-pub use presets::{Preset, SettingsGroup, apply_partial, extract_groups};
+pub use controls::{CONTROLS, ControlSpec, Section, Shade, Track};
+pub use presets::{Preset, SettingItem, SettingsGroup, SettingsPick, apply_partial, extract_groups};
+pub use retouch::{MAX_RETOUCH_MASKS, PartRequest, Retouch, RetouchAnalysis, RetouchMask, RetouchPart, RetouchTeeth};
 pub use segmask::SegMask;
 pub use settings::*;
 
@@ -109,6 +113,8 @@ impl DevelopSettings {
         let d = DevelopSettings::default();
         a.wb = d.wb;
         a.process = d.process;
+        // (new photos start with Constrain Crop on: not an edit)
+        a.geometry.constrain_crop = d.geometry.constrain_crop;
         a == d
     }
 
@@ -185,6 +191,11 @@ impl DevelopSettings {
         }
     }
 
+    /// Whether retouch section `section` is on: its own eye and the Retouch panel's (`retouch`).
+    pub fn retouch_section_on(&self, section: &str) -> bool {
+        self.section_enabled("retouch") && self.section_enabled(section)
+    }
+
     pub fn set_section_enabled(&mut self, section: &str, on: bool) {
         self.disabled_sections.retain(|s| s != section);
         if !on {
@@ -229,7 +240,11 @@ impl DevelopSettings {
 }
 
 #[cfg(test)]
+mod tests_genfill;
+#[cfg(test)]
 mod tests_process;
+#[cfg(test)]
+mod tests_skin;
 
 #[cfg(test)]
 mod tests {
@@ -343,21 +358,24 @@ mod tests {
         let stroke = BrushStroke { points: vec![p; MAX_STROKE_POINTS + 1], pressure: vec![1.0; MAX_STROKE_POINTS + 1], ..Default::default() };
         let shapes = [
             MaskShape::Brush { strokes: vec![stroke; 2] },
-            MaskShape::ColorRange { samples: vec![[0.0; 3]; MAX_COLOR_SAMPLES + 1], refine: 0.0 },
+            MaskShape::ColorRange { samples: vec![[0.0; 3]; MAX_COLOR_SAMPLES + 1], refine: 0.0, areas: Vec::new() },
             MaskShape::Object { hint: vec![p; MAX_PROMPT_POINTS + 1], exclude: vec![p; MAX_PROMPT_POINTS + 1], seg: None, detail: vec![], edge: 0.0 },
-            MaskShape::People { person: 0, parts: vec![String::new(); MAX_PEOPLE_PARTS + 1] },
+            MaskShape::People { person: 0, parts: vec![String::new(); MAX_PEOPLE_PARTS + 1], who: None, seg: None },
         ];
         // one list over at a time: each is noticed, and cut
         for (k, shape) in shapes.into_iter().enumerate() {
             let mut t = DevelopSettings::default();
-            t.masks.push(Mask { components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }], ..Default::default() });
+            t.masks.push(Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
+                ..Default::default()
+            });
             assert!(t.over_list_limits(), "shape {k}");
             t.cap_lists();
             assert!(!t.over_list_limits(), "shape {k}");
         }
         s.masks = vec![Mask::default(); MAX_MASKS + 1];
         s.masks[0].components =
-            vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Subject }; MAX_MASK_COMPONENTS + 1];
+            vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Subject }; MAX_MASK_COMPONENTS + 1];
         s.spots = vec![Spot { points: vec![p; MAX_SPOT_POINTS + 1], ..Default::default() }; MAX_SPOTS + 1];
         s.red_eye = vec![RedEye::default(); MAX_RED_EYES + 1];
         s.point_colors = vec![PointColor::default(); MAX_POINT_COLORS + 1];
@@ -380,6 +398,7 @@ mod tests {
         s.masks.push(Mask {
             id: 1,
             components: vec![MaskComponent {
+                anchor: None,
                 name: None,
                 op: MaskOp::Add,
                 invert: false,

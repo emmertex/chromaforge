@@ -104,7 +104,7 @@ fn deliver(png: &[u8], path: Option<&str>, out: &mut Value) -> Result<()> {
             crate::export::write_file(path, png).map_err(crate::EngineError::Other)?;
             out["path"] = json!(path);
         }
-        None => out["png"] = json!(base64(png)),
+        None => out["png"] = json!(crate::base64::encode(png)),
     }
     Ok(())
 }
@@ -193,22 +193,6 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
     }
     deliver(&png, path, &mut out)?;
     Ok(out)
-}
-
-/// Standard padded base64 (for an image returned in the reply).
-fn base64(bytes: &[u8]) -> String {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [chunk.first().copied().unwrap_or(0), chunk.get(1).copied().unwrap_or(0), chunk.get(2).copied().unwrap_or(0)];
-        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
-        let at = |shift: u32| A.get((n >> shift) as usize & 63).copied().unwrap_or(b'=') as char;
-        out.push(at(18));
-        out.push(at(12));
-        out.push(if chunk.len() > 1 { at(6) } else { '=' });
-        out.push(if chunk.len() > 2 { at(0) } else { '=' });
-    }
-    out
 }
 
 // ------------------------------------------------------------------------------- templates

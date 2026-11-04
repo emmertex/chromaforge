@@ -153,6 +153,64 @@ next to the files) and add that URL.
 Only the maintainer can decide that. Hugging Face's `facebook/sam3` is gated and can't be a
 default.
 
+## Object masks with SAM 2.1 (open licence)
+
+Object (click) masks can also run on **SAM 2.1 Hiera-Tiny** (Meta, Apache-2.0, ungated), ported to
+pure Rust by OneSlips (`crates/segment/src/hiera.rs`, `sam2.rs`). It reuses SAM 3's prompt encoder
+and mask decoder with SAM 2's 1024 px input and 64 × 64 grid (`Tracker::with_geometry`; SAM 3's
+path is unchanged) and its own multi-threaded CPU kernels (`sam2_kernels.rs`). Its masks are
+256 × 256 logits, stored with the mask like SAM 3's.
+
+- **Download:** the masking panel's **AI Models…** button (or `dialog.aiModels`) lists every AI mask
+  model with its size and licence and a Download button each; `ai.models.download {"id": "sam2",
+  "acknowledged": true}` does the same. The files (`config.json`, `model.safetensors`, 156 MB) come
+  from `facebook/sam2.1-hiera-tiny` on Hugging Face at a pinned commit, each checked against its size
+  and SHA-256, into `<settings_dir>/models/sam2.1-hiera-tiny`. `<PREFIX>_SAM2_MIRRORS` or
+  `sam2.1-hiera-tiny-mirrors.txt` add mirrors.
+- **Which model clicks use:** `ai.models.setObjectModel {"model": "auto" | "sam3" | "sam2"}`, or
+  the segmented control in the AI Models dialog. **Automatic** (the default) keeps SAM 3 when it is
+  installed, as before, and otherwise uses SAM 2.1 when that is installed. The choice is saved in
+  `<settings_dir>/models/ai-models.json`. **Describe** (text) always needs SAM 3.
+- With SAM 2.1 chosen and not installed, an Object mask fails with `ModelMissing(Sam2)` and the app
+  opens the AI Models dialog. A damaged download is an error, not a crash.
+- **Depth Anything V2 Small** (Apache-2.0, `depth-anything/Depth-Anything-V2-Small-hf`, 99 MB) is in
+  the same registry and downloadable by command (`ai.models.download {"id": "depth"}`), but nothing
+  uses it yet, so the dialog doesn't offer it. The port (`depth.rs`, `dino.rs`, `grid.rs`) is
+  OneSlips'. Its training data (SA-1B derivatives, Virtual KITTI 2) is a question to settle before
+  it backs a mask.
+- **MediaPipe people** (Selfie Multiclass 256, 16 MB) and **MediaPipe faces** (Face Landmarker bundle, 3.8 MB, plus
+  BlazeFace full range, 1 MB, fetched with it from its own address) are Google's Apache-2.0 models from
+  `storage.googleapis.com/mediapipe-models` / `mediapipe-assets`, pinned by size and SHA-256 (`lcc_tflite::models`) and run
+  on the pure-Rust TFLite interpreter (`crates/tflite`, `lcc_segment::people`). The dialog offers both
+  (`ai.models.download {"id": "people" | "face"}`, mirrors via `<PREFIX>_PEOPLE_MIRRORS` / `<PREFIX>_FACE_MIRRORS`); they
+  back Retouch (Smooth Skin, Find Blemishes) and Detect Faces ([faces.md](faces.md)). Without them those fail with
+  `ModelMissing(People)` / `ModelMissing(FaceDetector)` and the app opens the AI Models dialog; nothing is downloaded
+  without the person's go-ahead.
+- **EoMT scene** (EoMT-S COCO panoptic, `tue-mps/coco_panoptic_eomt_small_640_2x`, 96 MB, MIT, pinned to
+  commit 10f53267 by size and SHA-256) can compute the Sky, Landscape (water, vegetation) and People
+  selections instead of the photo analysis. It is the person's choice: the AI Models dialog's
+  "Sky, Landscape and People masks use" control, or `ai.models.setSceneModel {"model": "analysis" | "eomt"}`
+  (saved in `ai-models.json`). The default stays the photo analysis; EoMT is used only once it is chosen
+  and installed (`ai.models.download {"id": "scene"}`, mirrors via `<PREFIX>_SCENE_MIRRORS`). It runs
+  once per photo at 640 px, with an activity row; a failure falls back to the analysis. Embedded
+  sky mattes (HEIC) still win over it. The model was trained on COCO, whose annotations are
+  CC BY 4.0: the dialog and `NOTICE` credit it (maintainer decision 2026-11-03). Switching
+  it (or installing the Subject model) re-renders the photos whose masks use an automatic
+  selection at once (`auto_mask::model_generation` is in their render and mask keys). The port
+  (`scene.rs`) is OneSlips'. With EoMT chosen, Retouch's people parts pass its floors, walls and
+  chairs (`people::Surfaces::from_scene`) to the People mask, so they are never Clothes (Retouch
+  asks only for Teeth so far, so the scene model runs only once a Clothes part is asked for). On six
+  CC0 corpus raws (1600 px, 32-thread CPU, no GPU on Linux: candle uses Metal on macOS only) it
+  takes about 2.4 s per photo after a 0.1 s load.
+- Not ported: their BiRefNet-portrait checkpoint (licence pending) and their SAM 2 speed work,
+  which rewrites the segmentation helpers SAM 3 shares.
+
+Tests: `cargo test -p lcc-segment` (kernels against candle, preprocessing, the registry);
+`tests/sam2_reference.rs` compares against Hugging Face `transformers` stage by stage when
+`<PREFIX>_SAM2_DIR` and `<PREFIX>_SAM2_REF` are set (skipped otherwise). `tests/scene_reference.rs`
+runs the real EoMT weights (`<PREFIX>_SCENE_DIR`): sky above a drawn meadow, and damaged copies of
+the checkpoint as errors, not panics; with `<PREFIX>_SCENE_REF` also the stage-by-stage comparison.
+
 ## Remote Metal inference
 
 Native builds with `sam` can keep the editor, RAW files, library, and exports local while
@@ -316,6 +374,10 @@ Therefore:
 | `segment.subject.status` | `{}` | the Subject / Background model (BiRefNet_lite): installed, in use, download progress → `{available, installed, active, dir, sizeBytes, license, licenseUrl, download}` |
 | `segment.subject.download` | `{acknowledged: true}` | download it (178 MB, MIT) in the background → `{started, installed, downloading}` |
 | `segment.subject.cancel` | `{}` | stop that download → `{cancelled}` |
+| `ai.models.status` | `{}` | every AI mask model (sam3, subject, sam2, depth) and the Object model choice → `{available, objectModel, objectModelInUse, models: [{id, title, purpose, installed, dir, sizeBytes, license, licenseUrl, offered, download}]}` |
+| `ai.models.download` | `{id, acknowledged: true}` | download that model in the background → `{started, installed, downloading}` |
+| `ai.models.cancel` | `{id}` | stop that download → `{cancelled}` |
+| `ai.models.setObjectModel` | `{model: auto\|sam3\|sam2}` | which model computes Object clicks (saved) → `{objectModel, objectModelInUse}` |
 
 `remote` reports the configured endpoint, not its health. `installed` describes local weights only.
 `download` is `{running, done, total, file, error, cancelled, finished}`: `cancelled` is true when the last

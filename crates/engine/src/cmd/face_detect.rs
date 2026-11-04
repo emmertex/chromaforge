@@ -1,4 +1,6 @@
-//! `faces.detect`: find faces with the YuNet detector the user has downloaded (Settings > Faces).
+//! `faces.detect`: find faces with the open MediaPipe face model (Face Landmarker: BlazeFace and FaceMesh-V2,
+//! Apache-2.0, `ai.models.download {"id": "face"}`), the one Retouch uses. It replaced YuNet, whose weights were
+//! trained on WIDER FACE (CC BY-NC-ND); a YuNet installed by an older version is left where it is and not used.
 //!
 //! The photo is rendered upright and uncropped with default settings (so edits, crops and rotations you have
 //! made do not matter), the detector runs on it, and the faces come back as fractions of the photo's width
@@ -6,14 +8,12 @@
 //! unnamed face regions in one undoable step; earlier detections are replaced, and regions that came from XMP (or
 //! that you drew or named) are never touched. Like every region edit it is catalog-only: no sidecar is written.
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use lcc_catalog::Op;
 use lcc_develop::DevelopSettings;
-use lcc_faces::known::YUNET_ID;
-use lcc_faces::yunet::{Detector, Face, Options};
+use lcc_faces::yunet::Face;
 use lcc_meta::{Region, RegionKind};
 use serde_json::{Value, json};
 
@@ -23,74 +23,117 @@ use crate::{AiModel, EngineError, Result, Session};
 const C: &str = "faces.detect";
 /// Regions made by this command say so in their description; only those are replaced on a new run.
 pub(crate) const MARK: &str = "Detected by ";
-pub(crate) const LABEL: &str = "YuNet 2023mar";
-/// Long edge of the picture the detector is given (it shrinks it to its own scan size, 1024 px, anyway).
+pub(crate) const LABEL: &str = "MediaPipe Face Landmarker";
+/// Long edge of the picture the detector looks at.
 const LOOK_EDGE: usize = 1280;
-/// YuNet is 232 KB; a file this much larger in its folder is not it.
-const MAX_MODEL_BYTES: u64 = 8 << 20;
 /// How much a detection must overlap a region the photo already has to count as the same face.
 const EXISTING_IOU: f64 = 0.3;
-
-/// What to tell someone who has not downloaded the detector yet.
-const NOT_INSTALLED: &str = "finding faces needs the YuNet face detector (232 KB, MIT): download it in Settings > Faces";
+/// The default score a face must reach (BlazeFace's own floor is 0.65).
+const DEFAULT_SCORE: f32 = 0.65;
+/// Most faces one photo gives.
+const DEFAULT_MAX_FACES: usize = 200;
 
 /// Why [`detector`] has no detector to give.
 #[derive(Debug)]
 pub(crate) enum NoDetector {
     /// Not downloaded yet: a frontend offers the download ([`crate::ErrorKind::ModelMissing`]).
-    NotInstalled,
-    /// Nowhere to keep it, or there but unusable: says what to do.
+    #[cfg_attr(not(feature = "sam"), allow(dead_code))]
+    NotInstalled(String),
+    /// Not in this build, or there but unusable: says what to do.
     Unusable(String),
 }
 
 impl NoDetector {
-    /// Command `cmd`'s error for it. The message reads as before kinds existed (an invalid-parameters
-    /// error), so control-channel and MCP clients see the same `error` text.
+    /// Command `cmd`'s error for it (an invalid-parameters message, as before kinds existed).
     pub(crate) fn into_error(self, cmd: &str) -> EngineError {
         match self {
-            Self::NotInstalled => EngineError::ModelMissing { model: AiModel::FaceDetector, msg: bad(cmd, NOT_INSTALLED).to_string() },
+            Self::NotInstalled(why) => EngineError::ModelMissing { model: AiModel::FaceDetector, msg: bad(cmd, why).to_string() },
             Self::Unusable(why) => bad(cmd, why),
         }
     }
 }
 
-/// The YuNet loaded last, and from where.
-static LOADED: Mutex<Option<(PathBuf, Arc<Detector>)>> = Mutex::new(None);
+/// The open face model, loaded.
+pub(crate) struct Finder {
+    #[cfg(feature = "sam")]
+    model: Arc<lcc_segment::people::FaceModel>,
+}
 
-/// The installed YuNet, loaded once and kept (a new one is loaded when the model folder changes).
-/// (also used by the background scan, which aligns faces by the detector's landmarks and finds faces in photos that have none)
-pub(crate) fn detector(s: &Session) -> std::result::Result<Arc<Detector>, NoDetector> {
-    let home = s
-        .face_models_dir
-        .as_deref()
-        .ok_or_else(|| NoDetector::Unusable("this build has nowhere to keep face models (the desktop app does)".into()))?
-        .join(YUNET_ID);
-    let path = home.join("model.onnx");
-    // installing writes the manifest last, so a folder without one is not (yet) a model
-    if !path.is_file() || !home.join("face-model.json").is_file() {
-        return Err(NoDetector::NotInstalled);
+impl Finder {
+    /// The faces in an 8-bit RGB picture (`w × h`), left to right: boxes and five landmarks as fractions of the
+    /// picture (the eyes, the nose tip and the mouth corners, from FaceMesh where it placed its landmarks). `fine`
+    /// also looks in overlapping tiles of half the picture, which finds smaller faces (group photos) at about four
+    /// times the cost.
+    pub(crate) fn detect(&self, rgb: &[u8], w: usize, h: usize, fine: bool) -> std::result::Result<Vec<Face>, String> {
+        #[cfg(feature = "sam")]
+        {
+            use lcc_tflite::mediapipe;
+            if w == 0 || h == 0 || rgb.len() < w.saturating_mul(h).saturating_mul(3) {
+                return Ok(Vec::new());
+            }
+            let mut dets = self.model.detect(rgb, w, h).map_err(|e| e.to_string())?;
+            if fine && w.min(h) >= 512 {
+                // half-size tiles, overlapping by half: each is searched like a whole photo
+                let (tw, th) = (w / 2, h / 2);
+                let tiles = [0, w / 4, w - tw].into_iter().flat_map(|x| [0, h / 4, h - th].into_iter().map(move |y| (x, y)));
+                for (x0, y0) in tiles {
+                    let mut tile = Vec::with_capacity(tw * th * 3);
+                    for y in y0..y0 + th {
+                        tile.extend_from_slice(rgb.get((y * w + x0) * 3..(y * w + x0 + tw) * 3).unwrap_or(&[]));
+                    }
+                    if tile.len() != tw * th * 3 {
+                        continue;
+                    }
+                    for d in self.model.detect(&tile, tw, th).map_err(|e| e.to_string())? {
+                        dets.push(d.from_window(x0 as f32, y0 as f32, 1.0));
+                    }
+                }
+                dets = mediapipe::merge_windows(dets, 0.3);
+                dets.sort_by(|a, b| a.center()[0].total_cmp(&b.center()[0]));
+            }
+            let mut out = Vec::new();
+            for d in dets {
+                let landmarks = self.model.landmarks(rgb, w, h, &d).map_err(|e| e.to_string())?;
+                // FaceMesh not seeing a face there, and the detector only fairly sure: a pattern, a paw, a circuit
+                // board (the detector alone takes those for faces, mostly in the tiles of `fine`)
+                if landmarks.is_none() && d.score < lcc_segment::people::FACE_THRESHOLD_NO_MESH {
+                    continue;
+                }
+                let found = crate::segment::FoundFace::from_pixels(&lcc_segment::people::Face { detection: d, landmarks }, w as f32, h as f32);
+                let [x0, y0, x1, y1] = found.rect;
+                out.push(Face { x0, y0, x1, y1, score: found.score, landmarks: found.five() });
+            }
+            Ok(out)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (rgb, w, h, fine);
+            Err(NOT_AVAILABLE.into())
+        }
     }
-    let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((p, d)) = loaded.as_ref()
-        && *p == path
+}
+
+#[cfg(not(feature = "sam"))]
+const NOT_AVAILABLE: &str = "finding faces needs the open AI models, which this build does not include";
+
+/// The installed face model, loaded once and kept (a new one is loaded when its folder changes).
+/// (also used by the background scan, which aligns faces by the landmarks and finds faces in photos that have none)
+pub(crate) fn detector(s: &Session) -> std::result::Result<Arc<Finder>, NoDetector> {
+    #[cfg(feature = "sam")]
     {
-        return Ok(d.clone());
+        let dir = match s.segmenter.require_open_model("face", AiModel::FaceDetector) {
+            Ok(d) => d,
+            Err(EngineError::ModelMissing { msg, .. }) => return Err(NoDetector::NotInstalled(msg)),
+            Err(e) => return Err(NoDetector::Unusable(e.to_string())),
+        };
+        let model = crate::segment::face_model(&dir).map_err(NoDetector::Unusable)?;
+        Ok(Arc::new(Finder { model }))
     }
-    let len = std::fs::metadata(&path).map_err(|e| NoDetector::Unusable(format!("could not read the detector: {e}")))?.len();
-    if len > MAX_MODEL_BYTES {
-        return Err(NoDetector::Unusable("the detector's file is far bigger than YuNet: remove it in Settings > Faces and download it again".into()));
-    }
-    let bytes = std::fs::read(&path).map_err(|e| NoDetector::Unusable(format!("could not read the detector: {e}")))?;
-    let d = Arc::new(
-        Detector::new(&bytes).map_err(|e| NoDetector::Unusable(format!("{e}: remove the detector in Settings > Faces and download it again")))?,
-    );
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(feature = "sam"))]
     {
-        let net = d.clone();
-        offer_gpu(s, "detection", move |gpu| net.accelerate(gpu, true));
+        let _ = s;
+        Err(NoDetector::Unusable(NOT_AVAILABLE.into()))
     }
-    *loaded = Some((path, d.clone()));
-    Ok(d)
 }
 
 /// Where a face model runs, for Settings ▸ Faces and `faces.gpu`.
@@ -175,24 +218,18 @@ fn gpu(s: &mut Session, p: &Value) -> Result<Value> {
         let cpu = cpu.as_bool().ok_or_else(|| bad(C, "`cpuOnly` is true or false"))?;
         let dir = s.face_models_dir.clone().ok_or_else(|| bad(C, "this build has nowhere to keep face models (the desktop app does)"))?;
         super::face_models::set_cpu_only(&dir, cpu)?;
-        let detector = LOADED.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|(_, d)| d.clone());
         #[cfg(not(target_arch = "wasm32"))]
         let embedder = s.faces.embedder.as_ref().map(|(_, e)| e.clone());
         #[cfg(target_arch = "wasm32")]
         let embedder: Option<Arc<lcc_faces::runtime::Embedder>> = None;
         if cpu {
-            for (what, net) in [("detection", detector.as_ref().map(|d| d.net())), ("recognition", embedder.as_ref().map(|e| e.net()))] {
-                if let Some(net) = net {
-                    net.detach();
-                }
-                set_gpu_state(what, GpuState { why: Some("the CPU is chosen in Settings".into()), ..GpuState::default() });
+            if let Some(e) = &embedder {
+                e.net().detach();
             }
+            set_gpu_state("recognition", GpuState { why: Some("the CPU is chosen in Settings".into()), ..GpuState::default() });
         } else {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                if let Some(d) = detector {
-                    offer_gpu(s, "detection", move |gpu| d.accelerate(gpu, true));
-                }
                 if let Some(e) = embedder {
                     offer_gpu(s, "recognition", move |gpu| e.accelerate(gpu, true).map_err(|e| e.to_string()));
                 }
@@ -238,44 +275,59 @@ pub(crate) fn is_detected(r: &Region) -> bool {
     r.kind != RegionKind::IgnoredFace && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))
 }
 
-/// The photo as the faces see it: upright, uncropped, default settings, as 8-bit RGB with its size, its long edge at
-/// most `edge`.
-pub(crate) fn render_rgb(s: &mut Session, id: lcc_catalog::PhotoId, edge: usize) -> std::result::Result<(Vec<u8>, usize, usize), String> {
-    let settings = DevelopSettings::default();
-    let job = s.preview_job(id, edge, edge, false, &settings).ok_or("no such photo")?;
+/// What `faces.detect` was asked for.
+#[derive(Clone, Copy)]
+struct Options {
+    apply: bool,
+    score: f32,
+    max_faces: usize,
+    fine: bool,
+}
+
+fn options(p: &Value) -> Options {
+    Options {
+        apply: p.get("apply").and_then(Value::as_bool).unwrap_or(true),
+        score: p.get("score").and_then(Value::as_f64).filter(|v| v.is_finite()).map_or(DEFAULT_SCORE, |v| v as f32),
+        max_faces: p.get("maxFaces").and_then(Value::as_u64).map_or(DEFAULT_MAX_FACES, |v| usize::try_from(v).unwrap_or(DEFAULT_MAX_FACES)),
+        fine: p.get("fine").and_then(Value::as_bool).unwrap_or(true),
+    }
+}
+
+/// The photo `job` renders, as 8-bit RGB with its size.
+fn rgb_of(job: crate::media::RenderJob) -> std::result::Result<(Vec<u8>, usize, usize), String> {
     let image = job.run().rendered?.image;
     let rgb: Vec<u8> = image.data.iter().flat_map(|px| [px[0], px[1], px[2]]).collect();
     Ok((rgb, image.width, image.height))
 }
 
-fn detect(s: &mut Session, p: &Value) -> Result<Value> {
-    let apply = p.get("apply").and_then(Value::as_bool).unwrap_or(true);
-    let defaults = Options::default();
-    let opts = Options {
-        score: p.get("score").and_then(Value::as_f64).map_or(defaults.score, |v| v as f32),
-        nms_iou: p.get("nmsIou").and_then(Value::as_f64).map_or(defaults.nms_iou, |v| v as f32),
-        max_faces: p.get("maxFaces").and_then(Value::as_u64).map_or(defaults.max_faces, |v| usize::try_from(v).unwrap_or(defaults.max_faces)),
-        long_edge: defaults.long_edge,
-    };
-    let detector = detector(s).map_err(|e| e.into_error(C))?;
-    let started = Instant::now();
+/// The faces in one photo that pass `o`.
+fn find(detector: &Finder, job: crate::media::RenderJob, o: Options) -> std::result::Result<Vec<Face>, String> {
+    let (rgb, width, height) = rgb_of(job)?;
+    let mut f = detector.detect(&rgb, width, height, o.fine)?;
+    f.retain(|f| f.score >= o.score);
+    f.truncate(o.max_faces);
+    Ok(f)
+}
+
+/// The job that renders `id` as the faces see it: upright, uncropped, default settings, its long edge at most [`LOOK_EDGE`].
+fn look_job(s: &mut Session, id: lcc_catalog::PhotoId) -> Option<crate::media::RenderJob> {
+    s.preview_job(id, LOOK_EDGE, LOOK_EDGE, false, &DevelopSettings::default())
+}
+
+/// Add the faces found to their photos (earlier detections replaced) in one undo step, and say what was done.
+fn finish(s: &mut Session, o: Options, found: Vec<(lcc_catalog::PhotoId, std::result::Result<Vec<Face>, String>)>, ms: f64) -> Result<Value> {
     let (mut results, mut ops) = (Vec::new(), Vec::new());
-    for id in s.targets(p)? {
-        let (rgb, width, height) = match render_rgb(s, id, LOOK_EDGE) {
-            Ok(r) => r,
+    for (id, r) in found {
+        let faces = match r {
+            Ok(f) => f,
             Err(e) => {
                 results.push(json!({"id": id.0, "error": e}));
                 continue;
             }
         };
-        let faces = match detector.detect(&rgb, width, height, &opts) {
-            Ok(f) => f,
-            Err(e) => {
-                results.push(json!({"id": id.0, "error": e.to_string()}));
-                continue;
-            }
-        };
-        if apply && let Some(photo) = s.catalog.photo(id) {
+        if o.apply
+            && let Some(photo) = s.catalog.photo(id)
+        {
             let mut meta = photo.meta.clone();
             meta.regions.retain(|r| !is_detected(r));
             let fresh: Vec<&Face> = faces.iter().filter(|f| !overlaps_existing(f, &meta.regions)).collect();
@@ -293,11 +345,135 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let applied = !ops.is_empty();
     if applied {
+        let t = Instant::now();
+        let n = ops.len();
         s.commit("Detect Faces", Op::Batch { ops })?;
+        log::info!("faces: detected faces added to {n} photos in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
         // regions are not written to XMP, so a sidecar must not be rewritten for this
         s.skip_auto_write = true;
     }
-    Ok(json!({"detector": LABEL, "applied": applied, "photos": results, "ms": started.elapsed().as_secs_f64() * 1000.0}))
+    Ok(json!({"detector": LABEL, "applied": applied, "photos": results, "ms": ms}))
+}
+
+/// A background Detect Faces run: its results arrive on `rx`; `cancel` stops it between photos.
+pub(crate) struct DetectRun {
+    rx: Mutex<std::sync::mpsc::Receiver<Done>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    options: Options,
+    total: usize,
+    started: Instant,
+}
+
+enum Done {
+    Photo(lcc_catalog::PhotoId, std::result::Result<Vec<Face>, String>),
+    End { cancelled: bool },
+}
+
+/// `faces.detect`. Without `wait` it runs in the background (a row in the activity stack, cancellable) and the faces
+/// land in one undo step when it is done (`faces.detectPump`, called every frame by the app).
+fn detect(s: &mut Session, p: &Value) -> Result<Value> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let o = options(p);
+    let detector = detector(s).map_err(|e| e.into_error(C))?;
+    let t0 = Instant::now();
+    let ids = s.targets(p)?;
+    if p.get("wait").and_then(Value::as_bool).unwrap_or(false) {
+        let started = Instant::now();
+        let found = ids
+            .into_iter()
+            .map(|id| {
+                let r = look_job(s, id).ok_or_else(|| "no such photo".to_string()).and_then(|job| find(&detector, job, o));
+                (id, r)
+            })
+            .collect();
+        return finish(s, o, found, started.elapsed().as_secs_f64() * 1000.0);
+    }
+    if s.face_detect.as_ref().is_some_and(|r| !r.cancel.load(Ordering::Relaxed)) {
+        return Err(bad(C, "a run is in progress already"));
+    }
+    let jobs: Vec<(lcc_catalog::PhotoId, Option<crate::media::RenderJob>)> = ids.into_iter().map(|id| (id, look_job(s, id))).collect();
+    let total = jobs.len();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let task = s.activity.start("faces", "Detecting faces", crate::activity::Cancel::Flag(cancel.clone()));
+    task.progress(0, total as u64);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let flag = cancel.clone();
+    std::thread::Builder::new()
+        .name("faces-detect".into())
+        .spawn(move || {
+            let mut done = 0u64;
+            for (id, job) in jobs {
+                if flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                let r = match job {
+                    None => Err("no such photo".to_string()),
+                    Some(job) => crate::guard::catch("finding faces", || find(&detector, job, o)).and_then(|r| r),
+                };
+                done += 1;
+                task.progress(done, total as u64);
+                let _ = tx.send(Done::Photo(id, r));
+            }
+            let _ = tx.send(Done::End { cancelled: flag.load(Ordering::Relaxed) });
+            drop(task);
+        })
+        .map_err(|e| bad(C, format!("could not start ({e})")))?;
+    log::info!("faces: {total} photos queued in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
+    s.face_detect = Some(Arc::new(DetectRun { rx: Mutex::new(rx), cancel, options: o, total, started: Instant::now() }));
+    s.face_detect_results.clear();
+    Ok(json!({"done": false, "photos": total}))
+}
+
+/// `faces.detectPump`: cheap every frame. Takes in finished photos; when the run is over, adds the faces (one undo
+/// step) and returns the summary once (`done: true`).
+fn pump(s: &mut Session, _: &Value) -> Result<Value> {
+    let Some(run) = s.face_detect.clone() else { return Ok(json!({"active": false})) };
+    let mut end = None;
+    {
+        let rx = run.rx.lock().unwrap_or_else(PoisonError::into_inner);
+        for d in rx.try_iter() {
+            match d {
+                Done::Photo(id, r) => s.face_detect_results.push((id, r)),
+                Done::End { cancelled } => end = Some(cancelled),
+            }
+        }
+    }
+    let Some(cancelled) = end else {
+        return Ok(json!({"active": true, "done": false, "looked": s.face_detect_results.len(), "photos": run.total}));
+    };
+    s.face_detect = None;
+    let found = std::mem::take(&mut s.face_detect_results);
+    log::info!("faces: detection of {} photos ran {:.1} s", found.len(), run.started.elapsed().as_secs_f64());
+    let t = Instant::now();
+    let mut out = finish(s, run.options, found, run.started.elapsed().as_secs_f64() * 1000.0)?;
+    log::info!("faces: results taken in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+    out["active"] = json!(false);
+    out["done"] = json!(true);
+    out["cancelled"] = json!(cancelled);
+    Ok(out)
+}
+
+/// `faces.clearAndRescan`: forget what the scan learned about these photos' faces and detect them again. Faces you
+/// named, drew or ignored are kept; the ones an earlier detection made are replaced.
+fn clear_and_rescan(s: &mut Session, p: &Value) -> Result<Value> {
+    let ids: Vec<lcc_catalog::PhotoId> = if p.get("ids").is_some() || s.selection.ids.len() > 1 { s.targets(p)? } else { s.visible_cloned() };
+    let mut params = p.as_object().cloned().unwrap_or_default();
+    params.insert("ids".into(), json!(ids.iter().map(|i| i.0).collect::<Vec<_>>()));
+    let t = Instant::now();
+    let started = detect(s, &Value::Object(params))?;
+    log::info!("faces: rescan started in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let t = Instant::now();
+        for id in ids {
+            s.faces.content_replaced(id);
+        }
+        log::info!("faces: scan state cleared in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        s.faces.epoch = s.faces.epoch.wrapping_add(1);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = ids;
+    Ok(started)
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -307,9 +483,27 @@ pub fn specs() -> Vec<CommandSpec> {
             "Detect Faces",
             ["Library"],
             None,
-            "{ids?, apply?: bool (default true), score?: 0.6, nmsIou?: 0.3, maxFaces?} → {photos: [{id, faces: [{rect, score, landmarks}]}]}. Finds faces with the YuNet detector (download it first: `faces.models.download {id: \"yunet-2023mar\"}`) and, unless `apply` is false, adds them as unnamed face regions (one undo step), replacing earlier detections but never regions from XMP or ones you named; the sidecar is not touched",
+            "{ids?, wait?: bool (false: runs in the background, an activity row, and `faces.detectPump` takes the results), apply?: bool (default true), score?: 0.65, maxFaces?: 200, fine?: bool (true: also looks in tiles, for the small faces of group photos)} → {photos: [{id, faces: [{rect, score, landmarks}]}]}. Finds faces with the open MediaPipe face model (Apache-2.0; download it first: `ai.models.download {id: \"face\", acknowledged: true}`) and, unless `apply` is false, adds them as unnamed face regions (one undo step), replacing earlier detections but never regions from XMP or ones you named; the sidecar is not touched",
             has_selection,
             detect
+        ),
+        cmd!(
+            "faces.detectPump",
+            "Detect Faces: Take Results",
+            [],
+            None,
+            "{} — cheap every frame: when a Detect Faces run has finished, add its faces (one undo step) and return its summary once → {active, done, photos, …}",
+            always,
+            pump
+        ),
+        cmd!(
+            "faces.clearAndRescan",
+            "Clear Faces and Rescan",
+            ["Library"],
+            None,
+            "{ids?} — the selected photos (else all in view): forget what the scan learned about their faces and detect them again in the background (faces you named, drew or ignored are kept) → {done: false, photos}",
+            always,
+            clear_and_rescan
         ),
         cmd!(
             query "faces.gpu",
@@ -337,7 +531,7 @@ mod tests {
     #[test]
     fn a_detection_on_an_existing_region_is_not_a_new_face() {
         let existing = [region(0.40, 0.20, 0.60, 0.50), region(0.10, 0.10, 0.20, 0.20)];
-        // the same face, a bit larger or shifted (a Lightroom box is not YuNet's box)
+        // the same face, a bit larger or shifted (a Lightroom box is not the detector's box)
         assert!(overlaps_existing(&face(0.38, 0.18, 0.64, 0.54), &existing));
         assert!(overlaps_existing(&face(0.42, 0.22, 0.58, 0.48), &existing));
         // another face, a sliver of overlap, and no regions at all

@@ -84,6 +84,7 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
         match write_dng_for(s, path, packet) {
             Ok(out) => {
                 let file_name = Path::new(&out).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let file_size = std::fs::metadata(&out).map_err(|e| bad(C, format!("{out}: could not read converted file size ({e})")))?.len();
                 // virtual copies of this photo follow it to the DNG
                 for c in s.catalog.photos().filter(|c| c.copy_of == Some(id)) {
                     ops.push(Op::Relink {
@@ -92,8 +93,26 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
                         source: Source::File { path: out.clone() },
                         format: Some("DNG".into()),
                     });
+                    ops.push(Op::SetContent {
+                        id: c.id,
+                        width: c.width,
+                        height: c.height,
+                        file_size,
+                        content_hash: c.content_hash.clone(),
+                        preview_only: c.preview_only.clone(),
+                        preview_checked: c.preview_checked.clone(),
+                    });
                 }
                 ops.push(Op::Relink { id, file_name, source: Source::File { path: out.clone() }, format: Some("DNG".into()) });
+                ops.push(Op::SetContent {
+                    id,
+                    width: ph.width,
+                    height: ph.height,
+                    file_size,
+                    content_hash: ph.content_hash.clone(),
+                    preview_only: ph.preview_only.clone(),
+                    preview_checked: ph.preview_checked.clone(),
+                });
                 converted.push(json!({"id": id.0, "path": out, "original": path}));
             }
             Err(e) => skipped.push(json!([id.0, e])),
@@ -191,7 +210,25 @@ fn edit_copy(s: &mut Session, p: &Value, id: lcc_catalog::PhotoId, opts: &crate:
     let ext = format!(".{}", opts.format.extension());
     let out = written.into_iter().find(|w| w.ends_with(&ext)).ok_or_else(|| bad(cmd, "nothing was written"))?;
     let r = s.execute("library.import", &json!({"paths": [out]}))?;
-    let new = r["imported"].get(0).and_then(Value::as_u64).ok_or_else(|| bad(cmd, "the edit copy could not be added"))?;
+    let Some(new) = r["imported"].get(0).and_then(Value::as_u64) else {
+        // the render is the same bytes as a copy the library already has (the last one was never changed): that copy
+        // is the one to open, and the file just written is an orphan nobody would ever see (upstream #3617)
+        let existing = r["restored"]
+            .get(0)
+            .and_then(Value::as_u64)
+            .or_else(|| r["duplicates"].get(0).and_then(|d| d["existing"].as_u64()))
+            .and_then(|i| s.catalog.photo(lcc_catalog::PhotoId(i)))
+            .filter(|p| !p.deleted)
+            .and_then(|p| match &p.source {
+                Source::File { path } => Some((p.id.0, path.clone())),
+                Source::Demo { .. } => None,
+            });
+        let _ = std::fs::remove_file(&out);
+        return match existing {
+            Some((id, path)) => Ok(json!({"path": path, "id": id, "original": ph.id.0})),
+            None => Err(bad(cmd, "the edit copy could not be added")),
+        };
+    };
     // stack: the edit on top of the original, expanded so both show
     let _ = s.execute("stack.group", &json!({"ids": [new, id.0], "top": new, "collapsed": false}));
     Ok(json!({"path": out, "id": new, "original": id.0}))

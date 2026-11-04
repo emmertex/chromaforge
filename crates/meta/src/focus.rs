@@ -1,6 +1,6 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 //! Where the camera focused: the autofocus point a camera records in its maker notes, as a box on the
-//! upright photo ([`FocusPoint`]). Sony only for now.
+//! upright photo ([`FocusPoint`]). Sony (below) and Canon ([`crate::focus_canon`]: CR3, CR2, JPEG).
 //!
 //! **Sony** (the MakerNote IFD: header-less in ARWs, after a `SONY DSC` header in JPEGs). Tag identities and value names come from the public ExifTool
 //! tag-name documentation (Sony table); every layout below was confirmed on real ILCE-1 (α1) and
@@ -143,13 +143,16 @@ pub const SONY_MODELS: &[&str] = &[
 /// one whose files can carry a focus point, so a photo from any other camera is never opened to look.
 pub fn camera_supported(camera: &str) -> bool {
     let camera = camera.trim();
+    if is_canon(camera) {
+        return true;
+    }
     camera.get(..4).is_some_and(|m| m.eq_ignore_ascii_case("SONY")) && camera.rsplit(' ').next().is_some_and(|model| SONY_MODELS.contains(&model))
 }
 
 /// Names what [`read`] decodes (its bodies), so a record of "looked, found nothing" made by this
 /// decoder is not trusted by one that knows more bodies.
 pub fn decoder_tag() -> String {
-    format!("sony-v1:{}", SONY_MODELS.join(","))
+    format!("sony-v1:{};canon-v1", SONY_MODELS.join(","))
 }
 
 const FOCUS_MODE: u16 = 0x201b;
@@ -167,6 +170,15 @@ const DEFAULT_SIDE: f64 = 0.03;
 /// `data` is the TIFF stream the maker note's offsets refer to (a whole raw, or an Exif block).
 pub fn read(data: &[u8], tiff: &Tiff, make: Option<&str>, model: Option<&str>, orientation: Option<Orientation>) -> Option<FocusPoint> {
     let make = make?;
+    if is_canon(make) {
+        // CR2 and Canon JPEGs: a header-less maker-note IFD, offsets relative to the TIFF header
+        let e = tiff.exif()?.get(t::MAKER_NOTE)?;
+        let mn = makernote::parse_makernote(data, e.offset, e.count() as u64, tiff.order, make)?;
+        if !matches!(mn.kind, makernote::MakerNoteKind::Plain) {
+            return None;
+        }
+        return crate::focus_canon::canon(&mn.ifd, orientation.unwrap_or_default());
+    }
     if !make.to_ascii_uppercase().starts_with("SONY") || !SONY_MODELS.contains(&model?.trim()) {
         return None;
     }
@@ -177,6 +189,22 @@ pub fn read(data: &[u8], tiff: &Tiff, make: Option<&str>, model: Option<&str>, o
         return None;
     }
     sony(&mn.ifd, mn.order, orientation.unwrap_or_default())
+}
+
+/// Whether `make` (Exif Make) is Canon's.
+fn is_canon(make: &str) -> bool {
+    make.trim().get(..5).is_some_and(|m| m.eq_ignore_ascii_case("CANON"))
+}
+
+/// The focus point of a CR3 (`bytes`: the file, or at least its `moov` box): the Canon maker note
+/// in its `CMT3` block.
+pub fn cr3_focus(bytes: &[u8], make: Option<&str>, orientation: Option<Orientation>) -> Option<FocusPoint> {
+    if !make.is_none_or(is_canon) {
+        return None;
+    }
+    let c = crate::cr3::parse_cr3(bytes)?;
+    let note = Tiff::parse(c.cmt.get(2).copied().flatten()?).ok()?;
+    crate::focus_canon::canon(note.ifds.first()?, orientation.unwrap_or_default())
 }
 
 fn byte(ifd: &Ifd, tag: u16) -> Option<u8> {
@@ -233,6 +261,41 @@ pub(crate) fn sony(ifd: &Ifd, order: ByteOrder, orientation: Orientation) -> Opt
 }
 
 /// A minimal little-endian TIFF laid out as an α1 ARW's metadata is (IFD0 with Make `SONY` and Model `ILCE-1` →
+/// A minimal Canon CR2-like file (little-endian TIFF, Make `Canon`, a header-less maker note) whose AFInfo2
+/// record holds one valid point, in focus: a 200-pixel frame 1500 right of and 1000 above the centre of a
+/// 6000 × 4000 AF image (so its centre is at (0.75, 0.25)), followed by `samples` filler bytes. For tests of
+/// the readers and the zoom in other crates; not a real raw (it has no image).
+#[doc(hidden)]
+pub fn synthetic_cr2(samples: usize) -> Vec<u8> {
+    fn entry(f: &mut Vec<u8>, tag: u16, typ: u16, count: u32, value: [u8; 4]) {
+        f.extend_from_slice(&tag.to_le_bytes());
+        f.extend_from_slice(&typ.to_le_bytes());
+        f.extend_from_slice(&count.to_le_bytes());
+        f.extend_from_slice(&value);
+    }
+    let mut f = b"II*\0".to_vec();
+    f.extend_from_slice(&8u32.to_le_bytes());
+    // IFD0 at 8: Make (at 50), Orientation, the Exif IFD (at 56)
+    f.extend_from_slice(&3u16.to_le_bytes());
+    entry(&mut f, t::MAKE, 2, 6, 50u32.to_le_bytes());
+    entry(&mut f, t::ORIENTATION, 3, 1, [1, 0, 0, 0]);
+    entry(&mut f, t::EXIF_IFD, 4, 1, 56u32.to_le_bytes());
+    f.extend_from_slice(&[0; 4]);
+    f.extend_from_slice(b"Canon\0");
+    // the Exif IFD: the maker note at 74, 46 bytes
+    f.extend_from_slice(&1u16.to_le_bytes());
+    entry(&mut f, t::MAKER_NOTE, 7, 46, 74u32.to_le_bytes());
+    f.extend_from_slice(&[0; 4]);
+    // the maker note's IFD: AFInfo2 (14 shorts at 92)
+    f.extend_from_slice(&1u16.to_le_bytes());
+    entry(&mut f, 0x0026, 3, 14, 92u32.to_le_bytes());
+    f.extend_from_slice(&[0; 4]);
+    for v in [28u16, 2, 1, 1, 6000, 4000, 6000, 4000, 200, 200, 1500, 1000, 1, 1] {
+        f.extend_from_slice(&v.to_le_bytes());
+    }
+    f.extend((0..samples).map(|i| (i % 251) as u8));
+    f
+}
 /// Exif IFD → a header-less maker note with the focus tags: AF-C or the given FocusMode byte, Wide, Face tracking,
 /// Animal Eye Tracking at (3226, 1980) of 8640 × 5760), followed by `samples` bytes standing in for sensor data. For
 /// tests of the readers and the backfill in other crates; not a real raw (it has no image).
@@ -732,6 +795,32 @@ mod tests {
             Ok(())
         });
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn the_synthetic_arw_is_laid_out_as_described() {
+        let f = synthetic_arw(3, 10);
+        assert_eq!(f.len(), 260);
+        let p = crate::extract(&f).focus.expect("a point");
+        assert_eq!(p.words(), vec!["AF-C", "Wide", "Animal Eye Tracking"]);
+        assert!(crate::extract(&synthetic_arw(0, 0)).focus.is_none(), "manual focus");
+    }
+
+    #[test]
+    fn the_synthetic_cr2_has_its_point() {
+        let p = crate::extract(&synthetic_cr2(0)).focus.expect("a point");
+        let (cx, cy) = p.center();
+        assert!((cx - 0.75).abs() < 1e-9 && (cy - 0.25).abs() < 1e-9, "{cx} {cy}");
+        assert_eq!(p.area.as_deref(), Some("Single-point AF"));
+    }
+
+    #[test]
+    fn cameras_that_can_have_a_point() {
+        assert!(camera_supported("SONY ILCE-1") && camera_supported("Sony ILCE-7SM3 "));
+        assert!(camera_supported("Canon EOS R5 C") && camera_supported("CANON EOS 5D Mark IV"), "every Canon");
+        for c in ["SONY ILCE-0000", "", "SONY", "ILCE-1", "SON", "Cano"] {
+            assert!(!camera_supported(c), "{c}");
+        }
     }
 
     /// Opt-in: decode real α1 / A7S III files and compare with the values ExifTool (run as a black box)

@@ -56,6 +56,14 @@ pub fn may_close(app: &mut LccApp) -> bool {
         }));
         return false;
     }
+    // a catalog backup due: asked once, as Lightroom Classic asks when it closes (the web keeps no catalog folder)
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.exit_backup.is_none() && app.session.catalog_dir().is_some() && app.session.catalog_settings().backup_due(lcc_catalog::library::now_secs())
+    {
+        app.quit_prompt =
+            Some(QuitPrompt::Backup(crate::i18n::tr("A backup of the catalog is due. Back it up now, before {app} quits?").to_string()));
+        return false;
+    }
     if app.session.unsaved().is_none() {
         return true;
     }
@@ -144,6 +152,24 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         }
         return;
     }
+    if let Some(QuitPrompt::Backup(text)) = app.quit_prompt.clone() {
+        let buttons = [
+            ("quitBackUp", "Back Up and Quit", Choice::Retry),
+            ("quitSkipBackup", "Skip This Time", Choice::QuitAnyway),
+            ("quitCancel", "Cancel", Choice::Cancel),
+        ];
+        let Some(i) = window(ctx, "quit-backup", "Back up the catalog?", &text, &buttons) else { return };
+        app.quit_prompt = None;
+        match buttons[i].2 {
+            Choice::Retry => app.exit_backup = Some(true),
+            Choice::QuitAnyway => app.exit_backup = Some(false),
+            Choice::Cancel | Choice::Ok => return,
+        }
+        if may_close(app) {
+            app.ui.quit = true;
+        }
+        return;
+    }
     if let Some(QuitPrompt::Unsaved(text)) = app.quit_prompt.clone() {
         let buttons = [
             ("quitRetry", "Try Saving Again", Choice::Retry),
@@ -169,7 +195,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     if let Some(text) = app.notices.first().cloned() {
         let buttons = [("noticeOk", "OK", Choice::Ok)];
-        if window(ctx, "settings-notice", "Settings file problem", &text, &buttons).is_some() {
+        // an upgrade is news, not a problem: don't title it like one
+        let title = if text.starts_with(lcc_engine::library::UPGRADE_NOTICE_START) { "Library upgraded" } else { "Settings file problem" };
+        if window(ctx, "settings-notice", title, &text, &buttons).is_some() {
             app.notices.remove(0);
         }
     }

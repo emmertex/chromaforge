@@ -30,9 +30,12 @@ pub struct PresetFile {
 /// Reads go through `Deref` (`iter`, `len`, `find`…) and keep the generation; `push`, `iter_mut`,
 /// `remove`… go through `DerefMut` and bump it, whether or not anything is then changed.
 /// Generations are unique across all lists in the process.
+///
+/// The items are shared copy-on-write: [`PresetList::snapshot`] hands the list to a background
+/// save without copying 40 MB on the UI thread; the next change then copies it once.
 #[derive(Clone, Debug)]
 pub struct PresetList {
-    items: Vec<Preset>,
+    items: std::sync::Arc<Vec<Preset>>,
     generation: u64,
 }
 
@@ -44,7 +47,12 @@ fn next_generation() -> u64 {
 
 impl PresetList {
     pub fn new(items: Vec<Preset>) -> PresetList {
-        PresetList { items, generation: next_generation() }
+        PresetList { items: std::sync::Arc::new(items), generation: next_generation() }
+    }
+
+    /// The presets as they are now, shared (no copy): a later change copies the list for itself.
+    pub fn snapshot(&self) -> std::sync::Arc<Vec<Preset>> {
+        self.items.clone()
     }
 
     /// Changes whenever the list may have changed.
@@ -74,7 +82,7 @@ impl std::ops::Deref for PresetList {
 impl std::ops::DerefMut for PresetList {
     fn deref_mut(&mut self) -> &mut Vec<Preset> {
         self.generation = next_generation();
-        &mut self.items
+        std::sync::Arc::make_mut(&mut self.items)
     }
 }
 
@@ -91,7 +99,7 @@ impl<'a> IntoIterator for &'a mut PresetList {
     type IntoIter = std::slice::IterMut<'a, Preset>;
     fn into_iter(self) -> Self::IntoIter {
         self.generation = next_generation();
-        self.items.iter_mut()
+        std::sync::Arc::make_mut(&mut self.items).iter_mut()
     }
 }
 
@@ -479,6 +487,10 @@ pub fn builtin() -> Vec<Preset> {
             json!({"treatment": "bw", "grading": {"shadows": {"hue": 32.0, "sat": 22.0, "lum": 0.0}, "highlights": {"hue": 42.0, "sat": 18.0, "lum": 0.0}}, "curve": {"shadows": 10.0}}),
         ),
     ]
+    .into_iter()
+    // AI-mask recipes: Sun Kissed, Recover Blue Suit, Bring Sky Down…
+    .chain(crate::presets_smart::smart())
+    .collect()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -537,10 +549,14 @@ pub const RECENT_PROFILES: usize = 5;
 impl Session {
     /// A profile by id, looking up built-in profiles first and imported LUT profiles second.
     pub fn profile_info(&self, id: &str) -> Option<(&str, &str)> {
-        if let Some(p) = profile(id) {
-            return Some((p.name, p.group));
-        }
-        self.lut_profiles.iter().find(|p| p.id == id).map(|p| (p.name.as_str(), p.group.as_str()))
+        let (name, group) = match profile(id) {
+            Some(p) => (p.name, p.group),
+            None => self.lut_profiles.iter().find(|p| p.id == id).map(|p| (p.name.as_str(), p.group.as_str()))?,
+        };
+        // the Profile Manager's name and group for it
+        let name = self.profile_edits.names.get(id).map(String::as_str).unwrap_or(name);
+        let group = self.profile_edits.groups.get(id).map(String::as_str).unwrap_or(group);
+        Some((name, group))
     }
 
     /// Remember `id` as the most recently applied profile.
@@ -560,24 +576,40 @@ impl Session {
                 .find(|p| p.id == id)
                 .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.contains(&p.id), "imported": true}))
         };
-        let list = |ids: &[String]| ids.iter().filter_map(|id| profile(id).map(item).or_else(|| lut_item(id))).collect::<Vec<_>>();
-        let mut groups: Vec<Value> = profile_groups()
+        let shown = |id: &str| !self.profile_hidden.iter().any(|h| h == id) && !self.profile_edits.removed.iter().any(|r| r == id);
+        let renamed = |mut v: Value| {
+            if let Some(n) = v.get("id").and_then(Value::as_str).and_then(|id| self.profile_edits.names.get(id)).cloned() {
+                v["name"] = json!(n);
+            }
+            v
+        };
+        let list = |ids: &[String]| {
+            ids.iter().filter(|id| shown(id)).filter_map(|id| profile(id).map(item).or_else(|| lut_item(id))).map(renamed).collect::<Vec<_>>()
+        };
+        // (profiles the Profile Manager hides or removed are left out; a group left empty goes too)
+        let groups: Vec<Value> = self
+            .shown_groups()
             .into_iter()
-            .map(|g| json!({"name": g, "profiles": PROFILES.iter().filter(|p| p.group == g).map(item).collect::<Vec<_>>()}))
+            .map(|g| {
+                let profiles: Vec<Value> = g
+                    .profiles
+                    .iter()
+                    .map(|p| {
+                        let mut v =
+                            json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.iter().any(|f| f == &p.id)});
+                        if p.kind == "lut" {
+                            v["imported"] = json!(true);
+                        }
+                        v
+                    })
+                    .collect();
+                let mut v = json!({"name": g.name, "profiles": profiles});
+                if g.imported {
+                    v["imported"] = json!(true);
+                }
+                v
+            })
             .collect();
-        // imported LUT profiles, by their groups
-        let mut lut_groups: Vec<&str> = self.lut_profiles.iter().map(|p| p.group.as_str()).collect();
-        lut_groups.sort_unstable();
-        lut_groups.dedup();
-        for g in lut_groups {
-            let profiles: Vec<Value> = self
-                .lut_profiles
-                .iter()
-                .filter(|p| p.group == g)
-                .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.contains(&p.id), "imported": true}))
-                .collect();
-            groups.push(json!({"name": g, "profiles": profiles, "imported": true}));
-        }
         json!({
             "favorites": list(&self.profile_favorites),
             "recent": list(&self.profile_recent),

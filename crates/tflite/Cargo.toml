@@ -1,0 +1,19 @@
+[package]
+name = "lcc-tflite"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+description = "A small, bounded TensorFlow Lite interpreter in pure Rust for the MediaPipe models, and their pre/post-processing (L1)"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+lcc-testkit = { workspace = true }
+lcc-brand = { workspace = true }
+# reads the LiteRT reference outputs (safetensors) in tests/reference.rs
+candle-core = { workspace = true }

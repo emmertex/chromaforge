@@ -43,6 +43,8 @@ pub struct ModernUi {
     pub filters: bool,
     /// Library's Info card shows at the right of the grid ([`crate::modern_library`]).
     pub info: bool,
+    /// Library's second bar shows under the top one: delete, flag, rating and Info.
+    pub actions: bool,
     /// The histogram over the photo in Develop: off, small or large. (Saved under a new name: the
     /// touch layout's `histogram` was off by default, and Modern shows it.)
     #[serde(rename = "histogramSize")]
@@ -163,6 +165,7 @@ impl Default for ModernUi {
             filmstrip: false,
             filters: false,
             info: false,
+            actions: false,
             histogram: HistogramPlace::Small,
             histogram_at: [1.0, 0.0],
             menu: None,
@@ -447,7 +450,8 @@ pub fn take_system_back(app: &mut LccApp) -> bool {
 /// screen's insets and below the top bar, so they never cover its buttons (Back, Import, …).
 pub(crate) fn overlay_origin(app: &LccApp) -> Pos2 {
     let i = app.ui.modern.insets;
-    pos2(i.left + 8.0, i.top + BAR_H + 14.0)
+    let extra = if app.ui.modern.actions && app.ui.module == ModuleId::Library { BAR_H } else { 0.0 };
+    pos2(i.left + 8.0, i.top + BAR_H + extra + 14.0)
 }
 
 /// The Modern layout's edges (replacing `shell::edges`): the screen's insets and Library's bar.
@@ -662,8 +666,8 @@ fn library_bar(app: &mut LccApp, ui: &mut egui::Ui, form: Form) {
         if button(if square { Icon::GridPhoto } else { Icon::GridSquare }, "modern:gridStyle", "Grid Style", false) {
             let _ = app.run(if square { "view.photoGrid" } else { "view.squareGrid" }, json!({}));
         }
-        if button(Icon::Info, "modern:infoButton", "Info", app.ui.modern.info) {
-            app.ui.modern.info = !app.ui.modern.info;
+        if button(Icon::More, "modern:actionsButton", "Photo Actions", app.ui.modern.actions) {
+            app.ui.modern.actions = !app.ui.modern.actions;
         }
         if button(Icon::Filter, "modern:filters", "Filter", app.ui.modern.filters) {
             app.ui.modern.filters = !app.ui.modern.filters;
@@ -676,6 +680,67 @@ fn library_bar(app: &mut LccApp, ui: &mut egui::Ui, form: Form) {
         }
         let _ = form;
     });
+    if app.ui.modern.actions && app.ui.modern.menu.is_none() {
+        actions_bar(app, ui);
+    }
+}
+
+/// Library's second bar: delete, flag and rating for the selected photos, and the Info card.
+fn actions_bar(app: &mut LccApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let (rating, flag) =
+        app.session.active().and_then(|id| app.session.catalog.photo(id)).map_or((0, lcc_catalog::Flag::None), |p| (p.rating, p.flag));
+    let has = app.session.active().is_some();
+    egui::Panel::top("modern-actions-bar").exact_size(BAR_H).frame(egui::Frame::NONE.fill(t.chrome).stroke(egui::Stroke::new(1.0, t.divider))).show(
+        ui,
+        |ui| {
+            let r = ui.max_rect();
+            let y = r.center().y - BUTTON / 2.0;
+            let mut x = r.left() + MARGIN - 4.0;
+            let mut next = |w: f32| {
+                let rect = Rect::from_min_size(pos2(x, y), vec2(w, BUTTON));
+                x += w;
+                rect
+            };
+            let gap = BUTTON * 0.25;
+            let mut run: Option<(&str, Value)> = None;
+            if round_button(ui, next(BUTTON), "modern:delete", Icon::Trash, "Delete Photo", false, has).clicked() {
+                run = Some(("photo.delete", json!({})));
+            }
+            let picked = flag == lcc_catalog::Flag::Pick;
+            let icon = if picked { Icon::FlagPickFilled } else { Icon::FlagPick };
+            if round_button(ui, next(BUTTON), "modern:flag", icon, "Flag as Pick", picked, has).clicked() {
+                run = Some(("photo.flag", json!({"flag": if picked { "none" } else { "pick" }})));
+            }
+            let _ = next(gap);
+            for n in 1..=5u8 {
+                let on = rating >= n;
+                if round_button(
+                    ui,
+                    next(BUTTON * 0.8),
+                    &format!("modern:star{n}"),
+                    if on { Icon::StarFilled } else { Icon::Star },
+                    "Rating",
+                    false,
+                    has,
+                )
+                .clicked()
+                {
+                    run = Some(("photo.rate", json!({"rating": if rating == n { 0 } else { n }})));
+                }
+            }
+            // Info at the right
+            let info = Rect::from_min_size(pos2(r.right() - 8.0 - BUTTON, y), Vec2::splat(BUTTON));
+            if round_button(ui, info, "modern:infoButton", Icon::Info, "Info", app.ui.modern.info, true).clicked() {
+                app.ui.modern.info = !app.ui.modern.info;
+            }
+            if let Some((id, p)) = run
+                && let Err(e) = app.run(id, p)
+            {
+                app.ui.status = e;
+            }
+        },
+    );
 }
 
 /// The Library / Develop switch at the top centre of `bar`.
@@ -722,6 +787,9 @@ fn import_menu(app: &mut LccApp, ui: &egui::Ui, right_top: Pos2) {
         vec![("modern:import:photos", "Import Photos…", "file.addPhotos"), ("modern:import:folder", "Import Folder…", "file.addFolder")];
     if app.services.camera_roll.is_some() {
         items.push(("modern:import:cameraRoll", "Camera Roll", "file.addCameraRoll"));
+    }
+    if crate::import_tab::enabled(app) {
+        items.push(("modern:import:tab", "Import Tab", "view.importTab"));
     }
     let size = vec2(220.0, BUTTON * items.len() as f32 + 8.0);
     let min = pos2(right_top.x - size.x, right_top.y);
@@ -1172,6 +1240,7 @@ pub(crate) fn round_button(ui: &mut egui::Ui, rect: Rect, id: &str, icon: Icon, 
 /// The Modern layout's commands (`menus_fork` lists them).
 pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("view.modernLayout", "Modern Layout", None, "Window>Panels"),
+    ("view.compactLayout", "Compact Layout", None, "Window>Panels"),
     ("modern.chrome", "Show Modern Tools", None, ""),
     ("modern.group", "Open a Dock Group", None, ""),
     ("modern.dock", "Dock at the Side", None, ""),
@@ -1195,6 +1264,18 @@ pub(crate) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
                 app.ui.modern.menu = None;
             }
             Ok(json!({"on": app.ui.modern.enabled}))
+        }
+        // {on?}: the Compact layout (Classic drawn denser); on turns the Modern layout off
+        "view.compactLayout" => {
+            let on = flag(p, app.compact());
+            if on && app.ui.modern.enabled {
+                app.ui.modern.enabled = false;
+                crate::modern_dock::close(app);
+                stop_holding(app);
+                app.ui.modern.menu = None;
+            }
+            app.ui.settings.compact_layout = on;
+            Ok(json!({"on": on}))
         }
         "modern.chrome" => {
             app.ui.modern.chrome = flag(p, app.ui.modern.chrome);
