@@ -240,6 +240,9 @@ catalog on Windows.
   copies ("Variant 2", …). Originals inside the catalog are found relative to the folder holding the database,
   referenced ones by `ZPATHLOCATION` (`ZWINROOT` / `ZMACROOT` + `ZRELATIVEPATH`). Images in Capture One's trash
   are left out, with a warning.
+- **Offline originals** (a drive that isn't connected, a file that is gone) take the capture time (`ZEXP_DATE`, the
+  camera's clock, no offset), camera make, model and lens from the catalog; a file that is there keeps its own.
+  Capture One's stand-ins for a file without a camera ("Tiff File", "Jpeg File") are no camera.
 - **Ratings and colour tags** (`ZVARIANTMETADATA`): red, yellow, green, blue and purple become labels; orange and
   pink have no label here and come in without one, with a warning.
 - **Keywords:** `ZCONTENT_KEYWORDS` lists each keyword as its full path with an order suffix
