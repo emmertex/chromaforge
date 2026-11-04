@@ -183,6 +183,7 @@ const LAYOUT: &[(&str, &[&str])] = &[
             "dialog.cull",
             "tool.painter",
             "faces.detect",
+            "faces.clearAndRescan",
             "---",
             "dialog.rename",
             "file.findMissing",

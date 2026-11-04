@@ -275,44 +275,57 @@ pub(crate) fn is_detected(r: &Region) -> bool {
     r.kind != RegionKind::IgnoredFace && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))
 }
 
-/// The photo as the faces see it: upright, uncropped, default settings, as 8-bit RGB with its size, its long edge at
-/// most `edge`.
-pub(crate) fn render_rgb(s: &mut Session, id: lcc_catalog::PhotoId, edge: usize) -> std::result::Result<(Vec<u8>, usize, usize), String> {
-    let settings = DevelopSettings::default();
-    let job = s.preview_job(id, edge, edge, false, &settings).ok_or("no such photo")?;
+/// What `faces.detect` was asked for.
+#[derive(Clone, Copy)]
+struct Options {
+    apply: bool,
+    score: f32,
+    max_faces: usize,
+    fine: bool,
+}
+
+fn options(p: &Value) -> Options {
+    Options {
+        apply: p.get("apply").and_then(Value::as_bool).unwrap_or(true),
+        score: p.get("score").and_then(Value::as_f64).filter(|v| v.is_finite()).map_or(DEFAULT_SCORE, |v| v as f32),
+        max_faces: p.get("maxFaces").and_then(Value::as_u64).map_or(DEFAULT_MAX_FACES, |v| usize::try_from(v).unwrap_or(DEFAULT_MAX_FACES)),
+        fine: p.get("fine").and_then(Value::as_bool).unwrap_or(true),
+    }
+}
+
+/// The photo `job` renders, as 8-bit RGB with its size.
+fn rgb_of(job: crate::media::RenderJob) -> std::result::Result<(Vec<u8>, usize, usize), String> {
     let image = job.run().rendered?.image;
     let rgb: Vec<u8> = image.data.iter().flat_map(|px| [px[0], px[1], px[2]]).collect();
     Ok((rgb, image.width, image.height))
 }
 
-fn detect(s: &mut Session, p: &Value) -> Result<Value> {
-    let apply = p.get("apply").and_then(Value::as_bool).unwrap_or(true);
-    let score = p.get("score").and_then(Value::as_f64).filter(|v| v.is_finite()).map_or(DEFAULT_SCORE, |v| v as f32);
-    let max_faces = p.get("maxFaces").and_then(Value::as_u64).map_or(DEFAULT_MAX_FACES, |v| usize::try_from(v).unwrap_or(DEFAULT_MAX_FACES));
-    let fine = p.get("fine").and_then(Value::as_bool).unwrap_or(true);
-    let detector = detector(s).map_err(|e| e.into_error(C))?;
-    let started = Instant::now();
+/// The faces in one photo that pass `o`.
+fn find(detector: &Finder, job: crate::media::RenderJob, o: Options) -> std::result::Result<Vec<Face>, String> {
+    let (rgb, width, height) = rgb_of(job)?;
+    let mut f = detector.detect(&rgb, width, height, o.fine)?;
+    f.retain(|f| f.score >= o.score);
+    f.truncate(o.max_faces);
+    Ok(f)
+}
+
+/// The job that renders `id` as the faces see it: upright, uncropped, default settings, its long edge at most [`LOOK_EDGE`].
+fn look_job(s: &mut Session, id: lcc_catalog::PhotoId) -> Option<crate::media::RenderJob> {
+    s.preview_job(id, LOOK_EDGE, LOOK_EDGE, false, &DevelopSettings::default())
+}
+
+/// Add the faces found to their photos (earlier detections replaced) in one undo step, and say what was done.
+fn finish(s: &mut Session, o: Options, found: Vec<(lcc_catalog::PhotoId, std::result::Result<Vec<Face>, String>)>, ms: f64) -> Result<Value> {
     let (mut results, mut ops) = (Vec::new(), Vec::new());
-    for id in s.targets(p)? {
-        let (rgb, width, height) = match render_rgb(s, id, LOOK_EDGE) {
-            Ok(r) => r,
+    for (id, r) in found {
+        let faces = match r {
+            Ok(f) => f,
             Err(e) => {
                 results.push(json!({"id": id.0, "error": e}));
                 continue;
             }
         };
-        let faces = match detector.detect(&rgb, width, height, fine) {
-            Ok(mut f) => {
-                f.retain(|f| f.score >= score);
-                f.truncate(max_faces);
-                f
-            }
-            Err(e) => {
-                results.push(json!({"id": id.0, "error": e.to_string()}));
-                continue;
-            }
-        };
-        if apply && let Some(photo) = s.catalog.photo(id) {
+        if o.apply && let Some(photo) = s.catalog.photo(id) {
             let mut meta = photo.meta.clone();
             meta.regions.retain(|r| !is_detected(r));
             let fresh: Vec<&Face> = faces.iter().filter(|f| !overlaps_existing(f, &meta.regions)).collect();
@@ -334,7 +347,114 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         // regions are not written to XMP, so a sidecar must not be rewritten for this
         s.skip_auto_write = true;
     }
-    Ok(json!({"detector": LABEL, "applied": applied, "photos": results, "ms": started.elapsed().as_secs_f64() * 1000.0}))
+    Ok(json!({"detector": LABEL, "applied": applied, "photos": results, "ms": ms}))
+}
+
+/// A background Detect Faces run: its results arrive on `rx`; `cancel` stops it between photos.
+pub(crate) struct DetectRun {
+    rx: Mutex<std::sync::mpsc::Receiver<Done>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    options: Options,
+    total: usize,
+    started: Instant,
+}
+
+enum Done {
+    Photo(lcc_catalog::PhotoId, std::result::Result<Vec<Face>, String>),
+    End { cancelled: bool },
+}
+
+/// `faces.detect`. Without `wait` it runs in the background (a row in the activity stack, cancellable) and the faces
+/// land in one undo step when it is done (`faces.detectPump`, called every frame by the app).
+fn detect(s: &mut Session, p: &Value) -> Result<Value> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let o = options(p);
+    let detector = detector(s).map_err(|e| e.into_error(C))?;
+    let ids = s.targets(p)?;
+    if p.get("wait").and_then(Value::as_bool).unwrap_or(false) {
+        let started = Instant::now();
+        let found = ids
+            .into_iter()
+            .map(|id| {
+                let r = look_job(s, id).ok_or_else(|| "no such photo".to_string()).and_then(|job| find(&detector, job, o));
+                (id, r)
+            })
+            .collect();
+        return finish(s, o, found, started.elapsed().as_secs_f64() * 1000.0);
+    }
+    if s.face_detect.as_ref().is_some_and(|r| !r.cancel.load(Ordering::Relaxed)) {
+        return Err(bad(C, "a run is in progress already"));
+    }
+    let jobs: Vec<(lcc_catalog::PhotoId, Option<crate::media::RenderJob>)> = ids.into_iter().map(|id| (id, look_job(s, id))).collect();
+    let total = jobs.len();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let task = s.activity.start("faces", "Detecting faces", crate::activity::Cancel::Flag(cancel.clone()));
+    task.progress(0, total as u64);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let flag = cancel.clone();
+    std::thread::Builder::new()
+        .name("faces-detect".into())
+        .spawn(move || {
+            let mut done = 0u64;
+            for (id, job) in jobs {
+                if flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                let r = match job {
+                    None => Err("no such photo".to_string()),
+                    Some(job) => crate::guard::catch("finding faces", || find(&detector, job, o)).and_then(|r| r),
+                };
+                done += 1;
+                task.progress(done, total as u64);
+                let _ = tx.send(Done::Photo(id, r));
+            }
+            let _ = tx.send(Done::End { cancelled: flag.load(Ordering::Relaxed) });
+            drop(task);
+        })
+        .map_err(|e| bad(C, format!("could not start ({e})")))?;
+    s.face_detect = Some(Arc::new(DetectRun { rx: Mutex::new(rx), cancel, options: o, total, started: Instant::now() }));
+    s.face_detect_results.clear();
+    Ok(json!({"done": false, "photos": total}))
+}
+
+/// `faces.detectPump`: cheap every frame. Takes in finished photos; when the run is over, adds the faces (one undo
+/// step) and returns the summary once (`done: true`).
+fn pump(s: &mut Session, _: &Value) -> Result<Value> {
+    let Some(run) = s.face_detect.clone() else { return Ok(json!({"active": false})) };
+    let mut end = None;
+    {
+        let rx = run.rx.lock().unwrap_or_else(PoisonError::into_inner);
+        for d in rx.try_iter() {
+            match d {
+                Done::Photo(id, r) => s.face_detect_results.push((id, r)),
+                Done::End { cancelled } => end = Some(cancelled),
+            }
+        }
+    }
+    let Some(cancelled) = end else {
+        return Ok(json!({"active": true, "done": false, "looked": s.face_detect_results.len(), "photos": run.total}));
+    };
+    s.face_detect = None;
+    let found = std::mem::take(&mut s.face_detect_results);
+    let mut out = finish(s, run.options, found, run.started.elapsed().as_secs_f64() * 1000.0)?;
+    out["active"] = json!(false);
+    out["done"] = json!(true);
+    out["cancelled"] = json!(cancelled);
+    Ok(out)
+}
+
+/// `faces.clearAndRescan`: forget what the scan learned about these photos' faces and detect them again. Faces you
+/// named, drew or ignored are kept; the ones an earlier detection made are replaced.
+fn clear_and_rescan(s: &mut Session, p: &Value) -> Result<Value> {
+    let ids: Vec<lcc_catalog::PhotoId> = if p.get("ids").is_some() || s.selection.ids.len() > 1 { s.targets(p)? } else { s.visible_cloned() };
+    let mut params = p.as_object().cloned().unwrap_or_default();
+    params.insert("ids".into(), json!(ids.iter().map(|i| i.0).collect::<Vec<_>>()));
+    let started = detect(s, &Value::Object(params))?;
+    for id in ids {
+        s.faces.content_replaced(id);
+    }
+    s.faces.epoch = s.faces.epoch.wrapping_add(1);
+    Ok(started)
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -344,9 +464,27 @@ pub fn specs() -> Vec<CommandSpec> {
             "Detect Faces",
             ["Library"],
             None,
-            "{ids?, apply?: bool (default true), score?: 0.65, maxFaces?: 200, fine?: bool (true: also looks in tiles, for the small faces of group photos)} → {photos: [{id, faces: [{rect, score, landmarks}]}]}. Finds faces with the open MediaPipe face model (Apache-2.0; download it first: `ai.models.download {id: \"face\", acknowledged: true}`) and, unless `apply` is false, adds them as unnamed face regions (one undo step), replacing earlier detections but never regions from XMP or ones you named; the sidecar is not touched",
+            "{ids?, wait?: bool (false: runs in the background, an activity row, and `faces.detectPump` takes the results), apply?: bool (default true), score?: 0.65, maxFaces?: 200, fine?: bool (true: also looks in tiles, for the small faces of group photos)} → {photos: [{id, faces: [{rect, score, landmarks}]}]}. Finds faces with the open MediaPipe face model (Apache-2.0; download it first: `ai.models.download {id: \"face\", acknowledged: true}`) and, unless `apply` is false, adds them as unnamed face regions (one undo step), replacing earlier detections but never regions from XMP or ones you named; the sidecar is not touched",
             has_selection,
             detect
+        ),
+        cmd!(
+            "faces.detectPump",
+            "Detect Faces: Take Results",
+            [],
+            None,
+            "{} — cheap every frame: when a Detect Faces run has finished, add its faces (one undo step) and return its summary once → {active, done, photos, …}",
+            always,
+            pump
+        ),
+        cmd!(
+            "faces.clearAndRescan",
+            "Clear Faces and Rescan",
+            ["Library"],
+            None,
+            "{ids?} — the selected photos (else all in view): forget what the scan learned about their faces and detect them again in the background (faces you named, drew or ignored are kept) → {done: false, photos}",
+            always,
+            clear_and_rescan
         ),
         cmd!(
             query "faces.gpu",

@@ -1327,6 +1327,10 @@ impl LccApp {
                     panels::faces::offer_detector(self);
                 }
             }
+            Ok(v) if matches!(id, "faces.detect" | "faces.clearAndRescan") && v["done"] == false => {
+                let n = v["photos"].as_u64().unwrap_or(0);
+                self.ui.status = if n == 1 { "Detecting faces…".to_string() } else { format!("Detecting faces in {n} photos…") };
+            }
             Ok(v) if id == "faces.detect" => self.ui.status = detect_summary(v),
             Ok(v) if id == "faces.renamePerson" => {
                 let to = v["to"].as_str().unwrap_or("").to_string();
@@ -1608,6 +1612,25 @@ impl LccApp {
         if self.ui.dialog.is_none() || matches!(self.ui.dialog, Some(state::Dialog::Settings { .. })) {
             self.ui.dialog = Some(state::Dialog::Settings { tab: "ai".into() });
         }
+    }
+
+    /// Detect Faces running in the background (`faces.detect`): when it ends, its faces are in the photos (one undo
+    /// step) and its summary is shown. Cheap every frame.
+    fn faces_detect_pump(&mut self) {
+        let Ok(v) = self.session.execute("faces.detectPump", &serde_json::json!({})) else { return };
+        if v["active"] == true {
+            if let Some(ctx) = self.tasks.repaint.as_ref() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            }
+            return;
+        }
+        if v["done"] != true {
+            return;
+        }
+        self.caches.faces_epoch += 1;
+        let text = detect_summary(&v);
+        let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
+        self.ui.show_toast((text, now + TOAST_SECONDS, None));
     }
 
     /// A toast for an error the user has to read and act on (stays 6 s).
@@ -2126,6 +2149,7 @@ impl LccApp {
         panels::faces::pump(self, ctx);
         focus_scan::pump(self, ctx);
         eye_strip::reject_pump(self);
+        self.faces_detect_pump();
         panels::masking::put_tools_away(self);
         enhance_pump::pump(self, ctx);
         self.collect_screenshots(ctx);
