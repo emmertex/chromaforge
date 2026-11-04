@@ -379,8 +379,20 @@ fn name_score(db: &[String], exif: &[String], maker: &[String]) -> f64 {
     if db.iter().any(|t| is_number(t) && !exif.contains(t)) || exif.iter().any(|t| is_number(t) && !db.contains(t)) {
         return 0.0;
     }
+    // A teleconverter combo is a different optical system from the bare lens: reject it whichever side
+    // carries the marker, whatever tokens the names drop or add.
+    if db.iter().any(|t| is_teleconverter_marker(t)) != exif.iter().any(|t| is_teleconverter_marker(t)) {
+        return 0.0;
+    }
     let common = db.iter().filter(|t| exif.contains(t)).count() as f64;
     2.0 * common / (db.len() + exif.len()) as f64
+}
+
+/// Teleconverter markers in a lens name. A name carrying one names a different optical system than the bare
+/// lens. Converter factors such as `1.4x` tokenise into a number the base profile lacks, so the numeric check
+/// in `name_score` already rejects them.
+fn is_teleconverter_marker(t: &str) -> bool {
+    t == "tc" || t == "teleconverter"
 }
 
 fn camera(n: &xml::Node) -> Option<Camera> {
