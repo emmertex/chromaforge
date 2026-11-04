@@ -3243,3 +3243,57 @@ fn space_zooms_to_is_a_choice_in_the_view_menu() {
     let s: crate::state::AppSettings = serde_json::from_value(json!({"spaceZoom": "nose"})).expect("lenient");
     assert_eq!(s.space_zoom, SpaceZoom::FocusPoint);
 }
+
+/// Issue #774: folders and collections remember their open/closed state across sessions.
+#[test]
+fn remembering_folder_and_collection_conditions_across_sessions() {
+    let mut h = folders_app(&["/pics/sub/a.jpg", "/pics/sub/b.jpg", "/pics/other/c.jpg"]);
+    let make = |h: &mut Headless, params: serde_json::Value| h.app.session.execute("album.create", &params).unwrap()["id"].as_u64().unwrap();
+    let trips = make(&mut h, json!({"name": "Trips", "folder": true}));
+    let europe = make(&mut h, json!({"name": "Europe", "folder": true, "parent": trips}));
+    let _best = make(&mut h, json!({"name": "Best", "parent": europe}));
+    h.settle(SETTLE);
+
+    // Initial state: /pics subfolders folded, album folders start open
+    assert!(!has(&h, "source:libfolder:/pics/sub"));
+    assert!(has(&h, &format!("albumToggle:{trips}")));
+    assert!(has(&h, &format!("albumToggle:{europe}")));
+
+    // Unfold /pics folder in Folders
+    click(&mut h, "libraryFolderToggle:/pics");
+    assert!(has(&h, "source:libfolder:/pics/sub"));
+
+    // Collapse Europe album folder in Collections
+    click(&mut h, &format!("albumToggle:{europe}"));
+
+    // Serialize ui state to JSON as the app writer does on quit
+    let saved_ui = serde_json::to_value(&h.app.ui).unwrap();
+
+    // Verify tree_open recorded the conditions
+    assert_eq!(h.app.ui.tree_open.get("libfolder:/pics"), Some(&true));
+    assert_eq!(h.app.ui.tree_open.get(&format!("album:{europe}")), Some(&false));
+
+    // Deserialized UiState preserves tree_open
+    let restored = serde_json::from_value::<crate::UiState>(saved_ui.clone()).unwrap().sanitized();
+    assert_eq!(restored.tree_open.get("libfolder:/pics"), Some(&true));
+    assert_eq!(restored.tree_open.get(&format!("album:{europe}")), Some(&false));
+
+    // Re-create app session with restored ui settings
+    let mut h2 = folders_app_prepared(
+        &["/pics/sub/a.jpg", "/pics/sub/b.jpg", "/pics/other/c.jpg"],
+        [1400.0, 980.0],
+        serde_json::json!({"view": "photoGrid", "leftPanel": true, "moduleBar": false}),
+        Services { png: None, ..Default::default() },
+        |app| {
+            app.ui = restored.clone();
+        },
+    );
+    let trips2 = make(&mut h2, json!({"name": "Trips", "folder": true}));
+    let europe2 = make(&mut h2, json!({"name": "Europe", "folder": true, "parent": trips2}));
+    let _best2 = make(&mut h2, json!({"name": "Best", "parent": europe2}));
+    h2.settle(SETTLE);
+
+    // In restored session, /pics folder stays open, and Europe album folder stays collapsed!
+    assert!(has(&h2, "source:libfolder:/pics/sub"), "remembered /pics was expanded");
+    assert_eq!(h2.app.ui.tree_open.get(&format!("album:{europe2}")), Some(&false));
+}
