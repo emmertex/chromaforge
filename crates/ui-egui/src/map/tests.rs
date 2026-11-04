@@ -353,3 +353,44 @@ fn a_long_press_opens_the_context_menu_where_it_was_pressed() {
     assert!((got.lat - want.lat).abs() < 1e-6 && (got.lon - want.lon).abs() < 1e-6, "{got:?} vs {want:?}");
     assert!(widget(&h, "map:menu:geotag").is_some(), "the menu has its items");
 }
+
+#[test]
+fn zooming_over_a_pin_keeps_zooming_and_suppresses_hover_preview() {
+    // #740: hovering a pin stole hover from the map canvas, interrupting wheel / trackpad zoom
+    let mut h = map_on_fake_tiles();
+    let id = h.app.session.visible_cloned()[0].0;
+    run(&mut h, "map.geotag", json!({"ids": [id], "lat": 48.85, "lon": 2.35}));
+    h.settle(SETTLE);
+    let pin = widget(&h, &format!("map:pin:{id}")).expect("the pin is on screen");
+    let at = pin.center();
+    h.events.push(egui::Event::PointerMoved(at));
+    h.step();
+    assert!(widget(&h, "map:hover").is_some(), "hovering a pin while idle shows its thumbnail preview");
+
+    let z0 = h.app.map.prefs.zoom;
+    h.events.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, 200.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    assert!(h.app.map.prefs.zoom > z0 + 0.1, "scroll zooms in over a pin: {z0} -> {}", h.app.map.prefs.zoom);
+    assert!(widget(&h, "map:hover").is_none(), "thumbnail preview is suppressed while zooming");
+
+    // Let smooth scroll decay before testing pinch zoom
+    for _ in 0..30 {
+        h.step();
+    }
+    assert!(widget(&h, "map:hover").is_some(), "hover preview reappears when scroll zooming stops");
+
+    let z1 = h.app.map.prefs.zoom;
+    h.events.push(egui::Event::Zoom(0.5));
+    h.step();
+    assert!(h.app.map.prefs.zoom < z1 - 0.5, "trackpad pinch zooms out over a pin: {z1} -> {}", h.app.map.prefs.zoom);
+    assert!(widget(&h, "map:hover").is_none(), "thumbnail preview is suppressed during pinch zoom");
+
+    // Once zooming stops, the hover preview returns.
+    h.step();
+    assert!(widget(&h, "map:hover").is_some(), "hover preview reappears when zooming stops");
+}
