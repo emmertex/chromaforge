@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn served_paths_stay_inside_the_site() {
-        assert!(safe_site_path("index.html") && safe_site_path("pkg/lightcraft.js"));
+        assert!(safe_site_path("index.html") && safe_site_path("pkg/app.js"));
         for bad in ["../Cargo.toml", "a/../../x", "/etc/passwd", "C:/Windows/win.ini", "C:\\x", "a\\..\\b", "./x"] {
             assert!(!safe_site_path(bad), "{bad}");
         }
