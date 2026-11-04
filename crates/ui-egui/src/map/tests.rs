@@ -394,3 +394,33 @@ fn zooming_over_a_pin_keeps_zooming_and_suppresses_hover_preview() {
     h.step();
     assert!(widget(&h, "map:hover").is_some(), "hover preview reappears when zooming stops");
 }
+
+/// Fork #783: the Location Filter bar filters the filmstrip, as Lightroom Classic's does, not only
+/// the pins: Untagged hides the geotagged photos, Tagged keeps only them, Visible on Map keeps the
+/// photos positioned inside the map view, and None shows every photo again.
+#[test]
+fn location_filter_filters_the_filmstrip() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 48.8566, "lon": 2.3522}));
+    h.settle(SETTLE);
+    let film = |h: &Headless, id: u64| widget(h, &format!("film:{id}")).is_some();
+    assert!(film(&h, ids[0]) && film(&h, ids[1]), "no filter: every photo is in the strip");
+    run(&mut h, "map.filter", json!({"filter": "untagged"}));
+    h.settle(SETTLE);
+    assert!(!film(&h, ids[0]) && film(&h, ids[1]), "Untagged hides the geotagged photo");
+    run(&mut h, "map.filter", json!({"filter": "tagged"}));
+    h.settle(SETTLE);
+    assert!(film(&h, ids[0]) && !film(&h, ids[1]), "Tagged keeps only the geotagged photo");
+    // Visible on Map: the photo is in the strip while Paris is in view, not when the map shows Sydney
+    run(&mut h, "map.filter", json!({"filter": "visible"}));
+    run(&mut h, "map.view", json!({"lat": 48.85, "lon": 2.35, "zoom": 12}));
+    h.settle(SETTLE);
+    assert!(film(&h, ids[0]) && !film(&h, ids[1]), "Visible on Map keeps the photo in view");
+    run(&mut h, "map.view", json!({"lat": -33.87, "lon": 151.21, "zoom": 12}));
+    h.settle(SETTLE);
+    assert!(!film(&h, ids[0]) && !film(&h, ids[1]), "Visible on Map drops the photo out of view");
+    run(&mut h, "map.filter", json!({"filter": "all"}));
+    h.settle(SETTLE);
+    assert!(film(&h, ids[0]) && film(&h, ids[1]), "None shows every photo again");
+}

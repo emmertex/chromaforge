@@ -194,12 +194,24 @@ fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Most bytes of alpha planes a render keeps at once, and the fewest masks it always keeps: every evaluated mask
+/// retains a full-size `f32` plane, so a sidecar listing thousands of masks must not multiply the output size
+/// (upstream #3699).
+const MAX_ALPHA_BYTES: usize = 8 << 30;
+const MIN_MASKS: usize = 16;
+
+/// How many masks of a `w` × `h` render are evaluated (the first ones, in order).
+pub fn max_masks(w: usize, h: usize) -> usize {
+    (MAX_ALPHA_BYTES / w.saturating_mul(h).saturating_mul(4).max(1)).max(MIN_MASKS)
+}
+
 /// The visible masks with components, evaluated in order (`mattes`: the source's, see [`Mattes`]).
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate(masks: &[Mask], frame: &Frame, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, ev: f32, mattes: Option<&Mattes>) -> Vec<Evaluated> {
     masks
         .iter()
         .filter(|m| m.visible && !m.components.is_empty())
+        .take(max_masks(w, h))
         .map(|m| Evaluated {
             id: m.id,
             alpha: std::sync::Arc::new(evaluate_one(m, frame, w, h, img, log_l, ev, mattes)),
@@ -1159,6 +1171,15 @@ mod tests_brush_lrc;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_evaluated_mask_count_is_bounded_by_the_alpha_plane_memory() {
+        // a 24 MP render keeps a few dozen planes, a 100 MP one fewer, but never fewer than MIN_MASKS
+        assert!(max_masks(6000, 4000) * 6000 * 4000 * 4 <= MAX_ALPHA_BYTES);
+        assert_eq!(max_masks(20_000, 20_000), MIN_MASKS);
+        assert!(max_masks(1, 1) >= 1000);
+        assert!(max_masks(0, 0) >= MIN_MASKS);
+    }
 
     // Given masks, the key of their planes changes with what the planes depend on and only that:
     // the exposure counts for a range mask, not for a gradient; a mask's own sliders never count

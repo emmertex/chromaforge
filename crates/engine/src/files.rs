@@ -1155,7 +1155,7 @@ pub fn fs_preview_loader() -> PreviewLoader {
         {
             return Some(image);
         }
-        embedded_preview_srgb(&std::fs::read(path).ok()?, max_edge)
+        embedded_preview_srgb(&crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES).ok()?, max_edge)
     })
 }
 
@@ -1412,7 +1412,8 @@ pub fn fs_pair_loader() -> PairLoader {
         let weight = len * if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 4 } else { 10 };
         let gate = crate::memory::work_gate();
         let _permit = if crate::memory::is_background() { gate.acquire(weight) } else { gate.acquire_urgent(weight) };
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES)
+            .map_err(|e| format!("{path}: {e}"))?;
         let r = load_vec_pair(bytes, max_edge, spec, options.at(path));
         crate::memory::release();
         r
@@ -1444,7 +1445,8 @@ pub fn fs_hooks() -> (FileLoader, FileProbe) {
         }
         let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
         let _permit = crate::memory::work_gate().acquire(len);
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES)
+            .map_err(|e| format!("{path}: {e}"))?;
         // (a short file that hasn't changed for a while is corrupt: the decode below reports it)
         if lcc_catalog::incoming::declared_end_past(&bytes, bytes.len() as u64)
             && lcc_catalog::incoming::recently_modified(std::path::Path::new(path))
@@ -1469,7 +1471,8 @@ fn fs_load<T>(path: &str, max_edge: usize, load: impl FnOnce(Vec<u8>) -> Result<
     let weight = len.saturating_mul(if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 3 } else { 6 });
     let gate = crate::memory::work_gate();
     let _permit = if crate::memory::is_background() { gate.acquire(weight) } else { gate.acquire_urgent(weight) };
-    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let bytes =
+        crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES).map_err(|e| format!("{path}: {e}"))?;
     let r = load(bytes);
     // the file, the samples and the intermediate images are gone: give their pages back
     crate::memory::release();
@@ -3310,12 +3313,14 @@ pub(crate) mod tests {
         assert_eq!((q.quick, q.key), (Some(QuickSource::Embedded), job.key));
         drop(job.clone().run());
         assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Cached));
-        // an edited raw: no embedded stand-in (it wouldn't show the edit)
+        // an edited raw: the embedded preview is still its first picture, but only a stand-in (the
+        // grid renders the real thumbnail behind it: never an empty cell)
         s.execute("library.select", &serde_json::json!({"ids": [id.0]})).unwrap();
         s.execute("develop.set", &serde_json::json!({"control": "light.exposure", "value": 1.0})).unwrap();
         let job = s.thumb_job(id, 128).unwrap();
-        assert!(s.quick_thumb_job(&job).is_none());
-        assert_eq!(s.quick_view_job(id, 1600, true).unwrap().run().quick, Some(QuickSource::Small));
+        assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Embedded));
+        assert!(!s.embedded_thumb_is_final(s.catalog.photo(id).unwrap()));
+        assert_eq!(s.quick_view_job(id, 1600, true).unwrap().run().quick, Some(QuickSource::Embedded));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

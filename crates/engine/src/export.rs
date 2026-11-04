@@ -607,7 +607,7 @@ pub(crate) fn watermark_logo(path: &str) -> Option<std::sync::Arc<Rgba8>> {
 /// watermark logo, the loupe's layout image. Applies EXIF orientation before either consumer sizes it.
 /// The error says why it couldn't be read or decoded.
 pub fn read_graphic(path: &str) -> Result<Rgba8, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("can't read {path}: {e}"))?;
+    let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), 256 << 20).map_err(|e| format!("can't read {path}: {e}"))?;
     let decoded = lcc_codecs::decode(&bytes, Default::default()).map_err(|e| format!("can't decode {path}: {e}"))?;
     Ok(decoded.to_srgb8().into_oriented(lcc_geom::Orientation::from_exif(decoded.orientation)))
 }

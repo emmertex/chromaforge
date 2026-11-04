@@ -1,7 +1,9 @@
 {
   "All Photographs": "Tất cả ảnh",
+  "All masks shown · O to hide": "Đang hiện mọi mặt nạ · O để ẩn",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Áp dụng từ lần khởi động sau. Nếu ứng dụng khởi động chậm khi bật GPU, hãy thử Vulkan: trên một số máy tính, nó chuẩn bị GPU nhanh hơn nhiều.",
   "Ask": "Hỏi",
+  "Click to hide the overlay": "Nhấp để ẩn lớp phủ",
   "Click to update it.": "Nhấp để cập nhật.",
   "Colour": "Màu",
   "Computing AI masks": "Đang tính mặt nạ AI",

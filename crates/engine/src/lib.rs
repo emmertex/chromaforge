@@ -99,6 +99,7 @@ pub mod peer_exchange;
 pub mod peers;
 mod people_smart;
 pub mod people_store;
+pub mod prep;
 pub mod preset_import;
 pub mod preset_luminar;
 pub mod preset_xmp;

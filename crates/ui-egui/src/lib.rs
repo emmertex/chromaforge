@@ -773,6 +773,9 @@ pub struct LccApp {
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
     /// "thumb", "none").
     pub loupe_shown: Option<(lcc_catalog::PhotoId, &'static str)>,
+    /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked
+    /// its first picture ([`LccApp::pictures_missing`]).
+    pub pictures_missing_pass: Option<u64>,
     /// The loupe's video frames (playback worker, paused still).
     pub video_view: video_view::VideoView,
     /// The zoomed view the loupe asked tiles for last (see [`region`]): the frame, the part its
@@ -927,6 +930,20 @@ pub struct LccApp {
 }
 
 impl LccApp {
+    /// A cell on screen or the loupe has no picture yet in frame `pass` ([`render::Renderer::frame`]),
+    /// its first one on its way: this window's own background requests (the neighbours prepared
+    /// ahead, real thumbnails behind stand-ins) wait, and so does the engine's background work
+    /// ([`lcc_engine::prep::pictures_missing`]).
+    pub fn pictures_missing(&mut self, pass: u64) {
+        self.pictures_missing_pass = Some(pass);
+        lcc_engine::prep::pictures_missing();
+    }
+
+    /// Whether a picture was missing in frame `pass` or the one before.
+    pub fn pictures_busy(&self, pass: u64) -> bool {
+        self.pictures_missing_pass.is_some_and(|p| pass.saturating_sub(p) <= 1)
+    }
+
     /// Whether the selected mask has settings (an effect to judge), see [`panels::detail::mask_has_settings`].
     fn active_mask_has_settings(&self) -> bool {
         let Some(id) = self.session.active_mask else { return false };
@@ -1029,6 +1046,7 @@ impl LccApp {
             space_hand: None,
             brush_live: None,
             loupe_shown: None,
+            pictures_missing_pass: None,
             video_view: Default::default(),
             region_view: None,
             region_before_view: None,

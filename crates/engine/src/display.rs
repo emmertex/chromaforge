@@ -33,7 +33,7 @@ impl Display {
         if meta.len() > MAX_PROFILE_BYTES as u64 {
             return Err(format!("{path}: too large for an ICC profile"));
         }
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), MAX_PROFILE_BYTES as u64).map_err(|e| format!("{path}: {e}"))?;
         Display::from_bytes(path, &bytes)
     }
 

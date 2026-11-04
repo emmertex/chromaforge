@@ -136,6 +136,10 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
     match shape {
         MaskShape::Object { seg: Some(_), .. } | MaskShape::Prompt { seg: Some(_), .. } => {}
         MaskShape::Object { hint, exclude, .. } if !hint.is_empty() && background => {
+            // refused here, not when the worker later fails at the model's limit after "pending" (upstream #3717)
+            if hint.len() + exclude.len() > MAX_CLICKS {
+                return Err(ai_err(format!("an Object selection takes at most {MAX_CLICKS} clicks")));
+            }
             s.segmenter.require_object_model()?;
             return Ok(Later::Clicks(std::mem::take(hint), std::mem::take(exclude)));
         }

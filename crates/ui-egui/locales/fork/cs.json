@@ -1,6 +1,7 @@
 {
   "Address": "Adresa",
   "All files": "Všechny soubory",
+  "All masks shown · O to hide": "Zobrazeny všechny masky · O skryje",
   "Allow Access to All Files…": "Povolit přístup ke všem souborům…",
   "Also the contributors to": "Také přispěvatelé projektu",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Platí od dalšího spuštění. Pokud se aplikace se zapnutou GPU spouští pomalu, zkuste Vulkan: na některých počítačích připraví GPU mnohem rychleji.",
@@ -12,6 +13,7 @@
   "Blend source texture with target tone": "Prolnout zdrojovou texturu s tónem cíle",
   "Blue/Yellow": "Modrá/žlutá",
   "Catalog": "Katalog",
+  "Click to hide the overlay": "Klepnutím skryjete překrytí",
   "Click to update it.": "Kliknutím ho aktualizujete.",
   "Click to zoom": "Kliknutím přiblížíte",
   "Compact": "Kompaktní",

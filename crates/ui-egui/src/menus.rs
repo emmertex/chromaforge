@@ -1457,17 +1457,20 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             if let Some(auto) = p.get("auto").and_then(Value::as_bool) {
                 app.ui.mask_overlay_auto = auto;
             }
-            if let Some(show) = p.get("show").and_then(Value::as_bool) {
+            // O always turns off whatever overlay shows, All Mask Overlays included: one key to know
+            let toggle = p.get("auto").is_none().then_some(!(app.ui.mask_overlay || app.ui.mask_overlay_all));
+            if let Some(show) = p.get("show").and_then(Value::as_bool).or(toggle) {
                 app.ui.mask_overlay = show;
                 app.ui.mask_overlay_pinned = show;
-            } else if p.get("auto").is_none() {
-                app.ui.mask_overlay = !app.ui.mask_overlay;
-                app.ui.mask_overlay_pinned = app.ui.mask_overlay;
+                if !show {
+                    app.ui.mask_overlay_all = false;
+                }
             }
-            Ok(json!({"maskOverlay": app.ui.mask_overlay, "auto": app.ui.mask_overlay_auto}))
+            Ok(json!({"maskOverlay": app.ui.mask_overlay, "auto": app.ui.mask_overlay_auto, "maskOverlayAll": app.ui.mask_overlay_all}))
         }
         "view.maskOverlayAll" => {
-            app.ui.mask_overlay_all = !app.ui.mask_overlay_all;
+            // `on` sets it; without it Ctrl+Shift+O toggles (O also turns it off)
+            app.ui.mask_overlay_all = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.mask_overlay_all);
             Ok(json!({"maskOverlayAll": app.ui.mask_overlay_all}))
         }
         "view.maskOverlayMode" => {

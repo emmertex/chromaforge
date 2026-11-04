@@ -1455,3 +1455,17 @@ fn search_text_finds_people_and_quoted_values() {
     assert!(q(&long).is_empty());
     assert_eq!(q("   \t jane \u{3000} "), vec![jane, both], "any whitespace separates tokens");
 }
+
+#[test]
+fn search_boolean_tokens_reject_invalid_values() {
+    let mut c = Catalog::new();
+    photo(&mut c, "original.jpg", "2026-05-01T10:00:00");
+    let q = |text: &str| c.query(&Filter { text: text.into(), ..Default::default() }, &Sort::default());
+    for field in ["edited", "copy", "virtual", "video"] {
+        for value in ["", "garbage", "maybe", "0", "1", "trueish"] {
+            assert!(q(&format!("{field}:{value}")).is_empty(), "{field}:{value}");
+        }
+    }
+    assert_eq!(q("edited:no").len(), 1, "unedited photo matches edited:no");
+    assert!(q("edited:yes").is_empty());
+}

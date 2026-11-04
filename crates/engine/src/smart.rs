@@ -267,7 +267,15 @@ pub fn check_writable(dir: &Path) -> Result<(), String> {
         std::fs::create_dir(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     }
     let probe = dir.join(format!(".app-write-test-{}", std::process::id()));
-    std::fs::write(&probe, b"x").map_err(|e| format!("{} is not writable (is the drive full or read-only?): {e}", dir.display()))?;
+    // the probe is a new entry of ours: an existing one (a link planted under the name would be
+    // written through) is removed first, never opened (upstream #3673)
+    let _ = std::fs::remove_file(&probe);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b"x"))
+        .map_err(|e| format!("{} is not writable (is the drive full or read-only?): {e}", dir.display()))?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
 }
@@ -516,6 +524,20 @@ mod tests {
         let err = check_writable(&base.join("gone/deeper")).unwrap_err();
         assert!(err.contains("not available"), "{err}");
         assert!(!base.join("gone").exists(), "no fallback onto the current drive");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writable_probe_never_writes_through_a_planted_link() {
+        let base = temp("probe-link");
+        let victim = base.join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let probe = base.join(format!(".app-write-test-{}", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &probe).unwrap();
+        assert!(check_writable(&base).is_ok());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert!(!probe.exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 
