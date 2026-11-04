@@ -56,7 +56,7 @@ const BOTTOM_BAR_H: f32 = 46.0;
 pub(crate) fn bottom_bar_buttons(module: crate::module::ModuleId) -> [(&'static str, &'static str, &'static str); 2] {
     match module {
         crate::module::ModuleId::Develop => [("leftBar-copy", "Copy…", "dialog.copySettings"), ("leftBar-paste", "Paste", "develop.paste")],
-        _ => [("leftBar-import", "Import…", "dialog.import"), ("leftBar-export", "Export…", "dialog.export")],
+        _ => [("leftBar-import", "Import…", "dialog.import"), ("leftBar-export", "Export…", "file.export")],
     }
 }
 

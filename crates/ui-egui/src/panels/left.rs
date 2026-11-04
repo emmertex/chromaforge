@@ -1786,7 +1786,7 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
             let has_photos = app.session.catalog.album_count(a.id) > 0;
             if ui.add_enabled(has_photos, egui::Button::new(crate::i18n::tr("Export Collection…"))).clicked() {
                 show_all(app);
-                let _ = app.run("dialog.export", json!({}));
+                let _ = app.run("file.export", json!({}));
             }
             ui.add_enabled_ui(has_photos, |ui| {
                 crate::widgets::menu_button(ui, crate::i18n::tr("Export Collection with Preset"), |ui| {
@@ -2288,7 +2288,7 @@ fn export_folder_item(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode, with_
         }
         register(ui.ctx(), "folderExport", r.rect);
         if r.clicked() {
-            if let Err(e) = show_all(app).and_then(|()| app.run("dialog.export", json!({})).map(|_| ())) {
+            if let Err(e) = show_all(app).and_then(|()| app.run("file.export", json!({})).map(|_| ())) {
                 app.toast(ui.ctx(), e);
             }
             ui.close();

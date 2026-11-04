@@ -221,7 +221,7 @@ pub const ALIASES: &[(&str, &str, &str)] = &[
     ("Cmd+D", "library.selectNone", "{}"),
     // F11: the Windows / Linux full-screen key (issue #2)
     ("F11", "view.enterFullScreen", "{}"),
-    ("Shift+E", "dialog.export", "{}"),
+    ("Shift+E", "file.export", "{}"),
     ("Cmd+E", "app.exportPrevious", "{}"),
     ("Space", "view.zoomToggle", "{}"),
     // Lightroom Classic: F6 toggles the filmstrip, F7 the left library panel.
