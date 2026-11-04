@@ -102,6 +102,7 @@ pub mod people_store;
 pub mod preset_import;
 pub mod preset_luminar;
 pub mod preset_xmp;
+pub mod prep;
 pub mod presets;
 mod presets_save;
 pub mod presets_smart;
