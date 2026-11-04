@@ -10,6 +10,9 @@
 use std::io::Read;
 use std::path::Path;
 
+/// Most bytes of a photo, video or other media file read into memory (upstream #3703).
+pub const MAX_MEDIA_BYTES: u64 = 8 << 30;
+
 /// Why [`read_bounded`] refused a file.
 #[derive(Debug)]
 pub enum ReadError {
