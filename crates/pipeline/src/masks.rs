@@ -1146,8 +1146,15 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
     }
     // (each pixel's chromaticity once for every Auto Mask stroke)
     let chroma = if strokes.iter().any(|s| s.auto_mask) { chroma_plane(img) } else { Vec::new() };
+    // one dab budget for the whole mask, as the GPU path keeps: a stroke's own cap alone let a thousand far-flung
+    // two-point strokes build and stamp a billion dabs (upstream #3681)
+    let mut room = MAX_STROKE_DABS;
     for s in strokes {
-        let bd = brush_dabs(s, frame, w, h);
+        if room == 0 {
+            break;
+        }
+        let bd = brush_dabs_within(s, frame, w, h, room);
+        room = room.saturating_sub(bd.dabs.len());
         let auto = bd.auto;
         let mut stroke_alpha = Plane::new(w, h);
         stamp_dabs_with(&bd, w, h, log_l, &chroma, &mut stroke_alpha);
