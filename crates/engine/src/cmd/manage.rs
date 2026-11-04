@@ -7,8 +7,17 @@ use lcc_catalog::{ColorLabel, Op};
 use super::{CommandSpec, always, bad, bool_or, cmd, f64_or, has_selection, str_param};
 use crate::Result;
 
-fn rename_args(s: &mut crate::Session, p: &Value, c: &str) -> Result<(Vec<lcc_catalog::PhotoId>, String, usize)> {
+/// The photos, template and first number of a rename. The template's `{text:…}` tags take `texts`
+/// (`strict`: each must be given; the preview leaves a missing one empty).
+fn rename_args(s: &mut crate::Session, p: &Value, c: &str, strict: bool) -> Result<(Vec<lcc_catalog::PhotoId>, String, usize)> {
     let template = str_param(p, "template").or_else(|| str_param(p, "name")).ok_or_else(|| bad(c, "missing `template`"))?.to_string();
+    let template = if strict {
+        let texts = crate::rename::texts_param(&template, p.get("texts")).map_err(|e| bad(c, e))?;
+        crate::rename::fill_texts(&template, &|l| texts.get(l).cloned())
+    } else {
+        let texts = p.get("texts").and_then(Value::as_object);
+        crate::rename::fill_texts(&template, &|l| texts.and_then(|t| t.get(l)).and_then(Value::as_str).map(str::to_string))
+    };
     let start = p.get("start").and_then(Value::as_u64).unwrap_or(1);
     let mut ids = s.targets(p)?;
     if p.get("ids").is_none() && p.get("id").is_none() {
@@ -21,6 +30,34 @@ fn rename_args(s: &mut crate::Session, p: &Value, c: &str) -> Result<(Vec<lcc_ca
     let start = last.and_then(|l| usize::try_from(l).ok()).and_then(|_| usize::try_from(start).ok());
     let start = start.ok_or_else(|| bad(c, "start out of range"))?;
     Ok((ids, template, start))
+}
+
+/// A file-name template saved by name (Lightroom's Filename Template Editor presets), shared by
+/// Rename Photos and Export. `{text:Label}` tags in it are asked each time.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NamingPreset {
+    pub name: String,
+    pub template: String,
+}
+
+/// Most saved naming presets (a hand-edited file can't grow the list without end).
+pub const MAX_NAMING_PRESETS: usize = 500;
+
+/// The app's own naming presets (not deletable), then the user's.
+pub fn builtin_naming_presets() -> Vec<NamingPreset> {
+    let p = |name: &str, template: &str| NamingPreset { name: name.into(), template: template.into() };
+    vec![
+        p("Original name", "{name}"),
+        p("Date - Name", "{date}_{name}"),
+        p("Title - Number", "{title}-{seq:3}"),
+        p("Custom Text - Number", "{text:Name}-{seq:3}"),
+    ]
+}
+
+fn naming_presets_json(s: &crate::Session) -> Value {
+    let b = builtin_naming_presets().into_iter().map(|p| json!({"name": p.name, "template": p.template, "builtin": true}));
+    let u = s.naming_presets.iter().map(|p| json!({"name": p.name, "template": p.template, "builtin": false}));
+    Value::Array(b.chain(u).collect())
 }
 
 /// A named set of colour-label names (red, yellow, green, blue, purple; empty = the colour's name).
@@ -77,7 +114,9 @@ fn auto_tag_tracklog(s: &mut crate::Session, p: &Value) -> Result<Value> {
     const C: &str = "photo.autoTagTracklog";
     let text = match (str_param(p, "gpx"), str_param(p, "path")) {
         (Some(t), _) => t.to_string(),
-        (None, Some(path)) => std::fs::read_to_string(path).map_err(|e| bad(C, format!("can't read {path}: {e}")))?,
+        (None, Some(path)) => crate::bounded_read::read_bounded(std::path::Path::new(path), 256 << 20)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .map_err(|e| bad(C, format!("can't read {path}: {e}")))?,
         (None, None) => return Err(bad(C, "missing `path` (a .gpx file) or `gpx` (its text)")),
     };
     let log = parse_gpx(&text).map_err(|e| bad(C, e.to_string()))?;
@@ -171,11 +210,57 @@ fn file_time(p: &lcc_catalog::Photo) -> Option<String> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        // ---- naming presets
+        cmd!(query "naming.presets", "File Naming Presets", [], None, "{} → [{name, template, builtin}]: saved file-name templates shared by Rename Photos, Export and Import (the app's first)", always, |s, _| {
+            Ok(naming_presets_json(s))
+        }),
+        cmd!(
+            "naming.savePreset",
+            "Save File Naming Preset",
+            [],
+            None,
+            "{name, template} — adds or replaces a user naming preset (kept with the library); `{text:Label}` tags in it are asked each time it is used → presets",
+            always,
+            |s, p| {
+                let c = "naming.savePreset";
+                let name = str_param(p, "name")
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty() && n.chars().count() <= 120)
+                    .ok_or_else(|| bad(c, "missing `name`"))?;
+                let template = str_param(p, "template").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad(c, "missing `template`"))?;
+                if template.chars().count() > 1000 {
+                    return Err(bad(c, "the template is too long"));
+                }
+                if builtin_naming_presets().iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
+                    return Err(bad(c, format!("“{name}” is one of the built-in presets; choose another name")));
+                }
+                let preset = NamingPreset { name: name.to_string(), template: template.to_string() };
+                let full = s.naming_presets.len() >= MAX_NAMING_PRESETS;
+                match s.naming_presets.iter_mut().find(|x| x.name.eq_ignore_ascii_case(name)) {
+                    Some(x) => *x = preset,
+                    None if full => return Err(bad(c, "too many naming presets")),
+                    None => s.naming_presets.push(preset),
+                }
+                s.save_prefs()?;
+                Ok(naming_presets_json(s))
+            }
+        ),
+        cmd!("naming.deletePreset", "Delete File Naming Preset", [], None, "{name} — user presets only → presets", always, |s, p| {
+            let c = "naming.deletePreset";
+            let name = str_param(p, "name").ok_or_else(|| bad(c, "missing `name`"))?;
+            let before = s.naming_presets.len();
+            s.naming_presets.retain(|x| !x.name.eq_ignore_ascii_case(name.trim()));
+            if s.naming_presets.len() == before {
+                return Err(bad(c, format!("no user naming preset “{name}”")));
+            }
+            s.save_prefs()?;
+            Ok(naming_presets_json(s))
+        }),
         cmd!(query "photo.renameTokens", "Rename Template Tags", [], None, "{} → {tokens: [{tag, aliases, meaning, example}], dateDirectives: [{directive, meaning}], notes: [..], sample} — the file-name template tags shared by photo.rename, library.import (rename) and app.export (naming); examples are for a sample photo", always, |_, _| {
             Ok(crate::rename::token_help_json())
         }),
-        cmd!(query "photo.renamePreview", "Rename Preview", [], None, "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext}; photo.renameTokens explains each), start?: first sequence number (1), ids?} — renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable", has_selection, |s, p| {
-            let (ids, template, start) = rename_args(s, p, "photo.renamePreview")?;
+        cmd!(query "photo.renamePreview", "Rename Preview", [], None, "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?} — renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable", has_selection, |s, p| {
+            let (ids, template, start) = rename_args(s, p, "photo.renamePreview", false)?;
             Ok(serde_json::to_value(s.plan_rename(&ids, &template, start)).unwrap_or_default())
         }),
         cmd!(
@@ -183,10 +268,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Photos",
             [],
             None,
-            "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext}; photo.renameTokens explains each), start?: first sequence number (1), ids?} — renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable",
+            "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?} — renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable",
             has_selection,
             |s, p| {
-                let (ids, template, start) = rename_args(s, p, "photo.rename")?;
+                let (ids, template, start) = rename_args(s, p, "photo.rename", true)?;
+                // a browsed photo's file is only looked at until it is imported (LR-IMP-NODELETE)
+                if ids.iter().any(|id| s.catalog.photo(*id).is_some_and(|ph| ph.local)) {
+                    return Err(bad("photo.rename", "browsed photos are not in the library: import them before renaming their files"));
+                }
                 let plans = s.plan_rename(&ids, &template, start);
                 let n = s.apply_rename(&plans)?;
                 Ok(json!({"renamed": n, "plans": plans}))
@@ -418,6 +507,42 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             s.save_prefs()?;
             Ok(json!({"deleted": name}))
+        }),
+        // ---- what dialogs remember
+        cmd!(
+            "dialog.remember",
+            "Remember Dialog Choices",
+            [],
+            None,
+            "{dialog: id (at most 64 characters), choices: any JSON (at most 64 KB)} — keep a dialog's last choices across restarts and libraries; null forgets them",
+            always,
+            |s, p| {
+                let c = "dialog.remember";
+                let dialog =
+                    str_param(p, "dialog").map(str::trim).filter(|d| !d.is_empty() && d.len() <= 64).ok_or_else(|| bad(c, "missing `dialog`"))?;
+                let choices = p.get("choices").cloned().unwrap_or(Value::Null);
+                if choices.is_null() {
+                    if s.dialogs.other.remove(dialog).is_some() {
+                        s.save_prefs()?;
+                    }
+                    return Ok(json!({"dialog": dialog}));
+                }
+                if serde_json::to_vec(&choices).ok().is_none_or(|b| b.len() > crate::app_store::MAX_REMEMBERED_BYTES) {
+                    return Err(bad(c, "the choices are too large to remember"));
+                }
+                if !s.dialogs.other.contains_key(dialog) && s.dialogs.other.len() >= crate::app_store::MAX_REMEMBERED_DIALOGS {
+                    return Err(bad(c, "too many dialogs remembered"));
+                }
+                if s.dialogs.other.get(dialog) != Some(&choices) {
+                    s.dialogs.other.insert(dialog.to_string(), choices);
+                    s.save_prefs()?;
+                }
+                Ok(json!({"dialog": dialog}))
+            }
+        ),
+        cmd!(query "dialog.recall", "Recall Dialog Choices", [], None, "{dialog} → the choices dialog.remember kept (null: none)", always, |s, p| {
+            let dialog = str_param(p, "dialog").ok_or_else(|| bad("dialog.recall", "missing `dialog`"))?;
+            Ok(s.dialogs.other.get(dialog).cloned().unwrap_or(Value::Null))
         }),
     ]
 }

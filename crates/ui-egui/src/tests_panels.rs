@@ -1658,6 +1658,8 @@ fn disks_are_bars_over_their_folders() {
 fn choosing_a_library_folder_replaces_whatever_was_shown() {
     use lcc_engine::LibrarySource;
     let mut h = folders_app(&["/pics/trip/a.jpg", "/pics/home/b.jpg"]);
+    // (a browsed folder in the Library tab's own view: Import as a tab off)
+    h.app.ui.settings.import_as_tab = false;
     click(&mut h, "libraryFolderToggle:/pics");
     for before in [LibrarySource::Picks, LibrarySource::Folder, LibrarySource::RecentlyDeleted, LibrarySource::Missing] {
         h.app.session.source = before;
@@ -2636,6 +2638,8 @@ fn recognise_faces_stays_off_until_a_model_is_chosen() {
 #[test]
 fn local_photos_cannot_be_added_to_albums_until_they_join_my_photos() {
     let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid", "leftPanel": true}));
+    // (dragging browsed photos onto the library's albums: Import as a tab off)
+    h.app.ui.settings.import_as_tab = false;
     let album = h.app.session.execute("album.create", &json!({"name": "Trip", "addSelected": false})).unwrap()["id"].as_u64().unwrap();
     let album_id = lcc_catalog::AlbumId(album);
     let dir = std::env::temp_dir().join(format!("lc-ui-albums-local-{}", std::process::id()));
@@ -3086,7 +3090,7 @@ fn an_imported_folder_is_listed_by_its_own_name() {
 }
 
 #[test]
-fn export_folder_shows_the_folder_selects_its_photos_and_opens_the_dialog() {
+fn export_folder_shows_the_folder_selects_its_photos_and_opens_export() {
     let mut h = folders_app_with_services(
         &["/pics/trip/a.jpg", "/pics/trip/day2/b.jpg", "/pics/home/c.jpg", "/Volumes/nas/d.jpg"],
         [1400.0, 900.0],
@@ -3109,7 +3113,7 @@ fn export_folder_shows_the_folder_selects_its_photos_and_opens_the_dialog() {
     let selected: std::collections::BTreeSet<u64> = h.app.session.selection.ids.iter().map(|i| i.0).collect();
     assert_eq!(selected.len(), 2, "the folder's photo and the one in the folder inside it");
     assert_eq!(selected, photos_in(&h, "/pics/trip"));
-    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::Export { .. })), "the Export dialog is open");
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Export, "the Export module is open");
     assert!(!popup_open(&h), "choosing closes the menu");
 }
 
@@ -3162,4 +3166,134 @@ fn settling_waits_for_the_missing_photos_count() {
     // the timed refresh of a slow count is not waited for: the fast simulated clock would start
     // the next one before the last finished, and settling would never end
     assert!(h.settle(Duration::from_secs(30)), "the sidebar settles while a slow count refreshes");
+}
+
+/// "I" toggles the Info panel; pressing it again brings back exactly what the right column showed
+/// before, closed included (ported from OneSlips' KEY-INFO).
+#[test]
+fn info_toggled_off_brings_back_exactly_what_was_there() {
+    use crate::state::RightPanel;
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+    let r = h.request("ui.set", json!({"view": "detail", "right": "edit"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let exec = |h: &mut Headless, id: &str| {
+        let r = h.request("ui.menu.invoke", json!({"id": id}), T);
+        assert_eq!(r["ok"], true, "{id}: {r}");
+        h.step();
+        h.step();
+    };
+    assert_eq!(h.app.ui.right, RightPanel::Edit);
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Info);
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Edit, "Edit → I → I = Edit");
+    exec(&mut h, "panel.masking");
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Info);
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Masking, "Masks → I → I = Masks");
+    h.app.ui.right = RightPanel::None;
+    h.step();
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::Info);
+    exec(&mut h, "panel.info");
+    assert_eq!(h.app.ui.right, RightPanel::None, "closed → I → I = closed");
+}
+
+/// Assisted Culling: the eyes are asked about; with "blurry eyes" ticked the dialog asks how soft is
+/// too soft, and whether only the main subjects count; the choices reach the dialog's state.
+#[test]
+fn assisted_culling_asks_about_the_eyes() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
+    exec(&mut h, "dialog.cull", json!({}));
+    assert!(!h.app.widgets.iter().any(|(w, _)| w == "radio:cullSoftToo"), "only once blurry eyes are asked for");
+    click(&mut h, "check:cullBlurryEyes");
+    click(&mut h, "radio:cullSoftToo");
+    click(&mut h, "check:cullMainOnly");
+    let Some(crate::state::Dialog::Cull { blurry_eyes, soft_eyes, everyone, closed_eyes, .. }) = h.app.ui.dialog.clone() else {
+        panic!("the dialog stays")
+    };
+    assert!(blurry_eyes && soft_eyes && everyone && !closed_eyes);
+}
+
+/// View ▸ Space Zooms To: the choice is kept with the settings, turns Zoom to Focus Point on, and
+/// a word it doesn't know is refused. Without a camera focus point Space zooms to the eyes; "eyes
+/// first" prefers them to the point.
+#[test]
+fn space_zooms_to_is_a_choice_in_the_view_menu() {
+    use crate::state::SpaceZoom;
+    let mut h = demo([1400.0, 900.0], json!({"view": "detail"}));
+    exec(&mut h, "view.zoomToFocus", json!({"on": false}));
+    exec(&mut h, "view.spaceZoomsTo", json!({"to": "eye"}));
+    assert_eq!(h.app.ui.settings.space_zoom, SpaceZoom::Eye);
+    assert!(h.app.ui.settings.zoom_to_focus);
+    let r = h.request("engine.execute", json!({"command": "view.spaceZoomsTo", "params": {"to": "nose"}}), T);
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(h.app.ui.settings.space_zoom, SpaceZoom::Eye);
+    let (point, eye) = (Some((0.2, 0.3)), Some((0.6, 0.4)));
+    use crate::panels::detail::space_target;
+    assert_eq!(space_target(SpaceZoom::FocusPoint, point, eye), point);
+    assert_eq!(space_target(SpaceZoom::FocusPoint, None, eye), eye, "no focus point: the eyes");
+    assert_eq!(space_target(SpaceZoom::Eye, point, eye), eye);
+    assert_eq!(space_target(SpaceZoom::Eye, point, None), point, "no face: the focus point");
+    assert_eq!(space_target(SpaceZoom::Eye, None, None), None);
+    // a settings file with a word it doesn't know reads as the default
+    let s: crate::state::AppSettings = serde_json::from_value(json!({"spaceZoom": "nose"})).expect("lenient");
+    assert_eq!(s.space_zoom, SpaceZoom::FocusPoint);
+}
+
+/// Issue #774: folders and collections remember their open/closed state across sessions.
+#[test]
+fn remembering_folder_and_collection_conditions_across_sessions() {
+    let mut h = folders_app(&["/pics/sub/a.jpg", "/pics/sub/b.jpg", "/pics/other/c.jpg"]);
+    let make = |h: &mut Headless, params: serde_json::Value| h.app.session.execute("album.create", &params).unwrap()["id"].as_u64().unwrap();
+    let trips = make(&mut h, json!({"name": "Trips", "folder": true}));
+    let europe = make(&mut h, json!({"name": "Europe", "folder": true, "parent": trips}));
+    let _best = make(&mut h, json!({"name": "Best", "parent": europe}));
+    h.settle(SETTLE);
+
+    // Initial state: /pics subfolders folded, album folders start open
+    assert!(!has(&h, "source:libfolder:/pics/sub"));
+    assert!(has(&h, &format!("albumToggle:{trips}")));
+    assert!(has(&h, &format!("albumToggle:{europe}")));
+
+    // Unfold /pics folder in Folders
+    click(&mut h, "libraryFolderToggle:/pics");
+    assert!(has(&h, "source:libfolder:/pics/sub"));
+
+    // Collapse Europe album folder in Collections
+    click(&mut h, &format!("albumToggle:{europe}"));
+
+    // Serialize ui state to JSON as the app writer does on quit
+    let saved_ui = serde_json::to_value(&h.app.ui).unwrap();
+
+    // Verify tree_open recorded the conditions
+    assert_eq!(h.app.ui.tree_open.get("libfolder:/pics"), Some(&true));
+    assert_eq!(h.app.ui.tree_open.get(&format!("album:{europe}")), Some(&false));
+
+    // Deserialized UiState preserves tree_open
+    let restored = serde_json::from_value::<crate::UiState>(saved_ui.clone()).unwrap().sanitized();
+    assert_eq!(restored.tree_open.get("libfolder:/pics"), Some(&true));
+    assert_eq!(restored.tree_open.get(&format!("album:{europe}")), Some(&false));
+
+    // Re-create app session with restored ui settings
+    let mut h2 = folders_app_prepared(
+        &["/pics/sub/a.jpg", "/pics/sub/b.jpg", "/pics/other/c.jpg"],
+        [1400.0, 980.0],
+        serde_json::json!({"view": "photoGrid", "leftPanel": true, "moduleBar": false}),
+        Services { png: None, ..Default::default() },
+        |app| {
+            app.ui = restored.clone();
+        },
+    );
+    let trips2 = make(&mut h2, json!({"name": "Trips", "folder": true}));
+    let europe2 = make(&mut h2, json!({"name": "Europe", "folder": true, "parent": trips2}));
+    let _best2 = make(&mut h2, json!({"name": "Best", "parent": europe2}));
+    h2.settle(SETTLE);
+
+    // In restored session, /pics folder stays open, and Europe album folder stays collapsed!
+    assert!(has(&h2, "source:libfolder:/pics/sub"), "remembered /pics was expanded");
+    assert_eq!(h2.app.ui.tree_open.get(&format!("album:{europe2}")), Some(&false));
 }

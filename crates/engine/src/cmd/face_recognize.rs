@@ -613,6 +613,7 @@ mod imp {
             .filter(|v: &Vec<f32>| !v.is_empty())
             .unwrap_or_else(|| (4..=16).map(|i| i as f32 * 0.05).collect());
         let budget = Duration::from_millis(p.get("budgetMs").and_then(Value::as_u64).unwrap_or(0).min(3_600_000));
+        let top = top_faces_param(s, p).clamp(1, matching::MAX_TOP_FACES);
         let started = Instant::now();
         // `scope: "visible"` looks only at the photos the current filter shows (say one year, or one album)
         let scope: Option<std::collections::HashSet<PhotoId>> = (str_scope(p) == Some("visible")).then(|| s.visible_cloned().into_iter().collect());
@@ -657,7 +658,7 @@ mod imp {
                 continue;
             }
             let refs: Vec<(&str, &[f32])> = others.iter().map(|g| (g.name.as_str(), &g.emb[..])).collect();
-            let ranked = matching::rank(&q.emb, &refs);
+            let ranked = matching::rank_top(&q.emb, &refs, top);
             queries += 1;
             if ranked.first().is_some_and(|r| r.name.eq_ignore_ascii_case(&q.name)) {
                 top1 += 1;
@@ -680,6 +681,7 @@ mod imp {
             "pendingPhotos": todo.len().saturating_sub(done),
             "top1": pct(top1, queries),
             "margin": margin,
+            "topFaces": top,
             "burstSecs": burst,
             "sweep": sweep.iter().map(|(t, sg, ok)| json!({"threshold": t, "suggested": sg, "correct": ok, "precision": pct(*ok, *sg), "recall": pct(*ok, queries)})).collect::<Vec<_>>(),
         }))
@@ -807,10 +809,11 @@ mod imp {
         }
         let bar = embedder.manifest().thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD) * 0.8;
         let refs: Vec<(&str, &[f32])> = gallery.iter().map(|e| ("person", &e[..])).collect();
+        let top = top_faces(s);
         let mut scored: Vec<(f32, u64, usize, Rect)> = candidates
             .into_iter()
             .filter_map(|(photo, index, rect, e)| {
-                let score = matching::rank(&e, &refs).first()?.score;
+                let score = matching::rank_top(&e, &refs, top).first()?.score;
                 (score >= bar).then_some((score, photo, index, rect))
             })
             .collect();
@@ -893,10 +896,11 @@ mod imp {
             .collect();
         let refs: Vec<(&str, &[f32])> = gallery.iter().map(|(n, e)| (n.as_str(), &e[..])).collect();
         let threshold = embedder.manifest().thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD);
+        let top = top_faces(s);
         let mut suggestions = std::collections::HashMap::new();
         if !refs.is_empty() {
             for ((photo, index, _), e) in ordered.iter().take(limit) {
-                if let Some(x) = matching::suggest(&matching::rank(e, &refs), threshold, DEFAULT_MARGIN) {
+                if let Some(x) = matching::suggest(&matching::rank_top(e, &refs, top), threshold, DEFAULT_MARGIN) {
                     suggestions.insert((*photo, *index), (x.name, x.score));
                 }
             }
@@ -906,6 +910,23 @@ mod imp {
         all.extend(beyond.into_iter().map(|(f, _)| f));
         all.extend(plain);
         super::Arranged { ordered: grouped, ready: true, suggestions }
+    }
+
+    /// How many of a person's best matching faces a match is based on (Settings ▸ Faces), looked up at most once a second.
+    fn top_faces(s: &mut Session) -> usize {
+        if let Some((t, n)) = s.faces.top_seen
+            && t.elapsed() < RECHECK
+        {
+            return n;
+        }
+        let n = s.face_models_dir.as_deref().map_or(matching::TOP_FACES, |d| read_settings(d).top_faces());
+        s.faces.top_seen = Some((Instant::now(), n));
+        n
+    }
+
+    /// `topFaces` asked for in a command, else the setting.
+    fn top_faces_param(s: &mut Session, p: &Value) -> usize {
+        p.get("topFaces").and_then(Value::as_u64).map_or_else(|| top_faces(s), |n| usize::try_from(n).unwrap_or(matching::MAX_TOP_FACES))
     }
 
     /// Whether face recognition is switched on, looked up at most once a second.
@@ -929,6 +950,7 @@ mod imp {
         let num = |k: &str| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).map(|v| v as f32);
         let threshold = num("threshold").or(model_threshold).unwrap_or(DEFAULT_THRESHOLD);
         let margin = num("margin").unwrap_or(DEFAULT_MARGIN);
+        let top = top_faces_param(s, p).clamp(1, matching::MAX_TOP_FACES);
         // the photos asked about are embedded first, then the named faces they are compared with, within the budget
         let budget = Duration::from_millis(p.get("budgetMs").and_then(Value::as_u64).unwrap_or(1500).min(600_000));
         let started = Instant::now();
@@ -966,7 +988,7 @@ mod imp {
                     faces.push(json!({"index": index, "pending": true}));
                     continue;
                 };
-                let ranked = matching::rank(q, &refs);
+                let ranked = matching::rank_top(q, &refs, top);
                 let suggestion = matching::suggest(&ranked, threshold, margin);
                 faces.push(json!({
                     "index": index,
@@ -977,13 +999,13 @@ mod imp {
             photos.push(json!({"id": id.0, "faces": faces}));
         }
         Ok(
-            json!({"model": s.faces.index.tag, "threshold": threshold, "margin": margin, "galleryFaces": gallery.len(), "pendingPhotos": pending_photos, "photos": photos}),
+            json!({"model": s.faces.index.tag, "threshold": threshold, "margin": margin, "topFaces": top, "galleryFaces": gallery.len(), "pendingPhotos": pending_photos, "photos": photos}),
         )
     }
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::tests_face_recognize::{install_yunet, region, set_regions, setup, temp, two_photos};
+        use crate::tests_face_recognize::{install_face_model, region, set_regions, setup, temp, two_photos};
 
         fn unit(parts: &[(usize, f32)]) -> Vec<f32> {
             let mut v = vec![0.0; 64];
@@ -1050,7 +1072,7 @@ mod imp {
         fn only_the_background_scan_looks_for_faces_and_only_in_photos_without_any() {
             let (mut s, d) = loaded("search");
             // finding faces needs the detector, which is not bundled; without it the scan only embeds
-            let detector = install_yunet(&mut s);
+            let detector = install_face_model(&mut s);
             let (a, b) = two_photos(&s);
             set_regions(&mut s, b, vec![region(0.1, Some("Ann")), region(0.5, None)]);
             // `faces.index` embeds what is boxed; only the scan (search = true) also searches the rest, last
@@ -1210,7 +1232,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Suggest Names for Faces",
             [],
             None,
-            "{ids?, threshold?, margin?, budgetMs?} → {photos: [{id, faces: [{index, suggestion: {name, score, runnerUp} | null, candidates: [{name, score}]}]}]} — who the unnamed faces in these photos might be, from the faces already named in the library. Only suggestions: nothing is named",
+            "{ids?, threshold?, margin?, topFaces?, budgetMs?} → {photos: [{id, faces: [{index, suggestion: {name, score, runnerUp} | null, candidates: [{name, score}]}]}]} — who the unnamed faces in these photos might be, from the faces already named in the library. Only suggestions: nothing is named",
             super::always,
             imp::suggest
         ),
@@ -1228,7 +1250,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Evaluate Face Recognition",
             [],
             None,
-            "{budgetMs?: 0, burstSecs?: 5, margin?, thresholds?: [..], scope?: \"visible\"} → {queries, top1, sweep: [{threshold, suggested, correct, precision, recall}]} — leave-one-out over your named faces: each is ranked against the others (ignoring shots within burstSecs of it) to show how well the chosen model recognises people in *your* photos and which threshold to trust. Faces not yet embedded are done within budgetMs (`faces.index` does them all); counts only",
+            "{budgetMs?: 0, burstSecs?: 5, margin?, thresholds?: [..], topFaces?, scope?: \"visible\"} → {queries, top1, topFaces, sweep: [{threshold, suggested, correct, precision, recall}]} — leave-one-out over your named faces: each is ranked against the others (ignoring shots within burstSecs of it) to show how well the chosen model recognises people in *your* photos and which threshold to trust. Faces not yet embedded are done within budgetMs (`faces.index` does them all); counts only",
             super::always,
             imp::evaluate
         ),

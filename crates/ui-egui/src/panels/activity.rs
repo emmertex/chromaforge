@@ -104,6 +104,7 @@ fn detail_line(t: &TaskInfo) -> String {
 pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     announce_finished(app, ctx);
     let all = app.session.activity.list();
+    app.activity_bottom = None;
     if all.is_empty() {
         app.activity_expanded = false;
         app.activity_open.clear();
@@ -135,7 +136,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let mut fold = None;
     let open = app.activity_open.clone();
     let frame = egui::Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.field_border)).corner_radius(6).inner_margin(Margin::same(MARGIN));
-    egui::Area::new(egui::Id::new("activity-stack")).order(egui::Order::Middle).fixed_pos(origin).show(ctx, |ui| {
+    let area = egui::Area::new(egui::Id::new("activity-stack")).order(egui::Order::Middle).fixed_pos(origin).show(ctx, |ui| {
         // An area lays out in the size it had last frame, and the scroll area would take that as all the room there
         // is: the stack would never grow when rows are added. Give it the whole height below the top bar instead
         // (the scroll area keeps to `max_height`).
@@ -173,6 +174,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             }
         });
     });
+    // what draws under the stack (the eye strip's messages) keeps clear of it
+    app.activity_bottom = Some(area.response.rect.bottom());
     if let Some(id) = cancel {
         self::cancel(app, id);
     }

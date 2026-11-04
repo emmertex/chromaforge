@@ -343,20 +343,31 @@ pub fn show(app: &mut crate::LccApp, ui: &mut egui::Ui) {
             Panel::Canvas => {
                 canvas = Some(ui.new_child(egui::UiBuilder::new().id_salt("photo-view").max_rect(ui.max_rect())));
             }
+            // (each panel is lapped: a slow frame's log names the one that cost it)
             Panel::Library => {
+                let mut lap = crate::now_ms();
                 crate::widgets::register(ui.ctx(), "panel:left_panel", ui.max_rect());
                 crate::panels::left::show(app, ui);
+                app.lap(&mut lap, "panel.library");
             }
             Panel::Tools => {
+                let mut lap = crate::now_ms();
                 crate::widgets::register(ui.ctx(), "panel:right_panel", ui.max_rect());
                 crate::panels::right::show(app, ui);
+                app.lap(&mut lap, "panel.tools");
             }
-            Panel::Presets => crate::panels::presets::show(app, ui, crate::module::DEVELOP_LEFT, false),
+            Panel::Presets => {
+                let mut lap = crate::now_ms();
+                crate::panels::presets::show(app, ui, crate::module::DEVELOP_LEFT, false);
+                app.lap(&mut lap, "panel.presets");
+            }
         },
     );
     if let Some(mut canvas) = canvas {
         let ui = &mut canvas;
+        let mut lap = crate::now_ms();
         crate::panels::bottombar::show(app, ui);
+        app.lap(&mut lap, "panel.bottombar");
         let bg = if matches!(
             app.ui.view,
             crate::state::ViewMode::Detail | crate::state::ViewMode::Compare | crate::state::ViewMode::Survey | crate::state::ViewMode::Reference
@@ -366,14 +377,18 @@ pub fn show(app: &mut crate::LccApp, ui: &mut egui::Ui) {
             t.grid_bg
         };
         crate::panels::compare::prepare(app);
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| match app.ui.view {
-            crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid => crate::panels::grid::show(app, ui),
-            crate::state::ViewMode::Detail => crate::panels::detail::show(app, ui),
-            crate::state::ViewMode::Compare => crate::panels::compare::show_compare(app, ui),
-            crate::state::ViewMode::Survey => crate::panels::compare::show_survey(app, ui),
-            crate::state::ViewMode::Reference => crate::panels::compare::show_reference(app, ui),
-            crate::state::ViewMode::People => crate::panels::people::show(app, ui),
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| {
+            crate::panels::alternatives::show(app, ui);
+            match app.ui.view {
+                crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid => crate::panels::grid::show(app, ui),
+                crate::state::ViewMode::Detail => crate::panels::detail::show(app, ui),
+                crate::state::ViewMode::Compare => crate::panels::compare::show_compare(app, ui),
+                crate::state::ViewMode::Survey => crate::panels::compare::show_survey(app, ui),
+                crate::state::ViewMode::Reference => crate::panels::compare::show_reference(app, ui),
+                crate::state::ViewMode::People => crate::panels::people::show(app, ui),
+            }
         });
+        app.lap(&mut lap, "panel.view");
     }
 
     let rendered = workspace;

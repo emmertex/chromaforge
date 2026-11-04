@@ -583,6 +583,10 @@ struct PngWriter {
 impl Backend for PngWriter {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         assert!(matches!(method, "ui.render" | "ui.screenshot"), "{method}");
+        // an app from before `ui.render {inline}`: it ignores the flag and renders without writing anything
+        if params.get("inline").and_then(Value::as_bool) == Some(true) {
+            return Ok(json!({"width": 1, "height": 1}));
+        }
         let path = std::path::PathBuf::from(params["path"].as_str().unwrap());
         self.seen.push((path.clone(), path.parent().and_then(|d| std::fs::symlink_metadata(d).ok())));
         if self.dies_mid_write {
@@ -633,4 +637,90 @@ fn render_and_screenshot_pngs_go_through_a_private_folder() {
         assert!(!folders.contains(&dir), "{} was used twice", dir.display());
         folders.push(dir);
     }
+}
+
+/// An app on another machine (`mcp --connect host:port`): files it writes are not readable here,
+/// so a `ui.render` with a `path` leaves nothing behind for the MCP server. `inline` drops out when
+/// `old_app` is set, as an app from before `ui.render {inline}` would ignore it.
+struct OtherMachine {
+    app: Headless,
+    old_app: bool,
+}
+
+impl Backend for OtherMachine {
+    fn call(&mut self, method: &str, mut params: Value) -> Result<Value, String> {
+        if method != "ui.render" {
+            return self.app.call(method, params);
+        }
+        if self.old_app
+            && let Some(p) = params.as_object_mut()
+        {
+            p.remove("inline");
+        }
+        match params.get("path").and_then(Value::as_str).map(str::to_string) {
+            // written on the other machine: gone as far as this one is concerned
+            Some(path) => {
+                let r = self.app.call(method, params);
+                let _ = std::fs::remove_file(path);
+                r
+            }
+            None => self.app.call(method, params),
+        }
+    }
+    fn has_ui(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> String {
+        "remote (test)".into()
+    }
+}
+
+/// `render_photo` / `render_preview` failed over `--connect` to another machine with "cannot read
+/// rendered image /tmp/<binary>-mcp-…-render.png": the app wrote the temp file on its own disk.
+#[test]
+fn render_photo_works_against_an_app_on_another_machine() {
+    let mut b = OtherMachine { app: Headless::demo(), old_app: false };
+    for tool in ["render_photo", "render_preview"] {
+        let r = call_tool(&mut b, tool, &json!({"format": "jpeg"}));
+        assert!(!r.is_error, "{tool}: {r:?}");
+        let image = r.content.iter().find(|c| c["type"] == "image").expect("image content");
+        assert_eq!(image["mimeType"], "image/jpeg");
+        let bytes = crate::base64_decode(image["data"].as_str().unwrap()).unwrap();
+        assert!(lcc_codecs::decode(&bytes, lcc_codecs::DecodeOptions::default()).is_ok());
+    }
+    // saving a copy writes on this machine
+    let out = std::env::temp_dir().join(format!("lc-mcp-remote-render-{}.png", std::process::id()));
+    let r = call_tool(&mut b, "render_photo", &json!({"path": out.to_string_lossy()}));
+    assert!(!r.is_error, "{r:?}");
+    assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    let _ = std::fs::remove_file(&out);
+}
+
+/// An app from before `ui.render {inline}` that ignores it.
+struct OldApp(Headless);
+
+impl Backend for OldApp {
+    fn call(&mut self, method: &str, mut params: Value) -> Result<Value, String> {
+        if let Some(p) = params.as_object_mut().filter(|_| method == "ui.render") {
+            p.remove("inline");
+        }
+        self.0.call(method, params)
+    }
+    fn has_ui(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> String {
+        "old app (test)".into()
+    }
+}
+
+/// An older app on this machine still renders, through a temp file; on another machine it gets an
+/// error, not a panic.
+#[test]
+fn render_photo_falls_back_to_a_file_for_an_older_app() {
+    let r = call_tool(&mut OldApp(Headless::demo()), "render_photo", &json!({}));
+    assert!(!r.is_error, "{r:?}");
+    assert!(r.content.iter().any(|c| c["type"] == "image"));
+    let r = call_tool(&mut OtherMachine { app: Headless::demo(), old_app: true }, "render_photo", &json!({}));
+    assert!(r.is_error, "{r:?}");
 }

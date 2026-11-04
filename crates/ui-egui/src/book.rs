@@ -688,7 +688,7 @@ fn photo_tex(app: &mut LccApp, id: &str) -> Option<(egui::TextureId, [usize; 2])
     let pid = PhotoId(id.parse().ok()?);
     app.session.catalog.photo(pid)?;
     crate::panels::grid::request_thumb(app, pid, 512, 6);
-    app.renderer.thumb(pid).map(|t| (t.tex.id(), t.size))
+    app.renderer.thumb(pid).map(|t| (t.id(), t.size))
 }
 
 /// Paints a photo filling/fitting `cell` like the export does.
@@ -1061,7 +1061,7 @@ fn filmstrip(ui: &mut egui::Ui, app: &mut LccApp, r: Rect) {
                     crate::panels::grid::request_thumb(app, *id, 256, 8);
                     ui.painter().rect_filled(cell, 2.0, Color32::from_gray(45));
                     if let Some(tex) = app.renderer.thumb(*id) {
-                        paint_photo(ui.painter(), tex.tex.id(), tex.size, inner, false, 1.0, [0.0, 0.0], Color32::WHITE);
+                        paint_photo(ui.painter(), tex.id(), tex.size, inner, false, 1.0, [0.0, 0.0], Color32::WHITE);
                     }
                     if let Some(n) = used.get(&id.0.to_string()) {
                         let b = Rect::from_min_size(cell.right_top() + vec2(-18.0, 3.0), vec2(15.0, 13.0));

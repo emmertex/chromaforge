@@ -9,7 +9,8 @@
 //!   catalog.log                op log: undo journal, change feed, crash safety (crate::journal)
 //!   catalog.snap               a stub that makes builds before v4 refuse the folder, untouched
 //!   catalog-settings.json      backup schedule, backup folder, last backup
-//!   backups/                   default backup folder; `before-v4-…/` keeps the migrated v3 files
+//!   backups/                   default backup folder; `before-v<N> <time>/` keeps the library as it was
+//!                              before an upgrade to format N (crate::upgrade_backup)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -183,7 +184,8 @@ const STUB: &str = "{\"format\":\"lcc-catalog-db\",\"version\":4,\"store\":\"cat
 
 impl Journal {
     /// Open the library in `dir` with the v4 store, creating it, or migrating a v3 library
-    /// (JSON snapshot + log) first: its files are copied to `backups/before-v4-<time>/`, the
+    /// (JSON snapshot + log) first: its files are copied and verified to `backups/before-v<N> <time>/`
+    /// ([`crate::upgrade_backup`]), the
     /// store is built in a temporary file and renamed into place only once complete, so a crash
     /// at any point leaves either the v3 library (migrated again next time) or the v4 one.
     ///
@@ -207,9 +209,10 @@ impl Journal {
             // the stub without its store: the store was lost
             return Err(CatalogError::Corrupt(format!("{} is missing (restore it from a backup)", db_path.display())));
         } else if snap_state.is_some() || store.read(LOG).map_err(ioe)?.is_some_and(|l| !l.is_empty()) {
-            let (s, db, from) = migrate_v3(store, dir)?;
+            let (s, db, from, kept) = migrate_v3(store, dir)?;
             store = s;
             report.upgraded_from = Some(from);
+            report.upgrade_backup = Some(kept);
             db
         } else {
             report.created = true;
@@ -232,6 +235,13 @@ impl Journal {
         let stored = db.version();
         if stored < crate::journal::VERSION {
             crate::journal::refuse_newer_records(log.as_deref().unwrap_or_default())?;
+            // copy first: the store, its log and stub as the older build left them, checked, before
+            // anything of the library is written (the store is closed meanwhile, so the copy is
+            // the file as it is on disk)
+            drop(db);
+            let kept = crate::upgrade_backup::keep_copy(dir, stored, crate::journal::VERSION, &[DB_FILE, LOG, SNAPSHOT])?;
+            report.upgrade_backup = Some(kept);
+            db = CatalogDb::open(&db_path)?;
             db.mark_version().map_err(|e| match e {
                 CatalogError::Io(e) => CatalogError::Io(format!(
                     "can't upgrade {} from catalog format v{stored} to v{} ({e}). The library was left unchanged: free some disk space (or make the catalog writable), then try again",
@@ -278,25 +288,17 @@ pub fn now_secs() -> i64 {
 }
 
 /// `2026-10-10 153005` (UTC): sortable, valid in file names on every platform.
-fn stamp(secs: i64) -> String {
+pub(crate) fn stamp(secs: i64) -> String {
     crate::dates::civil(secs).replace('T', " ").replace(':', "")
 }
 
 /// v3 → v4: back up, load the JSON library, write the store, put the stub in place.
-fn migrate_v3(store: Box<dyn Store>, dir: &Path) -> Result<(Box<dyn Store>, CatalogDb, u32)> {
+fn migrate_v3(store: Box<dyn Store>, dir: &Path) -> Result<(Box<dyn Store>, CatalogDb, u32, PathBuf)> {
     // another app's catalog: refused before anything (the backup folder included) is written
     if let Some(f) = foreign_format(dir) {
         return Err(CatalogError::Foreign(format!("{SNAPSHOT}: format {f:?}")));
     }
     let _running = crate::progress::Running::start(dir.display().to_string());
-    let backup = dir.join(BACKUPS_DIR).join(format!("before-v4 {}", stamp(now_secs())));
-    std::fs::create_dir_all(&backup).map_err(ioe)?;
-    for f in [SNAPSHOT, LOG] {
-        let src = dir.join(f);
-        if src.exists() {
-            std::fs::copy(&src, backup.join(f)).map_err(|e| CatalogError::Io(format!("backup of {f} before the upgrade: {e}")))?;
-        }
-    }
     #[derive(Deserialize)]
     struct Header {
         #[serde(default)]
@@ -304,6 +306,8 @@ fn migrate_v3(store: Box<dyn Store>, dir: &Path) -> Result<(Box<dyn Store>, Cata
     }
     // the header only (the catalog in it is skipped, not built)
     let from = std::fs::read(dir.join(SNAPSHOT)).ok().and_then(|b| serde_json::from_slice::<Header>(&b).ok()).map_or(0, |h| h.version);
+    // copy first: the v3 files, checked, before anything of the library is written
+    let backup = crate::upgrade_backup::keep_copy(dir, from, VERSION, &[SNAPSHOT, LOG])?;
     crate::progress::phase(MigrationPhase::Reading, 0, 0);
     let (mut j, catalog, rep) = Journal::open_json(store, false)?;
     crate::progress::phase(MigrationPhase::Encoding, 0, catalog.len() as u64);
@@ -330,7 +334,7 @@ fn migrate_v3(store: Box<dyn Store>, dir: &Path) -> Result<(Box<dyn Store>, Cata
     // the store holds every op up to `seq`: the log's records are stale now
     store.write_atomic(SNAPSHOT, STUB.as_bytes()).map_err(ioe)?;
     store.write_atomic(LOG, b"").map_err(ioe)?;
-    Ok((store, CatalogDb::open(&dir.join(DB_FILE))?, from))
+    Ok((store, CatalogDb::open(&dir.join(DB_FILE))?, from, backup))
 }
 
 // ---- recent catalogs
@@ -546,7 +550,8 @@ impl Journal {
         let dir = self.db_dir()?;
         let dest = root.join(stamp(now_secs()));
         std::fs::create_dir_all(&dest).map_err(ioe)?;
-        let mut files = vec![DB_FILE.to_string(), LOG.to_string(), SNAPSHOT.to_string(), SETTINGS_FILE.to_string()];
+        // (the library's prefs.json too, where the app keeps its presets: gathered back from a backup)
+        let mut files = vec![DB_FILE.to_string(), LOG.to_string(), SNAPSHOT.to_string(), SETTINGS_FILE.to_string(), "prefs.json".to_string()];
         if let Some(e) = find_entry(&dir).and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned())) {
             files.push(e);
         }
@@ -592,12 +597,13 @@ impl Journal {
     }
 }
 
-/// Delete all but the newest `keep` timestamped backups in `root` (never the pre-v4 one).
+/// Delete all but the newest `keep` timestamped backups in `root` (never a copy kept before an
+/// upgrade, `before-v<N> …`: it is what an older version opens).
 fn prune_backups(root: &Path, keep: usize) {
     let Ok(rd) = std::fs::read_dir(root) else { return };
     let mut dirs: Vec<PathBuf> = rd
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_dir() && p.join(DB_FILE).exists() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("before-v4")))
+        .filter(|p| p.is_dir() && p.join(DB_FILE).exists() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("before-v")))
         .collect();
     dirs.sort();
     let excess = dirs.len().saturating_sub(keep);

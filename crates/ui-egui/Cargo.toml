@@ -33,6 +33,7 @@ lcc-classic-slideshow = { workspace = true }
 lcc-book = { workspace = true }
 lcc-text = { workspace = true }
 lcc-webgallery = { workspace = true }
+lcc-surface = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -49,6 +50,8 @@ resvg = { version = "0.45", default-features = false }
 image = { workspace = true }
 # tests record why they skip (`cargo xtask ci` lists the skips)
 lcc-testkit = { workspace = true }
+# the GPU-drawn view test makes a wgpu device
+pollster = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 lcc-denoise = { workspace = true, features = ["runtime"] }
 # the model-setup tests run denoise models; only the app/CLI enable this in builds. test-support: the

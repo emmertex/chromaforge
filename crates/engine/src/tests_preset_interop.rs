@@ -30,7 +30,12 @@ const LR_METADATA: &str = r#"s = {
 		["com.adobe.creatorWorkPhone"] = "+61 3 0000 0000",
 		["com.adobe.creatorWorkEmail"] = "ann@example.org",
 		["com.adobe.creatorWorkWebsite"] = "https://example.org",
-		["com.adobe.headline"] = "Not here",
+		["com.adobe.headline"] = "Studio day",
+		["com.adobe.descriptionWriter"] = "Ann Lee",
+		["com.adobe.iptcCategory"] = "ACE",
+		["com.adobe.iptcOtherCategories"] = "Portraits, Studio",
+		["com.adobe.iptcSubjectCode"] = "01000000; 13000000",
+		["com.adobe.intellectualGenre"] = "Not here",
 		["com.example.plugin.field"] = "x",
 	},
 	version = 0,
@@ -120,7 +125,8 @@ fn lightroom_metadata_preset_imports_and_applies_to_the_selection_in_one_step() 
     assert_eq!(rows.len(), 1, "{r}");
     assert_eq!(rows[0]["name"], "Studio Rights");
     let unmapped: Vec<&str> = rows[0]["unmapped"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
-    assert!(unmapped.contains(&"headline") && unmapped.contains(&"com.example.plugin.field"), "{unmapped:?}");
+    assert!(unmapped.contains(&"intellectualGenre") && unmapped.contains(&"com.example.plugin.field"), "{unmapped:?}");
+    assert!(!unmapped.contains(&"headline") && !unmapped.contains(&"iptcSubjectCode"), "{unmapped:?}");
     assert!(r["imported"].as_array().unwrap().is_empty(), "not a develop preset: {r}");
     assert!(r["failed"].as_array().unwrap().is_empty(), "{r}");
     let fields = &s.metadata_presets[0].fields;
@@ -133,6 +139,9 @@ fn lightroom_metadata_preset_imports_and_applies_to_the_selection_in_one_step() 
         let m = &s.catalog.photo(*id).unwrap().meta;
         assert_eq!((m.creator.as_str(), m.usage_terms.as_str()), ("Ann Lee", "Editorial use only"));
         assert_eq!((m.contact.email.as_str(), m.contact.city.as_str(), m.contact.job_title.as_str()), ("ann@example.org", "Hobart", "Photographer"));
+        assert_eq!((m.headline.as_str(), m.description_writer.as_str(), m.category.as_str()), ("Studio day", "Ann Lee", "ACE"));
+        assert_eq!(m.supplemental_categories, ["Portraits", "Studio"]);
+        assert_eq!(m.subject_code, ["01000000", "13000000"]);
     }
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(ids.iter().all(|id| s.catalog.photo(*id).unwrap().meta.contact.is_empty()), "both undone at once");
@@ -168,6 +177,37 @@ fn xmp_metadata_template_imports_and_sidecars_do_not() {
     let f = write(&dir.join("IMG_1.xmp"), &sidecar);
     let r = s.execute("metadata.importPresets", &json!({"paths": [f]})).unwrap();
     assert_eq!(r["failed"][0][1], "not a metadata preset", "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Other categories and subject codes survive a template's import, our own file and the preset an
+/// import applies to each new photo, which doesn't go through `photo.setMeta`.
+#[test]
+fn metadata_preset_lists_reach_the_photo_at_import() {
+    let dir = temp_dir("meta-lists");
+    let mut s = Session::new();
+    let m = lcc_meta::Metadata {
+        supplemental_categories: vec!["Rain".into(), "Rivers".into()],
+        subject_code: vec!["17000000".into()],
+        ..Default::default()
+    };
+    let f = write(&dir.join("Weather.xmp"), &lcc_meta::write_xmp(&m, None));
+    let r = s.execute("metadata.importPresets", &json!({"paths": [f]})).unwrap();
+    assert_eq!(r["imported"][0]["unmapped"], json!([]), "{r}");
+    let fields = s.metadata_presets[0].fields.clone();
+
+    let (kept, unmapped) = metadata_files::clean_fields(fields.as_object().unwrap());
+    assert!(unmapped.is_empty(), "{unmapped:?}");
+    assert_eq!(Value::Object(kept), fields, "an `.lcmeta` file keeps them");
+    let (_, unmapped) = metadata_files::clean_fields(json!({"subjectCode": "17000000", "supplementalCategories": [1]}).as_object().unwrap());
+    assert_eq!(unmapped, ["subjectCode", "supplementalCategories"], "a list of text or nothing");
+
+    let mut meta = lcc_catalog::Meta { subject_code: vec!["old".into()], ..Default::default() };
+    crate::cmd::metadata::apply_to(&mut meta, &fields);
+    assert_eq!(meta.supplemental_categories, ["Rain", "Rivers"]);
+    assert_eq!(meta.subject_code, ["17000000"], "replaced, like text");
+    crate::cmd::metadata::apply_to(&mut meta, &json!({"subjectCode": "not a list", "supplementalCategories": [" a ", "a", ""]}));
+    assert_eq!((meta.subject_code.as_slice(), meta.supplemental_categories.as_slice()), (&["17000000".to_string()][..], &["a".to_string()][..]));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

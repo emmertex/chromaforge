@@ -9,7 +9,8 @@ page describes what exists.
 
 ## What exists
 
-**`crates/ml` (`lcc-ml`, L3)** knows nothing about models, photos or the UI. A job is a closure.
+**`crates/ml` (`lcc-ml`, L3)** provides the shared queue, device selection, model manifests, CLIP encoder, and binary
+embedding cache store.
 
 - **Device** (`device.rs`): `Preference::Auto` takes the GPU when the probe finds one, else the CPU, with the reason
   kept (`Device::why_cpu`); `Preference::Cpu` never asks for the GPU. The probe runs on the worker thread before the
@@ -27,39 +28,57 @@ page describes what exists.
   - Dropping the queue tells the running job to stop and doesn't wait for the thread.
 - **Activity row** (`Rows` / `Row`): while the queue has work it holds one batch row; the row's ✕ sets the batch's
   cancel flag (the running job stops, everything waiting ends as cancelled), and the row goes when the queue is empty.
+- **Model manifests & known models** (`manifest.rs`, `known.rs`): each model lives in its own folder under
+  `<config>/ml-models/<id>` (or `<PREFIX>_ML_MODELS`) with a `manifest.json` naming its role (`embedder`,
+  `aestheticHead`, `orientationHead`), architecture, embedding dimension, input preprocessing (`InputSpec`), licence
+  (`Licence`, `Commercial`), and every file's size and SHA-256 digest (`ModelManifest::verify_dir`). The known-models
+  catalogue includes `clip-vit-b32-laion2b` (`laion/CLIP-ViT-B-32-laion2B-s34B-b79K`, MIT, `Commercial::Yes`), pinned
+  to a revision and verified by SHA-256 before installation.
+- **CLIP ViT + Text encoder** (`encoder.rs`, `tokenizer.rs`, `weights.rs`, `clip.rs`): a clean-room MIT CLIP vision +
+  text transformer implementation on `candle-core` (CPU everywhere, plus Metal on macOS with automatic fallback to CPU
+  via `JobError::Device`), paired with a positional `.safetensors` reader that validates tensor shapes, bounds, and
+  finiteness (rejecting `NaN`/`Inf` weights) and a byte-level BPE tokenizer (`vocab.json` + `merges.txt`).
+- **Binary embedding store** (`store.rs`): per-model cache file `ml-embeddings-<id>.bin` stored beside the library
+  (rebuildable, never inside `catalog.json`). Stores L2-normalized `f32` embeddings keyed by `(photo_id, fingerprint)`,
+  tolerates torn tails on crash recovery, resets cleanly when the model's `tag` (`<id>@<sha256-prefix>`) or dimension
+  changes, and saves atomically via a `.tmp` sibling.
 
-**The engine** (`crates/engine/src/ml.rs`) gives the session one queue, made on its first job:
+**The engine** (`crates/engine/src/ml.rs`, `crates/engine/src/cmd/ml.rs`) integrates `lcc-ml` into `Session`:
 
 - its GPU probe follows the rendering GPU's switches (`<PREFIX>_GPU`, `<PREFIX>_GPU_BACKEND`, `app.gpu`) and reports
   the adapter rendering uses;
 - `<PREFIX>_ML_DEVICE=cpu` keeps the AI jobs on the CPU (`auto` is the default);
 - its row in the activity stack is a batch: kind `mlIndex`, label "Indexing photos" ("Indexing photos · 37 of 200 ·
   2 failed"), detail the photo's file name;
-- `ml.status {preference?: auto | cpu}` reports the device (and why it is the CPU), the jobs waiting, the running
-  job's key and the counts, and sets the preference for the session.
-
-No feature submits jobs yet, so nothing user-visible has changed.
+- background indexing (`ml.pump`) paces itself with `faces_index::Pace` (`fast` / `idle` / `pause`) and
+  `memory::work_gate`, decodes source thumbnails on the worker thread, encodes batches of up to 4 photos on the
+  `ml-queue` worker, and persists `ml-embeddings-<id>.bin` beside the library;
+- commands:
+  - `ml.status {preference?: auto | cpu}`: reports device status, queue counts, `enabled`, `modelId`, `modelInstalled`,
+    `indexedPhotos`, and `unindexedPhotos`;
+  - `ml.enable {enabled: bool}`: enables or pauses background ML indexing;
+  - `ml.models.list`, `ml.models.install`, `ml.models.select`, `ml.models.remove`, `ml.models.download`,
+    `ml.models.downloads`, `ml.models.downloadCancel`: manage installed and downloadable ML models behind explicit
+    licence acknowledgement;
+  - `ml.pump {pace?: fast | idle | pause}` and `ml.index {ids?, wait?, batchSize?}`: drive background or synchronous
+    embedding indexing;
+  - `search.semantic {text, limit?, minScore?, scope?: all | filtered | selected}`: encodes a natural-language query
+    with the CLIP text tower and ranks indexed photos by cosine similarity.
 
 ## What's next
 
 In the order of the plan on issue #491:
 
-1. **M0 spike:** measure CLIP ViT-B/32 image throughput on candle (CPU, and Metal on macOS), the decode vs encode
-   split on raw previews, and an orientation head on a frozen embedding. Post the numbers on the issue.
-2. **Models in `lcc-ml`:** a model manifest and known-model table (the `lcc_faces::manifest` shape: size, SHA-256,
-   licence, commercial flag), download through `lcc-fetch` with the licence dialog, an `Encoder` trait (image and text
-   embeddings) with a candle CPU implementation (Metal on macOS) that reports device failures as
-   `JobError::Device`, and hostile-input tests for weights and shapes.
-3. **Indexing in the engine:** a pump that diffs the library against a per-model embedding cache beside the library
-   (not in the catalog), feeds preview-size pictures in batches, paces itself like the face scan (`Pace`,
-   `memory::work_gate`) and starts after an import; a backfill command.
-4. **Features (#487–#490)** on the cached embeddings: search, scores, culling suggestions, orientation suggestions.
-   Suggestions are proposals the user accepts, never silent writes.
-5. **GPU on Linux and Windows** (wgpu), only if the measurements show the CPU is too slow; checked against the CPU
-   result before it is trusted, as the denoise network's GPU path is.
+1. **Downstream AI features (#487–#490)** on the cached embeddings: UI search integration (#487), aesthetic scoring
+   head (#488), culling suggestions (#489), and orientation suggestions (#490). Suggestions are proposals the user
+   accepts, never silent writes.
+2. **GPU on Linux and Windows** (wgpu), if measurements show CPU inference is too slow; checked against the CPU result
+   before it is trusted, as the denoise network's GPU path is.
 
 ## Testing
 
-`crates/ml/src/tests.rs` covers the queue (priority, replacement, cancel one / all / from the row, CPU fallback,
-panicking jobs, limits, the row's lifetime) with a fake probe; `crates/engine/src/tests_ml.rs` covers the session's
-row in the activity stack and `ml.status`. Nothing touches a GPU driver: tests pass a probe that names a fake GPU.
+`crates/ml/src/tests.rs` and unit tests across `manifest.rs`, `known.rs`, `store.rs`, `encoder.rs`, `tokenizer.rs`,
+`weights.rs`, and `clip.rs` cover the queue, manifests, SHA-256 verification, hostile `.safetensors` / tokenizer /
+store inputs, and synthetic CLIP image/text encoding. `crates/engine/src/tests_ml.rs` covers the session's activity
+row, GPU-to-CPU fallback, model installation and tamper rejection, background and synchronous indexing, persistent
+embedding stores across library reopen, content-replacement invalidation, and `search.semantic`.

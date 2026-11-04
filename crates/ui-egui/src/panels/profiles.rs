@@ -5,7 +5,6 @@
 use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use lcc_catalog::PhotoId;
 use lcc_develop::DevelopSettings;
-use lcc_engine::presets::{PROFILES, profile_groups};
 use serde_json::json;
 
 use super::presets::cover_uv;
@@ -62,6 +61,19 @@ fn camera_profile_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, 
     if choice != current {
         let _ = app.run("develop.cameraProfile", json!({"id": choice}));
     }
+    // a camera profile chosen for this photo can become its body's own (OneSlips, LR-PROF-BODY)
+    if !current.is_empty()
+        && let Some(body) = lcc_engine::profile_bodies::key_of(&photo)
+    {
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            if app.session.body_profiles.get(&body) == Some(&current) {
+                ui.label(egui::RichText::new(crate::i18n::tr("This body's default")).color(t.text_dim).font(t.font(12.0)));
+            } else if crate::widgets::text_button(ui, "bodyDefault", crate::i18n::tr("Make default for this body"), false).clicked() {
+                let _ = app.run("profile.setBodyDefault", json!({"id": current, "photo": id.0}));
+            }
+        });
+    }
     ui.add_space(4.0);
 }
 
@@ -89,6 +101,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     camera_profile_row(app, ui, &d, id);
     divider(ui);
+    let shown_groups = app.session.shown_groups();
     // (title, cell tag, imported LUT folder, profiles)
     let mut sections: Vec<(&str, &str, bool, Vec<(String, String, String)>)> = Vec::new();
     let favs: Vec<(String, String, String)> = app
@@ -100,22 +113,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     if !favs.is_empty() {
         sections.push(("Favorites", "fav", false, favs));
     }
-    for g in profile_groups() {
-        sections.push((
-            g,
-            "",
-            false,
-            PROFILES.iter().filter(|p| p.group == g).map(|p| (p.id.to_string(), p.name.to_string(), p.group.to_string())).collect(),
-        ));
+    // every group with the Profile Manager's names, groups and order (hidden and removed ones left out)
+    for g in &shown_groups {
+        sections.push((g.name.as_str(), "", g.imported, g.profiles.iter().map(|p| (p.id.clone(), p.name.clone(), p.group.clone())).collect()));
     }
-    // imported LUT profile groups
-    let mut lut_groups: Vec<String> = app.session.lut_profiles.iter().map(|p| p.group.clone()).collect();
-    lut_groups.sort_unstable();
-    lut_groups.dedup();
-    for g in &lut_groups {
-        let profiles = app.session.lut_profiles.iter().filter(|p| &p.group == g).map(|p| (p.id.clone(), p.name.clone(), p.group.clone())).collect();
-        sections.push((g.as_str(), "", true, profiles));
-    }
+    // (a group whose profiles the Profile Manager all hides is left out)
+    sections.retain(|s| !s.3.is_empty());
     for (title, tag, imported, list) in sections {
         // an imported folder named like a built-in group still opens and closes on its own
         let key = if imported { format!("lut:{title}") } else { format!("profile:{title}") };
@@ -149,9 +152,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         let th = (cw * 0.75).round();
         for row in list.chunks(COLUMNS) {
             let (rr, _) = ui.allocate_exact_size(vec2(ui.available_width(), th + 30.0), Sense::hover());
+            // only the cells in view ask for their thumbnail: every cell asking re-rendered the
+            // photo once per profile at every edit (hundreds of imported profiles, hundreds of
+            // renders queued at once)
+            let in_view = ui.is_rect_visible(rr.expand(th));
             for (i, p) in row.iter().enumerate() {
                 let cell = Rect::from_min_size(pos2(rr.left() + 22.0 + i as f32 * (cw + gap), rr.top()), vec2(cw, th + 24.0));
-                cell_ui(app, ui, &d, id, tag, p, cell, th);
+                cell_ui(app, ui, &d, id, tag, p, cell, th, in_view);
             }
         }
         ui.add_space(6.0);
@@ -187,7 +194,17 @@ fn with_profile_id(d: &DevelopSettings, profile_id: &str) -> DevelopSettings {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn cell_ui(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, id: PhotoId, tag: &str, p: &(String, String, String), cell: Rect, th: f32) {
+fn cell_ui(
+    app: &mut LccApp,
+    ui: &mut egui::Ui,
+    d: &DevelopSettings,
+    id: PhotoId,
+    tag: &str,
+    p: &(String, String, String),
+    cell: Rect,
+    th: f32,
+    in_view: bool,
+) {
     let (p_id, p_name, p_group) = (p.0.as_str(), p.1.as_str(), p.2.as_str());
     let t = Tokens::get(ui.ctx());
     let key = if tag.is_empty() { format!("profileCell:{p_id}") } else { format!("profileCell:{tag}:{p_id}") };
@@ -195,13 +212,16 @@ fn cell_ui(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, id: PhotoId
     crate::widgets::announce(&resp, p_name.to_string());
     register(ui.ctx(), key, cell);
     let thumb = Rect::from_min_size(cell.min, vec2(cell.width(), th));
-    let s = with_profile_id(d, p_id);
+    // (the photo's settings with this profile: only for a cell in view or under the pointer)
+    let s = (in_view || resp.hovered()).then(|| with_profile_id(d, p_id));
     let painter = ui.painter();
     painter.rect_filled(thumb, 3.0, t.canvas);
-    if let Some(job) = app.session.variant_job(id, &s, THUMB_EDGE)
+    if in_view
+        && let Some(s) = &s
+        && let Some(job) = app.session.variant_job(id, s, THUMB_EDGE)
         && let Some(tex) = app.renderer.variant(job)
     {
-        painter.image(tex.tex.id(), thumb, cover_uv(thumb, tex.size), Color32::WHITE);
+        painter.image(tex.id(), thumb, cover_uv(thumb, tex.size), Color32::WHITE);
     }
     let applied = d.profile.id == p_id;
     if applied {
@@ -222,9 +242,13 @@ fn cell_ui(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, id: PhotoId
         painter.circle_filled(star.center(), 10.0, Color32::from_black_alpha(110));
         crate::rating::paint_star(painter, star.shrink(4.0), fav, if fav || over_star { t.star } else { Color32::WHITE });
     }
-    if resp.hovered() && !applied && !over_star {
+    if resp.hovered()
+        && !applied
+        && !over_star
+        && let Some(s) = s
+    {
         app.hover_preview =
-            Some(HoverPreview { label: crate::i18n::tr_format!("Profile: {}", crate::i18n::profile_label(p_id, p_name)), settings: s.clone() });
+            Some(HoverPreview { label: crate::i18n::tr_format!("Profile: {}", crate::i18n::profile_label(p_id, p_name)), settings: s });
         ui.data_mut(|m| m.insert_temp(egui::Id::new("last-profile-hover"), (id, p_id.to_string())));
     } else if resp.hovered() && applied {
         // resting on the applied profile shows it (no preview), not the last other profile hovered

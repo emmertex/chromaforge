@@ -1,0 +1,2 @@
+### Pick single settings for presets, copy and sync
+- New Preset, Copy Settings, Paste Selected, Sync Settings and Update Preset share one list: tick a whole group or open it with its arrow to pick single settings, such as only Exposure or only Sharpening. New presets leave White Balance out unless you tick it, and each dialog remembers what you ticked last, in every library. Update with Current Settings… shows what the preset holds and can be undone from the preset's menu. Based on work by @OneSlips.

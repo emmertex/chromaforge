@@ -301,7 +301,7 @@ fn assert_export_grade_matches_cpu(s: &lcc_develop::DevelopSettings) {
     assert!(worst <= 1.0, "export grade vs CPU differ by {worst} 8-bit codes");
 }
 
-/// A clip with a LUT profile exports with the LUT applied (the GPU has no LUT stage).
+/// A clip with a LUT profile exports with the LUT applied, on the GPU as on the CPU.
 #[test]
 fn export_grade_applies_lut_profile() {
     let n = 5;
@@ -329,11 +329,10 @@ fn export_grade_applies_lut_profile() {
     d.profile.id = "lut:video-gpu-parity".into();
     d.profile.amount = 100.0;
     let vs = lcc_pipeline::grade::video_settings(&d);
-    assert!(crate::export_video::grade_gpu(&mut graded_frame(), &vs).is_none(), "a LUT profile must not grade on the GPU");
     assert_export_grade_matches_cpu(&vs);
 }
 
-/// A feathered or refined mask is graded on the CPU, as stills are.
+/// A clip whose edit has a feathered mask grades alike on the GPU and the CPU (a video grade leaves masks out).
 #[test]
 fn export_grade_applies_feathered_mask() {
     use lcc_develop::{Mask, MaskComponent, MaskOp, MaskShape};
@@ -342,6 +341,7 @@ fn export_grade_applies_feathered_mask() {
         visible: true,
         feather: 60.0,
         components: vec![MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,
@@ -350,6 +350,5 @@ fn export_grade_applies_feathered_mask() {
         adjust: lcc_develop::LocalAdjustments { exposure: 1.0, ..Default::default() },
         ..Default::default()
     });
-    assert!(crate::export_video::grade_gpu(&mut graded_frame(), &d).is_none(), "a feathered mask must not grade on the GPU");
-    assert_export_grade_matches_cpu(&d);
+    assert_export_grade_matches_cpu(&lcc_pipeline::grade::video_settings(&d));
 }

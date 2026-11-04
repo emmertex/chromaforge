@@ -255,8 +255,9 @@ fn append(path: &Path, buf: &[u8]) -> std::io::Result<()> {
 
 const SCAN_MAGIC: &[u8; 4] = b"LCFS";
 const SCAN_VERSION: u8 = 1;
-/// The detector a search was made with: a record made by another one is ignored (a better detector may find more).
-pub(crate) const SCAN_TAG: &str = "yunet-2023mar";
+/// The detector a search was made with: a record made by another one is ignored (a better detector may find more), so
+/// photos YuNet searched are searched again with the MediaPipe face model.
+pub(crate) const SCAN_TAG: &str = "mediapipe-face-landmarker-1";
 /// Largest record file we read.
 const SCAN_MAX_FILE: u64 = 64 << 20;
 
@@ -598,6 +599,8 @@ pub(crate) struct FacesState {
     pub checked: Option<std::time::Instant>,
     /// Whether recognition was switched on when last looked up, and when.
     pub enabled_seen: Option<(std::time::Instant, bool)>,
+    /// How many of a person's best matching faces a match is based on when last looked up, and when.
+    pub top_seen: Option<(std::time::Instant, usize)>,
     pub worker: Option<crate::faces_worker::Worker>,
     /// After a failure to load the chosen model, the background pump leaves it alone until then.
     pub retry_at: Option<std::time::Instant>,

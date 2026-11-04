@@ -173,7 +173,19 @@ pub fn rotate(dir: &Path) -> std::io::Result<(PathBuf, File)> {
 /// One formatted log line: `<timestamp> <LEVEL> [<thread>] <target>: <message>\n`.
 pub fn format_line(ts: &str, level: log::Level, thread: &str, target: &str, message: &str) -> String {
     let message = message.strip_suffix('\n').unwrap_or(message);
-    format!("{ts} {level:<5} [{thread}] {target}: {message}\n")
+    // A message can carry text from files and peers (a file name, a rejected value): it must not be able to start a
+    // record of its own. Later lines of a multi-line message (a panic report) are indented, so none begins like a
+    // record; other control characters (a bare CR, an escape sequence) are shown escaped (upstream #3720).
+    let mut safe = String::with_capacity(message.len());
+    for c in message.chars() {
+        match c {
+            '\n' => safe.push_str("\n    "),
+            '\t' => safe.push(c),
+            c if c.is_control() => safe.extend(c.escape_default()),
+            c => safe.push(c),
+        }
+    }
+    format!("{ts} {level:<5} [{thread}] {target}: {safe}\n")
 }
 
 /// Where formatted lines go besides standard error: kept in memory until a file is attached,
@@ -658,6 +670,13 @@ mod tests {
     /// The panic hook's report lands in the file, and never deadlocks when the panic happened
     /// while this thread held the sink.
     #[test]
+    fn a_message_cannot_forge_a_record() {
+        let forged = format_line("t", log::Level::Info, "w", "x", "name\r\n2026-01-01T00:00:00Z ERROR [main] x: fake\u{1b}[2J");
+        assert!(forged.lines().skip(1).all(|l| l.starts_with(' ')), "{forged:?}");
+        assert!(!forged.contains('\r') && !forged.contains('\u{1b}'), "{forged:?}");
+    }
+
+    #[test]
     fn a_panic_report_goes_to_the_file_and_never_deadlocks() {
         let dir = temp_dir("panic");
         let logger = AppLogger::new(Filter::parse("off"), false);
@@ -668,7 +687,7 @@ mod tests {
             logger.record_panic("main", "while the sink is held");
         }
         let text = read(&path);
-        assert!(text.contains(" ERROR [render] app: panicked at crates/x/src/lib.rs:3:5:\nboom\n"), "{text}");
+        assert!(text.contains(" ERROR [render] app: panicked at crates/x/src/lib.rs:3:5:\n    boom\n"), "{text}");
         assert!(!text.contains("while the sink is held"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }

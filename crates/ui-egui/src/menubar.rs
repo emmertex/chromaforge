@@ -134,11 +134,9 @@ const LAYOUT: &[(&str, &[&str])] = &[
             "@More Imports",
             "@Tethered Capture",
             "---",
-            "@Catalog",
-            "@Open Recent Catalog",
             "@Libraries",
             "---",
-            "dialog.export",
+            "file.export",
             "app.exportPrevious",
             "@Export with Preset",
             "@More Exports",
@@ -185,6 +183,7 @@ const LAYOUT: &[(&str, &[&str])] = &[
             "dialog.cull",
             "tool.painter",
             "faces.detect",
+            "faces.clearAndRescan",
             "---",
             "dialog.rename",
             "file.findMissing",
@@ -335,6 +334,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "develop.treatment",
             "develop.matchExposure",
             "develop.updateProcess",
+            "masks.updateAi",
             "---",
             "version.create",
             "dialog.createPreset",
@@ -359,10 +359,19 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
     ("Photo", "Rotate & Flip", &["photo.rotateLeft", "photo.rotateRight", "---", "photo.flipHorizontal", "photo.flipVertical"]),
     (
         "File",
-        "Catalog",
-        &["catalog.new", "catalog.open", "---", "dialog.exportCatalog", "---", "catalog.backup", "catalog.checkIntegrity", "catalog.optimize"],
+        "Libraries",
+        &[
+            "app.newLibrary",
+            "app.openLibrary",
+            "---",
+            "dialog.exportCatalog",
+            "---",
+            "file.backupLibrary",
+            "file.restoreLibrary",
+            "catalog.checkIntegrity",
+            "library.compact",
+        ],
     ),
-    ("File", "Libraries", &["app.newLibrary", "app.openLibrary", "---", "file.backupLibrary", "file.restoreLibrary", "library.compact"]),
     (
         "File",
         "More Imports",
@@ -391,6 +400,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "view.focusPoint",
             "view.zoomToFocus",
             "view.faceBoxes",
+            "view.eyeFocus",
             "view.visualizeHdr",
             "view.hdrPreview",
             "---",
@@ -438,13 +448,6 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
         "Window",
         "Panels",
         &[
-            "panel.presets",
-            "panel.versions",
-            "panel.activity",
-            "panel.info",
-            "panel.keywords",
-            "panel.actions",
-            "---",
             "view.leftPanel",
             "view.photoCounts",
             "view.filmstrip",
@@ -689,6 +692,15 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             v.push(item("library.filter", json!({"rating": 0, "ratingOp": "atLeast"}), "None", None, f.rating_filters(), None));
             v
         }
+        // View ▸ Zoom: where Toggle Zoom (Space) centres while Zoom to Focus Point is on
+        "Zoom" => {
+            let mut v = vec![item("view.spaceZoomsTo", Value::Null, "Space Zooms To", None, false, None)];
+            v.extend(crate::state::SpaceZoom::ALL.into_iter().map(|z| {
+                let on = app.ui.settings.zoom_to_focus && app.ui.settings.space_zoom == z;
+                item("view.spaceZoomsTo", json!({"to": z.id()}), z.label(), None, true, Some(on))
+            }));
+            v
+        }
         "Set Rating" => (0..=5u8)
             .map(|r| {
                 let label = if r == 0 { "None".to_string() } else { "★".repeat(r as usize) };
@@ -893,7 +905,13 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
         "Libraries" => {
             let can = crate::panels::settings::can_switch_library(app).is_ok();
             let open = app.session.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone());
-            let recent = &app.ui.settings.recent_libraries;
+            let mut recent: Vec<String> = Vec::new();
+            for r in &app.ui.settings.recent_libraries {
+                if !recent.iter().any(|x| std::path::Path::new(x) == std::path::Path::new(r)) {
+                    recent.push(r.clone());
+                }
+            }
+            let recent = &recent;
             let label = |r: &str| {
                 let d = std::path::Path::new(r);
                 format!("{} — {}", crate::panels::settings::library_name(d), d.parent().map(|p| p.display().to_string()).unwrap_or_default())
@@ -1066,7 +1084,10 @@ pub fn menu_bar(app: &LccApp) -> Vec<(String, Vec<MenuNode>)> {
         let mut items = Vec::new();
         let mut last = Vec::new();
         let sub = |name: &str, used: &mut [bool]| -> Vec<MenuNode> {
-            let mut children = expanded(app, name).unwrap_or_default();
+            // Zoom's generated choices (Space Zooms To) follow its commands
+            let after = name == "Zoom";
+            let generated = expanded(app, name).unwrap_or_default();
+            let mut children = if after { Vec::new() } else { generated.clone() };
             // the registry's items follow the generated ones in their own group
             children.push(MenuNode::Separator);
             let here = |e: &MenuEntry| e.menu.len() == 2 && e.menu[0] == *title && e.menu[1] == name;
@@ -1086,6 +1107,10 @@ pub fn menu_bar(app: &LccApp) -> Vec<(String, Vec<MenuNode>)> {
                     // commands that open a dialog go last, after a separator
                     if e.label.ends_with('…') { dialogs.push(node(app, e)) } else { children.push(node(app, e)) }
                 }
+            }
+            if after {
+                children.push(MenuNode::Separator);
+                children.extend(generated);
             }
             if !dialogs.is_empty() {
                 // Tethered Capture opens with Start Tethered Capture… (as in Classic); elsewhere
@@ -1185,6 +1210,10 @@ pub fn run_item(app: &mut LccApp, id: &str, params: Value) -> Result<Value, Stri
     if culling_cmd {
         crate::panels::compare::target_active(app, &mut params);
     }
+    if id == "library.deleteRejected" && params.get("files").is_none() {
+        // always asked: it can move files to the trash
+        return crate::menus::ask_delete_rejected(app);
+    }
     if id == "photo.delete" && crate::menus::confirm_delete(app) {
         return Ok(Value::Null);
     }
@@ -1200,7 +1229,7 @@ pub fn run_item(app: &mut LccApp, id: &str, params: Value) -> Result<Value, Stri
     }
     let was = app.session.active();
     let r = app.run(id, params);
-    if culling_cmd && r.is_ok() && app.ui.auto_advance {
+    if culling_cmd && r.is_ok() && app.auto_advance_on() {
         crate::panels::compare::advance(app, was);
     }
     r
@@ -1486,6 +1515,32 @@ mod tests {
             MenuNode::Submenu { children, .. } => find(children, id),
             _ => None,
         })
+    }
+
+    /// View ▸ Zoom holds Space Zooms To: picking a choice checks it (and Zoom to Focus Point).
+    #[test]
+    fn space_zooms_to_lives_in_view_zoom() {
+        let mut a = app();
+        let zoom = |a: &LccApp| -> Vec<MenuNode> {
+            let bar = menu_bar(a);
+            let view = &bar.iter().find(|(t, _)| t == "View").expect("View menu").1;
+            view.iter()
+                .find_map(|n| match n {
+                    MenuNode::Submenu { label, children } if label == "Zoom" => Some(children.clone()),
+                    _ => None,
+                })
+                .expect("View ▸ Zoom")
+        };
+        let eye = |nodes: &[MenuNode]| {
+            nodes.iter().find_map(|n| match n {
+                MenuNode::Item { id, params, checked, .. } if id == "view.spaceZoomsTo" && params["to"] == "eye" => Some(*checked),
+                _ => None,
+            })
+        };
+        assert_eq!(eye(&zoom(&a)), Some(Some(false)));
+        run_item(&mut a, "view.spaceZoomsTo", json!({"to": "eye"})).unwrap();
+        assert_eq!(eye(&zoom(&a)), Some(Some(true)));
+        assert!(a.ui.settings.zoom_to_focus);
     }
 
     /// #2500: a direct-grid binding takes precedence over the borrowed cycle hint.

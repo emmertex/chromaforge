@@ -58,10 +58,11 @@ fn parse_created(date: Option<&str>, time: Option<&str>) -> Option<DateTime> {
 }
 
 /// Parse an IIM stream into the fields [`Metadata`] carries (title, keywords, artist, copyright, caption,
-/// creation date/time).
+/// subject codes, creation date/time).
 pub fn parse_iptc(b: &[u8]) -> Metadata {
     let mut m = Metadata::default();
     let mut utf8 = false;
+    let mut seen_keywords = std::collections::HashSet::new();
     let mut date: Option<String> = None;
     let mut time: Option<String> = None;
     let mut i = 0usize;
@@ -82,6 +83,14 @@ pub fn parse_iptc(b: &[u8]) -> Metadata {
         match (rec, ds) {
             (1, 90) => utf8 = data == b"\x1b%G",
             (2, 5) => m.title = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
+            // `IPR:number:name:matter:detail`: the subject code is the reference number
+            (2, 12) => {
+                let number = decode(data, utf8);
+                let number = number.split(':').nth(1).unwrap_or("").trim();
+                if !number.is_empty() && !m.subject_code.iter().any(|c| c == number) {
+                    m.subject_code.push(number.to_string());
+                }
+            }
             (2, 15) => m.category = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
             (2, 20) => {
                 let c = decode(data, utf8);
@@ -91,7 +100,7 @@ pub fn parse_iptc(b: &[u8]) -> Metadata {
             }
             (2, 25) => {
                 let k = decode(data, utf8);
-                if !k.is_empty() && !m.keywords.contains(&k) {
+                if !k.is_empty() && seen_keywords.insert(k.clone()) {
                     m.keywords.push(k);
                 }
             }
@@ -118,6 +127,18 @@ pub(crate) mod tests {
         out.extend_from_slice(&[0x1c, rec, ds]);
         out.extend_from_slice(&(data.len() as u16).to_be_bytes());
         out.extend_from_slice(data);
+    }
+
+    #[test]
+    fn distinct_keywords_are_kept_once_each_without_rescanning() {
+        let mut b = Vec::new();
+        for i in 0..50_000u32 {
+            ds(&mut b, 2, 25, format!("k{i}").as_bytes());
+            ds(&mut b, 2, 25, b"same");
+        }
+        let m = parse_iptc(&b);
+        assert_eq!(m.keywords.len(), 50_001);
+        assert_eq!(m.keywords.iter().filter(|k| *k == "same").count(), 1);
     }
 
     pub(crate) fn sample_iim() -> Vec<u8> {
@@ -188,12 +209,23 @@ pub(crate) mod tests {
             (Some(b"121314+0100"), Some("2026-01-01T12:13:14+01:00")),
             (Some(b"121314-0530"), Some("2026-01-01T12:13:14-05:30")),
             (Some(b"121314+1800"), Some("2026-01-01T12:13:14+18:00")),
-            (Some(b" 121314+0000  "), Some("2026-01-01T12:13:14+00:00")),
+            (Some(b" 121314+0000 \0"), Some("2026-01-01T12:13:14+00:00")),
         ];
         for (time, expected) in cases {
             let metadata = capture_time(*time);
             assert_eq!(metadata.capture_time.map(|value| value.to_iso()).as_deref(), *expected, "Time Created {time:?}");
         }
+    }
+
+    #[test]
+    fn subject_codes_are_the_reference_numbers() {
+        let mut v = Vec::new();
+        ds(&mut v, 2, 12, b"IPTC:17000000:weather::");
+        ds(&mut v, 2, 12, b"IPTC:06006000:environmental issue:water:");
+        ds(&mut v, 2, 12, b"IPTC:17000000:weather::");
+        ds(&mut v, 2, 12, b"no reference number");
+        ds(&mut v, 2, 12, b"IPTC::weather::");
+        assert_eq!(parse_iptc(&v).subject_code, ["17000000", "06006000"]);
     }
 
     #[test]

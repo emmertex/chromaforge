@@ -269,6 +269,8 @@ fn fs_store_background_snapshot() {
     }
     // a previous crash mid-snapshot left a partial temp file
     std::fs::write(dir.join(format!("{SNAPSHOT}.tmp")), b"{\"format\":\"lcc-catal").unwrap();
+    // (what the log's own thread was handed is on disk before another handle reads it)
+    j.flush().unwrap();
     let (mut j2, c2, r) = Journal::open(Box::new(FsStore::open_json(&dir).unwrap())).unwrap();
     assert_eq!((c2.to_snapshot(), r.snapshot_seq), (live.to_snapshot(), 0));
     drop(j);

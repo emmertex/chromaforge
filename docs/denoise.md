@@ -158,7 +158,7 @@ The upstream project's **Denoise (Bayer) 0.1.0** is a U-Net (7.8 M weights, 31 M
 contributors with the open tools in `tools/denoise-train` on 705 clean low-ISO raws from raw.pixls.us, each CC0, with
 synthetic sensor noise calibrated on real cameras (numbers only). Its weights are licensed **MIT OR Apache-2.0**, so
 any use, commercial work included, is allowed. The `own-model` Cargo feature offers it as a download (Settings ▸ AI
-Denoise); the desktop app turns that feature on. Its addresses are built from `[upstream]` in `brand.toml`
+Denoise, and the AI Models dialog, with its size and licence); the desktop app turns that feature on. Its addresses are built from `[upstream]` in `brand.toml`
 (`crates/denoise-core/src/known.rs`).
 
 It is downloaded from two sources, tried in order:
@@ -173,15 +173,21 @@ wrong file is never kept, whichever source sent it, and with both failing the me
 source: `<PREFIX>_DENOISE_MODEL_URL` (an `https://` address) replaces both with that one address, for maintainers who
 host the same file themselves.
 
+With the file at hand, `<PREFIX>_TEST_OWN_DENOISE_MODEL=<file> cargo test --release -p lcc-engine --features denoise
+tests_denoise_own -- --nocapture` runs it for real: a noisy raw developed with it against the best manual Noise
+Reduction (the Rust form of `tools/denoise-train/eval_app.py`), the graphics card against the processor, a damaged copy
+(an error, never a panic), and with `--ignored` a 24 MP timing against the built-in denoiser.
+
 Measured upstream on held-out pictures (PSNR in tone space): ISO 800 43.4 dB, ISO 3200 42.4 dB, ISO 12800 40.6 dB, a
 dark ISO 25600 36.4 dB (demosaicing without noise reduction: 38.1 / 36.9 / 33.1 / 22.8 dB).
 
-RawNIND's optional ONNX weights are **GPL-3.0**, as recorded in the pinned model catalog.
-They are downloaded separately after consent and read by our own Rust executor.
-Whether releases should offer this download remains a maintainer policy decision;
-permissively licensed or independently trained weights remain a gap. This is not a
-claim that optional downloading settles licensing questions. No GPL decoder or neural
-runtime code is included. Model metadata is in `crates/denoise-core/src/known.rs`.
+RawNIND's optional ONNX weights ("RawNIND" by Benoit Brummer) are dual-licensed by their
+author under **GPL-3.0 and CC BY 4.0** ([rawnind_jddc](https://github.com/trougnouf/rawnind_jddc),
+issue #1760); the pinned model catalog offers them under **CC BY 4.0**, which allows any use,
+commercial use included, and asks for credit. The terms shown before the download give that
+credit. They are downloaded separately after consent and read by our own Rust executor; none
+are bundled. No GPL decoder or neural runtime code is included. Model metadata is in
+`crates/denoise-core/src/known.rs`.
 
 Installation checks the manifest, model hash and size, then runs a synthetic self-test:
 finite output of the promised shape, repeatability, the declared scale and reduced

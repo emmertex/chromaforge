@@ -266,7 +266,7 @@ fn draw_photo(p: &egui::Painter, app: &mut LccApp, id: lcc_catalog::PhotoId, r: 
     let aspect = w.max(1) as f32 / h.max(1) as f32;
     let fit = if r.width() / r.height().max(1.0) > aspect { vec2(r.height() * aspect, r.height()) } else { vec2(r.width(), r.width() / aspect) };
     let dst = Rect::from_center_size(r.center(), fit);
-    p.image(tex.tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    p.image(tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     if border > 0.0 {
         p.rect_stroke(dst, 0.0, Stroke::new(border, border_c), egui::StrokeKind::Outside);
     }

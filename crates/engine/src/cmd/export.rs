@@ -67,7 +67,7 @@ fn list(s: &Session) -> Value {
 /// Params that describe a selection or a single file, not the export settings. The destination
 /// folder (`dir`) is a setting, as in Lightroom's presets: a preset that names one exports there
 /// unless the call says otherwise.
-const NOT_SETTINGS: &[&str] = &["id", "ids", "path", "preset", "background", "pluginDestination"];
+const NOT_SETTINGS: &[&str] = &["id", "ids", "path", "preset", "background", "pluginDestination", "texts"];
 
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "export.savePreset";

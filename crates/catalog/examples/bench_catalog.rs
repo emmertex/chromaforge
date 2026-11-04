@@ -67,8 +67,8 @@ fn photo(c: &mut Catalog, i: u64) -> Photo {
         p.develop = s.clone();
         p.edited = Some("2026-09-30T12:00:00".into());
         p.history = vec![
-            HistoryStep { label: "Import".into(), settings: Arc::new(DevelopSettings::default()) },
-            HistoryStep { label: "Exposure".into(), settings: s },
+            HistoryStep { label: "Import".into(), settings: Arc::new(DevelopSettings::default()), batch: None },
+            HistoryStep { label: "Exposure".into(), settings: s, batch: None },
         ];
     }
     p

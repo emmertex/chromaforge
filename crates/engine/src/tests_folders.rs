@@ -868,3 +868,18 @@ fn a_date_folder_inside_the_library_can_be_renamed_but_the_librarys_own_folders_
     assert!(s.execute("folder.rename", &json!({"path": alias, "name": "x"})).is_err(), "even named through '..'");
     assert!(lib.join("Originals").is_dir());
 }
+
+#[cfg(unix)]
+#[test]
+fn the_library_folder_is_protected_however_its_path_is_spelled() {
+    let dir = Scratch::new("library-link");
+    let lib = dir.0.join("library");
+    let mut s = Session::new();
+    s.open_library(&lib, true).unwrap();
+    // a link to the library's folder names the same folder on disk
+    std::os::unix::fs::symlink(&lib, dir.0.join("alias")).unwrap();
+    std::fs::create_dir_all(dir.0.join("elsewhere")).unwrap();
+    let err = s.execute("folder.move", &json!({"path": dir.path("alias"), "into": dir.path("elsewhere")})).unwrap_err().to_string();
+    assert!(err.contains("library's own folders"), "{err}");
+    assert!(lib.is_dir() && !dir.0.join("elsewhere/alias").exists());
+}

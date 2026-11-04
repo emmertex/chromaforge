@@ -56,7 +56,7 @@ const BOTTOM_BAR_H: f32 = 46.0;
 pub(crate) fn bottom_bar_buttons(module: crate::module::ModuleId) -> [(&'static str, &'static str, &'static str); 2] {
     match module {
         crate::module::ModuleId::Develop => [("leftBar-copy", "Copy…", "dialog.copySettings"), ("leftBar-paste", "Paste", "develop.paste")],
-        _ => [("leftBar-import", "Import…", "dialog.import"), ("leftBar-export", "Export…", "dialog.export")],
+        _ => [("leftBar-import", "Import…", "dialog.import"), ("leftBar-export", "Export…", "file.export")],
     }
 }
 
@@ -406,13 +406,15 @@ fn folders_body(app: &mut LccApp, ui: &mut egui::Ui) {
             super::folder_rows(app, ui, std::slice::from_ref(n), 0.0);
             continue;
         }
-        let open_id = egui::Id::new(("libfolder-open", lcc_catalog::query::folder_key(&n.path)));
-        let mut open = super::tree_open(ui, open_id, true);
+        let folder_k = lcc_catalog::query::folder_key(&n.path);
+        let key = format!("libfolder:{folder_k}");
+        let open_id = egui::Id::new(("libfolder-open", folder_k));
+        let mut open = super::tree_open(app, ui, &key, open_id, true);
         let bar = crate::panels::folders::volume_bar(ui, n, open);
         super::row_menu(app, &bar, n);
         if bar.clicked() {
             open = !open;
-            super::set_tree_open(ui, open_id, open);
+            super::set_tree_open(app, ui, &key, open_id, open);
         }
         if !open {
             continue;

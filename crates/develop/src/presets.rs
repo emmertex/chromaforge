@@ -41,10 +41,14 @@ pub enum SettingsGroup {
     LensBlur,
     Calibration,
     PluginFilters,
+    /// Retouch: Smooth Skin's sliders and which skin it works on, and the other retouch sections
+    /// (Teeth) with the person each is for; never the skin and parts found on the photo (each
+    /// photo's own are found for it). (Its id is still `smoothSkin`.)
+    SmoothSkin,
 }
 
 impl SettingsGroup {
-    pub const ALL: [SettingsGroup; 21] = [
+    pub const ALL: [SettingsGroup; 22] = [
         SettingsGroup::Profile,
         SettingsGroup::Treatment,
         SettingsGroup::WhiteBalance,
@@ -66,13 +70,22 @@ impl SettingsGroup {
         SettingsGroup::LensBlur,
         SettingsGroup::Calibration,
         SettingsGroup::PluginFilters,
+        SettingsGroup::SmoothSkin,
     ];
+
+    /// Groups a new preset includes by default: the copy defaults without White Balance (each
+    /// photo keeps its own unless the photographer ticks it; the user's decision).
+    pub fn default_preset() -> Vec<SettingsGroup> {
+        SettingsGroup::default_copy().into_iter().filter(|g| *g != SettingsGroup::WhiteBalance).collect()
+    }
 
     /// Groups included by default when copying (Lightroom excludes crop, masks and spots by default).
     pub fn default_copy() -> Vec<SettingsGroup> {
         SettingsGroup::ALL
             .into_iter()
-            .filter(|g| !matches!(g, SettingsGroup::Crop | SettingsGroup::Masks | SettingsGroup::Spots | SettingsGroup::RedEye))
+            .filter(|g| {
+                !matches!(g, SettingsGroup::Crop | SettingsGroup::Masks | SettingsGroup::Spots | SettingsGroup::RedEye | SettingsGroup::SmoothSkin)
+            })
             .collect()
     }
 
@@ -99,6 +112,7 @@ impl SettingsGroup {
             SettingsGroup::LensBlur => "Lens Blur",
             SettingsGroup::Calibration => "Calibration",
             SettingsGroup::PluginFilters => "Plug-in Filters",
+            SettingsGroup::SmoothSkin => "Retouch",
         }
     }
 
@@ -126,6 +140,7 @@ impl SettingsGroup {
             SettingsGroup::LensBlur => &["lens_blur"],
             SettingsGroup::Calibration => &["calibration"],
             SettingsGroup::PluginFilters => &["plugin_filters"],
+            SettingsGroup::SmoothSkin => &["skin", "retouch"],
         }
     }
 }
@@ -143,6 +158,13 @@ pub fn extract_groups(s: &DevelopSettings, groups: &[SettingsGroup]) -> Value {
                 out.insert((*k).to_string(), Value::Array(Vec::new()));
             }
         }
+        // (not written while off: copying it off still switches it off where it is pasted)
+        if *g == SettingsGroup::SmoothSkin && !out.contains_key("skin") {
+            out.insert("skin".into(), serde_json::to_value(crate::SkinSmoothing::default()).unwrap_or(Value::Null));
+        }
+        if *g == SettingsGroup::SmoothSkin && !out.contains_key("retouch") {
+            out.insert("retouch".into(), serde_json::to_value(crate::Retouch::default()).unwrap_or(Value::Null));
+        }
     }
     // the Camera colour is left out of the settings while it is Auto; a preset or a sync of the Profile group still
     // carries it, so that applying it turns a Colorimetric photo back to Auto
@@ -150,6 +172,323 @@ pub fn extract_groups(s: &DevelopSettings, groups: &[SettingsGroup]) -> Value {
         profile.entry("camera_colour").or_insert_with(|| serde_json::to_value(s.profile.camera_colour).unwrap_or(Value::Null));
     }
     Value::Object(out)
+}
+
+/// One setting inside a [`SettingsGroup`] that can be ticked on its own in the New Preset, Update
+/// Preset and Copy Settings trees (Lightroom's per-setting checklist): Exposure inside Light, the
+/// Sharpening sliders inside Detail… `id` is `<group id>.<name>`; `paths` are the dot paths of the
+/// settings JSON it covers (a group's items together cover every key of the group).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingItem {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub paths: &'static [&'static str],
+}
+
+const fn item(id: &'static str, label: &'static str, paths: &'static [&'static str]) -> SettingItem {
+    SettingItem { id, label, paths }
+}
+
+const LIGHT_ITEMS: &[SettingItem] = &[
+    item("light.exposure", "Exposure", &["light.exposure"]),
+    item("light.contrast", "Contrast", &["light.contrast"]),
+    item("light.highlights", "Highlights", &["light.highlights"]),
+    item("light.shadows", "Shadows", &["light.shadows"]),
+    item("light.whites", "Whites", &["light.whites"]),
+    item("light.blacks", "Blacks", &["light.blacks"]),
+    item("light.hdr", "HDR Output", &["hdr"]),
+];
+const CURVE_ITEMS: &[SettingItem] = &[
+    item(
+        "toneCurve.parametric",
+        "Parametric Curve",
+        &["curve.highlights", "curve.lights", "curve.darks", "curve.shadows", "curve.split_shadows", "curve.split_mid", "curve.split_highlights"],
+    ),
+    item("toneCurve.point", "Point Curve", &["curve.master", "curve.red", "curve.green", "curve.blue"]),
+    item("toneCurve.refineSaturation", "Refine Saturation", &["curve.refine_saturation"]),
+];
+const COLOR_ITEMS: &[SettingItem] =
+    &[item("color.vibrance", "Vibrance", &["color.vibrance"]), item("color.saturation", "Saturation", &["color.saturation"])];
+const MIXER_ITEMS: &[SettingItem] = &[
+    item("colorMixer.mixer", "Color Mixer", &["mixer"]),
+    item("colorMixer.bw", "B&W Mix", &["bw_mix"]),
+    item("colorMixer.pointColor", "Point Color", &["point_colors"]),
+];
+const EFFECTS_ITEMS: &[SettingItem] = &[
+    item("effects.texture", "Texture", &["effects.texture"]),
+    item("effects.clarity", "Clarity", &["effects.clarity"]),
+    item("effects.dehaze", "Dehaze", &["effects.dehaze"]),
+];
+const DETAIL_ITEMS: &[SettingItem] = &[
+    item("detail.sharpening", "Sharpening", &["detail.sharpen_amount", "detail.sharpen_radius", "detail.sharpen_detail", "detail.sharpen_masking"]),
+    item("detail.noise", "Noise Reduction", &["detail.nr_luminance", "detail.nr_detail", "detail.nr_contrast", "detail.nr_outliers"]),
+    item("detail.colorNoise", "Color Noise Reduction", &["detail.nr_color", "detail.nr_color_detail", "detail.nr_color_smoothness"]),
+    item("detail.enhance", "AI Denoise and Enhance", &["enhance"]),
+];
+const OPTICS_ITEMS: &[SettingItem] = &[
+    item("optics.lensProfile", "Lens Profile Corrections", &["optics.lens_profile", "optics.profile_distortion", "optics.profile_vignetting"]),
+    item("optics.chromatic", "Chromatic Aberration", &["optics.remove_ca", "optics.ca_red", "optics.ca_blue"]),
+    item(
+        "optics.defringe",
+        "Defringe",
+        &[
+            "optics.defringe_purple_amount",
+            "optics.defringe_purple_hue_lo",
+            "optics.defringe_purple_hue_hi",
+            "optics.defringe_green_amount",
+            "optics.defringe_green_hue_lo",
+            "optics.defringe_green_hue_hi",
+        ],
+    ),
+    item("optics.distortion", "Manual Distortion", &["optics.distortion"]),
+    item("optics.vignetting", "Manual Vignetting", &["optics.vignetting", "optics.vignetting_midpoint"]),
+];
+const GEOMETRY_ITEMS: &[SettingItem] = &[
+    item("geometry.upright", "Upright", &["geometry.upright", "geometry.guides", "geometry.upright_transform"]),
+    item(
+        "geometry.transform",
+        "Transform Sliders",
+        &[
+            "geometry.vertical",
+            "geometry.horizontal",
+            "geometry.rotate",
+            "geometry.aspect",
+            "geometry.scale",
+            "geometry.offset_x",
+            "geometry.offset_y",
+        ],
+    ),
+    item("geometry.constrainCrop", "Constrain Crop", &["geometry.constrain_crop"]),
+];
+const CROP_ITEMS: &[SettingItem] =
+    &[item("crop.crop", "Crop and Straighten", &["crop"]), item("crop.orientation", "Rotation and Flip", &["orientation"])];
+
+impl SettingsGroup {
+    /// The settings that can be ticked one by one (empty: the group is one setting).
+    pub fn items(self) -> &'static [SettingItem] {
+        match self {
+            SettingsGroup::Light => LIGHT_ITEMS,
+            SettingsGroup::ToneCurve => CURVE_ITEMS,
+            SettingsGroup::Color => COLOR_ITEMS,
+            SettingsGroup::ColorMixer => MIXER_ITEMS,
+            SettingsGroup::Effects => EFFECTS_ITEMS,
+            SettingsGroup::Detail => DETAIL_ITEMS,
+            SettingsGroup::Optics => OPTICS_ITEMS,
+            SettingsGroup::Geometry => GEOMETRY_ITEMS,
+            SettingsGroup::Crop => CROP_ITEMS,
+            _ => &[],
+        }
+    }
+
+    /// The group's id (`light`, `whiteBalance`…), as commands take it.
+    pub fn id(self) -> &'static str {
+        match self {
+            SettingsGroup::Profile => "profile",
+            SettingsGroup::Treatment => "treatment",
+            SettingsGroup::WhiteBalance => "whiteBalance",
+            SettingsGroup::Light => "light",
+            SettingsGroup::ToneCurve => "toneCurve",
+            SettingsGroup::Color => "color",
+            SettingsGroup::ColorMixer => "colorMixer",
+            SettingsGroup::ColorGrading => "colorGrading",
+            SettingsGroup::Effects => "effects",
+            SettingsGroup::Vignette => "vignette",
+            SettingsGroup::Grain => "grain",
+            SettingsGroup::Detail => "detail",
+            SettingsGroup::Optics => "optics",
+            SettingsGroup::Geometry => "geometry",
+            SettingsGroup::Crop => "crop",
+            SettingsGroup::Masks => "masks",
+            SettingsGroup::Spots => "spots",
+            SettingsGroup::RedEye => "redEye",
+            SettingsGroup::LensBlur => "lensBlur",
+            SettingsGroup::Calibration => "calibration",
+            SettingsGroup::PluginFilters => "pluginFilters",
+            SettingsGroup::SmoothSkin => "smoothSkin",
+        }
+    }
+
+    /// The group with id `id`.
+    pub fn from_id(id: &str) -> Option<SettingsGroup> {
+        SettingsGroup::ALL.into_iter().find(|g| g.id() == id)
+    }
+}
+
+/// The setting item with id `id` and its group.
+pub fn find_item(id: &str) -> Option<(SettingsGroup, &'static SettingItem)> {
+    SettingsGroup::ALL.into_iter().find_map(|g| g.items().iter().find(|i| i.id == id).map(|i| (g, i)))
+}
+
+/// What to copy, save in a preset or sync: whole groups, plus single settings of groups that are only
+/// partly ticked ([`SettingItem`] ids). Remembered by the dialogs that choose it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SettingsPick {
+    pub groups: Vec<SettingsGroup>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub settings: Vec<String>,
+}
+
+impl SettingsPick {
+    /// Whole groups only.
+    pub fn of_groups(groups: Vec<SettingsGroup>) -> SettingsPick {
+        SettingsPick { groups, settings: Vec::new() }.normalized()
+    }
+
+    /// A list of group and setting ids (`light`, `detail.sharpening`) as the dialogs keep them: a group
+    /// whose every setting is ticked becomes the whole group. Unknown ids are left out.
+    pub fn from_ids<S: AsRef<str>>(ids: &[S]) -> SettingsPick {
+        let mut pick = SettingsPick::default();
+        for id in ids {
+            let id = id.as_ref();
+            if let Some(g) = SettingsGroup::from_id(id) {
+                if !pick.groups.contains(&g) {
+                    pick.groups.push(g);
+                }
+            } else if find_item(id).is_some() && !pick.settings.iter().any(|s| s == id) {
+                pick.settings.push(id.to_string());
+            }
+        }
+        pick.normalized()
+    }
+
+    /// The pick as ids, one per tickable box: a group with settings lists each of them (the tree's leaves).
+    pub fn to_ids(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for g in SettingsGroup::ALL {
+            if self.groups.contains(&g) {
+                if g.items().is_empty() {
+                    out.push(g.id().to_string());
+                } else {
+                    out.extend(g.items().iter().map(|i| i.id.to_string()));
+                }
+            } else {
+                out.extend(g.items().iter().filter(|i| self.settings.iter().any(|s| s == i.id)).map(|i| i.id.to_string()));
+            }
+        }
+        out
+    }
+
+    /// Single settings of a group that is whole anyway are dropped; a group whose settings are all
+    /// there becomes whole; unknown setting ids are dropped.
+    pub fn normalized(mut self) -> SettingsPick {
+        let groups = self.groups.clone();
+        self.settings.retain(|s| find_item(s).is_some_and(|(g, _)| !groups.contains(&g)));
+        for g in SettingsGroup::ALL {
+            let items = g.items();
+            if !items.is_empty() && !self.groups.contains(&g) && items.iter().all(|i| self.settings.iter().any(|s| s == i.id)) {
+                self.groups.push(g);
+                self.settings.retain(|s| !items.iter().any(|i| i.id == s));
+            }
+        }
+        // in the groups' own order, once each
+        self.groups = SettingsGroup::ALL.into_iter().filter(|g| self.groups.contains(g)).collect();
+        let mut seen = Vec::new();
+        self.settings.retain(|s| {
+            let new = !seen.contains(s);
+            seen.push(s.clone());
+            new
+        });
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty() && self.settings.is_empty()
+    }
+
+    /// The pick includes all or part of `g`.
+    pub fn touches(&self, g: SettingsGroup) -> bool {
+        self.groups.contains(&g) || g.items().iter().any(|i| self.settings.iter().any(|s| s == i.id))
+    }
+
+    /// The pick includes setting (or group) `id`.
+    pub fn has(&self, id: &str) -> bool {
+        if let Some(g) = SettingsGroup::from_id(id) {
+            return self.groups.contains(&g);
+        }
+        self.settings.iter().any(|s| s == id) || find_item(id).is_some_and(|(g, _)| self.groups.contains(&g))
+    }
+
+    /// Only what both picks hold (Paste Selected: the ticked part of what was copied).
+    pub fn intersect(&self, other: &SettingsPick) -> SettingsPick {
+        let ids: Vec<String> = self.to_ids().into_iter().filter(|id| other.has(id)).collect();
+        SettingsPick::from_ids(&ids)
+    }
+
+    /// The part of `s` the pick covers, as a partial JSON object.
+    pub fn extract(&self, s: &DevelopSettings) -> Value {
+        let mut out = extract_groups(s, &self.groups);
+        if self.settings.is_empty() {
+            return out;
+        }
+        let full = s.to_json();
+        let Some(o) = out.as_object_mut() else { return out };
+        for id in &self.settings {
+            let Some((_, it)) = find_item(id) else { continue };
+            for path in it.paths {
+                copy_path(&full, o, path);
+            }
+            // (left out of the JSON while off, as the whole group knows: copying it off switches it off)
+            if it.paths.contains(&"hdr") && !o.contains_key("hdr") {
+                o.insert("hdr".into(), serde_json::to_value(crate::Hdr::default()).unwrap_or(Value::Null));
+            }
+        }
+        out
+    }
+
+    /// What the partial settings `partial` (a preset's) hold, as a pick: a key of a group with several
+    /// settings counts for the settings it has.
+    pub fn of_partial(partial: &Value) -> SettingsPick {
+        let Some(o) = partial.as_object() else { return SettingsPick::default() };
+        let mut ids: Vec<String> = Vec::new();
+        for g in SettingsGroup::ALL {
+            if g.items().is_empty() {
+                if g.keys().iter().any(|k| o.contains_key(*k)) {
+                    ids.push(g.id().to_string());
+                }
+                continue;
+            }
+            for it in g.items() {
+                if it.paths.iter().any(|p| path_in(partial, p)) {
+                    ids.push(it.id.to_string());
+                }
+            }
+        }
+        SettingsPick::from_ids(&ids)
+    }
+}
+
+/// `path` (dot separated) is in `v`.
+fn path_in(v: &Value, path: &str) -> bool {
+    let mut cur = v;
+    for k in path.split('.') {
+        match cur.get(k) {
+            Some(n) => cur = n,
+            None => return false,
+        }
+    }
+    true
+}
+
+/// Copy the value at `path` in `from` into `to` (creating the objects on the way).
+fn copy_path(from: &Value, to: &mut Map<String, Value>, path: &str) {
+    let mut parts = path.split('.').peekable();
+    let mut src = from;
+    let mut dst = to;
+    while let Some(k) = parts.next() {
+        let Some(v) = src.get(k) else { return };
+        if parts.peek().is_none() {
+            dst.insert(k.to_string(), v.clone());
+            return;
+        }
+        src = v;
+        let entry = dst.entry(k.to_string()).or_insert_with(|| Value::Object(Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(Map::new());
+        }
+        let Some(next) = entry.as_object_mut() else { return };
+        dst = next;
+    }
 }
 
 /// Recursively merge `patch` into `base` (objects merge; everything else replaces).
@@ -325,27 +664,107 @@ impl Preset {
     pub fn from_settings(id: &str, name: &str, group: &str, s: &DevelopSettings, groups: &[SettingsGroup]) -> Preset {
         Preset { id: id.into(), name: name.into(), group: group.into(), settings: extract_groups(s, groups), favorite: false, builtin: false }
     }
-    /// Apply at `amount` (1.0 = 100 %). Masks in the preset are added to the photo's own (ones it
-    /// already has are skipped), their effect scaled by the amount.
+
+    /// Apply at `amount` (1.0 = 100 %), as Lightroom Classic does: the preset's settings are set
+    /// (only those it has; everything else stays) and its masks are **added** to the photo's own,
+    /// their effect scaled by the amount. Masks are recipes: what a model computed for the photo
+    /// the preset was made on (Object, Describe) is dropped and computed for each photo
+    /// ([`crate::Mask::needs_compute`]).
+    ///
+    /// The masks the latest preset application added are provisional (tagged with that preset's
+    /// id): applying the same preset again right away replaces them (no doubling); applying any
+    /// other preset first makes them the photographer's own (untagged), so the next application
+    /// of the first preset adds a fresh set. Editing a provisional mask makes it the
+    /// photographer's own too ([`settle_provisional`]). A mask with a placeholder name ("Mask 2")
+    /// is named after the preset, or after the preset and what it selects when it brings several.
     pub fn apply(&self, s: &DevelopSettings, amount: f64) -> DevelopSettings {
-        let Some(masks) = self.settings.get("masks").and_then(Value::as_array).filter(|m| !m.is_empty()) else {
-            return apply_partial(s, &self.settings, amount);
-        };
+        let masks: Vec<crate::Mask> = self
+            .settings
+            .get("masks")
+            .and_then(Value::as_array)
+            .map(|m| m.iter().filter_map(|m| serde_json::from_value::<crate::Mask>(m.clone()).ok()).collect())
+            .unwrap_or_default();
         let mut rest = self.settings.clone();
         if let Some(o) = rest.as_object_mut() {
             o.remove("masks");
         }
         let mut out = apply_partial(s, &rest, amount);
-        for m in masks {
-            let Ok(mut m) = serde_json::from_value::<crate::Mask>(m.clone()) else { continue };
-            if out.masks.iter().any(|q| q.name == m.name && q.components == m.components) {
-                continue;
+        if masks.is_empty() {
+            return out;
+        }
+        // the same preset again: its own (still provisional) masks make room for the new ones
+        out.masks.retain(|m| m.preset.as_deref() != Some(self.id.as_str()));
+        // whatever an earlier application left is the photographer's now
+        for m in &mut out.masks {
+            m.preset = None;
+        }
+        let short = crate::recipe::short_preset_name(&self.name);
+        let several = masks.len() > 1;
+        for mut m in masks {
+            if crate::recipe::generic_name(&m.name) {
+                let own = crate::recipe::content_name(&m);
+                m.name = match (short.is_empty(), several) {
+                    (true, _) => own,
+                    (false, true) => format!("{short} - {own}"),
+                    (false, false) => short.clone(),
+                };
             }
-            m.id = out.next_mask_id();
+            // above every id the photo had, so a fresh mask never takes the id of the one it replaces
+            let top = s.masks.iter().chain(&out.masks).map(|m| m.id).max().unwrap_or(0);
+            m.id = top.checked_add(1).unwrap_or_else(|| out.next_mask_id());
+            m.preset = Some(self.id.clone());
+            m.strip_ai(crate::recipe::RECIPE_ASPECT);
             m.adjust.amount = (m.adjust.amount * amount).clamp(0.0, 200.0);
             out.masks.push(m);
         }
         out
+    }
+
+    /// Whether it carries masks with AI selections (applying it computes them on each photo).
+    pub fn has_ai_masks(&self) -> bool {
+        self.settings
+            .get("masks")
+            .and_then(Value::as_array)
+            .is_some_and(|m| m.iter().filter_map(|m| serde_json::from_value::<crate::Mask>(m.clone()).ok()).any(|m| m.uses_ai()))
+    }
+
+    /// Whether it has masks and no other settings (a "mask-only" preset such as Bring Sky Down).
+    pub fn mask_only(&self) -> bool {
+        self.settings.as_object().is_some_and(|o| o.contains_key("masks") && o.len() == 1)
+    }
+}
+
+/// `partial`'s masks as recipes: no segmentation computed for one photo, no Object clicks (they
+/// point at that photo's pixels: the object is picked again on each photo), no provisional tag
+/// (what presets, copy and paste carry).
+pub fn to_recipes(partial: &mut Value) {
+    let Some(masks) = partial.get_mut("masks").and_then(Value::as_array_mut) else { return };
+    for m in masks.iter_mut() {
+        if let Ok(mut mask) = serde_json::from_value::<crate::Mask>(m.clone()) {
+            mask.for_other_photo(crate::recipe::RECIPE_ASPECT);
+            mask.preset = None;
+            if let Ok(v) = serde_json::to_value(mask) {
+                *m = v;
+            }
+        }
+    }
+}
+
+/// After an edit of `before` into `after`: when the photographer changed one of the masks the
+/// latest preset application added, all of that application's masks become theirs (untagged), so
+/// applying that preset again adds rather than replaces.
+pub fn settle_provisional(before: &DevelopSettings, after: &mut DevelopSettings) {
+    let touched = after.masks.iter().filter(|m| m.preset.is_some()).any(|m| {
+        before.masks.iter().find(|b| b.id == m.id).is_some_and(|b| {
+            let mut b = b.clone();
+            b.preset.clone_from(&m.preset);
+            b != *m
+        })
+    });
+    if touched {
+        for m in &mut after.masks {
+            m.preset = None;
+        }
     }
 }
 
@@ -353,6 +772,40 @@ impl Preset {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn presets_add_masks_and_the_same_preset_again_replaces_its_own() {
+        let mask = json!({"name": "Mask 1", "components": [{"shape": {"kind": "sky"}}], "adjust": {"exposure": -0.5}});
+        let p = Preset {
+            id: "p".into(),
+            name: "P3 Bring Sky Down".into(),
+            group: String::new(),
+            settings: json!({"masks": [mask]}),
+            favorite: false,
+            builtin: false,
+        };
+        let q = Preset { id: "q".into(), ..p.clone() };
+        assert!(p.has_ai_masks() && p.mask_only());
+        let once = p.apply(&DevelopSettings::default(), 1.0);
+        assert_eq!(once.masks.len(), 1);
+        assert_eq!(once.masks[0].name, "Bring Sky Down");
+        assert_eq!(once.masks[0].preset.as_deref(), Some("p"));
+        let again = p.apply(&once, 0.5);
+        assert_eq!(again.masks.len(), 1, "the same preset again replaces its provisional masks");
+        assert_ne!(again.masks[0].id, once.masks[0].id);
+        // another preset in between makes the first one's masks the photographer's
+        let other = q.apply(&once, 1.0);
+        assert!(other.masks.iter().filter(|m| m.preset.is_none()).count() == 1);
+        assert_eq!(p.apply(&other, 1.0).masks.len(), 3);
+        // an edit of a provisional mask settles them all
+        let mut edited = once.clone();
+        edited.masks[0].adjust.exposure = 1.0;
+        settle_provisional(&once, &mut edited);
+        assert!(edited.masks[0].preset.is_none());
+        let mut same = once.clone();
+        settle_provisional(&once, &mut same);
+        assert!(same.masks[0].preset.is_some());
+    }
 
     #[test]
     fn extract_and_apply_roundtrip() {
@@ -446,6 +899,98 @@ mod tests {
     fn lcc_develop_curve_mid(c: &[lcc_geom::Point]) -> f64 {
         let pts: Vec<(f64, f64)> = c.iter().map(|p| (p.x, p.y)).collect();
         curve_at(&pts, 0.5)
+    }
+
+    /// Every group with single settings is covered by them: all ticked = the whole group.
+    #[test]
+    fn group_items_cover_every_key() {
+        let mut s = DevelopSettings::default();
+        s.hdr.enabled = true;
+        let full = s.to_json();
+        for g in SettingsGroup::ALL {
+            if g.items().is_empty() {
+                continue;
+            }
+            let whole = extract_groups(&s, &[g]);
+            let pick = SettingsPick { groups: vec![], settings: g.items().iter().map(|i| i.id.to_string()).collect() };
+            assert_eq!(pick.clone().normalized().groups, vec![g], "{g:?}");
+            let by_items = SettingsPick { groups: vec![], settings: pick.settings }.extract(&s);
+            assert_eq!(whole, by_items, "{g:?}: the settings miss a key of the group");
+            for it in g.items() {
+                assert!(it.id.starts_with(&format!("{}.", g.id())), "{}", it.id);
+                for p in it.paths {
+                    assert!(path_in(&full, p) || ["camera_profile", "retouch"].contains(p), "{}: {p} isn't in the settings", it.id);
+                }
+            }
+        }
+        for g in SettingsGroup::ALL {
+            assert_eq!(serde_json::to_value(g).unwrap(), json!(g.id()));
+            assert_eq!(SettingsGroup::from_id(g.id()), Some(g));
+        }
+    }
+
+    /// Client note 8a: Light without Exposure leaves each photo's exposure alone.
+    #[test]
+    fn single_settings_travel_alone() {
+        let mut a = DevelopSettings::default();
+        a.light.exposure = 1.5;
+        a.light.contrast = 30.0;
+        a.detail.sharpen_amount = 80.0;
+        a.detail.nr_luminance = 40.0;
+        let pick = SettingsPick::from_ids(&["light.contrast", "detail.sharpening"]);
+        assert_eq!(pick.settings, vec!["light.contrast".to_string(), "detail.sharpening".to_string()]);
+        let p = Preset { settings: pick.extract(&a), ..Preset::from_settings("p", "P", "User", &a, &[]) };
+        assert_eq!(
+            p.settings,
+            json!({"light": {"contrast": 30.0}, "detail": {"sharpen_amount": 80.0, "sharpen_radius": 1.0, "sharpen_detail": 25.0, "sharpen_masking": 0.0}})
+        );
+        let mut b = DevelopSettings::default();
+        b.light.exposure = -0.7;
+        b.detail.nr_luminance = 12.0;
+        let out = p.apply(&b, 1.0);
+        assert_eq!((out.light.exposure, out.light.contrast), (-0.7, 30.0));
+        assert_eq!((out.detail.sharpen_amount, out.detail.nr_luminance), (80.0, 12.0));
+        // what the preset holds, as ticks again
+        assert_eq!(SettingsPick::of_partial(&p.settings), pick);
+        assert_eq!(pick.to_ids(), vec!["light.contrast".to_string(), "detail.sharpening".to_string()]);
+        // a whole group lists every setting as a tick
+        let whole = SettingsPick::from_ids(&["effects", "whiteBalance", "nonsense", "light.nope"]);
+        assert_eq!(whole.groups, vec![SettingsGroup::WhiteBalance, SettingsGroup::Effects]);
+        assert!(whole.settings.is_empty());
+        assert_eq!(whole.to_ids(), vec!["whiteBalance", "effects.texture", "effects.clarity", "effects.dehaze"]);
+        assert!(whole.has("effects.clarity") && whole.has("whiteBalance") && !whole.has("light.exposure"));
+        assert_eq!(whole.intersect(&SettingsPick::from_ids(&["effects.clarity", "light"])), SettingsPick::from_ids(&["effects.clarity"]));
+    }
+
+    /// Client note 8b: a preset saved without White Balance never touches a photo's own (as shot or
+    /// set by hand), and New Preset leaves it out unless it is ticked.
+    #[test]
+    fn preset_without_white_balance_keeps_each_photos_own() {
+        assert!(!SettingsGroup::default_preset().contains(&SettingsGroup::WhiteBalance));
+        assert!(SettingsGroup::default_copy().contains(&SettingsGroup::WhiteBalance));
+        let mut src = DevelopSettings::for_raw(3200.0, 12.0);
+        src.wb.mode = crate::WbMode::Custom;
+        src.wb.scale = crate::WbScale::Kelvin;
+        src.light.exposure = 0.4;
+        src.calibration.red_hue = 10.0;
+        for pick in [SettingsPick::of_groups(SettingsGroup::default_preset()), SettingsPick::from_ids(&["light", "color", "calibration"])] {
+            let p = Preset { settings: pick.extract(&src), ..Preset::from_settings("p", "P", "User", &src, &[]) };
+            assert!(p.settings.get("wb").is_none(), "{:?}", p.settings);
+            for (temp, tint, mode, scale) in [
+                (5600.0, 4.0, crate::WbMode::AsShot, crate::WbScale::Kelvin),
+                (6500.0, 0.0, crate::WbMode::AsShot, crate::WbScale::Legacy),
+                (4100.0, -8.0, crate::WbMode::Custom, crate::WbScale::Kelvin),
+            ] {
+                let mut photo = DevelopSettings::for_raw(temp, tint);
+                photo.wb.mode = mode;
+                photo.wb.scale = scale;
+                let out = p.apply(&photo, 1.0);
+                assert_eq!(out.wb, photo.wb);
+                assert_eq!(out.light.exposure, 0.4);
+                let half = p.apply(&photo, 0.5);
+                assert_eq!(half.wb, photo.wb);
+            }
+        }
     }
 
     #[test]

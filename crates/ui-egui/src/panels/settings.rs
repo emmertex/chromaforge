@@ -1,5 +1,5 @@
 //! The Settings dialog (⌘,): General, Import, Folders, Performance, Display, Interface, Slideshow, Faces,
-//! AI Denoise.
+//! AI Denoise, Controls (control surfaces, `panels::controls`).
 //!
 //! Changes apply immediately (no OK/Cancel). Where they are stored:
 //! - **app settings** ([`crate::state::AppSettings`]: startup view, delete confirmation, GPU,
@@ -34,9 +34,13 @@ pub const TABS: &[(&str, &str)] = &[
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
     ("denoise", "AI Denoise"),
+    ("ai", "AI Models"),
+    ("profiles", "Profiles"),
     ("connections", "Connections"),
     ("sync", "Sync"),
     ("shortcuts", "Shortcuts"),
+    ("controls", "Controls"),
+    ("genfill", "Generative Fill"),
 ];
 
 /// The room Settings ▸ Slideshow wants: its settings column, the gap and the live preview.
@@ -62,7 +66,12 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, tab: &mut String, max_height: f
     let t = Tokens::get(ui.ctx());
     let room = ui.ctx().content_rect().width() - 96.0;
     // the slideshow category is an editor with its preview beside it: wider
-    let wanted = if tab == "slideshow" { SLIDESHOW_COLUMN_W + 12.0 + super::slide_layout::PREVIEW_W + 40.0 } else { CONTENT_W };
+    // (Controls draws the device beside its editor: it takes more room too)
+    let wanted = match tab.as_str() {
+        "slideshow" => SLIDESHOW_COLUMN_W + 12.0 + super::slide_layout::PREVIEW_W + 40.0,
+        "controls" => CONTENT_W.max(900.0),
+        _ => CONTENT_W,
+    };
     // (and once the window was that wide, every category fills it)
     let window = ui.available_width() - SIDEBAR_W - 9.0 - 2.0 * ui.spacing().item_spacing.x;
     let content_w = (room - SIDEBAR_W - 24.0).min(wanted.max(window)).max(240.0);
@@ -103,7 +112,11 @@ pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &st
         "slideshow" => slideshow_tab(app, ui, t),
         "faces" => super::faces::settings_tab(app, ui, t),
         "denoise" => super::denoise::settings_tab(app, ui, t),
+        "ai" => super::ai_models::settings_tab(app, ui, t),
+        "genfill" => super::genfill::settings_tab(app, ui, t),
+        "profiles" => super::settings_profiles::settings_tab(app, ui, t),
         "shortcuts" => shortcuts_tab(app, ui, t),
+        "controls" => super::controls::settings_tab(app, ui, t),
         #[cfg(not(target_arch = "wasm32"))]
         "connections" => super::connections::settings_tab(app, ui, t),
         #[cfg(not(target_arch = "wasm32"))]
@@ -250,11 +263,25 @@ fn shortcuts_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 // ------------------------------------------------------------------------------------- General
 
 fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
-    // Modern (Android's default) or Classic; on either, this row switches back
+    // Modern (Android's default), Classic or Compact (Classic drawn denser); on each, this row switches back
     row(ui, t, crate::i18n::tr("Layout"), |ui| {
-        let mut modern = app.ui.modern.enabled;
-        if choices(ui, "settingsLayout", &[(false, "Classic – Advanced"), (true, "Modern – Simple")], &mut modern) {
-            let _ = app.run("view.modernLayout", json!({"on": modern}));
+        let now = if app.ui.modern.enabled {
+            1
+        } else if app.compact() {
+            2
+        } else {
+            0
+        };
+        let mut layout = now;
+        if choices(ui, "settingsLayout", &[(0, "Classic – Advanced"), (1, "Modern – Simple"), (2, "Compact – Dense")], &mut layout) {
+            let _ = match layout {
+                1 => app.run("view.modernLayout", json!({"on": true})),
+                2 => app.run("view.compactLayout", json!({"on": true})),
+                _ => {
+                    let _ = app.run("view.modernLayout", json!({"on": false}));
+                    app.run("view.compactLayout", json!({"on": false}))
+                }
+            };
         }
     });
     row(ui, t, crate::i18n::tr("Language"), |ui| {
@@ -452,14 +479,18 @@ fn preset_combo(app: &LccApp, ui: &mut egui::Ui, id: &str, current: Option<&str>
     };
     let text = current.map(name).unwrap_or_else(|| crate::i18n::tr(none_label).to_string());
     let mut out = None;
-    let r = crate::widgets::combo_box(id).width(240.0).selected_text(text).show_ui(ui, |ui| {
-        if ui.selectable_label(current.is_none(), crate::i18n::tr(none_label)).clicked() {
-            out = Some(None);
-        }
-        if let Some(pid) = crate::panels::presets::picker_rows(ui, id, &app.session.presets, current) {
-            out = Some(Some(pid));
-        }
-    });
+    let r = crate::widgets::combo_box(id).width(240.0).selected_text(text).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show_ui(
+        ui,
+        |ui| {
+            if ui.selectable_label(current.is_none(), crate::i18n::tr(none_label)).clicked() {
+                out = Some(None);
+                ui.close();
+            }
+            if let Some(pid) = crate::panels::presets::picker_rows(ui, id, &app.session, current) {
+                out = Some(Some(pid));
+            }
+        },
+    );
     register(ui.ctx(), format!("combo:{id}"), r.response.rect);
     out.filter(|v| v.as_deref() != current)
 }
@@ -481,6 +512,18 @@ fn cameras(app: &LccApp) -> Vec<String> {
 
 fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let d = app.session.import_defaults.clone();
+    // (browsing folders needs a file system: the web keeps the import review)
+    if !cfg!(target_arch = "wasm32") {
+        heading(ui, t, crate::i18n::tr("Import Window"));
+        check(ui, "settings.importAsTab", &mut app.ui.settings.import_as_tab, "Import as a tab");
+        hint(
+            ui,
+            t,
+            crate::i18n::tr(
+                "On: Import is a tab beside Library, where a card or folder is culled before its picks are imported. Off: Import… opens the import review.",
+            ),
+        );
+    }
     heading(ui, t, crate::i18n::tr("Raw defaults"));
     hint(ui, t, crate::i18n::tr("Settings new raw photos start from. Changing them doesn't touch photos already in the library."));
     row(ui, t, crate::i18n::tr("Raw photos"), |ui| {
@@ -516,6 +559,26 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "New raw photos shot at this ISO or above start with AI Denoise on, and their denoised pictures are made in the background after the import. Needs a denoise model (Settings, AI Denoise).",
         ),
     );
+    let mut dust = d.remove_dust;
+    row(ui, t, "", |ui| {
+        if check(ui, "settings.removeDust", &mut dust, "Remove dust on import") {
+            let _ = app.run("library.preferences", json!({"import": {"removeDust": dust}}));
+        }
+    });
+    hint(ui, t, crate::i18n::tr("After an import, Remove Dust runs on the new raw photos in the background (their camera's dust map included)."));
+    let mut constrain = !d.crop_unconstrained;
+    row(ui, t, "", |ui| {
+        if check(ui, "settings.constrainCrop", &mut constrain, "Constrain crop by default") {
+            let _ = app.run("library.preferences", json!({"import": {"constrainCrop": constrain}}));
+        }
+    });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "New photos start with Constrain Crop on: the crop stays inside the photo after a rotation or lens correction. Photos already in the library keep theirs.",
+        ),
+    );
     if per {
         let cams = cameras(app);
         if cams.is_empty() {
@@ -544,17 +607,23 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                             .unwrap_or_else(|| pid.to_string()),
                     };
                     let id = format!("settingsCamera-{i}");
-                    let r = crate::widgets::combo_box(&id).width(240.0).selected_text(label).show_ui(ui, |ui| {
-                        if ui.selectable_label(current == Some(RAW_DEFAULT), crate::i18n::tr("Same as raw default")).clicked() {
-                            pick = Some(json!({"camera": cam, "remove": true}));
-                        }
-                        if ui.selectable_label(current.is_none(), crate::i18n::tr("{app} Default")).clicked() {
-                            pick = Some(json!({"camera": cam, "preset": null}));
-                        }
-                        if let Some(pid) = crate::panels::presets::picker_rows(ui, &id, &app.session.presets, current) {
-                            pick = Some(json!({"camera": cam, "preset": pid}));
-                        }
-                    });
+                    let r = crate::widgets::combo_box(&id)
+                        .width(240.0)
+                        .selected_text(label)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(current == Some(RAW_DEFAULT), crate::i18n::tr("Same as raw default")).clicked() {
+                                pick = Some(json!({"camera": cam, "remove": true}));
+                                ui.close();
+                            }
+                            if ui.selectable_label(current.is_none(), crate::i18n::tr("{app} Default")).clicked() {
+                                pick = Some(json!({"camera": cam, "preset": null}));
+                                ui.close();
+                            }
+                            if let Some(pid) = crate::panels::presets::picker_rows(ui, &id, &app.session, current) {
+                                pick = Some(json!({"camera": cam, "preset": pid}));
+                            }
+                        });
                     register(ui.ctx(), format!("combo:{id}"), r.response.rect);
                     if let Some(c) = pick {
                         let _ = app.run("library.preferences", json!({"camera": c}));
@@ -726,6 +795,9 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 let _ = app.run("folder.watchPreferences", json!({"newFiles": p.as_str()}));
             }
         });
+        heading(ui, t, crate::i18n::tr("Drag and Drop"));
+        check(ui, "settings.importDropped", &mut app.ui.settings.import_dropped_directly, "Import dropped photos without review");
+        hint(ui, t, crate::i18n::tr("Off: photos and folders dropped on the window open the import review first."));
         heading(ui, t, crate::i18n::tr("Cameras and Cards"));
         let mut on_card = d.show_on_card;
         if check(ui, "settings.importOnCard", &mut on_card, "Show the import review when a camera or card is connected") {
@@ -774,7 +846,7 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                     let _ = app.run("library.autoImport", json!({"copy": copy}));
                 }
             });
-            row(ui, t, crate::i18n::tr("Album"), |ui| {
+            row(ui, t, crate::i18n::tr("Collection"), |ui| {
                 let id = egui::Id::new("auto-album");
                 let mut name = ui.data(|m| m.get_temp::<String>(id)).unwrap_or_else(|| d.auto_album.clone().unwrap_or_default());
                 let r = ui.add(egui::TextEdit::singleline(&mut name).hint_text(crate::i18n::tr("None")).desired_width(180.0));
@@ -947,6 +1019,83 @@ fn gpu_backend_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
 }
 
+/// Settings ▸ Performance: the graphics card for editing and the second card (exports, previews,
+/// thumbnails). The cards are those listed when the GPU started; a change applies at once.
+#[cfg(not(target_arch = "wasm32"))]
+fn gpu_card_rows(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    use lcc_engine::gpu;
+    let cards = gpu::adapters();
+    if cards.is_empty() {
+        return;
+    }
+    let label = |e: &gpu::cards::AdapterEntry| {
+        let mut l = e.name.clone();
+        if cards.iter().filter(|c| c.key.same_model(&e.key)).count() > 1 {
+            l = format!("{l} #{}", e.key.index);
+        }
+        if e.drives_screen {
+            l = crate::i18n::tr_format!("{card} (screen)", card = l);
+        }
+        l
+    };
+    let name_of = |setting: &str| cards.iter().find(|e| gpu::cards::AdapterKey::parse(setting).is_some_and(|k| k == e.key)).map(label);
+    let auto = crate::i18n::tr("Automatic").to_string();
+    row(ui, t, crate::i18n::tr("Graphics card for editing"), |ui| {
+        let current = name_of(&app.ui.settings.gpu_card).unwrap_or_else(|| auto.clone());
+        let combo = crate::widgets::combo_box("settingsGpuCard").selected_text(current).width(260.0).show_ui(ui, |ui| {
+            let r = ui.selectable_value(&mut app.ui.settings.gpu_card, String::new(), auto.as_str());
+            register(ui.ctx(), "button:settingsGpuCard-auto", r.rect);
+            for (i, e) in cards.iter().enumerate() {
+                let r = ui.add_enabled_ui(e.usable, |ui| ui.selectable_value(&mut app.ui.settings.gpu_card, e.key.to_string(), label(e))).inner;
+                let r = match &e.why_not {
+                    Some(why) => r.on_disabled_hover_text(why),
+                    None => r,
+                };
+                register(ui.ctx(), format!("button:settingsGpuCard-{i}"), r.rect);
+            }
+        });
+        register(ui.ctx(), "combo:settingsGpuCard", combo.response.rect);
+    });
+    // (another card than the editing one; Automatic picks one when there is one)
+    let (_, editing, switching) = gpu::card_status();
+    let others: Vec<_> = cards.iter().enumerate().filter(|(_, e)| e.usable && editing.as_deref() != Some(e.key.to_string().as_str())).collect();
+    // whether the row shows depends only on the cards listed, not on which one is editing yet: the
+    // editing card is known once its device is up, and a row that came and went then would move every
+    // control below it while the GPU starts
+    if cards.iter().filter(|e| e.usable).count() < 2 && app.ui.settings.gpu_helper.is_empty() {
+        return;
+    }
+    row(ui, t, crate::i18n::tr("Second graphics card"), |ui| {
+        let off = crate::i18n::tr("Off").to_string();
+        let current = match app.ui.settings.gpu_helper.as_str() {
+            "" => auto.clone(),
+            "off" => off.clone(),
+            k => name_of(k).unwrap_or_else(|| auto.clone()),
+        };
+        let combo = crate::widgets::combo_box("settingsGpuHelper").selected_text(current).width(260.0).show_ui(ui, |ui| {
+            let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, String::new(), auto.as_str());
+            register(ui.ctx(), "button:settingsGpuHelper-auto", r.rect);
+            let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, "off".to_string(), off.as_str());
+            register(ui.ctx(), "button:settingsGpuHelper-off", r.rect);
+            for (i, e) in &others {
+                let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, e.key.to_string(), label(e));
+                register(ui.ctx(), format!("button:settingsGpuHelper-{i}"), r.rect);
+            }
+        });
+        register(ui.ctx(), "combo:settingsGpuHelper", combo.response.rect);
+    });
+    let status = match gpu::helper_status() {
+        _ if switching => crate::i18n::tr("Setting up the chosen graphics card…").to_string(),
+        ("ready", Some(name)) => crate::i18n::tr_format!("Exports, previews and thumbnails also use {card}.", card = name),
+        ("starting", _) => crate::i18n::tr("Second graphics card: starting…").to_string(),
+        ("failed" | "lost", Some(why)) => crate::i18n::tr_format!("Second graphics card not used: {why}", why = why),
+        _ => crate::i18n::tr("Exports, previews and thumbnails use the graphics card for editing.").to_string(),
+    };
+    crate::dialog_frame::in_control_column(ui, |ui| {
+        ui.add(egui::Label::new(RichText::new(&status).size(11.0).color(t.text_dim)).truncate()).on_hover_text(&status);
+    });
+}
+
 /// The largest thumbnail cache Custom… offers (1 TB).
 const MAX_CACHE_GB: u32 = 1024;
 
@@ -963,6 +1112,60 @@ pub(crate) fn save_pending_cache_size(app: &mut LccApp, ctx: &egui::Context) {
     }
 }
 
+/// Exports: photos side by side, the GPU for exports, and "Test my machine", which measures both and
+/// sets them (its last report below the button).
+fn exports_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    heading(ui, t, crate::i18n::tr("Exports"));
+    row(ui, t, crate::i18n::tr("Photos at once"), |ui| {
+        // (what Automatic is here: what Test my machine found, else half the processor's threads, up to 12)
+        let tested = app.ui.settings.machine_test.as_ref().map(|m| m.lanes).filter(|n| *n > 0);
+        let auto = match tested {
+            Some(n) => format!("{} ({n}, {})", crate::i18n::tr("Automatic"), crate::i18n::tr("tested")),
+            None => {
+                let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
+                format!("{} ({})", crate::i18n::tr("Automatic"), (cores / 2).clamp(1, 12))
+            }
+        };
+        let mut opts: Vec<(u32, String)> = vec![(0, auto)];
+        let cur = app.ui.settings.export_lanes;
+        for n in [2u32, 4, 6, 8, 12, 16, 24] {
+            opts.push((n, n.to_string()));
+        }
+        if cur > 0 && !opts.iter().any(|(v, _)| *v == cur) {
+            opts.push((cur, cur.to_string()));
+            opts.sort_by_key(|(v, _)| *v);
+        }
+        let opts: Vec<(u32, &str)> = opts.iter().map(|(v, l)| (*v, l.as_str())).collect();
+        choices(ui, "settingsExportLanes", &opts, &mut app.ui.settings.export_lanes);
+    });
+    let mut gpu_exports = !app.ui.settings.export_cpu_only;
+    if check(ui, "settings.exportGpu", &mut gpu_exports, "Use the GPU for exports") {
+        app.ui.settings.export_cpu_only = !gpu_exports;
+    }
+    row(ui, t, crate::i18n::tr("Test my machine"), |ui| {
+        let running = crate::machine_test::running(app);
+        let label = if running { crate::i18n::tr("Testing…") } else { crate::i18n::tr("Test my machine") };
+        let r = ui.add_enabled(!running, egui::Button::new(label));
+        register(ui.ctx(), "button:settingsTestMachine", r.rect);
+        if r.clicked()
+            && let Err(e) = crate::machine_test::start(app)
+        {
+            app.toast_error(ui.ctx(), e);
+        }
+    });
+    let text = match &app.ui.settings.machine_test {
+        Some(m) => {
+            let when = m.tested.get(..10).unwrap_or(&m.tested);
+            format!("{} {when}: {}", crate::i18n::tr("Tested"), crate::i18n::tr(&m.summary))
+        }
+        None => crate::i18n::tr(
+            "Exports a few of your photos (or the demo photos) for a few minutes at several settings, then uses the fastest. Run it again after changing the computer or its graphics driver.",
+        )
+        .to_string(),
+    };
+    hint(ui, t, &text);
+}
+
 fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     use lcc_engine::gpu;
     heading(ui, t, crate::i18n::tr("Rendering"));
@@ -970,6 +1173,8 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     check(ui, "settings.composeWindow", &mut app.ui.settings.compose_window, "Prevent G-SYNC/FreeSync flicker (applies at next launch)");
     check(ui, "settings.gpu", &mut app.ui.settings.gpu, "Use the GPU for rendering");
     gpu_backend_row(app, ui, t);
+    #[cfg(not(target_arch = "wasm32"))]
+    gpu_card_rows(app, ui, t);
     check(ui, "settings.hdrDisplay", &mut app.ui.settings.hdr_display, "HDR display where the screen supports it (applies at next launch)");
     // `available` waits for a device still being created: say so instead of blocking the frame
     let status = if gpu::enabled() && !gpu::ready() {
@@ -1015,15 +1220,20 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         let opts = [(0u32, auto.as_str()), (512, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB")];
         choices(ui, "settingsMemory", &opts, &mut app.ui.settings.memory_mb);
     });
+    exports_section(app, ui, t);
     heading(ui, t, crate::i18n::tr("Thumbnail cache"));
     let cur = (app.session.cache_bytes() >> 20) as u32;
+    // (0: Automatic, a share of the cache drive's free space)
+    let chosen = app.session.cache_mb;
     // a size of the user's own, in whole GB: a large library outgrows 8 GB (#3252)
     let custom_id = egui::Id::new("settings-cache-custom");
-    let mut custom = !CACHE_SIZES.contains(&cur) || ui.data(|d| d.get_temp::<bool>(custom_id)).unwrap_or(false);
+    let mut custom = (chosen != 0 && !CACHE_SIZES.contains(&chosen)) || ui.data(|d| d.get_temp::<bool>(custom_id)).unwrap_or(false);
     row(ui, t, crate::i18n::tr("Size limit"), |ui| {
-        let opts = [(512u32, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")];
-        // none of the five lit while a custom size is chosen
-        let mut v = if custom { 0 } else { cur };
+        let gb = app.session.automatic_cache_bytes().div_ceil(1 << 30);
+        let auto = format!("{} ({gb} GB)", crate::i18n::tr("Automatic"));
+        let opts = [(0u32, auto.as_str()), (512, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")];
+        // none of them lit while a custom size is chosen
+        let mut v = if custom { u32::MAX } else { chosen };
         if choices(ui, "settingsCache", &opts, &mut v) {
             custom = false;
             // a size typed earlier does not come back with Custom…
@@ -1272,6 +1482,35 @@ fn display_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     hint(ui, t, crate::i18n::tr("Profiles assigned in your desktop's colour settings are usually in ~/.local/share/icc."));
 }
 
+/// LR-PREF-SHARED: presets, profiles and the user's habits are the app's, shared by every library;
+/// a library can keep its own instead (`store.useLibrary`). Shown only with a library open and the
+/// shared store available (the desktop app).
+fn shared_store(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    let info = app.session.store_info();
+    if info["available"] != serde_json::Value::Bool(true) || app.session.library.is_none() {
+        return;
+    }
+    let mut own = info["libraryKeepsOwn"] == serde_json::Value::Bool(true);
+    if check(ui, "settings.libraryKeepsOwnStore", &mut own, "This library keeps its own presets, profiles and habits") {
+        match app.run("store.useLibrary", serde_json::json!({"keep": own})) {
+            Ok(_) => app.toast(
+                ui.ctx(),
+                crate::i18n::tr(if own {
+                    "This library now keeps its own presets"
+                } else {
+                    "This library now uses the presets every library shares"
+                }),
+            ),
+            Err(e) => app.toast_error(ui.ctx(), e),
+        }
+    }
+    hint(
+        ui,
+        t,
+        crate::i18n::tr("Off (the default): presets, profiles, export presets and your other habits are the same in every library on this computer."),
+    );
+}
+
 fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let system = app.system_theme(ui.ctx());
     appearance(ui, t, &mut app.ui.settings, system);
@@ -1305,6 +1544,7 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
     heading(ui, t, crate::i18n::tr("Presets"));
     check(ui, "settings.userPresetsFirst", &mut app.ui.settings.user_presets_first, "List User Presets first in the Presets panel");
+    shared_store(app, ui, t);
     heading(ui, t, crate::i18n::tr("Detail View"));
     check(ui, "settings.navigator", &mut app.ui.navigator, "Show the Navigator while zoomed in");
     check(ui, "settings.hideFilterInDevelop", &mut app.ui.settings.hide_filter_in_develop, "Hide filter text in Develop mode");
@@ -1313,6 +1553,8 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         choices(ui, "settingsInfo", &[(I::Off, "Off"), (I::Basic, "Info 1"), (I::Exposure, "Info 2")], &mut app.ui.info_overlay);
     });
     hint(ui, t, crate::i18n::tr("View → View Options chooses the lines Info 1 and Info 2 show."));
+    // the overlay that reports every change (and the control surfaces' readout)
+    super::surface_osd::settings_section(app, ui, t);
 }
 
 /// View ▸ View Options (⌘J), Lightroom Classic's Loupe View tab: whether the info overlay shows and
@@ -1879,7 +2121,8 @@ fn switch_library(app: &mut LccApp, path: &str, demo: bool) -> Result<Value, Str
 
 /// Put `path` first in the recent list, without duplicates, capped at [`RECENT_LIBRARIES`].
 pub fn remember_library(recent: &mut Vec<String>, path: &str) {
-    recent.retain(|r| r != path);
+    // the same folder spelled differently (trailing slash…) is one library
+    recent.retain(|r| std::path::Path::new(r) != std::path::Path::new(path));
     recent.insert(0, path.to_string());
     recent.truncate(crate::state::RECENT_LIBRARIES);
 }

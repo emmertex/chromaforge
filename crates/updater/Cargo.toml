@@ -20,7 +20,7 @@ base64 = { workspace = true }
 log = { workspace = true }
 
 # the portable zip a Windows copy unpacked from it updates itself from (deflate, pure Rust)
-zip = { version = "7.2", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # whether Windows Installer owns the running program (an MSI install updates through the installer)
 lcc-winmsi = { workspace = true }

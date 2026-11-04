@@ -193,7 +193,7 @@ pub fn bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let ui = &mut child;
     ui.label(RichText::new(tr("Location Filter:")).color(t.text_dim));
     let current = app.map.filter.clone();
-    for (key, label) in [("all", "Visible on Map"), ("tagged", "Tagged"), ("untagged", "Untagged")] {
+    for (key, label) in [("visible", "Visible on Map"), ("tagged", "Tagged"), ("untagged", "Untagged"), ("all", "None")] {
         let on = current.key() == key;
         let b = ui.selectable_label(on, tr(label));
         register(ui.ctx(), format!("map:filter:{key}"), b.rect);

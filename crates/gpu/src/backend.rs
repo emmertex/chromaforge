@@ -195,9 +195,13 @@ pub fn instance_flags(flags: wgpu::InstanceFlags, env: Option<&str>) -> wgpu::In
     }
 }
 
-/// [`instance_flags`] with `WGPU_VALIDATION_INDIRECT_CALL` read from the environment.
+/// [`instance_flags`] with wgpu's environment variables applied to `flags` (`WGPU_VALIDATION`, `WGPU_DEBUG`,
+/// `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER`…, see `wgpu::InstanceFlags::with_env`) and
+/// `WGPU_VALIDATION_INDIRECT_CALL` read from the environment. The compute devices pass wgpu's defaults here,
+/// so this is where those variables reach them: a Vulkan driver that reports no conformance version, like
+/// Mesa's Dozen (the only one on WSL2), is listed only with `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=1`.
 pub fn instance_flags_from_env(flags: wgpu::InstanceFlags) -> wgpu::InstanceFlags {
-    instance_flags(flags, std::env::var("WGPU_VALIDATION_INDIRECT_CALL").ok().as_deref())
+    instance_flags(flags.with_env(), std::env::var("WGPU_VALIDATION_INDIRECT_CALL").ok().as_deref())
 }
 
 /// The graphics card `<PREFIX>_GPU_ADAPTER` asks for: (part of) its name, trimmed and in lower
@@ -583,6 +587,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc-gpu-marker-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
+        // exclusive: a directory planted at this predictable name fails the test instead of receiving the marker
+        std::fs::create_dir(&dir).unwrap();
         // a local scope counter: other tests create real devices through the process-wide one
         let active = Mutex::new(0);
         let seen = with_marker_in(&Mutex::new(Some(m.clone())), &active, "device creation", || m.exists());
@@ -603,6 +609,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc-gpu-global-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
+        // exclusive: a directory planted at this predictable name fails the test instead of receiving the marker
+        std::fs::create_dir(&dir).unwrap();
         set_init_marker(Some(m.clone()));
         let seen = InitMarker::current().run(Backends::DX12, || m.exists());
         set_init_marker(None);
@@ -665,6 +673,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc-gpu-scopes-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
+        // exclusive: a directory planted at this predictable name fails the test instead of receiving the marker
+        std::fs::create_dir(&dir).unwrap();
         let active = Mutex::new(0);
         arm(&m, &active, "device creation");
         assert!(read_init_marker(&m).unwrap().contains("device creation"));
@@ -688,6 +698,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc-gpu-panic-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
+        // exclusive: a directory planted at this predictable name fails the test instead of receiving the marker
+        std::fs::create_dir(&dir).unwrap();
         let active = Mutex::new(0);
         let r = std::panic::catch_unwind(|| with_marker_in(&Mutex::new(Some(m.clone())), &active, "kernel compilation", || panic!("compile")));
         assert!(r.is_err());

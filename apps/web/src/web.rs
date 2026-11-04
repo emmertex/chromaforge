@@ -90,10 +90,13 @@ impl Options {
             })
             .collect();
         let get = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        let bench = get("bench").is_some();
         Options {
-            bench: get("bench").is_some(),
-            store: get("store").filter(|s| s == "idb" || s == "memory").unwrap_or_else(|| "opfs".into()),
-            workers: get("workers").and_then(|v| v.parse().ok()),
+            bench,
+            // the benchmark edits the first photo it finds: a link with `?bench` must never reach the library in
+            // browser storage, so it always runs on the demo photos in an unsaved library (upstream #3646)
+            store: if bench { "memory".into() } else { get("store").filter(|s| s == "idb" || s == "memory").unwrap_or_else(|| "opfs".into()) },
+            workers: get("workers").and_then(|v| v.parse().ok()).map(|n: usize| n.min(crate::workers::MAX_WORKERS)),
             reset: get("reset").is_some(),
         }
     }
@@ -257,6 +260,12 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
         // video is native-only
         video_gpu: None,
         hdr_output: None,
+        // no control surfaces in the browser
+        surface_store: None,
+        pick_surface_file: None,
+        save_surface_file: None,
+        surface_listener: None,
+        surface_plugin: None,
     }
 }
 
@@ -467,6 +476,10 @@ impl WebApp {
                     )
                 });
             }
+        }
+        // `?bench` never has storage (see `Options::from_url`): it measures the generated demo photos
+        if opts.bench && backend.is_none() && session.catalog.is_empty() {
+            lcc_engine::demo::load(&mut session);
         }
         if backend.is_some() {
             notice(&lcc_brand::fill(

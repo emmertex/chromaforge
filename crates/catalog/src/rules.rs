@@ -67,7 +67,7 @@ pub const FIELDS: &[(&str, &str, Kind)] = &[
     ),
     ("text", "Any Searchable Text", Kind::Text),
     // Source
-    ("album", "Album", Kind::Album),
+    ("album", "Collection", Kind::Album),
     ("virtualCopy", "Virtual Copy", Kind::Bool),
     ("copyName", "Copy Name", Kind::Text),
     ("stacked", "In a Stack", Kind::Bool),
@@ -256,10 +256,10 @@ impl Issue {
             Issue::NeedsNamesOrNotEmpty => "needs something to look for (or use “aren't empty”)",
             Issue::NeedsText => "needs text",
             Issue::NoRatingMatches => "can't match any rating from 0 to 5",
-            Issue::ChooseAlbum => "needs an album",
-            Issue::NoSuchAlbum => "names an album that no longer exists",
-            Issue::AlbumLoop => "would make this album include itself through other smart albums",
-            Issue::FolderAlbum => "can't test a folder; choose an album in it",
+            Issue::ChooseAlbum => "needs a collection",
+            Issue::NoSuchAlbum => "names a collection that no longer exists",
+            Issue::AlbumLoop => "would make this collection include itself through other smart collections",
+            Issue::FolderAlbum => "can't test a folder; choose a collection in it",
             Issue::EmptyGroup => "This group is empty: add a rule or remove it.",
         }
     }
@@ -332,14 +332,14 @@ pub fn album_rule_id(value: &Value) -> Option<crate::AlbumId> {
 /// testing itself, directly or through others).
 fn album_problem(v: &Value, cat: &Catalog, owner: Option<crate::AlbumId>) -> Found {
     if v.is_null() {
-        return Some((Issue::ChooseAlbum, "choose an album".into()));
+        return Some((Issue::ChooseAlbum, "choose a collection".into()));
     }
     match album_rule_id(v).and_then(|id| cat.album(id)) {
-        None => Some((Issue::NoSuchAlbum, format!("no album {v}"))),
+        None => Some((Issue::NoSuchAlbum, format!("no collection {v}"))),
         Some(a) if owner.is_some_and(|o| a.id == o || cat.album_reaches(a.id, o)) => {
-            Some((Issue::AlbumLoop, format!("album {v} would make this album include itself")))
+            Some((Issue::AlbumLoop, format!("collection {v} would make this collection include itself")))
         }
-        Some(a) if a.folder => Some((Issue::FolderAlbum, format!("album {v} is a folder; choose an album in it"))),
+        Some(a) if a.folder => Some((Issue::FolderAlbum, format!("collection {v} is a folder; choose a collection in it"))),
         Some(_) => None,
     }
 }
@@ -806,6 +806,10 @@ pub(crate) fn rule_text_of(p: &Photo) -> String {
         &m.state,
         &m.country,
         &m.alt_text,
+        &m.headline,
+        &m.category,
+        &m.supplemental_categories.join(" "),
+        &m.subject_code.join(" "),
         &p.format,
         &m.keywords.join(" "),
         &p.people().join(" "),
@@ -1786,6 +1790,26 @@ mod tests {
         }
     }
 
+    /// Any Searchable Text also finds the headline, the category, the other categories and the
+    /// subject codes.
+    #[test]
+    fn any_searchable_text_covers_iptc_content() {
+        let cat = Catalog::new();
+        let mut p = photo(1);
+        let m = |p: &Photo, value: &str| rs(json!({"rules": [{"field": "text", "op": "contains", "value": value}]})).matches(p, &cat);
+        let words = ["flood", "wea", "rain", "rivers", "17000000", "06006000"];
+        for word in words {
+            assert!(!m(&p, word), "{word}");
+        }
+        p.meta.headline = "Flood waters rise".into();
+        p.meta.category = "WEA".into();
+        p.meta.supplemental_categories = vec!["Rain".into(), "Rivers".into()];
+        p.meta.subject_code = vec!["17000000".into(), "06006000".into()];
+        for word in words {
+            assert!(m(&p, word), "{word}");
+        }
+    }
+
     /// Yes/no fields read "Yes" / "No", and a value means the same to matching and to every
     /// summary: `false`, `"false"`, `"no"` and `0` are no; `true`, `"yes"`, `1` and a missing value
     /// are yes. Anything else is reported, not silently taken as yes.
@@ -1898,7 +1922,7 @@ mod tests {
         bad(r("keywords", "startsWith", json!("")), "something to look for");
         // albums: one that exists, plain or smart
         ok(r("album", "is", json!(1)));
-        bad(r("album", "is", json!(999)), "no album 999");
+        bad(r("album", "is", json!(999)), "no collection 999");
         ok(r("album", "is", json!(2)));
         // groups: an empty one is a mistake; problems inside one say where they are
         let p = rs(json!({"rules": [r("rating", "gte", json!(3)), {"group": {"match": "any", "rules": []}}]})).check(&cat);

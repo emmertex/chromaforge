@@ -162,8 +162,24 @@ fn grain_noise(x: f32, y: f32, seed: u32) -> f32 {
     a + (b - a) * v
 }
 
+/// Where a mask's Whites act when nothing better is known (log2 luminance over middle grey): from
+/// nothing at the first to full at the second (the white point is about 2.9). Mirrored in `finish.wgsl`.
+pub const LOCAL_WHITES: (f32, f32) = (-0.5, 2.6);
+/// Where a mask's Blacks act when nothing better is known: full at the first, nothing from the second on.
+pub const LOCAL_BLACKS: (f32, f32) = (-5.5, 1.0);
+/// The most a mask's Whites or Blacks at ±100 move a pixel (EV). Mirrored in `finish.wgsl`.
+pub const LOCAL_WB_EV: f32 = 1.5;
+
 /// Number of per-mask terms in [`mask_terms`].
-pub const MASK_TERMS: usize = MASK_SUMS + 4;
+pub const MASK_TERMS: usize = MASK_SUMS + 8;
+
+/// Where a mask's own tone range starts in its [`mask_terms`]: Whites from nothing to full, then Blacks
+/// from full to nothing (log2 luminance over middle grey; [`crate::mask_tone`] fits them to the tones
+/// under the mask).
+pub const MASK_TONE: usize = MASK_SUMS + 4;
+
+/// The tone range a mask's Whites / Blacks act on when nothing better is known.
+pub const DEFAULT_MASK_TONE: [f32; 4] = [LOCAL_WHITES.0, LOCAL_WHITES.1, LOCAL_BLACKS.0, LOCAL_BLACKS.1];
 
 /// Number of alpha-weighted terms at the start of [`mask_terms`].
 pub const MASK_SUMS: usize = 17 + crate::colorops::LOCAL_GRADE_TERMS;
@@ -189,7 +205,8 @@ pub fn dehaze_v3_pixel(c: [f32; 3], dz: f32, d: f32, air: f32) -> [f32; 3] {
 /// exposure, temp, tint, contrast, highlights, shadows, whites, blacks, texture, clarity, dehaze,
 /// saturation, hue, sharpness, noise, moiré, defringe, the colour grading
 /// ([`crate::colorops::local_grade_terms`]), then the colour overlay: on (0/1), cos and sin of its
-/// OkLCh hue, and its strength.
+/// OkLCh hue, and its strength; then the tone range of its Whites and Blacks ([`MASK_TONE`],
+/// [`DEFAULT_MASK_TONE`] here: [`with_tone`] gives it the mask's own).
 pub fn mask_terms(j: &LocalAdjustments) -> [f32; MASK_TERMS] {
     let (on, cos, sin, amt) = if j.color_sat > 0.0 {
         let hue = crate::colorops::oklch_hue_of_srgb_hue(j.color_hue);
@@ -232,7 +249,24 @@ pub fn mask_terms(j: &LocalAdjustments) -> [f32; MASK_TERMS] {
         cos,
         sin,
         amt,
+        DEFAULT_MASK_TONE[0],
+        DEFAULT_MASK_TONE[1],
+        DEFAULT_MASK_TONE[2],
+        DEFAULT_MASK_TONE[3],
     ]
+}
+
+/// `terms` (one per evaluated mask) with the masks' own tone ranges (`tone`, in the same order; left
+/// as they are when the two lists don't line up).
+pub fn with_tone(terms: &mut [[f32; MASK_TERMS]], tone: &[[f32; 4]]) {
+    if terms.len() != tone.len() {
+        return;
+    }
+    for (t, r) in terms.iter_mut().zip(tone) {
+        if let Some(dst) = t.get_mut(MASK_TONE..MASK_TONE + 4) {
+            dst.copy_from_slice(r);
+        }
+    }
 }
 
 /// Everything the per-pixel stage computes once per render: the CPU loop below and the GPU kernel
@@ -242,6 +276,12 @@ pub struct FinishParams {
     pub lut: Option<(std::sync::Arc<crate::lut::Lut3d>, f32)>,
     pub tone: ToneMap,
     pub ops: ColorOps,
+    /// The masks' local Point Color samples, one list per evaluated mask (empty when none has any,
+    /// [`crate::colorops::mask_point_ks`]).
+    pub local_points: Vec<Vec<crate::colorops::PointK>>,
+    /// The masks' local Color Mixers, one per evaluated mask (empty when none has one,
+    /// [`crate::colorops::mask_mixer_ks`]); applied before the mask's Point Color.
+    pub local_mixers: Vec<Option<crate::colorops::MixerK>>,
     /// Calibration: primaries matrix (row-major, linear Rec.2020) and shadows tint (−1..1).
     pub calib: Option<[[f32; 3]; 3]>,
     pub shadow_tint: f32,
@@ -281,8 +321,10 @@ pub struct FinishParams {
     pub air_pre: f32,
     pub gain: f32,
     pub ev: f32,
-    /// Grain: amount, cell size (px), roughness, seed.
+    /// Grain of processes V1–V6: amount, cell size (px), roughness, seed.
     pub grain: Option<(f32, f32, f32, u32)>,
+    /// Grain from process V7: clumps of particles ([`crate::grain`]); `grain` is then `None`.
+    pub particles: Option<crate::grain::GrainParams>,
     /// Output px → normalized oriented coordinates.
     pub out_to_norm: lcc_geom::Affine,
     pub ow: f64,
@@ -330,7 +372,12 @@ impl FinishParams {
             && frame.oh.is_finite()
             && frame.ow.max(frame.oh) > 0.0
             && out_to_norm.0.iter().all(|v| v.is_finite());
-        let grain = (s.grain.amount > 0.0 && effects && finite_frame).then(|| {
+        let v7 = match s.process.process() {
+            Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 => false,
+            Process::V7 => true,
+        };
+        let particles = if effects && finite_frame && v7 { crate::grain::GrainParams::new(&s.grain, px_per_long) } else { None };
+        let grain = (s.grain.amount > 0.0 && effects && finite_frame && !v7).then(|| {
             let cell = (0.0006 + (s.grain.size / 100.0) as f32 * 0.0024) * px_per_long as f32;
             // Grain finer than GRAIN_CELL_MIN px is drawn at that size, its amplitude scaled by the ratio of cell
             // sizes: averaging the export's grain down to this preview size reduces it by about as much, so a
@@ -347,6 +394,8 @@ impl FinishParams {
             tone: base_tone(s, info, peak),
             lut: crate::lut::get(&s.profile.id).map(|l| (l, (s.profile.amount / 100.0).clamp(0.0, 2.0) as f32)),
             ops: ColorOps::new(s),
+            local_points: crate::colorops::mask_point_ks(s),
+            local_mixers: crate::colorops::mask_mixer_ks(s),
             curves: curve_luts(&s.curve),
             refine_sat: (s.curve.refine_saturation / 100.0).clamp(0.0, 1.0) as f32,
             vig: if effects { vignette(s) } else { None },
@@ -371,6 +420,7 @@ impl FinishParams {
             gain,
             ev,
             grain,
+            particles,
             out_to_norm,
             ow: frame.ow,
             oh: frame.oh,
@@ -418,11 +468,13 @@ fn base_tone_at(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
     match s.process.process() {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), V5 the over-range colours
         // ([`hue_clip`]), not the tone map
-        Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 => match info.camera_tone.as_ref().filter(|_| raw) {
-            Some(curve) => ToneMap::camera_hdr(curve, l.contrast, l.whites, l.blacks, peak),
-            None if raw => ToneMap::hdr(l.contrast, l.whites, l.blacks, peak),
-            None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
-        },
+        Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 => {
+            match info.camera_tone.as_ref().filter(|_| raw) {
+                Some(curve) => ToneMap::camera_hdr(curve, l.contrast, l.whites, l.blacks, peak),
+                None if raw => ToneMap::hdr(l.contrast, l.whites, l.blacks, peak),
+                None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
+            }
+        }
     }
 }
 
@@ -570,6 +622,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
         gain,
         ev,
         grain,
+        particles,
         ..
     } = fp;
     let dehaze_v3 = *dehaze_v3;
@@ -577,7 +630,11 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let (hl, sh, clar, tex, dehaze, sharpen, sharpen_mask, air, air_pre, gain, ev) =
         (*hl, *sh, *clar, *tex, *dehaze, *sharpen, *sharpen_mask, *air, *air_pre, *gain, *ev);
     let (sharpen_limit, sharpen_fade) = (*sharpen_limit, *sharpen_fade);
-    let terms: Vec<[f32; MASK_TERMS]> = p.masks.iter().map(|m| mask_terms(&m.adjust)).collect();
+    let mut terms: Vec<[f32; MASK_TERMS]> = p.masks.iter().map(|m| mask_terms(&m.adjust)).collect();
+    with_tone(&mut terms, &p.mask_tone);
+    // (only when it lines up with the evaluated masks, which it does unless a caller mixed settings)
+    let local_points: &[Vec<crate::colorops::PointK>] = if fp.local_points.len() == p.masks.len() { &fp.local_points } else { &[] };
+    let local_mixers: &[Option<crate::colorops::MixerK>] = if fp.local_mixers.len() == p.masks.len() { &fp.local_mixers } else { &[] };
     let local_curves: Vec<_> = p.masks.iter().filter_map(|m| Some((m, m.curve.as_ref()?))).collect();
     let out_to_norm = fp.out_to_norm;
     let long = fp.ow.max(fp.oh);
@@ -589,8 +646,13 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let peak = fp.peak;
     let hdr = peak > 1.0;
     let mut out = vec![T::default(); w * h];
-    for_rows(&mut out, w, |y, row| {
-        for (x, px) in row.iter_mut().enumerate() {
+    // bands of rows: the particle grain splats each grain once per band (`GrainParams::apply_band`)
+    const BAND: usize = 8;
+    for_rows(&mut out, (w * BAND).max(1), |band, rows| {
+        // display-encoded colour and gamut-warning overlay per pixel, before particle grain and LUT
+        let mut enc: Vec<([f32; 3], Option<[f32; 3]>)> = Vec::with_capacity(rows.len());
+        for q in 0..rows.len() {
+            let (x, y) = (q % w.max(1), band * BAND + q / w.max(1));
             let i = y * w + x;
             let raw = p.img.data[i];
             let mut c = if gain == 1.0 { raw } else { raw.map(|v| v * gain) };
@@ -702,11 +764,23 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 let sg = if ss > 0.0 { 0.82 } else { 0.92 };
                 delta += ss * 1.7 * sg * ws * ws.sqrt() + hh * 0.85 * wh;
             }
-            if l_wh != 0.0 {
-                delta += l_wh * 0.8 * smooth(0.5, 3.0, l1);
-            }
-            if l_bl != 0.0 {
-                delta += l_bl * 0.8 * (1.0 - smooth(-6.0, -1.5, l1));
+            // local Whites / Blacks: the brightest (darkest) tones under each mask, fitted to that
+            // mask's own tones (crate::mask_tone), so a white dress's highlights move as a sky's do
+            if l_wh != 0.0 || l_bl != 0.0 {
+                for (m, t) in p.masks.iter().zip(&terms) {
+                    let a = m.alpha.data.get(i).copied().unwrap_or(0.0);
+                    if a <= 0.0 {
+                        continue;
+                    }
+                    if t[6] != 0.0 {
+                        let w = smooth(t[MASK_TONE], t[MASK_TONE + 1], l1);
+                        delta += a * t[6] * LOCAL_WB_EV * w * w.sqrt();
+                    }
+                    if t[7] != 0.0 {
+                        let b = 1.0 - smooth(t[MASK_TONE + 2], t[MASK_TONE + 3], l1);
+                        delta += a * t[7] * LOCAL_WB_EV * b;
+                    }
+                }
             }
             if l_con != 0.0 {
                 delta += l_con * 0.14 * l1.clamp(-6.0, 4.0);
@@ -774,6 +848,10 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
 
             // --- colour
             d = ops.apply(d, l_sat, l_hue);
+            // local Point Color: each mask's samples at the mask's opacity
+            if !local_points.is_empty() || !local_mixers.is_empty() {
+                d = local_point_colors(d, i, &p.masks, local_mixers, local_points);
+            }
             if let Some((dir, amt)) = tint_col {
                 let lab = lcc_color::perceptual::oklab_from_2020(d);
                 d = lcc_color::perceptual::oklab_to_2020([lab[0], lab[1] + dir[0] * 0.08 * amt, lab[2] + dir[1] * 0.08 * amt]);
@@ -886,6 +964,26 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                     e = e.map(|v| v + k);
                 }
             }
+            enc.push((e, warn));
+        }
+        // process V7: clumps of particles over the band (OneSlips, `crate::grain`)
+        if let Some(gp) = particles {
+            let (mut gx, mut gy) = (Vec::with_capacity(enc.len()), Vec::with_capacity(enc.len()));
+            for q in 0..enc.len() {
+                let (x, y) = (q % w.max(1), band * BAND + q / w.max(1));
+                let n = out_to_norm.apply(Point::new(x as f64 + 0.5, y as f64 + 0.5));
+                gx.push((n.x * fp.ow / long) as f32);
+                gy.push((n.y * fp.oh / long) as f32);
+            }
+            let mut es: Vec<[f32; 3]> = enc.iter().map(|q| q.0).collect();
+            gp.apply_band(&gx, &gy, w, &mut es);
+            for (q, e) in enc.iter_mut().zip(es) {
+                if e.iter().all(|v| v.is_finite()) {
+                    q.0 = e;
+                }
+            }
+        }
+        for (px, (e, warn)) in rows.iter_mut().zip(enc) {
             let e = match &p_lut {
                 Some((l, k)) if hdr => {
                     // the LUT sees SDR values; the part above SDR white is carried over
@@ -903,6 +1001,41 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
         }
     });
     out
+}
+
+/// The masks' local Color Mixer and Point Color on display-linear Rec.2020 colour `d` of pixel `i`:
+/// each mask's mixer, then its samples, at the mask's opacity there (at most 1). `mixers` and
+/// `local` are each empty or one entry per mask.
+#[inline]
+fn local_point_colors(
+    d: [f32; 3],
+    i: usize,
+    masks: &[crate::masks::Evaluated],
+    mixers: &[Option<crate::colorops::MixerK>],
+    local: &[Vec<crate::colorops::PointK>],
+) -> [f32; 3] {
+    use lcc_color::perceptual::{lab_to_lch, lch_to_lab, oklab_from_2020, oklab_to_2020};
+    let mut lch: Option<[f32; 3]> = None;
+    for (mi, m) in masks.iter().enumerate() {
+        let mixer = mixers.get(mi).copied().flatten();
+        let points: &[crate::colorops::PointK] = local.get(mi).map_or(&[], Vec::as_slice);
+        if points.is_empty() && mixer.is_none() {
+            continue;
+        }
+        let a = m.alpha.data.get(i).copied().unwrap_or(0.0).min(1.0);
+        if a <= 0.0 {
+            continue;
+        }
+        let mut v = lch.unwrap_or_else(|| lab_to_lch(oklab_from_2020(d)));
+        if let Some(mk) = mixer {
+            v = mk.apply_scaled(v, a);
+        }
+        for k in points {
+            v = k.apply_scaled(v, a);
+        }
+        lch = Some(v);
+    }
+    lch.map_or(d, |v| oklab_to_2020(lch_to_lab(v)))
 }
 
 /// A colour needing more desaturation than this (scale < `GAMUT_WARN`) to fit is out of gamut for

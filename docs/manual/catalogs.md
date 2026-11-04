@@ -7,7 +7,7 @@ A **library** is a folder. Inside it:
 | Path | What |
 |---|---|
 | `<name>.<catalog_ext>` | the catalog entry file you open (File → Open Catalog…) |
-| `catalog.redb`, `catalog.snap`, `catalog.log` | the catalog store: photos, edits, history, albums, keywords |
+| `catalog.redb`, `catalog.snap`, `catalog.log` | the catalog store: photos, edits, history, collections, keywords |
 | `catalog.lock` | held while the catalog is open, so two app instances can't write it at once |
 | `Originals/` | photos copied or moved in on import (`YYYY/YYYY-MM-DD/` by default) |
 | `backups/` | catalog backups (default location) |
@@ -39,7 +39,7 @@ backup folder, how many backups to keep, and whether to test integrity and optim
 
 ## Moving photos between catalogs
 
-- File → Export as Catalog… (`catalog.export`): selected, visible or all photos with their albums and stacks into
+- File → Export as Catalog… (`catalog.export`): selected, visible or all photos with their collections and stacks into
   a new catalog folder, optionally with the originals and previews (for a laptop trip).
 - File → Import from Another Catalog… (`catalog.import`): bring them back. Choose what wins for photos both catalogs
   have — keep, replace settings, replace metadata, or both — and preview the changes first. One undo step.

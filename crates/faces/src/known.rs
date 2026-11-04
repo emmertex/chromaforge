@@ -8,8 +8,17 @@ use crate::manifest::{Colour, Commercial, InputSpec, Licence, ModelManifest, Out
 /// Detector output decoders built into the app.
 pub const DECODERS: &[&str] = &["yunet-v2"];
 
-/// The id of the face detector the app runs (see [`yunet`]).
+/// The id of the face detector older versions ran (see [`yunet`]). Retired: faces are found with the
+/// open MediaPipe face model now; a YuNet already installed is listed (so it can be removed) and never used.
 pub const YUNET_ID: &str = "yunet-2023mar";
+
+/// Models the app knows but no longer uses or offers: listed only when installed, never downloaded.
+pub const RETIRED: &[&str] = &[YUNET_ID];
+
+/// Whether the model `id` is retired ([`RETIRED`]).
+pub fn retired(id: &str) -> bool {
+    RETIRED.contains(&id)
+}
 pub const YUNET_SHA256: &str = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4";
 pub const SFACE_SHA256: &str = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79";
 pub const AURAFACE_SHA256: &str = "a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60";
@@ -18,7 +27,8 @@ fn licence(name: &str, commercial: Commercial, url: &str, notice: &str) -> Licen
     Licence { name: name.into(), commercial, url: Some(url.into()), notice: notice.into() }
 }
 
-/// YuNet 2023mar (OpenCV Zoo): a small face detector.
+/// YuNet 2023mar (OpenCV Zoo): a small face detector, retired ([`RETIRED`]): its MIT weights were trained on
+/// WIDER FACE, whose licence is CC BY-NC-ND.
 pub fn yunet() -> ModelManifest {
     ModelManifest {
         id: YUNET_ID.into(),
@@ -29,13 +39,13 @@ pub fn yunet() -> ModelManifest {
             "MIT",
             Commercial::Yes,
             "https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/LICENSE",
-            "MIT licence, copyright Shiqi Yu. A separate opt-in download.",
+            "MIT licence, copyright Shiqi Yu. No longer used by the app (faces are found with the MediaPipe face model): you can remove it.",
         ),
         source: Some("https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet".into()),
         sha256: Some(YUNET_SHA256.into()),
         size_bytes: Some(232_589),
         provenance:
-            "Trained on WIDER FACE, whose terms are not settled by the weights' MIT licence. A detector: it finds faces, it does not identify anyone."
+            "Trained on WIDER FACE, licensed CC BY-NC-ND (non-commercial, no derivatives): that is why the app no longer uses it. A detector: it finds faces, it does not identify anyone."
                 .into(),
         input: InputSpec { width: 640, height: 640, colour: Colour::Bgr, mean: [0.0; 3], std: [1.0; 3], resize: Resize::Letterbox },
         output: OutputSpec::Detector { decoder: "yunet-v2".into() },
@@ -121,11 +131,6 @@ pub struct Download {
 /// that is marked non-commercial is never offered for download (the user brings the file themselves).
 const SOURCES: &[(&str, &str, &str)] = &[
     (
-        YUNET_ID,
-        "https://github.com/opencv/opencv_zoo/raw/25f423d0e04c31a17254620e58febd7386da523b/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
-        "face_detection_yunet_2023mar.onnx",
-    ),
-    (
         "sface-2021dec",
         "https://github.com/opencv/opencv_zoo/raw/25f423d0e04c31a17254620e58febd7386da523b/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
         "face_recognition_sface_2021dec.onnx",
@@ -201,6 +206,10 @@ mod tests {
             assert_eq!((Some(d.size_bytes), Some(d.sha256.as_str())), (m.size_bytes, m.sha256.as_deref()), "{}", d.id);
             assert!(m.licence.commercial != Commercial::No, "{} is non-commercial and must not be offered", d.id);
         }
+        assert!(download("yunet-2023mar").is_none(), "retired: never offered");
+        assert!(retired(YUNET_ID) && !retired("sface-2021dec"));
+        assert_eq!(download("sface-2021dec").map(|d| host(&d.url).to_string()).as_deref(), Some("github.com"));
+        assert_eq!(download("auraface-v1").map(|d| host(&d.url).to_string()).as_deref(), Some("huggingface.co"));
         // unknown ids and path tricks have nothing to download
         for id in ["nope", "", "../sface-2021dec", "SFACE-2021DEC"] {
             assert!(download(id).is_none(), "{id}");

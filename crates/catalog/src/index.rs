@@ -81,6 +81,7 @@ impl Indexes {
                 | Op::SetHistory { .. }
                 | Op::PushHistory { .. }
                 | Op::SetHistoryCursor { .. }
+                | Op::SetBefore { .. }
                 | Op::SetPreview { .. }
                 | Op::SetCaptured { .. }
                 | Op::SetFile { .. }

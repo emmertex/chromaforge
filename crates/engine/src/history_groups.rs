@@ -156,7 +156,7 @@ pub fn rewrite(history: &[HistoryStep], cursor: usize, new: DevelopSettings, lab
     };
     let mut out: Vec<HistoryStep> = history.get(..=cursor)?.to_vec();
     let at = out.len();
-    out.push(HistoryStep { label: label.into(), settings: Arc::new(new) });
+    out.push(HistoryStep { label: label.into(), settings: Arc::new(new), batch: None });
     for pair in history.get(resume.saturating_sub(1)..).unwrap_or_default().windows(2) {
         let [before, step] = pair else { continue };
         let prev = out.last().map(|s| s.settings.clone()).unwrap_or_default();
@@ -164,7 +164,7 @@ pub fn rewrite(history: &[HistoryStep], cursor: usize, new: DevelopSettings, lab
             Some(d) => Arc::new(lcc_develop::apply_partial(&prev, &d, 1.0)),
             None => prev,
         };
-        out.push(HistoryStep { label: step.label.clone(), settings });
+        out.push(HistoryStep { label: step.label.clone(), settings, batch: step.batch });
     }
     Some(Rewrite { history: out, at })
 }

@@ -1,7 +1,7 @@
 //! Develop commands. All operate on the active photo unless `ids` are given (sync).
 
 use lcc_catalog::{Op, PhotoId, Version};
-use lcc_develop::{DevelopSettings, Preset, ProcessVersion, Section, SettingsGroup, Treatment, Upright, WbMode, controls};
+use lcc_develop::{DevelopSettings, Preset, ProcessVersion, Section, SettingsGroup, SettingsPick, Treatment, Upright, WbMode, controls};
 use lcc_geom::{CropGeometry, CropHandle, MIN_CROP_FRACTION, Point, Rect, crop_fit_angle, drag_crop};
 use serde_json::{Value, json};
 
@@ -21,6 +21,30 @@ fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettin
     ok()
 }
 
+/// `d` (photo with source `info`, crop frame `dims`) with control `ctl` moved by `delta` from its
+/// own value: white balance on the photo's own scale (As Shot read as the file's white first),
+/// clamped to the control's range. Quick Develop and the live multi-photo edit use it, so every
+/// photo moves by the same amount whatever its starting point.
+fn nudge(info: &lcc_pipeline::SourceInfo, dims: (f64, f64), d: &DevelopSettings, ctl: &str, delta: f64, default: f64) -> DevelopSettings {
+    let mut nd = d.clone();
+    let wb = ctl == "wb.temp" || ctl == "wb.tint";
+    if wb {
+        lcc_pipeline::local::normalize_wb(&mut nd, info);
+        if nd.wb.mode == WbMode::AsShot {
+            nd.wb.temp = info.as_shot_temp;
+            nd.wb.tint = info.as_shot_tint;
+        }
+    }
+    let before = nd.crop.geometry;
+    let v = controls::get(&nd, ctl).unwrap_or(default);
+    controls::set(&mut nd, ctl, v + delta);
+    refit_crop_angle(ctl == CROP_ANGLE, before, &mut nd, dims);
+    if wb {
+        nd.wb.mode = WbMode::Custom;
+    }
+    nd
+}
+
 fn section_param(p: &Value, c: &str) -> Result<Section> {
     let v = p.get("section").cloned().ok_or_else(|| bad(c, "missing `section`"))?;
     serde_json::from_value(v).map_err(|e| bad(c, e.to_string()))
@@ -30,6 +54,46 @@ pub(super) fn groups_param(p: &Value, c: &str) -> Result<Option<Vec<SettingsGrou
     match p.get("groups") {
         None | Some(Value::Null) => Ok(None),
         Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|e| bad(c, format!("invalid `groups`: {e}"))),
+    }
+}
+
+/// `groups` (whole groups) and `settings` (single settings of a group: `light.exposure`,
+/// `detail.sharpening`…; `develop.settingItems` lists them) as one pick; `None` when neither is given.
+fn pick_param(p: &Value, c: &str) -> Result<Option<SettingsPick>> {
+    let groups = groups_param(p, c)?;
+    let settings: Option<Vec<String>> = match p.get("settings") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| bad(c, format!("invalid `settings`: {e}")))?),
+    };
+    if groups.is_none() && settings.is_none() {
+        return Ok(None);
+    }
+    let settings = settings.unwrap_or_default();
+    if let Some(unknown) = settings.iter().find(|id| lcc_develop::presets::find_item(id).is_none()) {
+        return Err(bad(c, format!("unknown setting `{unknown}` (see develop.settingItems)")));
+    }
+    Ok(Some(SettingsPick { groups: groups.unwrap_or_default(), settings }.normalized()))
+}
+
+/// A preset group named like `name` (trimmed, any case) that exists already, else `name` trimmed:
+/// typing "wedding " never makes a second "Wedding" group.
+pub(crate) fn existing_preset_group(s: &Session, name: &str) -> String {
+    let name = name.trim();
+    let same = |g: &str| g.trim().eq_ignore_ascii_case(name);
+    s.presets
+        .iter()
+        .map(|p| p.group.as_str())
+        .chain(s.preset_folders.iter().map(String::as_str))
+        .find(|g| same(g))
+        .map(|g| g.trim().to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// Remember the dialogs' choices (saved with the store or the library; a failed save is logged,
+/// the command itself went through).
+fn remember_dialogs(s: &mut Session) {
+    if let Err(e) = s.save_prefs() {
+        log::error!("dialogs: remembering the choices: {e}");
     }
 }
 
@@ -74,7 +138,7 @@ fn recipe_partial(recipe: &[(String, f64)]) -> Option<Value> {
 /// The longest name or group a saved recipe preset may have (characters).
 const MAX_PRESET_TEXT: usize = 100;
 
-fn crop_dims(s: &Session, id: PhotoId) -> (f64, f64) {
+pub(crate) fn crop_dims(s: &Session, id: PhotoId) -> (f64, f64) {
     let p = s.catalog.photo(id);
     let (w, h) = p.map(|p| (p.width.max(1) as f64, p.height.max(1) as f64)).unwrap_or((3.0, 2.0));
     let o = p.map(|p| p.develop.orientation).unwrap_or_default();
@@ -256,6 +320,94 @@ fn named_photos(s: &Session, p: &Value, c: &str) -> Result<Option<Vec<PhotoId>>>
 }
 
 /// The user preset named by `p.id` (built-ins can't be changed).
+/// Turn a preset's mark (At Import, hidden) on, off (`key`) or over; bumps the preset list's
+/// generation so the mark is saved and the pickers rebuild.
+fn toggle_mark(s: &mut Session, p: &Value, c: &str, key: &str, list: impl Fn(&mut Session) -> &mut Vec<String>) -> Result<Value> {
+    let pid = str_param(p, "id").ok_or_else(|| bad(c, "missing id"))?.to_string();
+    if !s.presets.iter().any(|x| x.id == pid) {
+        return Err(bad(c, format!("unknown preset `{pid}`")));
+    }
+    let marks = list(s);
+    let was = marks.contains(&pid);
+    let on = bool_or(p, key, !was);
+    marks.retain(|x| *x != pid);
+    if on {
+        marks.push(pid);
+    }
+    s.presets.bump();
+    let mut out = serde_json::Map::new();
+    out.insert(key.to_string(), Value::Bool(on));
+    Ok(Value::Object(out))
+}
+
+impl Session {
+    /// Built-in presets take their stock name and group, then the user's renames and moves
+    /// ([`Session::preset_builtin_names`], [`Session::preset_builtin_groups`]).
+    pub(crate) fn apply_builtin_edits(&mut self) {
+        let stock: std::collections::HashMap<String, (String, String)> =
+            crate::presets::builtin().into_iter().map(|b| (b.id, (b.name, b.group))).collect();
+        let (names, groups) = (self.preset_builtin_names.clone(), self.preset_builtin_groups.clone());
+        for p in self.presets.iter_mut().filter(|p| p.builtin) {
+            if let Some((name, group)) = stock.get(&p.id) {
+                p.name = names.get(&p.id).cloned().unwrap_or_else(|| name.clone());
+                p.group = groups.get(&p.id).cloned().unwrap_or_else(|| group.clone());
+            }
+        }
+        self.presets.bump();
+    }
+}
+
+/// Give preset `p.id` a new name or group (`name`: which); a built-in one keeps the change in the
+/// session's built-in edits, so it lasts and `preset.restoreBuiltins` can undo it.
+fn edit_preset(s: &mut Session, p: &Value, c: &str, name: bool, value: String) -> Result<()> {
+    let pid = str_param(p, "id").ok_or_else(|| bad(c, "missing id"))?.to_string();
+    let pr = s.presets.iter_mut().find(|x| x.id == pid).ok_or_else(|| bad(c, format!("unknown preset `{pid}`")))?;
+    if name {
+        pr.name = value.clone();
+    } else {
+        pr.group = value.clone();
+    }
+    if pr.builtin {
+        let edits = if name { &mut s.preset_builtin_names } else { &mut s.preset_builtin_groups };
+        edits.insert(pid, value);
+    }
+    s.presets.bump();
+    Ok(())
+}
+
+/// Every preset in `group` or a group under it.
+fn in_group(p: &Preset, group: &str) -> bool {
+    p.group == group || p.group.strip_prefix(group).is_some_and(|r| r.starts_with('/'))
+}
+
+/// `group` (or under it) moved to `new_group`, for user folders and every preset in it (built-in
+/// ones keep it in the built-in edits).
+fn regroup(s: &mut Session, old_group: &str, new_group: &str) {
+    let swap = |g: &str| -> Option<String> {
+        if g == old_group {
+            Some(new_group.to_string())
+        } else {
+            g.strip_prefix(old_group).and_then(|r| r.strip_prefix('/')).map(|rest| format!("{new_group}/{rest}"))
+        }
+    };
+    for f in &mut s.preset_folders {
+        if let Some(n) = swap(f) {
+            *f = n;
+        }
+    }
+    let mut moved_builtin = Vec::new();
+    for p in s.presets.iter_mut() {
+        if let Some(n) = swap(&p.group) {
+            if p.builtin {
+                moved_builtin.push((p.id.clone(), n.clone()));
+            }
+            p.group = n;
+        }
+    }
+    s.preset_builtin_groups.extend(moved_builtin);
+    s.presets.bump();
+}
+
 fn user_preset<'a>(s: &'a mut Session, p: &Value, c: &str) -> Result<&'a mut Preset> {
     let pid = str_param(p, "id").ok_or_else(|| bad(c, "missing id"))?;
     let pr = s.presets.iter_mut().find(|x| x.id == pid).ok_or_else(|| bad(c, format!("unknown preset `{pid}`")))?;
@@ -353,20 +505,17 @@ pub fn specs() -> Vec<CommandSpec> {
             let id = active(s, "develop.adjust")?;
             let (info, dims) = (s.source_info(id), crop_dims(s, id));
             edit(s, "develop.adjust", spec.label, |d| {
-                let before = d.crop.geometry;
-                if c == "wb.temp" || c == "wb.tint" {
-                    lcc_pipeline::local::normalize_wb(d, &info);
-                    if d.wb.mode == WbMode::AsShot {
-                        d.wb.temp = info.as_shot_temp;
-                        d.wb.tint = info.as_shot_tint;
-                    }
-                    d.wb.mode = WbMode::Custom;
-                }
-                let v = controls::get(d, &c).unwrap_or(spec.default);
-                controls::set(d, &c, v + delta);
-                refit_crop_angle(c == CROP_ANGLE, before, d, dims);
+                *d = nudge(&info, dims, d, &c, delta, spec.default);
                 Ok(())
-            })
+            })?;
+            // a multi-photo interaction (develop.beginInteraction {ids}): the other photos move along,
+            // live, each from its own value
+            for other in s.interaction_others() {
+                let Some(d) = s.develop_of(other) else { continue };
+                let nd = nudge(&s.source_info(other), crop_dims(s, other), &d, &c, delta, spec.default);
+                s.set_develop_silent(other, nd, spec.label)?;
+            }
+            ok()
         }),
         cmd!("develop.merge", "Apply Settings JSON", [], None, "{settings: partial DevelopSettings JSON, label?}", has_active, |s, p| {
             let partial = p.get("settings").cloned().ok_or_else(|| bad("develop.merge", "missing settings"))?;
@@ -577,7 +726,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "White Balance Selector",
             [],
             Some("W"),
-            "{x, y} normalized image coords of a neutral point, size?: side of the averaged square in pixels (1..=31, odd; default 5)",
+            "{x, y} normalized image coords of a neutral point, size?: side of the averaged square in pixels (1..=31, odd; default 5) → {applied: true, temp, tint}, or {applied: false, refused: bright|dark, message} for a clipped, near-white or near-black spot: nothing changes",
             has_active,
             |s, p| {
                 let (x, y) = (f64_req(p, "x", "develop.wbPick")?, f64_req(p, "y", "develop.wbPick")?);
@@ -592,16 +741,18 @@ pub fn specs() -> Vec<CommandSpec> {
                 // Sample a small neighbourhood in the oriented source.
                 let o = src.oriented(d.orientation);
                 let (cx, cy) = ((x.clamp(0.0, 1.0) * o.width as f64) as isize, (y.clamp(0.0, 1.0) * o.height as f64) as isize);
-                let mut acc = [0.0f32; 3];
-                let n = ((2 * half + 1) * (2 * half + 1)) as f32;
-                for dy in -half..=half {
-                    for dx in -half..=half {
-                        let c = o.get_clamped(cx + dx, cy + dy);
-                        for i in 0..3 {
-                            acc[i] += c[i] / n;
-                        }
+                let acc = match wb_sample(&o, cx, cy, half) {
+                    WbSample::Neutral(c) => c,
+                    // a white balance from a spot with no colour left is wrong: nothing changes and
+                    // the selector stays armed (OneSlips, test notes 2026-10-25 note 13)
+                    refused => {
+                        let (why, message) = match refused {
+                            WbSample::TooDark => ("dark", "This spot is too dark to read its colour: click a brighter neutral area"),
+                            _ => ("bright", "This spot is too bright to read its colour: click a slightly darker neutral area"),
+                        };
+                        return Ok(json!({"applied": false, "refused": why, "message": message}));
                     }
-                }
+                };
                 let patch = lcc_raster::Rgb32f::filled(4, 4, acc);
                 let (t, tint) = lcc_pipeline::auto::auto_wb(&patch, &info);
                 edit(s, "develop.wbPick", "White Balance", |d| {
@@ -611,7 +762,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     d.wb.tint = tint;
                     Ok(())
                 })?;
-                Ok(json!({"temp": t, "tint": tint}))
+                Ok(json!({"applied": true, "temp": t, "tint": tint}))
             }
         ),
         cmd!(
@@ -944,7 +1095,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Upright",
             [],
             None,
-            "{mode: off|auto|guided|level|vertical|full} — analyses the photo (line segments → vanishing points) and stores the correction; run again to update after lens changes → {mode, transform, note (why the mode found nothing to correct, when it didn't)}",
+            "{mode: off|auto|guided|level|vertical|full, again?: bool} — analyses the photo (line segments → vanishing points) and stores the correction; run again to update after lens changes. `again` (a second click on the mode that is on) analyses it afresh and clears Guided's guides; the Transform sliders stay → {mode, transform, note (why the mode found nothing to correct, when it didn't)}",
             has_active,
             |s, p| {
                 let mode: Upright =
@@ -961,7 +1112,13 @@ pub fn specs() -> Vec<CommandSpec> {
                         (Some(lcc_pipeline::upright::solve(m, &a)), lcc_pipeline::upright::shortfall(m, &a))
                     }
                 };
+                let again = bool_or(p, "again", false);
                 edit(s, "geometry.upright", "Upright", |d| {
+                    // a second click on the mode analyses it afresh (OneSlips, test notes 2026-10-24 note 6);
+                    // the Transform sliders stay as set (decision 2026-10-25 item 11)
+                    if again && mode == Upright::Guided {
+                        d.geometry.guides.clear();
+                    }
                     d.geometry.upright = mode;
                     d.geometry.upright_transform = transform;
                     Ok(())
@@ -1016,17 +1173,21 @@ pub fn specs() -> Vec<CommandSpec> {
             "Copy Edit Settings",
             ["Photo", "Develop Settings"],
             Some("Cmd+C"),
-            "{groups?: [settingsGroup]} (default: all but crop, masks, remove)",
+            "{groups?: [settingsGroup], settings?: [settingItem] (single settings of a group, develop.settingItems)} (default: what was ticked last; at first all but crop, masks, remove) — the choice is remembered → {groups, settings}",
             has_active,
             |s, p| {
                 let c = "develop.copy";
                 let id = active(s, c)?;
-                if let Some(g) = groups_param(p, c)? {
-                    s.copy_groups = g;
+                if let Some(pick) = pick_param(p, c)?
+                    && pick != s.dialogs.copy
+                {
+                    s.dialogs.copy = pick;
+                    remember_dialogs(s);
                 }
                 let d = s.develop_of(id).unwrap_or_default();
-                s.clipboard = Some(lcc_develop::extract_groups(&d, &s.copy_groups));
-                Ok(json!({"groups": s.copy_groups}))
+                s.clipboard = Some(s.dialogs.copy.extract(&d));
+                s.clipboard_from = Some(id);
+                Ok(json!({"groups": s.dialogs.copy.groups, "settings": s.dialogs.copy.settings}))
             }
         ),
         cmd!(
@@ -1034,21 +1195,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste Settings from Previous",
             ["Photo", "Develop Settings"],
             Some("Cmd+Alt+V"),
-            "{ids?, groups?: [settingsGroup] (default: the copy groups)} — from the photo that was active before this one",
+            "{ids?, groups?: [settingsGroup], settings?: [settingItem] (default: the copy choice)} — from the photo that was active before this one",
             has_active,
             |s, p| {
                 let c = "develop.pastePrevious";
                 let prev =
                     s.previous_active.filter(|id| s.catalog.photo(*id).is_some_and(|ph| !ph.deleted)).ok_or_else(|| bad(c, "no previous photo"))?;
-                let groups = groups_param(p, c)?.unwrap_or_else(|| s.copy_groups.clone());
-                let partial = lcc_develop::extract_groups(&s.develop_of(prev).unwrap_or_default(), &groups);
+                let pick = pick_param(p, c)?.unwrap_or_else(|| s.dialogs.copy.clone());
+                let mut partial = pick.extract(&s.develop_of(prev).unwrap_or_default());
+                lcc_develop::presets::to_recipes(&mut partial);
                 let ids: Vec<PhotoId> = s.targets(p)?.into_iter().filter(|id| *id != prev).collect();
-                let ops = ids
-                    .iter()
-                    .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                    .filter_map(|(id, d)| s.develop_op(id, lcc_develop::apply_partial(&d, &partial, 1.0), "Paste from Previous"))
-                    .collect::<Vec<_>>();
+                let link_source = link_copied_masks(s, &mut partial, Some(prev), &ids, "Paste from Previous");
+                let mut ops = Vec::new();
+                for id in ids {
+                    let Some(d) = s.develop_of(id) else { continue };
+                    let next = crate::smart_masks::completed(s, id, lcc_develop::apply_partial(&d, &partial, 1.0));
+                    ops.extend(s.develop_op(id, next, "Paste from Previous"));
+                }
                 let n = ops.len();
+                ops.extend(link_source);
                 s.commit("Paste from Previous", Op::Batch { ops })?;
                 Ok(json!({"changed": n, "from": prev.0}))
             }
@@ -1058,24 +1223,38 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste Edit Settings",
             ["Photo", "Develop Settings"],
             Some("Cmd+V"),
-            "{ids?, groups?: [settingsGroup] (paste only these of the copied groups)}",
+            "{ids?, groups?: [settingsGroup], settings?: [settingItem] (paste only these of the copied settings)}",
             has_clipboard,
             |s, p| {
                 let c = "develop.paste";
                 let mut clip = s.clipboard.clone().unwrap_or_default();
-                if let Some(only) = groups_param(p, c)? {
-                    // the clipboard holds whole groups: rebuild it with just the chosen (copied) ones
-                    let only: Vec<_> = only.into_iter().filter(|g| s.copy_groups.contains(g)).collect();
+                if let Some(only) = pick_param(p, c)? {
+                    // the clipboard holds what was copied: rebuild it with just the chosen part of it
+                    let only = only.intersect(&s.dialogs.copy);
+                    let masks = clip.get("masks").cloned();
                     let full = lcc_develop::apply_partial(&DevelopSettings::default(), &clip, 1.0);
-                    clip = lcc_develop::extract_groups(&full, &only);
+                    clip = only.extract(&full);
+                    // (the copied masks go as they were copied)
+                    if let (Some(m), Some(o)) = (masks, clip.as_object_mut())
+                        && o.contains_key("masks")
+                    {
+                        o.insert("masks".into(), m);
+                    }
                 }
+                lcc_develop::presets::to_recipes(&mut clip);
                 let ids = s.targets(p)?;
-                let ops = ids
-                    .iter()
-                    .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                    .filter_map(|(id, d)| s.develop_op(id, lcc_develop::apply_partial(&d, &clip, 1.0), "Paste Settings"))
-                    .collect::<Vec<_>>();
+                let from = s.clipboard_from;
+                let link_source = link_copied_masks(s, &mut clip, from, &ids, "Paste Settings");
+                let mut ops = Vec::new();
+                for id in ids {
+                    let Some(d) = s.develop_of(id) else { continue };
+                    let mut pasted = lcc_develop::apply_partial(&d, &clip, 1.0);
+                    crate::upright_jobs::as_recipe(&d, &mut pasted);
+                    let next = crate::smart_masks::completed(s, id, pasted);
+                    ops.extend(s.develop_op(id, next, "Paste Settings"));
+                }
                 let n = ops.len();
+                ops.extend(link_source);
                 s.commit("Paste Settings", Op::Batch { ops })?;
                 Ok(json!({"changed": n}))
             }
@@ -1085,7 +1264,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sync Settings",
             [],
             None,
-            "{groups?: [settingsGroup], controls?: [controlId]} — copy the active photo's settings to the other selected photos: whole groups plus single controls (e.g. [\"light.exposure\"]); with only `controls`, nothing else is copied (default groups: all but crop, masks, remove) → {changed}",
+            "{groups?: [settingsGroup], settings?: [settingItem], controls?: [controlId]} — copy the active photo's settings to the other selected photos: whole groups, single settings of a group (develop.settingItems) and single controls (e.g. [\"light.exposure\"]); with only `controls`, nothing else is copied (default: what Sync ticked last, at first all but crop, masks, remove; the choice is remembered) → {changed}",
             has_selection,
             |s, p| {
                 let c = "develop.sync";
@@ -1103,28 +1282,71 @@ pub fn specs() -> Vec<CommandSpec> {
                         .collect::<Result<_>>()?,
                     Some(_) => return Err(bad(c, "controls must be a list of control ids")),
                 };
-                let groups = groups_param(p, c)?.unwrap_or_else(|| if controls.is_empty() { SettingsGroup::default_copy() } else { Vec::new() });
-                let d = s.develop_of(id).unwrap_or_default();
-                let partial = lcc_develop::extract_groups(&d, &groups);
-                let values: Vec<(&str, f64)> = controls.iter().filter_map(|k| lcc_develop::controls::get(&d, k).map(|v| (*k, v))).collect();
-                let ops = s
-                    .selection
-                    .ids
-                    .clone()
-                    .into_iter()
-                    .filter(|x| *x != id)
-                    .filter_map(|x| s.develop_of(x).map(|d| (x, d)))
-                    .filter_map(|(x, dd)| {
-                        let mut nd = lcc_develop::apply_partial(&dd, &partial, 1.0);
-                        for (k, v) in &values {
-                            lcc_develop::controls::set(&mut nd, k, *v);
+                let pick = match pick_param(p, c)? {
+                    Some(pick) => {
+                        if pick != s.dialogs.sync {
+                            s.dialogs.sync = pick.clone();
+                            remember_dialogs(s);
                         }
-                        s.develop_op(x, nd, "Sync Settings")
-                    })
-                    .collect::<Vec<_>>();
+                        pick
+                    }
+                    None if controls.is_empty() => s.dialogs.sync.clone(),
+                    None => SettingsPick::default(),
+                };
+                let d = s.develop_of(id).unwrap_or_default();
+                let mut partial = pick.extract(&d);
+                lcc_develop::presets::to_recipes(&mut partial);
+                let values: Vec<(&str, f64)> = controls.iter().filter_map(|k| lcc_develop::controls::get(&d, k).map(|v| (*k, v))).collect();
+                let targets: Vec<PhotoId> = s.selection.ids.iter().copied().filter(|x| *x != id).collect();
+                let link_source = link_copied_masks(s, &mut partial, Some(id), &targets, "Sync Settings");
+                let mut ops = Vec::new();
+                // a crop goes on as what it means on each photo's own frame (upstream #3572; as Auto Sync does)
+                let with_crop = partial.get("crop").is_some();
+                let adims = crop_dims(s, id);
+                for x in s.selection.ids.clone().into_iter().filter(|x| *x != id) {
+                    let Some(dd) = s.develop_of(x) else { continue };
+                    let mut nd = lcc_develop::apply_partial(&dd, &partial, 1.0);
+                    if with_crop {
+                        nd.crop = crate::sync_same::synced_crop(&d.crop, adims, crop_dims(s, x));
+                    }
+                    for (k, v) in &values {
+                        lcc_develop::controls::set(&mut nd, k, *v);
+                    }
+                    crate::upright_jobs::as_recipe(&dd, &mut nd);
+                    let nd = crate::smart_masks::completed(s, x, nd);
+                    ops.extend(s.develop_op(x, nd, "Sync Settings"));
+                }
                 let n = ops.len();
+                ops.extend(link_source);
                 s.commit("Sync Settings", Op::Batch { ops })?;
                 Ok(json!({"changed": n}))
+            }
+        ),
+        cmd!(
+            "develop.settingItems",
+            "List Settings to Copy",
+            [],
+            None,
+            "{} → {groups: [{group, label, settings: [{id, label}]}], copy, sync, newPreset, presetGroup}: the settings groups and the single settings inside them that copy, sync and presets can pick, and what Copy, Sync and New Preset tick now",
+            always,
+            |s, _| {
+                let groups: Vec<Value> = SettingsGroup::ALL
+                    .iter()
+                    .map(|g| {
+                        json!({
+                            "group": g.id(),
+                            "label": g.label(),
+                            "settings": g.items().iter().map(|i| json!({"id": i.id, "label": i.label})).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "groups": groups,
+                    "copy": s.dialogs.copy,
+                    "sync": s.dialogs.sync,
+                    "newPreset": s.dialogs.new_preset,
+                    "presetGroup": s.dialogs.preset_group,
+                }))
             }
         ),
         cmd!(
@@ -1145,23 +1367,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     .into_iter()
                     .filter_map(|id| s.develop_of(id).map(|d| (id, d)))
                     .filter_map(|(id, d)| {
-                        let mut nd = (*d).clone();
-                        if ctl == "wb.temp" || ctl == "wb.tint" {
-                            // each photo on its own scale: Kelvin (an old relative value converted first) or relative
-                            let info = s.source_info(id);
-                            lcc_pipeline::local::normalize_wb(&mut nd, &info);
-                            if nd.wb.mode == WbMode::AsShot {
-                                nd.wb.temp = info.as_shot_temp;
-                                nd.wb.tint = info.as_shot_tint;
-                            }
-                        }
-                        let before = nd.crop.geometry;
-                        let v = controls::get(&nd, &ctl).unwrap_or(spec.default);
-                        controls::set(&mut nd, &ctl, v + delta);
-                        refit_crop_angle(ctl == CROP_ANGLE, before, &mut nd, crop_dims(s, id));
-                        if ctl == "wb.temp" || ctl == "wb.tint" {
-                            nd.wb.mode = WbMode::Custom;
-                        }
+                        // each photo on its own scale: Kelvin (an old relative value converted first) or relative
+                        let nd = nudge(&s.source_info(id), crop_dims(s, id), &d, &ctl, delta, spec.default);
                         s.develop_op(id, nd, &label)
                     })
                     .collect();
@@ -1222,16 +1429,33 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         // ---- presets
-        cmd!("preset.apply", "Apply Preset", [], None, "{id: presetId, amount?: 0..200 (percent), ids?}", has_selection, |s, p| {
-            let pid = str_param(p, "id").ok_or_else(|| bad("preset.apply", "missing id"))?;
-            let preset = s.presets.iter().find(|x| x.id == pid).cloned().ok_or_else(|| bad("preset.apply", format!("unknown preset `{pid}`")))?;
-            let amount = f64_or(p, "amount", 100.0).clamp(0.0, 200.0) / 100.0;
-            // `id` names the preset here: the photos are `ids`, else the selection
-            let ids = s.targets(&json!({"ids": p.get("ids")}))?;
-            let ops = ids
-                .iter()
-                .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                .filter_map(|(id, d)| {
+        cmd!(
+            "preset.apply",
+            "Apply Preset",
+            [],
+            None,
+            "{id: presetId, amount?: 0..200 (percent), ids?, followAutoSync?: bool (true, as Develop's Presets panel: the photos a slider changes, the active photo, or every selected photo with Auto Sync on; default: the selection)}",
+            has_selection,
+            |s, p| {
+                let pid = str_param(p, "id").ok_or_else(|| bad("preset.apply", "missing id"))?;
+                let preset = s.presets.iter().find(|x| x.id == pid).cloned().ok_or_else(|| bad("preset.apply", format!("unknown preset `{pid}`")))?;
+                let amount = f64_or(p, "amount", 100.0).clamp(0.0, 200.0) / 100.0;
+                // `id` names the preset here: the photos are `ids`, else the selection, or (Develop's
+                // Presets panel) the photos a slider would change
+                // (an active photo outside the selection is not edited: the selection then, as before)
+                let follow = bool_or(p, "followAutoSync", false) && s.active().is_some_and(|a| s.selection.ids.contains(&a));
+                let ids =
+                    if p.get("ids").is_none_or(Value::is_null) && follow { s.slider_targets() } else { s.targets(&json!({"ids": p.get("ids")}))? };
+                // its masks applied to several photos in one go are linked: one link per mask of the preset
+                let links: Vec<String> = if ids.len() > 1 {
+                    let n = preset.settings.get("masks").and_then(Value::as_array).map_or(0, Vec::len);
+                    (0..n).map(|k| crate::new_mask_link(k as u64)).collect()
+                } else {
+                    Vec::new()
+                };
+                let mut ops = Vec::new();
+                for id in ids {
+                    let Some(d) = s.develop_of(id) else { continue };
                     // a hand-written preset may name one white balance number only, and then it means the same as
                     // a partial: bring the photo onto that scale first, with its own as-shot white, and put the
                     // result back on the scale the photo is edited on (issue #2910) — the merge `develop.merge` uses
@@ -1243,23 +1467,63 @@ pub fn specs() -> Vec<CommandSpec> {
                     if on_kelvin_scale {
                         lcc_pipeline::local::normalize_wb(&mut next, &info);
                     }
-                    s.develop_op(id, next, &format!("Preset: {}", preset.name))
-                })
-                .collect::<Vec<_>>();
-            s.commit(&format!("Preset: {}", preset.name), Op::Batch { ops })?;
-            ok()
-        }),
-        cmd!("preset.create", "Create Preset", ["Photo"], None, "{name, group?, groups?: [settingsGroup]}", has_active, |s, p| {
-            let c = "preset.create";
-            let id = active(s, c)?;
-            let name = str_param(p, "name").ok_or_else(|| bad(c, "missing name"))?;
-            let group = str_param(p, "group").unwrap_or("User Presets");
-            let groups = groups_param(p, c)?.unwrap_or_else(SettingsGroup::default_copy);
-            let d = s.develop_of(id).unwrap_or_default();
-            let pid = format!("user.{}.{}", s.presets.len(), name.to_lowercase().replace(' ', "-"));
-            s.presets.push(Preset::from_settings(&pid, name, group, &d, &groups));
-            Ok(json!({"id": pid}))
-        }),
+                    let own = |m: &&mut lcc_develop::Mask| m.preset.as_deref() == Some(preset.id.as_str());
+                    for (m, l) in next.masks.iter_mut().filter(own).zip(&links) {
+                        m.link = l.clone();
+                    }
+                    let next = crate::smart_masks::completed(s, id, next);
+                    ops.extend(s.develop_op(id, next, &format!("Preset: {}", preset.name)));
+                }
+                s.commit(&format!("Preset: {}", preset.name), Op::Batch { ops })?;
+                ok()
+            }
+        ),
+        cmd!(
+            "preset.create",
+            "Create Preset",
+            ["Photo"],
+            None,
+            "{name, group?, groups?: [settingsGroup], settings?: [settingItem]} (default: what New Preset ticked last; White Balance only once ticked) — a group named like an existing one (any case, spaces trimmed) is that group; the choice is remembered → {id, group}",
+            has_active,
+            |s, p| {
+                let c = "preset.create";
+                let id = active(s, c)?;
+                let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?.to_string();
+                let typed = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).unwrap_or(crate::app_store::DEFAULT_PRESET_GROUP);
+                let group = existing_preset_group(s, typed);
+                let pick = pick_param(p, c)?.unwrap_or_else(|| s.dialogs.new_preset.clone());
+                if pick.is_empty() {
+                    return Err(bad(c, "tick at least one setting to save in the preset"));
+                }
+                if pick != s.dialogs.new_preset || group != s.dialogs.preset_group {
+                    s.dialogs.new_preset = pick.clone();
+                    s.dialogs.preset_group = group.clone();
+                    remember_dialogs(s);
+                }
+                let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
+                // a mask still under its automatic name ("Radial Gradient", "Groom Jamie - Clothes") is
+                // saved unnamed, so applying the preset names it after the preset; a name the
+                // photographer gave it ("Warmth") is kept
+                for k in 0..d.masks.len() {
+                    let Some(m) = d.masks.get(k).cloned() else { continue };
+                    if s.auto_mask_name(id, &m) == m.name
+                        && let Some(m) = d.masks.get_mut(k)
+                    {
+                        m.name.clear();
+                    }
+                }
+                let base = format!("user.{}", crate::presets::slug(&format!("{group}-{name}")));
+                let mut pid = base.clone();
+                let mut n = 2u32;
+                while s.presets.iter().any(|x| x.id == pid) && n < 100_000 {
+                    pid = format!("{base}-{n}");
+                    n += 1;
+                }
+                let preset = Preset { settings: pick.extract(&d), ..Preset::from_settings(&pid, &name, &group, &d, &[]) };
+                s.presets.push(preset);
+                Ok(json!({"id": pid, "group": group}))
+            }
+        ),
         cmd!(
             "preset.saveRecipe",
             "Save Import Recipe as Preset",
@@ -1302,6 +1566,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 return Err(bad("preset.delete", "built-in presets can't be deleted"));
             }
             s.presets.remove(i);
+            s.preset_at_import.retain(|x| x.as_str() != pid);
+            s.preset_hidden.retain(|x| x.as_str() != pid);
             ok()
         }),
         cmd!("preset.favorite", "Favorite Preset", [], None, "{id, favorite?: bool}", always, |s, p| {
@@ -1310,18 +1576,88 @@ pub fn specs() -> Vec<CommandSpec> {
             pr.favorite = bool_or(p, "favorite", !pr.favorite);
             ok()
         }),
-        cmd!("preset.rename", "Rename Preset", [], None, "{id, name}", always, |s, p| {
-            let c = "preset.rename";
-            let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?.to_string();
-            user_preset(s, p, c)?.name = name;
-            ok()
-        }),
-        cmd!("preset.move", "Move Preset to Group", [], None, "{id, group}", always, |s, p| {
+        cmd!(
+            "preset.forImport",
+            "Mark Preset At Import",
+            [],
+            None,
+            "{id, on?: bool} — the import pickers list presets marked At Import first",
+            always,
+            |s, p| { toggle_mark(s, p, "preset.forImport", "on", |s| &mut s.preset_at_import) }
+        ),
+        cmd!(
+            "preset.hide",
+            "Hide Preset",
+            [],
+            None,
+            "{id, hidden?: bool} — out of the Presets panel and the pickers, kept in the Presets Manager",
+            always,
+            |s, p| { toggle_mark(s, p, "preset.hide", "hidden", |s| &mut s.preset_hidden) }
+        ),
+        cmd!(
+            "preset.rename",
+            "Rename Preset",
+            [],
+            None,
+            "{id, name} — built-in presets too (preset.restoreBuiltins gives them their names back)",
+            always,
+            |s, p| {
+                let c = "preset.rename";
+                let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?.to_string();
+                edit_preset(s, p, c, true, name)?;
+                ok()
+            }
+        ),
+        cmd!("preset.move", "Move Preset to Group", [], None, "{id, group} — built-in presets too", always, |s, p| {
             let c = "preset.move";
-            let group = str_param(p, "group").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing group"))?.to_string();
-            user_preset(s, p, c)?.group = group;
+            let group = str_param(p, "group").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+            // (a group named like one there is is that group: never two "Wedding" groups)
+            let group = existing_preset_group(s, group);
+            edit_preset(s, p, c, false, group)?;
             ok()
         }),
+        cmd!(
+            "preset.hideGroup",
+            "Hide Preset Group",
+            [],
+            None,
+            "{group, hidden?: bool} — every preset in the group (and the groups under it) out of the Presets panel and the pickers, or back → {hidden, count}",
+            always,
+            |s, p| {
+                let c = "preset.hideGroup";
+                let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+                let ids: Vec<String> = s.presets.iter().filter(|q| in_group(q, group)).map(|q| q.id.clone()).collect();
+                if ids.is_empty() {
+                    return Err(bad(c, format!("no presets in `{group}`")));
+                }
+                let all_hidden = ids.iter().all(|id| s.preset_hidden.contains(id));
+                let hidden = bool_or(p, "hidden", !all_hidden);
+                s.preset_hidden.retain(|h| !ids.contains(h));
+                if hidden {
+                    s.preset_hidden.extend(ids.iter().cloned());
+                }
+                s.presets.bump();
+                Ok(json!({"hidden": hidden, "count": ids.len()}))
+            }
+        ),
+        cmd!(
+            "preset.restoreBuiltins",
+            "Restore Built-in Presets",
+            [],
+            None,
+            "{} — built-in presets get their own names and groups back and are shown again → {restored}",
+            always,
+            |s, _p| {
+                let builtin: std::collections::HashSet<String> = s.presets.iter().filter(|q| q.builtin).map(|q| q.id.clone()).collect();
+                let before = s.preset_builtin_names.len() + s.preset_builtin_groups.len();
+                let hidden = s.preset_hidden.len();
+                s.preset_hidden.retain(|h| !builtin.contains(h));
+                s.preset_builtin_names.clear();
+                s.preset_builtin_groups.clear();
+                s.apply_builtin_edits();
+                Ok(json!({"restored": before + hidden - s.preset_hidden.len()}))
+            }
+        ),
         cmd!("preset.createGroup", "Create Preset Folder", [], None, "{name, parent?: group}", always, |s, p| {
             let c = "preset.createGroup";
             let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?;
@@ -1342,102 +1678,54 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"group": group}))
         }),
-        cmd!("preset.renameGroup", "Rename Preset Folder", [], None, "{group, name}", always, |s, p| {
+        cmd!("preset.renameGroup", "Rename Preset Folder", [], None, "{group, name} — built-in groups too", always, |s, p| {
             let c = "preset.renameGroup";
-            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?.to_string();
             let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?;
             if name.contains('/') {
                 return Err(bad(c, "folder name cannot contain slashes"));
-            }
-            if crate::presets::builtin().iter().any(|b| b.group == old_group || b.group.starts_with(&format!("{old_group}/"))) {
-                return Err(bad(c, "built-in groups cannot be renamed"));
             }
             let new_group = match old_group.rsplit_once('/') {
                 Some((parent, _)) => format!("{parent}/{name}"),
                 None => name.to_string(),
             };
-            if old_group == new_group {
-                return Ok(json!({"group": new_group}));
+            if old_group != new_group {
+                regroup(s, &old_group, &new_group);
             }
-            let old_prefix = format!("{old_group}/");
-            let new_prefix = format!("{new_group}/");
-            for f in &mut s.preset_folders {
-                if f == old_group {
-                    *f = new_group.clone();
-                } else if f.starts_with(&old_prefix) {
-                    *f = format!("{}{}", new_prefix, &f[old_prefix.len()..]);
-                }
-            }
-            for p in s.presets.iter_mut() {
-                if !p.builtin {
-                    if p.group == old_group {
-                        p.group = new_group.clone();
-                    } else if p.group.starts_with(&old_prefix) {
-                        p.group = format!("{}{}", new_prefix, &p.group[old_prefix.len()..]);
-                    }
-                }
-            }
-            s.presets.bump();
             Ok(json!({"group": new_group}))
         }),
-        cmd!("preset.moveGroup", "Move Preset Folder", [], None, "{group, parent?: group | null}", always, |s, p| {
+        cmd!("preset.moveGroup", "Move Preset Folder", [], None, "{group, parent?: group | null} — built-in groups too", always, |s, p| {
             let c = "preset.moveGroup";
-            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
-            if crate::presets::builtin().iter().any(|b| b.group == old_group || b.group.starts_with(&format!("{old_group}/"))) {
-                return Err(bad(c, "built-in groups cannot be moved"));
-            }
+            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?.to_string();
             let parent = str_param(p, "parent").map(str::trim).filter(|p| !p.is_empty());
             if let Some(par) = parent
                 && (par == old_group || par.starts_with(&format!("{old_group}/")))
             {
                 return Err(bad(c, "cannot move a folder into itself or its subfolder"));
             }
-            let leaf = old_group.rsplit_once('/').map(|(_, l)| l).unwrap_or(old_group);
+            let leaf = old_group.rsplit_once('/').map(|(_, l)| l).unwrap_or(&old_group);
             let new_group = match parent {
                 Some(par) => format!("{par}/{leaf}"),
                 None => leaf.to_string(),
             };
-            if old_group == new_group {
-                return Ok(json!({"group": new_group}));
+            if old_group != new_group {
+                regroup(s, &old_group, &new_group);
             }
-            let old_prefix = format!("{old_group}/");
-            let new_prefix = format!("{new_group}/");
-            for f in &mut s.preset_folders {
-                if f == old_group {
-                    *f = new_group.clone();
-                } else if f.starts_with(&old_prefix) {
-                    *f = format!("{}{}", new_prefix, &f[old_prefix.len()..]);
-                }
-            }
-            for p in s.presets.iter_mut() {
-                if !p.builtin {
-                    if p.group == old_group {
-                        p.group = new_group.clone();
-                    } else if p.group.starts_with(&old_prefix) {
-                        p.group = format!("{}{}", new_prefix, &p.group[old_prefix.len()..]);
-                    }
-                }
-            }
-            s.presets.bump();
             Ok(json!({"group": new_group}))
         }),
         cmd!("preset.deleteGroup", "Delete Preset Folder", [], None, "{group}", always, |s, p| {
             let c = "preset.deleteGroup";
             let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
-            if crate::presets::builtin().iter().any(|b| b.group == group || b.group.starts_with(&format!("{group}/"))) {
-                return Err(bad(c, "built-in groups cannot be deleted"));
+            if s.presets.iter().any(|q| q.builtin && in_group(q, group)) {
+                return Err(bad(c, "the group holds built-in presets, which can't be deleted: hide the group instead"));
             }
             let prefix = format!("{group}/");
             s.preset_folders.retain(|f| f != group && !f.starts_with(&prefix));
-            let mut removed = 0;
-            s.presets.retain(|p| {
-                if !p.builtin && (p.group == group || p.group.starts_with(&prefix)) {
-                    removed += 1;
-                    false
-                } else {
-                    true
-                }
-            });
+            let gone: Vec<String> = s.presets.iter().filter(|q| in_group(q, group)).map(|q| q.id.clone()).collect();
+            let removed = gone.len();
+            s.presets.retain(|q| !gone.contains(&q.id));
+            s.preset_at_import.retain(|x| !gone.contains(x));
+            s.preset_hidden.retain(|x| !gone.contains(x));
             s.presets.bump();
             Ok(json!({"deleted": removed}))
         }),
@@ -1446,23 +1734,52 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Preset with Current Settings",
             [],
             None,
-            "{id, groups?: [settingsGroup] (default: the groups the preset already sets)} — from the active photo",
+            "{id, groups?: [settingsGroup], settings?: [settingItem] (default: the settings the preset already has)} — from the active photo; keeps the preset's name, group, place, favourite and marks; preset.undoUpdate puts the old settings back → {id, groups, settings}",
             has_active,
             |s, p| {
                 let c = "preset.update";
                 let id = active(s, c)?;
-                let current = s.develop_of(id).unwrap_or_default().to_json();
-                let groups = groups_param(p, c)?;
+                let current = s.develop_of(id).unwrap_or_default();
+                let pick = pick_param(p, c)?;
                 let pr = user_preset(s, p, c)?;
-                pr.settings = match groups {
-                    Some(g) => lcc_develop::extract_groups(&serde_json::from_value(current).unwrap_or_default(), &g),
-                    // the same keys as before, with the current values
-                    None => {
-                        let keys: Vec<String> = pr.settings.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
-                        Value::Object(keys.into_iter().filter_map(|k| current.get(&k).cloned().map(|v| (k, v))).collect())
-                    }
-                };
-                ok()
+                let pick = pick.unwrap_or_else(|| SettingsPick::of_partial(&pr.settings));
+                if pick.is_empty() {
+                    return Err(bad(c, "tick at least one setting to keep in the preset"));
+                }
+                let before = std::mem::replace(&mut pr.settings, pick.extract(&current));
+                let pid = pr.id.clone();
+                s.preset_undo = Some((pid.clone(), before));
+                Ok(json!({"id": pid, "groups": pick.groups, "settings": pick.settings}))
+            }
+        ),
+        cmd!(
+            "preset.undoUpdate",
+            "Undo Update Preset",
+            [],
+            None,
+            "{} — put back the settings the last Update with Current Settings replaced",
+            |s| if s.preset_undo.is_some() { Ok(()) } else { Err("no preset update to undo".into()) },
+            |s, _| {
+                let c = "preset.undoUpdate";
+                let (pid, before) = s.preset_undo.take().ok_or_else(|| bad(c, "no preset update to undo"))?;
+                let pr = s.presets.iter_mut().find(|x| x.id == pid).ok_or_else(|| bad(c, "the preset was deleted"))?;
+                pr.settings = before;
+                Ok(json!({"id": pid}))
+            }
+        ),
+        cmd!(
+            "preset.settings",
+            "Preset Settings",
+            [],
+            None,
+            "{id} → {groups, settings, ids}: what the preset holds, as the per-setting ticks (Update Preset's dialog starts from it)",
+            always,
+            |s, p| {
+                let c = "preset.settings";
+                let pid = str_param(p, "id").ok_or_else(|| bad(c, "missing id"))?;
+                let pr = s.presets.iter().find(|x| x.id == pid).ok_or_else(|| bad(c, format!("unknown preset `{pid}`")))?;
+                let pick = SettingsPick::of_partial(&pr.settings);
+                Ok(json!({"groups": pick.groups, "settings": pick.settings, "ids": pick.to_ids()}))
             }
         ),
         // ---- versions & history
@@ -1504,7 +1821,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("history.clear", "Clear History", [], None, "{} — keeps the current settings as the only step", has_active, |s, _| {
             let id = active(s, "history.clear")?;
             let d = s.develop_of(id).unwrap_or_default();
-            let history = vec![lcc_catalog::HistoryStep { label: "Cleared History".into(), settings: d }];
+            let history = vec![lcc_catalog::HistoryStep { label: "Cleared History".into(), settings: d, batch: None }];
             s.commit("Clear History", Op::Batch { ops: vec![Op::SetHistory { id, history }, Op::SetHistoryCursor { id, cursor: None }] })?;
             ok()
         }),
@@ -1597,10 +1914,23 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         // ---- interactions (slider drags, brush strokes)
-        cmd!("develop.beginInteraction", "Begin Interaction", [], None, "{label}", has_active, |s, p| {
-            s.begin_interaction(str_param(p, "label").unwrap_or("Edit"))?;
-            ok()
-        }),
+        cmd!(
+            "develop.beginInteraction",
+            "Begin Interaction",
+            [],
+            None,
+            "{label, ids?} — ids: more photos develop.adjust moves along, live (a multi-photo edit; one undo step)",
+            has_active,
+            |s, p| {
+                let ids: Vec<PhotoId> = p
+                    .get("ids")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_u64).take(100_000).map(PhotoId).collect())
+                    .unwrap_or_default();
+                s.begin_interaction_with(str_param(p, "label").unwrap_or("Edit"), &ids)?;
+                ok()
+            }
+        ),
         cmd!("develop.endInteraction", "End Interaction", [], None, "{}", always, |s, _| {
             s.end_interaction()?;
             ok()
@@ -1682,6 +2012,98 @@ pub(crate) fn wb_pick_half(size: Option<f64>) -> isize {
     }
 }
 
+/// A channel this close to the photo's top (its brightest value of that channel) has lost its colour.
+/// Relative, as sources can be scene-referred (values past 1.0).
+const WB_CLIPPED: f32 = 0.97;
+/// A sample whose mean is this close to the top in some channel is near white.
+const WB_NEAR_WHITE: f32 = 0.9;
+/// Below this (linear, the brightest channel) a spot is noise, not colour.
+const WB_DARK: f32 = 0.004;
+
+/// What the White Balance Selector reads at a spot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum WbSample {
+    /// The mean colour of the sample.
+    Neutral([f32; 3]),
+    /// Clipped or near white: no colour left to read.
+    TooBright,
+    /// Near black: noise.
+    TooDark,
+}
+
+/// The photo's top in each channel: white (1.0), or its brightest finite value where a scene-referred
+/// source passes that; read on every other pixel.
+fn wb_top(img: &lcc_raster::Rgb32f) -> [f32; 3] {
+    let mut top = [1.0f32; 3];
+    for c in img.data.iter().step_by(2) {
+        for (t, v) in top.iter_mut().zip(c.iter()) {
+            if v.is_finite() && *v > *t {
+                *t = *v;
+            }
+        }
+    }
+    top
+}
+
+/// The square of half-side `half` around pixel (`cx`, `cy`) of `img` (clamped at the edges): its mean
+/// colour, unless a quarter of it is clipped, its mean is near white, or it is near black
+/// (OneSlips' White Balance Selector, test notes 2026-10-25 note 13).
+pub(crate) fn wb_sample(img: &lcc_raster::Rgb32f, cx: isize, cy: isize, half: isize) -> WbSample {
+    let top = wb_top(img);
+    let half = half.clamp(0, 64);
+    let (mut acc, mut n, mut clipped) = ([0.0f64; 3], 0usize, 0usize);
+    for dy in -half..=half {
+        for dx in -half..=half {
+            let c = img.get_clamped(cx.saturating_add(dx), cy.saturating_add(dy));
+            if !c.iter().all(|v| v.is_finite()) {
+                continue;
+            }
+            if c.iter().zip(top.iter()).any(|(v, t)| *v >= WB_CLIPPED * t) {
+                clipped += 1;
+            }
+            for (a, v) in acc.iter_mut().zip(c.iter()) {
+                *a += f64::from(*v);
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return WbSample::TooDark;
+    }
+    let mean = acc.map(|a| (a / n as f64) as f32);
+    if clipped * 4 >= n || mean.iter().zip(top.iter()).any(|(m, t)| *m >= WB_NEAR_WHITE * t) {
+        return WbSample::TooBright;
+    }
+    if mean[0].max(mean[1]).max(mean[2]) < WB_DARK {
+        return WbSample::TooDark;
+    }
+    WbSample::Neutral(mean)
+}
+
+#[cfg(test)]
+mod wb_sample_tests {
+    use super::*;
+
+    #[test]
+    fn clipped_white_and_black_spots_are_refused() {
+        let mut img = lcc_raster::Rgb32f::filled(32, 32, [0.3, 0.25, 0.2]);
+        assert!(matches!(wb_sample(&img, 16, 16, 2), WbSample::Neutral(_)));
+        for p in img.data.iter_mut().take(32 * 16) {
+            *p = [1.0, 1.0, 1.0];
+        }
+        assert_eq!(wb_sample(&img, 16, 2, 2), WbSample::TooBright);
+        let dark = lcc_raster::Rgb32f::filled(8, 8, [0.001, 0.001, 0.001]);
+        assert_eq!(wb_sample(&dark, 4, 4, 2), WbSample::TooDark);
+        // a scene-referred photo whose top is past white: a dim grey card still reads
+        let mut hdr = lcc_raster::Rgb32f::filled(32, 32, [0.9, 0.9, 0.9]);
+        hdr.data[0] = [4.0, 4.0, 4.0];
+        assert!(matches!(wb_sample(&hdr, 16, 16, 2), WbSample::Neutral(_)));
+        // hostile input: NaN pixels and huge offsets don't panic
+        let nan = lcc_raster::Rgb32f::filled(4, 4, [f32::NAN; 3]);
+        assert_eq!(wb_sample(&nan, isize::MAX, isize::MIN, 1000), WbSample::TooDark);
+    }
+}
+
 #[cfg(test)]
 mod wb_pick_size_tests {
     use super::wb_pick_half;
@@ -1695,4 +2117,38 @@ mod wb_pick_size_tests {
         assert_eq!(wb_pick_half(Some(1.0)), 0);
         assert!(wb_pick_half(Some(15.0)) > wb_pick_half(None));
     }
+}
+
+/// Link the masks Paste, Sync Settings or Paste from Previous copy from photo `source` onto
+/// `targets` in one go: each mask of `partial` gets the link its original on `source` has, else a
+/// fresh one, written on `source` too (the returned op, part of the same undo step). Nothing is
+/// linked when the copies land on fewer than two photos in all.
+fn link_copied_masks(s: &Session, partial: &mut Value, source: Option<PhotoId>, targets: &[PhotoId], label: &str) -> Option<Op> {
+    let others = targets.iter().filter(|t| Some(**t) != source).count();
+    if others + usize::from(source.is_some_and(|id| s.catalog.photo(id).is_some())) < 2 {
+        return None;
+    }
+    let masks = partial.get_mut("masks").and_then(Value::as_array_mut)?;
+    let mut src = source.and_then(|id| s.develop_of(id)).map(|d| (*d).clone());
+    let mut src_changed = false;
+    for m in masks.iter_mut() {
+        let Some(o) = m.as_object_mut() else { continue };
+        if o.get("link").and_then(Value::as_str).is_some_and(|l| !l.is_empty()) {
+            continue;
+        }
+        let mid = o.get("id").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok());
+        let original = src.as_mut().and_then(|d| mid.and_then(|mid| d.masks.iter_mut().find(|x| x.id == mid)));
+        let link = match original {
+            Some(orig) if !orig.link.is_empty() => orig.link.clone(),
+            Some(orig) => {
+                orig.link = crate::new_mask_link(u64::from(orig.id));
+                src_changed = true;
+                orig.link.clone()
+            }
+            None => crate::new_mask_link(mid.map_or(0, u64::from)),
+        };
+        o.insert("link".into(), Value::String(link));
+    }
+    let (Some(id), Some(d), true) = (source, src, src_changed) else { return None };
+    s.develop_op(id, d, label)
 }

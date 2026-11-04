@@ -87,6 +87,16 @@ const THUMB_SOURCE_BYTES: usize = 384 << 20;
 const RENDERED_MEM_BYTES: usize = 128 << 20;
 /// Disk budget for the thumbnail cache.
 pub const DISK_CACHE_BYTES: u64 = 2 << 30;
+/// What one photo's previews take on disk, about: its standard preview (a 2048 px JPEG, ~1 MB)
+/// and its grid thumbnails. The default disk budget grows by this per photo of the library, so
+/// the built previews of a whole wedding do not prune each other while they are made.
+pub const DISK_CACHE_PER_PHOTO: u64 = 3 << 19;
+
+/// The default disk budget for a library of `photos`: [`DISK_CACHE_BYTES`], or room for every
+/// photo's previews ([`DISK_CACHE_PER_PHOTO`]) when that is more.
+pub fn default_disk_cache_bytes(photos: usize) -> u64 {
+    DISK_CACHE_BYTES.max((photos as u64).saturating_mul(DISK_CACHE_PER_PHOTO))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -142,7 +152,7 @@ pub type FileLoader = Arc<dyn Fn(&str, usize, LoadOptions) -> Result<(Rgb32f, So
 
 /// The photo's settings a decode depends on: decoded sources are cached with them ([`DecodedSource::options`]) and
 /// decoded again when they change.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadOptions {
     /// Where a raw without colour matrices takes its starting colour from (`Profile::camera_colour`).
     pub colour: lcc_develop::CameraColour,
@@ -151,11 +161,35 @@ pub struct LoadOptions {
     /// How a raw's colour model is chosen (`Profile::camera`): empty for its camera's default, `lc` for the app's own
     /// colour, `dcp:<id>` for an imported camera profile (`.dcp`).
     pub camera: String,
+    /// Correct the raw's hot, dead and stuck pixels (`sensor.pixelFix`): the camera body's known ones
+    /// and the clear ones this photo shows (`crate::files::repair_pixels`).
+    pub pixel_fix: bool,
+    /// The file being decoded, set by the filesystem loaders: names the camera body when the raw has
+    /// no serial number (`crate::sensor_maps::body_key`). Not a setting: [`DecodedSource::serves`]
+    /// ignores it.
+    pub path: Option<String>,
+}
+
+impl Default for LoadOptions {
+    fn default() -> Self {
+        LoadOptions { colour: Default::default(), outliers: false, camera: String::new(), pixel_fix: true, path: None }
+    }
 }
 
 impl LoadOptions {
     pub fn of(s: &DevelopSettings) -> LoadOptions {
-        LoadOptions { colour: s.profile.camera_colour, outliers: s.detail.nr_outliers, camera: s.profile.camera.clone() }
+        LoadOptions {
+            colour: s.profile.camera_colour,
+            outliers: s.detail.nr_outliers,
+            camera: s.profile.camera.clone(),
+            pixel_fix: s.sensor.fixes_pixels(),
+            path: None,
+        }
+    }
+
+    /// These options for a decode of the file at `path`.
+    pub fn at(self, path: &str) -> LoadOptions {
+        LoadOptions { path: Some(path.to_string()), ..self }
     }
 }
 
@@ -239,7 +273,8 @@ impl DecodedSource {
         self.from_proxy
             || ((self.options.outliers == options.outliers || !info.is_some_and(|i| i.raw))
                 && (self.options.colour == options.colour || !info.is_some_and(|i| i.colorimetric))
-                && (self.options.camera == options.camera || !info.is_some_and(|i| i.raw)))
+                && (self.options.camera == options.camera || !info.is_some_and(|i| i.raw))
+                && (self.options.pixel_fix == options.pixel_fix || !info.is_some_and(|i| i.raw)))
     }
 
     /// The picture to develop for a Denoise `amount` (0 to 1, see [`DevelopSettings::denoise_amount`]): the plain one,
@@ -279,10 +314,13 @@ impl DecodedSource {
 
     /// What to render these pixels against: the decoder's facts, else `header` (the catalog's)
     /// with any stored camera tone curve. The original's size comes from `header` either way: the
-    /// decoder only sees the level it decoded.
+    /// decoder only sees the level it decoded. The photo's generative fill patches always come from
+    /// `header` too (the session knows them, the decoder doesn't).
     pub fn info_or(&self, header: SourceInfo) -> SourceInfo {
         match &self.info {
-            Some(info) => SourceInfo { native_long: info.native_long.or(header.native_long), ..info.clone() },
+            Some(info) => {
+                SourceInfo { native_long: info.native_long.or(header.native_long), generated: header.generated, avoid: header.avoid, ..info.clone() }
+            }
             None => SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header },
         }
     }
@@ -356,54 +394,23 @@ impl SourceRef {
             }
             SourceRef::Demo { scene, max_edge } => crate::demo::scene_pixels(scene, *max_edge)?,
             SourceRef::File { path, max_edge, loader, fallback, denoise, options, reduced } => {
-                let plain = || match (reduced, loader) {
-                    (Some(l), _) => l(path, *max_edge, options.clone()).map(|(image, info, reduced)| DecodedSource {
-                        options: options.clone(),
-                        reduced,
-                        ..DecodedSource::new(Arc::new(image), Some(info))
-                    }),
-                    (None, Some(l)) => l(path, *max_edge, options.clone())
-                        .map(|(image, info)| DecodedSource { options: options.clone(), ..DecodedSource::new(Arc::new(image), Some(info)) }),
-                    (None, None) => Err(format!("no decoder available for {path}")),
-                };
-                // the denoised picture comes with the plain one from a single decode; when it cannot be read the
-                // pair loader gives the plain picture alone (the cached file is never a reason to fail a render)
-                let r = match denoise {
-                    Some((spec, pair)) => {
-                        // a job that needs the denoised picture has it made first; if that fails the job fails (no smart
-                        // preview stands in: an export must not quietly come out without the denoise it was asked for)
-                        let made = match &spec.make {
-                            Some(make) => make()?,
-                            None => true,
-                        };
-                        if made {
-                            pair(path, *max_edge, spec, options.clone()).and_then(|(image, twin, info)| {
-                                if spec.make.is_some() && twin.is_none() {
-                                    return Err("the cached AI Denoise picture could not be read; clear the denoise cache and retry".into());
-                                }
-                                Ok(DecodedSource {
-                                    image: Arc::new(image),
-                                    info: Some(info),
-                                    camera_tone: None,
-                                    denoised: twin.map(|t| Arc::new(Twin::new(Arc::new(t)))),
-                                    options: options.clone(),
-                                    from_proxy: false,
-                                    reduced: false,
-                                })
-                            })
-                        } else {
-                            plain()
+                // (a job that comes while another decodes the same pixels waits for that decode)
+                let decode = || Self::decode_file(path, *max_edge, loader.as_ref(), fallback.as_deref(), denoise.as_ref(), options, reduced.as_ref());
+                return match share_key(path, *max_edge, loader.as_ref(), fallback.as_deref(), denoise.as_ref(), options, reduced.as_ref()) {
+                    Some(key) => {
+                        let mut anchors: crate::decode_share::Anchors = Vec::new();
+                        if let Some(l) = loader {
+                            anchors.push(Box::new(Arc::downgrade(l)));
                         }
+                        if let Some(l) = reduced {
+                            anchors.push(Box::new(Arc::downgrade(l)));
+                        }
+                        if let Some((_, l)) = denoise {
+                            anchors.push(Box::new(Arc::downgrade(l)));
+                        }
+                        crate::decode_share::decode_once(&key, anchors, decode)
                     }
-                    None => plain(),
-                };
-                // An offline original renders from its smart preview (no decoder facts: header ones).
-                return match (r, fallback) {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    (Err(e), Some(sp)) if denoise.as_ref().is_none_or(|(spec, _)| spec.make.is_none()) && crate::smart::is_valid(sp) => {
-                        crate::smart::load(sp).map_err(|e2| format!("{e}; smart preview: {e2}"))
-                    }
-                    (r, _) => r,
+                    None => decode(),
                 };
             }
             SourceRef::Video { path, time, max_edge } => Arc::new(video_poster(path, *time, *max_edge)?),
@@ -414,6 +421,90 @@ impl SourceRef {
         };
         Ok(DecodedSource::new(image, None))
     }
+
+    /// Decode a [`SourceRef::File`] (its fields).
+    fn decode_file(
+        path: &str,
+        max_edge: usize,
+        loader: Option<&FileLoader>,
+        fallback: Option<&std::path::Path>,
+        denoise: Option<&(DenoiseSpec, PairLoader)>,
+        options: &LoadOptions,
+        reduced: Option<&ReducedLoader>,
+    ) -> Result<DecodedSource, String> {
+        let plain = || match (reduced, loader) {
+            (Some(l), _) => l(path, max_edge, options.clone()).map(|(image, info, reduced)| DecodedSource {
+                options: options.clone(),
+                reduced,
+                ..DecodedSource::new(Arc::new(image), Some(info))
+            }),
+            (None, Some(l)) => l(path, max_edge, options.clone())
+                .map(|(image, info)| DecodedSource { options: options.clone(), ..DecodedSource::new(Arc::new(image), Some(info)) }),
+            (None, None) => Err(format!("no decoder available for {path}")),
+        };
+        // the denoised picture comes with the plain one from a single decode; when it cannot be read the
+        // pair loader gives the plain picture alone (the cached file is never a reason to fail a render)
+        let r = match denoise {
+            Some((spec, pair)) => {
+                // a job that needs the denoised picture has it made first; if that fails the job fails (no smart
+                // preview stands in: an export must not quietly come out without the denoise it was asked for)
+                let made = match &spec.make {
+                    Some(make) => make()?,
+                    None => true,
+                };
+                if made {
+                    pair(path, max_edge, spec, options.clone()).and_then(|(image, twin, info)| {
+                        if spec.make.is_some() && twin.is_none() {
+                            return Err("the cached AI Denoise picture could not be read; clear the denoise cache and retry".into());
+                        }
+                        Ok(DecodedSource {
+                            image: Arc::new(image),
+                            info: Some(info),
+                            camera_tone: None,
+                            denoised: twin.map(|t| Arc::new(Twin::new(Arc::new(t)))),
+                            options: options.clone(),
+                            from_proxy: false,
+                            reduced: false,
+                        })
+                    })
+                } else {
+                    plain()
+                }
+            }
+            None => plain(),
+        };
+        // An offline original renders from its smart preview (no decoder facts: header ones).
+        match (r, fallback) {
+            #[cfg(not(target_arch = "wasm32"))]
+            (Err(e), Some(sp)) if denoise.is_none_or(|(spec, _)| spec.make.is_none()) && crate::smart::is_valid(sp) => {
+                crate::smart::load(sp).map_err(|e2| format!("{e}; smart preview: {e2}"))
+            }
+            (r, _) => r,
+        }
+    }
+}
+
+/// What a [`SourceRef::File`] decode's pixels depend on, as a key for [`crate::decode_share`]
+/// (the loaders by identity: the session keeps one of each). `None`: not shared (a decode that
+/// makes the photo's denoised picture first, for an export).
+fn share_key(
+    path: &str,
+    max_edge: usize,
+    loader: Option<&FileLoader>,
+    fallback: Option<&std::path::Path>,
+    denoise: Option<&(DenoiseSpec, PairLoader)>,
+    options: &LoadOptions,
+    reduced: Option<&ReducedLoader>,
+) -> Option<String> {
+    if denoise.is_some_and(|(spec, _)| spec.make.is_some()) {
+        return None;
+    }
+    let at = |p: Option<*const ()>| p.map_or(0, |p| p as usize);
+    let loader = at(loader.map(|l| Arc::as_ptr(l) as *const ()));
+    let reduced = at(reduced.map(|l| Arc::as_ptr(l) as *const ()));
+    let pair = at(denoise.map(|(_, l)| Arc::as_ptr(l) as *const ()));
+    let denoised = denoise.map(|(spec, _)| (spec.key.as_str(), spec.product.as_path()));
+    Some(format!("{path}|{max_edge}|{loader:x}|{reduced:x}|{pair:x}|{denoised:?}|{options:?}|{fallback:?}"))
 }
 
 /// A clip's poster frame (linear Rec.709, the JPEG/TIFF input path), `max_edge` long at most. An
@@ -522,6 +613,8 @@ pub struct MediaCache {
     /// [`ProfileFacts`]): kept when the decoded sources go, so those rows do not vanish while a source is decoded
     /// again or evicted, which would move every control under them.
     profile_facts: HashMap<PhotoId, ProfileFacts>,
+    /// The camera bodies' corrections the decoded sources were made with ([`crate::sensor_maps::generation`]).
+    sensor_generation: u64,
 }
 
 /// File facts that decide whether the Edit panel's Profile section shows an option: a camera model with measured
@@ -603,13 +696,16 @@ impl Default for MediaCache {
             rendered: Arc::new(PreviewCache::memory(rendered_budget(budget))),
             denoise: DenoiseIndex::default(),
             profile_facts: HashMap::new(),
+            sensor_generation: 0,
         }
     }
 }
 
 /// Memory for rendered previews out of the cache share.
 fn rendered_budget(share: usize) -> usize {
-    RENDERED_MEM_BYTES.min(share / 4)
+    // a quarter of the share, so a big budget keeps a whole shoot's previews, and at least
+    // RENDERED_MEM_BYTES where the share allows
+    (share / 4).max(RENDERED_MEM_BYTES.min(share / 2))
 }
 
 impl MediaCache {
@@ -722,6 +818,16 @@ impl MediaCache {
     }
 
     fn get_source(&mut self, id: PhotoId, level: SourceLevel) -> Option<DecodedSource> {
+        // a camera body's corrections changed (a pixel was confirmed): raws decoded before are out of date
+        let generation = crate::sensor_maps::generation();
+        if generation != self.sensor_generation {
+            if self.sensor_generation != 0 {
+                self.thumbs = Lru::new(THUMB_SOURCE_BYTES.min(self.budget));
+                self.previews.clear();
+                self.full.clear();
+            }
+            self.sensor_generation = generation;
+        }
         match level {
             SourceLevel::Thumb => self.thumbs.get(&id).cloned(),
             SourceLevel::Preview => self.previews.iter_mut().find(|e| e.0 == id).map(|e| {
@@ -753,6 +859,12 @@ impl MediaCache {
 
     pub fn insert(&mut self, id: PhotoId, level: SourceLevel, img: Arc<Rgb32f>) {
         self.insert_source(id, level, DecodedSource::new(img, None));
+    }
+
+    /// A decoded source with what the decoder reported about it (tests: photos of another as-shot white).
+    #[cfg(test)]
+    pub(crate) fn insert_with_info(&mut self, id: PhotoId, level: SourceLevel, img: Arc<Rgb32f>, info: SourceInfo) {
+        self.insert_source(id, level, DecodedSource::new(img, Some(info)));
     }
 
     fn insert_source(&mut self, id: PhotoId, level: SourceLevel, img: DecodedSource) {
@@ -941,6 +1053,9 @@ impl MediaCache {
     }
 }
 
+/// The error of a render skipped because a newer request replaced it ([`RenderJob::superseded`]).
+pub const SUPERSEDED: &str = "replaced by a newer render";
+
 /// Everything needed to render one photo, detached from the session.
 #[derive(Clone)]
 pub struct RenderJob {
@@ -980,6 +1095,11 @@ pub struct RenderJob {
     /// small ratios and aliases it at large ones. The caches keep the full render (a fit made on
     /// the GPU reads it back as well for the view cache, unless [`Self::drawn_view_cache`]).
     pub display_fit: Option<(usize, usize)>,
+    /// Set by the frontend when a newer request for the same view replaced this one while it ran
+    /// (an interactive draft on a photo whose first full render is decoding). Checked once the
+    /// source is decoded: the render is then skipped (the decoded source still comes back for the
+    /// session to keep), so the draft gets the processor and the GPU.
+    pub superseded: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// A slider drag's update: a fit made on the GPU leaves its drawn-size image in the view cache
     /// instead of reading the full render back too (+3 ms an update; the next render at rest
     /// replaces it). Not part of [`Self::key`]: the same render, cached at another size.
@@ -988,6 +1108,70 @@ pub struct RenderJob {
     /// GPU, it comes back as the texture's texels made there ([`RenderResult::hdr_texels`]) and
     /// without float samples; on the CPU, as usual. Set by the frontend.
     pub hdr_texels: Option<f32>,
+    /// Shown on screen at once and not kept: the result may stay on the GPU as a texture
+    /// ([`Self::on_screen`]).
+    pub on_screen: bool,
+}
+
+/// A render left on the GPU for the window to draw ([`RenderResult::frame`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub type ScreenFrame = lcc_gpu::DisplayFrame;
+/// A render left on the GPU for the window to draw (never, in the browser build).
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug)]
+pub struct ScreenFrame {
+    pub width: usize,
+    pub height: usize,
+}
+
+/// The least the automatic preview cache takes where the drive has room for it.
+pub const AUTO_DISK_CACHE_MIN: u64 = 20 << 30;
+/// The share of the cache drive's room (free space and what the cache holds) the automatic size takes.
+pub const AUTO_DISK_CACHE_SHARE: f64 = 0.15;
+/// The most of the drive's free space the automatic size may claim beyond what the cache holds.
+pub const AUTO_DISK_CACHE_FREE_SHARE: f64 = 0.5;
+/// What the automatic size always leaves free on the cache drive.
+const CACHE_DRIVE_RESERVE: u64 = 10 << 30;
+
+/// The automatic preview cache size: a budget sized from the library alone (1.5 MB a photo) let a
+/// wedding's previews prune each other and every edit's previews replace the last ones, so
+/// reopening the library rendered everything again. Now: a share ([`AUTO_DISK_CACHE_SHARE`]) of
+/// the room on the cache drive (`free` bytes plus the cache's own `used`), at least
+/// [`AUTO_DISK_CACHE_MIN`] and room for every photo of the library, never more than leaves
+/// [`CACHE_DRIVE_RESERVE`] (or half the room, on a small drive) free, and never growing by more
+/// than half of what is free ([`AUTO_DISK_CACHE_FREE_SHARE`]): on a nearly full drive the minimum
+/// gives way. `free` unknown: the minimum, or the library's room when that is more.
+pub fn automatic_disk_cache_bytes(photos: usize, free: Option<u64>, used: u64) -> u64 {
+    let by_photos = default_disk_cache_bytes(photos);
+    let Some(free) = free else { return by_photos.max(AUTO_DISK_CACHE_MIN) };
+    let room = free.saturating_add(used);
+    let share = (room as f64 * AUTO_DISK_CACHE_SHARE) as u64;
+    let want = by_photos.max(AUTO_DISK_CACHE_MIN).max(share);
+    let cap = room.saturating_sub(CACHE_DRIVE_RESERVE).max(room / 2);
+    let most = used.saturating_add((free as f64 * AUTO_DISK_CACHE_FREE_SHARE) as u64);
+    want.min(cap).max(DISK_CACHE_BYTES.min(room)).min(most)
+}
+
+/// A cached view render this much smaller than asked for still serves the loupe (rounding: a fit
+/// of the same frame into a box one pixel different).
+const VIEW_REUSE_SLACK: f64 = 0.01;
+
+/// `img` fitted into `max_w × max_h` (its aspect kept), when it is big enough to need no enlarging
+/// (within [`VIEW_REUSE_SLACK`]): as it is, or shrunk.
+pub fn fit_cached(img: &Rgba8, max_w: usize, max_h: usize) -> Option<Rgba8> {
+    let (w, h) = (img.width, img.height);
+    if w == 0 || h == 0 || max_w == 0 || max_h == 0 {
+        return None;
+    }
+    let s = (max_w as f64 / w as f64).min(max_h as f64 / h as f64);
+    if !s.is_finite() || s > 1.0 + VIEW_REUSE_SLACK {
+        return None;
+    }
+    let (nw, nh) = (((w as f64 * s).round() as usize).clamp(1, w), ((h as f64 * s).round() as usize).clamp(1, h));
+    if nw == w && nh == h {
+        return Some(img.clone());
+    }
+    Some(fit_for_display(img, nw, nh))
 }
 
 /// `img` shrunk to fit `max_w × max_h` with a Lanczos filter (see [`RenderJob::display_fit`]).
@@ -1015,9 +1199,22 @@ pub struct RenderResult {
     /// An HDR view's texture texels made on the GPU, and the headroom they were made for
     /// ([`RenderJob::hdr_texels`]); its render then has no float samples.
     pub hdr_texels: Option<(Vec<u16>, f32)>,
+    /// The result as a texture on the window's GPU device ([`RenderJob::on_screen`]); `rendered`
+    /// then holds its histogram and an empty (0 × 0) image.
+    pub frame: Option<ScreenFrame>,
 }
 
 impl RenderJob {
+    /// The result is only drawn (an interactive draft of a view): when the GPU renderer runs on the
+    /// window's device it may hand back a texture ([`RenderResult::frame`]) instead of reading the
+    /// pixels back. Ignored where pixels are needed: thumbnails (cached), a render kept as the view
+    /// preview (other than a drag's drawn-size one), a monitor profile (corrected on the CPU), a
+    /// slide, transparency and HDR texels. The display fit is then the window's drawing filter.
+    pub fn on_screen(mut self) -> Self {
+        self.on_screen = true;
+        self
+    }
+
     /// Render at draft quality (interactive drags). Gets its own result key.
     /// Shrink the full-quality result to fit `w × h` pixels with a Lanczos filter (see
     /// [`Self::display_fit`]). Gets its own result key, so a change of drawn size renders again.
@@ -1025,6 +1222,28 @@ impl RenderJob {
         self.display_fit = Some((w, h));
         self.key ^= ((w as u64) << 32 | h as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         self
+    }
+
+    /// The view render kept for this job's photo and settings ([`Self::view_cache`]), fitted to the
+    /// size asked for, when it is at least that big (else `None`: render). Only for what the cached
+    /// view is: a full-quality, 8-bit, whole-frame sRGB render of the photo (no HDR, display
+    /// profile, transparency or slide).
+    pub fn cached_view(&self) -> Option<Rgba8> {
+        let (cache, key) = self.view_cache.as_ref()?;
+        if self.request.quality != Quality::Full
+            || self.request.depth != lcc_pipeline::OutputDepth::U8
+            || self.request.window.is_some()
+            || self.request.alpha
+            || self.request.display.is_some()
+            || self.display.is_some()
+            || self.hdr_texels.is_some()
+            || self.settings.hdr.enabled
+            || self.slide.is_some()
+        {
+            return None;
+        }
+        let img = cache.get_at(self.cache_generation, *key)?;
+        fit_cached(&img, self.request.max_w, self.request.max_h)
     }
 
     /// See [`Self::drawn_view_cache`].
@@ -1120,7 +1339,10 @@ impl RenderJob {
     /// it, so a few such panics used to stop every render).
     pub fn run(self) -> RenderResult {
         let failed = self.failed(String::new());
-        crate::guard::catch("the render", || self.run_unguarded()).unwrap_or_else(|e| RenderResult { rendered: Err(e), ..failed })
+        // thumbnails go to the second graphics card when there is one: the editing card keeps the views
+        let thumb = self.cache.is_some();
+        let run = || crate::guard::catch("the render", || self.run_unguarded()).unwrap_or_else(|e| RenderResult { rendered: Err(e), ..failed });
+        if thumb { lcc_gpu::prefer_helper(run) } else { run() }
     }
 
     /// This job's result when it fails with `e`.
@@ -1137,6 +1359,7 @@ impl RenderJob {
             quick: None,
             display: None,
             hdr_texels: None,
+            frame: None,
         }
     }
 
@@ -1164,6 +1387,30 @@ impl RenderJob {
 
     /// The photo's render (without slide composition).
     fn run_photo(self) -> RenderResult {
+        // the loupe: a cached view render of these settings at least this big is the render (a
+        // built preview, or the render kept from an earlier visit, is not rendered again)
+        if let Some(mut image) = self.cached_view() {
+            if let Some((fw, fh)) = self.display_fit
+                && (image.width > fw.max(1) || image.height > fh.max(1))
+            {
+                image = fit_for_display(&image, fw, fh);
+            }
+            let histogram = Histogram::of_srgb8(&image);
+            return RenderResult {
+                request_id: self.request_id,
+                source_key: self.source_key,
+                photo: self.photo,
+                level: self.level,
+                key: self.key,
+                rendered: Ok(Rendered { image, histogram, deep: None, warnings: Vec::new(), coverage: None, alpha: None }),
+                gpu_fallback: None,
+                loaded: None,
+                quick: None,
+                display: None,
+                hdr_texels: None,
+                frame: None,
+            };
+        }
         if let Some((cache, key)) = &self.cache
             && let Some(img) = cache.get_at(self.cache_generation, *key)
         {
@@ -1181,6 +1428,7 @@ impl RenderJob {
                 quick: None,
                 display: None,
                 hdr_texels: None,
+                frame: None,
             };
         }
         // a face tile of an unedited raw: cut from the camera's embedded preview when it is big enough
@@ -1202,6 +1450,7 @@ impl RenderJob {
                 quick: None,
                 display: None,
                 hdr_texels: None,
+                frame: None,
             };
         }
         let was_loaded = matches!(self.source, SourceRef::Loaded(_));
@@ -1213,6 +1462,9 @@ impl RenderJob {
             None => self.source.load_source().and_then(|s| closing().map_or(Ok(s), Err)),
         };
         match source {
+            Ok(source) if self.superseded.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) => {
+                RenderResult { loaded: (!was_loaded).then_some(source), ..self.failed(SUPERSEDED.into()) }
+            }
             Ok(source) => {
                 // the plain picture, or (Denoise amount above 0 and a denoised picture cached) the mix the amount asks for
                 let src = &source.image_for(self.settings.denoise_amount());
@@ -1226,9 +1478,10 @@ impl RenderJob {
                 let src = straight.as_ref().unwrap_or(src);
                 // (a straight picture is this job's own: no stage of an earlier render applies to it)
                 let stages = if straight.is_some() { None } else { self.stages.as_deref() };
-                // Thumbnails (many small jobs side by side) stay on the CPU; views and exports use
-                // the GPU when there is one.
-                let gpu = self.cache.is_none();
+                // Views and exports use the GPU when there is one (waiting for the device if it is
+                // still being created). Thumbnails (grid, filmstrip, preset and profile previews)
+                // use it once it is ready, and never wait for it: at startup they render on the CPU.
+                let gpu = self.cache.is_none() || lcc_gpu::ready();
                 // the display fit on the GPU when the render is there and nothing is done to its
                 // full-size image first (a monitor profile's conversion); else below, on the CPU
                 let fit =
@@ -1244,6 +1497,46 @@ impl RenderJob {
                     Some((headroom, Ok((r, t)))) => {
                         hdr_texels = Some((t, headroom));
                         (r, None)
+                    }
+                    _ if self.on_screen
+                        && gpu
+                        && self.cache.is_none()
+                        && (self.display.is_none() || self.request.display.is_none())
+                        && self.slide.is_none()
+                        && straight.is_none()
+                        // (a draft is never kept as the view preview)
+                        && (self.view_cache.is_none() || self.drawn_view_cache || self.request.quality != Quality::Full) =>
+                    {
+                        match on_screen(src, &info, &self.settings, &self.request, stages) {
+                            Some(OnScreen::Frame(frame, histogram)) => {
+                                return RenderResult {
+                                    request_id: self.request_id,
+                                    source_key: self.source_key,
+                                    photo: self.photo,
+                                    level: self.level,
+                                    key: self.key,
+                                    rendered: Ok(Rendered {
+                                        image: Rgba8 { width: 0, height: 0, data: Vec::new() },
+                                        histogram,
+                                        deep: None,
+                                        warnings: Vec::new(),
+                                        coverage: None,
+                                        alpha: None,
+                                    }),
+                                    gpu_fallback: None,
+                                    loaded: (!was_loaded).then_some(source),
+                                    quick: None,
+                                    display: None,
+                                    hdr_texels: None,
+                                    frame: Some(frame),
+                                };
+                            }
+                            Some(OnScreen::Pixels(r)) => (r, None),
+                            None => {
+                                let (r, fallback, _) = develop_reporting_fitted(src, &info, &self.settings, &self.request, stages, gpu, fit, false);
+                                (r, fallback)
+                            }
+                        }
                     }
                     _ => {
                         let keep_full = self.view_cache.is_some() && !self.drawn_view_cache;
@@ -1308,6 +1601,7 @@ impl RenderJob {
                     quick: None,
                     display,
                     hdr_texels,
+                    frame: None,
                 }
             }
             Err(e) => self.failed(e),
@@ -1365,13 +1659,50 @@ fn develop_reporting_fitted(
     (rendered, fallback, full)
 }
 
-/// Whether the GPU pipeline renders `s` for `req` like the CPU does. LUT profiles, masks with
-/// Refine Edges or Feather and soft-proofing have no GPU stage: those render on the CPU. Every
-/// GPU caller (previews, exports, video frames) checks this first.
-pub fn gpu_renders_faithfully(s: &DevelopSettings, req: &RenderRequest) -> bool {
-    !lcc_pipeline::lut::is_lut_profile(&s.profile.id)
-        && !s.masks.iter().any(|m| m.visible && (m.refine > 0.0 || m.feather > 0.0))
-        && req.proof.is_none()
+/// What [`on_screen`] made.
+enum OnScreen {
+    /// A texture on the window's device, and the histogram.
+    Frame(ScreenFrame, Histogram),
+    /// Pixels from the GPU (it could not hand over a texture for this render).
+    Pixels(Rendered),
+}
+
+/// A render that is only drawn, on the GPU: a texture on the window's device when the GPU renderer
+/// can hand one over, else its pixels. `None`: the GPU did not render it (the CPU must).
+fn on_screen(src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, stages: Option<&StageCache>) -> Option<OnScreen> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if !lcc_gpu::on_window_device() {
+            return None;
+        }
+        let (mut rendered, frame) = lcc_gpu::try_render_display(src, info, s, req, stages).ok()?;
+        // an HDR edit's preview histogram shows the HDR range, as from `develop_reporting_fitted`
+        let hdr = match stages {
+            Some(c) => lcc_pipeline::hdr_histogram_cached(src, info, s, req, c),
+            None => lcc_pipeline::hdr_histogram(src, info, s, req),
+        };
+        if let Some(h) = hdr {
+            rendered.histogram = h;
+        }
+        Some(match frame {
+            Some(f) => OnScreen::Frame(f, rendered.histogram),
+            None => OnScreen::Pixels(rendered),
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (src, info, s, req, stages);
+        None
+    }
+}
+
+/// Whether the GPU pipeline renders `s` for `req` like the CPU does. Every GPU caller (previews,
+/// exports, video frames) checks this first. Since GPU-FULL every 8-bit and HDR render does
+/// (`lcc_gpu::handles` declines the rest itself).
+pub fn gpu_renders_faithfully(_s: &DevelopSettings, _req: &RenderRequest) -> bool {
+    // LUT profiles, Refine Edges, mask Feather and matrix soft proofs all render on the GPU
+    // (an output-device proof's table is declined by `lcc_gpu::handles` itself)
+    true
 }
 
 fn develop_image(
@@ -1427,6 +1758,14 @@ pub struct QuickJob {
     pub cached: Vec<(Arc<PreviewCache>, Hash128)>,
     /// Embedded preview of an unedited raw: (path, loader, max edge).
     pub embedded: Option<(String, PreviewLoader, usize)>,
+    /// Where a decoded [`Self::embedded`] preview is kept in memory, so stepping back to a photo
+    /// shows its camera JPEG again without reading and decoding it (culling goes back and forth):
+    /// the cache (memory only, never its disk) and the key for this photo and edge.
+    pub embedded_cache: Option<(Arc<PreviewCache>, Hash128)>,
+    /// Whether [`Self::embedded_cache`] keeps the decoded preview on disk too: a grid thumbnail,
+    /// so a folder seen before fills in from small files at once instead of every raw being read
+    /// and its camera JPEG decoded again (the loupe's large stand-ins stay in memory).
+    pub embedded_on_disk: bool,
     /// Last resort: run this thumbnail job.
     pub small: Option<Box<RenderJob>>,
 }
@@ -1448,6 +1787,7 @@ impl QuickJob {
             quick: None,
             display: None,
             hdr_texels: None,
+            frame: None,
         })
     }
 
@@ -1466,6 +1806,7 @@ impl QuickJob {
             quick,
             display: None,
             hdr_texels: None,
+            frame: None,
         };
         let rendered = |image: Rgba8| {
             let histogram = Histogram::of_srgb8(&image);
@@ -1476,10 +1817,22 @@ impl QuickJob {
                 return done(rendered(Arc::unwrap_or_clone(img)), Some(QuickSource::Cached));
             }
         }
-        if let Some((path, loader, edge)) = &self.embedded
-            && let Some(image) = loader(path, *edge)
-        {
-            return done(rendered(image), Some(QuickSource::Embedded));
+        if let Some((path, loader, edge)) = &self.embedded {
+            if let Some((cache, k)) = &self.embedded_cache
+                && let Some(img) = if self.embedded_on_disk { cache.get(*k) } else { cache.get_in_memory(*k) }
+            {
+                return done(rendered(Arc::unwrap_or_clone(img)), Some(QuickSource::Embedded));
+            }
+            if let Some(image) = loader(path, *edge) {
+                if let Some((cache, k)) = &self.embedded_cache {
+                    if self.embedded_on_disk {
+                        cache.put_deferred(*k, Arc::new(image.clone()));
+                    } else {
+                        cache.put_memory(*k, Arc::new(image.clone()));
+                    }
+                }
+                return done(rendered(image), Some(QuickSource::Embedded));
+            }
         }
         if let Some(job) = self.small {
             let r = job.run();
@@ -1487,6 +1840,11 @@ impl QuickJob {
         }
         done(Err("no quick preview".into()), None)
     }
+}
+
+/// The thumbnail cache's key for the camera JPEG standing for the thumbnail of cache key `k`.
+fn embedded_thumb_key(k: Hash128) -> Hash128 {
+    Hasher128::new().str("embedded-thumb").u64((k.0 >> 64) as u64).u64(k.0 as u64).finish()
 }
 
 /// What identifies a photo's pixels for caching: its content hash, else its source.
@@ -1499,6 +1857,21 @@ pub fn content_key(p: &Photo) -> String {
 }
 
 pub fn source_info(p: &Photo) -> SourceInfo {
+    let info = source_info_plain(p);
+    // faces are never a source for content-aware fill
+    let faces: Vec<[f64; 4]> = p
+        .meta
+        .regions
+        .iter()
+        .filter(|r| r.kind == lcc_meta::RegionKind::Face)
+        .map(|r| [r.rect.x0, r.rect.y0, r.rect.x1, r.rect.y1])
+        .filter(|b| b.iter().all(|v| v.is_finite()))
+        .take(256)
+        .collect();
+    SourceInfo { avoid: (!faces.is_empty()).then(|| Arc::new(faces)), ..info }
+}
+
+fn source_info_plain(p: &Photo) -> SourceInfo {
     // Procedural demo scenes are scene-referred HDR (like raw files): use the filmic tone map.
     // (They are drawn afresh at every size, so they have no original size.)
     if matches!(p.source, Source::Demo { .. }) {
@@ -1531,6 +1904,11 @@ fn header_info(p: &Photo) -> SourceInfo {
 }
 
 impl crate::Session {
+    /// What a render of `p` is interpreted against: [`source_info`] and the photo's generated patches.
+    pub fn job_info(&self, p: &Photo) -> SourceInfo {
+        SourceInfo { generated: self.genfill_store(p), ..source_info(p) }
+    }
+
     /// Build a render job for `id` fitting `max_w × max_h`. `before` renders the unedited look.
     pub fn render_job(&mut self, id: PhotoId, max_w: usize, max_h: usize, before: bool, apply_crop: bool) -> Option<RenderJob> {
         self.build_job(id, max_w, max_h, before, apply_crop, None)
@@ -1583,7 +1961,13 @@ impl crate::Session {
         let content = source_key.0 as u64;
         // Temporary "before" settings must not replace the photo's cached develop hash.
         let settings_hash = if before || uncropped { settings.hash64() } else { self.media.settings_hashes.get(id, &settings) };
-        let salt = self.media.denoise_salt(id, &settings);
+        // (AI masks on an automatic selection re-render when the Subject or scene model changes)
+        let models = if lcc_pipeline::auto_mask::needed(&settings) {
+            lcc_pipeline::auto_mask::model_generation().wrapping_add(1).wrapping_mul(0x2545_f491_4f6c_dd1d)
+        } else {
+            0
+        };
+        let salt = self.media.denoise_salt(id, &settings) ^ models;
         let key = settings_hash
             ^ ((max_w as u64) << 40)
             ^ ((max_h as u64) << 20)
@@ -1594,7 +1978,12 @@ impl crate::Session {
             ^ salt;
         let cache = thumb_bucket.map(|b| {
             let mut k = Hasher128::new();
-            k.str(&content_key).u64(settings_hash).u64(b as u64).u64(RENDER_CACHE_VERSION).u64(crate::camera_profiles::cache_key());
+            k.str(&content_key)
+                .u64(settings_hash)
+                .u64(b as u64)
+                .u64(RENDER_CACHE_VERSION)
+                .u64(crate::camera_profiles::cache_key())
+                .u64(crate::sensor_maps::generation());
             // (only a render that uses a denoised picture has it in its key, so every other thumbnail stays valid)
             if salt != 0 {
                 k.u64(salt);
@@ -1603,6 +1992,7 @@ impl crate::Session {
         });
         Some(RenderJob {
             drawn_view_cache: false,
+            on_screen: false,
             request_id: 0,
             cache_generation: self.media.rendered.generation(),
             source_key: Some(source_key),
@@ -1610,7 +2000,7 @@ impl crate::Session {
             level,
             source,
             origin: p.source.clone(),
-            info: source_info(&p),
+            info: self.job_info(&p),
             settings,
             request,
             key,
@@ -1622,6 +2012,7 @@ impl crate::Session {
             preview_cut: None,
             display_fit: None,
             hdr_texels: None,
+            superseded: None,
         })
     }
 
@@ -1643,6 +2034,7 @@ impl crate::Session {
             .u64(edge as u64)
             .u64(RENDER_CACHE_VERSION)
             .u64(crate::camera_profiles::cache_key())
+            .u64(crate::sensor_maps::generation())
             .finish()
     }
 
@@ -1659,6 +2051,7 @@ impl crate::Session {
         let ck = Self::variant_key(&p, settings, edge);
         Some(RenderJob {
             drawn_view_cache: false,
+            on_screen: false,
             request_id: 0,
             cache_generation: self.media.rendered.generation(),
             source_key: Some(Hasher128::new().str(&pixels_key(&p)).finish()),
@@ -1666,7 +2059,7 @@ impl crate::Session {
             level,
             source,
             origin: p.source.clone(),
-            info: source_info(&p),
+            info: self.job_info(&p),
             settings: Arc::new(settings.clone()),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
             key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),
@@ -1678,6 +2071,7 @@ impl crate::Session {
             preview_cut: None,
             display_fit: None,
             hdr_texels: None,
+            superseded: None,
         })
     }
 
@@ -1716,6 +2110,7 @@ impl crate::Session {
         let preview_cut = self.face_preview_cut(&p, rect, edge, needed as usize);
         Some(RenderJob {
             drawn_view_cache: false,
+            on_screen: false,
             request_id: 0,
             cache_generation: self.media.rendered.generation(),
             source_key: Some(Hasher128::new().str(&pixels_key(&p)).finish()),
@@ -1723,7 +2118,7 @@ impl crate::Session {
             level,
             source,
             origin: p.source.clone(),
-            info: source_info(&p),
+            info: self.job_info(&p),
             settings: Arc::new(settings),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
             key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),
@@ -1735,6 +2130,7 @@ impl crate::Session {
             preview_cut,
             display_fit: None,
             hdr_texels: None,
+            superseded: None,
         })
     }
 
@@ -1762,6 +2158,7 @@ impl crate::Session {
             .u64(apply_crop as u64)
             .u64(RENDER_CACHE_VERSION)
             .u64(crate::camera_profiles::cache_key())
+            .u64(crate::sensor_maps::generation())
             .finish()
     }
 
@@ -1846,8 +2243,18 @@ impl crate::Session {
 
     /// The embedded preview of an unedited raw (path, loader), when the app installed a loader.
     fn embedded_of(&self, p: &Photo) -> Option<(String, PreviewLoader)> {
+        self.embedded_stand_in_of(p).filter(|_| crate::import::has_import_look(p))
+    }
+
+    /// The embedded preview of any raw (path, loader), when the app installed a loader: the
+    /// cheapest full picture of the photo, shown until the app's render of it arrives. A photo
+    /// with any setting changed (a body's default camera profile picked for a whole folder is
+    /// enough) otherwise had no picture in the grid, the filmstrip or the loupe until a full raw
+    /// render, seconds a photo for a 45 MP CR3. Only an unedited raw's is its final picture
+    /// ([`Self::embedded_thumb_is_final`]); for the others a render replaces it.
+    fn embedded_stand_in_of(&self, p: &Photo) -> Option<(String, PreviewLoader)> {
         match (&p.source, &self.media.preview_loader) {
-            (Source::File { path }, Some(l)) if p.kind == MediaKind::Raw && crate::import::has_import_look(p) => Some((path.clone(), l.clone())),
+            (Source::File { path }, Some(l)) if p.kind == MediaKind::Raw => Some((path.clone(), l.clone())),
             _ => None,
         }
     }
@@ -1902,7 +2309,8 @@ impl crate::Session {
     }
 
     /// Something to show in the loupe right away for `id` (see [`QuickJob`]): its cached view
-    /// render, else the embedded preview of an unedited raw, else a cached or fresh thumbnail.
+    /// render, else the embedded preview of a raw (edited or not: a stand-in until the render
+    /// arrives), else a cached or fresh thumbnail.
     pub fn quick_view_job(&mut self, id: PhotoId, max_edge: usize, apply_crop: bool) -> Option<QuickJob> {
         let p = self.catalog.photo(id)?.clone();
         let small = self.thumb_job(id, THUMB_SIZES[THUMB_SIZES.len() - 1])?;
@@ -1914,19 +2322,33 @@ impl crate::Session {
         }
         let h = Hasher128::new().str(&pixels_key(&p)).str("quick").u64(p.develop.hash64()).u64(apply_crop as u64).finish();
         let key = h.0 as u64;
-        let embedded = self.embedded_of(&p).map(|(path, l)| (path, l, max_edge.clamp(1, SourceLevel::Preview.max_edge())));
-        Some(QuickJob { request_id: 0, photo: id, key, cached, embedded, small: apply_crop.then(|| Box::new(small)) })
+        let embedded = self.embedded_stand_in_of(&p).map(|(path, l)| (path, l, max_edge.clamp(1, SourceLevel::Preview.max_edge())));
+        let embedded_cache = embedded
+            .as_ref()
+            .map(|(_, _, edge)| (self.media.rendered.clone(), Hasher128::new().str(&pixels_key(&p)).str("embedded").u64(*edge as u64).finish()));
+        Some(QuickJob {
+            request_id: 0,
+            photo: id,
+            key,
+            cached,
+            embedded,
+            embedded_cache,
+            embedded_on_disk: false,
+            small: apply_crop.then(|| Box::new(small)),
+        })
     }
 
-    /// A first grid thumbnail for an unedited raw: the cached render for `job` (the real
+    /// A first grid thumbnail for a raw: the cached render for `job` (the real
     /// thumbnail job, from [`Self::thumb_job`]) if there is one — then the result carries
     /// [`QuickSource::Cached`] and `job.key` and is final — else its embedded preview, else `job`
     /// itself: the grid queues no render behind an unedited raw's quick thumbnail
     /// ([`Self::embedded_thumb_is_final`]), so a preview that can't be read must not leave the
-    /// cell empty (issue #1448). `None` for other photos (render them directly).
+    /// cell empty (issue #1448). For an edited raw the camera JPEG is only a stand-in: the grid
+    /// renders the real thumbnail behind it ([`Self::embedded_thumb_is_final`]). `None` for other
+    /// photos (render them directly).
     pub fn quick_thumb_job(&mut self, job: &RenderJob) -> Option<QuickJob> {
         let p = self.catalog.photo(job.photo)?.clone();
-        let (path, l) = self.embedded_of(&p)?;
+        let (path, l) = self.embedded_stand_in_of(&p)?;
         let edge = job.request.max_w.max(job.request.max_h);
         Some(QuickJob {
             request_id: 0,
@@ -1934,6 +2356,10 @@ impl crate::Session {
             key: job.key,
             cached: job.cache.clone().into_iter().collect(),
             embedded: Some((path, l, edge)),
+            // the camera JPEG is this thumbnail (an unedited raw): kept with the rendered ones, under
+            // a key of its own, so the folder's next visit reads it from the thumbnail cache
+            embedded_cache: job.cache.as_ref().map(|(c, k)| (c.clone(), embedded_thumb_key(*k))),
+            embedded_on_disk: true,
             small: Some(Box::new(job.clone())),
         })
     }
@@ -2071,6 +2497,39 @@ impl crate::Session {
         self.media.insert_source(id, level, r);
         Ok(image)
     }
+
+    /// [`Self::source_now`] for several photos at once, each with the facts its decoder gave
+    /// ([`Self::source_info`], read before another photo can push it out of the cache): the
+    /// ones not in memory are decoded in parallel, so a selection costs about one decode per core,
+    /// not one after another. In the order of `ids`. Callers pass a few at a time (all of them are
+    /// held decoded until this returns).
+    pub(crate) fn sources_now(&mut self, ids: &[PhotoId], level: SourceLevel) -> Vec<(PhotoId, Result<(Arc<Rgb32f>, SourceInfo), String>)> {
+        use rayon::prelude::*;
+        let refs: Vec<(PhotoId, Option<SourceRef>)> =
+            ids.iter().map(|&id| (id, self.catalog.photo(id).cloned().map(|p| self.media.source_ref(&p, level)))).collect();
+        let loaded: Vec<(PhotoId, Result<DecodedSource, String>)> =
+            refs.into_par_iter().map(|(id, r)| (id, r.ok_or_else(|| "no such photo".to_string()).and_then(|r| r.load_source()))).collect();
+        loaded
+            .into_iter()
+            .map(|(id, r)| {
+                let r = r.map(|r| {
+                    let image = r.image.clone();
+                    if let Some(info) = &r.info {
+                        self.learn_as_shot_wb(id, info);
+                    }
+                    // read before the insert: the cache's budget may evict this very entry, and
+                    // the header facts alone lack the decoder's camera colour
+                    let facts = match r.info {
+                        Some(_) => r.info_or(self.catalog.photo(id).map(|p| source_info(p)).unwrap_or_default()),
+                        None => self.source_info(id),
+                    };
+                    self.media.insert_source(id, level, r);
+                    (image, facts)
+                });
+                (id, r)
+            })
+            .collect()
+    }
 }
 
 /// What an import learns from a file header (set by the app from `lcc-codecs`/`-raw`).
@@ -2133,6 +2592,30 @@ mod thumbnail_hash_tests {
         s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
         s
     }
+    /// An edited raw (here: exposure; a body's default camera profile picked for a folder is enough)
+    /// still shows its camera JPEG first, in the grid and the loupe, until its
+    /// render replaces it; only an unedited raw's is final.
+    #[test]
+    fn an_edited_raw_still_shows_its_camera_preview_first() {
+        let mut s = crate::Session::new();
+        s.media.preview_loader =
+            Some(Arc::new(|_: &str, edge: usize| Some(Rgba8 { width: edge.min(8), height: 2, data: vec![[9, 8, 7, 255]; edge.min(8) * 2] })));
+        let mut raw = Photo::new(PhotoId(1), Source::File { path: "a.cr3".into() }, "a.cr3", "CR3", 6000, 4000, "2026-01-01");
+        raw.kind = MediaKind::Raw;
+        let mut d = raw.camera_defaults();
+        d.light.exposure = 0.3;
+        raw.develop = Arc::new(d);
+        s.catalog.apply(Op::AddPhoto { photo: Box::new(raw) }).unwrap();
+        let p = s.catalog.photo(PhotoId(1)).unwrap().clone();
+        assert!(!s.embedded_thumb_is_final(&p), "its render replaces the camera JPEG");
+        let q = s.quick_view_job(PhotoId(1), 64, true).unwrap();
+        assert!(q.embedded.is_some(), "the loupe's stand-in is the camera JPEG");
+        assert_eq!(q.run().quick, Some(QuickSource::Embedded));
+        let thumb = s.thumb_job(PhotoId(1), 256).unwrap();
+        let q = s.quick_thumb_job(&thumb).expect("the grid's stand-in");
+        assert_eq!(q.run().quick, Some(QuickSource::Embedded));
+    }
+
     #[test]
     fn hashes_match_uncached_keys_and_are_not_recomputed_for_sizes_metadata_or_before() {
         let mut s = session();
@@ -2150,6 +2633,7 @@ mod thumbnail_hash_tests {
                 .u64(b as u64)
                 .u64(RENDER_CACHE_VERSION)
                 .u64(crate::camera_profiles::cache_key())
+                .u64(crate::sensor_maps::generation())
                 .finish();
             let job = s.thumb_job(p.id, edge).unwrap();
             assert_eq!(job.key, expected);
@@ -2394,6 +2878,8 @@ mod thumbnail_hash_tests {
             key: 9,
             cached: Vec::new(),
             embedded: Some(("x.arw".into(), Arc::new(|_: &str, _: usize| -> Option<Rgba8> { panic!("preview reader bug") }), 256)),
+            embedded_cache: None,
+            embedded_on_disk: false,
             small: None,
         };
         let r = quick.run();
@@ -2438,6 +2924,52 @@ mod tests {
         // release finds the drag's last render)
         let at_rest = s.loupe_job(id, 1024, 1024, true).unwrap().with_display_fit(400, 400);
         assert_eq!(at_rest.clone().with_drawn_view_cache().key, at_rest.key);
+    }
+
+    // Given a photo whose view render of these settings is kept (a built preview, an earlier
+    // visit), when the loupe asks for it at that size or smaller, then it is the kept picture,
+    // fitted, with no render; a larger size, a draft or other settings render
+    #[test]
+    fn the_loupe_uses_a_kept_view_render_at_least_as_big() {
+        let mut s = crate::Session::with_demo();
+        let id = s.active().unwrap();
+        let job = s.loupe_job(id, 1024, 1024, true).unwrap();
+        let (cache, key) = job.view_cache.clone().expect("a loupe job keeps the view preview");
+        let plain = job.run().rendered.unwrap().image;
+        let t0 = std::time::Instant::now();
+        while cache.get_in_memory(key).is_none() && t0.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let same = s.loupe_job(id, 1024, 1024, true).unwrap();
+        assert!(same.cached_view().is_some(), "the kept render serves the same size");
+        assert_eq!(same.run().rendered.unwrap().image.data, plain.data);
+        let small = s.loupe_job(id, 512, 512, true).unwrap().cached_view().expect("and a smaller one");
+        assert!(small.width.max(small.height) <= 512);
+        assert!(s.loupe_job(id, 2048, 2048, true).unwrap().cached_view().is_none() || plain.width.max(plain.height) >= 2048, "a larger view renders");
+        assert!(s.loupe_job(id, 512, 512, true).unwrap().draft().cached_view().is_none(), "a draft renders");
+        s.execute("develop.set", &serde_json::json!({"values": {"light.exposure": 1.0}})).unwrap();
+        assert!(s.loupe_job(id, 512, 512, true).unwrap().cached_view().is_none(), "other settings render");
+        // the default disk budget makes room for every photo's previews, from a floor
+        assert_eq!(default_disk_cache_bytes(0), DISK_CACHE_BYTES);
+        assert!(default_disk_cache_bytes(50_000) > DISK_CACHE_BYTES && default_disk_cache_bytes(usize::MAX) == u64::MAX);
+        // the automatic size: a share of the drive, from 20 GB, never the drive's last 10 GB
+        assert_eq!(automatic_disk_cache_bytes(10, None, 0), AUTO_DISK_CACHE_MIN);
+        assert_eq!(automatic_disk_cache_bytes(10, Some(1000 << 30), 0), 150 << 30);
+        assert!(automatic_disk_cache_bytes(10, Some(12 << 30), 0) <= 6 << 30, "a nearly full drive keeps room");
+        // nearly full: the 20 GB minimum (and the 2 GB floor) give way to half of what is free,
+        // plus what the cache already holds
+        for (free, used) in [(5u64 << 30, 0u64), (1 << 30, 0), (3 << 30, 1 << 30), (0, 0), (100 << 20, 50 << 20)] {
+            for photos in [0, 10, 100_000] {
+                let auto = automatic_disk_cache_bytes(photos, Some(free), used);
+                assert!(auto <= used + free / 2, "{photos} photos, {free} free, {used} used: {auto}");
+            }
+        }
+        assert!(automatic_disk_cache_bytes(10, Some(5 << 30), 0) <= (5 << 30) / 2);
+        for (n, free, used) in [(usize::MAX, Some(u64::MAX), u64::MAX), (0, Some(0), 0), (1, Some(1), 1)] {
+            let _ = automatic_disk_cache_bytes(n, free, used);
+        }
+        // hostile sizes
+        assert!(fit_cached(&plain, 0, 10).is_none() && fit_cached(&Rgba8::new(0, 0), 10, 10).is_none());
     }
 
     #[test]
@@ -2853,6 +3385,7 @@ mod tests {
             points: vec![lcc_geom::Point::new(0.2, 0.5)],
             size: 0.01,
             source_offset: Some(lcc_geom::Point::new(0.6, 0.0)),
+            auto: None,
             ..Default::default()
         });
         s.set_develop(id, d, "Spot").unwrap();

@@ -63,8 +63,20 @@ pub fn check_image(data: &[u8], info: &ImageInfo) -> Result<usize> {
         return Err(RawError::Limit("image data chunks far larger than the image"));
     }
     // Plausibility bound before allocating: no supported coding stores more than ~2000 samples per byte
-    // (Deflate of constant data is the extreme), so tiny files cannot trigger huge allocations.
-    let available: u64 = chunks.iter().map(|c| chunk_bytes(data, c).map_or(0, |s| s.len() as u64)).sum();
+    // (Deflate of constant data is the extreme), so tiny files cannot trigger huge allocations. The
+    // bytes are counted once however many chunks point at them: a grid of tiles sharing one small
+    // payload holds that payload's samples, not the grid's.
+    let mut spans: Vec<(u64, u64)> =
+        chunks.iter().filter_map(|c| Some((c.offset, c.offset.checked_add(chunk_bytes(data, c)?.len() as u64)?))).collect();
+    spans.sort_unstable();
+    let (mut available, mut end) = (0u64, 0u64);
+    for (a, b) in spans {
+        let a = a.max(end);
+        if b > a {
+            available = available.saturating_add(b - a);
+            end = b;
+        }
+    }
     if available.saturating_mul(2048) < total as u64 {
         return Err(RawError::Corrupt(format!("{available} bytes of image data cannot hold {total} samples")));
     }
@@ -313,6 +325,11 @@ fn decode_chunk(data: &[u8], info: &ImageInfo, c: &Chunk, order: ByteOrder, pack
             // Deflate compresses at most about 1:1032, so a source this far under half of its
             // nominal length cannot reconstruct the chunk: refused before the nominal buffer is
             // inflated and predicted, which padding-only work would make gigabytes.
+            // Nor may the nominal chunk be mostly padding outside the image (a tile far larger than the picture):
+            // its allocation and predictor pass would be spent on samples nobody reads.
+            if n > vw.saturating_mul(vh).saturating_mul(cpp).saturating_mul(MAX_PADDING_FACTOR).saturating_add(1 << 20) {
+                return Err(RawError::Limit("deflated chunk is mostly padding outside the image"));
+            }
             if (src.len() as u64).saturating_mul(2048) < inflate_len {
                 return Err(RawError::Corrupt(format!("a deflated chunk of {inflate_len} bytes is packed into only {} bytes", src.len())));
             }
@@ -359,6 +376,10 @@ fn jxl_chunk(_: &[u8], _: usize, _: usize, _: usize, _: usize, _: usize, _: u32,
 fn jxl_chunk_check(src: &[u8], cw: usize, ch: usize, vw: usize, vh: usize, cpp: usize, bits: u32, float: bool) -> Result<()> {
     jxl_chunk(src, cw, ch, vw, vh, cpp, bits, float).map(|_| ())
 }
+
+/// How many times its in-image samples a deflated chunk's nominal size may reach (plus 1 Mi samples of slack):
+/// edge tiles of real files are mostly inside the image.
+const MAX_PADDING_FACTOR: usize = 32;
 
 /// The most samples a tiled JPEG chunk or a white-balance preview may decode to: far more than
 /// any real lossy tile or preview carries, and small enough that a JPEG header alone cannot size
@@ -487,6 +508,30 @@ fn unpack_chunk(
 mod lossy_tests {
     use super::*;
     use lcc_tiff::image::Layout;
+
+    /// 65 536 tiles all pointing at the same 256 bytes: the image's samples can't come from them,
+    /// and nothing of its size is allocated to find that out.
+    #[test]
+    fn tiles_sharing_one_payload_count_its_bytes_once() {
+        let file = vec![0u8; 8 + 256];
+        let info = ImageInfo {
+            width: 4096,
+            height: 4096,
+            bits_per_sample: vec![8],
+            samples_per_pixel: 1,
+            compression: comp::NONE,
+            photometric: 34892,
+            planar: 1,
+            predictor: 1,
+            sample_format: 1,
+            new_subfile_type: 0,
+            layout: Layout::Tiles { tile_width: 16, tile_height: 16 },
+            offsets: vec![8; 65_536],
+            byte_counts: vec![256; 65_536],
+        };
+        let err = check_image(&file, &info).unwrap_err().to_string();
+        assert!(err.contains("cannot hold"), "{err}");
+    }
 
     /// A lossy-DNG-style image: two 16×8 tiles, each a baseline JPEG, the right one cut short
     /// by the image edge.
