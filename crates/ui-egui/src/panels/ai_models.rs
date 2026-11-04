@@ -87,6 +87,14 @@ fn sam3_folder(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             t,
             "This build has no download address for SAM 3: put model.safetensors, vocab.json and merges.txt from Meta's facebook/sam3 in the folder above, and Object and Describe masks work as soon as they are there.",
         );
+        let help = super::dialogs::SAM_HELP;
+        let r = ui.link(crate::i18n::tr("How to install the model")).on_hover_text(help);
+        crate::widgets::register(ui.ctx(), "link:samHelp", r.rect);
+        if r.clicked()
+            && let Err(e) = crate::links::open(app, help)
+        {
+            app.toast(ui.ctx(), e);
+        }
     }
     super::settings::hint(ui, t, "Changing the folder doesn't move a model already downloaded: copy its files over, or download it again.");
 }
