@@ -587,6 +587,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc-gpu-marker-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
+        // exclusive: a directory planted at this predictable name fails the test instead of receiving the marker
+        std::fs::create_dir(&dir).unwrap();
         // a local scope counter: other tests create real devices through the process-wide one
         let active = Mutex::new(0);
         let seen = with_marker_in(&Mutex::new(Some(m.clone())), &active, "device creation", || m.exists());
@@ -607,6 +609,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc-gpu-global-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
+        // exclusive: a directory planted at this predictable name fails the test instead of receiving the marker
+        std::fs::create_dir(&dir).unwrap();
         set_init_marker(Some(m.clone()));
         let seen = InitMarker::current().run(Backends::DX12, || m.exists());
         set_init_marker(None);
@@ -669,6 +673,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc-gpu-scopes-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
+        // exclusive: a directory planted at this predictable name fails the test instead of receiving the marker
+        std::fs::create_dir(&dir).unwrap();
         let active = Mutex::new(0);
         arm(&m, &active, "device creation");
         assert!(read_init_marker(&m).unwrap().contains("device creation"));
@@ -692,6 +698,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc-gpu-panic-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
+        // exclusive: a directory planted at this predictable name fails the test instead of receiving the marker
+        std::fs::create_dir(&dir).unwrap();
         let active = Mutex::new(0);
         let r = std::panic::catch_unwind(|| with_marker_in(&Mutex::new(Some(m.clone())), &active, "kernel compilation", || panic!("compile")));
         assert!(r.is_err());
