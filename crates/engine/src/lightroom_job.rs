@@ -34,14 +34,16 @@ fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate:
     use crate::lightroom_archive::{Kept, MAX_ARCHIVE_BYTES};
     let Some(dir) = archive_dir else { return Ok(None) };
     let limit = MAX_ARCHIVE_BYTES >> 20;
+    // the warning names the program the catalog comes from
+    let program = if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Capture One" } else { "Lightroom" };
     Ok(match crate::lightroom_archive::store_best_effort(dir, data).map_err(error)? {
         Kept::All(path) => Some(path),
         Kept::WithoutSettings(path) => {
-            data.warnings.push(format!("Lightroom source archive exceeded {limit} MiB; archived without history-step and snapshot settings"));
+            data.warnings.push(format!("{program} source archive exceeded {limit} MiB; archived without history-step and snapshot settings"));
             Some(path)
         }
         Kept::Nothing => {
-            data.warnings.push(format!("Lightroom source archive exceeded {limit} MiB; archive skipped"));
+            data.warnings.push(format!("{program} source archive exceeded {limit} MiB; archive skipped"));
             None
         }
     })

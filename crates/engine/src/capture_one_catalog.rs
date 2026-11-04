@@ -93,6 +93,30 @@ fn colour_tag(index: i64) -> Result<&'static str, Option<&'static str>> {
     }
 }
 
+/// The capture time to import from the catalog (`ZEXP_DATE`, seconds since 1970), as
+/// `YYYY-MM-DDTHH:MM:SS`, or nothing. Capture One keeps the camera's wall-clock time as if it were
+/// UTC, so it is formatted as UTC, with no offset. A file that is there is read when it is added and
+/// keeps its own time (with its offset); any other original (on a drive that isn't connected, on
+/// another computer, deleted) has only the catalog's.
+fn catalog_capture_time(original_on_disk: bool, seconds: Option<f64>) -> String {
+    match seconds {
+        Some(s) if !original_on_disk && s.is_finite() && s.abs() < 9.0e15 => {
+            chrono::DateTime::from_timestamp(s.trunc() as i64, 0).map(|t| t.naive_utc().format("%Y-%m-%dT%H:%M:%S").to_string()).unwrap_or_default()
+        }
+        _ => String::new(),
+    }
+}
+
+/// The camera's make and model as the catalog has them, or nothing for a file without one: Capture
+/// One then names the format instead (`Adobe Systems Inc.` / `Tiff File` for a TIFF,
+/// `Joint Photographic Experts Group` / `Jpeg File` for a JPEG).
+fn camera(image: &Row) -> (&str, &str) {
+    let (make, model) = (text(image, "ZCAMERA_MAKE").trim(), text(image, "ZCAMERA_MODEL").trim());
+    let format = text(image, "ZEXP_FORMAT").trim();
+    let names_the_format = model.strip_suffix(" File").is_some_and(|f| !f.is_empty() && f.eq_ignore_ascii_case(format));
+    if names_the_format { ("", "") } else { (make, model) }
+}
+
 /// The folder an image's `ZPATHLOCATION` names, as a path string (it may be on another computer).
 /// Relative locations are relative to the folder the catalog database is in.
 fn location_path(loc: &Row, catalog_dir: &Path) -> Option<String> {
@@ -313,13 +337,9 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
         // ZWIDTH / ZHEIGHT are the file's pixels (ZPIXELWIDTH is the sensor's pixel pitch in µm)
         let width = int(image, "ZWIDTH").unwrap_or(0).max(0);
         let height = int(image, "ZHEIGHT").unwrap_or(0).max(0);
-        // The file's own capture time is read when it is added; an offline original has only the catalog's.
-        let captured = match (&original, image.get("ZEXP_DATE").and_then(Value::as_f64)) {
-            (Original::Local, _) | (_, None) => String::new(),
-            (_, Some(seconds)) => chrono::DateTime::from_timestamp(seconds.trunc() as i64, 0)
-                .map(|t| t.naive_utc().format("%Y-%m-%dT%H:%M:%S").to_string())
-                .unwrap_or_default(),
-        };
+        let on_disk = original == Original::Local && Path::new(&path).is_file();
+        let captured = catalog_capture_time(on_disk, image.get("ZEXP_DATE").and_then(Value::as_f64));
+        let (camera_make, camera_model) = camera(image);
         let image_variants = by_image.get(&image_pk).cloned().unwrap_or_default();
         if image_variants.is_empty() {
             skipped.push(SkippedImage { image: image_pk, reason: SkipReason::MissingFile });
@@ -359,6 +379,10 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
                 "pick": if stars < 0 { -1 } else { 0 },
                 "colorLabels": label,
                 "captureTime": captured,
+                // the camera as the catalog has it, for a photo whose file isn't read (the file's own wins)
+                "cameraMake": camera_make,
+                "cameraModel": camera_model,
+                "lens": text(image, "ZCAMERA_LENS").trim(),
             });
             if master != 0
                 && let Some(obj) = row.as_object_mut()
@@ -519,6 +543,34 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
 mod tests {
     use super::*;
 
+    /// A SQLite file with these tables, one leaf page each; a table's columns are its rows' keys.
+    fn sqlite(tables: &[(&str, Vec<Value>)]) -> Vec<u8> {
+        use crate::lightroom_sqlite::Value as Sql;
+        let specs: Vec<(String, String, Vec<Vec<Sql>>)> = tables
+            .iter()
+            .map(|(name, rows)| {
+                let columns: std::collections::BTreeSet<String> = rows.iter().flat_map(|r| r.as_object().unwrap().keys().cloned()).collect();
+                let cells = rows
+                    .iter()
+                    .map(|r| {
+                        columns
+                            .iter()
+                            .map(|c| match &r[c] {
+                                Value::Number(n) if n.is_i64() => Sql::Integer(n.as_i64().unwrap()),
+                                Value::Number(n) => Sql::Real(n.as_f64().unwrap()),
+                                Value::String(s) => Sql::Text(s.clone()),
+                                _ => Sql::Null,
+                            })
+                            .collect()
+                    })
+                    .collect();
+                (name.to_string(), columns.into_iter().collect::<Vec<_>>().join(", "), cells)
+            })
+            .collect();
+        let refs: Vec<(&str, &str, Vec<Vec<Sql>>)> = specs.iter().map(|(n, c, r)| (n.as_str(), c.as_str(), r.clone())).collect();
+        crate::lightroom_catalog::tests::native_catalog_rows(&refs, None)
+    }
+
     #[test]
     fn colour_tags_map_to_library_labels_or_say_why_not() {
         assert_eq!(colour_tag(1), Ok("Red"));
@@ -526,6 +578,75 @@ mod tests {
         assert_eq!(colour_tag(2), Err(Some("orange")));
         assert_eq!(colour_tag(0), Err(None));
         assert_eq!(colour_tag(-5), Err(None));
+    }
+
+    /// The catalog's capture time is imported whenever the file isn't there to be read, whatever
+    /// the path looks like; a file that is there keeps its own (which has its UTC offset).
+    #[test]
+    fn the_catalogs_capture_time_is_used_when_the_file_is_not_there() {
+        // 2000-01-01 12:00:00 on the camera's clock, as Capture One stores it
+        let seconds = Some(946_728_000.0);
+        assert_eq!(catalog_capture_time(false, seconds), "2000-01-01T12:00:00");
+        assert_eq!(catalog_capture_time(true, seconds), "", "the file's own time wins");
+        assert_eq!(catalog_capture_time(false, None), "");
+        // hostile numbers are no time, not a panic
+        for bad in [f64::NAN, f64::INFINITY, -f64::INFINITY, 1.0e300, -1.0e300] {
+            assert_eq!(catalog_capture_time(false, Some(bad)), "", "{bad}");
+        }
+    }
+
+    /// End to end through the reader: an image whose folder is on a drive that isn't there gets the
+    /// catalog's capture time and camera; the same catalog with the file present leaves the time to
+    /// the file.
+    #[test]
+    fn an_offline_original_gets_the_catalogs_time_and_camera() {
+        let dir = std::env::temp_dir().join(format!("c1-offline-time-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Originals")).unwrap();
+        let db = dir.join("Test.cocatalogdb");
+        let image = |location: i64| {
+            json!({"Z_PK": 1, "ZIMAGEFILENAME": "a.NEF", "ZIMAGELOCATION": location, "ZWIDTH": 6000, "ZHEIGHT": 4000,
+                   "ZEXP_DATE": 946_728_000.0, "ZCAMERA_MAKE": "EXAMPLE CORP", "ZCAMERA_MODEL": "EXAMPLE X1 ", "ZCAMERA_LENS": "EXAMPLE 50mm"})
+        };
+        let tables = |location: i64| {
+            sqlite(&[
+                ("ZIMAGE", vec![image(location)]),
+                (
+                    "ZPATHLOCATION",
+                    vec![
+                        json!({"Z_PK": 1, "ZWINROOT": "Q:\\", "ZMACROOT": "/Volumes/Gone", "ZRELATIVEPATH": "Photos"}),
+                        json!({"Z_PK": 2, "ZRELATIVEPATH": "./Originals", "ZISRELATIVE": 1}),
+                    ],
+                ),
+                ("ZVARIANT", vec![json!({"Z_PK": 7, "ZIMAGE": 1, "ZVARIANTUUID": "u"})]),
+            ])
+        };
+        let cancel = AtomicBool::new(false);
+        let read = |bytes: Vec<u8>| {
+            std::fs::write(&db, bytes).unwrap();
+            read_with_progress(&db, &cancel, &AtomicUsize::new(0), &AtomicUsize::new(0)).unwrap()
+        };
+        let offline = read(tables(1));
+        let row = &offline.photos[0].image;
+        assert_eq!(row["captureTime"], "2000-01-01T12:00:00");
+        assert_eq!((&row["cameraMake"], &row["cameraModel"], &row["lens"]), (&json!("EXAMPLE CORP"), &json!("EXAMPLE X1"), &json!("EXAMPLE 50mm")));
+        std::fs::write(dir.join("Originals").join("a.NEF"), b"raw").unwrap();
+        let here = read(tables(2));
+        assert!(here.photos[0].original_is_file());
+        assert_eq!(here.photos[0].image["captureTime"], "", "a file that is there keeps its own time");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_format_named_in_place_of_a_camera_is_no_camera() {
+        let row = |make: &str, model: &str, format: &str| -> Row {
+            serde_json::from_value(json!({"ZCAMERA_MAKE": make, "ZCAMERA_MODEL": model, "ZEXP_FORMAT": format})).unwrap()
+        };
+        assert_eq!(camera(&row("Adobe Systems Inc.", "Tiff File", "TIFF")), ("", ""));
+        assert_eq!(camera(&row("Joint Photographic Experts Group", "Jpeg File", "JPEG")), ("", ""));
+        assert_eq!(camera(&row("EXAMPLE CORP", "EXAMPLE X1", "RAW")), ("EXAMPLE CORP", "EXAMPLE X1"));
+        // a camera whose model happens to end in "File" is still a camera
+        assert_eq!(camera(&row("Acme", "Raw File", "JPEG")), ("Acme", "Raw File"));
     }
 
     #[test]
