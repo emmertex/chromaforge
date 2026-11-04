@@ -94,6 +94,11 @@ impl Finder {
             let mut out = Vec::new();
             for d in dets {
                 let landmarks = self.model.landmarks(rgb, w, h, &d).map_err(|e| e.to_string())?;
+                // FaceMesh not seeing a face there, and the detector only fairly sure: a pattern, a paw, a circuit
+                // board (the detector alone takes those for faces, mostly in the tiles of `fine`)
+                if landmarks.is_none() && d.score < lcc_segment::people::FACE_THRESHOLD_NO_MESH {
+                    continue;
+                }
                 let found = crate::segment::FoundFace::from_pixels(&lcc_segment::people::Face { detection: d, landmarks }, w as f32, h as f32);
                 let [x0, y0, x1, y1] = found.rect;
                 out.push(Face { x0, y0, x1, y1, score: found.score, landmarks: found.five() });
