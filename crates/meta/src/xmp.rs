@@ -393,8 +393,13 @@ fn is_rdf_meta_attr(k: &str) -> bool {
 
 fn collect_description(d: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<String>>, budget: &mut usize) {
     for (k, v) in &d.attrs {
-        if !is_rdf_meta_attr(k) && take_key_bytes(&format!("{prefix}{k}"), budget) {
-            props.entry(format!("{prefix}{k}")).or_default().push(v.clone());
+        // the budget is checked before the path is built, not after
+        if is_rdf_meta_attr(k) || *budget < prefix.len().saturating_add(k.len()) {
+            continue;
+        }
+        let key = format!("{prefix}{k}");
+        if take_key_bytes(&key, budget) {
+            props.entry(key).or_default().push(v.clone());
         }
     }
     for c in &d.children {
@@ -414,6 +419,11 @@ fn take_key_bytes(key: &str, budget: &mut usize) -> bool {
 }
 
 fn collect_property(p: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<String>>, budget: &mut usize) {
+    // a path that can't fit the budget isn't built (a long ancestor path shared by many children
+    // would otherwise be copied for each of them after the budget is spent)
+    if *budget < prefix.len().saturating_add(p.name.len()) {
+        return;
+    }
     let key = format!("{prefix}{}", p.name);
     if let Some(arr) = p.children.iter().find(|c| matches!(c.name.as_str(), "rdf:Seq" | "rdf:Bag" | "rdf:Alt")) {
         let mut items: Vec<(bool, String)> = arr
@@ -433,6 +443,12 @@ fn collect_property(p: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<Str
         return;
     }
     let struct_prefix = format!("{key}/");
+    // a struct's path is charged like a key before its fields copy it: that work too is bounded
+    // by the budget, kept fields or not
+    let is_struct = p.attr("rdf:parseType") == Some("Resource") || p.children.iter().any(|c| c.name == "rdf:Description");
+    if is_struct && !take_key_bytes(&key, budget) {
+        return;
+    }
     if p.attr("rdf:parseType") == Some("Resource") {
         for c in &p.children {
             collect_property(c, &struct_prefix, props, budget);
