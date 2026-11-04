@@ -170,6 +170,7 @@ pub enum StartupView {
     #[default]
     Last,
     Grid,
+    SquareGrid,
     Detail,
 }
 
@@ -2689,6 +2690,7 @@ impl UiState {
         match self.settings.startup_view {
             StartupView::Last => {}
             StartupView::Grid => self.view = ViewMode::PhotoGrid,
+            StartupView::SquareGrid => self.view = ViewMode::SquareGrid,
             StartupView::Detail => self.view = ViewMode::Detail,
         }
         self

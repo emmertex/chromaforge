@@ -350,7 +350,12 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         choices(
             ui,
             "settingsStartup",
-            &[(StartupView::Last, "Last view"), (StartupView::Grid, "Photo Grid"), (StartupView::Detail, "Detail View")],
+            &[
+                (StartupView::Last, "Last view"),
+                (StartupView::Grid, "Photo Grid"),
+                (StartupView::SquareGrid, "Square Grid"),
+                (StartupView::Detail, "Detail View"),
+            ],
             &mut app.ui.settings.startup_view,
         );
     });

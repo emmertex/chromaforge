@@ -301,7 +301,17 @@ fn painter_command(app: &mut LccApp, p: &Value) -> Result<Value, String> {
         _ => {}
     }
     if !matches!(app.ui.view, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid) {
-        app.ui.view = crate::state::ViewMode::PhotoGrid;
+        let prev_grid = app
+            .ui
+            .layouts
+            .get(&crate::module::ModuleId::Library)
+            .and_then(|l| l.view)
+            .filter(|v| matches!(v, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid));
+        app.ui.view = prev_grid.unwrap_or(if app.ui.settings.startup_view == crate::state::StartupView::SquareGrid {
+            crate::state::ViewMode::SquareGrid
+        } else {
+            crate::state::ViewMode::PhotoGrid
+        });
     }
     app.ui.lib.last_painter = Some(painter.clone());
     app.ui.lib.painter = Some(painter.clone());
