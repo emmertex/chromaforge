@@ -209,7 +209,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             for (id, icon, tip, cmd) in [
                 ("cloud", Icon::Cloud, cloud_tip, ""),
                 ("help", Icon::Help, "Keyboard shortcuts", "app.shortcuts"),
-                ("share", Icon::Share, "Export", "dialog.export"),
+                ("share", Icon::Share, "Export", "file.export"),
                 ("import", Icon::Plus, import_tip.as_str(), "dialog.import"),
             ] {
                 let r = Rect::from_center_size(pos2(x, full.center().y), vec2(28.0, 28.0));

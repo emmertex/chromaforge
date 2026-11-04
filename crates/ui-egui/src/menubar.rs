@@ -136,7 +136,7 @@ const LAYOUT: &[(&str, &[&str])] = &[
             "---",
             "@Libraries",
             "---",
-            "dialog.export",
+            "file.export",
             "app.exportPrevious",
             "@Export with Preset",
             "@More Exports",

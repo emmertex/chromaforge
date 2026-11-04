@@ -284,7 +284,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.syncSettings", "Sync Settings…", Some("Cmd+Shift+S"), "Photo>Develop Settings"),
     ("view.focusSearch", "Find…", Some("Cmd+F"), "Library"),
     ("dialog.import", "Import…", Some("Cmd+Shift+I"), "File"),
-    ("dialog.export", "Export…", None, "File"),
+    ("file.export", "Export…", None, "File"),
+    ("dialog.export", "Export Dialog…", None, ""),
     ("dialog.print", "Print…", Some("Cmd+P"), "File"),
     ("app.print", "Print to PDF", None, ""),
     ("dialog.contactSheet", "Contact Sheet PDF…", None, "File>More Exports"),
@@ -2043,6 +2044,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             crate::export_task::start_contact_sheet(app, &params)
         }
+        // File ▸ Export…, ⇧E, the top bar's Export button: the Export module on the desktop, the
+        // dialog on touch layouts (no room there for the module's settings column)
+        "file.export" => {
+            let to = if crate::modern::on(app) { "dialog.export" } else { "module.export" };
+            app.run(to, json!({}))
+        }
         "dialog.export" => {
             let prev = app.session.last_export.clone().unwrap_or_default();
             let u = |k: &str, d: u64| prev.get(k).and_then(Value::as_u64).unwrap_or(d);
@@ -3091,7 +3098,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
             !cfg!(target_arch = "wasm32") && !app.session.slideshow_export.as_ref().is_some_and(|r| r.running())
         }
         s if s.starts_with("panel.") || s.starts_with("tool.") || s.starts_with("section.") => app.session.active().is_some() || s == "panel.close",
-        "app.export" | "dialog.export" | "dialog.createPreset" | "dialog.rename" | "dialog.captureTime" | "dialog.copySettings" => {
+        "app.export" | "dialog.export" | "file.export" | "dialog.createPreset" | "dialog.rename" | "dialog.captureTime" | "dialog.copySettings" => {
             app.session.active().is_some()
         }
         "photo.tagFromTracklog" => app.session.active().is_some() && app.services.pick_tracklog.is_some(),

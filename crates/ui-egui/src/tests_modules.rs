@@ -518,3 +518,13 @@ fn export_module_previews_and_resizes() {
     h.settle(SETTLE);
     assert!(width(&h) < before, "dragging the edge right narrows the column");
 }
+
+/// File ▸ Export… (⇧E, the top bar's Export button) opens the Export module on the desktop.
+#[test]
+fn file_export_opens_the_module() {
+    let mut h = demo();
+    run(&mut h, "file.export", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.module, ModuleId::Export);
+    assert!(h.app.ui.dialog.is_none());
+}
