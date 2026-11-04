@@ -9,3 +9,4 @@
 - Place-name downloads and XMP files with absurd contents (huge dump files, thousands of namespace declarations) are refused instead of slowing the app down.
 - A download whose secure connection is cut short is reported as an error instead of being treated as complete.
 - Lens databases, HEIC images and Object selections with absurd contents (huge name copies, thousands of tiles or clicks) are refused or capped instead of slowing the app down, and moving a photo no longer copies a sidecar that is really a link to another file.
+- The app no longer writes through a link planted under a temporary file name (denoise cache, camera profiles, slideshow export, drive check).
