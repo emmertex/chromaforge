@@ -187,3 +187,25 @@ fn the_frame_loop_reads_focus_points_for_photos_imported_earlier() {
     assert!(h.step_until(SETTLE, |h| has_point(h, 9002)));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A Canon file's AF point (AFInfo2 in its maker note, read from the file's header like the background reader
+/// does) puts the box on the photo, and Z zooms to it.
+#[test]
+fn a_canon_files_af_point_is_read_and_z_zooms_to_it() {
+    let bytes = lcc_meta::focus::synthetic_cr2(200_000);
+    let read = lcc_meta::focus::read_header(bytes.len() as u64, &mut |off, buf| {
+        let start = usize::try_from(off).expect("offset");
+        buf.copy_from_slice(bytes.get(start..start + buf.len()).expect("in the file"));
+        Ok(())
+    })
+    .expect("read");
+    let point = read.focus.expect("a Canon AF point");
+    assert_eq!(Some(&point), lcc_meta::extract(&bytes).focus.as_ref(), "header-only and whole-file reads agree");
+    let (mut h, _) = detail_with_focus(Some(point));
+    let r = h.request("ui.key", json!({"key": "z"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(matches!(h.app.ui.zoom, Zoom::Percent(_)), "{:?}", h.app.ui.zoom);
+    let (u, v) = h.app.ui.pan;
+    assert!((u - 0.75).abs() < 1e-3 && (v - 0.25).abs() < 1e-3, "pan {u} {v}");
+}

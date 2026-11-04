@@ -16,6 +16,7 @@ pub mod cr3;
 mod datetime;
 mod exif;
 pub mod focus;
+mod focus_canon;
 mod focus_read;
 mod fuji;
 mod gpx;
@@ -428,7 +429,7 @@ pub fn exposure_display_of(t: f64) -> Option<String> {
 /// Precedence: EXIF, then IPTC fills gaps, then XMP overrides user fields and fills the rest.
 pub fn extract(bytes: &[u8]) -> Metadata {
     let e = embedded(bytes);
-    let exif = e.exif.as_deref().map(read_exif).unwrap_or_default();
+    let exif = with_cr3_focus(bytes, e.exif.as_deref().map(read_exif).unwrap_or_default());
     let xmp = e.xmp.as_deref().and_then(|xmp| parse_xmp(xmp).ok());
     extract_embedded(e, exif, xmp)
 }
@@ -443,12 +444,21 @@ pub fn try_extract(bytes: &[u8]) -> Result<Metadata, ExtractError> {
         Some(exif) => read_exif(exif),
         None => Metadata::default(),
     };
+    let exif = with_cr3_focus(bytes, exif);
     let xmp = match e.xmp.as_deref() {
         Some(xmp) if is_psd => Some(parse_xmp(xmp).map_err(|_| ExtractError::MalformedPsd)?),
         Some(xmp) => parse_xmp(xmp).ok(),
         None => None,
     };
     Ok(extract_embedded(e, exif, xmp))
+}
+
+/// A CR3 keeps its maker note in a block of its own (`CMT3`), apart from the merged Exif: read its focus point.
+fn with_cr3_focus(bytes: &[u8], mut m: Metadata) -> Metadata {
+    if m.focus.is_none() && cr3::is_cr3(bytes) {
+        m.focus = focus::cr3_focus(bytes, m.make.as_deref(), m.orientation);
+    }
+    m
 }
 
 fn extract_embedded(e: Embedded, mut m: Metadata, xmp: Option<XmpData>) -> Metadata {
