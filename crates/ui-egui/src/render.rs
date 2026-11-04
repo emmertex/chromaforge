@@ -588,7 +588,33 @@ impl Default for Renderer {
     }
 }
 
+/// Workers kept for the stand-ins ([`Slot::is_stand_in`]) on top of the others: the cheapest
+/// pictures (a raw's embedded JPEG, a cached thumbnail or render) never wait for a worker while the
+/// others render raws for seconds ("Rendering…" in the loupe and empty grid cells while every
+/// worker decoded a 45 MP CR3).
+const STAND_IN_WORKERS: usize = 2;
+
+/// Jobs below this priority are background work (the real thumbnails rendered behind the
+/// stand-ins, [`crate::panels::grid::BACKGROUND_THUMB_PRIORITY`]): at most [`BACKGROUND_AT_ONCE`]
+/// of them run at once, so a worker is always free for the photo on screen.
+const BACKGROUND_BELOW: u32 = 4;
+const BACKGROUND_AT_ONCE: usize = 2;
+
+impl Slot {
+    /// A stand-in picture: cheap to make (a raw's embedded JPEG, a cached picture), and what a view
+    /// shows first, before any render ([`STAND_IN_WORKERS`]).
+    pub fn is_stand_in(&self) -> bool {
+        matches!(self, Slot::ThumbQuick(_) | Slot::Preview)
+    }
+}
+
 impl Renderer {
+    fn pool(threads: usize) -> JobPool<Slot, Finished> {
+        let pool = if threads == 0 { JobPool::new(0) } else { JobPool::with_fast_lane(threads, STAND_IN_WORKERS, Slot::is_stand_in) };
+        pool.cap_background(BACKGROUND_BELOW, BACKGROUND_AT_ONCE);
+        pool
+    }
+
     /// Explicit worker count for hosts and bounded validation runs (one to six on native).
     /// Browser hosts continue to use inline jobs or their installed worker offload.
     pub fn with_worker_threads(threads: usize) -> Self {
@@ -602,7 +628,7 @@ impl Renderer {
             shown_ids: HashMap::new(),
             epoch: 0,
             preview_generation: None,
-            pool: JobPool::new(threads),
+            pool: Self::pool(threads),
             thumb_inputs: HashMap::new(),
             embedded_thumbs: HashMap::new(),
             offload: None,
@@ -697,7 +723,7 @@ impl Renderer {
             if let Some(&(k, p)) = self.pending.get(&quick_slot)
                 && k == key
             {
-                return p == priority.saturating_add(1) || !self.is_queued(quick_slot);
+                return p == crate::panels::grid::stand_in_priority(priority) || !self.is_queued(quick_slot);
             }
             return !self.request_needed(slot, key, crate::panels::grid::BACKGROUND_THUMB_PRIORITY);
         }
@@ -723,7 +749,8 @@ impl Renderer {
         let Some((old, size, key)) = self.embedded_thumbs.get(&photo.id) else { return false };
         let slot = Slot::ThumbQuick(photo.id);
         // a queued stand-in at another priority isn't settled yet: the grid moves it (both ways)
-        let requeue = self.pending.get(&slot).is_some_and(|&(k, p)| k == *key && p != priority.saturating_add(1) && self.is_queued(slot));
+        let requeue =
+            self.pending.get(&slot).is_some_and(|&(k, p)| k == *key && p != crate::panels::grid::stand_in_priority(priority) && self.is_queued(slot));
         old.as_ptr() == Arc::as_ptr(photo) && *size >= bucket && !requeue && !self.request_needed(slot, *key, priority)
     }
 
@@ -738,7 +765,7 @@ impl Renderer {
             && self.pending.get(&slot).is_some_and(|&(k, p)| {
                 // a queued stand-in follows the grid's priority both ways (scrolling demotes it too);
                 // `request_quick` only reprioritizes it, so this never restarts work
-                k == *key && (p == priority.saturating_add(1) || !self.is_queued(slot))
+                k == *key && (p == crate::panels::grid::stand_in_priority(priority) || !self.is_queued(slot))
             })
     }
 
@@ -1676,6 +1703,11 @@ impl Renderer {
         }
     }
 
+    /// Frames polled so far (one a frame).
+    pub fn frame(&self) -> u64 {
+        self.frame
+    }
+
     pub fn thumb_textures(&self) -> usize {
         self.textures.keys().filter(|s| matches!(s, Slot::Thumb(_) | Slot::ThumbQuick(_))).count()
     }
@@ -2120,7 +2152,7 @@ impl Renderer {
     pub fn evict_thumbs(&mut self, keep: &std::collections::HashSet<PhotoId>, max: usize) {
         self.thumb_inputs.retain(|id, _| keep.contains(id));
         let dropped = self.pool.reprioritize(|s, p| match s {
-            Slot::Thumb(id) | Slot::ThumbQuick(id) if !keep.contains(id) && p <= 11 => None,
+            Slot::Thumb(id) | Slot::ThumbQuick(id) if !keep.contains(id) && (p <= 11 || p == crate::panels::grid::STAND_IN_ON_SCREEN) => None,
             _ => Some(p),
         });
         for s in dropped {
@@ -2277,9 +2309,10 @@ mod thumbnail_tests {
         let request_id = r.requests[&slot].id;
         assert!(r.thumb_current(&p, 384, 5));
         assert!(!r.thumb_current(&p, 384, 10));
-        r.request_quick(slot, quick.clone(), 11); // visible grid: 10 + 1
+        let visible = crate::panels::grid::stand_in_priority(10);
+        r.request_quick(slot, quick.clone(), visible); // visible grid
         assert!(r.thumb_current(&p, 384, 10));
-        r.request_quick(slot, quick.clone(), 11);
+        r.request_quick(slot, quick.clone(), visible);
         assert_eq!(r.requests[&slot].id, request_id);
         assert_eq!(r.pool.queued(), 2);
         r.pool.run_inline(1);
@@ -2714,6 +2747,46 @@ mod thumbnail_tests {
         std::fs::remove_file(replacement).unwrap();
     }
 
+    /// An edited raw: its camera JPEG is still the
+    /// cell's first picture, ahead of every render, and the real thumbnail behind it is background
+    /// work that waits while another cell on screen still lacks its first picture.
+    #[test]
+    fn an_edited_raw_shows_its_camera_jpeg_first_and_the_render_waits_behind_the_stand_ins() {
+        let mut s = Session::new();
+        s.media.preview_loader = Some(Arc::new(|_, _| Some(lcc_raster::Rgba8 { width: 4, height: 4, data: vec![[200, 100, 50, 255]; 16] })));
+        let mut raw = (*photo()).clone();
+        raw.kind = lcc_catalog::MediaKind::Raw;
+        let mut d = raw.camera_defaults();
+        d.light.exposure = 0.3;
+        raw.develop = Arc::new(d);
+        let (mut app, work, ctx) = fixture_with(s, raw);
+        app.renderer.pool = JobPool::new(0);
+        let id = PhotoId(1);
+        assert!(!app.session.embedded_thumb_is_final(app.session.catalog.photo(id).unwrap()));
+        crate::panels::grid::request_thumb(&mut app, id, 384, 10);
+        assert_eq!(app.renderer.pending[&Slot::ThumbQuick(id)].1, crate::panels::grid::STAND_IN_ON_SCREEN, "the stand-in comes before renders");
+        assert!(work.borrow().jobs.is_empty(), "no raw render before the stand-in");
+        // the cell on screen has no picture yet: background work waits for it
+        crate::panels::grid::note_cell(&mut app, id);
+        assert!(app.pictures_busy(app.renderer.frame()));
+        assert!(lcc_engine::prep::pictures_busy());
+        assert_eq!(app.renderer.pool.run_inline(1), 1);
+        app.renderer.poll(&ctx, &mut app.session);
+        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Embedded), "the camera JPEG is on screen");
+        // another cell still waits for its picture in this frame: the real render is held back
+        app.pictures_missing(app.renderer.frame());
+        crate::panels::grid::request_thumb(&mut app, id, 384, 10);
+        assert!(work.borrow().jobs.is_empty(), "the real thumbnail waits while a cell lacks its first picture");
+        // a couple of frames later every cell has one: the real render follows, at background priority
+        app.renderer.poll(&ctx, &mut app.session);
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(!app.pictures_busy(app.renderer.frame()));
+        crate::panels::grid::request_thumb(&mut app, id, 384, 10);
+        let (slot, _) = take_job(&work);
+        assert_eq!(slot, Slot::Thumb(id), "the edit is rendered behind the stand-in");
+        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Embedded), "the stand-in stays until then");
+    }
+
     #[test]
     fn grid_queued_standin_changes_priority_without_restarting() {
         let mut s = Session::new();
@@ -2731,7 +2804,7 @@ mod thumbnail_tests {
         assert_eq!(app.renderer.pending[&slot].1, 6);
         assert_eq!(app.renderer.pool.queued(), 1);
         crate::panels::grid::request_thumb(&mut app, id, 384, 10);
-        assert_eq!(app.renderer.pending[&slot].1, 11, "the grid must promote its queued stand-in");
+        assert_eq!(app.renderer.pending[&slot].1, crate::panels::grid::STAND_IN_ON_SCREEN, "the grid must promote its queued stand-in");
         assert_eq!(app.renderer.requests[&slot].id, request_id);
         assert_eq!(app.renderer.pool.queued(), 1);
 

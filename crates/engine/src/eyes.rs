@@ -1223,10 +1223,10 @@ pub(crate) fn wait_for_foreground(cancel: &std::sync::atomic::AtomicBool) -> boo
     cancel.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Wait (at most `_most`) while a cell or the loupe still lacks its first picture; true when
-/// `stop` says to give up. Without a preparation scheduler there is nothing to wait for.
-pub(crate) fn wait_for_pictures(stop: &dyn Fn() -> bool, _most: std::time::Duration) -> bool {
-    stop()
+/// Wait (at most `most`) while a cell or the loupe still lacks its first picture
+/// ([`crate::prep::pictures_missing`]); true when `stop` says to give up.
+pub(crate) fn wait_for_pictures(stop: &dyn Fn() -> bool, most: std::time::Duration) -> bool {
+    crate::prep::wait_for_pictures(stop, most)
 }
 
 /// What came back for a job.
