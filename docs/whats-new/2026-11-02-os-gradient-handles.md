@@ -1,0 +1,2 @@
+### Gradient handles say what they do
+- The pointer shows what a drag on the selected gradient does: move, resize or turn. A Linear gradient shows its middle line; dragging it turns the gradient, dragging the outer lines widens or narrows the fade. A Radial gradient shows its feather ring with a handle, and a Feather slider under it; dragging just outside its edge turns it. Ported from OneSlips' fork.

@@ -135,7 +135,7 @@ fn id_counters_are_moved_past_the_ids_in_use() {
 fn history_beyond_the_limit_is_trimmed_on_load() {
     let (mut c, ids) = sound();
     let extra = HISTORY_LIMIT * 5;
-    let step = HistoryStep { label: "s0".into(), settings: std::sync::Arc::new(lcc_develop::DevelopSettings::default()) };
+    let step = HistoryStep { label: "s0".into(), settings: std::sync::Arc::new(lcc_develop::DevelopSettings::default()), batch: None };
     c.apply(Op::PushHistory { id: ids[0], step }).unwrap();
     c.apply(Op::SetHistoryCursor { id: ids[0], cursor: Some(extra - 3) }).unwrap();
     let (loaded, report) = load_edited(&c, |v| {
@@ -174,7 +174,7 @@ fn an_album_filed_under_another_id_gets_its_own() {
     let folder = c.albums().find(|a| a.folder).unwrap().id;
     let inner = c.albums().find(|a| !a.folder).unwrap().id;
     let (c, report) = load_edited(&c, |v| v["albums"][inner.0.to_string()]["id"] = folder.0.into());
-    assert!(report.repaired.iter().any(|r| r.contains(&format!("album {} was filed as {}", folder.0, inner.0))), "{:?}", report.repaired);
+    assert!(report.repaired.iter().any(|r| r.contains(&format!("collection {} was filed as {}", folder.0, inner.0))), "{:?}", report.repaired);
     let a = c.album(inner).unwrap();
     assert_eq!((a.id, a.parent), (inner, Some(folder)));
     assert_eq!(c.album_children(Some(folder)).iter().map(|a| a.id).collect::<Vec<_>>(), vec![inner]);

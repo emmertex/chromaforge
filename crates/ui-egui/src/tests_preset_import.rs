@@ -28,7 +28,11 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
 fn import(h: &mut Headless, paths: &[&std::path::Path]) -> serde_json::Value {
     let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
     let r = h.request("engine.execute", json!({"command": "file.importPresets", "params": {"paths": paths}}), T);
-    h.settle(SETTLE);
+    // a few frames apply the import to the UI; a full settle could outlast the toast on a slow
+    // runner (it is shown for 1.4 s of frame time), and the tests read it
+    for _ in 0..5 {
+        h.step();
+    }
     r
 }
 

@@ -77,23 +77,31 @@ pub fn apply(app: &mut LccApp, ctx: &egui::Context, name: &str, params: Value) {
 fn take_brush(app: &mut LccApp, b: &Value) {
     let Some(b) = b.as_object() else { return };
     let f = |k: &str| b.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+    let mut s = app.ui.brush_set(false);
+    // (a size an older build saved as a fraction of the photo becomes the Size that paints the same)
     if let Some(v) = f("size") {
-        app.ui.brush_size = (v as f32).clamp(0.002, 0.5);
+        s.size = crate::state::brush_size_of(v as f32);
     }
     if let Some(v) = f("feather") {
-        app.ui.brush_feather = (v as f32).clamp(0.0, 100.0);
+        s.feather = v as f32;
     }
     if let Some(v) = f("flow") {
-        app.ui.brush_flow = (v as f32).clamp(1.0, 100.0);
+        s.flow = v as f32;
     }
+    if let Some(v) = f("density") {
+        s.density = v as f32;
+    }
+    app.ui.set_brush_set(false, s);
     if let Some(v) = b.get("auto_mask").and_then(Value::as_bool) {
         app.ui.brush_auto_mask = v;
     }
+    // (left out when it is the default)
+    app.ui.brush_auto_range = f("auto_range").unwrap_or(0.0).clamp(-lcc_develop::AUTO_RANGE_MAX, lcc_develop::AUTO_RANGE_MAX) as f32;
 }
 
 /// The brush settings in use, as an effect carries them.
 fn brush_now(app: &LccApp) -> Value {
-    json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow, "auto_mask": app.ui.brush_auto_mask})
+    json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather, "flow": app.ui.brush_flow, "density": app.ui.brush_density, "auto_mask": app.ui.brush_auto_mask, "auto_range": app.ui.brush_auto_range})
 }
 
 /// Open the New Effect Preset dialog for the selected mask.
@@ -142,6 +150,12 @@ fn menu_rows(effects: &[MaskEffect], query: &str) -> Vec<(String, String, String
         }
     }
     rows
+}
+
+/// The mask an effect action is for: `None` (no mask selected; mask id 0) means the settings for
+/// the next new mask.
+fn mask_id(mask: &Mask) -> Option<u32> {
+    (mask.id != 0).then_some(mask.id)
 }
 
 /// The Effect menu above the mask's sliders.
@@ -263,7 +277,7 @@ fn menu(app: &mut LccApp, ui: &mut egui::Ui, mask: &Mask, current: Option<&str>)
     }
     ui.data_mut(|d| d.insert_temp(state_id(), st));
     if let Some(name) = chosen {
-        apply(app, ui.ctx(), &name, json!({"id": mask.id}));
+        apply(app, ui.ctx(), &name, json!({"id": mask_id(mask)}));
         ui.close();
         return;
     }
@@ -275,7 +289,7 @@ fn menu(app: &mut LccApp, ui: &mut egui::Ui, mask: &Mask, current: Option<&str>)
     };
     if item(ui, "maskEffectMenu:reset", crate::i18n::tr("Reset Sliders").to_string(), true) {
         let zero: serde_json::Map<String, Value> = FIELDS.iter().map(|k| (k.to_string(), json!(0.0))).collect();
-        let _ = app.run("mask.adjust", json!({"id": mask.id, "values": zero}));
+        let _ = app.run("mask.adjust", json!({"id": mask_id(mask), "values": zero}));
         if let Some(tool) = fx::mask_tool(mask) {
             let _ = app.run("mask.toolEffect", json!({"tool": tool}));
         }
@@ -288,7 +302,7 @@ fn menu(app: &mut LccApp, ui: &mut egui::Ui, mask: &Mask, current: Option<&str>)
     if let Some(last) = last_applied(app, mask) {
         let text = crate::i18n::tr_format!("Update “{name}” with Current Settings", name = last);
         if item(ui, "maskEffectMenu:update", text, current != Some(last.as_str())) {
-            let _ = app.run("mask.updateEffect", json!({"name": last, "id": mask.id}));
+            let _ = app.run("mask.updateEffect", json!({"name": last, "id": mask_id(mask)}));
             ui.close();
         }
     }
@@ -338,12 +352,12 @@ fn row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: &Mask, name: &str, fav: b
     if app.session.selection.ids.len() > 1 {
         let text = crate::i18n::tr_format!("Apply to “{mask}” on Selected Photos", mask = mask.name);
         if ui.button(text).on_hover_text(crate::i18n::tr("Also the masks of the same name on the other selected photos")).clicked() {
-            apply(app, ui.ctx(), name, json!({"id": mask.id, "photos": "selected"}));
+            apply(app, ui.ctx(), name, json!({"id": mask_id(mask), "photos": "selected"}));
             ui.close();
         }
     }
     ui.separator();
-    run(app, ui, "Update with Current Settings", "mask.updateEffect", json!({"name": name, "id": mask.id}));
+    run(app, ui, "Update with Current Settings", "mask.updateEffect", json!({"name": name, "id": mask_id(mask)}));
     if ui.button(crate::i18n::tr("Rename…")).clicked() {
         crate::panels::dialogs::prompt(app, "Rename Effect Preset", "Preset name", name, "mask.renameEffect", json!({"name": name}), "to");
         ui.close();

@@ -73,7 +73,7 @@ impl LibrarySource {
         match self {
             LibrarySource::All => "All Photos".into(),
             LibrarySource::RecentlyAdded => "Recently Added".into(),
-            LibrarySource::Album(a) => cat.album(*a).map(|a| a.name.clone()).unwrap_or_else(|| "Album".into()),
+            LibrarySource::Album(a) => cat.album(*a).map(|a| a.name.clone()).unwrap_or_else(|| "Collection".into()),
             LibrarySource::RecentlyDeleted => "Recently Deleted".into(),
             LibrarySource::Picks => "Picks".into(),
             LibrarySource::Folder => "Folder".into(),
@@ -123,8 +123,9 @@ impl Selection {
     pub fn toggle(&mut self, id: PhotoId) {
         if let Some(i) = self.ids.iter().position(|x| *x == id) {
             self.ids.remove(i);
+            // taking the active photo out: the nearest selected photo before it (else after it) is active
             if self.active == Some(id) {
-                self.active = self.ids.last().copied();
+                self.active = self.ids.get(i.saturating_sub(1)).or(self.ids.first()).copied();
             }
         } else {
             // Lightroom Classic: adding to a selection keeps the photo that was active (the
@@ -150,6 +151,15 @@ impl Selection {
         }
         // The anchor stays the active photo, as in Lightroom Classic (#119).
         self.active = Some(anchor);
+    }
+    /// A plain click on a photo's picture, as in Lightroom: on a photo of a selection of several it
+    /// becomes the active photo and the selection stays; anywhere else the photo alone is selected.
+    pub fn click(&mut self, id: PhotoId) {
+        if self.ids.len() > 1 && self.contains(id) {
+            self.active = Some(id);
+        } else {
+            *self = Selection::single(id);
+        }
     }
 }
 
@@ -316,5 +326,37 @@ mod selection_state_tests {
         assert_eq!(s.ids.len(), 4);
         s.toggle(order[1]);
         assert!(s.active.is_some_and(|a| s.contains(a)));
+    }
+
+    fn ids(n: u64) -> Vec<PhotoId> {
+        (1..=n).map(PhotoId).collect()
+    }
+
+    /// ⌘/Ctrl-click adds and removes photos without changing the active one; taking the active
+    /// photo out makes a neighbour active.
+    #[test]
+    fn ctrl_click_adds_and_removes_without_moving_the_active_photo() {
+        let order = ids(5);
+        let mut s = Selection::single(order[0]);
+        s.toggle(order[3]);
+        assert_eq!(s.active, Some(order[0]));
+        s.toggle(order[3]);
+        assert_eq!((s.active, s.ids.len()), (Some(order[0]), 1));
+        s.toggle(order[2]);
+        s.toggle(order[0]);
+        assert_eq!(s.active, Some(order[2]));
+    }
+
+    /// A click inside the selection makes that photo active and keeps the selection; a click
+    /// outside it replaces the selection.
+    #[test]
+    fn a_click_inside_the_selection_keeps_it() {
+        let order = ids(8);
+        let mut s = Selection::single(order[1]);
+        s.extend_to(order[5], &order);
+        s.click(order[3]);
+        assert_eq!((s.active, s.ids.len()), (Some(order[3]), 5), "the whole set stays");
+        s.click(order[7]);
+        assert_eq!(s, Selection::single(order[7]), "a photo outside it replaces the selection");
     }
 }

@@ -12,17 +12,24 @@
 //! token ([`lcc_engine::control_auth`]); anything else gets one error reply and the
 //! connection is closed, so a process or web page that only knows the port can't run commands.
 //! See `docs/control-protocol.md`.
+//!
+//! A connection that subscribes to a control surface's layout (`surface.subscribe`,
+//! `docs/control-surfaces.md`) also receives pushed event lines (`{"event": ...}`) between its
+//! replies; lines never interleave. The surfaces-only listener ([`start_surfaces`], Settings,
+//! Controls) serves nothing but `surface.*` methods; it takes no `auth` (surfaces pair instead,
+//! `surface.pair`) and its connections may stay idle, waiting for pushed events.
 
 use std::cell::Cell;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use lcc_engine::control_auth;
 use lcc_ui_egui::ControlRequest;
+use lcc_ui_egui::surface::EventSink;
 use serde_json::{Value, json};
 
 /// Longest accepted request line (bytes, without the newline). Requests are small JSON objects;
@@ -36,6 +43,11 @@ pub const MAX_PENDING: usize = 16;
 pub const AUTH_DEADLINE: Duration = Duration::from_secs(10);
 /// An authenticated connection that sends no request for this long is closed.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// A surfaces-only connection may wait this long for pushed events without sending a request.
+pub const SURFACE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Connection numbers (0 is the in-process channel).
+static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
 /// Open-connection counts, kept apart so unauthenticated peers can't use up authenticated slots.
 #[derive(Default)]
@@ -77,33 +89,64 @@ impl Read for TimedReader<'_> {
     }
 }
 
-/// Serve the control channel on `127.0.0.1:port`; every connection must authenticate with `token`.
-/// `publish` (which stores the token for clients) runs only once the port is ours: a second
-/// instance started with the same port must not replace the running instance's token and then
-/// fail to bind, which would lock every client out of the first one. `None` when the bind fails.
-pub fn start(port: u16, token: String, ctx: egui::Context, publish: impl FnOnce(&str)) -> Option<Receiver<ControlRequest>> {
+/// Serve the control channel on `127.0.0.1:port`, requests going to `tx`; every connection must
+/// authenticate with `token`. `publish` (which stores the token for clients) runs only once the
+/// port is ours: a second instance started with the same port must not replace the running
+/// instance's token and then fail to bind, which would lock every client out of the first one.
+/// `false` when the bind fails.
+pub fn start(port: u16, token: String, tx: Sender<ControlRequest>, ctx: egui::Context, publish: impl FnOnce(&str)) -> bool {
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
             log::error!("control server failed to bind 127.0.0.1:{port}: {e}");
-            return None;
+            return false;
         }
     };
     publish(&token);
     log::info!("control server listening on 127.0.0.1:{port}");
-    let (tx, rx) = channel::<ControlRequest>();
-    std::thread::spawn(move || accept_loop(listener, tx, ctx, token));
-    Some(rx)
+    std::thread::spawn(move || accept_loop(listener, tx, ctx, Some(Arc::new(token)), None));
+    true
 }
 
-fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, token: String) {
+/// Start the surfaces-only listener on `port` (0: any free port); set the returned flag to stop
+/// it. Returns the flag and the port.
+pub fn start_surfaces(port: u16, tx: Sender<ControlRequest>, ctx: egui::Context) -> Result<(Arc<AtomicBool>, u16), String> {
+    let l = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("can't listen on 127.0.0.1:{port}: {e}"))?;
+    l.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let port = l.local_addr().map(|a| a.port()).unwrap_or(port);
+    log::info!("control-surface listener on 127.0.0.1:{port}");
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    std::thread::spawn(move || accept_loop(l, tx, ctx, None, Some(flag)));
+    Ok((stop, port))
+}
+
+/// Accept connections until `stop` is set (a non-blocking listener) or forever. With a `token`
+/// every method is served after `auth`; without one only `surface.*` (the surfaces-only port).
+fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, token: Option<Arc<String>>, stop: Option<Arc<AtomicBool>>) {
     let slots = Arc::new(Slots::default());
-    let token = Arc::new(token);
-    for stream in listener.incoming().flatten() {
+    let idle = if token.is_some() { IDLE_TIMEOUT } else { SURFACE_IDLE_TIMEOUT };
+    loop {
+        if stop.as_ref().is_some_and(|s| s.load(Ordering::SeqCst)) {
+            log::info!("control listener stopped");
+            return;
+        }
+        let stream = match listener.accept() {
+            Ok((s, _)) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Err(_) => continue,
+        };
+        // a non-blocking listener hands out non-blocking sockets on some systems
+        let _ = stream.set_nonblocking(false);
         let tx = tx.clone();
         let ctx = ctx.clone();
-        let token = Arc::clone(&token);
-        accept_one(stream, &slots, AUTH_DEADLINE, IDLE_TIMEOUT, move |stream, timeouts| serve(stream, &tx, &ctx, &token, timeouts));
+        let token = token.clone();
+        accept_one(stream, &slots, AUTH_DEADLINE, idle, move |stream, timeouts| {
+            serve(stream, &tx, &ctx, token.as_deref().map(String::as_str), timeouts)
+        });
     }
 }
 
@@ -143,19 +186,82 @@ const NO_FRAMES_AFTER: Duration = Duration::from_secs(5);
 pub const HIDDEN_WINDOW_ERROR: &str = "the app drew no frame for 5 s, so the request was not run: its window is probably not visible \
 (on Wayland a window on a hidden workspace or minimized is not redrawn, which pauses the app). Bring the window on screen and send it again";
 
+/// A writer shared by a connection's replies and its pushed events: each line goes out whole.
+/// It writes through the connection's one socket (no `try_clone`, see [`serve_stream`]).
+#[derive(Clone)]
+struct LineWriter {
+    out: Arc<TcpStream>,
+    lock: Arc<Mutex<()>>,
+    buf: Vec<u8>,
+}
+
+impl Write for LineWriter {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.buf.extend_from_slice(b);
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let data = std::mem::take(&mut self.buf);
+        let _line = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut out: &TcpStream = &self.out;
+        out.write_all(&data)?;
+        out.flush()
+    }
+}
+
+/// Write pushed events to the connection until it closes.
+fn pump_events(events: Receiver<Value>, mut out: LineWriter, open: Arc<AtomicBool>) {
+    loop {
+        match events.recv_timeout(Duration::from_millis(500)) {
+            Ok(v) => {
+                if writeln!(out, "{v}").and_then(|()| out.flush()).is_err() {
+                    open.store(false, Ordering::SeqCst);
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) if open.load(Ordering::SeqCst) => {}
+            Err(_) => return,
+        }
+    }
+}
+
 /// Reads and writes go through the one `stream` ([`serve_stream`]): no `try_clone`. On Windows a
 /// cloned socket handle is inheritable, so every program the app starts while a client is
 /// connected (a link in the browser, Show in Explorer, an external editor) kept a copy of the
 /// connection: closing it then reached the client only when that program exited, as a reset
-/// instead of a clean close.
-fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, token: &str, t: &Timeouts) {
-    serve_stream(stream, token, t, |method, params| {
+/// instead of a clean close. Pushed events (`surface.subscribe`) are written by a second thread
+/// through the same socket, a line at a time.
+fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, token: Option<&str>, t: &Timeouts) {
+    let stream = Arc::new(stream);
+    let conn = NEXT_CONN.fetch_add(1, Ordering::SeqCst);
+    let open = Arc::new(AtomicBool::new(true));
+    let (etx, erx) = channel::<Value>();
+    let out = LineWriter { out: Arc::clone(&stream), lock: Arc::new(Mutex::new(())), buf: Vec::new() };
+    let pump = {
+        let (out, open) = (out.clone(), Arc::clone(&open));
+        std::thread::spawn(move || pump_events(erx, out, open))
+    };
+    let sink = EventSink { tx: etx, open: Arc::clone(&open) };
+    let surfaces_only = token.is_none();
+    serve_stream(&stream, out, token, t, |method, params| {
+        if surfaces_only && !method.starts_with("surface.") {
+            return Some(Reply::Ready(json!({"ok": false, "error": "this port serves control surfaces only (surface.* methods)"})));
+        }
+        let pipelined = PIPELINED.contains(&method.as_str());
         let (req, rrx) = ControlRequest::new(method, params);
+        let req = req.on_connection(conn, sink.clone());
         let state = Arc::clone(&req.state);
         tx.send(req).ok()?;
         ctx.request_repaint();
-        Some(await_reply(&rrx, &state, || ctx.cumulative_pass_nr(), || ctx.request_repaint(), NO_FRAMES_AFTER, REPLY_TIMEOUT))
+        let ctx = ctx.clone();
+        let wait: Waiter =
+            Box::new(move || await_reply(&rrx, &state, || ctx.cumulative_pass_nr(), || ctx.request_repaint(), NO_FRAMES_AFTER, REPLY_TIMEOUT));
+        Some(if pipelined { Reply::Pipelined(wait) } else { Reply::Wait(wait) })
     });
+    open.store(false, Ordering::SeqCst);
+    drop(sink);
+    let _ = pump.join();
 }
 
 /// Wait for a request's reply. While the app has not picked the request up and `frames` (its
@@ -235,9 +341,10 @@ fn parse_line(bytes: &[u8]) -> Line {
 /// [`serve_lines`] on a socket, then close it so the peer reads every reply. Reads and writes go
 /// through the one stream, not a `try_clone`: on Windows a cloned socket handle is inheritable, and
 /// a program the app starts (browser, Explorer, an editor) would keep the connection open (#1991).
-fn serve_stream(stream: TcpStream, token: &str, t: &Timeouts, handle: impl FnMut(String, Value) -> Option<Value>) {
+/// With no `token` (the surfaces-only port) the connection takes an authenticated slot at once.
+fn serve_stream(stream: &TcpStream, out: impl Write + Send, token: Option<&str>, t: &Timeouts, handle: impl FnMut(String, Value) -> Option<Reply>) {
     let authed = Cell::new(false);
-    let reader = TimedReader { stream: &stream, auth_by: t.auth_by, idle: t.idle, authed: &authed };
+    let reader = TimedReader { stream, auth_by: t.auth_by, idle: t.idle, authed: &authed };
     // The pending slot is given back on authenticating; an authenticated one is taken then.
     let admit = || {
         let ok = Slots::take(&t.slots.authed, MAX_CONNECTIONS);
@@ -245,8 +352,8 @@ fn serve_stream(stream: TcpStream, token: &str, t: &Timeouts, handle: impl FnMut
         authed.set(true);
         ok
     };
-    serve_lines(reader, &stream, token, admit, handle);
-    close_gracefully(&stream);
+    serve_lines(reader, out, token, admit, handle);
+    close_gracefully(stream);
     let counter = if authed.get() { &t.slots.authed } else { &t.slots.pending };
     counter.fetch_sub(1, Ordering::SeqCst);
 }
@@ -321,58 +428,134 @@ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
     Ok(true)
 }
 
+/// Methods whose requests are pipelined: the next line is read (and handed to the app) without
+/// waiting for this one's reply, so a control surface's dial ticks never queue up one per frame in
+/// the socket (a knob turned quickly sent ticks faster than the app drew frames, and they drained
+/// seconds late, presses included). The app still runs them in order, and their replies go out in
+/// order, after the replies to every earlier request.
+pub const PIPELINED: &[&str] = &["surface.input"];
+
+/// Requests of one connection handed to the app but not answered yet, at most (the reader waits
+/// beyond that).
+const PIPELINE_DEPTH: usize = 256;
+
+/// Waits for a request's reply.
+type Waiter = Box<dyn FnOnce() -> Value + Send>;
+
+/// How a request is answered.
+enum Reply {
+    /// At once (the request was refused without reaching the app).
+    Ready(Value),
+    /// When the app has run it; the next request is read only after this reply went out.
+    Wait(Waiter),
+    /// When the app has run it; the next request is read at once ([`PIPELINED`]).
+    Pipelined(Waiter),
+}
+
+/// A reply to write, in order: its request's id (`None`: an error that closes the connection),
+/// the reply, and who waits for it to be written.
+struct Queued {
+    id: Option<Value>,
+    reply: Reply,
+    written: Option<std::sync::mpsc::SyncSender<bool>>,
+}
+
+/// Write the replies `queue` hands over, in order, until it closes or a write fails.
+fn write_replies<W: Write>(queue: Receiver<Queued>, mut out: W) {
+    for q in queue {
+        let mut v = match q.reply {
+            Reply::Ready(v) => v,
+            Reply::Wait(f) | Reply::Pipelined(f) => f(),
+        };
+        if let (Some(id), Some(o)) = (q.id, v.as_object_mut()) {
+            o.insert("id".into(), id);
+        }
+        let ok = writeln!(out, "{v}").and_then(|()| out.flush()).is_ok();
+        if let Some(w) = q.written {
+            let _ = w.send(ok);
+        }
+        if !ok {
+            return;
+        }
+    }
+}
+
 /// Serve requests from `read`, answering on `out`, until the peer closes, sends something that is
-/// not a request, fails to authenticate, or `handle` returns `None` (app gone). The first request
-/// must be `auth` with `token` and is answered here; `handle` gets the later ones as
+/// not a request, fails to authenticate, or `handle` returns `None` (app gone). With a `token` the
+/// first request must be `auth` with it and is answered here (without one, `admit` is asked at once); `handle` gets the later ones as
 /// `(method, params)` and returns the reply object (the request's `id` is added here).
 /// After a correct `auth`, `admit` is asked for an authenticated slot; `false` refuses the connection.
-fn serve_lines<R: Read, W: Write>(
+fn serve_lines<R: Read, W: Write + Send>(
     read: R,
-    mut out: W,
-    token: &str,
+    out: W,
+    token: Option<&str>,
     mut admit: impl FnMut() -> bool,
-    mut handle: impl FnMut(String, Value) -> Option<Value>,
+    mut handle: impl FnMut(String, Value) -> Option<Reply>,
 ) {
-    let mut reader = BufReader::new(read);
-    let mut buf = Vec::new();
-    let mut authenticated = false;
-    loop {
-        let closing = match read_bounded_line(&mut reader, &mut buf, MAX_LINE) {
-            Ok(false) => return,
-            Err(closing) => closing,
-            Ok(true) => match parse_line(&buf) {
-                Line::Blank => continue,
-                Line::Reject(e) => Closing::Error(e),
-                Line::Request { id, method, params } if !authenticated => {
-                    let (mut r, mut ok) = control_auth::check_auth_request(&method, &params, token);
-                    if ok && !admit() {
-                        r = json!({"ok": false, "error": "too many control connections"});
-                        ok = false;
-                    }
-                    if let Some(o) = r.as_object_mut() {
-                        o.insert("id".into(), id);
-                    }
-                    if writeln!(out, "{r}").and_then(|()| out.flush()).is_err() || !ok {
-                        return;
-                    }
-                    authenticated = true;
-                    continue;
-                }
-                Line::Request { id, method, params } => {
-                    let Some(mut r) = handle(method, params) else { return };
-                    if let Some(o) = r.as_object_mut() {
-                        o.insert("id".into(), id);
-                    }
-                    if writeln!(out, "{r}").and_then(|()| out.flush()).is_err() {
-                        return;
-                    }
-                    continue;
-                }
-            },
+    std::thread::scope(|scope| {
+        let (queue, rx) = std::sync::mpsc::sync_channel::<Queued>(PIPELINE_DEPTH);
+        let writer = scope.spawn(move || write_replies(rx, out));
+        // hand a reply to the writer; with `wait`, until it is written. Whether to go on.
+        let send = |id: Option<Value>, reply: Reply, wait: bool| -> bool {
+            let (written, done) = if wait {
+                let (t, r) = std::sync::mpsc::sync_channel(1);
+                (Some(t), Some(r))
+            } else {
+                (None, None)
+            };
+            if queue.send(Queued { id, reply, written }).is_err() {
+                return false;
+            }
+            done.is_none_or(|d| d.recv().unwrap_or(false))
         };
-        let _ = writeln!(out, "{}", closing.reply()).and_then(|()| out.flush());
-        return;
-    }
+        let mut reader = BufReader::new(read);
+        let mut buf = Vec::new();
+        let mut authenticated = false;
+        if token.is_none() {
+            if !admit() {
+                send(None, Reply::Ready(json!({"ok": false, "error": "too many control connections"})), true);
+                drop(queue);
+                let _ = writer.join();
+                return;
+            }
+            authenticated = true;
+        }
+        let token = token.unwrap_or_default();
+        loop {
+            let closing = match read_bounded_line(&mut reader, &mut buf, MAX_LINE) {
+                Ok(false) => break,
+                Err(closing) => closing,
+                Ok(true) => match parse_line(&buf) {
+                    Line::Blank => continue,
+                    Line::Reject(e) => Closing::Error(e),
+                    Line::Request { id, method, params } if !authenticated => {
+                        let (mut r, mut ok) = control_auth::check_auth_request(&method, &params, token);
+                        if ok && !admit() {
+                            r = json!({"ok": false, "error": "too many control connections"});
+                            ok = false;
+                        }
+                        if !send(Some(id), Reply::Ready(r), true) || !ok {
+                            break;
+                        }
+                        authenticated = true;
+                        continue;
+                    }
+                    Line::Request { id, method, params } => {
+                        let Some(r) = handle(method, params) else { break };
+                        let wait = !matches!(r, Reply::Pipelined(_));
+                        if !send(Some(id), r, wait) {
+                            break;
+                        }
+                        continue;
+                    }
+                },
+            };
+            send(None, Reply::Ready(closing.reply()), true);
+            break;
+        }
+        drop(queue);
+        let _ = writer.join();
+    });
 }
 
 #[cfg(test)]
@@ -437,7 +620,9 @@ mod tests {
         let s2 = Arc::clone(&slots);
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                accept_one(stream, &s2, auth_deadline, idle, |s, t| serve_stream(s, TOKEN, t, |_, _| Some(json!({"ok": true}))));
+                accept_one(stream, &s2, auth_deadline, idle, |s, t| {
+                    serve_stream(&s, &s, Some(TOKEN), t, |_, _| Some(Reply::Ready(json!({"ok": true}))))
+                });
             }
         });
         (addr, slots)
@@ -532,7 +717,7 @@ mod tests {
         serve_lines(
             input.as_bytes(),
             &mut out,
-            TOKEN,
+            Some(TOKEN),
             || false,
             |_, _| {
                 ran = true;
@@ -554,11 +739,11 @@ mod tests {
         serve_lines(
             input,
             &mut out,
-            TOKEN,
+            Some(TOKEN),
             || true,
             |m, _p| {
                 calls.push(m);
-                Some(json!({"ok": true, "result": null}))
+                Some(Reply::Ready(json!({"ok": true, "result": null})))
             },
         );
         let replies = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).collect();
@@ -669,7 +854,7 @@ mod tests {
         serve_lines(
             endless,
             &mut out,
-            TOKEN,
+            Some(TOKEN),
             || true,
             |_, _| {
                 ran = true;
@@ -699,8 +884,8 @@ mod tests {
         let taken = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = taken.local_addr().unwrap().port();
         let mut published = None;
-        let rx = start(port, TOKEN.into(), egui::Context::default(), |t| published = Some(t.to_string()));
-        assert!(rx.is_none());
+        let rx = start(port, TOKEN.into(), channel().0, egui::Context::default(), |t| published = Some(t.to_string()));
+        assert!(!rx);
         assert_eq!(published, None, "the token must not be published when the bind failed");
     }
 
@@ -708,12 +893,12 @@ mod tests {
     fn a_free_port_publishes_the_token_once_bound() {
         let port = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
         let mut published = None;
-        let rx = start(port, TOKEN.into(), egui::Context::default(), |t| {
+        let rx = start(port, TOKEN.into(), channel().0, egui::Context::default(), |t| {
             // the port is already ours when the token is stored
             assert!(TcpListener::bind(("127.0.0.1", port)).is_err());
             published = Some(t.to_string());
         });
-        assert!(rx.is_some());
+        assert!(rx);
         assert_eq!(published.as_deref(), Some(TOKEN));
     }
 
@@ -727,7 +912,7 @@ mod tests {
         let (tx, _rx) = channel::<ControlRequest>();
         let server = std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
-            serve(s, &tx, &egui::Context::default(), TOKEN, &timeouts());
+            serve(s, &tx, &egui::Context::default(), Some(TOKEN), &timeouts());
         });
         let mut c = TcpStream::connect(addr).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
@@ -755,7 +940,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
-            serve_stream(s, TOKEN, &timeouts(), |_, _| Some(json!({"ok": true})));
+            serve_stream(&s, &s, Some(TOKEN), &timeouts(), |_, _| Some(Reply::Ready(json!({"ok": true}))));
         });
         let mut c = TcpStream::connect(addr).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
@@ -771,5 +956,262 @@ mod tests {
         assert!(lines[0].contains("\"authenticated\":true"));
         assert!(lines[1].contains("\"id\":7"));
         assert!(lines[2].contains("closing the connection"));
+    }
+
+    /// A pushed event and a reply never share a line, and events stop when the peer goes.
+    #[test]
+    fn pushed_events_and_replies_arrive_as_whole_lines() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let open = Arc::new(AtomicBool::new(true));
+        let (etx, erx) = channel::<Value>();
+        let out = LineWriter { out: Arc::new(server), lock: Arc::new(Mutex::new(())), buf: Vec::new() };
+        let pump = {
+            let (out, open) = (out.clone(), Arc::clone(&open));
+            std::thread::spawn(move || pump_events(erx, out, open))
+        };
+        let mut reply = out.clone();
+        for i in 0..50 {
+            etx.send(json!({"event": "surface.layout", "n": i})).unwrap();
+            writeln!(reply, "{}", json!({"id": i, "ok": true})).unwrap();
+            reply.flush().unwrap();
+        }
+        client.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut r = BufReader::new(client);
+        let (mut events, mut replies) = (0, 0);
+        let mut line = String::new();
+        while events + replies < 100 {
+            line.clear();
+            r.read_line(&mut line).unwrap();
+            let v: Value = serde_json::from_str(line.trim()).unwrap();
+            if v.get("event").is_some() { events += 1 } else { replies += 1 }
+        }
+        assert_eq!((events, replies), (50, 50));
+        open.store(false, Ordering::SeqCst);
+        drop(etx);
+        pump.join().unwrap();
+    }
+
+    /// A fake control surface drives a headless app over a real loopback socket: it is
+    /// refused until paired, pairs, subscribes, turns the dial and hears the new value pushed
+    /// back; the surfaces-only port refuses everything else.
+    #[test]
+    fn a_surface_client_pairs_subscribes_and_turns_the_dial_end_to_end() {
+        use std::time::Instant;
+
+        use lcc_ui_egui::headless::Headless;
+        use lcc_ui_egui::surface::SurfaceStore;
+        use lcc_ui_egui::{LccApp, Services};
+
+        struct Store(Mutex<Option<String>>);
+        impl SurfaceStore for Store {
+            fn load(&self) -> Result<Option<String>, String> {
+                Ok(self.0.lock().unwrap().clone())
+            }
+            fn save(&self, t: &str) -> Result<(), String> {
+                *self.0.lock().unwrap() = Some(t.to_string());
+                Ok(())
+            }
+        }
+        let settings = lcc_surface::SurfaceSettings { enabled: true, ..Default::default() };
+        let services = Services { png: None, surface_store: Some(Box::new(Store(Mutex::new(Some(settings.to_json()))))), ..Default::default() };
+        let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo(), services), [1200.0, 800.0], 1.0);
+        h.settle(Duration::from_secs(20));
+        let first = h.app.session.visible_cloned()[0];
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [first.0]}}), Duration::from_secs(20));
+        h.app.ui.view = lcc_ui_egui::state::ViewMode::Detail;
+        h.settle(Duration::from_secs(20));
+        let before = h.app.session.develop_of(first).unwrap().light.exposure;
+        let (stop, port) = start_surfaces(0, h.control_sender(), egui::Context::default()).unwrap();
+
+        // the client, on its own thread (the app answers between frames on this one)
+        let client = std::thread::spawn(move || {
+            let send = |c: &mut TcpStream, id: u64, method: &str, params: Value| {
+                writeln!(c, "{}", json!({"id": id, "method": method, "params": params})).unwrap();
+            };
+            // read lines until the reply with `id`; events seen on the way are kept
+            let read = |r: &mut BufReader<TcpStream>, id: u64, events: &mut Vec<Value>| -> Value {
+                loop {
+                    let mut line = String::new();
+                    r.read_line(&mut line).unwrap();
+                    let v: Value = serde_json::from_str(line.trim()).unwrap();
+                    if v.get("event").is_some() {
+                        events.push(v);
+                    } else if v["id"] == id {
+                        return v;
+                    }
+                }
+            };
+            let connect = || {
+                let c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+                c.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+                let r = BufReader::new(c.try_clone().unwrap());
+                (c, r)
+            };
+            let mut events = Vec::new();
+            let (mut c, mut r) = connect();
+            send(&mut c, 1, "engine.execute", json!({"command": "edit.undo"}));
+            let v = read(&mut r, 1, &mut events);
+            assert!(v["error"].as_str().unwrap().contains("control surfaces only"), "{v}");
+            send(&mut c, 2, "surface.input", json!({"events": [{"control": "dial", "ticks": 1}]}));
+            assert_eq!(read(&mut r, 2, &mut events)["ok"], false, "not paired");
+            send(&mut c, 3, "surface.pair", json!({"client": "e2e", "name": "E2E Surface"}));
+            let v = read(&mut r, 3, &mut events);
+            let request = v["result"]["request"].as_str().unwrap().to_string();
+            // wait for the approval (the test approves on the app's thread)
+            let token = loop {
+                send(&mut c, 4, "surface.pair", json!({"request": request}));
+                let v = read(&mut r, 4, &mut events);
+                if v["result"]["status"] == "approved" {
+                    break v["result"]["token"].as_str().unwrap().to_string();
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            drop(c);
+            let (mut c, mut r) = connect();
+            send(&mut c, 5, "surface.hello", json!({"protocol": 1, "client": "e2e", "token": token}));
+            assert_eq!(read(&mut r, 5, &mut events)["result"]["paired"], true);
+            send(&mut c, 6, "surface.subscribe", json!({"device": "mx-creative-console"}));
+            let v = read(&mut r, 6, &mut events);
+            assert_eq!(v["result"]["layout"]["dials"][1]["binding"]["target"], "light.exposure", "{v}");
+            send(&mut c, 7, "surface.input", json!({"events": [{"control": "roller", "ticks": 25}]}));
+            assert_eq!(read(&mut r, 7, &mut events)["ok"], true);
+            // the new value arrives as a pushed layout
+            let t0 = Instant::now();
+            loop {
+                if events.iter().any(|e| e["layout"]["dials"][1]["value"] == "+0.25") {
+                    break;
+                }
+                assert!(t0.elapsed() < Duration::from_secs(30), "no pushed value: {events:?}");
+                let mut line = String::new();
+                if r.read_line(&mut line).is_ok() && !line.trim().is_empty() {
+                    events.push(serde_json::from_str(line.trim()).unwrap());
+                }
+            }
+        });
+        let t0 = Instant::now();
+        while !client.is_finished() {
+            h.step();
+            let waiting: Vec<String> = h.app.surface.pairing.waiting().map(|w| w.request.clone()).collect();
+            for w in waiting {
+                let mut s = h.app.surface.settings().clone();
+                h.app.surface.pairing.approve(&w, &mut s, 0).unwrap();
+                h.app.surface.runtime.settings_mut().paired = s.paired;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+            assert!(t0.elapsed() < Duration::from_secs(60), "the client didn't finish");
+        }
+        client.join().unwrap();
+        let after = h.app.session.develop_of(first).unwrap().light.exposure;
+        assert!((after - before - 0.25).abs() < 1e-6, "{before} → {after}");
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    /// TEST-NOTES 2026-10-16 item 8: a knob turned fast sends a tick per request, faster than the
+    /// app draws frames. Ticks used to wait for a frame each (the connection read its next request
+    /// only after the reply), so they queued in the socket and were applied seconds late, a press
+    /// behind them "clicking itself" later. Now hundreds of ticks sent at once, with slow frames
+    /// (40 ms), are all applied within a few frames, the value is their sum, and a press sent
+    /// after them runs in the same breath.
+    #[test]
+    fn a_burst_of_dial_ticks_is_applied_within_a_few_frames_without_a_backlog() {
+        use std::time::Instant;
+
+        use lcc_ui_egui::headless::Headless;
+        use lcc_ui_egui::{LccApp, Services};
+
+        struct Store(Mutex<Option<String>>);
+        impl lcc_ui_egui::surface::SurfaceStore for Store {
+            fn load(&self) -> Result<Option<String>, String> {
+                Ok(self.0.lock().unwrap().clone())
+            }
+            fn save(&self, t: &str) -> Result<(), String> {
+                *self.0.lock().unwrap() = Some(t.to_string());
+                Ok(())
+            }
+        }
+        const TOKEN: &str = "stress-token";
+        let mut settings = lcc_surface::SurfaceSettings { enabled: true, ..Default::default() };
+        settings.paired.push(lcc_surface::settings::PairedClient {
+            client: "stress".into(),
+            name: "Stress".into(),
+            token_sha256: lcc_surface::protocol::token_hash(TOKEN),
+            approved_at: 0,
+        });
+        // no acceleration: every tick is one step (0.01 EV), so the sum is exact
+        settings.motion.acceleration = 0.1;
+        let services = Services { png: None, surface_store: Some(Box::new(Store(Mutex::new(Some(settings.to_json()))))), ..Default::default() };
+        let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo(), services), [1200.0, 800.0], 1.0);
+        h.settle(Duration::from_secs(20));
+        let first = h.app.session.visible_cloned()[0];
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [first.0]}}), Duration::from_secs(20));
+        h.app.ui.view = lcc_ui_egui::state::ViewMode::Detail;
+        h.settle(Duration::from_secs(20));
+        let before = h.app.session.develop_of(first).unwrap().light.exposure;
+        let rating_before = h.app.session.catalog.photo(first).unwrap().rating;
+        let (stop, port) = start_surfaces(0, h.control_sender(), egui::Context::default()).unwrap();
+        const TICKS: usize = 300;
+        let frames = Arc::new(AtomicU64::new(0));
+        let client = {
+            let frames = Arc::clone(&frames);
+            std::thread::spawn(move || {
+                let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+                c.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut reply = |id: u64| loop {
+                    let mut line = String::new();
+                    r.read_line(&mut line).unwrap();
+                    let v: Value = serde_json::from_str(line.trim()).unwrap();
+                    if v.get("event").is_none() {
+                        assert_eq!(v["id"], id, "replies come in order: {v}");
+                        return v;
+                    }
+                };
+                writeln!(c, "{}", json!({"id": 1, "method": "surface.hello", "params": {"protocol": 1, "client": "stress", "token": TOKEN}}))
+                    .unwrap();
+                assert_eq!(reply(1)["result"]["paired"], true);
+                // every tick its own request, all at once (as a plugin forwards a fast spin), then a key press
+                let t0 = Instant::now();
+                let f0 = frames.load(Ordering::SeqCst);
+                let mut burst = String::new();
+                for i in 0..TICKS {
+                    burst.push_str(
+                        &json!({"id": 10 + i, "method": "surface.input", "params": {"events": [{"control": "roller", "ticks": 1}]}}).to_string(),
+                    );
+                    burst.push('\n');
+                }
+                let press =
+                    json!({"id": 9999, "method": "surface.input", "params": {"events": [{"action": "c.photo.rate.rating-5", "press": true}]}});
+                burst.push_str(&format!("{press}\n"));
+                c.write_all(burst.as_bytes()).unwrap();
+                for i in 0..TICKS {
+                    assert_eq!(reply(10 + i as u64)["ok"], true);
+                }
+                assert_eq!(reply(9999)["ok"], true);
+                (t0.elapsed(), frames.load(Ordering::SeqCst) - f0)
+            })
+        };
+        let t0 = Instant::now();
+        while !client.is_finished() {
+            h.step();
+            frames.fetch_add(1, Ordering::SeqCst);
+            // a slow frame (a busy app): one tick per frame would take 12 s
+            std::thread::sleep(Duration::from_millis(40));
+            assert!(t0.elapsed() < Duration::from_secs(60), "the client didn't finish");
+        }
+        let (took, used) = client.join().unwrap();
+        // the last flush and gesture end
+        for _ in 0..40 {
+            h.step();
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let after = h.app.session.develop_of(first).unwrap().light.exposure;
+        assert!((after - before - 0.01 * TICKS as f64).abs() < 1e-6, "{before} → {after}: every tick, once");
+        assert!(used <= 10, "{TICKS} ticks took {used} frames ({took:?}): they queued up");
+        let rating = h.app.session.catalog.photo(first).unwrap().rating;
+        assert!(rating == 5 && rating_before != 5, "the key press ran once the ticks were in: {rating_before} → {rating}");
+        stop.store(true, Ordering::SeqCst);
     }
 }

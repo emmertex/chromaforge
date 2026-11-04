@@ -11,10 +11,14 @@ The app reads the face names other apps (Lightroom, digiKam…) write into your 
 
 No model weights are part of the app. Each one is a file you choose to get, from **Settings ▸ Faces**:
 
-- **Face detection:** [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (232 KB, MIT).
-  It runs in the app's own code, with no extra runtime. It was trained on the WIDER FACE dataset; an MIT licence on
-  weights does not settle that dataset's terms, so this is flagged for the maintainer. It finds faces; it does not
-  identify anyone. **Library ▸ Detect Faces** offers the download the first time you use it.
+- **Face detection:** Google's MediaPipe **Face Landmarker** (3.8 MB, Apache-2.0: BlazeFace finds the faces, FaceMesh-V2
+  places 478 landmarks on each; with BlazeFace full range, 1 MB, for the small faces of group photos), the same open model
+  Retouch uses. It is downloaded from the AI Models dialog (`ai.models.download {"id": "face"}`) and runs on Chromaforge's
+  pure-Rust TFLite interpreter (`lcc-tflite`). It finds faces; it does not identify anyone. **Library ▸ Detect Faces**
+  offers the download the first time you use it. It replaced **YuNet** (ported from OneSlips): YuNet's MIT weights were
+  trained on WIDER FACE, whose licence is CC BY-NC-ND, so Chromaforge no longer offers it. A YuNet an older version
+  installed is listed in Settings ▸ Faces as no longer used, so it can be removed; it is never run, and a detector can no
+  longer be added by file. (The YuNet measurements below are kept as a record.)
 - **Face recognition models** are large (AuraFace is 261 MB), and their licences and training data deserve a decision by
   the person installing them. Everything works without one: names from XMP, the People view, the face boxes.
 - **Recognition runs in the app's own pure-Rust CPU interpreter**, shared with the detector. Dense
@@ -229,19 +233,15 @@ a ResNet-100 (so it is not the accuracy choice its size suggests). InsightFace's
 
 ## Finding faces yourself
 
-**Library ▸ Detect Faces** (`faces.detect`) runs the YuNet detector on the selected photos and adds what it finds as
+**Library ▸ Detect Faces** (`faces.detect`) runs the MediaPipe face model on the selected photos and adds what it finds as
 unnamed face boxes, in one undo step. A new run replaces earlier detections; boxes that came from XMP, or that you drew or
-named, are never touched (and a face that already has one is not boxed a second time), and no sidecar is written. It looks at the photo upright and uncropped with default settings,
-so your edits and crops do not matter. `apply: false` only reports. It finds faces of about 10 pixels and up in a
-1024-pixel version of the photo, kept in its own shape (YuNet is fully convolutional, so it needn't squeeze the photo
-into its file's 640 x 640 square; a photo smaller than 1024 px is looked at as it is). That is how OpenCV runs it for
-its published WIDER FACE figures, whose photos are 1024 px wide. On the 3,226 photos of WIDER FACE's validation set,
-scored with the official protocol, the average precision (AP) easy / medium / hard is 88.9 / 87.2 / 76.6 against the
-published 88.4 / 86.6 / 75.0; the former 640 x 640 square gave 87.8 / 83.7 / 59.8 and missed the back rows of group
-photos. It costs about 1.5 to 2 times the time on the CPU. Faces still smaller than about 10 pixels at that size can be missed.
-The detector's output matches OpenCV's own YuNet on a 45-photo public-domain test set (97 of 99 faces found by both,
-mean box overlap 0.97), including marble busts and paintings, with no false boxes on the landscape and architecture
-photos in the set.
+named, are never touched (and a face that already has one is not boxed a second time), and no sidecar is written. It looks at
+the photo upright and uncropped with default settings, so your edits and crops do not matter. `apply: false` only reports.
+BlazeFace (short range) looks at the whole 1280-pixel version of the photo and (`fine`, the default) at overlapping
+half-size tiles, which finds faces of about 60 pixels and up; very small faces in a big group photo can still be missed
+(YuNet found smaller ones). Each face's five alignment points (iris centres, nose tip, mouth corners) come from its FaceMesh
+landmarks; a face FaceMesh doesn't accept (a strong profile) uses BlazeFace's keypoints. Faces below a score of 0.65 are
+ignored (`score` raises it, `maxFaces` caps them).
 
 ## Suggesting who is in a photo
 
@@ -269,7 +269,7 @@ Turning recognition on starts a scan of the whole library, once, in the backgrou
 
 - A photo that already has face boxes (from XMP, or drawn, or named) has its faces embedded.
 - A photo with **no** face boxes at all is searched with the detector, and what it is sure of becomes that photo's unnamed
-  face boxes (marked "Detected by YuNet", so a manual Detect Faces replaces them), embedded in the same pass. Photos are
+  face boxes (marked "Detected by MediaPipe Face Landmarker", so a manual Detect Faces replaces them; photos YuNet searched are searched again once), embedded in the same pass. Photos are
   searched once: `face-scanned.bin` in the library folder remembers which, so a photo whose boxes you remove is not boxed
   again. These boxes are the app's own bookkeeping: not an undo step, never written to a sidecar.
 - Photos you have named faces in go first, then the rest. Raw files are read through the camera's embedded preview (much
@@ -288,8 +288,8 @@ Turning recognition on starts a scan of the whole library, once, in the backgrou
   when light (2 threads).
 - **Memory** limits the number of photos at once as much as the processor does: a photo in progress holds about 180 MB
   (peak memory grew by that much per extra worker), so at most half of the memory budget (a quarter of the RAM, at most
-  1.5 GiB, unless `<PREFIX>_MEMORY_MB` says otherwise; a container's or cgroup's memory limit counts as the RAM when
-  smaller) is given to them: about four photos at once on a default setup,
+  16 GiB, unless `<PREFIX>_MEMORY_MB` says otherwise; a container's or cgroup's memory limit counts as the RAM when
+  smaller) is given to them: about four photos per 1.5 GiB of budget,
   whatever the core count. Eight at once was not much faster and needed about twice the memory (a 2.0 GB peak against
   1.1 GB). `<PREFIX>_FACE_THREADS` replaces these limits with a number of your own. A couple more photos wait behind
   the running ones, so a worker that finishes has its next photo at once.
@@ -398,9 +398,45 @@ All of this is reachable from the control channel, the CLI and MCP: `faces.model
 
 ## Find Blemishes
 
-Photo ▸ Find Blemishes (`spot.findBlemishes`) uses the installed detector's boxes and landmarks to look for small,
-round, darker-or-redder spots on each face's skin and adds a heal spot on each, the way Find Dust Spots does for
-sensor dust. Eyes, brows, nostrils and the mouth are cut out around the landmarks; faces narrower than 160 px in
-the 1600 px analysis image get nothing, as do faces with more than 12 candidates (stubble, freckles and pores are
-texture, not blemishes); at most six per face. It needs no model beyond the detector and never changes anything
-without a spot you can see and delete (`crates/pipeline/src/blemish.rs`).
+**Edit ▸ Retouch ▸ Blemishes ▸ Find Blemishes** (`spot.findBlemishes`, ported from OneSlips) looks for small, round,
+darker-or-redder spots on the faces' skin and adds a heal spot on each, the way Remove Dust does for sensor dust. It works
+from the open MediaPipe people and face models: only the **skin** Selfie Multiclass finds is searched (never hair, the
+background or a hand over the face), inside each face's outline, with the eyes (and lash line), brows, lips and lower nose
+cut out by polygons around FaceMesh's landmarks. Faces without landmarks (strong profiles) and faces narrower than 160 px in
+the 1600 px analysis image get nothing; a face with more than 14 candidates gets none (stubble, freckles and pores are
+texture, not blemishes); at most six per face (`maxPerFace`). **Include body skin** (`body: true`) also searches shoulders,
+arms and back, each person's at the scale of their face, none on a body with more than ten candidates (freckles, moles). It
+never changes anything without a spot you can see and delete; the heal spots are applied before Smooth Skin, so Smooth Skin
+smooths the healed skin. In the app the models run in the background (a row in the activity stack) and a message says what
+was found (`crates/pipeline/src/blemish.rs`, `crates/engine/src/cmd/retouch.rs`).
+
+## Smooth Skin
+
+**Edit ▸ Retouch ▸ Skin** (`skin.smooth`, `skin.set`, `skin.find`, `skin.status`; ported from OneSlips) smooths the skin
+the people model finds, by frequency separation on the scene-linear image, its bands measured in each face's eye distance
+so a preview and an export look alike (`crates/pipeline/src/skin.rs`). Amount softens the middle band, Texture the pores,
+Even Tone blotches, Redness red patches, Reduce Shine hot spots brighter than the skin around them. Face, Body or Both, and
+All or person 1 to 4 (counted from the left by their face). What the models found is stored with the photo (so renders and
+exports never need a model) without an undo step of its own, and kept for the session, so undo and redo never run the
+models again; copy, paste, sync and presets carry the sliders, never another photo's skin. Each part of Retouch has its own
+eye for a before/after; the section's switch turns all of it off.
+
+## Teeth
+
+**Edit ▸ Retouch ▸ Teeth** (`retouch.set {section: "teeth", whiten?, brighten?, person?}`, `retouch.off`, `retouch.find`,
+`retouch.status`; ported from OneSlips) whitens and brightens the teeth the people and face models find (the People
+masks' `Teeth` part: the bright, unsaturated pixels inside the mouth opening), of everyone or of person 1 to 4.
+**Whiten** takes the yellow out (red over green and green over blue moved towards neutral, in log colour ratios) with a
+touch more brightness; **Brighten** lifts them by up to about half a stop. Both start at 0 (nothing changes) and stay
+gentle at 100. The change is blended in by the part's soft coverage, so nothing outside the teeth changes, on the
+scene-linear image right after Smooth Skin and before exposure, tone and colour; it is per pixel, so a preview and an
+export change the teeth alike (`crates/pipeline/src/retouch.rs`). The GPU renderer reads the scene-linear image back for
+it, as for Smooth Skin, so both renderers run the same code.
+
+The teeth found are stored with the photo (`retouch_analysis`, with the orientation they were found for) without an undo
+step, and kept for the session per photo, person, orientation and look, so undo and redo never run the models again. They
+are looked for when a slider first moves, settings are pasted, the person changes or the photo is turned: on their own
+thread with a row in the activity stack in the app, at once in the CLI and MCP (`crates/engine/src/segment/parts.rs`).
+Without the models the AI Models dialog offers them; nothing is downloaded on its own. The sliders and the person are
+develop controls (`retouch.teethWhiten`, `retouch.teethBrighten`, `retouch.teethPerson`) in the **Retouch** settings
+group; copy, paste, sync and presets never carry another photo's teeth. Teeth has its own eye for a before/after.

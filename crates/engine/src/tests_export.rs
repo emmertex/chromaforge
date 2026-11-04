@@ -1700,6 +1700,8 @@ fn opaque_sources_export_exactly_as_before() {
     let flat: Vec<u8> = img.data.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
     let rgb_png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::new(96, 64, 3, lcc_codecs::Samples::U8(&flat)), &Default::default());
     std::fs::write(&rgb, rgb_png.unwrap()).unwrap();
+    // (unconstrained, so the keystone brings in the grey outside the photo)
+    s.execute("library.preferences", &json!({"import": {"constrainCrop": false}})).unwrap();
     s.execute("library.import", &json!({"paths": [rgba.to_string_lossy(), rgb.to_string_lossy()]})).unwrap();
     let ids: Vec<_> = s.catalog.photos().map(|p| p.id).collect();
     assert_eq!(ids.len(), 2);
@@ -1765,4 +1767,181 @@ fn soft_edges_keep_their_colour_through_crop_straighten_and_exposure() {
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A gain map's HDR rendition starts from the SDR render's decoded original and stages (as
+/// `PreparedExport::run` hands them over) and comes out exactly as rendered on its own, noise
+/// reduction and clarity included (the GPU stages too, when the renders run there).
+#[test]
+fn the_hdr_rendition_from_the_sdr_renders_stages_is_the_same() {
+    use crate::export::{OutputDepth, OutputSpace};
+    let mut s = Session::with_demo();
+    let id = sunset(&mut s);
+    s.execute("develop.hdr", &json!({"enabled": true, "maxEv": 3})).unwrap();
+    s.execute("develop.set", &json!({"control": "detail.nrLuminance", "value": 30})).unwrap();
+    s.execute("develop.set", &json!({"control": "effects.clarity", "value": 20})).unwrap();
+    let (w, h, space) = (400, 400, OutputSpace::DisplayP3);
+    let fresh = s.export_job(id, w, h, space, OutputDepth::F32Hdr).unwrap().run().rendered.unwrap().deep.unwrap();
+    let stages = std::sync::Arc::new(lcc_pipeline::StageCache::default());
+    let mut sdr = s.export_job(id, w, h, space, OutputDepth::U8).unwrap();
+    sdr.stages = Some(stages.clone());
+    let mut r = sdr.run();
+    assert!(r.rendered.is_ok());
+    let mut hdr = s.export_job(id, w, h, space, OutputDepth::F32Hdr).unwrap();
+    if let Some(src) = r.loaded.take() {
+        hdr.source = crate::media::SourceRef::Loaded(Box::new(src));
+    }
+    hdr.stages = Some(stages);
+    let shared = hdr.run().rendered.unwrap().deep.unwrap();
+    assert_eq!((shared.width, shared.height), (fresh.width, fresh.height));
+    let (crate::export::DeepSamples::F32(a), crate::export::DeepSamples::F32(b)) = (&shared.samples, &fresh.samples) else {
+        panic!("float samples expected")
+    };
+    assert!(a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()), "the shared render differs");
+}
+
+/// Settings like a real HDR edit (tone, clarity, noise reduction, a radial mask) for the export
+/// turn tests.
+fn hdr_export_settings(s: &mut Session, id: lcc_catalog::PhotoId) {
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    s.execute("develop.hdr", &json!({"enabled": true, "maxEv": 3})).unwrap();
+    for (c, v) in [("light.exposure", 0.3), ("effects.clarity", 15.0), ("detail.nrLuminance", 20.0), ("light.highlights", -40.0)] {
+        s.execute("develop.set", &json!({"control": c, "value": v})).unwrap();
+    }
+}
+
+/// Photos side by side took turns at an idle GPU because a photo's turn covered its decode and
+/// its encode too. A gain map export decodes before its renders and encodes after them, never
+/// inside them.
+#[test]
+fn an_export_encodes_outside_its_renders() {
+    use std::sync::atomic::Ordering;
+    let mut s = Session::with_demo();
+    let ids: Vec<_> = s.catalog.photos().map(|p| p.id).take(3).collect();
+    for &id in &ids {
+        hdr_export_settings(&mut s, id);
+    }
+    let o = ExportOptions::from_json(&json!({"longEdge": 256, "hdr": true, "quality": 90}));
+    let before = crate::export::ENCODES_IN_TURN.load(Ordering::Relaxed);
+    let files = crate::export::export_batch_lanes(&mut s, &ids, &o, 2, false).unwrap();
+    assert_eq!(files.len(), 3, "{files:?}");
+    assert!(files.iter().all(|f| f.get("error").is_none()), "{files:?}");
+    assert_eq!(crate::export::ENCODES_IN_TURN.load(Ordering::Relaxed), before, "no encode inside a photo's renders");
+}
+
+/// On the GPU, with one export at a time on the card, photos side by side still go faster than
+/// one by one: only their renders take turns (decode, the gain map and the encode overlap).
+/// A measurement (timings depend on the machine's load): `cargo test -p lcc-engine --release --lib
+/// photos_side_by_side -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn photos_side_by_side_overlap_on_one_gpu_turn() {
+    if !lcc_gpu::available() {
+        lcc_testkit::skip!(Gpu, "no GPU adapter ({})", lcc_gpu::unavailable_reason().unwrap_or_default());
+        return;
+    }
+    let mut s = Session::with_demo();
+    let ids: Vec<_> = s.catalog.photos().map(|p| p.id).take(4).collect();
+    for &id in &ids {
+        hdr_export_settings(&mut s, id);
+    }
+    let batch: Vec<_> = ids.iter().copied().cycle().take(8).collect();
+    let o = ExportOptions::from_json(&json!({"longEdge": 3000, "hdr": true, "quality": 90}));
+    lcc_gpu::set_batch_limits(None, Some(1));
+    let mut run = |lanes: usize| {
+        for &id in &ids {
+            s.media.forget(id);
+        }
+        let t = std::time::Instant::now();
+        let files = crate::export::export_batch_lanes(&mut s, &batch, &o, lanes, false).unwrap();
+        assert!(files.iter().all(|f| f.get("error").is_none() && f.get("gpuFallback").is_none()), "{files:?}");
+        t.elapsed().as_secs_f64()
+    };
+    run(1); // warm up
+    let one = run(1);
+    let four = run(4);
+    lcc_gpu::set_batch_limits(None, None);
+    eprintln!("8 HDR exports: 1 lane {one:.2} s, 4 lanes {four:.2} s ({:.1}x)", one / four.max(1e-3));
+    assert!(four < one, "4 lanes {four:.2} s vs 1 lane {one:.2} s: lanes must overlap");
+}
+
+/// A cancelled export stayed "cancelling" for minutes and kept exporting. It returns
+/// within about a second of the cancel and writes nothing more (its lanes stop at their next step).
+#[test]
+fn a_cancelled_export_stops_within_a_second() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut s = Session::with_demo();
+    let ids: Vec<_> = s.catalog.photos().map(|p| p.id).take(4).collect();
+    for &id in &ids {
+        hdr_export_settings(&mut s, id);
+    }
+    let batch: Vec<_> = ids.iter().copied().cycle().take(12).collect();
+    let o = ExportOptions::from_json(&json!({"longEdge": 1600, "hdr": true}));
+    let items = crate::export::prepare_batch(&mut s, &batch, &o).unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = cancel.clone();
+    let cancelled_at = Arc::new(std::sync::Mutex::new(None));
+    let at = cancelled_at.clone();
+    // cancel while the first photos are still rendering
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        *at.lock().unwrap() = Some(std::time::Instant::now());
+        flag.store(true, Ordering::Relaxed);
+    });
+    let mut written = 0;
+    let mut write = |_: &str, _: &[u8]| {
+        written += 1;
+        Ok(())
+    };
+    let to = crate::export::Destination::default();
+    let c = cancel.clone();
+    let files = crate::export::run_batch_cancellable(
+        items,
+        &o,
+        &to,
+        &mut write,
+        &|_| false,
+        false,
+        &mut |_, _| !c.load(Ordering::Relaxed),
+        Some(cancel.clone()),
+    )
+    .unwrap();
+    let after = cancelled_at.lock().unwrap().expect("cancelled").elapsed();
+    assert!(after < std::time::Duration::from_millis(1500), "returned {after:?} after the cancel");
+    assert!(files.len() < 12 && written == files.len(), "{} files, {written} written", files.len());
+}
+
+/// The GPU and the processor at once: with one export at a time on the card and the processor
+/// rendering the photos it has no room for, every photo comes out and none fails. Prints the time
+/// against the GPU alone.
+#[test]
+fn exports_render_on_the_gpu_and_the_processor_at_once() {
+    if !lcc_gpu::available() {
+        lcc_testkit::skip!(Gpu, "no GPU adapter ({})", lcc_gpu::unavailable_reason().unwrap_or_default());
+        return;
+    }
+    let mut s = Session::with_demo();
+    let ids: Vec<_> = s.catalog.photos().map(|p| p.id).take(4).collect();
+    for &id in &ids {
+        hdr_export_settings(&mut s, id);
+    }
+    let batch: Vec<_> = ids.iter().copied().cycle().take(8).collect();
+    let o = ExportOptions::from_json(&json!({"longEdge": 3000, "hdr": true, "quality": 90}));
+    lcc_gpu::set_batch_limits(None, Some(1));
+    let mut run = |mix: bool| {
+        for &id in &ids {
+            s.media.forget(id);
+        }
+        let t = std::time::Instant::now();
+        let files = crate::export::export_batch_lanes(&mut s, &batch, &o, 4, mix).unwrap();
+        assert_eq!(files.len(), 8);
+        assert!(files.iter().all(|f| f.get("error").is_none()), "{files:?}");
+        t.elapsed().as_secs_f64()
+    };
+    run(false); // warm up
+    let gpu = run(false);
+    let both = run(true);
+    lcc_gpu::set_batch_limits(None, None);
+    eprintln!("8 HDR exports, 4 lanes: GPU alone {gpu:.2} s, GPU + processor {both:.2} s");
 }

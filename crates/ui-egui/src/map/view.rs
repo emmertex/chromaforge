@@ -358,7 +358,7 @@ fn hover_preview(app: &mut LccApp, ui: &mut egui::Ui, r: Rect, at: Pos2, ids: &[
         let [tw, th] = tex.size;
         let s = (img.width() / tw.max(1) as f32).min(img.height() / th.max(1) as f32);
         let fr = Rect::from_center_size(img.center(), vec2(tw as f32 * s, th as f32 * s));
-        p.image(tex.tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        p.image(tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
     let name = app.session.catalog.photo(first).map(|ph| ph.file_name.clone()).unwrap_or_default();
     let text = if ids.len() > 1 { crate::i18n::tr_format!("{n} photos", n = ids.len()) } else { name };

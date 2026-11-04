@@ -33,6 +33,7 @@ mod editors;
 mod hdr_display;
 mod hdr_probe;
 mod logging;
+mod logi_plugin;
 mod midi;
 mod native_dialog;
 #[cfg(target_os = "macos")]
@@ -45,6 +46,7 @@ mod screen_profile;
 mod screen_profile_linux;
 #[cfg(any(windows, test))]
 mod screen_profile_windows;
+mod threads;
 mod video_gpu;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod wayland_hdr;
@@ -69,7 +71,49 @@ fn app_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(png).unwrap_or_default()
 }
 
-struct App(LccApp, PrefsWriter, #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>);
+struct App(LccApp, PrefsWriter, Option<WindowTextures>, #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>);
+
+/// Draws renders that stayed on the GPU: registers their textures with the window's egui-wgpu
+/// renderer (the GPU renderer runs on the window's device, see [`offer_window_device`]).
+struct WindowTextures {
+    device: eframe::wgpu::Device,
+    queue: eframe::wgpu::Queue,
+    renderer: std::sync::Arc<egui::mutex::RwLock<eframe::egui_wgpu::Renderer>>,
+}
+
+impl lcc_ui_egui::render::ScreenTextures for WindowTextures {
+    fn show(&mut self, frame: &lcc_engine::media::ScreenFrame, id: Option<egui::TextureId>) -> Option<egui::TextureId> {
+        let view = frame.texture.create_view(&Default::default());
+        let mut r = self.renderer.write();
+        let filter = eframe::wgpu::FilterMode::Linear;
+        Some(match id {
+            Some(id) => {
+                r.update_egui_texture_from_wgpu_texture(&self.device, &view, filter, id);
+                id
+            }
+            None => r.register_native_texture(&self.device, &view, filter),
+        })
+    }
+
+    fn free(&mut self, id: egui::TextureId) {
+        self.renderer.write().free_texture(&id);
+    }
+
+    fn read(&self, frame: &lcc_engine::media::ScreenFrame) -> Option<egui::ColorImage> {
+        let img = lcc_engine::gpu::read_texture(&self.device, &self.queue, &frame.texture, frame.width, frame.height).ok()?;
+        let pixels = img.data.iter().map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])).collect();
+        Some(egui::ColorImage::new([img.width, img.height], pixels))
+    }
+}
+
+/// Offer the window's device to the GPU renderer, so the loupe's drafts are drawn straight from the
+/// GPU (the kernels are built on it when the renderer warms up, off the UI thread); the textures
+/// they leave are shown through [`WindowTextures`] once it runs there. A device that doesn't suit
+/// is declined and the renderer makes one of its own, as before: every render comes back as pixels.
+fn offer_window_device(rs: &eframe::egui_wgpu::RenderState) -> WindowTextures {
+    lcc_engine::gpu::offer_window_device(rs.device.clone(), rs.queue.clone(), &rs.adapter);
+    WindowTextures { device: rs.device.clone(), queue: rs.queue.clone(), renderer: rs.renderer.clone() }
+}
 
 impl eframe::App for App {
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
@@ -81,7 +125,7 @@ impl eframe::App for App {
     }
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
-        if let Some(m) = self.2.as_mut()
+        if let Some(m) = self.3.as_mut()
             && m.update(&mut self.0, ctx)
             && lcc_ui_egui::panels::notices::may_close(&mut self.0)
         {
@@ -99,6 +143,13 @@ impl eframe::App for App {
     }
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.0.perf.host_frame_ms = frame.info().cpu_usage.map(|s| f64::from(s) * 1000.0);
+        // the GPU renderer adopted the window's device: its renders can be drawn as they are
+        if self.2.is_some()
+            && lcc_engine::gpu::on_window_device()
+            && let Some(t) = self.2.take()
+        {
+            self.0.renderer.set_screen_textures(Box::new(t));
+        }
         self.0.ui(ui);
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -107,7 +158,10 @@ impl eframe::App for App {
         if let Err(e) = self.1.save(&self.0) {
             log::error!("{e}");
         }
-        catalog_hooks::backup_if_due(&mut self.0.session);
+        // Skip This Time in the quit prompt: no backup on this quit
+        if self.0.exit_backup != Some(false) {
+            catalog_hooks::backup_if_due(&mut self.0.session);
+        }
         if let Err(e) = self.0.session.close_library() {
             log::error!("saving the library failed: {e}");
         }
@@ -205,9 +259,8 @@ fn gpu_lost_marker_path() -> Option<std::path::PathBuf> {
     gpu_marker_path().map(|p| p.with_file_name("gpu-lost.marker"))
 }
 
-/// Why the GPU was lost, when the GPU pipeline stopped after a device failure in this process (a
-/// driver reset, a hang, the Windows watchdog): `None` for other reasons it is off, or when it
-/// never failed.
+/// Why the GPU was lost, when the device failed in this process (a driver reset, a hang, the
+/// Windows watchdog), even if a new device replaced it since: `None` when it never failed.
 fn gpu_lost_reason() -> Option<String> {
     lcc_engine::gpu::unavailable_reason().and_then(|r| r.strip_prefix("stopped after a GPU failure: ").map(str::to_string))
 }
@@ -870,13 +923,70 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         // playing video frames graded on the window GPU (wgpu renderer only)
         video_gpu: cc.wgpu_render_state.as_ref().map(|s| Box::new(video_gpu::WindowVideoGpu::new(s)) as Box<dyn lcc_ui_egui::VideoGpu>),
         hdr_output: cc.wgpu_render_state.as_ref().and_then(hdr_display::WindowHdr::new).map(|h| Box::new(h) as Box<dyn lcc_ui_egui::HdrOutput>),
+        surface_store: surface_store(),
+        pick_surface_file: Some(Box::new(|| {
+            file_dialog()
+                .set_title(lcc_ui_egui::i18n::tr("Import Control Surface Setup"))
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Control surface setups"), &["json", "lp5", "lcsurface"])
+                .pick_file()
+                .map(|p| vec![p.to_string_lossy().to_string()])
+                .unwrap_or_default()
+        })),
+        save_surface_file: Some(Box::new(|name: &str| {
+            file_dialog()
+                .set_title(lcc_ui_egui::i18n::tr("Export Control Surface Layout"))
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("{app} surface layout"), &["lcsurface"])
+                .set_file_name(name)
+                .save_file()
+                .map(|p| p.to_string_lossy().to_string())
+        })),
+        surface_listener: None,
+        surface_plugin: logi_plugin::installer(),
     }
+}
+
+/// `<config>/control-surfaces.json` (Settings, Controls; `docs/control-surfaces.md`).
+struct SurfaceFile(std::path::PathBuf);
+
+/// The largest control-surface settings file read.
+const MAX_SURFACE_FILE: u64 = 16 * 1024 * 1024;
+
+impl lcc_ui_egui::surface::SurfaceStore for SurfaceFile {
+    fn load(&self) -> Result<Option<String>, String> {
+        match std::fs::metadata(&self.0) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", self.0.display())),
+            Ok(m) if m.len() > MAX_SURFACE_FILE => Err(format!("{} is too large", self.0.display())),
+            Ok(_) => std::fs::read_to_string(&self.0).map(Some).map_err(|e| format!("{}: {e}", self.0.display())),
+        }
+    }
+
+    fn save(&self, text: &str) -> Result<(), String> {
+        if let Some(dir) = self.0.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        lcc_engine::export::write_file(&self.0.to_string_lossy(), text.as_bytes())
+    }
+}
+
+/// Where control-surface settings live (none with `<PREFIX>_NO_PREFS` or no settings folder).
+fn surface_store() -> Option<Box<dyn lcc_ui_egui::surface::SurfaceStore>> {
+    if lcc_brand::env_is_set("NO_PREFS") {
+        return None;
+    }
+    config_dir().map(|d| Box::new(SurfaceFile(d.join("control-surfaces.json"))) as Box<dyn lcc_ui_egui::surface::SurfaceStore>)
 }
 
 /// A session with no library yet (one opens later), with the folders face models and slideshow
 /// templates are kept in.
 fn unopened_session() -> Session {
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_connections().with_system_clock();
+    let mut s = Session::new()
+        .with_fs()
+        .with_default_denoise_models()
+        .with_default_genfill()
+        .with_default_connections()
+        .with_system_clock()
+        .with_default_app_store();
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
     s.lens_db = lcc_engine::lens_download::LensSettings::load(lcc_engine::config::config_dir());
     s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
@@ -888,7 +998,9 @@ fn unopened_session() -> Session {
 /// the window lists the recent ones.
 fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool) -> (Session, Option<LibraryProblem>) {
     let (mut s, problem) = match launch {
-        Launch::Ask => (Session::new().with_fs().with_default_denoise_models().with_system_clock(), None),
+        Launch::Ask => {
+            (Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_app_store(), None)
+        }
         Launch::Open { dir, .. } => open_library_session(in_memory, dir.clone(), seed_demo),
     };
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
@@ -896,6 +1008,8 @@ fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool) -> (Session, 
     s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
     // Control requests are answered on the UI thread: Add to Apple Photos must not wait there
     s.apple_photos_background = true;
+    // presets.json (40 MB for an imported Lightroom collection) is saved off the UI thread
+    s.background_saves = true;
     (s, problem)
 }
 
@@ -910,18 +1024,28 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
             if seed_demo { Session::with_demo() } else { Session::new() }
                 .with_fs()
                 .with_default_denoise_models()
+                .with_default_genfill()
                 .with_default_connections()
                 .with_system_clock(),
             None,
         );
     }
-    let unopened = || Session::new().with_fs().with_default_denoise_models().with_default_connections().with_system_clock();
+    // presets, profiles and habits are shared by every library (the settings folder's Library Store)
+    let unopened = || {
+        Session::new()
+            .with_fs()
+            .with_default_denoise_models()
+            .with_default_genfill()
+            .with_default_connections()
+            .with_system_clock()
+            .with_default_app_store()
+    };
     let Some(dir) = dir else {
         log::warn!("no library location (set --library or {})", lcc_brand::env_var("LIBRARY"));
         return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the library in. Choose a folder for it.")));
     };
     let t0 = std::time::Instant::now();
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_connections().with_system_clock();
+    let mut s = unopened();
     match s.open_library(&dir, seed_demo) {
         Ok(r) => {
             let (replayed, torn) = (r.replayed, r.torn_bytes);
@@ -1087,6 +1211,8 @@ fn main() -> eframe::Result {
         logging::record_panics(logger);
     }
     alloc_release::install();
+    // the shared worker pool leaves cores free and renders run below normal priority
+    threads::install();
     let mut control_port = control_port_from(&lcc_brand::env_var("CONTROL_PORT"), lcc_brand::env("CONTROL_PORT").filter(|v| !v.is_empty()));
     let mut control_token_arg = control_auth::env_token().filter(|v| !v.trim().is_empty());
     let mut files = Vec::new();
@@ -1312,6 +1438,8 @@ fn main() -> eframe::Result {
                 app.hdr_display_sdr = !display.is_hdr();
                 if let Some(ui) = prefs {
                     app.ui = ui;
+                    // Auto Sync is the app's, remembered across libraries and restarts
+                    app.session.auto_sync = app.ui.settings.auto_sync;
                 }
                 catalog_hooks::remember_recent(&mut app, in_memory);
                 // the recent libraries to choose from (issue #1290), checked on a worker once shown
@@ -1364,19 +1492,32 @@ fn main() -> eframe::Result {
                 let (midi_actions, midi_reload, midi_problem) = midi::start(cc.egui_ctx.clone());
                 app.notices.extend(midi_problem);
                 app = app.with_midi(midi_actions, midi_reload);
+                // requests from --control and from the control-surface listener
+                let (control_tx, control_rx) = std::sync::mpsc::channel();
+                let mut control_started = false;
                 if let Some(port) = control_port {
                     let supplied = control_token_arg.is_some();
                     match control_token(control_token_arg) {
                         Ok(token) => {
                             // bind first: the token file is written only once the port is ours
                             let publish = |token: &str| publish_control_token(port, token, supplied);
-                            if let Some(rx) = control_server::start(port, token, cc.egui_ctx.clone(), publish) {
-                                app = app.with_control(rx);
-                            }
+                            control_started = control_server::start(port, token, control_tx.clone(), cc.egui_ctx.clone(), publish);
                         }
                         Err(e) => log::error!("no control server: {e}"),
                     }
                 }
+                app = if control_started { app.with_control(control_rx) } else { app.with_requests(control_rx) };
+                let listener_ctx = cc.egui_ctx.clone();
+                let mut running: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+                app.services.surface_listener = Some(Box::new(move |port: Option<u16>| {
+                    if let Some(stop) = running.take() {
+                        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    if let Some(port) = port {
+                        running = Some(control_server::start_surfaces(port, control_tx.clone(), listener_ctx.clone())?.0);
+                    }
+                    Ok(())
+                }));
                 if let Some(foreign) = welcome {
                     // a first start: create a catalog or open one (command-line files wait for it)
                     lcc_ui_egui::catalog_ui::welcome(&mut app, foreign.iter().map(|p| p.display().to_string()).collect());
@@ -1400,9 +1541,22 @@ fn main() -> eframe::Result {
                 // drawn in the window's top bar). <PREFIX>_NO_NATIVE_MENU=1 keeps the in-window menus.
                 #[cfg(target_os = "macos")]
                 let menu = (!lcc_brand::env_is_set("NO_NATIVE_MENU")).then(|| native_menu::NativeMenu::install(&mut app, &cc.egui_ctx));
+                // the GPU renderer on the window's device, when GPU rendering is on
+                // (<PREFIX>_GPU_WINDOW=0: a device of its own, renders read back - for comparison or a
+                // driver that misbehaves with compute and drawing on one device)
+                // Not on an HDR window for now: with the renderer on the window's device, turning an
+                // edit's HDR on stopped the Wayland window drawing (RADV, 2026-11-03; fine with a
+                // device of its own). `<PREFIX>_GPU_WINDOW=1` offers it anyway, `0` never.
+                let window_device = match lcc_brand::env("GPU_WINDOW").as_deref().map(str::trim) {
+                    Some("0") => false,
+                    Some("1") => true,
+                    _ => !display.is_hdr(),
+                };
+                let window_textures = cc.wgpu_render_state.as_ref().filter(|_| gpu_on && window_device).map(offer_window_device);
                 Ok(Box::new(App(
                     app,
                     writer,
+                    window_textures,
                     #[cfg(target_os = "macos")]
                     menu,
                 )))
@@ -1505,6 +1659,7 @@ mod tests {
         let mut app = App(
             LccApp::new(Session::new(), Services::default()),
             PrefsWriter::default(),
+            None,
             #[cfg(target_os = "macos")]
             None,
         );
@@ -2067,6 +2222,7 @@ mod tests {
             let mut app = App(
                 app,
                 PrefsWriter::default(),
+                None,
                 #[cfg(target_os = "macos")]
                 None,
             );
@@ -2099,6 +2255,7 @@ mod tests {
             let mut app = App(
                 LccApp::new(session, Services::default()),
                 PrefsWriter::default(),
+                None,
                 #[cfg(target_os = "macos")]
                 None,
             );

@@ -12,6 +12,7 @@
 //!   image coordinates (brush strokes, crop handles…) — mapped to screen and injected as real input
 //! - `ui.key {key, shift?, alt?, cmd?}` / `ui.text {text}` / `ui.scroll {dx, dy}`
 //! - `ui.set {view?, panel?, filmstrip?, leftPanel?, zoom?, …}` / `ui.dialog.confirm|cancel`
+//! - `surface.*`: control surfaces (pairing, subscribe, input, layout, icons; `crate::surface`)
 //! - `ui.screenshot {path?, headless?}` (headless: CPU-rendered, no compositor needed), `ui.resize {width, height}`, `ui.render {id?, size?, path?}`, `app.quit`
 
 use std::sync::mpsc::Sender;
@@ -29,6 +30,10 @@ pub struct ControlRequest {
     /// Who has the request: [`PENDING`], [`TAKEN`] (the app runs it) or [`ABANDONED`] (the
     /// sender gave up on it, so the app must not run it late: issue #718).
     pub state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// The connection it came on (0 = in process: headless scripts and tests, trusted).
+    pub conn: u64,
+    /// Where events for that connection go, for `surface.subscribe` (none in process).
+    pub sink: Option<crate::surface::EventSink>,
 }
 
 /// Queued, not yet run.
@@ -41,7 +46,14 @@ pub const ABANDONED: u8 = 2;
 impl ControlRequest {
     pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx, state: Default::default() }, rx)
+        (Self { method: method.into(), params, reply: tx, state: Default::default(), conn: 0, sink: None }, rx)
+    }
+
+    /// The request came on connection `conn` (numbered from 1), whose pushed events go to `sink`.
+    pub fn on_connection(mut self, conn: u64, sink: crate::surface::EventSink) -> Self {
+        self.conn = conn;
+        self.sink = Some(sink);
+        self
     }
 
     /// Claim the request for running; false when its sender already gave up on it.
@@ -113,7 +125,7 @@ pub fn inspect(app: &LccApp, ctx: &egui::Context) -> Value {
         "selection": app.session.selection.ids.iter().map(|p| p.0).collect::<Vec<_>>(),
         "activeMask": app.session.active_mask,
         "widgetCount": app.widgets.len(),
-        "perf": {"viewFollowed": app.session.view_followed, "viewWorkedOut": app.session.view_worked_out, "frameMs": app.perf.frame_ms, "logicMs": app.perf.logic_ms, "updateMs": app.perf.update_ms, "maxUpdateMs": app.perf.max_update_ms, "fps": app.perf.fps, "lastRenderMs": app.renderer.last_main_ms, "adjustQuality": app.hq_drag.quality(app.session.interaction.as_ref().filter(|_| app.ui.settings.high_quality_adjustment_previews).map(|i| (i.photo, i.label.as_str()))).name(), "renderQueue": app.renderer.queued(), "rendersInFlight": app.renderer.in_flight(), "pendingSlots": app.renderer.pending_slots(), "mergeRunning": app.merge.busy(), "lastMerge": app.merge.last_result, "rendersDone": app.renderer.completed, "thumbTextures": app.renderer.thumb_textures(), "variantTextures": app.renderer.variant_textures(), "hdrWindowsKept": app.renderer.hdr_windows_kept(), "gpu": (lcc_engine::gpu::ready() && lcc_engine::gpu::available()).then(lcc_engine::gpu::adapter_name).flatten(), "gpuReason": lcc_engine::gpu::unavailable_reason(), "gpuFallback": lcc_engine::gpu::last_fallback()},
+        "perf": {"loupeRenders": app.renderer.loupe_log.iter().collect::<Vec<_>>(), "nowMs": crate::now_ms(), "refineAfterS": crate::region::StillRefine::refine_after(app.renderer.last_full_main_ms), "viewFollowed": app.session.view_followed, "viewWorkedOut": app.session.view_worked_out, "frameMs": app.perf.frame_ms, "logicMs": app.perf.logic_ms, "updateMs": app.perf.update_ms, "maxUpdateMs": app.perf.max_update_ms, "slowestFrame": app.slowest_frame, "fps": app.perf.fps, "lastRenderMs": app.renderer.last_main_ms, "adjustQuality": app.hq_drag.quality(app.session.interaction.as_ref().filter(|_| app.ui.settings.high_quality_adjustment_previews).map(|i| (i.photo, i.label.as_str()))).name(), "renderQueue": app.renderer.queued(), "rendersInFlight": app.renderer.in_flight(), "pendingSlots": app.renderer.pending_slots(), "mergeRunning": app.merge.busy(), "lastMerge": app.merge.last_result, "rendersDone": app.renderer.completed, "thumbTextures": app.renderer.thumb_textures(), "variantTextures": app.renderer.variant_textures(), "hdrWindowsKept": app.renderer.hdr_windows_kept(), "gpu": (lcc_engine::gpu::ready() && lcc_engine::gpu::available()).then(lcc_engine::gpu::adapter_name).flatten(), "gpuReason": lcc_engine::gpu::unavailable_reason(), "gpuFallback": lcc_engine::gpu::last_fallback(), "gpuWindowDevice": lcc_engine::gpu::on_window_device(), "screenTextures": app.renderer.has_screen_textures(), "mainOnGpu": app.renderer.textures.get(&crate::render::Slot::Main).is_some_and(|t| t.native.is_some())},
         "loupe": app.loupe_shown.map(|(p, src)| json!({
             "photo": p.0,
             "source": src,
@@ -238,6 +250,9 @@ pub(crate) fn check_gesture_numbers(method: &str, p: &Value) -> Result<(), Strin
 }
 
 pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    if let Some(o) = crate::surface::handle(app, req) {
+        return o;
+    }
     let p = &req.params;
     if matches!(
         req.method.as_str(),
@@ -279,6 +294,11 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
         "ui.clickWidget" | "ui.dragWidget" | "ui.hoverWidget" => {
             let Some(id) = s("id") else { return err("missing `id`") };
             let Some(r) = widget_rect(app, id) else { return err(format!("no widget `{id}` on screen (see ui.widgets)")) };
+            // a widget laid out past the window's edge (a panel scrolled away from it) can't take a pointer
+            // event: say so instead of answering ok for a click that lands on nothing
+            if !ctx.content_rect().intersects(r) {
+                return err(format!("widget `{id}` is outside the window (scrolled out of view): scroll it into view first (ui.scroll)"));
+            }
             let m = modifiers(p);
             // optional relative position inside the widget (0..1)
             let at = egui::pos2(r.left() + r.width() * f("fx").unwrap_or(0.5) as f32, r.top() + r.height() * f("fy").unwrap_or(0.5) as f32);
@@ -361,16 +381,16 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
         "ui.key" => {
             let Some(k) = s("key").and_then(key_from) else { return err("unknown or missing `key`") };
             let m = modifiers(p);
-            // {action?: "press" | "down" | "up"}: down … up holds the key across other input (Space
-            // held over a drag); a press is both in one frame
-            let (down, up) = match s("action").unwrap_or("press") {
-                "press" => (true, true),
-                "down" => (true, false),
-                "up" => (false, true),
-                other => return err(format!("ui.key: action {other:?} (press, down or up)")),
-            };
-            for pressed in [down.then_some(true), up.then_some(false)].into_iter().flatten() {
-                app.synthetic.push(egui::Event::Key { key: k, physical_key: None, pressed, repeat: false, modifiers: m });
+            // {action?: "press" | "down" | "repeat" | "up"}: down … up holds the key across other
+            // input (Space held over a drag); a press is both in one frame; repeat is the system's
+            // auto-repeat while the key is held
+            let key = |pressed: bool, repeat: bool| egui::Event::Key { key: k, physical_key: None, pressed, repeat, modifiers: m };
+            match s("action").unwrap_or("press") {
+                "press" => app.synthetic.extend([key(true, false), key(false, false)]),
+                "down" => app.synthetic.push(key(true, false)),
+                "repeat" => app.synthetic.push(key(true, true)),
+                "up" => app.synthetic.push(key(false, false)),
+                other => return err(format!("ui.key: action {other:?} (press, down, repeat or up)")),
             }
             ctx.request_repaint();
             ok(Value::Null)
@@ -477,8 +497,16 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                     // a script's values get the same range checks as a settings file's
                     u.clamp_ranges();
                     u.toasts = app.ui.toasts.clone();
+                    // (and the panel a tool panel took the place of, to put back when it closes)
+                    u.tool_return = app.ui.tool_return;
+                    u.right_seen = app.ui.right_seen;
                     u.dialog = app.ui.dialog.clone();
                     u.status = app.ui.status.clone();
+                    // the masking mode (not settings): a tool armed for a new mask stays armed
+                    u.mask_new = app.ui.mask_new.clone();
+                    u.tool_photo = app.ui.tool_photo;
+                    u.mask_drawing = app.ui.mask_drawing;
+                    u.active_mask_component = app.ui.active_mask_component;
                     crate::docking::cancel_replaced_gesture(app, u.docking.as_ref());
                     app.ui = u;
                     crate::i18n::set_language(app.ui.language);
@@ -488,41 +516,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 Err(e) => err(e),
             }
         }
-        "ui.dialog.confirm" => match app.ui.dialog.take() {
-            Some(d) => {
-                let r = crate::panels::dialogs::confirm_dialog(app, &d);
-                // the import review and the rule editor stay open on an error, as with their buttons
-                if (r.is_err()
-                    && matches!(
-                        d,
-                        crate::state::Dialog::Import { .. }
-                            | crate::state::Dialog::SamModel { .. }
-                            | crate::state::Dialog::SmartRules { .. }
-                            | crate::state::Dialog::SaveEffect { .. }
-                            | crate::state::Dialog::CaptureTime { .. }
-                    ))
-                    || (r.is_ok() && crate::panels::dialogs::keeps_open(app, &d))
-                    || (r.is_err() && crate::lightroom_destination::keeps_open_on_error(app, &d))
-                {
-                    app.ui.dialog = Some(d);
-                }
-                wrap(r)
-            }
-            // Read / Save Metadata's overwrite question lives with the catalog dialogs: confirm it as its button does
-            #[cfg(not(target_arch = "wasm32"))]
-            None => match app.catalog_ui.dialog.take() {
-                Some(crate::catalog_ui::CatalogDialog::XmpConflict { command, ids, .. }) => {
-                    wrap(app.run(&command, json!({"ids": ids, "confirmed": true})))
-                }
-                other => {
-                    app.catalog_ui.dialog = other;
-                    err("no dialog open")
-                }
-            },
-            // the web build has no Read / Save Metadata overwrite question
-            #[cfg(target_arch = "wasm32")]
-            None => err("no dialog open"),
-        },
+        "ui.dialog.confirm" => wrap(confirm_dialog(app)),
         "ui.dialog.cancel" => {
             app.ui.dialog = None;
             #[cfg(not(target_arch = "wasm32"))]
@@ -560,6 +554,9 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             if let Some(Err(e)) = s("path").map(|path| app.session.check_write_target(path)) {
                 return err(e);
             }
+            // views drawn straight from the GPU become pixels first: a window capture over native
+            // textures stopped the window presenting (Linux / X11, RADV)
+            app.renderer.views_to_pixels();
             ctx.request_repaint();
             Outcome::Screenshot { path: s("path").map(str::to_string), headless: p.get("headless").and_then(Value::as_bool).unwrap_or(false) }
         }
@@ -598,6 +595,44 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             ok(Value::Null)
         }
         other => err(format!("unknown method `{other}`")),
+    }
+}
+
+/// OK on the open dialog (`ui.dialog.confirm`, a surface's OK key).
+/// Confirms the open dialog as its button does (`ui.dialog.confirm`, and a control surface's Confirm key).
+pub(crate) fn confirm_dialog(app: &mut LccApp) -> Result<Value, String> {
+    match app.ui.dialog.take() {
+        Some(d) => {
+            let r = crate::panels::dialogs::confirm_dialog(app, &d);
+            // the import review and the rule editor stay open on an error, as with their buttons
+            if (r.is_err()
+                && matches!(
+                    d,
+                    crate::state::Dialog::Import { .. }
+                        | crate::state::Dialog::SamModel { .. }
+                        | crate::state::Dialog::SmartRules { .. }
+                        | crate::state::Dialog::SaveEffect { .. }
+                        | crate::state::Dialog::CaptureTime { .. }
+                ))
+                || (r.is_ok() && crate::panels::dialogs::keeps_open(app, &d))
+                || (r.is_err() && crate::lightroom_destination::keeps_open_on_error(app, &d))
+            {
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
+        // Read / Save Metadata's overwrite question lives with the catalog dialogs: confirm it as its button does
+        #[cfg(not(target_arch = "wasm32"))]
+        None => match app.catalog_ui.dialog.take() {
+            Some(crate::catalog_ui::CatalogDialog::XmpConflict { command, ids, .. }) => app.run(&command, json!({"ids": ids, "confirmed": true})),
+            other => {
+                app.catalog_ui.dialog = other;
+                Err("no dialog open".into())
+            }
+        },
+        // the web build has no Read / Save Metadata overwrite question
+        #[cfg(target_arch = "wasm32")]
+        None => Err("no dialog open".into()),
     }
 }
 

@@ -170,7 +170,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let lines: Vec<Value> = recipe.rows.iter().map(|r| json!({"tag": r.tag, "label": r.label, "value": r.value})).collect();
             Ok(json!({"present": true, "text": recipe.text(), "lines": lines}))
         }),
-        cmd!(query "albums.list", "List Albums", [], None, "{}", always, |s, _| {
+        cmd!(query "albums.list", "List Collections", [], None, "{}", always, |s, _| {
             let all: Vec<Album> = s.catalog.albums().cloned().collect();
             // every album counted in one pass, so a smart album tested by others is worked out once
             let counts = lcc_catalog::tally::AlbumTally::of(&s.catalog);
@@ -228,7 +228,7 @@ pub fn specs() -> Vec<CommandSpec> {
             ))
         }),
         cmd!(query "presets.list", "List Presets", [], None, "{}", always, |s, _| {
-            Ok(Value::Array(s.presets.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": p.favorite, "builtin": p.builtin})).collect()))
+            Ok(Value::Array(s.presets.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": p.favorite, "builtin": p.builtin, "atImport": s.preset_at_import.contains(&p.id), "hidden": s.preset_hidden.contains(&p.id)})).collect()))
         }),
         cmd!(query "presets.folders", "List Preset Folders", [], None, "{} — all preset folders (user, built-in, and empty folders)", always, |s, _| {
             let mut set = std::collections::BTreeSet::new();
@@ -250,20 +250,31 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(Value::Array(set.into_iter().map(Value::String).collect()))
         }),
-        cmd!(query "profiles.list", "List Profiles", [], None, "{} — every profile (built-in, then imported LUTs marked `imported`) with its group and favourite flag", always, |s, _| {
+        cmd!(query "profiles.list", "List Profiles", [], None, "{all?: bool (also the profiles the Profile Manager hides)} — every profile (built-in, then imported LUTs marked `imported`) with its group and favourite flag", always, |s, p| {
             let favorite = |id: &str| s.profile_favorites.iter().any(|f| f == id);
-            let builtin = crate::presets::PROFILES.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(p.id)}));
-            // imported LUT profiles too (#618), marked as in `profiles.menu`
-            let imported =
-                s.lut_profiles.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(&p.id), "imported": true}));
-            Ok(Value::Array(builtin.chain(imported).collect()))
+            let all = p.get("all").and_then(Value::as_bool).unwrap_or(false);
+            // the user's names, groups and order; imported LUT profiles marked as in `profiles.menu` (#618)
+            Ok(Value::Array(
+                s.all_profiles()
+                    .into_iter()
+                    .filter(|p| all || !p.hidden)
+                    .map(|p| {
+                        let mut v = json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(&p.id)});
+                        if p.kind == "lut" {
+                            v["imported"] = json!(true);
+                        }
+                        v
+                    })
+                    .collect(),
+            ))
         }),
         cmd!(query "profiles.menu", "Profile Menu", [], None, "{} — favourites, recent (newest first) and groups", always, |s, _| Ok(s.profile_menu())),
-        cmd!(query "history.list", "List History", [], None, "{id?} — returns {history: labels oldest first, cursor: index of the step the settings are at (later steps can be returned to), versions}", has_active, |s, p| {
+        cmd!(query "history.list", "List History", [], None, "{id?} — returns {history: labels oldest first, batches: per step the id of the edit of several photos it belongs to (null: this photo's own edit), cursor: index of the step the settings are at (later steps can be returned to), versions}", has_active, |s, p| {
             let id = photo_arg(s, p, "history.list")?;
             let ph = s.catalog.photo(id).ok_or_else(|| bad("history.list", "no such photo"))?;
             Ok(json!({
                 "history": ph.history.iter().map(|h| h.label.clone()).collect::<Vec<_>>(),
+                "batches": ph.history.iter().map(|h| h.batch).collect::<Vec<_>>(),
                 "cursor": ph.history_index(),
                 "versions": ph.versions.iter().map(|v| json!({"name": v.name, "created": v.created})).collect::<Vec<_>>(),
             }))
@@ -282,27 +293,55 @@ pub fn specs() -> Vec<CommandSpec> {
                 .collect();
             Ok(json!({"groups": groups, "cursor": ph.history_index(), "latest": ph.history_cursor.is_none()}))
         }),
-        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool} — allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why)}", always, |_, p| {
+        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool, card?: string, helper?: string} — allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why), recoveries (lost devices replaced), events [{seq, kind: lost|recovered|gaveUp, text}] (what happened to the graphics card, in plain words), batch {jobs, bytes, waiting, limitBytes, limitJobs, waits, waitedMs} (exports' turns at the GPU), card {choice, inUse, switching} (the graphics card for editing: `card` takes a card's key or \"\" for Automatic), helper {state: off|starting|ready|failed|lost, detail, jobs, bytes, waiting} (the second graphics card: `helper` takes \"\" Automatic, \"off\" or a key), adapters [{key, name, kind, memory, backend, drivesScreen, usable, whyNot}]}", always, |_, p| {
             if let Some(on) = p.get("enabled").and_then(Value::as_bool) {
                 lcc_gpu::set_enabled(on);
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Some(card) = p.get("card").and_then(Value::as_str) {
+                    if card.chars().count() > 512 {
+                        return Err(bad("app.gpu", "card is too long"));
+                    }
+                    lcc_gpu::set_card(card);
+                }
+                if let Some(helper) = p.get("helper").and_then(Value::as_str) {
+                    if helper.chars().count() > 512 {
+                        return Err(bad("app.gpu", "helper is too long"));
+                    }
+                    lcc_gpu::set_helper(helper);
+                }
+            }
+            let b = lcc_gpu::batch_usage();
             Ok(json!({
                 "enabled": lcc_gpu::enabled(),
                 "available": lcc_gpu::available(),
                 "adapter": lcc_gpu::adapter_name(),
                 "reason": lcc_gpu::unavailable_reason(),
                 "lastFallback": lcc_gpu::last_fallback(),
+                "recoveries": lcc_gpu::recoveries(),
+                "events": gpu_events(),
+                "batch": {
+                    "jobs": b.jobs, "bytes": b.bytes, "waiting": b.waiting, "limitBytes": b.limit_bytes,
+                    "limitJobs": b.limit_jobs, "waits": b.waits, "waitedMs": b.waited_ms,
+                },
+                "card": gpu_card(),
+                "helper": gpu_helper(),
+                "adapters": gpu_adapters(),
             }))
         }),
         cmd!(query "library.memory", "Memory Usage", [], None, "{} — bytes held by each cache (decoded sources, rendered previews, GPU buffers; heap when instrumented)", always, |s, _| {
             Ok(serde_json::to_value(s.memory_report()).unwrap_or_default())
         }),
-        cmd!(query "app.memoryBudget", "Memory Budget", [], None, "{mb?: number} — set the memory budget shared by the caches (default: a quarter of RAM, at most 1536 MB); returns the report", always, |s, p| {
+        cmd!(query "app.memoryBudget", "Memory Budget", [], None, "{mb?: number (0 = automatic)} — set the memory budget shared by the caches (automatic: a quarter of the computer's memory, at most 16 GB; by hand at most three quarters of it, `maxBudget`); returns the report", always, |s, p| {
             if let Some(mb) = p.get("mb").and_then(Value::as_f64) {
-                if !(64.0..=1_048_576.0).contains(&mb) {
-                    return Err(bad("app.memoryBudget", "mb must be 64..1048576"));
+                if mb == 0.0 {
+                    s.set_memory_budget(crate::memory::default_budget());
+                } else if !(64.0..=1_048_576.0).contains(&mb) {
+                    return Err(bad("app.memoryBudget", "mb must be 64..1048576, or 0 for automatic"));
+                } else {
+                    s.set_memory_budget((mb * 1048576.0) as usize);
                 }
-                s.set_memory_budget((mb * 1048576.0) as usize);
             }
             Ok(serde_json::to_value(s.memory_report()).unwrap_or_default())
         }),
@@ -312,6 +351,70 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Array(s.journal[start..].iter().map(|(c, p)| json!({"command": c, "params": p})).collect()))
         }),
     ]
+}
+
+/// The graphics card for editing, for `app.gpu`.
+fn gpu_card() -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (choice, in_use, switching) = lcc_gpu::card_status();
+        json!({"choice": choice, "inUse": in_use, "switching": switching})
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Value::Null
+    }
+}
+
+/// The second graphics card, for `app.gpu`.
+fn gpu_helper() -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (state, detail) = lcc_gpu::helper_status();
+        let (jobs, bytes, waiting) = lcc_gpu::helper_usage();
+        json!({"state": state, "detail": detail, "jobs": jobs, "bytes": bytes, "waiting": waiting})
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Value::Null
+    }
+}
+
+/// The graphics cards listed, for `app.gpu`.
+fn gpu_adapters() -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Value::Array(
+            lcc_gpu::adapters()
+                .into_iter()
+                .map(|e| {
+                    json!({"key": e.key.to_string(), "name": e.name, "kind": e.kind.id(), "memory": e.memory, "backend": e.backend,
+                           "drivesScreen": e.drives_screen, "usable": e.usable, "whyNot": e.why_not})
+                })
+                .collect(),
+        )
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Value::Array(Vec::new())
+    }
+}
+
+/// What happened to the graphics card this session ([`lcc_gpu::events_after`]), for `app.gpu`.
+fn gpu_events() -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let kind = |k: lcc_gpu::EventKind| match k {
+            lcc_gpu::EventKind::Lost => "lost",
+            lcc_gpu::EventKind::Recovered => "recovered",
+            lcc_gpu::EventKind::GaveUp => "gaveUp",
+        };
+        Value::Array(lcc_gpu::events_after(0).into_iter().map(|e| json!({"seq": e.seq, "kind": kind(e.kind), "text": e.text})).collect())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Value::Array(Vec::new())
+    }
 }
 
 #[cfg(test)]
@@ -325,5 +428,24 @@ mod pagination_tests {
         assert_eq!(pagination_usize(u64::MAX), usize::MAX);
         #[cfg(target_pointer_width = "32")]
         assert_eq!(pagination_usize(u64::from(u32::MAX) + 1), usize::MAX);
+    }
+}
+
+#[cfg(test)]
+mod gpu_card_tests {
+    /// `app.gpu` reports the cards and takes hostile card choices without a panic: an over-long
+    /// one is refused, text that is no card means Automatic.
+    #[test]
+    fn app_gpu_reports_cards_and_refuses_hostile_choices() {
+        let mut s = crate::Session::new();
+        let long = "x".repeat(10_000);
+        assert!(s.execute("app.gpu", &serde_json::json!({"card": long})).is_err());
+        assert!(s.execute("app.gpu", &serde_json::json!({"helper": long})).is_err());
+        let r = s.execute("app.gpu", &serde_json::json!({"card": "not a card", "helper": "nonsense"})).expect("reply");
+        assert!(r["card"]["choice"].is_null(), "text that is no card is Automatic: {r}");
+        assert!(r["helper"]["state"].is_string());
+        assert!(r["adapters"].is_array());
+        let r = s.execute("app.gpu", &serde_json::json!({"card": "", "helper": ""})).expect("reply");
+        assert!(r["card"]["choice"].is_null());
     }
 }

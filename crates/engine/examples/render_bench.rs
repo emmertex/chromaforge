@@ -11,6 +11,8 @@
 //! Each scenario runs on the CPU pipeline and, when a GPU adapter exists, on `lcc-gpu`
 //! (second column; `{ENV_PREFIX}_GPU=0` for the CPU only, `GPU_ONLY=1` for the GPU only).
 //!
+//! `ONLY=fit`: a Fit view's drafts at the drawn size (1280×1920) of a photo with a gradient, a
+//! subject and a sky mask, while a global slider and a mask's slider are dragged (warm stages).
 //! `ONLY=window`: a 1:1 zoom window cut from the full-size original (the loupe's `Slot::Region`):
 //! the first window of a photo, a pan, and exposure / draft / NR changes with a warm stage cache;
 //! `DUMP=file` writes the GPU window's RGBA bytes, for pixel A/B comparisons between builds.
@@ -281,6 +283,52 @@ fn main() {
             k += 1.0;
             t.detail.nr_luminance = 30.0 + k % 50.0;
             drop(develop(&preview, &info, &t, &view, Some(&caches[g as usize]), g));
+        });
+    }
+    if run("fit") {
+        // PERF-EDIT: a Fit view's slider drag at the full drawn size (a 4K-window fit, 1280×1920
+        // portrait) of a photo with a gradient, a subject and a sky mask: the masks' planes are
+        // kept with the stages, so a global slider only re-runs the per-pixel stage
+        use lcc_develop::{LocalAdjustments, Mask, MaskComponent, MaskOp, MaskShape};
+        let mut m = s.clone();
+        let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
+        let radial = MaskShape::Radial { center: lcc_geom::Point::new(0.5, 0.4), rx: 0.3, ry: 0.2, angle: 0.0, feather: 50.0, invert: false };
+        m.masks.push(Mask {
+            id: 1,
+            components: vec![comp(radial)],
+            adjust: LocalAdjustments { exposure: 0.5, ..Default::default() },
+            ..Default::default()
+        });
+        m.masks.push(Mask {
+            id: 2,
+            components: vec![comp(MaskShape::Subject)],
+            adjust: LocalAdjustments { contrast: 20.0, ..Default::default() },
+            ..Default::default()
+        });
+        m.masks.push(Mask {
+            id: 3,
+            components: vec![comp(MaskShape::Sky)],
+            adjust: LocalAdjustments { exposure: -0.4, ..Default::default() },
+            ..Default::default()
+        });
+        let fit_draft = RenderRequest { quality: Quality::Draft, ..RenderRequest::fit(1920, 1920) };
+        let fit_caches = [StageCache::default(), StageCache::default()];
+        for g in backends {
+            drop(develop(&preview, &info, &m, &fit_draft, Some(&fit_caches[*g as usize]), *g));
+        }
+        row("fit draft contrast drag, masks (warm):", &mut |g| {
+            let mut t = m.clone();
+            k += 1.0;
+            t.light.contrast = k % 50.0;
+            drop(develop(&preview, &info, &t, &fit_draft, Some(&fit_caches[g as usize]), g));
+        });
+        row("fit draft mask exposure drag (warm):", &mut |g| {
+            let mut t = m.clone();
+            k += 1.0;
+            if let Some(mask) = t.masks.get_mut(1) {
+                mask.adjust.exposure = (k % 20.0) * 0.05;
+            }
+            drop(develop(&preview, &info, &t, &fit_draft, Some(&fit_caches[g as usize]), g));
         });
     }
     if run("window") {

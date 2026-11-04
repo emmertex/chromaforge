@@ -983,7 +983,7 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::tests_face_recognize::{install_yunet, region, set_regions, setup, temp, two_photos};
+        use crate::tests_face_recognize::{install_face_model, region, set_regions, setup, temp, two_photos};
 
         fn unit(parts: &[(usize, f32)]) -> Vec<f32> {
             let mut v = vec![0.0; 64];
@@ -1050,7 +1050,7 @@ mod imp {
         fn only_the_background_scan_looks_for_faces_and_only_in_photos_without_any() {
             let (mut s, d) = loaded("search");
             // finding faces needs the detector, which is not bundled; without it the scan only embeds
-            let detector = install_yunet(&mut s);
+            let detector = install_face_model(&mut s);
             let (a, b) = two_photos(&s);
             set_regions(&mut s, b, vec![region(0.1, Some("Ann")), region(0.5, None)]);
             // `faces.index` embeds what is boxed; only the scan (search = true) also searches the rest, last

@@ -70,8 +70,8 @@ of it. Full standard: `../craftrules/standards/never-crash.md`
   fallback (`unwrap_or…`) only where it can't silently corrupt a document. An unfinished feature returns an
   "unsupported" error or is disabled. Sole exception: a provably infallible literal, as `#[allow(clippy::expect_used)]`
   + `.expect("why it can't fail")`.
-- **`unsafe` lives only in `crates/sysmem`** (two FFI calls: `malloc_zone_pressure_relief`, that returns freed
-  allocator pages to macOS after raw decodes, and `fsync`, for volumes such as SMB shares that refuse std's `F_FULLFSYNC`) **and `crates/hdrmeta`** (wgpu-hal calls on Linux / BSD: open the
+- **`unsafe` lives only in `crates/sysmem`** (five FFI calls. On Windows: `GetCurrentThread` + `SetThreadPriority`, that run render workers below normal priority so the desktop stays responsive, and `GetDiskFreeSpaceExW`, the cache drive's free space for the automatic preview cache size. On macOS: `malloc_zone_pressure_relief`, that returns freed
+  allocator pages after raw decodes, and `fsync`, for volumes such as SMB shares that refuse std's `F_FULLFSYNC`. Elsewhere free space comes from POSIX `df`, no FFI) **and `crates/hdrmeta`** (wgpu-hal calls on Linux / BSD: open the
   window's Vulkan device with `VK_EXT_hdr_metadata`, and `vkSetHdrMetadataEXT` on its swapchain, so the Wayland
   compositor shows HDR; no-op elsewhere). **`crates/gpumem`** (wgpu-hal calls: read how much memory the window's GPU offers — Vulkan
   device-local heaps, the DXGI budget, Metal's working set — so the HDR zoom cache is only offered where it fits;

@@ -17,7 +17,12 @@ fn ramp() -> Rgb32f {
 /// Settings with one mask of `shape`, with the local Curve `curve` and Amount `amount`.
 fn masked(shape: MaskShape, curve: PointCurves, amount: f64) -> DevelopSettings {
     let mut s = DevelopSettings::default();
-    let mut m = Mask { id: 1, components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }], curve, ..Default::default() };
+    let mut m = Mask {
+        id: 1,
+        components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
+        curve,
+        ..Default::default()
+    };
     m.adjust.amount = amount;
     s.masks.push(m);
     s
@@ -142,4 +147,57 @@ fn two_masks_apply_their_curves_one_after_the_other() {
         let (b, p) = (px(&both, 40, y), px(&plain, 40, y));
         assert!((b[1] - p[1]).abs() <= 2, "row {y}: {b:?} vs {p:?}");
     }
+}
+
+/// A view's stage cache keeps the masks' alpha planes: a drag that reuses them renders what a
+/// fresh render does while the exposure moves (a range mask selects on it), the masks' own
+/// sliders, curve and amount change, a gradient moves, Feather changes and a mask is hidden.
+#[test]
+fn cached_mask_planes_render_what_a_fresh_render_does() {
+    use lcc_develop::LocalAdjustments;
+    let src = std::sync::Arc::new(Rgb32f::from_fn(W, H, |x, y| {
+        let v = 0.05 + 0.6 * x as f32 / W as f32;
+        [v, v * 0.9, v * (0.5 + y as f32 / H as f32)]
+    }));
+    let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
+    let mut s = masked(left(), PointCurves::default(), 100.0);
+    s.masks[0].adjust.exposure = 0.8;
+    s.masks.push(Mask {
+        id: 2,
+        components: vec![comp(MaskShape::LuminanceRange { lo: 0.3, hi: 0.6, lo_feather: 0.1, hi_feather: 0.1 })],
+        adjust: LocalAdjustments { saturation: -60.0, ..Default::default() },
+        ..Default::default()
+    });
+    s.masks.push(Mask {
+        id: 3,
+        components: vec![comp(MaskShape::Subject)],
+        adjust: LocalAdjustments { contrast: 40.0, ..Default::default() },
+        ..Default::default()
+    });
+    let cache = crate::StageCache::default();
+    let req = RenderRequest::fit(W, H);
+    let info = SourceInfo::default();
+    let same = |s: &DevelopSettings, what: &str| {
+        let cached = crate::render_cached(&src, &info, s, &req, &cache).image;
+        let fresh = render(&src, &info, s, &req).image;
+        assert!(cached.data == fresh.data, "{what}: the cached render differs");
+    };
+    same(&s, "first");
+    for ev in [-1.0, 0.5, 1.5] {
+        s.light.exposure = ev;
+        same(&s, "exposure");
+    }
+    s.masks[0].adjust.exposure = -0.5;
+    s.masks[2].adjust.amount = 40.0;
+    s.masks[1].curve.master = pts(&[(0.0, 0.1), (1.0, 0.9)]);
+    same(&s, "mask sliders, curve and amount");
+    if let Some(MaskShape::Linear { start, end }) = s.masks.first_mut().and_then(|m| m.components.first_mut()).map(|c| &mut c.shape) {
+        *start = Point::new(0.7, 0.5);
+        *end = Point::new(0.71, 0.5);
+    }
+    same(&s, "moved gradient");
+    s.masks[0].feather = 40.0;
+    same(&s, "feathered");
+    s.masks[1].visible = false;
+    same(&s, "hidden mask");
 }

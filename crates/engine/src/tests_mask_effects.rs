@@ -152,7 +152,7 @@ fn applying_to_several_masks_and_photos_is_one_undo_step() {
 }
 
 #[test]
-fn new_masks_start_with_the_last_effect_of_their_tool() {
+fn the_last_effect_of_each_tool_is_remembered_but_never_starts_a_new_mask() {
     let mut s = Session::with_demo();
     with_effect(&mut s, "Dodge", json!({"exposure": 0.5}));
     with_effect(&mut s, "Grad", json!({"highlights": -40}));
@@ -160,15 +160,14 @@ fn new_masks_start_with_the_last_effect_of_their_tool() {
     s.execute("mask.applyEffect", &json!({"name": "Dodge"})).unwrap();
     s.execute("mask.add", &json!({"kind": "linear"})).unwrap();
     s.execute("mask.applyEffect", &json!({"name": "Grad"})).unwrap();
+    // remembered for the Effect menu's "Update … with Current Settings"
     assert_eq!(s.execute("mask.effects", &json!({})).unwrap()["toolEffects"], json!({"brush": "Dodge", "linear": "Grad"}));
-    // a new brush mask (painted with no mask selected) starts as Dodge, a new gradient as Grad
+    // a new mask starts with the next-mask settings, whatever the tool
     s.execute("mask.select", &json!({"id": null})).unwrap();
     s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2], [0.3, 0.3]]})).unwrap();
-    assert_eq!(mask_adjust(&s, s.active_mask.unwrap()).exposure, 0.5);
+    assert_eq!(mask_adjust(&s, s.active_mask.unwrap()).exposure, 0.0);
     s.execute("mask.add", &json!({"kind": "linear"})).unwrap();
-    assert_eq!(mask_adjust(&s, s.active_mask.unwrap()).highlights, -40.0);
-    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
-    assert_eq!(mask_adjust(&s, s.active_mask.unwrap()).exposure, 0.0, "radial has none");
+    assert_eq!(mask_adjust(&s, s.active_mask.unwrap()).highlights, 0.0);
     // set / clear explicitly; renaming and deleting the effect follow
     s.execute("mask.toolEffect", &json!({"tool": "radial", "name": "dodge"})).unwrap();
     assert!(s.execute("mask.toolEffect", &json!({"tool": "radial", "name": "nope"})).is_err());

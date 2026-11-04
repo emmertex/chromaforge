@@ -223,6 +223,7 @@ fn object_clicks_are_capped() {
     d.masks.push(lcc_develop::Mask {
         id: 1,
         components: vec![lcc_develop::MaskComponent {
+            anchor: None,
             name: None,
             op: lcc_develop::MaskOp::Add,
             invert: false,
@@ -317,7 +318,7 @@ fn subject_model_is_optional_and_used_once_installed() {
         let src = scene.render_fit(200);
         let mut set = DevelopSettings::default();
         set.masks.push(Mask {
-            components: vec![MaskComponent { name: None, op: Default::default(), invert: false, shape: MaskShape::Subject }],
+            components: vec![MaskComponent { anchor: None, name: None, op: Default::default(), invert: false, shape: MaskShape::Subject }],
             ..Default::default()
         });
         let info = lcc_pipeline::SourceInfo::default();
@@ -360,4 +361,177 @@ fn a_missing_model_is_model_missing_by_kind() {
             }
         }
     }
+}
+
+fn prompt_mask(s: &mut Session, id: lcc_catalog::PhotoId, text: &str) {
+    let mut d = (*s.develop_of(id).unwrap()).clone();
+    let next = d.masks.iter().map(|m| m.id).max().unwrap_or(0) + 1;
+    d.masks.push(lcc_develop::Mask {
+        id: next,
+        components: vec![lcc_develop::MaskComponent {
+            anchor: None,
+            name: None,
+            op: lcc_develop::MaskOp::Add,
+            invert: false,
+            shape: lcc_develop::MaskShape::Prompt { text: text.into(), seg: None, detail: vec![], edge: 0.0 },
+        }],
+        ..Default::default()
+    });
+    s.set_develop(id, d, "Preset").unwrap();
+}
+
+fn ai_rows(s: &Session) -> usize {
+    s.activity.list().iter().filter(|t| t.kind == "aiMasks").count()
+}
+
+/// The app's Recompute AI Masks returns at once and computes on the AI worker as one activity row;
+/// undo cancels it, redo computes again, and a preset bringing a Describe mask starts it by itself.
+#[test]
+fn recompute_runs_on_the_worker_with_one_activity_row() {
+    if !Segmenter::AVAILABLE {
+        return;
+    }
+    let mut s = Session::with_demo();
+    s.segmenter.background = true;
+    let dir = damaged_model("recompute");
+    s.segmenter.dir = Some(dir.clone());
+    let id = s.active().unwrap();
+    prompt_mask(&mut s, id, "the sky");
+    prompt_mask(&mut s, id, "the tree");
+    let t = Instant::now();
+    let r = s.execute("masks.recompute", &json!({})).unwrap();
+    assert!(t.elapsed() < Duration::from_secs(1), "the UI thread didn't wait: {:?}", t.elapsed());
+    assert_eq!(r["photos"][0]["queued"], 2, "{r}");
+    assert_eq!(ai_rows(&s), 1, "one row for the batch");
+    assert!(s.segmenter.recomputing());
+    // undo cancels what is still computing: the row goes, late results are dropped
+    s.undo_step().unwrap();
+    assert!(!s.segmenter.recomputing());
+    assert_eq!(ai_rows(&s), 0);
+    // redo computes what is missing again (at the next poll, as in the app)
+    s.redo_step().unwrap();
+    let t = Instant::now();
+    let _ = s.segment_poll();
+    assert!(t.elapsed() < Duration::from_secs(1));
+    assert_eq!(ai_rows(&s), 1);
+    let messages = settle(&mut s, Duration::from_secs(60));
+    assert!(!s.segmenter.recomputing() && ai_rows(&s) == 0, "the row ends with the batch");
+    assert!(messages.iter().any(|m| m.contains("model.safetensors") || m.contains("SAM 3")), "{messages:?}");
+    // a preset (or paste) bringing a Describe mask starts the batch by itself
+    let mut d = (*s.develop_of(id).unwrap()).clone();
+    d.masks.clear();
+    s.set_develop(id, d, "clear").unwrap();
+    let mut d = (*s.develop_of(id).unwrap()).clone();
+    d.masks.push(lcc_develop::Mask {
+        id: 9,
+        components: vec![lcc_develop::MaskComponent {
+            anchor: None,
+            name: None,
+            op: lcc_develop::MaskOp::Add,
+            invert: false,
+            shape: lcc_develop::MaskShape::Prompt { text: "a dog".into(), seg: None, detail: vec![], edge: 0.0 },
+        }],
+        ..Default::default()
+    });
+    let d = crate::smart_masks::completed(&mut s, id, d);
+    s.set_develop(id, d, "Preset").unwrap();
+    // the batch starts by itself at the next poll; with the damaged model a busy machine can let the
+    // worker fail it before we look, so either its row shows or its result has already come back
+    let p = s.segment_poll();
+    let started = ai_rows(&s) == 1 || s.segmenter.recomputing() || !p.messages.is_empty();
+    assert!(started, "a preset bringing a Describe mask starts the batch: {:?}", p.messages);
+    // ✕ on the row stops it
+    if let Some(row) = s.activity.list().into_iter().find(|t| t.kind == "aiMasks") {
+        s.activity.cancel(row.id).unwrap();
+        let _ = s.segment_poll();
+        assert_eq!(ai_rows(&s), 0);
+    }
+    let _ = settle(&mut s, Duration::from_secs(60));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Update AI Mask computes the mask again from this photo: what it held (a copied selection) is
+/// dropped; an Object without clicks here has to be picked first; Update All AI Masks covers the
+/// selection.
+#[test]
+fn update_ai_mask_replaces_what_the_mask_held() {
+    let mut s = Session::with_demo();
+    let id = s.active().unwrap();
+    let seg = serde_json::to_value(lcc_develop::SegMask::from_logits(4, &[5.0; 16])).unwrap();
+    s.execute("mask.add", &json!({"kind": "prompt", "text": "sky", "seg": seg})).unwrap();
+    let m = s.develop_of(id).unwrap().masks[0].id;
+    assert!(s.develop_of(id).unwrap().masks[0].components[0].shape.has_seg());
+    let r = s.execute("mask.updateAi", &json!({"id": m})).unwrap();
+    assert!(r.get("notes").is_some(), "{r}");
+    let d = s.develop_of(id).unwrap();
+    assert!(!d.masks[0].components[0].shape.has_seg(), "the copied selection is gone, to be computed here");
+    assert!(d.masks[0].needs_compute());
+    // undo brings it back in one step
+    s.undo_step().unwrap();
+    assert!(s.develop_of(id).unwrap().masks[0].components[0].shape.has_seg());
+    // an Object without clicks on this photo
+    let mut d = (*s.develop_of(id).unwrap()).clone();
+    d.masks.push(lcc_develop::Mask {
+        id: 7,
+        components: vec![lcc_develop::MaskComponent {
+            anchor: None,
+            name: None,
+            op: lcc_develop::MaskOp::Add,
+            invert: false,
+            shape: lcc_develop::MaskShape::Object { hint: vec![], exclude: vec![], seg: None, detail: vec![], edge: 0.0 },
+        }],
+        ..Default::default()
+    });
+    s.set_develop(id, d, "paste").unwrap();
+    let e = s.execute("mask.updateAi", &json!({"id": 7})).unwrap_err().to_string();
+    assert!(e.contains("pick the object"), "{e}");
+    assert!(s.execute("mask.updateAi", &json!({"id": 999})).is_err());
+    let r = s.execute("masks.updateAi", &json!({})).unwrap();
+    assert_eq!(r["photos"][0]["id"], id.0, "{r}");
+    assert!(!s.develop_of(id).unwrap().masks[0].components[0].shape.has_seg());
+}
+
+/// With SAM 2.1 chosen for Object clicks, an Object mask without it is `ModelMissing(Sam2)`,
+/// while Describe still asks for SAM 3; `ai.models.*` list, refuse without consent and reject
+/// unknown ids.
+#[test]
+#[cfg(feature = "sam")] // the SAM 2.1 entry and model errors exist only in a build with AI masks
+fn object_clicks_follow_the_chosen_model() {
+    use crate::{AiModel, ErrorKind};
+    let root = tmp("choice");
+    let mut s = Session::with_demo();
+    s.segmenter.dir = Some(root.join("sam3"));
+    s.segmenter.models_root = Some(root.clone());
+    let st = s.execute("ai.models.status", &json!({})).unwrap();
+    assert_eq!(st["objectModelInUse"], "sam3");
+    assert!(st["models"].as_array().unwrap().iter().any(|m| m["id"] == "sam2"));
+    assert!(s.execute("ai.models.setObjectModel", &json!({"model": "sam5"})).is_err());
+    let r = s.execute("ai.models.setObjectModel", &json!({"model": "sam2"})).unwrap();
+    assert_eq!(r["objectModelInUse"], "sam2");
+    assert!(s.execute("ai.models.download", &json!({"id": "sam2"})).is_err(), "needs consent");
+    assert!(s.execute("ai.models.download", &json!({"id": "nope", "acknowledged": true})).is_err());
+    let e = s.execute("mask.add", &json!({"kind": "object"})).unwrap_err();
+    let p = s.execute("mask.add", &json!({"kind": "prompt", "text": "sky"})).unwrap_err();
+    if Segmenter::AVAILABLE {
+        assert_eq!(e.kind(), ErrorKind::ModelMissing(AiModel::Sam2), "{e}");
+        assert_eq!(p.kind(), ErrorKind::ModelMissing(AiModel::Sam3), "{p}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Installing or removing the Subject or scene model re-renders the photos whose AI masks use an
+/// automatic selection (their render key moves on), and only those.
+#[test]
+fn a_model_change_re_renders_ai_masks_at_once() {
+    let mut s = Session::with_demo();
+    let plain = s.catalog.photos().map(|p| p.id).find(|p| Some(*p) != s.active()).unwrap();
+    let id = s.active().unwrap();
+    assert_ne!(id, plain);
+    s.execute("mask.add", &json!({"kind": "sky"})).unwrap();
+    let key = |s: &mut Session, id| s.render_job(id, 400, 300, false, true).unwrap().key;
+    let (k_sky, k_plain) = (key(&mut s, id), key(&mut s, plain));
+    lcc_pipeline::scene_model::set_scene_model(Some(std::sync::Arc::new(|_: &[u8], _: usize, _: usize| None)));
+    lcc_pipeline::scene_model::set_scene_model(None);
+    assert_ne!(key(&mut s, id), k_sky, "the Sky mask renders afresh");
+    assert_eq!(key(&mut s, plain), k_plain, "a photo without AI masks keeps its render");
 }

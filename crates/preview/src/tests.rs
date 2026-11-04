@@ -123,6 +123,42 @@ fn disk_cache_roundtrip_and_prune() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Records kept beside the thumbnails (a photo's eyes) come back as written, count in the
+/// cache's size, are let go like thumbnails when it is full, and go when dropped.
+#[test]
+fn data_records_roundtrip_count_and_prune() {
+    let dir = temp_dir("data");
+    let d = DiskCache::new(&dir, 40_000);
+    let k = hash_bytes(b"eyes-1");
+    assert!(d.get_data(k).is_none());
+    d.put_data(k, b"hello eyes");
+    assert_eq!(d.get_data(k).as_deref(), Some(&b"hello eyes"[..]));
+    assert_eq!(d.size(), 10);
+    // a thumbnail under another key and the record are both cache files
+    let hex = k.to_string();
+    assert!(disk::is_cache_file(&hex[..2], &format!("{hex}.{DATA_EXT}")));
+    // fill past the budget: the oldest records go
+    let keys: Vec<_> = (0..40u8).map(|i| hash_bytes(&[i, 9])).collect();
+    for k in &keys {
+        d.put_data(*k, &[7u8; 2000]);
+    }
+    assert!(d.size() <= 40_000, "{}", d.size());
+    assert!(d.get_data(*keys.last().unwrap()).is_some());
+    assert!(d.get_data(keys[0]).is_none());
+    let before = d.size();
+    d.remove_data(*keys.last().unwrap());
+    assert!(d.get_data(*keys.last().unwrap()).is_none());
+    assert_eq!(d.size(), before - 2000);
+    // a retired cache reads and writes no records
+    let cache = PreviewCache::with_disk(1 << 20, &dir, 1 << 20);
+    cache.put_data(k, b"again");
+    assert_eq!(cache.get_data(k).as_deref(), Some(&b"again"[..]));
+    cache.retire();
+    assert!(cache.get_data(k).is_none());
+    d.clear();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn disk_cache_overwrite_accounts_for_replaced_jpeg_only_once() {
     let dir = temp_dir("overwrite");
@@ -770,6 +806,48 @@ fn a_slot_runs_one_job_at_a_time() {
     }));
     assert!(!done.contains(&2), "the replaced job never runs");
     assert_eq!(most.load(Ordering::SeqCst), 1, "slot 1 ran two jobs at once");
+}
+
+/// Note 8 of 2026-10-31: a slider draft waited seconds behind the view's first full render (the
+/// slot ran one job at a time). An overtaking job starts beside the slot's running ordinary job;
+/// a second overtaking job still waits for the first, and an ordinary job waits for both kinds.
+#[test]
+fn an_overtaking_job_starts_beside_the_slots_running_job() {
+    let mut p: JobPool<u8, u32> = JobPool::new(4);
+    let (started, has_started) = std::sync::mpsc::channel();
+    let gate = |n: u32| {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let started = started.clone();
+        let job: crate::pool::Job<u32> = Box::new(move || {
+            let _ = started.send(n);
+            let _ = released.recv_timeout(std::time::Duration::from_secs(30));
+            n
+        });
+        (release, job)
+    };
+    let (release_full, full) = gate(1);
+    p.submit(1, 1, 9, full);
+    assert_eq!(has_started.recv().unwrap(), 1);
+    // the draft starts at once, beside the full render
+    let (release_draft, draft) = gate(2);
+    p.submit_overtaking(1, 2, 9, draft);
+    assert_eq!(has_started.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), 2);
+    // the next draft waits for the first; an ordinary job for the slot replaces it and waits for both
+    let (_r3, draft2) = gate(3);
+    p.submit_overtaking(1, 3, 9, draft2);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(has_started.try_recv().is_err(), "two overtaking jobs of a slot ran at once");
+    p.submit(1, 4, 9, Box::new(|| 4));
+    drop(release_draft);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(p.is_queued(1), "an ordinary job waits for the slot's ordinary job too");
+    drop(release_full);
+    let mut done = Vec::new();
+    assert!(eventually(10, || {
+        done.extend(std::iter::from_fn(|| p.try_recv()).map(|d| d.result));
+        done.contains(&4)
+    }));
+    assert_eq!(done, vec![2, 1, 4], "the replaced draft never runs");
 }
 
 /// A job that panics still frees its slot: the slot's next job runs (on another worker).

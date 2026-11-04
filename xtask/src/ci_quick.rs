@@ -37,6 +37,7 @@ const EMBEDDED: &[(&str, &[&str])] = &[
     ("assets/camera-profiles/", &["lcc-engine"]),
     ("assets/camera-tone/", &["lcc-engine"]),
     ("assets/fonts/", &["lcc-engine", "lcc-ui-egui", "lcc-pdf", "lcc-text"]),
+    ("assets/surface-icons/", &["lcc-surface"]),
     ("brand.toml", &["lcc-brand"]),
     ("contributors/", &["lcc-ui-egui"]),
     ("docs/whats-new.md", &["lcc-ui-egui"]),

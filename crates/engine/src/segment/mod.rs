@@ -17,9 +17,18 @@
 
 #[cfg(feature = "sam")]
 mod download;
+pub mod models;
+mod parts;
+pub mod scene;
+mod skin;
 pub mod subject;
 #[cfg(feature = "sam")]
 mod worker;
+
+#[cfg(feature = "sam")]
+pub(crate) use skin::face_model;
+pub use skin::{FoundFace, SkinFound};
+pub(crate) use skin::{SkinKey, SkinPurpose};
 
 use std::path::PathBuf;
 
@@ -65,6 +74,24 @@ pub(crate) enum Tag {
     NewPrompt { photo: PhotoId, mask: Option<u32>, op: String, name: Option<String>, text: String },
     /// A zoomed-in pass for a component, computed from `shape` (without its detail).
     Detail { photo: PhotoId, mask: u32, comp: usize, shape: MaskShape },
+    /// Recompute AI Masks: the selection of component `comp` of mask `mask`, computed from
+    /// `shape` (the recipe, without a segmentation), for run `run`.
+    Recompute { run: u64, photo: PhotoId, mask: u32, comp: usize, shape: MaskShape },
+    /// `concepts.teach`: an example of remembered object `name` learned on `photo`.
+    Learn { photo: PhotoId, name: String },
+    /// A remembered object found on `photo`: a new mask (`mask: None`) or a component combined by
+    /// `op`, named after it.
+    Concept { photo: PhotoId, mask: Option<u32>, op: String, name: String },
+    /// The faces of `photo` (look `key`) with their appearance signatures; `learn`: remember the
+    /// named ones in `people.json`.
+    Faces { photo: PhotoId, key: u64, learn: bool },
+}
+
+/// Where the models for appearance signatures are ([`crate::identity`]).
+#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+pub(crate) struct FacesKind {
+    pub face: PathBuf,
+    pub sam2: Option<PathBuf>,
 }
 
 /// The model input: 8-bit RGB.
@@ -129,8 +156,29 @@ pub struct Segmenter {
     pub background: bool,
     /// The Subject / Background model (BiRefNet).
     pub subject: subject::Subject,
+    /// Where the openly licensed models (SAM 2.1, Depth Anything) live; `None`: next to SAM 3's folder.
+    pub models_root: Option<PathBuf>,
+    /// Which model computes Object clicks ([`models::ObjectModel`]).
+    object_model: models::ObjectModel,
+    /// Which model computes Sky, Landscape and People ([`models::SceneModel`]).
+    scene_model: models::SceneModel,
+    /// The scene model as installed in the pipeline.
+    pub scene: scene::SceneMasks,
+    #[cfg(feature = "sam")]
+    model_downloads: std::collections::HashMap<&'static str, download::Downloader>,
     pending: Option<PendingClicks>,
     messages: Vec<String>,
+    /// Smooth Skin and Find Blemishes requests ([`skin`]).
+    pub(crate) skin: skin::SkinJobs,
+    /// Retouch ▸ Teeth requests ([`parts`]).
+    pub(crate) parts: parts::RetouchJobs,
+    /// Photos whose Object / Describe selections should be computed at the next poll (a preset,
+    /// paste or redo brought them without a segmentation).
+    pub(crate) wanted: Vec<PhotoId>,
+    /// The running Recompute AI Masks batch (one activity row).
+    recompute: Option<RecomputeRun>,
+    #[cfg_attr(not(feature = "sam"), allow(dead_code))]
+    run_seq: u64,
     #[cfg(feature = "sam")]
     worker: worker::Worker,
     #[cfg(feature = "sam")]
@@ -148,8 +196,19 @@ impl Default for Segmenter {
             mirrors_file: None,
             background: false,
             subject: subject::Subject::default(),
+            models_root: None,
+            object_model: models::ObjectModel::default(),
+            scene_model: models::SceneModel::default(),
+            scene: scene::SceneMasks::default(),
+            #[cfg(feature = "sam")]
+            model_downloads: std::collections::HashMap::new(),
             pending: None,
             messages: Vec::new(),
+            skin: skin::SkinJobs::default(),
+            parts: parts::RetouchJobs::default(),
+            wanted: Vec::new(),
+            recompute: None,
+            run_seq: 0,
             #[cfg(feature = "sam")]
             worker: worker::Worker::default(),
             #[cfg(feature = "sam")]
@@ -160,7 +219,35 @@ impl Default for Segmenter {
     }
 }
 
+/// A Recompute AI Masks batch on the worker: its activity row (✕ sets `cancel`, which the worker
+/// checks before each job) and the selections still on their way.
+#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+struct RecomputeRun {
+    id: u64,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    guard: crate::activity::TaskGuard,
+    photos: Vec<PhotoId>,
+    left: usize,
+    total: usize,
+}
+
 impl Segmenter {
+    /// Whether a Recompute AI Masks batch is computing.
+    pub fn recomputing(&self) -> bool {
+        self.recompute.is_some()
+    }
+
+    /// Stop the Recompute AI Masks batch (all of it, or only when it works on `photo`): queued
+    /// selections are skipped and late results dropped.
+    pub(crate) fn cancel_recompute(&mut self, photo: Option<PhotoId>) {
+        if self.recompute.as_ref().is_some_and(|r| photo.is_none_or(|p| r.photos.contains(&p)))
+            && let Some(r) = self.recompute.take()
+        {
+            r.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.wanted.retain(|w| photo.is_some_and(|p| p != *w));
+    }
+
     /// Whether this build can compute AI masks at all.
     pub const AVAILABLE: bool = cfg!(feature = "sam");
 
@@ -297,7 +384,7 @@ impl Segmenter {
             if mirrors.is_empty() {
                 return Err(lcc_segment::fetch::no_mirrors_message());
             }
-            self.download.start(lcc_segment::fetch::SAM3_FILES, mirrors, dir, lcc_segment::fetch::options(), activity, "SAM 3")
+            self.download.start(lcc_segment::fetch::SAM3_FILES, Vec::new(), mirrors, dir, lcc_segment::fetch::options(), activity, "SAM 3")
         }
         #[cfg(not(feature = "sam"))]
         {
@@ -386,6 +473,16 @@ impl Session {
         let p = self.catalog.photo(id)?;
         let mut d = (*p.develop).clone();
         d.masks.clear();
+        // masks live on the photo before lens corrections, Upright, Transform and the flips
+        // (`Mask::on_photo`): the model sees it so, and its selections stay on the content
+        d.crop.flip_h = false;
+        d.crop.flip_v = false;
+        d.geometry = Default::default();
+        d.optics.lens_profile = false;
+        d.optics.distortion = 0.0;
+        d.optics.remove_ca = false;
+        d.optics.ca_red = 0.0;
+        d.optics.ca_blue = 0.0;
         let content = crate::media::content_key(p);
         let mut h = mix(0xcbf2_9ce4_8422_2325, d.hash64());
         h = mix(h, id.0);
@@ -413,7 +510,25 @@ impl Session {
         reply: std::sync::mpsc::Sender<worker::Outcome>,
         region: Option<[f64; 4]>,
     ) -> Result<worker::Job, String> {
-        let dir = self.segmenter.model_dir()?;
+        // Describe (text) needs SAM 3; Object clicks use the model the user chose
+        let text = matches!(&kind, worker::Kind::Text(_) | worker::Kind::Detail { prompt: Prompt::Text(_), .. });
+        let concept = matches!(&kind, worker::Kind::Learn { .. } | worker::Kind::Find { .. });
+        let dir = if let worker::Kind::Faces { face, .. } | worker::Kind::People { face, .. } = &kind {
+            face.clone()
+        } else if concept {
+            self.segmenter.require_sam2().map_err(|e| e.to_string())?
+        } else if text {
+            self.segmenter.model_dir()?
+        } else {
+            self.segmenter.object_dir()?
+        };
+        // old masks go onto the photo first: the selection that comes back is in its coordinates
+        if let Some(cur) = self.develop_of(id).filter(|d| d.masks.iter().any(|m| !m.on_photo)) {
+            let mut on = (*cur).clone();
+            self.attach_masks(id, &cur, &mut on);
+            let op = lcc_catalog::Op::SetDevelop { id, settings: std::sync::Arc::new(on), label: "Masks".into(), edited: None };
+            self.apply_unrecorded(op).map_err(|e| e.to_string())?;
+        }
         let (key, mut d) = self.segment_key(id).ok_or("no such photo")?;
         let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
         let missing = match &p.source {
@@ -434,7 +549,7 @@ impl Session {
                 job
             }
         };
-        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply })
+        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply, cancel: None })
     }
 
     /// Send a request and wait for its result (CLI, MCP, tests; or when not in background mode).
@@ -453,6 +568,159 @@ impl Session {
         }
     }
 
+    /// The look key of photo `id` (what [`Session::segment_key`] gives).
+    pub(crate) fn segment_key_of(&self, id: PhotoId) -> Option<u64> {
+        self.segment_key(id).map(|(k, _)| k)
+    }
+
+    /// The faces of photo `id` with their signatures: waited for (→ the worker's list), or in
+    /// background mode queued (→ `None`; [`Session::segment_poll`] keeps them).
+    #[cfg(feature = "sam")]
+    pub(crate) fn segment_faces(&mut self, id: PhotoId, kind: FacesKind, learn: bool) -> Result<Option<serde_json::Value>, String> {
+        let key = self.segment_key_of(id).ok_or("no such photo")?;
+        let tag = Tag::Faces { photo: id, key, learn };
+        let kind = worker::Kind::Faces { face: kind.face, sam2: kind.sam2 };
+        if self.segmenter.background {
+            self.segment_queue(id, kind, tag, None)?;
+            return Ok(None);
+        }
+        let o = self.segment_wait_outcome(id, kind, tag)?;
+        o.result?;
+        Ok(Some(o.extra.unwrap_or_else(|| serde_json::json!([]))))
+    }
+
+    /// [`Session::segment_wait`] with the whole outcome (a learned example, a found object's seeds).
+    #[cfg(feature = "sam")]
+    fn segment_wait_outcome(&mut self, id: PhotoId, kind: worker::Kind, tag: Tag) -> Result<worker::Outcome, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let job = self.segment_job(id, kind, tag, tx, None)?;
+        self.segmenter.worker.submit(job)?;
+        match rx.recv_timeout(WAIT) {
+            Ok(o) => {
+                self.segmenter.messages.extend(o.notice.clone());
+                Ok(o)
+            }
+            Err(_) => Err("the AI model took too long; try again".into()),
+        }
+    }
+
+    /// Learn an example of remembered object `name` from `mask` on photo `id` (SAM 2.1). In
+    /// background mode → `None` and [`Session::segment_poll`] stores it; otherwise → how many
+    /// examples the object has now.
+    pub fn concept_teach(&mut self, id: PhotoId, mask: lcc_develop::Mask, name: &str) -> Result<Option<usize>, String> {
+        self.segmenter.require_sam2().map_err(|e| e.to_string())?;
+        #[cfg(feature = "sam")]
+        {
+            let kind = worker::Kind::Learn { mask: Box::new(mask) };
+            let tag = Tag::Learn { photo: id, name: name.to_string() };
+            if self.segmenter.background {
+                self.segment_queue(id, kind, tag, None)?;
+                return Ok(None);
+            }
+            let o = self.segment_wait_outcome(id, kind, tag)?;
+            o.result?;
+            let ex = o.extra.ok_or("the mask selects too little to learn from")?;
+            self.store_concept_example(name, id, ex).map(Some)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask, name);
+            Err("remembered objects need the AI models, which this build doesn't have".into())
+        }
+    }
+
+    /// Find remembered object `name` on photo `id`: a new mask (`mask: None`) or a component of
+    /// `mask` combined by `op`, an Object selection grown from the clicks the object's look
+    /// picked (editable like any). In background mode → `None` (applied by
+    /// [`Session::segment_poll`]); otherwise the command's result.
+    pub fn concept_find(&mut self, id: PhotoId, name: &str, mask: Option<u32>, op: &str) -> Result<Option<serde_json::Value>, String> {
+        let examples: Vec<serde_json::Value> =
+            self.concept_store().get(name).map(|c| c.examples.clone()).ok_or_else(|| format!("no remembered object called “{name}”"))?;
+        self.segmenter.require_sam2().map_err(|e| e.to_string())?;
+        #[cfg(feature = "sam")]
+        {
+            let examples: Vec<lcc_segment::concept::Example> = examples.into_iter().filter_map(|e| serde_json::from_value(e).ok()).collect();
+            if examples.is_empty() {
+                return Err(format!("“{name}” has no examples yet: teach it on a photo first"));
+            }
+            let name = self.concept_store().get(name).map(|c| c.name.clone()).unwrap_or_else(|| name.to_string());
+            let kind = worker::Kind::Find { examples };
+            let tag = Tag::Concept { photo: id, mask, op: op.to_string(), name: name.clone() };
+            if self.segmenter.background {
+                self.segment_queue(id, kind, tag, None)?;
+                return Ok(None);
+            }
+            let o = self.segment_wait_outcome(id, kind, tag)?;
+            let seg = o.result?.ok_or_else(|| format!("“{name}” wasn't found on this photo"))?;
+            self.add_found_concept(id, mask, op, &name, seg, o.extra.as_ref()).map(Some)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, examples, mask, op);
+            Err("remembered objects need the AI models, which this build doesn't have".into())
+        }
+    }
+
+    /// The examples of remembered object `name`, for the worker.
+    #[cfg(feature = "sam")]
+    fn concept_examples(&mut self, name: &str) -> Result<Vec<lcc_segment::concept::Example>, String> {
+        let examples: Vec<serde_json::Value> =
+            self.concept_store().get(name).map(|c| c.examples.clone()).ok_or_else(|| format!("no remembered object called “{name}”"))?;
+        let examples: Vec<lcc_segment::concept::Example> = examples.into_iter().filter_map(|e| serde_json::from_value(e).ok()).collect();
+        if examples.is_empty() {
+            return Err(format!("“{name}” has no examples yet: teach it on a photo first"));
+        }
+        Ok(examples)
+    }
+
+    /// Remembered object `name` on photo `id` (a `MaskShape::Concept` recipe), waiting for SAM 2.1;
+    /// `Ok(None)` when it isn't found there.
+    pub fn segment_concept(&mut self, id: PhotoId, name: &str) -> Result<Option<SegMask>, String> {
+        self.segmenter.require_sam2().map_err(|e| e.to_string())?;
+        #[cfg(feature = "sam")]
+        {
+            let examples = self.concept_examples(name)?;
+            self.segment_wait(id, worker::Kind::Find { examples }, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, name);
+            Err("remembered objects need the AI models, which this build doesn't have".into())
+        }
+    }
+
+    /// A found remembered object becomes an Object selection (its seeds are the clicks), as a new
+    /// mask named after it or a component of `mask`.
+    #[cfg(feature = "sam")]
+    fn add_found_concept(
+        &mut self,
+        id: PhotoId,
+        mask: Option<u32>,
+        op: &str,
+        name: &str,
+        seg: SegMask,
+        extra: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        if self.active() != Some(id) {
+            return Err(format!("The photo changed before “{name}” was found; try again."));
+        }
+        let seeds = extra.and_then(|e| e.get("seeds")).cloned().unwrap_or_else(|| serde_json::json!([]));
+        let seg = serde_json::to_value(seg).map_err(|e| e.to_string())?;
+        let mut p = serde_json::json!({"kind": "object", "points": seeds, "seg": seg, "name": name});
+        let r = match mask {
+            None => self.execute("mask.add", &p),
+            Some(m) => {
+                if !self.develop_of(id).is_some_and(|d| d.masks.iter().any(|x| x.id == m)) {
+                    return Err("The mask was removed before the object was found.".into());
+                }
+                self.active_mask = Some(m);
+                p["op"] = serde_json::json!(op);
+                self.execute("mask.addComponent", &p)
+            }
+        };
+        r.map_err(|e| e.to_string())
+    }
+
     /// Send a request whose result [`Session::segment_poll`] applies.
     #[cfg(feature = "sam")]
     fn segment_queue(&mut self, id: PhotoId, kind: worker::Kind, tag: Tag, region: Option<[f64; 4]>) -> Result<(), String> {
@@ -464,7 +732,7 @@ impl Session {
     /// Start preparing photo `id` for AI masks (load the model, encode the image), so the first
     /// click is fast. In background mode it returns at once.
     pub fn segment_prepare(&mut self, id: PhotoId) -> Result<(), String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.object_dir()?;
         #[cfg(feature = "sam")]
         {
             if self.segmenter.background {
@@ -479,7 +747,7 @@ impl Session {
 
     /// Segment the object `clicks` pick on photo `id`, waiting for the model.
     pub fn segment_clicks(&mut self, id: PhotoId, clicks: &[Click]) -> Result<SegMask, String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.object_dir()?;
         if !clicks.iter().any(|c| c.include) {
             return Err("click the object to include it first".into());
         }
@@ -513,10 +781,27 @@ impl Session {
         }
     }
 
+    /// The People selection `person` / `parts` on photo `id` from MediaPipe's people models,
+    /// waiting for them; `Ok(None)` when they aren't installed (the pipeline's heuristic shows) or
+    /// nobody, or none of the parts, is there.
+    pub fn segment_people(&mut self, id: PhotoId, person: u32, parts: &[String]) -> Result<Option<SegMask>, String> {
+        let Some(face) = self.segmenter.people_models() else { return Ok(None) };
+        #[cfg(feature = "sam")]
+        {
+            let sam2 = self.segmenter.require_sam2().ok();
+            self.segment_wait(id, worker::Kind::People { face, person, parts: parts.to_vec(), sam2 }, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, face, person, parts);
+            Ok(None)
+        }
+    }
+
     /// Background mode: queue Object clicks for component `comp` of mask `mask`; the result
     /// (clicks and segmentation, one undo step) is applied by [`Session::segment_poll`].
     pub(crate) fn segment_clicks_later(&mut self, id: PhotoId, mask: u32, comp: usize, hint: Vec<Point>, exclude: Vec<Point>) -> Result<(), String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.object_dir()?;
         if hint.is_empty() {
             return Err("click the object to include it first".into());
         }
@@ -561,7 +846,9 @@ impl Session {
     /// otherwise it is applied before this returns. `Ok(false)` when there is nothing to
     /// refine (no selection yet, or it is most of the photo) or a pass is running already.
     pub fn segment_detail(&mut self, id: PhotoId, mask: u32, comp: usize) -> Result<bool, String> {
-        self.segmenter.model_dir()?;
+        if self.segmenter.object_dir().is_err() {
+            self.segmenter.model_dir()?;
+        }
         let d = self.develop_of(id).ok_or("no such photo")?;
         let shape = d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(comp)).map(|c| c.shape.clone()).ok_or("no such mask")?;
         let (seg, prompt) = match &shape {
@@ -587,7 +874,7 @@ impl Session {
                 self.segment_queue(id, kind, tag, Some(region))?;
             } else {
                 let patch = self.segment_wait(id, kind, Some(region))?;
-                let outcome = worker::Outcome { tag, result: Ok(patch), superseded: false, notice: None };
+                let outcome = worker::Outcome { tag, result: Ok(patch), superseded: false, notice: None, extra: None };
                 let mut polled = Polled::default();
                 self.apply_outcome(outcome, &mut polled);
             }
@@ -600,13 +887,114 @@ impl Session {
         }
     }
 
+    /// Queue the Object and Describe selections of photo `id` that have no segmentation, as part of
+    /// the Recompute AI Masks batch (started when none runs). → how many were queued.
+    pub(crate) fn segment_missing_later(&mut self, id: PhotoId) -> Result<usize, String> {
+        let Some(d) = self.develop_of(id) else { return Ok(0) };
+        let todo: Vec<(u32, usize, MaskShape)> = d
+            .masks
+            .iter()
+            .flat_map(|m| m.components.iter().enumerate().map(move |(ci, c)| (m.id, ci, c.shape.clone())))
+            .filter(|(_, _, sh)| sh.stores_seg() && !sh.has_seg())
+            .collect();
+        // People selections run on MediaPipe's people and faces models; without them the
+        // pipeline's heuristic shows (nothing to queue)
+        let people_face = self.segmenter.people_models();
+        let todo: Vec<(u32, usize, MaskShape)> =
+            todo.into_iter().filter(|(_, _, sh)| people_face.is_some() || !matches!(sh, MaskShape::People { .. })).collect();
+        if todo.is_empty() {
+            return Ok(0);
+        }
+        if todo.iter().any(|(_, _, sh)| !matches!(sh, MaskShape::People { .. })) {
+            self.segmenter.model_dir()?;
+        }
+        #[cfg(feature = "sam")]
+        {
+            if self.segmenter.recompute.as_ref().is_some_and(|r| r.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
+                self.segmenter.recompute = None;
+            }
+            if self.segmenter.recompute.is_none() {
+                self.segmenter.run_seq = self.segmenter.run_seq.wrapping_add(1);
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let guard = self.activity.start_batch("aiMasks", "Computing AI masks", crate::activity::Cancel::Flag(cancel.clone()));
+                self.segmenter.recompute = Some(RecomputeRun { id: self.segmenter.run_seq, cancel, guard, photos: Vec::new(), left: 0, total: 0 });
+            }
+            let (run, cancel) = match &self.segmenter.recompute {
+                Some(r) => (r.id, r.cancel.clone()),
+                None => return Ok(0),
+            };
+            let mut queued = 0;
+            for (mask, comp, shape) in todo {
+                let kind = match &shape {
+                    MaskShape::Object { hint, exclude, .. } if !hint.is_empty() && hint.len() + exclude.len() <= MAX_CLICKS => {
+                        worker::Kind::Clicks(Self::model_clicks(&clicks_of(hint, exclude)))
+                    }
+                    MaskShape::Prompt { text, .. } if !text.trim().is_empty() => worker::Kind::Text(text.trim().to_string()),
+                    MaskShape::Concept { name, .. } => match self.concept_examples(name) {
+                        Ok(examples) if self.segmenter.require_sam2().is_ok() => worker::Kind::Find { examples },
+                        _ => continue,
+                    },
+                    MaskShape::People { person, parts, .. } => match &people_face {
+                        Some(face) => worker::Kind::People {
+                            face: face.clone(),
+                            person: *person,
+                            parts: parts.clone(),
+                            sam2: self.segmenter.require_sam2().ok(),
+                        },
+                        None => continue,
+                    },
+                    _ => continue,
+                };
+                let tag = Tag::Recompute { run, photo: id, mask, comp, shape };
+                let reply = self.segmenter.results.0.clone();
+                let mut job = self.segment_job(id, kind, tag, reply, None)?;
+                job.cancel = Some(cancel.clone());
+                self.segmenter.worker.submit(job)?;
+                queued += 1;
+            }
+            if let Some(r) = &mut self.segmenter.recompute {
+                r.left += queued;
+                r.total += queued;
+                if !r.photos.contains(&id) {
+                    r.photos.push(id);
+                }
+                r.guard.progress(u64::try_from(r.total - r.left).unwrap_or(0), u64::try_from(r.total).unwrap_or(0));
+                if r.left == 0 {
+                    self.segmenter.recompute = None;
+                }
+            }
+            Ok(queued)
+        }
+        #[cfg(not(feature = "sam"))]
+        Ok(0)
+    }
+
     /// Apply finished background requests (to masks that haven't changed since) and collect
     /// their messages. Cheap when nothing is pending: call it every frame.
     pub fn segment_poll(&mut self) -> Polled {
         #[cfg_attr(not(feature = "sam"), allow(unused_mut))]
         let mut polled = Polled { messages: std::mem::take(&mut self.segmenter.messages), ..Default::default() };
+        self.skin_poll(&mut polled);
+        // a finished EoMT download is put to use (only for those who chose it: two file checks)
+        if self.segmenter.scene_model() == models::SceneModel::Eomt {
+            let activity = self.activity.clone();
+            self.segmenter.scene_sync(&activity);
+        }
+        // presets, pastes and redos that brought selections without a segmentation
+        let wanted = std::mem::take(&mut self.segmenter.wanted);
+        for id in wanted.into_iter().take(10_000) {
+            if let Err(e) = self.segment_missing_later(id)
+                && !polled.messages.contains(&e)
+            {
+                polled.messages.push(e);
+            }
+        }
         #[cfg(feature = "sam")]
         {
+            // ✕ on the row: the worker skips the rest; the row goes now
+            if self.segmenter.recompute.as_ref().is_some_and(|r| r.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
+                self.segmenter.recompute = None;
+            }
             // (before draining: a worker that is idle now has sent everything)
             let idle = !self.segmenter.busy();
             let done: Vec<worker::Outcome> = self.segmenter.results.1.try_iter().collect();
@@ -616,6 +1004,8 @@ impl Session {
             // clicks whose request was lost (the worker restarted) aren't pending forever
             if idle {
                 self.segmenter.pending = None;
+                // (nor is a batch whose replies were lost)
+                self.segmenter.recompute = None;
             }
         }
         polled
@@ -623,6 +1013,9 @@ impl Session {
 
     #[cfg(feature = "sam")]
     fn apply_outcome(&mut self, o: worker::Outcome, polled: &mut Polled) {
+        if let Tag::Recompute { run, photo, mask, comp, shape } = o.tag {
+            return self.apply_recomputed(run, photo, mask, comp, &shape, o.superseded, o.result, o.notice, polled);
+        }
         if o.superseded {
             return;
         }
@@ -691,6 +1084,54 @@ impl Session {
                     Err(e) => polled.messages.push(e.to_string()),
                 }
             }
+            Tag::Recompute { .. } => {}
+            Tag::Faces { photo, key, learn } => {
+                if let Err(e) = o.result {
+                    return polled.messages.push(e);
+                }
+                let faces = self.keep_appearance(key, &o.extra.unwrap_or_default());
+                if learn && let Err(e) = self.learn_named_faces(photo, &faces) {
+                    polled.messages.push(e);
+                }
+                // the looks are here: People masks by name or role are matched again (and
+                // computed for whoever they now find)
+                let by_who = self
+                    .develop_of(photo)
+                    .is_some_and(|d| d.masks.iter().flat_map(|m| &m.components).any(|c| matches!(c.shape, MaskShape::People { who: Some(_), .. })));
+                if by_who {
+                    // (the app's own doing: no undo step of its own)
+                    match self.compute_masks_later_as(photo, false, false) {
+                        Ok((done, _)) => {
+                            polled.changed |= done.changed > 0;
+                        }
+                        Err(e) => polled.messages.push(e.to_string()),
+                    }
+                }
+            }
+            Tag::Learn { photo, name } => {
+                if let Err(e) = o.result {
+                    return polled.messages.push(e);
+                }
+                let Some(ex) = o.extra else { return polled.messages.push("The mask selects too little to learn from.".into()) };
+                match self.store_concept_example(&name, photo, ex) {
+                    Ok(n) => polled.messages.push(format!("Remembered “{name}” ({n} example{}).", if n == 1 { "" } else { "s" })),
+                    Err(e) => polled.messages.push(e),
+                }
+            }
+            Tag::Concept { photo, mask, op, name } => {
+                let seg = match o.result {
+                    Ok(Some(seg)) => seg,
+                    Ok(None) => return polled.messages.push(format!("“{name}” wasn't found on this photo.")),
+                    Err(e) => return polled.messages.push(e),
+                };
+                match self.add_found_concept(photo, mask, &op, &name, seg, o.extra.as_ref()) {
+                    Ok(_) => {
+                        polled.changed = true;
+                        polled.refine = self.active_mask;
+                    }
+                    Err(e) => polled.messages.push(e),
+                }
+            }
             Tag::Detail { photo, mask, comp, shape } => {
                 let patch = match o.result {
                     Ok(Some(p)) => p,
@@ -716,6 +1157,77 @@ impl Session {
     }
 }
 
+impl Session {
+    /// A Recompute AI Masks result: stored in the component when it still is the selection it was
+    /// computed for (an undo or an edit since drops it), without an undo step of its own (undoing
+    /// the preset or paste that brought the mask takes it away with the mask).
+    #[cfg(feature = "sam")]
+    #[allow(clippy::too_many_arguments)]
+    fn apply_recomputed(
+        &mut self,
+        run: u64,
+        photo: PhotoId,
+        mask: u32,
+        comp: usize,
+        shape: &MaskShape,
+        skipped: bool,
+        result: Result<Option<SegMask>, String>,
+        notice: Option<String>,
+        polled: &mut Polled,
+    ) {
+        let Some(r) = self.segmenter.recompute.as_mut().filter(|r| r.id == run) else { return };
+        r.left = r.left.saturating_sub(1);
+        let name = self.develop_of(photo).and_then(|d| d.masks.iter().find(|m| m.id == mask).map(|m| m.name.clone())).unwrap_or_default();
+        let finished = self.segmenter.recompute.as_ref().is_some_and(|r| r.left == 0);
+        let report = |s: &mut Session, why: Option<&str>| {
+            if let Some(r) = &s.segmenter.recompute {
+                match why {
+                    Some(w) => r.guard.item_failed(w),
+                    None => r.guard.item_done(),
+                }
+            }
+        };
+        polled.messages.extend(notice);
+        match (skipped, result) {
+            (true, _) => {}
+            (false, Ok(Some(seg))) => {
+                let applied = self.develop_of(photo).and_then(|d| {
+                    let mut d = (*d).clone();
+                    let c = d.masks.iter_mut().find(|m| m.id == mask)?.components.get_mut(comp)?;
+                    if c.shape != *shape {
+                        return None; // undone or edited meanwhile
+                    }
+                    match &mut c.shape {
+                        MaskShape::Object { seg: s, .. }
+                        | MaskShape::Prompt { seg: s, .. }
+                        | MaskShape::People { seg: s, .. }
+                        | MaskShape::Concept { seg: s, .. } => *s = Some(seg),
+                        _ => return None,
+                    }
+                    Some(d)
+                });
+                if let Some(op) = applied.and_then(|d| self.develop_op(photo, d, "AI Masks")) {
+                    match self.apply_unrecorded(op) {
+                        Ok(()) => polled.changed = true,
+                        Err(e) => polled.messages.push(e.to_string()),
+                    }
+                }
+                report(self, None);
+            }
+            (false, Ok(None)) => report(self, Some(&format!("{name}: nothing matched"))),
+            (false, Err(e)) => {
+                report(self, Some(&format!("{name}: {e}")));
+                if !polled.messages.contains(&e) {
+                    polled.messages.push(e);
+                }
+            }
+        }
+        if finished {
+            self.segmenter.recompute = None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,7 +1238,7 @@ mod tests {
         // the job after which the model runs on the CPU (the GPU failed) says so
         let mut s = Session::with_demo();
         let notice = Some(worker::GPU_FAILED.to_string());
-        s.segmenter.results.0.send(worker::Outcome { tag: Tag::Prepare, result: Ok(None), superseded: false, notice }).unwrap();
+        s.segmenter.results.0.send(worker::Outcome { tag: Tag::Prepare, result: Ok(None), superseded: false, notice, extra: None }).unwrap();
         let polled = s.segment_poll();
         assert_eq!(polled.messages, vec![worker::GPU_FAILED.to_string()]);
         assert!(s.segment_poll().messages.is_empty(), "once");

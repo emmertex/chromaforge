@@ -78,7 +78,13 @@ fn settings(points: usize) -> DevelopSettings {
             ..Default::default()
         };
         s.masks.push(Mask {
-            components: vec![MaskComponent { name: None, op: Default::default(), invert: false, shape: MaskShape::Brush { strokes: vec![stroke] } }],
+            components: vec![MaskComponent {
+                anchor: None,
+                name: None,
+                op: Default::default(),
+                invert: false,
+                shape: MaskShape::Brush { strokes: vec![stroke] },
+            }],
             ..Default::default()
         });
     }
@@ -113,7 +119,18 @@ fn micro(points: usize, pending: bool) {
             let key = app.session.thumb_job(id, 384).unwrap().key;
             app.renderer.textures.insert(
                 Slot::Thumb(id),
-                Tex { key, photo: id, tex: texture.clone(), size: [1, 1], histogram: None, ms: 0.0, quick: None, pixels: None, warnings: Vec::new() },
+                Tex {
+                    key,
+                    photo: id,
+                    tex: texture.clone(),
+                    size: [1, 1],
+                    histogram: None,
+                    ms: 0.0,
+                    quick: None,
+                    pixels: None,
+                    warnings: Vec::new(),
+                    native: None,
+                },
             );
         }
         request_thumb(&mut app, id, 384, 10);

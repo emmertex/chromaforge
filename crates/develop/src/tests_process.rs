@@ -85,13 +85,13 @@ fn v1_is_left_out_when_saving_and_other_processes_are_kept() {
 #[test]
 fn unknown_process_numbers_load_and_render_with_the_newest_known() {
     // written by a newer version of the app: kept as it is, rendered with the latest process this build has
-    let s = DevelopSettings::from_json(&json!({"process": 7, "light": {"exposure": 0.5}})).unwrap();
-    assert_eq!(s.process, ProcessVersion(7));
+    let s = DevelopSettings::from_json(&json!({"process": LATEST_PLUS_ONE, "light": {"exposure": 0.5}})).unwrap();
+    assert_eq!(s.process, ProcessVersion(LATEST_PLUS_ONE));
     assert_eq!(s.process.process(), Process::LATEST);
     assert!(!s.process.is_known());
     assert!(!s.process.is_outdated(), "never downgraded by Update to Current Process");
-    assert_eq!(s.to_json()["process"], json!(7));
-    assert_eq!(s.merged(&json!({"light": {"exposure": 1.0}})).unwrap().process, ProcessVersion(7));
+    assert_eq!(s.to_json()["process"], json!(LATEST_PLUS_ONE));
+    assert_eq!(s.merged(&json!({"light": {"exposure": 1.0}})).unwrap().process, ProcessVersion(LATEST_PLUS_ONE));
     // below V1 (no version of the app writes it): rendered as V1, and updatable
     let zero = DevelopSettings::from_json(&json!({"process": 0})).unwrap().process;
     assert_eq!((zero.process(), zero.is_known(), zero.is_outdated()), (Process::V1, false, true));
@@ -228,4 +228,13 @@ fn denoise_weight_is_straight_before_v6_and_eased_from_it() {
     assert_eq!(s.denoise_amount(), 0.0);
     s.enhance.denoise = 1e300;
     assert_eq!(s.denoise_amount(), 1.0);
+}
+
+/// Grain saved before process V7's particle controls existed loads with their defaults (OneSlips).
+#[test]
+fn grain_saved_without_the_new_fields_loads_with_their_defaults() {
+    let s = DevelopSettings::from_json(&legacy()).unwrap();
+    let d = Grain::default();
+    assert_eq!((s.grain.amount, s.grain.size, s.grain.roughness, s.grain.seed), (20.0, 25.0, 50.0, 0));
+    assert_eq!((s.grain.color, s.grain.response, s.grain.size_variation, s.grain.clumping), (d.color, d.response, d.size_variation, d.clumping));
 }

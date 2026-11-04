@@ -58,6 +58,7 @@
 //! | 13 | a cleared GPS position stays cleared in the sidecar (upstream PR #2088) | `Meta.gps_removed` |
 //! | 14 | persistent Ignore Faces (upstream PR #2416) | `RegionKind::IgnoredFace` |
 //! | 15 | assisted culling scores (upstream PR #2855) | `Analysis.eyes_open` / `aesthetic` / `cull_score` |
+//! | 16 | Before / After: the import state and Set Before kept with the photo | `Op::SetBefore`, `Photo.before`, `Photo.import_state` |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a
@@ -87,7 +88,7 @@ pub(crate) const FORMAT: &str = "lcc-catalog";
 pub(crate) const V4_FORMAT: &str = "lcc-catalog-db";
 /// The catalog format this build writes (and the newest it reads). See the module docs →
 /// *Format versions*; bump it whenever an [`Op`] variant or a serialized field is added.
-pub const VERSION: u32 = 15;
+pub const VERSION: u32 = 16;
 
 /// When [`Journal::wants_snapshot`] says it's time to compact the log.
 #[derive(Clone, Copy, Debug)]
@@ -125,6 +126,9 @@ pub struct LoadReport {
     /// The library was in an older catalog format (`0` = before format versions: a log without a
     /// snapshot) and was rewritten in this version's format ([`VERSION`]).
     pub upgraded_from: Option<u32>,
+    /// With [`Self::upgraded_from`] on disk: the verified copy of the library as it was before the
+    /// upgrade (`backups/before-v<N> <time>/`), which the older version still opens.
+    pub upgrade_backup: Option<std::path::PathBuf>,
     /// What [`Catalog::repair`] changed in a damaged snapshot (empty for a sound one).
     pub repaired: Vec<String>,
 }
@@ -215,6 +219,16 @@ pub struct Journal {
     /// A failed append may have left part of its records after `log_bytes`, and cutting them off
     /// failed too: the next append cuts the log back to `log_bytes` first.
     tail_dirty: bool,
+    /// Appends handed to the store's log thread ([`Store::log_progress`]) and not acknowledged yet:
+    /// (log length, seq, log records) after each, oldest first.
+    unacked: std::collections::VecDeque<(u64, u64, u64)>,
+    /// `seq` of the last op that is durable in the log or a snapshot (acknowledged).
+    durable_seq: u64,
+    /// The log's length and record count right after op `durable_seq`.
+    durable_at: (u64, u64),
+    /// Ops applied (and handed to the log) that a failed log write lost: the log ends before them,
+    /// no append is taken until a snapshot holds them ([`Journal::snapshot_with_unlogged`]).
+    lost: u64,
 }
 
 /// A background snapshot in flight.
@@ -468,6 +482,10 @@ impl Journal {
             pending: None,
             retry_at_records: 0,
             tail_dirty: false,
+            unacked: std::collections::VecDeque::new(),
+            durable_seq: snapshot_seq,
+            durable_at: (0, 0),
+            lost: 0,
         };
         let log = log.unwrap_or_default();
 
@@ -589,6 +607,8 @@ impl Journal {
             }
         }
         catalog.revision = 0;
+        // what was read back is durable (the open's own fixes are acknowledged by the next flush)
+        j.mark_all_durable();
         Ok((j, catalog, report))
     }
 
@@ -596,6 +616,12 @@ impl Journal {
     pub fn append(&mut self, ops: &[Op]) -> Result<()> {
         if ops.is_empty() {
             return Ok(());
+        }
+        // a log write that failed since is found here, before anything is appended after it
+        self.check_log()?;
+        if self.lost > 0 {
+            // the log ends before ops a failed write lost: appending after them would leave a hole
+            return Err(CatalogError::Io(format!("{} change(s) are waiting for a snapshot (a catalog log write failed)", self.lost)));
         }
         let t0 = web_time::Instant::now();
         let mut buf = String::new();
@@ -636,6 +662,12 @@ impl Journal {
         self.seq = seq;
         self.log_records += ops.len() as u64;
         self.log_bytes += buf.len() as u64;
+        if self.store.log_progress(LOG).is_some() {
+            // acknowledged once the store's log thread has synced it
+            self.unacked.push_back((self.log_bytes, seq, self.log_records));
+        } else {
+            self.mark_all_durable();
+        }
         let ms = ms_since(t0);
         self.stats.appends += 1;
         self.stats.last_append_ms = ms;
@@ -661,8 +693,10 @@ impl Journal {
         if let Err(e) = self.wait() {
             log::warn!("catalog: background snapshot failed ({e}); writing one now");
         }
+        // a failed log write is folded in first: the ops it lost are counted with `unlogged`
+        let _ = self.check_log();
         let t0 = web_time::Instant::now();
-        let seq = self.seq.saturating_add(unlogged);
+        let seq = self.seq.saturating_add(self.lost).saturating_add(unlogged);
         let written = if self.v4 {
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -690,6 +724,7 @@ impl Journal {
         // the snapshot is durable: it holds every op up to `seq`
         self.seq = seq;
         self.snapshot_seq = seq;
+        self.lost = 0;
         let t2 = web_time::Instant::now();
         // A crash here leaves old records in the log; they are skipped by seq on load.
         self.store.write_atomic(LOG, b"").map_err(io)?;
@@ -702,6 +737,7 @@ impl Journal {
         self.log_bytes = 0;
         self.retry_at_records = 0;
         self.tail_dirty = false;
+        self.mark_all_durable();
         Ok(())
     }
 
@@ -712,6 +748,10 @@ impl Journal {
     pub fn snapshot_in_background(&mut self, catalog: &Catalog) -> Result<()> {
         if self.pending.is_some() {
             return Ok(());
+        }
+        // ops a failed log write lost are saved by a snapshot written now, counting them
+        if self.check_log().is_err() || self.lost > 0 {
+            return self.snapshot(catalog);
         }
         let t0 = web_time::Instant::now();
         let copy = catalog.clone();
@@ -820,6 +860,9 @@ impl Journal {
         self.log_bytes = p.tail.len() as u64;
         self.retry_at_records = 0;
         self.tail_dirty = false;
+        // the snapshot holds the ops up to `p.seq` and the log was rewritten (synced) with every
+        // one handed over since: all acknowledged, also any a failed log write had dropped
+        self.mark_all_durable();
         Ok(())
     }
 
@@ -862,11 +905,87 @@ impl Journal {
         PersistStats { snapshot_running: self.pending.is_some(), ..self.stats }
     }
 
+    /// Take in what the store's log thread made durable since ([`Store::log_progress`]). When a
+    /// log write failed: a background snapshot in flight is finished (it rewrites the log with
+    /// every op since it started, so nothing is lost); otherwise the log is cut back to its last
+    /// acknowledged record, the ops after it count as lost ([`Journal::lost`]) and the error is
+    /// returned. Cheap when nothing failed.
+    pub fn check_log(&mut self) -> Result<()> {
+        let Some(p) = self.store.log_progress(LOG) else {
+            if self.lost == 0 {
+                self.mark_all_durable();
+            }
+            return Ok(());
+        };
+        while let Some(&(len, seq, records)) = self.unacked.front() {
+            if len > p.durable_len {
+                break;
+            }
+            self.durable_seq = seq;
+            self.durable_at = (len, records);
+            self.unacked.pop_front();
+        }
+        let Some(why) = p.failed else { return Ok(()) };
+        if self.pending.is_some() && self.wait().is_ok() {
+            log::warn!("catalog: a log write failed ({why}); the snapshot just written holds every change");
+            return Ok(());
+        }
+        let lost = self.seq.saturating_sub(self.durable_seq);
+        let (len, records) = self.durable_at;
+        self.lost = self.lost.saturating_add(lost);
+        self.seq = self.durable_seq;
+        self.log_bytes = len;
+        self.log_records = records;
+        self.unacked.clear();
+        if let Err(t) = self.store.truncate(LOG, len) {
+            log::error!("catalog: can't cut the log back after a failed write: {t}");
+            self.tail_dirty = true;
+        }
+        if self.lost == 0 {
+            // nothing was lost (a sync of records already acknowledged, or of no record at all)
+            log::warn!("catalog: a log write failed ({why}); no change was lost");
+            return Ok(());
+        }
+        log::error!("catalog: {lost} change(s) were not written to the log: {why}");
+        Err(CatalogError::Io(format!("{} change(s) could not be written to the catalog log: {why}", self.lost)))
+    }
+
+    /// Everything appended is durable (written synchronously, read back, or rewritten).
+    fn mark_all_durable(&mut self) {
+        self.durable_seq = self.seq;
+        self.durable_at = (self.log_bytes, self.log_records);
+        self.unacked.clear();
+    }
+
+    /// Wait until every appended op is durable (natively the store writes the log on a thread of
+    /// its own): before a command is reported done to someone outside, before the files are read
+    /// or copied from outside, and at shutdown. An error means a write failed and ops were lost
+    /// from the log ([`Journal::lost`]): a snapshot saves them.
+    pub fn flush(&mut self) -> Result<()> {
+        let flushed = self.store.flush(LOG).map_err(io);
+        self.check_log()?;
+        flushed?;
+        if self.lost > 0 {
+            return Err(CatalogError::Io(format!("{} change(s) are not in the catalog log yet", self.lost)));
+        }
+        Ok(())
+    }
+
+    /// `seq` of the last op that is durable (acknowledged by the store).
+    pub fn durable_seq(&self) -> u64 {
+        self.durable_seq
+    }
+
+    /// Ops a failed log write lost (saved by the next snapshot, which counts them).
+    pub fn lost(&self) -> u64 {
+        self.lost
+    }
+
     /// The log is long enough to be worth compacting.
     pub fn wants_snapshot(&self) -> bool {
         self.pending.is_none()
-            && self.log_records >= self.retry_at_records
-            && (self.log_records >= self.policy.max_records || self.log_bytes >= self.policy.max_bytes)
+            && (self.lost > 0 || self.log_records >= self.retry_at_records)
+            && (self.lost > 0 || self.log_records >= self.policy.max_records || self.log_bytes >= self.policy.max_bytes)
     }
 
     pub fn seq(&self) -> u64 {

@@ -593,6 +593,7 @@ fn views(ui: &mut egui::Ui, app: &mut LccApp) {
     use crate::panels;
     // the originals the view keeps decoded (the loupe's even over budget), as the docked centre does
     panels::compare::prepare(app);
+    panels::alternatives::show(app, ui);
     match app.ui.view {
         ViewMode::PhotoGrid | ViewMode::SquareGrid => panels::grid::show(app, ui),
         ViewMode::Detail => panels::detail::show(app, ui),

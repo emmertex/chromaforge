@@ -174,7 +174,6 @@ fn held(s: &Session) -> std::collections::HashSet<PhotoId> {
     keep.extend(s.selection.active);
     keep.extend(s.previous_active);
     keep.extend(s.interaction.as_ref().map(|i| i.photo));
-    keep.extend(s.before.keys().copied());
     for e in s.undo.iter().chain(s.redo.iter()) {
         e.op.photo_ids(&mut |id| {
             keep.insert(id);

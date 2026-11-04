@@ -1,6 +1,8 @@
 //! Window regions and panels.
 
 pub mod activity;
+pub mod ai_models;
+pub mod alternatives;
 pub mod bottombar;
 pub mod cells;
 pub mod chips;
@@ -9,6 +11,7 @@ pub mod collections;
 pub mod compare;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod connections;
+pub mod controls;
 pub mod crop_overlay;
 pub mod denoise;
 pub mod detail;
@@ -18,6 +21,7 @@ pub mod empty_library;
 pub mod faces;
 pub mod filterbar;
 pub mod folders;
+pub mod genfill;
 pub mod grid;
 pub mod histogram;
 pub mod keymap;
@@ -27,6 +31,7 @@ pub mod layout_overlay;
 pub mod left;
 pub mod library_problem;
 pub mod mask_effects;
+pub mod mask_pickers;
 pub mod masking;
 pub mod metadata;
 pub mod navigator;
@@ -41,22 +46,27 @@ pub mod plugin_icon;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugins;
 pub mod presets;
+pub mod presets_manager;
 pub mod profiles;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod publish;
 pub mod quick_develop;
+pub mod range_pick;
+pub mod retouch;
 pub mod right;
 pub mod rules_editor;
 pub mod rules_move;
 pub mod second;
 pub mod settings;
 pub mod settings_folders;
+pub mod settings_profiles;
 pub mod slide_layout;
 pub mod slide_overlays;
 pub mod slide_templates;
 pub mod slide_titles;
 pub mod slideshow;
 pub mod strip;
+pub mod surface_osd;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tether_bar;
 pub mod topbar;
@@ -109,6 +119,7 @@ pub fn resizable_side(
 pub fn toast(app: &mut LccApp, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
     app.ui.expire_toasts(now);
+    let action_h = toast_action(app, ctx, now);
     if app.ui.toasts.is_empty() {
         return;
     }
@@ -119,7 +130,7 @@ pub fn toast(app: &mut LccApp, ctx: &egui::Context) {
     let wrap = (canvas.width() - 80.0).clamp(200.0, 720.0);
     // a slideshow's playback controls sit at the bottom: the toasts go to the top there, clear of them
     let top = app.ui.slideshow.is_some();
-    let mut edge = if top { canvas.top() + 40.0 } else { canvas.bottom() - 40.0 };
+    let mut edge = if top { canvas.top() + 40.0 + action_h } else { canvas.bottom() - 40.0 - action_h };
     for (text, until, label) in app.ui.toasts.iter().rev() {
         let fade = ((until - now) / 0.25).clamp(0.0, 1.0) as f32;
         let (background, foreground) = label.map(crate::theme::label_toast_colors).unwrap_or((egui::Color32::from_black_alpha(200), t.text));
@@ -140,6 +151,51 @@ pub fn toast(app: &mut LccApp, ctx: &egui::Context) {
         edge = if top { r.bottom() + 8.0 } else { r.top() - 8.0 };
     }
     ctx.request_repaint_after(std::time::Duration::from_millis(30));
+}
+
+/// The toast with a button ([`crate::state::ToastAction`]), in the toasts' look, at the bottom
+/// centre of the canvas (top during a slideshow) with the others stacked past it. A click runs its
+/// command once. Returns the room it takes (0 without one).
+fn toast_action(app: &mut LccApp, ctx: &egui::Context, now: f64) -> f32 {
+    if app.ui.toast_action.as_ref().is_some_and(|a| a.until < now) {
+        app.ui.toast_action = None;
+    }
+    let (Some(a), Some(canvas)) = (app.ui.toast_action.clone(), app.canvas_rect) else { return 0.0 };
+    let t = Tokens::get(ctx);
+    let fade = ((a.until - now) / 0.25).clamp(0.0, 1.0) as f32;
+    let top = app.ui.slideshow.is_some();
+    let (pivot, anchor) = if top {
+        (egui::Align2::CENTER_TOP, pos2(canvas.center().x, canvas.top() + 40.0))
+    } else {
+        (egui::Align2::CENTER_BOTTOM, pos2(canvas.center().x, canvas.bottom() - 40.0))
+    };
+    let mut clicked = false;
+    let shown = egui::Area::new(egui::Id::new("toast-action")).order(egui::Order::Foreground).pivot(pivot).fixed_pos(anchor).show(ctx, |ui| {
+        egui::Frame::NONE
+            .fill(egui::Color32::from_black_alpha(200).gamma_multiply(fade))
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::symmetric(20, 9))
+            .show(ui, |ui| {
+                ui.set_max_width((canvas.width() - 80.0).clamp(200.0, 720.0));
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&a.text).font(t.font(14.0)).color(t.text.gamma_multiply(fade)));
+                    ui.add_space(8.0);
+                    let b = ui.button(egui::RichText::new(&a.button).font(t.semibold(13.0)));
+                    crate::widgets::register(ui.ctx(), "button:toastAction", b.rect);
+                    clicked = b.clicked();
+                });
+            })
+    });
+    if clicked {
+        app.ui.toast_action = None;
+        match app.run(&a.command, a.params.clone()) {
+            Ok(_) => {}
+            Err(e) => app.toast_error(ctx, e),
+        }
+        return 0.0;
+    }
+    ctx.request_repaint_after(std::time::Duration::from_millis(30));
+    shown.response.rect.height() + 8.0
 }
 
 /// Paint a centred, dimmed message (empty states).
