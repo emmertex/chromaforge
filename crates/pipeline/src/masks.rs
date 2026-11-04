@@ -173,7 +173,7 @@ pub fn alpha_key(masks: &[Mask], ev: f32, w: usize, h: usize, mattes: Option<&Ma
     let mut exposure = false;
     let mut automatic = false;
     for m in masks.iter().filter(|m| m.visible && !m.components.is_empty()) {
-        let _ = write!(parts, "{}|{}|{}|{}|{}", m.id, m.invert, m.refine.to_bits(), m.feather.to_bits(), m.adjust.amount.to_bits());
+        let _ = write!(parts, "{}|{}|{}|{}|{}|{}", m.id, m.invert, m.refine.to_bits(), m.feather.to_bits(), m.adjust.amount.to_bits(), m.on_photo);
         for c in &m.components {
             // (the whole component: a field added to it later counts too)
             let _ = write!(parts, "|{c:?}");
@@ -1211,6 +1211,12 @@ mod tests {
         assert_eq!(alpha_key(&masks, 0.0, 100, 50, None), k2, "the mask's own curve");
         masks[0].invert = true;
         assert_ne!(alpha_key(&masks, 0.0, 100, 50, None), k2, "inverted");
+        masks[0].invert = false;
+        let before = alpha_key(&masks, 0.0, 100, 50, None);
+        masks[0].on_photo = !masks[0].on_photo;
+        assert_ne!(alpha_key(&masks, 0.0, 100, 50, None), before, "the frame the coordinates are on (under a warp they differ)");
+        masks[0].on_photo = !masks[0].on_photo;
+        masks[0].invert = true;
         masks.push(Mask {
             id: 2,
             components: vec![comp(MaskShape::LuminanceRange { lo: 0.2, hi: 0.8, lo_feather: 0.1, hi_feather: 0.1 })],
