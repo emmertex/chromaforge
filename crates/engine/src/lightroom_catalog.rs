@@ -1677,10 +1677,13 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         }
     }
     let stacks = stack_ops(s, &data, &ids, &mut ops, &mut warnings);
+    // the undo step names the program the catalog comes from
+    let step =
+        if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Import Capture One Catalog" } else { "Import Lightroom Catalog" };
     if !ops.is_empty() {
-        s.commit("Import Lightroom Catalog", Op::Batch { ops })?;
+        s.commit(step, Op::Batch { ops })?;
     }
-    s.merge_undo(s.undo.len().saturating_sub(undo0), "Import Lightroom Catalog");
+    s.merge_undo(s.undo.len().saturating_sub(undo0), step);
     Ok(AppliedImport {
         report: json!({"source":data.source,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
         index: index.clone(),

@@ -85,7 +85,7 @@ fn open_library_on_a_lightroom_catalog_offers_its_import() {
     h.step();
     h.step();
     // Import Lightroom Catalog…: no file dialog, the window that asks where that catalog goes
-    // (#2672) takes its place, as File ▸ Import Lightroom Catalog… does
+    // (#2672) takes its place, as File ▸ Import Lightroom or Capture One Catalog… does
     assert_eq!(h.request("ui.clickWidget", json!({"id": "button:dialogOk"}), T)["ok"], true);
     h.step();
     assert!(

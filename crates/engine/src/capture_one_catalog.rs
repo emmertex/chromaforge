@@ -56,6 +56,11 @@ pub fn database_file(path: &Path) -> Option<PathBuf> {
     found.into_iter().next()
 }
 
+/// [`ensure_read_active`], saying the Capture One import was cancelled.
+fn active(cancel: &AtomicBool) -> Result<(), String> {
+    ensure_read_active(cancel).map_err(|_| "Capture One import cancelled".to_string())
+}
+
 fn text<'a>(r: &'a Row, k: &str) -> &'a str {
     r.get(k).and_then(Value::as_str).unwrap_or("")
 }
@@ -243,9 +248,9 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
     done.store(0, Ordering::Relaxed);
     let db_path = database_file(path).ok_or_else(|| format!("{}: no Capture One catalog database (.cocatalogdb) found", path.display()))?;
     let catalog_dir = db_path.parent().map(Path::to_path_buf).unwrap_or_default();
-    let (reader, guard) = open_catalog(&db_path, cancel)?;
+    let (reader, guard) = open_catalog(&db_path, cancel).map_err(|e| e.replace("Lightroom", "Capture One"))?;
     let table = |name: &str, required: bool| -> Result<Vec<Row>, String> {
-        ensure_read_active(cancel)?;
+        active(cancel)?;
         let rows = reader.table(name, required, cancel).map_err(|e| e.replace("Lightroom", "Capture One"))?;
         done.fetch_add(1, Ordering::Relaxed);
         Ok(rows)
@@ -282,7 +287,7 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
     let mut trashed = 0usize;
     let mut unlabelled: BTreeMap<&'static str, usize> = BTreeMap::new();
     for image in &images {
-        ensure_read_active(cancel)?;
+        active(cancel)?;
         let Some(image_pk) = int(image, "Z_PK") else { continue };
         if number(image, "ZISTRASHED") != 0 {
             trashed += 1;

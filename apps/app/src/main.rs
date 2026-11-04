@@ -677,7 +677,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                         if let Some(t) = &req.title {
                             d = d.set_title(t);
                         }
-                        if let Some((name, exts)) = &req.filter {
+                        for (name, exts) in req.filters() {
                             d = d.add_filter_nocase(name.clone(), exts);
                         }
                         if let Some(n) = &req.file_name {
@@ -705,8 +705,10 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         log_file: log_file.map(|p| p.display().to_string()),
         pick_lightroom_catalog: picker!(|| {
             file_dialog()
-                .set_title(lcc_ui_egui::i18n::tr("Import Lightroom Catalog"))
-                .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom Classic Catalog"), &["lrcat", "cocatalogdb"])
+                .set_title(lcc_ui_egui::i18n::tr("Import Lightroom or Capture One Catalog"))
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom or Capture One Catalog"), &["lrcat", "cocatalogdb"])
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom Classic Catalog"), &["lrcat"])
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Capture One Catalog"), &["cocatalogdb"])
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
         }),
