@@ -1897,21 +1897,10 @@ fn ai_masks_without_the_model_offer_the_download() {
         assert!(dir.is_dir(), "the model folder is created to be shown");
         assert_eq!(*shown.lock().unwrap(), vec![dir.to_string_lossy().to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
-        let r = h.request("ui.clickWidget", json!({"id": "button:dialogOk"}), T);
-        assert_eq!(r["ok"], false, "{r}");
-        let r = h.request("ui.dialog.confirm", json!({}), T);
-        assert_eq!(r["ok"], false, "{r}");
-        assert!(r["error"].as_str().unwrap_or_default().contains(&lcc_brand::env_var("SAM3_MIRRORS")), "{r}");
+        // Settings ▸ AI has no download to confirm here: confirming just closes it
         assert!(matches!(&h.app.ui.dialog, Some(Dialog::Settings { tab }) if tab == "ai"), "stays open");
-    } else {
-        // with a mirror: Download starts it in the background (here it fails: nothing listens)
-        let r = h.request("ui.clickWidget", json!({"id": "button:dialogOk"}), T);
-        assert_eq!(r["ok"], true, "{r}");
     }
-    // (a frame with the message laid out, so the buttons are where they are drawn)
-    h.step();
-    h.step();
-    let r = h.request("ui.clickWidget", json!({"id": "button:dialogCancel"}), T);
+    let r = h.request("ui.dialog.confirm", json!({}), T);
     assert_eq!(r["ok"], true, "{r}");
     assert!(h.app.ui.dialog.is_none());
     // Describe asks too
