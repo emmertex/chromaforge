@@ -678,8 +678,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             if let Some(id) = neighbour {
                 let _ = app.run("library.select", json!({"ids": [id.0], "mode": "add"}));
             }
-        } else if compare::culling(app) && (f == "library.next" || f == "library.previous") {
-            let d = if f == "library.next" { 1 } else { -1 };
+        } else if compare::culling(app) && matches!(f.as_str(), "library.next" | "library.previous" | "library.down" | "library.up") {
+            // ↑ / ↓ step like → / ←: run as the grid's Photo Below / Above, they would leave one photo
+            // of the survey (or the pair) selected (upstream #3640)
+            let d = if matches!(f.as_str(), "library.next" | "library.down") { 1 } else { -1 };
             let _ = if app.ui.view == crate::state::ViewMode::Compare { compare::compare_step(app, d) } else { compare::survey_step(app, d) };
         } else if matches!(f.as_str(), "photo.cycleFlag" | "photo.increaseFlag" | "photo.decreaseFlag") {
             // `, ⌘↑, ⌘↓: step the flag; the toast names the active photo's new state (read before Auto Advance moves on)
