@@ -572,11 +572,48 @@ pub(crate) fn max_radius(cx: f64, cy: f64, w: f64, h: f64) -> f64 {
 /// every pixel: tens of GB at [`crate::MAX_SAMPLES`]. Pixels past the cap, in list order, are left as they are.
 const MAX_BAD_PIXELS: usize = 1 << 22;
 
+/// Whole-image passes one opcode list may cost, all its ops together (a real DNG's list is a handful of gain maps
+/// and tables). Ops past it, in list order, are left out: a list repeating a full-image polynomial thousands of
+/// times was billions of evaluations on an ordinary raw (upstream #3679).
+const MAX_LIST_PASSES: usize = 32;
+
+/// Sample visits `op` costs on a `w × h × cpp` buffer (coefficient evaluations for a polynomial).
+fn op_cost(op: &Opcode, w: usize, h: usize, cpp: usize) -> usize {
+    let visits = |a: &Area| {
+        let rows = (a.bottom as usize).min(h).saturating_sub(a.top as usize).div_ceil(a.row_pitch.max(1) as usize);
+        let cols = (a.right as usize).min(w).saturating_sub(a.left as usize).div_ceil(a.col_pitch.max(1) as usize);
+        let planes = (a.plane as usize).saturating_add(a.planes.max(1) as usize).min(cpp).saturating_sub(a.plane as usize);
+        rows.saturating_mul(cols).saturating_mul(planes)
+    };
+    match op {
+        Opcode::MapPolynomial { area, coefficients } => visits(area).saturating_mul(coefficients.len().max(1)),
+        Opcode::MapTable { area, .. }
+        | Opcode::GainMap { area, .. }
+        | Opcode::DeltaPerRow { area, .. }
+        | Opcode::DeltaPerColumn { area, .. }
+        | Opcode::ScalePerRow { area, .. }
+        | Opcode::ScalePerColumn { area, .. } => visits(area),
+        // `apply_list` does nothing for these, so they spend none of the budget
+        Opcode::Unknown { .. }
+        | Opcode::TrimBounds { .. }
+        | Opcode::WarpFisheye { .. }
+        | Opcode::WarpRectilinear { .. }
+        | Opcode::WarpRectilinear2 { .. } => 0,
+        _ => w.saturating_mul(h).saturating_mul(cpp),
+    }
+}
+
 /// Apply a list to an interleaved `w × h × cpp` buffer. `cfa` (when the data is a mosaic) is used by the
 /// bad-pixel opcodes. `scale` is the value of 1.0 in the buffer: 65535 for list 1 (raw 16-bit values), 1 for
 /// lists 2 and 3 (normalised values).
 pub fn apply_list(list: &[Opcode], buf: &mut [f32], w: usize, h: usize, cpp: usize, cfa: Option<&Cfa>, scale: f32) {
+    let mut budget = w.saturating_mul(h).saturating_mul(cpp).max(1).saturating_mul(MAX_LIST_PASSES);
     for op in list {
+        let cost = op_cost(op, w, h, cpp);
+        if cost > budget {
+            continue;
+        }
+        budget -= cost;
         match op {
             Opcode::MapTable { area, table } => {
                 // `parse_one` refuses an empty table; a list built otherwise (deserialised) leaves the data as it is

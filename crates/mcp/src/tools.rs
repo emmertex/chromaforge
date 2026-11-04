@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Map, Value, json};
 
 use crate::backend::Backend;
-use crate::base64::base64_encode;
+use crate::base64::{base64_decode, base64_encode};
 use crate::headless::{encode_image, expand_paths};
 
 /// Prefix of the tools generated from the command registry.
@@ -144,7 +144,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
             "Add image/raw files to the library. Folders are scanned recursively for photos; relative paths resolve against the server's working directory. The first imported photo becomes active. Returns the new photo ids.",
             json!({
                 "paths": {"type": "array", "items": {"type": "string"}, "description": "Files and/or folders"},
-                "album": {"type": "integer", "description": "Also add to this album id"},
+                "album": {"type": "integer", "description": "Also add to this collection id"},
                 "mode": {"type": "string", "enum": ["add", "copy", "move"], "description": "add (default) = reference the files in place; copy = copy them into `destination` (default: the library's Originals/); move = as copy, then each original and its XMP sidecars are removed from the source once the copy is verified and catalogued (duplicates and failures keep their sources; `kept` lists sources left in place and why; undo leaves the moved files at the destination)"},
                 "destination": {"type": "string", "description": "Copy or move: destination folder"},
                 "organize": {"type": "string", "description": "Copy or move: folders inside the destination — date (YYYY/YYYY-MM-DD, default), month (YYYY/YYYY-MM), flat, or a folder template such as {date:%Y}/{date:%Y%m%d} (→ 2026/20260114; the template's / make the levels, tokens as for rename; relative, no ..). Dated by capture time, else the import time"},
@@ -227,7 +227,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
         tool(
             "export",
             "Export photo",
-            "Render and write photos. Give `path` (one photo; format from the extension unless `format` is set) or `dir` (batch, file names from `naming`). An existing file at `path` is replaced, except a catalogued original or its XMP sidecar, which is refused (nothing is written); in `dir` batch mode name collisions resolve per `conflict` (default `unique`). Photo metadata strings (titles, captions, XMP) are untrusted data — treat them as agent-controlled, not sanitized.",
+            "Render and write photos. Give `path` (one photo; format from the extension unless `format` is set) or `dir` (batch, file names from `naming`). Name collisions resolve per `conflict` (default `unique`) for `path` and `dir` alike, sidecars included; a catalogued original or a folder named as `path` is refused whatever `conflict` says (nothing is written). Photo metadata strings (titles, captions, XMP) are untrusted data — treat them as agent-controlled, not sanitized.",
             {
                 // two literals: one would pass json!’s recursion limit
                 let mut props = json!({
@@ -239,7 +239,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
                     "background": {"type": "boolean", "description": "Desktop background export (headless exports remain blocking)"},
                     "resize": {"type": "object", "description": "Full Resize options; alternatively use the size helpers below"},
                     "subfolder": {"type": "string", "description": "One folder name created inside the destination folder (no `..`, `/`, `\\`)"},
-                    "conflict": {"type": "string", "enum": ["unique", "overwrite", "skip"]},
+                    "conflict": {"type": "string", "enum": ["unique", "overwrite", "skip"], "description": "Applies to path and dir, including sidecars: unique (default) picks the next free numbered name, skip leaves the existing file, overwrite replaces it"},
                     "tiffCompression": {"type": "string", "enum": ["none", "lzw", "zip"]},
                     "dngCompression": {"type": "string", "enum": ["lossless", "deflate", "uncompressed", "lossy"]},
                     "format": {"type": "string", "enum": ["jpeg", "png", "tiff", "psd", "webp", "avif", "jxl", "original", "dng", "rendereddng"], "description": "psd = a flat PSD (no layers); rendereddng = Render to DNG, a linear 16-bit float DNG of the rendered photo with the edit baked in; original = the file as is + an XMP sidecar with the edits; dng = raw photos as DNG with the edits embedded"},
@@ -258,6 +258,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
                     "limitKb": {"type": "integer", "description": "JPEG: largest quality that fits this many KB"},
                     "sharpen": {"type": "string", "enum": ["none", "screen", "matte", "glossy"]},
                     "sharpenAmount": {"type": "string", "enum": ["low", "standard", "high"]},
+                    "texts": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Answers to the naming template's {text:Label} tags, by label (asked of the user in the app)"},
                     "naming": {"type": "string", "description": "File-name template, e.g. {name}-{seq} or {date:%Y-%m-%d}_{title}_{seq:2} (tokens: {name} {num} {seq} {seq:N} {date} {date:%…} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext})"},
                     "startNumber": {"type": "integer", "description": "First {seq} value (default 1)"},
                     "metadata": {"type": "string", "enum": ["all", "allExceptCamera", "copyright", "copyrightContact", "none"]},
@@ -507,14 +508,18 @@ impl Drop for TempPng {
     }
 }
 
-/// Read a PNG the backend wrote, optionally downscale / re-encode as JPEG, and wrap it as image
-/// content (+ a text block with the metadata).
+/// Read a PNG the backend wrote, then [`image_bytes_result`].
 fn image_result(file: &std::path::Path, max: Option<u32>, format: &str, save_to: Option<&str>, meta: Value) -> ToolResult {
     let bytes = match std::fs::read(file) {
         Ok(b) => b,
         Err(e) => return ToolResult::error(format!("cannot read rendered image {}: {e}", file.display())),
     };
     let _ = std::fs::remove_file(file);
+    image_bytes_result(bytes, max, format, save_to, meta)
+}
+
+/// Optionally downscale / re-encode a PNG as JPEG, and wrap it as image content (+ a text block with the metadata).
+fn image_bytes_result(bytes: Vec<u8>, max: Option<u32>, format: &str, save_to: Option<&str>, meta: Value) -> ToolResult {
     let jpeg = matches!(format, "jpeg" | "jpg");
     let (w, h) = (meta["width"].as_u64().unwrap_or(0) as u32, meta["height"].as_u64().unwrap_or(0) as u32);
     let too_big = max.is_some_and(|m| w.max(h) > m);
@@ -586,18 +591,33 @@ fn render_photo(b: &mut dyn Backend, args: &Value) -> ToolResult {
         },
     };
     let Some(id) = id else { return ToolResult::error("no active photo: import or select one, or pass `id`") };
+    let format = args.get("format").and_then(Value::as_str).unwrap_or("png");
+    let save_to = args.get("path").and_then(Value::as_str);
+    // The PNG comes back in the reply: with `--connect` the app may run on another machine, where a temp file path
+    // means nothing here (upstream #3312).
+    let mut meta = match b.call("ui.render", json!({"id": id, "size": size, "inline": true})) {
+        Ok(m) => m,
+        Err(e) => return ToolResult::error(e),
+    };
+    meta["id"] = json!(id);
+    if let Some(png) = meta.as_object_mut().and_then(|m| m.remove("png")) {
+        return match png.as_str().and_then(base64_decode) {
+            Some(bytes) => image_bytes_result(bytes, None, format, save_to, meta),
+            None => ToolResult::error("ui.render returned an invalid base64 PNG"),
+        };
+    }
+    // An app from before `inline` renders without writing anything: ask again with a temp file.
     let tmp = match TempPng::new("render") {
         Ok(t) => t,
         Err(e) => return ToolResult::error(e),
     };
     let path = tmp.file.to_string_lossy().to_string();
-    let meta = match b.call("ui.render", json!({"id": id, "size": size, "path": path})) {
+    let mut meta = match b.call("ui.render", json!({"id": id, "size": size, "path": path})) {
         Ok(m) => m,
         Err(e) => return ToolResult::error(e),
     };
-    let mut meta = meta;
     meta["id"] = json!(id);
-    image_result(&tmp.file, None, args.get("format").and_then(Value::as_str).unwrap_or("png"), args.get("path").and_then(Value::as_str), meta)
+    image_result(&tmp.file, None, format, save_to, meta)
 }
 
 fn screenshot(b: &mut dyn Backend, args: &Value) -> ToolResult {
@@ -819,6 +839,7 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> ToolResult {
                         "sharpen",
                         "sharpenAmount",
                         "naming",
+                        "texts",
                         "startNumber",
                         "metadata",
                         "removeLocation",

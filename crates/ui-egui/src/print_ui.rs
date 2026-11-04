@@ -1621,7 +1621,7 @@ fn draw_photo(p: &egui::Painter, app: &LccApp, id: PhotoId, r: Rect, ph: &lcc_la
             _ => pos2(u, v),
         }
     };
-    let mut mesh = egui::Mesh::with_texture(tex.tex.id());
+    let mut mesh = egui::Mesh::with_texture(tex.id());
     for q in [vis.left_top(), vis.right_top(), vis.right_bottom(), vis.left_bottom()] {
         mesh.vertices.push(egui::epaint::Vertex { pos: q, uv: uv(q), color: Color32::WHITE });
     }

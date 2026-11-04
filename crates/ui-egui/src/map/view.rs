@@ -69,6 +69,7 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
 
     // ---- input: pan, zoom (pointer-anchored), double-click zoom
     let hover = resp.hover_pos();
+    let pointer_in_map = hover.or_else(|| ui.input(|i| i.multi_touch().map(|t| t.center_pos).or(i.pointer.hover_pos())).filter(|p| r.contains(*p)));
     if resp.dragged() && app.map.dragging_pin.is_none() {
         let d = resp.drag_delta();
         let world = world_px(app.map.prefs.zoom);
@@ -80,11 +81,12 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     if resp.drag_stopped() {
         app.map.save();
     }
-    let scroll = if hover.is_some() { ui.input(|i| i.smooth_scroll_delta.y + i.zoom_delta().log2() * 200.0) } else { 0.0 };
-    if let Some(at) = hover
+    let scroll = if pointer_in_map.is_some() { ui.input(|i| i.smooth_scroll_delta.y + i.zoom_delta().log2() * 200.0) } else { 0.0 };
+    if let Some(at) = pointer_in_map
         && scroll.abs() > 0.0
     {
         zoom_at(app, r, at, f64::from(scroll) / 200.0);
+        ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
     }
     if resp.double_clicked()
         && let Some(at) = hover
@@ -241,6 +243,7 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     // hover preview: the first photo's thumbnail and the count
     if let Some((at, ids)) = hovered
         && app.map.dragging_pin.is_none()
+        && scroll.abs() == 0.0
     {
         hover_preview(app, ui, r, at, &ids);
     }
@@ -355,7 +358,7 @@ fn hover_preview(app: &mut LccApp, ui: &mut egui::Ui, r: Rect, at: Pos2, ids: &[
         let [tw, th] = tex.size;
         let s = (img.width() / tw.max(1) as f32).min(img.height() / th.max(1) as f32);
         let fr = Rect::from_center_size(img.center(), vec2(tw as f32 * s, th as f32 * s));
-        p.image(tex.tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        p.image(tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
     let name = app.session.catalog.photo(first).map(|ph| ph.file_name.clone()).unwrap_or_default();
     let text = if ids.len() > 1 { crate::i18n::tr_format!("{n} photos", n = ids.len()) } else { name };

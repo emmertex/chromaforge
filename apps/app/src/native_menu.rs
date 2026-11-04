@@ -27,10 +27,12 @@ const QUIT: &str = "app.quit";
 /// Settings… (the app menu on macOS; Edit elsewhere).
 const SETTINGS: &str = "app.settings";
 const SETTINGS_KEY: &str = "Cmd+,";
-/// Keys whose meaning depends on the panel (X = reject or swap crop aspect, ⌫ = delete the photo
-/// or the active mask; ⌘↑/⌘↓ flag status follows Compare/Survey's active photo): left to the egui
-/// handler, which knows the context.
-const CONTEXTUAL: &[&str] = &["X", "Delete", "Cmd+Up", "Cmd+Down"];
+/// Keys whose meaning depends on the panel (⌫ = delete the photo or the active mask; ⌘↑/⌘↓ flag
+/// status follows Compare/Survey's active photo): left to the egui handler, which knows the
+/// context. X (reject, or swap the crop aspect under the Crop panel) isn't listed: as a plain key
+/// it never reaches the menu bar, so its accelerator only shows next to Reject (upstream #3487;
+/// not run on macOS here).
+const CONTEXTUAL: &[&str] = &["Delete", "Cmd+Up", "Cmd+Down"];
 /// Shortcuts text fields need while they have focus.
 const TEXT_EDIT: &[&str] = lcc_ui_egui::menubar::TEXT_EDIT_SHORTCUTS;
 

@@ -8,15 +8,15 @@ actions are commands, so the CLI, control channel and MCP can do everything the 
 
 ## Library
 
-Photo Grid and Square Grid (View menu), loupe (`E`), compare (`C`) and survey (`N`) views of the folder, album or filter in view.
+Photo Grid and Square Grid (View menu), loupe (`E`), compare (`C`) and survey (`N`) views of the folder, collection or filter in view.
 
-- **Organise:** folders, albums and smart albums (Library → New Album… `Cmd+N`, New Smart Album…), collection sets,
+- **Organise:** folders, collections and smart collections (Library → New Collection… `Cmd+N`, New Smart Collection…), collection sets,
   stacks (`Cmd+G`), virtual copies (`Cmd+'`), people (face regions from XMP or the opt-in face detector).
 - **Rate and cull:** stars `0`–`5`, flags `P`/`X`/`U`, colour labels `6`–`9`; `Shift` + key moves on
   ([library-shortcuts.md](../library-shortcuts.md)).
 - **Metadata:** Info and Keywords panels, metadata presets, hierarchical keywords with import/export (File →
   Import/Export Keywords…), the Painter (`Cmd+Alt+K`), Save Metadata to File (`Cmd+S`).
-- **Find:** the filter bar (`Cmd+F`): text, attributes, metadata columns; save it as a smart album.
+- **Find:** the filter bar (`Cmd+F`): text, attributes, metadata columns; save it as a smart collection.
 
 ## Develop
 
@@ -77,4 +77,4 @@ and reopened.
 ## Saved creations
 
 Books, prints, slideshows and web galleries can be saved as creations (`creation.save`): a collection holding the
-photos and the layout, listed with your albums. `layout.templates` lists the built-in templates for each kind.
+photos and the layout, listed with your collections. `layout.templates` lists the built-in templates for each kind.

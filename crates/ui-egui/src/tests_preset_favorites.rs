@@ -62,7 +62,8 @@ fn app() -> Headless {
     h
 }
 
-/// A user group named "Favorites" or "favorites" keeps its own header, apart from the section's: a
+/// A user group named "Favorites" keeps its own header (a typed "favorites" joins it: groups match
+/// in any case), apart from the section's: a
 /// click aimed at either id lands on the right row (the widget lookup takes the last match).
 #[test]
 fn user_groups_named_favorites_keep_their_own_header() {
@@ -76,11 +77,10 @@ fn user_groups_named_favorites_keep_their_own_header() {
         h.step();
     }
     let section = rect(&h, "presetFavorites").unwrap();
-    for group in ["Favorites", "favorites"] {
-        let id = format!("presetGroup:{group}");
-        let user = rect(&h, &id).unwrap_or_else(|| panic!("the user's {group:?} group is listed"));
-        assert_ne!(user, section, "{id} is its own row");
-        assert_eq!(h.app.widgets.iter().filter(|(w, _)| *w == id).count(), 1, "{id} names one row");
-    }
+    assert!(h.app.session.presets.iter().filter(|p| !p.builtin).all(|p| p.group == "Favorites"));
+    let id = "presetGroup:Favorites";
+    let user = rect(&h, id).expect("the user's Favorites group is listed");
+    assert_ne!(user, section, "{id} is its own row");
+    assert_eq!(h.app.widgets.iter().filter(|(w, _)| *w == id).count(), 1, "{id} names one row");
     assert_eq!(h.app.widgets.iter().filter(|(w, _)| w == "presetFavorites").count(), 1);
 }

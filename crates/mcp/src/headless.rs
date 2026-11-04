@@ -36,6 +36,7 @@ impl Default for Headless {
             Session::new()
                 .with_fs()
                 .with_default_denoise_models()
+                .with_default_genfill()
                 .with_system_clock()
                 .with_default_connections()
                 .with_default_face_models()
@@ -58,6 +59,7 @@ impl Headless {
             Session::with_demo()
                 .with_fs()
                 .with_default_denoise_models()
+                .with_default_genfill()
                 .with_system_clock()
                 .with_default_connections()
                 .with_default_face_models()
@@ -200,6 +202,10 @@ impl Backend for Headless {
                         self.session.check_write_target(path)?;
                         write_image(Path::new(path), &img, 92)?;
                         Ok(json!({"path": path, "width": img.width, "height": img.height}))
+                    }
+                    None if p.get("inline").and_then(Value::as_bool).unwrap_or(false) => {
+                        let png = encode_image("png", &img, 92)?;
+                        Ok(json!({"width": img.width, "height": img.height, "png": lcc_engine::base64::encode(&png)}))
                     }
                     None => Ok(json!({"width": img.width, "height": img.height})),
                 }

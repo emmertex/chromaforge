@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use lcc_develop::SegMask;
 use lcc_segment::{
-    Encoded, Sam3,
+    Encoded, Sam2, Sam2Encoded, Sam3,
     remote::{self, Operation, Request, text_logits},
 };
 
@@ -46,6 +46,34 @@ pub enum Kind {
     Detail {
         prompt: Prompt,
         region: [f64; 4],
+    },
+    /// Learn an example of a remembered object from what `mask` selects on the photo
+    /// (`concepts.teach`; SAM 2.1). The outcome's `extra` is the example.
+    Learn {
+        mask: Box<lcc_develop::Mask>,
+    },
+    /// Find a remembered object taught by `examples` on the photo (SAM 2.1). The outcome's
+    /// `extra` is `{seeds: [[x, y], …], score}`, the clicks the selection grew from.
+    Find {
+        examples: Vec<lcc_segment::concept::Example>,
+    },
+    /// The photo's faces with their appearance signatures (MediaPipe faces in `face`, its people
+    /// model beside it when installed, SAM 2.1's features from `sam2` when given). The outcome's
+    /// `extra` is `[{rect: [x0, y0, x1, y1] normalized, signature}]`, left to right.
+    Faces {
+        face: PathBuf,
+        sam2: Option<PathBuf>,
+    },
+    /// A People selection (`person` 0: everyone, n: the n-th from the left; `parts` Lightroom's
+    /// names, none: the entire person) from MediaPipe's people model (Selfie Multiclass, beside
+    /// `face`) and its faces model in `face`. The photo's analysis is kept for the next part.
+    People {
+        face: PathBuf,
+        person: u32,
+        parts: Vec<String>,
+        /// SAM 2.1, when installed: one person of several follows their own silhouette where
+        /// people overlap (an arm round someone stays its owner's).
+        sam2: Option<PathBuf>,
     },
     /// Panics (tests of the worker's recovery).
     #[cfg(test)]
@@ -71,6 +99,8 @@ pub struct Job {
     pub kind: Kind,
     pub tag: Tag,
     pub reply: mpsc::Sender<Outcome>,
+    /// Set when the job's batch was cancelled (Recompute AI Masks): skipped, not run.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 /// A finished request: the segmentation (`None`: nothing selected / nothing to report).
@@ -81,6 +111,9 @@ pub struct Outcome {
     pub superseded: bool,
     /// Something the user should know besides the result ([`GPU_FAILED`]).
     pub notice: Option<String>,
+    /// What a job gives besides a selection (a learned example, the clicks a found object grew
+    /// from).
+    pub extra: Option<serde_json::Value>,
 }
 
 /// The notice of the job after which the model runs on the CPU.
@@ -255,7 +288,27 @@ impl Worker {
 struct State {
     model: Option<(PathBuf, Sam3)>,
     cache: Option<(u64, Encoded)>,
+    /// SAM 2.1, when the user chose it for Object clicks.
+    sam2: Option<(PathBuf, Sam2)>,
+    sam2_cache: Option<(u64, Sam2Encoded)>,
+    /// The model input `sam2_cache` was encoded from (remembered objects read its colours).
+    sam2_input: Option<Input>,
     remote: Option<remote::Client>,
+    /// The running job's [`Outcome::extra`].
+    extra: Option<serde_json::Value>,
+    /// MediaPipe's faces and people models (their folder), for appearance signatures.
+    faces: Option<(PathBuf, lcc_segment::people::FaceModel, Option<lcc_segment::people::PeopleModel>)>,
+    /// The last photo's people analysis (its look key): every part of it reuses it.
+    people_seen: Option<(u64, PeopleSeen)>,
+}
+
+/// One photo's people analysis: the model input, the class map and the faces (left to right).
+struct PeopleSeen {
+    input: Input,
+    map: Option<lcc_segment::people::PeopleMap>,
+    faces: Vec<lcc_segment::people::Face>,
+    /// Everyone's SAM 2.1 silhouette, once asked for (`Some(None)`: SAM 2.1 couldn't give them).
+    instances: Option<Option<lcc_segment::people::Instances>>,
 }
 
 /// Whether `later` makes `job` pointless (it asks for the same selection again).
@@ -276,7 +329,7 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
             match rx.recv_timeout(idle) {
                 Ok(j) => queue.push_back(j),
                 Err(RecvTimeoutError::Timeout) => {
-                    if state.model.is_some() || state.remote.is_some() {
+                    if state.model.is_some() || state.sam2.is_some() || state.remote.is_some() {
                         state = State::default();
                         shared.loaded.store(false, Ordering::SeqCst);
                         log::info!("SAM 3 unloaded after {} minutes without use", idle.as_secs() / 60);
@@ -294,9 +347,10 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
         // counts the job as pending until just before its reply goes out: a caller woken by the
         // reply must not still see the worker busy with it
         let done = Done(if is_detail { &shared.detail } else { &shared.pending });
-        if queue.iter().any(|later| supersedes(later, &job)) {
+        let cancelled = job.cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst));
+        if cancelled || queue.iter().any(|later| supersedes(later, &job)) {
             drop(done);
-            let _ = job.reply.send(Outcome { tag: job.tag, result: Ok(None), superseded: true, notice: None });
+            let _ = job.reply.send(Outcome { tag: job.tag, result: Ok(None), superseded: true, notice: None, extra: None });
             continue;
         }
         // what a retry on the CPU needs (running the job takes them)
@@ -328,12 +382,14 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
             }
         }
         let result = result.map_err(Failure::message);
+        let extra = state.extra.take();
         if result.is_err() && !is_detail {
             state.cache = None;
+            state.sam2_cache = None;
         }
-        shared.loaded.store(state.model.is_some() || state.remote.is_some(), Ordering::SeqCst);
+        shared.loaded.store(state.model.is_some() || state.sam2.is_some() || state.remote.is_some(), Ordering::SeqCst);
         drop(done);
-        let _ = job.reply.send(Outcome { tag: job.tag, result, superseded: false, notice });
+        let _ = job.reply.send(Outcome { tag: job.tag, result, superseded: false, notice, extra });
     }
 }
 
@@ -357,6 +413,8 @@ fn model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path, place
     if state.model.as_ref().is_none_or(|(d, _)| d != dir) {
         state.model = None;
         state.cache = None;
+        // one model at a time: SAM 2.1 is freed
+        (state.sam2, state.sam2_cache) = (None, None);
         let _busy = Flag::raise(&shared.encoding);
         let t = web_time::Instant::now();
         let m = match placement {
@@ -409,6 +467,203 @@ fn encoded<'a>(state: &'a mut State, shared: &Shared, job: &mut Job, placement: 
     }
 }
 
+/// SAM 2.1 for `dir`, loading it on `placement` when needed (SAM 3 is freed: one model at a time).
+fn sam2_model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path, placement: Placement) -> Result<&'a mut Sam2, Failure> {
+    if state.sam2.as_ref().is_none_or(|(d, _)| d != dir) {
+        (state.model, state.cache, state.sam2, state.sam2_cache) = (None, None, None, None);
+        let _busy = Flag::raise(&shared.encoding);
+        let t = web_time::Instant::now();
+        let m = match placement {
+            Placement::Gpu => Sam2::load(dir)?,
+            Placement::Cpu => Sam2::load_cpu(dir)?,
+        };
+        log::info!("SAM 2.1 loaded in {:?}", t.elapsed());
+        state.sam2 = Some((dir.to_path_buf(), m));
+        shared.loaded.store(true, Ordering::SeqCst);
+    }
+    state.sam2.as_mut().map(|(_, m)| m).ok_or_else(|| "the model did not load".into())
+}
+
+/// Object clicks (and their detail passes) with SAM 2.1; Describe needs SAM 3.
+fn sam2_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
+    let side = lcc_segment::SAM2_MASK_SIDE;
+    let encode = |m: &Sam2, input: &Input| -> Result<Sam2Encoded, Failure> {
+        let t = web_time::Instant::now();
+        let enc = m.encode(&input.rgb, input.w, input.h)?;
+        log::info!("SAM 2.1 encoded {}×{} in {:?}", input.w, input.h, t.elapsed());
+        Ok(enc)
+    };
+    let kind = std::mem::replace(&mut job.kind, Kind::Prepare);
+    if let Kind::Detail { prompt, region } = kind {
+        let Prompt::Clicks(clicks) = prompt else { return Err("Describe masks need the SAM 3 model".into()) };
+        let (rw, rh) = (region[2] - region[0], region[3] - region[1]);
+        if !(rw > 0.0 && rh > 0.0) {
+            return Ok(None);
+        }
+        let inside: Vec<lcc_segment::Click> = clicks
+            .iter()
+            .map(|c| ((c.at.x - region[0]) / rw, (c.at.y - region[1]) / rh, c.include))
+            .filter(|(x, y, _)| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
+            .map(|(x, y, positive)| lcc_segment::Click { x: x as f32, y: y as f32, positive })
+            .collect();
+        if !inside.iter().any(|c| c.positive) {
+            return Ok(None);
+        }
+        let input = render(job)?;
+        let m = sam2_model(state, shared, &job.dir, placement)?;
+        let enc = {
+            let _busy = Flag::raise(&shared.encoding);
+            encode(m, &input)?
+        };
+        let p = m.segment_clicks(&enc, &inside)?;
+        return Ok(Some(SegMask::from_logits_in(side, &p.logits, region)));
+    }
+    if let Kind::Text(_) = kind {
+        return Err("Describe masks need the SAM 3 model".into());
+    }
+    sam2_model(state, shared, &job.dir, placement)?;
+    if state.sam2_cache.as_ref().is_none_or(|(k, _)| *k != job.key) {
+        (state.sam2_cache, state.sam2_input) = (None, None);
+        let input = render(job)?;
+        let _busy = Flag::raise(&shared.encoding);
+        let m = state.sam2.as_ref().map(|(_, m)| m).ok_or("the model did not load")?;
+        state.sam2_cache = Some((job.key, encode(m, &input)?));
+        state.sam2_input = Some(input);
+    }
+    let (Some((_, m)), Some((_, enc))) = (state.sam2.as_ref(), state.sam2_cache.as_ref()) else { return Err("the model is not ready".into()) };
+    let input = state.sam2_input.as_ref().ok_or("the photo is not available")?;
+    match kind {
+        Kind::Clicks(clicks) => Ok(Some(SegMask::from_logits(side, &m.segment_clicks(enc, &clicks)?.logits))),
+        Kind::Learn { mask } => {
+            let alpha = mask_alpha(&mask, input, 128);
+            let (emb, es, dim) = enc.embedding()?;
+            let (aw, ah) = (alpha.width.max(1), alpha.height.max(1));
+            let at = |u: f32, v: f32| {
+                let x = ((u * aw as f32) as usize).min(aw - 1);
+                let y = ((v * ah as f32) as usize).min(ah - 1);
+                alpha.data.get(y * aw + x).copied().unwrap_or(0.0)
+            };
+            let ex = lcc_segment::concept::learn(&emb, es, dim, at, &input.rgb, input.w, input.h);
+            state.extra = ex.and_then(|e| serde_json::to_value(e).ok());
+            Ok(None)
+        }
+        Kind::Find { examples } => {
+            let Some(found) = lcc_segment::concept::find(m, enc, &examples, &input.rgb, input.w, input.h)? else { return Ok(None) };
+            let seeds: Vec<[f32; 2]> = found.seeds.iter().map(|(x, y)| [*x, *y]).collect();
+            state.extra = Some(serde_json::json!({"seeds": seeds, "score": found.score}));
+            Ok(Some(SegMask::from_logits(found.mask_side, &found.logits)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Side of the class map a group's crops are pasted into.
+const CROWD_SIDE: usize = 1024;
+
+/// The class map `whole` of `input`, with a group's small people segmented again on their own
+/// crops ([`lcc_segment::people::PeopleModel::segment_people`]): in the whole photo's 256-cell
+/// map someone in a group of 29 is a few cells tall, too few for their clothes, hair or body, and
+/// for one person's mask. Unchanged when everyone is large enough, or (with a log line) when the
+/// crops fail.
+fn crowd_map(
+    model: Option<&lcc_segment::people::PeopleModel>,
+    input: &Input,
+    whole: Option<lcc_segment::people::PeopleMap>,
+    faces: &[lcc_segment::people::Face],
+) -> Option<lcc_segment::people::PeopleMap> {
+    let (Some(model), Some(map)) = (model, whole.as_ref()) else { return whole };
+    let boxes = lcc_segment::people::person_boxes(faces, input.w, input.h);
+    if boxes.is_empty() {
+        return whole;
+    }
+    let t = web_time::Instant::now();
+    match model.segment_people(&input.rgb, input.w, input.h, map, &boxes, CROWD_SIDE) {
+        Ok(m) => {
+            log::info!("people: {} small people cropped from {}×{} in {:?}", boxes.len(), input.w, input.h, t.elapsed());
+            Some(m)
+        }
+        Err(e) => {
+            log::warn!("people: the group's crops failed ({e}); using the whole photo's map");
+            whole
+        }
+    }
+}
+
+/// Every face on the photo with its appearance signature, left to right
+/// ([`lcc_segment::identity`]).
+fn faces_job(
+    state: &mut State,
+    shared: &Shared,
+    job: &mut Job,
+    face: &std::path::Path,
+    sam2: Option<PathBuf>,
+    placement: Placement,
+) -> Result<serde_json::Value, Failure> {
+    ensure_faces(state, shared, face)?;
+    let input = render(job)?;
+    let (_, fm, pm) = state.faces.as_ref().ok_or("the faces model did not load")?;
+    let map = match pm {
+        Some(p) => Some(p.segment(&input.rgb, input.w, input.h)?),
+        None => None,
+    };
+    let mut faces = fm.faces_confirmed(&input.rgb, input.w, input.h, map.as_ref())?;
+    faces.sort_by(|a, b| (a.detection.x0 + a.detection.x1).total_cmp(&(b.detection.x0 + b.detection.x1)));
+    faces.truncate(64);
+    let map = crowd_map(pm.as_ref(), &input, map, &faces);
+    // SAM 2.1's features of each person's body, when it is installed (appearance beyond colour)
+    let emb = match sam2.filter(|_| !faces.is_empty()) {
+        Some(dir) => {
+            let m = sam2_model(state, shared, &dir, placement)?;
+            let enc = m.encode(&input.rgb, input.w, input.h)?;
+            enc.embedding().ok()
+        }
+        None => None,
+    };
+    let (w, h) = (input.w.max(1) as f32, input.h.max(1) as f32);
+    let out: Vec<serde_json::Value> = (0..faces.len())
+        .filter_map(|i| {
+            let mut sig = lcc_segment::identity::signature(&faces, i, map.as_ref(), &input.rgb, input.w, input.h)?;
+            if let Some((e, side, dim)) = &emb {
+                (sig.body, sig.face) = lcc_segment::identity::features(e, *side, *dim, &faces, i, map.as_ref(), input.w, input.h);
+            }
+            let d = &faces.get(i)?.detection;
+            let rect = [d.x0 / w, d.y0 / h, d.x1 / w, d.y1 / h].map(|v| f64::from(v.clamp(0.0, 1.0)));
+            Some(serde_json::json!({"rect": rect, "signature": sig}))
+        })
+        .collect();
+    Ok(serde_json::Value::Array(out))
+}
+
+/// The alpha of `mask` over the model input, on a grid of about `edge` cells on the long side
+/// (the mask's coordinates are the uncropped photo's, which the input is).
+pub(crate) fn mask_alpha(mask: &lcc_develop::Mask, input: &Input, edge: usize) -> lcc_raster::Plane {
+    let (w, h) = (input.w.max(1), input.h.max(1));
+    let s = edge.max(8) as f64 / w.max(h) as f64;
+    let (gw, gh) = (((w as f64 * s).round() as usize).max(1), ((h as f64 * s).round() as usize).max(1));
+    let lin = |v: u8| {
+        let c = f32::from(v) / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    let px = |x: usize, y: usize| -> [f32; 3] {
+        let (sx, sy) = ((x * w / gw).min(w - 1), (y * h / gh).min(h - 1));
+        let i = (sy * w + sx) * 3;
+        match input.rgb.get(i..i + 3) {
+            Some([r, g, b]) => [lin(*r), lin(*g), lin(*b)],
+            _ => [0.0; 3],
+        }
+    };
+    let img = lcc_raster::Rgb32f::from_fn(gw, gh, px);
+    let log_l = lcc_raster::Plane::from_fn(gw, gh, |x, y| {
+        let p = img.data.get(y * gw + x).copied().unwrap_or_default();
+        (0.2627 * p[0] + 0.678 * p[1] + 0.0593 * p[2]).max(1e-6).log2()
+    });
+    let frame = lcc_pipeline::geometry::Frame::new(gw, gh, &lcc_develop::DevelopSettings::default(), false);
+    let mut m = mask.clone();
+    m.visible = true;
+    m.adjust.amount = 100.0;
+    lcc_pipeline::masks::evaluate_one(&m, &frame, gw, gh, &img, &log_l, 0.0, None)
+}
+
 fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str) -> Result<Option<SegMask>, String> {
     let _busy = Flag::raise(&shared.encoding);
     if state.remote.is_none() {
@@ -441,6 +696,9 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
                 }
             }
         }
+        Kind::Learn { .. } | Kind::Find { .. } | Kind::Faces { .. } | Kind::People { .. } => {
+            return Err("remembered objects, appearance and people run locally".into());
+        }
         #[cfg(test)]
         Kind::Panic | Kind::FailOnGpu { .. } => return Err("test panic request".into()),
     };
@@ -456,7 +714,136 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
     }))
 }
 
+/// Load MediaPipe's faces model in `face` (and the people model beside it) unless loaded.
+fn ensure_faces(state: &mut State, shared: &Shared, face: &std::path::Path) -> Result<(), Failure> {
+    if state.faces.as_ref().is_none_or(|(d, ..)| d != face) {
+        let _busy = Flag::raise(&shared.encoding);
+        let m = lcc_segment::people::FaceModel::load(face)?;
+        state.faces = Some((face.to_path_buf(), m, crate::eyes::people_beside(face)));
+        state.people_seen = None;
+    }
+    Ok(())
+}
+
+/// A [`Kind::People`] request: the selection as a stored segmentation (`None`: nobody, or none
+/// of the parts, is there).
+#[allow(clippy::too_many_arguments)]
+fn people_job(
+    state: &mut State,
+    shared: &Shared,
+    job: &mut Job,
+    face: &std::path::Path,
+    person: u32,
+    parts: &[String],
+    sam2: Option<&std::path::Path>,
+    placement: Placement,
+) -> Result<Option<SegMask>, Failure> {
+    let req = lcc_segment::people::PeopleRequest::parse(person, parts).ok_or_else(|| Failure::Other(format!("unknown People part in {parts:?}")))?;
+    ensure_faces(state, shared, face)?;
+    if state.people_seen.as_ref().is_none_or(|(k, _)| *k != job.key || job.key == 0) {
+        let input = render(job)?;
+        let _busy = Flag::raise(&shared.encoding);
+        let (_, fm, pm) = state.faces.as_ref().ok_or("the faces model did not load")?;
+        let map = match pm {
+            Some(p) => Some(p.segment(&input.rgb, input.w, input.h)?),
+            None => None,
+        };
+        let mut faces = fm.faces_confirmed(&input.rgb, input.w, input.h, map.as_ref())?;
+        faces.sort_by(|a, b| (a.detection.x0 + a.detection.x1).total_cmp(&(b.detection.x0 + b.detection.x1)));
+        faces.truncate(64);
+        let map = crowd_map(pm.as_ref(), &input, map, &faces);
+        state.people_seen = Some((job.key, PeopleSeen { input, map, faces, instances: None }));
+    }
+    // one person of several: everyone's silhouette decides whose an overlapping pixel is
+    let crowd = person > 0 && state.people_seen.as_ref().is_some_and(|(_, p)| p.faces.len() > 1 && p.instances.is_none());
+    if let Some(dir) = sam2.filter(|_| crowd) {
+        let found = silhouettes(state, shared, dir, placement);
+        if let Some((_, p)) = state.people_seen.as_mut() {
+            p.instances = Some(found);
+        }
+    }
+    let (_, seen) = state.people_seen.as_ref().ok_or("the photo is not available")?;
+    let instances = seen.instances.as_ref().and_then(Option::as_ref).filter(|_| person > 0);
+    let g = lcc_segment::people::people_mask_with(&req, &seen.input.rgb, seen.input.w, seen.input.h, seen.map.as_ref(), &seen.faces, instances, None);
+    // nobody found (the models ran): an empty selection, not the saliency guess a mask without
+    // one falls back to
+    Ok(Some(match g {
+        Some(g) => match g.rect {
+            Some(r) => SegMask::from_logits_in(g.side, &g.logits, r),
+            None => SegMask::from_logits(g.side, &g.logits),
+        },
+        None => SegMask::from_logits(1, &[-16.0]),
+    }))
+}
+
+/// Everyone's silhouette on the analysed photo (SAM 2.1; for each face: clicks on it and down
+/// its body, the other faces left out); `None` (with a log line) when SAM 2.1 can't give them.
+fn silhouettes(state: &mut State, shared: &Shared, dir: &std::path::Path, placement: Placement) -> Option<lcc_segment::people::Instances> {
+    let seen = state.people_seen.take();
+    let out = (|| -> Result<lcc_segment::people::Instances, Failure> {
+        let (_, p) = seen.as_ref().ok_or("the photo is not available")?;
+        let m = sam2_model(state, shared, dir, placement)?;
+        Ok(person_silhouettes(m, &p.input.rgb, p.input.w, p.input.h, &p.faces)?)
+    })();
+    state.people_seen = seen;
+    match out {
+        Ok(i) => Some(i),
+        Err(e) => {
+            log::warn!("people: no silhouettes from SAM 2.1 ({})", e.message());
+            None
+        }
+    }
+}
+
+/// Everyone's silhouette on an 8-bit RGB picture `w × h` with SAM 2.1 `m`: for each face, clicks
+/// on it and down its body, the other faces left out. People masks and Retouch share it, so one
+/// person of several is the same pixels in both.
+pub(crate) fn person_silhouettes(
+    m: &Sam2,
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    faces: &[lcc_segment::people::Face],
+) -> Result<lcc_segment::people::Instances, lcc_segment::Error> {
+    let (wf, hf) = (w.max(1) as f32, h.max(1) as f32);
+    let centre = |f: &lcc_segment::people::Face| {
+        let d = &f.detection;
+        (((d.x0 + d.x1) / 2.0 / wf).clamp(0.0, 1.0), ((d.y0 + d.y1) / 2.0 / hf).clamp(0.0, 1.0), ((d.y1 - d.y0) / hf).max(0.0))
+    };
+    let enc = m.encode(rgb, w, h)?;
+    let mut people = Vec::with_capacity(faces.len());
+    let mut seeds = Vec::with_capacity(faces.len());
+    for (k, f) in faces.iter().enumerate() {
+        let (cx, cy, fh) = centre(f);
+        seeds.push([cx, cy]);
+        // their face, chest and middle (below the frame: left out); the others' faces out
+        let mut clicks: Vec<lcc_segment::Click> =
+            [0.0, 1.6, 3.2].iter().map(|d| cy + d * fh).filter(|y| *y < 0.98).map(|y| lcc_segment::Click { x: cx, y, positive: true }).collect();
+        for (j, o) in faces.iter().enumerate() {
+            if j != k {
+                let (ox, oy, _) = centre(o);
+                clicks.push(lcc_segment::Click { x: ox, y: oy, positive: false });
+            }
+        }
+        people.push(m.segment_clicks_with(&enc, &clicks, false)?.logits);
+    }
+    Ok(lcc_segment::people::Instances::new(lcc_segment::SAM2_MASK_SIDE, people, &seeds))
+}
+
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
+    if let Kind::People { face, person, parts, sam2 } = &job.kind {
+        let (face, person, parts, sam2) = (face.clone(), *person, parts.clone(), sam2.clone());
+        return people_job(state, shared, job, &face, person, &parts, sam2.as_deref(), placement);
+    }
+    if let Kind::Faces { face, sam2 } = &job.kind {
+        let (face, sam2) = (face.clone(), sam2.clone());
+        state.extra = Some(faces_job(state, shared, job, &face, sam2, placement)?);
+        return Ok(None);
+    }
+    // SAM 2.1 runs here even with a remote SAM 3 worker (which serves SAM 3 only)
+    if lcc_segment::is_sam2_dir(&job.dir) {
+        return sam2_job(state, shared, job, placement);
+    }
     if let Some(endpoint) = remote::configured() {
         let result = remote_job(state, shared, job, &endpoint);
         if result.is_err() {
@@ -474,6 +861,9 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
             let (m, enc) = encoded(state, shared, job, placement)?;
             let p = m.segment_clicks(enc, &clicks)?;
             Ok(Some(SegMask::from_logits(side, &p.logits)))
+        }
+        Kind::Learn { .. } | Kind::Find { .. } | Kind::Faces { .. } | Kind::People { .. } => {
+            Err("remembered objects need SAM 2.1 (Preferences ▸ AI Models ▸ Object model)".into())
         }
         Kind::Text(text) => {
             let (m, enc) = encoded(state, shared, job, placement)?;
@@ -526,7 +916,7 @@ mod tests {
     fn job(tag: Tag, reply: &mpsc::Sender<Outcome>) -> Job {
         // an empty folder: loading fails with an error (no model files)
         let dir = std::env::temp_dir().join(format!("lc-sam3-worker-none-{}", std::process::id()));
-        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone() }
+        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone(), cancel: None }
     }
 
     #[test]
@@ -632,6 +1022,33 @@ mod tests {
         assert_eq!(out[0].notice, None);
         let missing = lcc_segment::Error::Missing(PathBuf::from("models"));
         assert!(matches!(Failure::from(missing), Failure::Other(_)));
+    }
+
+    #[test]
+    fn a_damaged_sam2_model_is_an_error_and_describe_asks_for_sam3() {
+        let dir = std::env::temp_dir().join(format!("lcc-sam2-damaged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), br#"{"model_type": "sam2_video"}"#).unwrap();
+        std::fs::write(dir.join("model.safetensors"), b"\x10\x00\x00\x00\x00\x00\x00\x00{not json at all}").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (jtx, jrx) = mpsc::channel();
+        let shared = Shared::default();
+        for kind in [Kind::Clicks(vec![lcc_segment::Click { x: 0.5, y: 0.5, positive: true }]), Kind::Text("sky".into()), Kind::Prepare] {
+            let mut j = job(Tag::Wait, &tx);
+            (j.kind, j.dir) = (kind, dir.clone());
+            jtx.send(j).unwrap();
+        }
+        shared.pending.store(3, Ordering::SeqCst);
+        drop(jtx);
+        run(&jrx, &shared, Duration::from_secs(60), Placement::Cpu);
+        let out: Vec<Outcome> = rx.try_iter().collect();
+        assert_eq!(out.len(), 3);
+        assert!(out[0].result.is_err() && out[2].result.is_err(), "damaged weights are errors");
+        assert!(out[1].result.as_ref().unwrap_err().contains("SAM 3"));
+        assert_eq!(shared.pending.load(Ordering::SeqCst), 0);
+        assert!(!shared.loaded.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

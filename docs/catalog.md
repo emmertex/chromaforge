@@ -152,13 +152,27 @@ My Catalog/
   catalog.log                the op log
   catalog.snap               stub that makes builds before v4 refuse the folder untouched
   catalog-settings.json      backup schedule, backup folder, backups kept, last backup
-  backups/                   default backup folder; before-v4 <time>/ holds the migrated v3 files
+  backups/                   default backup folder; before-v<N> <time>/ keeps the library as it was before
+                             an upgrade to catalog format N
 ```
 
 - `library::create(parent, name)`, `library::open(path)` (entry point or folder), `library::resolve`,
   `RecentCatalogs` (Open Recent list, a startup default, the chooser when Alt is held or asked for).
+- **Copy first, then upgrade** (`crates/catalog/src/upgrade_backup.rs`): before any format upgrade of a folder
+  library (the v3 → v4 migration, or a v4 store an older build wrote, whose format version is raised), the files that
+  build reads (store, log, stub or JSON snapshot, entry point, catalog settings) are copied into a hidden
+  `backups/.before-v<N> <time>.partial/` folder, each synced and compared byte for byte with its source, a
+  `README.txt` says how to go back, and only then is the folder renamed to `backups/before-v<N> <time>/` and the
+  library itself upgraded. The older version opens that folder as a library; scheduled backups never prune it; it is
+  the newest backup the "damaged store" errors point to. A full disk, an unwritable folder or a source that changed
+  while it was copied removes the partial folder and refuses the open with an error that says the library was left
+  unchanged and what to free or fix; a crash leaves only the partial folder, removed by the next upgrade. A damaged
+  store is refused before anything is copied or written. The open's `LoadReport::upgrade_backup` names the copy; the
+  app shows it once as a notice (from format vX to vY, where the copy is, how to go back) and `library.info` →
+  `load.upgradedFrom` / `load.upgradeBackup` reports it. Idea from OneSlips' "upgraded copy"; Chromaforge keeps the
+  library's path (Open Recent, scripts, the app store) and upgrades in place behind the verified copy.
 - **Migration** happens in `Journal::open` for any folder library still in the JSON format: its `catalog.snap` and
-  `catalog.log` are copied to `backups/before-v4 <time>/`, the library is loaded, the store is written to a temporary
+  `catalog.log` are kept as above in `backups/before-v<N> <time>/`, the library is loaded, the store is written to a temporary
   file and renamed into place, then the stub replaces the snapshot and the log is reset. A crash at any point leaves
   the v3 library (migrated again on the next open) or the finished v4 one.
 - **Backup**: `Journal::backup(catalog, root, keep)` checkpoints, copies the store, log, stub, settings and entry point

@@ -249,6 +249,8 @@ fn run_all(jobs: Vec<Vec<RenderJob>>, state: &PreviewBuild, task: &TaskGuard, la
 
 fn build(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "library.buildPreviews";
+    // (photos added since the library opened: the automatic disk budget makes room for them first)
+    s.fit_disk_cache();
     let edge = match str_param(p, "size").unwrap_or("standard") {
         "standard" => Some(p.get("edge").and_then(Value::as_u64).map_or(s.preview_prefs.standard_edge(), |e| e.clamp(256, 8192) as usize)),
         "full" | "1:1" => None,

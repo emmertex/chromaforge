@@ -61,12 +61,16 @@ pub const TABLE: &[(&str, Class)] = &[
     ("heif", Class::Layer(0)),
     ("raw", Class::Layer(1)),
     ("camdb", Class::Layer(1)),
+    ("camprof", Class::Layer(1)),
     ("codecs", Class::Layer(1)),
     ("meta", Class::Layer(1)),
     ("develop", Class::Layer(1)),
     ("lensdb", Class::Layer(2)),
     ("inpaint", Class::Layer(1)),
+    ("genfill", Class::Layer(1)),
     ("faces", Class::Layer(1)),
+    // the pure-Rust TFLite interpreter and MediaPipe pre/post-processing (People masks, Faces)
+    ("tflite", Class::Layer(1)),
     ("geocode", Class::Layer(1)),
     ("scenes", Class::Layer(1)),
     ("text", Class::Layer(1)),
@@ -97,6 +101,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("slideshow", Class::Layer(1)),
     ("ui-egui", Class::Layer(5)),
     ("mcp", Class::Layer(5)),
+    ("surface", Class::Layer(2)),
     ("colourfit", Class::Layer(5)),
     ("testkit", Class::Testkit),
     ("fuzzkit", Class::Testkit),
@@ -138,6 +143,7 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     &["codecs", "raw"],
     // camdb organises the colour data the raw decoder uses
     &["raw", "camdb"],
+    &["raw", "camprof"],
     // the PDF writer embeds fonts laid out by the type engine
     &["text", "pdf"],
     // L3: the Immich client writes remote links into the catalog

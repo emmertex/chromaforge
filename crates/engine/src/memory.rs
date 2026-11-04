@@ -19,18 +19,53 @@ use serde::Serialize;
 /// - an eighth for the GPU renderer's pool of recycled buffers (trimmed when the app is idle).
 ///
 /// The rest is headroom for what isn't cached (renders in progress, textures, the UI). An export
-/// batch may, in addition, hold up to twice the budget in photos rendering side by side
+/// batch may, in addition, hold up to twice the budget (or 45 % of the RAM, if more) in photos rendering side by side
 /// ([`export_gate`]): transient memory, given back when the batch ends. Default:
 /// a quarter of the machine's RAM ([`total_ram`]: a container's or cgroup's memory limit when
-/// smaller), at most 1.5 GiB (`{ENV_PREFIX}_MEMORY_MB` overrides it).
+/// smaller), at most [`AUTO_MAX`] ([`auto_budget`]; `{ENV_PREFIX}_MEMORY_MB` overrides it, and a
+/// budget set by hand may go up to [`max_budget`]).
 pub fn default_budget() -> usize {
     if let Some(mb) = lcc_brand::env("MEMORY_MB").and_then(|v| v.trim().parse::<usize>().ok()).filter(|m| *m >= 64) {
-        return mb << 20;
+        return mb.min(1 << 20).saturating_mul(1 << 20);
     }
-    let cap = 3usize << 29; // 1.5 GiB
-    match total_ram() {
-        Some(ram) => (ram / 4).clamp(256 << 20, cap),
-        None => cap,
+    auto_budget(total_ram())
+}
+
+/// The most the automatic budget takes. It was 1.5 GiB on every machine, so a 64 GB computer evicted
+/// decoded sources and previews almost at once and re-rendered every photo it went back to.
+pub const AUTO_MAX: usize = clamp_to_usize(16 << 30);
+
+/// `bytes` as a `usize`, held to `usize::MAX` on 32-bit targets (wasm32).
+const fn clamp_to_usize(bytes: u64) -> usize {
+    if bytes > usize::MAX as u64 { usize::MAX } else { bytes as usize }
+}
+
+/// The budget when it is unknown how much memory the computer has.
+const UNKNOWN_RAM_BUDGET: usize = 3 << 29; // 1.5 GiB
+
+/// The automatic budget for a computer with `ram` bytes: a quarter of it, at most [`AUTO_MAX`] (8 GB → 2 GB,
+/// 32 GB → 8 GB, 64 GB and more → 16 GB). No floor: under a small cgroup limit (128 MiB) a floor above the quarter
+/// would let the caches alone outgrow the limit, and the kernel kills the process (upstream #3072); at least a byte,
+/// since 0 means "not computed yet" to [`budget`].
+pub fn auto_budget(ram: Option<usize>) -> usize {
+    match ram {
+        Some(ram) => (ram / 4).clamp(1, AUTO_MAX),
+        None => UNKNOWN_RAM_BUDGET,
+    }
+}
+
+/// The most a budget chosen by hand may be ([`max_budget_of`] this computer's memory).
+pub fn max_budget() -> usize {
+    max_budget_of(total_ram())
+}
+
+/// The most a budget chosen by hand may be on a computer with `ram` bytes: three quarters of it (the
+/// rest for the system, the GPU driver, renders in progress and other apps), at least 512 MiB.
+/// Unknown memory: 1 TiB.
+pub fn max_budget_of(ram: Option<usize>) -> usize {
+    match ram {
+        Some(ram) => (ram / 4).saturating_mul(3).max(512 << 20),
+        None => clamp_to_usize(1 << 40),
     }
 }
 
@@ -38,6 +73,13 @@ pub fn default_budget() -> usize {
 /// RAM, held on Linux to the memory limit of the process's cgroup (a container, a Flatpak, a
 /// systemd scope with `MemoryMax`, a CI runner) when that is smaller.
 pub(crate) fn total_ram() -> Option<usize> {
+    // (read once: on macOS, FreeBSD and Windows it is a process to run, and an export asks for
+    // every photo)
+    static RAM: OnceLock<Option<usize>> = OnceLock::new();
+    *RAM.get_or_init(read_total_ram)
+}
+
+fn read_total_ram() -> Option<usize> {
     #[cfg(target_os = "linux")]
     {
         lcc_sysmem::effective_total().map(|b| usize::try_from(b).unwrap_or(usize::MAX))
@@ -52,7 +94,19 @@ pub(crate) fn total_ram() -> Option<usize> {
         let out = std::process::Command::new("/sbin/sysctl").args(["-n", "hw.physmem"]).output().ok()?;
         String::from_utf8_lossy(&out.stdout).trim().parse().ok()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+    #[cfg(windows)]
+    {
+        // (no native call: CIM through PowerShell, once per process)
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: no console flashes up from the desktop app
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd", windows)))]
     {
         None
     }
@@ -105,6 +159,10 @@ pub struct WorkGate {
     /// releasing one in any order leaves the others counted (issue #2576).
     state: Mutex<(u128, usize)>,
     cv: Condvar,
+    /// Acquires that had to wait, and their total wait (ms): what a benchmark reports as memory
+    /// holding work back.
+    waits: std::sync::atomic::AtomicU64,
+    waited_ms: std::sync::atomic::AtomicU64,
 }
 
 /// Bytes held from a [`WorkGate`] until dropped.
@@ -115,7 +173,7 @@ pub struct Permit<'a> {
 
 impl WorkGate {
     pub fn new(limit: usize) -> WorkGate {
-        WorkGate { state: Mutex::new((0, limit)), cv: Condvar::new() }
+        WorkGate { state: Mutex::new((0, limit)), cv: Condvar::new(), waits: Default::default(), waited_ms: Default::default() }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, (u128, usize)> {
@@ -125,6 +183,11 @@ impl WorkGate {
     pub fn set_limit(&self, limit: usize) {
         self.lock().1 = limit;
         self.cv.notify_all();
+    }
+
+    /// Acquires that waited so far, and their total wait (ms).
+    pub fn waits(&self) -> (u64, u64) {
+        (self.waits.load(Ordering::Relaxed), self.waited_ms.load(Ordering::Relaxed))
     }
 
     /// Bytes held now (at most `usize::MAX`) and the limit.
@@ -137,8 +200,14 @@ impl WorkGate {
     /// a gate whose limit is `usize::MAX` make the next holder wait.
     pub fn acquire(&self, bytes: usize) -> Permit<'_> {
         let mut g = self.lock();
-        while g.0 > 0 && g.0.saturating_add(bytes as u128) > g.1 as u128 {
+        let over = |g: &(u128, usize)| g.0 > 0 && g.0.saturating_add(bytes as u128) > g.1 as u128;
+        let start = over(&g).then(web_time::Instant::now);
+        while over(&g) {
             g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+        if let Some(t) = start {
+            self.waits.fetch_add(1, Ordering::Relaxed);
+            self.waited_ms.fetch_add(u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
         }
         g.0 = g.0.saturating_add(bytes as u128);
         Permit { gate: self, bytes }
@@ -194,7 +263,35 @@ pub fn export_gate() -> &'static WorkGate {
 }
 
 fn export_share(budget: usize) -> usize {
-    budget.saturating_mul(2)
+    export_share_of(budget, total_ram())
+}
+
+/// Twice the budget, or (when the computer's memory `ram` is known) [`EXPORT_RAM_PERCENT`] of it
+/// if that is more: the budget is the caches', and an export's photos are transient (a 45 MP gain
+/// map export holds ~4 GB of working memory each).
+fn export_share_of(budget: usize, ram: Option<usize>) -> usize {
+    let by_ram = ram.map_or(0, |r| r / 100 * EXPORT_RAM_PERCENT);
+    budget.saturating_mul(2).max(by_ram)
+}
+
+/// Share of the computer's memory an export batch may hold in photos side by side.
+const EXPORT_RAM_PERCENT: usize = 45;
+
+#[cfg(test)]
+mod export_share_tests {
+    use super::export_share_of;
+
+    /// The export gate follows the computer's memory, not only the caches' budget.
+    #[test]
+    fn exports_may_use_a_share_of_the_ram() {
+        let gb = 1usize << 30;
+        assert_eq!(export_share_of(3 * gb / 2, Some(64 * gb)), 64 * gb / 100 * 45);
+        // a large budget still counts double
+        assert_eq!(export_share_of(20 * gb, Some(64 * gb)), 40 * gb);
+        // memory unknown: twice the budget
+        assert_eq!(export_share_of(gb, None), 2 * gb);
+        assert_eq!(export_share_of(usize::MAX, Some(usize::MAX)), usize::MAX, "no overflow");
+    }
 }
 
 static EXPORT_GATE: OnceLock<WorkGate> = OnceLock::new();
@@ -252,6 +349,10 @@ pub struct MemoryReport {
     /// The memory budget (see [`budget`]) and the engine caches' share of it.
     pub budget: usize,
     pub cache_budget: usize,
+    /// The automatic budget on this computer ([`default_budget`]) and the most one set by hand may be
+    /// ([`max_budget`]).
+    pub auto_budget: usize,
+    pub max_budget: usize,
     /// Working memory of decodes / probes in flight and its limit ([`work_gate`]).
     pub work_bytes: usize,
     pub work_limit: usize,
@@ -310,6 +411,8 @@ impl crate::Session {
             gpu: gpu_usage(),
             budget: budget(),
             cache_budget: self.media.budget(),
+            auto_budget: default_budget(),
+            max_budget: max_budget(),
             work_bytes: work_gate().usage().0,
             work_limit: work_gate().usage().1,
             heap: heap_stats(),
@@ -318,7 +421,7 @@ impl crate::Session {
 
     /// Set the memory budget (bytes; process-wide) and apply this session's cache share.
     pub fn set_memory_budget(&mut self, bytes: usize) -> usize {
-        let b = set_budget(bytes);
+        let b = set_budget(bytes.min(max_budget()));
         self.media.set_budget(cache_share(b));
         b
     }
@@ -349,5 +452,26 @@ mod tests {
     #[ignore = "diagnostic: prints the RAM and default budget this process sees"]
     fn prints_the_default_budget() {
         println!("total_ram {:?} MiB, default_budget {} MiB", total_ram().map(|b| b >> 20), default_budget() >> 20);
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::{AUTO_MAX, auto_budget, max_budget_of};
+
+    /// The automatic budget grows with the computer's memory (it stopped at 1.5 GiB), up to a safe
+    /// ceiling; a budget set by hand may go further, but never past three quarters of it.
+    #[test]
+    fn the_budget_scales_with_the_memory_up_to_a_safe_ceiling() {
+        let gb = 1usize << 30;
+        assert!(auto_budget(Some(32 * gb)) > auto_budget(Some(8 * gb)));
+        assert_eq!(auto_budget(Some(512 * gb)), AUTO_MAX, "a safe ceiling");
+        // no floor: under a small cgroup limit the caches must not outgrow the limit (upstream #3072)
+        assert_eq!(auto_budget(Some(128 << 20)), 32 << 20, "a quarter of a 128 MiB limit");
+        assert_eq!(auto_budget(Some(0)), 1, "never the 0 that means not computed");
+        assert!(max_budget_of(Some(64 * gb)) < 64 * gb);
+        assert!(max_budget_of(Some(64 * gb)) > auto_budget(Some(64 * gb)));
+        assert!(max_budget_of(Some(usize::MAX)) < usize::MAX, "no overflow");
+        assert!(max_budget_of(None) >= 64 * gb);
     }
 }

@@ -23,6 +23,7 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
         camera: lcc_catalog::camera_label(&camera_make, &camera_model),
         camera_make,
         camera_model,
+        camera_serial: m.serial_number.as_deref().map(str::trim).unwrap_or_default().chars().take(64).collect(),
         // (a camera that writes no lens name, like Nikon's DSLRs, still says what range the lens covers)
         lens: m.lens_model.clone().or_else(|| m.lens_spec.and_then(lcc_meta::lens_spec_name)).unwrap_or_default(),
         focal_mm: m.focal_length.map(|f| f as f32),
@@ -376,7 +377,7 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
         content_hash,
         embedded_lens: None,
         lens_from_file: false,
-        xmp: None,
+        xmp: crate::sidecar::jpeg_header_xmp(bytes),
         orientation: m.orientation,
         preview_only: None,
         sha1,
@@ -587,6 +588,108 @@ pub fn load_vec_pair(
     })
 }
 
+/// How a raw is decoded beyond its bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawOptions {
+    /// The file's name, which names the camera body when the file has no serial number
+    /// ([`crate::sensor_maps::body_key`]).
+    pub file_name: Option<String>,
+    /// Where the file is (remembered with its body: `crate::sensor_maps::body_of_path`).
+    pub path: Option<String>,
+    /// Correct hot, dead and stuck pixels (the photo's `sensor.pixelFix`): the camera body's known ones and the clear
+    /// ones this photo shows, and add what it shows to the body's map.
+    pub pixel_fix: bool,
+}
+
+impl Default for RawOptions {
+    fn default() -> Self {
+        RawOptions { file_name: None, path: None, pixel_fix: true }
+    }
+}
+
+impl RawOptions {
+    /// The options a decode with `options` uses (the file named by [`LoadOptions::path`]).
+    pub fn of(options: &LoadOptions) -> RawOptions {
+        match &options.path {
+            Some(p) => RawOptions::for_path(p, options.pixel_fix),
+            None => RawOptions { pixel_fix: options.pixel_fix, ..RawOptions::default() },
+        }
+    }
+
+    /// The options for the file at `path`.
+    pub fn for_path(path: &str, pixel_fix: bool) -> RawOptions {
+        let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).map(str::to_string);
+        RawOptions { file_name: name, path: Some(path.to_string()), pixel_fix }
+    }
+}
+
+/// What a photo tells the maps: a fingerprint of its samples and capture facts, and those facts.
+pub fn shot_of(raw: &lcc_raw::RawImage) -> crate::sensor_maps::Shot {
+    let m = &raw.metadata;
+    let captured = m.capture_time.map(|t| t.to_iso());
+    let mut h = lcc_raw::defects::sample_fingerprint(raw);
+    let facts = captured
+        .as_deref()
+        .unwrap_or("")
+        .bytes()
+        .chain(m.exposure_time.unwrap_or(0.0).to_bits().to_le_bytes())
+        .chain(m.iso.unwrap_or(0).to_le_bytes());
+    for b in facts {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    crate::sensor_maps::Shot { fingerprint: h, captured, exposure: m.exposure_time, iso: m.iso, f_number: m.f_number.map(|f| f as f32) }
+}
+
+/// Hot, dead and stuck pixels of a decoded raw, before anything reads its samples: look for them (at the learning
+/// threshold: those go to the body's map), then correct the body's confirmed ones and the clear ones found here.
+pub fn repair_pixels(raw: &mut lcc_raw::RawImage, opts: &RawOptions) -> lcc_pipeline::PixelRepair {
+    use lcc_raw::defects::{Fix, Thresholds, correct, detect, refine};
+    let m = &raw.metadata;
+    let body = crate::sensor_maps::body_key(m.serial_number.as_deref(), opts.file_name.as_deref());
+    if let (Some(p), Some(b)) = (&opts.path, &body) {
+        crate::sensor_maps::remember_path(p, b);
+    }
+    let c = raw.develop_crop(raw.active_area.width, raw.active_area.height);
+    let base = lcc_pipeline::PixelRepair {
+        on: false,
+        body: body.clone(),
+        orientation: raw.orientation,
+        developed: [c.width, c.height],
+        sensor: [raw.width, raw.height],
+        model: m.model.clone().unwrap_or_default(),
+        ..Default::default()
+    };
+    if !opts.pixel_fix {
+        return base;
+    }
+    let t0 = web_time::Instant::now();
+    let (make, model) = (m.make.clone().unwrap_or_default(), m.model.clone().unwrap_or_default());
+    let found = detect(raw, &Thresholds::LEARN);
+    let strict = refine(raw, &found, &Thresholds::CORRECT);
+    let sensor = [raw.width, raw.height];
+    let mut fixes: Vec<Fix> = strict.iter().map(Fix::from).collect();
+    let mut from_map = 0;
+    if let Some(b) = &body {
+        if !found.overflow {
+            let _ = crate::sensor_maps::record_pixels(b, &make, &model, sensor, &shot_of(raw), &found.defects);
+        }
+        let known = crate::sensor_maps::fixes_for(b, &model, sensor);
+        from_map = known.len();
+        fixes.extend(known.iter().copied());
+        // a known pixel's cluster mates (they fail the single-photo checks one by one)
+        if !known.is_empty() {
+            fixes.extend(lcc_raw::defects::grow(raw, &known));
+        }
+    }
+    fixes.sort_by_key(|f| (f.y, f.x, f.s));
+    fixes.dedup();
+    let n = correct(raw, &fixes);
+    if lcc_pipeline::profiling() {
+        eprintln!("[profile] pixels: {} found, {from_map} from the map, {n} corrected in {:.1} ms", strict.len(), t0.elapsed().as_secs_f64() * 1e3);
+    }
+    lcc_pipeline::PixelRepair { on: true, from_map: from_map as u32, found: strict.len() as u32, ..base }
+}
+
 /// The denoised camera RGB of `raw` from its cached product, as the plain development would have it: the default
 /// crop, and `factor` × `factor` blocks averaged into one pixel when the plain one was binned (plain means: the
 /// plain development's clip mask tells highlight reconstruction which of them held clipped samples). `None` when
@@ -636,6 +739,8 @@ fn load_bytes_now(
             }
             Err(Err(e)) => return Err(e),
         };
+        // hot, dead and stuck pixels are corrected on the mosaic, before anything reads it
+        let pixels = repair_pixels(&mut raw, &RawOptions::of(&options));
         // single outlier photosites, replaced in the mosaic before anything is developed from it (#1345)
         if options.outliers {
             let t = std::time::Instant::now();
@@ -772,6 +877,9 @@ fn load_bytes_now(
                 native_long: None,
                 colorimetric,
                 alpha: None,
+                generated: None,
+                avoid: None,
+                pixels: Some(pixels),
             },
             used_reduced,
         ));
@@ -1047,7 +1155,7 @@ pub fn fs_preview_loader() -> PreviewLoader {
         {
             return Some(image);
         }
-        embedded_preview_srgb(&std::fs::read(path).ok()?, max_edge)
+        embedded_preview_srgb(&crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES).ok()?, max_edge)
     })
 }
 
@@ -1304,8 +1412,9 @@ pub fn fs_pair_loader() -> PairLoader {
         let weight = len * if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 4 } else { 10 };
         let gate = crate::memory::work_gate();
         let _permit = if crate::memory::is_background() { gate.acquire(weight) } else { gate.acquire_urgent(weight) };
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-        let r = load_vec_pair(bytes, max_edge, spec, options);
+        let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES)
+            .map_err(|e| format!("{path}: {e}"))?;
+        let r = load_vec_pair(bytes, max_edge, spec, options.at(path));
         crate::memory::release();
         r
     })
@@ -1319,8 +1428,9 @@ pub fn fs_pair_loader() -> PairLoader {
 /// interactive loads (the loupe, exports) never wait — they are counted, so background work
 /// yields to them.
 pub fn fs_hooks() -> (FileLoader, FileProbe) {
-    let loader: FileLoader =
-        Arc::new(|path: &str, max_edge: usize, options: LoadOptions| fs_load(path, max_edge, |bytes| load_vec_with(bytes, max_edge, options)));
+    let loader: FileLoader = Arc::new(|path: &str, max_edge: usize, options: LoadOptions| {
+        fs_load(path, max_edge, |bytes| load_vec_with(bytes, max_edge, options.at(path)))
+    });
     let probe: FileProbe = Arc::new(|path: &str| {
         // a file still being copied in is left for a later scan (issue #123): its name or an open
         // writer says so before anything is read, its own header (below) after
@@ -1335,7 +1445,8 @@ pub fn fs_hooks() -> (FileLoader, FileProbe) {
         }
         let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
         let _permit = crate::memory::work_gate().acquire(len);
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES)
+            .map_err(|e| format!("{path}: {e}"))?;
         // (a short file that hasn't changed for a while is corrupt: the decode below reports it)
         if lcc_catalog::incoming::declared_end_past(&bytes, bytes.len() as u64)
             && lcc_catalog::incoming::recently_modified(std::path::Path::new(path))
@@ -1351,7 +1462,7 @@ pub fn fs_hooks() -> (FileLoader, FileProbe) {
 
 /// The filesystem [`ReducedLoader`]: [`load_vec_reduced`] of the file, gated like [`fs_hooks`]' loader.
 pub fn fs_reduced_loader() -> ReducedLoader {
-    Arc::new(|path: &str, max_edge: usize, options: LoadOptions| fs_load(path, max_edge, |bytes| load_vec_reduced(bytes, max_edge, options)))
+    Arc::new(|path: &str, max_edge: usize, options: LoadOptions| fs_load(path, max_edge, |bytes| load_vec_reduced(bytes, max_edge, options.at(path))))
 }
 
 /// Read `path` and `load` it, waiting on [`crate::memory::work_gate`] as [`fs_hooks`] explains.
@@ -1360,7 +1471,8 @@ fn fs_load<T>(path: &str, max_edge: usize, load: impl FnOnce(Vec<u8>) -> Result<
     let weight = len.saturating_mul(if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 3 } else { 6 });
     let gate = crate::memory::work_gate();
     let _permit = if crate::memory::is_background() { gate.acquire(weight) } else { gate.acquire_urgent(weight) };
-    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let bytes =
+        crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES).map_err(|e| format!("{path}: {e}"))?;
     let r = load(bytes);
     // the file, the samples and the intermediate images are gone: give their pages back
     crate::memory::release();
@@ -2825,7 +2937,7 @@ pub(crate) mod tests {
         assert_eq!((img.width, img.height), (8, 16));
         assert!(info.mattes.is_some());
         let sky = Mask {
-            components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Sky }],
+            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Sky }],
             adjust: LocalAdjustments { exposure: -3.0, ..Default::default() },
             ..Default::default()
         };
@@ -2984,7 +3096,8 @@ pub(crate) mod tests {
         assert!(!p.develops_raw());
         // rendered like the JPEG it is: relative white balance, display tone curve, no raw defaults
         assert_eq!(SourceInfo { native_long: None, ..crate::media::source_info(&p) }, SourceInfo::default());
-        assert_eq!(*p.develop, lcc_develop::DevelopSettings::default());
+        // (new photos start with Constrain Crop on, which is not an edit)
+        assert!(p.develop.is_unedited() && p.develop.geometry.constrain_crop, "{:?}", p.develop);
         assert!(s.render_job(id, 48, 48, false, true).unwrap().run().rendered.is_ok());
         // agents see it
         let q = s.execute("catalog.query", &json!({"filter": {}})).unwrap();
@@ -3200,12 +3313,14 @@ pub(crate) mod tests {
         assert_eq!((q.quick, q.key), (Some(QuickSource::Embedded), job.key));
         drop(job.clone().run());
         assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Cached));
-        // an edited raw: no embedded stand-in (it wouldn't show the edit)
+        // an edited raw: the embedded preview is still its first picture, but only a stand-in (the
+        // grid renders the real thumbnail behind it: never an empty cell)
         s.execute("library.select", &serde_json::json!({"ids": [id.0]})).unwrap();
         s.execute("develop.set", &serde_json::json!({"control": "light.exposure", "value": 1.0})).unwrap();
         let job = s.thumb_job(id, 128).unwrap();
-        assert!(s.quick_thumb_job(&job).is_none());
-        assert_eq!(s.quick_view_job(id, 1600, true).unwrap().run().quick, Some(QuickSource::Small));
+        assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Embedded));
+        assert!(!s.embedded_thumb_is_final(s.catalog.photo(id).unwrap()));
+        assert_eq!(s.quick_view_job(id, 1600, true).unwrap().run().quick, Some(QuickSource::Embedded));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

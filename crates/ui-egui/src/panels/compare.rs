@@ -260,7 +260,7 @@ fn photo_tile(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, slot: Slot, area
     if let Some(tex) = app.renderer.textures.get(&slot).filter(|x| x.photo == id) {
         let texture_aspect = tex.size[0].max(1) as f32 / tex.size[1].max(1) as f32;
         display = super::detail::fit_rect(img_area, texture_aspect, zoom, native, ppp, app.ui.pan);
-        p.image(tex.tex.id(), display, uv, Color32::WHITE);
+        p.image(tex.id(), display, uv, Color32::WHITE);
         own_aspect = Some(texture_aspect);
         if let Some(h) = super::detail::hdr_texture(app, hdr_view, id, hdr_key) {
             p.image(h.tex, display, uv, Color32::WHITE);
@@ -268,7 +268,7 @@ fn photo_tile(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, slot: Slot, area
     } else if let Some(tex) = app.renderer.textures.get(&Slot::Thumb(id)) {
         let texture_aspect = tex.size[0].max(1) as f32 / tex.size[1].max(1) as f32;
         display = super::detail::fit_rect(img_area, texture_aspect, zoom, native, ppp, app.ui.pan);
-        p.image(tex.tex.id(), display, uv, Color32::WHITE);
+        p.image(tex.id(), display, uv, Color32::WHITE);
     } else {
         p.rect_filled(img.intersect(img_area), 0.0, t.skeleton);
     }

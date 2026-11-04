@@ -18,6 +18,7 @@ pub mod catalog_ui;
 #[cfg(target_arch = "wasm32")]
 #[path = "catalog_ui_web.rs"]
 pub mod catalog_ui;
+pub mod chart_profile;
 pub mod color_readout;
 mod command_error;
 pub mod control;
@@ -31,6 +32,8 @@ mod edit_in;
 mod enhance_pump;
 pub mod enhance_ui;
 pub mod export_task;
+pub mod eye_strip;
+pub mod eyedropper;
 mod focus_scan;
 pub mod folder_poll;
 mod frame_rate;
@@ -42,11 +45,14 @@ pub mod icons;
 pub mod import;
 pub mod import_report;
 mod import_screen;
+pub mod import_tab;
 pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
+pub mod machine_test;
 pub mod map;
+mod mask_thumbs;
 pub mod menu_level;
 pub mod menubar;
 pub mod menus;
@@ -61,6 +67,7 @@ pub mod module;
 pub mod panels;
 pub mod pick;
 pub mod plate;
+mod pointer_repair;
 pub mod print_ui;
 pub mod print_view;
 pub mod progress;
@@ -81,6 +88,9 @@ pub mod soft_keyboard;
 pub mod softpaint;
 pub mod space_hand;
 pub mod state;
+pub mod surface;
+pub mod surface_icons;
+pub mod surface_plugin;
 pub mod sync;
 pub mod tasks;
 pub mod text_field;
@@ -124,6 +134,8 @@ mod tests_capture_time;
 #[cfg(test)]
 mod tests_catalog_ui;
 #[cfg(test)]
+mod tests_chart_profile;
+#[cfg(test)]
 mod tests_classic;
 #[cfg(test)]
 mod tests_clipping;
@@ -132,6 +144,8 @@ mod tests_color_readout;
 #[cfg(test)]
 mod tests_colour_export;
 #[cfg(test)]
+mod tests_compact_layout;
+#[cfg(test)]
 mod tests_compare;
 #[cfg(test)]
 mod tests_copy_paste_dialogs;
@@ -139,6 +153,8 @@ mod tests_copy_paste_dialogs;
 mod tests_crop_aspects;
 #[cfg(test)]
 mod tests_crop_frame;
+#[cfg(test)]
+mod tests_crop_lock_kept;
 #[cfg(test)]
 mod tests_crop_rotate;
 #[cfg(test)]
@@ -198,6 +214,8 @@ mod tests_i18n_coverage;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_immich_ui;
 #[cfg(test)]
+mod tests_import_body_profiles;
+#[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
 mod tests_import_recipe;
@@ -207,6 +225,8 @@ mod tests_import_report;
 mod tests_import_scan_note;
 #[cfg(test)]
 mod tests_import_screen;
+#[cfg(test)]
+mod tests_import_tab;
 #[cfg(test)]
 mod tests_info_dialogs;
 #[cfg(test)]
@@ -242,6 +262,8 @@ mod tests_loading_cell;
 #[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
+mod tests_mask_range_pick;
+#[cfg(test)]
 mod tests_mask_sections;
 #[cfg(test)]
 mod tests_masking;
@@ -264,13 +286,21 @@ mod tests_offline;
 #[cfg(test)]
 mod tests_open_lightroom;
 #[cfg(test)]
+mod tests_osd;
+#[cfg(test)]
+mod tests_panel_restore;
+#[cfg(test)]
 mod tests_panels;
+#[cfg(test)]
+mod tests_pickers;
 #[cfg(test)]
 mod tests_preset_favorites;
 #[cfg(test)]
 mod tests_preset_folders;
 #[cfg(test)]
 mod tests_preset_import;
+#[cfg(test)]
+mod tests_presets_manager;
 #[cfg(test)]
 mod tests_preview_limit;
 #[cfg(test)]
@@ -288,13 +318,23 @@ mod tests_rating;
 #[cfg(test)]
 mod tests_recheck;
 #[cfg(test)]
+mod tests_remote_render;
+#[cfg(test)]
 mod tests_rename_person;
+#[cfg(test)]
+mod tests_render_storms;
+#[cfg(test)]
+mod tests_retouch;
 #[cfg(test)]
 mod tests_rules_editor;
 #[cfg(test)]
 mod tests_sam_setup;
 #[cfg(test)]
 mod tests_scroll;
+#[cfg(test)]
+mod tests_settings_profiles;
+#[cfg(test)]
+mod tests_settings_window;
 #[cfg(test)]
 mod tests_slider_drag;
 #[cfg(test)]
@@ -305,6 +345,10 @@ mod tests_slideshow;
 mod tests_solo_sections;
 #[cfg(test)]
 mod tests_space_hand;
+#[cfg(test)]
+mod tests_space_hold;
+#[cfg(test)]
+mod tests_surface;
 #[cfg(test)]
 mod tests_switch_library;
 #[cfg(test)]
@@ -319,6 +363,8 @@ mod tests_thumb_churn;
 mod tests_titlebar;
 #[cfg(test)]
 mod tests_tool_overlay;
+#[cfg(test)]
+mod tests_tool_pan;
 #[cfg(test)]
 mod tests_tool_row;
 #[cfg(test)]
@@ -344,7 +390,7 @@ pub use command_error::CommandError;
 pub use control::{ControlRequest, ControlResponse};
 pub use state::UiState;
 
-const TOAST_SECONDS: f64 = 1.4;
+pub(crate) const TOAST_SECONDS: f64 = 1.4;
 
 /// How long after a mask slider last moved its overlay stays hidden (ms).
 const MASK_ADJUST_HIDE_MS: u64 = 250;
@@ -389,6 +435,9 @@ pub type CheckEditorFn = Box<dyn Fn(&str) -> Result<(), String>>;
 /// Something the host does with the session (web: back up or restore the library in browser
 /// storage); the work may finish asynchronously.
 pub type HostAction = Box<dyn FnMut(&mut Session) -> Result<Value, String>>;
+
+/// Start or stop the control-surface listener (see [`Services::surface_listener`]).
+pub type SurfaceListenerFn = Box<dyn FnMut(Option<u16>) -> Result<(), String>>;
 
 /// The system's dark/light appearance where egui doesn't report one (Linux desktops whose
 /// windowing layer says nothing, e.g. many Wayland compositors). The host answers from what it
@@ -543,7 +592,40 @@ pub struct Services {
     pub video_gpu: Option<Box<dyn VideoGpu>>,
     /// HDR display output (none: the window is SDR).
     pub hdr_output: Option<Box<dyn HdrOutput>>,
+    /// Where control-surface settings are kept (`control-surfaces.json`; none: in memory).
+    pub surface_store: Option<Box<dyn surface::SurfaceStore>>,
+    /// Open dialog for control-surface files (TactileBridge `settings.json`, `.lp5`, `.lcsurface`).
+    pub pick_surface_file: Option<PickFiles>,
+    /// Save dialog for an exported `.lcsurface` layout file.
+    pub save_surface_file: Option<SaveFile>,
+    /// Start (`Some(port)`) or stop (`None`) the loopback listener control surfaces connect to
+    /// (desktop only); it serves `surface.*` methods only.
+    pub surface_listener: Option<SurfaceListenerFn>,
+    /// Installs a surface's plugin into its maker's app (the the app plugin for Logi
+    /// Options+; desktop only): Settings ▸ Controls, `surface.installPlugin`.
+    pub surface_plugin: Option<std::sync::Arc<dyn surface_plugin::PluginInstaller>>,
 }
+
+/// A frame that held the UI thread for [`SLOW_FRAME_MS`] or more, and what ran in it: a stall is
+/// told by its causes, not only by its length.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlowFrame {
+    pub ms: f64,
+    pub logic_ms: f64,
+    pub layout_ms: f64,
+    /// Commands, control requests and slow panels (`panel.tools 340 ms`) of the frame, in order.
+    pub ran: Vec<String>,
+    /// When it ended ([`now_ms`]).
+    pub at_ms: f64,
+}
+
+/// A frame this long or longer is logged and kept as [`LccApp::slowest_frame`].
+pub const SLOW_FRAME_MS: f64 = 500.0;
+/// The most names a frame's log keeps.
+const FRAME_LOG_LEN: usize = 32;
+/// A panel that took this long in a frame is named in its log ([`LccApp::lap`]).
+const SLOW_PANEL_MS: f64 = 50.0;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Perf {
@@ -569,13 +651,15 @@ pub enum QuitPrompt {
     Unsaved(String),
     /// Tasks that quitting would cut short are running: an import, an export… (issue #345).
     Tasks(String),
+    /// A catalog backup is due (Settings ▸ Catalog ▸ Back up catalog): Back Up and Quit, or Skip This Time.
+    Backup(String),
 }
 
 impl QuitPrompt {
     /// The prompt's message.
     pub fn text(&self) -> &str {
         match self {
-            QuitPrompt::Unsaved(text) | QuitPrompt::Tasks(text) => text,
+            QuitPrompt::Unsaved(text) | QuitPrompt::Tasks(text) | QuitPrompt::Backup(text) => text,
         }
     }
 }
@@ -589,6 +673,12 @@ pub struct LccApp {
     pub services: Services,
     pub renderer: render::Renderer,
     pub perf: Perf,
+    /// What this frame ran (commands, control requests, slow panels), for [`SlowFrame`]: at most
+    /// [`FRAME_LOG_LEN`] names.
+    frame_log: Vec<String>,
+    /// The slowest frame since start that took [`SLOW_FRAME_MS`] or more (`ui.inspect` →
+    /// `perf.slowestFrame`), with what ran in it.
+    pub slowest_frame: Option<SlowFrame>,
     /// macOS: the host draws the traffic lights over our top bar.
     pub integrated_titlebar: bool,
     /// The host installed a native menu bar (no in-window menus then).
@@ -611,6 +701,9 @@ pub struct LccApp {
     pub quit_prompt: Option<QuitPrompt>,
     /// Quit Anyway was chosen: the window may close with unsaved changes.
     pub quit_confirmed: bool,
+    /// The quit prompt's answer about a due catalog backup: `Some(true)` Back Up and Quit, `Some(false)` Skip This
+    /// Time, `None` not asked (the host backs up when due).
+    pub exit_backup: Option<bool>,
     control_rx: Option<Receiver<ControlRequest>>,
     midi_rx: Option<Receiver<lcc_engine::midi::Action>>,
     /// Re-reads the MIDI map file (`midi.reload`); the host app provides it with the MIDI input.
@@ -648,6 +741,8 @@ pub struct LccApp {
     /// [`Self::raw_input_hook`] takes their events out of egui's input, so no widget treats them
     /// as a press (a slider would jump to the pointer, issue #3303); the shortcuts read them here.
     pub(crate) nav_buttons: Vec<egui::PointerButton>,
+    /// Puts back mouse-button releases the window integration dropped (see `pointer_repair`).
+    pointer_repair: pointer_repair::PointerRepair,
     styled: bool,
     /// The language the installed fonts were built for: the CJK fallback order follows the UI
     /// language's script, so switching language reinstalls them.
@@ -680,6 +775,9 @@ pub struct LccApp {
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
     /// "thumb", "none").
     pub loupe_shown: Option<(lcc_catalog::PhotoId, &'static str)>,
+    /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked
+    /// its first picture ([`LccApp::pictures_missing`]).
+    pub pictures_missing_pass: Option<u64>,
     /// The loupe's video frames (playback worker, paused still).
     pub video_view: video_view::VideoView,
     /// The zoomed view the loupe asked tiles for last (see [`region`]): the frame, the part its
@@ -691,8 +789,16 @@ pub struct LccApp {
     pub(crate) size_hold: region::SizeHold,
     /// The size of a slider drag's whole-frame drafts (full size where they keep up, issue #330).
     pub(crate) drag_scale: region::DragScale,
+    /// When a drag's drafts give way to the full render in an open interaction.
+    pub(crate) still_refine: region::StillRefine,
     /// High quality adjustment previews: whether a drag keeps full quality or falls back to drafts.
     pub(crate) hq_drag: region::HqDrag,
+    /// The eye focus strip's results and crops (`view.eyeFocus`).
+    pub(crate) eye_strip: eye_strip::EyeStrip,
+    /// Where the activity stack ended last frame (None: not shown), so overlays under it keep clear.
+    pub(crate) activity_bottom: Option<f32>,
+    /// The eye job key of the photo the strip shows (for `ui.inspect`).
+    pub(crate) eye_key: Option<u64>,
     /// The photo the loupe shows whole, and since when (host clock, s): after a short look its
     /// full-resolution source is decoded in the background, for a 1:1 zoom to start from.
     pub(crate) whole_since: Option<(lcc_catalog::PhotoId, f64)>,
@@ -739,6 +845,8 @@ pub struct LccApp {
     pub last_render_dng: Option<serde_json::Value>,
     /// Background file-system work of other commands (Find Missing Photos, auto import…).
     pub tasks: tasks::Tasks,
+    /// Create Camera Profile from Color Chart: its photos and last report.
+    pub chart_profile: chart_profile::ChartProfileState,
     /// The files of the last finished background export (`ui.inspect` → `export.last`).
     pub last_export_result: Option<Value>,
     /// The Modern layout's Settings and Export screens (`modern_sheets`).
@@ -755,6 +863,8 @@ pub struct LccApp {
     preview_window: Option<bool>,
     /// The GPU preference last applied (`app.gpu`), to apply Settings changes once.
     gpu_applied: Option<bool>,
+    /// The graphics cards (for editing, second) last handed to the renderer.
+    gpu_cards_applied: Option<(String, String)>,
     /// Say once, when the GPU device has been tried, that no graphics processor was found
     /// ([`panels::notices::gpu_notice`]). The desktop app sets it; headless sessions and tests don't.
     pub gpu_notice: bool,
@@ -768,6 +878,15 @@ pub struct LccApp {
     /// The display's headroom when the window shows HDR now ([`HdrOutput::headroom`]): the loupe
     /// then draws HDR edits from their HDR render ([`render::Slot::HdrView`]).
     pub hdr_headroom: Option<f32>,
+    /// The last GPU event told (`lcc_gpu::events_after`: the graphics card stopped
+    /// responding, was restarted …).
+    gpu_event_seen: u64,
+    /// The window's size last frame: a resize asks the GPU's batch work (exports) to make room.
+    last_screen: egui::Vec2,
+    /// The export lanes, processor-only switch and GPU share last applied (install settings).
+    export_tuning_applied: Option<(u32, bool, u32, u32)>,
+    /// "Test my machine" while it runs (Settings ▸ Performance).
+    pub machine: Option<machine_test::MachineTask>,
     /// The memory budget setting last applied (MB, 0 = automatic).
     memory_applied: Option<u32>,
     /// The display profile setting last applied (`app.displayProfile`).
@@ -808,9 +927,25 @@ pub struct LccApp {
     /// A dialog panel asked to be closed (it cannot do it itself: the dialog frame writes the state
     /// back after the body has drawn). Taken by the dialog frame each frame.
     pub close_dialog: bool,
+    /// Control surfaces: their engine, pairing and subscribers (`surface`).
+    pub surface: surface::SurfaceHost,
 }
 
 impl LccApp {
+    /// A cell on screen or the loupe has no picture yet in frame `pass` ([`render::Renderer::frame`]),
+    /// its first one on its way: this window's own background requests (the neighbours prepared
+    /// ahead, real thumbnails behind stand-ins) wait, and so does the engine's background work
+    /// ([`lcc_engine::prep::pictures_missing`]).
+    pub fn pictures_missing(&mut self, pass: u64) {
+        self.pictures_missing_pass = Some(pass);
+        lcc_engine::prep::pictures_missing();
+    }
+
+    /// Whether a picture was missing in frame `pass` or the one before.
+    pub fn pictures_busy(&self, pass: u64) -> bool {
+        self.pictures_missing_pass.is_some_and(|p| pass.saturating_sub(p) <= 1)
+    }
+
     /// Whether the selected mask has settings (an effect to judge), see [`panels::detail::mask_has_settings`].
     fn active_mask_has_settings(&self) -> bool {
         let Some(id) = self.session.active_mask else { return false };
@@ -822,7 +957,18 @@ impl LccApp {
 
     /// How panel sliders are laid out: always pills in the Modern layout, else as Settings say.
     pub(crate) fn slider_layout(&self) -> theme::SliderLayout {
-        if self.ui.modern.enabled { theme::SliderLayout::Pill } else { self.ui.settings.slider_layout }
+        if self.ui.modern.enabled {
+            theme::SliderLayout::Pill
+        } else if self.compact() {
+            theme::SliderLayout::OneRow
+        } else {
+            self.ui.settings.slider_layout
+        }
+    }
+
+    /// Whether the Compact layout is drawn: chosen, and the Modern layout is off.
+    pub(crate) fn compact(&self) -> bool {
+        self.ui.settings.compact_layout && !self.ui.modern.enabled
     }
 
     pub fn new(mut session: Session, services: Services) -> Self {
@@ -832,6 +978,12 @@ impl LccApp {
         }
         // AI mask requests run on the model's worker; frames apply their results (never wait)
         session.segmenter.background = true;
+        // generative fills run on their own thread; frames apply them
+        session.genfill.background = true;
+        session.upright_jobs.background = true;
+        // a flag or a step never waits for the drive: the catalog log's own thread writes and
+        // syncs it (control replies wait for it, `drain_control`)
+        session.wait_for_catalog_log = false;
         Self {
             session,
             #[cfg(not(target_arch = "wasm32"))]
@@ -846,6 +998,8 @@ impl LccApp {
             services,
             renderer: render::Renderer::default(),
             perf: Perf::default(),
+            frame_log: Vec::new(),
+            slowest_frame: None,
             caches: Caches::default(),
             integrated_titlebar: false,
             native_menu: false,
@@ -857,6 +1011,7 @@ impl LccApp {
             notices: vec![],
             quit_prompt: None,
             quit_confirmed: false,
+            exit_backup: None,
             control_rx: None,
             midi_rx: None,
             midi_reload: None,
@@ -876,6 +1031,7 @@ impl LccApp {
             synthetic_mods: egui::Modifiers::NONE,
             synthetic_mods_release: false,
             nav_buttons: vec![],
+            pointer_repair: pointer_repair::PointerRepair::default(),
             styled: false,
             font_language: i18n::Locale::En,
             chinese_font: None,
@@ -892,12 +1048,17 @@ impl LccApp {
             space_hand: None,
             brush_live: None,
             loupe_shown: None,
+            pictures_missing_pass: None,
             video_view: Default::default(),
             region_view: None,
             region_before_view: None,
             size_hold: Default::default(),
             drag_scale: Default::default(),
+            still_refine: Default::default(),
             hq_drag: Default::default(),
+            eye_strip: Default::default(),
+            activity_bottom: None,
+            eye_key: None,
             whole_since: None,
             window_refused: None,
             full_preview_loaded: None,
@@ -921,6 +1082,7 @@ impl LccApp {
             render_dng: None,
             last_render_dng: None,
             tasks: Default::default(),
+            chart_profile: Default::default(),
             last_export_result: None,
             modern_sheets: Default::default(),
             slideshow_export_reported: true,
@@ -929,10 +1091,15 @@ impl LccApp {
             window_is_fullscreen: false,
             preview_window: None,
             gpu_applied: None,
+            gpu_cards_applied: None,
             gpu_notice: false,
             startup_update_check: false,
             hdr_display_sdr: false,
             hdr_headroom: None,
+            gpu_event_seen: 0,
+            last_screen: egui::Vec2::ZERO,
+            export_tuning_applied: None,
+            machine: None,
             memory_applied: None,
             display_applied: None,
             display_error: None,
@@ -944,6 +1111,7 @@ impl LccApp {
             activity_expanded: false,
             activity_open: Default::default(),
             activity_seen_seq: 0,
+            surface: Default::default(),
         }
     }
 
@@ -959,6 +1127,13 @@ impl LccApp {
     pub fn with_midi(mut self, rx: Receiver<lcc_engine::midi::Action>, reload: MidiReload) -> Self {
         self.midi_rx = Some(rx);
         self.midi_reload = Some(reload);
+        self
+    }
+
+    /// Take requests from `rx` (the desktop app's control-surface listener) without the extra
+    /// screenshot support of [`Self::with_control`].
+    pub fn with_requests(mut self, rx: Receiver<ControlRequest>) -> Self {
+        self.control_rx = Some(rx);
         self
     }
 
@@ -986,6 +1161,26 @@ impl LccApp {
     }
 
     /// Run a UI or engine command by id. The single entry point for every frontend path.
+    /// Whether the photos shown are a folder being browsed to cull and import, not the library's.
+    pub fn importing(&self) -> bool {
+        self.session.source == lcc_engine::LibrarySource::Folder
+    }
+
+    /// Whether the eye focus strip shows here: it has its own switch while browsing a folder (on
+    /// at first: culling) and in the library (off at first: editing).
+    pub fn eye_focus_on(&self) -> bool {
+        if self.importing() { self.ui.eye_focus_import } else { self.ui.eye_focus }
+    }
+
+    /// Switch the eye focus strip on or off where the user is (a browsed folder or the library).
+    pub fn set_eye_focus(&mut self, on: bool) {
+        if self.importing() {
+            self.ui.eye_focus_import = on;
+        } else {
+            self.ui.eye_focus = on;
+        }
+    }
+
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         self.run_typed(id, params).map_err(|e| e.message)
     }
@@ -993,7 +1188,14 @@ impl LccApp {
     /// [`LccApp::run`], keeping what kind of error a refusal is: for code that decides on it
     /// (offer a model's download, treat a cancel as one) instead of reading the message.
     pub fn run_typed(&mut self, id: &str, params: Value) -> Result<Value, CommandError> {
+        let id = &*lcc_engine::canonical_id(id);
+        self.note_ran(id);
         shortcuts::set_active(self.ui.settings.keymap_set);
+        // a brush stroke being painted belongs to the mask and photo it started on: picking another
+        // ends it first, so its release can't land on the one picked
+        if matches!(id, "mask.select" | "library.select") {
+            self.cancel_brush_gesture();
+        }
         if let Some(r) = edit_in::intercept(self, id, &params) {
             return r.map_err(CommandError::from);
         }
@@ -1015,7 +1217,25 @@ impl LccApp {
         } else {
             params
         };
+        // an edit of the crop on an untouched photo keeps the lock the tool shows
+        let commits = self.session.commits();
+        let stored_lock = touches_crop(id, &params, self.session.active()) && self.store_shown_crop_lock();
         let r = self.session.execute(id, &params).map_err(CommandError::from);
+        if stored_lock && self.session.interaction.is_none() {
+            let steps = usize::try_from(self.session.commits().wrapping_sub(commits)).unwrap_or(0);
+            match &r {
+                // the lock and the edit are one undo step, named after the edit
+                Ok(_) if steps >= 2 => {
+                    let label = self.session.undo.last().map(|e| e.label.clone()).unwrap_or_default();
+                    self.session.merge_undo(steps, &label);
+                }
+                // the edit was refused or changed nothing: take the lock back off as well
+                _ if steps == 1 && self.session.undo_step().is_ok() => {
+                    self.session.redo.pop();
+                }
+                _ => {}
+            }
+        }
         if let Ok(v) = &r {
             edit_in::after_command(self, id, v);
         }
@@ -1146,20 +1366,40 @@ impl LccApp {
 
     /// Called only after a crop gesture begins, inside its undo transaction.
     pub(crate) fn begin_crop(&mut self) -> Result<(), String> {
-        // nothing chosen yet: the photo's own shape, as `crop_tool_aspect` shows it
-        let aspect = self.ui.crop_default_aspect.clone().unwrap_or_else(|| serde_json::json!("original"));
-        if self.session.interaction.is_some()
-            && self.session.active().and_then(|id| self.session.develop_of(id)).is_some_and(|d| d.crop == lcc_develop::Crop::default())
-            && aspect != serde_json::json!("free")
-            // the remembered ratio, turned like the new photo's crop (as a named ratio is)
-            && let Err(e) = self.session.execute("crop.aspect", &serde_json::json!({"aspect": aspect, "orientation": "crop"}))
-        {
-            // A remembered value the command refuses (a hand-edited settings file) would refuse
-            // every crop drag on an untouched photo: forget it and let this drag go ahead.
-            self.ui.crop_default_aspect = None;
-            self.ui.status = e.to_string();
+        if self.session.interaction.is_some() {
+            self.store_shown_crop_lock();
         }
         Ok(())
+    }
+
+    /// Before an edit of an untouched photo's crop (a drag, the angle, Straighten, Auto, a flip):
+    /// store the ratio the tool shows locked into the crop itself. Until then the lock is only
+    /// shown (`crop_tool_aspect`), and the edit would leave the crop touched with no lock, which
+    /// reads as unlocked (nothing but the lock button and A unlocks it). Returns whether it
+    /// stored one (one undo step of its own outside an interaction, which the caller merges with
+    /// the edit). Only this photo: Auto Sync carries the edit, not a ratio fitted to this
+    /// photo's shape.
+    pub(crate) fn store_shown_crop_lock(&mut self) -> bool {
+        // nothing chosen yet: the photo's own shape, as `crop_tool_aspect` shows it
+        let aspect = self.ui.crop_default_aspect.clone().unwrap_or_else(|| serde_json::json!("original"));
+        let untouched = self.session.active().and_then(|id| self.session.develop_of(id)).is_some_and(|d| d.crop == lcc_develop::Crop::default());
+        if !untouched || aspect == serde_json::json!("free") {
+            return false;
+        }
+        let sync = std::mem::replace(&mut self.session.auto_sync, false);
+        // the remembered ratio, turned like the new photo's crop (as a named ratio is)
+        let r = self.session.execute("crop.aspect", &serde_json::json!({"aspect": aspect, "orientation": "crop"}));
+        self.session.auto_sync = sync;
+        match r {
+            Ok(_) => true,
+            Err(e) => {
+                // A remembered value the command refuses (a hand-edited settings file) would refuse
+                // every crop edit on an untouched photo: forget it and let this edit go ahead.
+                self.ui.crop_default_aspect = None;
+                self.ui.status = e.to_string();
+                false
+            }
+        }
     }
 
     /// Show a transient toast at the bottom of the canvas (like the reference app's HUD).
@@ -1240,6 +1480,28 @@ impl LccApp {
         }
     }
 
+    /// Whether a rating, flag or label moves on to the next photo: Photo ▸ Auto Advance, or Caps
+    /// Lock while it is on (as in other photo libraries).
+    pub fn auto_advance_on(&self) -> bool {
+        self.ui.auto_advance || self.ui.caps_lock
+    }
+
+    /// A toast with a button that runs `command` with `params` (Undo after Update Preset…), for
+    /// `secs` seconds; a click runs it once and the toast goes.
+    pub fn toast_with_action(
+        &mut self,
+        ctx: &egui::Context,
+        text: impl Into<String>,
+        button: impl Into<String>,
+        command: &str,
+        params: Value,
+        secs: f64,
+    ) {
+        let until = ctx.input(|i| i.time) + secs;
+        self.ui.toast_action = Some(state::ToastAction { text: text.into(), button: button.into(), command: command.to_string(), params, until });
+        ctx.request_repaint();
+    }
+
     /// A toast that stays `secs` seconds (messages that say where to look or what to do next).
     pub fn toast_for(&mut self, ctx: &egui::Context, text: impl Into<String>, secs: f64) {
         let t = ctx.input(|i| i.time);
@@ -1262,6 +1524,13 @@ impl LccApp {
     /// show their errors; start a zoomed-in detail pass once the clicking stops
     /// (`ui.detail_due`); watch the model download. Never waits for the model.
     fn ai_mask_detail(&mut self, ctx: &egui::Context) {
+        // Upright worked out in the background for photos an automatic mode reached by sync or paste
+        if self.session.upright_poll() {
+            ctx.request_repaint();
+        }
+        if self.session.upright_jobs.pending() > 0 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let polled = self.session.segment_poll();
         let now = ctx.input(|i| i.time);
         if polled.changed {
@@ -1316,6 +1585,14 @@ impl LccApp {
         let e = e.into();
         if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
             self.offer_sam_download(then);
+        } else if lcc_engine::segment::Segmenter::AVAILABLE
+            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::People | AiModel::FaceDetector))
+        {
+            // SAM 2.1 was chosen for Object masks, or Retouch needs the MediaPipe models: their downloads are in the
+            // AI Models dialog
+            if self.ui.dialog.is_none() {
+                self.ui.dialog = Some(state::Dialog::AiModels { error: None });
+            }
         } else {
             self.toast_error(ctx, e.message);
         }
@@ -1377,6 +1654,19 @@ impl LccApp {
         }
     }
 
+    /// End a Brush stroke being painted, if one is: it is dropped (strokes reach the photo when
+    /// released), and the pointer still held paints nothing more until it is let go.
+    pub(crate) fn cancel_brush_gesture(&mut self) {
+        if let Some(panels::detail::Gesture::Brush { sent, .. }) = self.gesture {
+            self.gesture = None;
+            self.brush_live = None;
+            // a stroke sent live keeps what it painted so far, as one undo step
+            if sent > 0 {
+                let _ = self.run("develop.endInteraction", serde_json::json!({}));
+            }
+        }
+    }
+
     /// Close the open MIDI interaction, if any.
     pub(crate) fn end_midi_interaction(&mut self) {
         if self.midi_active.take().is_some() {
@@ -1419,8 +1709,16 @@ impl LccApp {
                 continue;
             }
             let reply = req.reply.clone();
+            self.note_ran(&req.method);
             match control::handle(self, ctx, &req) {
-                control::Outcome::Done(v) => {
+                control::Outcome::Done(mut v) => {
+                    // the UI's own commands don't wait for the catalog log's thread; a reply
+                    // to someone outside does: "done" only for what is on disk
+                    if let Err(e) = self.session.flush_catalog()
+                        && let Some(o) = v.as_object_mut()
+                    {
+                        o.insert("notSaved".into(), serde_json::Value::String(e.to_string()));
+                    }
                     let _ = reply.send(v);
                 }
                 control::Outcome::Screenshot { path, headless } => {
@@ -1500,12 +1798,14 @@ impl LccApp {
     pub fn sync_theme(&mut self, ctx: &egui::Context) {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
+        theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         let wanted = self.ui.settings.theme(self.system_theme(ctx));
         if theme::current(ctx) != Some(wanted) {
             theme::apply_kind(ctx, wanted);
         }
+        theme::refresh_window_on_first_focus(ctx);
     }
 
     /// Draw the UI into an offscreen context at the window's size; with `capture`, rasterize it
@@ -1596,6 +1896,7 @@ impl LccApp {
     /// Per-frame logic before layout (control channel, renders, shortcuts, drops).
     pub fn logic(&mut self, ctx: &egui::Context) {
         i18n::set_language(self.ui.language);
+        self.frame_log.clear();
         widgets::sync_section_folds(ctx, &mut self.ui.section_open);
         let t0 = now_ms();
         panels::library_problem::logic(self, ctx);
@@ -1620,6 +1921,7 @@ impl LccApp {
     fn logic_inner(&mut self, ctx: &egui::Context) {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
+        theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         if !self.styled {
@@ -1660,6 +1962,7 @@ impl LccApp {
             self.last_time = now;
             self.drain_control(ctx);
             self.drain_midi(ctx);
+            surface::tick(self, ctx);
         }
         self.apply_settings(ctx);
         if !self.synthetic.is_empty() {
@@ -1814,8 +2117,11 @@ impl LccApp {
         self.session.persist_if_dirty();
         panels::denoise::pump(self, ctx);
         panels::plugin_filters::pump(self, ctx);
+        panels::right::dust_pump(self, ctx);
         panels::faces::pump(self, ctx);
         focus_scan::pump(self, ctx);
+        eye_strip::reject_pump(self);
+        panels::masking::put_tools_away(self);
         enhance_pump::pump(self, ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
@@ -1869,12 +2175,45 @@ impl LccApp {
         import::drop_paths(self, ctx, photos);
     }
 
+    /// The window and the GPU's batch work (exports): a resize makes room for the window's own
+    /// drawing first (`lcc_gpu::hold_batch`: the surface is reconfigured, which waits for
+    /// the GPU); what happened to the GPU (it stopped responding, it was restarted) is told once.
+    fn gpu_housekeeping(&mut self, ctx: &egui::Context) {
+        let screen = ctx.content_rect().size();
+        if screen != self.last_screen {
+            if self.last_screen != egui::Vec2::ZERO {
+                lcc_engine::gpu::hold_batch(std::time::Duration::from_millis(800));
+            }
+            self.last_screen = screen;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        for e in lcc_engine::gpu::events_after(self.gpu_event_seen) {
+            self.gpu_event_seen = self.gpu_event_seen.max(e.seq);
+            let text = crate::i18n::tr(&e.text).to_string();
+            match e.kind {
+                lcc_engine::gpu::EventKind::Recovered => self.toast_for(ctx, text, 8.0),
+                _ => self.toast_for(ctx, text, 15.0),
+            }
+        }
+    }
+
     /// Apply settings that act outside the UI state: GPU rendering and window full screen.
     fn apply_settings(&mut self, ctx: &egui::Context) {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
+        theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
+        // the cards first: the device warmed up below is made on the chosen one
+        let cards = (self.ui.settings.gpu_card.clone(), self.ui.settings.gpu_helper.clone());
+        if self.gpu_cards_applied.as_ref() != Some(&cards) {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                lcc_engine::gpu::set_card(&cards.0);
+                lcc_engine::gpu::set_helper(&cards.1);
+            }
+            self.gpu_cards_applied = Some(cards);
+        }
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);
             // not the `app.gpu` command: its answer (`available`, `adapter`) waits for the device, and
@@ -1889,10 +2228,19 @@ impl LccApp {
         let mb = self.ui.settings.memory_mb;
         // automatic at startup: leave the engine's default alone
         if self.memory_applied != Some(mb) && (mb > 0 || self.memory_applied.is_some()) {
-            let mb = if mb == 0 { (lcc_engine::memory::default_budget() >> 20) as u32 } else { mb };
+            // 0 asks for the automatic budget itself (rounding it to whole MB here would set a budget
+            // slightly below automatic)
             let _ = self.session.execute("app.memoryBudget", &serde_json::json!({"mb": mb}));
         }
         self.memory_applied = Some(mb);
+        // export lanes and the GPU's share for exports (Settings ▸ Performance, "Test my machine")
+        let st = &self.ui.settings;
+        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs);
+        if self.export_tuning_applied != Some(tuning) {
+            crate::machine_test::apply(st);
+            self.export_tuning_applied = Some(tuning);
+        }
+        self.gpu_housekeeping(ctx);
         // the monitor profile (Settings ▸ Display): previews follow it from the next frame
         if self.display_applied.as_ref() != Some(&self.ui.settings.display_profile) {
             let path = self.ui.settings.display_profile.clone();
@@ -1980,7 +2328,10 @@ impl LccApp {
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
         modern::before_input(self, raw);
         self.synthetic_input(raw);
+        // put back button releases the window integration dropped (OneSlips)
+        self.pointer_repair.repair(raw);
         self.take_nav_buttons(raw);
+        drop_space_repeats(raw);
         modern::after_input(self, raw);
     }
 
@@ -2060,6 +2411,7 @@ impl LccApp {
     fn end_frame(&mut self, ctx: &egui::Context, t0: f64) {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
+        theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         self.text_focus = self.tasks.repaint.as_ref().is_some_and(|c| c.egui_wants_keyboard_input());
@@ -2079,6 +2431,45 @@ impl LccApp {
         self.perf.frame_ms = now_ms() - t0;
         self.perf.update_ms = self.perf.logic_ms + self.perf.frame_ms;
         self.perf.max_update_ms = self.perf.max_update_ms.max(self.perf.update_ms);
+        self.note_slow_frame(ctx.cumulative_pass_nr());
+    }
+
+    /// Remember that `what` ran in this frame (see [`SlowFrame`]).
+    pub(crate) fn note_ran(&mut self, what: &str) {
+        if self.frame_log.len() < FRAME_LOG_LEN {
+            self.frame_log.push(what.to_string());
+        }
+    }
+
+    /// Name the part of the frame since `*t` (`what`, e.g. a panel) in the frame's log when it took
+    /// [`SLOW_PANEL_MS`] or more, and restart the clock.
+    pub(crate) fn lap(&mut self, t: &mut f64, what: &str) {
+        let now = now_ms();
+        let ms = now - *t;
+        *t = now;
+        if ms >= SLOW_PANEL_MS {
+            self.note_ran(&format!("{what} {ms:.0} ms"));
+        }
+    }
+
+    /// A frame of [`SLOW_FRAME_MS`] or more (after start-up, `pass` > 10: the first frames load
+    /// fonts and open the library) is logged with what ran in it and kept if it is the slowest.
+    fn note_slow_frame(&mut self, pass: u64) {
+        if self.perf.update_ms < SLOW_FRAME_MS || pass <= 10 {
+            return;
+        }
+        let ran = std::mem::take(&mut self.frame_log);
+        log::warn!(
+            "slow frame: {:.0} ms on the UI thread (logic {:.0} ms, layout {:.0} ms); ran: {}",
+            self.perf.update_ms,
+            self.perf.logic_ms,
+            self.perf.frame_ms,
+            if ran.is_empty() { "nothing named".to_string() } else { ran.join(", ") }
+        );
+        if self.slowest_frame.as_ref().is_none_or(|s| s.ms < self.perf.update_ms) {
+            self.slowest_frame =
+                Some(SlowFrame { ms: self.perf.update_ms, logic_ms: self.perf.logic_ms, layout_ms: self.perf.frame_ms, ran, at_ms: now_ms() });
+        }
     }
 
     /// Once per library opened (at launch too): name it in the window title, so nobody edits in
@@ -2099,7 +2490,31 @@ impl LccApp {
             settings.recent_opened.insert(path, (self.session.clock)());
             settings.recent_opened.retain(|p, _| settings.recent_libraries.contains(p));
         }
+        self.gather_shared_presets(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.window_title()));
+    }
+
+    /// LR-PREF-SHARED: the libraries of File ▸ Open Recent Library join the shared store (once each;
+    /// they are only read), and their named presets, backups' included, are gathered; says so when
+    /// that added some.
+    fn gather_shared_presets(&mut self, ctx: &egui::Context) {
+        if !self.session.uses_app_store() {
+            return;
+        }
+        let paths = self.ui.settings.recent_libraries.clone();
+        let mut n = 0;
+        match self.run("store.mergeLibraries", serde_json::json!({"paths": paths})) {
+            Ok(r) => n += r["merged"].as_array().into_iter().flatten().map(|m| m["presets"].as_u64().unwrap_or(0)).sum::<u64>(),
+            Err(e) => log::warn!("store: {e}"),
+        }
+        match self.run("store.gatherPresets", serde_json::json!({"paths": paths})) {
+            Ok(r) => n += r["count"].as_u64().unwrap_or(0),
+            Err(e) => log::warn!("store: {e}"),
+        }
+        if n > 0 {
+            let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
+            self.toast(ctx, msg);
+        }
     }
 
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).
@@ -2138,11 +2553,18 @@ impl LccApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.library_changed(&ctx);
+        // (a tool panel opened some other way still remembers the panel it took the place of)
+        self.ui.note_right();
+        // a picker armed in another tab or panel than the one on show is put away
+        self.ui.check_picker();
+        // Auto Sync is remembered app-wide, however it was switched (menu, switch, console)
+        self.ui.settings.auto_sync = self.session.auto_sync;
         // panels set it again this frame while the pointer rests on a preset or profile
         self.hover_preview = None;
         // …and the histogram sets this while the pointer rests on a clipping indicator
         self.clipping_preview = false;
         self.ai_mask_detail(&ctx);
+        crate::panels::genfill::frame(self, &ctx);
         self.place_names_outcome(&ctx);
         if self.ui.fullscreen {
             // full-screen preview: the photo alone on black
@@ -2155,6 +2577,8 @@ impl LccApp {
             catalog_ui::show(self, &ctx);
             panels::library_problem::show(self, &ctx);
             pick::poll(self, &ctx);
+            panels::surface_osd::show(self, &ctx);
+            panels::presets::picker_frame(self, &ctx);
             panels::toast(self, &ctx);
             drop_overlay::show(self, &ctx);
             self.widgets = widgets::take_registry(&ctx);
@@ -2164,7 +2588,17 @@ impl LccApp {
         // Order matters: earlier panels take the full edge (top bar spans the window; the tool strip,
         // right panels and left panel run to the bottom; the bottom bar sits between them).
         let touch = modern::on(self);
-        let m = if touch { modern::edges(self, ui, &ctx) } else { shell::edges(self, ui, &ctx) };
+        // the Import tab (Settings ▸ Import ▸ Import as a tab) takes the window under the top bar
+        import_tab::keep_in_step(self);
+        let importing = import_tab::showing(self);
+        let m = if importing && !touch {
+            panels::topbar::show(self, ui);
+            module::get(self.ui.module)
+        } else if touch {
+            modern::edges(self, ui, &ctx)
+        } else {
+            shell::edges(self, ui, &ctx)
+        };
         let t = theme::Tokens::get(&ctx);
         let bg = if matches!(self.ui.view, state::ViewMode::Detail | state::ViewMode::Compare | state::ViewMode::Survey | state::ViewMode::Reference)
         {
@@ -2172,9 +2606,15 @@ impl LccApp {
         } else {
             t.grid_bg
         };
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(bg))
-            .show(ui, |ui| if touch { modern::center(self, ui, m) } else { m.center(ui, self) });
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| {
+            if importing {
+                import_tab::show(self, ui)
+            } else if touch {
+                modern::center(self, ui, m)
+            } else {
+                m.center(ui, self)
+            }
+        });
         module::lights_out(self, &ctx);
         help_overlay::show(self, &ctx);
         panels::second::show(self, &ctx);
@@ -2191,6 +2631,7 @@ impl LccApp {
         #[cfg(not(target_arch = "wasm32"))]
         panels::plugins::poll(self, &ctx);
         render_dng_task::poll(self, &ctx);
+        machine_test::poll(self, &ctx);
         slideshow_export::poll(self, &ctx);
         panels::activity::show(self, &ctx);
         export_task::poll_photos(self, &ctx);
@@ -2200,6 +2641,8 @@ impl LccApp {
         panels::left::album_drag_feedback(self, &ctx);
         panels::left::section_drag_feedback(self, &ctx);
         panels::keyword_list::drag_feedback(self, &ctx);
+        panels::surface_osd::show(self, &ctx);
+        panels::presets::picker_frame(self, &ctx);
         panels::toast(self, &ctx);
         drop_overlay::show(self, &ctx);
         self.widgets = widgets::take_registry(&ctx);
@@ -2271,6 +2714,38 @@ fn sam_download_ended(download: &lcc_engine::segment::DownloadStatus) -> Option<
         None if download.finished => Some((crate::i18n::tr("The SAM 3 model is installed: Object and Describe masks are ready.").to_string(), true)),
         None => None,
     }
+}
+
+/// Whether command `id` edits the active photo's crop other than through its lock: the angle
+/// (slider, Straighten tool, pointer rotation, Auto), a crop drag, a flip. Such an edit first
+/// stores the lock the tool shows.
+fn touches_crop(id: &str, params: &Value, active: Option<lcc_catalog::PhotoId>) -> bool {
+    match id {
+        // (a swap of the orientation too: X keeps the lock the tool shows, 3:2 → 2:3)
+        "crop.straighten" | "crop.autoStraighten" | "crop.drag" | "crop.rotateAspect" => true,
+        // a rect given outright is the shape asked for (no lock is honoured there); an angle alone turns the crop
+        "crop.set" => params.get("rect").is_none_or(Value::is_null),
+        // a flip of other photos leaves the active one alone
+        "photo.flipHorizontal" | "photo.flipVertical" => match params.get("ids").and_then(Value::as_array) {
+            Some(ids) => active.is_some_and(|a| ids.iter().any(|v| v.as_u64() == Some(a.0))),
+            None => true,
+        },
+        _ if id.starts_with("develop.") => {
+            let crop_control = |c: &str| c.starts_with("crop.");
+            params.get("control").and_then(Value::as_str).is_some_and(crop_control)
+                || params.get("values").and_then(Value::as_object).is_some_and(|o| o.keys().any(|k| crop_control(k)))
+        }
+        _ => false,
+    }
+}
+
+/// Space is a modifier (held: the hand that pans; pressed: Toggle Zoom), like Shift or Alt, so
+/// holding it never fires again and again: the key's auto-repeat presses are dropped before
+/// anything sees them (shortcuts, a focused handle or button, the control channel), in the
+/// desktop and the touch layout alike. Only the key events go: the typed text (`Event::Text`)
+/// stays, so holding Space in a text box still types spaces.
+pub(crate) fn drop_space_repeats(raw: &mut egui::RawInput) {
+    raw.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Space, pressed: true, repeat: true, .. }));
 }
 
 /// A file `ui.dropFiles` delivers as dropped, as a real OS drop arrives in `raw.dropped_files`.

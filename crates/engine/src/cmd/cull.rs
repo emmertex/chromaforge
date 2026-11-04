@@ -24,9 +24,9 @@ fn secs(iso: &str) -> Option<i64> {
     Some(d.unix_seconds())
 }
 
-/// Eyes-open from YuNet landmarks when the detector is installed; otherwise a weak guess from a
+/// Eyes-open from the face model's landmarks when it is installed; otherwise a weak guess from a
 /// stored face box. `None` when neither is available (the field is skipped, not stored as 0).
-fn eyes_open_for(src: &Rgb32f, detector: Option<&lcc_faces::yunet::Detector>, photo: Option<&Photo>) -> Option<f32> {
+fn eyes_open_for(src: &Rgb32f, detector: Option<&super::face_detect::Finder>, photo: Option<&Photo>) -> Option<f32> {
     if let Some(det) = detector {
         let rgb: Vec<u8> = src
             .data
@@ -35,7 +35,7 @@ fn eyes_open_for(src: &Rgb32f, detector: Option<&lcc_faces::yunet::Detector>, ph
                 [0, 1, 2].map(|i| (lcc_color::transfer::linear_to_srgb(c.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0)) * 255.0).round() as u8)
             })
             .collect();
-        if let Ok(faces) = det.detect(&rgb, src.width, src.height, &lcc_faces::yunet::Options::default())
+        if let Ok(faces) = det.detect(&rgb, src.width, src.height, false)
             && let Some(first) = faces.first()
         {
             return lcc_pipeline::cull::eyes_open(src, &first.landmarks);
@@ -161,11 +161,35 @@ fn burst_params(p: &Value) -> Result<(f64, f32)> {
 
 /// Find Similar: photos that look like `id` (signatures from thumbnail-level sources, cached by
 /// content), most similar first; the view is filtered to them.
+/// Cache the signatures of `ids` that are not cached yet (by content key). The thumbnail-level sources are decoded
+/// side by side, each once, a few photos at a time ([`Session::sources_now`] holds them all until it returns);
+/// a photo that can't be read gets none and is tried again by the caller (upstream #3613).
+fn compute_signatures(s: &mut Session, ids: impl Iterator<Item = PhotoId>) {
+    let mut keys = std::collections::HashSet::new();
+    let mut todo = Vec::new();
+    for id in ids {
+        let Some(p) = s.catalog.photo(id) else { continue };
+        let key = crate::media::content_key(p);
+        if s.signatures.contains_key(&key) || !keys.insert(key) {
+            continue;
+        }
+        todo.push(id);
+    }
+    let batch = std::thread::available_parallelism().map_or(4, |n| n.get()).saturating_mul(2).max(4);
+    for chunk in todo.chunks(batch) {
+        for (id, loaded) in s.sources_now(chunk, crate::media::SourceLevel::Thumb) {
+            let (Ok((image, _)), Some(key)) = (loaded, s.catalog.photo(id).map(|p| crate::media::content_key(p))) else { continue };
+            s.signatures.insert(key, lcc_pipeline::cull::signature(&image));
+        }
+    }
+}
+
 fn find_similar(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "library.findSimilar";
     let id = s.photo_or_active(p, C)?;
     let min = p.get("similarity").and_then(Value::as_f64).unwrap_or(0.8) as f32;
     let all: Vec<PhotoId> = s.catalog.photos().filter(|q| q.in_library()).map(|q| q.id).collect();
+    compute_signatures(s, std::iter::once(id).chain(all.iter().copied()));
     let sig = |s: &mut Session, id: PhotoId| -> Option<[f32; 64]> {
         let key = s.catalog.photo(id).map(|p| crate::media::content_key(p))?;
         if let Some(v) = s.signatures.get(&key) {
@@ -198,6 +222,33 @@ fn find_similar(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            "photo.rejectEyes",
+            "Reject Closed and Blurry Eyes",
+            [],
+            None,
+            "{ids?, closed?: bool (true), blurry?: bool (true), soft?: bool (false: soft eyes, the strip's amber, count as blurry too), mainOnly?: bool (true), wait?: bool} — judge the eyes of the selected photos (else all in view) as the culling strip does and reject those where a main subject (a face at least half as wide as the largest; everyone with mainOnly false) has closed or blurry (or, with soft, soft) eyes; picked photos are left alone. Runs in the background (activity row, cancellable) and flags the rejects in one undo step when done (`photo.rejectEyesPump`); `wait` runs it now → {done, photos} or {done, rejected, closedEyes, blurryEyes, noFaces, looked, failed, cancelled}",
+            always,
+            crate::eye_cull::reject_eyes
+        ),
+        cmd!(
+            "photo.rejectEyesPump",
+            "Reject Closed and Blurry Eyes: Take Results",
+            [],
+            None,
+            "{} — cheap every frame: when a Reject Closed and Blurry Eyes run has finished, flag its rejects (one undo step) and return its summary once → {active, done, rejected, closedEyes, blurryEyes, …}",
+            always,
+            crate::eye_cull::pump
+        ),
+        cmd!(
+            "eyes.analyze",
+            "Find Eyes Ahead",
+            [],
+            None,
+            "{path?: folder (its browsed or library photos), subfolders?: bool (true), ids?, wait?: bool, lanes?: 1..8 (photos side by side: 1 in the background, with wait an eighth of the threads up to 4), status?: bool, cancel?: bool} — find the eyes of many photos ahead of culling (those in folder `path`, else `ids`, else the selection, else all in view) and keep each result in the preview cache, so the eye focus strip shows them at once, also after a restart; photos kept there already are skipped. Runs in the background (activity row, cancellable, waits while the photo on screen is being made); `wait` runs it now; `status` reports the last run; `cancel` stops it → {active, done, photos, kept, analyzed, failed, cancelled, ms?, lanes?}",
+            always,
+            crate::eye_prep::analyze
+        ),
         cmd!(
             "library.findSimilar",
             "Find Similar Photos",

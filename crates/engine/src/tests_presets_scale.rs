@@ -57,6 +57,33 @@ fn develop_commands_do_not_reserialize_unchanged_presets() {
     let _ = std::fs::remove_dir_all(&lib);
 }
 
+/// With background saves on (the desktop app), a preset change doesn't write presets.json inside
+/// the command: the file follows on the saver's thread, and closing the library waits for it.
+#[test]
+fn presets_are_saved_off_the_ui_thread_when_asked() {
+    let lib = temp_dir("background");
+    let mut s = Session::new();
+    s.open_library(&lib, true).unwrap();
+    s.background_saves = true;
+    let added = s.add_presets(many(3000));
+    let before = crate::library::presets_serialized();
+    s.persist().unwrap();
+    assert_eq!(crate::library::presets_serialized(), before, "not serialized on this thread");
+    s.flush_presets();
+    let text = std::fs::read_to_string(lib.join("presets.json")).unwrap();
+    assert!(text.contains(&added[2999]), "the saver wrote the new presets");
+    // a favourite toggled, the library closed at once: the save is waited for
+    let pid = added[11].clone();
+    s.execute("preset.favorite", &json!({"id": pid})).unwrap();
+    s.close_library().unwrap();
+    drop(s);
+    let mut t = Session::new();
+    t.open_library(&lib, false).unwrap();
+    assert!(t.presets.iter().any(|p| p.id == pid && p.favorite), "favourite saved before the library closed");
+    assert_eq!(t.presets.iter().filter(|p| !p.builtin).count(), 3000);
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
 #[test]
 fn importing_thousands_of_presets_is_not_quadratic() {
     let mut s = Session::new();

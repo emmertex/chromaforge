@@ -106,7 +106,8 @@ fn make_device(backends: wgpu::Backends) -> Result<Dev, String> {
     desc.backend_options = crate::backend::backend_options();
     desc.flags = crate::backend::instance_flags_from_env(desc.flags);
     let instance = wgpu::Instance::new(desc);
-    let adapter = crate::backend::pick_adapter(&instance, backends)?;
+    // the second graphics card when there is one (`crate::ai_adapter`)
+    let adapter = crate::ai_adapter(&instance, backends)?;
     let info = adapter.get_info();
     if info.device_type == wgpu::DeviceType::Cpu {
         return Err(format!("software adapter ({}) skipped: the CPU is faster", info.name));

@@ -118,7 +118,7 @@ fn pane_mesh(h: &Headless, slot: Slot, pane: egui::Rect) -> egui::Rect {
         .shapes
         .iter()
         .filter_map(|c| match &c.shape {
-            egui::epaint::Shape::Mesh(m) if m.texture_id == tex.tex.id() && c.clip_rect == pane => Some(m.calc_bounds()),
+            egui::epaint::Shape::Mesh(m) if m.texture_id == tex.id() && c.clip_rect == pane => Some(m.calc_bounds()),
             _ => None,
         })
         .collect();
@@ -145,7 +145,7 @@ fn animation_view(mode: BeforeAfter, zoom: Zoom) -> (Headless, [egui::Rect; 2], 
     h.app.ui.pan = (0.5, 0.5);
     h.app.ui.click_zoom = 300;
     assert!(h.settle(SETTLE), "baseline renders settled");
-    let before_id = h.app.renderer.textures[&Slot::Before].tex.id();
+    let before_id = h.app.renderer.textures[&Slot::Before].id();
     let before = h
         .view
         .shapes

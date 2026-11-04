@@ -826,7 +826,7 @@ fn smart_album_problems_flag_stale_rules() {
     assert!(c.smart_album_problems(AlbumId(1)).is_empty(), "a plain album has no rules");
     c.apply(Op::RemoveAlbum { id: AlbumId(1) }).unwrap();
     let p = c.smart_album_problems(AlbumId(2));
-    assert_eq!(p.iter().map(ToString::to_string).collect::<Vec<_>>(), vec!["rule 1: no album 1".to_string()]);
+    assert_eq!(p.iter().map(ToString::to_string).collect::<Vec<_>>(), vec!["rule 1: no collection 1".to_string()]);
 }
 
 /// A smart album can test another smart album: "Keywords contain travel" and "Album isn't Excluded
@@ -913,9 +913,9 @@ fn summaries_name_albums() {
         {"field": "keywords", "op": "contains", "value": "travel"},
         {"group": {"match": "any", "rules": [{"field": "album", "op": "isNot", "value": 4}, {"field": "album", "op": "is", "value": 9}]}}]}))
     .unwrap();
-    assert_eq!(rules.describe_with(&c), "keywords contains travel and (album isn't “Excluded Photos” or album is #9)");
+    assert_eq!(rules.describe_with(&c), "keywords contains travel and (collection isn't “Excluded Photos” or collection is #9)");
     let f = Filter { rule_set: Some(rules), ..Default::default() };
-    assert!(f.describe_with(&c).contains("album isn't “Excluded Photos”"));
+    assert!(f.describe_with(&c).contains("collection isn't “Excluded Photos”"));
 }
 
 /// A chain of smart albums each testing the one before twice ("all of: album is X(k-1), album is
@@ -1454,4 +1454,18 @@ fn search_text_finds_people_and_quoted_values() {
     let long = format!("person:\"{}", "é ".repeat(50_000));
     assert!(q(&long).is_empty());
     assert_eq!(q("   \t jane \u{3000} "), vec![jane, both], "any whitespace separates tokens");
+}
+
+#[test]
+fn search_boolean_tokens_reject_invalid_values() {
+    let mut c = Catalog::new();
+    photo(&mut c, "original.jpg", "2026-05-01T10:00:00");
+    let q = |text: &str| c.query(&Filter { text: text.into(), ..Default::default() }, &Sort::default());
+    for field in ["edited", "copy", "virtual", "video"] {
+        for value in ["", "garbage", "maybe", "0", "1", "trueish"] {
+            assert!(q(&format!("{field}:{value}")).is_empty(), "{field}:{value}");
+        }
+    }
+    assert_eq!(q("edited:no").len(), 1, "unedited photo matches edited:no");
+    assert!(q("edited:yes").is_empty());
 }

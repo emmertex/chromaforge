@@ -92,7 +92,8 @@ pub(super) fn decode(src: &[u8], width: usize, height: usize, bits: u32, xtrans:
     if mode == Mode::Header {
         return Ok(Vec::new());
     }
-    let decoded: Vec<Vec<u16>> = stripes.par_iter().map(|s| decode_stripe(s, height, bits, xtrans)).collect::<Result<_>>()?;
+    let decoded: Vec<Vec<u16>> =
+        stripes.par_iter().map(|s| decode_stripe(s, height, bits, xtrans)).collect::<Vec<_>>().into_iter().collect::<Result<_>>()?;
     let mut output = vec![0; n];
     for (i, (stripe, data)) in stripes.iter().zip(&decoded).enumerate() {
         for (row, samples) in output.chunks_exact_mut(width).zip(data.chunks_exact(stripe.width)) {

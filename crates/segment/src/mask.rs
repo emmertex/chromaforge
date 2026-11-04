@@ -30,9 +30,52 @@ fn weights(src: usize, dst: usize) -> Vec<(usize, Vec<f32>)> {
 /// An 8-bit RGB image (`w × h`, row-major) stretched to `side × side`, scaled to −1..1 and laid
 /// out channel-first (`[3, side, side]`), as SAM 3's processor does.
 pub fn preprocess(rgb: &[u8], w: usize, h: usize, side: usize) -> Result<Vec<f32>> {
+    resample(rgb, w, h, side, [0.5; 3], [0.5; 3], false)
+}
+
+/// ImageNet channel means and standard deviations (SAM 2's processor).
+pub const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
+
+/// Like [`preprocess`], normalized per channel as `(v / 255 − mean) / std`, and rounding the
+/// horizontally resampled image to 8 bits before the vertical pass as Pillow and torchvision's
+/// antialiased 8-bit resize do (SAM 2's processor).
+pub fn preprocess_normalized(rgb: &[u8], w: usize, h: usize, side: usize, mean: [f32; 3], std: [f32; 3]) -> Result<Vec<f32>> {
+    resample(rgb, w, h, side, mean, std, true)
+}
+
+fn resample(rgb: &[u8], w: usize, h: usize, side: usize, mean: [f32; 3], std: [f32; 3], round_mid: bool) -> Result<Vec<f32>> {
+    if std.iter().any(|s| !s.is_finite() || *s == 0.0) {
+        return Err(Error::Model("preprocessing: zero standard deviation".into()));
+    }
     let n = w.checked_mul(h).and_then(|n| n.checked_mul(3)).ok_or_else(|| Error::Model("image too large".into()))?;
     if w == 0 || h == 0 || rgb.len() < n {
         return Err(Error::Model(format!("image buffer of {} bytes for {w} × {h}", rgb.len())));
+    }
+    // The horizontal pass keeps every source row (h × side samples): for a strip far taller than
+    // it is wide that is many times the image itself, so such an image is resampled transposed
+    // (its rows become columns) and the result transposed back.
+    if h > w.saturating_mul(4) {
+        let mut t = vec![0u8; n];
+        for y in 0..h {
+            for x in 0..w {
+                if let (Some(d), Some(s)) = (t.get_mut((x * h + y) * 3..(x * h + y) * 3 + 3), rgb.get((y * w + x) * 3..(y * w + x) * 3 + 3)) {
+                    d.copy_from_slice(s);
+                }
+            }
+        }
+        let o = preprocess(&t, h, w, side)?;
+        let mut out = vec![0f32; o.len()];
+        for c in 0..3 {
+            for oy in 0..side {
+                for ox in 0..side {
+                    if let (Some(d), Some(v)) = (out.get_mut((c * side + oy) * side + ox), o.get((c * side + ox) * side + oy)) {
+                        *d = *v;
+                    }
+                }
+            }
+        }
+        return Ok(out);
     }
     let (wx, wy) = (weights(w, side), weights(h, side));
     // horizontal pass: h rows × side columns × 3
@@ -45,6 +88,9 @@ pub fn preprocess(rgb: &[u8], w: usize, h: usize, side: usize) -> Result<Vec<f32
                 for (c, a) in acc.iter_mut().enumerate() {
                     *a += wt * f32::from(rgb.get(i + c).copied().unwrap_or(0));
                 }
+            }
+            if round_mid {
+                acc.iter_mut().for_each(|a| *a = a.round().clamp(0.0, 255.0));
             }
             if let Some(dst) = tmp.get_mut((y * side + ox) * 3..(y * side + ox) * 3 + 3) {
                 dst.copy_from_slice(&acc);
@@ -62,10 +108,10 @@ pub fn preprocess(rgb: &[u8], w: usize, h: usize, side: usize) -> Result<Vec<f32
                 }
             }
             for (c, a) in acc.iter().enumerate() {
-                // Pillow rounds to 8 bits; then /255 and (x − 0.5) / 0.5
+                // Pillow rounds to 8 bits; then /255 and (x − mean) / std
                 let v = a.round().clamp(0.0, 255.0) / 255.0;
-                if let Some(d) = out.get_mut((c * side + oy) * side + ox) {
-                    *d = (v - 0.5) / 0.5;
+                if let (Some(d), Some(m), Some(s)) = (out.get_mut((c * side + oy) * side + ox), mean.get(c), std.get(c)) {
+                    *d = (v - m) / s;
                 }
             }
         }
@@ -115,8 +161,32 @@ mod tests {
     }
 
     #[test]
+    fn imagenet_normalization() {
+        let flat = vec![255u8; 4 * 4 * 3];
+        let p = preprocess_normalized(&flat, 4, 4, 2, IMAGENET_MEAN, IMAGENET_STD).unwrap();
+        for c in 0..3 {
+            let want = (1.0 - IMAGENET_MEAN[c]) / IMAGENET_STD[c];
+            assert!(p[c * 4..c * 4 + 4].iter().all(|v| (v - want).abs() < 1e-6));
+        }
+        assert!(preprocess_normalized(&flat, 4, 4, 2, IMAGENET_MEAN, [0.0; 3]).is_err());
+    }
+
+    #[test]
     fn short_buffers_are_errors() {
         assert!(preprocess(&[0; 5], 2, 2, 4).is_err());
+        // a strip 1 pixel wide and 200 000 tall: resampled transposed, so the intermediate is
+        // side × 1 rather than 200 000 × side; it equals the resample of its transposed twin
+        let h = 200_000usize;
+        let strip: Vec<u8> = (0..h * 3).map(|i| (i / 3 % 251) as u8).collect();
+        let a = preprocess(&strip, 1, h, 8).unwrap();
+        let b = preprocess(&strip, h, 1, 8).unwrap();
+        for c in 0..3 {
+            for y in 0..8 {
+                for x in 0..8 {
+                    assert_eq!(a[(c * 8 + y) * 8 + x], b[(c * 8 + x) * 8 + y]);
+                }
+            }
+        }
         assert!(preprocess(&[], 0, 0, 4).is_err());
     }
 

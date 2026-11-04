@@ -380,12 +380,18 @@ fn settings_window(app: &mut LccApp, ctx: &egui::Context) {
                         .find(|p| p.id == form.preset)
                         .map(|p| p.name.clone())
                         .unwrap_or_else(|| crate::i18n::tr("None").to_string());
-                    egui::ComboBox::from_id_salt("tether-preset").selected_text(shown).width(260.0).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut form.preset, String::new(), crate::i18n::tr("None"));
-                        if let Some(id) = crate::panels::presets::picker_rows(ui, "tether-preset", &app.session.presets, Some(&form.preset)) {
-                            form.preset = id;
-                        }
-                    });
+                    egui::ComboBox::from_id_salt("tether-preset")
+                        .selected_text(shown)
+                        .width(260.0)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_value(&mut form.preset, String::new(), crate::i18n::tr("None")).clicked() {
+                                ui.close();
+                            }
+                            if let Some(id) = crate::panels::presets::picker_rows(ui, "tether-preset", &app.session, Some(&form.preset)) {
+                                form.preset = id;
+                            }
+                        });
                     ui.end_row();
                     ui.label(crate::i18n::tr("Metadata preset"));
                     let metas: Vec<String> = app.session.metadata_presets.iter().map(|m| m.name.clone()).collect();

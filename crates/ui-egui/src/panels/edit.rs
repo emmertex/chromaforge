@@ -19,6 +19,10 @@ use crate::widgets::{BAND_COLORS, SliderOut, divider, flyout_row, hex, register,
 
 /// Commit a slider interaction: begin → live updates → end, so a drag is one undo step.
 pub fn apply_slider_out(app: &mut LccApp, spec: &ControlSpec, out: SliderOut, mut set: impl FnMut(&mut LccApp, f64) -> Result<Value, String>) {
+    // a slider touched puts a picker away: the slider's own change is what is wanted now
+    if out.drag_started || out.reset || out.value.is_some() {
+        app.ui.put_away_picker();
+    }
     if out.drag_started && !out.reset {
         // a MIDI turn still inside its idle window must not outlive the hand-over to the mouse
         app.end_midi_interaction();
@@ -59,6 +63,7 @@ pub(crate) static REL_TEMP: ControlSpec = ControlSpec {
     step: 1.0,
     decimals: 0,
     track: Track::Temp,
+    shade: lcc_develop::Shade::Plain,
 };
 pub(crate) static REL_TINT: ControlSpec = ControlSpec {
     id: "wb.tintRel",
@@ -70,6 +75,7 @@ pub(crate) static REL_TINT: ControlSpec = ControlSpec {
     step: 1.0,
     decimals: 0,
     track: Track::Tint,
+    shade: lcc_develop::Shade::Plain,
 };
 
 pub(crate) fn k_to_rel(k: f64) -> f64 {
@@ -299,11 +305,19 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         register(ui.ctx(), "note:sdrSlidersHidden", r.rect);
                     });
                 }
-                for c in
-                    ["hdr.sdrBrightness", "hdr.sdrContrast", "hdr.sdrHighlights", "hdr.sdrShadows", "hdr.sdrWhites", "hdr.sdrClarity", "hdr.sdrBlend"]
-                {
-                    control(app, ui, d, c, sdr_shown);
-                }
+                crate::widgets::slider_group(ui, "sdrRendition", |ui| {
+                    for c in [
+                        "hdr.sdrBrightness",
+                        "hdr.sdrContrast",
+                        "hdr.sdrHighlights",
+                        "hdr.sdrShadows",
+                        "hdr.sdrWhites",
+                        "hdr.sdrClarity",
+                        "hdr.sdrBlend",
+                    ] {
+                        control(app, ui, d, c, sdr_shown);
+                    }
+                });
                 ui.add_space(6.0);
             }
         }
@@ -370,10 +384,32 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 if super::settings::check(ui, "detail.nrOutliers", &mut on, "Remove Hot Pixels") {
                     let _ = app.run("develop.merge", json!({"settings": {"detail": {"nr_outliers": on}}, "label": "Remove Hot Pixels"}));
                 }
+                // hot, dead and stuck pixels this camera body has shown (its sensor map) and the clear ones in this photo
+                let mut fix = d.sensor.fixes_pixels();
+                if super::settings::check(ui, "sensor.pixelFix", &mut fix, "Fix Hot and Dead Pixels") {
+                    let _ = app.run("develop.set", json!({"control": "sensor.pixelFix", "value": if fix { 1.0 } else { 0.0 }}));
+                }
+                if let Some(px) = app.session.source_info(id).pixels.filter(|p| p.on) {
+                    let label = px.body.as_deref().map(lcc_engine::sensor_maps::body_label).unwrap_or_default();
+                    let text = if label.is_empty() {
+                        crate::i18n::tr_format!("{} fixed in this photo", px.found)
+                    } else {
+                        crate::i18n::tr_format!(
+                            "{} fixed: {} known for camera {}, {} found in this photo",
+                            px.from_map + px.found,
+                            px.from_map,
+                            label,
+                            px.found
+                        )
+                    };
+                    ui.label(egui::RichText::new(text).size(11.0).color(Tokens::get(ui.ctx()).text_dim));
+                }
             });
         }
         ui.add_space(8.0);
     });
+    // portrait retouching (beyond Lightroom), below Detail
+    section(app, ui, &d, "retouch", "Retouch", |app, ui, d| super::retouch::panel(app, ui, d, id));
     // the lens database changed since this photo was looked up: look again (its correction and preview follow),
     // also while the Lens Corrections section is folded
     if d.optics.lens_profile && app.session.lens_profiles_stale(id) {
@@ -442,19 +478,21 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             app.ui.toggle_flyout("defringe");
         }
         if open {
-            sub_title(ui, crate::i18n::tr("Purple"));
-            control_as(app, ui, d, "optics.defringePurple", true, Some("Amount"));
-            let on = d.optics.defringe_purple_amount > 0.0;
-            control_as(app, ui, d, "optics.defringePurpleHueLo", on, Some("Hue Low"));
-            control_as(app, ui, d, "optics.defringePurpleHueHi", on, Some("Hue High"));
-            sub_title(ui, crate::i18n::tr("Green"));
-            control_as(app, ui, d, "optics.defringeGreen", true, Some("Amount"));
-            let on = d.optics.defringe_green_amount > 0.0;
-            control_as(app, ui, d, "optics.defringeGreenHueLo", on, Some("Hue Low"));
-            control_as(app, ui, d, "optics.defringeGreenHueHi", on, Some("Hue High"));
-            sub_title(ui, crate::i18n::tr("Lateral Chromatic Aberration"));
-            control_as(app, ui, d, "optics.caRed", true, Some("Red/Cyan"));
-            control_as(app, ui, d, "optics.caBlue", true, Some("Blue/Yellow"));
+            crate::widgets::slider_group(ui, "defringe", |ui| {
+                sub_title(ui, crate::i18n::tr("Purple"));
+                control_as(app, ui, d, "optics.defringePurple", true, Some("Amount"));
+                let on = d.optics.defringe_purple_amount > 0.0;
+                control_as(app, ui, d, "optics.defringePurpleHueLo", on, Some("Hue Low"));
+                control_as(app, ui, d, "optics.defringePurpleHueHi", on, Some("Hue High"));
+                sub_title(ui, crate::i18n::tr("Green"));
+                control_as(app, ui, d, "optics.defringeGreen", true, Some("Amount"));
+                let on = d.optics.defringe_green_amount > 0.0;
+                control_as(app, ui, d, "optics.defringeGreenHueLo", on, Some("Hue Low"));
+                control_as(app, ui, d, "optics.defringeGreenHueHi", on, Some("Hue High"));
+                sub_title(ui, crate::i18n::tr("Lateral Chromatic Aberration"));
+                control_as(app, ui, d, "optics.caRed", true, Some("Red/Cyan"));
+                control_as(app, ui, d, "optics.caBlue", true, Some("Blue/Yellow"));
+            });
         }
         ui.add_space(8.0);
     });
@@ -487,8 +525,16 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             control(app, ui, d, c, enabled);
         }
         sub_title(ui, crate::i18n::tr("Grain"));
-        for c in ["grain.amount", "grain.size", "grain.roughness"] {
-            control(app, ui, d, c, c == "grain.amount" || d.grain.amount != 0.0);
+        // process V7's particle grain has its own controls (OneSlips); earlier processes render the
+        // value-noise grain, which only reads Amount, Size and Roughness
+        let particles = d.process.process() == lcc_develop::Process::V7;
+        let grain: &[&str] = if particles {
+            &["grain.amount", "grain.size", "grain.sizeVariation", "grain.roughness", "grain.clumping", "grain.color", "grain.response", "grain.seed"]
+        } else {
+            &["grain.amount", "grain.size", "grain.roughness"]
+        };
+        for c in grain {
+            control(app, ui, d, c, *c == "grain.amount" || d.grain.amount != 0.0);
         }
         ui.add_space(8.0);
     });
@@ -518,7 +564,6 @@ fn profile_menu(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, below:
 }
 
 fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, below: f32) {
-    use lcc_engine::presets::{PROFILES, profile_groups};
     let t = Tokens::get(ui.ctx());
     ui.set_min_width(200.0);
     let cur = d.profile.id.as_str();
@@ -548,35 +593,20 @@ fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, b
         }
         ui.separator();
     }
-    for g in profile_groups() {
-        let r = crate::widgets::menu_button(ui, crate::i18n::tr(g), |ui| {
+    // every group with the Profile Manager's names, groups and order (hidden and removed ones left out)
+    for g in app.session.shown_groups() {
+        // a built-in group is translated; an imported folder or the user's group keeps its name and its own widget id
+        let label = crate::i18n::builtin_label(&g.name, !g.imported).to_string();
+        let r = crate::widgets::menu_button(ui, label, |ui| {
             crate::menu_level::level(ui, 2, Some(below), |ui| {
                 ui.set_min_width(170.0);
-                for p in PROFILES.iter().filter(|p| p.group == g) {
-                    item(ui, "group", p.id, p.name, &mut pick);
-                }
-            });
-        });
-        register(ui.ctx(), format!("profileMenu:groupMenu:{g}"), r.response.rect);
-        if r.inner.is_some() {
-            crate::menu_level::set_anchor(ui.ctx(), 2, r.response.rect);
-        }
-    }
-    // imported LUT profile groups
-    let mut lut_groups: Vec<String> = app.session.lut_profiles.iter().map(|p| p.group.clone()).collect();
-    lut_groups.sort_unstable();
-    lut_groups.dedup();
-    for g in &lut_groups {
-        // a folder's name as it is, and its own widget id even when it matches a built-in group
-        let r = crate::widgets::menu_button(ui, g.as_str(), |ui| {
-            crate::menu_level::level(ui, 2, Some(below), |ui| {
-                ui.set_min_width(170.0);
-                for p in app.session.lut_profiles.iter().filter(|p| &p.group == g) {
+                for p in &g.profiles {
                     item(ui, "group", &p.id, &p.name, &mut pick);
                 }
             });
         });
-        register(ui.ctx(), format!("profileMenu:lutGroupMenu:{g}"), r.response.rect);
+        let wid = if g.imported { format!("profileMenu:lutGroupMenu:{}", g.name) } else { format!("profileMenu:groupMenu:{}", g.name) };
+        register(ui.ctx(), wid, r.response.rect);
         if r.inner.is_some() {
             crate::menu_level::set_anchor(ui.ctx(), 2, r.response.rect);
         }
@@ -599,6 +629,11 @@ fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, b
     register(ui.ctx(), "profileMenu:browse", r.rect);
     if r.clicked() {
         let _ = app.run("panel.profiles", json!({}));
+    }
+    let r = ui.button(crate::i18n::tr("Manage Profiles…"));
+    register(ui.ctx(), "profileMenu:manage", r.rect);
+    if r.clicked() {
+        let _ = app.run("app.settings", json!({"tab": "profiles"}));
     }
     // resting on a profile previews it in the loupe
     if let Some(hovered_id) = &pick.1
@@ -1928,7 +1963,7 @@ fn set_tat(app: &mut LccApp, ctx: &egui::Context, tool: &str, active: bool) {
 pub(crate) const MIXER_ADJUST: [(&str, &str); 2] = [("HSL", "hsl"), ("Color", "color")];
 pub(crate) const MIXER_GROUPS: [(&str, &str); 4] = [("Hue", "hue"), ("Saturation", "sat"), ("Luminance", "lum"), ("All", "all")];
 /// The mixer bands' names, as the HSL sliders are labelled (parallel to `MIXER_BANDS`).
-const BAND_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"];
+pub(crate) const BAND_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"];
 
 /// A Color Mixer targeted adjustment (`tat:hue|sat|lum`) whose button the mixer's layout no longer
 /// shows is put down (a B&W photo shows Luminance's only, Point Color none, HSL the chosen group's
@@ -2024,7 +2059,7 @@ fn mixer(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 }
 
 /// A word tab (Hue, Saturation…): bright and underlined when it is the one shown.
-fn group_tab(ui: &mut egui::Ui, id: &str, label: &str, active: bool) -> egui::Response {
+pub(crate) fn group_tab(ui: &mut egui::Ui, id: &str, label: &str, active: bool) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let font = t.semibold(11.5);
     let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), t.text);
@@ -2104,7 +2139,7 @@ fn mixer_by_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 // ------------------------------------------------------------------------------ point color
 
 /// Display colour of an OkLCh sample (lightness, chroma, hue in degrees).
-fn oklch_color(l: f64, c: f64, h_deg: f64) -> Color32 {
+pub(crate) fn oklch_color(l: f64, c: f64, h_deg: f64) -> Color32 {
     use lcc_color::perceptual::{lch_to_lab, oklab_to_2020};
     let lin = oklab_to_2020(lch_to_lab([l as f32, c as f32, (h_deg as f32).to_radians()]));
     let s = lcc_color::REC2020.to_space(&lcc_color::SRGB).apply_f32(lin);

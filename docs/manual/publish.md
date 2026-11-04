@@ -3,8 +3,8 @@
 > Names in angle brackets are the values set in [`brand.toml`](../../brand.toml); see the [manual index](README.md).
 
 A publish service keeps a destination in step with collections, as in Lightroom Classic. Each service has a kind,
-a name and its own export settings, and holds **published collections**. A published collection is an ordinary album
-(inside a collection set named after the service), so you add and remove photos as with any album. Every photo in
+a name and its own export settings, and holds **published collections**. A published collection is an ordinary collection
+(inside a collection set named after the service), so you add and remove photos as with any collection. Every photo in
 it is **new**, **modified** (edited since it was published), **published**, or **to remove** (taken out of the
 collection); Publish sends the new and modified ones and removes the rest.
 

@@ -92,3 +92,52 @@ fn masking_long_names_and_describe_controls_stay_inside_the_panel() {
         }
     }
 }
+
+fn panel_with_lum(width: f32) -> Vec<(String, Rect)> {
+    let mut app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
+    app.run("mask.add", json!({"kind": "luminanceRange", "lo": 0.2, "hi": 0.8})).unwrap();
+    let photo = app.session.active().unwrap();
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    crate::theme::apply(&ctx);
+    let mut widgets = Vec::new();
+    for frame in 0..3 {
+        let raw = HeadlessView::raw_input(vec2(width, 1600.0), 1.0, frame as f64 / 60.0, vec![]);
+        let mut out = ctx.run_ui(raw, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                crate::panels::masking::show(&mut app, ui, photo);
+            });
+        });
+        out.textures_delta.clear();
+        widgets = crate::widgets::take_registry(&ctx);
+    }
+    widgets
+}
+
+#[test]
+fn masking_tiles_block_is_centered_in_panel() {
+    for width in [270.0, 330.0, 420.0, 520.0] {
+        let (_, widgets) = panel(width, 1.0, Locale::En, false);
+        let object_rect = widgets.iter().find(|(id, _)| id == "maskNew:object").unwrap().1;
+        let row1_right = widgets
+            .iter()
+            .filter(|(id, r)| id.starts_with("maskNew:") && !id.contains("Label") && (r.top() - object_rect.top()).abs() < 1.0)
+            .map(|(_, r)| r.right())
+            .fold(0.0, f32::max);
+        let left_pad = object_rect.left();
+        let right_pad = width - row1_right;
+        assert!((left_pad - right_pad).abs() <= 2.0, "width {width}: left_pad {left_pad} != right_pad {right_pad}");
+    }
+}
+
+#[test]
+fn luminance_range_slider_fills_panel_width_without_arbitrary_cap() {
+    for width in [300.0, 400.0, 500.0] {
+        let widgets = panel_with_lum(width);
+        let lum_rect = widgets.iter().find(|(id, _)| id == "lumRange:0").unwrap().1;
+        assert!(lum_rect.width() > 240.0, "width {width}: lum_rect.width() = {} should exceed 240.0", lum_rect.width());
+        assert!(lum_rect.left() >= 12.0 && lum_rect.right() <= width - 12.0);
+        let expected_w = width - 16.0 - 16.0;
+        assert!((lum_rect.width() - expected_w).abs() <= 1.0, "width {width}: expected width {expected_w}, got {}", lum_rect.width());
+    }
+}

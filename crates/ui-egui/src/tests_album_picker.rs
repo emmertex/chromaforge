@@ -278,8 +278,8 @@ mod import_review {
         click(&mut h, "importAlbum:new");
         replace_name(&mut h, "Keep this name");
         click(&mut h, "albumPicker:import-album");
-        text(&mut h, "no such album");
-        assert!(h.painted_text().iter().any(|t| t == "No albums match"));
+        text(&mut h, "no such collection");
+        assert!(h.painted_text().iter().any(|t| t == "No collections match"));
         key(&mut h, "Enter");
         assert!(has(&h, "albumPickerSearch:import-album"), "Enter with no result keeps the picker open");
         key(&mut h, "Escape");
@@ -360,10 +360,10 @@ mod import_review {
             assert!(h.settle(SETTLE));
             assert!(button_text(&h, "albumPicker:import-album", locale.tr("None")), "{locale:?}: localized empty destination");
             click(&mut h, "albumPicker:import-album");
-            assert!(button_text(&h, "importAlbum:new", locale.tr("New album…")), "{locale:?}: localized new-album option");
+            assert!(button_text(&h, "importAlbum:new", locale.tr("New collection…")), "{locale:?}: localized new-album option");
             click(&mut h, "importAlbum:new");
             assert_eq!(destination(&h).new_album, locale.tr("Imported Photos"));
-            assert!(button_text(&h, "albumPicker:import-album", locale.tr("New album")));
+            assert!(button_text(&h, "albumPicker:import-album", locale.tr("New collection")));
             click(&mut h, "albumPicker:import-album");
             click(&mut h, "importAlbum:none");
         }
@@ -379,7 +379,7 @@ mod import_review {
         h.app.ui.dialog = Some(crate::state::Dialog::Import { opts: Box::new(crate::import::ImportDialog::new(vec![file])) });
         assert!(h.settle(SETTLE));
         click(&mut h, "albumPicker:import-album");
-        assert!(h.painted_text().iter().any(|t| t == "No albums yet"));
+        assert!(h.painted_text().iter().any(|t| t == "No collections yet"));
         click(&mut h, "importAlbum:new");
         assert!(has(&h, "field:importAlbumName"));
         click(&mut h, "albumPicker:import-album");

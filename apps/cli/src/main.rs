@@ -10,6 +10,7 @@
 //! <cli> merge hdr|panorama|hdr-panorama|hdr-batch|focus [OPTIONS] FILES…
 //! <cli> synth-merge hdr|panorama|focus -o DIR
 //! <cli> denoise-serve [--model ID] [--models DIR] [--listen ADDR] [--token-env VAR] [--run-on auto|gpu|cpu]
+//! <cli> genfill-mock [--port N] [--key KEY] [--fill patchmatch|mean]
 //! <cli> commands [--json]
 //! <cli> controls [--json]
 //! <cli> calibrate [--max N] [--out DIR] FOLDERS/FILES…
@@ -54,10 +55,13 @@ USAGE:
       Options:
         --demo            headless, the procedural demo library
         --library DIR     headless, open (or create) a {app} library; edits are saved
+                          (@app: the library the desktop app opens)
         --import PATH     headless, import a file or folder first (repeatable)
         --connect [ADDR]  drive the running app (`{bin} --control 7980`; default 127.0.0.1:7980)
         --script FILE|-   also run JSON lines {\"command\": id, \"params\": {…}} (or {\"method\": …})
         --keep-going      continue after a failed command
+        --shared-settings headless without --library: use the shared presets and profiles (the settings
+                          folder's Library Store), e.g. `run --shared-settings store.gatherPresets`; quit the app first
   {cli} run-action NAME [OPTIONS] [param=value…] [ids=[…]]
       Play a saved action (actions.list) on the selection, or on `ids`; OPTIONS as for `run`.
   {cli} sync-folder [OPTIONS] FOLDER
@@ -116,6 +120,11 @@ USAGE:
   {cli} synth-merge hdr|panorama|focus -o DIR
       Write synthetic merge inputs (procedural scene; bracketed DNGs, overlapping PNG views or a
       focus bracket as PNGs).
+  {cli} genfill-mock [--port N] [--key KEY] [--fill patchmatch|mean]
+      A local stand-in for the generative fill providers (OpenAI, Stability AI, Black Forest Labs,
+      fal.ai request shapes) on 127.0.0.1, for testing without an account: start {app} with
+      {P}_GENFILL_MOCK=http://127.0.0.1:PORT and any key. It fills holes with {app}'s own
+      content-aware fill (or a flat mean); nothing leaves this computer. Default port 18510.
   {cli} denoise-serve [OPTIONS]
       Run AI Denoise tiles for {app} on other computers ({P}_DENOISE_URL=<this host>:7990 and
       {P}_DENOISE_TOKEN there; see docs/denoise.md). Serves the installed model selected in Settings,
@@ -132,7 +141,7 @@ USAGE:
   {cli} controls [--json]   list every develop control id with its range
   {cli} calibrate [--max N] [--out DIR] FOLDERS/FILES…
       Fit a colour profile per camera model from raw files and their embedded camera JPEGs
-      (Sony ARW, Nikon NEF, Fujifilm RAF): up to N files spread over the folders (default 300; 0 = all), pooled per
+      (Sony ARW, Nikon NEF, Fujifilm RAF, Canon CR3/CR2, Panasonic RW2, Olympus ORF, Pentax PEF…): up to N files spread over the folders (default 300; 0 = all), pooled per
       model, written as <model>.json to DIR (default: the profiles folder {app} reads,
       <config>/camera-profiles, or ${P}_CAMERA_PROFILES). Raws of a profiled model then
       take their colour from the profile and only their tone from their own JPEG.
@@ -195,6 +204,34 @@ const BIN: &str = lcc_brand::BINARY;
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
+
+/// `--library @app`: the library the desktop app opens — the one last opened with Settings → Open
+/// Library… (`settings.libraryPath` in its `ui.json`, unless `<PREFIX>_LIBRARY` is set), else the
+/// default location — so a headless run (a prep run before culling) fills the same preview cache
+/// the app reads.
+pub const APP_LIBRARY: &str = "@app";
+
+fn app_library_with(config: Option<std::path::PathBuf>, env_set: bool, default: Option<std::path::PathBuf>) -> Option<String> {
+    let saved = config
+        .filter(|_| !env_set)
+        .and_then(|d| std::fs::read(d.join("ui.json")).ok())
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get("settings")?.get("libraryPath")?.as_str().map(str::to_string))
+        .filter(|p| !p.trim().is_empty());
+    saved.or_else(|| default.map(|d| d.to_string_lossy().into_owned()))
+}
+
+/// The folder `--library` names: `@app` is the desktop app's library ([`APP_LIBRARY`]).
+fn library_arg(dir: &str) -> Result<String, String> {
+    if dir != APP_LIBRARY {
+        return Ok(dir.to_string());
+    }
+    let env_set = lcc_brand::env_os("LIBRARY").is_some_and(|v| !v.is_empty());
+    let found = app_library_with(lcc_engine::config::config_dir(), env_set, lcc_engine::library::default_dir())
+        .ok_or_else(|| "--library @app: no home folder to find the app's library in".to_string())?;
+    eprintln!("{CLI}: the app's library is {found}");
+    Ok(found)
+}
 
 /// Why `--library DIR` can't be opened; for a library open in another program, how to work with
 /// that one instead (issue #99).
@@ -266,6 +303,7 @@ fn main() -> ExitCode {
         Some("synth-merge") => synth_merge(&args[1..]),
         Some("controls") => controls(&args[1..]),
         Some("denoise-serve") => denoise_serve(&args[1..]),
+        Some("genfill-mock") => genfill_mock(&args[1..]),
         Some("calibrate") => calibrate(&args[1..]),
         Some("camdb") => camdb(&args[1..]),
         Some("calibrate-lightroom") => calibrate_lightroom::run(&args[1..]),
@@ -291,26 +329,37 @@ fn main() -> ExitCode {
 }
 
 /// Raw files below `path` (or `path` itself), skipping hidden and NAS metadata folders.
-fn raw_files(path: &Path, out: &mut Vec<std::path::PathBuf>, depth: usize) {
-    let is_raw =
-        |p: &Path| p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["arw", "nef", "nrw", "raf"].iter().any(|x| e.eq_ignore_ascii_case(x)));
+///
+/// Folders go through the engine's bounded walk ([`lcc_engine::walk::files_in_entering`]): it enters a folder reached
+/// through a link once at most and stops at a depth and an entry budget. A folder of links pointing back at their
+/// parents made the old recursive walk re-read the same folders exponentially often before its depth limit cut it
+/// off (upstream #3643).
+fn raw_files(path: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let is_raw = |p: &Path| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| ["arw", "nef", "nrw", "raf", "cr3", "cr2", "rw2", "orf", "pef", "srw", "erf"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+    };
     if path.is_file() {
         if is_raw(path) {
             out.push(path.to_path_buf());
         }
         return;
     }
-    let Ok(entries) = std::fs::read_dir(path) else { return };
-    if depth > 32 {
-        return;
+    // (hidden entries are left out by the walk; `@eaDir` and other NAS metadata folders and files here, folders
+    // before they are listed so their entries do not use up the walk's budget)
+    let nas_metadata = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('@'));
+    let walked = lcc_engine::walk::files_in_entering(
+        path,
+        None,
+        lcc_engine::walk::Limits::default(),
+        |p| is_raw(p) && !nas_metadata(p) && p.is_file(),
+        |p| !nas_metadata(p),
+    );
+    if walked.truncated {
+        eprintln!("calibrate: {} has more folders or entries than a walk looks at; the rest is left out", path.display());
     }
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        if name.to_string_lossy().starts_with(['.', '@']) {
-            continue;
-        }
-        raw_files(&entry.path(), out, depth + 1);
-    }
+    out.extend(walked.files);
 }
 
 /// `camdb extract`: entries from camera-native DNGs; `camdb show`: the entry a camera resolves to.
@@ -372,7 +421,7 @@ fn calibrate(args: &[String]) -> Result<(), String> {
     }
     let mut files = Vec::new();
     for input in &inputs {
-        raw_files(Path::new(input), &mut files, 0);
+        raw_files(Path::new(input), &mut files);
     }
     files.sort();
     files.dedup();
@@ -467,7 +516,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
             "--headless" => connect = None,
             "--demo" => demo = true,
             "--compact" => compact = true,
-            "--library" => library = Some(take_value(args, &mut i, "--library")?.to_string()),
+            "--library" => library = Some(library_arg(take_value(args, &mut i, "--library")?)?),
             a if a.starts_with("--") => return Err(format!("unknown option `{a}`")),
             f => files.push(f.to_string()),
         }
@@ -493,6 +542,8 @@ fn mcp(args: &[String]) -> Result<(), String> {
             let mut h = match &library {
                 Some(dir) => {
                     let mut h = Headless::default();
+                    // the presets and profiles every library shares (the settings folder's Library Store)
+                    h.session.use_default_app_store();
                     catalog_migrate::migrate_with_progress(dir)?;
                     let r = h.session.open_library(dir, demo).map_err(|e| library_error(dir, e))?;
                     eprintln!("{CLI} mcp: opened library {dir} ({r:?})");
@@ -563,7 +614,7 @@ fn merge(args: &[String]) -> Result<(), String> {
         }
         i += 1;
     }
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_system_clock().with_default_connections();
+    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_connections();
     let paths = expand_paths(&files);
     let r = s.execute("library.import", &json!({"paths": paths})).map_err(|e| e.to_string())?;
     let mut ids: Vec<u64> = r["imported"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
@@ -679,6 +730,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut imports = Vec::new();
     let mut script: Option<String> = None;
     let mut keep_going = false;
+    let mut shared_settings = false;
     let mut i = 0;
     while i < args.len() && args[i].starts_with("--") {
         match args[i].as_str() {
@@ -695,10 +747,11 @@ fn run(args: &[String]) -> Result<(), String> {
             },
             a if a.starts_with("--connect=") => connect = Some(a["--connect=".len()..].to_string()),
             "--demo" => demo = true,
-            "--library" => library = Some(take_value(args, &mut i, "--library")?.to_string()),
+            "--library" => library = Some(library_arg(take_value(args, &mut i, "--library")?)?),
             "--import" => imports.push(take_value(args, &mut i, "--import")?.to_string()),
             "--script" => script = Some(take_value(args, &mut i, "--script")?.to_string()),
             "--keep-going" => keep_going = true,
+            "--shared-settings" => shared_settings = true,
             a => return Err(format!("unknown option `{a}`")),
         }
         i += 1;
@@ -736,8 +789,8 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let mut backend: Box<dyn Backend> = match connect {
         Some(addr) => {
-            if demo || library.is_some() || !imports.is_empty() {
-                return Err("--demo, --library and --import apply to headless mode only".into());
+            if demo || library.is_some() || !imports.is_empty() || shared_settings {
+                return Err("--demo, --library, --shared-settings and --import apply to headless mode only".into());
             }
             Box::new(Remote::connect(&addr).map_err(|e| match e.kind() {
                 std::io::ErrorKind::PermissionDenied => format!("{APP} at {addr} refused the connection: {e}"),
@@ -748,12 +801,20 @@ fn run(args: &[String]) -> Result<(), String> {
             let mut h = match &library {
                 Some(dir) => {
                     let mut h = Headless::default();
+                    h.session.use_default_app_store();
                     catalog_migrate::migrate_with_progress(dir)?;
                     h.session.open_library(dir, demo).map_err(|e| library_error(dir, e))?;
                     library_warnings(&mut h.session, "lcc-cli");
                     h
                 }
                 None if demo => Headless::demo(),
+                None if shared_settings => {
+                    // the shared presets and profiles without a library (`store.*`, presets)
+                    let mut h = Headless::default();
+                    h.session.use_default_app_store();
+                    library_warnings(&mut h.session, "lcc-cli");
+                    h
+                }
                 None => Headless::default(),
             };
             if !imports.is_empty() {
@@ -881,7 +942,7 @@ fn render(args: &[String]) -> Result<(), String> {
     }
     let input = input.ok_or("render: missing input file")?;
     let output = output.ok_or("render: missing -o OUTPUT")?;
-    let mut s = Session::new().with_fs().with_default_denoise_models().with_system_clock().with_default_connections();
+    let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_connections();
     let abs = expand_paths(std::slice::from_ref(&input));
     let r = s.execute("library.import", &json!({"paths": abs})).map_err(|e| e.to_string())?;
     let id = r["imported"][0].as_u64().ok_or_else(|| format!("{input}: not a readable photo"))?;
@@ -970,7 +1031,7 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     while i < args.len() {
         match args[i].as_str() {
             "--demo" => {}
-            "--library" => library = Some(take_value(args, &mut i, "--library")?.to_string()),
+            "--library" => library = Some(library_arg(take_value(args, &mut i, "--library")?)?),
             "--script" => script = Some(take_value(args, &mut i, "--script")?.to_string()),
             "-o" | "--output" => output = Some(take_value(args, &mut i, "-o")?.to_string()),
             "--size" => {
@@ -994,12 +1055,14 @@ fn snapshot(args: &[String]) -> Result<(), String> {
             let mut s = Session::new()
                 .with_fs()
                 .with_default_denoise_models()
+                .with_default_genfill()
                 .with_system_clock()
                 .with_default_connections()
                 .with_default_face_models()
                 .with_default_lens_profiles()
                 .with_default_sam3_model()
-                .with_default_slide_templates();
+                .with_default_slide_templates()
+                .with_default_app_store();
             catalog_migrate::migrate_with_progress(dir)?;
             s.open_library(dir, false).map_err(|e| library_error(dir, e))?;
             s
@@ -1007,6 +1070,7 @@ fn snapshot(args: &[String]) -> Result<(), String> {
         None if files.is_empty() => Session::with_demo()
             .with_fs()
             .with_default_denoise_models()
+            .with_default_genfill()
             .with_system_clock()
             .with_default_connections()
             .with_default_face_models()
@@ -1016,6 +1080,7 @@ fn snapshot(args: &[String]) -> Result<(), String> {
         None => Session::new()
             .with_fs()
             .with_default_denoise_models()
+            .with_default_genfill()
             .with_system_clock()
             .with_default_connections()
             .with_default_face_models()
@@ -1206,6 +1271,46 @@ fn controls(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `genfill-mock`: the generative fill providers' request shapes on 127.0.0.1, answered with
+/// the app's own content-aware fill (`lcc_genfill::cloud::mock`).
+fn genfill_mock(args: &[String]) -> Result<(), String> {
+    let (mut port, mut key, mut fill) = (18510u16, None::<String>, "patchmatch".to_string());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--port" => port = it.next().and_then(|v| v.parse().ok()).ok_or("genfill-mock: --port N")?,
+            "--key" => key = Some(it.next().ok_or("genfill-mock: --key KEY")?.clone()),
+            "--fill" => fill = it.next().ok_or("genfill-mock: --fill patchmatch|mean")?.clone(),
+            other => return Err(format!("genfill-mock: unknown option `{other}`")),
+        }
+    }
+    let filler: lcc_genfill::cloud::mock::Filler = match fill.as_str() {
+        "mean" => lcc_genfill::cloud::mock::mean_filler(),
+        "patchmatch" => std::sync::Arc::new(|w, h, rgb: &[u8], mask: &[u8], var| {
+            let img: Vec<f32> = rgb.iter().map(|v| f32::from(*v) / 255.0).collect();
+            let hole: Vec<bool> = mask.iter().map(|m| *m >= 128).collect();
+            let p = lcc_inpaint::CompleteParams { seed: u64::from(var) + 1, ..Default::default() };
+            let out = lcc_inpaint::complete(w, h, 3, &img, &hole, &p).unwrap_or_else(|| lcc_inpaint::membrane_fill(w, h, 3, &img, &hole));
+            out.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect()
+        }),
+        other => return Err(format!("genfill-mock: --fill patchmatch|mean, not `{other}`")),
+    };
+    let server =
+        lcc_genfill::cloud::mock::MockServer::start(port, key.as_deref(), filler).map_err(|e| format!("genfill-mock: 127.0.0.1:{port}: {e}"))?;
+    eprintln!(
+        "{} genfill-mock: listening on {} ({fill} fill{}); set {}={} for {}",
+        lcc_brand::CLI_BINARY,
+        server.base,
+        if key.is_some() { ", key required" } else { "" },
+        lcc_brand::env_var("GENFILL_MOCK"),
+        server.base,
+        lcc_brand::DISPLAY_NAME
+    );
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+}
+
 /// `denoise-serve`: the remote half of AI Denoise (`lcc_denoise::remote`).
 #[cfg(feature = "denoise")]
 fn denoise_serve(args: &[String]) -> Result<(), String> {
@@ -1249,4 +1354,57 @@ fn denoise_serve(args: &[String]) -> Result<(), String> {
 #[cfg(not(feature = "denoise"))]
 fn denoise_serve(_: &[String]) -> Result<(), String> {
     Err("denoise-serve: this build has no denoise support (build with the `denoise` feature)".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `--library @app` finds the library the app opens: its saved Settings → Open Library…
+    // choice, unless the environment names one, else the default; anything else is passed through
+    #[test]
+    fn library_at_app_reads_the_apps_saved_library() {
+        let d = std::env::temp_dir().join(format!("cli-app-library-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let default = Some(std::path::PathBuf::from("/home/me/Pictures/Library"));
+        let def = default.clone().map(|p| p.to_string_lossy().into_owned());
+        assert_eq!(app_library_with(Some(d.clone()), false, default.clone()), def, "no settings yet");
+        std::fs::write(d.join("ui.json"), br#"{"settings": {"libraryPath": "/Volumes/Photos/Lib"}}"#).unwrap();
+        assert_eq!(app_library_with(Some(d.clone()), false, default.clone()).as_deref(), Some("/Volumes/Photos/Lib"));
+        assert_eq!(app_library_with(Some(d.clone()), true, default.clone()), def, "the environment wins, as in the app");
+        std::fs::write(d.join("ui.json"), br#"{"settings": {"libraryPath": ""}}"#).unwrap();
+        assert_eq!(app_library_with(Some(d.clone()), false, default.clone()), def);
+        std::fs::write(d.join("ui.json"), b"{not json").unwrap();
+        assert_eq!(app_library_with(Some(d.clone()), false, default.clone()), def);
+        assert_eq!(app_library_with(None, false, None), None);
+        assert_eq!(library_arg("/some/dir").unwrap(), "/some/dir");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod raw_files_tests {
+    use super::raw_files;
+
+    /// Links back to their own folders are entered once, not once per path that reaches them: a
+    /// handful of such links made the old walk list the same folders exponentially often.
+    #[test]
+    fn folder_links_back_up_are_walked_once() {
+        let dir = std::env::temp_dir().join(format!("cli-raw-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = dir.join("a");
+        std::fs::create_dir_all(a.join("@eaDir")).unwrap();
+        std::fs::write(a.join("one.NEF"), b"").unwrap();
+        std::fs::write(a.join("@eaDir").join("thumb.nef"), b"").unwrap();
+        std::fs::write(a.join("notes.txt"), b"").unwrap();
+        for i in 0..8 {
+            std::os::unix::fs::symlink(&dir, a.join(format!("up{i}"))).unwrap();
+        }
+        let started = std::time::Instant::now();
+        let mut files = Vec::new();
+        raw_files(&dir, &mut files);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "walk took {:?}", started.elapsed());
+        assert_eq!(files, vec![a.join("one.NEF")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

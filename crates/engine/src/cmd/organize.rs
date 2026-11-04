@@ -136,7 +136,7 @@ pub(crate) fn virtual_copy(s: &mut Session, src: PhotoId, name: &str) -> Result<
     c.copy_of = Some(master);
     c.copy_name = Some(name.to_string());
     c.versions.clear();
-    c.history = vec![HistoryStep { label: "Virtual Copy".into(), settings: c.develop.clone() }];
+    c.history = vec![HistoryStep { label: "Virtual Copy".into(), settings: c.develop.clone(), batch: None }];
     c.deleted = false;
     let mut ops = vec![Op::AddPhoto { photo: Box::new(c) }];
     for a in s.catalog.albums().filter(|a| !a.is_smart() && a.photos.contains(&src)) {

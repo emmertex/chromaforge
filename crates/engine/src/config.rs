@@ -142,6 +142,10 @@ impl Session {
             .map(PathBuf::from)
             .or_else(|| config_dir().map(|d| d.join("models").join("birefnet")));
         self.segmenter.subject.sync(&self.activity);
+        // the openly licensed models (SAM 2.1, Depth Anything): `<config>/models/<model>`
+        self.segmenter.models_root = config_dir().map(|d| d.join("models"));
+        self.segmenter.load_prefs();
+        self.segmenter.scene_sync(&self.activity);
         self
     }
 

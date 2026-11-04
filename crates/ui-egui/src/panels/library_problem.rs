@@ -107,6 +107,9 @@ pub struct LibraryProblem {
     /// The window lists the recent libraries to choose from instead (issue #1290); `error` then
     /// says why the last one tried didn't open.
     pub chooser: Option<Chooser>,
+    /// The library remembered by the settings was not there at launch (an unmounted drive, say): Try Again
+    /// opens it only once a library is found there again, and never creates an empty one.
+    pub never_create: bool,
 }
 
 /// Why a library didn't open, from its error: each gets its own words and actions. Only a catalog
@@ -972,7 +975,14 @@ fn act(app: &mut LccApp, choice: Choice) {
     let Some(problem) = app.library_problem.clone() else { return };
     let chosen = problem.chooser.as_ref().and_then(|c| c.selected.and_then(|i| c.libraries.get(i)).map(|l| (l.clone(), c.over)));
     match choice {
-        Choice::Retry => open(app, Some(problem.path)),
+        Choice::Retry => {
+            // a remembered library that is still not there stays a problem; nothing is created in its place
+            let at = lcc_engine::library::resolve_dir(Path::new(&problem.path)).unwrap_or_else(|_| problem.path.clone().into());
+            if problem.never_create && !lcc_engine::library::is_library(&at) {
+                return;
+            }
+            open(app, Some(problem.path))
+        }
         Choice::Choose => open(app, None),
         Choice::Open => {
             let Some((library, over)) = chosen.filter(|(l, _)| l.unavailable.is_none()) else { return };

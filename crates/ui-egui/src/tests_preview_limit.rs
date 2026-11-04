@@ -408,6 +408,7 @@ mod in_the_loupe {
             points: vec![lcc_geom::Point::new(0.5, 0.5)],
             size: 0.01,
             source_offset: Some(lcc_geom::Point::new(0.05, 0.0)),
+            auto: None,
             ..Default::default()
         });
         h.app.session.set_develop(id, s, "Spot").unwrap();
@@ -488,6 +489,8 @@ mod in_the_loupe {
     /// Drag Exposure in the loupe and return the long edge of the whole-frame draft shown, with
     /// the largest a small (CPU-sized) draft of the photo as drawn can be.
     fn drag_exposure(h: &mut Headless) -> (usize, usize) {
+        // (the drag's drafts, not the refine of a still photo, are what these tests look at)
+        h.app.still_refine.never = true;
         h.app.session.begin_interaction("Exposure").unwrap();
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.5}}), T);
         h.settle(SETTLE);
@@ -798,12 +801,12 @@ mod in_the_loupe {
     /// The meshes the last frame drew with `slot`'s texture: (paint order, clip rect, bounds).
     fn drawn(h: &Headless, slot: Slot) -> Vec<(usize, egui::Rect, egui::Rect)> {
         let Some(tex) = h.app.renderer.textures.get(&slot) else { return vec![] };
-        drawn_with(h, &[tex.tex.id()])
+        drawn_with(h, &[tex.id()])
     }
 
     /// The meshes the last frame drew with one side's tiles.
     fn drawn_tiles(h: &Headless, before: bool) -> Vec<(usize, egui::Rect, egui::Rect)> {
-        let ids: Vec<_> = h.app.renderer.tiles.iter().filter(|(k, _)| k.before() == before).map(|(_, t)| t.tex.id()).collect();
+        let ids: Vec<_> = h.app.renderer.tiles.iter().filter(|(k, _)| k.before() == before).map(|(_, t)| t.id()).collect();
         drawn_with(h, &ids)
     }
 
@@ -1001,6 +1004,8 @@ mod in_the_loupe {
             let m = h.app.renderer.memory();
             (m["stageCaches"]["gpuBytes"].as_u64().unwrap() + m["stageCaches"]["cpuBytes"].as_u64().unwrap()) as usize
         };
+        // (the drag's drafts, not the refine of a still photo after each settle, are looked at)
+        h.app.still_refine.never = true;
         // (the drag window's cache is made by the first tick of a drag)
         h.app.session.begin_interaction("Exposure").unwrap();
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.05}}), T);

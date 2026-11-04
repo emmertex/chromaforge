@@ -598,7 +598,7 @@ fn paint_segment(app: &mut LccApp, ui: &egui::Ui, frame: Rect, seg: Segment, pho
     let ppp = ui.ctx().pixels_per_point();
     let g0 = geometry(frame.width() as usize, frame.height() as usize, 3, 2, &s);
     crate::panels::grid::request_thumb(app, id, (g0.cell.w().max(g0.cell.h()) * ppp) as usize, 9);
-    let tex = app.renderer.thumb(id).map(|t| (t.tex.id(), t.tex.size()));
+    let tex = app.renderer.thumb(id).map(|t| (t.id(), t.tex.size()));
     let (pw, ph) = tex.map_or((3, 2), |(_, sz)| (sz[0], sz[1]));
     let g: Geometry = geometry(frame.width().round() as usize, frame.height().round() as usize, pw, ph, &s);
     let at = frame.min;

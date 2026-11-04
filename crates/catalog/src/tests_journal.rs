@@ -43,7 +43,7 @@ fn op_for(c: &mut Catalog, kind: u8, a: u8, b: u8) -> Op {
             Op::Batch {
                 ops: vec![
                     Op::SetDevelop { id: pid, settings: settings.clone(), label: "Exposure".into(), edited: Some(format!("t{b}")) },
-                    Op::PushHistory { id: pid, step: HistoryStep { label: "Exposure".into(), settings } },
+                    Op::PushHistory { id: pid, step: HistoryStep { label: "Exposure".into(), settings, batch: None } },
                 ],
             }
         }
@@ -306,7 +306,7 @@ fn push_history_is_bounded_and_invertible() {
     let mut c = Catalog::new();
     let id = c.alloc_photo_id();
     c.apply(Op::AddPhoto { photo: Box::new(Photo::new(id, Source::Demo { scene: 1 }, "a", "JPEG", 1, 1, "t")) }).unwrap();
-    let step = |i: usize| HistoryStep { label: format!("s{i}"), settings: Arc::new(DevelopSettings::default()) };
+    let step = |i: usize| HistoryStep { label: format!("s{i}"), settings: Arc::new(DevelopSettings::default()), batch: None };
     for i in 0..HISTORY_LIMIT + 5 {
         c.apply(Op::PushHistory { id, step: step(i) }).unwrap();
     }
@@ -325,7 +325,7 @@ fn push_history_is_bounded_and_invertible() {
 fn add_photo_and_set_history_are_bounded_and_invertible() {
     let mut c = Catalog::new();
     let id = c.alloc_photo_id();
-    let step = |i: usize| HistoryStep { label: format!("s{i}"), settings: Arc::new(DevelopSettings::default()) };
+    let step = |i: usize| HistoryStep { label: format!("s{i}"), settings: Arc::new(DevelopSettings::default()), batch: None };
     let mut p = Photo::new(id, Source::Demo { scene: 1 }, "a", "JPEG", 1, 1, "t");
     p.history = (0..HISTORY_LIMIT + 5).map(step).collect();
     p.history_cursor = Some(10);
@@ -390,9 +390,10 @@ fn a_volume_without_a_full_flush_still_gets_its_files() {
         let mut s = FsStore::open(&dir).unwrap();
         s.write_atomic("prefs.json", b"{}").unwrap();
         s.truncate(LOG, 0).unwrap();
-        // at least the new library's snapshot, the append, the snapshot and the emptied log, prefs.json
-        // and the truncate fell back to fsync (the exact count depends on the write path)
-        assert!(crate::safe_file::plain_fsyncs_on_this_thread() - fsyncs >= 6, "each sync falls back to fsync");
+        // at least the new library's snapshot, the snapshot, prefs.json and the truncate fell back to
+        // fsync on this thread (the log's own appends and reset are synced by its writer thread;
+        // the exact count depends on the write path)
+        assert!(crate::safe_file::plain_fsyncs_on_this_thread() - fsyncs >= 4, "each sync falls back to fsync");
         c
     };
     let names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();

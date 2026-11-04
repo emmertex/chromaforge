@@ -17,6 +17,9 @@ const MAX_LSB: u8 = 3;
 fn gpu() -> bool {
     let ok = lcc_gpu::available();
     if !ok {
+        // no adapter (CI) skips; an adapter whose kernels don't build is a bug in them
+        let why = lcc_gpu::unavailable_reason().unwrap_or_default();
+        assert!(!why.contains("kernels failed to build"), "{why}");
         lcc_testkit::skip!(Gpu, "no GPU adapter");
     }
     // which card the comparisons ran on (`<PREFIX>_GPU_ADAPTER` picks one on a machine with two)
@@ -147,10 +150,13 @@ fn banded_full_size_render_matches() {
     let src = scene(3, w, h);
     let mut s = DevelopSettings::default();
     typical(&mut s);
+    // the value-noise grain (processes V1–V6)
+    s.process = lcc_develop::Process::V6.version();
     s.grain.amount = 30.0;
     s.vignette.amount = -30.0;
     s.masks = vec![Mask {
         components: vec![MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,
@@ -240,7 +246,16 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.vignette.amount = -40.0;
             s.vignette.style = VignetteStyle::PaintOverlay;
         }),
+        ("particle grain (V7)", |s| {
+            s.process = lcc_develop::Process::V7.version();
+            s.grain.amount = 50.0;
+            s.grain.size = 40.0;
+            s.grain.roughness = 60.0;
+            s.grain.color = 30.0;
+        }),
         ("grain", |s| {
+            // processes V1–V6 keep their value-noise grain
+            s.process = lcc_develop::Process::V6.version();
             s.grain.amount = 50.0;
             s.grain.size = 40.0;
             s.grain.roughness = 60.0;
@@ -269,6 +284,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
         ("local sharpness", |s| {
             s.masks = vec![Mask {
                 components: vec![MaskComponent {
+                    anchor: None,
                     name: None,
                     op: MaskOp::Add,
                     invert: false,
@@ -316,6 +332,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.masks = vec![
                 Mask {
                     components: vec![MaskComponent {
+                        anchor: None,
                         name: None,
                         op: MaskOp::Add,
                         invert: false,
@@ -337,12 +354,14 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 Mask {
                     components: vec![
                         MaskComponent {
+                            anchor: None,
                             name: None,
                             op: MaskOp::Add,
                             invert: false,
                             shape: MaskShape::Radial { center: Point::new(0.4, 0.6), rx: 0.25, ry: 0.15, angle: 20.0, feather: 60.0, invert: false },
                         },
                         MaskComponent {
+                            anchor: None,
                             name: None,
                             op: MaskOp::Intersect,
                             invert: true,
@@ -373,6 +392,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.masks = vec![
                 Mask {
                     components: vec![MaskComponent {
+                        anchor: None,
                         name: None,
                         op: MaskOp::Add,
                         invert: false,
@@ -383,6 +403,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 },
                 Mask {
                     components: vec![MaskComponent {
+                        anchor: None,
                         name: None,
                         op: MaskOp::Add,
                         invert: false,
@@ -393,10 +414,11 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 },
                 Mask {
                     components: vec![MaskComponent {
+                        anchor: None,
                         name: None,
                         op: MaskOp::Add,
                         invert: false,
-                        shape: MaskShape::ColorRange { samples: vec![[0.6, -0.05, -0.08]], refine: 50.0 },
+                        shape: MaskShape::ColorRange { samples: vec![[0.6, -0.05, -0.08]], refine: 50.0, areas: Vec::new() },
                     }],
                     adjust: lcc_develop::LocalAdjustments { saturation: 40.0, tint: 20.0, ..Default::default() },
                     invert: true,
@@ -408,8 +430,9 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.masks = vec![
                 Mask {
                     components: vec![
-                        MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Sky },
+                        MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Sky },
                         MaskComponent {
+                            anchor: None,
                             name: None,
                             op: MaskOp::Subtract,
                             invert: false,
@@ -420,12 +443,12 @@ fn cases() -> Vec<(&'static str, Edit)> {
                     ..Default::default()
                 },
                 Mask {
-                    components: vec![MaskComponent { name: None, op: MaskOp::Intersect, invert: false, shape: MaskShape::Subject }],
+                    components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Intersect, invert: false, shape: MaskShape::Subject }],
                     adjust: lcc_develop::LocalAdjustments { exposure: 0.5, ..Default::default() },
                     ..Default::default()
                 },
                 Mask {
-                    components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: true, shape: MaskShape::Background }],
+                    components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: true, shape: MaskShape::Background }],
                     adjust: lcc_develop::LocalAdjustments { saturation: -60.0, ..Default::default() },
                     invert: true,
                     ..Default::default()
@@ -434,7 +457,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
         }),
         ("masks (inverted, add and subtract)", |s| {
             let radial = |x: f64| MaskShape::Radial { center: Point::new(x, 0.5), rx: 0.15, ry: 0.15, angle: 0.0, feather: 30.0, invert: false };
-            let comp = |op, x| MaskComponent { name: None, op, invert: false, shape: radial(x) };
+            let comp = |op, x| MaskComponent { anchor: None, name: None, op, invert: false, shape: radial(x) };
             s.masks = vec![
                 Mask {
                     components: vec![comp(MaskOp::Add, 0.3), comp(MaskOp::Add, 0.7), comp(MaskOp::Subtract, 0.3)],
@@ -454,7 +477,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
             let radial = MaskShape::Radial { center: Point::new(0.4, 0.6), rx: 0.3, ry: 0.25, angle: 0.0, feather: 50.0, invert: false };
             let linear = MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.7) };
             let m = |shape, adjust| Mask {
-                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
                 adjust,
                 ..Default::default()
             };
@@ -480,7 +503,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 st(&[(0.5, 0.58)], true, true),
             ];
             s.masks = vec![Mask {
-                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
                 adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -50.0, ..Default::default() },
                 ..Default::default()
             }];
@@ -489,7 +512,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
             use lcc_develop::{LocalAdjustments as L, PointCurves};
             let pts = |v: &[(f64, f64)]| v.iter().map(|p| Point::new(p.0, p.1)).collect::<Vec<_>>();
             let m = |shape, adjust, curve, invert| Mask {
-                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
                 adjust,
                 curve,
                 invert,
@@ -521,6 +544,175 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 ),
             ];
         }),
+        ("masks (local point color)", |s| {
+            use lcc_develop::PointColor;
+            let radial = MaskShape::Radial { center: Point::new(0.45, 0.5), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: false };
+            let linear = MaskShape::Linear { start: Point::new(0.5, 0.1), end: Point::new(0.5, 0.8) };
+            let m = |shape, point_colors| Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
+                point_colors,
+                ..Default::default()
+            };
+            s.masks = vec![
+                m(
+                    radial,
+                    vec![
+                        PointColor {
+                            lum: 0.62,
+                            chroma: 0.09,
+                            hue: 60.0,
+                            hue_shift: 40.0,
+                            sat_shift: -30.0,
+                            lum_shift: 20.0,
+                            range: 80.0,
+                            ..Default::default()
+                        },
+                        PointColor { lum: 0.4, chroma: 0.01, hue: 0.0, lum_shift: -30.0, ..Default::default() },
+                    ],
+                ),
+                // a mask without samples in between: its record is empty
+                m(linear.clone(), Vec::new()),
+                m(
+                    linear,
+                    vec![PointColor { lum: 0.5, chroma: 0.12, hue: 270.0, variance: -60.0, sat_shift: 40.0, hue_range: 80.0, ..Default::default() }],
+                ),
+            ];
+        }),
+        ("masks on the photo under transform + distortion", |s| {
+            use lcc_develop::{BrushStroke, LocalAdjustments};
+            s.geometry.vertical = 35.0;
+            s.geometry.rotate = 4.0;
+            s.optics.distortion = 30.0;
+            let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
+            let adj = LocalAdjustments { exposure: 1.2, saturation: -40.0, ..Default::default() };
+            s.masks = vec![
+                Mask {
+                    components: vec![comp(MaskShape::Radial {
+                        center: Point::new(0.4, 0.45),
+                        rx: 0.25,
+                        ry: 0.2,
+                        angle: 20.0,
+                        feather: 50.0,
+                        invert: false,
+                    })],
+                    adjust: adj,
+                    ..Default::default()
+                },
+                Mask {
+                    components: vec![comp(MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.6) })],
+                    adjust: adj,
+                    ..Default::default()
+                },
+                Mask {
+                    components: vec![comp(MaskShape::Brush {
+                        strokes: vec![BrushStroke { points: vec![Point::new(0.2, 0.7), Point::new(0.7, 0.75)], size: 0.04, ..Default::default() }],
+                    })],
+                    adjust: adj,
+                    ..Default::default()
+                },
+            ];
+        }),
+        ("masks (local color mixer)", |s| {
+            use lcc_develop::{Hsl, Mixer, PointColor};
+            let radial = MaskShape::Radial { center: Point::new(0.45, 0.5), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: false };
+            let linear = MaskShape::Linear { start: Point::new(0.5, 0.1), end: Point::new(0.5, 0.8) };
+            let comp = |shape| vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }];
+            s.masks = vec![
+                // a mixer alone, strong in several bands
+                Mask {
+                    components: comp(radial),
+                    mixer: Mixer {
+                        red: Hsl { hue: 40.0, sat: -50.0, lum: 30.0 },
+                        yellow: Hsl { hue: -60.0, sat: 80.0, lum: -40.0 },
+                        blue: Hsl { hue: 30.0, sat: -100.0, lum: 50.0 },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                // a mixer with a Point Color sample after it
+                Mask {
+                    components: comp(linear),
+                    mixer: Mixer { green: Hsl { hue: 70.0, sat: 40.0, lum: -60.0 }, ..Default::default() },
+                    point_colors: vec![PointColor { lum: 0.5, chroma: 0.1, hue: 120.0, sat_shift: -40.0, range: 80.0, ..Default::default() }],
+                    ..Default::default()
+                },
+            ];
+        }),
+        ("masks (Lightroom brush)", |s| {
+            use lcc_develop::BrushStroke;
+            // overlapping soft strokes add up, a hard one, an eraser and a legacy stroke in one component
+            let st = |pts: &[(f64, f64)], feather, erase, model| BrushStroke {
+                points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+                size: 0.03,
+                feather,
+                flow: 70.0,
+                density: 90.0,
+                erase,
+                model,
+                ..Default::default()
+            };
+            let lrc = lcc_develop::BRUSH_MODEL_LRC;
+            let strokes = vec![
+                st(&[(0.2, 0.3), (0.5, 0.35), (0.7, 0.3)], 100.0, false, lrc),
+                st(&[(0.3, 0.45), (0.6, 0.4)], 80.0, false, lrc),
+                st(&[(0.25, 0.6)], 0.0, false, lrc),
+                st(&[(0.45, 0.38)], 40.0, true, lrc),
+                st(&[(0.6, 0.7), (0.8, 0.65)], 50.0, false, lcc_develop::BRUSH_MODEL_LEGACY),
+            ];
+            s.masks = vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: -1.0, ..Default::default() },
+                ..Default::default()
+            }];
+        }),
+        ("masks (Lightroom auto mask brush)", |s| {
+            use lcc_develop::BrushStroke;
+            let st = |pts: &[(f64, f64)], auto_mask, erase| BrushStroke {
+                points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+                size: 0.04,
+                feather: 60.0,
+                flow: 90.0,
+                auto_mask,
+                erase,
+                model: lcc_develop::BRUSH_MODEL_LRC,
+                ..Default::default()
+            };
+            let strokes = vec![
+                st(&[(0.2, 0.55), (0.5, 0.6), (0.8, 0.5)], true, false),
+                st(&[(0.3, 0.5), (0.6, 0.55)], true, false),
+                st(&[(0.3, 0.2), (0.6, 0.25)], false, false),
+                st(&[(0.5, 0.58)], true, true),
+            ];
+            s.masks = vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -50.0, ..Default::default() },
+                ..Default::default()
+            }];
+        }),
+        ("masks (Auto Mask range, note 1)", |s| {
+            // the same strokes tight, at the default and wide: each keeps its own range
+            let st = |pts: &[(f64, f64)], auto_range| BrushStroke {
+                points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+                size: 0.04,
+                feather: 60.0,
+                flow: 90.0,
+                auto_mask: true,
+                auto_range,
+                model: lcc_develop::BRUSH_MODEL_LRC,
+                ..Default::default()
+            };
+            let strokes = vec![
+                st(&[(0.2, 0.3), (0.8, 0.35)], -100.0),
+                st(&[(0.2, 0.55), (0.5, 0.6), (0.8, 0.5)], 0.0),
+                st(&[(0.2, 0.75), (0.8, 0.7)], 100.0),
+                st(&[(0.5, 0.45)], 37.0),
+            ];
+            s.masks = vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -50.0, ..Default::default() },
+                ..Default::default()
+            }];
+        }),
         ("calibration", |s| {
             s.calibration.shadows_tint = 40.0;
             s.calibration.red_hue = 50.0;
@@ -529,11 +721,93 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.calibration.blue_sat = 60.0;
             s.calibration.blue_hue = 25.0;
         }),
+        ("retouch teeth (cpu stage)", |s| {
+            // teeth found over the middle of the frame: the GPU reads its scene-linear image back
+            // for the retouch (lcc_pipeline::retouch_people), so both renderers run the same code
+            let side = 64;
+            let logits: Vec<f32> = (0..side * side)
+                .map(|i| {
+                    let (x, y) = ((i % side) as f64 / side as f64, (i / side) as f64 / side as f64);
+                    if (x - 0.5).hypot(y - 0.5) < 0.25 { 10.0 } else { -10.0 }
+                })
+                .collect();
+            s.retouch.teeth = lcc_develop::RetouchTeeth { person: 0, whiten: 80.0, brighten: 60.0 };
+            s.retouch_analysis = Some(lcc_develop::RetouchAnalysis {
+                orientation: Orientation::Normal,
+                masks: vec![lcc_develop::RetouchMask {
+                    part: lcc_develop::RetouchPart::Teeth,
+                    person: 0,
+                    seg: Some(lcc_develop::SegMask::from_logits(side, &logits)),
+                }],
+            });
+        }),
+        ("smooth skin (gpu)", |s| {
+            // a face over the middle of the frame, its skin a soft ellipse: Smooth Skin runs on
+            // the device (the `skin` module, from skin::plan)
+            let side = 128;
+            let logits: Vec<f32> = (0..side * side)
+                .map(|i| {
+                    let (x, y) = (((i % side) as f64 + 0.5) / side as f64, ((i / side) as f64 + 0.5) / side as f64);
+                    let d = ((x - 0.5) / 0.18).powi(2) + ((y - 0.5) / 0.24).powi(2);
+                    (8.0 * (1.0 - d)).clamp(-12.0, 12.0) as f32
+                })
+                .collect();
+            s.skin = lcc_develop::SkinSmoothing { amount: 80.0, texture: -30.0, even_tone: 50.0, redness: 40.0, shine: 30.0, ..Default::default() };
+            s.skin_analysis = Some(lcc_develop::SkinAnalysis {
+                area: s.skin.area,
+                person: s.skin.person,
+                orientation: s.orientation,
+                seg: lcc_develop::SegMask::from_logits(side, &logits),
+                faces: vec![lcc_develop::SkinFace { x: 0.5, y: 0.45, eyes: 0.06 }],
+            });
+        }),
         ("spots + defringe (cpu stage)", |s| {
             s.spots = vec![Spot { points: vec![Point::new(0.3, 0.3)], size: 0.03, source_offset: Some(Point::new(0.1, 0.0)), ..Default::default() }];
             s.optics.defringe_purple_amount = 5.0;
         }),
     ]
+}
+
+/// A mask's local Point Color is drawn by the kernel, as the CPU draws it.
+#[test]
+fn local_point_colors_render_on_the_gpu() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 480, 320);
+    let (raw, req) = (SourceInfo { raw: true, ..Default::default() }, RenderRequest::fit(480, 480));
+    let mut s = DevelopSettings::default();
+    let edit = cases().into_iter().find(|(name, _)| *name == "masks (local point color)").map(|c| c.1).unwrap();
+    edit(&mut s);
+    check("local point color", &src, &raw, &s, &req);
+    let with = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    for m in &mut s.masks {
+        m.point_colors.clear();
+    }
+    let without = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    let (mean, max, _) = diff(&with, &without);
+    assert!(mean > 0.2 && max > 10, "the samples change the GPU render: mean {mean:.2}, max {max}");
+}
+
+/// A mask's local Color Mixer is drawn by the kernel, as the CPU draws it.
+#[test]
+fn local_color_mixers_render_on_the_gpu() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 480, 320);
+    let (raw, req) = (SourceInfo { raw: true, ..Default::default() }, RenderRequest::fit(480, 480));
+    let mut s = DevelopSettings::default();
+    let edit = cases().into_iter().find(|(name, _)| *name == "masks (local color mixer)").map(|c| c.1).unwrap();
+    edit(&mut s);
+    check("local color mixer", &src, &raw, &s, &req);
+    let with = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    for m in &mut s.masks {
+        m.mixer = Default::default();
+    }
+    let without = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image;
+    let (mean, max, _) = diff(&with, &without);
+    assert!(mean > 0.2 && max > 10, "the mixers change the GPU render: mean {mean:.2}, max {max}");
 }
 
 /// A mask's local Curve is drawn by the kernel (not left out, nor handed to the CPU), as the CPU draws it.
@@ -789,6 +1063,7 @@ fn highlights_shadows_base_matches_on_every_process() {
             check(&format!("{p:?} typical {w}"), &src, &raw, &s, &req);
             s.masks = vec![Mask {
                 components: vec![MaskComponent {
+                    anchor: None,
                     name: None,
                     op: MaskOp::Add,
                     invert: false,
@@ -842,6 +1117,7 @@ fn overlays_match() {
         Mask {
             id: 1,
             components: vec![MaskComponent {
+                anchor: None,
                 name: None,
                 op: MaskOp::Add,
                 invert: false,
@@ -851,13 +1127,20 @@ fn overlays_match() {
         },
         Mask {
             id: 2,
-            components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes: vec![stroke] } }],
+            components: vec![MaskComponent {
+                anchor: None,
+                name: None,
+                op: MaskOp::Add,
+                invert: false,
+                shape: MaskShape::Brush { strokes: vec![stroke] },
+            }],
             ..Default::default()
         },
         Mask {
             id: 3,
             visible: false,
             components: vec![MaskComponent {
+                anchor: None,
                 name: None,
                 op: MaskOp::Add,
                 invert: false,
@@ -929,6 +1212,8 @@ fn saturated(s: &mut DevelopSettings) {
     s.color.vibrance = 40.0;
     s.curve.highlights = 30.0;
     s.curve.shadows = -20.0;
+    // the value-noise grain (processes V1–V6)
+    s.process = lcc_develop::Process::V6.version();
     s.grain.amount = 30.0;
 }
 
@@ -997,6 +1282,7 @@ fn windows_match() {
             feather: 30.0,
             opacity: 100.0,
             source_offset: Some(Point::new(0.15, 0.0)),
+            auto: None,
             ..Default::default()
         });
     }));
@@ -1019,6 +1305,58 @@ fn windows_match() {
     s.vignette.midpoint = 10.0;
     let corner = RenderRequest { window: Some(PixelWindow { x: 2360, y: 1520, w: 640, h: 480 }), ..RenderRequest::fit(3000, 2000) };
     check("window: vignette corner", &src, &info, &s, &corner);
+}
+
+/// A zoomed window of a photo with a dress brushed over (thousands of dabs, TEST-NOTES 2026-10-16
+/// item 28: 9–55 s a window): the brush kernel looks only at the dabs near each pixel, matches the
+/// CPU, and a window of a few megapixels takes well under a second (`LC_BRUSH_BENCH=1` prints the
+/// times at 45 MP, 100 %).
+#[test]
+fn a_zoomed_window_of_a_big_brush_matches_and_is_quick() {
+    if !gpu() {
+        return;
+    }
+    use lcc_pipeline::PixelWindow;
+    let dress = |auto_mask: bool| {
+        let mut strokes = Vec::new();
+        for k in 0..12 {
+            let y0 = 0.25 + 0.04 * k as f64;
+            let points: Vec<Point> = (0..=200)
+                .map(|i| {
+                    let t = i as f64 / 200.0;
+                    Point::new(0.3 + 0.4 * (t * 6.0 * std::f64::consts::PI).sin().abs(), y0 + 0.08 * t)
+                })
+                .collect();
+            strokes.push(BrushStroke { points, size: 0.02, auto_mask, ..Default::default() });
+        }
+        DevelopSettings {
+            masks: vec![Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 1.0, saturation: -40.0, ..Default::default() },
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    };
+    let bench = std::env::var_os("LC_BRUSH_BENCH").is_some();
+    let (fw, fh) = if bench { (8192, 5464) } else { (4096, 2732) };
+    let src = scene(1, if bench { 2048 } else { 960 }, if bench { 1366 } else { 640 });
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let win = if bench { PixelWindow { x: 3000, y: 2000, w: 2048, h: 1792 } } else { PixelWindow { x: 1500, y: 1000, w: 1024, h: 896 } };
+    let req = RenderRequest { window: Some(win), ..RenderRequest::fit(fw, fh) };
+    for auto in [false, true] {
+        let s = dress(auto);
+        // (the first render builds the kernels and uploads the source)
+        let _ = lcc_gpu::render(&src, &info, &s, &req, None).expect("gpu render");
+        let t = std::time::Instant::now();
+        let gpu = lcc_gpu::render(&src, &info, &s, &req, None).expect("gpu render");
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("brushed dress window {}x{} (auto {auto}): {ms:.0} ms on the GPU", gpu.image.width, gpu.image.height);
+        if !bench {
+            check(&format!("big brush window (auto {auto})"), &src, &info, &s, &req);
+        }
+        assert!(ms < 3000.0, "a zoomed brush window took {ms:.0} ms");
+    }
 }
 
 /// Issue #323: a window of a 24 MP photo is cut from a source of 288 MB on the device. Keeping that
@@ -1159,6 +1497,8 @@ fn hdr_renders_match() {
     s.effects.clarity = 30.0;
     s.curve.master = vec![Point::new(0.0, 0.0), Point::new(0.5, 0.6), Point::new(1.0, 1.0)];
     check_hdr("hdr vignette + curve", &src, &raw, &s, 320, 240);
+    // the value-noise grain (processes V1–V6)
+    s.process = lcc_develop::Process::V6.version();
     s.grain.amount = 30.0;
     s.color.saturation = 20.0;
     check_hdr("hdr grain + colour", &src, &raw, &s, 320, 240);
@@ -1378,4 +1718,296 @@ fn the_display_fit_on_the_device_matches_the_cpus() {
     if let Ok(r) = lcc_gpu::try_render_fitted(&src, &info, &s, &overlay, None, Some((640, 480))) {
         assert_eq!(r.image.width, whole.image.width, "an overlay is drawn on the CPU, after the fit there");
     }
+}
+
+/// A non-trivial 3D LUT (cross-process look: lifted blacks, warm highlights).
+fn look_lut(n: usize, domain_max: f32) -> lcc_pipeline::lut::Lut3d {
+    let mut data = Vec::with_capacity(n * n * n);
+    for b in 0..n {
+        for g in 0..n {
+            for r in 0..n {
+                let c = [r, g, b].map(|v| v as f32 / (n - 1) as f32 * domain_max);
+                data.push([
+                    (0.06 + 0.9 * c[0].powf(0.9) + 0.05 * c[2]).min(1.0),
+                    (0.04 + 0.92 * c[1] * (1.0 - 0.1 * c[2])).min(1.0),
+                    (0.1 + 0.6 * c[2] + 0.2 * c[0] * c[1]).min(1.0),
+                ]);
+            }
+        }
+    }
+    lcc_pipeline::lut::Lut3d { size: n, data, domain_min: [0.0; 3], domain_max: [domain_max; 3], title: None }
+}
+
+/// LUT profiles render on the GPU (the table is applied after grain, blended by the amount).
+#[test]
+fn lut_profiles_match() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(1, 900, 600);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    lcc_pipeline::lut::register("lut:gpu-test-17", look_lut(17, 1.0));
+    lcc_pipeline::lut::register("lut:gpu-test-domain", look_lut(9, 1.2));
+    for (id, amount) in [("lut:gpu-test-17", 100.0), ("lut:gpu-test-17", 160.0), ("lut:gpu-test-domain", 60.0)] {
+        for (name, edit) in [("default", (|_| {}) as Edit), ("saturated", saturated as Edit)] {
+            let mut s = DevelopSettings::default();
+            edit(&mut s);
+            s.profile.id = id.into();
+            s.profile.amount = amount;
+            check(&format!("{id} {amount} {name}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
+        }
+    }
+    // the case is meaningful: the LUT changes the image
+    let s = DevelopSettings::default();
+    let looked = DevelopSettings { profile: lcc_develop::Profile { id: "lut:gpu-test-17".into(), amount: 100.0, ..s.profile.clone() }, ..s.clone() };
+    let gpu = |s: &DevelopSettings| lcc_gpu::render(&src, &raw, s, &RenderRequest::fit(320, 320), None).expect("gpu render").image;
+    assert!(diff(&gpu(&s), &gpu(&looked)).1 > 10, "the LUT applies");
+}
+
+/// Refine Edges (the cross guided filter, blended by √refine) and Feather (a Gaussian of the
+/// combined alpha) on a mask render on the GPU, before the mask's invert and amount.
+#[test]
+fn refine_edges_and_feather_match() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 900, 600);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    for (refine, feather) in [(15.0, 0.0), (60.0, 0.0), (100.0, 0.0), (0.0, 40.0), (50.0, 80.0)] {
+        let mut s = DevelopSettings::default();
+        typical(&mut s);
+        s.masks = vec![
+            Mask {
+                components: vec![MaskComponent {
+                    anchor: None,
+                    name: None,
+                    op: MaskOp::Add,
+                    invert: false,
+                    shape: MaskShape::Radial { center: Point::new(0.45, 0.55), rx: 0.3, ry: 0.2, angle: 10.0, feather: 30.0, invert: false },
+                }],
+                adjust: lcc_develop::LocalAdjustments { exposure: 0.9, saturation: -30.0, ..Default::default() },
+                refine,
+                feather,
+                ..Default::default()
+            },
+            Mask {
+                components: vec![MaskComponent {
+                    anchor: None,
+                    name: None,
+                    op: MaskOp::Add,
+                    invert: false,
+                    shape: MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.5) },
+                }],
+                adjust: lcc_develop::LocalAdjustments { exposure: -0.7, amount: 70.0, ..Default::default() },
+                refine: refine / 2.0,
+                feather: feather / 2.0,
+                invert: true,
+                ..Default::default()
+            },
+        ];
+        check(&format!("refine {refine} feather {feather}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
+        let gpu = |s: &DevelopSettings| lcc_gpu::render(&src, &raw, s, &RenderRequest::fit(640, 640), None).expect("gpu render").image;
+        let plain = DevelopSettings { masks: s.masks.iter().map(|m| Mask { refine: 0.0, feather: 0.0, ..m.clone() }).collect(), ..s.clone() };
+        // (a light refine barely moves a soft radial edge; a strong one or a feather visibly does)
+        assert!(refine < 50.0 && feather == 0.0 || diff(&gpu(&s), &gpu(&plain)).1 > 3, "refine {refine} / feather {feather} change the mask");
+    }
+}
+
+/// Spot removal on the device: Clone, Heal and Remove (automatic source, scored on the device),
+/// brushed strokes, overlapping spots (each reads what the earlier ones left), feather 0 and
+/// spots cut by the image edge.
+#[test]
+fn spots_match() {
+    if !gpu() {
+        return;
+    }
+    use lcc_develop::SpotMode;
+    let src = scene(3, 900, 600);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    let spot = |mode, pts: &[(f64, f64)], size, feather, off: Option<(f64, f64)>| Spot {
+        mode,
+        points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
+        size,
+        feather,
+        opacity: 100.0,
+        source_offset: off.map(|o| Point::new(o.0, o.1)),
+        ..Default::default()
+    };
+    let sets: Vec<(&str, Vec<Spot>)> = vec![
+        ("clone", vec![spot(SpotMode::Clone, &[(0.3, 0.4)], 0.04, 40.0, Some((0.15, 0.05)))]),
+        ("heal", vec![spot(SpotMode::Heal, &[(0.6, 0.5)], 0.05, 60.0, Some((-0.12, 0.1)))]),
+        ("remove (auto source)", vec![spot(SpotMode::Remove, &[(0.5, 0.45)], 0.03, 50.0, None)]),
+        ("heal (auto source)", vec![spot(SpotMode::Heal, &[(0.5, 0.45)], 0.03, 50.0, None)]),
+        ("remove near the edge (auto)", vec![spot(SpotMode::Remove, &[(0.04, 0.5)], 0.03, 50.0, None)]),
+        ("brushed heal stroke", vec![spot(SpotMode::Heal, &[(0.2, 0.7), (0.3, 0.72), (0.4, 0.69)], 0.02, 30.0, Some((0.0, -0.15)))]),
+        ("feather 0, half opacity", vec![Spot { opacity: 50.0, ..spot(SpotMode::Clone, &[(0.7, 0.3)], 0.04, 0.0, Some((-0.2, 0.0))) }]),
+        ("cut by the edge", vec![spot(SpotMode::Heal, &[(0.99, 0.02)], 0.05, 50.0, Some((-0.2, 0.2)))]),
+        (
+            "overlapping, auto after manual",
+            vec![
+                spot(SpotMode::Clone, &[(0.45, 0.5)], 0.04, 50.0, Some((0.1, 0.0))),
+                spot(SpotMode::Remove, &[(0.47, 0.52)], 0.04, 50.0, None),
+                spot(SpotMode::Heal, &[(0.5, 0.5)], 0.03, 70.0, Some((0.0, 0.12))),
+            ],
+        ),
+    ];
+    for (name, spots) in sets {
+        let mut s = DevelopSettings::default();
+        typical(&mut s);
+        s.spots = spots;
+        check(&format!("spots: {name}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
+    }
+}
+
+/// Defringe on the device: purple and green at several amounts and hue ranges, at preview and
+/// full size (its filter radius follows the output size).
+#[test]
+fn defringe_matches() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(1, 1800, 1200);
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    for (purple, green, hue) in [(4.0, 0.0, (30.0, 70.0)), (0.0, 10.0, (20.0, 80.0)), (20.0, 15.0, (0.0, 100.0))] {
+        let mut s = DevelopSettings::default();
+        typical(&mut s);
+        s.color.saturation = 40.0;
+        s.optics.defringe_purple_amount = purple;
+        s.optics.defringe_green_amount = green;
+        s.optics.defringe_purple_hue_lo = hue.0;
+        s.optics.defringe_purple_hue_hi = hue.1;
+        s.optics.defringe_green_hue_lo = hue.0;
+        s.optics.defringe_green_hue_hi = hue.1;
+        for edge in [640, 1800] {
+            check(&format!("defringe {purple}/{green} {hue:?} @{edge}"), &src, &raw, &s, &RenderRequest::fit(edge, edge));
+        }
+    }
+}
+
+/// Note 4 of 2026-10-31: a slider draft on the GPU has the large-scale tone of the full render (the
+/// Highlights / Shadows base was narrower in drafts), for a slider drag and a mask stroke, in a
+/// 100 % window of a 6000 px frame and in a whole frame drawn 2000 px wide; and it matches the CPU's
+/// full render as closely.
+#[test]
+fn a_gpu_draft_has_the_large_scale_tone_of_the_full_render() {
+    use lcc_pipeline::PixelWindow;
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 960, 640);
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let mut slider = DevelopSettings::default();
+    typical(&mut slider);
+    slider.light.shadows = 60.0;
+    slider.light.highlights = -60.0;
+    let mut stroke = DevelopSettings::default();
+    typical(&mut stroke);
+    stroke.masks.push(Mask {
+        components: vec![MaskComponent {
+            anchor: None,
+            name: None,
+            op: MaskOp::Add,
+            invert: false,
+            shape: MaskShape::Radial { center: Point::new(0.3, 0.3), rx: 0.1, ry: 0.1, angle: 0.0, feather: 50.0, invert: false },
+        }],
+        adjust: lcc_develop::LocalAdjustments { exposure: 0.5, shadows: 50.0, ..Default::default() },
+        ..Default::default()
+    });
+    // worst 16 px block mean difference, in 8-bit levels
+    let block_diff = |a: &Rgba8, b: &Rgba8| {
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        let mut worst = 0f64;
+        for by in 0..a.height / 16 {
+            for bx in 0..a.width / 16 {
+                let (mut da, mut db) = (0f64, 0f64);
+                for y in by * 16..by * 16 + 16 {
+                    for x in bx * 16..bx * 16 + 16 {
+                        let (p, q) = (a.get(x, y), b.get(x, y));
+                        da += (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0;
+                        db += (q[0] as f64 + q[1] as f64 + q[2] as f64) / 3.0;
+                    }
+                }
+                worst = worst.max((da - db).abs() / 256.0);
+            }
+        }
+        worst
+    };
+    let cases = [
+        RenderRequest { window: Some(PixelWindow { x: 2400, y: 1500, w: 384, h: 256 }), ..RenderRequest::fit(6000, 4000) },
+        RenderRequest::fit(2000, 2000),
+    ];
+    for (name, s) in [("slider", &slider), ("stroke", &stroke)] {
+        for req in cases {
+            let full = lcc_gpu::render(&src, &info, s, &RenderRequest { quality: Quality::Full, ..req }, None).expect("gpu full").image;
+            let draft = lcc_gpu::render(&src, &info, s, &RenderRequest { quality: Quality::Draft, ..req }, None).expect("gpu draft").image;
+            let cpu = render(&src, &info, s, &RenderRequest { quality: Quality::Full, ..req }).image;
+            let (d, c) = (block_diff(&full, &draft), block_diff(&cpu, &draft));
+            eprintln!("{name} {:?}: gpu draft vs gpu full {d:.3}/255, vs cpu full {c:.3}/255", req.window);
+            assert!(
+                d <= 0.5 && c <= 0.5,
+                "{name} {:?}: the GPU draft's large-scale tone is {d:.2}/255 off the GPU full render, {c:.2}/255 off the CPU's",
+                req.window
+            );
+        }
+    }
+}
+
+/// A drag of a photo with masks reuses their device-resident alpha planes (AI masks are
+/// evaluated on the CPU): the result must equal a fresh render while the exposure moves (a range
+/// mask selects on it), the masks' own sliders change, and a mask moves, is feathered or hidden.
+#[test]
+fn cached_mask_planes_match_uncached() {
+    use lcc_develop::LocalAdjustments;
+    if !gpu() {
+        return;
+    }
+    let src = scene(2, 900, 600);
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let cache = StageCache::default();
+    let req = RenderRequest::fit(640, 640);
+    let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
+    let mut s = DevelopSettings::default();
+    typical(&mut s);
+    let radial = MaskShape::Radial { center: Point::new(0.5, 0.4), rx: 0.3, ry: 0.2, angle: 0.0, feather: 50.0, invert: false };
+    s.masks.push(Mask {
+        id: 1,
+        components: vec![comp(radial)],
+        adjust: LocalAdjustments { exposure: 0.5, ..Default::default() },
+        ..Default::default()
+    });
+    let range = MaskShape::LuminanceRange { lo: 0.3, hi: 0.6, lo_feather: 0.1, hi_feather: 0.1 };
+    s.masks.push(Mask {
+        id: 2,
+        components: vec![comp(range)],
+        adjust: LocalAdjustments { saturation: -50.0, ..Default::default() },
+        ..Default::default()
+    });
+    s.masks.push(Mask {
+        id: 3,
+        components: vec![comp(MaskShape::Subject)],
+        adjust: LocalAdjustments { contrast: 30.0, ..Default::default() },
+        ..Default::default()
+    });
+    let step = |s: &DevelopSettings, what: &str| {
+        let warm = lcc_gpu::render(&src, &info, s, &req, Some(&cache)).expect("gpu");
+        let fresh = lcc_gpu::render(&src, &info, s, &req, None).expect("gpu");
+        assert_eq!(warm.image, fresh.image, "{what}");
+    };
+    step(&s, "first");
+    for k in 0..3 {
+        s.light.exposure = -0.5 + 0.6 * k as f64;
+        step(&s, "exposure");
+    }
+    s.masks[0].adjust.exposure = -0.3;
+    s.masks[2].adjust.amount = 40.0;
+    step(&s, "mask sliders and amount");
+    if let Some(MaskShape::Radial { center, .. }) = s.masks.first_mut().and_then(|m| m.components.first_mut()).map(|c| &mut c.shape) {
+        *center = Point::new(0.3, 0.6);
+    }
+    step(&s, "moved radial");
+    s.masks[0].feather = 40.0;
+    s.masks[1].curve.master = vec![Point::new(0.0, 0.1), Point::new(1.0, 0.9)];
+    step(&s, "feather and a mask's curve");
+    s.masks[1].visible = false;
+    step(&s, "hidden mask");
 }

@@ -2,7 +2,11 @@
 //!
 //! * [`complete`]: multi-scale patch-based completion (Wexler, Shechtman, Irani 2007) with the
 //!   nearest-neighbour field found by PatchMatch (Barnes et al. 2009). See [`patchmatch`].
+//!   Straight edges and lines crossing the hole (horizons, frames, wires) are found first and
+//!   continued through it by guide channels in the patch distance ([`structure`]).
+//! * [`complete_guided`]: the same with a [`Guide`], e.g. pixels that must never be copied from.
 //! * [`membrane_fill`]: smooth harmonic fill, used to seed the coarsest level and as a fallback.
+//! * [`dilate`]: grow a mask by a disc (exact Euclidean distance transform, [`mask`]).
 //!
 //! Buffers are interleaved `w × h × ch` floats in any colour model plus a `w × h` hole mask.
 //! Everything is deterministic (fixed-seed RNG, results independent of the thread count) and never
@@ -19,11 +23,14 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod mask;
 pub mod membrane;
 pub mod patchmatch;
+pub mod structure;
 
+pub use mask::dilate;
 pub use membrane::membrane_fill;
-pub use patchmatch::{CompleteParams, complete, complete_with};
+pub use patchmatch::{CompleteParams, Guide, complete, complete_guided, complete_with};
 
 /// A cancelled [`complete_with`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

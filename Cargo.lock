@@ -4511,7 +4511,9 @@ dependencies = [
  "lcc-gpumem",
  "lcc-hdrmeta",
  "lcc-pipeline",
+ "lcc-preview",
  "lcc-raster",
+ "lcc-surface",
  "lcc-sysmem",
  "lcc-testkit",
  "lcc-ui-egui",
@@ -4522,6 +4524,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "pollster 1.0.1",
+ "rayon",
  "rfd",
  "serde_json",
  "wayland-client",
@@ -4576,6 +4579,14 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "lcc-camprof"
+version = "26.45.1"
+dependencies = [
+ "lcc-color",
+ "lcc-raw",
 ]
 
 [[package]]
@@ -4641,6 +4652,8 @@ dependencies = [
  "lcc-colourfit",
  "lcc-denoise",
  "lcc-engine",
+ "lcc-genfill",
+ "lcc-inpaint",
  "lcc-mcp",
  "lcc-merge",
  "lcc-raster",
@@ -4803,6 +4816,7 @@ dependencies = [
  "lcc-audio-out",
  "lcc-brand",
  "lcc-camdb",
+ "lcc-camprof",
  "lcc-catalog",
  "lcc-codecs",
  "lcc-color",
@@ -4813,6 +4827,7 @@ dependencies = [
  "lcc-faces",
  "lcc-fetch",
  "lcc-filters",
+ "lcc-genfill",
  "lcc-geo",
  "lcc-geocode",
  "lcc-geom",
@@ -4820,6 +4835,7 @@ dependencies = [
  "lcc-hash",
  "lcc-heif",
  "lcc-immich",
+ "lcc-inpaint",
  "lcc-layout",
  "lcc-lensdb",
  "lcc-merge",
@@ -4840,6 +4856,7 @@ dependencies = [
  "lcc-sysmem",
  "lcc-testkit",
  "lcc-tether",
+ "lcc-tflite",
  "lcc-tiff",
  "lcc-updater",
  "lcc-video",
@@ -4850,6 +4867,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "pollster 1.0.1",
  "rayon",
+ "redb",
  "rustix 1.1.5",
  "serde",
  "serde_json",
@@ -4914,6 +4932,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "lcc-genfill"
+version = "26.45.1"
+dependencies = [
+ "lcc-brand",
+ "lcc-color",
+ "lcc-fetch",
+ "lcc-raster",
+ "log",
+ "miniz_oxide 0.8.9",
+ "png 0.18.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lcc-geo"
 version = "26.45.1"
 dependencies = [
@@ -4955,6 +4988,7 @@ dependencies = [
  "lcc-develop",
  "lcc-faces",
  "lcc-geom",
+ "lcc-gpumem",
  "lcc-pipeline",
  "lcc-raster",
  "lcc-raw",
@@ -5027,6 +5061,7 @@ dependencies = [
 name = "lcc-inpaint"
 version = "26.45.1"
 dependencies = [
+ "png 0.18.1",
  "rayon",
 ]
 
@@ -5093,6 +5128,7 @@ dependencies = [
  "chrono",
  "lcc-brand",
  "lcc-geom",
+ "lcc-testkit",
  "lcc-tiff",
  "proptest",
  "quick-xml",
@@ -5181,6 +5217,7 @@ dependencies = [
  "lcc-color",
  "lcc-develop",
  "lcc-filters",
+ "lcc-genfill",
  "lcc-geom",
  "lcc-inpaint",
  "lcc-raster",
@@ -5301,6 +5338,7 @@ dependencies = [
  "proptest",
  "rayon",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "zune-core",
@@ -5329,6 +5367,7 @@ dependencies = [
  "lcc-brand",
  "lcc-fetch",
  "lcc-testkit",
+ "lcc-tflite",
  "log",
  "rayon",
  "serde",
@@ -5344,6 +5383,17 @@ dependencies = [
  "lcc-raster",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lcc-surface"
+version = "26.45.1"
+dependencies = [
+ "lcc-develop",
+ "miniz_oxide 0.8.9",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -5380,6 +5430,17 @@ dependencies = [
  "serde",
  "serde_json",
  "skrifa 0.44.0",
+]
+
+[[package]]
+name = "lcc-tflite"
+version = "26.45.1"
+dependencies = [
+ "candle-core",
+ "lcc-brand",
+ "lcc-testkit",
+ "rayon",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5428,11 +5489,13 @@ dependencies = [
  "lcc-raster",
  "lcc-raw",
  "lcc-slideshow",
+ "lcc-surface",
  "lcc-testkit",
  "lcc-text",
  "lcc-updater",
  "lcc-webgallery",
  "log",
+ "pollster 1.0.1",
  "resvg",
  "serde",
  "serde_json",
