@@ -69,6 +69,7 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
 
     // ---- input: pan, zoom (pointer-anchored), double-click zoom
     let hover = resp.hover_pos();
+    let pointer_in_map = hover.or_else(|| ui.input(|i| i.multi_touch().map(|t| t.center_pos).or(i.pointer.hover_pos())).filter(|p| r.contains(*p)));
     if resp.dragged() && app.map.dragging_pin.is_none() {
         let d = resp.drag_delta();
         let world = world_px(app.map.prefs.zoom);
@@ -80,11 +81,12 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     if resp.drag_stopped() {
         app.map.save();
     }
-    let scroll = if hover.is_some() { ui.input(|i| i.smooth_scroll_delta.y + i.zoom_delta().log2() * 200.0) } else { 0.0 };
-    if let Some(at) = hover
+    let scroll = if pointer_in_map.is_some() { ui.input(|i| i.smooth_scroll_delta.y + i.zoom_delta().log2() * 200.0) } else { 0.0 };
+    if let Some(at) = pointer_in_map
         && scroll.abs() > 0.0
     {
         zoom_at(app, r, at, f64::from(scroll) / 200.0);
+        ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
     }
     if resp.double_clicked()
         && let Some(at) = hover
@@ -241,6 +243,7 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     // hover preview: the first photo's thumbnail and the count
     if let Some((at, ids)) = hovered
         && app.map.dragging_pin.is_none()
+        && scroll.abs() == 0.0
     {
         hover_preview(app, ui, r, at, &ids);
     }
