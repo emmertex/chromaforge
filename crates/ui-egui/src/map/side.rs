@@ -103,7 +103,7 @@ pub fn lookup(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                             };
                             if let Some(pl) = pl {
                                 places.push(
-                                    json!({"id": id, "sublocation": pl.sublocation, "city": pl.city, "state": pl.state, "country": pl.country}),
+                                    json!({"id": id, "sublocation": pl.sublocation, "city": pl.city, "state": pl.state, "country": pl.country, "countryCode": pl.iso}),
                                 );
                             }
                         }
@@ -256,6 +256,7 @@ pub fn panel(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
         locations_section(app, ui);
         track_section(app, ui);
         geocode_section(app, ui);
+        metadata_section(app, ui);
         let results = app.map.results.clone();
         if !results.is_empty() {
             section(ui, "Search Results", true, |ui| {
@@ -474,6 +475,17 @@ fn geocode_section(app: &mut LccApp, ui: &mut egui::Ui) {
                 Ok(v) => app.toast(ui.ctx(), crate::i18n::tr_format!("Filled the location of {n} photos", n = v["found"].as_u64().unwrap_or(0))),
                 Err(e) => app.toast_error(ui.ctx(), e),
             }
+        }
+    });
+}
+
+fn metadata_section(app: &mut LccApp, ui: &mut egui::Ui) {
+    section(ui, "Metadata", true, |ui| {
+        let active = app.session.active().or_else(|| app.session.selected().first().copied());
+        if let Some(id) = active {
+            crate::panels::metadata::show_embedded(app, ui, id);
+        } else {
+            ui.label(RichText::new(tr("No photo selected")).weak().size(11.0));
         }
     });
 }

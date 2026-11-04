@@ -369,6 +369,7 @@ mod geocoding {
             meta.city = pl.city.clone();
             meta.state = pl.state.clone();
             meta.country = pl.country.clone();
+            meta.country_code = pl.iso.clone();
             if meta != ph.meta {
                 ops.push(Op::SetMeta { id, meta: Box::new(meta) });
             }
@@ -400,6 +401,11 @@ fn apply_given(s: &mut crate::Session, p: &Value) -> Result<Value> {
         meta.city = t("city");
         meta.state = t("state");
         meta.country = t("country");
+        let cc = t("countryCode");
+        let cc = if cc.is_empty() { t("iso") } else { cc };
+        if !cc.is_empty() {
+            meta.country_code = cc;
+        }
         if meta != ph.meta {
             ops.push(Op::SetMeta { id, meta: Box::new(meta) });
         }

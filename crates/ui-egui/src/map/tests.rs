@@ -424,3 +424,72 @@ fn location_filter_filters_the_filmstrip() {
     h.settle(SETTLE);
     assert!(film(&h, ids[0]) && film(&h, ids[1]), "None shows every photo again");
 }
+
+/// Fork #784: the Map module side panel displays an editable Metadata section for the selected
+/// photos (location fields: GPS, Sublocation, City, State/Province, Country, ISO Country Code;
+/// IPTC fields: Title, Headline, Caption, Keywords). Selecting photos (or clicking a pin) shows
+/// their metadata, and editing a field updates every selected photo.
+#[test]
+fn map_side_panel_shows_and_edits_metadata() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    run(&mut h, "map.geotag", json!({"ids": [ids[0], ids[1]], "lat": 48.8566, "lon": 2.3522}));
+    run(
+        &mut h,
+        "photo.setMeta",
+        json!({
+            "ids": [ids[0]],
+            "title": "Tower View",
+            "headline": "Historic Monument",
+            "caption": "Eiffel Tower in autumn",
+            "keywords": ["paris", "tower"],
+            "location": "Champ de Mars",
+            "city": "Paris",
+            "state": "Île-de-France",
+            "country": "France",
+            "countryCode": "FR",
+        }),
+    );
+    // Select the first photo
+    run(&mut h, "library.select", json!({"ids": [ids[0]], "active": ids[0]}));
+    run(&mut h, "metadata.panelPreset", json!({"preset": "location"}));
+    h.settle(SETTLE);
+
+    // Verify metadata section is rendered in map side panel
+    assert!(widget(&h, "field:title").is_some(), "Title field rendered");
+    assert!(widget(&h, "field:headline").is_some(), "Headline field rendered");
+    assert!(widget(&h, "field:caption").is_some(), "Caption field rendered");
+    assert!(widget(&h, "field:keywords").is_some(), "Keywords field rendered");
+    assert!(widget(&h, "field:location").is_some(), "Sublocation field rendered");
+    assert!(widget(&h, "field:city").is_some(), "City field rendered");
+    assert!(widget(&h, "field:state").is_some(), "State/Province field rendered");
+    assert!(widget(&h, "field:country").is_some(), "Country field rendered");
+    assert!(widget(&h, "field:countryCode").is_some(), "ISO Country Code field rendered");
+    assert!(widget(&h, "field:gps").is_some(), "GPS field rendered");
+
+    // Select both photos (as when clicking a cluster pin with multiple photos)
+    run(&mut h, "library.select", json!({"ids": [ids[0], ids[1]], "active": ids[0]}));
+    h.settle(SETTLE);
+
+    // Batch-edit fields on both selected photos via photo.setMeta
+    run(
+        &mut h,
+        "photo.setMeta",
+        json!({
+            "ids": [ids[0], ids[1]],
+            "city": "Paris",
+            "countryCode": "FR",
+            "keywords": ["france", "vacation"]
+        }),
+    );
+    h.settle(SETTLE);
+
+    let ph0 = h.app.session.catalog.photo(lcc_catalog::PhotoId(ids[0])).unwrap();
+    let ph1 = h.app.session.catalog.photo(lcc_catalog::PhotoId(ids[1])).unwrap();
+    assert_eq!(ph0.meta.city, "Paris");
+    assert_eq!(ph1.meta.city, "Paris");
+    assert_eq!(ph0.meta.country_code, "FR");
+    assert_eq!(ph1.meta.country_code, "FR");
+    assert_eq!(ph0.meta.keywords, vec!["france".to_string(), "vacation".to_string()]);
+    assert_eq!(ph1.meta.keywords, vec!["france".to_string(), "vacation".to_string()]);
+}

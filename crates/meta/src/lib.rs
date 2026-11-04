@@ -224,6 +224,8 @@ pub struct Metadata {
     pub city: Option<String>,
     pub state: Option<String>,
     pub country: Option<String>,
+    /// 2-letter ISO 3166-1 country code (`Iptc4xmpCore:CountryCode`).
+    pub country_code: Option<String>,
     /// The creator's contact details and job title (IPTC Core).
     #[serde(default, skip_serializing_if = "CreatorContact::is_empty")]
     pub contact: CreatorContact,

@@ -104,6 +104,11 @@ pub fn parse_iptc(b: &[u8]) -> Metadata {
                     m.keywords.push(k);
                 }
             }
+            (2, 90) => m.city = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
+            (2, 92) => m.sublocation = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
+            (2, 95) => m.state = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
+            (2, 100) => m.country_code = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
+            (2, 101) => m.country = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
             (2, 105) => m.headline = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
             (2, 80) => m.artist = Some(decode(data, utf8)).filter(|s| !s.is_empty()),
             (2, 116) => m.copyright = Some(decode(data, utf8)).filter(|s| !s.is_empty()),

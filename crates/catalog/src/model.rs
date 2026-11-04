@@ -208,6 +208,9 @@ pub struct Meta {
     pub city: String,
     pub state: String,
     pub country: String,
+    /// 2-letter ISO 3166-1 country code (`Iptc4xmpCore:CountryCode`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub country_code: String,
     pub gps: Option<(f64, f64)>,
     /// The position (latitude, longitude) that was cleared from [`Meta::gps`], while it stays cleared: saving the
     /// sidecar removes the GPS tags it still states for that very position (a different one was written by another
