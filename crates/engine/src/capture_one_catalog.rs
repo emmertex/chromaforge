@@ -180,40 +180,60 @@ fn iptc_xmp(meta: &dyn Fn(&str) -> Option<String>) -> String {
     )
 }
 
-/// Keyword paths (`a|b|c`) for the names in a variant's keyword field. A name that is one keyword of
-/// the catalog's keyword tree gets its parents; anything else is kept as written.
+/// One entry of a variant's keyword field without its order suffix: Capture One writes each keyword
+/// as its full path and a position, `Animals|Birds|Owls||4`.
+fn without_order(entry: &str) -> &str {
+    match entry.rsplit_once("||") {
+        Some((path, order)) if !order.is_empty() && order.trim().bytes().all(|b| b.is_ascii_digit()) => path,
+        _ => entry,
+    }
+}
+
+/// Keyword paths (`a|b|c`) for a variant's keyword field (`ZCONTENT_KEYWORDS`). Capture One lists
+/// every keyword with its full path, and the parents of an assigned keyword as entries of their own;
+/// those parents are dropped, as the library implies them from the path. A bare name that is one
+/// keyword of the catalog's keyword tree gets its parents from the tree; anything else is kept as
+/// written.
 fn keyword_paths(field: &str, tree: &HashMap<i64, Row>, by_name: &HashMap<String, Vec<i64>>) -> Vec<String> {
-    let mut out = Vec::new();
-    for name in field.split([',', ';', '\n', '\r']).map(str::trim).filter(|n| !n.is_empty()) {
-        if name.contains('|') {
-            out.push(name.split('|').map(str::trim).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("|"));
-            continue;
-        }
-        let path = match by_name.get(&name.to_lowercase()).map(Vec::as_slice) {
-            Some([only]) => {
-                let mut parts = Vec::new();
-                let mut seen = HashSet::new();
-                let mut at = *only;
-                while let Some(k) = tree.get(&at) {
-                    if parts.len() >= MAX_DEPTH || !seen.insert(at) {
-                        break;
-                    }
-                    let part = text(k, "ZNAME").trim();
-                    if !part.is_empty() {
-                        parts.push(part.to_string());
-                    }
-                    at = number(k, "ZPARENT");
-                }
-                parts.reverse();
-                parts.join("|")
-            }
-            _ => name.to_string(),
+    let mut out: Vec<String> = Vec::new();
+    for entry in field.split([',', '\n', '\r']).map(without_order).map(str::trim).filter(|n| !n.is_empty()) {
+        let path = if entry.contains('|') {
+            entry.split('|').map(str::trim).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("|")
+        } else {
+            tree_path(entry, tree, by_name)
         };
         if !path.is_empty() && !out.contains(&path) {
             out.push(path);
         }
     }
+    // keep only the deepest keywords: `Animals` goes when `Animals|Birds` is there too
+    let all = out.clone();
+    out.retain(|p| !all.iter().any(|q| q.len() > p.len() && q.starts_with(p.as_str()) && q.as_bytes().get(p.len()) == Some(&b'|')));
     out
+}
+
+/// The path of a bare keyword name through the catalog's keyword tree, or the name itself when the
+/// tree doesn't hold exactly one keyword of that name.
+fn tree_path(name: &str, tree: &HashMap<i64, Row>, by_name: &HashMap<String, Vec<i64>>) -> String {
+    let Some([only]) = by_name.get(&name.to_lowercase()).map(Vec::as_slice) else { return name.to_string() };
+    let mut parts = Vec::new();
+    let mut seen = HashSet::new();
+    let mut at = *only;
+    while let Some(k) = tree.get(&at) {
+        if parts.len() >= MAX_DEPTH || !seen.insert(at) {
+            break;
+        }
+        let part = text(k, "ZNAME").trim();
+        if !part.is_empty() {
+            parts.push(part.to_string());
+        }
+        at = number(k, "ZPARENT");
+    }
+    if parts.is_empty() {
+        return name.to_string();
+    }
+    parts.reverse();
+    parts.join("|")
 }
 
 /// Read a Capture One catalog for import, counting the tables read in `total` / `done` and stopping
@@ -285,8 +305,9 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
             Err(crate::doc_path::NotFollowed::Refused(why)) => (stored, Original::Refused(why.to_string())),
         };
         let format = Path::new(file_name).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
-        let width = int(image, "ZPIXELWIDTH").or_else(|| int(image, "ZWIDTH")).unwrap_or(0).max(0);
-        let height = int(image, "ZPIXELHEIGHT").or_else(|| int(image, "ZHEIGHT")).unwrap_or(0).max(0);
+        // ZWIDTH / ZHEIGHT are the file's pixels (ZPIXELWIDTH is the sensor's pixel pitch in µm)
+        let width = int(image, "ZWIDTH").unwrap_or(0).max(0);
+        let height = int(image, "ZHEIGHT").unwrap_or(0).max(0);
         // The file's own capture time is read when it is added; an offline original has only the catalog's.
         let captured = match (&original, image.get("ZEXP_DATE").and_then(Value::as_f64)) {
             (Original::Local, _) | (_, None) => String::new(),
@@ -376,7 +397,31 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
         .collect();
     let roots: HashSet<i64> = documents.iter().filter_map(|d| int(d, "ZROOTCOLLECTION")).collect();
     let by_id: HashMap<i64, &Row> = collections.iter().filter_map(|c| Some((int(c, "Z_PK")?, c))).collect();
-    let is_group = |id: i64| matches!(kinds.get(&id).map(String::as_str), Some("ProjectCollection" | "Collection"));
+    // Capture One's own folders, named by the collections that use them (the root names Recent
+    // Imports, Recent Captures, All Images and the trash this way).
+    let system: HashSet<i64> = collections
+        .iter()
+        .flat_map(|c| {
+            [
+                "ZLASTIMPORTSCOLLECTION",
+                "ZLASTCAPTURESCOLLECTION",
+                "ZALLIMAGESCOLLECTION",
+                "ZTRASHCOLLECTION",
+                "ZCAPTURECOLLECTION",
+                "ZPROCESSCOLLECTION",
+                "ZMOVETOCOLLECTION",
+            ]
+            .into_iter()
+            .filter_map(|k| int(c, k).filter(|id| *id > 0))
+        })
+        .collect();
+    // A user's group is stored as a VirtualFolderCollection, like Recent Imports; only the ones
+    // Capture One doesn't use itself are groups.
+    let is_group = |id: i64| match kinds.get(&id).map(String::as_str) {
+        Some("ProjectCollection" | "Collection") => true,
+        Some("VirtualFolderCollection") => !system.contains(&id),
+        _ => false,
+    };
     // A collection is imported when it is an album or a group and every collection above it, up to
     // the catalog's root, is a group: albums under Recent Imports and other system folders stay out.
     let wanted = |id: i64| -> bool {
@@ -414,14 +459,18 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
         }
         let parent = number(c, "ZPARENT");
         let parent = if roots.contains(&parent) || parent < 0 { 0 } else { parent };
-        let creation = if is_group(id) { "com.adobe.ag.library.group" } else { "com.adobe.ag.library.collection" };
+        let group = is_group(id);
+        let creation = if group { "com.adobe.ag.library.group" } else { "com.adobe.ag.library.collection" };
         let name = text(c, "ZNAME").trim();
         let name = if name.is_empty() { "Untitled" } else { name };
         out_collections.push(
             serde_json::from_value::<Row>(json!({"id_local": id, "name": name, "parent": parent, "creationId": creation}))
                 .map_err(|e| e.to_string())?,
         );
-        kept.insert(id);
+        // a project or group lists the images of the albums in it as its own; only albums hold photos here
+        if !group {
+            kept.insert(id);
+        }
     }
     let position: HashMap<(i64, i64), i64> =
         positions.iter().filter_map(|p| Some(((number(p, "ZCOLLECTION"), number(p, "ZIMAGE")), int(p, "ZMANUALSORTINDEX")?))).collect();
@@ -497,8 +546,20 @@ mod tests {
         for (pk, k) in &tree {
             names.entry(text(k, "ZNAME").to_lowercase()).or_default().push(*pk);
         }
-        assert_eq!(keyword_paths("trees, Rivers; Loop", &tree, &names), vec!["Nature|Trees", "Rivers", "Loop"]);
+        assert_eq!(keyword_paths("trees, Rivers,Loop", &tree, &names), vec!["Nature|Trees", "Rivers", "Loop"]);
         assert_eq!(keyword_paths("a | b|", &tree, &names), vec!["a|b"]);
+    }
+
+    #[test]
+    fn keyword_field_drops_order_suffixes_and_implied_parents() {
+        let (tree, names) = (HashMap::new(), HashMap::new());
+        let paths = |field: &str| keyword_paths(field, &tree, &names);
+        // as Capture One 16 writes it: every keyword's full path, its parents too, and a position
+        assert_eq!(paths("Animals||2,Animals|Birds||3,Animals|Birds|Owls||4,Weather||0,Night||1"), vec!["Animals|Birds|Owls", "Weather", "Night"]);
+        assert_eq!(paths("Weather|Snow||0,Weather||1,Animals||2,Animals|Fish||3"), vec!["Weather|Snow", "Animals|Fish"]);
+        // a name that merely starts like another keyword is not its parent; a non-numeric tail stays
+        assert_eq!(paths("Wet||0,Weather||1,a||b"), vec!["Wet", "Weather", "a|b"]);
+        assert!(paths("||,||7, ,").is_empty());
     }
 
     #[test]
