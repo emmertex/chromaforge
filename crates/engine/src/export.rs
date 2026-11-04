@@ -2548,9 +2548,9 @@ pub enum DngCompression {
 
 /// The destination of a batch: a folder (with `ExportOptions::subfolder` and the conflict policy
 /// applied to each file together with its sidecars; with [`DestinationMode::SameAsOriginal`] each
-/// photo's own folder instead of `dir`), or one exact file path (single photo; an ordinary file
-/// already there is replaced). Either way a catalogued original (or its sidecar)
-/// is never written over: see [`crate::originals`].
+/// photo's own folder instead of `dir`), or one explicit file path (single photo). Both apply the
+/// conflict policy to the file and its sidecars; Unique may change the requested basename. A
+/// catalogued original (or its sidecar) is never written over: see [`crate::originals`].
 #[derive(Clone, Debug, Default)]
 pub struct Destination {
     pub dir: String,
@@ -2715,7 +2715,39 @@ fn write_with(path: &str, bytes: &[u8], durable: bool) -> Result<(), String> {
 
 /// The path of the sidecar with extension `ext` of the exported file `main`.
 fn sidecar_path(main: &str, ext: &str) -> String {
-    std::path::Path::new(main).with_extension(ext).to_string_lossy().to_string()
+    let (folder, stem, _) = split_file_name(main);
+    format!("{folder}{stem}.{ext}")
+}
+
+/// `path` as folder (with its trailing separator), stem and extension. Both `/` and `\` separate
+/// folders, so a file and its sidecars get the same stem on every platform; a leading dot (a
+/// hidden file's) starts no extension (upstream #1415).
+fn split_file_name(path: &str) -> (&str, &str, Option<&str>) {
+    let (folder, name) = path.split_at(path.rfind(['/', '\\']).map_or(0, |i| i + 1));
+    match name.rfind('.').filter(|&i| i > 0) {
+        Some(i) => (folder, name.get(..i).unwrap_or(name), name.get(i + 1..)),
+        None => (folder, name, None),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn sidecar_path_for_tests(main: &str, ext: &str) -> String {
+    sidecar_path(main, ext)
+}
+
+#[cfg(test)]
+pub(crate) fn split_file_name_for_tests(path: &str) -> (String, String, Option<String>) {
+    let (a, b, c) = split_file_name(path);
+    (a.to_string(), b.to_string(), c.map(str::to_string))
+}
+
+/// Why an explicitly requested export path can't be used, whatever the conflict policy: it names
+/// a folder, or a catalogued original. (Its sidecars only collide, so they follow the policy.)
+fn exact_target_refusal(requested: &str, guard: &crate::originals::OriginalGuard) -> Result<(), String> {
+    if requested.ends_with(['/', '\\']) || std::path::Path::new(requested).is_dir() {
+        return Err(format!("{requested}: is a folder; give the file's own name (or `dir` for a folder export)"));
+    }
+    guard.check(std::path::Path::new(requested))
 }
 
 /// Run prepared exports in order: pick each one's path, and hand the bytes (and sidecars) to
@@ -3153,8 +3185,9 @@ impl<'a> Placer<'a> {
         e: Result<Exported, String>,
     ) -> Result<(), String> {
         use serde_json::json;
-        // an exact file path needs no folder
-        let dir = if self.to.exact.is_some() && self.single { Ok(String::new()) } else { self.folder_for(&name, source_dir) };
+        // an exact file path (one photo) needs no folder
+        let exact = self.to.exact.as_deref().filter(|_| self.single);
+        let dir = if exact.is_some() { Ok(String::new()) } else { self.folder_for(&name, source_dir) };
         let (o, exists) = (self.o, self.exists);
         let (dir, e) = match dir.and_then(|dir| e.map(|e| (dir, e))) {
             Ok(v) => v,
@@ -3167,39 +3200,40 @@ impl<'a> Placer<'a> {
         let dir = dir.as_str();
         // the exported file and its sidecars
         let group = |main: &str| std::iter::once(main.to_string()).chain(e.sidecars.iter().map(|(x, _)| sidecar_path(main, x))).collect::<Vec<_>>();
-        let path = match self.to.exact.as_deref().filter(|_| self.single) {
-            Some(p) => Ok(p.to_string()),
-            None => {
-                let path = join_path(dir, &e.file_name);
-                let taken = &self.taken;
-                let busy = |main: &str| group(main).iter().any(|p| taken.contains(p) || exists(p));
-                let unique = || {
-                    let (stem, ext) = e.file_name.rsplit_once('.').map_or((e.file_name.as_str(), None), |(a, b)| (a, Some(b)));
-                    let name = |n: usize| join_path(dir, &ext.map_or(format!("{stem}-{n}"), |x| format!("{stem}-{n}.{x}")));
-                    (2..1_000_000).map(name).find(|p| !busy(p)).ok_or_else(|| format!("{path}: no free file name"))
-                };
-                if !busy(&path) {
-                    Ok(path)
-                } else {
-                    match o.conflict {
-                        // Overwrite replaces files from earlier runs, never another photo of this
-                        // same batch: a name already written by this batch gets the next free one
-                        Conflict::Overwrite if group(&path).iter().any(|p| taken.contains(p)) => unique(),
-                        Conflict::Overwrite => Ok(path),
-                        Conflict::Skip => {
-                            self.out.push(json!({"skipped": path}));
-                            return Ok(());
-                        }
-                        Conflict::Unique => unique(),
-                    }
+        let requested = exact.map_or_else(|| join_path(dir, &e.file_name), str::to_string);
+        // An explicitly requested folder or original is an error, not a candidate for renaming or skipping.
+        let refused = if exact.is_some() { exact_target_refusal(&requested, guard) } else { Ok(()) };
+        let taken = &self.taken;
+        let busy = |main: &str| group(main).iter().any(|p| taken.contains(p) || exists(p));
+        let unique = || {
+            // keep the requested folder and basename, split as the sidecars' names are
+            let (folder, stem, ext) = split_file_name(&requested);
+            let name = |n: usize| ext.map_or_else(|| format!("{folder}{stem}-{n}"), |x| format!("{folder}{stem}-{n}.{x}"));
+            (2..1_000_000).map(name).find(|p| !busy(p)).ok_or_else(|| format!("{requested}: no free file name"))
+        };
+        let path = if let Err(err) = refused {
+            Err(err)
+        } else if !busy(&requested) {
+            Ok(requested.clone())
+        } else {
+            match o.conflict {
+                // Overwrite replaces files from earlier runs, never another photo of this
+                // same batch: a name already written by this batch gets the next free one
+                Conflict::Overwrite if group(&requested).iter().any(|p| taken.contains(p)) => unique(),
+                Conflict::Overwrite => Ok(requested.clone()),
+                Conflict::Skip => {
+                    self.out.push(json!({"skipped": requested}));
+                    return Ok(());
                 }
+                Conflict::Unique => unique(),
             }
         };
-        let file = path.clone().unwrap_or_else(|_| name.clone());
+        let file = path.clone().unwrap_or_else(|_| exact.map_or_else(|| name.clone(), str::to_string));
         let write = &mut *self.write;
         let written = path.and_then(|path| {
             let files = group(&path);
             // never over an original, whatever the conflict policy or the exact path said
+            // (rechecked for the selected main file too: collision probes can outlive its early validation)
             for f in &files {
                 guard.check(std::path::Path::new(f))?;
             }

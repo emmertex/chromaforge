@@ -445,6 +445,45 @@ fn disk_batch(
     crate::export::export_batch(s, &[id], o, to, &mut crate::export::write_file, &|p| std::path::Path::new(p).exists())
 }
 
+/// Upstream #1405: explicit paths honour the same conflict policy as folder exports, sidecars included, and an
+/// original or a folder named as the path is refused under every policy.
+#[test]
+fn explicit_export_paths_follow_the_conflict_policy() {
+    use crate::export::{Conflict, Destination};
+    let (mut s, id, dir, src, original) = library_with_jpeg("export-exact-conflict");
+    let target = dir.join("chosen.name.jpg");
+    std::fs::write(&target, b"precious existing file").unwrap();
+    std::fs::write(dir.join("chosen.name-2.jpg"), b"previous numbered export").unwrap();
+    let to = Destination { dir: dir.join("unused").to_string_lossy().into(), exact: Some(target.to_string_lossy().into()) };
+    let opts = ExportOptions::default();
+    let skipped = disk_batch(&mut s, id, &ExportOptions { conflict: Conflict::Skip, ..opts.clone() }, &to).unwrap();
+    assert_eq!(skipped[0]["skipped"], target.to_string_lossy().as_ref());
+    assert_eq!(std::fs::read(&target).unwrap(), b"precious existing file");
+    let unique = disk_batch(&mut s, id, &ExportOptions { conflict: Conflict::Unique, ..opts.clone() }, &to).unwrap();
+    assert_eq!(std::path::Path::new(unique[0]["path"].as_str().unwrap()), dir.join("chosen.name-3.jpg"));
+    assert_eq!(std::fs::read(&target).unwrap(), b"precious existing file");
+    disk_batch(&mut s, id, &ExportOptions { conflict: Conflict::Overwrite, ..opts.clone() }, &to).unwrap();
+    assert_ne!(std::fs::read(&target).unwrap(), b"precious existing file");
+    // an original or a folder is refused whatever the policy
+    for exact in [src.to_string_lossy().to_string(), dir.to_string_lossy().to_string()] {
+        for conflict in [Conflict::Unique, Conflict::Skip, Conflict::Overwrite] {
+            let to = Destination { dir: String::new(), exact: Some(exact.clone()) };
+            assert!(disk_batch(&mut s, id, &ExportOptions { conflict, ..opts.clone() }, &to).is_err(), "{exact} {conflict:?}");
+        }
+    }
+    assert_eq!(std::fs::read(&src).unwrap(), original);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn sidecars_share_the_stem_on_both_separators() {
+    use crate::export::{sidecar_path_for_tests, split_file_name_for_tests};
+    assert_eq!(sidecar_path_for_tests(r"C:\album.v1\chosen-2", "xmp"), r"C:\album.v1\chosen-2.xmp");
+    assert_eq!(sidecar_path_for_tests("album.v1/chosen.name-3.jpg", "xmp"), "album.v1/chosen.name-3.xmp");
+    assert_eq!(sidecar_path_for_tests("/a/.hidden", "xmp"), "/a/.hidden.xmp");
+    assert_eq!(split_file_name_for_tests("a/b.tar.gz"), ("a/".to_string(), "b.tar".to_string(), Some("gz".to_string())));
+}
+
 /// Issue #93: exporting into the photo's own folder as `{name}` with "Overwrite" replaced the
 /// original with the re-encoded render. It is refused now, whatever the policy or exact path.
 #[test]
