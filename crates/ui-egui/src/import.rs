@@ -10,7 +10,7 @@
 //! one undo step.
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
-use lcc_engine::import::{ImportCandidate, ImportWarning, ScanInput, ScanOutput, ScanProgress, scan_with, scan_with_subfolders};
+use lcc_engine::import::{ImportCandidate, ImportWarning, ScanInput, ScanOutput, ScanProgress, scan_with_subfolders};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
@@ -70,6 +70,13 @@ pub struct ImportDialog {
     pub new_album: String,
     /// Preset id ("" = none).
     pub preset: String,
+    /// The camera profile every raw of its camera gets ("" = automatic: each body's own; ported
+    /// from OneSlips, LR-PROF-IMPORT-APPLY).
+    pub camera_profile: String,
+    /// With `camera_profile` automatic: a profile per camera body for this import (body key → id).
+    pub per_body: std::collections::BTreeMap<String, String>,
+    /// The Import tab's preset stack (ids, applied in order after `preset`).
+    pub presets: Vec<String>,
     /// An optional batch-edit recipe: develop control id → value (only controls moved off their
     /// default are kept), set on every photo this import adds, on top of its sidecar, camera
     /// default and preset (the `recipe` param of `library.import`).
@@ -283,6 +290,59 @@ impl ImportDialog {
     }
     /// The `organize` param of `library.import` (`None` = the default, by day); an unusable
     /// custom folder template is an error.
+    /// The `library.import` parameters these options give (without `paths`, the album and a
+    /// metadata preset still being created: [`start`] adds those).
+    pub fn params(&self) -> Result<Value, String> {
+        let mode = match (self.copy, self.move_files) {
+            (false, _) => "add",
+            (true, false) => "copy",
+            (true, true) => "move",
+        };
+        let mut params = json!({"mode": mode, "keywords": self.keywords()});
+        if !self.recipe.is_empty() {
+            params["recipe"] = recipe_items(&self.recipe);
+        }
+        if !self.on_deleted.is_empty() {
+            params["onDeleted"] = json!(self.on_deleted);
+        }
+        if self.import_duplicates {
+            params["importDuplicates"] = json!(true);
+        }
+        if !self.preset.is_empty() {
+            params["preset"] = json!(self.preset);
+        }
+        if !self.presets.is_empty() {
+            params["presets"] = json!(self.presets);
+        }
+        if !self.camera_profile.is_empty() {
+            params["cameraProfile"] = json!({"all": self.camera_profile});
+        } else if !self.per_body.is_empty() {
+            params["cameraProfile"] = json!({"perBody": self.per_body});
+        }
+        if !self.metadata_preset.is_empty() {
+            params["metadataPreset"] = json!(self.metadata_preset);
+        }
+        if let Some(a) = self.album {
+            params["album"] = json!(a);
+        }
+        if self.copy {
+            if !self.destination.trim().is_empty() {
+                params["destination"] = json!(self.destination.trim());
+            }
+            if let Some(o) = self.organize_param()? {
+                params["organize"] = json!(o);
+            }
+            if !self.rename.trim().is_empty() {
+                params["rename"] = json!(self.rename.trim());
+                params["renameStart"] = json!(1);
+            }
+            if self.dng && !self.move_files {
+                params["dng"] = json!(true);
+            }
+        }
+        Ok(params)
+    }
+
     pub fn organize_param(&self) -> Result<Option<String>, String> {
         match self.organize.as_str() {
             "" => Ok(None),
@@ -350,12 +410,22 @@ pub struct ImportTask {
     run: Option<ImportRun>,
     /// The import's row in the activity stack (its ✕ and `activity.cancel` set the run's cancel flag).
     guard: Option<lcc_engine::activity::TaskGuard>,
+    /// The Import tab's: once the photos are in, their previews are built unattended
+    /// (`none` | `standard` | `full`: `library.finishImport`).
+    pub finish_previews: Option<String>,
+    /// The photos this import added or restored, in order (for the finishing).
+    ids: Vec<u64>,
 }
 
 impl ImportTask {
     /// An import of `paths` (files or folders) with `library.import` params (without `paths`).
     pub fn new(paths: Vec<String>, params: Value, undo0: usize, browse: bool) -> Self {
         ImportTask { total: paths.len(), queue: paths, params, undo0, browse, ..Default::default() }
+    }
+
+    /// Reading a folder for the Local view (not an import into the library).
+    pub fn is_browse(&self) -> bool {
+        self.browse
     }
 
     /// An Auto Import (see [`ImportTask::auto`]).
@@ -498,14 +568,14 @@ impl ImportRun {
 /// A folder scan running on a worker thread (a network share can take minutes to read; the
 /// window must keep answering meanwhile).
 pub struct ScanTask {
-    progress: std::sync::Arc<ScanProgress>,
+    pub(crate) progress: std::sync::Arc<ScanProgress>,
     rx: std::sync::mpsc::Receiver<ScanOutput>,
     /// Open the review with "copy into the library" checked (a camera / card).
     pub copy: bool,
     /// Open the review with this album chosen (an album's context menu ▸ Import…).
     pub album: Option<u64>,
     /// Browsing a folder (Local): the photos are read in place instead of opening the review.
-    browse: bool,
+    pub(crate) browse: bool,
     /// What is being scanned (the review's source).
     sources: Vec<String>,
     /// The scan's row in the activity stack (its ✕ and `activity.cancel` set `progress.cancel`).
@@ -641,6 +711,7 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<
     let (tx, rx) = std::sync::mpsc::channel();
     let p = progress.clone();
     let root = dir_s.clone();
+    let sort = app.session.sort;
     let job = move || {
         let files: Vec<String> = if subfolders {
             lcc_engine::import::expand(&[root], None)
@@ -659,7 +730,14 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<
             v.sort();
             v
         };
-        let _ = tx.send(scan_with(input, &files, &p));
+        // Nothing is read here: the import that follows reads the files and adds them batch by
+        // batch, first screen first, so the view fills while the rest is read (PERF-CULL-1).
+        // Every listed file is a candidate (the ones the library knows as it knows them),
+        // so the folder's known photos still count as listed and aren't forgotten.
+        let candidates = lcc_engine::import::browse_candidates(&input, files, &sort);
+        p.total.store(candidates.len(), Ordering::Relaxed);
+        p.done.store(candidates.len(), Ordering::Relaxed);
+        let _ = tx.send(lcc_engine::import::ScanOutput { candidates, ..Default::default() });
     };
     #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(job);
@@ -847,26 +925,9 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
         let r = app.session.execute("album.create", &json!({"name": d.new_album.trim()})).map_err(|e| e.to_string())?;
         album = r["id"].as_u64();
     }
-    let mode = match (d.copy, d.move_files) {
-        (false, _) => "add",
-        (true, false) => "copy",
-        (true, true) => "move",
-    };
-    let mut params = json!({"mode": mode, "keywords": d.keywords()});
-    if !d.recipe.is_empty() {
-        params["recipe"] = recipe_items(&d.recipe);
-    }
-    if !d.on_deleted.is_empty() {
-        params["onDeleted"] = json!(d.on_deleted);
-    }
-    if d.import_duplicates {
-        params["importDuplicates"] = json!(true);
-    }
+    let mut params = d.params()?;
     if let Some(a) = album {
         params["album"] = json!(a);
-    }
-    if !d.preset.is_empty() {
-        params["preset"] = json!(d.preset);
     }
     let mut meta_preset = d.metadata_preset.clone();
     if d.creating_meta_preset && !d.new_meta_name.trim().is_empty() {
@@ -890,21 +951,6 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
     if !meta_preset.is_empty() {
         params["metadataPreset"] = json!(meta_preset);
     }
-    if d.copy {
-        if !d.destination.trim().is_empty() {
-            params["destination"] = json!(d.destination.trim());
-        }
-        if let Some(o) = d.organize_param()? {
-            params["organize"] = json!(o);
-        }
-        if !d.rename.trim().is_empty() {
-            params["rename"] = json!(d.rename.trim());
-            params["renameStart"] = json!(1);
-        }
-        if d.dng && !d.move_files {
-            params["dng"] = json!(true);
-        }
-    }
     let total = queue.len();
     app.import = Some(ImportTask::new(queue, params, undo0, false));
     app.renderer.forget_imports();
@@ -913,19 +959,38 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
 
 /// Start importing `paths` (files or folders) in the background, e.g. dropped on the window.
 pub fn start_paths(app: &mut LccApp, paths: Vec<String>) -> Result<Value, String> {
+    start_paths_with(app, paths, json!({"mode": "add"}))
+}
+
+/// [`start_paths`] with the import's own `library.import` params (the paths are added to them).
+fn start_paths_with(app: &mut LccApp, paths: Vec<String>, params: Value) -> Result<Value, String> {
     busy_synchronizing(app)?;
     if running(app) {
         return Err(crate::i18n::tr("An import is running").to_string());
     }
     let undo0 = app.session.undo.len();
     let total = paths.len();
-    app.import = Some(ImportTask::new(paths, json!({"mode": "add"}), undo0, false));
+    app.import = Some(ImportTask::new(paths, params, undo0, false));
     Ok(json!({"importing": total}))
+}
+
+/// The `library.import` params of a drop imported without review: added in place, with the
+/// library's import settings (its presets, camera defaults, creator and copyright apply to every
+/// import; the metadata preset is the one the review would start with).
+fn dropped_import_params(app: &LccApp) -> Value {
+    let mut p = json!({"mode": "add"});
+    if let Some(mp) = &app.session.import_defaults.metadata_preset
+        && app.session.metadata_presets.iter().any(|m| m.name.eq_ignore_ascii_case(mp))
+    {
+        p["metadataPreset"] = json!(mp);
+    }
+    p
 }
 
 /// Photos or folders dropped on the window. They are scanned and reviewed exactly as File ▸ Import
 /// from Folder… does (one walk with progress, then the review), or, with Settings ▸ Import ▸ Import
-/// dropped files without review, added at once on a worker thread. A drop while an import or any
+/// dropped photos without review, added at once on a worker thread with the library's import
+/// settings. A drop while an import or any
 /// scan runs is refused (a browse that finishes replaces `app.import`). Errors are shown, and a
 /// frame is asked for so the scan or import starts even if the window then sits idle (no input
 /// follows a drop).
@@ -941,11 +1006,12 @@ pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
         app.toast(ctx, crate::i18n::tr("An import is running"));
         return;
     }
-    // a folder opens the import review; photo files are added at once
-    let r = if paths.iter().any(|p| std::path::Path::new(p).is_dir()) {
-        busy_synchronizing(app).and_then(|_| open(app, paths).map(|_| ()))
+    // the import review first, unless Settings ▸ Import says to add dropped photos at once
+    let r = if app.ui.settings.import_dropped_directly {
+        let params = dropped_import_params(app);
+        start_paths_with(app, paths, params).map(|_| ())
     } else {
-        start_paths(app, paths).map(|_| ())
+        busy_synchronizing(app).and_then(|_| open(app, paths).map(|_| ()))
     };
     if let Err(e) = r {
         log::warn!("drop: {e}");
@@ -1044,6 +1110,7 @@ fn commit_batch(app: &mut LccApp, task: &mut ImportTask, prepared: lcc_engine::i
             for k in v["kept"].as_array().into_iter().flatten() {
                 log::warn!("import: kept {}: {}", k["path"].as_str().unwrap_or(""), k["reason"].as_str().unwrap_or(""));
             }
+            task.ids.extend(["imported", "restored"].iter().flat_map(|k| v[*k].as_array().into_iter().flatten().filter_map(Value::as_u64)));
             if task.first.is_none() {
                 task.first = ["imported", "restored"].iter().find_map(|k| v[*k].as_array().and_then(|a| a.first()).and_then(Value::as_u64));
             }
@@ -1068,6 +1135,13 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
         crate::i18n::tr_format!("Add {} Photo{}", task.imported, if task.imported == 1 { "" } else { "s" })
     };
     app.session.merge_undo(steps, &label);
+    // the Import tab's: the new photos' previews, built in the background (one activity row)
+    if let Some(previews) = task.finish_previews.as_deref()
+        && !task.ids.is_empty()
+        && let Err(e) = app.session.finish_import(&task.ids, previews)
+    {
+        log::warn!("import: finishing: {e}");
+    }
     if task.auto {
         if !task.warnings.is_empty() {
             let line = crate::import_report::record(app, task.imported + task.restored, &task.warnings, false);
@@ -1519,11 +1593,11 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
     albums.retain(|a| a.folder || !a.smart);
     // Catalog changes while the review is open must not leave a hidden, unselectable destination.
     d.album = d.album.filter(|id| albums.iter().any(|a| a.id == *id && !a.folder));
-    field(ui, "Album", |ui| {
+    field(ui, "Collection", |ui| {
         ui.vertical(|ui| {
             let mut chosen = d.album;
             let mut extra = None;
-            let empty = crate::i18n::tr(if d.new_album.is_empty() { "None" } else { "New album" });
+            let empty = crate::i18n::tr(if d.new_album.is_empty() { "None" } else { "New collection" });
             let response = crate::album_picker::AlbumPicker::new("import-album", &mut chosen, &albums)
                 .width(ui.available_width())
                 .empty_text(empty)
@@ -1533,7 +1607,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
                     if none.clicked() {
                         extra = Some(false);
                     }
-                    let new = ui.selectable_label(d.album.is_none() && !d.new_album.is_empty(), crate::i18n::tr("New album…"));
+                    let new = ui.selectable_label(d.album.is_none() && !d.new_album.is_empty(), crate::i18n::tr("New collection…"));
                     register(ui.ctx(), "importAlbum:new", new.rect);
                     if new.clicked() {
                         extra = Some(true);
@@ -1567,16 +1641,22 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             .find(|p| p.id == d.preset)
             .map(|p| crate::i18n::builtin_label(&p.name, p.builtin).to_string())
             .unwrap_or_else(|| crate::i18n::tr("None").into());
-        crate::widgets::combo_box("import-preset").selected_text(cur).height(300.0).show_ui(ui, |ui| {
-            if ui.selectable_label(d.preset.is_empty(), crate::i18n::tr("None")).clicked() {
-                d.preset.clear();
-            }
-            let selected = (!d.preset.is_empty()).then_some(d.preset.as_str());
-            if let Some(pid) = crate::panels::presets::picker_rows(ui, "import-preset", &app.session.presets, selected) {
-                d.preset = pid;
-            }
-        });
+        crate::widgets::combo_box("import-preset")
+            .selected_text(cur)
+            .height(300.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(d.preset.is_empty(), crate::i18n::tr("None")).clicked() {
+                    d.preset.clear();
+                    ui.close();
+                }
+                let selected = (!d.preset.is_empty()).then_some(d.preset.as_str());
+                if let Some(pid) = crate::panels::presets::picker_rows(ui, "import-preset", &app.session, selected) {
+                    d.preset = pid;
+                }
+            });
     });
+    camera_profile_section(app, ui, d, false);
     field(ui, "Metadata", |ui| metadata_preset_picker(app, ui, d));
     field(ui, "Keywords", |ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut d.keywords).hint_text(crate::i18n::tr("comma, separated")).desired_width(f32::INFINITY));
@@ -1803,7 +1883,7 @@ pub(crate) fn candidate_cell(app: &mut LccApp, ui: &mut egui::Ui, d: &mut Import
         let s = ((img.width() - 8.0) / tw as f32).min((img.height() - 8.0) / th as f32);
         let fit = Rect::from_center_size(img.center(), vec2(tw as f32 * s, th as f32 * s));
         let tint = if ok { Color32::WHITE } else { Color32::from_gray(110) };
-        p.image(tex.tex.id(), fit, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+        p.image(tex.id(), fit, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
     }
     let on = d.checked[i] && ok;
     if on {
@@ -2070,6 +2150,98 @@ fn field<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R
         add(ui)
     })
     .inner
+}
+
+/// The camera profiles an import can give (id, label), for raws of `camera` (`None`: any camera).
+fn camera_profile_options(camera: Option<&str>) -> Vec<(String, String)> {
+    let mut options: Vec<(String, String)> =
+        vec![(String::new(), crate::i18n::tr("Automatic").to_string()), ("lc".into(), crate::i18n::tr("Built-in colour").to_string())];
+    for (pid, p) in lcc_raw::dcp::library() {
+        if camera.is_some_and(|c| !lcc_raw::dcp::covers_model(&p.model, c)) {
+            continue;
+        }
+        let name = if p.name.is_empty() { pid.trim_start_matches("dcp:").to_string() } else { p.name.clone() };
+        options.push((pid, format!("{name} · {}", p.model)));
+    }
+    let cals: Vec<_> = match camera {
+        Some(c) => lcc_raw::dcp::calibrated_for_camera(c).into_iter().collect(),
+        None => lcc_raw::dcp::calibrated(),
+    };
+    for c in cals {
+        options.extend(c.looks.iter().map(|(pid, p)| (pid.clone(), format!("{} · {}", p.name, p.model))));
+    }
+    options
+}
+
+fn profile_combo(ui: &mut egui::Ui, id: &str, options: &[(String, String)], value: &mut String) {
+    let cur = options.iter().find(|(o, _)| o == value).map(|(_, n)| n.clone()).unwrap_or_else(|| value.clone());
+    let combo = crate::widgets::combo_box(id.to_string()).selected_text(cur).height(300.0).show_ui(ui, |ui| {
+        for (o, name) in options {
+            ui.selectable_value(value, o.clone(), name);
+        }
+    });
+    register(ui.ctx(), format!("combo:{id}"), combo.response.rect);
+}
+
+/// Camera Profile: automatic (each body's own, else the camera's default) with a row per camera
+/// body found on the card to choose another for this import, or one profile for all raws of its
+/// camera (ported from OneSlips, LR-PROF-IMPORT-APPLY).
+pub(crate) fn camera_profile_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog, screen: bool) {
+    // (the full-screen Import and the dialog lay rows out their own way)
+    let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
+        if screen {
+            crate::dialog_frame::form_row(ui, label, |ui| add(ui));
+        } else {
+            field(ui, label, |ui| add(ui));
+        }
+    };
+    row(ui, "Camera Profile", &mut |ui| profile_combo(ui, "importCameraProfile", &camera_profile_options(None), &mut d.camera_profile));
+    if !d.camera_profile.is_empty() {
+        return;
+    }
+    let choice = lcc_engine::profile_bodies::ImportProfile::PerBody(d.per_body.clone());
+    let rows = if screen && crate::import_tab::showing(app) {
+        // the Import tab: the browsed photos it would import now (its Take)
+        let take = app.ui.settings.import_tab.take();
+        let (picks, selected, all) = app.session.import_targets();
+        let ids = match take {
+            lcc_engine::cmd::import_tab::Take::Picks => picks,
+            lcc_engine::cmd::import_tab::Take::Selected => selected,
+            lcc_engine::cmd::import_tab::Take::All => all,
+        };
+        let photos: Vec<&lcc_catalog::Photo> = ids.iter().filter_map(|id| app.session.catalog.photo(*id).map(|p| &**p)).collect();
+        lcc_engine::profile_bodies::plan_photos(&app.session, &photos, &choice)
+    } else {
+        let checked: Vec<_> = d.candidates.iter().zip(&d.checked).filter(|(_, c)| **c).map(|(c, _)| c.clone()).collect();
+        lcc_engine::profile_bodies::plan(&app.session, &checked, &choice)
+    };
+    for body in rows {
+        let label = format!("{} · {} ({})", body.camera, body.serial.trim_start_matches("file:"), body.photos);
+        // (the body under the Camera Profile row: the label column is too narrow for it)
+        row(ui, "", &mut |ui: &mut egui::Ui| {
+            let mut body_row = |ui: &mut egui::Ui| {
+                ui.label(egui::RichText::new(label.as_str()).color(Tokens::get(ui.ctx()).text_dim));
+                let mut v = d.per_body.get(&body.body).cloned().unwrap_or_default();
+                let mut options = camera_profile_options(Some(&body.camera));
+                if let Some(first) = options.first_mut() {
+                    // automatic names what it gives this body
+                    first.1 = format!("{} ({})", crate::i18n::tr("Automatic"), lcc_engine::profile_bodies::profile_name(&body.profile));
+                }
+                profile_combo(ui, &format!("importBodyProfile:{}", body.body), &options, &mut v);
+                if v.is_empty() {
+                    d.per_body.remove(&body.body);
+                } else {
+                    d.per_body.insert(body.body.clone(), v);
+                }
+            };
+            // (a narrow settings column: the body's name above its menu)
+            if screen {
+                ui.vertical(|ui| body_row(ui));
+            } else {
+                body_row(ui);
+            }
+        });
+    }
 }
 
 #[cfg(test)]

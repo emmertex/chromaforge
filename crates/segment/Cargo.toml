@@ -22,6 +22,7 @@ sha2 = { workspace = true }
 candle-core = { workspace = true }
 candle-nn = { workspace = true }
 lcc-fetch = { workspace = true }
+lcc-tflite = { workspace = true }
 # the CPU kernels share candle's thread pool
 rayon = { workspace = true }
 

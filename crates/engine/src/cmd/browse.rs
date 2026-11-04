@@ -174,7 +174,6 @@ fn held(s: &Session) -> std::collections::HashSet<PhotoId> {
     keep.extend(s.selection.active);
     keep.extend(s.previous_active);
     keep.extend(s.interaction.as_ref().map(|i| i.photo));
-    keep.extend(s.before.keys().copied());
     for e in s.undo.iter().chain(s.redo.iter()) {
         e.op.photo_ids(&mut |id| {
             keep.insert(id);
@@ -545,7 +544,14 @@ pub(crate) fn move_folder(s: &mut Session, from: &str, to: &str) -> std::result:
     }
     // the library folder itself, and its own top-level folders (`Originals`, `thumbs`), stay where
     // the library expects them; folders below those (an import's date folders) can be renamed
-    if s.library.as_ref().is_some_and(|l| l.dir.starts_with(src) || src.parent() == Some(l.dir.as_path())) {
+    // compared as the folders are on disk (a differently spelled or linked path to the library names the same
+    // folder), with the spelling as a fallback where that can't be told (upstream #3676)
+    let on_disk = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let protected = |l: &Path| {
+        let (lib, chosen) = (on_disk(l), on_disk(src));
+        lib.starts_with(&chosen) || chosen.parent() == Some(lib.as_path()) || l.starts_with(src) || src.parent() == Some(l)
+    };
+    if s.library.as_ref().is_some_and(|l| protected(&l.dir)) {
         return Err("the library's own folders can't be moved here".into());
     }
     // Repairs retain their exact old paths, including those on surviving history entries.

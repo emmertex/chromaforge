@@ -94,9 +94,9 @@ fn effect_menu_groups_searches_and_applies_with_keys() {
     h.step();
     assert_eq!(mask(&h).adjust.clarity, -40.0);
     assert_eq!(exec(&mut h, "mask.effects", json!({}))["current"], "21 Skin");
-    // a new radial mask now starts with it (the menu remembers per tool)
+    // a new radial mask doesn't start with it: an effect on an existing mask stays on it
     exec(&mut h, "mask.add", json!({"kind": "radial"}));
-    assert_eq!(mask(&h).adjust.clarity, -40.0);
+    assert_eq!(mask(&h).adjust.clarity, 0.0);
 }
 
 #[test]

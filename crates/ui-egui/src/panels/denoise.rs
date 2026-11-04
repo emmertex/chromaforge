@@ -306,6 +306,29 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     work_section(app, ui, t, &list);
 }
 
+/// The AI Models dialog's AI Denoise group: each denoise model the app knows how to download, with its size and
+/// licence, under the same Download (terms first, then the activity stack), Use and Remove as Settings ▸ AI Denoise.
+pub fn ai_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    let list = models(app, ui.ctx());
+    let known: Vec<Value> = list["models"].as_array().map(|a| a.iter().filter(|m| m["known"] == true).cloned().collect()).unwrap_or_default();
+    if list["dir"].is_null() || known.is_empty() {
+        return;
+    }
+    let runtime = list["runtime"].as_bool() == Some(true);
+    let downloads = app
+        .session
+        .execute("denoise.models.downloads", &json!({}))
+        .map(|v| v["downloads"].as_array().cloned().unwrap_or_default())
+        .unwrap_or_default();
+    crate::dialog_frame::group_begin(ui, Some("AI Denoise"));
+    ui.label(tr("Cleans noise out of raw photos (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used."));
+    for m in &known {
+        let dl = downloads.iter().find(|d| d["id"] == m["id"]);
+        model_row(app, ui, t, m, dl, runtime);
+    }
+    crate::dialog_frame::group_end(ui);
+}
+
 /// What the cache holds, its limit, and what is being made.
 fn work_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value) {
     let status = app.session.execute("denoise.status", &json!({})).unwrap_or(Value::Null);

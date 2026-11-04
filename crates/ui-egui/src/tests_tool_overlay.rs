@@ -293,3 +293,25 @@ fn spot_context_menu_switches_mode() {
     exec(&mut h, "spot.update", json!({"index": 0, "mode": "remove"}));
     assert_eq!(get_mode(&h, 0), lcc_develop::SpotMode::Remove);
 }
+
+/// The Remove panel comes back on the tool last used (Heal stays Heal), after another panel; each
+/// tool's button explains it in its tooltip.
+#[test]
+fn the_remove_panel_remembers_its_tool() {
+    let mut h = detail("panel.remove");
+    assert_eq!(h.app.ui.tool, "remove", "the first time: Remove");
+    h.step();
+    let r = h.request("ui.clickWidget", json!({"id": "button:removeMode-heal"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert_eq!(h.app.ui.tool, "heal");
+    exec(&mut h, "panel.crop", json!({}));
+    h.step();
+    assert!(h.app.ui.tool.is_empty(), "another panel, no Remove tool");
+    exec(&mut h, "panel.remove", json!({}));
+    assert_eq!((h.app.ui.right, h.app.ui.tool.as_str()), (RightPanel::Remove, "heal"), "back on Heal");
+    // every tool has a tooltip in plain words
+    for (_, _, tool, tip) in crate::panels::right::REMOVE_MODES {
+        assert!(tip.split_whitespace().count() >= 10, "{tool}: {tip}");
+    }
+}

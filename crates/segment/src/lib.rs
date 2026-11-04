@@ -31,18 +31,48 @@ pub mod birefnet;
 #[cfg(not(target_arch = "wasm32"))]
 mod clip;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod concept;
+#[cfg(not(target_arch = "wasm32"))]
 mod cpu;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod depth;
 #[cfg(not(target_arch = "wasm32"))]
 mod detector;
 #[cfg(not(target_arch = "wasm32"))]
+mod dino;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod fetch;
+#[cfg(not(target_arch = "wasm32"))]
+mod grid;
+#[cfg(not(target_arch = "wasm32"))]
+mod hiera;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod identity;
 pub mod mask;
+/// Matte refinement on coverage grids (People masks).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod matte;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod models;
 #[cfg(not(target_arch = "wasm32"))]
 mod neck;
 #[cfg(not(target_arch = "wasm32"))]
 mod nn;
+/// People masks from MediaPipe's models, run by `lcc-tflite`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod people;
+/// MediaPipe's pre- and post-processing (faces, landmarks), for the eye finder.
+#[cfg(not(target_arch = "wasm32"))]
+pub use lcc_tflite::mediapipe;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote;
+#[cfg(not(target_arch = "wasm32"))]
+mod sam2;
+#[cfg(not(target_arch = "wasm32"))]
+mod sam2_kernels;
+/// Scene understanding: EoMT-S COCO panoptic segmentation (Sky, People, Landscape masks).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod scene;
 pub mod tokenizer;
 #[cfg(not(target_arch = "wasm32"))]
 mod tracker;
@@ -61,7 +91,9 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use tracker::Click;
+pub use sam2::{SAM2_INPUT, SAM2_MASK_SIDE, Sam2, Sam2Encoded, is_sam2_dir};
+#[cfg(not(target_arch = "wasm32"))]
+pub use tracker::{Click, Decoded};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -69,6 +101,13 @@ pub enum Error {
     Model(String),
     #[error("SAM 3 model files not found in {0} (expected model.safetensors, vocab.json, merges.txt)")]
     Missing(PathBuf),
+    /// An error that names its model itself (the depth model).
+    #[error("{0}")]
+    Message(String),
+    #[error("SAM 2 model: {0}")]
+    Sam2(String),
+    #[error("SAM 2 model files not found in {0} (expected model.safetensors and config.json)")]
+    Sam2Missing(PathBuf),
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Candle(#[from] candle_core::Error),
@@ -78,6 +117,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Side of the square model input.
 pub const INPUT: usize = 1008;
+/// Most clicks one Object selection may carry (the engine's `MAX_CLICKS`).
+pub const MAX_CLICKS: usize = 64;
 /// Side of the low-resolution masks the model predicts.
 pub const MASK_SIDE: usize = 288;
 #[cfg(not(target_arch = "wasm32"))]
@@ -207,6 +248,10 @@ impl Sam3 {
         if clicks.is_empty() {
             return Err(Error::Model("no clicks".into()));
         }
+        // the prompt grows with every click: the editor takes at most this many (the engine's `MAX_CLICKS`)
+        if clicks.len() > MAX_CLICKS {
+            return Err(Error::Model(format!("at most {MAX_CLICKS} clicks, not {}", clicks.len())));
+        }
         let (neck, tracker) = self.tracker_parts()?;
         if enc.tracker.is_none() {
             let levels = neck.forward(&enc.backbone, 3)?;
@@ -280,7 +325,7 @@ fn hugging_face_format(weights: &weights::Weights) -> Result<()> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn sigmoid(x: f32) -> f32 {
+pub(crate) fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 

@@ -38,7 +38,11 @@ fn app(paths: &[(PathBuf, bool)]) -> Headless {
         p.local = *local;
         session.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
     }
-    let mut h = Headless::new(LccApp::new(session, Services { png: None, ..Default::default() }), [1300.0, 1600.0], 1.0);
+    let mut app = LccApp::new(session, Services { png: None, ..Default::default() });
+    // browsed photos dragged onto the library's folders: the Library tab's own view of a browsed
+    // folder (Settings ▸ Import ▸ Import as a tab off; on, browsing shows the Import tab)
+    app.ui.settings.import_as_tab = false;
+    let mut h = Headless::new(app, [1300.0, 1600.0], 1.0);
     let r = h.request("ui.set", json!({"view": "photoGrid", "leftPanel": true, "sidebar": ["folders"]}), std::time::Duration::from_secs(10));
     assert_eq!(r["ok"], true, "{r}");
     for _ in 0..6 {

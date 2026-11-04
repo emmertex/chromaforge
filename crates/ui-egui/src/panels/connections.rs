@@ -1544,8 +1544,8 @@ fn sync_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id: &
         let ar = &st["albumRule"];
         let (dir, pol) = (ar["direction"].as_str().unwrap_or("off").to_string(), ar["policy"].as_str().unwrap_or("ask").to_string());
         let (mut d2, mut p2) = (dir.clone(), pol.clone());
-        ui.label(RichText::new(crate::i18n::tr("Albums ↔ albums")).color(t.text_label)).on_hover_text(crate::i18n::tr(
-            "Catalog albums map to the Immich albums of the same name: creates, renames, photos added or removed, and album deletes. Deleting an album never deletes photos. Off: only albums linked by hand.",
+        ui.label(RichText::new(crate::i18n::tr("Collections ↔ albums")).color(t.text_label)).on_hover_text(crate::i18n::tr(
+            "Catalog collections map to the Immich albums of the same name: creates, renames, photos added or removed, and deletes. Deleting a collection or an album never deletes photos. Off: only collections linked by hand.",
         ));
         egui::ComboBox::from_id_salt(("immich-dir-albums", i)).width(110.0).selected_text(crate::i18n::tr(label_of(DIRECTIONS, &dir))).show_ui(
             ui,

@@ -22,7 +22,7 @@ pub enum ViewMode {
 }
 
 /// The right-hand tool/panel shown next to the tool strip.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RightPanel {
     #[default]
@@ -41,6 +41,12 @@ pub enum RightPanel {
 }
 
 impl RightPanel {
+    /// A tool that takes the panel's place while it is used (Crop, Remove, Masking, Red Eye): on
+    /// closing, the panel shown before it comes back ([`UiState::leave_tool`]).
+    pub fn is_tool(self) -> bool {
+        matches!(self, RightPanel::Crop | RightPanel::Remove | RightPanel::Masking | RightPanel::RedEye)
+    }
+
     pub fn is_edit_tool(self) -> bool {
         matches!(self, RightPanel::Edit | RightPanel::Profiles | RightPanel::Crop | RightPanel::Remove | RightPanel::Masking | RightPanel::RedEye)
     }
@@ -427,11 +433,32 @@ pub struct AppSettings {
     /// A click on the dimmed backdrop around a dialog closes it, like Esc (off: a stray click
     /// never throws away a dialog's choices).
     pub close_dialogs_outside: bool,
+    /// Settings ▸ Import ▸ "Import dropped photos without review": photos and folders dropped on the
+    /// window are added at once with the library's import settings (Settings ▸ Import) instead of
+    /// opening the import review. Off by default: a drop opens the review, as Lightroom does.
+    pub import_dropped_directly: bool,
+    /// Settings ▸ Import ▸ "Import as a tab" (OneSlips, LR-IMP-WINDOW): Import is a workspace tab
+    /// beside Library, where a browsed folder or card is culled and then imported. On by default;
+    /// off, Import… opens the import review (the dialog) as before.
+    pub import_as_tab: bool,
+    /// The Import tab's settings, kept between sessions ([`crate::import_tab::ImportSettings`]).
+    pub import_tab: crate::import_tab::ImportSettings,
+    /// The Settings section shown last: Settings… opens there again (LR-PREF-WINDOW).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub settings_tab: String,
     /// GPU rendering allowed (`app.gpu`).
     pub gpu: bool,
     /// The graphics interface GPU rendering uses (Settings ▸ Performance; applies at next launch).
     /// The window keeps the platform's own; `<PREFIX>_GPU_BACKEND` / `WGPU_BACKEND` win over it.
     pub gpu_backend: GpuBackend,
+    /// The graphics card for editing (Settings ▸ Performance): a card's key
+    /// (`lcc_gpu::cards::AdapterKey`), or empty for Automatic (the card the screen is connected to).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gpu_card: String,
+    /// The second graphics card, for exports, previews and thumbnails: empty for Automatic (another
+    /// card when there is one), `off`, or a card's key.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gpu_helper: String,
     /// Windows DirectComposition to prevent VRR flicker; opt-in, applies at next launch.
     pub compose_window: bool,
     /// An HDR (extended-range) window where the display offers one; off: always an SDR window.
@@ -459,6 +486,22 @@ pub struct AppSettings {
     pub photocraft_file: EditFile,
     /// Memory the caches may hold together, in MB (0 = automatic; `app.memoryBudget`).
     pub memory_mb: u32,
+    /// Photos an export renders side by side (0 = automatic; `app.exportTuning`, "Test my machine").
+    #[serde(deserialize_with = "lenient")]
+    pub export_lanes: u32,
+    /// Exports render on the processor only (the GPU stays for the views); "Test my machine" sets
+    /// it when the processor alone was as fast.
+    #[serde(deserialize_with = "lenient")]
+    pub export_cpu_only: bool,
+    /// Device memory exports may use together on the GPU, MB (0 = automatic: 55 % of the card's).
+    #[serde(deserialize_with = "lenient")]
+    pub gpu_export_mb: u32,
+    /// Exports sharing the GPU at once (0 = automatic).
+    #[serde(deserialize_with = "lenient")]
+    pub gpu_export_jobs: u32,
+    /// The last "Test my machine" (Settings ▸ Performance): what it measured and chose.
+    #[serde(deserialize_with = "lenient")]
+    pub machine_test: Option<lcc_engine::machine_test::MachineReport>,
     /// Filmstrip: file names above the thumbnails.
     pub film_names: bool,
     /// Filmstrip: rating / flag / edited badges on the thumbnails.
@@ -487,6 +530,13 @@ pub struct AppSettings {
     pub ui_font_size: UiFontSize,
     /// Panel sliders on one row or two (Settings ▸ Interface).
     pub slider_layout: crate::theme::SliderLayout,
+    /// The Compact layout (Settings ▸ General ▸ Layout, `view.compactLayout`): Classic's panels
+    /// drawn denser (one-line slider rows, short section headers, sharper corners). Off: Classic
+    /// as it always was. The Modern layout overrides it.
+    pub compact_layout: bool,
+    /// Auto Sync (Edit ▸ Auto Sync, `develop.autoSync`), remembered app-wide: it stays as left
+    /// whichever library is open and after a restart.
+    pub auto_sync: bool,
     /// Panel slider names and values compact or at the regular text size (Settings ▸ Interface).
     pub slider_text: crate::theme::SliderText,
     /// How dragging a slider and scrubbing its value follow the pointer (Settings ▸ Interface).
@@ -507,6 +557,10 @@ pub struct AppSettings {
     /// View ▸ Zoom to Focus Point: Toggle Zoom (Z) centres the zoomed view on the camera's focus point
     /// when the photo has one (`view.zoomToFocus`).
     pub zoom_to_focus: bool,
+    /// View ▸ Space Zooms To: where Toggle Zoom (Space / Z) centres the zoomed photo while Zoom to
+    /// Focus Point is on (`view.spaceZoomsTo`).
+    #[serde(deserialize_with = "lenient")]
+    pub space_zoom: SpaceZoom,
     /// Double-clicking a grid photo opens it in Develop instead of the Library loupe (issue #144;
     /// off by default, as in Lightroom Classic).
     pub double_click_develop: bool,
@@ -614,8 +668,14 @@ impl Default for AppSettings {
             confirm_delete: true,
             ask_before_move: true,
             close_dialogs_outside: false,
+            import_dropped_directly: false,
+            import_as_tab: true,
+            import_tab: Default::default(),
+            settings_tab: String::new(),
             gpu: true,
             gpu_backend: GpuBackend::Auto,
+            gpu_card: String::new(),
+            gpu_helper: String::new(),
             compose_window: false,
             hdr_display: true,
             preview_limit: 0,
@@ -626,6 +686,11 @@ impl Default for AppSettings {
             photocraft_path: String::new(),
             photocraft_file: EditFile { format: EditFormat::Psd, ..EditFile::default() },
             memory_mb: 0,
+            export_lanes: 0,
+            export_cpu_only: false,
+            gpu_export_mb: 0,
+            gpu_export_jobs: 0,
+            machine_test: None,
             film_names: true,
             film_badges: true,
             grid_badges: GridBadges::Auto,
@@ -639,6 +704,8 @@ impl Default for AppSettings {
             light_theme: LightTheme::Silver,
             ui_font_size: UiFontSize::default(),
             slider_layout: Default::default(),
+            compact_layout: false,
+            auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
             favorite_themes: Vec::new(),
@@ -647,6 +714,7 @@ impl Default for AppSettings {
             keyword_chips: KeywordChips::default(),
             focus_point: false,
             zoom_to_focus: true,
+            space_zoom: SpaceZoom::default(),
             double_click_develop: false,
             hide_filter_in_develop: false,
             user_presets_first: false,
@@ -878,8 +946,42 @@ pub enum KeywordingView {
     WillExport,
 }
 
-/// One of the Masking brush's A / B presets: each remembers its own size (fraction of the long
-/// edge), feather, flow and density (0..100), like Lightroom's brush A and B.
+/// Where Toggle Zoom (Space / Z) centres the zoomed photo (View ▸ Space Zooms To).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SpaceZoom {
+    /// The camera's focus point; without one, the main subject's sharpest open eye (else the
+    /// largest face).
+    #[default]
+    FocusPoint,
+    /// The main subject's sharpest open eye (else the largest face); without a face, the camera's
+    /// focus point.
+    Eye,
+}
+
+impl SpaceZoom {
+    pub const ALL: [SpaceZoom; 2] = [SpaceZoom::FocusPoint, SpaceZoom::Eye];
+
+    /// The id `view.spaceZoomsTo` takes.
+    pub fn id(self) -> &'static str {
+        match self {
+            SpaceZoom::FocusPoint => "focusPoint",
+            SpaceZoom::Eye => "eye",
+        }
+    }
+
+    /// The menu's words.
+    pub fn label(self) -> &'static str {
+        match self {
+            SpaceZoom::FocusPoint => "Camera Focus Point, Else the Eyes",
+            SpaceZoom::Eye => "Main Subject's Eyes, Else the Focus Point",
+        }
+    }
+}
+
+/// One of the Masking brush's settings: Size (Lightroom's 1..100, a size on the screen,
+/// [`brush_core_points`]), Feather, Flow and Density (0..100). The A / B presets and the eraser's
+/// own settings are each one, like Lightroom's brush A, B and Erase.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrushPreset {
@@ -891,17 +993,43 @@ pub struct BrushPreset {
 
 impl Default for BrushPreset {
     fn default() -> Self {
-        Self { size: 0.04, feather: 50.0, flow: 60.0, density: 100.0 }
+        Self { size: BRUSH_SIZE_DEFAULT, feather: 50.0, flow: 60.0, density: 100.0 }
+    }
+}
+
+/// The brush Size slider's range and starting value: Lightroom's Size, a size on the screen.
+pub const BRUSH_SIZE_MIN: f32 = 1.0;
+pub const BRUSH_SIZE_MAX: f32 = 100.0;
+pub const BRUSH_SIZE_DEFAULT: f32 = 15.0;
+
+/// The radius of the brush's solid core, in screen points, at Size `size` (1..100): the same at every
+/// zoom, as in Lightroom (Size → core radius measured at Fit on a ~1000-point-wide photo,
+/// `lcc_develop::brush_model::size_to_core`).
+pub fn brush_core_points(size: f32) -> f32 {
+    (1000.0 * lcc_develop::brush_model::size_to_core(f64::from(size))) as f32
+}
+
+/// A brush Size read from settings, a preset or a script: Lightroom's 1..100. One below 1 is a size
+/// saved as a fraction of the photo (before Size was a size on the screen), brought to the Size
+/// that paints the same at Fit.
+pub fn brush_size_of(v: f32) -> f32 {
+    if !v.is_finite() || v <= 0.0 {
+        BRUSH_SIZE_DEFAULT
+    } else if v < BRUSH_SIZE_MIN {
+        lcc_develop::brush_model::core_to_size(f64::from(v)) as f32
+    } else {
+        v.min(BRUSH_SIZE_MAX)
     }
 }
 
 impl BrushPreset {
-    /// Clamp values restored from disk (NaN falls back to the default).
+    /// Clamp values restored from disk (NaN falls back to the default); a size saved as a photo
+    /// fraction becomes the screen Size that paints the same ([`brush_size_of`]).
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         let fix = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };
         Self {
-            size: fix(self.size, 0.002, 0.5, d.size),
+            size: brush_size_of(self.size),
             feather: fix(self.feather, 0.0, 100.0, d.feather),
             flow: fix(self.flow, 1.0, 100.0, d.flow),
             density: fix(self.density, 0.0, 100.0, d.density),
@@ -925,6 +1053,17 @@ pub enum KeywordChips {
 /// shown in, if any.
 pub type Toast = (String, f64, Option<lcc_catalog::ColorLabel>);
 
+/// A toast with a button (Undo…): its text, the button's label, the command the button runs and
+/// its parameters, and when it goes (app time, s). One at a time; a newer one replaces it.
+#[derive(Clone, Debug)]
+pub struct ToastAction {
+    pub text: String,
+    pub button: String,
+    pub command: String,
+    pub params: serde_json::Value,
+    pub until: f64,
+}
+
 /// The most toasts on screen at once: a newer one pushes the oldest out.
 pub const MAX_TOASTS: usize = 3;
 
@@ -940,6 +1079,12 @@ pub struct UiState {
     pub docking: Option<crate::docking::Workspace>,
     #[serde(default = "crate::i18n::default_language")]
     pub language: crate::i18n::Locale,
+    /// The eye focus strip across the top of the loupe (`view.eyeFocus`): each person's sharper
+    /// eye at 100 %, with how sharp it is. On and off apart while browsing a folder to cull it (on
+    /// at first) and in the library (off at first); see `LccApp::eye_focus_on`.
+    #[serde(rename = "eyeFocusLibrary")]
+    pub eye_focus: bool,
+    pub eye_focus_import: bool,
     /// Android: the first-start question whether to add the camera roll was answered (either
     /// way); Settings ▸ Folders offers it again.
     pub camera_roll_asked: bool,
@@ -958,8 +1103,29 @@ pub struct UiState {
     /// The Modern layout (fork-owned; see [`crate::modern`]). Saved as `touch` before it replaced the touch layout.
     #[serde(alias = "touch")]
     pub modern: crate::modern::ModernUi,
+    /// The workspace tab on show, Import or Library (with Settings ▸ Import ▸ Import as a tab).
+    #[serde(skip)]
+    pub tab: crate::import_tab::Tab,
+    /// The library view the Library tab goes back to when the Import tab browsed a folder.
+    #[serde(skip)]
+    pub library_source: Option<lcc_engine::LibrarySource>,
+    /// The view showed a browsed folder last frame ([`crate::import_tab::keep_in_step`]).
+    #[serde(skip)]
+    pub import_was_browsing: bool,
     pub left_panel: bool,
     pub right: RightPanel,
+    /// The panel a toggle (a panel key or button: I, M, R, Q…) opened, with what the right column showed
+    /// before it: toggling it off puts back exactly that, closed included. Forgotten once another
+    /// toggle opens a panel.
+    #[serde(skip)]
+    pub toggle_return: Option<(RightPanel, RightPanel)>,
+    /// The panel on show before a tool panel ([`RightPanel::is_tool`]) took its place, put back
+    /// when the tool closes ([`RightPanel::None`]: the panel was hidden, and stays hidden).
+    #[serde(skip)]
+    pub tool_return: Option<RightPanel>,
+    /// The panel [`UiState::note_right`] last saw.
+    #[serde(skip)]
+    pub right_seen: RightPanel,
     /// The right panel (and Library's right column) is folded away by the tool strip's top button;
     /// the strip stays, and choosing any of its tools unfolds it.
     pub right_collapsed: bool,
@@ -1037,7 +1203,9 @@ pub struct UiState {
     /// need [`mask_pins`](Self::mask_pins).
     pub tool_overlay: ToolOverlay,
     /// Masking: show every visible mask's region as one overlay at once (Ctrl+Shift+O / Cmd+Shift+O),
-    /// instead of just the selected mask's ([`mask_overlay`]).
+    /// instead of just the selected mask's ([`mask_overlay`]). A look, not a setting: not kept
+    /// between sessions, so the overlay never comes back by itself.
+    #[serde(skip)]
     pub mask_overlay_all: bool,
     /// The overlay (on, mode) to go back to when Show Luminance Map is turned off.
     #[serde(skip)]
@@ -1054,9 +1222,30 @@ pub struct UiState {
     /// being adjusted.
     #[serde(skip)]
     pub mask_hover: Option<u32>,
+    /// The mask whose pin was right-clicked on the photo: the photo's menu is that mask's.
+    pub mask_menu_for: Option<u32>,
+    /// The mask whose pin the pointer rests on (its overlay shows, as for a hovered row).
+    pub mask_pin_hover: Option<u32>,
     /// Active mask component index within the currently selected mask.
     #[serde(skip)]
     pub active_mask_component: Option<usize>,
+    /// A mask tool armed for a new mask (photo, `mask.add` kind): no mask is selected, and the
+    /// mask is made by the first stroke or drag on the photo. Selecting a mask, another photo or
+    /// leaving Masking puts it away (one masking mode at a time).
+    #[serde(skip)]
+    pub mask_new: Option<(u64, String)>,
+    /// The photo the armed mask tool belongs to: another photo puts it away.
+    #[serde(skip)]
+    pub tool_photo: Option<u64>,
+    /// What was selected in Masks last frame (photo, mask, the component edited): on another photo
+    /// the engine selects the mask's linked copy, and the same component (and an armed brush on
+    /// it) carries over when it is the same kind.
+    #[serde(skip)]
+    pub mask_held: Option<(u64, u32, Option<usize>)>,
+    /// A linear or radial gradient being drawn by a drag of a tool armed for a new mask
+    /// (mask, component, the drag's start in image coordinates).
+    #[serde(skip)]
+    pub mask_drawing: Option<(u32, usize, lcc_geom::Point)>,
     /// Mask IDs whose sub-actions are collapsed in the masking panel.
     #[serde(default)]
     pub collapsed_masks: std::collections::HashSet<u32>,
@@ -1072,7 +1261,12 @@ pub struct UiState {
     pub grid_info: String,
     /// Photo counts next to sources and albums in the left panel.
     pub show_counts: bool,
-    /// Face / pet boxes (read from XMP) over the photo in the loupe.
+    /// Face / pet boxes (read from XMP) over the photo in the loupe, switched on (View ▸ Face
+    /// Boxes). Off by default (they get in the way of looking at the photo); they also show while a
+    /// face is being named or a photo was opened from the People view
+    /// ([`crate::panels::faces::face_boxes_shown`]). A new key: earlier builds saved `faceBoxes: true`
+    /// without the user choosing it, so only a choice made since is kept.
+    #[serde(rename = "faceBoxesOn")]
     pub face_boxes: bool,
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
@@ -1182,6 +1376,20 @@ pub struct UiState {
     pub detail_due: Option<(f64, u32)>,
     /// A mask component being renamed inline: (mask id, component index, name).
     pub renaming_component: Option<(u32, usize, String)>,
+    /// The Set Role row under a People component, while open: (role, person).
+    #[serde(skip)]
+    pub role_draft: Option<(String, String)>,
+    /// The People picker under Create New Mask, while open: (person, 0 = everyone; parts).
+    #[serde(skip)]
+    pub people_pick: Option<(u32, Vec<String>)>,
+    /// The photo whose faces the People picker asked the AI worker for (asked once), and when.
+    #[serde(skip)]
+    pub people_asked: Option<(lcc_catalog::PhotoId, web_time::Instant)>,
+    /// The Remembered picker under Create New Mask is open.
+    #[serde(skip)]
+    pub concept_pick: bool,
+    /// The Roles window (who has which role, and where) is open.
+    pub roles_window: bool,
     /// Close the window on the next frame (File → Quit).
     #[serde(skip)]
     pub quit: bool,
@@ -1223,12 +1431,21 @@ pub struct UiState {
     pub grading_hidden: Option<(lcc_catalog::PhotoId, [bool; 3])>,
     /// Active on-canvas tool: "", "brush", "linear", "radial", "wbPicker", "straighten", "remove".
     pub tool: String,
+    /// The panel layout a picker ([`is_picker`]) was armed in: when it changes (another tab, mixer mode, curve
+    /// channel or panel) the picker is put away.
+    #[serde(skip)]
+    pub picker_armed_in: Option<String>,
     /// Guided Upright: the selected guide (photo id + index) while the tool is open. A Delete /
     /// Backspace on it removes that guide alone; a click away or leaving the tool clears it.
     #[serde(skip)]
     pub selected_guide: Option<(u64, usize)>,
     /// White Balance Selector: side of the averaged square, in preview pixels (1, 3, 5, 9, 15).
     pub wb_sample: u32,
+    /// The Remove panel's tool last used ("remove", "fill", "generate", "heal", "clone"): the panel
+    /// opens on it again (this session).
+    pub remove_tool: String,
+    /// The brush's Size (Lightroom's 1..100, a size on the screen: the core is [`brush_core_points`] at
+    /// every zoom; a stroke stores it in photo units as painted), Feather, Flow and Density.
     pub brush_size: f32,
     pub brush_feather: f32,
     pub brush_flow: f32,
@@ -1239,17 +1456,45 @@ pub struct UiState {
     /// The A and B brush presets; the slot in use is mirrored by the `brush_*` fields above and
     /// saved back when switching (`brush.preset`).
     pub brush_presets: [BrushPreset; 2],
+    /// The eraser's own Size, Feather, Flow and Density, used while erasing (Erase picked, or ⌥ /
+    /// Alt held to switch modes) and remembered beside the brush's.
+    pub erase_brush: BrushPreset,
+    /// ⌥ / Alt held over the photo with the brush this frame (it switches painting and erasing).
+    #[serde(skip)]
+    pub brush_alt: bool,
     pub brush_erase: bool,
     /// Brush Auto Mask: dabs stick to areas like the one under the brush centre.
     pub brush_auto_mask: bool,
+    /// Masking's "Reset settings on new mask", saved with the UI settings (the engine holds it as
+    /// `Session::mask_reset_new` while the app runs).
+    pub mask_reset_new: bool,
+    /// The engine's `mask_reset_new` last frame: a change there came from a command.
+    #[serde(skip)]
+    pub mask_reset_seen: Option<bool>,
+    /// Brush Auto Mask range, −100 (tight) … 0 (Lightroom's limits) … 100 (wide): kept with each stroke painted
+    /// ([`lcc_develop::BrushStroke::auto_range`]), so changing it leaves the strokes already painted.
+    pub brush_auto_range: f32,
     /// Brush Pen Pressure: a pen's pressure scales each dab's size and flow (a mouse paints at full pressure).
     pub brush_pressure: bool,
     /// Remove tool brush: size (fraction of the long edge), feather and opacity (0..100).
     pub remove_size: f32,
     pub remove_feather: f32,
     pub remove_opacity: f32,
+    /// Find Blemishes also looks on the body's skin (shoulders, arms, back).
+    pub blemish_body: bool,
+    /// Generative fill choices of the Remove panel (prompt, estimate; not saved).
+    #[serde(skip)]
+    pub genfill: crate::panels::genfill::GenfillUi,
+    /// Generative fill: the service last used (its id; empty: the first one set up), how many
+    /// variations (each is a paid result; 1 unless changed). Remembered.
+    pub genfill_provider: String,
+    pub genfill_variations: u32,
     /// Selected Point Color sample.
     pub point_color: usize,
+    /// Selected sample of the active mask's local Point Color.
+    pub mask_point_color: usize,
+    /// The active mask's Color Mixer group shown (`hue`, `sat`, `lum`).
+    pub mask_mixer_group: String,
     /// Point Color "Visualize range": the selected sample's range in colour, the rest grey.
     pub point_color_visualize: bool,
     /// Light panel "Visualize HDR": grey below SDR white, colour bands above (HDR edits).
@@ -1284,6 +1529,13 @@ pub struct UiState {
     pub local_browse_root: Option<String>,
     /// Culling: after a rating, flag or colour-label key, move to the next photo.
     pub auto_advance: bool,
+    /// Caps Lock is on, as last seen from a letter key: it turns Auto Advance on while it lasts
+    /// (see [`crate::shortcuts::caps_lock_from`]).
+    #[serde(skip)]
+    pub caps_lock: bool,
+    /// Show Alternatives: the frames brought in get the original's edit.
+    #[serde(skip)]
+    pub alternatives_same_edit: bool,
     /// Full-screen preview (F): the photo alone on black, no chrome.
     pub fullscreen: bool,
     /// Window ▸ Second Window.
@@ -1387,6 +1639,9 @@ pub struct UiState {
     /// Transient toast text, expiry (seconds of app time), and optional colour-label styling.
     #[serde(skip)]
     pub toasts: Vec<Toast>,
+    /// The toast with a button, if one is showing ([`ToastAction`]).
+    #[serde(skip)]
+    pub toast_action: Option<ToastAction>,
     /// The result of the last Find Missing Photos (it searches in the background).
     #[serde(skip)]
     pub last_find_missing: Option<serde_json::Value>,
@@ -1431,18 +1686,23 @@ pub struct UiState {
 /// Settings group ids (`SettingsGroup` serde names) a new preset includes by default: everything
 /// but crop, masks, spots and red eye.
 pub fn default_preset_groups() -> Vec<String> {
-    lcc_develop::SettingsGroup::default_copy().iter().filter_map(|g| serde_json::to_value(g).ok()?.as_str().map(str::to_string)).collect()
+    lcc_develop::SettingsPick::of_groups(lcc_develop::SettingsGroup::default_preset()).to_ids()
 }
 
 impl Dialog {
     /// A fresh Create Preset dialog.
-    pub fn create_preset() -> Dialog {
-        Dialog::CreatePreset { name: String::new(), group: "User Presets".into(), groups: default_preset_groups() }
+    /// Ticked and grouped as the last one was (the session's [`lcc_engine::app_store::DialogMemory`]).
+    pub fn create_preset(s: &lcc_engine::Session) -> Dialog {
+        Dialog::CreatePreset { name: String::new(), group: s.dialogs.preset_group.clone(), groups: s.dialogs.new_preset.to_ids() }
     }
 
     /// A fresh Create Preset dialog pre-filling `group`.
-    pub fn create_preset_in(group: Option<&str>) -> Dialog {
-        Dialog::CreatePreset { name: String::new(), group: group.unwrap_or("User Presets").into(), groups: default_preset_groups() }
+    pub fn create_preset_in(s: &lcc_engine::Session, group: Option<&str>) -> Dialog {
+        Dialog::CreatePreset {
+            name: String::new(),
+            group: group.map_or_else(|| s.dialogs.preset_group.clone(), str::to_string),
+            groups: s.dialogs.new_preset.to_ids(),
+        }
     }
 
     /// A fresh Create Preset Folder dialog.
@@ -1544,6 +1804,9 @@ pub enum Dialog {
     Rename {
         template: String,
         start: u32,
+        /// What each `{text:Label}` of the template becomes (typed for this rename only).
+        #[serde(default)]
+        texts: std::collections::BTreeMap<String, String>,
     },
     /// Rename a keyword on every photo (children included).
     RenameKeyword {
@@ -1626,6 +1889,17 @@ pub enum Dialog {
         pick_best: bool,
         burst_gap: f32,
         similarity: f32,
+        /// Reject photos where a subject's eyes are closed / blurry (`photo.rejectEyes`).
+        #[serde(default)]
+        closed_eyes: bool,
+        #[serde(default)]
+        blurry_eyes: bool,
+        /// Soft eyes are rejected as well as blurry ones (`photo.rejectEyes` `soft`).
+        #[serde(default)]
+        soft_eyes: bool,
+        /// Everyone's eyes count, not only the main subjects' (`mainOnly: false`).
+        #[serde(default)]
+        everyone: bool,
     },
     /// Help ▸ System Info: (label, value) rows.
     DenoiseModel {
@@ -1681,6 +1955,13 @@ pub enum Dialog {
         groups: Vec<String>,
         controls: Vec<String>,
     },
+    /// Update Preset with Current Settings: which settings preset `id` keeps (pre-ticked with what it
+    /// holds).
+    UpdatePreset {
+        id: String,
+        name: String,
+        groups: Vec<String>,
+    },
     /// Paste Selected Settings: which of the copied groups to paste.
     PasteSettings {
         groups: Vec<String>,
@@ -1711,9 +1992,19 @@ pub enum Dialog {
     /// Object and Describe masks need the SAM 3 model, which isn't installed: offer to download
     /// it (size, licence, progress). `then`: the AI mask to start once it is there (`kind`
     /// object|prompt, `op` new|add|subtract|intersect).
+    /// Create Camera Profile from Color Chart; the photos and the report live in the app.
+    ChartProfile {
+        opts: crate::chart_profile::ChartProfileDialog,
+    },
     SamModel {
         then: Option<(String, String)>,
         /// Why the download couldn't start (shown in the dialog).
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// The AI Models dialog: every AI mask model's download, and which one computes Object
+    /// masks (`dialog.aiModels`). `error`: why the last action failed.
+    AiModels {
         #[serde(default)]
         error: Option<String>,
     },
@@ -1765,9 +2056,25 @@ pub enum Dialog {
         confirm_delete: bool,
         new_group: String,
     },
+    /// The Presets Manager (LR-PRE-MANAGE): the search; the row whose Delete (or Restore
+    /// Built-ins) waits for a yes (`preset:<id>`, `group:<path>`, `restore`); the row being renamed
+    /// in place and its text.
+    PresetsManager {
+        query: String,
+        confirm: Option<String>,
+        rename: Option<(String, String)>,
+    },
     /// Confirm deleting mask effect presets.
     DeleteEffects {
         names: Vec<String>,
+    },
+    /// Before a generative fill provider is used for the first time: what is uploaded (the crop,
+    /// shown), the provider's data policy and the cost; OK agrees and generates spot `index`.
+    GenfillConsent {
+        provider: String,
+        index: usize,
+        prompt: String,
+        variations: u32,
     },
     /// Confirm moving photos to Recently Deleted or deleting from disk.
     ConfirmDelete {
@@ -1792,6 +2099,12 @@ pub enum Dialog {
         /// The library the photos were dropped in (`Session::library_generation`): ids are
         /// numbered per library, so in another one they name other photos.
         library: u64,
+    },
+    /// Photo ▸ Delete Rejected Photos…: how many rejects the view has, and whether their files go
+    /// to the system trash too (`library.deleteRejected`).
+    DeleteRejected {
+        count: usize,
+        recycle: bool,
     },
     /// Confirm taking a folder's photos out of the library (`library.removeFolder`).
     RemoveFolder {
@@ -1885,11 +2198,20 @@ impl SyncCounts {
     }
 }
 
+/// Whether `tool` is a picker: a targeted adjustment (`tat:*`, drag on a colour or tone) or a colour sampler
+/// (Point Color, Color Range). The white balance picker is left out: it puts itself away after one pick and keeps
+/// working across panels (W).
+pub fn is_picker(tool: &str) -> bool {
+    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange")
+}
+
 impl Default for UiState {
     fn default() -> Self {
         UiState {
             window: None,
             docking: None,
+            eye_focus: false,
+            eye_focus_import: true,
             language: crate::i18n::default_language(),
             camera_roll_asked: false,
             preview_build_seen: None,
@@ -1898,15 +2220,28 @@ impl Default for UiState {
             luminance_map_restore: None,
             mask_overlay_pinned: false,
             mask_adjusting_until: None,
+            mask_pin_hover: None,
+            mask_menu_for: None,
             mask_hover: None,
             active_mask_component: None,
+            mask_new: None,
+            tool_photo: None,
+            mask_held: None,
+            mask_drawing: None,
             collapsed_masks: Default::default(),
             view: ViewMode::Detail,
             modern: crate::modern::ModernUi::default(),
+            tab: Default::default(),
+            library_source: None,
+            import_was_browsing: false,
             left_panel: false,
             left_width: LEFT_WIDTH.default,
             right_width: RIGHT_WIDTH.default,
             right: RightPanel::Edit,
+            toggle_return: None,
+            tool_return: None,
+            picker_armed_in: None,
+            right_seen: RightPanel::Edit,
             right_collapsed: false,
             right_hidden: RightPanel::None,
             presets: false,
@@ -1946,7 +2281,7 @@ impl Default for UiState {
             show_filenames: true,
             grid_info: "filename".into(),
             show_counts: true,
-            face_boxes: true,
+            face_boxes: false,
             hdr_preview: true,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
@@ -1982,6 +2317,11 @@ impl Default for UiState {
             detail_due: None,
             sam_downloading: false,
             renaming_component: None,
+            roles_window: false,
+            role_draft: None,
+            people_pick: None,
+            people_asked: None,
+            concept_pick: false,
             quit: false,
             dragging_photos: None,
             reveal_album: None,
@@ -1999,19 +2339,31 @@ impl Default for UiState {
             tool: String::new(),
             selected_guide: None,
             wb_sample: 5,
-            brush_size: 0.04,
+            remove_tool: "remove".into(),
+            brush_size: BRUSH_SIZE_DEFAULT,
             brush_feather: 50.0,
             brush_flow: 60.0,
             brush_density: 100.0,
             brush_slot: 0,
-            brush_presets: [BrushPreset::default(), BrushPreset { size: 0.012, feather: 20.0, flow: 100.0, density: 100.0 }],
+            brush_presets: [BrushPreset::default(), BrushPreset { size: 5.0, feather: 20.0, flow: 100.0, density: 100.0 }],
+            erase_brush: BrushPreset { flow: 100.0, ..BrushPreset::default() },
+            brush_alt: false,
             brush_erase: false,
             brush_auto_mask: false,
+            mask_reset_new: false,
+            mask_reset_seen: None,
+            brush_auto_range: 0.0,
             brush_pressure: true,
             remove_size: 0.02,
             remove_feather: 50.0,
             remove_opacity: 100.0,
+            blemish_body: false,
+            genfill: Default::default(),
+            genfill_provider: String::new(),
+            genfill_variations: 1,
             point_color: 0,
+            mask_point_color: 0,
+            mask_mixer_group: "hue".into(),
             point_color_visualize: false,
             hdr_visualize: false,
             hover_color: None,
@@ -2020,6 +2372,8 @@ impl Default for UiState {
             visualize_spots: false,
             spots_threshold: 50.0,
             auto_advance: false,
+            caps_lock: false,
+            alternatives_same_edit: true,
             fullscreen: false,
             slideshow: None,
             slides: Default::default(),
@@ -2075,6 +2429,7 @@ impl Default for UiState {
             compare: None,
             reference: None,
             toasts: Vec::new(),
+            toast_action: None,
             last_find_missing: None,
             last_find_missing_result: None,
             #[cfg(test)]
@@ -2139,6 +2494,72 @@ impl UiState {
             *slot = hidden;
         }
         self.grading_hidden = h.iter().any(|x| *x).then_some((photo, h));
+    }
+
+    /// Where a picker is armed: the panel and the tabs on show in it.
+    fn picker_layout(&self) -> String {
+        format!(
+            "{:?}|{:?}|{}|{}|{}|{}|{}|{}",
+            self.view,
+            self.right,
+            self.flyout_open("pointColor"),
+            self.mixer_adjust,
+            self.mixer_group,
+            self.mixer_mode,
+            self.curve_channel,
+            self.grading_mode
+        )
+    }
+
+    /// Once a frame: a picker armed in one layout is put away when the layout changes (another Color Mixer tab,
+    /// Hue / Saturation / Luminance, a mixer mode, the curve channel, another panel or view), so its cursor and its
+    /// claim on the photo's clicks go with it.
+    pub fn check_picker(&mut self) {
+        if !is_picker(&self.tool) {
+            self.picker_armed_in = None;
+            return;
+        }
+        let here = self.picker_layout();
+        match &self.picker_armed_in {
+            Some(armed) if *armed != here => {
+                self.tool.clear();
+                self.picker_armed_in = None;
+            }
+            Some(_) => {}
+            None => self.picker_armed_in = Some(here),
+        }
+    }
+
+    /// A slider (or dial) was touched: a picker armed is put away.
+    pub fn put_away_picker(&mut self) {
+        if is_picker(&self.tool) {
+            self.tool.clear();
+            self.picker_armed_in = None;
+        }
+    }
+
+    /// Notes the panel on show: a tool panel opened from another panel (or from none) remembers
+    /// that one, to put it back when the tool closes; any other panel forgets it.
+    pub fn note_right(&mut self) {
+        if self.right == self.right_seen {
+            return;
+        }
+        if self.right.is_tool() {
+            if !self.right_seen.is_tool() {
+                self.tool_return = Some(self.right_seen);
+            }
+        } else {
+            self.tool_return = None;
+        }
+        self.right_seen = self.right;
+    }
+
+    /// The panel to show when the tool panel on show closes: the one shown before it, or none
+    /// when the panel was hidden (Edit when nothing is known).
+    pub fn leave_tool(&mut self) -> RightPanel {
+        self.note_right();
+        let back = self.tool_return.take().unwrap_or(RightPanel::Edit);
+        if back.is_tool() { RightPanel::Edit } else { back }
     }
 
     /// A right-panel section that folds by its title is folded shut.
@@ -2255,13 +2676,37 @@ impl UiState {
         self
     }
 
+    /// Whether the brush erases now: Erase picked, or ⌥ / Alt held to switch modes (the panel, the
+    /// cursor and the [ / ] keys then show and change the eraser's settings).
+    pub fn brush_erasing(&self) -> bool {
+        self.brush_erase != self.brush_alt
+    }
+
+    /// The brush's settings for painting (`erase` false) or erasing.
+    pub fn brush_set(&self, erase: bool) -> BrushPreset {
+        if erase {
+            self.erase_brush
+        } else {
+            BrushPreset { size: self.brush_size, feather: self.brush_feather, flow: self.brush_flow, density: self.brush_density }
+        }
+    }
+
+    /// Store `s` as the painting (`erase` false) or erasing settings, in the sliders' ranges.
+    pub fn set_brush_set(&mut self, erase: bool, s: BrushPreset) {
+        let s = BrushPreset { size: s.size.max(BRUSH_SIZE_MIN), ..s }.sanitized();
+        if erase {
+            self.erase_brush = s;
+        } else {
+            (self.brush_size, self.brush_feather, self.brush_flow, self.brush_density) = (s.size, s.feather, s.flow, s.density);
+        }
+    }
+
     /// Put the numeric and enumerated settings back in their valid ranges. Shared by loading a
     /// settings file ([`Self::sanitized`]) and `ui.set`, which merges values from a script.
     pub fn clamp_ranges(&mut self) {
         self.thumb_size = self.thumb_size.clamp(THUMB_SIZE_MIN, THUMB_SIZE_MAX);
         self.left_width = LEFT_WIDTH.clamp(self.left_width);
         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
-        self.brush_size = self.brush_size.clamp(0.002, 0.5);
         // a histogram mode or scale another build wrote (or a hand-edited file) is the default
         if lcc_raster::HistogramMode::parse(&self.histogram_mode).is_none() {
             self.histogram_mode = lcc_raster::HistogramMode::default().name().into();
@@ -2276,6 +2721,7 @@ impl UiState {
         self.brush_presets = self.brush_presets.map(BrushPreset::sanitized);
         let cur = BrushPreset { size: self.brush_size, feather: self.brush_feather, flow: self.brush_flow, density: self.brush_density }.sanitized();
         (self.brush_size, self.brush_feather, self.brush_flow, self.brush_density) = (cur.size, cur.feather, cur.flow, cur.density);
+        self.erase_brush = self.erase_brush.sanitized();
         if !crate::state::PREVIEW_LIMITS.contains(&self.settings.preview_limit) {
             self.settings.preview_limit = AppSettings::default().preview_limit;
         }

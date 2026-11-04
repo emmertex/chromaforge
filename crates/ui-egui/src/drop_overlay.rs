@@ -60,9 +60,9 @@ fn lines(app: &LccApp, ctx: &Context, paths: Vec<String>, unknown: bool) -> Vec<
         out.push(crate::i18n::tr("An import is running. Drop photos when it has finished").to_string());
     } else if !drop.photos.is_empty() {
         let n = drop.photos.len();
-        // a folder opens the review, photo files import at once (the web build has no review)
-        let folder = drop.photos.iter().any(|p| std::path::Path::new(p).is_dir());
-        if !folder || cfg!(target_arch = "wasm32") {
+        // the review opens first unless Settings ▸ Import says to import drops at once (the web
+        // build has no review)
+        if app.ui.settings.import_dropped_directly || cfg!(target_arch = "wasm32") {
             out.push(crate::i18n::tr_format!("Drop to import {n} item{}", plural(n), n = n));
         } else {
             out.push(crate::i18n::tr_format!("Drop to review {n} item{} for import", plural(n), n = n));

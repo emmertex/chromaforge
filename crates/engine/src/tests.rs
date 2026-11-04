@@ -194,7 +194,7 @@ fn albums_crud() {
     s.execute("album.delete", &json!({"id": f})).unwrap();
     assert!(s.catalog.album(lcc_catalog::AlbumId(a)).is_none());
     assert!(s.catalog.album(lcc_catalog::AlbumId(f)).is_none());
-    assert_eq!(s.catalog.photos().count(), 24, "album deletion keeps the photos");
+    assert_eq!(s.catalog.photos().count(), 24, "collection deletion keeps the photos");
 }
 
 /// Given an album and a folder, when something is created inside each, then only the folder
@@ -764,7 +764,9 @@ fn presets_versions_history_and_select_by() {
     assert_eq!(preset(&s).settings["light"]["exposure"], 1.25);
     assert!(preset(&s).settings.get("color").is_none(), "only the groups it already had");
     let builtin = s.presets.iter().find(|p| p.builtin).unwrap().id.clone();
-    assert!(s.execute("preset.rename", &json!({"id": builtin, "name": "x"})).is_err());
+    // built-ins can be renamed (LR-PRE-MANAGE) but never take new settings
+    assert!(s.execute("preset.rename", &json!({"id": builtin, "name": "x"})).is_ok());
+    assert!(s.execute("preset.update", &json!({"id": builtin})).is_err());
     // versions
     s.execute("version.create", &json!({"name": "A"})).unwrap();
     s.execute("version.rename", &json!({"index": 0, "name": "First"})).unwrap();
@@ -1011,13 +1013,13 @@ fn auto_sync_carries_only_the_changed_settings() {
         assert_eq!(s.develop_of(PhotoId(*id)).unwrap().light.exposure, 0.7, "photo {id}");
     }
     assert_eq!(s.develop_of(PhotoId(ids[1])).unwrap().light.contrast, 25.0, "untouched settings stay");
-    // a slider drag syncs once, on release
+    // a slider drag syncs live (LR-AUTOSYNC-LIVE) and commits once, on release
     let shadows: Vec<f64> = ids.iter().map(|id| s.develop_of(PhotoId(*id)).unwrap().light.shadows).collect();
     s.begin_interaction("Shadows").unwrap();
     let mut d = (*s.develop_of(PhotoId(ids[0])).unwrap()).clone();
     d.light.shadows = 40.0;
     s.set_develop(PhotoId(ids[0]), d, "Shadows").unwrap();
-    assert_eq!(s.develop_of(PhotoId(ids[2])).unwrap().light.shadows, shadows[2], "not while dragging");
+    assert_eq!(s.develop_of(PhotoId(ids[2])).unwrap().light.shadows, 40.0, "live while dragging");
     s.end_interaction().unwrap();
     assert_eq!(s.develop_of(PhotoId(ids[2])).unwrap().light.shadows, 40.0);
     // one undo step reverts every photo
@@ -1543,7 +1545,7 @@ fn ai_masks_without_the_model_explain_themselves() {
     let mut d = (*s.develop_of(id).unwrap()).clone();
     d.masks.push(lcc_develop::Mask {
         id: 1,
-        components: vec![lcc_develop::MaskComponent { name: None, op: lcc_develop::MaskOp::Add, invert: false, shape }],
+        components: vec![lcc_develop::MaskComponent { anchor: None, name: None, op: lcc_develop::MaskOp::Add, invert: false, shape }],
         ..Default::default()
     });
     s.set_develop(id, d, "test").unwrap();
@@ -1861,7 +1863,8 @@ fn develop_sync_validates_groups_and_rejects_malformed_with_zero_mutations() {
     // Reselect Photo A (active) and Photo B
     s.execute("library.select", &json!({"ids": [photo_a.0, photo_b.0], "active": photo_a.0})).unwrap();
 
-    // 4. Omitted groups preserves default behavior (all default copy groups synced)
+    // 4. Omitted groups: what Sync ticked last (remembered); with fresh memory, the default copy groups
+    s.dialogs = Default::default();
     s.execute("develop.sync", &json!({})).unwrap();
     let dev_after_omitted = (*s.develop_of(photo_b).unwrap()).clone();
     assert_eq!(dev_after_omitted.light.exposure, 1.0);
@@ -1934,7 +1937,8 @@ fn presets_validate_groups_on_create_and_update() {
     assert!(p.settings.get("light").is_some());
     assert!(p.settings.get("color").is_none());
 
-    // 3. preset.create with omitted groups uses default copy groups
+    // 3. preset.create with omitted groups: what New Preset ticked last; fresh memory = the defaults
+    s.dialogs = Default::default();
     let res_omitted = s.execute("preset.create", &json!({"name": "DefaultPreset"})).unwrap();
     let pid_omitted = res_omitted["id"].as_str().unwrap().to_string();
     let p_omitted = s.presets.iter().find(|p| p.id == pid_omitted).unwrap();
@@ -2217,4 +2221,191 @@ fn upright_says_why_it_found_nothing_to_correct() {
     assert!(noted > 0, "the demo's natural scenes have no verticals to correct");
     let r = s.execute("geometry.upright", &json!({"mode": "off"})).unwrap();
     assert!(r["note"].is_null());
+}
+
+/// The Remove tools behave differently: a clicked Remove spot gets a source it chose and chooses
+/// again when moved (Heal keeps its own); a brushed Remove stroke has none (it is rebuilt from its
+/// surroundings); an explicit `repick` is a no-op for Heal and adds no undo step.
+#[test]
+fn remove_picks_its_own_source_and_heal_keeps_its_own() {
+    let mut s = demo();
+    let id = s.active().unwrap();
+    let r = s.execute("spot.add", &json!({"mode": "remove", "points": [[0.3, 0.4]], "size": 0.02})).unwrap();
+    let i = r["index"].as_u64().unwrap() as usize;
+    assert!(active_dev(&s).spots[i].source_offset.is_some(), "a click: a source of its own");
+    let brushed = s.execute("spot.add", &json!({"mode": "remove", "points": [[0.6, 0.6], [0.65, 0.62], [0.7, 0.6]], "size": 0.02})).unwrap();
+    let b = brushed["index"].as_u64().unwrap() as usize;
+    assert_eq!(active_dev(&s).spots[b].source_offset, None, "a brushed stroke: rebuilt, no source");
+    let heal = s.execute("spot.add", &json!({"mode": "heal", "points": [[0.2, 0.7]], "size": 0.02, "source": [0.1, 0.0]})).unwrap();
+    let hi = heal["index"].as_u64().unwrap() as usize;
+    // moving: Heal keeps its offset (so does Remove: it chooses again only when asked)
+    s.execute("spot.update", &json!({"index": hi, "move": [0.3, -0.2]})).unwrap();
+    assert_eq!(active_dev(&s).spots[hi].source_offset, Some(lcc_geom::Point::new(0.1, 0.0)));
+    let steps = |s: &mut Session| s.execute("history.list", &json!({})).unwrap()["history"].as_array().unwrap().len();
+    s.execute("spot.update", &json!({"index": i, "move": [0.35, 0.3]})).unwrap();
+    assert!(active_dev(&s).spots[i].source_offset.is_some());
+    // asked, Remove chooses again where it now is; then it has that source: asking again changes
+    // nothing (no undo step), nor does asking Heal
+    s.execute("spot.update", &json!({"index": i, "repick": true})).unwrap();
+    let n = steps(&mut s);
+    s.execute("spot.update", &json!({"index": i, "repick": true})).unwrap();
+    s.execute("spot.update", &json!({"index": hi, "repick": true})).unwrap();
+    assert_eq!(steps(&mut s), n);
+    let _ = id;
+}
+
+/// Delete Rejected Photos takes every rejected photo of the view in one undo step, to Recently
+/// Deleted (files stay); a bad `files` is refused. Ported from OneSlips' LR-DELETE-REJECTED.
+#[test]
+fn delete_rejected_photos_takes_the_views_rejects_in_one_step() {
+    let mut s = demo();
+    let ids: Vec<u64> = s.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    let before = s.visible_cloned().len();
+    s.execute("photo.flag", &json!({"ids": [ids[0], ids[2]], "flag": "reject"})).unwrap();
+    s.execute("photo.flag", &json!({"ids": [ids[1]], "flag": "none"})).unwrap();
+    let view = s.visible_cloned();
+    let rejects = view.iter().filter(|id| s.catalog.photo(**id).is_some_and(|p| p.flag == lcc_catalog::Flag::Reject)).count();
+    assert!(rejects >= 2);
+    assert!(s.execute("library.deleteRejected", &json!({"files": "shred"})).is_err());
+    let r = s.execute("library.deleteRejected", &json!({})).unwrap();
+    assert_eq!(r["deleted"], rejects, "{r}");
+    assert_eq!(s.visible_cloned().len(), before - rejects);
+    assert!(s.catalog.photo(lcc_catalog::PhotoId(ids[0])).is_some_and(|p| p.deleted), "to Recently Deleted");
+    assert!(s.catalog.photo(lcc_catalog::PhotoId(ids[1])).is_some_and(|p| !p.deleted), "a photo not rejected stays");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.visible_cloned().len(), before, "one undo step brings both back");
+    let r = s.execute("library.deleteRejected", &json!({"files": "recycle"}));
+    assert!(r.is_err(), "sending files to the trash needs confirm: {r:?}");
+    let all: Vec<u64> = s.visible_cloned().iter().map(|p| p.0).collect();
+    s.execute("photo.flag", &json!({"ids": all, "flag": "none"})).unwrap();
+    assert_eq!(s.execute("library.deleteRejected", &json!({})).unwrap()["deleted"], 0);
+}
+
+/// The filter bar's live counts: the view by mark, counted without the marks' own filter, so the
+/// pick count stays while only picks are shown. Ported from OneSlips' LR-FILTER-BAR (engine).
+#[test]
+fn tally_counts_the_view_without_its_mark_filter() {
+    let mut s = demo();
+    let ids: Vec<u64> = s.visible_cloned().iter().map(|p| p.0).collect();
+    s.execute("photo.flag", &json!({"ids": ids, "flag": "none"})).unwrap();
+    s.execute("photo.flag", &json!({"ids": [ids[0], ids[1]], "flag": "pick"})).unwrap();
+    s.execute("photo.flag", &json!({"ids": [ids[2]], "flag": "reject"})).unwrap();
+    s.execute("photo.label", &json!({"ids": [ids[0]], "label": "red"})).unwrap();
+    let t = s.execute("library.tally", &json!({})).unwrap();
+    assert_eq!((t["picks"].as_u64(), t["rejects"].as_u64(), t["total"].as_u64()), (Some(2), Some(1), Some(ids.len() as u64)), "{t}");
+    assert!(t["labels"][0].as_u64().is_some_and(|n| n >= 1), "{t}");
+    s.execute("library.filter", &json!({"flag": "pick"})).unwrap();
+    assert_eq!(s.visible_cloned().len(), 2);
+    let t = s.tally();
+    assert_eq!((t.picks, t.rejects, t.total), (2, 1, ids.len()), "the flag filter itself isn't counted in");
+}
+
+/// A stroke goes into the chosen Brush component of a mask (the one armed on the photo), not only
+/// the last one; a component that isn't a Brush, or isn't there, is an error and changes nothing.
+#[test]
+fn brush_strokes_go_into_the_chosen_brush_component() {
+    use lcc_develop::{MaskOp, MaskShape};
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "brush"})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2]]})).unwrap();
+    s.execute("mask.addComponent", &json!({"kind": "linear", "start": [0.1, 0.5], "end": [0.9, 0.5]})).unwrap();
+    s.execute("mask.addComponent", &json!({"kind": "brush", "op": "subtract"})).unwrap();
+    let counts = |s: &Session| {
+        active_dev(s).masks[0]
+            .components
+            .iter()
+            .map(|c| match &c.shape {
+                MaskShape::Brush { strokes } => strokes.len() as i32,
+                _ => -1,
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = counts(&s);
+    assert_eq!(before.iter().filter(|n| **n >= 0).count(), 2, "{before:?}");
+    let first = before.iter().position(|n| *n >= 0).unwrap();
+    let last = before.iter().rposition(|n| *n >= 0).unwrap();
+    let linear = before.iter().position(|n| *n < 0).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.3, 0.3]], "component": first})).unwrap();
+    assert_eq!(counts(&s)[first], before[first] + 1, "into the first Brush, not the last");
+    s.execute("mask.brushStroke", &json!({"points": [[0.4, 0.4]], "component": last, "erase": true})).unwrap();
+    assert_eq!(counts(&s)[last], before[last] + 1);
+    assert_eq!(active_dev(&s).masks[0].components[last].op, MaskOp::Subtract, "its own operation is kept");
+    let now = counts(&s);
+    for bad in [json!(linear), json!(9), json!(-1), json!("x")] {
+        assert!(s.execute("mask.brushStroke", &json!({"points": [[0.5, 0.5]], "component": bad})).is_err(), "{bad}");
+    }
+    assert_eq!(counts(&s), now, "a refused stroke changes nothing");
+}
+
+/// A gesture painted in parts (⌥ pressed and let go during it) arrives as `runs`, one stroke per
+/// mode; a live update (`continue`) replaces what the gesture sent last time (`replace` strokes),
+/// so the gesture stays as many strokes as it has runs. Hostile `runs` are errors.
+#[test]
+fn brush_stroke_runs_and_live_updates_replace_what_the_gesture_sent() {
+    use lcc_develop::MaskShape;
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "brush"})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.1, 0.1]]})).unwrap();
+    let strokes = |s: &Session| match &active_dev(s).masks[0].components[0].shape {
+        MaskShape::Brush { strokes } => strokes.clone(),
+        _ => panic!("brush"),
+    };
+    // the live stroke: first sent plain, then again as it grows
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2]], "size": 0.05})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.2, 0.2], [0.3, 0.3]], "size": 0.05, "continue": true})).unwrap();
+    assert_eq!(strokes(&s).len(), 2, "the live update replaced the stroke it grew from");
+    assert_eq!(strokes(&s)[1].points.len(), 2);
+    // ⌥ pressed part-way: two runs replace the one stroke sent so far
+    let runs = json!({"runs": [{"points": [[0.2, 0.2], [0.3, 0.3]]}, {"points": [[0.3, 0.3], [0.4, 0.4]], "erase": true, "size": 0.08}],
+        "size": 0.05, "continue": true});
+    s.execute("mask.brushStroke", &runs).unwrap();
+    let now = strokes(&s);
+    assert_eq!(now.len(), 3, "{now:?}");
+    assert!(!now[1].erase && now[2].erase, "each run keeps its mode");
+    assert_eq!((now[1].size, now[2].size), (0.05, 0.08), "a run's own value, else the top level's");
+    // the next update says how many it sent last time
+    let mut more = runs.clone();
+    more["replace"] = json!(2);
+    s.execute("mask.brushStroke", &more).unwrap();
+    assert_eq!(strokes(&s).len(), 3, "two replaced by two");
+    assert!(
+        s.execute("mask.brushStroke", &json!({"runs": [{"points": [[0.1, 0.1]]}], "replace": -4, "continue": true})).is_ok(),
+        "a bad count is one"
+    );
+    for bad in [json!({"runs": []}), json!({"runs": 3}), json!({"runs": [{"size": 0.1}]})] {
+        assert!(s.execute("mask.brushStroke", &bad).is_err(), "{bad}");
+    }
+}
+
+/// Masks are named after what they select ("Radial Gradient − Linear Gradient") and follow their
+/// components while the name is automatic; a name the photographer gives is kept.
+#[test]
+fn masks_get_automatic_names_until_renamed() {
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].name, "Radial Gradient");
+    s.execute("mask.addComponent", &json!({"kind": "linear", "op": "subtract"})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].name, "Radial Gradient − Linear Gradient");
+    s.execute("mask.rename", &json!({"name": "Face light"})).unwrap();
+    s.execute("mask.addComponent", &json!({"kind": "brush", "op": "add"})).unwrap();
+    assert_eq!(active_dev(&s).masks[0].name, "Face light", "a given name is kept");
+    // a brush stroke into no mask makes one named after it
+    s.execute("mask.select", &json!({"id": null})).unwrap();
+    s.execute("mask.brushStroke", &json!({"points": [[0.5, 0.5]]})).unwrap();
+    assert_eq!(active_dev(&s).masks[1].name, "Brush");
+}
+
+#[test]
+fn a_renamed_mask_keeps_its_name_in_a_user_preset() {
+    let mut s = demo();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    s.execute("mask.add", &json!({"kind": "linear"})).unwrap();
+    s.execute("mask.rename", &json!({"name": "Warmth"})).unwrap();
+    let r = s.execute("preset.create", &json!({"name": "Glow", "groups": ["masks"]})).unwrap();
+    let pid = r["id"].as_str().unwrap().to_string();
+    s.execute("library.next", &json!({})).unwrap();
+    s.execute("preset.apply", &json!({"id": pid})).unwrap();
+    let names: Vec<String> = active_dev(&s).masks.iter().map(|m| m.name.clone()).collect();
+    assert!(names.iter().any(|n| n == "Warmth"), "the given name is kept: {names:?}");
+    assert!(names.iter().any(|n| n.starts_with("Glow")), "the automatic one is named after the preset: {names:?}");
 }

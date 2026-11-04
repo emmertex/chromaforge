@@ -374,7 +374,65 @@ fn keyboard_owned(app: &LccApp, ctx: &egui::Context) -> bool {
     })
 }
 
+/// Caps Lock's state, read from this frame's typing: a letter key pressed without Shift that types
+/// a capital (or with Shift, a small letter) means Caps Lock is on, and the other way round it is
+/// off. `None` when no letter was typed. egui has no Caps Lock key or modifier, but the text a key
+/// types follows it; the culling keys (P, X, U) are letters, so the state is known by the time it
+/// matters.
+pub fn caps_lock_from(events: &[egui::Event]) -> Option<bool> {
+    let mut last_key: Option<(egui::Key, bool)> = None;
+    let mut seen = None;
+    for e in events {
+        match e {
+            egui::Event::Key { key, pressed: true, modifiers, .. } => last_key = Some((*key, modifiers.shift)),
+            egui::Event::Text(t) => {
+                let mut chars = t.chars();
+                if let (Some(c), None, Some((key, shift))) = (chars.next(), chars.next(), last_key)
+                    && c.is_ascii_alphabetic()
+                    && key.symbol_or_name().eq_ignore_ascii_case(&c.to_string())
+                {
+                    seen = Some(c.is_ascii_uppercase() != shift);
+                }
+            }
+            _ => {}
+        }
+    }
+    seen
+}
+
+/// Ctrl+V (and ⇧Ctrl+V) when the system clipboard holds no text (empty, a screenshot, a copied
+/// file): the windowing layer turns the press into a Paste event only when there is text to paste
+/// and otherwise drops it, so the paste shortcuts did nothing until some text was copied. Its
+/// release still arrives: a V released with Ctrl / ⌘ held whose press never came is that press.
+/// Returns the modifiers it was pressed with. The state lives across frames (press and release may
+/// come in different frames).
+pub(crate) fn orphan_paste(ctx: &egui::Context) -> Option<Modifiers> {
+    let id = egui::Id::new("shortcuts-paste-pressed");
+    let mut pressed = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let mut orphan = None;
+    ctx.input(|i| {
+        for e in &i.events {
+            match e {
+                egui::Event::Paste(_) | egui::Event::Key { key: Key::V, pressed: true, .. } => pressed = true,
+                egui::Event::Key { key: Key::V, pressed: false, modifiers, .. } => {
+                    if !pressed && modifiers.command {
+                        orphan = Some(*modifiers);
+                    }
+                    pressed = false;
+                }
+                _ => {}
+            }
+        }
+    });
+    ctx.data_mut(|d| d.insert_temp(id, pressed));
+    orphan
+}
+
 pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
+    if let Some(on) = ctx.input(|i| caps_lock_from(&i.events)) {
+        app.ui.caps_lock = on;
+    }
+    let orphan = orphan_paste(ctx);
     // the Back / Forward presses were for this pass's shortcuts only, as a key press is
     let nav_buttons = std::mem::take(&mut app.nav_buttons);
     // Space held over a tool ends when the key is up, whoever has the keyboard by then
@@ -392,6 +450,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     // don't steal keys from text fields or from the keymap editor recording a shortcut
     if keyboard_owned(app, ctx) || app.recording_shortcut.is_some() || app.ui.name_edit.is_some() {
         return;
+    }
+    // a paste key press the windowing layer dropped (no text on the clipboard): run it as one
+    if let Some(modifiers) = orphan {
+        ctx.input_mut(|i| i.events.push(egui::Event::Key { key: Key::V, physical_key: None, pressed: true, repeat: false, modifiers }));
     }
     // a video in the loupe: Space plays / pauses, ←/→ step frames while paused
     crate::video_ui::handle_keys(app, ctx);
@@ -506,7 +568,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
         compare::target_active(app, &mut params);
         let was = app.session.active();
         let ok = app.run(id, params).is_ok();
-        if ok && (advance || app.ui.auto_advance) {
+        if ok && (advance || app.auto_advance_on()) {
             compare::advance(app, was);
         }
     };
@@ -616,8 +678,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             if let Some(id) = neighbour {
                 let _ = app.run("library.select", json!({"ids": [id.0], "mode": "add"}));
             }
-        } else if compare::culling(app) && (f == "library.next" || f == "library.previous") {
-            let d = if f == "library.next" { 1 } else { -1 };
+        } else if compare::culling(app) && matches!(f.as_str(), "library.next" | "library.previous" | "library.down" | "library.up") {
+            // ↑ / ↓ step like → / ←: run as the grid's Photo Below / Above, they would leave one photo
+            // of the survey (or the pair) selected (upstream #3640)
+            let d = if matches!(f.as_str(), "library.next" | "library.down") { 1 } else { -1 };
             let _ = if app.ui.view == crate::state::ViewMode::Compare { compare::compare_step(app, d) } else { compare::survey_step(app, d) };
         } else if matches!(f.as_str(), "photo.cycleFlag" | "photo.increaseFlag" | "photo.decreaseFlag") {
             // `, ⌘↑, ⌘↓: step the flag; the toast names the active photo's new state (read before Auto Advance moves on)
@@ -1138,6 +1202,33 @@ mod tests {
         assert_eq!(h.app.session.active(), Some(PhotoId(3)));
     }
 
+    /// Caps Lock is read from the case a letter key types, and turns Auto Advance on while it lasts.
+    #[test]
+    fn caps_lock_auto_advances() {
+        use egui::{Event, Key, Modifiers};
+        use lcc_catalog::PhotoId;
+        let press = |k: Key, shift: bool| Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers { shift, ..Default::default() },
+        };
+        assert_eq!(super::caps_lock_from(&[press(Key::P, false), Event::Text("P".into())]), Some(true));
+        assert_eq!(super::caps_lock_from(&[press(Key::P, false), Event::Text("p".into())]), Some(false));
+        assert_eq!(super::caps_lock_from(&[press(Key::X, true), Event::Text("x".into())]), Some(true), "Shift with Caps Lock types small letters");
+        assert_eq!(super::caps_lock_from(&[press(Key::X, true), Event::Text("X".into())]), Some(false));
+        assert_eq!(super::caps_lock_from(&[press(Key::Num5, false), Event::Text("5".into())]), None, "a digit says nothing");
+        assert_eq!(super::caps_lock_from(&[Event::Text("Q".into())]), None, "text without its key (a paste, an IME) says nothing");
+        for k in ["X", "P", "3"] {
+            let mut h = library();
+            h.app.ui.caps_lock = true;
+            assert!(!h.app.ui.auto_advance);
+            key(&mut h, k, false);
+            assert_eq!(h.app.session.active(), Some(PhotoId(2)), "{k} with Caps Lock moves on");
+        }
+    }
+
     #[test]
     fn plain_culling_keys_auto_advance_once() {
         use lcc_catalog::PhotoId;
@@ -1448,6 +1539,8 @@ mod tests {
         fn grid(view: ViewMode) -> crate::headless::Headless {
             let mut h = library();
             h.app.ui.view = view;
+            // the full menu bar (the Import | Library tabs would fold it at this width)
+            h.app.ui.settings.import_as_tab = false;
             h.app.session.execute("library.select", &json!({"ids": [1, 2, 3], "active": 2})).unwrap();
             for _ in 0..3 {
                 h.step();

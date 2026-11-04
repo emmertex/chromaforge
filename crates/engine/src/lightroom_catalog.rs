@@ -945,10 +945,10 @@ fn history_steps(
         };
         let mut settings = lcc_develop::apply_partial(base, &partial, 1.0);
         crate::crs::keep_chosen_dcp(base, &mut settings);
-        steps.push(lcc_catalog::HistoryStep { label, settings: Arc::new(settings) });
+        steps.push(lcc_catalog::HistoryStep { label, settings: Arc::new(settings), batch: None });
     }
     if !steps.is_empty() && steps.last().is_some_and(|l| l.settings != *current) {
-        steps.push(lcc_catalog::HistoryStep { label: "Lightroom catalog".into(), settings: current.clone() });
+        steps.push(lcc_catalog::HistoryStep { label: "Lightroom catalog".into(), settings: current.clone(), batch: None });
     }
     if steps.len() > lcc_catalog::HISTORY_LIMIT {
         let n = steps.len() - lcc_catalog::HISTORY_LIMIT;

@@ -163,3 +163,99 @@ fn modal_dialogs_close_background_menus() {
     h.step();
     assert!(!egui::Popup::is_any_open(&h.view.ctx), "background menus cannot remain above the modal window");
 }
+
+/// Photo ▸ Delete Rejected Photos… always asks, with the number of rejects and how: removing them
+/// (the default, undoable) or trashing their files too. Ported from OneSlips' LR-DELETE-REJECTED.
+#[test]
+fn delete_rejected_photos_asks_how() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|p| p.0).collect();
+    h.app.session.execute("photo.flag", &json!({"ids": ids, "flag": "none"})).unwrap();
+    h.app.session.execute("photo.flag", &json!({"ids": [ids[0], ids[1]], "flag": "reject"})).unwrap();
+    let total = h.app.session.visible_cloned().len();
+    crate::menubar::run_item(&mut h.app, "library.deleteRejected", json!({})).unwrap();
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::DeleteRejected { count: 2, recycle: false })), "{:?}", h.app.ui.dialog);
+    h.step();
+    let r = h.request("ui.dialog.confirm", json!({}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(h.app.ui.dialog.is_none(), "{:?}", h.app.ui.dialog);
+    assert_eq!(h.app.session.visible_cloned().len(), total - 2);
+    crate::menubar::run_item(&mut h.app, "library.deleteRejected", json!({})).unwrap();
+    assert!(h.app.ui.dialog.is_none(), "nothing left to delete: no dialog");
+}
+
+/// The filter bar shows live counts after its flag and label toggles.
+#[test]
+fn the_filter_bar_shows_live_counts() {
+    let mut h = demo([1600.0, 900.0], json!({"view": "photoGrid"}));
+    h.app.ui.filter_bar = true;
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "filter:count:pick"), "no pick count drawn");
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "filter:count:red"));
+}
+
+/// Show Alternatives: the bar over the frames around a photo appears, and Back leaves them.
+#[test]
+fn alternatives_bar_shows_and_goes_back() {
+    let dir = std::env::temp_dir().join(format!("lcc-ui-alternatives-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paths = Vec::new();
+    for i in 0..5u8 {
+        let p = dir.join(format!("IMG_{i:02}.jpg"));
+        let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 13) as u8, i * 40, 255]);
+        std::fs::write(&p, lcc_engine::export::encode_image(&img, &lcc_engine::export::ExportOptions::default()).unwrap()).unwrap();
+        paths.push(p.to_string_lossy().into_owned());
+    }
+    let mut session = lcc_engine::Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [paths[2]]})).unwrap();
+    let app = LccApp::new(session, Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+    h.app.ui.view = crate::state::ViewMode::Detail;
+    let id = h.app.session.visible_cloned()[0];
+    h.app.session.execute("photo.showAlternatives", &json!({"id": id.0})).unwrap();
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "alternatives:bar"));
+    h.settle(Duration::from_secs(60));
+    let r = h.request("ui.clickWidget", json!({"id": "button:alternativesBack"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(h.app.session.alternatives.is_none(), "Back leaves the alternatives");
+    assert_eq!(h.app.session.visible_cloned(), vec![id]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rename Photos: a naming preset sets the template, a `{text:…}` tag gets its own field, and the
+/// rename uses what was typed. Ported from OneSlips' LR-LIB-RENAME.
+#[test]
+fn rename_with_a_text_preset_asks_for_the_text() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
+    let first = h.app.session.visible_cloned()[0];
+    h.app.session.execute("library.select", &json!({"ids": [first.0]})).unwrap();
+    h.app.ui.dialog = Some(crate::state::Dialog::Rename { template: "{name}".into(), start: 1, texts: Default::default() });
+    h.settle(Duration::from_secs(60));
+    // the built-in "Custom Text - Number" preset is the fourth
+    let r = h.request("ui.clickWidget", json!({"id": "button:renamePreset-3"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(Duration::from_secs(60));
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "field:renameText-0"), "a field for the text tag");
+    if let Some(crate::state::Dialog::Rename { texts, template, .. }) = h.app.ui.dialog.as_mut() {
+        assert!(template.contains("{text:"), "{template}");
+        texts.insert("Name".into(), "RA".into());
+    }
+    let r = h.request("ui.dialog.confirm", json!({}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(
+        h.app.session.catalog.photo(first).is_some_and(|p| p.file_name.starts_with("RA-")),
+        "{:?}",
+        h.app.session.catalog.photo(first).map(|p| p.file_name.clone())
+    );
+}

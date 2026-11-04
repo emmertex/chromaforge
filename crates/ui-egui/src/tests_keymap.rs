@@ -380,6 +380,34 @@ fn clipboard_events_run_the_copy_and_paste_shortcuts() {
     assert!(matches!(h.app.ui.dialog, Some(Dialog::PasteSettings { .. })), "⇧Ctrl+V: {:?}", h.app.ui.dialog);
 }
 
+/// With no text on the system clipboard (empty, a screenshot) the windowing layer drops Ctrl+V's
+/// press and sends only its release; the paste shortcuts still paste (Ctrl+V) and open Paste
+/// Selected Settings (⇧Ctrl+V).
+#[test]
+fn paste_shortcuts_work_with_no_text_on_the_clipboard() {
+    let mut h = demo();
+    h.events.push(egui::Event::Copy);
+    h.settle(SETTLE);
+    assert!(h.app.session.clipboard.is_some());
+    let undo = h.app.session.undo.len();
+    let release = |m: egui::Modifiers| egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers: m };
+    h.events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), release(egui::Modifiers::COMMAND)]);
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.undo.len(), undo + 1, "Ctrl+V pasted the settings");
+    let shift_cmd = egui::Modifiers::SHIFT | egui::Modifiers::COMMAND;
+    h.events.extend([egui::Event::ModifiersChanged(shift_cmd), release(shift_cmd)]);
+    h.settle(SETTLE);
+    assert!(matches!(h.app.ui.dialog, Some(Dialog::PasteSettings { .. })), "⇧Ctrl+V: {:?}", h.app.ui.dialog);
+    // a normal paste (press seen, then release) runs once, not twice
+    h.app.ui.dialog = None;
+    let undo = h.app.session.undo.len();
+    h.events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), egui::Event::Paste("text".into())]);
+    h.settle(SETTLE);
+    h.events.push(release(egui::Modifiers::COMMAND));
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.undo.len(), undo + 1, "one paste");
+}
+
 /// Windows also pastes with ⇧Insert and cuts with ⇧Delete: the clipboard events they become are
 /// the plain Paste / Cut, not ⇧Ctrl+V (Paste Selected Settings).
 #[test]

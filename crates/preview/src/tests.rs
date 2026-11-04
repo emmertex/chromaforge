@@ -123,6 +123,42 @@ fn disk_cache_roundtrip_and_prune() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Records kept beside the thumbnails (a photo's eyes) come back as written, count in the
+/// cache's size, are let go like thumbnails when it is full, and go when dropped.
+#[test]
+fn data_records_roundtrip_count_and_prune() {
+    let dir = temp_dir("data");
+    let d = DiskCache::new(&dir, 40_000);
+    let k = hash_bytes(b"eyes-1");
+    assert!(d.get_data(k).is_none());
+    d.put_data(k, b"hello eyes");
+    assert_eq!(d.get_data(k).as_deref(), Some(&b"hello eyes"[..]));
+    assert_eq!(d.size(), 10);
+    // a thumbnail under another key and the record are both cache files
+    let hex = k.to_string();
+    assert!(disk::is_cache_file(&hex[..2], &format!("{hex}.{DATA_EXT}")));
+    // fill past the budget: the oldest records go
+    let keys: Vec<_> = (0..40u8).map(|i| hash_bytes(&[i, 9])).collect();
+    for k in &keys {
+        d.put_data(*k, &[7u8; 2000]);
+    }
+    assert!(d.size() <= 40_000, "{}", d.size());
+    assert!(d.get_data(*keys.last().unwrap()).is_some());
+    assert!(d.get_data(keys[0]).is_none());
+    let before = d.size();
+    d.remove_data(*keys.last().unwrap());
+    assert!(d.get_data(*keys.last().unwrap()).is_none());
+    assert_eq!(d.size(), before - 2000);
+    // a retired cache reads and writes no records
+    let cache = PreviewCache::with_disk(1 << 20, &dir, 1 << 20);
+    cache.put_data(k, b"again");
+    assert_eq!(cache.get_data(k).as_deref(), Some(&b"again"[..]));
+    cache.retire();
+    assert!(cache.get_data(k).is_none());
+    d.clear();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn disk_cache_overwrite_accounts_for_replaced_jpeg_only_once() {
     let dir = temp_dir("overwrite");
@@ -772,6 +808,48 @@ fn a_slot_runs_one_job_at_a_time() {
     assert_eq!(most.load(Ordering::SeqCst), 1, "slot 1 ran two jobs at once");
 }
 
+/// Note 8 of 2026-10-31: a slider draft waited seconds behind the view's first full render (the
+/// slot ran one job at a time). An overtaking job starts beside the slot's running ordinary job;
+/// a second overtaking job still waits for the first, and an ordinary job waits for both kinds.
+#[test]
+fn an_overtaking_job_starts_beside_the_slots_running_job() {
+    let mut p: JobPool<u8, u32> = JobPool::new(4);
+    let (started, has_started) = std::sync::mpsc::channel();
+    let gate = |n: u32| {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let started = started.clone();
+        let job: crate::pool::Job<u32> = Box::new(move || {
+            let _ = started.send(n);
+            let _ = released.recv_timeout(std::time::Duration::from_secs(30));
+            n
+        });
+        (release, job)
+    };
+    let (release_full, full) = gate(1);
+    p.submit(1, 1, 9, full);
+    assert_eq!(has_started.recv().unwrap(), 1);
+    // the draft starts at once, beside the full render
+    let (release_draft, draft) = gate(2);
+    p.submit_overtaking(1, 2, 9, draft);
+    assert_eq!(has_started.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), 2);
+    // the next draft waits for the first; an ordinary job for the slot replaces it and waits for both
+    let (_r3, draft2) = gate(3);
+    p.submit_overtaking(1, 3, 9, draft2);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(has_started.try_recv().is_err(), "two overtaking jobs of a slot ran at once");
+    p.submit(1, 4, 9, Box::new(|| 4));
+    drop(release_draft);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(p.is_queued(1), "an ordinary job waits for the slot's ordinary job too");
+    drop(release_full);
+    let mut done = Vec::new();
+    assert!(eventually(10, || {
+        done.extend(std::iter::from_fn(|| p.try_recv()).map(|d| d.result));
+        done.contains(&4)
+    }));
+    assert_eq!(done, vec![2, 1, 4], "the replaced draft never runs");
+}
+
 /// A job that panics still frees its slot: the slot's next job runs (on another worker).
 #[test]
 fn a_panicking_job_frees_its_slot() {
@@ -987,4 +1065,89 @@ fn a_slow_first_count_never_holds_up_the_size_shown() {
     }
     assert_eq!(cache.disk_size_now(), Some(on_disk));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Notes 1 and 4 of 2026-10-22: with every worker busy with a long render, a cheap stand-in (a
+/// raw's embedded JPEG) waited for one of them to end; the fast lane runs it at once.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn the_fast_lane_runs_cheap_jobs_while_every_other_worker_is_busy() {
+    use std::time::{Duration, Instant};
+    let mut p: JobPool<u8, u8> = JobPool::with_fast_lane(2, 1, |s| *s >= 100);
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Arc::new(std::sync::Mutex::new(held));
+    // two long renders take both ordinary workers…
+    for slot in [1u8, 2] {
+        let h = held.clone();
+        p.submit(
+            slot,
+            0,
+            50,
+            Box::new(move || {
+                let _ = h.lock().map(|r| r.recv_timeout(Duration::from_secs(20)));
+                0
+            }),
+        );
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    // …and a third one waits for them: the fast worker never takes it
+    p.submit(3, 0, 60, Box::new(|| 3));
+    std::thread::sleep(Duration::from_millis(100));
+    // a cheap job still runs at once
+    let t0 = Instant::now();
+    p.submit(100, 0, 1, Box::new(|| 100));
+    let mut got = Vec::new();
+    while t0.elapsed() < Duration::from_secs(5) && !got.contains(&100) {
+        if p.wait(Duration::from_millis(20))
+            && let Some(d) = p.try_recv()
+        {
+            got.push(d.result);
+        }
+    }
+    assert!(got.contains(&100), "the cheap job ran while the other workers were busy");
+    assert!(!got.contains(&3), "the fast lane took only its own jobs: {got:?}");
+    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    drop(release);
+    p.shutdown(Duration::from_secs(5));
+}
+
+/// Background jobs (a folder's thumbnail renders) run a few at a time: a worker stays free for the
+/// photo on screen.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn background_jobs_leave_workers_free() {
+    use std::time::Duration;
+    let mut p: JobPool<u8, u8> = JobPool::new(3);
+    p.cap_background(10, 1);
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Arc::new(std::sync::Mutex::new(held));
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for slot in [1u8, 2, 3] {
+        let (h, r) = (held.clone(), running.clone());
+        p.submit(
+            slot,
+            0,
+            3,
+            Box::new(move || {
+                r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = h.lock().map(|x| x.recv_timeout(Duration::from_secs(20)));
+                0
+            }),
+        );
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(running.load(std::sync::atomic::Ordering::SeqCst), 1, "one background job at a time");
+    p.submit(9, 0, 50, Box::new(|| 9));
+    let mut got = None;
+    for _ in 0..100 {
+        if p.wait(Duration::from_millis(20))
+            && let Some(d) = p.try_recv()
+        {
+            got = Some(d.result);
+            break;
+        }
+    }
+    assert_eq!(got, Some(9), "the job on screen found a free worker");
+    drop(release);
+    p.shutdown(Duration::from_secs(5));
 }

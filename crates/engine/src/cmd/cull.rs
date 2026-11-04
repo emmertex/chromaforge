@@ -24,9 +24,9 @@ fn secs(iso: &str) -> Option<i64> {
     Some(d.unix_seconds())
 }
 
-/// Eyes-open from YuNet landmarks when the detector is installed; otherwise a weak guess from a
+/// Eyes-open from the face model's landmarks when it is installed; otherwise a weak guess from a
 /// stored face box. `None` when neither is available (the field is skipped, not stored as 0).
-fn eyes_open_for(src: &Rgb32f, detector: Option<&lcc_faces::yunet::Detector>, photo: Option<&Photo>) -> Option<f32> {
+fn eyes_open_for(src: &Rgb32f, detector: Option<&super::face_detect::Finder>, photo: Option<&Photo>) -> Option<f32> {
     if let Some(det) = detector {
         let rgb: Vec<u8> = src
             .data
@@ -35,7 +35,7 @@ fn eyes_open_for(src: &Rgb32f, detector: Option<&lcc_faces::yunet::Detector>, ph
                 [0, 1, 2].map(|i| (lcc_color::transfer::linear_to_srgb(c.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0)) * 255.0).round() as u8)
             })
             .collect();
-        if let Ok(faces) = det.detect(&rgb, src.width, src.height, &lcc_faces::yunet::Options::default())
+        if let Ok(faces) = det.detect(&rgb, src.width, src.height, false)
             && let Some(first) = faces.first()
         {
             return lcc_pipeline::cull::eyes_open(src, &first.landmarks);
@@ -198,6 +198,33 @@ fn find_similar(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            "photo.rejectEyes",
+            "Reject Closed and Blurry Eyes",
+            [],
+            None,
+            "{ids?, closed?: bool (true), blurry?: bool (true), soft?: bool (false: soft eyes, the strip's amber, count as blurry too), mainOnly?: bool (true), wait?: bool} — judge the eyes of the selected photos (else all in view) as the culling strip does and reject those where a main subject (a face at least half as wide as the largest; everyone with mainOnly false) has closed or blurry (or, with soft, soft) eyes; picked photos are left alone. Runs in the background (activity row, cancellable) and flags the rejects in one undo step when done (`photo.rejectEyesPump`); `wait` runs it now → {done, photos} or {done, rejected, closedEyes, blurryEyes, noFaces, looked, failed, cancelled}",
+            always,
+            crate::eye_cull::reject_eyes
+        ),
+        cmd!(
+            "photo.rejectEyesPump",
+            "Reject Closed and Blurry Eyes: Take Results",
+            [],
+            None,
+            "{} — cheap every frame: when a Reject Closed and Blurry Eyes run has finished, flag its rejects (one undo step) and return its summary once → {active, done, rejected, closedEyes, blurryEyes, …}",
+            always,
+            crate::eye_cull::pump
+        ),
+        cmd!(
+            "eyes.analyze",
+            "Find Eyes Ahead",
+            [],
+            None,
+            "{path?: folder (its browsed or library photos), subfolders?: bool (true), ids?, wait?: bool, lanes?: 1..8 (photos side by side: 1 in the background, with wait an eighth of the threads up to 4), status?: bool, cancel?: bool} — find the eyes of many photos ahead of culling (those in folder `path`, else `ids`, else the selection, else all in view) and keep each result in the preview cache, so the eye focus strip shows them at once, also after a restart; photos kept there already are skipped. Runs in the background (activity row, cancellable, waits while the photo on screen is being made); `wait` runs it now; `status` reports the last run; `cancel` stops it → {active, done, photos, kept, analyzed, failed, cancelled, ms?, lanes?}",
+            always,
+            crate::eye_prep::analyze
+        ),
         cmd!(
             "library.findSimilar",
             "Find Similar Photos",

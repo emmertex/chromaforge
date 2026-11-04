@@ -236,6 +236,27 @@ impl MapUi {
         }
     }
 
+    /// The map view as a rectangle of positions, from the canvas drawn last frame (`None` before
+    /// the first frame). A view wider than the world spans every longitude.
+    pub fn view_bounds(&self) -> Option<lcc_engine::cmd::map::Bounds> {
+        let r = self.canvas?;
+        let nw = view::screen_to_geo(self, r, r.min);
+        let se = view::screen_to_geo(self, r, r.max);
+        let whole = f64::from(r.width()) >= lcc_geo::mercator::world_px(self.prefs.zoom);
+        Some(lcc_engine::cmd::map::Bounds {
+            south: se.lat,
+            north: nw.lat,
+            west: if whole { -180.0 } else { nw.lon },
+            east: if whole { 180.0 } else { se.lon },
+        })
+    }
+
+    /// The photos the filmstrip under the map shows: the photos in view that pass the Location
+    /// Filter (fork #783).
+    pub fn film_ids(&self, app_session: &mut lcc_engine::Session) -> Vec<lcc_catalog::PhotoId> {
+        lcc_engine::cmd::map::in_view(app_session, &self.filter, self.view_bounds())
+    }
+
     /// The pins for the photos in view at the current zoom (cached per catalog revision, filter and zoom step;
     /// shared, so a frame doesn't copy 50k clusters — P6.1).
     pub fn pins(&mut self, app_session: &mut lcc_engine::Session) -> std::sync::Arc<Vec<lcc_geo::Cluster<u64>>> {
@@ -412,7 +433,7 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         }
         "map.filter" => {
             let want = s(p, "filter").unwrap_or("all");
-            let filter = LocationFilter::parse(want).ok_or("filter is all|tagged|untagged|location:<name>")?;
+            let filter = LocationFilter::parse(want).ok_or("filter is all|visible|tagged|untagged|location:<name>")?;
             if let LocationFilter::Location(n) = &filter
                 && app.session.catalog.saved_location(n).is_none()
             {

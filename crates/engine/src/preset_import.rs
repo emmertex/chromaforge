@@ -503,6 +503,13 @@ pub fn group_from_dir(dir: &str) -> Option<String> {
 
 pub(crate) fn build(props: &Props, values: &crate::crs_masks::Values, name: String, group: Option<String>, from_photo: bool) -> Option<Imported> {
     let (mut settings, mut unmapped) = crate::crs::to_partial_report(props, Some(values), crate::crs::Target::Any, crate::crs_masks::DEFAULT_ASPECT);
+    // a preset we exported: its own complete settings win over the crs: reading
+    if let Some(own) =
+        props.get(crate::preset_xmp::LC_SETTINGS).and_then(|v| v.first()).and_then(|s| serde_json::from_str::<Value>(s).ok()).filter(Value::is_object)
+    {
+        settings = own;
+        unmapped.clear();
+    }
     if from_photo && let Some(o) = settings.as_object_mut() {
         // a photo's own framing and absolute white balance don't belong in a look
         o.remove("crop");

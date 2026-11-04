@@ -34,8 +34,8 @@ Photos you already edited in <app> keep their edits; `updateExisting=true` repla
 | Star ratings, picks / rejects, colour labels | yes |
 | Titles, captions, copyright, creator and other XMP metadata | yes |
 | Keywords, including hierarchies | yes |
-| Collections and collection sets | albums and album sets |
-| Smart collections | regular albums with their current photos; the rules are kept in the recovery archive |
+| Collections and collection sets | collections and collection folders |
+| Smart collections | regular collections with their current photos; the rules are kept in the recovery archive |
 | Virtual copies | virtual copies |
 | Develop settings | mapped onto <app>'s controls (see below); unmapped fields are reported |
 | Develop history and snapshots | kept in the recovery archive as source data, not as <app> history yet |

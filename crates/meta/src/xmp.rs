@@ -190,6 +190,18 @@ pub(crate) const MAX_OPAQUE_NAME_BYTES: usize = 8 * 1024 * 1024;
 /// retains its prefix once per property: node limits alone cannot bound that duplication.
 const MAX_KEY_BYTES: usize = 1 << 20;
 
+/// Most namespace declarations in scope at once. Prefix lookup scans them, so declarations times the names of a
+/// start tag is the work; real packets declare a few dozen.
+const MAX_NS_DECLS: usize = 512;
+
+/// Refuses a scope stack holding more than [`MAX_NS_DECLS`] declarations (one count per start tag over a stack at most [`MAX_DEPTH`] deep).
+pub(crate) fn check_scopes(scopes: &[Vec<(String, String)>]) -> Result<(), XmpError> {
+    if scopes.iter().map(Vec::len).sum::<usize>() > MAX_NS_DECLS {
+        return Err(XmpError::TooComplex);
+    }
+    Ok(())
+}
+
 /// Names canonicalised by namespace URI (see [`NAMESPACES`]); conflicting foreign prefixes are opaque.
 pub(crate) fn canonical_name(qname: &str, scopes: &[Vec<(String, String)>], opaque_budget: &mut usize) -> Result<String, XmpError> {
     canonical(qname, scopes, opaque_budget)
@@ -319,6 +331,7 @@ fn parse_tree(s: &str) -> Result<Node, XmpError> {
                     }
                 }
                 scopes.push(scope);
+                check_scopes(&scopes)?;
                 let name = canonical(&String::from_utf8_lossy(e.name().as_ref()), &scopes, &mut opaque_budget)?;
                 let attrs =
                     raw_attrs.into_iter().map(|(k, v)| Ok((canonical(&k, &scopes, &mut opaque_budget)?, v))).collect::<Result<_, XmpError>>()?;
@@ -380,8 +393,13 @@ fn is_rdf_meta_attr(k: &str) -> bool {
 
 fn collect_description(d: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<String>>, budget: &mut usize) {
     for (k, v) in &d.attrs {
-        if !is_rdf_meta_attr(k) && take_key_bytes(&format!("{prefix}{k}"), budget) {
-            props.entry(format!("{prefix}{k}")).or_default().push(v.clone());
+        // the budget is checked before the path is built, not after
+        if is_rdf_meta_attr(k) || *budget < prefix.len().saturating_add(k.len()) {
+            continue;
+        }
+        let key = format!("{prefix}{k}");
+        if take_key_bytes(&key, budget) {
+            props.entry(key).or_default().push(v.clone());
         }
     }
     for c in &d.children {
@@ -401,6 +419,11 @@ fn take_key_bytes(key: &str, budget: &mut usize) -> bool {
 }
 
 fn collect_property(p: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<String>>, budget: &mut usize) {
+    // a path that can't fit the budget isn't built (a long ancestor path shared by many children
+    // would otherwise be copied for each of them after the budget is spent)
+    if *budget < prefix.len().saturating_add(p.name.len()) {
+        return;
+    }
     let key = format!("{prefix}{}", p.name);
     if let Some(arr) = p.children.iter().find(|c| matches!(c.name.as_str(), "rdf:Seq" | "rdf:Bag" | "rdf:Alt")) {
         let mut items: Vec<(bool, String)> = arr
@@ -420,6 +443,12 @@ fn collect_property(p: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<Str
         return;
     }
     let struct_prefix = format!("{key}/");
+    // a struct's path is charged like a key before its fields copy it: that work too is bounded
+    // by the budget, kept fields or not
+    let is_struct = p.attr("rdf:parseType") == Some("Resource") || p.children.iter().any(|c| c.name == "rdf:Description");
+    if is_struct && !take_key_bytes(&key, budget) {
+        return;
+    }
     if p.attr("rdf:parseType") == Some("Resource") {
         for c in &p.children {
             collect_property(c, &struct_prefix, props, budget);
@@ -1756,5 +1785,14 @@ mod tests {
         assert!(total <= MAX_KEY_BYTES, "flattened-key text {total} is over the {MAX_KEY_BYTES} budget");
         assert!(d.properties.len() < 3000, "keys stop being added once the budget is spent");
         assert!(!d.properties.is_empty(), "properties parsed before the budget are kept");
+    }
+
+    #[test]
+    fn a_start_tag_with_thousands_of_namespace_declarations_is_refused() {
+        let decls: String = (0..2000).map(|i| format!(" xmlns:p{i}=\"urn:x{i}\"")).collect();
+        let xmp = format!(
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description{decls} p1:a=\"1\"/></rdf:RDF></x:xmpmeta>"
+        );
+        assert!(matches!(parse_xmp(&xmp), Err(XmpError::TooComplex)));
     }
 }

@@ -61,6 +61,7 @@ pub struct TextField<'a> {
     align: Option<egui::Align>,
     margin: Option<egui::Margin>,
     rows: Option<usize>,
+    password: bool,
 }
 
 /// The egui id of the field registered as `widget`, to give it the focus (⌘F to search).
@@ -92,6 +93,7 @@ impl<'a> TextField<'a> {
             align: None,
             margin: None,
             rows: None,
+            password: false,
         }
     }
 
@@ -115,6 +117,12 @@ impl<'a> TextField<'a> {
 
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
+        self
+    }
+
+    /// Show dots instead of the text (API keys); Copy and Cut copy nothing.
+    pub fn password(mut self, on: bool) -> Self {
+        self.password = on;
         self
     }
 
@@ -217,6 +225,9 @@ impl<'a> TextField<'a> {
         }
         if let Some(rows) = self.rows {
             edit = edit.desired_rows(rows);
+        }
+        if self.password {
+            edit = edit.password(true);
         }
         let (escape, enter) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.key_pressed(egui::Key::Enter)));
         // a right-click places the cursor as a left one does: the selection the menu acts on

@@ -11,7 +11,8 @@ zooms to it, so checking whether the subject is sharp takes one key while cullin
   default; the choice is saved with the app's settings.
 - **View ▸ Loupe Info ▸ Zoom to Focus Point** (`view.zoomToFocus {on?}`, on by default): Toggle Zoom (Z or Space) zooms in
   centred on the focus point instead of the last position. A click on the photo still zooms where you click, and a
-  photo without a focus point zooms as before. On by default because it changes nothing for photos without a point,
+  photo without a focus point zooms to the main subject's sharpest open eye when the eye finder has looked at it
+  (the culling eye strip; else the largest face found), and otherwise as before. On by default because it changes nothing for photos without a point,
   and for those with one the focus point is what a 1:1 check is for. In Compare the two panes share one pan, so Z
   centres on the active photo's point; per-pane focus zoom is a follow-up.
 - **Info panel**: a *Focus* row says how the camera focused, e.g. `AF-C · Wide · Animal Eye Tracking` (focus mode,
@@ -33,8 +34,9 @@ from a supported body have no point and haven't been looked at, the app reads th
 (`photo.readFocusPoints`) starts the same job by hand. Photo ▸ File ▸ Reload from Disk still fills a missing point too, but it
 re-reads and hashes whole files and runs while you wait, so it is for a few photos, not a library.
 
-- **What is opened**: only photos whose stored camera is a supported body (`SONY ILCE-1`, `SONY ILCE-7SM3`), whose
-  file is an ARW or JPEG, that are in the library and have no point yet. Nothing else is opened.
+- **What is opened**: only photos whose stored camera is a supported body (`SONY ILCE-1`, `SONY ILCE-7SM3`, any
+  Canon), whose file is an ARW, CR3, CR2 or JPEG, that are in the library and have no point yet. Nothing else is
+  opened. A CR3's focus data is in its `moov` box at the start of the file (about 35 KB on an EOS R5 C).
 - **What is read**: the few kilobytes that hold the focus data, not the file
   (`lcc_meta::focus::read_header`). It walks the file's structure as the decoder does — the TIFF header and
   IFD0 (Make, Model), the Exif IFD (the MakerNote entry), the maker note's IFD and the values of the focus tags; in a
@@ -63,10 +65,28 @@ re-reads and hashes whole files and runs while you wait, so it is for a few phot
 
 ## Cameras
 
-Sony first, on bodies whose files have been checked: **ILCE-1 (α1)** and **ILCE-7SM3 (A7S III)**
+**Sony** on bodies whose files have been checked: **ILCE-1 (α1)** and **ILCE-7SM3 (A7S III)**
 (`lcc_meta::focus::SONY_MODELS`). Other Sony bodies store the same tags, but a body is added only after its
-files are checked, so an unchecked one shows nothing rather than a misleading box. Fujifilm, Canon, Nikon, OM System
-and Panasonic record similar data and are later steps.
+files are checked, so an unchecked one shows nothing rather than a misleading box.
+
+**Canon** (CR3, CR2, JPEG), every body that writes the AFInfo2 or AFInfo3 record (`crates/meta/src/focus_canon.rs`);
+checked on EOS R5 C CR3s from two bodies. Fujifilm, Nikon, OM System and Panasonic record similar data and are later
+steps.
+
+### Canon layout and evidence
+
+Tag identities, layout and value names come from the public ExifTool tag-name documentation (Canon AFInfo2 table); no
+third-party code was read. A CR3 keeps its maker note in the `CMT3` block of the Canon `uuid` box; a CR2 or a Canon
+JPEG has a header-less maker-note IFD. The record is int16 values: size, AFAreaMode, NumAFPoints, ValidAFPoints, the
+Canon image size, the AF image size (the frame the positions are in), then the valid points' widths, heights, x and y
+positions from the frame's centre (x right, **y up**), then a bit mask of the points in focus. The box drawn covers the
+in-focus points among the valid ones; AFAreaMode 0 (manual focus) or no usable frame gives no point.
+
+On the R5 C files (1053 AF points, one valid): Face + Tracking frames (115 px) land on the tracked face (a guest's
+face in a candid, a bridesmaid in a group of five), Flexizone Single frames (576 × 480) on the couple or the middle
+of a group; with y read downwards they would land on chests and bouquets, which is how the sign was confirmed. The
+Info panel shows the AF area mode (`Face + Tracking`, `Zone AF`, `Flexizone Single`…; modes the documentation doesn't
+name plainly read `AF area <n>`).
 
 ### Sony layout and evidence
 

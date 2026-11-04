@@ -288,7 +288,7 @@ fn deleting_the_pinned_reference_stops_drawing_it_and_reentry_uses_a_live_photo(
     h.app.run("library.select", json!({"ids": [reference.0]})).unwrap();
     h.app.run("view.reference", json!({})).unwrap();
     h.settle(SETTLE);
-    let texture = h.app.renderer.textures.get(&crate::render::Slot::Compare(0)).unwrap().tex.id();
+    let texture = h.app.renderer.textures.get(&crate::render::Slot::Compare(0)).unwrap().id();
     let drawn = |h: &Headless| h.view.painted_shapes().iter().any(|s| matches!(s, egui::epaint::Shape::Mesh(mesh) if mesh.texture_id == texture));
     assert!(drawn(&h), "the live reference is shown before deletion");
     let active = h.app.session.active().unwrap();

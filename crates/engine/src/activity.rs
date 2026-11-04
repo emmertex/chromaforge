@@ -112,7 +112,7 @@ pub struct TaskInfo {
     pub id: u64,
     /// A stable id: `import`, `export`, `scan`, `previews`, `smartPreviews`, `lightroom`, `merge`, `download`,
     /// `faces`, `denoise`, `findMissing`, `applePhotos`, `renderDng`, `cache`, `focus`, `saveMetadata`, `readMetadata`,
-    /// `mlIndex`.
+    /// `mlIndex`, `sensorMaps` (camera sensor map builds and Remove Dust).
     pub kind: &'static str,
     /// English; the frontend translates it.
     pub label: String,

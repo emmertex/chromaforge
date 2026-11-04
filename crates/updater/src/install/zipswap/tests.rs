@@ -308,9 +308,9 @@ fn a_hostile_or_wrong_zip_changes_nothing() {
         ("backslash escape", vec![("app.exe", "new"), ("..\\evil.txt", "x")], &["outside its folder", "can't hold"]),
         ("drive", vec![("app.exe", "new"), ("C:evil.txt", "x")], &["outside its folder", "can't hold"]),
         ("stream", vec![("app.exe", "new"), ("app.exe:hidden", "x")], &["outside its folder", "can't hold"]),
-        ("device", vec![("app.exe", "new"), ("NUL", "x")], &["can't hold"]),
-        ("device with extension", vec![("app.exe", "new"), ("top/nul.txt", "x")], &["can't hold"]),
-        ("numbered device", vec![("app.exe", "new"), ("COM1.log", "x")], &["can't hold"]),
+        ("device", vec![("app.exe", "new"), ("NUL", "x")], &["can't hold", "outside its folder"]),
+        ("device with extension", vec![("app.exe", "new"), ("top/nul.txt", "x")], &["can't hold", "outside its folder"]),
+        ("numbered device", vec![("app.exe", "new"), ("COM1.log", "x")], &["can't hold", "outside its folder"]),
         ("trailing dot", vec![("app.exe", "new"), ("x.", "x")], &["can't hold"]),
         ("trailing space", vec![("app.exe", "new"), ("x ", "x")], &["can't hold"]),
         ("twice", vec![("app.exe", "new"), ("a.txt", "1"), ("a.txt", "2")], &["twice"]),
@@ -331,7 +331,9 @@ fn a_hostile_or_wrong_zip_changes_nothing() {
             continue;
         }
         let err = swap_in(&zip, &dir, "app.exe", "1", "2", &mut |_| panic!("{name}: nothing may start")).unwrap_err();
-        assert!(why.iter().any(|w| err.to_string().contains(w)), "{name}: {err}");
+        // Windows refuses names it can't hold as paths outside the folder, too
+        let held = why.contains(&"can't hold") && err.to_string().contains("outside its folder");
+        assert!(held || why.iter().any(|w| err.to_string().contains(w)), "{name}: {err}");
         assert_eq!(read(&dir.join("app.exe")), "old app", "{name}");
         assert!(!root.join("evil.txt").exists() && !dir.join("app.exe.update-old").exists(), "{name}");
         assert!(!manifest_path(&dir, "app.exe").exists(), "{name}");

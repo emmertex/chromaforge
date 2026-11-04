@@ -1,7 +1,7 @@
 //! Background export: the Export dialog, File → Export with Preset and Export with Previous hand
 //! their batch to a worker thread so the window stays responsive. Photos are prepared on the UI
 //! thread ([`lcc_engine::export::prepare_export`]: cheap, needs the session) and rendered,
-//! encoded and written on the worker (several side by side: [`run_batch`]); its row in the
+//! encoded and written on the worker (several side by side: [`run_batch_cancellable`]); its row in the
 //! activity stack shows the count, the file in progress and ✕ (issue #345).
 //!
 //! Needs [`crate::Services::write_shared`] (a thread-safe writer); without it (web) the batch runs
@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 
 use lcc_engine::activity::{Cancel, TaskGuard};
-use lcc_engine::export::{AfterExport, Destination, ExportOptions, PreparedExport, run_batch, set_video_hooks};
+use lcc_engine::export::{AfterExport, Destination, ExportOptions, PreparedExport, run_batch_cancellable, set_video_hooks};
 use serde_json::{Value, json};
 
 use crate::LccApp;
@@ -78,12 +78,23 @@ pub fn start(app: &mut LccApp, mut items: Vec<PreparedExport>, opts: ExportOptio
     let adding = crate::i18n::tr("Adding to Apple Photos…").to_string();
     let work = move || {
         let mut w = |path: &str, bytes: &[u8]| write(path, bytes);
-        let r = run_batch(items, &opts, &to, &mut w, &|path| std::path::Path::new(path).exists(), false, &mut |done, name| {
-            if let Ok(mut g) = p.lock() {
-                *g = (done, name.to_string());
-            }
-            !c.load(Ordering::Relaxed)
-        });
+        // (the cancel flag is watched while photos render too: a cancel stops within a second)
+        let flag = Some(c.clone());
+        let r = run_batch_cancellable(
+            items,
+            &opts,
+            &to,
+            &mut w,
+            &|path| std::path::Path::new(path).exists(),
+            false,
+            &mut |done, name| {
+                if let Ok(mut g) = p.lock() {
+                    *g = (done, name.to_string());
+                }
+                !c.load(Ordering::Relaxed)
+            },
+            flag,
+        );
         let r = r.map(|files| {
             if !after.is_none() {
                 // Photos can't be stopped once asked: no ✕ from here, before the last look at

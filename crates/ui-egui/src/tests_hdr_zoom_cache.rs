@@ -41,6 +41,8 @@ fn kept(h: &mut Headless) -> u64 {
 }
 
 fn click(h: &mut Headless) {
+    // (found again before each click: the section can still shift as the demo library loads)
+    crate::settings_screen::reveal(h, "check:settings.hdrZoomCache");
     let reply = h.request("ui.clickWidget", json!({"id": "check:settings.hdrZoomCache"}), TIMEOUT);
     assert_eq!(reply["ok"], true, "{reply}");
     h.step();
@@ -58,6 +60,7 @@ fn with_room_on_the_gpu_the_setting_turns_the_hdr_zoom_cache_off_and_on() {
         assert!(!h.app.ui.settings.hdr_zoom_cache);
         assert_eq!(kept(&mut h), 0, "{memory:?}: off");
         click(&mut h);
+        assert!(h.app.ui.settings.hdr_zoom_cache, "{memory:?}: the second click turns it back on");
         assert!(kept(&mut h) > 0, "{memory:?}: on again");
     }
 }

@@ -31,6 +31,26 @@ fn keep_waveform(slot: Slot, h: lcc_raster::Histogram) -> lcc_raster::Histogram 
     if matches!(slot, Slot::Main | Slot::Preview) { h } else { h.without_waveform() }
 }
 
+/// How many loupe renders [`Renderer::loupe_log`] keeps.
+pub const LOUPE_LOG_LEN: usize = 512;
+
+/// A whole-frame loupe render that replaced what was on screen.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoupeRender {
+    /// When it reached the screen (ms, wall clock: [`crate::now_ms`]).
+    pub at_ms: f64,
+    /// Pixels of the texture.
+    pub width: usize,
+    pub height: usize,
+    /// A drag's draft (else a full-quality render).
+    pub draft: bool,
+    /// Time on the worker.
+    pub render_ms: f64,
+    /// From the request to the screen.
+    pub latency_ms: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Slot {
     Thumb(PhotoId),
@@ -201,6 +221,11 @@ pub struct WindowGeom {
     pub full_quality: bool,
 }
 
+/// Full-quality whole-frame loupe renders ([`Slot::Main`]) kept after the view moved on, newest
+/// last: the crop tool's whole photo and the cropped view of the same edit (pressing C changes
+/// nothing in the edit, so C on and off shows the kept render at once instead of rendering again).
+pub const KEPT_VIEWS: usize = 2;
+
 pub struct Tex {
     pub key: u64,
     pub photo: PhotoId,
@@ -214,6 +239,33 @@ pub struct Tex {
     pub pixels: Option<std::sync::Arc<egui::ColorImage>>,
     /// What went wrong without failing the render (e.g. a plug-in filter skipped).
     pub warnings: Vec<String>,
+    /// Showing a render that stayed on the GPU ([`ScreenTextures`]): drawn by this id instead of `tex`.
+    pub native: Option<egui::TextureId>,
+}
+
+impl Tex {
+    /// The texture to draw.
+    pub fn id(&self) -> egui::TextureId {
+        self.native.unwrap_or_else(|| egui::TextureHandle::id(&self.tex))
+    }
+}
+
+/// Draws renders that stayed on the GPU ([`lcc_engine::media::ScreenFrame`]): the window's
+/// renderer registers their textures. Installed by a host whose GPU renderer runs on the window's
+/// device (the desktop app); without one, every render comes back as pixels.
+pub trait ScreenTextures {
+    /// Show `frame` under `id` (one this returned before, updated in place) or a new id; `None`
+    /// when it can't be shown.
+    fn show(&mut self, frame: &lcc_engine::media::ScreenFrame, id: Option<egui::TextureId>) -> Option<egui::TextureId>;
+    /// Release `id` (and the texture it shows).
+    fn free(&mut self, id: egui::TextureId);
+    /// The pixels `frame` holds, read back from the GPU: only for a headless screenshot of a view
+    /// that shows it ([`Renderer::cpu_textures`]). `None` when they can't be read (the view is
+    /// then left out of the picture).
+    fn read(&self, frame: &lcc_engine::media::ScreenFrame) -> Option<egui::ColorImage> {
+        let _ = frame;
+        None
+    }
 }
 
 /// Runs render jobs outside this thread's job pool (the browser build: Web Workers, each with its
@@ -370,6 +422,11 @@ pub const MAX_VARIANT_TEXTURES: usize = 800;
 /// Priority of variant thumbnail jobs: below on-screen grid thumbnails and the loupe.
 const VARIANT_PRIORITY: u32 = 6;
 
+/// Whether a render of `s` solves a content-aware fill (a Fill spot).
+fn has_fill(s: &lcc_develop::DevelopSettings) -> bool {
+    s.spots.iter().any(|sp| matches!(sp.mode, lcc_develop::SpotMode::Fill))
+}
+
 pub struct Renderer {
     #[cfg(test)]
     pub(crate) thumb_jobs_built: usize,
@@ -395,7 +452,29 @@ pub struct Renderer {
     seq: u64,
     /// Slot → (key, priority) of the request in flight (queued or running).
     pending: HashMap<Slot, (u64, u32)>,
+    /// Pending requests whose settings hold a content-aware fill (slot → key): solving one can take
+    /// seconds, so while any is out the activity stack says so ([`Self::fill_row`]).
+    fill_jobs: HashMap<Slot, u64>,
+    /// The "Filling spots" row, while [`Self::fill_jobs`] isn't empty.
+    fill_row: Option<lcc_engine::activity::TaskGuard>,
     pub textures: HashMap<Slot, Tex>,
+    /// Recent full-quality whole-frame renders ([`KEPT_VIEWS`], least recently shown first).
+    kept_views: std::collections::VecDeque<Tex>,
+    /// Request ids of the loupe's ([`Slot::Main`]) draft requests still out.
+    main_drafts: std::collections::HashSet<u64>,
+    /// When each `Main` request still out was made (request id → ms, [`crate::now_ms`]), for
+    /// [`Self::loupe_log`].
+    main_asked: HashMap<u64, f64>,
+    /// The loupe's last full-quality request per view ([`Slot::Main`], [`Slot::Window`]): its photo
+    /// and the flag that tells it a draft replaced it ([`lcc_engine::media::RenderJob::superseded`]).
+    full_requests: HashMap<Slot, (PhotoId, Arc<std::sync::atomic::AtomicBool>)>,
+    /// The latest whole-frame loupe renders that reached the screen, oldest first (`ui.inspect` →
+    /// `perf.loupeRenders`): how sharp the view was while a slider dragged and how soon after.
+    pub loupe_log: std::collections::VecDeque<LoupeRender>,
+    /// Render time of the loupe's last full-quality (not draft) whole-frame render.
+    pub last_full_main_ms: f64,
+    /// Keys of the full-quality (not draft) whole-frame renders among the textures and `kept_views`.
+    full_views: std::collections::HashSet<u64>,
     /// The last [`Slot::HdrHistogram`] result: (photo, job key, histogram).
     pub live_hdr_histogram: Option<(PhotoId, u64, Histogram)>,
     /// The last [`Slot::PanelHistogram`] result: (photo, job key, histogram with its waveform).
@@ -419,6 +498,8 @@ pub struct Renderer {
     pub last_main_ms: f64,
     /// Jobs finished since start (for inspect/perf).
     pub completed: u64,
+    /// Loupe ([`Slot::Main`]) renders asked for since start (a kept view shown again is none).
+    pub main_requested: u64,
     /// Finished jobs thrown away because a newer request for their slot had replaced them.
     pub discarded: u64,
     /// Keep a CPU copy of every texture so the UI can be rasterized headlessly (set when the app
@@ -479,6 +560,13 @@ pub struct Renderer {
     /// Surface is extended linear sRGB (macOS EDR / Windows scRGB): skip monitor profile
     /// conversion, let the compositor do it (P2-3).
     surface_is_extended_linear: bool,
+    /// Draws GPU-resident renders; with it, interactive drafts of views stay on the GPU.
+    screen: Option<Box<dyn ScreenTextures>>,
+    /// The texture id each view slot shows GPU-resident renders under (one per slot, reused).
+    natives: HashMap<Slot, egui::TextureId>,
+    /// The GPU-resident render each of those shows, kept with [`Self::keep_pixels`]: a headless
+    /// screenshot reads it back ([`Self::cpu_textures`]) instead of finding no pixels.
+    native_frames: HashMap<Slot, lcc_engine::media::ScreenFrame>,
 }
 
 /// After this long without renders the GPU renderer's pool of recycled buffers is freed.
@@ -500,7 +588,33 @@ impl Default for Renderer {
     }
 }
 
+/// Workers kept for the stand-ins ([`Slot::is_stand_in`]) on top of the others: the cheapest
+/// pictures (a raw's embedded JPEG, a cached thumbnail or render) never wait for a worker while the
+/// others render raws for seconds ("Rendering…" in the loupe and empty grid cells while every
+/// worker decoded a 45 MP CR3).
+const STAND_IN_WORKERS: usize = 2;
+
+/// Jobs below this priority are background work (the real thumbnails rendered behind the
+/// stand-ins, [`crate::panels::grid::BACKGROUND_THUMB_PRIORITY`]): at most [`BACKGROUND_AT_ONCE`]
+/// of them run at once, so a worker is always free for the photo on screen.
+const BACKGROUND_BELOW: u32 = 4;
+const BACKGROUND_AT_ONCE: usize = 2;
+
+impl Slot {
+    /// A stand-in picture: cheap to make (a raw's embedded JPEG, a cached picture), and what a view
+    /// shows first, before any render ([`STAND_IN_WORKERS`]).
+    pub fn is_stand_in(&self) -> bool {
+        matches!(self, Slot::ThumbQuick(_) | Slot::Preview)
+    }
+}
+
 impl Renderer {
+    fn pool(threads: usize) -> JobPool<Slot, Finished> {
+        let pool = if threads == 0 { JobPool::new(0) } else { JobPool::with_fast_lane(threads, STAND_IN_WORKERS, Slot::is_stand_in) };
+        pool.cap_background(BACKGROUND_BELOW, BACKGROUND_AT_ONCE);
+        pool
+    }
+
     /// Explicit worker count for hosts and bounded validation runs (one to six on native).
     /// Browser hosts continue to use inline jobs or their installed worker offload.
     pub fn with_worker_threads(threads: usize) -> Self {
@@ -514,14 +628,23 @@ impl Renderer {
             shown_ids: HashMap::new(),
             epoch: 0,
             preview_generation: None,
-            pool: JobPool::new(threads),
+            pool: Self::pool(threads),
             thumb_inputs: HashMap::new(),
             embedded_thumbs: HashMap::new(),
             offload: None,
             queue: Vec::new(),
             seq: 0,
             pending: HashMap::new(),
+            fill_jobs: HashMap::new(),
+            fill_row: None,
             textures: HashMap::new(),
+            kept_views: std::collections::VecDeque::new(),
+            main_drafts: std::collections::HashSet::new(),
+            main_asked: HashMap::new(),
+            full_requests: HashMap::new(),
+            loupe_log: std::collections::VecDeque::new(),
+            last_full_main_ms: 0.0,
+            full_views: std::collections::HashSet::new(),
             live_hdr_histogram: None,
             panel_histogram: None,
             hdr_view_result: HashMap::new(),
@@ -534,6 +657,7 @@ impl Renderer {
             hdr_view_ms: HashMap::new(),
             last_main_ms: 0.0,
             completed: 0,
+            main_requested: 0,
             discarded: 0,
             keep_pixels: false,
             stages: HashMap::new(),
@@ -559,6 +683,9 @@ impl Renderer {
             #[cfg(not(target_arch = "wasm32"))]
             idle: None,
             surface_is_extended_linear: false,
+            screen: None,
+            natives: HashMap::new(),
+            native_frames: HashMap::new(),
         }
     }
 
@@ -596,7 +723,7 @@ impl Renderer {
             if let Some(&(k, p)) = self.pending.get(&quick_slot)
                 && k == key
             {
-                return p == priority.saturating_add(1) || !self.is_queued(quick_slot);
+                return p == crate::panels::grid::stand_in_priority(priority) || !self.is_queued(quick_slot);
             }
             return !self.request_needed(slot, key, crate::panels::grid::BACKGROUND_THUMB_PRIORITY);
         }
@@ -622,7 +749,8 @@ impl Renderer {
         let Some((old, size, key)) = self.embedded_thumbs.get(&photo.id) else { return false };
         let slot = Slot::ThumbQuick(photo.id);
         // a queued stand-in at another priority isn't settled yet: the grid moves it (both ways)
-        let requeue = self.pending.get(&slot).is_some_and(|&(k, p)| k == *key && p != priority.saturating_add(1) && self.is_queued(slot));
+        let requeue =
+            self.pending.get(&slot).is_some_and(|&(k, p)| k == *key && p != crate::panels::grid::stand_in_priority(priority) && self.is_queued(slot));
         old.as_ptr() == Arc::as_ptr(photo) && *size >= bucket && !requeue && !self.request_needed(slot, *key, priority)
     }
 
@@ -637,7 +765,7 @@ impl Renderer {
             && self.pending.get(&slot).is_some_and(|&(k, p)| {
                 // a queued stand-in follows the grid's priority both ways (scrolling demotes it too);
                 // `request_quick` only reprioritizes it, so this never restarts work
-                k == *key && (p == priority.saturating_add(1) || !self.is_queued(slot))
+                k == *key && (p == crate::panels::grid::stand_in_priority(priority) || !self.is_queued(slot))
             })
     }
 
@@ -681,7 +809,126 @@ impl Renderer {
     pub fn job_for(&self, slot: Slot, job: RenderJob) -> RenderJob {
         // When the surface is extended linear sRGB (macOS EDR / Windows scRGB), skip monitor
         // profile conversion: the compositor owns it (P2-3).
-        if Self::renders_for_display(slot) && !self.surface_is_extended_linear { job.with_display(self.display.clone()) } else { job }
+        if !Self::renders_for_display(slot) {
+            return job;
+        }
+        let job = if self.surface_is_extended_linear { job } else { job.with_display(self.display.clone()) };
+        // a drag's drafts are only drawn: they may stay on the GPU when the window can show them
+        if self.screen.is_some() && job.request.quality == lcc_engine::pipeline::Quality::Draft { job.on_screen() } else { job }
+    }
+
+    /// Show GPU-resident renders through `screen` from now on (the desktop app, once its GPU
+    /// renderer runs on the window's device).
+    pub fn set_screen_textures(&mut self, screen: Box<dyn ScreenTextures>) {
+        self.screen = Some(screen);
+    }
+
+    /// Whether GPU-resident renders can be shown.
+    pub fn has_screen_textures(&self) -> bool {
+        self.screen.is_some()
+    }
+
+    /// Release every GPU-resident texture shown (the textures that drew them fall back to their
+    /// pixels, or nothing, until the next render).
+    fn free_natives(&mut self) {
+        if let Some(screen) = self.screen.as_mut() {
+            for (_, id) in self.natives.drain() {
+                screen.free(id);
+            }
+        }
+        self.natives.clear();
+        self.native_frames.clear();
+        for t in self.textures.values_mut() {
+            t.native = None;
+        }
+    }
+
+    /// Replace every view drawn straight from the GPU with its pixels, read back once (a screenshot:
+    /// capturing native textures stopped the window presenting on Linux / X11). A view whose pixels
+    /// can't be read keeps its GPU texture. GPU-resident drafts go on afterwards.
+    pub fn views_to_pixels(&mut self) {
+        let Some(screen) = self.screen.as_ref() else { return };
+        let mut done = Vec::new();
+        for (slot, t) in self.textures.iter_mut() {
+            let (Some(_), Some(frame)) = (t.native, self.native_frames.get(slot)) else { continue };
+            let Some(img) = screen.read(frame) else { continue };
+            let img = Arc::new(img);
+            t.tex.set(img.clone(), egui::TextureOptions::LINEAR);
+            t.pixels = Some(img);
+            t.native = None;
+            done.push(*slot);
+        }
+        for slot in done {
+            self.native_frames.remove(&slot);
+            if let (Some(id), Some(screen)) = (self.natives.remove(&slot), self.screen.as_mut()) {
+                screen.free(id);
+            }
+        }
+    }
+
+    /// Show the GPU-resident render `frame` (histogram `histogram`) in `slot`. `false` when it
+    /// can't be shown: GPU-resident renders are then turned off and the view renders pixels again.
+    fn show_frame(
+        &mut self,
+        ctx: &egui::Context,
+        slot: Slot,
+        r: &RenderResult,
+        frame: &lcc_engine::media::ScreenFrame,
+        histogram: Histogram,
+        ms: f64,
+    ) -> bool {
+        let shown = self.screen.as_mut().and_then(|s| s.show(frame, self.natives.get(&slot).copied()));
+        let Some(id) = shown else {
+            log::warn!("render {slot:?}: a GPU-resident render can't be shown; rendering pixels");
+            self.free_natives();
+            self.screen = None;
+            return false;
+        };
+        self.natives.insert(slot, id);
+        if self.keep_pixels {
+            self.native_frames.insert(slot, frame.clone());
+        }
+        let (size, histogram) = ([frame.width, frame.height], keep_waveform(slot, histogram));
+        // a full-quality whole frame shown so far is kept for a return to it (Crop on and off), as
+        // when pixels replace it
+        if slot == Slot::Main
+            && self.textures.get(&slot).is_some_and(|t| t.key != r.key && t.native.is_none() && self.full_views.contains(&t.key))
+            && let Some(t) = self.textures.remove(&slot)
+        {
+            self.keep_view(t);
+        }
+        match self.textures.get_mut(&slot) {
+            Some(t) => {
+                t.native = Some(id);
+                t.pixels = None;
+                t.key = r.key;
+                t.photo = r.photo;
+                t.size = size;
+                t.histogram = Some(histogram);
+                t.warnings = Vec::new();
+                t.ms = ms;
+                t.quick = None;
+            }
+            None => {
+                // (`tex` is never drawn while `native` is set)
+                let blank = egui::ColorImage::filled([1, 1], egui::Color32::BLACK);
+                let tex = ctx.load_texture(format!("{slot:?}"), blank, egui::TextureOptions::LINEAR);
+                let t = Tex {
+                    key: r.key,
+                    photo: r.photo,
+                    tex,
+                    size,
+                    histogram: Some(histogram),
+                    ms,
+                    quick: None,
+                    pixels: None,
+                    warnings: Vec::new(),
+                    native: Some(id),
+                };
+                self.textures.insert(slot, t);
+            }
+        }
+        true
     }
 
     /// The display profile in use (id).
@@ -780,9 +1027,54 @@ impl Renderer {
         }
         true
     }
+    /// Show the kept whole-frame render made for `key` of `photo` ([`KEPT_VIEWS`]) in
+    /// [`Slot::Main`], keeping the one shown there now. Whether there was one. (Not for HDR
+    /// views: their HDR texture is not kept with the picture.)
+    fn take_kept_view(&mut self, key: u64, photo: PhotoId) -> bool {
+        if !self.hdr_view.is_empty() {
+            return false;
+        }
+        let Some(i) = self.kept_views.iter().position(|t| t.key == key && t.photo == photo) else { return false };
+        let Some(found) = self.kept_views.remove(i) else { return false };
+        self.pending.remove(&Slot::Main);
+        self.requests.remove(&Slot::Main);
+        self.failed.remove(&Slot::Main);
+        // (a render still out for the view is older than this one now)
+        self.shown_ids.insert(Slot::Main, lcc_preview::next_tick());
+        if let Some(old) = self.textures.insert(Slot::Main, found) {
+            self.keep_view(old);
+        }
+        true
+    }
+
+    /// Keep `t`, a whole-frame render leaving [`Slot::Main`], if it is a full-quality one.
+    fn keep_view(&mut self, t: Tex) {
+        if !self.full_views.contains(&t.key) || !self.hdr_view.is_empty() {
+            self.full_views.remove(&t.key);
+            return;
+        }
+        self.kept_views.retain(|k| k.key != t.key);
+        self.kept_views.push_back(t);
+        while self.kept_views.len() > KEPT_VIEWS {
+            if let Some(gone) = self.kept_views.pop_front() {
+                self.full_views.remove(&gone.key);
+            }
+        }
+    }
+
     /// Free a view slot's texture and stage cache (the view is no longer shown).
     pub fn release(&mut self, slot: Slot) {
         self.textures.remove(&slot);
+        self.native_frames.remove(&slot);
+        if let Some(id) = self.natives.remove(&slot)
+            && let Some(screen) = self.screen.as_mut()
+        {
+            screen.free(id);
+        }
+        if slot == Slot::Main {
+            self.kept_views.clear();
+            self.full_views.clear();
+        }
         self.stages.remove(&slot);
         self.window_shown.remove(&slot);
     }
@@ -914,11 +1206,52 @@ impl Renderer {
             self.slides_live = true;
         }
         let mut job = self.job_for(slot, job);
+        if slot == Slot::Main && self.textures.get(&slot).is_none_or(|t| t.key != job.key) && self.take_kept_view(job.key, job.photo) {
+            return;
+        }
         if !self.request_needed(slot, job.key, priority) {
             return;
         }
         self.pending.insert(slot, (job.key, priority));
+        if has_fill(&job.settings) {
+            self.fill_jobs.insert(slot, job.key);
+        } else {
+            self.fill_jobs.remove(&slot);
+        }
         job.request_id = lcc_preview::next_tick();
+        if slot == Slot::Main {
+            self.main_requested += 1;
+            if job.request.quality == lcc_pipeline::Quality::Draft {
+                self.main_drafts.insert(job.request_id);
+            }
+            // (requests a drag superseded and that never came back: dropped, the map stays small)
+            if self.main_asked.len() > 256
+                && let Some(o) = self.main_asked.keys().copied().min()
+            {
+                self.main_asked.remove(&o);
+            }
+            self.main_asked.insert(job.request_id, crate::now_ms());
+        }
+        // The loupe's drafts never wait for its full render (on a photo just landed on, a slider
+        // did nothing for 2–5 s while the first full render decoded and rendered): a draft starts
+        // beside it, and the full render it replaces stops once its source is decoded (the draft
+        // takes that decode over instead of decoding again). So does a full render of a photo the
+        // view has left.
+        let draft = job.request.quality == lcc_pipeline::Quality::Draft;
+        let view = matches!(slot, Slot::Main | Slot::Window(_));
+        let overtakes = draft && view;
+        if view {
+            if let Some((photo, flag)) = self.full_requests.get(&slot)
+                && (draft || *photo != job.photo)
+            {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if !draft {
+                let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                job.superseded = Some(flag.clone());
+                self.full_requests.insert(slot, (job.photo, flag));
+            }
+        }
         self.requests.insert(slot, Requested { id: job.request_id, source: Some(job.origin.clone()) });
         // the loupe stepping to a neighbour that was prepared: its render is there already
         // (its stages are not kept: a neighbour's would hold ~100 MB of device memory for the
@@ -945,15 +1278,24 @@ impl Renderer {
         let background = matches!(slot, Slot::Thumb(_) | Slot::ThumbQuick(_) | Slot::Prefetch(_));
         let display = self.display.clone();
         let headroom = self.hdr_headroom;
-        self.pool.submit(
-            slot,
-            key,
-            priority,
-            Box::new(move || {
-                let run = || if background { lcc_engine::memory::in_background(|| job.run()) } else { job.run() };
-                Self::run_for(slot, run, &display, headroom)
-            }),
-        );
+        let run: lcc_preview::pool::Job<Finished> = Box::new(move || {
+            // the neighbours prepared ahead take turns at the GPU behind the view's own renders
+            // and keep one short submission queued at a time, so the window's frames slot in
+            // between (`lcc_gpu::as_batch`); a thumbnail on screen does not wait for an
+            // export's turn
+            let prefetch = matches!(slot, Slot::Prefetch(_));
+            let run = || match (background, prefetch) {
+                (true, true) => lcc_engine::memory::in_background(|| lcc_engine::gpu::as_batch(|| job.run())),
+                (true, false) => lcc_engine::memory::in_background(|| job.run()),
+                _ => job.run(),
+            };
+            Self::run_for(slot, run, &display, headroom)
+        });
+        if overtakes {
+            self.pool.submit_overtaking(slot, key, priority, run);
+        } else {
+            self.pool.submit(slot, key, priority, run);
+        }
     }
 
     /// Request a stand-in for `slot` (once per job key).
@@ -1065,7 +1407,11 @@ impl Renderer {
         self.preview_generation = None;
         self.pool.reprioritize(|_, _| None);
         self.thumb_inputs.clear();
+        self.free_natives();
         self.textures.clear();
+        self.kept_views.clear();
+        self.full_views.clear();
+        self.main_drafts.clear();
         self.stages.clear();
         self.quick_tried.clear();
         self.failed.clear();
@@ -1141,7 +1487,18 @@ impl Renderer {
         let color = std::sync::Arc::new(color_image(img));
         let pixels = self.keep_pixels.then(|| color.clone());
         let tex = ctx.load_texture(format!("tile {:?} {:?}", key.tile, key.pane), color, egui::TextureOptions::LINEAR);
-        Tex { key: key.look, photo: key.photo, tex, size: [img.width, img.height], histogram: None, ms, quick: None, pixels, warnings: Vec::new() }
+        Tex {
+            key: key.look,
+            photo: key.photo,
+            tex,
+            size: [img.width, img.height],
+            histogram: None,
+            ms,
+            quick: None,
+            pixels,
+            warnings: Vec::new(),
+            native: None,
+        }
     }
 
     /// Drop queued tile renders `keep` says no to (tiles scrolled away). Running ones finish and
@@ -1346,6 +1703,11 @@ impl Renderer {
         }
     }
 
+    /// Frames polled so far (one a frame).
+    pub fn frame(&self) -> u64 {
+        self.frame
+    }
+
     pub fn thumb_textures(&self) -> usize {
         self.textures.keys().filter(|s| matches!(s, Slot::Thumb(_) | Slot::ThumbQuick(_))).count()
     }
@@ -1371,6 +1733,7 @@ impl Renderer {
         #[cfg(not(target_arch = "wasm32"))]
         let inline_ms = 0.0;
         let changed = self.collect(ctx, session, inline_ms);
+        self.track_fills(session);
         self.evict_variants();
         #[cfg(not(target_arch = "wasm32"))]
         self.trim_when_idle(ctx);
@@ -1378,6 +1741,34 @@ impl Renderer {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         changed
+    }
+
+    /// Hold the "Filling spots" activity row while a render that solves a content-aware fill is
+    /// out (a finished patch outline kept the machine busy with no word of why). Solved fills are
+    /// cached, so the row stays only for the first render of a new fill.
+    fn track_fills(&mut self, session: &Session) {
+        let pending = &self.pending;
+        self.fill_jobs.retain(|s, k| pending.get(s).is_some_and(|p| p.0 == *k));
+        if self.fill_jobs.is_empty() {
+            self.fill_row = None;
+        } else if self.fill_row.is_none() {
+            self.fill_row = Some(session.activity.start("fill", "Filling spots", lcc_engine::activity::Cancel::No));
+        }
+    }
+
+    /// Whether the "Filling spots" row is up (tests).
+    #[cfg(test)]
+    pub(crate) fn filling(&self) -> bool {
+        self.fill_row.is_some()
+    }
+
+    /// Ask for the next frame while renders are pending, for requests made after this frame's
+    /// [`Self::poll`] (which asks the same for the ones it saw): the refine of a still photo in an
+    /// open interaction would otherwise sit finished until the next input.
+    pub fn keep_polling(&self, ctx: &egui::Context) {
+        if !self.pending.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
     }
 
     /// In a slider drag, give the loupe's draft (just requested) until `budget` to finish, so that it
@@ -1419,6 +1810,7 @@ impl Renderer {
         let mut changed = false;
         for (mut slot, mut r, mut color, texels, ms) in finished {
             self.completed += 1;
+            let main_draft = slot == Slot::Main && self.main_drafts.remove(&r.request_id);
             // made for another display profile than the one in use: obsolete
             if r.display.is_some_and(|id| Some(id) != self.display_id()) {
                 continue;
@@ -1435,6 +1827,12 @@ impl Renderer {
                     && r.rendered.is_ok();
                 if !newer_draft {
                     self.discarded += 1;
+                    // (the source a view's render decoded before a draft replaced it is still the
+                    // photo's: kept, or the next render decodes it again)
+                    let replaced = matches!(&r.rendered, Err(e) if e == lcc_engine::media::SUPERSEDED);
+                    if replaced && slot.is_view() && r.loaded.is_some() && r.request_id >= self.epoch {
+                        session.accept(&r);
+                    }
                     continue;
                 }
                 session.accept(&r);
@@ -1446,6 +1844,35 @@ impl Renderer {
             };
             if slot.is_view() {
                 self.shown_ids.insert(slot, r.request_id);
+            }
+            // a render that stayed on the GPU: drawn from its texture
+            if let (Some(frame), Ok(rendered)) = (r.frame.clone(), r.rendered.as_ref()) {
+                if self.pending.get(&slot).is_some_and(|p| p.0 == r.key) {
+                    self.pending.remove(&slot);
+                }
+                self.failed.remove(&slot);
+                let histogram = rendered.histogram.clone();
+                if self.show_frame(ctx, slot, &r, &frame, histogram, ms) {
+                    if slot == Slot::Main {
+                        self.last_main_ms = ms;
+                        if let Some(asked) = self.main_asked.remove(&r.request_id) {
+                            let now = crate::now_ms();
+                            if self.loupe_log.len() >= LOUPE_LOG_LEN {
+                                self.loupe_log.pop_front();
+                            }
+                            self.loupe_log.push_back(LoupeRender {
+                                at_ms: now,
+                                width: frame.width,
+                                height: frame.height,
+                                draft: main_draft,
+                                render_ms: ms,
+                                latency_ms: (now - asked).max(0.0),
+                            });
+                        }
+                    }
+                    changed = true;
+                }
+                continue;
             }
             // (results from an offload, which doesn't know the display profile: converted here)
             if let Some(d) = &self.display {
@@ -1560,9 +1987,29 @@ impl Renderer {
             // the loupe's render stays readable on the CPU for the colour readout under the pointer
             let pixels = (self.keep_pixels || slot == Slot::Main).then(|| color.clone());
             let name = format!("{slot:?}");
+            // the whole frame: a full-quality render shown so far is kept for a return to it (Crop
+            // on and off), and the new one gets a texture of its own
+            if slot == Slot::Main {
+                if !main_draft {
+                    self.full_views.insert(r.key);
+                }
+                if self.textures.get(&slot).is_some_and(|t| t.key != r.key && self.full_views.contains(&t.key))
+                    && let Some(t) = self.textures.remove(&slot)
+                {
+                    self.keep_view(t);
+                }
+            }
+            // pixels again: the slot's GPU-resident texture is let go
+            self.native_frames.remove(&slot);
+            if let Some(id) = self.natives.remove(&slot)
+                && let Some(screen) = self.screen.as_mut()
+            {
+                screen.free(id);
+            }
             match self.textures.get_mut(&slot) {
                 Some(t) => {
                     t.tex.set(color, egui::TextureOptions::LINEAR);
+                    t.native = None;
                     t.pixels = pixels;
                     t.key = r.key;
                     t.photo = r.photo;
@@ -1586,12 +2033,30 @@ impl Renderer {
                             quick: r.quick,
                             pixels,
                             warnings: rendered.warnings,
+                            native: None,
                         },
                     );
                 }
             }
             if slot == Slot::Main {
                 self.last_main_ms = ms;
+                if let Some(asked) = self.main_asked.remove(&r.request_id) {
+                    if !main_draft {
+                        self.last_full_main_ms = ms;
+                    }
+                    let now = crate::now_ms();
+                    if self.loupe_log.len() >= LOUPE_LOG_LEN {
+                        self.loupe_log.pop_front();
+                    }
+                    self.loupe_log.push_back(LoupeRender {
+                        at_ms: now,
+                        width: img.width,
+                        height: img.height,
+                        draft: main_draft,
+                        render_ms: ms,
+                        latency_ms: (now - asked).max(0.0),
+                    });
+                }
             }
             changed = true;
         }
@@ -1654,12 +2119,21 @@ impl Renderer {
         })
     }
 
-    /// CPU copies of the current textures by id (see [`Self::keep_pixels`]).
+    /// CPU copies of the current textures by id (see [`Self::keep_pixels`]); a view drawn straight
+    /// from the GPU is read back from it (only here: drawing it never does).
     pub fn cpu_textures(&self) -> HashMap<egui::TextureId, crate::softpaint::CpuTexture> {
+        let natives = self.textures.iter().filter_map(|(slot, t)| {
+            let pixels = match (&t.pixels, t.native, self.native_frames.get(slot), self.screen.as_ref()) {
+                (None, Some(_), Some(frame), Some(screen)) => Arc::new(screen.read(frame)?),
+                _ => return None,
+            };
+            Some((t.id(), crate::softpaint::CpuTexture::linear(pixels)))
+        });
         self.textures
             .values()
             .chain(self.tiles.values())
-            .filter_map(|t| Some((t.tex.id(), crate::softpaint::CpuTexture::linear(t.pixels.clone()?))))
+            .filter_map(|t| Some((t.id(), crate::softpaint::CpuTexture::linear(t.pixels.clone()?))))
+            .chain(natives)
             .collect()
     }
 
@@ -1678,7 +2152,7 @@ impl Renderer {
     pub fn evict_thumbs(&mut self, keep: &std::collections::HashSet<PhotoId>, max: usize) {
         self.thumb_inputs.retain(|id, _| keep.contains(id));
         let dropped = self.pool.reprioritize(|s, p| match s {
-            Slot::Thumb(id) | Slot::ThumbQuick(id) if !keep.contains(id) && p <= 11 => None,
+            Slot::Thumb(id) | Slot::ThumbQuick(id) if !keep.contains(id) && (p <= 11 || p == crate::panels::grid::STAND_IN_ON_SCREEN) => None,
             _ => Some(p),
         });
         for s in dropped {
@@ -1835,9 +2309,10 @@ mod thumbnail_tests {
         let request_id = r.requests[&slot].id;
         assert!(r.thumb_current(&p, 384, 5));
         assert!(!r.thumb_current(&p, 384, 10));
-        r.request_quick(slot, quick.clone(), 11); // visible grid: 10 + 1
+        let visible = crate::panels::grid::stand_in_priority(10);
+        r.request_quick(slot, quick.clone(), visible); // visible grid
         assert!(r.thumb_current(&p, 384, 10));
-        r.request_quick(slot, quick.clone(), 11);
+        r.request_quick(slot, quick.clone(), visible);
         assert_eq!(r.requests[&slot].id, request_id);
         assert_eq!(r.pool.queued(), 2);
         r.pool.run_inline(1);
@@ -1905,6 +2380,96 @@ mod thumbnail_tests {
         assert_eq!(r.textures.get(&Slot::Main).map(|t| t.key), want);
     }
 
+    /// Note 8 of 2026-10-31: on a photo just landed on, a slider did nothing for 2–5 s: its drafts
+    /// waited behind the loupe's first full render (raw decode + render). Now a draft starts beside
+    /// it, takes over the decode already running instead of decoding the file again, and the full
+    /// render it replaced stops once the source is decoded (the source is kept all the same).
+    #[test]
+    fn a_draft_does_not_wait_for_the_first_full_render_and_shares_its_decode() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let decodes = Arc::new(AtomicUsize::new(0));
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Arc::new(std::sync::Mutex::new(released));
+        let mut s = Session::new();
+        let (d, gate) = (decodes.clone(), released.clone());
+        s.media.file_loader = Some(Arc::new(move |_, _, _| {
+            d.fetch_add(1, Ordering::SeqCst);
+            // the raw decode takes as long as the test says
+            let _ = gate.lock().unwrap().recv_timeout(std::time::Duration::from_secs(30));
+            let mut image = lcc_raster::Rgb32f::new(16, 16);
+            image.data.fill([0.2, 0.2, 0.2]);
+            Ok((image, Default::default()))
+        }));
+        let p = Photo::new(PhotoId(1), Source::File { path: "note8-slider.nef".into() }, "note8-slider.nef", "NEF", 6000, 4000, "2026-01-01");
+        s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        s.execute("library.select", &serde_json::json!({"ids": [1], "active": 1})).unwrap();
+        let mut r = Renderer::with_worker_threads(2);
+        let ctx = egui::Context::default();
+        // the photo is landed on: its first full render starts decoding
+        r.request(Slot::Main, s.loupe_job(PhotoId(1), 64, 64, true).unwrap(), 100);
+        let started = std::time::Instant::now();
+        while decodes.load(Ordering::SeqCst) == 0 && started.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(decodes.load(Ordering::SeqCst), 1);
+        // a slider moves: the draft (built before anything is decoded) starts beside the full render
+        s.execute("develop.set", &serde_json::json!({"control": "light.exposure", "value": 0.5})).unwrap();
+        let draft = s.loupe_job(PhotoId(1), 48, 48, true).unwrap().draft();
+        let want = draft.key;
+        r.request(Slot::Main, draft, 100);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(decodes.load(Ordering::SeqCst), 1, "the draft waits for the decode running, it does not decode again");
+        drop(release);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while r.textures.get(&Slot::Main).is_none_or(|t| t.key != want) && std::time::Instant::now() < deadline {
+            r.pool.wait(std::time::Duration::from_millis(50));
+            r.poll(&ctx, &mut s);
+        }
+        assert_eq!(r.textures.get(&Slot::Main).map(|t| t.key), Some(want), "the draft is on screen");
+        while r.completed < 2 && std::time::Instant::now() < deadline {
+            r.pool.wait(std::time::Duration::from_millis(50));
+            r.poll(&ctx, &mut s);
+        }
+        assert_eq!(r.completed, 2);
+        assert_eq!(decodes.load(Ordering::SeqCst), 1, "one decode for both");
+        let log: Vec<_> = r.loupe_log.iter().map(|l| l.draft).collect();
+        assert_eq!(log, vec![true], "the replaced full render (old settings) never reached the screen");
+        assert!(r.failure(Slot::Main).is_none(), "a replaced render is no failure");
+        // the decoded source is the session's: the next render does not decode again
+        let next = s.loupe_job(PhotoId(1), 64, 64, true).unwrap();
+        assert!(matches!(next.source, lcc_engine::media::SourceRef::Loaded(_)), "the decode was kept");
+    }
+
+    // Given a loupe render asked for after the frame's poll (the refine of a still photo while an
+    // interaction stays open), the renderer asks for the frame that will collect it; the loupe log
+    // says which renders were drafts and the full one's time is kept for the refine delay
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_late_request_keeps_frames_coming_and_the_loupe_log_tells_drafts_from_full_renders() {
+        let mut s = Session::new();
+        s.media.file_loader = Some(Arc::new(|_, _, _| Ok((lcc_raster::Rgb32f::new(8, 8), Default::default()))));
+        s.catalog.apply(Op::AddPhoto { photo: Box::new((*photo()).clone()) }).unwrap();
+        let mut r = Renderer::with_worker_threads(1);
+        let ctx = egui::Context::default();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        ctx.set_request_repaint_callback(move |i| seen.lock().unwrap().push(i.delay));
+        r.keep_polling(&ctx);
+        assert!(asked.lock().unwrap().is_empty(), "nothing pending: no frames asked for");
+        r.request(Slot::Main, s.render_job(PhotoId(1), 32, 32, false, true).unwrap().draft(), 100);
+        r.keep_polling(&ctx);
+        assert!(asked.lock().unwrap().iter().any(|d| *d <= std::time::Duration::from_millis(16)), "{:?}", asked.lock().unwrap());
+        r.last_main_ms = 1.0;
+        r.wait_for_draft(&ctx, &mut s, std::time::Duration::from_secs(10));
+        assert!(!r.is_pending(Slot::Main), "the draft");
+        r.request(Slot::Main, s.render_job(PhotoId(1), 32, 32, false, true).unwrap(), 100);
+        r.wait_for_draft(&ctx, &mut s, std::time::Duration::from_secs(10));
+        assert!(!r.is_pending(Slot::Main), "the full render");
+        let log: Vec<_> = r.loupe_log.iter().map(|l| l.draft).collect();
+        assert_eq!(log, vec![true, false]);
+        assert!(r.last_full_main_ms >= 0.0 && r.loupe_log.iter().all(|l| l.width > 0 && l.latency_ms >= 0.0));
+    }
+
     // Given a 60 Hz display, a high quality adjustment update as fast as the GPU display fit makes
     // it (~5 ms) is waited for, so it is drawn in the frame that asked for it; a draft that slow is
     // not (its share of the frame is smaller), and neither is the update on a 144 Hz display
@@ -1967,6 +2532,163 @@ mod thumbnail_tests {
         crate::panels::grid::request_thumb(app, PhotoId(1), 256, 10);
     }
 
+    /// Draws GPU-resident renders under one fixed id, and reads them back from the test's device.
+    #[cfg(not(target_arch = "wasm32"))]
+    struct TestScreen(lcc_engine::gpu::wgpu::Device, lcc_engine::gpu::wgpu::Queue);
+    #[cfg(not(target_arch = "wasm32"))]
+    impl ScreenTextures for TestScreen {
+        fn show(&mut self, _: &lcc_engine::media::ScreenFrame, _: Option<egui::TextureId>) -> Option<egui::TextureId> {
+            Some(egui::TextureId::User(7))
+        }
+        fn free(&mut self, _: egui::TextureId) {}
+        fn read(&self, frame: &lcc_engine::media::ScreenFrame) -> Option<egui::ColorImage> {
+            let img = lcc_engine::gpu::read_texture(&self.0, &self.1, &frame.texture, frame.width, frame.height).ok()?;
+            Some(color_image(&img))
+        }
+    }
+
+    /// A headless screenshot (driven by the control channel: `keep_pixels`) of a view drawn straight
+    /// from the GPU has its pixels. Before, a mid-drag `ui.screenshot {"headless": true}` showed the
+    /// photo as a white rectangle: the GPU-resident draft left no CPU copy (review of PR #1065).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_headless_screenshot_reads_back_a_view_drawn_from_the_gpu() {
+        use lcc_engine::gpu::wgpu;
+        let device = (|| {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = lcc_engine::gpu::backend::window_backends();
+            desc.backend_options = lcc_engine::gpu::backend::backend_options();
+            let instance = wgpu::Instance::new(desc);
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("test window"), ..Default::default() })).ok()
+        })();
+        let Some((device, queue)) = device else {
+            lcc_testkit::skip!(Gpu, "no GPU adapter");
+            return;
+        };
+        let (w, h) = (5usize, 3usize);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let texels: Vec<u8> = (0..w * h).flat_map(|i| [i as u8 * 10, 100, 200, 255]).collect();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &texels,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w as u32 * 4), rows_per_image: Some(h as u32) },
+            wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        );
+        let (mut app, work, ctx) = fixture();
+        assert!(app.renderer.keep_pixels);
+        app.renderer.set_screen_textures(Box::new(TestScreen(device, queue)));
+        let job = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap().draft();
+        app.renderer.request(Slot::Main, job, 100);
+        let (slot, job) = take_job(&work);
+        let mut result = job.run();
+        result.frame = Some(lcc_engine::media::ScreenFrame { texture, width: w, height: h });
+        finish(&mut app, &work, &ctx, slot, result);
+        let t = app.renderer.textures.get(&Slot::Main).unwrap();
+        assert_eq!(t.id(), egui::TextureId::User(7), "the draft is drawn from the GPU");
+        assert!(t.pixels.is_none());
+        let cpu = app.renderer.cpu_textures();
+        let shot = cpu.get(&egui::TextureId::User(7)).expect("the headless screenshot has the view's pixels");
+        assert_eq!(shot.image.size, [w, h]);
+        assert_eq!(shot.image.pixels[4], egui::Color32::from_rgb(40, 100, 200));
+        // a render that comes back as pixels lets the GPU-resident one go
+        app.renderer.request(Slot::Main, app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap(), 100);
+        let (slot, job) = take_job(&work);
+        let result = job.run();
+        finish(&mut app, &work, &ctx, slot, result);
+        let t = app.renderer.textures.get(&Slot::Main).unwrap();
+        assert!(t.native.is_none() && t.pixels.is_some(), "pixels again");
+    }
+
+    /// A drag's GPU-drawn draft over a full render keeps that render for a return to it (Crop on and
+    /// off, an undo), and leaving the view frees the draft's GPU texture.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_gpu_drawn_draft_keeps_the_full_render_and_leaving_frees_its_texture() {
+        use lcc_engine::gpu::wgpu;
+        struct Counting(std::rc::Rc<std::cell::RefCell<Vec<egui::TextureId>>>);
+        impl ScreenTextures for Counting {
+            fn show(&mut self, _: &lcc_engine::media::ScreenFrame, id: Option<egui::TextureId>) -> Option<egui::TextureId> {
+                Some(id.unwrap_or(egui::TextureId::User(9)))
+            }
+            fn free(&mut self, id: egui::TextureId) {
+                self.0.borrow_mut().push(id);
+            }
+        }
+        let device = (|| {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = lcc_engine::gpu::backend::window_backends();
+            let instance = wgpu::Instance::new(desc);
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        })();
+        let Some((device, _queue)) = device else {
+            lcc_testkit::skip!(Gpu, "no GPU adapter");
+            return;
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let freed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (mut app, work, ctx) = fixture();
+        app.renderer.set_screen_textures(Box::new(Counting(freed.clone())));
+        let full = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap();
+        let full_key = full.key;
+        app.renderer.request(Slot::Main, full, 100);
+        let (slot, job) = take_job(&work);
+        let result = job.run();
+        finish(&mut app, &work, &ctx, slot, result);
+        // (a draft of another edit: its own key)
+        let mut draft = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap().draft();
+        draft.key ^= 0x5555;
+        app.renderer.request(Slot::Main, draft, 100);
+        let (slot, job) = take_job(&work);
+        let mut result = job.run();
+        result.frame = Some(lcc_engine::media::ScreenFrame { texture, width: 4, height: 4 });
+        finish(&mut app, &work, &ctx, slot, result);
+        assert_eq!(app.renderer.textures[&Slot::Main].id(), egui::TextureId::User(9), "the draft is drawn from the GPU");
+        assert!(app.renderer.kept_views.iter().any(|t| t.key == full_key), "the full render is kept");
+        app.renderer.release(Slot::Main);
+        assert_eq!(*freed.borrow(), vec![egui::TextureId::User(9)], "leaving the view frees the draft's texture");
+    }
+
+    /// With GPU-resident textures shown, a view's drafts ask to stay on the GPU; full renders and
+    /// thumbnails never do.
+    #[test]
+    fn only_view_drafts_ask_to_stay_on_the_gpu() {
+        struct Never;
+        impl ScreenTextures for Never {
+            fn show(&mut self, _: &lcc_engine::media::ScreenFrame, _: Option<egui::TextureId>) -> Option<egui::TextureId> {
+                None
+            }
+            fn free(&mut self, _: egui::TextureId) {}
+        }
+        let (mut app, _work, _ctx) = fixture();
+        let job = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap();
+        assert!(!app.renderer.job_for(Slot::Main, job.clone().draft()).on_screen, "no screen textures: pixels");
+        let (draft, full, thumb) = (job.clone().draft(), job.clone(), job.draft());
+        app.renderer.set_screen_textures(Box::new(Never));
+        assert!(app.renderer.job_for(Slot::Main, draft).on_screen);
+        assert!(!app.renderer.job_for(Slot::Main, full).on_screen);
+        assert!(!app.renderer.job_for(Slot::Thumb(PhotoId(1)), thumb).on_screen);
+    }
+
     fn relink_destination() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("lc-render-relinked-{}-{}.nef", std::process::id(), lcc_preview::next_tick()));
         std::fs::write(&path, b"replacement source").unwrap();
@@ -2025,6 +2747,46 @@ mod thumbnail_tests {
         std::fs::remove_file(replacement).unwrap();
     }
 
+    /// An edited raw: its camera JPEG is still the
+    /// cell's first picture, ahead of every render, and the real thumbnail behind it is background
+    /// work that waits while another cell on screen still lacks its first picture.
+    #[test]
+    fn an_edited_raw_shows_its_camera_jpeg_first_and_the_render_waits_behind_the_stand_ins() {
+        let mut s = Session::new();
+        s.media.preview_loader = Some(Arc::new(|_, _| Some(lcc_raster::Rgba8 { width: 4, height: 4, data: vec![[200, 100, 50, 255]; 16] })));
+        let mut raw = (*photo()).clone();
+        raw.kind = lcc_catalog::MediaKind::Raw;
+        let mut d = raw.camera_defaults();
+        d.light.exposure = 0.3;
+        raw.develop = Arc::new(d);
+        let (mut app, work, ctx) = fixture_with(s, raw);
+        app.renderer.pool = JobPool::new(0);
+        let id = PhotoId(1);
+        assert!(!app.session.embedded_thumb_is_final(app.session.catalog.photo(id).unwrap()));
+        crate::panels::grid::request_thumb(&mut app, id, 384, 10);
+        assert_eq!(app.renderer.pending[&Slot::ThumbQuick(id)].1, crate::panels::grid::STAND_IN_ON_SCREEN, "the stand-in comes before renders");
+        assert!(work.borrow().jobs.is_empty(), "no raw render before the stand-in");
+        // the cell on screen has no picture yet: background work waits for it
+        crate::panels::grid::note_cell(&mut app, id);
+        assert!(app.pictures_busy(app.renderer.frame()));
+        assert!(lcc_engine::prep::pictures_busy());
+        assert_eq!(app.renderer.pool.run_inline(1), 1);
+        app.renderer.poll(&ctx, &mut app.session);
+        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Embedded), "the camera JPEG is on screen");
+        // another cell still waits for its picture in this frame: the real render is held back
+        app.pictures_missing(app.renderer.frame());
+        crate::panels::grid::request_thumb(&mut app, id, 384, 10);
+        assert!(work.borrow().jobs.is_empty(), "the real thumbnail waits while a cell lacks its first picture");
+        // a couple of frames later every cell has one: the real render follows, at background priority
+        app.renderer.poll(&ctx, &mut app.session);
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(!app.pictures_busy(app.renderer.frame()));
+        crate::panels::grid::request_thumb(&mut app, id, 384, 10);
+        let (slot, _) = take_job(&work);
+        assert_eq!(slot, Slot::Thumb(id), "the edit is rendered behind the stand-in");
+        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Embedded), "the stand-in stays until then");
+    }
+
     #[test]
     fn grid_queued_standin_changes_priority_without_restarting() {
         let mut s = Session::new();
@@ -2042,7 +2804,7 @@ mod thumbnail_tests {
         assert_eq!(app.renderer.pending[&slot].1, 6);
         assert_eq!(app.renderer.pool.queued(), 1);
         crate::panels::grid::request_thumb(&mut app, id, 384, 10);
-        assert_eq!(app.renderer.pending[&slot].1, 11, "the grid must promote its queued stand-in");
+        assert_eq!(app.renderer.pending[&slot].1, crate::panels::grid::STAND_IN_ON_SCREEN, "the grid must promote its queued stand-in");
         assert_eq!(app.renderer.requests[&slot].id, request_id);
         assert_eq!(app.renderer.pool.queued(), 1);
 
@@ -2842,7 +3604,16 @@ mod thumbnail_tests {
         let mut r = Renderer { pool: JobPool::new(0), ..Default::default() };
         let ctx = egui::Context::default();
         let mut s = Session::new();
-        let job = || QuickJob { request_id: 0, photo: id, key: 42, cached: vec![], embedded: None, small: None };
+        let job = || QuickJob {
+            request_id: 0,
+            photo: id,
+            key: 42,
+            cached: vec![],
+            embedded: None,
+            embedded_cache: None,
+            embedded_on_disk: false,
+            small: None,
+        };
 
         r.request_quick(Slot::ThumbQuick(id), job(), 5);
         r.pool.run_inline(1);
@@ -3096,6 +3867,7 @@ mod extended_linear_tests {
 
         let job = RenderJob {
             drawn_view_cache: false,
+            on_screen: false,
             cache_generation: 0,
             request_id: 1,
             source_key: None,
@@ -3114,6 +3886,7 @@ mod extended_linear_tests {
             info: Default::default(),
             display_fit: None,
             hdr_texels: None,
+            superseded: None,
             settings: Default::default(),
             request: lcc_pipeline::RenderRequest {
                 max_w: 100,

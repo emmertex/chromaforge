@@ -755,8 +755,8 @@ fn import_preview(ui: &mut egui::Ui, v: &Value, rule: &mut String, t: &crate::th
         (crate::i18n::tr("  with changed settings"), v["changedSettings"].to_string()),
         (crate::i18n::tr("  with changed metadata"), v["changedMetadata"].to_string()),
         (crate::i18n::tr("Unchanged photos"), v["unchanged"].to_string()),
-        (crate::i18n::tr("New albums"), n("newAlbums").to_string()),
-        (crate::i18n::tr("Albums photos are added to"), n("extendedAlbums").to_string()),
+        (crate::i18n::tr("New collections"), n("newAlbums").to_string()),
+        (crate::i18n::tr("Collections photos are added to"), n("extendedAlbums").to_string()),
     ];
     egui::Grid::new("import-catalog-preview").num_columns(2).show(ui, |ui| {
         for (k, v) in rows {
