@@ -444,14 +444,15 @@ impl Stream {
                     }
                     match conn.reader().read(buf) {
                         Ok(n) => return Ok(n),
-                        // closed without close_notify: the caller checks the length it got
-                        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(0),
+                        // closed without close_notify: an attacker on the path can cut a TLS stream at will, so this is
+                        // never a clean end (a body whose length is known is complete before any further read)
+                        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Err(HttpError::Tls(TRUNCATED.into())),
                         Err(e) if e.kind() == ErrorKind::WouldBlock => {}
                         Err(e) => return Err(io_tls_error(&e)),
                     }
                     // no plaintext buffered: more TLS records from the socket
                     match conn.read_tls(sock) {
-                        Ok(0) => return Ok(0),
+                        Ok(0) => return Err(HttpError::Tls(TRUNCATED.into())),
                         Ok(_) => {
                             conn.process_new_packets().map_err(|e| tls_error(&e))?;
                             while conn.wants_write() {
@@ -656,6 +657,8 @@ pub fn request(method: &str, url: &Url, headers: &[(&str, String)], body: Option
     request_with(method, url, headers, body, limits, None).map_err(|(e, _)| e)
 }
 
+const TRUNCATED: &str = "the connection closed without a TLS close_notify: the response may be truncated";
+
 /// How far a failed request got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -708,6 +711,11 @@ fn request_with(
     let at = |stage: Stage| move |e: HttpError| (e, stage);
     if method.is_empty() || !method.chars().all(|c| c.is_ascii_uppercase()) {
         return Err((HttpError::BadUrl("bad request method".into()), Stage::Connect));
+    }
+    // `path` and `host` are public fields: nothing that could end the request line or a header may reach the wire
+    let plain = |s: &str| !s.bytes().any(|b| b <= 0x20 || b == 0x7f);
+    if !url.path.starts_with('/') || !plain(&url.path) || !plain(&url.host) {
+        return Err((HttpError::BadUrl("a space or control character in the host or path".into()), Stage::Connect));
     }
     if body.is_some_and(|b| b.len() > MAX_BODY) {
         return Err((HttpError::BadUrl(format!("request body over {} MB", MAX_BODY >> 20)), Stage::Connect));
@@ -801,6 +809,16 @@ mod tests_connect {
 
     fn limits(cancel: &AtomicBool) -> Limits<'_> {
         Limits { connect: Duration::from_millis(300), stall: Duration::from_secs(1), cancel }
+    }
+
+    /// A `Url` built by hand cannot put a line break or space into the request line or the Host header.
+    #[test]
+    fn a_path_or_host_with_a_line_break_is_refused_before_connecting() {
+        let cancel = AtomicBool::new(false);
+        for (host, path) in [("example.com", "/a b"), ("example.com", "/a\r\nX: y"), ("example.com", "a"), ("ex\r\nample", "/")] {
+            let url = Url { tls: false, host: host.into(), port: 9, path: path.into() };
+            assert!(matches!(get(&url, &[], &limits(&cancel)), Err(HttpError::BadUrl(_))), "{host:?} {path:?}");
+        }
     }
 
     /// A name lookup that hangs is given up on at the connect timeout, and Cancel stops it at once (issue #1532).
