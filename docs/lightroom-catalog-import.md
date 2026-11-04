@@ -3,12 +3,15 @@
 > Names in angle brackets (`<app>`, `<binary>`, `<cli>`, `<PREFIX>`, `<settings_dir>`, …) are the values set in
 > [`brand.toml`](../brand.toml); see the README.
 
-File → Import Lightroom Catalog… opens `.lrcat` directly. Lightroom, Python, DNG conversion
+File → Import Lightroom or Capture One Catalog… opens `.lrcat` directly. Lightroom, Python, DNG conversion
 and a C SQLite runtime are not required. The source database is read-only, including committed
 `-wal` pages; a catalog that changes during the read is rejected when the change is
 observable. Close Lightroom and every other catalog writer before inspection or import:
 the metadata, header and companion checks are best-effort change detection, not a
 transactional SQLite snapshot. The app owns subsequent edits.
+
+The same command also opens a Capture One catalog (`.cocatalogdb`, see *Capture One catalogs* below); the file
+dialog offers both kinds together and each on its own.
 
 File → Open Library… given a Lightroom catalog folder (or an `.lrdata` / `.lrcat-data` folder, or the `.lrcat`)
 doesn't make a library of the app there: it offers this import instead, with the catalog found
@@ -31,7 +34,7 @@ unless Settings says to always merge (*Turning the question off*, below):
 The window opens on *Merge* when the open library has no photos (there is nothing to merge with) and on *Create a
 new library* when it has some.
 
-**Turning the question off.** Settings → General → Library → *When importing a Lightroom catalog*: *Ask where to
+**Turning the question off.** Settings → General → Library → *When importing a Lightroom or Capture One catalog*: *Ask where to
 import it* (the default) or *Always merge into the open library* (how imports always worked before). The window's
 *Don't ask again (always merge into the open library)* checkbox, offered with *Merge*, picks the second; the window
 says where to turn the question back on. The choice is an app setting (`ui.json`, `settings.lightroomImport`:
@@ -225,6 +228,28 @@ share only when the catalog itself is on it; Chromaforge does not, see the READM
 folder or file name in the catalog is an absolute path, is not looked at: the import lists it as missing with a
 warning and leaves the photo and its virtual copies out of the library. A path that is not a path on this computer
 (a Windows drive or UNC path read on macOS or Linux) is not looked at either and stays catalogued as missing.
+
+## Capture One catalogs
+
+A Capture One catalog keeps its library in `<name>.cocatalogdb`, an SQLite database, which the same read-only
+reader opens (`crates/engine/src/capture_one_catalog.rs`) into the same import model, so the destination window,
+one undo step, reimport without duplicates and the result window are shared. Checked against a Capture One 16
+catalog on Windows.
+
+- **Photos:** one per variant (`ZVARIANT`); the first variant of an image is the photo, later ones become virtual
+  copies ("Variant 2", …). Originals inside the catalog are found relative to the folder holding the database,
+  referenced ones by `ZPATHLOCATION` (`ZWINROOT` / `ZMACROOT` + `ZRELATIVEPATH`). Images in Capture One's trash
+  are left out, with a warning.
+- **Ratings and colour tags** (`ZVARIANTMETADATA`): red, yellow, green, blue and purple become labels; orange and
+  pink have no label here and come in without one, with a warning.
+- **Keywords:** `ZCONTENT_KEYWORDS` lists each keyword as its full path with an order suffix
+  (`Animals|Birds|Owls||4`) and the parents of an assigned keyword as entries of their own; the parents are
+  dropped, as the path implies them.
+- **IPTC fields** become an XMP packet merged like a sidecar.
+- **Albums** keep their projects and groups (a group is a `VirtualFolderCollection`, as are Recent Imports and
+  Recent Captures; the folders the catalog itself names are system folders and stay out, with the albums under
+  them). Smart albums are not imported yet (a warning names each one); develop settings are not read yet.
+- The import's activity row, messages, result window, destination window and undo step say Capture One.
 
 ## Historical local validation
 
