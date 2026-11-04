@@ -931,7 +931,11 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
     {
         app.renderer.thumb_jobs_built += 1;
     }
-    let quick = if app.renderer.textures.contains_key(&Slot::Thumb(id)) { None } else { app.session.quick_thumb_job(&job) };
+    // An edited raw's camera JPEG is only a stand-in: for a cell with no picture at all. One that
+    // shows a picture already (the look before this edit) keeps it until the real render arrives.
+    let shows_stand_in = app.renderer.textures.contains_key(&Slot::ThumbQuick(id))
+        && app.session.catalog.photo(id).is_some_and(|p| !app.session.embedded_thumb_is_final(p));
+    let quick = if app.renderer.textures.contains_key(&Slot::Thumb(id)) || shows_stand_in { None } else { app.session.quick_thumb_job(&job) };
     // A cached render is a stand-in for whatever comes next; an embedded camera preview of an
     // unedited raw is the picture itself, so no sensor decode is scheduled behind it.
     let embedded_is_final =
@@ -945,13 +949,39 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
     }
     match quick {
         Some(q) => {
-            app.renderer.request_quick(Slot::ThumbQuick(id), q, priority + 1);
-            if !embedded_is_final && !app.renderer.is_pending(Slot::ThumbQuick(id)) {
+            app.renderer.request_quick(Slot::ThumbQuick(id), q, stand_in_priority(priority));
+            // (the real thumbnail behind the stand-in is background work: not while a cell on
+            // screen waits for its first picture)
+            if !embedded_is_final && !app.renderer.is_pending(Slot::ThumbQuick(id)) && !app.pictures_busy(app.renderer.frame()) {
+                app.renderer.request(Slot::Thumb(id), job, BACKGROUND_THUMB_PRIORITY);
+            }
+        }
+        // (the render behind a stand-in on screen is background work, as above)
+        None if shows_stand_in => {
+            if !app.pictures_busy(app.renderer.frame()) {
                 app.renderer.request(Slot::Thumb(id), job, BACKGROUND_THUMB_PRIORITY);
             }
         }
         None => app.renderer.request(Slot::Thumb(id), job, priority),
     }
+}
+
+/// A grid or filmstrip cell of photo `id` is on screen: while its first picture is on its way,
+/// every background job waits ([`LccApp::pictures_missing`]; not for a cell whose picture failed).
+pub(crate) fn note_cell(app: &mut LccApp, id: PhotoId) {
+    if app.renderer.thumb(id).is_none() && (app.renderer.is_pending(Slot::ThumbQuick(id)) || app.renderer.is_pending(Slot::Thumb(id))) {
+        app.pictures_missing(app.renderer.frame());
+    }
+}
+
+/// The stand-in (embedded JPEG or cached thumbnail) of a cell on screen: the cheapest picture for
+/// the whole view comes before anything bigger but the loupe's own stand-in (110), so before every
+/// render ("lowest and fastest resolution first, then the next cheap one, then anything bigger").
+pub const STAND_IN_ON_SCREEN: u32 = 97;
+
+/// The priority of a cell's stand-in when the cell asks at `priority` (10: on screen).
+pub(crate) fn stand_in_priority(priority: u32) -> u32 {
+    if (10..STAND_IN_ON_SCREEN).contains(&priority) { STAND_IN_ON_SCREEN } else { priority.saturating_add(1) }
 }
 
 /// Thickness (points) of the grid's and the filmstrip's scroll bars.
@@ -1121,6 +1151,9 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     // thumbnail
     let size = thumb_px(img_rect.width().max(img_rect.height()), ppp);
     request_thumb(app, id, size, if onscreen { 10 } else { 5 });
+    if onscreen {
+        note_cell(app, id);
+    }
     if let Some(tex) = app.renderer.thumb(id) {
         let [tw, th] = tex.size;
         // Preserve the decoded preview's ratio when it differs from the catalog dimensions.

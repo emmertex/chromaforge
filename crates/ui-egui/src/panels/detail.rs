@@ -1153,7 +1153,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     };
     // once this photo is on screen: prepare its neighbours in filmstrip order (source decoded and
     // kept, view render cached) so stepping to them is instant
-    if !interacting && !app.renderer.is_pending(Slot::Main) && app.renderer.textures.get(&Slot::Main).is_some_and(|t| t.photo == id) {
+    // (nor while a cell on screen waits for its first picture: those come before anything bigger)
+    if !interacting
+        && !app.renderer.is_pending(Slot::Main)
+        && app.renderer.textures.get(&Slot::Main).is_some_and(|t| t.photo == id)
+        && !app.pictures_busy(app.renderer.frame())
+    {
         let ids = app.session.visible_cloned();
         if let Some(i) = ids.iter().position(|p| *p == id) {
             let next = ids.get(i + 1).copied();
@@ -1430,6 +1435,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         }
     }
     app.loupe_shown = Some((id, shown));
+    // no picture of this photo yet, its first one on its way: background work waits (the photo on
+    // screen comes first, at its cheapest first)
+    if shown == "none" && (app.renderer.is_pending(Slot::Preview) || app.renderer.is_pending(Slot::Main)) {
+        app.pictures_missing(app.renderer.frame());
+    }
     // the colour under the pointer, for the readout under the histogram (the After render only)
     if shown == "render"
         && !split
@@ -5370,6 +5380,9 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                 let resp = ui.interact(cr, egui::Id::new(("film", id.0)), sense);
                 // asked for first: a failure left by an earlier request is not this tile's verdict once a new one is on its way
                 super::grid::request_thumb(app, *id, (256.0 * ppp.min(2.0) / 2.0) as usize * 2, 8);
+                if local.intersects(vp) {
+                    super::grid::note_cell(app, *id);
+                }
                 let failed = app.renderer.thumb(*id).is_none() && app.renderer.thumb_failure(*id).is_some();
                 crate::widgets::announce(&resp, film_spoken(app.session.catalog.photo(*id).map_or("", |p| p.file_name.as_str()), failed));
                 if (map || reorder) && resp.drag_started() {
