@@ -1875,7 +1875,7 @@ fn sam_by_hand(sam: &lcc_engine::segment::Segmenter) -> bool {
 }
 
 /// The model installation guide.
-const SAM_HELP: &str = lcc_brand::REPOSITORY;
+pub(crate) const SAM_HELP: &str = lcc_brand::REPOSITORY;
 
 /// Open the configured SAM 3 folder itself; revealing a file opens its parent instead.
 pub(crate) fn show_model_folder(app: &mut LccApp) -> Result<serde_json::Value, String> {

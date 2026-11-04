@@ -593,10 +593,11 @@ mod tests {
         assert!(h.app.session.develop_of(id).is_some_and(|d| d.enhance.denoise_enabled()));
         assert_eq!(h.app.session.execute("denoise.status", &json!({})).unwrap()["model"]["id"], "builtin");
         // Settings still offers installing a model of one's own.
-        h.app.ui.dialog = Some(Dialog::Settings { tab: "denoise".into() });
+        h.app.ui.dialog = Some(Dialog::Settings { tab: "ai".into() });
         h.settle(SETTLE);
         let listed = h.app.session.execute("denoise.models.list", &json!({})).unwrap();
         assert_eq!(listed["models"].as_array().unwrap().len(), lcc_denoise::known::all().len(), "{listed}");
+        crate::settings_screen::reveal(&mut h, "denoise:installFile");
         assert!(widgets(&mut h).contains("\"denoise:installFile\""));
         h.app.ui.dialog = None;
         // a photo that is not raw: no offer
@@ -676,6 +677,7 @@ mod tests {
         h.app.services.pick_denoise_model = Some(Box::new(move || vec![picked.clone()]));
         h.app.ui.dialog = Some(Dialog::Settings { tab: "ai".into() });
         h.settle(SETTLE);
+        crate::settings_screen::reveal(&mut h, "denoise:installFile");
         let r = h.request("ui.clickWidget", json!({"id": "denoise:installFile"}), t);
         assert_eq!(r["ok"], true, "{r}");
         h.step();
@@ -1492,6 +1494,9 @@ mod tests {
         h.settle(SETTLE);
         h.step();
         let runtime = h.app.session.execute("faces.models.list", &json!({})).unwrap()["runtime"] == true;
+        if runtime {
+            crate::settings_screen::reveal(&mut h, "faces:download:sface-2021dec");
+        }
         let r = h.request("ui.clickWidget", json!({"id": "faces:download:sface-2021dec"}), t);
         if !runtime {
             assert_eq!(r["ok"], false, "a build that cannot run the model offers no download: {r}");

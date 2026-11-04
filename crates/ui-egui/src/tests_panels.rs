@@ -3090,7 +3090,7 @@ fn an_imported_folder_is_listed_by_its_own_name() {
 }
 
 #[test]
-fn export_folder_shows_the_folder_selects_its_photos_and_opens_the_dialog() {
+fn export_folder_shows_the_folder_selects_its_photos_and_opens_export() {
     let mut h = folders_app_with_services(
         &["/pics/trip/a.jpg", "/pics/trip/day2/b.jpg", "/pics/home/c.jpg", "/Volumes/nas/d.jpg"],
         [1400.0, 900.0],
@@ -3113,7 +3113,7 @@ fn export_folder_shows_the_folder_selects_its_photos_and_opens_the_dialog() {
     let selected: std::collections::BTreeSet<u64> = h.app.session.selection.ids.iter().map(|i| i.0).collect();
     assert_eq!(selected.len(), 2, "the folder's photo and the one in the folder inside it");
     assert_eq!(selected, photos_in(&h, "/pics/trip"));
-    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::Export { .. })), "the Export dialog is open");
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Export, "the Export module is open");
     assert!(!popup_open(&h), "choosing closes the menu");
 }
 
