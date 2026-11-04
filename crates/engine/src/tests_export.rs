@@ -1984,3 +1984,24 @@ fn exports_render_on_the_gpu_and_the_processor_at_once() {
     lcc_gpu::set_batch_limits(None, None);
     eprintln!("8 HDR exports, 4 lanes: GPU alone {gpu:.2} s, GPU + processor {both:.2} s");
 }
+
+/// Upstream #3054: a GPS property whose value is malformed can't be projected into `Metadata`, but it is still in the
+/// file's XMP: an Original export that removes the location refuses it, as it does a file with readable GPS.
+#[test]
+fn remove_location_refuses_original_with_malformed_xmp_gps() {
+    let dir = temp_dir("export-noloc-xmp-gps");
+    let path = dir.join("Gps.jpg");
+    let pixels = [96u8; 12];
+    let image = lcc_codecs::EncodeImage::new(2, 2, 3, lcc_codecs::Samples::U8(&pixels));
+    let xmp = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="45,60N" exif:GPSLongitude="7,0E"/></rdf:RDF>"#;
+    let encoded = lcc_codecs::EncodeMeta { xmp: Some(xmp), ..Default::default() };
+    let bytes = lcc_codecs::encode_jpeg(&image, 90, lcc_codecs::ChromaSubsampling::S444, &encoded).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let photo_id = session.catalog.photos().find(|p| p.file_name == "Gps.jpg").unwrap().id;
+    let options = ExportOptions { format: ExportFormat::Original, remove_location: true, ..Default::default() };
+    let error = export_photo(&mut session, photo_id, &options, 1).err().expect("the embedded XMP GPS should refuse Original export");
+    assert!(error.contains("embeds GPS") || error.contains("can't verify"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

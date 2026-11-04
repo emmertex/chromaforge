@@ -2469,12 +2469,18 @@ impl PreparedExport {
                         // fail closed: a PSD whose metadata can't be read might hide a location
                         let metadata = lcc_meta::try_extract(&bytes)
                             .map_err(|e| format!("{label}: can't verify location metadata in this original file: {e}"))?;
+                        let mut embeds_xmp_gps = false;
                         if !bytes.starts_with(b"8BPS") {
                             let embedded = lcc_meta::embedded(&bytes);
-                            if let Some(xmp) = embedded.xmp.as_deref() {
-                                lcc_meta::parse_xmp(xmp).map_err(|e| {
+                            // standard and Extended XMP packets alike; a GPS property whose value is malformed cannot be
+                            // projected into `Metadata`, so the raw properties are looked at too (upstream #3054)
+                            for packet in [embedded.xmp.as_deref(), embedded.xmp_extended.as_deref()].into_iter().flatten() {
+                                let xmp = lcc_meta::parse_xmp(packet).map_err(|e| {
                                     format!("{label}: can't verify location metadata in this original file: malformed embedded XMP: {e}")
                                 })?;
+                                embeds_xmp_gps |= ["exif:GPSLatitude", "exif:GPSLongitude"]
+                                    .into_iter()
+                                    .any(|key| xmp.properties.get(key).is_some_and(|values| values.iter().any(|v| !v.trim().is_empty())));
                             }
                         }
                         let embeds_place_name =
@@ -2482,7 +2488,7 @@ impl PreparedExport {
                                 .into_iter()
                                 .flatten()
                                 .any(|value| !value.trim().is_empty());
-                        if metadata.gps.is_some() || embeds_place_name || lcc_meta::embeds_location(&bytes) {
+                        if metadata.gps.is_some() || embeds_place_name || embeds_xmp_gps || lcc_meta::embeds_location(&bytes) {
                             // DNG only for what the DNG export below takes
                             let instead = if lcc_raw::probe(&bytes).is_some() { "JPEG, TIFF or DNG" } else { "JPEG or TIFF" };
                             return Err(format!(
