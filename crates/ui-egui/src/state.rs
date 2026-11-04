@@ -413,6 +413,8 @@ pub struct AppSettings {
     /// Libraries opened recently, newest first (File ▸ Open Recent Library; at most
     /// [`RECENT_LIBRARIES`]).
     pub recent_libraries: Vec<String>,
+    /// Where the SAM 3 model is kept (Settings ▸ AI Models); empty = the default folder.
+    pub sam3_dir: String,
     /// When each recent library was last opened (path → the session clock's ISO 8601 time), for
     /// the launch window. A separate key so files from earlier versions, and earlier versions
     /// reading this one, keep their list (issue #1290).
@@ -662,6 +664,7 @@ impl Default for AppSettings {
         AppSettings {
             library_path: String::new(),
             recent_libraries: Vec::new(),
+            sam3_dir: String::new(),
             recent_opened: Default::default(),
             at_launch: LaunchLibrary::Last,
             startup_view: StartupView::Last,

@@ -56,6 +56,8 @@ fn the_info_card_writes_to_every_selected_photo_and_leaves_mixed_values_alone() 
     exec(&mut h, "photo.setMeta", json!({"ids": [ids[0], ids[1]], "caption": "same"}));
     exec(&mut h, "photo.setMeta", json!({"ids": [ids[2]], "caption": "other"}));
     exec(&mut h, "library.select", json!({"ids": ids}));
+    // Info lives in the second bar, opened from the top bar's button
+    ask(&mut h, "ui.clickWidget", json!({"id": "modern:actionsButton"}));
     ask(&mut h, "ui.clickWidget", json!({"id": "modern:infoButton"}));
     assert!(h.app.ui.modern.info && has(&h, "modern:info"), "the card shows");
     type_into(&mut h, "modernInfo:title", "Alps");

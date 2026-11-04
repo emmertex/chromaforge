@@ -674,13 +674,13 @@ mod tests {
         std::fs::write(dir.join("model.json"), br#"{"name": "rawdenoise", "scale": 2}"#).unwrap();
         let picked = onnx.to_string_lossy().into_owned();
         h.app.services.pick_denoise_model = Some(Box::new(move || vec![picked.clone()]));
-        h.app.ui.dialog = Some(Dialog::Settings { tab: "denoise".into() });
+        h.app.ui.dialog = Some(Dialog::Settings { tab: "ai".into() });
         h.settle(SETTLE);
         let r = h.request("ui.clickWidget", json!({"id": "denoise:installFile"}), t);
         assert_eq!(r["ok"], true, "{r}");
         h.step();
         h.step();
-        assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "denoise".into() }));
+        assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "ai".into() }));
         let painted = h.painted_text();
         assert!(
             painted
@@ -1427,7 +1427,7 @@ mod tests {
         let listed = h.app.run("faces.models.list", json!({})).unwrap();
         assert!(listed["models"].as_array().unwrap().iter().any(|m| m["installed"] == true && m["known"] == false), "{listed}");
         // installed, in use and recognition on: back in Settings ▸ Faces, where the scan can be watched
-        assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "faces".into() }));
+        assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "ai".into() }));
         assert_eq!(listed["enabled"], true);
         h.app.ui.dialog = None;
 
@@ -1463,11 +1463,11 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             return;
         }
-        assert!(matches!(h.app.ui.dialog, Some(Dialog::AiModels { .. })), "the download is offered: {:?}", h.app.ui.dialog);
+        assert!(matches!(&h.app.ui.dialog, Some(Dialog::Settings { tab }) if tab == "ai"), "the download is offered: {:?}", h.app.ui.dialog);
         assert!(!dir.join("models").join("mediapipe-face-landmarker").exists(), "nothing is fetched by offering it");
 
         // Settings > Faces shows the face model with a Download button
-        h.app.ui.dialog = Some(Dialog::Settings { tab: "faces".into() });
+        h.app.ui.dialog = Some(Dialog::Settings { tab: "ai".into() });
         h.step();
         // (the first request switches the widget list on, the next frame fills it)
         h.request("ui.widgets", json!({}), Duration::from_secs(10));
@@ -1488,7 +1488,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
-        h.request("engine.execute", json!({"command": "app.settings", "params": {"tab": "faces"}}), t);
+        h.request("engine.execute", json!({"command": "app.settings", "params": {"tab": "ai"}}), t);
         h.settle(SETTLE);
         h.step();
         let runtime = h.app.session.execute("faces.models.list", &json!({})).unwrap()["runtime"] == true;

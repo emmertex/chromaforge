@@ -889,6 +889,8 @@ pub struct LccApp {
     pub machine: Option<machine_test::MachineTask>,
     /// The memory budget setting last applied (MB, 0 = automatic).
     memory_applied: Option<u32>,
+    /// The SAM 3 folder setting last handed to the segmenter (`AppSettings::sam3_dir`).
+    sam3_applied: Option<String>,
     /// The display profile setting last applied (`app.displayProfile`).
     pub(crate) display_applied: Option<String>,
     /// Why the display profile setting could not be applied (shown in Settings ▸ Display).
@@ -1101,6 +1103,7 @@ impl LccApp {
             export_tuning_applied: None,
             machine: None,
             memory_applied: None,
+            sam3_applied: None,
             display_applied: None,
             display_error: None,
             screen_profile: None,
@@ -1591,7 +1594,7 @@ impl LccApp {
             // SAM 2.1 was chosen for Object masks, or Retouch needs the MediaPipe models: their downloads are in the
             // AI Models dialog
             if self.ui.dialog.is_none() {
-                self.ui.dialog = Some(state::Dialog::AiModels { error: None });
+                self.ui.dialog = Some(state::Dialog::Settings { tab: "ai".into() });
             }
         } else {
             self.toast_error(ctx, e.message);
@@ -1600,8 +1603,10 @@ impl LccApp {
 
     /// Open the dialog offering the SAM 3 download (never downloads by itself).
     pub fn offer_sam_download(&mut self, then: Option<(&str, &str)>) {
-        if self.ui.dialog.is_none() || matches!(self.ui.dialog, Some(state::Dialog::SamModel { .. })) {
-            self.ui.dialog = Some(state::Dialog::SamModel { then: then.map(|(k, o)| (k.to_string(), o.to_string())), error: None });
+        // the download is on Settings ▸ AI Models, with every other model
+        let _ = then;
+        if self.ui.dialog.is_none() || matches!(self.ui.dialog, Some(state::Dialog::Settings { .. })) {
+            self.ui.dialog = Some(state::Dialog::Settings { tab: "ai".into() });
         }
     }
 
@@ -2225,6 +2230,12 @@ impl LccApp {
                 lcc_engine::gpu::warm_up();
             }
         }
+        // the SAM 3 model's folder: the default one until a person chooses another
+        let sam3 = self.ui.settings.sam3_dir.clone();
+        if self.sam3_applied.as_ref() != Some(&sam3) && (!sam3.is_empty() || self.sam3_applied.is_some()) {
+            self.session.segmenter.dir = if sam3.is_empty() { lcc_engine::config::default_sam3_dir() } else { Some(std::path::PathBuf::from(&sam3)) };
+        }
+        self.sam3_applied = Some(sam3);
         let mb = self.ui.settings.memory_mb;
         // automatic at startup: leave the engine's default alone
         if self.memory_applied != Some(mb) && (mb > 0 || self.memory_applied.is_some()) {
@@ -2593,6 +2604,9 @@ impl LccApp {
         let importing = import_tab::showing(self);
         let m = if importing && !touch {
             panels::topbar::show(self, ui);
+            if module::edge_visible(self, module::Edge::Top) {
+                module::module_bar(self, ui);
+            }
             module::get(self.ui.module)
         } else if touch {
             modern::edges(self, ui, &ctx)

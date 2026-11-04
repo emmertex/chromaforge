@@ -70,7 +70,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             let mut cx = bar.center().x;
             if !app.native_menu {
                 // leave room for the in-window menus left of the (centred) search field
-                let menus_right = full.left() + 140.0 + crate::import_tab::tabs_width(app, ui) + crate::menubar::bar_width(ui) + 24.0;
+                let menus_right = full.left() + 140.0 + crate::menubar::bar_width(ui) + 24.0;
                 sw = sw.min(2.0 * (cx - menus_right)).max(190.0);
                 // the Import | Library tabs leave the menus no room beside a centred field: the
                 // field moves right of them, while it still fits before the icons
@@ -89,11 +89,6 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     .clicked()
                 {
                     let _ = app.run("view.leftPanel", json!({}));
-                }
-                // Import | Library (Settings ▸ Import ▸ Import as a tab)
-                if crate::import_tab::enabled(app) {
-                    ui.add_space(6.0);
-                    crate::import_tab::tabs(app, ui);
                 }
                 if !app.native_menu {
                     // no native menu bar (web, Windows, Linux): menus in the top bar

@@ -39,7 +39,7 @@ fn smooth_skin_section_switches_on_offers_the_models_and_sets_skin_and_person() 
     h.settle(SETTLE);
     assert_eq!(h.app.session.develop_of(id).unwrap().skin, SkinSmoothing::SUBTLE);
     if lcc_engine::segment::Segmenter::AVAILABLE {
-        assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::AiModels { .. })), "the missing model is offered: {:?}", h.app.ui.dialog);
+        assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::Settings { tab }) if tab == "ai"), "the missing model is offered: {:?}", h.app.ui.dialog);
         h.app.ui.dialog = None;
         h.settle(SETTLE);
     }
@@ -126,7 +126,7 @@ fn find_blemishes_offers_the_models_and_remembers_include_body_skin() {
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
     if lcc_engine::segment::Segmenter::AVAILABLE {
-        assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::AiModels { .. })), "{:?}", h.app.ui.dialog);
+        assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::Settings { tab }) if tab == "ai"), "{:?}", h.app.ui.dialog);
     }
     assert_eq!(h.app.session.develop_of(h.app.session.active().unwrap()).unwrap().spots.len(), spots, "nothing added without the models");
     let _ = std::fs::remove_dir_all(&dir);

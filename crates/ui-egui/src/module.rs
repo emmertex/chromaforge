@@ -1306,17 +1306,42 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
                 let w = (full.width() * 0.3).max(120.0);
                 let status: String = app.ui.status.chars().take(120).collect();
                 let g = ui.painter().layout(status, t.font(12.0), t.text_dim, w);
-                ui.painter().galley(pos2(plate.right() + 28.0, full.center().y - g.size().y / 2.0), g, t.text_dim);
+                let at = pos2(plate.right() + 28.0, full.center().y - g.size().y / 2.0);
+                // a message goes away after 15 s, or when clicked
+                const STATUS_SECS: f64 = 15.0;
+                let now = ui.input(|i| i.time);
+                let key = egui::Id::new("status-first-seen");
+                let (seen_text, since): (String, f64) = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+                let since = if seen_text == app.ui.status { since } else { now };
+                ui.data_mut(|d| d.insert_temp(key, (app.ui.status.clone(), since)));
+                let rect = Rect::from_min_size(at, g.size());
+                let dismiss = ui.interact(rect, egui::Id::new("status-dismiss"), Sense::click());
+                crate::access::button(&dismiss, "Dismiss Message");
+                let dismiss = dismiss.on_hover_text(crate::i18n::tr("Click to dismiss")).clicked();
+                ui.painter().galley(at, g, t.text_dim);
+                if dismiss || now - since >= STATUS_SECS {
+                    app.ui.status.clear();
+                } else {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((STATUS_SECS - (now - since)).max(0.05)));
+                }
             }
             // the bar's own context menu; registered before the module names so they sit on top and get the clicks
             let bg = ui.interact(full, egui::Id::new("module-bar-bg"), Sense::click());
             crate::access::button(&bg, "Module Picker");
             bg.context_menu(|ui| picker_menu(app, ui));
             // module picker, right-aligned
-            let shown: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| !app.ui.hidden_modules.contains(m)).collect();
-            let sizes: Vec<(ModuleId, f32)> = shown
+            // Import is the first entry (Settings ▸ Import ▸ Import as a tab); it is a tab, not a module
+            let tab = crate::import_tab::enabled(app);
+            let importing = crate::import_tab::showing(app);
+            let shown: Vec<Option<ModuleId>> = tab
+                .then_some(None)
+                .into_iter()
+                .chain(ModuleId::ALL.into_iter().filter(|m| !app.ui.hidden_modules.contains(m)).map(Some))
+                .collect();
+            let label_of = |m: &Option<ModuleId>| m.map_or("Import", |m| m.label());
+            let sizes: Vec<(Option<ModuleId>, f32)> = shown
                 .iter()
-                .map(|m| (*m, ui.painter().layout_no_wrap(crate::i18n::tr(m.label()).to_string(), t.font(15.0), t.text).size().x))
+                .map(|m| (*m, ui.painter().layout_no_wrap(crate::i18n::tr(label_of(m)).to_string(), t.font(15.0), t.text).size().x))
                 .collect();
             let sep = 22.0;
             let total: f32 = sizes.iter().map(|(_, w)| w).sum::<f32>() + sep * sizes.len().saturating_sub(1) as f32;
@@ -1327,11 +1352,14 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
                     ui.painter().text(pos2(x - sep / 2.0, full.center().y), Align2::CENTER_CENTER, "|", t.font(13.0), t.text_dim.gamma_multiply(0.5));
                 }
                 let r = Rect::from_min_size(pos2(x, full.top() + 6.0), vec2(*w, full.height() - 12.0));
-                let id = format!("module:{}", m.key());
+                let id = format!("module:{}", m.map_or("import", |m| m.key()));
                 register(ui.ctx(), &id, r);
                 let resp = ui.interact(r, egui::Id::new(&id), Sense::click());
-                let on = *m == app.ui.module;
-                crate::access::choice(&resp, m.label(), on);
+                let on = match m {
+                    None => importing,
+                    Some(m) => *m == app.ui.module && !importing,
+                };
+                crate::access::choice(&resp, label_of(m), on);
                 let color = if on {
                     t.text
                 } else if resp.hovered() {
@@ -1339,17 +1367,25 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
                 } else {
                     t.text_dim
                 };
-                ui.painter().text(pos2(x, full.center().y), Align2::LEFT_CENTER, crate::i18n::tr(m.label()), t.font(15.0), color);
-                if resp.clicked() {
+                ui.painter().text(pos2(x, full.center().y), Align2::LEFT_CENTER, crate::i18n::tr(label_of(m)), t.font(15.0), color);
+                if resp.clicked() && !on {
                     switch_to = Some(*m);
                 }
                 resp.context_menu(|ui| picker_menu(app, ui));
                 x += w + sep;
             }
-            if let Some(m) = switch_to
-                && let Err(e) = app.run(m.command(), json!({}))
-            {
-                app.ui.status = e;
+            if let Some(m) = switch_to {
+                let result = match m {
+                    None => app.run("view.importTab", json!({})),
+                    Some(m) => {
+                        // leaving Import for a module: back to the library first
+                        let back = if importing { app.run("view.libraryTab", json!({})) } else { Ok(json!({})) };
+                        back.and_then(|_| app.run(m.command(), json!({})))
+                    }
+                };
+                if let Err(e) = result {
+                    app.ui.status = e;
+                }
             }
         });
 }

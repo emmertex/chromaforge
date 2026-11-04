@@ -134,8 +134,6 @@ const LAYOUT: &[(&str, &[&str])] = &[
             "@More Imports",
             "@Tethered Capture",
             "---",
-            "@Catalog",
-            "@Open Recent Catalog",
             "@Libraries",
             "---",
             "dialog.export",
@@ -358,12 +356,17 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
         ],
     ),
     ("Photo", "Rotate & Flip", &["photo.rotateLeft", "photo.rotateRight", "---", "photo.flipHorizontal", "photo.flipVertical"]),
-    (
-        "File",
-        "Catalog",
-        &["catalog.new", "catalog.open", "---", "dialog.exportCatalog", "---", "catalog.backup", "catalog.checkIntegrity", "catalog.optimize"],
-    ),
-    ("File", "Libraries", &["app.newLibrary", "app.openLibrary", "---", "file.backupLibrary", "file.restoreLibrary", "library.compact"]),
+    ("File", "Libraries", &[
+            "app.newLibrary",
+            "app.openLibrary",
+            "---",
+            "dialog.exportCatalog",
+            "---",
+            "file.backupLibrary",
+            "file.restoreLibrary",
+            "catalog.checkIntegrity",
+            "library.compact",
+        ]),
     (
         "File",
         "More Imports",
@@ -440,13 +443,6 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
         "Window",
         "Panels",
         &[
-            "panel.presets",
-            "panel.versions",
-            "panel.activity",
-            "panel.info",
-            "panel.keywords",
-            "panel.actions",
-            "---",
             "view.leftPanel",
             "view.photoCounts",
             "view.filmstrip",
@@ -904,7 +900,13 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
         "Libraries" => {
             let can = crate::panels::settings::can_switch_library(app).is_ok();
             let open = app.session.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone());
-            let recent = &app.ui.settings.recent_libraries;
+            let mut recent: Vec<String> = Vec::new();
+            for r in &app.ui.settings.recent_libraries {
+                if !recent.iter().any(|x| std::path::Path::new(x) == std::path::Path::new(r)) {
+                    recent.push(r.clone());
+                }
+            }
+            let recent = &recent;
             let label = |r: &str| {
                 let d = std::path::Path::new(r);
                 format!("{} — {}", crate::panels::settings::library_name(d), d.parent().map(|p| p.display().to_string()).unwrap_or_default())

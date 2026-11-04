@@ -34,6 +34,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
     ("denoise", "AI Denoise"),
+    ("ai", "AI Models"),
     ("profiles", "Profiles"),
     ("connections", "Connections"),
     ("sync", "Sync"),
@@ -111,6 +112,7 @@ pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &st
         "slideshow" => slideshow_tab(app, ui, t),
         "faces" => super::faces::settings_tab(app, ui, t),
         "denoise" => super::denoise::settings_tab(app, ui, t),
+        "ai" => super::ai_models::settings_tab(app, ui, t),
         "genfill" => super::genfill::settings_tab(app, ui, t),
         "profiles" => super::settings_profiles::settings_tab(app, ui, t),
         "shortcuts" => shortcuts_tab(app, ui, t),
@@ -2119,7 +2121,8 @@ fn switch_library(app: &mut LccApp, path: &str, demo: bool) -> Result<Value, Str
 
 /// Put `path` first in the recent list, without duplicates, capped at [`RECENT_LIBRARIES`].
 pub fn remember_library(recent: &mut Vec<String>, path: &str) {
-    recent.retain(|r| r != path);
+    // the same folder spelled differently (trailing slash…) is one library
+    recent.retain(|r| std::path::Path::new(r) != std::path::Path::new(path));
     recent.insert(0, path.to_string());
     recent.truncate(crate::state::RECENT_LIBRARIES);
 }
