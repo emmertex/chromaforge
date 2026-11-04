@@ -5212,11 +5212,11 @@ pub(crate) fn elide_end(text: &str, max: f32, width: impl Fn(&str) -> f32) -> St
 }
 
 /// Draws the source line in `head`: the source gives way first, then the file name, then the counts.
-fn film_source_line(app: &mut LccApp, ui: &egui::Ui, head: Rect, shown: usize, t: &Tokens) {
+fn film_source_line(app: &mut LccApp, ui: &egui::Ui, head: Rect, shown: usize, location_filter: bool, t: &Tokens) {
     if head.height() < 8.0 || head.width() < 40.0 {
         return;
     }
-    let filtering = app.session.filter != Default::default();
+    let filtering = location_filter || app.session.filter != Default::default();
     let count = super::chips::count_text(shown, app.session.source_total(), filtering);
     let name = app.session.active().and_then(|id| app.session.catalog.photo(id)).map(|p| p.file_name.clone());
     let source = crate::i18n::source_title(&app.session);
@@ -5254,16 +5254,25 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let t = Tokens::get(ui.ctx());
     ui.painter().rect_filled(r, 0.0, t.canvas);
     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 4.0)), 0.0, Color32::from_gray(0x20));
-    let ids = app.session.visible_cloned();
+    // in the Map module the strip shows the photos passing its Location Filter (fork #783)
+    let map_filter = (app.ui.module == crate::module::ModuleId::Map && app.map.filter != lcc_engine::cmd::map::LocationFilter::All)
+        .then(|| app.map.filter.clone());
+    let ids = if map_filter.is_some() { app.map.film_ids(&mut app.session) } else { app.session.visible_cloned() };
     let active = app.session.selection.active;
     // Lightroom Classic's source line above the strip: source, count, selection, active file name
     let head = Rect::from_min_max(pos2(r.left(), r.top() + 4.0), pos2(r.right(), (r.top() + 4.0 + FILM_HEAD_H).min(r.bottom())));
-    film_source_line(app, ui, head, ids.len(), &t);
+    film_source_line(app, ui, head, ids.len(), map_filter.is_some(), &t);
     let r = Rect::from_min_max(pos2(r.left(), head.bottom()), r.max);
     let cell_w = 120.0;
     let ppp = ui.ctx().pixels_per_point();
     if ids.is_empty() {
-        let why = if app.session.filter != Default::default() { "No photos match the filters (View → Clear Filters)" } else { "No photos" };
+        let why = if map_filter.is_some() {
+            "No photos match the Location Filter"
+        } else if app.session.filter != Default::default() {
+            "No photos match the filters (View → Clear Filters)"
+        } else {
+            "No photos"
+        };
         ui.painter().text(r.center(), Align2::CENTER_CENTER, why, t.font(12.5), t.text_dim);
         return;
     }
