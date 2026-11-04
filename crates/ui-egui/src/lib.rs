@@ -318,6 +318,8 @@ mod tests_rating;
 #[cfg(test)]
 mod tests_recheck;
 #[cfg(test)]
+mod tests_remote_render;
+#[cfg(test)]
 mod tests_rename_person;
 #[cfg(test)]
 mod tests_render_storms;

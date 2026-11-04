@@ -676,7 +676,7 @@ impl Backend for OtherMachine {
 }
 
 /// `render_photo` / `render_preview` failed over `--connect` to another machine with "cannot read
-/// rendered image /tmp/lightcraft-mcp-…-render.png": the app wrote the temp file on its own disk.
+/// rendered image /tmp/<binary>-mcp-…-render.png": the app wrote the temp file on its own disk.
 #[test]
 fn render_photo_works_against_an_app_on_another_machine() {
     let mut b = OtherMachine { app: Headless::demo(), old_app: false };
