@@ -1442,6 +1442,17 @@ fn rating_exactly_or_at_most_zero_shows_the_unrated_photos() {
     assert!(crate::filter_chips(&s.filter, &s.catalog).is_empty());
 }
 
+/// Upstream #3433: a smart album of rated photos, viewed with "= no stars", saves "= 0" rather than the album's own stars.
+#[test]
+fn smart_album_view_keeps_the_rating_operator_of_the_filter_bar() {
+    let mut s = demo();
+    let r = s.execute("album.createSmart", &json!({"name": "Rated", "rules": {"rating": 3}})).unwrap();
+    s.execute("library.source", &json!({"kind": "album", "id": r["id"]})).unwrap();
+    s.execute("library.filter", &json!({"rating": 0, "ratingOp": "exactly"})).unwrap();
+    let saved = s.view_rules();
+    assert_eq!((saved.rating, saved.rating_op), (0, lcc_catalog::RatingOp::Exactly));
+}
+
 #[test]
 fn find_similar_values_stay_within_zero_and_one() {
     let mut s = demo();
