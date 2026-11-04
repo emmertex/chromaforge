@@ -29,6 +29,8 @@ pub const LAYER: &str = "settings-screen";
 /// From this width (points) the rail always shows the sections' names.
 pub const ROOMY: f32 = 640.0;
 const HEADER_H: f32 = 56.0;
+/// Room for the macOS window controls at the window's top-left, as the top bar leaves it.
+const WINDOW_CONTROLS_ROOM: f32 = 78.0;
 const RAIL_WIDE: f32 = 220.0;
 const RAIL_NARROW: f32 = 60.0;
 const ITEM_H: f32 = 44.0;
@@ -211,7 +213,11 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
         ui.painter().rect_filled(bg, 0.0, t.chrome);
         // the header: ‹ (Back), the title, what Back does
         let header = Rect::from_min_size(bg.min, vec2(bg.width(), HEADER_H));
-        let b = Rect::from_min_size(pos2(header.left() + 10.0, header.center().y - 18.0), Vec2::splat(36.0));
+        // Settings covers the whole window, so on macOS the window's close, minimise and zoom
+        // buttons sit over its top-left corner: Back starts to their right, where the top bar
+        // puts its first button (fork #793); in macOS full screen they are gone and it keeps the corner.
+        let left = if app.integrated_titlebar && !app.window_is_fullscreen { WINDOW_CONTROLS_ROOM } else { 10.0 };
+        let b = Rect::from_min_size(pos2(header.left() + left, header.center().y - 18.0), Vec2::splat(36.0));
         let resp = ui.interact(b, ui.id().with("settings-back"), Sense::click());
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::tr("Back")));
         register(ui.ctx(), "settings:back", b);

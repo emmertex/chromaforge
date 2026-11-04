@@ -42,3 +42,32 @@ fn settings_reopens_on_the_last_section_and_ctrl_tab_steps_sections() {
     h.step();
     assert_eq!(open_tab(&h), next, "Settings… opens where it was left");
 }
+
+fn back_button(h: &Headless) -> egui::Rect {
+    h.app.widgets.iter().find(|(w, _)| w == "settings:back").map(|(_, r)| *r).unwrap_or_else(|| panic!("no settings:back widget"))
+}
+
+/// Fork #793: on macOS the window's close, minimise and zoom buttons sit over the top-left corner
+/// of the window, so Settings' Back button starts to their right, as the top bar's first button
+/// does; in macOS full screen they are gone and it keeps the corner, as on other platforms.
+#[test]
+fn settings_back_button_clears_the_macos_window_controls() {
+    let app = LccApp::new(lcc_engine::Session::new(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+    h.settle(Duration::from_secs(60));
+    assert_eq!(h.request("engine.execute", json!({"command": "app.settings", "params": {}}), T)["ok"], true);
+    h.step();
+    let plain = back_button(&h);
+    h.app.integrated_titlebar = true;
+    h.step();
+    let under_controls = back_button(&h);
+    assert!(under_controls.left() >= 78.0, "right of the window controls: {under_controls:?}");
+    assert_eq!(under_controls.top(), plain.top(), "same row");
+    h.app.window_is_fullscreen = true;
+    h.step();
+    assert_eq!(back_button(&h), plain, "macOS full screen hides the window controls");
+    h.app.integrated_titlebar = false;
+    h.app.window_is_fullscreen = false;
+    h.step();
+    assert_eq!(back_button(&h), plain, "other platforms keep the corner");
+}
