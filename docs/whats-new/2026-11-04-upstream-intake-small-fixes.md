@@ -5,3 +5,6 @@
 - GPU compute devices now honour wgpu's environment variables, such as `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER` on WSL2.
 - Search values for `edited:`, `copy:`, `virtual:` and `video:` accept only yes/no or true/false; anything else matches nothing instead of behaving like "no".
 - Edit In on a photo whose earlier edit copy is unchanged opens that copy instead of failing and leaving a stray file.
+- The log file can no longer be given fake records by a file name or message containing line breaks.
+- Place-name downloads and XMP files with absurd contents (huge dump files, thousands of namespace declarations) are refused instead of slowing the app down.
+- A download whose secure connection is cut short is reported as an error instead of being treated as complete.
