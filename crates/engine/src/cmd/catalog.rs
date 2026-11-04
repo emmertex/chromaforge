@@ -195,10 +195,10 @@ pub fn specs() -> Vec<CommandSpec> {
             on_disk,
             settings
         ),
-        cmd!(query "catalog.backup", "Back Up Catalog", ["File", "Catalog"], None, "{dir?} — checkpoint, copy the catalog into <dir or backup folder>/<time>/, test the copy; old backups pruned → {backup}", on_disk, backup),
+        cmd!(query "catalog.backup", "Back Up Catalog", [], None, "{dir?} — checkpoint, copy the catalog into <dir or backup folder>/<time>/, test the copy; old backups pruned → {backup}", on_disk, backup),
         cmd!(query "catalog.backupIfDue", "Back Up Catalog If Due", [], None, "{} — the exit-time backup: only when the schedule says so → {backup: path|null}", always, backup_if_due),
-        cmd!(query "catalog.checkIntegrity", "Test Catalog Integrity", ["File", "Catalog"], None, "{} → {ok, storeOk, storedPhotos, photos, danglingRefs}", on_disk, check),
-        cmd!(query "catalog.optimize", "Optimize Catalog", ["File", "Catalog"], None, "{} — rewrite the store, rebuild indexes, compact → {bytesBefore, bytesAfter, ms}", on_disk, optimize),
+        cmd!(query "catalog.checkIntegrity", "Test Library Integrity", ["File", "Libraries"], None, "{} → {ok, storeOk, storedPhotos, photos, danglingRefs}", on_disk, check),
+        cmd!(query "catalog.optimize", "Optimize Catalog", [], None, "{} — rewrite the store, rebuild indexes, compact → {bytesBefore, bytesAfter, ms}", on_disk, optimize),
         cmd!(
             query "catalog.export",
             "Export as Catalog",

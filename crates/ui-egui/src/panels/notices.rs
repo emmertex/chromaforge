@@ -195,7 +195,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     if let Some(text) = app.notices.first().cloned() {
         let buttons = [("noticeOk", "OK", Choice::Ok)];
-        if window(ctx, "settings-notice", "Settings file problem", &text, &buttons).is_some() {
+        // an upgrade is news, not a problem: don't title it like one
+        let title = if text.starts_with(lcc_engine::library::UPGRADE_NOTICE_START) { "Library upgraded" } else { "Settings file problem" };
+        if window(ctx, "settings-notice", title, &text, &buttons).is_some() {
             app.notices.remove(0);
         }
     }

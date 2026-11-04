@@ -65,7 +65,14 @@ const SECTIONS: &[Section] = &[
         label: "Editing",
         icon: Icon::Sliders,
         tabs: &["denoise", "faces", "profiles", "genfill"],
-        words: "ai denoise model faces people recognition profiles hide camera body serial generative fill openai service api key consent",
+        words: "ai denoise faces people recognition profiles hide camera body serial generative fill openai service api key consent",
+    },
+    Section {
+        key: "ai",
+        label: "AI Models",
+        icon: Icon::Brush,
+        tabs: &["ai"],
+        words: "ai models download sam sam3 sam2 eomt birefnet mediapipe denoise faces recognition masks object describe subject sky landscape people folder location licence",
     },
     Section {
         key: "display",

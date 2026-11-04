@@ -362,7 +362,7 @@ fn needs_model(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, top: f32) {
     let b = Rect::from_min_max(pos2(r.right() - 176.0, r.top() + 4.0), pos2(r.right() - 6.0, r.bottom() - 4.0));
     register(ui.ctx(), "eyes:getModel", b);
     if ui.put(b, egui::Button::new(crate::i18n::tr("Get the AI Model…")).small()).clicked() {
-        app.ui.dialog = Some(crate::state::Dialog::AiModels { error: None });
+        app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "ai".into() });
     }
 }
 

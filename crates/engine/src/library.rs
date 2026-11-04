@@ -1427,10 +1427,13 @@ impl Session {
 /// refusing would lock the user out — but the user must learn that a second program could open it.
 /// What an upgrade of the library's catalog did and how to go back (`None` when it wasn't
 /// upgraded, or no copy was kept: a new or in-memory library).
+pub const UPGRADE_NOTICE_START: &str = "This library's catalog was upgraded";
+
+/// See [`UPGRADE_NOTICE_START`]: the text always begins with it, so the UI can title it as news, not a problem.
 fn upgrade_notice(report: &LoadReport) -> Option<String> {
     let (from, kept) = (report.upgraded_from?, report.upgrade_backup.as_ref()?);
     Some(format!(
-        "This library's catalog was upgraded from format v{from} to v{}, so older versions of the app can't open the library \
+        "{UPGRADE_NOTICE_START} from format v{from} to v{}, so older versions of the app can't open the library \
          itself any more. A copy of it as it was is kept, unchanged, in {}: to go back to an older version, quit, copy the files \
          in that folder over the library's own (or open the folder in the older version). Changes made since the upgrade are \
          not in the copy.",

@@ -139,7 +139,7 @@ fn missing_model(app: &LccApp) -> Option<&'static str> {
 /// Offer the missing models (the AI Models dialog, which names their size and licence).
 fn offer_models(app: &mut LccApp) {
     if app.ui.dialog.is_none() {
-        app.ui.dialog = Some(crate::state::Dialog::AiModels { error: None });
+        app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "ai".into() });
     }
 }
 

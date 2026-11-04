@@ -279,10 +279,23 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     } else if on && app.caches.faces_active {
         scan_progress(app, ui, t);
     }
+    gpu_section(app, ui, t, &list["gpu"]);
+    hint(ui, t, "The face models are downloaded and chosen under Settings ▸ AI Models.");
+    if ui.link(crate::i18n::tr("Open AI Models")).clicked() {
+        let _ = app.run("app.settings", json!({"tab": "ai"}));
+    }
+}
+
+/// The face detector and the recognition models, with their downloads (Settings ▸ AI Models).
+pub fn models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    let list = models(app, ui.ctx());
+    if list["dir"].is_null() {
+        return;
+    }
+    let runtime = list["runtime"].as_bool() == Some(true);
     let all: Vec<Value> = list["models"].as_array().cloned().unwrap_or_default();
     let downloads =
         app.session.execute("faces.models.downloads", &json!({})).map(|v| v["downloads"].as_array().cloned().unwrap_or_default()).unwrap_or_default();
-    gpu_section(app, ui, t, &list["gpu"]);
     heading(ui, t, "Face detector");
     // faces are found by the open MediaPipe face model (the one Retouch uses), not by a model of this list
     let face_model = app.session.segmenter.open_model_installed("face");
@@ -562,7 +575,7 @@ pub fn open_download_dialog(app: &mut LccApp, m: &Value) {
 pub fn offer_detector(app: &mut LccApp) {
     // the face model lives with the other AI models: their dialog names its size and licence first
     if lcc_engine::segment::Segmenter::AVAILABLE && !app.session.segmenter.open_model_installed("face") {
-        app.ui.dialog = Some(crate::state::Dialog::AiModels { error: None });
+        app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "ai".into() });
     }
 }
 
@@ -580,7 +593,7 @@ pub fn install(app: &mut LccApp, path: &str, info: &Value, accepted: bool) -> Re
         return Err("Tick the box to accept the model's terms first".into());
     }
     app.caches.faces_epoch += 1;
-    let back_to_settings = |app: &mut LccApp| app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "faces".into() });
+    let back_to_settings = |app: &mut LccApp| app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "ai".into() });
     if let Some(id) = info["download"].as_str() {
         let r = app.run("faces.models.download", json!({"id": id, "acknowledged": true}));
         if r.is_ok() {
