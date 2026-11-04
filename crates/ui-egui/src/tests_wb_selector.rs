@@ -71,3 +71,40 @@ fn wb_selector_shows_a_loupe_while_hovering() {
     let wb = h.app.session.catalog.photo(id).map(|p| p.develop.wb.mode);
     assert_eq!(wb, Some(lcc_develop::WbMode::Custom));
 }
+
+/// OneSlips (test notes 2026-10-25 note 13): W again puts the selector away without sampling, and
+/// while it is armed the mouse wheel steps the sample's size instead of zooming.
+#[test]
+fn w_toggles_the_selector_and_the_wheel_sizes_its_sample() {
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+    let id = h.app.session.visible_cloned()[2];
+    h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [id.0], "active": id.0}}), T);
+    h.app.ui.view = ViewMode::Detail;
+    h.settle(SETTLE);
+    let wb = |h: &Headless| h.app.session.catalog.photo(id).map(|p| (p.develop.wb.temp, p.develop.wb.tint));
+    let before = wb(&h);
+    h.request("ui.key", json!({"key": "w"}), T);
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "wbPicker", "W arms the selector");
+    h.request("ui.key", json!({"key": "w"}), T);
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "W again puts it away");
+    assert_eq!(wb(&h), before, "without sampling");
+    h.request("ui.key", json!({"key": "w"}), T);
+    h.settle(SETTLE);
+    let img = h.app.image_rect.expect("photo on screen");
+    h.app.synthetic.push(egui::Event::PointerMoved(img.center()));
+    h.settle(SETTLE);
+    let (size, zoom) = (h.app.ui.wb_sample, h.app.ui.zoom);
+    h.app.synthetic.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, 1.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Default::default(),
+    });
+    h.settle(SETTLE);
+    assert_ne!(h.app.ui.wb_sample, size, "the wheel changes the sample");
+    assert_eq!(h.app.ui.zoom, zoom, "and doesn't zoom");
+    assert_eq!(h.app.ui.tool, "wbPicker", "still armed");
+}

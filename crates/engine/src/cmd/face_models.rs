@@ -143,6 +143,8 @@ fn row(s: &Session, m: &ModelManifest, installed: bool, selected: bool, accepted
         "installed": installed,
         "selected": selected,
         "accepted": accepted,
+        // known but no longer used (YuNet): listed only while installed, so it can be removed
+        "retired": known::retired(&m.id),
     })
 }
 
@@ -187,6 +189,9 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
     let mut models: Vec<Value> = Vec::new();
     for k in known::all() {
         let found = on_disk(&k.id);
+        if known::retired(&k.id) && found.is_none() {
+            continue;
+        }
         models.push(row(s, &k, found.is_some(), settings.embedder.as_deref() == Some(k.id.as_str()), found.map_or(&Value::Null, |f| &f.accepted)));
     }
     // the user's own catalog
@@ -264,8 +269,14 @@ fn install_file(s: &mut Session, c: &str, src: &Path, ins: Inspection, acknowled
         Suggestion::Known(m) | Suggestion::Draft { manifest: m, .. } => m,
         Suggestion::Unsupported(why) => return Err(bad(c, format!("this model cannot be used yet: {why}"))),
     };
-    if !matches!(m.role, Role::Embedder | Role::Detector) {
-        return Err(bad(c, "only face detection and recognition models can be installed"));
+    if m.role == Role::Detector {
+        return Err(bad(
+            c,
+            "Faces are found with the open MediaPipe face model (AI Models, or `ai.models.download {\"id\": \"face\"}`): face detectors can't be added",
+        ));
+    }
+    if m.role != Role::Embedder {
+        return Err(bad(c, "only face recognition models can be installed"));
     }
     manifest::validate(&m).map_err(|e| bad(c, e.to_string()))?;
     if !acknowledged {

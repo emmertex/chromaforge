@@ -145,7 +145,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     };
     let img = Rect::from_center_size(inner.center(), vec2(iw, ih));
     match app.renderer.thumb(id) {
-        Some(tex) => p.image(tex.tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE),
+        Some(tex) => p.image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE),
         None => p.rect_filled(img, 0.0, Color32::from_gray(40)),
     };
     register(ui.ctx(), "navigator:image", img);

@@ -112,8 +112,14 @@ fn prefs(s: &mut Session, p: &Value) -> Result<Value> {
                 };
             }
         }
+        if let Some(v) = i.get("constrainCrop").and_then(Value::as_bool) {
+            d.crop_unconstrained = !v;
+        }
         if let Some(v) = i.get("showOnCard").and_then(Value::as_bool) {
             d.show_on_card = v;
+        }
+        if let Some(v) = i.get("removeDust").and_then(Value::as_bool) {
+            d.remove_dust = v;
         }
         if let Some(v) = i.get("importDuplicates").and_then(Value::as_bool) {
             d.import_duplicates = v;
@@ -254,7 +260,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Library Preferences",
             [],
             None,
-            "{import?: {rawPreset?: presetId|\"default\", otherPreset?: presetId|\"default\", perCamera?: bool, cameras?: [{camera: \"Make Model\", preset: presetId|null}], copyright?: text, creator?: text (given to imported photos without one), showOnCard?: bool (open the import review when a camera or card is connected), denoiseAboveIso?: ISO | 0 | null (AI Denoise on for new raw photos shot at this ISO or above, their pictures made in the background; 0 / null = off), importDuplicates?: bool (Synchronize Folder brings in files whose content a photo already has, as photos of their own: \"Don't import files already in the library\" unticked, as the dialog last left it; off by default; `folder.synchronize` takes it unless given `importDuplicates`)}, camera?: {camera, preset?, remove?: bool}, cameraDefault?: {camera: \"Make Model\"|\"*\" (the default camera profile photos of that camera start from when they choose none, ahead of the camera's active imported profile and its calibration's default look; \"*\" = every camera), profile?: \"lc\" (the app's own colour) | dcpId (camera.listDcp) | calId | null (remove the entry)}, cacheMb?: n (0 = default), forgetLocalDays?: n (forget untouched Local photos of folders not browsed for n days; 0 = never)} — develop defaults applied on import (raws / other images / per camera), the default camera profile per camera model and the thumbnail cache size, saved with the library → {xmp, import, cameraDefaults, cacheMb, forgetLocalDays, persistent}",
+            "{import?: {rawPreset?: presetId|\"default\", otherPreset?: presetId|\"default\", perCamera?: bool, cameras?: [{camera: \"Make Model\", preset: presetId|null}], copyright?: text, creator?: text (given to imported photos without one), showOnCard?: bool (open the import review when a camera or card is connected), constrainCrop?: bool (new photos start with Constrain Crop on; default true), denoiseAboveIso?: ISO | 0 | null (AI Denoise on for new raw photos shot at this ISO or above, their pictures made in the background; 0 / null = off), importDuplicates?: bool (Synchronize Folder brings in files whose content a photo already has, as photos of their own: \"Don't import files already in the library\" unticked, as the dialog last left it; off by default; `folder.synchronize` takes it unless given `importDuplicates`)}, camera?: {camera, preset?, remove?: bool}, cameraDefault?: {camera: \"Make Model\"|\"*\" (the default camera profile photos of that camera start from when they choose none, ahead of the camera's active imported profile and its calibration's default look; \"*\" = every camera), profile?: \"lc\" (the app's own colour) | dcpId (camera.listDcp) | calId | null (remove the entry)}, cacheMb?: n (0 = default), forgetLocalDays?: n (forget untouched Local photos of folders not browsed for n days; 0 = never)} — develop defaults applied on import (raws / other images / per camera), the default camera profile per camera model and the thumbnail cache size, saved with the library → {xmp, import, cameraDefaults, cacheMb, forgetLocalDays, persistent}",
             always,
             prefs
         ),

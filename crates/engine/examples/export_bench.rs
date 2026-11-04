@@ -1,81 +1,137 @@
-//! Single-photo export benchmark (median and minimum of N runs):
-//! `cargo run --release -p lcc-engine --example export_bench -- corpus/raw/arw-sony-a7m3-compressed.arw`
+//! A wedding-style export benchmark: full-size HDR gain-map JPEGs of the raws given, each edited
+//! like a real wedding photo (tone, clarity, noise reduction, sharpening, a sky gradient, a subject radial and a
+//! vignetting radial), as the Export dialog runs them (several
+//! photos side by side). Prints photos per minute.
 //!
-//! Imports the files given and runs the export path the app, CLI and MCP share
-//! ([`lcc_engine::export::export_photo`]: decode the original, render it full size, encode)
-//! once per file per run, forgetting the decoded original between runs so each export reads and
-//! decodes it like a batch export does. `N=9` runs (default), `OPT='{"format":"png"}'` for other
-//! export options (JSON as `app.export` takes them), `<PREFIX>_GPU=0` for the CPU pipeline,
-//! `PHASES=1` to time render and encode separately, `OUT=dir` to write each file's export there
-//! (for byte comparisons between builds).
+//! `cargo run --release -p lcc-engine --example export_bench -- [--cpu] [--sdr] [--plain]
+//! [--lanes N] [--runs N] [--gpu-jobs N] [--gpu-mb MB] [--long-edge PX] [--limit-kb KB] FILES…`
+//!
+//! - `--cpu`: no GPU (as after a device failure); `--mix`: photos the busy GPU has no turn for
+//!   render on the processor; `--sdr`: plain JPEGs, no gain map; `--plain`:
+//!   no masks; `--lanes N`: photos side by side (default: the app's choice);
+//!   `--gpu-jobs N`, `--gpu-mb MB`: the batch limits at the GPU; `--long-edge PX`, `--limit-kb KB`:
+//!   resize and "Limit file size" as in the Export dialog.
+//! - `<PREFIX>_PROFILE=1` prints each render's stages on stderr.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::time::Instant;
 
-use lcc_engine::Session;
+use lcc_develop::DevelopSettings;
 use lcc_engine::catalog::PhotoId;
-use lcc_engine::export::{ExportOptions, encode_rendered, export_metadata, export_photo};
+use lcc_engine::export::{Destination, ExportOptions, export_batch};
 
-fn stats(mut v: Vec<f64>) -> (f64, f64) {
-    v.sort_by(f64::total_cmp);
-    (v[v.len() / 2], v[0])
+fn wedding_settings(plain: bool, hdr: bool) -> DevelopSettings {
+    lcc_engine::machine_test::bench_settings(plain, hdr)
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    assert!(!args.is_empty(), "usage: export_bench FILE...");
-    let n: usize = std::env::var("N").ok().and_then(|v| v.parse().ok()).unwrap_or(9).max(1);
-    let opt: serde_json::Value =
-        std::env::var("OPT").ok().map(|s| serde_json::from_str(&s).expect("OPT is JSON")).unwrap_or_else(|| serde_json::json!({}));
-    let o = ExportOptions::from_params(&opt).expect("export options");
-    let mut s = Session::new().with_fs();
-    let paths: Vec<String> = args.iter().map(|p| std::fs::canonicalize(p).expect("input file").to_string_lossy().to_string()).collect();
-    let r = s.execute("library.import", &serde_json::json!({"paths": paths})).expect("import");
-    let ids: Vec<PhotoId> = r["imported"].as_array().expect("ids").iter().filter_map(|v| v.as_u64()).map(PhotoId).collect();
-    assert_eq!(ids.len(), args.len(), "every file imports");
-    println!("{} file(s), {:?}, {n} runs, gpu {}", ids.len(), o.format, lcc_engine::gpu::available());
-    let mut times = Vec::new();
-    for i in 0..=n {
-        let t = Instant::now();
-        for (k, &id) in ids.iter().enumerate() {
-            let e = export_photo(&mut s, id, &o, k + 1).expect("export");
-            if i == 0
-                && let Some(dir) = std::env::var_os("OUT")
-            {
-                std::fs::write(std::path::Path::new(&dir).join(&e.file_name), &e.bytes).expect("write");
-                println!("  {} {}×{} {} bytes", e.file_name, e.width, e.height, e.bytes.len());
-            }
-            s.media.forget(id);
-        }
-        // run 0 warms up (GPU device, allocator, page cache)
-        if i > 0 {
-            times.push(t.elapsed().as_secs_f64() * 1e3);
-        }
+    let flag = |f: &str| args.iter().any(|a| a == f);
+    let value = |f: &str| args.iter().position(|a| a == f).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok());
+    let files: Vec<String> = {
+        let mut skip = false;
+        args.iter()
+            .filter(|a| {
+                let keep = !skip && !a.starts_with("--");
+                skip = matches!(a.as_str(), "--lanes" | "--runs" | "--gpu-jobs" | "--gpu-mb" | "--long-edge" | "--limit-kb");
+                keep
+            })
+            .cloned()
+            .collect()
+    };
+    if files.is_empty() && !flag("--test-machine") {
+        eprintln!(
+            "usage: export_bench [--cpu] [--sdr] [--plain] [--lanes N] [--runs N] [--gpu-jobs N] [--gpu-mb MB] FILES… | --test-machine [--quick] [FILES…]"
+        );
+        std::process::exit(2);
     }
-    let (med, min) = stats(times.clone());
-    println!("export: median {med:.1} ms, min {min:.1} ms  (runs: {})", times.iter().map(|t| format!("{t:.0}")).collect::<Vec<_>>().join(" "));
-    if std::env::var_os("PHASES").is_none() {
+    if let Some(n) = value("--lanes") {
+        lcc_engine::export::set_export_lanes(Some(n));
+    }
+    if flag("--test-machine") {
+        // "Test my machine" as the app runs it, with these files (none: the demo photos)
+        let t = Instant::now();
+        let o = lcc_engine::machine_test::TestOptions { paths: files.clone(), quick: flag("--quick"), ..Default::default() };
+        let r = lcc_engine::machine_test::run_test(&o, &mut |d, n, what| {
+            eprintln!("  {d}/{n} {what} ({:.0} s)", t.elapsed().as_secs_f64());
+            true
+        })
+        .expect("test");
+        for run in &r.runs {
+            println!(
+                "  {} lanes, {}: {:.1} photos/min ({} photos in {:.1} s)",
+                run.lanes,
+                if run.gpu { "GPU" } else { "CPU" },
+                run.photos_per_min,
+                run.photos,
+                run.seconds
+            );
+        }
+        println!("{}\n(test took {:.0} s)", r.summary, t.elapsed().as_secs_f64());
         return;
     }
-    let (mut render, mut encode) = (Vec::new(), Vec::new());
-    for _ in 0..n {
-        let (mut tr, mut te) = (0.0, 0.0);
-        for &id in &ids {
-            let p = s.catalog.photo(id).expect("photo").clone();
-            let (w, h) = lcc_engine::export::output_size(&p, &o);
-            let meta = export_metadata(&p, &s.catalog, &o);
-            let job = s.export_job(id, w, h, o.effective_space(), o.effective_depth()).expect("job");
-            let t = Instant::now();
-            let r = job.run().rendered.expect("render");
-            tr += t.elapsed().as_secs_f64() * 1e3;
-            let t = Instant::now();
-            std::hint::black_box(encode_rendered(&r, &o, meta.as_ref()).expect("encode"));
-            te += t.elapsed().as_secs_f64() * 1e3;
-            s.media.forget(id);
-        }
-        render.push(tr);
-        encode.push(te);
+    let gpu = !flag("--cpu");
+    lcc_engine::export::set_export_mix(flag("--mix"));
+    lcc_engine::gpu::set_enabled(gpu);
+    let hdr = !flag("--sdr");
+    let mut session = lcc_engine::Session::new().with_fs();
+    let r = session.execute("library.import", &serde_json::json!({"paths": files})).expect("import");
+    let ids: Vec<_> = r["imported"].as_array().expect("ids").iter().filter_map(|v| v.as_u64()).map(PhotoId).collect();
+    let settings = wedding_settings(flag("--plain"), hdr);
+    for &id in &ids {
+        session.set_develop(id, settings.clone(), "bench").expect("settings");
     }
-    let (rm, rn) = stats(render);
-    let (em, en) = stats(encode);
-    println!("  decode+render: median {rm:.1} ms, min {rn:.1} ms");
-    println!("  encode:        median {em:.1} ms, min {en:.1} ms");
+    let mut o = ExportOptions { hdr, quality: 90, ..ExportOptions::default() };
+    if let Some(edge) = value("--long-edge") {
+        o.resize = Some(lcc_engine::export::Resize::long_edge(edge as u32));
+    }
+    o.limit_kb = value("--limit-kb").map(|kb| kb as u32);
+    if value("--gpu-jobs").is_some() || value("--gpu-mb").is_some() {
+        lcc_engine::gpu::set_batch_limits(value("--gpu-mb").map(|mb| (mb as u64) << 20), value("--gpu-jobs"));
+    }
+    let lanes = lcc_engine::export::export_parallelism(ids.len());
+    println!(
+        "{} photos, {lanes} lanes, {}, {}, {}, memory budget {} MB",
+        ids.len(),
+        if gpu { lcc_engine::gpu::adapter_name().unwrap_or_else(|| "no GPU".into()) } else { "CPU only".into() },
+        if hdr { "HDR gain map" } else { "SDR" },
+        if flag("--plain") { "no masks" } else { "3 masks" },
+        lcc_engine::memory::budget() >> 20
+    );
+    for run in 0..value("--runs").unwrap_or(1) {
+        if run == 1 {
+            let b = lcc_engine::gpu::batch_usage();
+            println!(
+                "gpu memory {:?} MB, batch limit {} MB / {} jobs, waits {} ({} ms)",
+                lcc_engine::gpu::adapter_memory().map(|m| m >> 20),
+                b.limit_bytes >> 20,
+                b.limit_jobs,
+                b.waits,
+                b.waited_ms
+            );
+        }
+        let t = Instant::now();
+        let mut fell_back = 0;
+        let files = export_batch(&mut session, &ids, &o, &Destination::default(), &mut |_, _| Ok(()), &|_| false).expect("export");
+        for f in &files {
+            if let Some(why) = f.get("gpuFallback") {
+                fell_back += 1;
+                eprintln!("  gpu fallback: {why}");
+            }
+            if let Some(e) = f.get("error") {
+                eprintln!("  error: {e}");
+            }
+        }
+        let secs = t.elapsed().as_secs_f64();
+        println!(
+            "run {run}: {} files in {secs:.1} s = {:.1} photos/min ({:.2} s each){}",
+            files.len(),
+            files.len() as f64 * 60.0 / secs,
+            secs / files.len().max(1) as f64,
+            if fell_back > 0 { format!(", {fell_back} fell back to the CPU") } else { String::new() }
+        );
+        for &id in &ids {
+            session.media.forget(id);
+        }
+    }
 }

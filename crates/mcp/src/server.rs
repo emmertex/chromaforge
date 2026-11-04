@@ -202,7 +202,7 @@ impl Server {
                 resource(COMMANDS_URI, "commands", "Command catalog", "Every command (same as command_list)"),
                 resource(LIBRARY_URI, "library", "Library state", "Current source, filter, sort, selection, active photo/mask and undo/redo labels (library.state)"),
                 resource(PHOTOS_URI, "photos", "Photos in view", "The photos in the current view with ids, ratings, flags and metadata (catalog.query)"),
-                resource(PHOTO_URI, "active-photo", "Active photo", "Everything about the active photo: file, metadata, develop settings, albums, history (photo.inspect)"),
+                resource(PHOTO_URI, "active-photo", "Active photo", "Everything about the active photo: file, metadata, develop settings, collections, history (photo.inspect)"),
                 resource(DEVELOP_URI, "develop", "Develop settings", "The active photo's full develop settings JSON (develop.get)"),
                 resource(CONTROLS_URI, "controls", "Develop controls", "Every develop slider with id, range, default and current value (develop.controls)"),
             ]})),

@@ -6,7 +6,7 @@ verified: 0.7.1
 
 Chromaforge is a photo library and raw developer that runs on your own computer. It is an open-source alternative to Adobe Lightroom, written in Rust. It is a fork of [LightCraft](https://github.com/storytold/lightcraft).
 
-You import photos, sort them with ratings, flags and albums, and edit them without touching the originals. It reads raw files from Canon, Sony, Nikon, Fujifilm, Panasonic, Leica, Pentax and Olympus cameras, and DNG. There is no account, no cloud, no telemetry and no subscription. It runs on Windows, macOS and Linux, and in a web browser. Chromaforge is in alpha, so expect rough edges.
+You import photos, sort them with ratings, flags and collections, and edit them without touching the originals. It reads raw files from Canon, Sony, Nikon, Fujifilm, Panasonic, Leica, Pentax and Olympus cameras, and DNG. There is no account, no cloud, no telemetry and no subscription. It runs on Windows, macOS and Linux, and in a web browser. Chromaforge is in alpha, so expect rough edges.
 
 ## Start here
 

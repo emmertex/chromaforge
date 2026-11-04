@@ -86,11 +86,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.detail", "Detail View", Some("D"), "View"),
     ("view.compare", "Compare", Some("Shift+C"), "View"),
     ("view.survey", "Survey", Some("N"), "View"),
+    ("view.eyeFocus", "Eye Focus Strip", None, "View>Loupe Info"),
     ("view.people", "People", None, "View"),
     ("view.person", "Show Person", None, ""),
     ("view.faceBoxes", "Face Boxes", None, "View>Loupe Info"),
     ("view.focusPoint", "Show Focus Point", Some("Alt+F"), "View>Loupe Info"),
     ("view.zoomToFocus", "Zoom to Focus Point", None, "View>Loupe Info"),
+    ("view.spaceZoomsTo", "Space Zooms To", None, ""),
     ("view.reference", "Reference View", Some("Shift+R"), "View>Before/After"),
     ("photo.setReference", "Set as Reference Photo", None, ""),
     ("compare.swap", "Swap Compare Photos", None, "View"),
@@ -196,6 +198,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("section.detail", "Detail", Some("Cmd+5"), "Window>Edit Sections"),
     ("section.optics", "Lens Corrections", Some("Cmd+6"), "Window>Edit Sections"),
     ("section.calibration", "Calibration", Some("Cmd+9"), "Window>Edit Sections"),
+    ("section.retouch", "Retouch", None, "Window>Edit Sections"),
     // {on?}; no params toggles. Opening one Edit section closes the others.
     ("view.soloSections", "Solo Mode", None, "Window>Edit Sections"),
     ("tool.brush", "Brush", Some("B"), "Window>Tools"),
@@ -203,14 +206,33 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
     ("tool.none", "No Tool", None, ""),
+    // {id?, component}: the component edited on the photo (a Brush component arms the brush on it)
+    ("mask.editComponent", "Edit Mask Component", None, ""),
     // brush size / feather of the active brush (Masking brush, Remove tool and its selected spot)
     ("brush.smaller", "Decrease Brush Size", Some("["), "Window>Tools"),
+    // the brush's Erase mode; {on} sets it (a console key holds it like Alt), none toggles
+    ("brush.erase", "Erase", None, ""),
     ("brush.larger", "Increase Brush Size", Some("]"), "Window>Tools"),
     ("brush.featherLess", "Decrease Brush Feather", Some("Shift+["), "Window>Tools"),
     ("brush.featherMore", "Increase Brush Feather", Some("Shift+]"), "Window>Tools"),
     // the Masking brush's A / B presets (each keeps its own size, feather, flow and density)
     ("brush.preset", "Switch Brush A / B", None, "Window>Tools"),
     ("dialog.newAlbum", "New Collection…", Some("Cmd+N"), "Library"),
+    // the active raw photo of a ColorChecker (a second selected one: the second chart, other light)
+    ("dialog.cameraProfile", "Create Camera Profile from Color Chart…", None, "Photo>Develop Settings"),
+    // in the camera profile dialog: {id? | path?} the second chart photo; without either, the picker opens
+    ("cameraProfile.second", "Add Second Color Chart…", None, ""),
+    ("cameraProfile.removeSecond", "Remove Second Color Chart", None, ""),
+    // {allCameras?, close?}: the picker of library photos for the second chart
+    ("cameraProfile.pickSecond", "Choose Second Color Chart", None, ""),
+    // {slot?: 0 | 1}: look for the chart again / move the corners onto it / turn patch A01 a corner further
+    ("cameraProfile.find", "Find Color Chart Again", None, ""),
+    ("cameraProfile.align", "Align Corners to Color Chart", None, ""),
+    ("cameraProfile.turn", "Turn Color Chart", None, ""),
+    // {mode: fit | actual | in | out, slot?}: the chart view's zoom
+    ("cameraProfile.zoom", "Zoom Color Chart View", None, ""),
+    // {choice: replace | keepBoth | cancel, name?}: answer "a profile of that name is there"
+    ("cameraProfile.resolve", "Resolve Camera Profile Name", None, ""),
     ("dialog.newFolder", "New Collection Set…", Some("Cmd+Shift+N"), "Library"),
     ("dialog.smartAlbum", "New Smart Collection…", None, "Library"),
     ("view.photoCounts", "Show Photo Counts", None, "Window>Panels"),
@@ -253,8 +275,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.faceModel", "Add Face Model…", None, ""),
     ("dialog.newSmartAlbum", "New Smart Collection from Filter…", Some("Cmd+Alt+N"), "Library"),
     ("dialog.createPreset", "Create Preset…", Some("Cmd+Shift+P"), "Photo>Develop Settings"),
+    ("dialog.presetsManager", "Manage Presets…", None, "Photo>Develop Settings"),
     ("dialog.autoStack", "Auto-Stack by Capture Time…", None, "Photo>Stack"),
     ("dialog.copySettings", "Choose Edit Settings to Copy…", Some("Cmd+Shift+C"), "Photo>Develop Settings"),
+    // {id}: Update Preset with Current Settings, pre-ticked with what the preset holds
+    ("dialog.updatePreset", "Update Preset with Current Settings…", None, ""),
     ("dialog.pasteSettings", "Paste Selected Settings…", Some("Cmd+Shift+V"), "Photo>Develop Settings"),
     ("dialog.syncSettings", "Sync Settings…", Some("Cmd+Shift+S"), "Photo>Develop Settings"),
     ("view.focusSearch", "Find…", Some("Cmd+F"), "Library"),
@@ -281,6 +306,16 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("merge.hdrPanoramaLast", "HDR Panorama with Last Settings", None, "Photo>Photo Merge"),
     ("merge.focusStackLast", "Focus Stack with Last Settings", None, "Photo>Photo Merge"),
     ("file.addPhotos", "Import Photos…", None, "File"),
+    // the workspace tabs (Settings ▸ Import ▸ Import as a tab; OneSlips LR-IMP-WINDOW)
+    ("view.importTab", "Import Tab", None, "Window>Modules"),
+    ("view.libraryTab", "Library Tab", None, "Window>Modules"),
+    // {what?: picks|selected|all}: the Import tab's big button
+    ("import.start", "Import from the Import Tab", None, ""),
+    // {take?, previews?, copy?, moveFiles?, destination?, organize?, rename?, preset?, presets?, keywords?, metadataPreset?, album?, newAlbum?…}
+    ("import.configure", "Import Tab Settings", None, ""),
+    ("import.settings", "Show Import Tab Settings", None, ""),
+    ("import.usePreset", "Use Import Preset", None, ""),
+    ("import.saveSettings", "Save Import Preset", None, ""),
     ("file.addFolder", "Import from Folder…", None, "File"),
     // {path?, into?: open | new, name?, location?}: asks where the catalog goes unless `into` (or
     // Settings) says (#2672, `lightroom_destination`)
@@ -362,21 +397,63 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.showInFinder", "Show in Finder", Some("Cmd+R"), "Photo>File"),
     ("app.showInFolders", "Show in Folders", None, "Photo>File"),
     ("app.openSamModelFolder", "Show in File Manager", None, ""),
+    ("dialog.aiModels", "AI Models…", None, ""),
     ("dialog.rename", "Rename Photos…", Some("F2"), "Library"),
     ("dialog.labelNames", "Edit Color Label Names…", None, ""),
     ("dialog.captureTime", "Edit Capture Time…", None, "Metadata"),
     ("photo.tagFromTracklog", "Auto-Tag from Tracklog…", None, "Metadata"),
     ("app.exportPrevious", "Export with Previous", Some("Cmd+Alt+Shift+E"), "File"),
+    // control surfaces (`surface`): what their keys run, and their settings for agents
+    ("surface.maskPrevious", "Select Previous Mask", None, ""),
+    ("surface.maskNext", "Select Next Mask", None, ""),
+    ("surface.dialogConfirm", "Confirm Dialog", None, ""),
+    ("surface.dialogCancel", "Cancel Dialog", None, ""),
+    ("surface.pageNext", "Next Surface Page", None, ""),
+    ("surface.pagePrevious", "Previous Surface Page", None, ""),
+    ("surface.page", "Show Surface Page", None, ""),
+    ("surface.profile", "Control Surface Profile", None, ""),
+    ("surface.applyToSelected", "Dials Change All Selected Photos", None, ""),
+    ("surface.followContext", "Surface Pages Follow the App", None, ""),
+    ("surface.input", "Control Surface Input", None, ""),
+    ("surface.state", "Control Surface State", None, ""),
+    ("surface.settings", "Control Surface Settings", None, ""),
+    ("surface.forget", "Forget a Paired Surface", None, ""),
+    ("surface.import", "Import Control Surface Setup", None, ""),
+    ("surface.export", "Export Control Surface Layout", None, ""),
+    ("surface.plugin", "Surface Plugin Status", None, ""),
+    ("surface.installPlugin", "Install the Surface Plugin", None, ""),
+    ("surface.uninstallPlugin", "Remove the Surface Plugin", None, ""),
+    // the on-screen overlay (`panels::surface_osd`): its settings, for keys and agents
+    ("osd.settings", "Overlay Settings", None, ""),
+    ("osd.mode", "Overlay: What It Shows", None, ""),
+    ("osd.state", "Overlay State", None, ""),
 ];
 
 fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
+    app.ui.note_right();
     if app.ui.right == p && crate::docking::exposed(app, crate::docking::Panel::Tools) {
-        // Classic Develop: a tool's drawer closes back to the panels under it, as in Lightroom Classic
-        let drawer = app.ui.module == crate::module::ModuleId::Develop && p != RightPanel::Edit && p.is_edit_tool();
-        app.ui.right = if drawer { RightPanel::Edit } else { RightPanel::None };
+        // toggled off: back to exactly what the right column showed before this toggle opened it
+        // (closed when it was closed); otherwise a tool closes back to the panel shown before it
+        // (Edit's panels under a Develop drawer, as in Lightroom Classic), any other panel hides
+        let before = app.ui.toggle_return.take().and_then(|(opened, before)| (opened == p && before != p).then_some(before));
+        app.ui.right = match before {
+            // a tool opened from another tool closes back to the panel under both
+            Some(before) if p.is_tool() && before.is_tool() => app.ui.leave_tool(),
+            Some(before) => {
+                app.ui.tool_return = None;
+                before
+            }
+            None if p.is_tool() => app.ui.leave_tool(),
+            None => RightPanel::None,
+        };
+        app.ui.note_right();
         app.toast(ctx, crate::i18n::tr_format!("{name} Off", name = crate::i18n::tr(name)));
     } else {
+        // a panel hidden behind another dock tab was not on show: nothing to come back to but it
+        let before = if app.ui.right == p { RightPanel::None } else { app.ui.right };
+        app.ui.toggle_return = Some((p, before));
         app.ui.right = p;
+        app.ui.note_right();
         // one panel at a time on the right: a tool takes Presets' place, and unfolds the side
         app.ui.presets = false;
         app.ui.right_collapsed = false;
@@ -389,6 +466,10 @@ fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
         }
     }
     if p != RightPanel::Masking && app.ui.tool != "wbPicker" {
+        app.ui.tool.clear();
+    }
+    // an Edit panel picker doesn't follow into Masking, where it would claim the photo's clicks
+    if app.ui.right == RightPanel::Masking && (app.ui.tool.starts_with("tat:") || app.ui.tool == "pointColor") {
         app.ui.tool.clear();
     }
     app.end_midi_interaction();
@@ -434,9 +515,12 @@ pub(crate) fn adjust_brush(app: &mut LccApp, k: f32, df: f32) -> Value {
         app.ui.remove_feather = (app.ui.remove_feather + df).clamp(0.0, 100.0);
         json!({"size": app.ui.remove_size, "feather": app.ui.remove_feather})
     } else {
-        app.ui.brush_size = (app.ui.brush_size * k).clamp(0.002, 0.5);
-        app.ui.brush_feather = (app.ui.brush_feather + df).clamp(0.0, 100.0);
-        json!({"size": app.ui.brush_size, "feather": app.ui.brush_feather})
+        // the set in use: the eraser's while erasing; Size is a size on the screen (1..100)
+        let erase = app.ui.brush_erasing();
+        let s = app.ui.brush_set(erase);
+        app.ui.set_brush_set(erase, crate::state::BrushPreset { size: s.size * k, feather: s.feather + df, ..s });
+        let s = app.ui.brush_set(erase);
+        json!({"size": s.size, "feather": s.feather, "erase": erase})
     }
 }
 
@@ -585,6 +669,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
     if matches!(id, "ui.dock" | "ui.dock.reset") {
         return Some(crate::docking::command(app, id == "ui.dock.reset", p));
     }
+    if (id.starts_with("import.") || id.starts_with("view.") && id.ends_with("Tab"))
+        && let Some(r) = crate::import_tab::run(app, id, p)
+    {
+        return Some(r);
+    }
     if matches!(id, "library.inspectLightroom" | "library.importLightroom") {
         // the app's own context: a fresh one's repaints reach no window and its clock starts at zero
         let ctx = app.tasks.repaint.clone().unwrap_or_default();
@@ -611,6 +700,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
         });
     }
+    if id.starts_with("surface.")
+        && let Some(r) = crate::surface::command(app, id, p)
+    {
+        return Some(r);
+    }
+    if id.starts_with("osd.") {
+        return Some(crate::panels::surface_osd::command(app, id, p));
+    }
     if let Some(language) = language_from_command(id) {
         app.ui.language = language;
         // Immediately, not on the next frame: the reply and anything else run this frame
@@ -631,6 +728,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
     // and a toast set by it was long over by the app's clock: it never showed)
     let ctx = app.tasks.repaint.clone().unwrap_or_default();
     let r: Result<Value, String> = match id {
+        "view.eyeFocus" => {
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(!app.eye_focus_on());
+            app.set_eye_focus(on);
+            Ok(json!({"on": on, "where": if app.importing() { "import" } else { "library" }}))
+        }
         "view.photoGrid" => {
             app.ui.view = ViewMode::PhotoGrid;
             Ok(Value::Null)
@@ -739,6 +841,16 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             // {on?}; no params toggles. The camera's focus point (Sony, from the file) over the photo.
             app.ui.settings.focus_point = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.settings.focus_point);
             Ok(json!({"on": app.ui.settings.focus_point}))
+        }
+        "view.spaceZoomsTo" => {
+            // {to: focusPoint|eye} → {to}; it also turns Zoom to Focus Point on
+            let to = p.get("to").and_then(Value::as_str).unwrap_or_default();
+            let Some(z) = crate::state::SpaceZoom::ALL.into_iter().find(|z| z.id() == to) else {
+                return Some(Err(format!("view.spaceZoomsTo: `to` is focusPoint or eye, not `{to}`")));
+            };
+            app.ui.settings.space_zoom = z;
+            app.ui.settings.zoom_to_focus = true;
+            Ok(json!({"to": z.id()}))
         }
         "view.zoomToFocus" => {
             // {on?}; no params toggles. Toggle Zoom (Z) centres on the focus point when there is one.
@@ -1042,8 +1154,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                 },
             };
-            let tab = section_tab.or_else(|| p.get("tab").and_then(Value::as_str)).unwrap_or("general");
-            if !crate::panels::settings::TABS.iter().any(|(id, _)| *id == tab) {
+            // without a tab, the section shown last (else General)
+            let last = app.ui.settings.settings_tab.clone();
+            let last = if crate::settings_screen::known(&last) { last.as_str() } else { "general" };
+            let tab = section_tab.or_else(|| p.get("tab").and_then(Value::as_str)).unwrap_or(last);
+            if !crate::panels::settings::TABS.iter().any(|(id, _)| *id == tab) && !crate::settings_screen::known(tab) {
                 let tabs: Vec<&str> = crate::panels::settings::TABS.iter().map(|(id, _)| *id).collect();
                 return Some(Err(format!("unknown settings tab `{tab}` ({})", tabs.join("|"))));
             }
@@ -1401,6 +1516,17 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             };
             Ok(switch_brush_preset(app, want))
         }
+        "brush.erase" => {
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.brush_erase);
+            if on && app.ui.tool != "brush" {
+                // erasing needs the brush: pick it up on the selected mask
+                if let Err(e) = app.run("tool.brush", json!({})) {
+                    return Some(Err(e));
+                }
+            }
+            app.ui.brush_erase = on;
+            Ok(json!({"on": on}))
+        }
         "brush.smaller" | "brush.larger" | "brush.featherLess" | "brush.featherMore" => {
             let (k, df) = match id {
                 "brush.smaller" => (1.0 / 1.2, 0.0),
@@ -1540,8 +1666,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "panel.remove" => {
             panel(app, &ctx, RightPanel::Remove, "Remove");
+            // back on the tool used last (Heal stays Heal)
             if app.ui.right == RightPanel::Remove && app.ui.tool.is_empty() {
-                app.ui.tool = "remove".into();
+                let last =
+                    crate::panels::right::REMOVE_MODES.iter().find(|(_, _, t, _)| *t == app.ui.remove_tool).map_or("remove", |(_, _, t, _)| *t);
+                app.ui.tool = last.into();
             }
             Ok(Value::Null)
         }
@@ -1600,6 +1729,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             Ok(Value::Null)
         }
+        "mask.editComponent" => crate::panels::masking::edit_component(app, p),
         "tool.done" => {
             // Return commits a tool panel (crop, remove, red eye, masking): back to Edit
             use RightPanel::*;
@@ -1607,7 +1737,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 app.end_midi_interaction();
                 let _ = app.session.end_interaction();
                 app.ui.tool.clear();
-                app.ui.right = Edit;
+                // back to the panel shown before the tool (hidden if it was)
+                app.ui.right = app.ui.leave_tool();
             }
             Ok(Value::Null)
         }
@@ -1656,15 +1787,18 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "guidedUpright".into();
                 }
                 "brush" => {
-                    // A new mask and Add/Subtract are selection operations, not the brush's
-                    // Erase mode. Paint positively into a component with the requested op.
-                    let create = if p.get("new").and_then(Value::as_bool) == Some(true) {
-                        Some(app.run("mask.add", json!({"kind": "brush"})))
-                    } else {
-                        p.get("op").map(|op| app.run("mask.addComponent", json!({"kind": "brush", "op": op})))
-                    };
-                    if let Some(result) = create {
-                        if let Err(e) = result {
+                    // A new mask is armed: the first stroke makes it. Add/Subtract are selection
+                    // operations, not the brush's Erase mode: paint positively into a new component.
+                    if p.get("new").and_then(Value::as_bool) == Some(true) {
+                        if let Err(e) = crate::panels::masking::arm_new(app, "brush") {
+                            return Some(Err(e));
+                        }
+                        app.ui.brush_erase = false;
+                        app.ui.mask_overlay = true;
+                        return Some(Ok(json!({"armed": "brush"})));
+                    }
+                    if let Some(op) = p.get("op") {
+                        if let Err(e) = app.run("mask.addComponent", json!({"kind": "brush", "op": op})) {
                             return Some(Err(e));
                         }
                         app.ui.brush_erase = false;
@@ -1680,11 +1814,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "brush".into();
                 }
                 "linear" | "radial" => {
-                    app.ui.right = RightPanel::Masking;
-                    app.ui.view = ViewMode::Detail;
-                    app.ui.tool = tool.into();
-                    return Some(app.session.execute("mask.add", &json!({"kind": tool})).map_err(|e| e.to_string()));
+                    // armed: a drag on the photo draws the gradient (a click places a default one)
+                    return Some(crate::panels::masking::arm_new(app, tool));
                 }
+                // W again puts the selector away without sampling (OneSlips, test notes 2026-10-25 note 13)
+                "wbPicker" if app.ui.tool == "wbPicker" && p.get("sample").is_none() => app.ui.tool.clear(),
                 "wbPicker" => {
                     app.ui.right = RightPanel::Edit;
                     app.ui.view = ViewMode::Detail;
@@ -1698,6 +1832,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             Ok(Value::Null)
         }
+        "dialog.cameraProfile" => crate::chart_profile::open(app),
+        "cameraProfile.second" => crate::chart_profile::choose_second(app, p),
+        "cameraProfile.removeSecond" => crate::chart_profile::remove_second(app),
+        "cameraProfile.pickSecond" => crate::chart_profile::pick_second(app, p),
+        "cameraProfile.zoom" => crate::chart_profile::zoom(app, p),
+        "cameraProfile.resolve" => crate::chart_profile::resolve_clash(app, p),
+        "cameraProfile.find" | "cameraProfile.align" | "cameraProfile.turn" => crate::chart_profile::adjust(app, id, p),
         "dialog.newFolder" => {
             app.ui.dialog = Some(Dialog::NewAlbum {
                 name: p.get("name").and_then(Value::as_str).unwrap_or("").into(),
@@ -1799,17 +1940,32 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 app.ui.dialog = Some(Dialog::RenamePhoto { id: id.0, name });
             } else if !targets.is_empty() {
                 let template = p.get("template").and_then(Value::as_str).unwrap_or("{name}").to_string();
-                app.ui.dialog = Some(Dialog::Rename { template, start: p.get("start").and_then(Value::as_u64).unwrap_or(1) as u32 });
+                app.ui.dialog =
+                    Some(Dialog::Rename { template, start: p.get("start").and_then(Value::as_u64).unwrap_or(1) as u32, texts: Default::default() });
             }
             Ok(Value::Null)
         }
         "dialog.createPreset" => {
-            app.ui.dialog = Some(Dialog::create_preset());
+            app.ui.dialog = Some(Dialog::create_preset(&app.session));
+            Ok(Value::Null)
+        }
+        "dialog.updatePreset" => {
+            let Some(id) = p.get("id").and_then(Value::as_str).map(str::to_string) else { return Some(Err("missing `id`".into())) };
+            let Some(preset) = app.session.presets.iter().find(|x| x.id == id) else { return Some(Err(format!("unknown preset `{id}`"))) };
+            if preset.builtin {
+                return Some(Err("built-in presets can't be changed".into()));
+            }
+            let (name, groups) = (preset.name.clone(), lcc_develop::SettingsPick::of_partial(&preset.settings).to_ids());
+            app.ui.dialog = Some(Dialog::UpdatePreset { id, name, groups });
+            Ok(Value::Null)
+        }
+        "dialog.presetsManager" => {
+            let query = p.get("query").and_then(Value::as_str).unwrap_or("").to_string();
+            app.ui.dialog = Some(Dialog::PresetsManager { query, confirm: None, rename: None });
             Ok(Value::Null)
         }
         "dialog.pasteSettings" => {
-            let groups =
-                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
+            let groups = app.session.dialogs.copy.to_ids();
             app.ui.dialog = Some(Dialog::PasteSettings { groups });
             Ok(Value::Null)
         }
@@ -1819,14 +1975,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "dialog.syncSettings" => {
-            let groups =
-                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
-            app.ui.dialog = Some(Dialog::SyncSettings { groups, controls: Vec::new() });
+            let groups = app.session.dialogs.copy.to_ids();
+            let _ = groups;
+            app.ui.dialog = Some(Dialog::SyncSettings { groups: app.session.dialogs.sync.to_ids(), controls: Vec::new() });
             Ok(Value::Null)
         }
         "dialog.copySettings" => {
-            let groups =
-                app.session.copy_groups.iter().filter_map(|g| serde_json::to_value(g).ok().and_then(|v| v.as_str().map(str::to_string))).collect();
+            let groups = app.session.dialogs.copy.to_ids();
             app.ui.dialog = Some(Dialog::CopySettings { groups });
             Ok(Value::Null)
         }
@@ -1921,6 +2076,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "dialog.mergeHdrPanorama" => crate::merge::open(app, "merge.hdrPanorama"),
         "dialog.mergeFocusStack" => crate::merge::open(app, "merge.focusStack"),
         "app.openSamModelFolder" => crate::panels::dialogs::show_model_folder(app),
+        "dialog.aiModels" => {
+            app.ui.dialog = Some(Dialog::AiModels { error: None });
+            Ok(json!({"open": true}))
+        }
         "app.about" => {
             app.ui.dialog = Some(Dialog::About);
             Ok(Value::Null)
@@ -1993,7 +2152,16 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "photo.openOriginalInExternal" => open_original_in(app, &ctx, p),
         "dialog.cull" => {
             let (burst_gap, similarity) = app.ui.cull_burst.unwrap_or((10.0, 0.93));
-            app.ui.dialog = Some(Dialog::Cull { reject_below: 0.0, pick_best: true, burst_gap, similarity });
+            app.ui.dialog = Some(Dialog::Cull {
+                reject_below: 0.0,
+                pick_best: true,
+                burst_gap,
+                similarity,
+                closed_eyes: false,
+                blurry_eyes: false,
+                soft_eyes: false,
+                everyone: false,
+            });
             Ok(Value::Null)
         }
         "app.whatsNew" => {
@@ -2025,7 +2193,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     },
                 ),
                 ("Photos".to_string(), info["photos"].to_string()),
-                ("Albums".to_string(), info["albums"].to_string()),
+                ("Collections".to_string(), info["albums"].to_string()),
             ];
             if let Some(dir) = info["dir"].as_str().or(info["path"].as_str()) {
                 rows.push(("Library".into(), dir.to_string()));
@@ -2078,6 +2246,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     let r = crate::import::open_with_subfolders(app, paths, subfolders);
                     return Some(import_into_album(app, p, r));
                 }
+            }
+            // Import as a tab (the default): Import… shows the Import tab; the review stays for
+            // files and folders given outright
+            if crate::import_tab::enabled(app) {
+                return Some(crate::import_tab::switch(app, crate::import_tab::Tab::Import));
             }
             if !matches!(app.ui.dialog, Some(Dialog::Import { .. })) {
                 app.ui.dialog = Some(Dialog::Import { opts: Box::new(crate::import::ImportDialog::empty()) });
@@ -2324,6 +2497,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     None => return Some(Err("no camera or memory card found".into())),
                 },
             };
+            // Import as a tab: the card's photos are browsed there, for culling before the import
+            if crate::import_tab::enabled(app) && p.get("path").is_none() && p.get("album").is_none() {
+                let dcim = std::path::Path::new(&path).join("DCIM");
+                let at = if dcim.is_dir() { dcim.to_string_lossy().to_string() } else { path };
+                return Some(crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &at, None)));
+            }
             let r = crate::import::open(app, vec![path]);
             // only the scan just started (an error means another scan is running)
             if r.is_ok()
@@ -2346,6 +2525,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 },
             };
             match path {
+                // a folder picked here (not given by a script): the Import tab browses it
+                Some(path) if crate::import_tab::enabled(app) && p.get("path").is_none() && p.get("album").is_none() => {
+                    crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &path, None))
+                }
                 Some(path) => {
                     let subfolders = p.get("subfolders").and_then(Value::as_bool).unwrap_or(true);
                     let r = crate::import::open_with_subfolders(app, vec![path], subfolders);
@@ -2915,6 +3098,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "photo.editInPhotoCraft" | "photo.editInExternal" => app.session.active().is_some() && app.services.open_with.is_some(),
         "app.exportPrevious" => app.session.active().is_some() && app.session.last_export.is_some(),
         "dialog.pasteSettings" => app.session.active().is_some() && app.session.clipboard.is_some(),
+        "dialog.updatePreset" => app.session.active().is_some(),
         "dialog.syncSettings" => app.session.active().is_some() && app.session.selection.ids.len() > 1,
         "photo.openOriginalInExternal" => {
             // only a file type the app reads can be handed over (#2135); the extension alone
@@ -2935,6 +3119,11 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         }
         "app.showInFolders" => show_in_folders_enabled(app, None),
         "app.openSamModelFolder" => app.session.segmenter.dir.is_some() && app.services.open_with.is_some(),
+        "dialog.aiModels" => lcc_engine::segment::Segmenter::AVAILABLE,
+        "surface.maskPrevious" | "surface.maskNext" => {
+            app.session.active().and_then(|id| app.session.develop_of(id)).is_some_and(|d| !d.masks.is_empty())
+        }
+        "surface.dialogConfirm" | "surface.dialogCancel" => app.ui.dialog.is_some(),
         "file.exportPresets" => app.session.presets.iter().any(|p| !p.builtin),
         // a raw on disk has a camera colour to export; any photo has a look
         "file.exportCameraProfile" => app
@@ -3012,7 +3201,7 @@ pub fn delete_in_album(app: &mut LccApp, ctx: &egui::Context) -> bool {
     let lcc_engine::LibrarySource::Album(aid) = app.session.source else { return false };
     let Some(album) = app.session.catalog.album(aid) else { return false };
     if album.is_smart() {
-        app.toast(ctx, crate::i18n::tr("Smart albums update automatically: change their rules, or use Photo ▸ Delete Photo"));
+        app.toast(ctx, crate::i18n::tr("Smart collections update automatically: change their rules, or use Photo ▸ Delete Photo"));
         return true;
     }
     if app.session.selected().is_empty() {
@@ -3032,6 +3221,21 @@ pub fn delete_in_album(app: &mut LccApp, ctx: &egui::Context) -> bool {
 
 /// With Settings → General → "Confirm before deleting" on, open the confirmation dialog instead
 /// of deleting; true when it did (the dialog's OK runs `photo.delete`).
+/// Photo ▸ Delete Rejected Photos…: ask how (remove, or remove and trash the files), with the
+/// number of rejects the view has; with none, say so.
+pub fn ask_delete_rejected(app: &mut LccApp) -> Result<Value, String> {
+    let view = app.session.visible_cloned();
+    let count = view.iter().filter(|id| app.session.catalog.photo(**id).is_some_and(|p| p.flag == lcc_catalog::Flag::Reject)).count();
+    if count == 0 {
+        if let Some(ctx) = app.tasks.repaint.clone() {
+            app.toast(&ctx, crate::i18n::tr("No rejected photos here"));
+        }
+        return Ok(json!({"deleted": 0}));
+    }
+    app.ui.dialog = Some(Dialog::DeleteRejected { count, recycle: false });
+    Ok(json!({"asking": count}))
+}
+
 pub fn confirm_delete(app: &mut LccApp) -> bool {
     app.ui.settings.confirm_delete && open_delete_dialog(app)
 }

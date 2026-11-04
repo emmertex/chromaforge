@@ -181,6 +181,7 @@ fn local_sharpness_uses_the_sharpen_band() {
     let mut s = DevelopSettings {
         masks: vec![Mask {
             components: vec![MaskComponent {
+                anchor: None,
                 name: None,
                 op: MaskOp::Add,
                 invert: false,

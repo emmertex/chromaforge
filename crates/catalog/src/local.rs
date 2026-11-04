@@ -335,6 +335,7 @@ impl Op {
             | Op::SetHistory { id, .. }
             | Op::PushHistory { id, .. }
             | Op::SetHistoryCursor { id, .. }
+            | Op::SetBefore { id, .. }
             | Op::SetCaptured { id, .. }
             | Op::SetAnalysis { id, .. }
             | Op::SetFile { id, .. }

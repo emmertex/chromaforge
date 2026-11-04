@@ -826,7 +826,7 @@ fn smart_album_problems_flag_stale_rules() {
     assert!(c.smart_album_problems(AlbumId(1)).is_empty(), "a plain album has no rules");
     c.apply(Op::RemoveAlbum { id: AlbumId(1) }).unwrap();
     let p = c.smart_album_problems(AlbumId(2));
-    assert_eq!(p.iter().map(ToString::to_string).collect::<Vec<_>>(), vec!["rule 1: no album 1".to_string()]);
+    assert_eq!(p.iter().map(ToString::to_string).collect::<Vec<_>>(), vec!["rule 1: no collection 1".to_string()]);
 }
 
 /// A smart album can test another smart album: "Keywords contain travel" and "Album isn't Excluded
@@ -913,9 +913,9 @@ fn summaries_name_albums() {
         {"field": "keywords", "op": "contains", "value": "travel"},
         {"group": {"match": "any", "rules": [{"field": "album", "op": "isNot", "value": 4}, {"field": "album", "op": "is", "value": 9}]}}]}))
     .unwrap();
-    assert_eq!(rules.describe_with(&c), "keywords contains travel and (album isn't “Excluded Photos” or album is #9)");
+    assert_eq!(rules.describe_with(&c), "keywords contains travel and (collection isn't “Excluded Photos” or collection is #9)");
     let f = Filter { rule_set: Some(rules), ..Default::default() };
-    assert!(f.describe_with(&c).contains("album isn't “Excluded Photos”"));
+    assert!(f.describe_with(&c).contains("collection isn't “Excluded Photos”"));
 }
 
 /// A chain of smart albums each testing the one before twice ("all of: album is X(k-1), album is

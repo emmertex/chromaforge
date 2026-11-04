@@ -13,6 +13,9 @@ const SETTLE: Duration = Duration::from_secs(10);
 fn app(size: [f32; 2]) -> Headless {
     let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, size, 1.0);
+    // these windows are as narrow as the menu bar allows: the Import | Library tabs (on by
+    // default) would leave it no room, and it would fold into one Menu button
+    h.app.ui.settings.import_as_tab = false;
     h.settle(SETTLE);
     h
 }

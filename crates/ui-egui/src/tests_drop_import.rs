@@ -1,6 +1,7 @@
 //! Files dragged from the file manager onto the window: while they hover, the window says what
-//! dropping will do; dropped photo files are added at once and a dropped folder opens the import
-//! review; a drop while a dialog is open, or while an import runs, is refused.
+//! dropping will do; dropped photos and folders open the import review (or, with Settings ▸ Import ▸
+//! Import dropped photos without review, are added at once); a drop while a dialog is open, or while
+//! an import runs, is refused.
 
 use std::time::Duration;
 
@@ -76,15 +77,18 @@ fn photos(h: &Headless) -> usize {
 }
 
 #[test]
-fn hovering_says_photos_are_imported_and_a_folder_reviewed_and_lets_go_when_they_leave() {
+fn hovering_says_photos_are_reviewed_or_imported_and_lets_go_when_they_leave() {
     let dir = Scratch::new("hover");
     let mut h = app(&dir);
     assert!(!overlay(&h), "nothing is dragged over the window");
     drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("trip/b.png")], true);
     assert!(overlay(&h), "the window shows where to drop");
-    assert!(said(&h, "import 2 items"), "{:?}", h.painted_text());
+    assert!(said(&h, "review 2 items"), "photos are reviewed by default: {:?}", h.painted_text());
     drop_files(&mut h, &[dir.path("trip")], true);
     assert!(said(&h, "review 1 item"), "a folder is reviewed: {:?}", h.painted_text());
+    h.app.ui.settings.import_dropped_directly = true;
+    drop_files(&mut h, &[dir.path("trip")], true);
+    assert!(said(&h, "import 1 item"), "without review: {:?}", h.painted_text());
     drop_files(&mut h, &[], true);
     assert!(!overlay(&h), "the files left the window");
 }
@@ -122,9 +126,36 @@ fn dropping_a_folder_opens_the_import_review_and_imports_nothing_yet() {
 }
 
 #[test]
-fn dropped_photo_files_are_imported_at_once() {
+fn dropped_photo_files_open_the_import_review_by_default() {
+    assert!(!crate::state::AppSettings::default().import_dropped_directly, "off by default");
+    let older: crate::state::AppSettings = serde_json::from_value(json!({})).unwrap();
+    assert!(!older.import_dropped_directly, "a settings file from before the option reviews drops");
+    let dir = Scratch::new("files-review");
+    let mut h = app(&dir);
+    drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("trip/b.png")], false);
+    assert!(h.step_until(SETTLE, |h| matches!(h.app.ui.dialog, Some(Dialog::Import { .. }))), "the review opens");
+    let Some(Dialog::Import { opts }) = &h.app.ui.dialog else { panic!("no import review") };
+    assert_eq!(opts.candidates.len(), 2, "both files are listed");
+    assert_eq!(photos(&h), 0, "nothing is imported until the review is confirmed");
+}
+
+#[test]
+fn with_the_option_dropped_photos_and_folders_are_imported_at_once() {
+    let saved: crate::state::AppSettings = serde_json::from_value(json!({"importDroppedDirectly": true})).unwrap();
+    assert!(saved.import_dropped_directly, "the saved choice is kept");
+    let dir = Scratch::new("folder-direct");
+    let mut h = app(&dir);
+    h.app.ui.settings.import_dropped_directly = true;
+    drop_files(&mut h, &[dir.path("trip")], false);
+    assert!(h.step_until(SETTLE, |h| photos(h) == 2 && h.app.import.is_none()), "the folder's photos arrive");
+    assert!(h.app.ui.dialog.is_none(), "no review");
+}
+
+#[test]
+fn dropped_photo_files_are_imported_at_once_with_the_option() {
     let dir = Scratch::new("direct");
     let mut h = app(&dir);
+    h.app.ui.settings.import_dropped_directly = true;
     drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("trip/b.png")], false);
     assert!(h.step_until(SETTLE, |h| photos(h) == 2 && h.app.import.is_none()), "both photos arrive");
     assert!(h.app.ui.dialog.is_none(), "no review");
@@ -394,7 +425,10 @@ fn a_dropped_folder_that_vanished_says_so_and_leaves_nothing_running() {
     }
     assert!(wait_for(&mut h, |h| h.app.scan.is_none() && h.app.import.is_none()), "nothing stays running");
     assert!(h.app.session.activity.list().is_empty(), "no row left behind: {:?}", h.app.session.activity.list());
-    assert!(h.app.ui.toast().is_some(), "the failure is shown");
+    // the review lists the path with why it can't be read (nothing to check), or a toast says so
+    let listed = matches!(&h.app.ui.dialog, Some(crate::state::Dialog::Import { opts })
+        if opts.candidates.iter().all(|c| c.error.is_some()) && opts.checked.iter().all(|c| !c));
+    assert!(listed || h.app.ui.toast().is_some(), "the failure is shown");
 }
 
 /// Auto Import's second listing of `watch/w.png` on its worker thread (the first notes the file's size; the

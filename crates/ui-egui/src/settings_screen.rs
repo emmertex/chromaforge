@@ -1,5 +1,5 @@
 //! Settings (fork-owned), the one Settings screen of every layout: a full-window sheet with an icon
-//! rail of seven sections down its left side and the open section's rows beside it.
+//! rail of eight sections down its left side and the open section's rows beside it.
 //!
 //! - With room (a window at least [`ROOMY`] points wide: desktops, tablets) the rail always shows
 //!   each section's name and a search field; Back (the ‹ button, Esc, Android's Back) closes
@@ -7,8 +7,8 @@
 //! - On a narrow window the rail is icons only while a section is open. Back widens it to show the
 //!   names (and the search field); Back again closes Settings. A tap on an icon switches section.
 //!
-//! The twelve tabs of the old dialog become seven sections (General, Library, Import, Editing,
-//! Display & Speed, Sync, Shortcuts; Slideshow only in the Classic layout, which has that module).
+//! The twelve tabs of the old dialog become eight sections (General, Library, Import, Editing,
+//! Display & Speed, Sync, Shortcuts, Controls; Slideshow only in the Classic layout, which has that module).
 //! Each section shows the old tabs' own rows ([`crate::panels::settings::tab_body`]), so every
 //! setting keeps its control and its command.
 //!
@@ -64,8 +64,8 @@ const SECTIONS: &[Section] = &[
         key: "editing",
         label: "Editing",
         icon: Icon::Sliders,
-        tabs: &["denoise", "faces"],
-        words: "ai denoise model faces people recognition",
+        tabs: &["denoise", "faces", "profiles", "genfill"],
+        words: "ai denoise model faces people recognition profiles hide camera body serial generative fill openai service api key consent",
     },
     Section {
         key: "display",
@@ -82,6 +82,13 @@ const SECTIONS: &[Section] = &[
         words: "devices peers immich server api key connections keychain",
     },
     Section { key: "shortcuts", label: "Shortcuts", icon: Icon::Help, tabs: &["shortcuts"], words: "keyboard keymap keys" },
+    Section {
+        key: "controls",
+        label: "Controls",
+        icon: Icon::Sliders,
+        tabs: &["controls"],
+        words: "control surfaces hardware console dial dials knob keys keypad dialpad actions ring logi logitech mx creative loupedeck tactilebridge plugin pairing",
+    },
     Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"], words: "slide duration fade playback export" },
 ];
 
@@ -98,7 +105,8 @@ pub struct SettingsScreen {
 }
 
 fn shown(app: &LccApp, s: &Section) -> bool {
-    if cfg!(target_arch = "wasm32") && s.key == "sync" {
+    // the browser has no sync and no control surfaces
+    if cfg!(target_arch = "wasm32") && matches!(s.key, "sync" | "controls") {
         return false;
     }
     // Slideshow is a Classic module: its settings are Classic's
@@ -109,6 +117,35 @@ fn shown(app: &LccApp, s: &Section) -> bool {
 /// {tab: "performance"}`) opens the section that now holds it.
 pub fn section_of(tab: &str) -> &'static str {
     SECTIONS.iter().find(|s| s.key == tab || s.tabs.contains(&tab)).map_or("general", |s| s.key)
+}
+
+/// Whether `tab` names a section or one of the old dialog's tabs.
+pub fn known(tab: &str) -> bool {
+    SECTIONS.iter().any(|s| s.key == tab || s.tabs.contains(&tab))
+}
+
+/// The section after (`step` 1) or before (-1) `open` among those shown, wrapping around.
+fn step_section(app: &LccApp, open: &str, step: isize) -> Option<&'static str> {
+    let keys: Vec<&'static str> = SECTIONS.iter().filter(|s| shown(app, s)).map(|s| s.key).collect();
+    let n = keys.len() as isize;
+    if n == 0 {
+        return None;
+    }
+    let at = keys.iter().position(|k| *k == open).unwrap_or(0) as isize;
+    keys.get((at + step).rem_euclid(n) as usize).copied()
+}
+
+/// Consume a press of `key` with Ctrl held (and Shift as `shift` says, no Alt): the Control key
+/// itself on every platform (on macOS ⌘Tab is the system's), whatever egui reads as Command.
+fn ctrl_key(ctx: &egui::Context, key: egui::Key, shift: bool) -> bool {
+    ctx.input_mut(|i| {
+        let hit = |e: &egui::Event| matches!(e, egui::Event::Key { key: k, pressed: true, modifiers: m, .. } if *k == key && m.ctrl && m.shift == shift && !m.alt);
+        let found = i.events.iter().any(hit);
+        if found {
+            i.events.retain(|e| !hit(e));
+        }
+        found
+    })
 }
 
 /// Back on Settings: on a narrow window from a section to the widened rail (`Some`), else `None`
@@ -150,11 +187,18 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     let t = Tokens::get(ctx);
     let mut picked: Option<&'static str> = None;
+    // Ctrl+Tab / Ctrl+Page Down: the next section; Ctrl+Shift+Tab / Ctrl+Page Up: the one before (LR-PREF-WINDOW)
+    let back_key = ctrl_key(ctx, egui::Key::Tab, true) || ctrl_key(ctx, egui::Key::PageUp, false);
+    let next_key = !back_key && (ctrl_key(ctx, egui::Key::Tab, false) || ctrl_key(ctx, egui::Key::PageDown, false));
+    if back_key || next_key {
+        picked = step_section(app, &open, if back_key { -1 } else { 1 });
+    }
     // over the layout's floating chrome (also `Middle`), under popups (dropdowns, context menus:
     // `Foreground`), which open from its rows
     let layer = egui::LayerId::new(egui::Order::Middle, Id::new(LAYER));
     ctx.move_to_top(layer);
     ctx.memory_mut(|m| m.set_modal_layer(layer));
+    let picked_by_key = picked;
     egui::Area::new(Id::new(LAYER)).order(egui::Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
         let (bg, _) = ui.allocate_exact_size(screen.size(), Sense::click());
         ui.painter().rect_filled(bg, 0.0, t.chrome);
@@ -197,7 +241,7 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
             RAIL_NARROW
         };
         let rail = Rect::from_min_size(body.min, vec2(rail_w, body.height()));
-        picked = rail_ui(app, ui, rail, &open, names);
+        picked = rail_ui(app, ui, rail, &open, names).or(picked_by_key);
         ui.painter().vline(rail.right(), body.y_range(), Stroke::new(1.0, t.divider));
         let content = Rect::from_min_max(pos2(rail.right() + 1.0, body.top()), body.max);
         if !(wide && !roomy) {
@@ -223,6 +267,12 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
             *now = p.to_string();
         }
         app.ui.settings_section = None;
+    }
+    // Settings… opens on the section shown last
+    if let Some(Dialog::Settings { tab: now }) = &app.ui.dialog
+        && app.ui.settings.settings_tab != *now
+    {
+        app.ui.settings.settings_tab = now.clone();
     }
     if picked.is_some() || app.modern_sheets.settings.wide && picked_any {
         app.modern_sheets.settings.wide = false;
@@ -357,12 +407,22 @@ pub(crate) fn reveal(h: &mut crate::headless::Headless, id: &str) {
         let Some(rows) = find(h, "settings:rows") else { panic!("Settings' rows are not on screen") };
         let dy = match find(h, id) {
             Some(w) if w.top() >= rows.top() + 4.0 && w.bottom() <= rows.bottom() - 4.0 => {
-                // in view and settled (a scroll glides on for a few frames)
-                for _ in 0..6 {
-                    h.step();
-                }
-                if find(h, id) == Some(w) {
-                    return;
+                // in view; wait for a scroll's glide to stop (a layout may keep nudging it by a
+                // pixel or two, so "stopped" allows that), then it must still be in view
+                let mut last = w;
+                for _ in 0..30 {
+                    for _ in 0..3 {
+                        h.step();
+                    }
+                    let Some(now) = find(h, id) else { break };
+                    let still = (now.top() - last.top()).abs() <= 2.0;
+                    last = now;
+                    if still {
+                        if now.top() >= rows.top() + 4.0 && now.bottom() <= rows.bottom() - 4.0 {
+                            return;
+                        }
+                        break;
+                    }
                 }
                 continue;
             }

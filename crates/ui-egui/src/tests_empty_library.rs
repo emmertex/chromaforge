@@ -117,7 +117,15 @@ fn the_top_bar_imports_in_every_library() {
     let asked = counting_picker(&mut h);
     assert_eq!(h.request("ui.clickWidget", json!({"id": "icon:import"}), T)["ok"], true);
     h.step();
-    // the button opens the Import dialog, where files, folders and subfolders are picked
+    // Import as a tab (the default): the button shows the Import tab, where a folder or card is chosen
+    assert_eq!(h.app.ui.tab, crate::import_tab::Tab::Import, "the Import tab shows");
+    assert_eq!(asked.get(), 0, "no file picker of its own");
+    // with the option off it opens the Import dialog, where files, folders and subfolders are picked
+    h.app.ui.settings.import_as_tab = false;
+    h.app.ui.tab = crate::import_tab::Tab::Library;
+    h.step();
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "icon:import"}), T)["ok"], true);
+    h.step();
     assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::Import { .. })), "the Import dialog opens");
     assert_eq!(asked.get(), 0, "the file picker waits for the dialog's own buttons");
 }

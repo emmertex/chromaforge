@@ -46,6 +46,9 @@ const QUALITY: u8 = 90;
 pub const EXT: &str = "lcthumb";
 /// What it was named before (JPEG data then as now).
 const OLD_EXT: &str = "jpg";
+/// What a small record kept beside the thumbnails is named: not a picture but an analysis
+/// result, such as a photo's eyes ([`DiskCache::put_data`]).
+pub const DATA_EXT: &str = "lcdata";
 
 /// How long a thumbnail goes unused before a read brings its date forward (the date is what a
 /// full cache lets go by, oldest first). Reads within it write nothing.
@@ -205,7 +208,59 @@ impl DiskCache {
             return;
         }
         let Some(bytes) = encode_jpeg(img) else { return };
-        let p = self.path(key);
+        self.write(self.path(key), &bytes);
+    }
+
+    /// The record kept under `key` with [`Self::put_data`] (`None`: there is none). A read
+    /// counts as a use, like a thumbnail's. What the bytes mean is the caller's: one it can't
+    /// read it drops with [`Self::remove_data`].
+    pub fn get_data(&self, key: Hash128) -> Option<Vec<u8>> {
+        let p = self.named(key, DATA_EXT);
+        if !p.parent().is_some_and(is_real_dir) {
+            return None;
+        }
+        let Ok(bytes) = std::fs::read(&p) else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        self.hits.fetch_add(1, Ordering::Relaxed);
+        self.read.lock().unwrap_or_else(|e| e.into_inner()).insert(key.0);
+        let now = std::time::SystemTime::now();
+        let unused = std::fs::metadata(&p).and_then(|m| m.modified()).ok().and_then(|at| now.duration_since(at).ok());
+        if unused.is_some_and(|d| d > STALE)
+            && let Ok(f) = std::fs::File::options().write(true).open(&p)
+        {
+            let _ = f.set_modified(now);
+        }
+        Some(bytes)
+    }
+
+    /// Keep `bytes` under `key` (written via temp + rename, counted in the cache's size and let
+    /// go like a thumbnail when the cache is full).
+    pub fn put_data(&self, key: Hash128, bytes: &[u8]) {
+        self.write(self.named(key, DATA_EXT), bytes);
+    }
+
+    /// Drop the record under `key` (one that could not be read).
+    pub fn remove_data(&self, key: Hash128) {
+        let p = self.named(key, DATA_EXT);
+        if !p.parent().is_some_and(is_real_dir) {
+            return;
+        }
+        let Ok(m) = std::fs::symlink_metadata(&p) else { return };
+        if !m.is_file() || std::fs::remove_file(&p).is_err() {
+            return;
+        }
+        let mut t = self.total.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(total) = t.as_mut() {
+            *total = total.saturating_sub(m.len());
+            self.known.store(*total, Ordering::Relaxed);
+        }
+    }
+
+    /// Write `bytes` to the cache file `p` (via temp + rename) and trim the cache when that takes
+    /// it over its budget.
+    fn write(&self, p: PathBuf, bytes: &[u8]) {
         let Some(parent) = p.parent() else { return };
         // a folder the cache makes for itself says that it is a cache; one that was there
         // already may hold somebody's files, and is not declared one
@@ -222,7 +277,7 @@ impl DiskCache {
         let used = total.get_or_insert_with(|| self.scan().iter().map(|f| f.1).sum());
         let old_len = std::fs::metadata(&p).map_or(0, |m| m.len());
         let tmp = p.with_extension(format!("tmp{:?}", std::thread::current().id()).replace(['(', ')'], ""));
-        if write_fresh(&tmp, &bytes).is_err() || std::fs::rename(&tmp, &p).is_err() {
+        if write_fresh(&tmp, bytes).is_err() || std::fs::rename(&tmp, &p).is_err() {
             let _ = std::fs::remove_file(&tmp);
             return;
         }
@@ -486,7 +541,8 @@ fn is_shard_name(s: &str) -> bool {
 }
 
 /// Whether `name` inside shard directory `shard` is a file this cache wrote: `<32 hex>.lcthumb`
-/// (whose first two digits are the shard), the `<32 hex>.jpg` it wrote before, or a
+/// (whose first two digits are the shard), the `<32 hex>.jpg` it wrote before, a record
+/// `<32 hex>.lcdata` ([`DiskCache::put_data`]), or a
 /// `<32 hex>.tmp<alphanumeric>` temp file of [`DiskCache::put`]. Anything else in the cache
 /// directory belongs to someone else.
 pub fn is_cache_file(shard: &str, name: &str) -> bool {
@@ -497,7 +553,10 @@ pub fn is_cache_file(shard: &str, name: &str) -> bool {
     if stem.len() != 32 || !is_lower_hex(stem) || !stem.starts_with(shard) {
         return false;
     }
-    ext == EXT || ext == OLD_EXT || ext.strip_prefix("tmp").is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphanumeric()))
+    ext == EXT
+        || ext == OLD_EXT
+        || ext == DATA_EXT
+        || ext.strip_prefix("tmp").is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 /// Encode a thumbnail as the cache stores it (JPEG, RGB, 4:2:0).

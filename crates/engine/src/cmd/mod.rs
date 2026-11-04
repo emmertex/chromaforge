@@ -6,12 +6,15 @@
 
 pub mod actions;
 mod activity;
+pub mod alternatives;
 mod before;
 pub(crate) mod browse;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod catalog;
+pub mod chart_profile;
 mod collections;
 mod color;
+mod concepts;
 pub(crate) mod convert;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod credentials;
@@ -20,7 +23,7 @@ mod cull;
 pub mod curves;
 pub mod dcp_profiles;
 pub(crate) mod denoise;
-mod develop;
+pub(crate) mod develop;
 mod edit;
 pub mod edit_in;
 mod enhance;
@@ -34,9 +37,11 @@ pub mod filters;
 mod focus;
 pub mod folder_metadata;
 pub mod folders;
+mod genfill;
 pub mod geocode;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod immich;
+pub mod import_tab;
 pub mod keywords;
 mod lens_db;
 pub mod library;
@@ -54,6 +59,10 @@ mod ml;
 pub(crate) mod organize;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peers;
+mod people_recognize;
+mod people_roles;
+pub mod profile_manager;
+pub(crate) mod retouch;
 #[cfg(test)]
 pub(crate) use organize::STACK_WORK;
 pub(crate) mod plugin_filters;
@@ -84,8 +93,10 @@ mod query;
 mod quick;
 pub mod recheck;
 pub mod reload;
+pub mod sensor;
 mod slideshow;
 pub(crate) mod source;
+mod store;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tether;
@@ -217,6 +228,7 @@ macro_rules! cmd {
     };
 }
 pub(crate) use cmd;
+pub use masks::SPOT_SIZE;
 
 pub fn command_specs() -> &'static [CommandSpec] {
     static SPECS: std::sync::OnceLock<Vec<CommandSpec>> = std::sync::OnceLock::new();
@@ -224,6 +236,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         let mut v = Vec::new();
         v.extend(edit::specs());
         v.extend(library::specs());
+        v.extend(alternatives::specs());
         v.extend(collections::specs());
         v.extend(develop::specs());
         v.extend(color::specs());
@@ -231,6 +244,12 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(curves::specs());
         v.extend(crop_aspects::specs());
         v.extend(masks::specs());
+        v.extend(retouch::specs());
+        v.extend(retouch::retouch_specs());
+        v.extend(genfill::specs());
+        v.extend(concepts::specs());
+        v.extend(people_roles::specs());
+        v.extend(people_recognize::specs());
         v.extend(organize::specs());
         v.extend(keywords::specs());
         v.extend(manage::specs());
@@ -239,8 +258,11 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(lut_profiles::specs());
         v.extend(lens_db::specs());
         v.extend(source::specs());
+        v.extend(chart_profile::specs());
         v.extend(dcp_profiles::specs());
+        v.extend(profile_manager::specs());
         v.extend(mask_effects::specs());
+        v.extend(crate::machine_test::specs());
         v.extend(cull::specs());
         v.extend(convert::specs());
         v.extend(convert::edit_specs());
@@ -262,16 +284,19 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(print::specs());
         v.extend(before::specs());
         v.extend(browse::specs());
+        v.extend(import_tab::specs());
         v.extend(folders::specs());
         v.extend(missing::specs());
         v.extend(recheck::specs());
         v.extend(sync::specs());
+        v.extend(store::specs());
         v.extend(metadata::specs());
         v.extend(metadata_files::specs());
         v.extend(export_preset_files::specs());
         v.extend(geocode::specs());
         v.extend(filters::specs());
         v.extend(denoise::specs());
+        v.extend(sensor::specs());
         v.extend(face_models::specs());
         v.extend(face_detect::specs());
         v.extend(face_recognize::specs());
@@ -301,7 +326,28 @@ pub fn command_specs() -> &'static [CommandSpec] {
 }
 
 pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
-    command_specs().iter().find(|c| c.id == id)
+    let id = canonical_id(id);
+    command_specs().iter().find(|c| c.id == id.as_ref())
+}
+
+/// Collection command ids, the user-facing names: `collection.*` for `album.*`, `collections.list`
+/// for `albums.list` and `dialog.newCollection`, `dialog.smartCollection`,
+/// `dialog.newSmartCollection` for the dialogs' `…Album` ids. The UI calls them Collections (as
+/// Lightroom Classic does) while the catalog, the journal and saved scripts keep the album ids, so
+/// both spellings run the same command and old scripts, keymaps and journals keep working. Any
+/// other id is returned as it is.
+pub fn canonical_id(id: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    if let Some(rest) = id.strip_prefix("collection.") {
+        return Cow::Owned(format!("album.{rest}"));
+    }
+    match id {
+        "collections.list" => Cow::Borrowed("albums.list"),
+        "dialog.newCollection" => Cow::Borrowed("dialog.newAlbum"),
+        "dialog.smartCollection" => Cow::Borrowed("dialog.smartAlbum"),
+        "dialog.newSmartCollection" => Cow::Borrowed("dialog.newSmartAlbum"),
+        _ => Cow::Borrowed(id),
+    }
 }
 
 // ---------- param helpers

@@ -7,8 +7,8 @@
 //! Stage order (see `docs/pipeline.md`):
 //! 1. geometry — user orientation, lens corrections (distortion, CA, vignetting), perspective, crop +
 //!    straighten, flips; one resample at output resolution; then defringe
-//! 2. scene-linear — white balance, exposure, dehaze, local tone (highlights/shadows), texture,
-//!    clarity, local adjustments (masks)
+//! 2. scene-linear — white balance, spot removal, noise reduction, Smooth Skin ([`skin`]), then
+//!    exposure, dehaze, local tone (highlights/shadows), texture, clarity, local adjustments (masks)
 //! 3. tone map — contrast / whites / blacks filmic curve on luminance, highlight desaturation
 //! 4. colour — vibrance, saturation, colour mixer, colour grading, B&W (OkLCh)
 //! 5. display — gamut map to the output space (sRGB unless [`RenderRequest::space`] says otherwise), encode, tone curves (parametric + point), vignette, grain
@@ -31,17 +31,24 @@ pub mod cull;
 pub mod curve;
 pub mod dust;
 pub mod finish;
+pub mod genpatch;
 pub mod geometry;
 pub mod grade;
+pub mod grain;
 pub mod local;
 pub mod local_tone;
 pub mod lut;
+pub mod mask_space;
+pub mod mask_tone;
 pub mod masks;
 pub mod optics;
 pub mod output;
 pub mod plugin_filters;
 pub mod profiles;
 pub mod redeye;
+pub mod retouch;
+pub mod scene_model;
+pub mod skin;
 pub mod source_stage;
 pub mod spots;
 pub mod tone;
@@ -117,6 +124,32 @@ pub struct SourceInfo {
     /// their colour (`lcc_codecs::unflatten`) and carries this plane through the geometry
     /// beside the render ([`render_alpha`], issue #2976).
     pub alpha: Option<Arc<Plane>>,
+    /// The photo's generative fill patches ([`genpatch`]), read from the library by the engine.
+    pub generated: Option<genpatch::GenStore>,
+    /// Areas content-aware fill never copies from (faces): `[x0, y0, x1, y1]` normalized to the
+    /// EXIF-oriented source.
+    pub avoid: Option<Arc<Vec<[f64; 4]>>>,
+    /// Raw sources: what was done about hot, dead and stuck pixels before demosaic (`None`: not a raw).
+    pub pixels: Option<PixelRepair>,
+}
+
+/// Hot, dead and stuck pixels corrected on a raw's mosaic while it was decoded.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PixelRepair {
+    /// Whether correction was on (the photo's `sensor.pixelFix`).
+    pub on: bool,
+    /// The camera body's key (`lcc_engine::sensor_maps::body_key`), when known.
+    pub body: Option<String>,
+    /// Samples corrected from the body's map, and found in this photo alone.
+    pub from_map: u32,
+    pub found: u32,
+    /// The file's own orientation (the source is developed upright from it) and the developed sensor area's size
+    /// before it: what turns a position on the photo into one on the sensor (sensor dust).
+    pub orientation: lcc_geom::Orientation,
+    pub developed: [usize; 2],
+    /// The full raw data size and camera model (what a body's map is for).
+    pub sensor: [usize; 2],
+    pub model: String,
 }
 
 impl Default for SourceInfo {
@@ -136,6 +169,9 @@ impl Default for SourceInfo {
             native_long: None,
             colorimetric: false,
             alpha: None,
+            generated: None,
+            avoid: None,
+            pixels: None,
         }
     }
 }
@@ -305,6 +341,8 @@ pub(crate) struct Prepared {
     /// Airlight of `dark` (before exposure).
     pub air: f32,
     pub masks: Vec<masks::Evaluated>,
+    /// The masks' own Whites / Blacks tone ranges ([`Plan::mask_tone`]).
+    pub mask_tone: Vec<[f32; 4]>,
     /// Output pixels per unit of the source long edge.
     pub px_per_long: f64,
 }
@@ -403,6 +441,9 @@ impl StageCache {
             if let Some((_, l)) = &e.lin {
                 add(Arc::as_ptr(l) as usize, size(l));
             }
+            if let Some((_, l)) = &e.nr {
+                add(Arc::as_ptr(l) as usize, size(l));
+            }
             let pl = &e.planes;
             let planes = pl.log_l.iter().chain(pl.base.iter().map(|x| &x.1)).chain(pl.clarity.iter().map(|x| &x.1));
             for p in planes.chain(pl.texture.iter().map(|x| &x.1)).chain(pl.sharpen.iter().map(|x| &x.1)).chain(pl.dark.iter().map(|x| &x.1)) {
@@ -447,6 +488,9 @@ struct CacheEntry {
     /// `sampled` after the Source plug-in filters, keyed by [`Plan::source_key`] (and draft).
     filtered: Option<(u64, Arc<Rgb32f>)>,
     lin: Option<(u64, Arc<Rgb32f>)>,
+    /// The denoised image before Smooth Skin (the same buffer as `lin` when Smooth Skin is off): a
+    /// Smooth Skin drag redoes only Smooth Skin.
+    nr: Option<(u64, Arc<Rgb32f>)>,
     planes: local::Planes,
 }
 
@@ -472,8 +516,11 @@ pub struct Plan<'a> {
     pub detail_scale: f32,
     /// Key of the resampled source (together with the source buffer's identity).
     pub geo: u64,
-    /// Key of the white-balanced, retouched, denoised image (and of the planes computed from it).
+    /// Key of the white-balanced, retouched, denoised, skin-smoothed image (and of the planes
+    /// computed from it).
     pub lin_key: u64,
+    /// [`Self::lin_key`] before Smooth Skin (equal to it when Smooth Skin is off).
+    pub nr_key: u64,
     /// [`Self::lin_key`] without the noise-reduction settings: draft renders reuse the smooth
     /// planes of an image that differs from this one only in its noise reduction.
     pub pre_nr_key: u64,
@@ -481,6 +528,10 @@ pub struct Plan<'a> {
     pub eyes: Vec<redeye::EyeK>,
     /// The whole frame's dehaze airlight, for a windowed render (which can't see the whole frame).
     pub fixed_air: Option<f32>,
+    /// The tone range each visible mask's Whites / Blacks act on, fitted to the tones under it in a fixed-size
+    /// render of the whole frame ([`mask_tone`]), so previews, zoomed windows and exports agree; empty when no mask
+    /// has Whites or Blacks (the masks then use [`finish::DEFAULT_MASK_TONE`]).
+    pub mask_tone: Vec<[f32; 4]>,
     /// A windowed render works on a larger window when spots reach into it (see
     /// [`spots::window_for_reads`]); this is the requested window inside the rendered one, which
     /// the result is cut to.
@@ -540,6 +591,10 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
             }
             // (spots grow the rendered window; only 8-bit renders are cut back to the request)
             let work = if req.depth == OutputDepth::U8 { spots::window_for_reads(s, &frame, full_w, full_h, px_per_long, win) } else { win };
+            // and so does Smooth Skin, which reads the skin around what it changes
+            let work = if req.depth == OutputDepth::U8 { grow_window(work, skin::reach(s, px_per_long), full_w, full_h) } else { work };
+            // (the retouch of people's parts is per pixel: retouch::reach is 0)
+            let work = if req.depth == OutputDepth::U8 { grow_window(work, retouch::reach(s, px_per_long), full_w, full_h) } else { work };
             if work != win {
                 keep = Some(PixelWindow { x: win.x - work.x, y: win.y - work.y, ..win });
             }
@@ -572,14 +627,21 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         // the Source plug-in filters run before this stage
         source_filters.key,
     ));
+    // a generated patch whose file appears (or goes) changes the image
+    let shown: Vec<bool> = genpatch::shown(&s.spots, info.generated.as_ref()).iter().map(Option::is_some).collect();
+    let pre_nr_key = hash_of((pre_nr_key, shown, format!("{:?}", info.avoid)));
     // a draft's colour NR may take the half-resolution blur: its result is never a final render's
     let draft_nr = req.quality == Quality::Draft && d.nr_color > 0.0;
-    let lin_key = hash_of((
+    let nr_key = hash_of((
         pre_nr_key,
         [d.nr_luminance, d.nr_detail, d.nr_color, d.nr_color_detail, d.nr_color_smoothness].map(f64::to_bits),
         detail_scale.to_bits(),
         draft_nr,
     ));
+    let lin_key = match (skin::key(s), retouch::key(s)) {
+        (None, None) => nr_key,
+        (k, r) => hash_of((nr_key, k, r)),
+    };
     // AI masks without a model: analysed once per photo look on the whole frame (cached)
     let mattes = if auto_mask::needed(s) {
         let mut m = info.mattes.as_deref().cloned().unwrap_or_default();
@@ -588,6 +650,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     } else {
         info.mattes.clone()
     };
+    let mask_tone = mask_tone::ranges(aux(), info, s, &whole_frame, mattes.as_deref());
     Plan {
         settings,
         frame,
@@ -598,9 +661,11 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         detail_scale,
         geo,
         lin_key,
+        nr_key,
         pre_nr_key,
         eyes,
         fixed_air,
+        mask_tone,
         keep,
         mattes,
         source_filters,
@@ -609,22 +674,59 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     }
 }
 
-/// Whether the scene-linear stage needs work only the CPU does (defringe, spot removal).
+/// `win` grown by `reach` pixels on every side, inside the `full_w × full_h` output.
+fn grow_window(win: PixelWindow, reach: f64, full_w: usize, full_h: usize) -> PixelWindow {
+    if !(reach.is_finite() && reach >= 1.0) {
+        return win;
+    }
+    let r = reach.min((full_w.max(full_h)) as f64) as usize;
+    let (x0, y0) = (win.x.saturating_sub(r), win.y.saturating_sub(r));
+    let (x1, y1) = ((win.x + win.w).saturating_add(r).min(full_w), (win.y + win.h).saturating_add(r).min(full_h));
+    PixelWindow { x: x0, y: y0, w: x1.saturating_sub(x0).max(1), h: y1.saturating_sub(y0).max(1) }
+}
+
+/// Whether Smooth Skin or the retouch of people's parts (Teeth) changes this render (they run after noise
+/// reduction; the GPU renderer does Smooth Skin itself and the retouch on the CPU).
+pub fn skin_needs_cpu(s: &DevelopSettings) -> bool {
+    skin::analysis(s).is_some() || retouch::active(s)
+}
+
+/// Smooth Skin, then the retouch of people's parts, on the noise-reduced scene-linear image (both
+/// renderers run this, so they match).
+pub fn retouch_people(img: &mut Rgb32f, s: &DevelopSettings, frame: &geometry::Frame, px_per_long: f64) {
+    timed("smooth skin", || skin::apply(img, s, frame, px_per_long));
+    timed("retouch", || retouch::apply(img, s, frame, px_per_long));
+}
+
+/// Whether the scene-linear stage needs work only the CPU does (content-aware Fill, Generate and
+/// sourceless Remove spots, Even Out, the camera's local tone map).
 pub fn lin_needs_cpu(s: &DevelopSettings, info: &SourceInfo) -> bool {
-    let o = &s.optics;
-    let defringe = s.section_enabled("optics") && (o.defringe_purple_amount > 0.0 || o.defringe_green_amount > 0.0);
-    defringe || !s.spots.is_empty() || local_tone::enabled(info, s)
+    // defringe and Clone / Heal / sourced Remove spots have GPU kernels; spots rebuilt from their
+    // surroundings (Fill, Generate, a Remove without a source), Even Out and the camera's local
+    // tone map don't
+    s.spots.iter().any(|sp| spots::synthesises(sp) || sp.mode == lcc_develop::SpotMode::Flat) || local_tone::enabled(info, s)
 }
 
 /// The white-balanced, defringed, retouched image (before noise reduction): the CPU part of the
 /// scene-linear stage, in place.
 pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
     let s = &*p.settings;
+    // generated patches are source pixels: before anything else touches them
+    let patches = genpatch::shown(&s.spots, info.generated.as_ref());
+    for (sp, layer) in s.spots.iter().zip(&patches) {
+        if let (Some(g), Some(layer)) = (sp.shown_gen(), layer) {
+            genpatch::apply_layer(img, layer, &p.frame, genpatch::seed_of(&g.id, g.variant));
+        }
+    }
     // (before the white balance: the gain's input is the as-shot development, as in the file)
     local_tone::apply(img, info, p);
     local::white_balance(img, info, s);
     optics::defringe(img, s, p.px_per_long / optics::DEFRINGE_REF_LONG);
-    spots::apply(img, &s.spots, &p.frame, p.px_per_long);
+    // a Generative spot changes nothing until its patch is there (not generated yet, moved since,
+    // or its file is missing): no content-aware stand-in that looks like a poor AI result
+    let skip: Vec<bool> = s.spots.iter().zip(&patches).map(|(sp, p)| p.is_some() || sp.mode == lcc_develop::SpotMode::Generate).collect();
+    let avoid = genpatch::avoid_boxes(info.avoid.as_deref().map_or(&[][..], Vec::as_slice), &p.frame, img.width, img.height);
+    spots::apply_skipping(img, &s.spots, &p.frame, p.px_per_long, &skip, &avoid);
     redeye::apply(img, &p.eyes);
 }
 
@@ -737,7 +839,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         Src::Shared(a) => a,
     };
     let plan = plan(src_img, info, s, req);
-    let Plan { ref frame, w, h, px_per_long, detail_scale, geo, lin_key, .. } = plan;
+    let Plan { ref frame, w, h, px_per_long, detail_scale, geo, lin_key, nr_key, .. } = plan;
     let s = &*plan.settings;
     let mut warnings = Vec::new();
 
@@ -768,20 +870,33 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         draft_src = filtered.as_ref().is_some_and(|(k, _)| *k == draft_key);
         lap("plug-in filters (source)", &mut t);
     }
-    let lin_key = if draft_src { hash_of((lin_key, "draft source")) } else { lin_key };
+    let (lin_key, nr_key) = if draft_src { (hash_of((lin_key, "draft source")), hash_of((nr_key, "draft source"))) } else { (lin_key, nr_key) };
     let base = filtered.as_ref().map_or(&sampled, |(_, i)| i);
 
-    let lin = match cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == lin_key) {
-        Some((_, img)) => img,
+    let cached_nr = cached.as_ref().and_then(|e| e.nr.clone()).filter(|(k, _)| *k == nr_key);
+    let (lin, nr) = match cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == lin_key) {
+        Some((_, img)) => (img, cached_nr.map(|(_, n)| n)),
         None => {
-            // Without a cache (or filters) the resampled buffer is ours: work on it in place.
-            let mut img = if shared.is_some() || filtered.is_some() { (**base).clone() } else { Arc::unwrap_or_clone(sampled.clone()) };
-            lin_cpu(&mut img, info, &plan);
-            local::denoise_with(&mut img, s, detail_scale, req.quality == Quality::Draft);
-            Arc::new(img)
+            let nr = match cached_nr {
+                Some((_, img)) => img,
+                None => {
+                    // Without a cache (or filters) the resampled buffer is ours: work on it in place.
+                    let mut img = if shared.is_some() || filtered.is_some() { (**base).clone() } else { Arc::unwrap_or_clone(sampled.clone()) };
+                    lin_cpu(&mut img, info, &plan);
+                    local::denoise_with(&mut img, s, detail_scale, req.quality == Quality::Draft);
+                    Arc::new(img)
+                }
+            };
+            if lin_key == nr_key {
+                (nr.clone(), Some(nr))
+            } else {
+                let mut img = (*nr).clone();
+                retouch_people(&mut img, s, frame, px_per_long);
+                (Arc::new(img), Some(nr))
+            }
         }
     };
-    lap("wb/spots/nr", &mut t);
+    lap("wb/spots/nr/skin", &mut t);
     let mut planes = match cached.map(|e| e.planes) {
         Some(p) if p.key == lin_key => p,
         // A draft while noise reduction changes (a slider drag): the wide, edge-aware planes of the
@@ -791,13 +906,14 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         Some(p) if req.quality == Quality::Draft && p.pre_nr == plan.pre_nr_key => p.for_other_nr(),
         _ => local::Planes { key: lin_key, pre_nr: plan.pre_nr_key, ..Default::default() },
     };
-    let mut prep = local::prepare(lin.clone(), s, frame, px_per_long, req.quality, &mut planes, plan.mattes.as_deref());
+    let mut prep = local::prepare(lin.clone(), s, frame, px_per_long, req.quality, &mut planes, plan.mattes.as_ref());
     if let Some(a) = plan.fixed_air {
         prep.air = a;
     }
+    prep.mask_tone = plan.mask_tone.clone();
     lap("prepare", &mut t);
     if let Some((a, c)) = shared {
-        c.put(CacheEntry { src: a.clone(), geo, sampled, filtered, lin: Some((lin_key, lin)), planes });
+        c.put(CacheEntry { src: a.clone(), geo, sampled, filtered, lin: Some((lin_key, lin)), nr: nr.map(|n| (nr_key, n)), planes });
     }
     let display_filters = plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Display);
     let post = finish::Post { stack: &display_filters, frame: plan.filter_frame, warnings: std::cell::RefCell::new(&mut warnings) };
@@ -876,12 +992,67 @@ pub fn color_range_sample(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, 
     Some(acc.map(|v| v / n))
 }
 
+/// What the Colour Range and Luminance Range pickers see in `area` (normalized `[x0, y0, x1, y1]`
+/// of the oriented, cropped frame; a point, `x0 == x1`, reads the 3 × 3 pixels round it): each
+/// pixel's OkLab colour as the colour range compares it, and its luminance on the luminance
+/// range's 0..1 scale (−8..+4 EV, exposure included). Rendered as `req` asks (a small preview is
+/// plenty); at most 65 536 pixels, evenly spread over a large area. `None` when the area misses
+/// the photo.
+pub fn range_area_pixels(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, area: [f64; 4]) -> Option<Vec<([f64; 3], f64)>> {
+    if !area.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let effective = s.effective();
+    let rendition = settings_for(&effective, req);
+    let plan = plan(src, info, &rendition, req);
+    if plan.w == 0 || plan.h == 0 {
+        return None;
+    }
+    let mut img = plan.frame.sample(src, plan.w, plan.h);
+    lin_cpu(&mut img, info, &plan);
+    let to = plan.frame.norm_to_out(plan.w, plan.h);
+    let (a, b) = (to.apply(lcc_geom::Point::new(area[0], area[1])), to.apply(lcc_geom::Point::new(area[2], area[3])));
+    let (mut x0, mut x1) = (a.x.min(b.x).floor() as i64, a.x.max(b.x).floor() as i64);
+    let (mut y0, mut y1) = (a.y.min(b.y).floor() as i64, a.y.max(b.y).floor() as i64);
+    if x0 == x1 && y0 == y1 {
+        // a click: the pixels round it
+        (x0, x1, y0, y1) = (x0 - 1, x1 + 1, y0 - 1, y1 + 1);
+    }
+    let (x0, y0) = (x0.max(0), y0.max(0));
+    let (x1, y1) = (x1.min(plan.w as i64 - 1), y1.min(plan.h as i64 - 1));
+    if x0 > x1 || y0 > y1 {
+        return None;
+    }
+    let (n_x, n_y) = ((x1 - x0 + 1) as u64, (y1 - y0 + 1) as u64);
+    // every k-th pixel each way keeps a large area to about 65 536 of them
+    let step = ((n_x.saturating_mul(n_y) as f64 / 65_536.0).sqrt().ceil() as i64).max(1);
+    let ev = plan.settings.light.exposure as f32;
+    let gain = ev.exp2();
+    let mut out = Vec::new();
+    let mut y = y0;
+    while y <= y1 {
+        let mut x = x0;
+        while x <= x1 {
+            if let Some(c) = img.data.get(y as usize * plan.w + x as usize) {
+                let lab = lcc_color::perceptual::oklab_from_2020(masks::tonemap_for_select(c.map(|v| v * gain)));
+                let lum = ((local::log_lum(*c) + ev + 8.0) / 12.0).clamp(0.0, 1.0);
+                if lab.iter().all(|v| v.is_finite()) && lum.is_finite() {
+                    out.push((lab.map(f64::from), f64::from(lum)));
+                }
+            }
+            x += step;
+        }
+        y += step;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// The alpha plane a mask overlay shows: the one the render evaluated, or (for a hidden mask) a
 /// fresh evaluation.
 fn overlay_alpha(o: Overlay, plan: &Plan<'_>, prep: &Prepared) -> Option<Plane> {
     let m = o.mask(&plan.settings)?;
     if let Some(e) = prep.masks.iter().find(|e| e.id == m.id) {
-        return Some(e.alpha.clone());
+        return Some((*e.alpha).clone());
     }
     let ev = plan.settings.light.exposure as f32;
     Some(masks::evaluate_one(m, &plan.frame, plan.w, plan.h, &prep.img, &prep.log_l, ev, plan.mattes.as_deref()))
@@ -897,7 +1068,7 @@ fn overlay_alphas_all(o: Overlay, plan: &Plan<'_>, prep: &Prepared) -> Option<Ve
     let mut out = Vec::new();
     for m in plan.settings.masks.iter().filter(|m| m.visible && !m.components.is_empty()) {
         if let Some(e) = prep.masks.iter().find(|e| e.id == m.id) {
-            out.push(e.alpha.clone());
+            out.push((*e.alpha).clone());
         } else {
             out.push(masks::evaluate_one(m, &plan.frame, plan.w, plan.h, &prep.img, &prep.log_l, ev, plan.mattes.as_deref()));
         }
@@ -924,7 +1095,7 @@ pub fn profiling() -> bool {
 }
 
 /// Run `f`, printing its duration under `{ENV_PREFIX}_PROFILE`.
-pub(crate) fn timed<R>(what: &str, f: impl FnOnce() -> R) -> R {
+pub fn timed<R>(what: &str, f: impl FnOnce() -> R) -> R {
     if !profiling() {
         return f();
     }
@@ -949,13 +1120,21 @@ mod tests_hdr;
 #[cfg(test)]
 mod tests_local_curve;
 #[cfg(test)]
+mod tests_mask_geometry;
+#[cfg(test)]
+mod tests_mask_point_color;
+#[cfg(test)]
 mod tests_nr_scale;
 #[cfg(test)]
 mod tests_pixel_scale;
 #[cfg(test)]
 mod tests_plugin_filters;
 #[cfg(test)]
+mod tests_retouch;
+#[cfg(test)]
 mod tests_sharpen;
+#[cfg(test)]
+mod tests_skin;
 #[cfg(test)]
 mod tests_tone;
 #[cfg(test)]

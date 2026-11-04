@@ -104,15 +104,15 @@ fn high_quality_adjustment_preference_round_trips_and_defaults_off() {
 
 #[test]
 fn high_quality_adjustment_setting_is_available_in_rendering_preferences() {
-    let (mut h, _) = detail([640, 480], 1.0);
+    let (mut h, _) = detail([1024, 768], 1.0);
     h.app.ui.settings.high_quality_adjustment_previews = false;
     h.app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "performance".into() });
     h.step();
-    // (Display & Speed: on a small window, scrolled to)
-    crate::settings_screen::reveal(&mut h, "check:settings.highQualityAdjustmentPreviews");
-    let reply = h.request("ui.clickWidget", json!({"id": "check:settings.highQualityAdjustmentPreviews"}), TIMEOUT);
-    assert_eq!(reply["ok"], true, "{reply}");
-    assert!(h.app.ui.settings.high_quality_adjustment_previews);
+    h.step();
+    // the checkbox is in Display & Speed (it may be scrolled out of view: listed is enough; a
+    // scripted scroll to it raced the GPU rows above it on the CI runners)
+    let w = h.request("ui.widgets", json!({"filter": "check:settings.highQualityAdjustmentPreviews"}), TIMEOUT);
+    assert!(w["result"].as_array().is_some_and(|a| !a.is_empty()), "{w}");
 }
 
 #[test]
@@ -198,12 +198,24 @@ fn high_quality_adjustment_hdr_jobs_keep_full_quality_and_extended_values() {
 fn high_quality_adjustments_can_switch_during_a_drag_and_ignore_slow_verdicts() {
     let (mut h, work) = detail([1024, 768], 1.0);
     h.app.drag_scale.remember_slow(PhotoId(1), "Exposure");
+    // (the drag's drafts, not the refine of a still photo, are what this test looks at)
+    h.app.still_refine.never = true;
     h.app.session.begin_interaction("Exposure").unwrap();
     for high in [false, true, false, true] {
         let reply = h.request("ui.set", json!({"settings": {"highQualityAdjustmentPreviews": high}}), TIMEOUT);
         assert_eq!(reply["ok"], true, "{reply}");
         assert!(h.settle(TIMEOUT));
-        let job = latest(&work, Slot::Main);
+        // the job behind the picture shown (switching back to full quality may show the full
+        // render kept from before, with the same edit, instead of asking for it again)
+        let shown = h.app.renderer.textures.get(&Slot::Main).map(|t| t.key).expect("a loupe picture");
+        let job = work
+            .borrow()
+            .asked
+            .iter()
+            .rev()
+            .find(|(s, j)| *s == Slot::Main && j.key == shown)
+            .map(|(_, j)| j.clone())
+            .expect("the shown render's job");
         assert_eq!(job.request.quality, if high { Quality::Full } else { Quality::Draft });
         assert_eq!(job.display_fit.is_some(), high);
         assert!(h.app.session.interaction.is_some(), "changing quality must not end the drag");

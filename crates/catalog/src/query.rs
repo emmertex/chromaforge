@@ -788,7 +788,49 @@ fn has_person(p: &Photo, name: &str) -> bool {
     p.people().iter().any(|n| n.to_lowercase() == name)
 }
 
+/// How many photos of a view carry each culling mark: the filter bar's live counts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tally {
+    pub total: usize,
+    pub picks: usize,
+    pub rejects: usize,
+    pub unflagged: usize,
+    /// Photos with exactly 0, 1, … 5 stars.
+    pub stars: [usize; 6],
+    /// Photos per colour label, in [`ColorLabel::ALL`] order.
+    pub labels: [usize; 5],
+    pub unlabeled: usize,
+}
+
+impl Tally {
+    /// Photos with at least `n` stars.
+    pub fn at_least(&self, n: u8) -> usize {
+        self.stars.iter().skip(usize::from(n.min(5))).sum()
+    }
+
+    /// Photos with `label`.
+    pub fn label(&self, label: ColorLabel) -> usize {
+        ColorLabel::ALL.iter().position(|x| *x == label).and_then(|i| self.labels.get(i).copied()).unwrap_or(0)
+    }
+
+    /// Photos with `flag`.
+    pub fn flag(&self, flag: Flag) -> usize {
+        match flag {
+            Flag::Pick => self.picks,
+            Flag::Reject => self.rejects,
+            Flag::None => self.unflagged,
+        }
+    }
+}
+
 impl Filter {
+    /// This filter without the quick culling filters (stars, flags, colour labels): what the filter
+    /// bar counts its photos in, so "Picked 47" stays readable while only the picks are shown.
+    pub fn without_quick(&self) -> Filter {
+        Filter { rating: 0, rating_op: RatingOp::default(), flag: None, label: None, labels: Vec::new(), ..self.clone() }
+    }
+
     /// The labels that `label` and `labels` let through together (they AND), in `labels`' order;
     /// `None` when neither is set, empty when they exclude each other. The chip and the filter
     /// bar's buttons show this, so they match what is filtered.
@@ -1111,6 +1153,32 @@ impl Catalog {
             }
         }
         ids
+    }
+
+    /// How many of the photos matching `filter` carry each culling mark (the filter bar's counts).
+    pub fn tally(&self, filter: &Filter) -> Tally {
+        let prepared = filter.prepare();
+        let mut t = Tally::default();
+        for p in self.photos().filter(|p| filter.matches_in(p, self, &prepared)) {
+            t.total += 1;
+            match p.flag {
+                Flag::Pick => t.picks += 1,
+                Flag::Reject => t.rejects += 1,
+                Flag::None => t.unflagged += 1,
+            }
+            if let Some(n) = t.stars.get_mut(usize::from(p.rating.min(5))) {
+                *n += 1;
+            }
+            match p.label.and_then(|l| ColorLabel::ALL.iter().position(|x| *x == l)) {
+                Some(i) => {
+                    if let Some(n) = t.labels.get_mut(i) {
+                        *n += 1;
+                    }
+                }
+                None => t.unlabeled += 1,
+            }
+        }
+        t
     }
 
     /// How many photos match `filter`: [`Catalog::query`]'s length without its sorting.
