@@ -89,6 +89,7 @@ fn open_session(dir: Option<PathBuf>) -> (Session, Option<LibraryProblem>) {
     let fresh = || {
         let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_default_connections().with_system_clock();
         s.face_models_dir = lcc_engine::config::default_face_models_dir();
+        s.ml_models_dir = lcc_engine::config::default_ml_models_dir();
         s.lens_db = lcc_engine::lens_download::LensSettings::load(lcc_engine::config::config_dir());
         s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
         s

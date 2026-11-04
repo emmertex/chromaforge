@@ -40,6 +40,7 @@ impl Default for Headless {
                 .with_system_clock()
                 .with_default_connections()
                 .with_default_face_models()
+                .with_default_ml_models()
                 .with_default_lens_profiles()
                 .with_default_sam3_model()
                 .with_default_slide_templates(),
@@ -62,6 +63,7 @@ impl Headless {
                 .with_system_clock()
                 .with_default_connections()
                 .with_default_face_models()
+                .with_default_ml_models()
                 .with_default_lens_profiles()
                 .with_default_sam3_model()
                 .with_default_slide_templates(),

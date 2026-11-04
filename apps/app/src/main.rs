@@ -988,6 +988,7 @@ fn unopened_session() -> Session {
         .with_system_clock()
         .with_default_app_store();
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
+    s.ml_models_dir = lcc_engine::config::default_ml_models_dir();
     s.lens_db = lcc_engine::lens_download::LensSettings::load(lcc_engine::config::config_dir());
     s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
     s
@@ -1004,6 +1005,7 @@ fn open_session(in_memory: bool, launch: &Launch, seed_demo: bool, may_create: b
         Launch::Open { dir, .. } => open_library_session(in_memory, dir.clone(), seed_demo, may_create),
     };
     s.face_models_dir = lcc_engine::config::default_face_models_dir();
+    s.ml_models_dir = lcc_engine::config::default_ml_models_dir();
     s.lens_db = lcc_engine::lens_download::LensSettings::load(lcc_engine::config::config_dir());
     s.slide_templates_dir = lcc_engine::config::config_dir().map(|d| d.join(lcc_engine::slide_template::DIR_NAME));
     // Control requests are answered on the UI thread: Add to Apple Photos must not wait there
