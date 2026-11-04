@@ -9,3 +9,6 @@
 - Exporting an Original with Remove Location now refuses a file whose embedded XMP still holds GPS coordinates, even malformed ones.
 - A smart album viewed with "no stars" in the filter bar keeps that rating rule, Sync Settings with the Crop group puts a crop on each photo as what it means on that photo's frame, and the automatic memory budget no longer exceeds a small container's memory limit.
 - A `--memory` session writes no panic log.
+- A library the settings remember that isn't there at launch (an unmounted drive) is reported with Try Again instead of being created empty, and only `--library` creates one at launch.
+- The MCP `render_photo` tool returns the image in the reply, so it also works against an app on another machine, and more of the app is translated into Russian.
+- Settings can choose how many of a person's faces a name suggestion is based on (`faces.matching`).
