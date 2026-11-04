@@ -1803,6 +1803,7 @@ impl LccApp {
         if theme::current(ctx) != Some(wanted) {
             theme::apply_kind(ctx, wanted);
         }
+        theme::refresh_window_on_first_focus(ctx);
     }
 
     /// Draw the UI into an offscreen context at the window's size; with `capture`, rasterize it
