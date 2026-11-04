@@ -583,6 +583,10 @@ struct PngWriter {
 impl Backend for PngWriter {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         assert!(matches!(method, "ui.render" | "ui.screenshot"), "{method}");
+        // an app from before `ui.render {inline}`: it ignores the flag and renders without writing anything
+        if params.get("inline").and_then(Value::as_bool) == Some(true) {
+            return Ok(json!({"width": 1, "height": 1}));
+        }
         let path = std::path::PathBuf::from(params["path"].as_str().unwrap());
         self.seen.push((path.clone(), path.parent().and_then(|d| std::fs::symlink_metadata(d).ok())));
         if self.dies_mid_write {
