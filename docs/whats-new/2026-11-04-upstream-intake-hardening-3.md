@@ -4,3 +4,4 @@
 - Preset archives share one unpack budget across the packs inside them, brush masks have one stamp budget in all, and Defringe is faster on large radii.
 - Raw files with absurd preview tables, shared tile payloads or opcode lists are refused or capped instead of using gigabytes of memory.
 - The web app caps its render workers and plans a library restore before writing; `web --serve` only serves plain files inside the site.
+- Exporting to one explicit file path now follows the Conflict setting (unique by default, so an existing file is no longer replaced unless you ask): sidecars keep the chosen name, and a folder or a catalogued original as the path is refused.
