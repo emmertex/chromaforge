@@ -2966,14 +2966,14 @@ mod tests {
                 .output()
                 .expect("run fsutil sparse setflag on new synthetic fixture");
             assert!(set_sparse.status.success(), "fsutil sparse setflag failed: {}", String::from_utf8_lossy(&set_sparse.stderr));
-            let query_sparse = std::process::Command::new("C:/Windows/System32/fsutil.exe")
-                .args(["sparse", "queryflag"])
-                .arg(&path)
-                .output()
-                .expect("verify sparse flag on synthetic fixture");
-            assert!(query_sparse.status.success(), "fsutil sparse queryflag failed: {}", String::from_utf8_lossy(&query_sparse.stderr));
-            let query = format!("{}{}", String::from_utf8_lossy(&query_sparse.stdout), String::from_utf8_lossy(&query_sparse.stderr));
-            assert!(query.to_ascii_lowercase().contains("sparse"), "fsutil did not confirm a sparse fixture: {query}");
+            // fsutil's own answer is in the system's language; the file attribute isn't
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
+                let attributes = std::fs::metadata(&path).expect("read synthetic fixture attributes").file_attributes();
+                assert!(attributes & FILE_ATTRIBUTE_SPARSE_FILE != 0, "synthetic fixture is not sparse (attributes {attributes:#x})");
+            }
         }
 
         let mut file = std::fs::OpenOptions::new().write(true).open(&path).expect("open synthetic catalog");
