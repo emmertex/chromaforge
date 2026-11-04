@@ -31,6 +31,7 @@ mod drop_overlay;
 mod edit_in;
 mod enhance_pump;
 pub mod enhance_ui;
+pub mod export_module;
 pub mod export_task;
 pub mod eye_strip;
 pub mod eyedropper;

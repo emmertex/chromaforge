@@ -35,11 +35,14 @@ pub enum ModuleId {
     Slideshow,
     Print,
     Web,
+    /// Export as a module: the photos to export and the Export dialog's settings in a
+    /// resizable right column. Touch layouts keep the Export dialog (`crate::export_module`).
+    Export,
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 7] =
-        [ModuleId::Library, ModuleId::Develop, ModuleId::Map, ModuleId::Book, ModuleId::Slideshow, ModuleId::Print, ModuleId::Web];
+    pub const ALL: [ModuleId; 8] =
+        [ModuleId::Library, ModuleId::Develop, ModuleId::Map, ModuleId::Book, ModuleId::Slideshow, ModuleId::Print, ModuleId::Web, ModuleId::Export];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -50,6 +53,7 @@ impl ModuleId {
             ModuleId::Slideshow => "slideshow",
             ModuleId::Print => "print",
             ModuleId::Web => "web",
+            ModuleId::Export => "export",
         }
     }
 
@@ -62,6 +66,7 @@ impl ModuleId {
             ModuleId::Slideshow => "Slideshow",
             ModuleId::Print => "Print",
             ModuleId::Web => "Web",
+            ModuleId::Export => "Export",
         }
     }
 
@@ -85,6 +90,7 @@ impl ModuleId {
             ModuleId::Slideshow => "module.slideshow",
             ModuleId::Print => "module.print",
             ModuleId::Web => "module.web",
+            ModuleId::Export => "module.export",
         }
     }
 }
@@ -585,6 +591,7 @@ pub fn get(id: ModuleId) -> &'static dyn Module {
         ModuleId::Slideshow => &SLIDESHOW,
         ModuleId::Print => &PRINT,
         ModuleId::Web => &WEB,
+        ModuleId::Export => &crate::export_module::EXPORT,
     }
 }
 
@@ -789,6 +796,7 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("module.slideshow", "Slideshow", None, "Window>Modules"),
     ("module.print", "Print", None, "Window>Modules"),
     ("module.web", "Web", None, "Window>Modules"),
+    ("module.export", "Export", None, "Window>Modules"),
     ("module.previous", "Go Back to Previous Module", None, "Window"),
     ("module.help", "Module Shortcuts", None, "Help"),
     ("module.setVisible", "Show Module in Picker", None, ""),
