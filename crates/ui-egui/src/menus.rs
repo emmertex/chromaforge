@@ -177,13 +177,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("panel.masking", "Masking", Some("M"), "Window>Edit Panels"),
     ("panel.redeye", "Red Eye", None, "Window>Edit Panels"),
     // no default key: Shift+P is Lightroom Classic's pick-and-advance (a `shortcuts::ALIASES` entry)
-    ("panel.presets", "Presets", None, "Window>Panels"),
-    ("panel.info", "Info", Some("I"), "Window>Panels"),
-    ("panel.keywords", "Keywords", Some("K"), "Window>Panels"),
-    ("panel.versions", "Versions", Some("Shift+V"), "Window>Panels"),
+    ("panel.presets", "Presets", None, ""),
+    ("panel.info", "Info", Some("I"), ""),
+    ("panel.keywords", "Keywords", Some("K"), ""),
+    ("panel.versions", "Versions", Some("Shift+V"), ""),
     // Edit Keyword Tag for the keyword picked in the Keyword List (upstream #2879)
     ("panel.editKeywords", "Edit Keywords", Some("Cmd+Shift+K"), ""),
-    ("panel.activity", "History", None, "Window>Panels"),
+    ("panel.activity", "History", None, ""),
     ("panel.close", "Close Panel", None, ""),
     // the Color Mixer's layout {tab?: mixer|point, adjust?: hsl|color, group?: hue|sat|lum|all,
     // band?: red…magenta}: opens it in the Edit panel (the sliders are the mixer.* controls)
@@ -284,7 +284,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.syncSettings", "Sync Settings…", Some("Cmd+Shift+S"), "Photo>Develop Settings"),
     ("view.focusSearch", "Find…", Some("Cmd+F"), "Library"),
     ("dialog.import", "Import…", Some("Cmd+Shift+I"), "File"),
-    ("dialog.export", "Export…", None, "File"),
+    ("file.export", "Export…", None, "File"),
+    ("dialog.export", "Export Dialog…", None, ""),
     ("dialog.print", "Print…", Some("Cmd+P"), "File"),
     ("app.print", "Print to PDF", None, ""),
     ("dialog.contactSheet", "Contact Sheet PDF…", None, "File>More Exports"),
@@ -292,7 +293,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("photo.editInPhotoCraft", "Edit in PhotoCraft", Some("Cmd+Shift+E"), "Photo>Edit In"),
     ("photo.editInExternal", "Edit in Other Editor", Some("Cmd+Alt+E"), "Photo>Edit In"),
     ("dialog.editInPresets", "Edit In Presets…", None, "Photo>Edit In"),
-    ("panel.actions", "Actions", None, "Window>Panels"),
+    ("panel.actions", "Actions", None, ""),
     // {ids?, app?}: the original files themselves (a raw stays a raw: no render, no copy), opened
     // in the other editor, e.g. a raw developer
     ("photo.openOriginalInExternal", "Open Original in Other Editor (RAW, no copy)", None, "Photo>Edit In"),
@@ -355,20 +356,21 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.newLibrary", "New Library…", None, "File>Libraries"),
     ("app.openLibrary", "Open Library…", Some("Cmd+O"), "File>Libraries"),
     // catalogs (crate::catalog_ui)
-    ("catalog.new", "New Catalog…", None, "File>Catalog"),
-    ("catalog.open", "Open Catalog…", None, "File>Catalog"),
+    ("catalog.new", "New Catalog…", None, ""),
+    ("catalog.open", "Open Catalog…", None, ""),
     ("catalog.openRecent", "Open Recent Catalog", None, ""),
     ("catalog.chooser", "Choose Catalog…", None, ""),
     ("catalog.welcome", "Welcome…", None, ""),
     ("catalog.promptAtStartup", "Show the Catalog Chooser at Startup", None, ""),
     ("dialog.catalogSettings", "Catalog Settings…", None, "Edit"),
-    ("dialog.exportCatalog", "Export as Catalog…", None, "File>Catalog"),
+    ("dialog.exportCatalog", "Export as Catalog…", None, "File>Libraries"),
     ("dialog.importCatalog", "Import from Another Catalog…", None, "File>More Imports"),
     ("app.recentLibraries", "Recent Libraries", None, ""),
     ("app.clearRecentLibraries", "Clear Recent Libraries", None, ""),
     // Settings ▸ Display
     ("app.displayProfile", "Display Profile", None, ""),
     ("app.lensDbFolder", "Choose Lens Database Folder…", None, ""),
+    ("app.sam3Folder", "Choose SAM 3 Model Folder…", None, ""),
     ("app.folders", "Folders", None, ""),
     ("app.exportFolder", "Choose Export Folder…", None, ""),
     ("app.about", "About {app}", None, "Help"),
@@ -1172,6 +1174,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "app.clearRecentLibraries" => crate::panels::settings::recent_libraries(app, &json!({"clear": true})),
         "app.displayProfile" => crate::panels::settings::display_profile(app, p),
         "app.lensDbFolder" => crate::panels::settings::lens_db_folder(app, p),
+        "app.sam3Folder" => crate::panels::ai_models::sam3_folder_command(app, p),
         "app.folders" => Ok(crate::panels::settings_folders::folders(app)),
         "app.exportFolder" => crate::panels::settings_folders::export_folder(app, p),
         "file.backupLibrary" | "file.restoreLibrary" => {
@@ -2041,6 +2044,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             crate::export_task::start_contact_sheet(app, &params)
         }
+        // File ▸ Export…, ⇧E, the top bar's Export button: the Export module on the desktop, the
+        // dialog on touch layouts (no room there for the module's settings column)
+        "file.export" => {
+            let to = if crate::modern::on(app) { "dialog.export" } else { "module.export" };
+            app.run(to, json!({}))
+        }
         "dialog.export" => {
             let prev = app.session.last_export.clone().unwrap_or_default();
             let u = |k: &str, d: u64| prev.get(k).and_then(Value::as_u64).unwrap_or(d);
@@ -2080,7 +2089,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "dialog.mergeFocusStack" => crate::merge::open(app, "merge.focusStack"),
         "app.openSamModelFolder" => crate::panels::dialogs::show_model_folder(app),
         "dialog.aiModels" => {
-            app.ui.dialog = Some(Dialog::AiModels { error: None });
+            app.ui.dialog = Some(Dialog::Settings { tab: "ai".into() });
             Ok(json!({"open": true}))
         }
         "app.about" => {
@@ -3094,7 +3103,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
             !cfg!(target_arch = "wasm32") && !app.session.slideshow_export.as_ref().is_some_and(|r| r.running())
         }
         s if s.starts_with("panel.") || s.starts_with("tool.") || s.starts_with("section.") => app.session.active().is_some() || s == "panel.close",
-        "app.export" | "dialog.export" | "dialog.createPreset" | "dialog.rename" | "dialog.captureTime" | "dialog.copySettings" => {
+        "app.export" | "dialog.export" | "file.export" | "dialog.createPreset" | "dialog.rename" | "dialog.captureTime" | "dialog.copySettings" => {
             app.session.active().is_some()
         }
         "photo.tagFromTracklog" => app.session.active().is_some() && app.services.pick_tracklog.is_some(),

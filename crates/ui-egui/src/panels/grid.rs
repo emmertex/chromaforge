@@ -1843,7 +1843,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     ui.separator();
     if ui.button(crate::i18n::tr("Export…")).clicked() {
-        let _ = app.run("dialog.export", json!({}));
+        let _ = app.run("file.export", json!({}));
     }
     crate::widgets::menu_button(ui, crate::i18n::tr("Export with Preset"), |ui| {
         for (p, _) in app.session.all_export_presets() {

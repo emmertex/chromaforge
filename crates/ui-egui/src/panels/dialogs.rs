@@ -1883,7 +1883,7 @@ fn sam_by_hand(sam: &lcc_engine::segment::Segmenter) -> bool {
 }
 
 /// The model installation guide.
-const SAM_HELP: &str = lcc_brand::REPOSITORY;
+pub(crate) const SAM_HELP: &str = lcc_brand::REPOSITORY;
 
 /// Open the configured SAM 3 folder itself; revealing a file opens its parent instead.
 pub(crate) fn show_model_folder(app: &mut LccApp) -> Result<serde_json::Value, String> {
@@ -2241,28 +2241,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::PasteSettings { groups } => app.run("develop.paste", pick_params(groups)),
         Dialog::SyncSettings { groups, .. } => app.run("develop.sync", pick_params(groups)),
         Dialog::Export { opts, full_size, resize, limit_kb, dir, preset_name } => {
-            // a name typed in the preset name field is saved by Export too (the Add button is easy to miss)
-            if !preset_name.trim().is_empty() {
-                let params = preset_params(opts, *full_size, resize, *limit_kb, dir);
-                let saved = app.run("export.savePreset", json!({"name": preset_name.trim(), "params": params}));
-                if let Some(ctx) = app.tasks.repaint.clone() {
-                    match saved {
-                        Ok(_) => app.toast(&ctx, crate::i18n::tr_format!("Saved export preset “{}”", preset_name.trim())),
-                        Err(e) => app.toast(&ctx, e),
-                    }
-                }
-            }
-            let mut p = export_dialog_params(opts, *full_size, resize, *limit_kb);
-            // (Choose folder later: `app.export` asks for it)
-            if opts.destination_mode != lcc_engine::export::DestinationMode::ChooseLater {
-                p["dir"] = json!(dir);
-            }
-            p["background"] = json!(true);
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(d) = crate::panels::plugins::chosen_destination() {
-                p["pluginDestination"] = d;
-            }
-            app.run("app.export", p)
+            start_export(app, opts, *full_size, resize, *limit_kb, dir, preset_name)
         }
         Dialog::Merge { opts } => crate::merge::start_final(app, opts),
         Dialog::Enhance { opts } => crate::enhance_ui::confirm(app, opts),
@@ -2354,8 +2333,43 @@ pub fn prompt(app: &mut LccApp, title: &str, hint: &str, value: &str, command: &
         Some(Dialog::TextPrompt { title: title.into(), hint: hint.into(), value: value.into(), command: command.into(), params, key: key.into() });
 }
 
+/// Starts the export the Export dialog (or the Export module) is set up for: saves a preset name
+/// typed in the name field, then runs `app.export` in the background.
+pub(crate) fn start_export(
+    app: &mut LccApp,
+    opts: &lcc_engine::export::ExportOptions,
+    full_size: bool,
+    resize: &lcc_engine::export::Resize,
+    limit_kb: u32,
+    dir: &str,
+    preset_name: &str,
+) -> Result<serde_json::Value, String> {
+    // a name typed in the preset name field is saved by Export too (the Add button is easy to miss)
+    if !preset_name.trim().is_empty() {
+        let params = preset_params(opts, full_size, resize, limit_kb, dir);
+        let saved = app.run("export.savePreset", json!({"name": preset_name.trim(), "params": params}));
+        if let Some(ctx) = app.tasks.repaint.clone() {
+            match saved {
+                Ok(_) => app.toast(&ctx, crate::i18n::tr_format!("Saved export preset “{}”", preset_name.trim())),
+                Err(e) => app.toast(&ctx, e),
+            }
+        }
+    }
+    let mut p = export_dialog_params(opts, full_size, resize, limit_kb);
+    // (Choose folder later: `app.export` asks for it)
+    if opts.destination_mode != lcc_engine::export::DestinationMode::ChooseLater {
+        p["dir"] = json!(dir);
+    }
+    p["background"] = json!(true);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(d) = crate::panels::plugins::chosen_destination() {
+        p["pluginDestination"] = d;
+    }
+    app.run("app.export", p)
+}
+
 /// The Export dialog's choices as `app.export` params (without the folder).
-fn export_dialog_params(
+pub(crate) fn export_dialog_params(
     opts: &lcc_engine::export::ExportOptions,
     full_size: bool,
     resize: &lcc_engine::export::Resize,
@@ -2367,13 +2381,13 @@ fn export_dialog_params(
 }
 
 /// The Export dialog's fields, borrowed from [`Dialog::Export`].
-struct ExportForm<'a> {
-    opts: &'a mut lcc_engine::export::ExportOptions,
-    full_size: &'a mut bool,
-    resize: &'a mut lcc_engine::export::Resize,
-    preset_name: &'a mut String,
-    limit_kb: &'a mut u32,
-    dir: &'a mut String,
+pub(crate) struct ExportForm<'a> {
+    pub(crate) opts: &'a mut lcc_engine::export::ExportOptions,
+    pub(crate) full_size: &'a mut bool,
+    pub(crate) resize: &'a mut lcc_engine::export::Resize,
+    pub(crate) preset_name: &'a mut String,
+    pub(crate) limit_kb: &'a mut u32,
+    pub(crate) dir: &'a mut String,
 }
 
 /// The Export dialog's preset list column, in points.
@@ -2467,7 +2481,7 @@ fn preset_params(
 /// click; below, a name with Add (save the dialog's settings as a preset), Rename (the user preset
 /// picked, to the name typed) and Remove, then Import… (Lightroom Classic export presets,
 /// `.lcexport`) and Export… (the user presets as `.lcexport`).
-fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, max_h: f32) {
+pub(crate) fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, max_h: f32) {
     let ExportForm { opts, full_size, resize, preset_name, limit_kb, dir } = f;
     let t = Tokens::get(ui.ctx());
     let picked_id = egui::Id::new("export-preset-picked");
@@ -2805,7 +2819,7 @@ fn label_of<V: PartialEq + Copy>(options: &[(V, &str)], value: V) -> String {
 
 /// The Export dialog's settings, in Lightroom Classic's order (see [`export_body`]). `presets_here`:
 /// no preset column beside them (a narrow window), so the Preset menu and the save row are here.
-fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, presets_here: bool) {
+pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<'_>, presets_here: bool) {
     use lcc_engine::export::{
         Conflict as K, DestinationMode as D, ExportFormat as F, MetadataPolicy as M, OutputSpace as C, ResizeMode as R, SharpenAmount as A,
         SharpenFor as S,

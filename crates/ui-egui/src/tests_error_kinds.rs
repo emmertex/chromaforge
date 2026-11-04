@@ -23,7 +23,7 @@ fn ai_mask_errors_offer_the_model_by_kind() {
     let missing = CommandError { message: "Das SAM-3-Modell ist nicht installiert".into(), kind: ErrorKind::ModelMissing(AiModel::Sam3) };
     h.app.ai_error(&ctx, missing, Some(("object", "new")));
     if Segmenter::AVAILABLE {
-        assert_eq!(h.app.ui.dialog, Some(Dialog::SamModel { then: Some(("object".into(), "new".into())), error: None }));
+        assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "ai".into() }));
     } else {
         assert_eq!(h.app.ui.dialog, None, "a build without AI masks has nothing to offer");
     }
@@ -88,12 +88,12 @@ fn a_missing_sam2_opens_the_ai_models_dialog() {
         assert_eq!(h.app.ui.dialog, None);
         return;
     }
-    assert_eq!(h.app.ui.dialog, Some(Dialog::AiModels { error: None }));
+    assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "ai".into() }));
     h.app.ui.dialog = None;
     h.app.run("dialog.aiModels", json!({})).unwrap();
-    assert!(matches!(h.app.ui.dialog, Some(Dialog::AiModels { .. })));
+    assert!(matches!(&h.app.ui.dialog, Some(Dialog::Settings { tab }) if tab == "ai"));
     h.step();
-    assert!(matches!(h.app.ui.dialog, Some(Dialog::AiModels { .. })), "it stays open while shown");
+    assert!(matches!(&h.app.ui.dialog, Some(Dialog::Settings { tab }) if tab == "ai"), "it stays open while shown");
 }
 
 /// In a build with AI masks, the AI Models dialog offers the open MediaPipe people and face

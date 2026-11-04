@@ -413,6 +413,8 @@ pub struct AppSettings {
     /// Libraries opened recently, newest first (File ▸ Open Recent Library; at most
     /// [`RECENT_LIBRARIES`]).
     pub recent_libraries: Vec<String>,
+    /// Where the SAM 3 model is kept (Settings ▸ AI Models); empty = the default folder.
+    pub sam3_dir: String,
     /// When each recent library was last opened (path → the session clock's ISO 8601 time), for
     /// the launch window. A separate key so files from earlier versions, and earlier versions
     /// reading this one, keep their list (issue #1290).
@@ -662,6 +664,7 @@ impl Default for AppSettings {
         AppSettings {
             library_path: String::new(),
             recent_libraries: Vec::new(),
+            sam3_dir: String::new(),
             recent_opened: Default::default(),
             at_launch: LaunchLibrary::Last,
             startup_view: StartupView::Last,
@@ -1289,6 +1292,10 @@ pub struct UiState {
     /// are dropped on load, so a hand-edited file can't keep the other settings from loading.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", deserialize_with = "deserialize_section_open")]
     pub section_open: std::collections::BTreeMap<String, bool>,
+    /// Tree rows the user folded or unfolded in the sidebar (folders, collections/albums, etc.),
+    /// remembered across sessions (issue #774).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tree_open: std::collections::BTreeMap<String, bool>,
     /// A face's name being typed in the loupe.
     #[serde(skip)]
     pub name_edit: Option<NameEdit>,
@@ -2289,6 +2296,7 @@ impl Default for UiState {
             collapsed_sidebar: Vec::new(),
             group_open: Default::default(),
             section_open: Default::default(),
+            tree_open: Default::default(),
             name_edit: None,
             person_page: None,
             person_from: None,
@@ -2619,6 +2627,16 @@ impl UiState {
     /// when it holds the current preset or profile (`holds_current`).
     pub fn group_is_open(&self, key: &str, holds_current: bool) -> bool {
         self.group_open.get(key).copied().unwrap_or(holds_current)
+    }
+
+    /// Whether the sidebar tree row `key` is open (remembered across sessions, issue #774).
+    pub fn tree_is_open(&self, key: &str, default: bool) -> bool {
+        self.tree_open.get(key).copied().unwrap_or(default)
+    }
+
+    /// Open or close the sidebar tree row `key`.
+    pub fn set_tree_open(&mut self, key: &str, open: bool) {
+        self.tree_open.insert(key.to_string(), open);
     }
 
     /// Whether the sidebar section or panel with this id is folded shut (one never folded: no).

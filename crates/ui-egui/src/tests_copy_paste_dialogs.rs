@@ -120,5 +120,6 @@ fn library_left_bar_opens_export() {
     h.app.run("module.library", json!({})).unwrap();
     h.app.run("panel.left", json!({"show": true})).unwrap();
     click(&mut h, "button:leftBar-export");
-    assert!(matches!(h.app.ui.dialog, Some(Dialog::Export { .. })), "Export… opens Export: {:?}", h.app.ui.dialog);
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Export, "Export… opens the Export module");
+    assert!(h.app.ui.dialog.is_none(), "not the dialog: {:?}", h.app.ui.dialog);
 }

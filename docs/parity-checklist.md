@@ -604,7 +604,7 @@ visible menu bar yet: the menu model is only exposed through the control channel
 | MENU-FILE-NEWFOLDER | New Folder… | P0 | ✅ | `cmd:dialog.newFolder` | ⇧⌘N; Library menu |
 | MENU-FILE-NEWSMART | New Smart Album… | P1 | ✅ | `cmd:dialog.newSmartAlbum` | saves the current view (source + filter); Library menu |
 | MENU-FILE-IMPORTPROFILES | Import Profiles & Presets… | P1 | ✅ | `cmd:file.importPresets` | presets in every common format and .cube LUT profiles (see LR-IMP-PROFILES) |
-| MENU-FILE-EXPORT | Export… | P0 | ✅ | `cmd:dialog.export` | |
+| MENU-FILE-EXPORT | Export… | P0 | ✅ | `cmd:file.export`, `cmd:module.export`, `cmd:dialog.export` | opens the Export module (photo preview, settings in a resizable right column, `crates/ui-egui/src/export_module.rs`); touch layouts open the Export dialog |
 | MENU-FILE-EXPORTPREV | Export with Previous | P0 | ✅ | `cmd:app.exportPrevious` | ⌥⇧⌘E |
 | MENU-FILE-EXPORTPRESETS | Export preset submenu | P0 | ✅ | `cmd:app.export` (`preset`), `crates/ui-egui/src/menubar.rs` (Export with Preset) | built-ins, then user presets, then Custom… (the dialog); exports to the last folder |
 | MENU-FILE-SHARE | Share / get link / invite | OOS | 🚫 | | |
@@ -728,7 +728,7 @@ From `06-shortcuts.md` part 1. Evidence is our binding; conflicts are explained 
 | KEY-TOGGLEZOOM | Toggle zoom — Space | P0 | ✅ | `cmd:view.zoomToggle`, `crates/ui-egui/src/space_hand.rs`, `crates/ui-egui/src/tests_space_hand.rs` | Space is a secondary binding (primary Z); held, it toggles once (the key's auto-repeat no longer flips the zoom back and forth). With a tool on the photo (Masking, Remove, Red Eye, the white-balance / colour-range / point-colour pickers, a targeted adjustment) held Space is the view's hand until the key is up, as in Lightroom: a click zooms to the click-zoom ratio at the point clicked (or back to Fit), a drag pans the zoomed photo (grab cursor; zoom-in cursor at Fit), and the tool gets neither; a tap (under 0.4 s, no click) toggles the zoom on its release (issue #1895) |
 | KEY-MASKCOLOR | Cycle mask colour — ⇧O | P1 | ✅ | `cmd:view.maskOverlayColor`, `crates/ui-egui/src/shortcuts.rs` | ⇧O while masking cycles the overlay colour (while cropping: the guides' orientation); the overlay mode is in View ▸ Tool Overlay ▸ Cycle Mask Overlay Mode |
 | KEY-EXPORTPREV | Export with previous — ⌘E | P0 | ✅ | `cmd:app.exportPrevious` | ⌘E (alias) and ⌥⇧⌘E (Classic) |
-| KEY-EXPORTDIALOG | Export dialog — ⇧E | P0 | ✅ | `cmd:dialog.export` | secondary binding (primary ⌘⇧E) |
+| KEY-EXPORTDIALOG | Export dialog — ⇧E | P0 | ✅ | `cmd:file.export` | secondary binding (primary ⌘⇧E) |
 | KEY-ENTERFULLSCREEN | Window full screen — ⇧⌘F | P1 | ✅ | `cmd:view.enterFullScreen` | |
 | KEY-STACK | Group / ungroup stack — ⌘G / ⇧⌘G | P1 | ✅ | `cmd:stack.group`, `cmd:stack.ungroup` | also S expand/collapse, ⇧S top of stack |
 | KEY-GUIDEDUPRIGHT | Guided Upright — ⇧G | P1 | ✅ | `cmd:tool.guidedUpright`, `cmd:geometry.upright` | opens Crop & Geometry with Guided Upright on and the guide tool active; G toggles Photo Grid ↔ Square Grid (`cmd:view.gridToggle`) as observed |

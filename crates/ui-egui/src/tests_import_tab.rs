@@ -63,7 +63,7 @@ fn import_is_a_tab_by_default_and_browsing_shows_it() {
     let mut h = app([1400.0, 900.0], "classic");
     assert!(h.app.ui.settings.import_as_tab, "the default");
     h.settle(SETTLE);
-    assert!(has_widget(&mut h, "button:tab-import"), "the Import | Library switch is in the top bar");
+    assert!(has_widget(&mut h, "module:import"), "Import is in the module bar with Library, Develop…");
     exec(&mut h, "dialog.import", json!({}));
     assert_eq!(h.app.ui.tab, Tab::Import);
     assert!(!matches!(h.app.ui.dialog, Some(Dialog::Import { .. })), "no review dialog");
@@ -88,7 +88,7 @@ fn with_the_option_off_import_opens_the_review_as_before() {
     let mut h = app([1400.0, 900.0], "classic");
     h.app.ui.settings.import_as_tab = false;
     h.settle(SETTLE);
-    assert!(!has_widget(&mut h, "button:tab-import"), "no tabs");
+    assert!(!has_widget(&mut h, "module:import"), "no Import entry");
     exec(&mut h, "dialog.import", json!({}));
     assert!(matches!(h.app.ui.dialog, Some(Dialog::Import { .. })), "the review");
     h.app.ui.dialog = None;

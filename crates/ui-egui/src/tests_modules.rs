@@ -496,3 +496,35 @@ fn identity_plate_setup_edits_the_plate_and_cancel_restores_it() {
     let r = h.request("engine.execute", json!({"command": "view.identityPlate", "params": {"kind": "banner"}}), T);
     assert_eq!(r["ok"], false, "{r}");
 }
+
+/// The Export module previews what is exported and starts the export from its column; the
+/// settings column can be dragged narrower.
+#[test]
+fn export_module_previews_and_resizes() {
+    let mut h = demo();
+    run(&mut h, "library.selectAll", json!({}));
+    run(&mut h, "module.export", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.module, ModuleId::Export);
+    assert!(h.app.ui.dialog.is_none(), "the desktop layout shows the module, not the dialog");
+    for id in ["module:export", "view:export:preview", "panel:export:settings", "button:export:start"] {
+        assert!(has_widget(&h, id), "{id}");
+    }
+    let width = |h: &Headless| h.app.widgets.iter().find(|(w, _)| w == "panel:export:settings").map(|(_, r)| r.width()).unwrap();
+    let before = width(&h);
+    let handle = h.app.widgets.iter().find(|(w, _)| w == "handle:export:column").map(|(_, r)| r.center()).unwrap();
+    let r = h.request("ui.drag", json!({"x": handle.x, "y": handle.y, "toX": handle.x + 80.0, "toY": handle.y, "steps": 8}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(width(&h) < before, "dragging the edge right narrows the column");
+}
+
+/// File ▸ Export… (⇧E, the top bar's Export button) opens the Export module on the desktop.
+#[test]
+fn file_export_opens_the_module() {
+    let mut h = demo();
+    run(&mut h, "file.export", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.module, ModuleId::Export);
+    assert!(h.app.ui.dialog.is_none());
+}

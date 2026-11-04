@@ -14,6 +14,91 @@ const OBJECT_MODELS: &[(&str, &str)] = &[("auto", "Automatic"), ("sam3", "SAM 3"
 /// The Sky / Landscape / People model choices: (command value, label).
 const SCENE_MODELS: &[(&str, &str)] = &[("analysis", "Photo analysis"), ("eomt", "EoMT")];
 
+/// Settings ▸ AI Models: every AI model in one place, with its download, and where SAM 3 is kept.
+pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    let key = egui::Id::new("ai-models-error");
+    let mut error: Option<String> = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    super::settings::heading(ui, t, "AI Models");
+    body(app, ui, &mut error);
+    ui.data_mut(|d| d.insert_temp(key, error));
+    sam3_folder(app, ui, t);
+    super::faces::models_section(app, ui, t);
+    super::denoise::other_models_section(app, ui, t);
+}
+
+/// `app.sam3Folder {dir?}`: keep the SAM 3 model in `dir` (empty: the default folder); without it, a folder dialog.
+pub fn sam3_folder_command(app: &mut LccApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let dir = match p.get("dir").and_then(serde_json::Value::as_str) {
+        Some(d) => d.trim().to_string(),
+        None => {
+            let req = crate::pick::PickRequest::folder(crate::i18n::tr("Choose SAM 3 Model Folder"));
+            match crate::pick::ask(app, "app.sam3Folder", p, "dir", req, |s| s.pick_folder.as_mut().and_then(|f| f()).map(|x| vec![x])) {
+                crate::pick::Picked::Now(v) => match v.into_iter().next() {
+                    Some(d) => d,
+                    None => return Ok(serde_json::Value::Null),
+                },
+                crate::pick::Picked::Later => return Ok(serde_json::Value::Null),
+                crate::pick::Picked::Unavailable => return Err("no folder dialog here: pass {dir}".into()),
+            }
+        }
+    };
+    app.ui.settings.sam3_dir = dir.clone();
+    Ok(json!({"dir": dir}))
+}
+
+/// Where the SAM 3 model is kept: the folder it downloads to, or is installed by hand into.
+fn sam3_folder(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    super::settings::heading(ui, t, "SAM 3 model folder");
+    let current = app.session.segmenter.dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
+    let custom = !app.ui.settings.sam3_dir.is_empty();
+    super::settings::hint(ui, t, "SAM 3 is large. Choose another folder (another drive, say), or point to one that already holds it.");
+    super::settings::row(ui, t, crate::i18n::tr("Folder"), |ui| {
+        ui.add(egui::Label::new(egui::RichText::new(if current.is_empty() { "—".to_string() } else { current.clone() }).color(t.text)).truncate());
+    });
+    ui.horizontal(|ui| {
+        let can = app.services.picker.is_some() || app.services.pick_folder.is_some();
+        let r = ui.add_enabled(can, egui::Button::new(crate::i18n::tr("Choose…")));
+        crate::widgets::register(ui.ctx(), "button:samFolderChoose", r.rect);
+        if r.clicked()
+            && let Err(e) = app.run("app.sam3Folder", json!({}))
+        {
+            app.toast_error(ui.ctx(), e);
+        }
+        if custom {
+            let r = ui.button(crate::i18n::tr("Use the Default Folder"));
+            crate::widgets::register(ui.ctx(), "button:samFolderDefault", r.rect);
+            if r.clicked() {
+                let _ = app.run("app.sam3Folder", json!({"dir": ""}));
+            }
+        }
+        if app.session.segmenter.dir.is_some() && crate::menus::ui_enabled(app, "app.openSamModelFolder") {
+            let r = ui.button(crate::i18n::tr(crate::menus::reveal_label()));
+            crate::widgets::register(ui.ctx(), "button:samFolder", r.rect);
+            if r.clicked()
+                && let Err(e) = app.run("app.openSamModelFolder", json!({}))
+            {
+                app.toast_error(ui.ctx(), e);
+            }
+        }
+    });
+    if app.session.segmenter.mirrors().is_empty() {
+        super::settings::hint(
+            ui,
+            t,
+            "This build has no download address for SAM 3: put model.safetensors, vocab.json and merges.txt from Meta's facebook/sam3 in the folder above, and Object and Describe masks work as soon as they are there.",
+        );
+        let help = super::dialogs::SAM_HELP;
+        let r = ui.link(crate::i18n::tr("How to install the model")).on_hover_text(help);
+        crate::widgets::register(ui.ctx(), "link:samHelp", r.rect);
+        if r.clicked()
+            && let Err(e) = crate::links::open(app, help)
+        {
+            app.toast(ui.ctx(), e);
+        }
+    }
+    super::settings::hint(ui, t, "Changing the folder doesn't move a model already downloaded: copy its files over, or download it again.");
+}
+
 pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
     let t = Tokens::get(ui.ctx());
     ui.label(crate::i18n::tr("AI masks use models that aren't part of {app}. Each is a one-time download; everything else works without them."));

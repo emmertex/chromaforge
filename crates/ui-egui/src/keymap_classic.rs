@@ -74,6 +74,7 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     ("module.slideshow", Some("Cmd+Alt+5")),
     ("module.print", Some("Cmd+Alt+6")),
     ("module.web", Some("Cmd+Alt+7")),
+    ("module.export", Some("Cmd+Alt+8")),
     ("module.previous", Some("Cmd+Alt+Up")),
     // panels and screen
     ("panel.sides", Some("Tab")),

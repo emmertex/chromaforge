@@ -553,6 +553,9 @@ pub struct Session {
     /// Reject Closed and Blurry Eyes running in the background, and what it has finished so far.
     pub(crate) eye_cull: Option<Arc<eye_cull::EyeCullRun>>,
     pub(crate) eye_cull_results: Vec<(PhotoId, std::result::Result<Arc<eyes::EyeReport>, String>)>,
+    /// Detect Faces running in the background, and what it has finished so far.
+    pub(crate) face_detect: Option<Arc<cmd::face_detect::DetectRun>>,
+    pub(crate) face_detect_results: Vec<(PhotoId, std::result::Result<Vec<lcc_faces::yunet::Face>, String>)>,
     /// The last `eyes.analyze` run in the background.
     pub(crate) eye_prep: Option<Arc<eye_prep::EyePrep>>,
     /// Look-alike signatures by content key (Find Similar).
@@ -808,6 +811,8 @@ impl Session {
             naming_presets: Vec::new(),
             eye_cull: None,
             eye_cull_results: Vec::new(),
+            face_detect: None,
+            face_detect_results: Vec::new(),
             eye_prep: None,
             signatures: Default::default(),
             lut_profiles: Vec::new(),

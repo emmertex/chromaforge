@@ -1875,7 +1875,7 @@ fn ai_masks_without_the_model_offer_the_download() {
         assert!(h.app.ui.dialog.is_none());
         return;
     }
-    assert_eq!(h.app.ui.dialog, Some(Dialog::SamModel { then: Some(("object".into(), "new".into())), error: None }));
+    assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "ai".into() }));
     assert!(!h.app.session.segmenter.download_status().running, "nothing downloads without a yes");
     if h.app.session.segmenter.mirrors().is_empty() {
         // no location configured in this build: no Download button (only Close), and an agent
@@ -1891,32 +1891,22 @@ fn ai_masks_without_the_model_offer_the_download() {
             Ok(())
         }));
         h.step();
+        crate::settings_screen::reveal(&mut h, "button:samFolder");
         let r = h.request("ui.clickWidget", json!({"id": "button:samFolder"}), T);
         assert_eq!(r["ok"], true, "{r}");
         assert!(dir.is_dir(), "the model folder is created to be shown");
         assert_eq!(*shown.lock().unwrap(), vec![dir.to_string_lossy().to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
-        let r = h.request("ui.clickWidget", json!({"id": "button:dialogOk"}), T);
-        assert_eq!(r["ok"], false, "{r}");
-        let r = h.request("ui.dialog.confirm", json!({}), T);
-        assert_eq!(r["ok"], false, "{r}");
-        assert!(r["error"].as_str().unwrap_or_default().contains(&lcc_brand::env_var("SAM3_MIRRORS")), "{r}");
-        assert!(matches!(h.app.ui.dialog, Some(Dialog::SamModel { .. })), "stays open");
-    } else {
-        // with a mirror: Download starts it in the background (here it fails: nothing listens)
-        let r = h.request("ui.clickWidget", json!({"id": "button:dialogOk"}), T);
-        assert_eq!(r["ok"], true, "{r}");
+        // Settings ▸ AI has no download to confirm here: confirming just closes it
+        assert!(matches!(&h.app.ui.dialog, Some(Dialog::Settings { tab }) if tab == "ai"), "stays open");
     }
-    // (a frame with the message laid out, so the buttons are where they are drawn)
-    h.step();
-    h.step();
-    let r = h.request("ui.clickWidget", json!({"id": "button:dialogCancel"}), T);
+    let r = h.request("ui.dialog.confirm", json!({}), T);
     assert_eq!(r["ok"], true, "{r}");
     assert!(h.app.ui.dialog.is_none());
     // Describe asks too
     let r = h.request("ui.clickWidget", json!({"id": "maskNew:prompt"}), T);
     assert_eq!(r["ok"], true, "{r}");
-    assert_eq!(h.app.ui.dialog, Some(Dialog::SamModel { then: Some(("prompt".into(), "new".into())), error: None }));
+    assert_eq!(h.app.ui.dialog, Some(Dialog::Settings { tab: "ai".into() }));
     assert_eq!(h.app.ui.describe, None);
     // a click command from an agent gets the not-installed error at once, and the app offers the model
     let e = h.app.run("mask.add", json!({"kind": "prompt", "text": "sky"})).unwrap_err();

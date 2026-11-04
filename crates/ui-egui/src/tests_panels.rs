@@ -3090,7 +3090,7 @@ fn an_imported_folder_is_listed_by_its_own_name() {
 }
 
 #[test]
-fn export_folder_shows_the_folder_selects_its_photos_and_opens_the_dialog() {
+fn export_folder_shows_the_folder_selects_its_photos_and_opens_export() {
     let mut h = folders_app_with_services(
         &["/pics/trip/a.jpg", "/pics/trip/day2/b.jpg", "/pics/home/c.jpg", "/Volumes/nas/d.jpg"],
         [1400.0, 900.0],
@@ -3113,7 +3113,7 @@ fn export_folder_shows_the_folder_selects_its_photos_and_opens_the_dialog() {
     let selected: std::collections::BTreeSet<u64> = h.app.session.selection.ids.iter().map(|i| i.0).collect();
     assert_eq!(selected.len(), 2, "the folder's photo and the one in the folder inside it");
     assert_eq!(selected, photos_in(&h, "/pics/trip"));
-    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::Export { .. })), "the Export dialog is open");
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Export, "the Export module is open");
     assert!(!popup_open(&h), "choosing closes the menu");
 }
 
@@ -3242,4 +3242,58 @@ fn space_zooms_to_is_a_choice_in_the_view_menu() {
     // a settings file with a word it doesn't know reads as the default
     let s: crate::state::AppSettings = serde_json::from_value(json!({"spaceZoom": "nose"})).expect("lenient");
     assert_eq!(s.space_zoom, SpaceZoom::FocusPoint);
+}
+
+/// Issue #774: folders and collections remember their open/closed state across sessions.
+#[test]
+fn remembering_folder_and_collection_conditions_across_sessions() {
+    let mut h = folders_app(&["/pics/sub/a.jpg", "/pics/sub/b.jpg", "/pics/other/c.jpg"]);
+    let make = |h: &mut Headless, params: serde_json::Value| h.app.session.execute("album.create", &params).unwrap()["id"].as_u64().unwrap();
+    let trips = make(&mut h, json!({"name": "Trips", "folder": true}));
+    let europe = make(&mut h, json!({"name": "Europe", "folder": true, "parent": trips}));
+    let _best = make(&mut h, json!({"name": "Best", "parent": europe}));
+    h.settle(SETTLE);
+
+    // Initial state: /pics subfolders folded, album folders start open
+    assert!(!has(&h, "source:libfolder:/pics/sub"));
+    assert!(has(&h, &format!("albumToggle:{trips}")));
+    assert!(has(&h, &format!("albumToggle:{europe}")));
+
+    // Unfold /pics folder in Folders
+    click(&mut h, "libraryFolderToggle:/pics");
+    assert!(has(&h, "source:libfolder:/pics/sub"));
+
+    // Collapse Europe album folder in Collections
+    click(&mut h, &format!("albumToggle:{europe}"));
+
+    // Serialize ui state to JSON as the app writer does on quit
+    let saved_ui = serde_json::to_value(&h.app.ui).unwrap();
+
+    // Verify tree_open recorded the conditions
+    assert_eq!(h.app.ui.tree_open.get("libfolder:/pics"), Some(&true));
+    assert_eq!(h.app.ui.tree_open.get(&format!("album:{europe}")), Some(&false));
+
+    // Deserialized UiState preserves tree_open
+    let restored = serde_json::from_value::<crate::UiState>(saved_ui.clone()).unwrap().sanitized();
+    assert_eq!(restored.tree_open.get("libfolder:/pics"), Some(&true));
+    assert_eq!(restored.tree_open.get(&format!("album:{europe}")), Some(&false));
+
+    // Re-create app session with restored ui settings
+    let mut h2 = folders_app_prepared(
+        &["/pics/sub/a.jpg", "/pics/sub/b.jpg", "/pics/other/c.jpg"],
+        [1400.0, 980.0],
+        serde_json::json!({"view": "photoGrid", "leftPanel": true, "moduleBar": false}),
+        Services { png: None, ..Default::default() },
+        |app| {
+            app.ui = restored.clone();
+        },
+    );
+    let trips2 = make(&mut h2, json!({"name": "Trips", "folder": true}));
+    let europe2 = make(&mut h2, json!({"name": "Europe", "folder": true, "parent": trips2}));
+    let _best2 = make(&mut h2, json!({"name": "Best", "parent": europe2}));
+    h2.settle(SETTLE);
+
+    // In restored session, /pics folder stays open, and Europe album folder stays collapsed!
+    assert!(has(&h2, "source:libfolder:/pics/sub"), "remembered /pics was expanded");
+    assert_eq!(h2.app.ui.tree_open.get(&format!("album:{europe2}")), Some(&false));
 }
