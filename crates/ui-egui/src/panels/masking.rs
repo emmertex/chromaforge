@@ -186,15 +186,15 @@ fn kind_label(s: &MaskShape) -> (&'static str, Icon) {
     (label, kind_icon(kind))
 }
 
-const TILE: f32 = 52.0;
+const TILE_MAX: f32 = 68.0;
 const TILE_GAP: f32 = 6.0;
 /// Room left and right of a tile's label.
 const TILE_PAD: f32 = 3.0;
 
 /// Columns, tile width and label size of the Create New Mask grid in `width`, `label(size)` being
-/// the widest label at a font size: four tiles of up to 52 pt (at least 48), else three, else two —
-/// the first that fits the labels at 10.5 pt, or at 9.5 pt before a column is dropped. A tile grows
-/// past 52 pt for a long (translated) label. In a panel too narrow even for that, two tiles whose
+/// the widest label at a font size: four tiles (up to 68 pt when room allows, at least 48 pt),
+/// else three, else two — the first that fits the labels at 10.5 pt, or at 9.5 pt before a column is dropped.
+/// A tile grows past 68 pt for a long (translated) label. In a panel too narrow even for that, two tiles whose
 /// labels are cut short.
 fn tile_layout(width: f32, label: impl Fn(f32) -> f32) -> (usize, f32, f32) {
     let room = |n: usize| ((width - (n as f32 - 1.0) * TILE_GAP) / n as f32).floor();
@@ -206,7 +206,9 @@ fn tile_layout(width: f32, label: impl Fn(f32) -> f32) -> (usize, f32, f32) {
         for size in [10.5, 9.5] {
             let need = (label(size) + 2.0 * TILE_PAD).ceil();
             if need <= w {
-                return (n, w.min(TILE.max(need)), size);
+                let max_tile = TILE_MAX.max(need);
+                let target = w.min(max_tile);
+                return (n, target, size);
             }
         }
     }
@@ -247,8 +249,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         let (cols, tile, size) = tile_layout(ui.available_width(), widest);
         let compact = crate::theme::compact(ui.ctx());
         let grid_w = cols as f32 * tile + (cols as f32 - 1.0) * TILE_GAP;
-        let pad = ((ui.available_width() - grid_w) / 2.0).max(0.0);
+        let pad = ((ui.available_width() + 4.0 - grid_w) / 2.0).clamp(0.0, (ui.available_width() - grid_w).max(0.0));
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(pad);
             egui::Grid::new("mask-tiles").spacing(vec2(TILE_GAP, TILE_GAP)).show(ui, |ui| {
                 for (i, (kind, label)) in tiles.iter().enumerate() {
@@ -726,6 +729,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         ui.horizontal(|ui| {
                             let total_w = 4.0 * 32.0 + 3.0 * 4.0;
                             let pad = ((ui.available_width() - total_w) / 2.0).max(0.0);
+                            ui.spacing_mut().item_spacing.x = 0.0;
                             ui.add_space(pad);
                             ui.spacing_mut().item_spacing.x = 4.0;
                             let add = mask_icon(ui, "maskAddComp", Icon::MaskAdd, "Add", false);
@@ -1540,6 +1544,7 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
     };
     match shape {
         MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather } => {
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(crate::i18n::tr("Select Luminance Range")).color(t.text_dim));
                 let picking = app.ui.tool == "lumRange";
@@ -1550,33 +1555,32 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
                     app.ui.tool = if picking { String::new() } else { "lumRange".into() };
                 }
             });
+            ui.add_space(4.0);
             let (lo, hi) = (*lo, *hi);
-            let w = ui.available_width().min(240.0);
-            let (rect, resp) = ui.allocate_exact_size(vec2(w, 18.0), Sense::click_and_drag());
+            let total_w = ui.available_width();
+            let track_h = 18.0;
+            let (rect, resp) = ui.allocate_exact_size(vec2(total_w, 24.0), Sense::click_and_drag());
             crate::widgets::announce(&resp, crate::i18n::tr("Select Luminance Range"));
-            register(ui.ctx(), format!("lumRange:{comp}"), rect);
+            let track_rect = Rect::from_min_size(rect.min, vec2(total_w, track_h));
+            register(ui.ctx(), format!("lumRange:{comp}"), track_rect);
             let p = ui.painter();
-            // dark → light ramp, the selected span outlined
-            let n = 24;
-            for k in 0..n {
-                let a = k as f32 / n as f32;
-                let r = Rect::from_min_max(
-                    pos2(rect.left() + a * w, rect.top() + 4.0),
-                    pos2(rect.left() + (a + 1.0 / n as f32) * w + 0.5, rect.bottom() - 4.0),
-                );
-                let g = (a * 255.0) as u8;
-                p.rect_filled(r, 0.0, egui::Color32::from_gray(g));
-            }
-            let x = |v: f64| rect.left() + v.clamp(0.0, 1.0) as f32 * w;
-            p.rect_stroke(
-                Rect::from_min_max(pos2(x(lo), rect.top() + 2.0), pos2(x(hi), rect.bottom() - 2.0)),
-                2.0,
-                Stroke::new(1.5, t.accent),
-                egui::StrokeKind::Middle,
-            );
+            // smooth horizontal gradient: black to white
+            let mut mesh = egui::Mesh::default();
+            mesh.vertices.push(egui::epaint::Vertex { pos: track_rect.left_top(), uv: egui::epaint::WHITE_UV, color: egui::Color32::BLACK });
+            mesh.vertices.push(egui::epaint::Vertex { pos: track_rect.left_bottom(), uv: egui::epaint::WHITE_UV, color: egui::Color32::BLACK });
+            mesh.vertices.push(egui::epaint::Vertex { pos: track_rect.right_top(), uv: egui::epaint::WHITE_UV, color: egui::Color32::WHITE });
+            mesh.vertices.push(egui::epaint::Vertex { pos: track_rect.right_bottom(), uv: egui::epaint::WHITE_UV, color: egui::Color32::WHITE });
+            mesh.indices.extend_from_slice(&[0, 1, 2, 2, 1, 3]);
+            p.add(egui::Shape::mesh(mesh));
+            p.rect_stroke(track_rect, 0.0, Stroke::new(1.0, egui::Color32::from_gray(60)), egui::StrokeKind::Inside);
+
+            let x = |v: f64| track_rect.left() + v.clamp(0.0, 1.0) as f32 * total_w;
+            // High/low threshold indicators: vertical line across track and circular pin handle at bottom
             for v in [lo, hi] {
-                p.circle_filled(pos2(x(v), rect.center().y), 5.0, egui::Color32::WHITE);
-                p.circle_stroke(pos2(x(v), rect.center().y), 5.0, Stroke::new(1.0, egui::Color32::from_gray(40)));
+                let px = x(v);
+                p.line_segment([pos2(px, track_rect.top()), pos2(px, track_rect.bottom())], Stroke::new(1.5, t.accent));
+                p.circle_filled(pos2(px, track_rect.bottom()), 4.5, egui::Color32::WHITE);
+                p.circle_stroke(pos2(px, track_rect.bottom()), 4.5, Stroke::new(1.5, t.accent));
             }
             // Choose at the press position, then keep that handle for the entire drag. Testing
             // proximity on every frame can move the opposite endpoint after a fast/crossing drag.
@@ -1591,7 +1595,7 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
             if (resp.dragged() || resp.clicked())
                 && let Some(pos) = resp.interact_pointer_pos()
             {
-                let v = (((pos.x - rect.left()) / w) as f64).clamp(0.0, 1.0);
+                let v = (((pos.x - track_rect.left()) / total_w) as f64).clamp(0.0, 1.0);
                 let low =
                     if resp.dragged() { ui.data(|d| d.get_temp::<bool>(handle_id)).unwrap_or_else(|| nearer_low(pos.x)) } else { nearer_low(pos.x) };
                 let (nlo, nhi) = if low { (v.min((hi - 0.01).max(0.0)), hi) } else { (lo, v.max((lo + 0.01).min(1.0))) };
@@ -1601,6 +1605,7 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
                 ui.data_mut(|d| d.remove::<bool>(handle_id));
                 let _ = app.run("develop.endInteraction", json!({}));
             }
+            ui.add_space(4.0);
             // Smoothness: both falloffs at once
             let smooth = ControlSpec {
                 id: "smoothness",
