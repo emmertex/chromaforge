@@ -83,7 +83,7 @@ fn def_of(s: &Session, id: AlbumId, depth: usize) -> Option<Def> {
 fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "album.exportDefinition";
     let id = p.get("id").and_then(Value::as_u64).map(AlbumId).ok_or_else(|| bad(c, "missing id"))?;
-    let d = def_of(s, id, 0).ok_or_else(|| bad(c, format!("no album {}", id.0)))?;
+    let d = def_of(s, id, 0).ok_or_else(|| bad(c, format!("no collection {}", id.0)))?;
     let file = File { format: FORMAT.into(), version: 1, collections: vec![d] };
     let text = serde_json::to_string_pretty(&file).map_err(|e| bad(c, e.to_string()))?;
     match str_param(p, "path").filter(|x| !x.is_empty()) {

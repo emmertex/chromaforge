@@ -51,7 +51,10 @@ impl Record {
 
     /// Nobody has touched this photo: default settings, no rating, flag or label.
     pub fn untouched(&self) -> bool {
-        *self.develop == DevelopSettings::default() && self.rating == 0 && self.flag == Flag::None && self.label.is_none()
+        // (new photos start with Constrain Crop on: that is not an edit)
+        let unedited =
+            DevelopSettings { geometry: lcc_develop::Geometry { constrain_crop: false, ..self.develop.geometry.clone() }, ..(*self.develop).clone() };
+        unedited == DevelopSettings::default() && self.rating == 0 && self.flag == Flag::None && self.label.is_none()
     }
 }
 

@@ -119,7 +119,89 @@ pub const TOKENS: &[TokenHelp] = &[
     TokenHelp { tag: "{title}", aliases: &[], meaning: "Title metadata" },
     TokenHelp { tag: "{creator}", aliases: &[], meaning: "Creator metadata" },
     TokenHelp { tag: "{ext}", aliases: &[], meaning: "Original extension without the dot" },
+    TokenHelp {
+        tag: "{text:Couple initials}",
+        aliases: &[],
+        meaning: "Your own text, asked each time you rename or export (the label after : is the question)",
+    },
 ];
+
+/// Longest text typed for a `{text:…}` tag (characters).
+pub const MAX_TEXT: usize = 120;
+
+/// The labels of the `{text:Label}` tags in `template`, each once, in order.
+pub fn text_labels(template: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = template;
+    while let Some(i) = rest.find('{') {
+        let Some(j) = rest[i..].find('}') else { break };
+        let tok = &rest[i + 1..i + j];
+        if let Some((name, label)) = tok.split_once(':')
+            && name.trim().eq_ignore_ascii_case("text")
+        {
+            let label = label.trim().to_string();
+            if !out.contains(&label) {
+                out.push(label);
+            }
+        }
+        rest = &rest[i + j + 1..];
+    }
+    out
+}
+
+/// `template` with each `{text:Label}` replaced by `texts[Label]` (trimmed, braces dropped, at most
+/// [`MAX_TEXT`] characters); a label without a text gives nothing. The other tags stay for
+/// [`expand_tokens`].
+pub fn fill_texts(template: &str, texts: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(i) = rest.find('{') {
+        out.push_str(&rest[..i]);
+        let Some(j) = rest[i..].find('}') else {
+            out.push_str(&rest[i..]);
+            rest = "";
+            break;
+        };
+        let tok = &rest[i + 1..i + j];
+        match tok.split_once(':') {
+            Some((name, label)) if name.trim().eq_ignore_ascii_case("text") => {
+                let v = texts(label.trim()).unwrap_or_default();
+                out.extend(v.trim().chars().filter(|c| !matches!(c, '{' | '}')).take(MAX_TEXT));
+            }
+            _ => out.push_str(&rest[i..i + j + 1]),
+        }
+        rest = &rest[i + j + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The texts a command was given for a template's `{text:…}` tags (`texts: {label: text}`): every
+/// label must have one, or the error names the missing ones.
+pub fn texts_param(template: &str, texts: Option<&serde_json::Value>) -> std::result::Result<std::collections::BTreeMap<String, String>, String> {
+    let labels = text_labels(template);
+    let mut out = std::collections::BTreeMap::new();
+    let given = texts.and_then(serde_json::Value::as_object);
+    if texts.is_some_and(|t| !t.is_null() && !t.is_object()) {
+        return Err("`texts` must be an object of label: text".into());
+    }
+    let mut missing = Vec::new();
+    for l in labels {
+        match given.and_then(|g| g.get(&l)).and_then(serde_json::Value::as_str).map(str::trim).filter(|v| !v.is_empty()) {
+            Some(v) => {
+                out.insert(l, v.to_string());
+            }
+            None => missing.push(l),
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "type the text for {} (texts: {{label: text}})",
+            missing.iter().map(|l| format!("“{l}”")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    Ok(out)
+}
 
 /// The `%` directives of `{date:…}`.
 pub const DATE_DIRECTIVES: &[(&str, &str)] = &[
@@ -166,7 +248,7 @@ pub fn sample_photo() -> Photo {
 
 /// The token as expanded for [`sample_photo`] (sequence number 1), for the help's example column.
 pub fn token_example(tag: &str) -> String {
-    expand_tokens(tag, &sample_photo(), 1, 1)
+    expand_tokens(&fill_texts(tag, &|_| Some("R+A".into())), &sample_photo(), 1, 1)
 }
 
 /// Why a folder template (`{date:%Y}/{date:%Y%m%d}`) can't be used, if it can't: it must be
@@ -312,6 +394,8 @@ pub fn expand_tokens_with(
                 "title" => p.meta.title.clone(),
                 "creator" => p.meta.creator.clone(),
                 "ext" => ext.to_string(),
+                // (a text not filled in by `fill_texts`: nothing)
+                "text" if arg.is_some() => String::new(),
                 _ => format!("{{{tok}}}"),
             },
         };
@@ -1771,7 +1855,7 @@ pub(crate) mod tests {
             for tag in std::iter::once(&t.tag).chain(t.aliases) {
                 let v = expand_tokens(tag, &p, 1, 1);
                 assert!(!v.contains('{'), "{tag} is not a known token (expanded to {v:?})");
-                assert!(!v.is_empty(), "{tag}: the sample photo should give an example");
+                assert!(!token_example(tag).is_empty(), "{tag}: the sample photo should give an example");
             }
         }
         assert_eq!(token_example("{seq:3}"), "001");

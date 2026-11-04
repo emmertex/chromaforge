@@ -105,6 +105,9 @@ pub struct ImportOptions {
     pub mode: ImportMode,
     /// Applied to every imported photo (one History entry).
     pub preset: Option<lcc_develop::Preset>,
+    /// A preset stack, applied in order after `preset` (one History entry each): the Import tab's
+    /// presets (OneSlips, LR-IMP-WINDOW).
+    pub presets: Vec<lcc_develop::Preset>,
     /// Added to every imported photo.
     pub keywords: Vec<String>,
     /// Browsing a folder: photos come in as `local` (not in the library), and a file with the
@@ -122,6 +125,11 @@ pub struct ImportOptions {
     pub metadata_preset: Option<String>,
     /// Copy: raws are copied as DNG (Copy as DNG).
     pub convert_dng: bool,
+    /// The camera profile the raws get ([`crate::profile_bodies::ImportProfile`]); a sidecar's own wins.
+    pub camera_profile: crate::profile_bodies::ImportProfile,
+    /// A preset's own camera profile replaces the body's (`presetProfile`). Off (the default): a raw
+    /// keeps its camera profile through the preset stack (OneSlips, LR-IMP-PROFILE).
+    pub preset_profile: bool,
     /// A batch-edit recipe: develop control id / value pairs (e.g. `light.exposure` → 0.5),
     /// applied to every imported photo *after* its XMP sidecar, camera default and import preset,
     /// as one more History step (`Import adjustments`). Only the named controls change; the recipe
@@ -130,7 +138,8 @@ pub struct ImportOptions {
     /// and [`ImportJob::new`] refuses anything else.
     /// Empty (the default) = no recipe. A photo the library already has keeps its own settings:
     /// one skipped as a duplicate, restored from Recently Deleted, or joined from a browsed
-    /// folder (Local) is never touched, as the preset and keywords never are.
+    /// folder (Local) is never touched by the recipe. (A browsed photo joining the library does
+    /// get the import's metadata preset, keywords and presets: [`promote_ops`].)
     pub recipe: Vec<(String, f64)>,
     /// Import files whose content the library already has as new photos (Lightroom's "Don't
     /// Import Suspected Duplicates" unchecked). A file at a path the library already lists, or one
@@ -208,6 +217,13 @@ pub struct ImportCandidate {
     /// A raw variant that can't be decoded yet (why): it imports as preview only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_only: Option<String>,
+    /// A raw's camera body as `profiles.bodies` keys it (`model|serial`, else `model|file:XX`),
+    /// for the review's camera-profile rows ([`crate::profile_bodies::plan`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// A raw's camera (`Make Model`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub camera: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -249,6 +265,9 @@ pub struct ImportReport {
     /// Per-photo diagnostics from foreign XMP develop settings that could not be fully carried over.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ImportWarning>,
+    /// The camera profile each imported raw got, by profile: `{id ("" = the camera's default): {name, photos, bodies}}`.
+    #[serde(rename = "cameraProfiles", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub camera_profiles: std::collections::BTreeMap<String, crate::profile_bodies::ProfileCount>,
 }
 
 /// A structured diagnostic from foreign XMP develop settings.
@@ -355,6 +374,11 @@ pub struct ImportDefaults {
     pub auto_album: Option<String>,
     /// Open the import review when a camera or memory card is connected.
     pub show_on_card: bool,
+    /// New photos start with Constrain Crop off (Settings ▸ Import ▸ "Constrain crop by default"
+    /// unticked). Off by default: new photos start with it on, so a crop stays inside the photo
+    /// after a rotation or lens correction. Photos already in the library keep theirs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub crop_unconstrained: bool,
     /// Synchronize Folder brings in files whose content a photo of the library already has (at
     /// another path) as photos of their own: "Don't import files already in the library" turned
     /// off, and kept as it was last left. Off (such files left out) unless turned on.
@@ -363,6 +387,9 @@ pub struct ImportDefaults {
     /// pictures are queued after the import, under one row in the activity stack.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub denoise_above_iso: Option<u32>,
+    /// After an import, Remove Dust runs on the new raw photos in the background (`spot.findDust`; off by default).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub remove_dust: bool,
 }
 
 impl ImportDefaults {
@@ -410,6 +437,13 @@ pub fn apply_import_defaults(s: &Session, p: &mut Photo) {
     if let Some(mp) = d.metadata_preset.as_ref().and_then(|n| s.metadata_presets.iter().find(|m| m.name.eq_ignore_ascii_case(n))) {
         crate::cmd::metadata::apply_to(&mut p.meta, &mp.fields);
     }
+    // a new photo starts with Constrain Crop as the preference says (on unless turned off); it is
+    // part of the photo's defaults, like its process, so it is not an edit
+    if p.develop.geometry.constrain_crop == d.crop_unconstrained {
+        let mut fresh = (*p.develop).clone();
+        fresh.geometry.constrain_crop = !d.crop_unconstrained;
+        p.develop = std::sync::Arc::new(fresh);
+    }
     let base = p.camera_defaults();
     // a raw shown from its embedded JPEG gets the rendered-file default, not the raw one
     let raw = p.develops_raw();
@@ -432,6 +466,16 @@ pub fn apply_import_defaults(s: &Session, p: &mut Photo) {
         if !(d.enhance.denoise.is_finite() && d.enhance.denoise > 0.0) {
             d.enhance.denoise = 50.0;
         }
+        let look = std::sync::Arc::new(d);
+        p.develop = look.clone();
+        p.import_look = Some(look);
+    }
+    // the body's own camera profile, while the photo is on the camera's default (OneSlips, LR-PROF-BODY)
+    if p.develop.profile.camera.is_empty()
+        && let Some(id) = s.body_default(p).map(str::to_string)
+    {
+        let mut d = (*p.develop).clone();
+        d.profile.camera = id;
         let look = std::sync::Arc::new(d);
         p.develop = look.clone();
         p.import_look = Some(look);
@@ -841,6 +885,7 @@ pub struct ScanProgress {
 }
 
 /// The result of [`scan_with`]: the candidates, and the probes to keep for the import that follows.
+#[derive(Default)]
 pub struct ScanOutput {
     pub candidates: Vec<ImportCandidate>,
     pub probes: HashMap<String, ProbeInfo>,
@@ -870,6 +915,65 @@ impl ScanInput {
     /// The library as the scan sees it (shared, for [`crate::sync`], which looks at the same one).
     pub(crate) fn library(&self) -> std::sync::Arc<lcc_catalog::Catalog> {
         std::sync::Arc::clone(&self.library)
+    }
+}
+
+/// What browsing a folder (Local) has to read: the files of `files` the library has no photo at,
+/// in the order the view will show them (see [`browse_order`]). Unlike [`scan_with`] nothing is
+/// read, so the import that follows adds the photos batch by batch as it reads them, and the first
+/// screen of a 3,000-raw wedding shows within a second instead of after every file was read
+/// (measured on 2,933 EOS R5 C CR3s: 30.6 s to the first photo before).
+pub fn browse_queue(input: &ScanInput, files: Vec<String>, sort: &lcc_catalog::Sort) -> Vec<String> {
+    browse_candidates(input, files, sort).into_iter().filter(|c| c.duplicate.is_none() && !c.local).map(|c| c.path).collect()
+}
+
+/// Every file of `files` as a browse candidate, in the order the view will show them: those the
+/// library has a photo at are its summaries of them, as [`scan_with`] gives (so a browse still
+/// counts them as listed and doesn't forget their records), the rest are unread, for the import.
+pub fn browse_candidates(input: &ScanInput, mut files: Vec<String>, sort: &lcc_catalog::Sort) -> Vec<ImportCandidate> {
+    let known = library_files(&input.library, &files);
+    browse_order(&mut files, sort);
+    files
+        .into_iter()
+        .map(|path| match known.get(Path::new(&path)) {
+            Some((_, c, _)) => c.clone(),
+            None => ImportCandidate { path, ..Default::default() },
+        })
+        .collect()
+}
+
+/// Order `files` the way a view sorted by `sort` will show them, as far as the file system can
+/// tell before the files are read: by modification time for the date sorts (a camera's file time
+/// is its capture time, near enough to fill the first screen first), by name, or by size. Other
+/// sorts keep the given order. Files whose time or size can't be read go last.
+pub fn browse_order(files: &mut [String], sort: &lcc_catalog::Sort) {
+    use lcc_catalog::SortKey;
+    let asc = sort.ascending;
+    match sort.key {
+        SortKey::CaptureDate | SortKey::ImportDate | SortKey::EditDate => {
+            let mut keyed: Vec<(Option<std::time::SystemTime>, String)> =
+                files.iter().map(|f| (std::fs::metadata(f).and_then(|m| m.modified()).ok(), f.clone())).collect();
+            keyed.sort_by(|a, b| match (a.0, b.0) {
+                (Some(x), Some(y)) => if asc { x.cmp(&y) } else { y.cmp(&x) }.then_with(|| a.1.cmp(&b.1)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.1.cmp(&b.1),
+            });
+            for (slot, (_, f)) in files.iter_mut().zip(keyed) {
+                *slot = f;
+            }
+        }
+        SortKey::FileName => {
+            let name = |f: &String| Path::new(f).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            files.sort_by(|a, b| if asc { name(a).cmp(&name(b)) } else { name(b).cmp(&name(a)) });
+        }
+        SortKey::FileSize => {
+            files.sort_by_cached_key(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0));
+            if !asc {
+                files.reverse();
+            }
+        }
+        SortKey::Rating | SortKey::Random | SortKey::Custom => {}
     }
 }
 
@@ -975,6 +1079,14 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
                 // as the import will date it (a sidecar's date, when there is one, still wins there)
                 c.captured = c.captured.or_else(|| info.file_modified.clone());
                 c.preview_only = info.preview_only.clone();
+                if info.kind == MediaKind::Raw {
+                    c.camera = if info.meta.camera.trim().is_empty() {
+                        info.meta.camera_model.trim().to_string()
+                    } else {
+                        info.meta.camera.trim().to_string()
+                    };
+                    c.body = crate::profile_bodies::key_from(&info.meta.camera_model, &info.meta.camera, &info.meta.camera_serial, &c.name);
+                }
                 if let Some(h) = &info.content_hash {
                     match seen_hash.get(h) {
                         Some(existing) => {
@@ -1083,6 +1195,9 @@ struct ReadyFile {
     info: ProbeInfo,
     sidecar: Option<crate::sidecar::SidecarData>,
     placed: Option<crate::import_move::Placed>,
+    /// A Local (browsed) record whose file was copied or moved: the record follows the copy and
+    /// joins the library, keeping its culling and edits, instead of a new photo being added.
+    promote: Option<PhotoId>,
 }
 
 impl Prepared {
@@ -1126,7 +1241,7 @@ impl Prepared {
                 items.push(item);
                 continue;
             };
-            let ReadyFile { path, stored, info, sidecar, placed } = *ready;
+            let ReadyFile { path, stored, info, sidecar, placed, promote } = *ready;
             let existing_path = paths.get(&normalize_import_path(&stored)).copied().or_else(|| paths.get(&normalize_import_path(&path)).copied());
             let existing_hash = info.content_hash.as_ref().and_then(|hash| hashes.get(crate::sync::base_hash(hash)).map(|(_, id)| *id));
             if let Some(existing) = existing_path.or(existing_hash) {
@@ -1140,7 +1255,7 @@ impl Prepared {
                     hash: info.content_hash,
                 });
             } else {
-                items.push(PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed })));
+                items.push(PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed, promote })));
             }
         }
         self.items = items;
@@ -1216,6 +1331,15 @@ impl ImportJob {
         files
     }
 
+    /// Whether `path` is copied or moved into the destination (else it is added where it is).
+    fn transfers(&self, path: &str) -> bool {
+        matches!(self.mode, ImportMode::Copy | ImportMode::Move)
+            && self.copy_root.as_ref().is_some_and(|root| {
+                !crate::import_move::inside(Path::new(path), root)
+                    && !self.lib_dir.as_ref().is_some_and(|l| crate::import_move::inside(Path::new(path), l))
+            })
+    }
+
     /// When the import started ([`Session::clock`]), for [`commit_prepared`].
     pub fn now(&self) -> &str {
         &self.now
@@ -1258,8 +1382,15 @@ impl ImportJob {
         let mode = self.mode;
         let mut out = Prepared { scanned: files.len(), items: Vec::new() };
         let mut todo = Vec::new();
+        // browsed (Local) records whose files are copied or moved: the record follows its file
+        let mut follow: HashMap<String, PhotoId> = HashMap::new();
         for f in files {
             match self.by_path.get(f.as_str()).cloned() {
+                Some((id, true, hash)) if !opts.local && self.transfers(&f) => {
+                    self.by_path.insert(f.clone(), (id, false, hash));
+                    follow.insert(f.clone(), id);
+                    todo.push(f);
+                }
                 Some((id, true, hash)) if !opts.local => {
                     // a library photo with the same content comes first, and a file promoted earlier
                     // (here or in a previous batch) counts as the library's from then on
@@ -1335,6 +1466,7 @@ impl ImportJob {
                     continue;
                 }
             };
+            let promote = follow.get(&path).copied();
             // a copy of a file whose transfer is still pending: a duplicate only if that one succeeds
             if !opts.local
                 && let Some(h) = &info.content_hash
@@ -1348,6 +1480,8 @@ impl ImportJob {
             if let Some(h) = &info.content_hash
                 && !opts.local
                 && let Some(existing) = self.by_hash.get(h)
+                // (the browsed record of this very file is not a duplicate of it)
+                && !(promote.is_some() && *existing == promote)
             {
                 self.done.fetch_add(1, Relaxed);
                 plan.slots.push(Slot::Item(PreparedItem::Duplicate { path, existing: *existing, reason: "content", hash: Some(h.clone()) }));
@@ -1430,7 +1564,7 @@ impl ImportJob {
                     // Copy as DNG: the copied raw becomes a DNG (the copy is ours to replace)
                     let dng = opts.convert_dng && mode == ImportMode::Copy && raw && !info.format.eq_ignore_ascii_case("DNG");
                     plan.slots.push(Slot::Transfer);
-                    plan.transfers.push(Transfer { path, info, sidecar, dir, how, dng, family });
+                    plan.transfers.push(Transfer { path, info, sidecar, dir, how, dng, promote, family });
                     continue;
                 }
                 (ImportMode::Move, _) => {
@@ -1446,7 +1580,11 @@ impl ImportJob {
                 self.by_hash.insert(h.clone(), None);
             }
             self.done.fetch_add(1, Relaxed);
-            plan.slots.push(Slot::Item(PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed: None }))));
+            plan.slots.push(Slot::Item(match promote {
+                // (planned for a transfer that turned out not to need one: joins where it is)
+                Some(id) => PreparedItem::Promote(id),
+                None => PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed: None, promote: None })),
+            }));
         }
         self.run_plan(&mut plan, &mut out, cancel);
         out
@@ -1497,6 +1635,8 @@ struct Transfer {
     how: How,
     /// Copy as DNG.
     dng: bool,
+    /// The browsed record that follows the copy ([`ReadyFile::promote`]).
+    promote: Option<PhotoId>,
     /// The folder (lowercase) and [`name_family`]: transfers of one family can take each other's
     /// names, so they never run at the same time.
     family: (String, String),
@@ -1609,7 +1749,7 @@ fn run_transfers(
 
 /// Copy or move one planned file (and Copy as DNG); its item.
 fn run_transfer(t: Transfer, file_bytes: Option<&crate::merge::ByteReader>) -> PreparedItem {
-    let Transfer { path, mut info, sidecar, dir, how, dng, .. } = t;
+    let Transfer { path, mut info, sidecar, dir, how, dng, promote, .. } = t;
     let mut placed = None;
     let mut stored = match how {
         How::Place { name } => match crate::import_move::place(Path::new(&path), &dir, &name) {
@@ -1638,7 +1778,7 @@ fn run_transfer(t: Transfer, file_bytes: Option<&crate::merge::ByteReader>) -> P
             Err(e) => log::warn!("import {path}: copy as DNG: {e}"),
         }
     }
-    PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed }))
+    PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed, promote }))
 }
 
 /// A trashed photo's file is not where the library had it (never on the web, where paths are
@@ -1691,6 +1831,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
             PreparedItem::Promote(id) => {
                 if s.catalog.photo(id).is_some_and(|p| p.local) {
                     ops.push(Op::SetLocal { id, local: false });
+                    promote_ops(s, id, opts, &now, &mut ops);
                 }
                 // "Import as new": a trashed photo with the same content is replaced, as for a new file
                 if let Some(old) = s
@@ -1745,8 +1886,21 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
             }
             PreparedItem::Failed(path, e) => report.failed.push((path, e)),
             PreparedItem::Kept(k) => report.kept.push(k),
+            PreparedItem::Ready(r) if r.promote.is_some_and(|id| s.catalog.photo(id).is_some_and(|p| p.local)) => {
+                // a browsed photo copied or moved: its record follows the file into the library,
+                // keeping its culling and edits
+                let ReadyFile { stored, info, placed: pl, promote, .. } = *r;
+                placed.extend(pl);
+                let Some(id) = promote else { continue };
+                let file_name = Path::new(&stored).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| stored.clone());
+                let format = s.catalog.photo(id).filter(|p| p.format != info.format).map(|_| info.format.clone());
+                ops.push(Op::Relink { id, file_name, source: Source::File { path: stored.clone() }, format });
+                ops.push(Op::SetLocal { id, local: false });
+                promote_ops(s, id, opts, &now, &mut ops);
+                report.imported.push(id.0);
+            }
             PreparedItem::Ready(r) => {
-                let ReadyFile { path, stored, info, sidecar, placed: pl } = *r;
+                let ReadyFile { path, stored, info, sidecar, placed: pl, .. } = *r;
                 placed.extend(pl);
                 let id = s.catalog.alloc_photo_id();
                 if let Some(h) = &info.content_hash {
@@ -1792,6 +1946,12 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                         plugin_fields.push((id, sc.plugin_fields.clone()));
                     }
                     crate::sidecar::merge_into(&mut p, sc, &now);
+                    // a Lightroom edit (crs: settings) keeps Constrain Crop as it always read: off
+                    if matches!(sc.develop, Some(crate::sidecar::DevelopPatch::Partial(_))) && p.develop.geometry.constrain_crop {
+                        let mut d = (*p.develop).clone();
+                        d.geometry.constrain_crop = false;
+                        p.develop = std::sync::Arc::new(d);
+                    }
                     report.sidecars += 1;
                     report.warnings.extend(sc.warnings.iter().cloned().map(|mut warning| {
                         warning.path = path.clone();
@@ -1799,22 +1959,31 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                         warning
                     }));
                 }
-                if let Some(mp) = opts.metadata_preset.as_ref().and_then(|n| s.metadata_presets.iter().find(|m| m.name.eq_ignore_ascii_case(n))) {
-                    crate::cmd::metadata::apply_to(&mut p.meta, &mp.fields);
+                // the camera profile chosen for this import (a sidecar that sets develop settings keeps its own)
+                if sidecar.as_ref().is_none_or(|sc| sc.develop.is_none())
+                    && let Some(id) = opts.camera_profile.for_photo(&p)
+                    && p.develop.profile.camera != id
+                {
+                    let mut d = (*p.develop).clone();
+                    d.profile.camera = id;
+                    let look = std::sync::Arc::new(d);
+                    p.develop = look.clone();
+                    p.import_look = Some(look);
                 }
-                for k in &opts.keywords {
-                    let k = lcc_catalog::keywords::clean(k);
-                    if !k.is_empty() && !p.meta.keywords.iter().any(|x| x.eq_ignore_ascii_case(&k)) {
-                        p.meta.keywords.push(k);
+                if p.develops_raw() {
+                    let id = p.develop.profile.camera.clone();
+                    let e = report.camera_profiles.entry(id.clone()).or_insert_with(|| crate::profile_bodies::ProfileCount {
+                        name: crate::profile_bodies::profile_name(&id),
+                        ..Default::default()
+                    });
+                    e.photos += 1;
+                    if let Some(b) = crate::profile_bodies::key_of(&p)
+                        && !e.bodies.contains(&b)
+                    {
+                        e.bodies.push(b);
                     }
                 }
-                if let Some(preset) = &opts.preset {
-                    let d = std::sync::Arc::new(preset.apply(&p.develop, 1.0));
-                    let label = format!("Preset: {}", preset.name);
-                    p.develop = d.clone();
-                    p.edited = Some(now.clone());
-                    p.history.push(lcc_catalog::HistoryStep { label, settings: d });
-                }
+                apply_settings(s, &mut p, opts, &now);
                 // the batch-edit recipe goes on top of everything above (sidecar, camera default,
                 // preset): only the controls it names change, through the same specs the sliders use
                 if !opts.recipe.is_empty() {
@@ -1826,8 +1995,11 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                     let d = std::sync::Arc::new(d);
                     p.develop = d.clone();
                     p.edited = Some(now.clone());
-                    p.history.push(lcc_catalog::HistoryStep { label: "Import adjustments".into(), settings: d });
+                    p.history.push(lcc_catalog::HistoryStep { label: "Import adjustments".into(), settings: d, batch: None });
                 }
+                // the photo as the import leaves it, where that is not simply its import defaults:
+                // the Before view's default (`Photo::before_base`)
+                p.import_state = (*p.develop != p.import_defaults()).then(|| p.develop.clone());
                 report.imported.push(id.0);
                 p.local = opts.local;
                 if opts.local {
@@ -1874,7 +2046,70 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
     s.record_xmp_stamps(&with_xmp, true);
     // Edit In versions (TIFF/PSD with an xmpMM:DerivedFrom link) stack on their source again
     crate::cmd::edit_in::stack_derived(s, &with_xmp);
+    if s.import_defaults.remove_dust {
+        let raws: Vec<lcc_catalog::PhotoId> =
+            report.imported.iter().map(|id| lcc_catalog::PhotoId(*id)).filter(|id| s.catalog.photo(*id).is_some_and(|p| p.develops_raw())).collect();
+        crate::cmd::sensor::remove_dust_after_import(s, raws);
+    }
     Ok(report)
+}
+
+/// What every photo an import adds gets: the metadata preset, the keywords, then the preset and the
+/// preset stack (one History entry each).
+fn apply_settings(s: &Session, p: &mut Photo, opts: &ImportOptions, now: &str) {
+    if let Some(mp) = opts.metadata_preset.as_ref().and_then(|n| s.metadata_presets.iter().find(|m| m.name.eq_ignore_ascii_case(n))) {
+        crate::cmd::metadata::apply_to(&mut p.meta, &mp.fields);
+    }
+    for k in &opts.keywords {
+        let k = lcc_catalog::keywords::clean(k);
+        if !k.is_empty() && !p.meta.keywords.iter().any(|x| x.eq_ignore_ascii_case(&k)) {
+            p.meta.keywords.push(k);
+        }
+    }
+    // the camera profile before the presets: a preset doesn't take it away unless the import says so
+    let body = (!opts.preset_profile && p.develops_raw()).then(|| p.develop.profile.camera.clone()).filter(|c| !c.is_empty());
+    for preset in opts.preset.iter().chain(&opts.presets) {
+        let mut d = preset.apply(&p.develop, 1.0);
+        if let Some(cal) = &body {
+            d.profile.camera.clone_from(cal);
+        }
+        let d = std::sync::Arc::new(d);
+        let label = format!("Preset: {}", preset.name);
+        p.develop = d.clone();
+        p.edited = Some(now.to_string());
+        p.history.push(lcc_catalog::HistoryStep { label, settings: d, batch: None });
+    }
+}
+
+/// The ops that give a browsed (Local) photo joining the library what the import sets
+/// ([`apply_settings`]): the presets' History entries and settings, and its metadata. Its culling
+/// and its own edits stay (the presets go on top of them). Ported from OneSlips (LR-IMP-WINDOW).
+fn promote_ops(s: &Session, id: PhotoId, opts: &ImportOptions, now: &str, ops: &mut Vec<Op>) {
+    let Some(old) = s.catalog.photo(id) else { return };
+    let mut p = (**old).clone();
+    let history0 = p.history.len();
+    if old.edited.is_none() && p.develops_raw() {
+        // browsed before its body had the profile it has now (set in the Import panel, say), or
+        // with a choice made for this import: the profile as it is at import (OneSlips, LR-IMP-PROFILE)
+        if let Some(id) = opts.camera_profile.for_photo(&p).or_else(|| s.body_default(&p).map(str::to_string))
+            && p.develop.profile.camera != id
+        {
+            let mut d = (*p.develop).clone();
+            d.profile.camera = id;
+            p.develop = std::sync::Arc::new(d);
+        }
+    }
+    apply_settings(s, &mut p, opts, now);
+    if p.develop != old.develop {
+        let label = p.history.last().map(|h| h.label.clone()).unwrap_or_else(|| "Import".into());
+        for step in p.history.iter().skip(history0) {
+            ops.push(Op::PushHistory { id, step: step.clone() });
+        }
+        ops.push(Op::SetDevelop { id, settings: p.develop.clone(), label, edited: p.edited.clone() });
+    }
+    if p.meta != old.meta {
+        ops.push(Op::SetMeta { id, meta: Box::new(p.meta) });
+    }
 }
 
 /// Move, after the commit: save the library, then remove each source whose destination is
@@ -1949,6 +2184,7 @@ impl Session {
         let key = lcc_preview::Hasher128::new().str(&c.path).u64(c.file_size).u64(edge as u64).finish().0 as u64;
         let small = crate::media::RenderJob {
             drawn_view_cache: false,
+            on_screen: false,
             request_id: 0,
             cache_generation: self.media.rendered.generation(),
             source_key: None,
@@ -1968,12 +2204,22 @@ impl Session {
             preview_cut: None,
             display_fit: None,
             hdr_texels: None,
+            superseded: None,
         };
         let embedded = match (&self.media.preview_loader, c.kind) {
             (Some(l), MediaKind::Raw) => Some((c.path.clone(), l.clone(), edge)),
             _ => None,
         };
-        Some(crate::media::QuickJob { request_id: 0, photo: id, key, cached: Vec::new(), embedded, small: Some(Box::new(small)) })
+        Some(crate::media::QuickJob {
+            request_id: 0,
+            photo: id,
+            key,
+            cached: Vec::new(),
+            embedded,
+            embedded_cache: None,
+            embedded_on_disk: false,
+            small: Some(Box::new(small)),
+        })
     }
 
     /// Use the system clock for import/edit times (native hosts).
@@ -2050,6 +2296,7 @@ mod prepared_tests {
             info: ProbeInfo { format: "JPG".into(), ..ProbeInfo::default() },
             sidecar: None,
             placed: None,
+            promote: None,
         };
         let mut prepared = Prepared {
             scanned: 2,

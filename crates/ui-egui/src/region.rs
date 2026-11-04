@@ -546,6 +546,64 @@ pub fn plan(settings: &crate::state::AppSettings, v: ViewSizes) -> LoupePlan {
     LoupePlan { main_edge: edge_at(scale), window_edge }
 }
 
+/// How long the photo must stay unchanged in an open interaction before the view renders at full
+/// quality (s), at least: a slider held still, or a control surface whose gesture stays open for a
+/// second and more after the last turn of a knob, shows the sharp render instead of the last
+/// draft. The time the last full render took is added (up to [`REFINE_MAX_SECS`]): a slow CPU
+/// render started at every pause of the pointer would hold up the drafts behind it.
+pub const REFINE_AFTER_SECS: f64 = 0.15;
+/// The most the refine delay grows to.
+pub const REFINE_MAX_SECS: f64 = 1.0;
+
+/// When a drag's drafts give way to the full render although the interaction is still open.
+///
+/// The view used to stay a draft until the interaction ended: with a control surface (whose
+/// gesture ends about 1.5 s after the last turn) it stayed soft for seconds after the photo had
+/// stopped changing. Now it refines once the look has been still for the refine delay.
+#[derive(Clone, Debug, Default)]
+pub struct StillRefine {
+    /// The photo and look seen last, and since when (s; `-inf`: not changed in an interaction).
+    seen: Option<(lcc_catalog::PhotoId, u64, f64)>,
+    /// Tests that look at a drag's drafts after letting it settle: never refine.
+    #[cfg(test)]
+    pub never: bool,
+}
+
+impl StillRefine {
+    /// Whether the view drafts this frame: an interaction is `open` and the photo's `look` changed
+    /// within the refine delay (`full_ms`: the last full render's time). `now` is in s.
+    pub fn drafting(&mut self, open: bool, photo: lcc_catalog::PhotoId, look: u64, now: f64, full_ms: f64) -> bool {
+        let changed = !matches!(self.seen, Some((p, l, _)) if p == photo && l == look);
+        if changed {
+            // (a look first seen outside an interaction is not an edit in progress)
+            self.seen = Some((photo, look, if open { now } else { f64::NEG_INFINITY }));
+        }
+        if !open {
+            return false;
+        }
+        #[cfg(test)]
+        if self.never {
+            return true;
+        }
+        let since = self.seen.map_or(f64::NEG_INFINITY, |(_, _, t)| t);
+        now - since < Self::refine_after(full_ms)
+    }
+
+    /// How long the photo must be still before a full render, when the last one took `full_ms`.
+    pub fn refine_after(full_ms: f64) -> f64 {
+        let full = if full_ms.is_finite() { full_ms.max(0.0) / 1e3 } else { 0.0 };
+        (REFINE_AFTER_SECS + full).min(REFINE_MAX_SECS)
+    }
+
+    /// In how many seconds from `now` the view refines (a repaint is due then); `None`: no refine
+    /// is waiting.
+    pub fn refine_in(&self, now: f64, full_ms: f64) -> Option<f64> {
+        let (_, _, since) = self.seen?;
+        let left = since + Self::refine_after(full_ms) - now;
+        (left.is_finite() && left > 0.0).then_some(left)
+    }
+}
+
 /// How long the render sizes stay as they were after a pinch or two-finger scroll stops (s).
 pub const HOLD_SECS: f64 = 0.25;
 
@@ -1823,5 +1881,40 @@ mod tests {
         }
         assert!(!d.fell_back());
         let _ = d.frame(None, 0, f64::NAN);
+    }
+
+    // Given a slider drag, the view drafts while the photo changes and refines once it has been
+    // still for the refine delay, though the interaction stays open (a control surface's gesture
+    // ends 1.5 s after the last turn); nothing drafts outside an interaction
+    #[test]
+    fn drafts_while_the_photo_changes_and_refine_when_it_is_still() {
+        use lcc_catalog::PhotoId;
+        let mut d = StillRefine::default();
+        let p = PhotoId(1);
+        assert!(!d.drafting(false, p, 1, 0.0, 10.0), "no interaction");
+        assert!(!d.drafting(true, p, 1, 0.1, 10.0), "an interaction that has not changed the photo yet");
+        assert!(d.drafting(true, p, 2, 0.2, 10.0), "the first change");
+        assert!(d.drafting(true, p, 2, 0.3, 10.0), "within the refine delay");
+        let left = d.refine_in(0.3, 10.0).expect("a refine is due");
+        assert!((left - (0.2 + StillRefine::refine_after(10.0) - 0.3)).abs() < 1e-9, "{left}");
+        assert!(!d.drafting(true, p, 2, 0.2 + StillRefine::refine_after(10.0) + 0.01, 10.0), "still: the full render");
+        assert!(d.drafting(true, p, 3, 2.0, 10.0), "changing again drafts again");
+        assert!(!d.drafting(false, p, 3, 2.01, 10.0), "the interaction ended");
+    }
+
+    // Given a slow full render (the CPU), the refine waits longer, but never more than a second;
+    // hostile times stay within the bounds
+    #[test]
+    fn the_refine_delay_follows_the_full_render_time() {
+        assert!((StillRefine::refine_after(0.0) - REFINE_AFTER_SECS).abs() < 1e-9);
+        assert!((StillRefine::refine_after(200.0) - (REFINE_AFTER_SECS + 0.2)).abs() < 1e-9);
+        assert_eq!(StillRefine::refine_after(5000.0), REFINE_MAX_SECS);
+        for v in [f64::NAN, f64::INFINITY, -1.0] {
+            let r = StillRefine::refine_after(v);
+            assert!((REFINE_AFTER_SECS..=REFINE_MAX_SECS).contains(&r), "{v}: {r}");
+        }
+        let mut d = StillRefine::default();
+        let _ = d.drafting(true, lcc_catalog::PhotoId(1), 1, f64::NAN, f64::NAN);
+        assert!(d.refine_in(f64::NAN, f64::NAN).is_none());
     }
 }

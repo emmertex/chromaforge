@@ -384,7 +384,7 @@ mod tests {
             if fullscreen {
                 h.app.run("view.fullScreenPreview", json!({})).unwrap();
             }
-            h.app.ui.dialog = Some(Dialog::Rename { template: "keep this draft".into(), start: 7 });
+            h.app.ui.dialog = Some(Dialog::Rename { template: "keep this draft".into(), start: 7, texts: Default::default() });
             h.app.run("file.addPhotos", json!({})).unwrap();
             asked.lock().unwrap()[0].1.send(Err("macOS refused the file chooser".into())).unwrap();
             h.step();
@@ -395,7 +395,7 @@ mod tests {
             assert_eq!(h.app.session.catalog.to_snapshot(), catalog);
             assert_eq!(h.app.session.selected(), selected);
             assert_eq!(h.app.session.active(), active);
-            assert!(matches!(&h.app.ui.dialog, Some(Dialog::Rename { template, start: 7 }) if template == "keep this draft"));
+            assert!(matches!(&h.app.ui.dialog, Some(Dialog::Rename { template, start: 7, .. }) if template == "keep this draft"));
             assert_eq!(asked.lock().unwrap().len(), 1, "no automatic retry");
             let response = h.request("engine.execute", json!({"command": "photo.rate", "params": {"rating": 4}}), SETTLE);
             assert_eq!(response["ok"], true, "the control channel still answers commands: {response}");
@@ -414,13 +414,13 @@ mod tests {
             if fullscreen {
                 h.app.run("view.fullScreenPreview", json!({})).unwrap();
             }
-            h.app.ui.dialog = Some(Dialog::Rename { template: "keep this draft".into(), start: 7 });
+            h.app.ui.dialog = Some(Dialog::Rename { template: "keep this draft".into(), start: 7, texts: Default::default() });
             let catalog = h.app.session.catalog.to_snapshot();
             tx.send("macOS refused the folder chooser".into()).unwrap();
             h.step();
             h.step();
             assert!(h.painted_text().iter().any(|text| text.contains("macOS refused the folder chooser")));
-            assert!(matches!(&h.app.ui.dialog, Some(Dialog::Rename { template, start: 7 }) if template == "keep this draft"));
+            assert!(matches!(&h.app.ui.dialog, Some(Dialog::Rename { template, start: 7, .. }) if template == "keep this draft"));
             assert_eq!(h.app.session.catalog.to_snapshot(), catalog);
             assert!(h.app.pending_picks.is_empty());
         }

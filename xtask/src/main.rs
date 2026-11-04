@@ -3581,6 +3581,93 @@ const VIDEO_SAMPLES: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+/// A portrait in `corpus/people/` for the People masks and per-person silhouettes.
+struct PeopleSample {
+    name: &'static str,
+    url: &'static str,
+    /// Bytes as downloaded.
+    size: u64,
+    sha256: &'static str,
+    title: &'static str,
+    author: &'static str,
+    /// Wikimedia Commons file page, where the licence template was checked.
+    page: &'static str,
+    licence: &'static str,
+    /// What the image exercises (one person, a group, profile, glasses, closed eyes…).
+    covers: &'static str,
+}
+
+/// Portraits from Wikimedia Commons, each explicitly public domain or CC0 on its file page (no CC-BY, no
+/// "unknown"); mostly historical, so no private individuals. Never committed.
+const PEOPLE_SAMPLES: &[PeopleSample] = &[
+    PeopleSample {
+        name: "pd-one-lincoln-1863.jpg",
+        url: "https://upload.wikimedia.org/wikipedia/commons/a/ab/Abraham_Lincoln_O-77_matte_collodion_print.jpg",
+        size: 3898023,
+        sha256: "f5e79a35f74b54e0435dfc87f5956d6917725e2f5b8c17932ecf5bad704e29b2",
+        title: "Abraham Lincoln, O-77 matte collodion print (1863)",
+        author: "Alexander Gardner",
+        page: "https://commons.wikimedia.org/wiki/File:Abraham_Lincoln_O-77_matte_collodion_print.jpg",
+        licence: "Public domain (PD-scan / PD-old-auto-1923)",
+        covers: "one person, frontal",
+    },
+    PeopleSample {
+        name: "pd-two-curie-1895.jpg",
+        url: "https://upload.wikimedia.org/wikipedia/commons/2/2e/Pierre_Curie_et_Marie_Sklodowska_Curie_1895.jpg",
+        size: 67165,
+        sha256: "3980edcdba0a409ffe7b8895d00b140566cb726f1188fd1fc1d14673e0986399",
+        title: "Pierre Curie et Marie Sklodowska Curie (1895)",
+        author: "Unknown author",
+        page: "https://commons.wikimedia.org/wiki/File:Pierre_Curie_et_Marie_Sklodowska_Curie_1895.jpg",
+        licence: "Public domain (PD-old-auto, PD-France, PD-1996)",
+        covers: "two people close together",
+    },
+    PeopleSample {
+        name: "pd-group-solvay-1927.jpg",
+        url: "https://upload.wikimedia.org/wikipedia/commons/6/6e/Solvay_conference_1927.jpg",
+        size: 2671814,
+        sha256: "ae76a5be54f53cca50074a0d1ac8653187154d264fc58ed928e1b92c27e17e2a",
+        title: "Solvay conference 1927",
+        author: "Benjamin Couprie",
+        page: "https://commons.wikimedia.org/wiki/File:Solvay_conference_1927.jpg",
+        licence: "Public domain (PD-because: published in Belgium more than 70 years ago)",
+        covers: "group of 29, overlapping rows, several with glasses",
+    },
+    PeopleSample {
+        name: "pd-profile-edison.jpg",
+        url: "https://upload.wikimedia.org/wikipedia/commons/b/bb/Portrait_of_Thomas_Edison_in_profile_facing_right._%289e5a2edcde9346628e2acf7d63733576%29.jpg",
+        size: 1408823,
+        sha256: "fe21a2b60ddc1cc8a36b8eb59e5c9698e85d21395f8a911be4eba605997858ff",
+        title: "Portrait of Thomas Edison in profile facing right",
+        author: "Unknown author",
+        page: "https://commons.wikimedia.org/wiki/File:Portrait_of_Thomas_Edison_in_profile_facing_right._(9e5a2edcde9346628e2acf7d63733576).jpg",
+        licence: "Public domain (PD-US-expired)",
+        covers: "profile view",
+    },
+    PeopleSample {
+        name: "pd-glasses-gandhi-1931.jpg",
+        url: "https://upload.wikimedia.org/wikipedia/commons/7/7a/Mahatma-Gandhi%2C_studio%2C_1931.jpg",
+        size: 3250029,
+        sha256: "e2a72d6a6debf46c891805af65a5d63b76f84d89efe6189fa595ae615dc5ea05",
+        title: "Mahatma Gandhi, studio, 1931",
+        author: "Elliott & Fry",
+        page: "https://commons.wikimedia.org/wiki/File:Mahatma-Gandhi,_studio,_1931.jpg",
+        licence: "Public domain (PD-UK-unknown)",
+        covers: "glasses",
+    },
+    PeopleSample {
+        name: "pd-eyes-closed-fitz-1839.jpg",
+        url: "https://upload.wikimedia.org/wikipedia/commons/a/a0/Henry_Fitz_Jr._The_Eyes_Closed.jpg",
+        size: 547232,
+        sha256: "bc8eb48c8cfe6052bf97364243c51e26dd889a2ef5107fb764124f24a33bda68",
+        title: "Henry Fitz Jr., The Eyes Closed (daguerreotype self-portrait)",
+        author: "Henry Fitz Jr.",
+        page: "https://commons.wikimedia.org/wiki/File:Henry_Fitz_Jr._The_Eyes_Closed.jpg",
+        licence: "Public domain (PD-old-70)",
+        covers: "closed eyes",
+    },
+];
+
 fn cmd_corpus(download: bool) -> Result<(), String> {
     let corpus = root().join("corpus");
     println!(
@@ -3590,9 +3677,13 @@ Tests that use a corpus skip cleanly when it is absent.
   corpus/raw/        raw.pixls.us samples (CC0) — lcc-raw decodes every file.
   corpus/images/     CC0 / public-domain JPEG/PNG/TIFF/HEIC samples (optional)
   corpus/video/      public-domain / CC-BY test clips (see VIDEO_SAMPLES in xtask for provenance)
+  corpus/people/     public-domain / CC0 portraits from Wikimedia Commons (PEOPLE_SAMPLES) for People masks
 ",
         corpus.display()
     );
+    for p in PEOPLE_SAMPLES {
+        println!("  people/{}: {}, {} ({}; {}) — {}", p.name, p.title, p.author, p.licence, p.page, p.covers);
+    }
     if !download {
         return Ok(());
     }
@@ -3601,6 +3692,16 @@ Tests that use a corpus skip cleanly when it is absent.
     fetch_pinned(&corpus.join("raw"), &raw, &mut bad)?;
     let video: Vec<_> = VIDEO_SAMPLES.iter().map(|(n, u, h, _)| (*n, *u, *h)).collect();
     fetch_pinned(&corpus.join("video"), &video, &mut bad)?;
+    let people: Vec<_> = PEOPLE_SAMPLES.iter().map(|p| (p.name, p.url, p.sha256)).collect();
+    fetch_pinned(&corpus.join("people"), &people, &mut bad)?;
+    for p in PEOPLE_SAMPLES {
+        let path = corpus.join("people").join(p.name);
+        if let Ok(meta) = std::fs::metadata(&path)
+            && meta.len() != p.size
+        {
+            bad.push(format!("{}: {} bytes, expected {}", p.name, meta.len(), p.size));
+        }
+    }
     if bad.is_empty() {
         return Ok(());
     }
@@ -3685,7 +3786,22 @@ mod ci_jobs_tests {
 
 #[cfg(test)]
 mod corpus_tests {
-    use super::{RAW_SAMPLES, VIDEO_SAMPLES};
+    use super::{PEOPLE_SAMPLES, RAW_SAMPLES, VIDEO_SAMPLES};
+
+    #[test]
+    fn every_people_sample_is_pinned_and_public_domain_or_cc0_from_commons() {
+        let mut names: Vec<_> = PEOPLE_SAMPLES.iter().map(|s| s.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), PEOPLE_SAMPLES.len(), "duplicate file name");
+        for p in PEOPLE_SAMPLES {
+            assert!(p.sha256.len() == 64 && p.sha256.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')), "{}: sha256", p.name);
+            assert!(p.size > 0 && !p.title.is_empty() && !p.author.is_empty(), "{}", p.name);
+            assert!(p.licence.starts_with("Public domain") || p.licence.starts_with("CC0"), "{}: licence", p.name);
+            assert!(p.page.starts_with("https://commons.wikimedia.org/wiki/File:"), "{}: page", p.name);
+            assert!(p.url.starts_with("https://upload.wikimedia.org/"), "{}: url", p.name);
+        }
+    }
 
     #[test]
     fn every_video_sample_has_a_unique_name_a_sha256_and_a_licence() {

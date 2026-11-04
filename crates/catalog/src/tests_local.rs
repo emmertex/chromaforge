@@ -104,7 +104,7 @@ fn any_user_change_keeps_a_record() {
         (
             "history only",
             Box::new(|c, id| {
-                let step = HistoryStep { label: "Reset".into(), settings: Arc::new(DevelopSettings::default()) };
+                let step = HistoryStep { label: "Reset".into(), settings: Arc::new(DevelopSettings::default()), batch: None };
                 drop(c.apply(Op::PushHistory { id, step }).unwrap())
             }),
         ),

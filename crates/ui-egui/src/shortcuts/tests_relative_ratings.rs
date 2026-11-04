@@ -79,14 +79,14 @@ fn detail_masking_and_remove_keep_bracket_brush_sizing() {
         app.ui.view = ViewMode::Detail;
         app.ui.right = panel;
         let ctx = egui::Context::default();
-        app.ui.brush_size = 0.05;
+        // (the Masking brush's Size is a screen size, 1..100; the Remove tool's a photo fraction)
+        app.ui.brush_size = 50.0;
         app.ui.remove_size = 0.05;
+        let size = |app: &LccApp| if panel == RightPanel::Remove { app.ui.remove_size / 0.05 } else { app.ui.brush_size / 50.0 };
         frame(&mut app, &ctx, Some(Key::CloseBracket), None);
-        let size = if panel == RightPanel::Remove { app.ui.remove_size } else { app.ui.brush_size };
-        assert!((size - 0.06).abs() < 1e-6);
+        assert!((size(&app) - 1.2).abs() < 1e-5, "{}", size(&app));
         frame(&mut app, &ctx, Some(Key::OpenBracket), None);
-        let size = if panel == RightPanel::Remove { app.ui.remove_size } else { app.ui.brush_size };
-        assert!((size - 0.05).abs() < 1e-6);
+        assert!((size(&app) - 1.0).abs() < 1e-5, "{}", size(&app));
         assert_eq!(ratings(&app).unwrap(), [0, 2, 5]);
         assert!(app.session.undo.is_empty());
     }
@@ -184,15 +184,15 @@ fn brackets_yield_to_text_focus_and_shortcut_recording() {
 fn brush_presets_a_and_b_remember_their_settings() -> lcc_engine::Result<()> {
     let mut app = app()?;
     assert_eq!(app.ui.brush_slot, 0);
-    (app.ui.brush_size, app.ui.brush_feather, app.ui.brush_flow, app.ui.brush_density) = (0.1, 10.0, 30.0, 70.0);
+    (app.ui.brush_size, app.ui.brush_feather, app.ui.brush_flow, app.ui.brush_density) = (10.0, 10.0, 30.0, 70.0);
     let r = app.run("brush.preset", json!({"slot": "b"})).unwrap();
     assert_eq!(r["slot"], "b");
     assert_eq!(app.ui.brush_slot, 1);
-    assert_ne!(app.ui.brush_size, 0.1);
+    assert_ne!(app.ui.brush_size, 10.0);
     app.ui.brush_density = 40.0;
     // no slot: toggle back to A, which still has its settings
     app.run("brush.preset", json!({})).unwrap();
-    assert_eq!((app.ui.brush_slot, app.ui.brush_size, app.ui.brush_feather, app.ui.brush_flow, app.ui.brush_density), (0, 0.1, 10.0, 30.0, 70.0));
+    assert_eq!((app.ui.brush_slot, app.ui.brush_size, app.ui.brush_feather, app.ui.brush_flow, app.ui.brush_density), (0, 10.0, 10.0, 30.0, 70.0));
     app.run("brush.preset", json!({"slot": "B"})).unwrap();
     assert_eq!(app.ui.brush_density, 40.0);
     assert!(app.run("brush.preset", json!({"slot": "c"})).is_err());

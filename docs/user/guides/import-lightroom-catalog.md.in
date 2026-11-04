@@ -20,7 +20,7 @@ If you change your mind, one **Edit** > **Undo** reverses the changes to the cat
 
 - Ratings, picks and rejects, and colour labels
 - Keywords, including hierarchical ones, and XMP metadata
-- Collections and collection sets, which become albums
+- Collections and collection sets, which become collections and collection folders
 - Virtual copies
 - Develop settings that {{app}} can map
 
@@ -29,7 +29,7 @@ Original files stay where they are, and {{app}} refers to them in place. Photos 
 ## What does not match
 
 - Develop settings are an approximation. Camera profiles, Adobe's AI models and some masking and retouch fields are not reproduced, and settings {{app}} cannot map are reported.
-- Smart collections become regular albums that hold the photos they contain at the time of import.
+- Smart collections become regular collections that hold the photos they contain at the time of import.
 - Lightroom's process version is not carried over. Imported photos use {{app}}'s newest rendering.
 
 ## Good to know

@@ -302,6 +302,7 @@ impl Workers {
                     quick: None,
                     display: None,
                     hdr_texels: None,
+                    frame: None,
                 };
                 g.done.push((b.slot, r, 0.0));
             }
@@ -394,6 +395,7 @@ impl Workers {
                 quick: None,
                 display: None,
                 hdr_texels: None,
+                frame: None,
             },
             ms,
         ));
@@ -449,6 +451,7 @@ impl RenderOffload for Workers {
                 quick: None,
                 display: None,
                 hdr_texels: None,
+                frame: None,
             };
             g.done.push((slot, r, 0.0));
             return None;

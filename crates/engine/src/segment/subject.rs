@@ -89,7 +89,7 @@ impl Subject {
             use lcc_segment::fetch;
             let env = lcc_brand::env(fetch::BIREFNET_MIRRORS_ENV);
             let mirrors = fetch::birefnet_mirrors(env.as_deref());
-            self.download.start(fetch::BIREFNET_FILES, mirrors, dir, fetch::Options::default(), activity, "BiRefNet")
+            self.download.start(fetch::BIREFNET_FILES, Vec::new(), mirrors, dir, fetch::Options::default(), activity, "BiRefNet")
         }
         #[cfg(not(feature = "sam"))]
         {

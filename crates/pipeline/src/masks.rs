@@ -132,10 +132,60 @@ impl Mattes {
 pub struct Evaluated {
     /// The mask's id ([`Mask::id`]).
     pub id: u32,
-    pub alpha: Plane,
+    /// Shared with the view's stage cache, which keeps it for the next render ([`alpha_key`]).
+    pub alpha: std::sync::Arc<Plane>,
     pub adjust: LocalAdjustments,
     /// The mask's local Curve as tables ([`crate::finish::local_curve_luts`]); `None` while it is linear.
     pub curve: Option<[Lut1; 3]>,
+}
+
+/// Whether `shape`'s alpha depends on the exposure: range masks select on exposed values, and so
+/// does the sky heuristic (not a sky from the source's matte). Shapes not listed as independent
+/// count as dependent (a new shape is re-evaluated rather than wrongly reused).
+fn reads_exposure(shape: &MaskShape, mattes: Option<&Mattes>) -> bool {
+    // a shape drawn from the source's matte (an AI sky or subject) reads only the matte
+    if mattes.is_some_and(|m| !m.for_shape(shape).is_empty()) {
+        return false;
+    }
+    !matches!(
+        shape,
+        MaskShape::Linear { .. }
+            | MaskShape::Radial { .. }
+            | MaskShape::Brush { .. }
+            | MaskShape::Subject
+            | MaskShape::Background
+            | MaskShape::Object { .. }
+            | MaskShape::Prompt { .. }
+            | MaskShape::People { .. }
+    )
+}
+
+/// Key of the alpha planes [`evaluate`] gives for `masks` at `w × h` with exposure `ev`, for one
+/// image: the caller also keys that image (its linear stage and frame) and the source's mattes
+/// (by identity). What the planes depend on is in it — the visible masks' components, inversion,
+/// Refine Edges, Feather and amount, and the exposure where a shape selects on it — and nothing else, so
+/// a slider that does not touch the masks reuses them (a drag of a photo with AI masks re-ran
+/// them every tick: most of its render time).
+pub fn alpha_key(masks: &[Mask], ev: f32, w: usize, h: usize, mattes: Option<&Mattes>) -> u64 {
+    use std::fmt::Write;
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+    let mut parts = String::new();
+    let mut exposure = false;
+    let mut automatic = false;
+    for m in masks.iter().filter(|m| m.visible && !m.components.is_empty()) {
+        let _ = write!(parts, "{}|{}|{}|{}|{}", m.id, m.invert, m.refine.to_bits(), m.feather.to_bits(), m.adjust.amount.to_bits());
+        for c in &m.components {
+            // (the whole component: a field added to it later counts too)
+            let _ = write!(parts, "|{c:?}");
+            exposure |= reads_exposure(&c.shape, mattes);
+            automatic |= crate::auto_mask::wants(&c.shape);
+        }
+        parts.push(';');
+    }
+    let ev = if exposure { ev.to_bits() } else { 0 };
+    // (a mask on an automatic selection changes when a model is installed or removed)
+    let models = if automatic { crate::auto_mask::model_generation() } else { 0 };
+    BuildHasherDefault::<DefaultHasher>::default().hash_one((parts, w, h, ev, models))
 }
 
 #[inline]
@@ -152,7 +202,7 @@ pub fn evaluate(masks: &[Mask], frame: &Frame, w: usize, h: usize, img: &Rgb32f,
         .filter(|m| m.visible && !m.components.is_empty())
         .map(|m| Evaluated {
             id: m.id,
-            alpha: evaluate_one(m, frame, w, h, img, log_l, ev, mattes),
+            alpha: std::sync::Arc::new(evaluate_one(m, frame, w, h, img, log_l, ev, mattes)),
             adjust: m.adjust,
             curve: crate::finish::local_curve_luts(&m.curve),
         })
@@ -163,6 +213,8 @@ pub fn evaluate(masks: &[Mask], frame: &Frame, w: usize, h: usize, img: &Rgb32f,
 /// scaled by its amount.
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_one(m: &Mask, frame: &Frame, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, ev: f32, mattes: Option<&Mattes>) -> Plane {
+    // its coordinates on the photo before the warp, or (an old mask) on the corrected frame
+    let frame = &*frame.for_mask(m.on_photo);
     let mut alpha = Plane::new(w, h);
     let mut first = true;
     for comp in &m.components {
@@ -218,7 +270,7 @@ pub fn evaluate_one(m: &Mask, frame: &Frame, w: usize, h: usize, img: &Rgb32f, l
 
 /// Per-pixel positions in long-edge units for output pixel centres.
 fn for_each_pos(frame: &Frame, w: usize, h: usize, out: &mut Plane, f: impl Fn(Point, usize) -> f32 + Sync + Send) {
-    let m = frame.out_to_norm(w, h);
+    let m = frame.out_to_mask(w, h);
     let (ow, oh, l) = (frame.ow, frame.oh, frame.ow.max(frame.oh));
     for_rows(&mut out.data, w, |y, row| {
         for (x, v) in row.iter_mut().enumerate() {
@@ -236,6 +288,13 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
         let mut s = shape_alpha(&MaskShape::Subject, frame, w, h, img, log_l, ev, mattes);
         s.data.iter_mut().for_each(|v| *v = 1.0 - *v);
         return s;
+    }
+    // a People selection the people models computed on this photo (one person, their parts), a
+    // remembered object found on it
+    if let MaskShape::People { seg: Some(seg), .. } | MaskShape::Concept { seg: Some(seg), .. } = shape {
+        let mut out = Plane::new(w, h);
+        sample_seg(Some(seg), &[], 1.0, frame, w, h, &mut out);
+        return out;
     }
     let fitting = mattes.map(|m| m.for_shape(shape)).unwrap_or_default();
     if !fitting.is_empty() {
@@ -287,7 +346,7 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
                 *v = smooth(lo - lf, lo, y) * (1.0 - smooth(hi, hi + hf, y));
             }
         }
-        MaskShape::ColorRange { samples, refine } => {
+        MaskShape::ColorRange { samples, refine, .. } => {
             let tol = color_range_tolerance(*refine);
             let samples: Vec<[f32; 3]> = samples.iter().map(|s| [s[0] as f32, s[1] as f32, s[2] as f32]).collect();
             for (v, c) in out.data.iter_mut().zip(&img.data) {
@@ -327,6 +386,8 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
         // not computed yet (no clicks, or a build without the model): nothing selected
         MaskShape::Object { hint, .. } if hint.is_empty() => {}
         MaskShape::Prompt { .. } => {}
+        // a remembered object not found (yet) on this photo: nothing selected
+        MaskShape::Concept { .. } => {}
         MaskShape::Subject | MaskShape::Object { .. } | MaskShape::People { .. } => {
             // Saliency heuristic: centre-weighted local contrast (replaced by the segmenter in M12).
             let m = frame.out_to_norm(w, h);
@@ -351,24 +412,42 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
 }
 
 /// A decoded [`SegMask`]: its logits and the normalized rectangle they cover.
-struct SegGrid {
+pub(crate) struct SegGrid {
     logits: Vec<f32>,
     side: usize,
     r: [f64; 4],
 }
 
 impl SegGrid {
-    fn new(seg: &SegMask) -> Option<SegGrid> {
+    pub(crate) fn new(seg: &SegMask) -> Option<SegGrid> {
         Some(SegGrid { logits: seg.logits()?, side: seg.side as usize, r: seg.bounds()? })
     }
 
-    fn contains(&self, n: Point) -> bool {
+    /// The normalized box of the cells whose logit is above `min` (`None`: no such cell).
+    pub(crate) fn bounds_above(&self, min: f32) -> Option<[f64; 4]> {
+        let side = self.side;
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+        for (i, l) in self.logits.iter().enumerate() {
+            if *l > min {
+                let (x, y) = (i % side, i / side);
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+            }
+        }
+        if x0 == usize::MAX {
+            return None;
+        }
+        let (rw, rh) = (self.r[2] - self.r[0], self.r[3] - self.r[1]);
+        let s = side as f64;
+        Some([self.r[0] + x0 as f64 / s * rw, self.r[1] + y0 as f64 / s * rh, self.r[0] + x1 as f64 / s * rw, self.r[1] + y1 as f64 / s * rh])
+    }
+
+    pub(crate) fn contains(&self, n: Point) -> bool {
         n.x >= self.r[0] && n.x <= self.r[2] && n.y >= self.r[1] && n.y <= self.r[3]
     }
 
     /// The bilinearly sampled logit at normalized image point `n` (cell centres at
     /// `(i + 0.5) / side` of the rectangle).
-    fn logit(&self, n: Point) -> f32 {
+    pub(crate) fn logit(&self, n: Point) -> f32 {
         let side = self.side;
         let at = |x: usize, y: usize| self.logits.get(y.min(side - 1) * side + x.min(side - 1)).copied().unwrap_or(-16.0);
         let u = (n.x - self.r[0]) / (self.r[2] - self.r[0]);
@@ -394,7 +473,7 @@ fn sample_seg(seg: Option<&SegMask>, detail: &[SegMask], gain: f32, frame: &Fram
     if coarse.is_none() && patches.is_empty() {
         return;
     }
-    let m = frame.out_to_norm(w, h);
+    let m = frame.out_to_mask(w, h);
     for_rows(&mut out.data, w, |y, row| {
         for (x, v) in row.iter_mut().enumerate() {
             let n = m.apply(Point::new(x as f64 + 0.5, y as f64 + 0.5));
@@ -500,17 +579,26 @@ pub fn color_range_tolerance(refine: f64) -> f32 {
     0.015 + 0.06 * (refine / 100.0).clamp(0.0, 1.0) as f32
 }
 
-/// A brush stroke resolved to output pixels: dab centres (spacing r/4 along the path), radius,
-/// hard-core radius, flow and density (0..1), and whether it erases.
+/// A brush stroke resolved to output pixels: dab centres, radius (where a dab ends), hard-core
+/// radius, flow and density (0..1), and whether it erases. A legacy stroke's dabs lie r/4 apart
+/// along the path, each solid inside `hard` and smoothly fading to `r`; a Lightroom-model stroke's
+/// ([`BrushDabs::lrc`]) every [`DAB_SPACING`] × r, each `exp(−(d/a)^p)` cut at `r`.
 pub struct BrushDabs {
     pub dabs: Vec<Point>,
     pub r: f64,
     pub hard: f64,
+    /// Lightroom's brush model ([`lcc_develop::BRUSH_MODEL_LRC`]): the dab profile's `a`
+    /// (pixels, at full pressure) and `p`; strokes add up instead of taking the maximum. `None`: the
+    /// legacy model.
+    pub lrc: Option<(f64, f64)>,
     pub flow: f32,
     pub density: f32,
     pub erase: bool,
     /// Auto Mask: paint only pixels like the one under each dab, then snap to edges.
     pub auto: bool,
+    /// How much a Lightroom-model stroke's Auto Mask widens its limits ([`BrushStroke::auto_range_scale`]); 1
+    /// for a legacy stroke.
+    pub auto_scale: f32,
     /// Pen pressure (0..1) of each dab, parallel to `dabs`; empty when the stroke has no pressure data (full pressure).
     pub pressure: Vec<f32>,
 }
@@ -526,6 +614,48 @@ impl BrushDabs {
             None => (self.r, self.hard, self.flow),
         }
     }
+
+    /// How much one dab of radius `r` and hard core `hard` (from [`BrushDabs::dab`]) paints at
+    /// distance `dd` from its centre, in this stroke's brush model.
+    #[inline]
+    pub fn alpha(&self, dd: f64, r: f64, hard: f64) -> f32 {
+        match self.lrc {
+            // pen pressure scales the whole dab
+            Some((a, p)) => lrc_dab_alpha(dd, r, if self.r > 0.0 { a * r / self.r } else { a }, p),
+            None => dab_alpha(dd, r, hard),
+        }
+    }
+
+    /// The coverage `o` after this stroke paints `a` there ([`combine_stroke`]).
+    #[inline]
+    pub fn combine(&self, o: f32, a: f32) -> f32 {
+        combine_stroke(o, a, self.erase, self.lrc.is_some(), self.density)
+    }
+}
+
+/// The coverage `o` after a stroke paints `a` there (`a` already capped by the stroke's density):
+/// an erasing stroke takes away, a legacy stroke keeps the larger of the two, a Lightroom-model
+/// stroke adds up the way its dabs do, up to its density (note 20: overlapping soft strokes blend
+/// into one shape instead of pinching where they meet).
+#[inline]
+pub fn combine_stroke(o: f32, a: f32, erase: bool, lrc: bool, density: f32) -> f32 {
+    if erase {
+        o * (1.0 - a)
+    } else if lrc {
+        o.max((o + a - o * a).min(density))
+    } else {
+        o.max(a)
+    }
+}
+
+/// A Lightroom-model dab ([`lcc_develop::brush_model`]) at distance `dd` from its centre:
+/// `exp(−(dd/a)^p)` up to the radius `r`, 0 beyond.
+#[inline]
+pub fn lrc_dab_alpha(dd: f64, r: f64, a: f64, p: f64) -> f32 {
+    if dd.is_nan() || dd > r || a <= 0.0 {
+        return 0.0;
+    }
+    (-(dd / a).powf(p)).exp() as f32
 }
 
 /// The radius of a dab of a brush of radius `r` (pixels) painted at pen pressure `p` (0..1): from a tenth of the
@@ -575,7 +705,10 @@ pub fn brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize) -> BrushDa
 /// Ask for one more than the threshold to tell "at it" from "past it": a result shorter than
 /// `max` is the whole stroke.
 pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max: usize) -> BrushDabs {
-    let to_out = frame.norm_to_out(w, h);
+    if s.is_lrc() {
+        return lrc_brush_dabs(s, frame, w, h, max);
+    }
+    let to_out = frame.mask_to_out(w, h);
     let ppl = frame.px_per_long(w);
     let r = (s.size * ppl).max(0.5);
     let hard = r * (1.0 - (s.feather / 100.0).clamp(0.0, 1.0));
@@ -592,7 +725,7 @@ pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max
         if emitted >= max {
             break;
         }
-        let q = to_out.apply(*p);
+        let q = to_out(*p);
         let before = dabs.len();
         if push_dabs_within(&mut dabs, &mut emitted, prev, q, r, max) {
             let pq = s.pressure_at(i);
@@ -609,12 +742,119 @@ pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max
         dabs,
         r,
         hard,
+        lrc: None,
         flow: (s.flow / 100.0).clamp(0.0, 1.0) as f32,
         density: (s.density / 100.0).clamp(0.0, 1.0) as f32,
         erase: s.erase,
         auto: s.auto_mask,
+        auto_scale: 1.0,
         pressure,
     }
+}
+
+/// The dabs of a Lightroom-model stroke ([`lcc_develop::brush_model`]): `size` is the core
+/// radius `R0`, the dabs reach `R0 · outer_ratio(feather)` and lie every [`DAB_SPACING`] of that
+/// along the path ([`walk_dabs`]), as Lightroom saves them.
+fn lrc_brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max: usize) -> BrushDabs {
+    use lcc_develop::brush_model;
+    let to_out = frame.mask_to_out(w, h);
+    let ppl = frame.px_per_long(w);
+    let r0 = (s.size * ppl).max(0.5);
+    let r0 = if r0.is_finite() { r0 } else { 0.5 };
+    let r = r0 * brush_model::outer_ratio(s.feather);
+    let (a, p) = brush_model::profile(s.feather);
+    let mut dabs: Vec<Point> = Vec::new();
+    let mut pressure: Vec<f32> = Vec::new();
+    let with_pressure = !s.pressure.is_empty();
+    let mut walk = DabWalk::default();
+    let mut emitted = 0usize;
+    let mut ts: Vec<f64> = Vec::new();
+    let mut prev_p = 1.0;
+    for (i, q) in s.points.iter().enumerate() {
+        if dabs.len() >= max {
+            break;
+        }
+        let pq = s.pressure_at(i);
+        let had = walk.prev.is_some();
+        ts.clear();
+        if walk_dabs(&mut dabs, &mut emitted, &mut walk, to_out(*q), DAB_SPACING * r, &mut ts) {
+            if with_pressure {
+                let from = if had { prev_p } else { pq };
+                pressure.extend(ts.iter().map(|t| from + (pq - from) * *t as f32));
+            }
+            prev_p = pq;
+        }
+    }
+    dabs.truncate(max);
+    pressure.truncate(max);
+    BrushDabs {
+        dabs,
+        r,
+        hard: 0.0,
+        lrc: Some((a * r0, p)),
+        flow: (s.flow / 100.0).clamp(0.0, 1.0) as f32,
+        density: (s.density / 100.0).clamp(0.0, 1.0) as f32,
+        erase: s.erase,
+        auto: s.auto_mask,
+        auto_scale: s.auto_range_scale(),
+        pressure,
+    }
+}
+
+pub use lcc_develop::brush_model::DAB_SPACING;
+
+/// Where [`walk_dabs`] is along a stroke: the last sample taken and the path length still to go
+/// before the next dab.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DabWalk {
+    pub prev: Option<Point>,
+    pub left: f64,
+}
+
+/// Lay the dabs of a Lightroom-model stroke along the segment from the walk's last sample to `q`:
+/// the first sample is a dab, then one every `spacing` of path length (carried over from segment to
+/// segment), so the dabs lie evenly however the samples came in: a slow drag (samples a pixel
+/// apart) lays no more dabs than a fast one, and dabs saved `spacing` apart (Lightroom's) are laid
+/// where they were saved. `ts` receives, per dab laid, where it lies on the segment (0..1; the first
+/// sample's dab 1), for interpolating the pen pressure. A sample that didn't move (or isn't finite)
+/// is skipped; returns whether `q` was taken. A stroke holding [`MAX_STROKE_DABS`] (counting
+/// `emitted`) takes no more dabs.
+pub fn walk_dabs(dabs: &mut Vec<Point>, emitted: &mut usize, walk: &mut DabWalk, q: Point, spacing: f64, ts: &mut Vec<f64>) -> bool {
+    if !(q.x.is_finite() && q.y.is_finite()) {
+        return false;
+    }
+    let spacing = if spacing.is_finite() { spacing.max(0.5) } else { 0.5 };
+    let before = dabs.len();
+    match walk.prev {
+        None => {
+            if *emitted < MAX_STROKE_DABS {
+                dabs.push(q);
+                ts.push(1.0);
+            }
+            walk.left = spacing;
+        }
+        Some(prev) => {
+            let seg = prev.dist(q);
+            if seg.is_nan() || seg <= STATIONARY_PX {
+                return false;
+            }
+            // a hostile, huge segment lays at most 1 M dabs (and the stroke's budget)
+            let room = MAX_STROKE_DABS.saturating_sub(*emitted).min(1_000_000);
+            let mut t = walk.left;
+            // (a hair of slack: dabs saved exactly `spacing` apart land on the samples)
+            let end = seg + 1e-3 * spacing;
+            while t <= end && dabs.len() - before < room {
+                let k = (t / seg).min(1.0);
+                dabs.push(prev.lerp(q, k));
+                ts.push(k);
+                t += spacing;
+            }
+            walk.left = if t <= end { spacing } else { (t - seg).max(0.0) };
+        }
+    }
+    *emitted += dabs.len() - before;
+    walk.prev = Some(q);
+    true
 }
 
 /// Distance between consecutive dabs of a brush of radius `r` (pixels): a quarter of the radius,
@@ -698,6 +938,30 @@ pub fn accumulate(v: f32, a: f32, flow: f32, density: f32) -> f32 {
 pub const AUTO_TOL_EV: f32 = 0.5;
 pub const AUTO_TOL_CHROMA: f32 = 0.25;
 
+/// Auto Mask of a Lightroom-model stroke, measured on Lightroom Classic output (black-box): a pixel
+/// within 0.7 EV of the colour under the dab passes fully and one 0.8 EV away is blocked (a sharp
+/// cut), and at the same brightness the paint fades out with our chroma distance from 0.17 to 0.42.
+pub const AUTO_LRC_EV: (f32, f32) = (0.7, 0.8);
+pub const AUTO_LRC_CHROMA: (f32, f32) = (0.17, 0.42);
+
+/// Auto Mask of a Lightroom-model stroke ([`AUTO_LRC_EV`], [`AUTO_LRC_CHROMA`]): how much a pixel (log
+/// luminance `l`, chromaticity `ch`) takes the paint of a dab over a reference pixel. The cut is left
+/// pixel-sharp (no edge refinement afterwards), as Lightroom's is.
+#[inline]
+pub fn auto_similarity_lrc(l: f32, ch: [f32; 3], rl: f32, rch: [f32; 3]) -> f32 {
+    auto_similarity_lrc_scaled(l, ch, rl, rch, 1.0)
+}
+
+/// [`auto_similarity_lrc`] with every limit times `scale` (the stroke's Auto Mask range,
+/// [`BrushStroke::auto_range_scale`]): the distances are divided by it, which is the same.
+#[inline]
+pub fn auto_similarity_lrc_scaled(l: f32, ch: [f32; 3], rl: f32, rch: [f32; 3], scale: f32) -> f32 {
+    let k = if scale.is_finite() && scale > 0.0 { 1.0 / scale } else { 1.0 };
+    let dl = (l - rl).abs() * k;
+    let dc = ((ch[0] - rch[0]).powi(2) + (ch[1] - rch[1]).powi(2) + (ch[2] - rch[2]).powi(2)).sqrt() * k;
+    (1.0 - smooth(AUTO_LRC_EV.0, AUTO_LRC_EV.1, dl)) * (1.0 - smooth(AUTO_LRC_CHROMA.0, AUTO_LRC_CHROMA.1, dc))
+}
+
 /// Chromaticity `rgb / Y` (as colour noise reduction uses it).
 #[inline]
 pub fn chromaticity(c: [f32; 3]) -> [f32; 3] {
@@ -753,58 +1017,244 @@ pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
     q
 }
 
-/// Stamp brush strokes into `out` (max-combine; erase strokes subtract). Auto Mask strokes weight
+/// Rows per band of [`stamp_dabs`]: the bands are stamped in parallel, each with the dabs that
+/// reach it.
+const BRUSH_BAND: usize = 32;
+
+/// Stamp the dabs of one stroke into `out` (`w × h`, zero or partly painted): flow accumulates in
+/// dab order up to the density ([`accumulate`]); Auto Mask dabs paint only pixels like the one
+/// under their centre ([`auto_similarity`]).
+///
+/// The image is cut into bands of [`BRUSH_BAND`] rows, stamped in parallel: each band gets the
+/// dabs that reach it, in stroke order, so every pixel sees the same dabs in the same order as
+/// stamping them one by one over the whole plane (the same result, bit for bit). Dabs outside the
+/// plane (a zoomed view's window holds a small part of a long stroke) cost nothing. A stroke over
+/// a dress, 100 % zoom on a 45 MP photo, took seconds dab by dab on one core (TEST-NOTES
+/// 2026-10-16 item 28).
+pub fn stamp_dabs(bd: &BrushDabs, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, out: &mut Plane) {
+    let chroma = if bd.auto { chroma_plane(img) } else { Vec::new() };
+    stamp_dabs_with(bd, w, h, log_l, &chroma, out);
+}
+
+/// [`chromaticity`] of every pixel of `img` (an Auto Mask stroke compares each pixel with each
+/// dab: computed once, not once per dab).
+fn chroma_plane(img: &Rgb32f) -> Vec<[f32; 3]> {
+    use rayon::prelude::*;
+    img.data.par_iter().map(|c| chromaticity(*c)).collect()
+}
+
+/// [`stamp_dabs`] with the image's chromaticity given ([`chroma_plane`]; empty for a stroke
+/// without Auto Mask).
+fn stamp_dabs_with(bd: &BrushDabs, w: usize, h: usize, log_l: &Plane, chroma: &[[f32; 3]], out: &mut Plane) {
+    use rayon::prelude::*;
+    if w == 0 || h == 0 || out.data.len() < w * h {
+        return;
+    }
+    let (dens, auto) = (bd.density, bd.auto);
+    let bands = h.div_ceil(BRUSH_BAND);
+    // per dab: radius, hard core, flow and (Auto Mask) the colour under its centre
+    let mut info: Vec<(f64, f64, f32, Option<(f32, [f32; 3])>)> = Vec::with_capacity(bd.dabs.len());
+    let mut lists: Vec<Vec<u32>> = vec![Vec::new(); bands];
+    for (k, d) in bd.dabs.iter().enumerate() {
+        let (r, hard, flow) = bd.dab(k);
+        let refc = if auto {
+            let j = dab_pixel(*d, w, h);
+            log_l.data.get(j).zip(chroma.get(j)).map(|(l, c)| (*l, *c))
+        } else {
+            None
+        };
+        info.push((r, hard, flow, refc));
+        // (NaN fails these too)
+        let reaches = d.x + r > 0.0 && d.x - r < w as f64 && d.y + r > 0.0 && d.y - r < h as f64;
+        let Ok(k) = u32::try_from(k) else { break };
+        if !reaches || (auto && refc.is_none()) {
+            continue;
+        }
+        let b0 = ((d.y - r).floor().max(0.0) as usize) / BRUSH_BAND;
+        let b1 = (((d.y + r).ceil().max(0.0) as usize).min(h).saturating_sub(1) / BRUSH_BAND).min(bands - 1);
+        for list in lists.iter_mut().take(b1 + 1).skip(b0) {
+            list.push(k);
+        }
+    }
+    out.data[..w * h].par_chunks_mut(BRUSH_BAND * w).zip(lists.par_iter()).enumerate().for_each(|(b, (band, list))| {
+        let top = b * BRUSH_BAND;
+        let rows = band.len() / w;
+        for &k in list {
+            let (Some(d), Some(&(r, hard, flow, refc))) = (bd.dabs.get(k as usize), info.get(k as usize)) else { continue };
+            let (y0, y1) = (((d.y - r).floor().max(0.0)) as usize, ((d.y + r).ceil().max(0.0) as usize).min(h));
+            let (y0, y1) = (y0.max(top), y1.min(top + rows));
+            let r2 = r * r;
+            for y in y0..y1 {
+                let dy = y as f64 + 0.5 - d.y;
+                let left = r2 - dy * dy;
+                if left < 0.0 {
+                    continue;
+                }
+                // the row's span of the disc (a pixel of slack each side; the exact test is below)
+                let half = left.sqrt();
+                let x0 = ((d.x - half - 1.5).floor().max(0.0)) as usize;
+                let x1 = ((d.x + half + 1.5).ceil().max(0.0) as usize).min(w);
+                let row = (y - top) * w;
+                for x in x0..x1 {
+                    let Some(v) = band.get_mut(row + x) else { break };
+                    // painted up to the density already: no further dab changes it
+                    if *v >= dens {
+                        continue;
+                    }
+                    let dx = x as f64 + 0.5 - d.x;
+                    let d2 = dx * dx + dy * dy;
+                    if d2 > r2 {
+                        continue;
+                    }
+                    let mut a = bd.alpha(d2.sqrt(), r, hard);
+                    if let Some((rl, rch)) = refc {
+                        let i = y * w + x;
+                        let (Some(l), Some(c)) = (log_l.data.get(i), chroma.get(i)) else { continue };
+                        a *= if bd.lrc.is_some() {
+                            auto_similarity_lrc_scaled(*l, *c, rl, rch, bd.auto_scale)
+                        } else {
+                            auto_similarity(*l, *c, rl, rch)
+                        };
+                    }
+                    // flow accumulates within a stroke up to density
+                    *v = accumulate(*v, a, flow, dens);
+                }
+            }
+        }
+    });
+}
+
+/// Stamp brush strokes into `out` ([`BrushDabs::combine`]: erase strokes subtract, Lightroom-model
+/// strokes add up, legacy ones take the maximum). Auto Mask strokes weight
 /// each dab by [`auto_similarity`] to the pixel under its centre and are refined with
 /// [`guided_cross`] on log luminance.
 fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, out: &mut Plane) {
     if w == 0 || h == 0 {
         return;
     }
+    // (each pixel's chromaticity once for every Auto Mask stroke)
+    let chroma = if strokes.iter().any(|s| s.auto_mask) { chroma_plane(img) } else { Vec::new() };
     for s in strokes {
         let bd = brush_dabs(s, frame, w, h);
-        let (dens, erase, auto) = (bd.density, bd.erase, bd.auto);
+        let auto = bd.auto;
         let mut stroke_alpha = Plane::new(w, h);
-        for (k, d) in bd.dabs.iter().enumerate() {
-            let (r, hard, flow) = bd.dab(k);
-            let refc = auto.then(|| {
-                let j = dab_pixel(*d, w, h);
-                (log_l.data[j], chromaticity(img.data[j]))
-            });
-            let (x0, x1) = (((d.x - r).floor().max(0.0)) as usize, ((d.x + r).ceil().max(0.0) as usize).min(w));
-            let (y0, y1) = (((d.y - r).floor().max(0.0)) as usize, ((d.y + r).ceil().max(0.0) as usize).min(h));
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let dd = Point::new(x as f64 + 0.5, y as f64 + 0.5).dist(*d);
-                    if dd > r {
-                        continue;
-                    }
-                    let mut a = dab_alpha(dd, r, hard);
-                    let i = y * w + x;
-                    if let Some((rl, rch)) = refc {
-                        a *= auto_similarity(log_l.data[i], chromaticity(img.data[i]), rl, rch);
-                    }
-                    let v = &mut stroke_alpha.data[i];
-                    // flow accumulates within a stroke up to density
-                    *v = accumulate(*v, a, flow, dens);
-                }
-            }
-        }
-        if auto {
+        stamp_dabs_with(&bd, w, h, log_l, &chroma, &mut stroke_alpha);
+        // (a Lightroom-model stroke keeps its pixel-sharp cut)
+        if auto && bd.lrc.is_none() {
             let (sigma, eps) = auto_refine(bd.r);
             let q = guided_cross(log_l, &stroke_alpha, sigma, eps);
             // the refinement fills gaps along edges; it never takes paint away
             stroke_alpha = stroke_alpha.zip_map(&q, f32::max);
         }
         for (o, a) in out.data.iter_mut().zip(&stroke_alpha.data) {
-            *o = if erase { *o * (1.0 - a) } else { o.max(*a) };
+            *o = bd.combine(*o, *a);
         }
     }
 }
 
 #[cfg(test)]
+#[path = "tests_brush_lrc.rs"]
+mod tests_brush_lrc;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    // Given masks, the key of their planes changes with what the planes depend on and only that:
+    // the exposure counts for a range mask, not for a gradient; a mask's own sliders never count
+    #[test]
+    fn the_alpha_key_follows_what_the_planes_depend_on() {
+        use lcc_develop::MaskOp;
+        let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
+        let linear = MaskShape::Linear { start: Point::new(0.2, 0.5), end: Point::new(0.8, 0.5) };
+        let mut masks = vec![Mask { id: 1, components: vec![comp(linear)], ..Default::default() }];
+        let k = alpha_key(&masks, 0.0, 100, 50, None);
+        assert_eq!(alpha_key(&masks, 1.5, 100, 50, None), k, "a gradient does not read the exposure");
+        assert_ne!(alpha_key(&masks, 0.0, 100, 51, None), k, "size");
+        masks[0].adjust.exposure = 1.0;
+        assert_eq!(alpha_key(&masks, 0.0, 100, 50, None), k, "the mask's own sliders");
+        masks[0].adjust.amount = 50.0;
+        let k2 = alpha_key(&masks, 0.0, 100, 50, None);
+        assert_ne!(k2, k, "the amount scales the plane");
+        masks[0].feather = 30.0;
+        let k2 = alpha_key(&masks, 0.0, 100, 50, None);
+        assert_ne!(k2, k, "feathered");
+        masks[0].curve.master = vec![Point::new(0.0, 0.1), Point::new(1.0, 0.9)];
+        assert_eq!(alpha_key(&masks, 0.0, 100, 50, None), k2, "the mask's own curve");
+        masks[0].invert = true;
+        assert_ne!(alpha_key(&masks, 0.0, 100, 50, None), k2, "inverted");
+        masks.push(Mask {
+            id: 2,
+            components: vec![comp(MaskShape::LuminanceRange { lo: 0.2, hi: 0.8, lo_feather: 0.1, hi_feather: 0.1 })],
+            ..Default::default()
+        });
+        let k3 = alpha_key(&masks, 0.0, 100, 50, None);
+        assert_ne!(alpha_key(&masks, 0.5, 100, 50, None), k3, "a range mask reads the exposure");
+        masks[1].visible = false;
+        assert_eq!(alpha_key(&masks, 0.5, 100, 50, None), alpha_key(&masks, 0.0, 100, 50, None), "hidden masks count for nothing");
+        // the sky heuristic reads the exposure; a sky from the source's matte does not
+        let sky = vec![Mask { id: 3, components: vec![comp(MaskShape::Sky)], ..Default::default() }];
+        assert_ne!(alpha_key(&sky, 0.5, 100, 50, None), alpha_key(&sky, 0.0, 100, 50, None));
+        let mut mattes = Mattes::default();
+        mattes.push(MatteKind::Sky, Image { width: 4, height: 2, data: vec![255; 8] });
+        assert_eq!(alpha_key(&sky, 0.5, 100, 50, Some(&mattes)), alpha_key(&sky, 0.0, 100, 50, Some(&mattes)));
+    }
     use lcc_develop::{DevelopSettings, MaskComponent};
+
+    /// The banded, parallel [`stamp_dabs`] paints exactly what stamping the dabs one by one over
+    /// the whole plane does (the way it was done before), for plain and Auto Mask strokes, with
+    /// pen pressure, and with dabs off the plane's edges.
+    #[test]
+    fn banded_dab_stamping_matches_stamping_dab_by_dab() {
+        let (w, h) = (300, 171);
+        let mut img = Rgb32f::new(w, h);
+        for (i, p) in img.data.iter_mut().enumerate() {
+            let (x, y) = ((i % w) as f32, (i / w) as f32);
+            *p = [0.2 + 0.001 * x, 0.1 + 0.002 * y, if x > 150.0 { 0.6 } else { 0.05 }];
+        }
+        let log_l = Plane { width: w, height: h, data: img.data.iter().map(|c| lcc_color::luminance_2020(*c).max(1e-6).log2()).collect() };
+        let naive = |bd: &BrushDabs| {
+            let mut out = Plane::new(w, h);
+            for (k, d) in bd.dabs.iter().enumerate() {
+                let (r, hard, flow) = bd.dab(k);
+                let refc = bd.auto.then(|| {
+                    let j = dab_pixel(*d, w, h);
+                    (log_l.data[j], chromaticity(img.data[j]))
+                });
+                let (x0, x1) = (((d.x - r).floor().max(0.0)) as usize, ((d.x + r).ceil().max(0.0) as usize).min(w));
+                let (y0, y1) = (((d.y - r).floor().max(0.0)) as usize, ((d.y + r).ceil().max(0.0) as usize).min(h));
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let dd = Point::new(x as f64 + 0.5, y as f64 + 0.5).dist(*d);
+                        if dd > r {
+                            continue;
+                        }
+                        let mut a = dab_alpha(dd, r, hard);
+                        let i = y * w + x;
+                        if let Some((rl, rch)) = refc {
+                            a *= auto_similarity(log_l.data[i], chromaticity(img.data[i]), rl, rch);
+                        }
+                        out.data[i] = accumulate(out.data[i], a, flow, bd.density);
+                    }
+                }
+            }
+            out
+        };
+        let f = frame(w, h);
+        for (auto, pressure) in [(false, false), (true, false), (false, true)] {
+            let points: Vec<Point> = (0..40).map(|i| Point::new(-0.1 + 0.03 * i as f64, 0.1 + 0.4 * ((i as f64) * 0.4).sin().abs())).collect();
+            let pressure = if pressure { (0..40).map(|i| 0.2 + 0.02 * i as f32).collect() } else { Vec::new() };
+            let st = BrushStroke { points, size: 0.06, feather: 60.0, flow: 40.0, density: 90.0, auto_mask: auto, pressure, ..Default::default() };
+            let bd = brush_dabs(&st, &f, w, h);
+            assert!(bd.dabs.len() > 50);
+            let mut banded = Plane::new(w, h);
+            stamp_dabs(&bd, w, h, &img, &log_l, &mut banded);
+            let want = naive(&bd);
+            let worst = banded.data.iter().zip(&want.data).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-6, "auto {auto}: {worst}");
+            assert!(want.data.iter().any(|v| *v > 0.5), "the stroke paints");
+        }
+    }
 
     fn frame(w: usize, h: usize) -> Frame {
         Frame::new(w, h, &DevelopSettings::default(), true)
@@ -936,7 +1386,7 @@ mod tests {
         let img = Rgb32f::new(100, 100);
         let l = Plane::new(100, 100);
         let radial = |x: f64| MaskShape::Radial { center: Point::new(x, 0.5), rx: 0.1, ry: 0.1, angle: 0.0, feather: 20.0, invert: false };
-        let comp = |op, x| MaskComponent { name: None, op, invert: false, shape: radial(x) };
+        let comp = |op, x| MaskComponent { anchor: None, name: None, op, invert: false, shape: radial(x) };
         let at = |ops: Vec<MaskComponent>, x, y| {
             let m = Mask { components: ops, invert: true, ..Default::default() };
             evaluate(&[m], &f, 100, 100, &img, &l, 0.0, None)[0].alpha.get(x, y)
@@ -961,7 +1411,7 @@ mod tests {
         let shape = MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.2, ry: 0.2, angle: 0.0, feather: 20.0, invert: false };
         let a = shape_alpha(&shape, &f, 100, 100, &img, &l, 0.0, None);
         assert!(a.get(50, 50) > 0.99 && a.get(5, 5) < 0.01);
-        let m = Mask { components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: true, shape }], ..Default::default() };
+        let m = Mask { components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: true, shape }], ..Default::default() };
         let e = evaluate(&[m], &f, 100, 100, &img, &l, 0.0, None);
         assert!(e[0].alpha.get(50, 50) < 0.01);
     }
@@ -1132,7 +1582,13 @@ mod tests {
         let stroke = BrushStroke { points: vec![Point::new(0.1, 0.5), Point::new(0.9, 0.5)], size: 0.05, ..Default::default() };
         let erase = BrushStroke { points: vec![Point::new(0.5, 0.5)], size: 0.05, erase: true, feather: 0.0, ..Default::default() };
         let m = Mask {
-            components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes: vec![stroke, erase] } }],
+            components: vec![MaskComponent {
+                anchor: None,
+                name: None,
+                op: MaskOp::Add,
+                invert: false,
+                shape: MaskShape::Brush { strokes: vec![stroke, erase] },
+            }],
             ..Default::default()
         };
         let e = evaluate(&[m], &f, 200, 100, &img, &l, 0.0, None);
@@ -1183,6 +1639,7 @@ mod tests {
             let f = Frame::new(w, h, &Default::default(), true);
             let m = Mask {
                 components: vec![MaskComponent {
+                    anchor: None,
                     name: None,
                     op: MaskOp::Add,
                     invert: false,
@@ -1212,6 +1669,7 @@ mod tests {
         let extents = |feather: f64| {
             let m = Mask {
                 components: vec![MaskComponent {
+                    anchor: None,
                     name: None,
                     op: MaskOp::Add,
                     invert: false,
@@ -1284,9 +1742,25 @@ mod tests {
         assert!(subject.get(10, 50) > 0.99 && subject.get(190, 50) > 0.99 && subject.get(100, 50) < 0.01);
         let background = eval(&MaskShape::Background);
         assert!(background.get(100, 50) > 0.99 && background.get(10, 50) < 0.01);
-        let hair = eval(&MaskShape::People { person: 0, parts: vec!["Hair".into()] });
+        let hair = eval(&MaskShape::People { person: 0, parts: vec!["Hair".into()], who: None, seg: None });
         assert!(hair.get(190, 50) > 0.99 && hair.get(10, 50) < 0.01);
-        let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()] };
+        let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()], who: None, seg: None };
         assert_eq!(eval(&lips), shape_alpha(&lips, &f, w, h, &img, &l, 0.0, None));
+    }
+
+    #[test]
+    fn a_people_selection_the_models_computed_wins_over_mattes_and_the_heuristic() {
+        let (w, h) = (200, 100);
+        let img = Rgb32f::filled(w, h, [0.2; 3]);
+        let l = img.map(crate::local::log_lum);
+        let mut mattes = Mattes::default();
+        mattes.push(MatteKind::Skin, left_matte(w, h, 0.25));
+        // the right half of the photo selected
+        let side = 64;
+        let logits: Vec<f32> = (0..side * side).map(|i| if i % side >= side / 2 { 8.0 } else { -8.0 }).collect();
+        let seg = lcc_develop::SegMask::from_logits(side, &logits);
+        let shape = MaskShape::People { person: 1, parts: vec!["Face Skin".into()], who: None, seg: Some(seg) };
+        let a = shape_alpha(&shape, &frame(w, h), w, h, &img, &l, 0.0, Some(&mattes));
+        assert!(a.get(190, 50) > 0.9 && a.get(10, 50) < 0.1, "{} {}", a.get(190, 50), a.get(10, 50));
     }
 }

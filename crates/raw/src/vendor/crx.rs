@@ -457,6 +457,10 @@ fn wavelet_plane(sample: &[u8], plane: &Plane, width: usize, height: usize, edge
             }
             Ok(WaveletBand { width: w, height: h, data })
         })
+        .collect::<Vec<Result<_>>>()
+        // the first failure in band order: rayon's own Result collect keeps whichever band failed
+        // first in time, so one corrupt file could report a different error on each decode
+        .into_iter()
         .collect::<Result<Vec<_>>>()?;
     crx_wavelet::reconstruct(&bands, width, height, 3, edges)
 }

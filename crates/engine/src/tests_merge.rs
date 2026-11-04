@@ -421,7 +421,10 @@ fn hdr_batch_merges_each_stack() {
 /// (never below the 40 MP every panorama used to have), and never above a size asked for.
 #[test]
 fn panorama_size_is_held_to_memory() {
-    use crate::merge::{MIN_FITTED_MEGAPIXELS, fit_in_memory};
+    use crate::merge::MIN_FITTED_MEGAPIXELS;
+    // beside the app's old 1.5 GiB budget, whatever this process's is (it follows the computer and
+    // `{ENV_PREFIX}_MEMORY_MB`)
+    let fit_in_memory = |o: &lcc_merge::PanoOptions, px: f64, ram: Option<usize>| crate::merge::fit_in_memory_beside(o, px, ram, 3 << 29);
     let full = lcc_merge::PanoOptions::default();
     let gb = |g: usize| Some(g << 30);
     let photos = 5.0 * 51e6; // five 51 MP photos

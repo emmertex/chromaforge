@@ -155,3 +155,20 @@ fn gpu_status_never_moves_the_performance_controls() {
     let first = seen[0].1;
     assert!(seen.iter().all(|(_, r, _)| *r == first), "the memory buttons moved: {seen:?}");
 }
+
+// Scenario: a name typed in the preset name field is saved by Export itself (Add is easy to miss)
+#[test]
+fn export_saves_the_typed_preset_name() {
+    let mut h = export_dialog([1400.0, 1000.0]);
+    if let Some(crate::state::Dialog::Export { preset_name, .. }) = &mut h.app.ui.dialog {
+        *preset_name = "Client Web".into();
+    }
+    h.settle(T);
+    let r = h.request("ui.clickWidget", json!({"id": "button:dialogOk"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(h.app.ui.dialog.is_none());
+    assert!(h.app.session.export_presets.iter().any(|p| p.name == "Client Web"), "saved without pressing Add");
+    assert!(h.step_until(Duration::from_secs(60), |h| h.app.export.is_none()));
+}

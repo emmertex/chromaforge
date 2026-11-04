@@ -232,10 +232,22 @@ walks the drive.
   within 1 LSB (`the_display_fit_on_the_device_matches_the_cpus`). Overlays, a window that spots
   grew, HDR renders and a monitor profile's conversion keep the CPU fit. A render at rest reads the full
   image back with the fitted one, for the photo's view preview; a drag's updates cache the fitted one.
+- Smooth Skin (`skin` module: `skin_lab`, `skin_reduce`, `skin_combine`, with the box Gaussian on
+  4-channel bands) runs on the device from the CPU's plan (`skin::plan`: the coverage over the
+  skin's box, the faces grouped by size and each group's region), the same fast log / exp as the
+  CPU (`crates/gpu/tests/skin_gpu.rs`: max 1 LSB). Before, a photo with Smooth Skin had its whole
+  linear image read back, smoothed on the processor and uploaded again (a 45 MP export spent ~0.8 s
+  of its GPU turn on that). The retouch of people's parts still runs on the CPU (read back, uploaded),
+  and so does Smooth Skin when a region is over the device's buffer limit.
 - Per-stage hybrid: defringe and spot removal (rare, CPU-only for now) download the resampled image,
-  run on the CPU and upload; heuristic mask shapes (Sky, Subject, Background, …) and brushes of more
-  than 4096 dabs are evaluated on the CPU and uploaded; sources over the buffer limit are resampled
-  on the CPU.
+  run on the CPU and upload; heuristic mask shapes (Sky, Subject, Background, …), brushes with pen pressure and
+  brushes of more than 65 536 dabs (or whose tile lists would pass 8 M words) are evaluated on the CPU and uploaded. The
+  brush kernel bins each stroke's dabs into tiles of about a quarter radius, so a pixel looks only at the dabs that reach
+  its tile instead of every dab of the stroke (a dress brushed over, zoomed to 100 %: tens of seconds before); sources over the buffer limit are resampled
+  on the CPU. Retouch ▸ Teeth (`lcc_pipeline::retouch::apply`) reads the
+  noise-reduced scene-linear image back, runs the CPU's code and uploads it again, so the two renderers
+  match by construction (`gpu_matches_cpu` case `retouch teeth (cpu stage)`); it is per-pixel inside
+  small masks, so a kernel of its own was not worth a second implementation yet.
 - Stage cache: `GpuStages` mirrors `StageCache` (same keys: source identity + `geo`, `lin_key`,
   per-plane radii) and lives in it as an extension, so the UI needs no change. The uploaded source is
   kept per view. A tone / colour / exposure drag re-runs one dispatch of `finish` plus the readback.
@@ -429,7 +441,7 @@ A view's stages keep an uploaded source only up to 96 MB (a Preview-level source
 - Imports read raw headers only (`lcc_raw::probe_info`): no pixel data is decompressed,
   except the first rows a few vendor formats need for facts their headers lack (Nikon NEF: the
   first 128 rows for the masked trailing columns, issue #708).
-- One budget (`memory::budget`, default min(25 % of RAM, 1.5 GiB); `<PREFIX>_MEMORY_MB` or
+- One budget (`memory::budget`, default min(25 % of RAM, 16 GiB); by hand at most 75 % of RAM; `<PREFIX>_MEMORY_MB` or
   `app.memoryBudget {mb}`): half for the engine caches (decoded thumbnail / preview / full
   sources and rendered previews, evicted least recently used *across* them; the photo on screen
   stays), a quarter for decodes in flight (`memory::work_gate`: grid thumbnails, neighbour
@@ -445,9 +457,45 @@ A view's stages keep an uploaded source only up to 96 MB (a Preview-level source
 - Result (M4 Pro, 14 raws, loupe, 12 steps): peak RSS 1.9–2.3 GB → 0.83–0.99 GB, peak footprint
   2.5–2.6 GB → 0.91–0.96 GB, heap peak 930 → ~600 MB; stepping median ~13 ms (unchanged).
 
+## Drawing drafts straight from the GPU
+The desktop app creates the window's wgpu device with the adapter's limits and offers it to the GPU
+renderer (`lcc_gpu::offer_window_device`; the kernels build on it when the renderer warms up, off
+the UI thread, under the crash sentinel and the creation deadline), so rendering and drawing share
+one device. A slider drag's drafts of the views (Detail, Before, hover, Compare, the second window)
+are then `RenderJob::on_screen`: the render ends in an `Rgba8Unorm` texture
+(`lcc_gpu::try_render_display`) that egui-wgpu draws as a native texture (`ScreenTextures` in
+`ui-egui`, implemented by the app): no readback, no conversion to egui's pixels, no re-upload. The
+per-render checks run on the device instead: every pixel written (an atomic count), not entirely
+black (the device histogram). Rows are re-laid at a 256-byte stride for the texture copy when the
+width needs it (`present.wgsl`).
+
+Renders that need pixels keep the readback: the settled full-quality render (the cached view
+preview, the colour readout, screenshots), high quality adjustment previews (their Lanczos display
+fit), zoomed windows and tiles, thumbnails, exports, overlays, windows that spots grew, a monitor
+profile, HDR views (their own texels path) and anything the GPU path declines. A device that
+doesn't suit (software adapter, too few storage buffers, kernels that don't build there) is
+declined and the renderer makes one of its own, as before; a device that replaces a lost one is
+always its own. A headless `ui.screenshot` reads a GPU-drawn view back (`lcc_gpu::read_texture`).
+
+- Not offered on an HDR window for now: with the renderer on the window's device, turning an
+  edit's HDR on stopped the Wayland window drawing (Radeon 8060S / RADV, 2026-11-03; no error
+  logged; fine with a device of its own). `<PREFIX>_GPU_WINDOW=1` offers it anyway.
+- `<PREFIX>_GPU_WINDOW=0`: never offer the window's device (a device of its own, renders read
+  back): to compare, or for a driver that misbehaves with compute and drawing on one device.
+  `<PREFIX>_GPU_LIMITS` caps the adopted device as it caps one of its own.
+- `ui.inspect` → `perf.gpuWindowDevice` (renders run on the window's device), `perf.screenTextures`
+  (the UI can draw GPU-resident renders), `perf.mainOnGpu` (the loupe shows one now).
+- With the renderer on the window's device, errors the device raises outside a render (the window's
+  own included) are logged and replace the render device (one of its own) instead of wgpu's
+  default panic.
+
+AI models (the denoise network and AI masks' kernels in `nn.rs`, the face models in `faces.rs`)
+make their device on the second graphics card when one is chosen or found, else on the editing
+card (`lcc_gpu::ai_adapter`; `ai_card()` says which). Each AI device is made once and given up on
+alone. Models that arrive later (SAM 2.1 / EoMT masks, MediaPipe people) should make their device
+through `ai_adapter` too. Not ported from OneSlips' DUAL-GPU-5: one denoise photo per card at once.
+
 ## Open items
-- Keep the loupe texture on the GPU (render into an `egui-wgpu` texture on eframe's device instead of
-  reading back); share the device with eframe.
 - WebGPU in the browser build (async init, single device per canvas).
 - Defringe and spot removal kernels; Sky/Subject heuristics (replaced by the segmenter in M12).
 - Tiling for sources / outputs beyond the buffer limit (24 MP+ on WebGPU-default limits, 60 MP+

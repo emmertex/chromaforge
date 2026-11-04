@@ -381,7 +381,9 @@ pub const DEHAZE_PATCH_MAX: usize = 64;
 pub fn dehaze_patch_radius(s: &DevelopSettings, px_per_long: f64) -> usize {
     match s.process.process() {
         Process::V1 | Process::V2 => 0,
-        Process::V3 | Process::V4 | Process::V5 | Process::V6 => ((DEHAZE_PATCH * px_per_long).round().max(1.0) as usize).min(DEHAZE_PATCH_MAX),
+        Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 => {
+            ((DEHAZE_PATCH * px_per_long).round().max(1.0) as usize).min(DEHAZE_PATCH_MAX)
+        }
     }
 }
 
@@ -438,7 +440,7 @@ pub fn base_detail_radius(px_per_long: f64) -> usize {
 pub fn tone_base_detail(s: &DevelopSettings, px_per_long: f64) -> usize {
     match s.process.process() {
         Process::V1 => 0,
-        Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 => base_detail_radius(px_per_long),
+        Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 => base_detail_radius(px_per_long),
     }
 }
 
@@ -727,6 +729,28 @@ pub(crate) struct Planes {
     pub dark: Option<(u64, Arc<Plane>, f32)>,
     /// Blurred chromaticity (local Moiré / Noise).
     pub chroma: Option<(u32, Arc<Rgb32f>)>,
+    /// The visible masks' alpha planes, in order ([`masks::alpha_key`]; the mattes they were
+    /// evaluated with, compared by identity).
+    pub masks: Option<MaskPlanes>,
+}
+
+/// Cached mask alpha planes (see [`Planes::masks`]).
+#[derive(Clone)]
+pub(crate) struct MaskPlanes {
+    pub key: u64,
+    pub mattes: Option<Arc<masks::Mattes>>,
+    pub alphas: Vec<Arc<Plane>>,
+}
+
+impl MaskPlanes {
+    fn fits(&self, key: u64, mattes: Option<&Arc<masks::Mattes>>) -> bool {
+        self.key == key
+            && match (&self.mattes, mattes) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
 }
 
 impl Planes {
@@ -734,7 +758,8 @@ impl Planes {
     /// enough for a draft: the wide blurs (base, clarity, dehaze, chromaticity). Its `key` matches
     /// no image, so only another draft takes them.
     pub fn for_other_nr(self) -> Planes {
-        Planes { key: 0, pre_nr: self.pre_nr, log_l: None, texture: None, sharpen: None, ..self }
+        // (the masks are evaluated on the image itself: redone)
+        Planes { key: 0, pre_nr: self.pre_nr, log_l: None, texture: None, sharpen: None, masks: None, ..self }
     }
 }
 
@@ -837,7 +862,7 @@ pub fn texture_fade(px_per_long: f64) -> f32 {
     (want / TEXTURE_SIGMA_MIN).powi(2).min(1.0)
 }
 
-pub fn plane_sigmas(s: &DevelopSettings, px_per_long: f64, src_long: f64, q: Quality) -> PlaneSigmas {
+pub fn plane_sigmas(s: &DevelopSettings, px_per_long: f64, src_long: f64, _quality: Quality) -> PlaneSigmas {
     let ppl = px_per_long as f32;
     // A hidden mask, or one with no components, does not change the picture. Its sliders must
     // not pick the tone base Clarity reads (#1214).
@@ -849,10 +874,10 @@ pub fn plane_sigmas(s: &DevelopSettings, px_per_long: f64, src_long: f64, q: Qua
     // Edge-aware base at ~1.5% of the long edge (EV² epsilon: edges of > ~0.6 EV are preserved)
     // From V2 it is taken of the median at 0.15%: lines and texture finer than that are detail,
     // not tone (#632).
-    let base = tone_active.then(|| {
-        let sigma = (0.015 * ppl).max(1.0);
-        if q == Quality::Draft { sigma.min(24.0) } else { sigma }
-    });
+    // (a draft takes the same width as the full render: drafts once capped it at 24 px, which
+    // changed the large-scale tone of every draft wider than ~1600 px, most at 100 %, where the
+    // base is ~90 px wide. The fast guided filter costs no more for a wider one.)
+    let base = tone_active.then(|| (0.015 * ppl).max(1.0));
     let clarity = (s.effects.clarity != 0.0 || local_any(|a| a.clarity)).then(|| (0.012 * ppl).max(1.0));
     // local Noise and Defringe read the fine detail band too
     let v4 = crate::finish::sharpen_v4(s);
@@ -885,7 +910,7 @@ pub(crate) fn prepare(
     px_per_long: f64,
     q: Quality,
     planes: &mut Planes,
-    mattes: Option<&masks::Mattes>,
+    mattes: Option<&Arc<masks::Mattes>>,
 ) -> Prepared {
     let log_l = planes.log_l.get_or_insert_with(|| Arc::new(timed("log_l", || img.map(log_lum)))).clone();
     let PlaneSigmas {
@@ -944,8 +969,22 @@ pub(crate) fn prepare(
         None => (None, 1.0),
     };
     let ev = s.light.exposure as f32;
-    let masks = timed("masks", || masks::evaluate(&s.masks, frame, img.width, img.height, &img, &log_l, ev, mattes));
-    Prepared { img, log_l, base, clarity_blur, texture_blur, sharpen_blur, dark, chroma_blur, air, masks, px_per_long }
+    let key = masks::alpha_key(&s.masks, ev, img.width, img.height, mattes.map(|m| &**m));
+    let visible: Vec<_> = s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).collect();
+    let masks = match &planes.masks {
+        // the same masks on the same image: their planes, with the adjustments as they are now
+        Some(c) if c.fits(key, mattes) && c.alphas.len() == visible.len() => visible
+            .iter()
+            .zip(&c.alphas)
+            .map(|(m, a)| masks::Evaluated { id: m.id, alpha: a.clone(), adjust: m.adjust, curve: crate::finish::local_curve_luts(&m.curve) })
+            .collect(),
+        _ => {
+            let e = timed("masks", || masks::evaluate(&s.masks, frame, img.width, img.height, &img, &log_l, ev, mattes.map(|m| &**m)));
+            planes.masks = Some(MaskPlanes { key, mattes: mattes.cloned(), alphas: e.iter().map(|e| e.alpha.clone()).collect() });
+            e
+        }
+    };
+    Prepared { img, log_l, base, clarity_blur, texture_blur, sharpen_blur, dark, chroma_blur, air, masks, mask_tone: Vec::new(), px_per_long }
 }
 
 /// The airlight of the whole output frame, estimated on a small render of it (`proxy_w` px wide):
@@ -964,7 +1003,7 @@ const FRAME_PROXIES_KEPT: usize = 4;
 /// `frame.sample(src, w, h)`, kept for the last few (source, frame, size): sampling a 64 MP original down to the
 /// airlight proxy reads all of it (~190 ms of CPU), and every window of a zoomed view with Dehaze asked for it again,
 /// on each pan and slider tick. The proxy is taken before white balance, so a WB change still hits.
-fn frame_proxy(src: &Rgb32f, frame: &Frame, w: usize, h: usize) -> Arc<Rgb32f> {
+pub(crate) fn frame_proxy(src: &Rgb32f, frame: &Frame, w: usize, h: usize) -> Arc<Rgb32f> {
     type Entry = (u64, Frame, usize, usize, Arc<Rgb32f>);
     static CACHE: std::sync::Mutex<Vec<Entry>> = std::sync::Mutex::new(Vec::new());
     let key = crate::optics::fingerprint(src);
@@ -1069,7 +1108,7 @@ mod tests {
         use lcc_develop::{Mask, MaskComponent, MaskOp, MaskShape};
         use lcc_geom::Point;
         let shape = MaskShape::Linear { start: Point::new(0.0, 0.0), end: Point::new(1.0, 0.0) };
-        let component = MaskComponent { name: None, op: MaskOp::Add, invert: false, shape };
+        let component = MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
         let mut s = DevelopSettings::default();
         s.masks.push(Mask {
             visible: false,
@@ -1082,6 +1121,7 @@ mod tests {
         s.masks[0].components.clear();
         assert!(plane_sigmas(&s, 2000.0, 2000.0, Quality::Full).base.is_none());
         s.masks[0].components.push(MaskComponent {
+            anchor: None,
             name: None,
             op: MaskOp::Add,
             invert: false,

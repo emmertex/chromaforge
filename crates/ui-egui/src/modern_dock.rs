@@ -104,7 +104,7 @@ impl Group {
             Group::Light => &[("light", "Basic"), ("profile", "Profile & Treatment")],
             Group::Colour => &[("mixer", "Color Mixer"), ("grading", "Color Grading"), ("calibration", "Calibration")],
             Group::Tone => &[("curve", "Tone Curve")],
-            Group::Detail => &[("detail", "Detail")],
+            Group::Detail => &[("detail", "Detail"), ("retouch", "Retouch")],
             Group::Optics => &[("optics", "Lens Corrections"), ("geometry", "Transform")],
             Group::Effects => &[("effects", "Effects"), ("plugins", "Plug-in Filters")],
             _ => &[],
