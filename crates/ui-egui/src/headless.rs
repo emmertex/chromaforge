@@ -4067,7 +4067,7 @@ mod tests {
             texts(&shape.shape, &mut painted);
         }
         assert!(painted.iter().any(|text| text == &format!("Ordner „{name}“ (und seine Unterordner)")), "{painted:?}");
-        for label in ["Quelle", "Übertragen", "Stichwörter", "Vorgabe"] {
+        for label in ["Quelle", "Übertragen", "Stichwörter", "Vorgaben"] {
             assert!(painted.iter().any(|text| text == label), "{label}: {painted:?}");
         }
         assert_eq!(h.request("engine.execute", json!({"command": "app.language.english"}), t)["ok"], true);

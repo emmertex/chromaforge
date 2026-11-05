@@ -65,7 +65,8 @@ impl ImportSettings {
 
     /// These settings from an import preset's (unknown fields keep their defaults).
     pub fn from_preset(name: &str, v: &Value) -> ImportSettings {
-        let opts: crate::import::ImportDialog = serde_json::from_value(v.clone()).unwrap_or_default();
+        let mut opts: crate::import::ImportDialog = serde_json::from_value(v.clone()).unwrap_or_default();
+        opts.fold_preset();
         let previews = v.get("previews").and_then(Value::as_str).filter(|p| matches!(*p, "none" | "standard" | "full")).unwrap_or("standard");
         ImportSettings { take: "picks".into(), previews: previews.to_string(), preset_name: name.to_string(), opts: settings_only(opts) }
     }
@@ -261,7 +262,7 @@ pub fn save_preset(app: &mut LccApp, name: &str) -> Result<Value, String> {
 
 /// Change the Import tab's settings (`import.configure`): any of `take`, `previews`, and the
 /// import review's options (`copy`, `moveFiles`, `destination`, `organize`, `folderTemplate`,
-/// `rename`, `preset`, `presets`, `keywords`, `metadataPreset`, `album`, `newAlbum`, `dng`), by
+/// `rename`, `preset`, `presets`, `presetProfile`, `keywords`, `metadataPreset`, `album`, `newAlbum`, `dng`), by
 /// name. Returns the settings.
 pub fn configure(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     let Some(given) = p.as_object() else { return Err("settings must be an object".into()) };
@@ -658,9 +659,11 @@ fn choose_source(app: &mut LccApp, ui: &mut egui::Ui) {
 }
 
 /// The settings on the right: the import preset, what to take, the import review's options (how,
-/// apply), the preset stack, the previews to build, and the big button again at the bottom.
+/// apply, with the preset stack), the previews to build, and the big button again at the bottom.
 fn settings(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    // (one ordered stack: a single preset from older settings goes first, the import preset's name stays)
+    app.ui.settings.import_tab.opts.fold_preset();
     let mut s = app.ui.settings.import_tab.clone();
     egui::ScrollArea::vertical().id_salt("import-tab-settings-scroll").auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(12.0);
@@ -681,7 +684,6 @@ fn settings(app: &mut LccApp, ui: &mut egui::Ui) {
                 }
             });
             crate::import_screen::options_for(app, ui, &mut s.opts, true);
-            preset_stack(app, ui, &mut s);
             group_begin(ui, Some("After the Import"));
             form_row(ui, "Previews", |ui| {
                 let opts = [("none", "None"), ("standard", "Standard"), ("full", "1:1")];
@@ -750,43 +752,4 @@ fn preset_row(app: &mut LccApp, ui: &mut egui::Ui, s: &mut ImportSettings) {
         *s = ImportSettings::from_preset(&p.name, &p.settings);
         s.take = take;
     }
-}
-
-/// The preset stack: develop presets applied in order after the Apply card's preset.
-fn preset_stack(app: &mut LccApp, ui: &mut egui::Ui, s: &mut ImportSettings) {
-    use crate::dialog_frame::{form_row, group_begin, help};
-    let t = Tokens::get(ui.ctx());
-    group_begin(ui, Some("Preset Stack"));
-    let name_of = |id: &str| app.session.presets.iter().find(|p| p.id == id).map(|p| p.name.clone());
-    let mut remove = None;
-    for (i, id) in s.opts.presets.iter().enumerate() {
-        let name = name_of(id).unwrap_or_else(|| crate::i18n::tr("(missing preset)").to_string());
-        form_row(ui, &format!("{}.", i + 1), |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(name).color(t.text_label));
-                if crate::widgets::text_button(ui, &format!("importStackRemove-{i}"), "✕", false).clicked() {
-                    remove = Some(i);
-                }
-            });
-        });
-    }
-    if let Some(i) = remove
-        && i < s.opts.presets.len()
-    {
-        s.opts.presets.remove(i);
-    }
-    let all: Vec<(String, String)> = app.session.presets.iter().map(|p| (p.id.clone(), p.name.clone())).collect();
-    form_row(ui, "Add", |ui| {
-        let combo = crate::widgets::combo_box("import-tab-stack-add").selected_text(crate::i18n::tr("Choose a preset…")).show_ui(ui, |ui| {
-            for (i, (id, name)) in all.iter().enumerate().take(500) {
-                let r = ui.selectable_label(false, name);
-                register(ui.ctx(), format!("button:importStackAdd-{i}"), r.rect);
-                if r.clicked() {
-                    s.opts.presets.push(id.clone());
-                }
-            }
-        });
-        register(ui.ctx(), "combo:importStackAdd", combo.response.rect);
-    });
-    help(ui, "Each preset sets its settings on top of the one before, as its own History step.");
 }
