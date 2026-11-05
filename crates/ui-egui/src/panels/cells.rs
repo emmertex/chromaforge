@@ -101,7 +101,7 @@ pub fn extras(app: &mut LccApp, ui: &egui::Ui, id: PhotoId, r: Rect, square: boo
     }
     // a row of small badges at the image's top right (below the virtual-copy tag)
     let size = 18.0;
-    let top = img.top() + if p.copy_name.is_some() { 30.0 } else { 6.0 };
+    let top = img.top() + if p.virtual_copy_name().is_some() { 30.0 } else { 6.0 };
     let mut x = img.right() - 6.0;
     for (key, icon, tip, color) in badges {
         let br = Rect::from_min_size(pos2(x - size, top), vec2(size, size));

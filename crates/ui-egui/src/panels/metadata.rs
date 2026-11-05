@@ -707,7 +707,7 @@ pub(crate) fn focus_text(f: Option<&lcc_meta::FocusPoint>) -> Option<String> {
 fn extras(app: &mut LccApp, ui: &mut egui::Ui, p: &Photo) {
     let t = Tokens::get(ui.ctx());
     recipe_card(app, ui, p.id);
-    if let Some(name) = &p.copy_name {
+    if let Some(name) = p.virtual_copy_name() {
         let of = p
             .copy_of
             .and_then(|m| app.session.catalog.photo(m))
