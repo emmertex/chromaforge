@@ -161,6 +161,11 @@ pub struct LoadOptions {
     /// How a raw's colour model is chosen (`Profile::camera`): empty for its camera's default, `lc` for the app's own
     /// colour, `dcp:<id>` for an imported camera profile (`.dcp`).
     pub camera: String,
+    /// Whether the camera profile's own look (tone curve, look table) comes with it ("As profile",
+    /// [`DevelopSettings::keeps_camera_look`]); false: its calibration only, under one of the app's looks. Always true
+    /// from [`LoadOptions::for_photo`] when the photo's camera profile has no look, so a change of look doesn't decode
+    /// those photos again.
+    pub camera_look: bool,
     /// Correct the raw's hot, dead and stuck pixels (`sensor.pixelFix`): the camera body's known ones
     /// and the clear ones this photo shows (`crate::files::repair_pixels`).
     pub pixel_fix: bool,
@@ -172,7 +177,7 @@ pub struct LoadOptions {
 
 impl Default for LoadOptions {
     fn default() -> Self {
-        LoadOptions { colour: Default::default(), outliers: false, camera: String::new(), pixel_fix: true, path: None }
+        LoadOptions { colour: Default::default(), outliers: false, camera: String::new(), camera_look: true, pixel_fix: true, path: None }
     }
 }
 
@@ -182,9 +187,20 @@ impl LoadOptions {
             colour: s.profile.camera_colour,
             outliers: s.detail.nr_outliers,
             camera: s.profile.camera.clone(),
+            camera_look: s.keeps_camera_look(),
             pixel_fix: s.sensor.fixes_pixels(),
             path: None,
         }
+    }
+
+    /// [`Self::of`] photo `p`'s settings, `camera_look` true when its camera profile has no look of its own (then the
+    /// look chosen makes no difference to the decode).
+    pub fn for_photo(p: &Photo) -> LoadOptions {
+        let mut o = LoadOptions::of(&p.develop);
+        if !o.camera_look && !crate::camera_profiles::photo_profile(p).is_some_and(|d| d.has_look()) {
+            o.camera_look = true;
+        }
+        o
     }
 
     /// These options for a decode of the file at `path`.
@@ -280,7 +296,7 @@ impl DecodedSource {
         self.from_proxy
             || ((self.options.outliers == options.outliers || !info.is_some_and(|i| i.raw))
                 && (self.options.colour == options.colour || !info.is_some_and(|i| i.colorimetric))
-                && (self.options.camera == options.camera || !info.is_some_and(|i| i.raw))
+                && ((self.options.camera == options.camera && self.options.camera_look == options.camera_look) || !info.is_some_and(|i| i.raw))
                 && (self.options.pixel_fix == options.pixel_fix || !info.is_some_and(|i| i.raw)))
     }
 
@@ -971,7 +987,7 @@ impl MediaCache {
     }
 
     fn source_ref_with(&mut self, p: &Photo, level: SourceLevel, cached: bool) -> SourceRef {
-        let wanted = LoadOptions::of(&p.develop);
+        let wanted = LoadOptions::for_photo(p);
         let mut r = self.source_ref_plain(p, level, cached, &wanted);
         if let SourceRef::File { options, .. } = &mut r {
             *options = wanted;
@@ -2385,7 +2401,7 @@ impl crate::Session {
         if let Some(src) = &r.loaded
             && r.source_key.is_none_or(|key| self.catalog.photo(r.photo).is_some_and(|p| Hasher128::new().str(&pixels_key(p)).finish() == key))
             // (not a source decoded with settings the photo no longer has: one decoded for them replaces it)
-            && self.catalog.photo(r.photo).is_none_or(|p| src.serves(&LoadOptions::of(&p.develop)))
+            && self.catalog.photo(r.photo).is_none_or(|p| src.serves(&LoadOptions::for_photo(p)))
         {
             if let Some(info) = &src.info {
                 self.learn_as_shot_wb(r.photo, info);

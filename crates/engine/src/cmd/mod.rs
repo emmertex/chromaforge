@@ -495,8 +495,13 @@ pub(crate) fn check_recipe(recipe: &[(String, f64)]) -> std::result::Result<(), 
     Ok(())
 }
 pub(crate) fn point(p: &Value, key: &str) -> Option<lcc_geom::Point> {
-    let a = p.get(key)?.as_array()?;
-    Some(lcc_geom::Point::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+    let v = p.get(key)?;
+    // `[x, y]`, or `{x, y}` as a Point serializes (the app sends those)
+    let (x, y) = match v.as_array() {
+        Some(a) => (a.first()?.as_f64()?, a.get(1)?.as_f64()?),
+        None => (v.get("x")?.as_f64()?, v.get("y")?.as_f64()?),
+    };
+    Some(lcc_geom::Point::new(x, y))
 }
 
 #[cfg(test)]
@@ -504,6 +509,25 @@ mod tests {
     use serde_json::json;
 
     use super::index_req;
+
+    /// OneSlips ea89acca3: a point reads as `[x, y]` and as `{x, y}` (how a Point serializes), so a mask drawn with
+    /// either lands where it was drawn, not at the default place.
+    #[test]
+    fn points_read_as_a_list_or_as_x_and_y() {
+        let at = |v: serde_json::Value| super::point(&json!({"center": v}), "center").map(|p| (p.x, p.y));
+        assert_eq!(at(json!([0.2, 0.7])), Some((0.2, 0.7)));
+        assert_eq!(at(json!({"x": 0.2, "y": 0.7})), Some((0.2, 0.7)));
+        for bad in [json!({"x": 0.2}), json!([0.2]), json!("0.2,0.7"), json!({"x": "a", "y": 1})] {
+            assert_eq!(at(bad.clone()), None, "{bad}");
+        }
+        let mut s = crate::Session::with_demo();
+        s.execute("mask.add", &json!({"kind": "radial", "center": {"x": 0.2, "y": 0.7}})).unwrap();
+        let id = s.active().unwrap();
+        let d = s.develop_of(id).unwrap();
+        let shape = &d.masks.last().unwrap().components[0].shape;
+        let lcc_develop::MaskShape::Radial { center, .. } = shape else { panic!("a radial: {shape:?}") };
+        assert_eq!((center.x, center.y), (0.2, 0.7), "where it was drawn");
+    }
 
     #[test]
     fn command_indices_preserve_integer_precision_and_check_usize_bounds() {

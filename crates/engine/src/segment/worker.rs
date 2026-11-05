@@ -101,6 +101,10 @@ pub struct Job {
     pub reply: mpsc::Sender<Outcome>,
     /// Set when the job's batch was cancelled (Recompute AI Masks): skipped, not run.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Background work (finishing an import): the worker takes every other request first, between one of these and
+    /// the next (OneSlips 9bb601286, test notes 2026-10-25 note 6: an AI mask asked for on the photos in front of the
+    /// user runs first).
+    pub low: bool,
 }
 
 /// A finished request: the segmentation (`None`: nothing selected / nothing to report).
@@ -188,6 +192,8 @@ pub struct Shared {
     pub loaded: AtomicBool,
     /// Loading the model or encoding a photo right now (the slow parts).
     pub encoding: AtomicBool,
+    /// Requests running or queued as background work ([`Job::low`]).
+    pub low_pending: AtomicUsize,
 }
 
 /// Decrements a counter when dropped (also when unwinding).
@@ -259,6 +265,9 @@ impl Worker {
             self.shared = Arc::new(Shared::default());
         }
         self.counter(&job).fetch_add(1, Ordering::SeqCst);
+        if job.low {
+            self.shared.low_pending.fetch_add(1, Ordering::SeqCst);
+        }
         let job = match &self.tx {
             Some(tx) => match tx.send(job) {
                 Ok(()) => return Ok(()),
@@ -277,6 +286,9 @@ impl Worker {
             }
             Err(e) => {
                 let _ = self.counter(&job).try_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)));
+                if job.low {
+                    let _ = self.shared.low_pending.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)));
+                }
                 Err(format!("could not start the AI mask worker: {e}"))
             }
         }
@@ -342,7 +354,10 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
         while let Ok(j) = rx.try_recv() {
             queue.push_back(j);
         }
-        let Some(mut job) = queue.pop_front() else { continue };
+        // the user's own requests before background work, each in the order asked
+        let at = queue.iter().position(|j| !j.low).unwrap_or(0);
+        let Some(mut job) = queue.remove(at) else { continue };
+        let _low = job.low.then(|| Done(&shared.low_pending));
         let is_detail = matches!(job.kind, Kind::Detail { .. });
         // counts the job as pending until just before its reply goes out: a caller woken by the
         // reply must not still see the worker busy with it
@@ -916,7 +931,33 @@ mod tests {
     fn job(tag: Tag, reply: &mpsc::Sender<Outcome>) -> Job {
         // an empty folder: loading fails with an error (no model files)
         let dir = std::env::temp_dir().join(format!("lc-sam3-worker-none-{}", std::process::id()));
-        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone(), cancel: None }
+        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone(), cancel: None, low: false }
+    }
+
+    /// OneSlips 9bb601286 (test notes 2026-10-25 note 6): a request the user makes is taken before the background work
+    /// queued ahead of it (finishing an import), which goes on after it.
+    #[test]
+    fn the_users_requests_go_before_background_work() {
+        let shared = Shared::default();
+        let (tx, rx) = mpsc::channel();
+        let (jtx, jrx) = mpsc::channel();
+        for _ in 0..3 {
+            let mut j = job(Tag::Wait, &tx);
+            j.low = true;
+            jtx.send(j).unwrap();
+        }
+        // the user's: told apart by how it fails
+        let mut mine = job(Tag::Wait, &tx);
+        mine.kind = Kind::Panic;
+        jtx.send(mine).unwrap();
+        shared.pending.store(4, Ordering::SeqCst);
+        shared.low_pending.store(3, Ordering::SeqCst);
+        drop(jtx);
+        run(&jrx, &shared, Duration::from_secs(60), Placement::Cpu);
+        let order: Vec<bool> = rx.try_iter().map(|o| o.result.unwrap_err().contains("failed unexpectedly")).collect();
+        assert_eq!(order, [true, false, false, false], "the user's first, then the background's");
+        assert_eq!(shared.low_pending.load(Ordering::SeqCst), 0);
+        assert_eq!(shared.pending.load(Ordering::SeqCst), 0);
     }
 
     #[test]

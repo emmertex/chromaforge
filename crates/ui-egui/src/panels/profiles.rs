@@ -28,23 +28,9 @@ fn camera_profile_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, 
     }
     let t = Tokens::get(ui.ctx());
     let camera = photo.meta.camera.clone();
-    let mut options: Vec<(String, String)> = Vec::new();
-    let default_name = match lcc_raw::dcp::resolve_camera("", &camera) {
-        Some(p) => format!("{} ({})", crate::i18n::tr("Camera default"), p.name),
-        None => crate::i18n::tr("Camera default (built-in)").to_string(),
-    };
-    options.push((String::new(), default_name));
-    options.push(("lc".into(), crate::i18n::tr("Built-in colour").to_string()));
-    for (pid, p) in lcc_raw::dcp::library() {
-        if lcc_raw::dcp::covers_model(&p.model, &camera) {
-            let name = if p.name.is_empty() { pid.trim_start_matches("dcp:").to_string() } else { p.name.clone() };
-            options.push((pid, name));
-        }
-    }
-    // the camera's Lightroom-matched calibrated looks (Lightroom's "Adobe Color" shown as "Eboda Colour", `lcc_camdb::calibration::display_name`)
-    if let Some(cal) = lcc_raw::dcp::calibrated_for_camera(&camera) {
-        options.extend(cal.looks.iter().map(|(pid, p)| (pid.clone(), p.name.clone())));
-    }
+    // (with the camera's Lightroom-matched calibrated looks: Lightroom's "Adobe Color" shown as "Eboda Colour",
+    // `lcc_camdb::calibration::display_name`)
+    let options = super::edit::camera_profile_options(&camera);
     let current = d.profile.camera.clone();
     // the ones the Profile Manager hides are left out (the photo's own stays)
     options.retain(|(o, _)| *o == current || !app.session.profile_hidden.iter().any(|h| h == o));
@@ -61,7 +47,9 @@ fn camera_profile_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, 
         register(ui.ctx(), "cameraProfile", r.response.rect);
     });
     if choice != current {
-        let _ = app.run("develop.cameraProfile", json!({"id": choice}));
+        // a camera profile with a look of its own comes with it ("As profile"); the camera's default keeps the look
+        let c = if choice.is_empty() { "develop.cameraProfile" } else { "develop.profile" };
+        let _ = app.run(c, json!({"id": choice}));
     }
     // a camera profile chosen for this photo can become its body's own (OneSlips, LR-PROF-BODY)
     if !current.is_empty()
@@ -79,14 +67,14 @@ fn camera_profile_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, 
     ui.add_space(4.0);
 }
 
-/// The look the "None" choice sets: the app's own rendering, which adds nothing on top of the camera
-/// profile (`lcc_pipeline::profiles::effective` leaves the settings as they are).
-pub const NO_LOOK: &str = "lc.color";
+/// The look the "None" choice sets: the default look, which adds nothing of its own, so the camera
+/// profile applies alone, with its own look when it has one ("As profile", `DevelopSettings::keeps_camera_look`).
+pub const NO_LOOK: &str = lcc_develop::DEFAULT_LOOK;
 
 /// "None": no creative profile, so only the camera profile applies (one click; LR-PROF-MANAGE).
 fn none_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     let t = Tokens::get(ui.ctx());
-    let none = d.profile.id == NO_LOOK || d.profile.id.is_empty();
+    let none = d.keeps_camera_look();
     ui.horizontal(|ui| {
         ui.add_space(24.0);
         ui.label(egui::RichText::new(crate::i18n::tr("Look")).color(t.text_dim).font(t.font(13.0)));
@@ -117,10 +105,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     divider(ui);
     // the applied profile and its amount
     let (cr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
-    let name = app.session.profile_info(&d.profile.id).map(|(name, _)| name).unwrap_or("Color");
+    // (a photo developing with its camera profile's own look names the camera profile, "As profile")
+    let (name, _) = super::edit::profile_row_names(app, id, &d);
     ui.painter().text(pos2(cr.left() + 12.0, cr.center().y), Align2::LEFT_CENTER, crate::i18n::tr("Profile"), t.font(13.0), t.text_dim);
     // a long name is cut short (with …) at the panel's edge
-    let g = one_line(ui.painter(), crate::i18n::profile_label(&d.profile.id, name), t.font(14.0), t.text_label, cr.width() - 84.0 - 24.0);
+    let g = one_line(ui.painter(), &name, t.font(14.0), t.text_label, cr.width() - 84.0 - 24.0);
     ui.painter().galley(pos2(cr.left() + 84.0, cr.center().y - g.size().y / 2.0), g, t.text_label);
     if d.profile.id != "lc.color" {
         super::edit::control(app, ui, &d, "profile.amount", true);

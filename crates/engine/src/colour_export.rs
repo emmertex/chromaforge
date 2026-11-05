@@ -154,6 +154,7 @@ mod tests {
             copyright: String::new(),
             color: lcc_raw::ColorData { illuminant: [21, 0], color_matrix: [Some(mine), None], ..Default::default() },
         };
+        let _lock = crate::camera_profiles::test_library_lock();
         let saved = lcc_raw::dcp::library();
         let mut list: Vec<(String, lcc_raw::dcp::Dcp)> = saved.iter().map(|(id, d)| (id.clone(), (**d).clone())).collect();
         list.push(("dcp:colour-export-test".into(), profile));

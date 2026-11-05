@@ -12,8 +12,8 @@
 //! all, and Delete of the user's own profiles in it (asked at the group). Import Profiles… and
 //! Import Folder… sit above the list, with a search over names, groups and camera models.
 //!
-//! A photo that uses a deleted profile keeps its settings and falls back safely: a gone LUT renders
-//! without it, a gone camera profile gives the camera's default (`profile.delete`).
+//! A photo that uses a deleted profile falls back safely: a gone LUT renders without it (its settings
+//! stay), a gone camera profile goes back to the camera's default (`profile.deleteImported`, `profile.deleteCamera`).
 //!
 //! The window opens at a size that fits the screen, never grows from its content, and keeps the
 //! size the user drags it to, as the Presets Manager's does
@@ -96,6 +96,14 @@ struct Built {
     removed: usize,
 }
 
+/// The command that deletes one of the user's own profiles (built-ins are never offered one).
+fn delete_action(i: &Item) -> (&'static str, Value) {
+    match i.kind {
+        Kind::Camera => ("profile.deleteCamera", json!({"id": i.id})),
+        _ => ("profile.deleteImported", json!({"id": i.id})),
+    }
+}
+
 fn fold_key(key: &str) -> String {
     format!("profileManager:{key}")
 }
@@ -112,6 +120,7 @@ fn source_key(app: &LccApp) -> u64 {
     s.profile_edits.groups.hash(&mut h);
     s.profile_edits.order.hash(&mut h);
     s.profile_edits.removed.hash(&mut h);
+    s.profile_edits.group_order.hash(&mut h);
     s.body_profiles.hash(&mut h);
     for p in &s.lut_profiles {
         (&p.id, &p.name, &p.group).hash(&mut h);
@@ -158,6 +167,14 @@ fn build(m: &Value) -> Built {
             }
         }
     }
+    // the groups in the user's order, empty ones too (a place to move profiles to)
+    let order: Vec<String> = m["groups"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+    for g in &order {
+        if !looks.iter().any(|x| x.name == *g) {
+            looks.push(Group { key: format!("look:{g}"), name: g.clone(), shown: g.clone(), camera: false, builtin: false, items: Vec::new() });
+        }
+    }
+    looks.sort_by_key(|x| order.iter().position(|o| *o == x.name).unwrap_or(usize::MAX));
     let mut cameras: Vec<Group> = Vec::new();
     for p in m["cameras"].as_array().into_iter().flatten() {
         let (id, name, model) = (str_of(p, "id"), str_of(p, "name"), str_of(p, "model"));
@@ -202,6 +219,48 @@ fn build(m: &Value) -> Built {
     Built { groups, removed: m["removed"].as_array().map_or(0, Vec::len) }
 }
 
+/// `profiles.manager`'s answer `m` with what the table shows besides: how many photos of this
+/// library use each look, and every camera profile as `cameras` (the imported ones `m["camera"]`
+/// lists, then the bundled calibrated looks), each with its photo count, whether it is hidden and
+/// the bodies it starts.
+fn with_counts_and_cameras(app: &LccApp, m: &mut Value) {
+    let s = &app.session;
+    let mut looks: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    let mut cameras: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    for p in s.catalog.photos() {
+        let n = looks.entry(p.develop.profile.id.as_str()).or_default();
+        *n = n.saturating_add(1);
+        let n = cameras.entry(p.develop.profile.camera.as_str()).or_default();
+        *n = n.saturating_add(1);
+    }
+    let hidden = |id: &str| s.profile_hidden.iter().any(|h| h == id);
+    let defaults = |id: &str| -> Vec<String> { s.body_profiles.iter().filter(|(_, v)| v.as_str() == id).map(|(k, _)| k.clone()).collect() };
+    let mut list: Vec<Value> = Vec::new();
+    for c in m["camera"].as_array().into_iter().flatten() {
+        let Some(id) = c["id"].as_str() else { continue };
+        let name = c["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(id.trim_start_matches("dcp:"));
+        list.push(json!({"id": id, "name": name, "model": c["model"], "builtin": false, "hidden": hidden(id),
+            "usedBy": cameras.get(id).copied().unwrap_or(0), "bodyDefaults": defaults(id), "cameraDefault": c["cameraDefault"]}));
+    }
+    for cal in lcc_raw::dcp::calibrated() {
+        for (id, d) in &cal.looks {
+            list.push(json!({"id": id, "name": d.name, "model": d.model, "builtin": true, "hidden": hidden(id),
+                "usedBy": cameras.get(id.as_str()).copied().unwrap_or(0), "bodyDefaults": defaults(id)}));
+        }
+    }
+    if let Some(profiles) = m.get_mut("profiles").and_then(Value::as_array_mut) {
+        for p in profiles.iter_mut() {
+            let used = p.get("id").and_then(Value::as_str).and_then(|id| looks.get(id)).copied().unwrap_or(0);
+            if let Some(o) = p.as_object_mut() {
+                o.insert("usedBy".into(), json!(used));
+            }
+        }
+    }
+    if let Some(o) = m.as_object_mut() {
+        o.insert("cameras".into(), Value::Array(list));
+    }
+}
+
 /// The groups, rebuilt only when what they are built from changed.
 fn groups(ui: &egui::Ui, app: &mut LccApp) -> Arc<Built> {
     let key = source_key(app);
@@ -211,7 +270,8 @@ fn groups(ui: &egui::Ui, app: &mut LccApp) -> Arc<Built> {
     {
         return built;
     }
-    let m = app.session.execute("profiles.manager", &json!({})).unwrap_or(Value::Null);
+    let mut m = app.session.execute("profiles.manager", &json!({})).unwrap_or(Value::Null);
+    with_counts_and_cameras(app, &mut m);
     let mut built = build(&m);
     for g in &mut built.groups {
         for i in &mut g.items {
@@ -282,7 +342,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, query: &mut String, confirm: &m
     ui.add(
         egui::Label::new(
             egui::RichText::new(tr(
-                "Hidden profiles leave the profile menu, the browser and the camera profile choices. Delete removes your own profile files; built-in profiles can be hidden, not deleted. Photos using a deleted profile keep their settings: a deleted LUT is left out, a deleted camera profile falls back to the camera's default.",
+                "Hidden profiles leave the profile menu, the browser and the camera profile choices. Delete removes your own profile files; built-in profiles can be hidden, not deleted. Photos using a deleted LUT keep their settings and render without it; photos using a deleted camera profile go back to their camera's default (one undo step).",
             ))
             .color(t.text_dim)
             .size(11.5),
@@ -311,7 +371,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, query: &mut String, confirm: &m
                 let Some(group) = built.groups.get(g) else { return };
                 if let Some(yes) = confirm_group_delete(ui, &t, group) {
                     if yes {
-                        actions.extend(group.items.iter().filter(|i| !i.builtin).map(|i| ("profile.delete", json!({"id": i.id}))));
+                        actions.extend(group.items.iter().filter(|i| !i.builtin).map(delete_action));
                     }
                     *confirm = None;
                 }
@@ -334,11 +394,11 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, query: &mut String, confirm: &m
         Dragged::Group(g) => g.clone(),
     });
     for (cmd, p) in actions {
-        if cmd == "profile.delete" {
+        if matches!(cmd, "profile.deleteImported" | "profile.deleteCamera") {
             *confirm = None;
         }
         match app.run(cmd, p) {
-            Ok(r) if cmd == "profile.delete" && r["wasDefault"] == true => {
+            Ok(r) if cmd == "profile.deleteCamera" && r["wasCameraDefault"] == true => {
                 app.toast(ui.ctx(), tr("Deleted. It was its camera's default: that camera's raws now start from its built-in colour."));
             }
             Ok(_) => {}
@@ -446,7 +506,7 @@ fn confirm_group_delete(ui: &mut egui::Ui, t: &Tokens, g: &Group) -> Option<bool
             let mut text = tr_format!("Delete your {n} profiles in “{name}” and their files?", n = own, name = g.shown);
             if used > 0 {
                 text.push(' ');
-                text.push_str(&tr_format!("{n} photos use them and keep their settings.", n = used));
+                text.push_str(&tr_format!("{n} photos use them; they fall back safely.", n = used));
             }
             let r = ui.add(egui::Label::new(egui::RichText::new(text).color(t.text)).wrap());
             register(ui.ctx(), format!("label:profileManagerGroupDeleteAsk:{}", g.key), r.rect);
@@ -486,12 +546,12 @@ fn item_row(
     // asking before a delete takes the row
     if confirm.as_deref() == Some(row_key.as_str()) {
         let question = if p.used > 0 {
-            tr_format!("Delete “{name}” and its file? {n} photos use it and keep their settings.", name = p.shown, n = p.used)
+            tr_format!("Delete “{name}” and its file? {n} photos use it; they fall back safely.", name = p.shown, n = p.used)
         } else {
             tr_format!("Delete “{name}” and its file?", name = p.shown)
         };
         match table::confirm_item(ui, t, &COLS, &format!("profileManager:{id}"), &question) {
-            Some(true) => actions.push(("profile.delete", json!({"id": id}))),
+            Some(true) => actions.push(delete_action(p)),
             Some(false) => *confirm = None,
             None => {}
         }
