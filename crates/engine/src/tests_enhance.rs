@@ -133,3 +133,159 @@ fn hostile_and_unsuitable_photos_give_errors() {
     assert!(s.execute("enhance.rawDetails", &json!({"ids": [999_999], "wait": true})).is_err(), "no such photo");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// AI Super Resolution and AI Sharpen with a stand-in upscaler (adapted from upstream #3493)
+
+mod ai {
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use lcc_denoise::manifest::{DenoiserManifest, Domain};
+    use lcc_denoise::run::TileRunner;
+    use serde_json::{Value, json};
+
+    use crate::Session;
+    use crate::denoise::{Model, RunOn};
+    use crate::export::ExportOptions;
+    use crate::tests_denoise::manifest;
+
+    /// A stand-in upscaler: every pixel of its tile becomes a 4 × 4 block.
+    struct Repeat4;
+    impl TileRunner for Repeat4 {
+        fn run(&self, input: &[f32]) -> Result<Vec<f32>, lcc_denoise::Error> {
+            let t = ((input.len() / 3) as f64).sqrt() as usize;
+            let big = 4 * t;
+            Ok((0..3 * big * big).map(|k| input[(k / (big * big)) * t * t + (k % (big * big)) / big / 4 * t + k % big / 4]).collect())
+        }
+    }
+    impl Model for Repeat4 {
+        fn runner(&self, _: RunOn, threads: usize) -> (&dyn TileRunner, usize) {
+            (self, threads)
+        }
+
+        fn self_test(&self, _: RunOn) -> Result<Value, String> {
+            Ok(json!({"ok": true}))
+        }
+    }
+
+    /// The stand-in upscaler's `.onnx` (never read: the loader is the stand-in) with its manifest beside it.
+    fn upscaler_files(dir: &Path) -> PathBuf {
+        let src = dir.join("src-upscaler");
+        std::fs::create_dir_all(&src).unwrap();
+        let m = DenoiserManifest { domain: Domain::RgbToRgb4x, ..manifest("stand-in-upscaler") };
+        std::fs::write(src.join("denoise-model.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+        std::fs::write(src.join("model.onnx"), "not an onnx file, only a stand-in").unwrap();
+        src.join("model.onnx")
+    }
+
+    /// A session with a library holding one PNG of 150 × 100 (a ramp), selected, and the stand-in loader.
+    fn setup(tag: &str) -> (PathBuf, Session, lcc_catalog::PhotoId) {
+        let dir = super::temp_dir(tag);
+        let originals = dir.join("originals");
+        std::fs::create_dir_all(&originals).unwrap();
+        let img = lcc_raster::Rgba8::from_fn(150, 100, |x, y| [(40 + x) as u8, (60 + y) as u8, 120, 255]);
+        let o = ExportOptions { format: crate::export::ExportFormat::Png, ..Default::default() };
+        std::fs::write(originals.join("ramp.png"), crate::export::encode_image(&img, &o).unwrap()).unwrap();
+        let mut s = Session::new().with_fs();
+        s.open_library(dir.join("library"), false).unwrap();
+        s.execute("library.import", &json!({"paths": [originals.join("ramp.png").to_string_lossy()]})).unwrap();
+        let id = s.catalog.photos().next().unwrap().id;
+        s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+        s.set_denoise_models_dir(Some(dir.join("denoise-models")));
+        s.denoise.loader = Arc::new(|_, _| Ok(Arc::new(Repeat4) as Arc<dyn Model>));
+        (dir, s, id)
+    }
+
+    fn decoded(path: &str) -> lcc_codecs::Decoded {
+        lcc_codecs::decode(&std::fs::read(path).unwrap(), lcc_codecs::DecodeOptions::default()).unwrap()
+    }
+
+    fn made(r: &Value) -> Value {
+        r["made"][0].clone()
+    }
+
+    #[test]
+    fn ai_super_resolution_writes_a_larger_tiff_stacked_with_its_photo() {
+        let (dir, mut s, original) = setup("ai-sr");
+        // without an upscaler it says where to get one; `auto` falls back to the classical method
+        let e = s.execute("enhance.superResolution", &json!({"method": "ai", "wait": true})).unwrap_err().to_string();
+        assert!(e.contains("no upscaler is installed"), "{e}");
+        assert!(!s.enhance_upscaler_ready());
+
+        // an upscaler fills its own slot: the denoise models of both kinds of photo stay as they were
+        let r = s.execute("denoise.models.install", &json!({"path": upscaler_files(&dir).to_string_lossy(), "acknowledged": true})).unwrap();
+        assert_eq!((r["upscaleModel"].clone(), r["rgbModel"].clone()), (json!("stand-in-upscaler"), Value::Null), "{r}");
+        assert!(s.enhance_upscaler_ready());
+
+        let r = made(&s.execute("enhance.superResolution", &json!({"method": "auto", "wait": true})).unwrap());
+        assert_eq!(r["size"], json!([300, 200]), "{r}");
+        let path = r["path"].as_str().unwrap().to_string();
+        assert!(path.ends_with("ramp-Enhanced-SR.tif"), "{path}");
+        let id = lcc_catalog::PhotoId(r["id"].as_u64().unwrap());
+        assert!(s.catalog.stack_of(original).unwrap().photos.contains(&id), "stacked with its photo");
+
+        // a 16-bit TIFF of the picture, every pixel twice as large (the stand-in repeats, averaged down by 2)
+        let d = decoded(&path);
+        assert_eq!((d.image.width, d.image.height, d.bit_depth), (300, 200, 16));
+        let srgb = crate::denoise::srgb_encoded(&d);
+        for (x, y) in [(0, 0), (149, 99), (75, 50), (10, 90)] {
+            let want = [(40 + x) as f32, (60 + y) as f32, 120.0].map(|v| v / 255.0);
+            for (dx, dy) in [(0, 0), (1, 1)] {
+                let got = srgb.data[(2 * y + dy) * 300 + 2 * x + dx];
+                for c in 0..3 {
+                    assert!((got[c] - want[c]).abs() < 1.5 / 255.0, "({x}, {y}): {got:?} vs {want:?}");
+                }
+            }
+        }
+
+        // 4× on request, into a new file beside it
+        let r = made(&s.execute("enhance.superResolution", &json!({"ids": [original.0], "method": "ai", "scale": 4, "wait": true})).unwrap());
+        assert!(r["path"].as_str().unwrap().ends_with("ramp-Enhanced-SR-1.tif"), "{r}");
+        assert_eq!(r["size"], json!([600, 400]));
+
+        // the same request gives the same bytes: the photo that has them is the result, and no copy is left behind
+        let photos = s.catalog.photos().count();
+        let again = made(&s.execute("enhance.superResolution", &json!({"ids": [original.0], "method": "ai", "wait": true})).unwrap());
+        assert_eq!((again["id"].clone(), again["path"].as_str()), (json!(id.0), Some(path.as_str())), "{again}");
+        assert_eq!(s.catalog.photos().count(), photos);
+        drop(s);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ai_sharpen_keeps_the_photos_size_and_bad_requests_are_errors() {
+        let (dir, mut s, original) = setup("ai-sharpen");
+        s.execute("denoise.models.install", &json!({"path": upscaler_files(&dir).to_string_lossy(), "acknowledged": true})).unwrap();
+        let r = made(&s.execute("enhance.aiSharpen", &json!({"wait": true})).unwrap());
+        assert_eq!(r["size"], json!([150, 100]), "{r}");
+        assert_eq!((decoded(r["path"].as_str().unwrap()).image.width, s.catalog.photos().count()), (150, 2));
+
+        for scale in [json!(3), json!(1), json!("2")] {
+            let e = s.execute("enhance.superResolution", &json!({"ids": [original.0], "method": "ai", "scale": scale})).unwrap_err().to_string();
+            assert!(e.contains("`scale` must be 2 or 4"), "{e}");
+        }
+        let e = s.execute("enhance.superResolution", &json!({"ids": [original.0], "scale": 4})).unwrap_err().to_string();
+        assert!(e.contains("needs `method"), "the classical method only doubles: {e}");
+        let e = s.execute("enhance.superResolution", &json!({"ids": [original.0], "method": "magic"})).unwrap_err().to_string();
+        assert!(e.contains("unknown method"), "{e}");
+        // switched off, AI Sharpen asks for an upscaler again
+        s.execute("denoise.models.select", &json!({"id": null, "kind": "upscale"})).unwrap();
+        let e = s.execute("enhance.aiSharpen", &json!({"ids": [original.0], "wait": true})).unwrap_err().to_string();
+        assert!(e.contains("no upscaler"), "{e}");
+        drop(s);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_damaged_photo_fails_ai_super_resolution_with_a_reason() {
+        let (dir, mut s, original) = setup("ai-hostile");
+        s.execute("denoise.models.install", &json!({"path": upscaler_files(&dir).to_string_lossy(), "acknowledged": true})).unwrap();
+        let path = dir.join("originals").join("ramp.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nbroken").unwrap();
+        s.media.file_bytes = None;
+        assert!(s.execute("enhance.superResolution", &json!({"ids": [original.0], "method": "ai", "wait": true})).is_err());
+        drop(s);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
