@@ -191,6 +191,9 @@ fn a_browsed_raw_with_its_body_profile_still_looks_as_shot() {
     let mut s = Session::new();
     s.body_profiles.insert(BODY.into(), "lc".into());
     let id = browsed(&mut s, "/nowhere/IMG_0002.CR3", "653499300171");
+    // as shot: the raw's own camera defaults
+    let settings = std::sync::Arc::new(s.catalog.photo(id).unwrap().camera_defaults());
+    s.commit("As shot", Op::SetDevelop { id, settings, label: "As shot".into(), edited: None }).unwrap();
     let shown = s.rendered_photo_of(id).unwrap();
     assert_eq!(shown.develop.profile.camera, "lc", "rendered with the body's profile");
     assert!(crate::import::looks_as_shot(s.catalog.photo(id).unwrap()), "the record is as shot");
