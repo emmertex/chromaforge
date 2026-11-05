@@ -355,6 +355,7 @@
   "Copyright status, rights usage terms and copyright info URL in Info, metadata presets and exports.": "Estado de copyright, términos de uso de derechos y URL de información de copyright en Información, ajustes de metadatos y exportaciones.",
   "Corners": "Esquinas",
   "Couldn't open the editor": "No se pudo abrir el editor",
+  "Country Code": "Código de país",
   "Cover": "Cubierta",
   "Create Camera Profile from Color Chart…": "Crear perfil de cámara a partir de carta de color…",
   "Create Catalog": "Crear catálogo",
@@ -1910,6 +1911,5 @@
   "{} selected": "{} seleccionadas",
   "{} wants to sync its library “{}” with this library.": "{} quiere sincronizar su biblioteca “{}” con esta biblioteca.",
   "‹ Library": "‹ Biblioteca",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastrar para enderezar, ⇧G Upright guiado, una cuadrícula al transformar.",
-  "Country Code": "Código de país"
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastrar para enderezar, ⇧G Upright guiado, una cuadrícula al transformar."
 }

@@ -394,6 +394,7 @@
   "Copyright status, rights usage terms and copyright info URL in Info, metadata presets and exports.": "Статус авторских прав, условия использования прав и URL сведений об авторских правах в Сведениях, пресетах метаданных и экспорте.",
   "Corners": "Углы",
   "Couldn't open the editor": "Не удалось открыть редактор",
+  "Country Code": "Код страны",
   "Cover": "Обложка",
   "Create Camera Profile from Color Chart…": "Создать профиль камеры по цветовой мишени…",
   "Create Catalog": "Создать каталог",
@@ -2123,6 +2124,5 @@
   "≥  at least": "≥  не менее",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-перетаскивание для выравнивания, ⇧G Upright по направляющим, сетка во время трансформации.",
   "日本語": "日本語",
-  "繁體中文（台灣）": "繁體中文（台灣）",
-  "Country Code": "Код страны"
+  "繁體中文（台灣）": "繁體中文（台灣）"
 }

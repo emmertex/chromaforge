@@ -317,6 +317,7 @@
   "Copyright only": "Лише авторські права",
   "Corners": "Кути",
   "Couldn't open the editor": "Не вдалося відкрити редактор",
+  "Country Code": "Код країни",
   "Cover": "Обкладинка",
   "Create Camera Profile from Color Chart…": "Створити профіль камери за колірною мішенню…",
   "Create Catalog": "Створити каталог",
@@ -1658,6 +1659,5 @@
   "{} photos updated, {} copies": "Оновлено фото: {}, копій: {}",
   "{} selected": "Вибрано: {}",
   "{} wants to sync its library “{}” with this library.": "{} пропонує синхронізувати свою бібліотеку «{}» з цією бібліотекою.",
-  "‹ Library": "‹ Бібліотека",
-  "Country Code": "Код країни"
+  "‹ Library": "‹ Бібліотека"
 }

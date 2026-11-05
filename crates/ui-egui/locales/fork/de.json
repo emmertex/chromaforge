@@ -331,6 +331,7 @@
   "Copyright only": "Nur Copyright",
   "Corners": "Ecken",
   "Couldn't open the editor": "Der Editor konnte nicht geöffnet werden",
+  "Country Code": "Ländercode",
   "Cover": "Einband",
   "Create Camera Profile from Color Chart…": "Kameraprofil aus Farbtafel erstellen…",
   "Create Catalog": "Katalog erstellen",
@@ -1758,6 +1759,5 @@
   "{} photos updated, {} copies": "{} Fotos aktualisiert, {} Kopien",
   "{} selected": "{} ausgewählt",
   "{} wants to sync its library “{}” with this library.": "{} möchte seine Bibliothek „{}“ mit dieser Bibliothek synchronisieren.",
-  "‹ Library": "‹ Bibliothek",
-  "Country Code": "Ländercode"
+  "‹ Library": "‹ Bibliothek"
 }
