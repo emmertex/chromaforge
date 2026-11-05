@@ -737,7 +737,8 @@ pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max
         if emitted >= max {
             break;
         }
-        let q = to_out(*p);
+        // (a point the warp can't place lays no dab, rather than one at its unwarped place)
+        let Some(q) = to_out(*p) else { continue };
         let before = dabs.len();
         if push_dabs_within(&mut dabs, &mut emitted, prev, q, r, max) {
             let pq = s.pressure_at(i);
@@ -786,10 +787,11 @@ fn lrc_brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max: usize
         if dabs.len() >= max {
             break;
         }
+        let Some(q_out) = to_out(*q) else { continue };
         let pq = s.pressure_at(i);
         let had = walk.prev.is_some();
         ts.clear();
-        if walk_dabs(&mut dabs, &mut emitted, &mut walk, to_out(*q), DAB_SPACING * r, &mut ts) {
+        if walk_dabs(&mut dabs, &mut emitted, &mut walk, q_out, DAB_SPACING * r, &mut ts) {
             if with_pressure {
                 let from = if had { prev_p } else { pq };
                 pressure.extend(ts.iter().map(|t| from + (pq - from) * *t as f32));
