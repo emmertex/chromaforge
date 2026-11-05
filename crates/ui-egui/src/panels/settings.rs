@@ -1,5 +1,7 @@
-//! The Settings dialog (⌘,): General, Import, Folders, Performance, Display, Interface, Slideshow, Faces,
-//! AI Denoise, Controls (control surfaces, `panels::controls`).
+//! The Settings window (⌘,): one row of tabs ([`TABS`]: General, Import, Folders, Performance,
+//! Display, Interface, Slideshow, Faces, Profiles, AI Denoise, AI Models, Generative Fill,
+//! Shortcuts, Controls, Connections, Sync), those that don't fit under More. The touch screen
+//! (`crate::settings_screen`) shows the same tabs' rows by section.
 //!
 //! Changes apply immediately (no OK/Cancel). Where they are stored:
 //! - **app settings** ([`crate::state::AppSettings`]: startup view, delete confirmation, GPU,
@@ -23,7 +25,10 @@ use crate::widgets::register;
 /// Sections `app.settings {section}` can open, with their tab.
 pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import")];
 
-/// (id, label) of the tabs, in order.
+/// (id, label) of the tabs, in the order of the Settings window's one row of tabs (OneSlips,
+/// LR-PREF-WINDOW): the settings used most first, the editing helpers and the AI next, the
+/// keyboard, control surfaces and other devices last. Tabs that don't fit the window's width are
+/// under More at the end of the row.
 pub const TABS: &[(&str, &str)] = &[
     ("general", "General"),
     ("import", "Import"),
@@ -33,14 +38,14 @@ pub const TABS: &[(&str, &str)] = &[
     ("interface", "Interface"),
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
+    ("profiles", "Profiles"),
     ("denoise", "AI Denoise"),
     ("ai", "AI Models"),
-    ("profiles", "Profiles"),
-    ("connections", "Connections"),
-    ("sync", "Sync"),
+    ("genfill", "Generative Fill"),
     ("shortcuts", "Shortcuts"),
     ("controls", "Controls"),
-    ("genfill", "Generative Fill"),
+    ("connections", "Connections"),
+    ("sync", "Sync"),
 ];
 
 /// The room Settings ▸ Slideshow wants: its settings column, the gap and the live preview.
@@ -52,53 +57,273 @@ const CACHE_SIZES: [u32; 5] = [512, 1024, 2048, 4096, 8192];
 pub(super) const LABEL_W: f32 = 160.0;
 /// The label column of the same rows outside the dialog (the slideshow panels).
 const PANEL_LABEL_W: f32 = 150.0;
-/// The category list's width.
-const SIDEBAR_W: f32 = 150.0;
-/// The content column's width (the dialog keeps one size whatever the category).
-const CONTENT_W: f32 = 600.0;
-/// The dialog's body height, at most (it shrinks to fit a short window).
-const BODY_H: f32 = 560.0;
 
-/// The dialog: the category list on the left, the selected category's settings on the right in
-/// titled groups, scrolling on their own (the list stays put). `max_height` is the room the dialog
-/// has for its body.
-pub fn body(app: &mut LccApp, ui: &mut egui::Ui, tab: &mut String, max_height: f32) {
+/// The Settings window's size (points) when it first opens, before the user resizes it.
+pub const DEFAULT_SIZE: [f32; 2] = [900.0, 640.0];
+/// The smallest the user can make it (a small screen can make it smaller still).
+pub const MIN_SIZE: [f32; 2] = [620.0, 420.0];
+/// Room kept free around the window on the screen.
+const SCREEN_MARGIN: f32 = 12.0;
+/// Height of the tab row.
+const TAB_H: f32 = 30.0;
+/// Room on each side of a tab's label: the most that lets every tab fit the row (long names, as
+/// in Russian or German, get less before any tab goes to the More menu).
+const TAB_PADS: [f32; 3] = [12.0, 9.0, 7.0];
+
+/// The sizes the Settings window opens at and may be resized between on `screen`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowSize {
+    pub default: egui::Vec2,
+    pub min: egui::Vec2,
+    pub max: egui::Vec2,
+}
+
+/// The Settings window's sizes on `screen`: `saved` (the size the user left it at, else
+/// [`DEFAULT_SIZE`]) within [`MIN_SIZE`] and the screen. A saved size that is no size at all
+/// (NaN, negative: a hand-edited settings file) is the default.
+pub fn window_size(screen: egui::Rect, saved: Option<[f32; 2]>) -> WindowSize {
+    let finite = |v: f32| v.is_finite() && v > 0.0;
+    let max = egui::vec2(
+        if finite(screen.width()) { (screen.width() - 2.0 * SCREEN_MARGIN).max(200.0) } else { DEFAULT_SIZE[0] },
+        if finite(screen.height()) { (screen.height() - 2.0 * SCREEN_MARGIN).max(160.0) } else { DEFAULT_SIZE[1] },
+    );
+    let min = egui::vec2(MIN_SIZE[0], MIN_SIZE[1]).min(max);
+    let want = saved.filter(|[w, h]| finite(*w) && finite(*h)).unwrap_or(DEFAULT_SIZE);
+    let default = egui::vec2(want[0], want[1]).max(min).min(max);
+    WindowSize { default, min, max }
+}
+
+/// Keeps the Settings window's `size` (as the user left it) for the next time it opens.
+pub fn remember_size(app: &mut LccApp, size: egui::Vec2) {
+    let saved = app.ui.settings.settings_size;
+    if size.x.is_finite()
+        && size.y.is_finite()
+        && size.x > 0.0
+        && size.y > 0.0
+        && saved.is_none_or(|[w, h]| (w - size.x).abs() > 0.5 || (h - size.y).abs() > 0.5)
+    {
+        app.ui.settings.settings_size = Some([size.x.round(), size.y.round()]);
+    }
+}
+
+/// The tabs this build shows (the browser has no device sync, no connections and no control surfaces).
+pub fn shown_tabs() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    TABS.iter().filter(|(id, _)| !cfg!(target_arch = "wasm32") || !matches!(*id, "connections" | "sync" | "controls"))
+}
+
+/// The tab of the Settings window that `asked` opens: a tab's own id, or one of the touch screen's
+/// section names (`library`, `editing`, …: the first tab it holds).
+pub fn window_tab(asked: &str) -> &'static str {
+    if let Some((id, _)) = shown_tabs().find(|(id, _)| *id == asked) {
+        return id;
+    }
+    match asked {
+        "library" => "folders",
+        "editing" => "denoise",
+        _ => "general",
+    }
+}
+
+/// Which tabs fit one row `room` wide, given each tab's width: the indices shown (in order)
+/// and the ones left for the More menu (`more_w` wide). The `selected` tab is always shown: when it
+/// would be in the menu it takes the place of the last tab that fits.
+pub fn fit_tabs(widths: &[f32], selected: usize, room: f32, more_w: f32) -> (Vec<usize>, Vec<usize>) {
+    let total: f32 = widths.iter().sum();
+    if total <= room {
+        return ((0..widths.len()).collect(), Vec::new());
+    }
+    let budget = room - more_w;
+    let mut shown = Vec::new();
+    let mut used = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        shown.push(i);
+    }
+    if selected < widths.len() && !shown.contains(&selected) {
+        let need = widths.get(selected).copied().unwrap_or(0.0);
+        while used + need > budget {
+            let Some(last) = shown.pop() else { break };
+            used -= widths.get(last).copied().unwrap_or(0.0);
+        }
+        shown.push(selected);
+    }
+    let hidden = (0..widths.len()).filter(|i| !shown.contains(i)).collect();
+    (shown, hidden)
+}
+
+/// The tab after (`step` 1) or before (-1) `tab` among those shown, wrapping around.
+pub fn step_tab(tab: &str, step: isize) -> &'static str {
+    let tabs: Vec<&'static str> = shown_tabs().map(|(id, _)| *id).collect();
+    let n = tabs.len() as isize;
+    let at = tabs.iter().position(|id| *id == tab).unwrap_or(0) as isize;
+    let next = (at + step).rem_euclid(n.max(1)) as usize;
+    tabs.get(next).copied().unwrap_or("general")
+}
+
+fn tab_focus_id(id: &str) -> egui::Id {
+    egui::Id::new("settingsTab").with(id)
+}
+
+/// The Settings window's body for `tab` (OneSlips, LR-PREF-WINDOW): one row of tabs, then the
+/// tab's settings in a page that scrolls inside the window (`settings:rows`), so a tab never
+/// changes the window's size. `footer` is the room to leave under it for the Close button.
+pub fn body(app: &mut LccApp, ui: &mut egui::Ui, tab: &mut String, footer: f32) {
     let t = Tokens::get(ui.ctx());
-    let room = ui.ctx().content_rect().width() - 96.0;
-    // the slideshow category is an editor with its preview beside it: wider
-    // (Controls draws the device beside its editor: it takes more room too)
-    let wanted = match tab.as_str() {
-        "slideshow" => SLIDESHOW_COLUMN_W + 12.0 + super::slide_layout::PREVIEW_W + 40.0,
-        "controls" => CONTENT_W.max(900.0),
-        _ => CONTENT_W,
-    };
-    // (and once the window was that wide, every category fills it)
-    let window = ui.available_width() - SIDEBAR_W - 9.0 - 2.0 * ui.spacing().item_spacing.x;
-    let content_w = (room - SIDEBAR_W - 24.0).min(wanted.max(window)).max(240.0);
-    let height = max_height.clamp(120.0, BODY_H);
-    ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-            ui.set_height(height);
-            ui.add_space(2.0);
-            let before = tab.clone();
-            crate::dialog_frame::sidebar(ui, "settingsTab", TABS, tab, SIDEBAR_W);
-            if before == "performance" && *tab != before {
-                save_pending_cache_size(app, ui.ctx());
+    if !shown_tabs().any(|(id, _)| *id == tab.as_str()) {
+        *tab = window_tab(tab).to_string();
+    }
+    let full = ui.available_size();
+    let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(full.x.max(1.0), (full.y - footer).max(80.0)));
+    // the tabs draw in a child of exactly this size: what they hold can't widen or heighten the window
+    ui.advance_cursor_after_rect(rect);
+    let mut frame = ui.new_child(egui::UiBuilder::new().id_salt("settingsFrame").max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+    frame.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let before = tab.clone();
+    keyboard(&mut frame, tab);
+    tab_strip(&mut frame, &t, tab);
+    if before == "performance" && *tab != before {
+        save_pending_cache_size(app, frame.ctx());
+    }
+    frame.add_space(8.0);
+    // (the page's room: where a pointer scrolls it)
+    register(frame.ctx(), "settings:rows", frame.available_rect_before_wrap());
+    // a page that goes on below shows its scroll handle all the time: without it, a page a line or
+    // two too long looks cut off, not scrollable
+    frame.spacing_mut().scroll.dormant_handle_opacity = 0.6;
+    egui::ScrollArea::both().id_salt(("settingsTab", tab.as_str())).auto_shrink([false, false]).show(&mut frame, |ui| {
+        // room for the vertical scroll bar, so it never covers a control
+        ui.set_max_width((ui.available_width() - 12.0).max(120.0));
+        crate::dialog_frame::form(ui, LABEL_W, |ui| {
+            crate::dialog_frame::group_begin(ui, None);
+            tab_body(app, ui, &t, tab);
+        });
+        register(ui.ctx(), "settings:page", ui.min_rect());
+        ui.add_space(8.0);
+    });
+}
+
+/// Consume a press of `key` with Ctrl held (and Shift as `shift` says, no Alt): the Control key
+/// itself on every platform (on macOS ⌘Tab is the system's), whatever egui reads as Command.
+fn ctrl_key(ctx: &egui::Context, key: egui::Key, shift: bool) -> bool {
+    ctx.input_mut(|i| {
+        let hit = |e: &egui::Event| matches!(e, egui::Event::Key { key: k, pressed: true, modifiers: m, .. } if *k == key && m.ctrl && m.shift == shift && !m.alt);
+        let found = i.events.iter().any(hit);
+        if found {
+            i.events.retain(|e| !hit(e));
+        }
+        found
+    })
+}
+
+/// Ctrl+Tab / Ctrl+Page Down: the next tab; Ctrl+Shift+Tab / Ctrl+Page Up: the previous one;
+/// ← / → while a tab has the keyboard focus: the tab beside it (the focus follows).
+fn keyboard(ui: &mut egui::Ui, tab: &mut String) {
+    let ctx = ui.ctx().clone();
+    let back = ctrl_key(&ctx, egui::Key::Tab, true) || ctrl_key(&ctx, egui::Key::PageUp, false);
+    let forward = !back && (ctrl_key(&ctx, egui::Key::Tab, false) || ctrl_key(&ctx, egui::Key::PageDown, false));
+    if back || forward {
+        *tab = step_tab(tab, if back { -1 } else { 1 }).to_string();
+        return;
+    }
+    let focused = ctx.memory(|m| m.focused());
+    let Some(on_tab) = shown_tabs().find(|(id, _)| Some(tab_focus_id(id)) == focused).map(|(id, _)| *id) else { return };
+    let step = ctx.input_mut(|i| {
+        if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
+            1
+        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+            -1
+        } else {
+            0
+        }
+    });
+    if step != 0 {
+        let next = step_tab(on_tab, step);
+        *tab = next.to_string();
+        ctx.memory_mut(|m| {
+            // (egui would move the focus by the arrow too, past the tab chosen here)
+            m.move_focus(egui::FocusDirection::None);
+            m.request_focus(tab_focus_id(next));
+        });
+    }
+}
+
+/// One row of tabs (`button:settingsTab-{id}`), the chosen one underlined. Tabs that don't fit
+/// the window's width are in a More menu at its end (`button:settingsTabMore`) rather than on a
+/// second row; the chosen tab is always in the row.
+fn tab_strip(ui: &mut egui::Ui, t: &Tokens, tab: &mut String) {
+    let tabs: Vec<&(&str, &str)> = shown_tabs().collect();
+    let font = t.font(12.5);
+    let galleys: Vec<_> =
+        tabs.iter().map(|(_, label)| ui.painter().layout_no_wrap(crate::i18n::tr(label).to_string(), font.clone(), t.text)).collect();
+    let room = ui.available_width();
+    let widths_with = |pad: f32| -> Vec<f32> { galleys.iter().map(|g| (g.size().x + 2.0 * pad).ceil()).collect() };
+    let pad = TAB_PADS.iter().copied().find(|pad| widths_with(*pad).iter().sum::<f32>() <= room).unwrap_or(7.0);
+    let widths = widths_with(pad);
+    let more_label = crate::i18n::tr("More").to_string();
+    let more_galley = ui.painter().layout_no_wrap(more_label.clone(), font.clone(), t.text);
+    let more_w = (more_galley.size().x + 2.0 * pad + 12.0).ceil();
+    let selected = tabs.iter().position(|(id, _)| *id == tab.as_str()).unwrap_or(0);
+    let (shown, hidden) = fit_tabs(&widths, selected, room, more_w);
+    let (strip, _) = ui.allocate_exact_size(egui::vec2(room, TAB_H), egui::Sense::hover());
+    let painter = ui.painter_at(strip.expand2(egui::vec2(0.0, 1.0)));
+    painter.hline(strip.x_range(), strip.bottom() - 0.5, egui::Stroke::new(1.0, t.divider));
+    let mut x = strip.left();
+    for i in shown {
+        let (Some((id, label)), Some(galley), Some(w)) = (tabs.get(i), galleys.get(i), widths.get(i)) else { continue };
+        let r = egui::Rect::from_min_size(egui::pos2(x, strip.top()), egui::vec2(*w, TAB_H));
+        x += w;
+        let resp = ui.interact(r, tab_focus_id(id), egui::Sense::click());
+        let active = i == selected;
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, crate::i18n::tr(label)));
+        register(ui.ctx(), format!("button:settingsTab-{id}"), r);
+        if resp.hovered() && !active {
+            painter.rect_filled(r.shrink2(egui::vec2(2.0, 3.0)), 4.0, t.hover);
+        }
+        let color = if active {
+            t.text
+        } else if resp.hovered() {
+            t.text_label
+        } else {
+            t.text_dim
+        };
+        painter.galley(r.center() - galley.size() / 2.0, galley.clone(), color);
+        if active {
+            let line = egui::Rect::from_min_max(egui::pos2(r.left() + 6.0, r.bottom() - 2.0), egui::pos2(r.right() - 6.0, r.bottom()));
+            painter.rect_filled(line, 1.0, t.accent);
+        }
+        if resp.has_focus() {
+            painter.rect_stroke(r.shrink(2.0), 4.0, egui::Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+        }
+        if resp.clicked() {
+            *tab = id.to_string();
+        }
+    }
+    if hidden.is_empty() {
+        return;
+    }
+    let r = egui::Rect::from_min_size(egui::pos2(strip.right() - more_w, strip.top()), egui::vec2(more_w, TAB_H));
+    let resp = ui.interact(r, egui::Id::new("settingsTabMore"), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &more_label));
+    register(ui.ctx(), "button:settingsTabMore", r);
+    if resp.hovered() {
+        painter.rect_filled(r.shrink2(egui::vec2(2.0, 3.0)), 4.0, t.hover);
+    }
+    let text_at = egui::pos2(r.left() + pad, r.center().y - more_galley.size().y / 2.0);
+    painter.galley(text_at, more_galley.clone(), if resp.hovered() { t.text_label } else { t.text_dim });
+    let chevron = egui::Rect::from_center_size(egui::pos2(r.right() - pad - 3.0, r.center().y), egui::vec2(8.0, 8.0));
+    crate::icons::paint(&painter, chevron, crate::icons::Icon::ChevronDown, t.text_dim);
+    egui::Popup::menu(&resp).show(|ui| {
+        for i in &hidden {
+            let Some((id, label)) = tabs.get(*i) else { continue };
+            let r = ui.button(crate::i18n::tr(label));
+            register(ui.ctx(), format!("button:settingsTab-{id}"), r.rect);
+            if r.clicked() {
+                *tab = id.to_string();
             }
-        });
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, height), egui::Sense::hover());
-        ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.0, t.divider));
-        ui.vertical(|ui| {
-            ui.set_width(content_w);
-            ui.set_height(height);
-            egui::ScrollArea::vertical().id_salt(("settings-content", tab.as_str())).max_height(height).auto_shrink([false, false]).show(ui, |ui| {
-                ui.set_width(content_w - 14.0);
-                crate::dialog_frame::form(ui, LABEL_W, |ui| {
-                    crate::dialog_frame::group_begin(ui, None);
-                    tab_body(app, ui, &t, tab);
-                });
-            });
-        });
+        }
     });
 }
 
