@@ -115,6 +115,7 @@ fn lr_field(id: &str) -> Option<&'static str> {
         "city" => "city",
         "state" | "stateprovince" | "province" => "state",
         "country" => "country",
+        "countrycode" | "isocountrycode" => "countryCode",
         "keywords" => "keywords",
         _ => return None,
     })
@@ -234,6 +235,7 @@ fn from_xmp(file: &str, text: &str) -> Option<std::result::Result<Found, String>
     put("city", m.city.as_ref());
     put("state", m.state.as_ref());
     put("country", m.country.as_ref());
+    put("countryCode", m.country_code.as_ref());
     for k in CreatorContact::KEYS {
         put(k, m.contact.get(k));
     }

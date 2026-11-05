@@ -383,6 +383,14 @@ impl Entry {
 }
 
 impl Activity {
+    /// Work the user started that the background preparation ([`crate::prep`]) gives way to while
+    /// it runs (preparing photos competed with an export, which could hardly start): an export, an
+    /// import, any batch over photos (AI Denoise, AI masks, finding eyes…). Its kind, or `None`.
+    pub fn user_work(&self) -> Option<&'static str> {
+        const KINDS: [&str; 5] = ["export", "import", "merge", "benchmark", "lightroom"];
+        lock(&self.inner.tasks).iter().find(|e| e.parent.is_none() && (e.batch || KINDS.contains(&e.kind))).map(|e| e.kind)
+    }
+
     /// Register a task; it is listed until the returned guard is dropped. `label` is English (the frontend
     /// translates it).
     pub fn start(&self, kind: &'static str, label: &str, cancel: Cancel) -> TaskGuard {

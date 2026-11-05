@@ -109,6 +109,8 @@ mod tests_access;
 #[cfg(test)]
 mod tests_activity;
 #[cfg(test)]
+mod tests_adjust_overlay;
+#[cfg(test)]
 mod tests_adjustment_quality;
 #[cfg(test)]
 mod tests_album_picker;
@@ -117,9 +119,13 @@ mod tests_album_remove;
 #[cfg(test)]
 mod tests_appearance;
 #[cfg(test)]
+mod tests_background_prep;
+#[cfg(test)]
 mod tests_bar_buttons;
 #[cfg(test)]
 mod tests_before_after;
+#[cfg(test)]
+mod tests_breadcrumb_more;
 #[cfg(test)]
 mod tests_browse_active;
 #[cfg(test)]
@@ -161,6 +167,8 @@ mod tests_crop_rotate;
 #[cfg(test)]
 mod tests_crop_tool;
 #[cfg(test)]
+mod tests_culling_cells;
+#[cfg(test)]
 mod tests_curve;
 #[cfg(test)]
 mod tests_date_picker;
@@ -175,6 +183,8 @@ mod tests_dialog_settings;
 #[cfg(test)]
 mod tests_dialog_tab;
 #[cfg(test)]
+mod tests_dialog_width;
+#[cfg(test)]
 mod tests_dialogs;
 #[cfg(test)]
 mod tests_drop_import;
@@ -188,6 +198,8 @@ mod tests_enhance_dialog;
 mod tests_error_kinds;
 #[cfg(test)]
 mod tests_filmstrip;
+#[cfg(test)]
+mod tests_filmstrip_resize;
 #[cfg(test)]
 mod tests_filter_search;
 #[cfg(test)]
@@ -218,6 +230,8 @@ mod tests_i18n_coverage;
 mod tests_immich_ui;
 #[cfg(test)]
 mod tests_import_body_profiles;
+#[cfg(test)]
+mod tests_import_drives;
 #[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
@@ -265,6 +279,10 @@ mod tests_loading_cell;
 #[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
+mod tests_mask_landing;
+#[cfg(test)]
+mod tests_mask_menus;
+#[cfg(test)]
 mod tests_mask_range_pick;
 #[cfg(test)]
 mod tests_mask_sections;
@@ -308,6 +326,8 @@ mod tests_presets_manager;
 mod tests_preview_limit;
 #[cfg(test)]
 mod tests_print;
+#[cfg(test)]
+mod tests_profile_manager;
 #[cfg(test)]
 mod tests_profile_menu;
 #[cfg(test)]
@@ -378,6 +398,8 @@ mod tests_tool_row;
 mod tests_unsaved;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_update;
+#[cfg(test)]
+mod tests_viewperf;
 #[cfg(test)]
 mod tests_wb_selector;
 #[cfg(test)]
@@ -729,6 +751,18 @@ pub struct LccApp {
     headless_screenshotting: bool,
     /// Synthetic input events (from the control channel) injected one step per frame.
     pub synthetic: Vec<egui::Event>,
+    /// Until when (frame time, s) the photographer counts as painting on the loupe: a brush stroke in progress and a
+    /// short while after it, as strokes follow one another. Meanwhile only the photo on screen renders; the other
+    /// photos a stroke reached (Auto Sync) keep their thumbnails, and the neighbours aren't prepared (ported from
+    /// OneSlips, NOTES-1028 note 29).
+    pub(crate) paint_hold_until: f64,
+    /// [`Self::paint_hold_until`] not reached in this frame.
+    pub(crate) paint_hold: bool,
+    /// Masks' mask selection, worked out each frame ([`panels::masking::keep_selection`], OneSlips 0d9d4fb7d).
+    pub(crate) mask_landing: panels::masking::Landing,
+    /// The op (`add`, `subtract`, `intersect`) a People or Remembered picker opened from the selected mask's menu
+    /// combines its selection by (`None`: a new mask).
+    pub(crate) mask_pick_op: Option<String>,
     /// Files the control channel (`ui.dropFiles`) holds over the window: every frame reports them
     /// as hovered, as the OS does while a drag is over the window.
     drop_hover: Vec<String>,
@@ -785,6 +819,10 @@ pub struct LccApp {
     /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked
     /// its first picture ([`LccApp::pictures_missing`]).
     pub pictures_missing_pass: Option<u64>,
+    /// The loupe's last photo and its place in the view, and whether the user stepped back to
+    /// the one now on screen: the background preparation goes their way ([`lcc_engine::prep`]).
+    pub prep_at: Option<(lcc_catalog::PhotoId, usize)>,
+    pub prep_backward: bool,
     /// The loupe's video frames (playback worker, paused still).
     pub video_view: video_view::VideoView,
     /// The zoomed view the loupe asked tiles for last (see [`region`]): the frame, the part its
@@ -956,6 +994,22 @@ impl LccApp {
         lcc_engine::prep::pictures_missing();
     }
 
+    /// Preparing photos in the background ([`lcc_engine::prep`]): the whole view's previews once
+    /// the user is culling in the loupe, built from the photo on screen in the direction of travel;
+    /// held back while a slider drags.
+    fn background_prep(&mut self, ctx: &egui::Context) {
+        if self.session.interaction.is_some() {
+            lcc_engine::prep::foreground();
+        }
+        let mode = panels::detail::prep_mode(self);
+        let loupe = self.ui.fullscreen || self.ui.view == state::ViewMode::Detail;
+        let at = if loupe { self.session.active() } else { None };
+        self.session.prep_tick(mode, at, self.prep_backward);
+        if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+
     /// Whether a picture was missing in frame `pass` or the one before.
     pub fn pictures_busy(&self, pass: u64) -> bool {
         self.pictures_missing_pass.is_some_and(|p| pass.saturating_sub(p) <= 1)
@@ -984,6 +1038,23 @@ impl LccApp {
     /// Whether the Compact layout is drawn: chosen, and the Modern layout is off.
     pub(crate) fn compact(&self) -> bool {
         self.ui.settings.compact_layout && !self.ui.modern.enabled
+    }
+
+    /// The right panel's default width follows the layout (Compact: [`state::COMPACT_RIGHT_WIDTH`],
+    /// LAYOUT-DENSE, ported from OneSlips) while it is at the other layout's default; a width the
+    /// user dragged to stays.
+    fn follow_compact_width(&mut self, ctx: &egui::Context) {
+        let key = egui::Id::new("compact-right-width");
+        let now = self.compact();
+        let was = ctx.data(|d| d.get_temp::<bool>(key));
+        if was == Some(now) {
+            return;
+        }
+        ctx.data_mut(|d| d.insert_temp(key, now));
+        // (at launch only Compact moves it: Classic's default needs no change)
+        if was.is_some() || now {
+            self.ui.right_width = state::follow_compact_width(self.ui.right_width, now);
+        }
     }
 
     pub fn new(mut session: Session, services: Services) -> Self {
@@ -1038,6 +1109,10 @@ impl LccApp {
             shadow: None,
             headless_screenshotting: false,
             synthetic: vec![],
+            paint_hold_until: f64::NEG_INFINITY,
+            paint_hold: false,
+            mask_landing: Default::default(),
+            mask_pick_op: None,
             drop_hover: vec![],
             drop_pending: vec![],
             copied: None,
@@ -1064,6 +1139,8 @@ impl LccApp {
             brush_live: None,
             loupe_shown: None,
             pictures_missing_pass: None,
+            prep_at: None,
+            prep_backward: false,
             video_view: Default::default(),
             region_view: None,
             region_before_view: None,
@@ -1614,9 +1691,9 @@ impl LccApp {
         if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
             self.offer_sam_download(then);
         } else if lcc_engine::segment::Segmenter::AVAILABLE
-            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::People | AiModel::FaceDetector))
+            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::Describe | AiModel::People | AiModel::FaceDetector))
         {
-            // SAM 2.1 was chosen for Object masks, or Retouch needs the MediaPipe models: their downloads are in the
+            // SAM 2.1 was chosen for Object masks, Describe needs the open models, or Retouch needs the MediaPipe models: their downloads are in the
             // AI Models dialog
             if self.ui.dialog.is_none() {
                 self.ui.dialog = Some(state::Dialog::Settings { tab: "ai".into() });
@@ -1946,6 +2023,17 @@ impl LccApp {
     pub fn logic(&mut self, ctx: &egui::Context) {
         i18n::set_language(self.ui.language);
         self.frame_log.clear();
+        // painting on the loupe (OneSlips, NOTES-1028 note 29): a brush stroke in progress and a moment after it
+        let now = ctx.input(|i| i.time);
+        let painting = matches!(self.gesture, Some(panels::detail::Gesture::Brush { .. }));
+        if painting {
+            self.paint_hold_until = now + panels::detail::PAINT_HOLD_SECS;
+        }
+        // (a clock that went back never holds for longer than the hold)
+        self.paint_hold = painting || (now < self.paint_hold_until && self.paint_hold_until - now <= 2.0 * panels::detail::PAINT_HOLD_SECS);
+        if self.paint_hold {
+            ctx.request_repaint_after(std::time::Duration::try_from_secs_f64((self.paint_hold_until - now).clamp(0.0, 2.0)).unwrap_or_default());
+        }
         widgets::sync_section_folds(ctx, &mut self.ui.section_open);
         let t0 = now_ms();
         panels::library_problem::logic(self, ctx);
@@ -1971,6 +2059,7 @@ impl LccApp {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
         theme::set_compact(ctx, self.compact());
+        self.follow_compact_width(ctx);
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         if !self.styled {
@@ -2164,6 +2253,10 @@ impl LccApp {
             self.ui.known_cards = None;
         }
         self.session.persist_if_dirty();
+        // an import being finished: kept in the library until done, taken up again after a restart
+        if self.session.finishing_tick() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         panels::denoise::pump(self, ctx);
         panels::plugin_filters::pump(self, ctx);
         panels::right::dust_pump(self, ctx);
@@ -2620,6 +2713,7 @@ impl LccApp {
         // …and the histogram sets this while the pointer rests on a clipping indicator
         self.clipping_preview = false;
         self.ai_mask_detail(&ctx);
+        self.background_prep(&ctx);
         crate::panels::genfill::frame(self, &ctx);
         self.place_names_outcome(&ctx);
         if self.ui.fullscreen {

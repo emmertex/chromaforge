@@ -892,4 +892,32 @@ fn a_wait_is_translated_around_its_names() {
     assert!(header.iter().any(|t| t == "Warten, bis Converter fertig ist (Prog)"), "{header:?}");
     assert!(list.iter().any(|t| t.contains("Die Ergebnisse kommen zurück, wenn Converter geschlossen wird")), "{list:?}");
     drop(g);
+/// Nothing changed since the last backup: quitting neither asks for a backup nor makes one, even
+/// with one due on every exit. A change since asks again (ported from OneSlips' LR-BACKUP).
+#[test]
+fn quitting_with_nothing_changed_since_the_backup_does_not_ask() {
+    let dir = std::env::temp_dir().join(format!("lcc-quit-backup-same-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut session = lcc_engine::Session::new().with_fs();
+    session.open_library(&dir, false).unwrap();
+    let settings = lcc_catalog::library::CatalogSettings {
+        backup: lcc_catalog::library::BackupSchedule::EveryExit,
+        last_backup: None,
+        ..session.catalog_settings()
+    };
+    session.set_catalog_settings(&settings).unwrap();
+    session.backup_catalog(None).unwrap();
+    assert!(!session.catalog_backup_wanted(), "just backed up, nothing changed since");
+    assert_eq!(session.backup_catalog_if_due().unwrap(), None, "and the exit makes none");
+    let app = LccApp::new(session, Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
+    h.settle(T);
+    assert!(crate::panels::notices::may_close(&mut h.app), "{:?}", h.app.quit_prompt);
+    assert!(!matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))));
+    h.app.session.execute("album.create", &json!({"name": "Picks"})).unwrap();
+    assert!(h.app.session.catalog_backup_wanted(), "a change since the backup");
+    assert!(!crate::panels::notices::may_close(&mut h.app));
+    assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
+    let _ = h.app.session.close_library();
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -22,7 +22,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-pub use disk::{DATA_EXT, DiskCache, decode_jpeg, encode_jpeg};
+pub use disk::{DATA_EXT, DiskCache, decode_jpeg, encode_jpeg, jpeg_dims};
 pub use hash::{Hash128, Hasher128, hash_bytes};
 use lcc_raster::Rgba8;
 pub use lru::{Lru, next_tick};
@@ -346,6 +346,18 @@ impl PreviewCache {
         let in_mem = self.mem.lock().unwrap_or_else(|e| e.into_inner()).remove(&key).is_some();
         let on_disk = self.disk.as_ref().is_some_and(|d| d.remove(key) > 0);
         in_mem || on_disk
+    }
+
+    /// The size of the image kept under `key` (memory, else disk: read from its file's header),
+    /// without loading it or changing what is kept.
+    pub fn dims(&self, key: Hash128) -> Option<(usize, usize)> {
+        if self.generation.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            return None;
+        }
+        if let Some(v) = self.mem.lock().unwrap_or_else(|e| e.into_inner()).peek(&key) {
+            return Some((v.width, v.height));
+        }
+        self.disk.as_ref()?.dims(key)
     }
 
     /// Whether `key` is held in memory or on disk (without reading it).

@@ -15,7 +15,7 @@ use crate::icons::Icon;
 use crate::module::{ModuleId, PanelId};
 use crate::state::RightPanel;
 use crate::theme::Tokens;
-use crate::widgets::{divider, icon_button_named};
+use crate::widgets::{DENSE_ROW_H, divider, icon_button_named};
 
 /// Height of the row.
 const ROW_H: f32 = 34.0;
@@ -34,14 +34,24 @@ pub(super) fn row(app: &mut LccApp, ui: &mut egui::Ui) {
     let tools: Vec<PanelId> = crate::panels::strip::strip_panels(app).into_iter().filter(|p| *p != PanelId::Edit).collect();
     let develop = app.session.active().and_then(|id| app.session.develop_of(id));
     let width = ui.available_width();
-    ui.allocate_ui_with_layout(vec2(width, ROW_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.add_space(((width - (tools.len() + 1) as f32 * (BUTTON_W + 4.0)) / 2.0).max(0.0));
+    // Compact: every tool and Reset share the row's width evenly, one row (LAYOUT-DENSE)
+    let dense = crate::theme::compact(ui.ctx());
+    let count = tools.len() + 1 + usize::from(dense);
+    let (row_h, button_w, gap) = if dense {
+        let gap = 2.0;
+        let room = width - crate::widgets::PAD_L - crate::widgets::PAD_R + 8.0;
+        (DENSE_ROW_H + 6.0, ((room - gap * (count as f32 - 1.0)) / count as f32).clamp(16.0, BUTTON_W), gap)
+    } else {
+        (ROW_H, BUTTON_W, 4.0)
+    };
+    ui.allocate_ui_with_layout(vec2(width, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.add_space(((width - count as f32 * (button_w + gap) + gap) / 2.0).max(0.0));
         // Edit: the Develop panels, with no tool's drawer over them
         let edit_on = app.ui.right == RightPanel::Edit;
         let sc = crate::shortcuts::shortcut_of(&app.ui.settings.keymap, "panel.edit");
         let tip = crate::widgets::command_tooltip(ui, "Edit", sc);
-        let resp = icon_button_named(ui, "toolsEdit", Icon::Sliders, vec2(BUTTON_W, ROW_H - 4.0), edit_on, has_photo, crate::i18n::tr("Edit"), &tip);
+        let resp = icon_button_named(ui, "toolsEdit", Icon::Sliders, vec2(button_w, row_h - 4.0), edit_on, has_photo, crate::i18n::tr("Edit"), &tip);
         if resp.clicked() && !edit_on {
             let _ = app.run("panel.edit", json!({}));
         }
@@ -52,7 +62,7 @@ pub(super) fn row(app: &mut LccApp, ui: &mut egui::Ui) {
             let sc = crate::shortcuts::shortcut_of(&app.ui.settings.keymap, &format!("panel.{id}"));
             let tip = if video { crate::i18n::tr(crate::video_ui::NOT_FOR_VIDEO).to_string() } else { crate::widgets::command_tooltip(ui, tip, sc) };
             let name = crate::i18n::tr(entry_name(*p));
-            let resp = icon_button_named(ui, id, icon, vec2(BUTTON_W, ROW_H - 4.0), on, (has_photo || !needs_photo) && !video, name, &tip);
+            let resp = icon_button_named(ui, id, icon, vec2(button_w, row_h - 4.0), on, (has_photo || !needs_photo) && !video, name, &tip);
             if develop.as_ref().is_some_and(|d| applied(d, panel)) {
                 // the tool has been applied to this photo: a dot under its icon
                 let t = Tokens::get(ui.ctx());
@@ -65,6 +75,15 @@ pub(super) fn row(app: &mut LccApp, ui: &mut egui::Ui) {
             }
             // the strip's header menu: show/hide, solo, hiding mode
             crate::panels::classic::side_menu(app, &resp, crate::panels::strip::strip_declared(ModuleId::Develop));
+        }
+        if dense {
+            // Reset, last in the row (the bar under the panels keeps its own)
+            let tip = super::super::edit::reset_tip(&app.ui.settings.keymap, ui.ctx().os() == egui::os::OperatingSystem::Mac);
+            let resp =
+                icon_button_named(ui, "toolsReset", Icon::Reset, vec2(button_w, row_h - 4.0), false, has_photo, crate::i18n::tr("Reset"), &tip);
+            if resp.clicked() {
+                let _ = app.run("develop.reset", json!({}));
+            }
         }
     });
     divider(ui);

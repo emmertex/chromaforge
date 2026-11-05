@@ -1087,12 +1087,11 @@ fn op(app: &mut LccApp, ctx: &egui::Context, id: &str, p: Value) {
 }
 
 fn center(ui: &mut egui::Ui, app: &mut LccApp) {
-    let t = Tokens::get(ui.ctx());
     let mut area = ui.available_rect_before_wrap();
     app.canvas_rect = Some(area);
     ui.allocate_rect(area, Sense::hover());
     if crate::module::edge_visible(app, Edge::Bottom) {
-        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - t.film_h), area.max);
+        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - app.ui.film_height()), area.max);
         area.max.y = film.top();
         filmstrip(ui, app, film);
     }
