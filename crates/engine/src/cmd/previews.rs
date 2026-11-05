@@ -287,9 +287,26 @@ pub(crate) fn run_photo(jobs: Vec<RenderJob>) -> bool {
         // and the next. (Taken out of the job: it would only queue the write, and would serve a
         // smaller cached view.)
         let keep = j.view_cache.take().map(|v| (v, j.cache_generation));
+        // (and the photo's latest view / thumbnail, on disk before the photo counts as built: the
+        // picture an edited photo shows once its settings change again)
+        let latest = j.latest.take();
+        let thumb = j.cache.as_ref().map(|c| c.1);
+        let generation = j.cache_generation;
         let r = j.run();
-        if let (Some(((cache, key), generation)), Ok(img)) = (keep, r.rendered.as_ref()) {
-            cache.put_at(generation, key, Arc::new(img.image.clone()));
+        if let Ok(img) = r.rendered.as_ref() {
+            let img = Arc::new(img.image.clone());
+            let real = match keep {
+                Some(((cache, key), generation)) => {
+                    cache.put_at(generation, key, img.clone());
+                    Some(key)
+                }
+                None => thumb,
+            };
+            if let (Some((cache, alias)), Some(real)) = (latest, real)
+                && r.quick != Some(crate::media::QuickSource::Cached)
+            {
+                cache.put_latest_with(generation, alias, real, img, true, crate::media::placement_bytes(r.placement.as_ref()).as_deref());
+            }
         }
         ok &= r.rendered.is_ok();
         if decoded.is_none() {

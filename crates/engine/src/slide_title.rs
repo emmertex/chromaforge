@@ -355,6 +355,7 @@ impl TitleCompose {
         crate::media::RenderResult {
             request_id,
             source_key: None,
+            placement: None,
             photo: lcc_catalog::PhotoId(0),
             level: crate::media::SourceLevel::Preview,
             key: self.key(),
