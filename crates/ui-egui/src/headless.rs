@@ -5674,6 +5674,9 @@ mod tests {
         assert!(h.app.ui.settings.confirm_delete);
         crate::settings_screen::reveal(&mut h, "button:settingsStartup-2");
         h.request("ui.clickWidget", json!({"id": "button:settingsStartup-2"}), t);
+        assert_eq!(h.app.ui.settings.startup_view, crate::state::StartupView::SquareGrid);
+        crate::settings_screen::reveal(&mut h, "button:settingsStartup-3");
+        h.request("ui.clickWidget", json!({"id": "button:settingsStartup-3"}), t);
         assert_eq!(h.app.ui.settings.startup_view, crate::state::StartupView::Detail);
         // Interface: filmstrip names off, grid badges always
         h.request("ui.clickWidget", json!({"id": "button:settingsTab-interface"}), t);
