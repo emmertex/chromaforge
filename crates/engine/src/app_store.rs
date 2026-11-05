@@ -272,6 +272,8 @@ struct SharedFile {
     merged: Vec<Merged>,
     /// Library folders whose named presets `store.gatherPresets` took already.
     gathered: Vec<String>,
+    /// Preparing photos in the background ([`crate::prep`]): the app-wide settings.
+    prep: crate::prep::PrepSettings,
 }
 
 /// The store-held parts of a library's `prefs.json` (read only).
@@ -816,6 +818,8 @@ impl Session {
         let presets: PresetsFile = st.read(PRESETS).unwrap_or_default();
         st.merged = shared.merged;
         st.gathered = shared.gathered;
+        // (the app-wide background preparation settings: the session's own, not a library's content)
+        self.prep.app = shared.prep.sanitized();
         let mut marks = shared.preset_marks;
         // (read-old: marks a presets.json still carries join the store's)
         for id in presets.at_import.iter() {
@@ -950,6 +954,7 @@ impl Session {
             habits: c.habits,
             merged,
             gathered,
+            prep: self.prep.app,
         };
         serde_json::to_vec_pretty(&f).unwrap_or_default()
     }
