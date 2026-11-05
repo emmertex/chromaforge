@@ -509,6 +509,44 @@ fn browse(app: &mut LccApp, ctx: &egui::Context, path: &str) {
 
 /// The sources: cards and cameras, the Local places (the folders kept there, with their trees),
 /// the folders browsed lately, and a file picker for single files (with the import review).
+/// The drives and volumes of this computer as (label, path), read on a worker thread
+/// ([`crate::panels::left::fs_cached`]): on Windows every drive letter that answers (local, USB,
+/// cards, mapped network drives); elsewhere the root and the mounted volumes.
+/// The one drive tests see: a folder of their own in the temporary folder.
+pub(crate) fn test_drive() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("app-test-drive-{}", std::process::id()))
+}
+
+pub(crate) fn list_drives(_: &str) -> Vec<(String, String)> {
+    // tests never touch this machine's drives (mapped network drives can be slow to answer)
+    if cfg!(test) {
+        return vec![("Test drive".into(), test_drive().to_string_lossy().to_string())];
+    }
+    let mut v: Vec<(String, String)> = Vec::new();
+    if cfg!(windows) {
+        for l in b'A'..=b'Z' {
+            let p = format!("{}:\\", l as char);
+            if std::fs::metadata(&p).is_ok() {
+                v.push((format!("{}:", l as char), p));
+            }
+        }
+    } else {
+        v.push(("/".into(), "/".into()));
+        let user = std::env::var("USER").unwrap_or_default();
+        for base in ["/Volumes".to_string(), format!("/media/{user}"), format!("/run/media/{user}"), "/mnt".to_string()] {
+            let Ok(rd) = std::fs::read_dir(&base) else { continue };
+            let mut found: Vec<(String, String)> = rd
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() || t.is_symlink()))
+                .map(|e| (e.file_name().to_string_lossy().to_string(), e.path().to_string_lossy().to_string()))
+                .collect();
+            found.sort();
+            v.extend(found);
+        }
+    }
+    v
+}
+
 fn sources(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -534,6 +572,18 @@ fn sources(app: &mut LccApp, ui: &mut egui::Ui) {
                 let on = current.as_deref().is_some_and(|c| crate::panels::left::same_folder(c, &open_at));
                 source_row(app, ui, &format!("importCard-{i}"), name, &open_at, on);
             }
+        }
+        // This PC: every drive, each a folder tree to open down to the folder to import from
+        heading(ui, "This PC");
+        let drives = crate::panels::left::fs_cached(ui, "import-drives", "", 5.0, list_drives).unwrap_or_default();
+        if drives.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
+                ui.label(egui::RichText::new(crate::i18n::tr("Looking for drives…")).color(t.text_dim));
+            });
+        }
+        for (label, path) in &drives {
+            crate::panels::left::folder_tree(app, ui, "drives", label, path, 0.0, current.as_deref(), true, false);
         }
         heading(ui, "Folders");
         crate::panels::left::local_body(app, ui);

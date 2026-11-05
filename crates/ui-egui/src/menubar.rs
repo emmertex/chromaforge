@@ -397,6 +397,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
         "Loupe Info",
         &[
             "view.infoOverlay",
+            "view.shotInfo",
             "view.focusPoint",
             "view.zoomToFocus",
             "view.faceBoxes",
@@ -552,6 +553,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.focusPoint" => Some(u.settings.focus_point),
         "view.zoomToFocus" => Some(u.settings.zoom_to_focus),
         "view.filmstrip" => Some(u.filmstrip),
+        "view.shotInfo" => Some(u.shot_info),
         "view.frameRate" => Some(u.frame_rate),
         "view.histogram" => Some(if crate::modern::on(app) { crate::modern::histogram_shown(app) } else { u.histogram }),
         "view.clipping" => Some(u.show_clipping),

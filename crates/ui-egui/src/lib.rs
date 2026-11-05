@@ -123,6 +123,8 @@ mod tests_bar_buttons;
 #[cfg(test)]
 mod tests_before_after;
 #[cfg(test)]
+mod tests_breadcrumb_more;
+#[cfg(test)]
 mod tests_browse_active;
 #[cfg(test)]
 mod tests_button;
@@ -163,6 +165,8 @@ mod tests_crop_rotate;
 #[cfg(test)]
 mod tests_crop_tool;
 #[cfg(test)]
+mod tests_culling_cells;
+#[cfg(test)]
 mod tests_curve;
 #[cfg(test)]
 mod tests_date_picker;
@@ -177,6 +181,8 @@ mod tests_dialog_settings;
 #[cfg(test)]
 mod tests_dialog_tab;
 #[cfg(test)]
+mod tests_dialog_width;
+#[cfg(test)]
 mod tests_dialogs;
 #[cfg(test)]
 mod tests_drop_import;
@@ -190,6 +196,8 @@ mod tests_enhance_dialog;
 mod tests_error_kinds;
 #[cfg(test)]
 mod tests_filmstrip;
+#[cfg(test)]
+mod tests_filmstrip_resize;
 #[cfg(test)]
 mod tests_filter_search;
 #[cfg(test)]
@@ -220,6 +228,8 @@ mod tests_i18n_coverage;
 mod tests_immich_ui;
 #[cfg(test)]
 mod tests_import_body_profiles;
+#[cfg(test)]
+mod tests_import_drives;
 #[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]

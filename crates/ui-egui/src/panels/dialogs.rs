@@ -175,8 +175,13 @@ pub const WHATS_NEW: &str = include_str!(concat!(env!("OUT_DIR"), "/whats-new.md
 
 /// The import review, Export and Settings keep window ids of their own, so the size each is given
 /// doesn't carry over to the other dialogs.
-fn window_id(dialog: &Dialog) -> egui::Id {
-    egui::Id::new(match dialog {
+///
+/// Every other dialog has a window id of its own kind: egui keeps a window's size (and never
+/// shrinks it to its content), so a wide dialog (the Presets Manager, Chart Profile) left every
+/// later one that shared its id as wide, e.g. Create Collection ~2000 points with a full-width
+/// Name field. Each kind now starts at its own default width.
+pub(crate) fn window_id(dialog: &Dialog) -> egui::Id {
+    let own = match dialog {
         Dialog::Import { .. } => "app-import-dialog",
         Dialog::Print => "app-print-dialog",
         Dialog::Export { .. } => "app-export-dialog",
@@ -184,8 +189,9 @@ fn window_id(dialog: &Dialog) -> egui::Id {
         Dialog::PresetsManager { .. } => crate::panels::presets_manager::WINDOW,
         // (the Settings screen's own layer: `settings_screen::LAYER`)
         Dialog::Settings { .. } => crate::settings_screen::LAYER,
-        _ => "app-dialog",
-    })
+        _ => return egui::Id::new("app-dialog").with(std::mem::discriminant(dialog)),
+    };
+    egui::Id::new(own)
 }
 
 /// Block the underlying panels from the first frame, before the window establishes its modal
@@ -373,10 +379,12 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         })
         .max_width(if sheet {
             sheet_w(screen, insets)
-        } else if export {
-            (screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN).max(320.0)
         } else if presets {
+            // (before the others: the Presets Manager keeps its own cap)
             presets_max.x
+        } else if export || !settings {
+            // never wider than the window (a full-width field fills the dialog, not the screen)
+            (screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN).max(320.0)
         } else {
             f32::INFINITY
         })

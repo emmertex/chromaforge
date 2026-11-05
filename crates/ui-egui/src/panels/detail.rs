@@ -901,7 +901,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let full = ui.max_rect();
     let fullscreen = app.ui.fullscreen;
     let show_film = crate::module::edge_visible(app, crate::module::Edge::Bottom) && !fullscreen;
-    let film_h = if show_film { t.film_h } else { 0.0 };
+    let film_h = if show_film { app.ui.film_height() } else { 0.0 };
     let mut canvas = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
     // a video: its control bar along the bottom of the canvas (photos keep the whole canvas)
     let mut video_state = None;
@@ -1592,6 +1592,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         all_masks_pill(app, ui, canvas, img_rect);
     }
     info_overlay(app, &p, canvas, &photo, pill);
+    if app.ui.shot_info {
+        // zoomed in, it sits over the photo's bottom edge: not while a tool works on the pixels
+        let busy = super::surface_osd::on_photo_tool(app, ui.ctx());
+        shot_info_strip(ui, canvas, img_rect, &shot_info(&photo.meta, native), busy);
+    }
     if super::faces::face_boxes_shown(app) {
         // a name box left open on another photo is dropped
         if app.ui.name_edit.as_ref().is_some_and(|e| e.photo != id.0) {
@@ -5516,6 +5521,142 @@ fn film_source_line(app: &mut LccApp, ui: &egui::Ui, head: Rect, shown: usize, l
     }
 }
 
+/// The shot info strip's parts, most important first (the strip drops them from the end when it
+/// is narrow): aperture, shutter, ISO, focal length, the lens, the picture's size in pixels as
+/// shown (after the crop, oriented). Only what the photo's metadata already holds: nothing is
+/// read from the file.
+pub(crate) fn shot_info(m: &lcc_catalog::Meta, size: [usize; 2]) -> Vec<String> {
+    let mut v = Vec::new();
+    if let Some(a) = m.aperture.filter(|a| a.is_finite() && *a > 0.0) {
+        v.push(if a >= 10.0 { format!("f/{a:.0}") } else { format!("f/{a:.1}") });
+    }
+    let shutter = m.shutter.trim();
+    if !shutter.is_empty() {
+        // the camera notation (1/250, 1.3″) or whole seconds, each with its unit once
+        v.push(if shutter.ends_with(['s', '″']) { shutter.to_string() } else { format!("{shutter} s") });
+    }
+    if let Some(i) = m.iso {
+        v.push(format!("ISO {i}"));
+    }
+    if let Some(f) = m.focal_mm.filter(|f| f.is_finite() && *f > 0.0) {
+        v.push(format!("{f:.0} mm"));
+    }
+    let lens = m.lens.trim();
+    if !lens.is_empty() {
+        v.push(lens.to_string());
+    }
+    if size[0] > 1 && size[1] > 1 {
+        v.push(format!("{} × {}", size[0], size[1]));
+    }
+    v
+}
+
+/// The shot info strip: one line under the photo, or a slim pill over the bottom edge of the part
+/// of the photo on screen when there is no room below it (full screen, zoomed in), its parts
+/// dropped from the end when it doesn't fit (widget `loupe:shotInfo`). `hide_over`: an on-photo
+/// tool is in use, so the pill over the photo is left out (under the photo it stays: it covers
+/// nothing).
+fn shot_info_strip(ui: &egui::Ui, canvas: Rect, img: Rect, parts: &[String], hide_over: bool) {
+    // the part of the photo on screen (zoomed in, the photo is far bigger than the canvas)
+    let img = img.intersect(canvas);
+    if parts.is_empty() || !img.is_positive() {
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    let p = ui.painter_at(canvas);
+    let font = t.font(11.5);
+    let h = 18.0;
+    let below = img.bottom() + 3.0 + h <= canvas.bottom();
+    if !below && hide_over {
+        return;
+    }
+    let top = if below { img.bottom() + 3.0 } else { img.bottom() - h - 6.0 };
+    let max_w = (img.width() - 16.0).max(40.0);
+    let colour = if below { t.text_dim } else { Color32::from_gray(230) };
+    let width = |s: &str| p.layout_no_wrap(s.to_string(), font.clone(), colour).size().x;
+    let mut shown: Vec<String> = parts.to_vec();
+    // least important last: the size, then the lens give way first; the last part left is cut
+    // short with an ellipsis rather than dropped
+    while shown.len() > 1 && strip_width(&shown.iter().map(|s| width(s)).collect::<Vec<_>>()) > max_w {
+        shown.pop();
+    }
+    if shown.len() == 1
+        && let Some(only) = shown.first_mut()
+    {
+        let mut chars: Vec<char> = only.chars().collect();
+        while width(only) > max_w && chars.len() > 1 {
+            chars.pop();
+            *only = chars.iter().collect::<String>().trim_end().to_string() + "…";
+        }
+    }
+    if shown.is_empty() {
+        return;
+    }
+    let galleys: Vec<_> = shown.into_iter().map(|s| p.layout_no_wrap(s, font.clone(), colour)).collect();
+    let total = strip_width(&galleys.iter().map(|g| g.size().x).collect::<Vec<_>>());
+    let r = Rect::from_center_size(pos2(img.center().x, top + h / 2.0), vec2(total + 2.0 * STRIP_PAD, h));
+    if !below {
+        p.rect_filled(r, 9.0, Color32::from_black_alpha(140));
+    }
+    let mut x = r.left() + STRIP_PAD;
+    let n = galleys.len();
+    for (i, g) in galleys.into_iter().enumerate() {
+        let w = g.size().x;
+        p.galley(pos2(x, r.center().y - g.size().y / 2.0), g, colour);
+        x += w;
+        if i + 1 < n {
+            // a faint dot between the items, in the middle of a wide gap
+            p.circle_filled(pos2(x + STRIP_GAP / 2.0, r.center().y), 1.3, colour.gamma_multiply(0.55));
+            x += STRIP_GAP;
+        }
+    }
+    register(ui.ctx(), "loupe:shotInfo", r);
+}
+
+/// Space between two items of the shot info strip (a dot sits in its middle), and around them.
+const STRIP_GAP: f32 = 22.0;
+const STRIP_PAD: f32 = 10.0;
+
+/// Width of the shot info strip's items (their widths) with the gaps between them.
+pub(crate) fn strip_width(widths: &[f32]) -> f32 {
+    widths.iter().sum::<f32>() + STRIP_GAP * widths.len().saturating_sub(1) as f32
+}
+
+/// Width of a filmstrip cell for a strip `height` points high (the shape of its original
+/// 120 × 142 cells).
+pub(crate) fn film_cell_width(height: f32) -> f32 {
+    let h = if height.is_finite() { height } else { crate::state::FILM_HEIGHT.default };
+    (h * 120.0 / 142.0).round().max(60.0)
+}
+
+/// The thumbnail size (px) a filmstrip cell `cell_w` points wide asks for: what it shows at the
+/// screen's density, from the thumbnail sizes the cache keeps (at most 512).
+pub(crate) fn film_thumb_px(cell_w: f32, ppp: f32) -> usize {
+    let px = cell_w * if ppp.is_finite() { ppp.clamp(1.0, 3.0) } else { 1.0 } * 2.0;
+    (px.round() as usize).clamp(128, 512)
+}
+
+/// The filmstrip's top edge: dragged up or down, it resizes the strip (and its thumbnails) within
+/// [`crate::state::FILM_HEIGHT`]; a double click puts it back. The height is kept with the UI
+/// settings (widget `filmstrip:resize`; `film:` ids are the photos).
+fn film_resize(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
+    let edge = Rect::from_min_size(r.min - vec2(0.0, 2.0), vec2(r.width(), 7.0));
+    let resp = ui.interact(edge, egui::Id::new("filmstrip-resize"), Sense::click_and_drag());
+    register(ui.ctx(), "filmstrip:resize", edge);
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    if resp.dragged() {
+        let dy = resp.drag_delta().y;
+        if dy.is_finite() && dy != 0.0 {
+            app.ui.film_height = crate::state::FILM_HEIGHT.clamp(app.ui.film_height() - dy);
+        }
+    }
+    if resp.double_clicked() {
+        app.ui.film_height = crate::state::FILM_HEIGHT.default;
+    }
+}
+
 fn film_label(name: &str) -> String {
     if name.chars().nth(14).is_some() { format!("{}…", name.chars().take(13).collect::<String>()) } else { name.to_string() }
 }
@@ -5524,6 +5665,9 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let t = Tokens::get(ui.ctx());
     ui.painter().rect_filled(r, 0.0, t.canvas);
     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 4.0)), 0.0, Color32::from_gray(0x20));
+    film_resize(app, ui, r);
+    // the cells keep the shape they had at the strip's original height (120 wide at 142 high)
+    let cell_w = film_cell_width(r.height());
     // in the Map module the strip shows the photos passing its Location Filter (fork #783)
     let map_filter = (app.ui.module == crate::module::ModuleId::Map && app.map.filter != lcc_engine::cmd::map::LocationFilter::All)
         .then(|| app.map.filter.clone());
@@ -5533,8 +5677,8 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let head = Rect::from_min_max(pos2(r.left(), r.top() + 4.0), pos2(r.right(), (r.top() + 4.0 + FILM_HEAD_H).min(r.bottom())));
     film_source_line(app, ui, head, ids.len(), map_filter.is_some(), &t);
     let r = Rect::from_min_max(pos2(r.left(), head.bottom()), r.max);
-    let cell_w = 120.0;
     let ppp = ui.ctx().pixels_per_point();
+    let thumb_px = film_thumb_px(cell_w, ppp);
     if ids.is_empty() {
         let why = if map_filter.is_some() {
             "No photos match the Location Filter"
@@ -5598,7 +5742,7 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                 };
                 let resp = ui.interact(cr, egui::Id::new(("film", id.0)), sense);
                 // asked for first: a failure left by an earlier request is not this tile's verdict once a new one is on its way
-                super::grid::request_thumb(app, *id, (256.0 * ppp.min(2.0) / 2.0) as usize * 2, 8);
+                super::grid::request_thumb(app, *id, thumb_px, 8);
                 if local.intersects(vp) {
                     super::grid::note_cell(app, *id);
                 }
@@ -5617,7 +5761,12 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                 let p = ui.painter();
                 let label = app.session.catalog.photo(*id).and_then(|ph| ph.label);
                 let selected = state != lcc_engine::SelectionState::NotSelected;
-                let base = if selected {
+                // Compact: the grid's cell levels, the flag's glow and the marks in a strip under the picture
+                let compact = app.compact();
+                let flag = app.session.catalog.photo(*id).map(|ph| ph.flag).unwrap_or_default();
+                let base = if compact {
+                    super::grid::cell_fill(&t, state, flag, resp.hovered(), t.canvas)
+                } else if selected {
                     t.cell_selected
                 } else if resp.hovered() {
                     t.cell_selected.gamma_multiply(0.6)
@@ -5625,13 +5774,24 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     t.canvas
                 };
                 p.rect_filled(cr, 0.0, crate::theme::label_background(base, label, selected));
+                if compact {
+                    super::grid::flag_glow(p, &t, cr, flag);
+                }
                 let names = app.ui.settings.film_names;
                 if let Some(ph) = app.session.catalog.photo(*id).filter(|_| names) {
                     let name = ph.file_name.rsplit_once('.').map(|(n, _)| n).unwrap_or(&ph.file_name);
                     p.text(pos2(cr.left() + 8.0, cr.top() + 10.0), Align2::LEFT_CENTER, film_label(name), t.font(10.0), t.text_dim);
                     p.text(pos2(cr.right() - 8.0, cr.top() + 10.0), Align2::RIGHT_CENTER, &ph.format, t.semibold(8.5), t.text_dim);
                 }
-                let img_area = Rect::from_min_max(cr.min + vec2(10.0, 22.0), cr.max - vec2(10.0, 8.0));
+                let under = compact && app.ui.settings.film_badges;
+                let strip = if under { (cr.height() * 0.11).clamp(12.0, 16.0) } else { 0.0 };
+                let img_area = Rect::from_min_max(cr.min + vec2(10.0, 22.0), cr.max - vec2(10.0, 8.0 + strip));
+                if under && let Some(ph) = app.session.catalog.photo(*id) {
+                    let bar =
+                        Rect::from_min_max(pos2(cr.left() + 8.0, img_area.bottom() + 3.0), pos2(cr.right() - 8.0, img_area.bottom() + 3.0 + strip));
+                    register(ui.ctx(), format!("filmmarks:{}", id.0), bar);
+                    super::grid::paint_badges(p, &t, bar, ph, false);
+                }
                 let thumb = app.renderer.thumb(*id);
                 // the picture: a click outside it (on the frame) selects this photo alone
                 let mut picture = img_area;
@@ -5651,6 +5811,7 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     p.image(tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                     super::grid::selection_ring(p, &t, fr, state);
                     if app.ui.settings.film_badges
+                        && !under
                         && let Some(ph) = app.session.catalog.photo(*id)
                     {
                         film_badges(p, &t, fr, ph);
