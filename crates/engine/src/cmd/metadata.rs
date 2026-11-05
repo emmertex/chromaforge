@@ -33,6 +33,7 @@ pub const FIELDS: &[&str] = &[
     "city",
     "state",
     "country",
+    "countryCode",
     "keywords",
     "supplementalCategories",
     "subjectCode",
@@ -60,6 +61,7 @@ fn text_field<'a>(m: &'a mut Meta, k: &str) -> Option<&'a mut String> {
         "city" => &mut m.city,
         "state" => &mut m.state,
         "country" => &mut m.country,
+        "countryCode" => &mut m.country_code,
         k => return m.contact.get_mut(k),
     })
 }

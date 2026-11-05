@@ -383,11 +383,38 @@ fn advance_if(s: &mut Session, p: &Value) {
 }
 
 fn step(s: &mut Session, d: isize) -> Result<Value> {
+    step_in(s, d, false)
+}
+
+/// [`step`], and with `within` (← / →) through the selection when several photos are selected (ported from OneSlips,
+/// NOTES-1028 note 16): in the view's order, the selection kept, wrapping round; the photos between are skipped.
+/// ↑ / ↓ and Auto Advance step through the view.
+fn step_in(s: &mut Session, d: isize, within: bool) -> Result<Value> {
     let vis = s.visible_cloned();
     if vis.is_empty() {
         return ok();
     }
     let cur = s.selection.active.and_then(|a| vis.iter().position(|x| *x == a));
+    if within
+        && let Some(i) = cur
+        && s.selection.ids.len() > 1
+    {
+        let picked: std::collections::HashSet<PhotoId> = s.selection.ids.iter().copied().collect();
+        let order: Vec<PhotoId> = vis.iter().copied().filter(|x| picked.contains(x)).collect();
+        if order.len() > 1
+            && let Some(at) = vis.get(i).and_then(|a| order.iter().position(|x| x == a))
+        {
+            let n = order.len() as isize;
+            let to = (at as isize + d.signum()).rem_euclid(n) as usize;
+            let Some(&next) = order.get(to) else { return ok() };
+            s.end_interaction()?;
+            let (was, was_mask) = (s.selection.active, s.active_mask);
+            s.selection.active = Some(next);
+            s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
+            s.active_spot = None;
+            return Ok(json!({"active": next.0}));
+        }
+    }
     let next = match cur {
         Some(i) => (i as isize + d).clamp(0, vis.len() as isize - 1) as usize,
         None => 0,
@@ -457,7 +484,7 @@ fn active_meta(s: &Session, c: &str) -> Result<Value> {
         "category": m.category, "supplementalCategories": m.supplemental_categories, "subjectCode": m.subject_code,
         "altText": m.alt_text, "extendedDescription": m.extended_description,
         "copyright": m.copyright, "copyrightStatus": m.copyright_status.id(), "usageTerms": m.usage_terms, "copyrightUrl": m.copyright_url,
-        "creator": m.creator, "location": m.location, "city": m.city, "state": m.state, "country": m.country,
+        "creator": m.creator, "location": m.location, "city": m.city, "state": m.state, "country": m.country, "countryCode": m.country_code,
         "keywords": m.keywords, "creatorJobTitle": m.contact.job_title, "creatorAddress": m.contact.address,
         "creatorCity": m.contact.city, "creatorState": m.contact.state, "creatorPostalCode": m.contact.postal_code,
         "creatorCountry": m.contact.country, "creatorPhone": m.contact.phone, "creatorEmail": m.contact.email,
@@ -582,13 +609,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "Filter",
             [],
             None,
-            "partial Filter: {text?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
+            "partial Filter: {text?, semantic?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
             always,
             |s, p| {
                 let mut v = serde_json::to_value(&s.filter).unwrap_or_default();
                 lcc_develop::presets::deep_merge(&mut v, p);
                 let f: Filter = serde_json::from_value(v).map_err(|e| bad("library.filter", e.to_string()))?;
                 let mut f = f;
+                f.semantic = f.semantic.map(|q| q.trim().to_string()).filter(|q| !q.is_empty());
                 // a blank folder is no folder: no hidden "filters active" state
                 f.library_folder = f.library_folder.filter(|d| !d.trim().is_empty());
                 if f.library_folder.is_some() && s.source == LibrarySource::LibraryFolder {
@@ -609,7 +637,23 @@ pub fn specs() -> Vec<CommandSpec> {
                 if p.get("album").is_some_and(|a| !a.is_null()) && f.album.is_some_and(|a| s.catalog.album(a).is_none()) {
                     return Err(bad("library.filter", "no such collection"));
                 }
+                let sets_semantic = p.get("semantic").is_some();
+                let sets_only = p.get("only").is_some();
                 s.filter = f;
+                if sets_semantic {
+                    if let Some(q) = s.filter.semantic.clone() {
+                        if !sets_only {
+                            s.apply_semantic_filter("library.filter", Some(&q), None, None)?;
+                        }
+                    } else if !sets_only {
+                        s.filter.only.clear();
+                        s.filter.only_none = false;
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            s.ml.last_query = None;
+                        }
+                    }
+                }
                 s.shelved_filter = None;
                 Ok(json!({"count": s.visible().len()}))
             }
@@ -705,6 +749,10 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("library.clearFilter", "Clear Filters", ["Library", "Filters"], None, "{}", always, |s, _| {
             s.filter = Default::default();
             s.shelved_filter = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                s.ml.last_query = None;
+            }
             Ok(json!({"count": s.visible().len()}))
         }),
         // Classic: Library > Enable Filters (Cmd+L) switches the filter off and on again as it was
@@ -983,8 +1031,24 @@ pub fn specs() -> Vec<CommandSpec> {
             s.selection = Selection { ids: a.into_iter().collect(), active: a };
             ok()
         }),
-        cmd!("library.next", "Next Photo", [], Some("Right"), "{}", always, |s, _| step(s, 1)),
-        cmd!("library.previous", "Previous Photo", [], Some("Left"), "{}", always, |s, _| step(s, -1)),
+        cmd!(
+            "library.next",
+            "Next Photo",
+            [],
+            Some("Right"),
+            "{} — with several photos selected: the next selected one (wrapping round), the selection kept",
+            always,
+            |s, _| step_in(s, 1, true)
+        ),
+        cmd!(
+            "library.previous",
+            "Previous Photo",
+            [],
+            Some("Left"),
+            "{} — with several photos selected: the previous selected one (wrapping round), the selection kept",
+            always,
+            |s, _| step_in(s, -1, true)
+        ),
         cmd!(
             "library.down",
             "Photo Below",
@@ -2675,6 +2739,10 @@ mod tests_custom_order;
 #[cfg(test)]
 #[path = "library/tests_rated_out.rs"]
 mod rated_out_tests;
+
+#[cfg(test)]
+#[path = "library/tests_step_selection.rs"]
+mod step_selection_tests;
 
 #[cfg(test)]
 #[path = "library/tests_clear_label.rs"]

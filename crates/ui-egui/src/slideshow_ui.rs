@@ -901,7 +901,7 @@ pub fn center(app: &mut LccApp, ui: &mut egui::Ui) {
     }
     let mut area = ui.available_rect_before_wrap();
     if crate::module::edge_visible(app, crate::module::Edge::Bottom) {
-        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - t.film_h), area.max);
+        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - app.ui.film_height()), area.max);
         area.max.y = film.top();
         crate::panels::detail::filmstrip(app, ui, film);
     }

@@ -60,6 +60,11 @@ pub(crate) fn display_label(chip: &FilterChip, filter: &lcc_catalog::Filter, cat
             _ => chip.label.clone(),
         };
     }
+    if chip.clear.get("semantic").is_some()
+        && let Some(q) = &filter.semantic
+    {
+        return format!("{}: “{q}”", tr("AI search"));
+    }
     if chip.clear.get("only").is_some() {
         return format!("{} {}", tr("Only"), crate::i18n::tr_format!("{n} photos", n = if filter.only_none { 0 } else { filter.only.len() }));
     }
@@ -117,7 +122,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, chips: &[FilterChip]) {
         ui.painter().line_segment([pos2(a.x, b.y), pos2(b.x, a.y)], Stroke::new(1.3, col));
         if resp.clicked() {
             let _ = app.run("library.filter", c.clear.clone());
-            if c.clear.get("text").is_some() {
+            if c.clear.get("text").is_some() || c.clear.get("semantic").is_some() {
                 app.ui.search.clear();
             }
         }
@@ -141,7 +146,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, chips: &[FilterChip]) {
                     .clicked()
                 {
                     let _ = app.run("library.filter", c.clear.clone());
-                    if c.clear.get("text").is_some() {
+                    if c.clear.get("text").is_some() || c.clear.get("semantic").is_some() {
                         app.ui.search.clear();
                     }
                 }

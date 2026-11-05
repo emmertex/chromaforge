@@ -126,8 +126,13 @@ pub(super) fn start(s: &mut Session, run: StartRequest) -> Result<(), String> {
     let mut child = s.desktop.start_program(&run.found, &run.args, run.dir.path()).map_err(not_started)?;
     check_quick_failure(child.as_mut(), QUICK_FAILURE).map_err(not_started)?;
     let cancel = Arc::new(AtomicBool::new(false));
-    let guard = s.activity.start("pluginProgram", "Waiting for a plug-in's program", Cancel::Flag(cancel.clone()));
-    guard.detail(&run.program.name);
+    // the names aren't translated, the text around them is; ✕ would throw the run's results away, so the row
+    // carries a warning and frontends ask first
+    let guard = s.activity.start("pluginProgram", "Waiting for {program} to finish ({plugin})", Cancel::Flag(cancel.clone()));
+    guard.name("program", &run.program.name);
+    guard.name("plugin", &run.plugin_name);
+    guard.detail("The results come back when {program} closes");
+    guard.warn_on_stop("What {program} makes from now on won't come back to the library, and {program} keeps running.");
     let library = s.plugin_library.clone();
     let host = HookHost(RelayHost::new(relay_sender(), s.desktop.clone()));
     let work = move || {

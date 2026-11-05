@@ -132,7 +132,7 @@ fn watch_downloads(app: &mut LccApp, ctx: &egui::Context) {
 /// Per-photo AI Denoise switch.
 pub fn detail_toggle(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, on: bool, applicable: bool) {
     let mut enabled = on;
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }, 3, 2)).show(ui, |ui| {
         let mut r = ui.add_enabled(applicable, egui::Checkbox::new(&mut enabled, crate::i18n::tr("AI Denoise")));
         if !applicable && let Some((why, detail)) = not_applicable(app, id) {
             let tip = match detail {
