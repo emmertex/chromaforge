@@ -203,6 +203,8 @@ mod tests_grading;
 #[cfg(test)]
 mod tests_grid;
 #[cfg(test)]
+mod tests_grid_style;
+#[cfg(test)]
 mod tests_guided_guides;
 #[cfg(test)]
 mod tests_hdr_zoom_cache;

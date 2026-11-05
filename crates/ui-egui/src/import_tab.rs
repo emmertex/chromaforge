@@ -133,7 +133,7 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
             // culling happens in Library's grid and loupe
             app.ui.module = crate::module::ModuleId::Library;
             if !matches!(app.ui.view, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid | crate::state::ViewMode::Detail) {
-                app.ui.view = crate::state::ViewMode::PhotoGrid;
+                app.ui.view = app.ui.grid_style;
             }
             if let Some(b) = app.session.browse.clone()
                 && std::path::Path::new(&b.path).is_dir()
