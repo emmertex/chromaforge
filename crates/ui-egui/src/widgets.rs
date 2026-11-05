@@ -382,7 +382,7 @@ fn slider_laid_out(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, l
         // Compact: the name column fitted to the longest name of its section or flyout
         None if compact => {
             let name_w = ui.painter().layout_no_wrap(label_str.clone(), font.clone(), t.text_label).size().x.ceil();
-            SliderGeometry::new(row, name_column(ui, name_w).clamp(24.0_f32.min(max_label_col(w, k)), max_label_col(w, k)), k)
+            SliderGeometry::dense(row, name_column(ui, name_w).clamp(24.0_f32.min(max_label_col(w, k)), max_label_col(w, k)), k)
         }
         None => SliderGeometry::new(row, label_column(ui, w, &font, k), k),
     };
@@ -1045,6 +1045,13 @@ const TWO_ROW_TEXT_H: f32 = 12.0;
 /// [`LABEL_FONT`].
 const VALUE_W: f32 = 28.0;
 
+/// Space between a Compact slider row's name, track and value.
+const DENSE_GAP: f32 = 6.0;
+
+/// Gap between a Compact slider's right-aligned name and its track: room for the thumb sitting at
+/// the track's left end (and its hover halo), so a name never runs into it.
+const NAME_GAP: f32 = DENSE_GAP + THUMB_RING + 1.5;
+
 /// Maximum width of the slider label column: room for names such as "Vignetting Midpoint" or
 /// "Shadows Luminance" at [`LABEL_FONT`] (issue #346: names were cut off), while the track keeps
 /// more than half the panel.
@@ -1058,6 +1065,23 @@ impl SliderGeometry {
             Rect::from_min_max(pos2((row.right() - pad_r - VALUE_W * k).max(label.right()), row.top()), pos2(row.right() - pad_r, row.bottom()));
         let track_l = label.right() + gap;
         let track_r = (value.left() - gap).max(track_l + 1.0);
+        let track = Rect::from_min_max(pos2(track_l, row.top()), pos2(track_r, row.bottom()));
+        Self { label, track, value }
+    }
+
+    /// The Compact layout's row (LAYOUT-DENSE, ported from OneSlips): on the rows' shared margins
+    /// ([`PAD_L`], [`PAD_R`]), the name right-aligned in its column [`NAME_GAP`] before the track,
+    /// so it never runs into the thumb at the track's left end (the gap shrinks in a very narrow
+    /// row).
+    fn dense(row: Rect, label_col: f32, k: f32) -> Self {
+        let left = row.left() + PAD_L;
+        let right = (row.right() - PAD_R).max(left);
+        let w = right - left;
+        let label = Rect::from_min_size(pos2(left, row.top()), vec2(label_col.min(w).max(0.0), row.height()));
+        let value = Rect::from_min_max(pos2((right - VALUE_W * k).max(label.right()), row.top()), pos2(right, row.bottom()));
+        let gap = NAME_GAP.min(DENSE_GAP.max(w * 0.05));
+        let track_l = label.right() + gap;
+        let track_r = (value.left() - DENSE_GAP).max(track_l + 1.0);
         let track = Rect::from_min_max(pos2(track_l, row.top()), pos2(track_r, row.bottom()));
         Self { label, track, value }
     }
@@ -1201,14 +1225,17 @@ pub fn nudged(spec: &ControlSpec, value: f64, steps: f64) -> f64 {
     (((value + unit * steps) / step).round() * step).clamp(spec.min, spec.max)
 }
 
-/// Collapsible section header ("› Light"). Returns the response (click toggles).
+/// Collapsible section header ("› Light"). Returns the response (click toggles). In the Compact
+/// layout it is a loud band ([`paint_section_band`]) that the sub-tool rows under it stay quieter
+/// than.
 pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: Option<bool>) -> (Response, Option<bool>) {
+    if crate::theme::compact(ui.ctx()) {
+        return dense_section_header(ui, id, title, open, enabled);
+    }
     let title = crate::i18n::tr(title);
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width();
-    let compact = crate::theme::compact(ui.ctx());
-    let h = if compact { crate::theme::COMPACT_SECTION_H } else { 40.0 };
-    let (r, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 40.0), Sense::click());
     // the section's sliders share one name column (Compact)
     begin_slider_group(ui, id);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
@@ -1219,11 +1246,7 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
     }
     let chev = Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(16.0, 16.0));
     paint(p, chev, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_label);
-    if compact {
-        // a compact header is a band with a rule on top, so sections still read apart
-        p.line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.divider));
-    }
-    p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(if compact { 13.0 } else { 14.0 }), t.text);
+    p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(14.0), t.text);
     let mut toggled = None;
     // shown while the pointer is anywhere on the header: `resp.hovered()` turns false as soon as the
     // pointer is over the eye itself (the eye is on top), which hid the eye before it could be
@@ -1232,16 +1255,83 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
         && (ui.rect_contains_pointer(r) || !on)
     {
         let eye = Rect::from_center_size(pos2(r.right() - 34.0, r.center().y), vec2(18.0, 18.0));
-        let er = ui.interact(eye, ui.id().with(("eye", id)), Sense::click());
-        crate::widgets::announce_selected(&er, crate::i18n::tr("Show / hide"), on);
-        register(ui.ctx(), format!("sectionEye:{id}"), eye);
-        paint(ui.painter(), eye, Icon::Eye, if on { t.icon } else { t.text_disabled });
-        if !on {
-            ui.painter().line_segment([eye.left_bottom(), eye.right_top()], Stroke::new(1.5, t.text_disabled));
-        }
-        if er.clicked() {
-            toggled = Some(!on);
-        }
+        toggled = section_eye(ui, id, eye, on);
+    }
+    (resp, toggled)
+}
+
+/// A section's eye (show the photo without the section), drawn at `eye`; the new state when clicked.
+fn section_eye(ui: &mut Ui, id: &str, eye: Rect, on: bool) -> Option<bool> {
+    let t = Tokens::get(ui.ctx());
+    let er = ui.interact(eye, ui.id().with(("eye", id)), Sense::click());
+    crate::widgets::announce_selected(&er, crate::i18n::tr("Show / hide"), on);
+    register(ui.ctx(), format!("sectionEye:{id}"), eye);
+    paint(ui.painter(), eye, Icon::Eye, if on { t.icon } else { t.text_disabled });
+    if !on {
+        ui.painter().line_segment([eye.left_bottom(), eye.right_top()], Stroke::new(1.5, t.text_disabled));
+    }
+    er.clicked().then_some(!on)
+}
+
+/// Left and right margins of the Compact layout's panel rows: sliders, captions, buttons and
+/// checkboxes line up on them (LAYOUT-DENSE, ported from OneSlips).
+pub const PAD_L: f32 = 14.0;
+pub const PAD_R: f32 = 12.0;
+
+/// A panel row's frame margin: Classic's `classic` as it always was, or in the Compact layout the
+/// rows' shared margins ([`PAD_L`], [`PAD_R`]), `top` and `bottom` apart.
+pub fn row_margin(ui: &Ui, classic: egui::Margin, top: i8, bottom: i8) -> egui::Margin {
+    if crate::theme::compact(ui.ctx()) { egui::Margin { left: PAD_L as i8, right: PAD_R as i8, top, bottom } } else { classic }
+}
+
+/// Title size of a Compact section header (Basic, Detail…); sub-tool rows use [`SUB_TITLE`].
+pub(crate) const SECTION_TITLE: f32 = 13.0;
+/// Title size of a Compact sub-tool row (Defringe, SDR Rendition…): smaller and regular weight, so
+/// it reads as part of its section.
+pub(crate) const SUB_TITLE: f32 = 12.0;
+
+/// The fill of a Compact section header's band: the section-band token, a shade lighter (darker in
+/// light themes) under the pointer.
+pub(crate) fn section_fill(t: &Tokens, hovered: bool) -> Color32 {
+    if hovered { t.section_band.lerp_to_gamma(t.text, 0.06) } else { t.section_band }
+}
+
+/// The fill of a Compact sub-tool row: none at rest, a light hover, so the rows stay quieter than
+/// the section header above them.
+pub(crate) fn flyout_fill(t: &Tokens, hovered: bool) -> Option<Color32> {
+    hovered.then(|| t.chrome.lerp_to_gamma(t.hover, 0.6))
+}
+
+/// Paints a Compact section header's band over `r`: the band fill and a separator along its top.
+pub(crate) fn paint_section_band(p: &egui::Painter, r: Rect, t: &Tokens, hovered: bool) {
+    p.rect_filled(r, 0.0, section_fill(t, hovered));
+    p.rect_filled(Rect::from_min_max(r.left_top(), pos2(r.right(), r.top() + 1.0)), 0.0, t.divider);
+}
+
+/// The Compact layout's section header: one banded bar ([`crate::theme::COMPACT_SECTION_H`]), the
+/// chevron and name at the left on the rows' margin, the eye at the right.
+fn dense_section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: Option<bool>) -> (Response, Option<bool>) {
+    let title = crate::i18n::tr(title);
+    let t = Tokens::get(ui.ctx());
+    let w = ui.available_width();
+    let (r, resp) = ui.allocate_exact_size(vec2(w, crate::theme::COMPACT_SECTION_H), Sense::click());
+    begin_slider_group(ui, id);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
+    register(ui.ctx(), format!("section:{id}"), r);
+    let p = ui.painter();
+    paint_section_band(p, r, &t, ui.rect_contains_pointer(r));
+    if resp.has_focus() {
+        p.rect_stroke(r.shrink(1.0), t.radius(crate::theme::DENSE_RADIUS), Stroke::new(1.5, t.accent), StrokeKind::Inside);
+    }
+    let chev = Rect::from_center_size(pos2(r.left() + PAD_L + 5.0, r.center().y), vec2(12.0, 12.0));
+    paint(p, chev, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text);
+    p.text(pos2(r.left() + PAD_L + 16.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(SECTION_TITLE), t.text);
+    let mut toggled = None;
+    if let Some(on) = enabled
+        && (ui.rect_contains_pointer(r) || !on)
+    {
+        let eye = Rect::from_center_size(pos2(r.right() - PAD_R - 8.0, r.center().y), vec2(15.0, 15.0));
+        toggled = section_eye(ui, id, eye, on);
     }
     (resp, toggled)
 }
@@ -1294,8 +1384,12 @@ pub fn divider(ui: &mut Ui) {
     ui.painter().rect_filled(r, 0.0, t.divider);
 }
 
-/// A flyout row inside a section (Curve, Color Mixer, Color Grading…): inset dark box with icon tile.
+/// A flyout row inside a section (Curve, Color Mixer, Color Grading…): inset dark box with icon
+/// tile. In the Compact layout a quiet row ([`dense_flyout_row`]).
 pub fn flyout_row(ui: &mut Ui, id: &str, title: &str, icon: Icon, open: bool) -> Response {
+    if crate::theme::compact(ui.ctx()) {
+        return dense_flyout_row(ui, id, title, icon, open);
+    }
     let title = crate::i18n::tr(title);
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width();
@@ -1319,6 +1413,39 @@ pub fn flyout_row(ui: &mut Ui, id: &str, title: &str, icon: Icon, open: bool) ->
     resp
 }
 
+/// Height of a Compact row that holds a control (a sub-tool row, a caption, a button or segment
+/// row), so the rows of a section line up at one height.
+pub const DENSE_ROW_H: f32 = 22.0;
+
+/// The Compact layout's sub-tool row (Defringe, SDR Rendition…): an indented icon and a
+/// regular-weight title on the rows' margin, no box of its own, so it reads as part of the section
+/// above it (LAYOUT-DENSE, ported from OneSlips).
+fn dense_flyout_row(ui: &mut Ui, id: &str, title: &str, icon: Icon, open: bool) -> Response {
+    let title = crate::i18n::tr(title);
+    let t = Tokens::get(ui.ctx());
+    let w = ui.available_width();
+    let (outer, _) = ui.allocate_exact_size(vec2(w, DENSE_ROW_H), Sense::hover());
+    let r = Rect::from_min_max(pos2(outer.left() + PAD_L - 4.0, outer.top() + 1.0), pos2(outer.right() - PAD_R + 4.0, outer.bottom() - 1.0));
+    let resp = ui.interact(r, ui.id().with(("flyout", id)), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
+    register(ui.ctx(), format!("flyout:{id}"), r);
+    let p = ui.painter();
+    if let Some(fill) = flyout_fill(&t, resp.hovered()) {
+        p.rect_filled(r, t.radius(crate::theme::DENSE_RADIUS), fill);
+    }
+    // indented under the section's title: a nested part of it, not a section of its own
+    let tile = Rect::from_center_size(pos2(r.left() + 4.0 + 16.0 - 5.0, r.center().y), vec2(13.0, 13.0));
+    paint(p, tile, icon, t.text_dim);
+    p.text(pos2(tile.right() + 6.0, r.center().y), Align2::LEFT_CENTER, title, t.font(SUB_TITLE), t.text_label);
+    paint(
+        p,
+        Rect::from_center_size(pos2(r.right() - 4.0 - 6.0, r.center().y), vec2(12.0, 12.0)),
+        if open { Icon::ChevronDown } else { Icon::ChevronLeft },
+        t.text_dim,
+    );
+    resp
+}
+
 /// A small bordered text button (Auto, B&W, HDR…).
 pub fn text_button(ui: &mut Ui, id: &str, label: &str, active: bool) -> Response {
     text_button_sized(ui, id, label, active, None)
@@ -1335,10 +1462,33 @@ fn text_button_sized(ui: &mut Ui, id: &str, label: &str, active: bool, width: Op
     let t = Tokens::get(ui.ctx());
     // finger-sized on the touch Settings screen
     let finger = crate::dialog_frame::finger_sized(ui);
-    let font = t.semibold(if finger { 14.0 } else { 11.5 });
+    // (Compact: the panels' 20 pt buttons, as their segment rows)
+    let dense = t.dense && !finger;
+    let font = t.semibold(if finger {
+        14.0
+    } else if dense {
+        11.0
+    } else {
+        11.5
+    });
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, t.text);
     let w = width.filter(|w| w.is_finite()).unwrap_or(galley.size().x + if finger { 28.0 } else { 18.0 });
-    let size = vec2(w.max(if finger { 56.0 } else { 37.0 }), if finger { 40.0 } else { 24.0 });
+    let size = vec2(
+        w.max(if finger {
+            56.0
+        } else if dense {
+            34.0
+        } else {
+            37.0
+        }),
+        if finger {
+            40.0
+        } else if dense {
+            DENSE_ROW_H - 2.0
+        } else {
+            24.0
+        },
+    );
     let (r, resp) = ui.allocate_exact_size(size, Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label));
     register(ui.ctx(), format!("button:{id}"), r);
@@ -1427,8 +1577,11 @@ pub fn shared_width(room: f32, n: usize, gap: f32) -> f32 {
 /// addressable as `button:{id}-{key}` (keys parallel to labels). Returns the clicked index.
 pub fn segmented(ui: &mut Ui, id: &str, items: &[(&str, &str)], active: Option<usize>, per_row: usize) -> Option<usize> {
     let t = Tokens::get(ui.ctx());
-    let per_row = per_row.max(1);
     let finger = crate::dialog_frame::finger_sized(ui);
+    if crate::theme::compact(ui.ctx()) && !finger {
+        return dense_segmented(ui, id, items, active, per_row);
+    }
+    let per_row = per_row.max(1);
     let (seg_h, font) = if finger { (44.0, t.semibold(14.0)) } else { (24.0, t.semibold(11.5)) };
     let gap = 4.0;
     let w = ui.available_width();
@@ -1460,6 +1613,58 @@ pub fn segmented(ui: &mut Ui, id: &str, items: &[(&str, &str)], active: Option<u
         });
     }
     clicked
+}
+
+/// The Compact layout's [`segmented`]: the options as equal cells of one flat track
+/// ([`DENSE_ROW_H`] tall, the chosen cell raised), all on one row when every label fits its cell,
+/// else `per_row` to a row. Same widget ids (`button:{id}-{key}`).
+fn dense_segmented(ui: &mut Ui, id: &str, items: &[(&str, &str)], active: Option<usize>, per_row: usize) -> Option<usize> {
+    let t = Tokens::get(ui.ctx());
+    let font = t.font(11.0);
+    let w = ui.available_width().max(1.0);
+    let widest =
+        items.iter().map(|(l, _)| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x).fold(0.0_f32, f32::max);
+    let n = items.len().max(1);
+    let per_row = if widest + 8.0 <= w / n as f32 { n } else { per_row.clamp(1, n) };
+    let h = DENSE_ROW_H - 2.0;
+    let mut clicked = None;
+    for (row_i, row) in items.chunks(per_row).enumerate() {
+        let (track, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+        let r = t.radius(crate::theme::DENSE_RADIUS);
+        ui.painter().rect(track, r, t.button, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
+        let cell_w = track.width() / per_row as f32;
+        for (j, (label, key)) in row.iter().enumerate() {
+            let label = crate::i18n::tr(label);
+            let i = row_i * per_row + j;
+            let cell = Rect::from_min_size(pos2(track.left() + cell_w * j as f32, track.top()), vec2(cell_w, h));
+            let resp = ui.interact(cell, ui.id().with((id, i)), Sense::click());
+            crate::widgets::announce_selected(&resp, label.to_string(), active == Some(i));
+            register(ui.ctx(), format!("button:{id}-{key}"), cell);
+            let on = active == Some(i);
+            if on {
+                ui.painter().rect(cell.shrink(1.0), r, t.pressed, Stroke::new(1.0, t.text_dim.gamma_multiply(0.5)), StrokeKind::Inside);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(cell.shrink(1.0), r, t.hover);
+            }
+            if j > 0 && !on && active != Some(i - 1) {
+                ui.painter().vline(cell.left(), cell.y_range().shrink(4.0), Stroke::new(1.0, t.button_border));
+            }
+            let g = one_line_clipped(ui, label, font.clone(), if on { t.text } else { t.text_label }, cell.width() - 4.0);
+            ui.painter().galley(cell.center() - g.size() / 2.0, g, t.text);
+            if resp.clicked() {
+                clicked = Some(i);
+            }
+        }
+        ui.add_space(2.0);
+    }
+    clicked
+}
+
+/// `text` on one line at most `max_w` wide, cut short with … when it doesn't fit.
+fn one_line_clipped(ui: &Ui, text: &str, font: egui::FontId, color: Color32, max_w: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
+    job.wrap = egui::text::TextWrapping { max_width: max_w.max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    ui.painter().layout_job(job)
 }
 
 /// [`segmented`] with icons: one row of equal icon segments, each with its label as hover text and

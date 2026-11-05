@@ -90,21 +90,31 @@ fn section_header(app: &mut LccApp, ui: &mut egui::Ui, key: &str, title: &str, c
     let id = format!("mask:{key}");
     let open = !app.ui.section_folded(&id);
     let title = crate::i18n::tr(title);
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+    // (Compact: the Edit panel's banded section header, LAYOUT-DENSE)
+    let dense = t.dense;
+    let h = if dense { crate::theme::COMPACT_SECTION_H } else { 30.0 };
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
     register(ui.ctx(), format!("section:{id}"), r);
     // the section's sliders share one name column (Compact)
     crate::widgets::begin_slider_group(ui, &id);
     let p = ui.painter();
-    if resp.hovered() {
+    if dense {
+        crate::widgets::paint_section_band(p, r, &t, resp.hovered());
+    } else if resp.hovered() {
         p.rect_filled(r, 0.0, t.chrome.gamma_multiply(1.06));
     }
-    let chevron = Rect::from_center_size(pos2(r.left() + 20.0, r.center().y), vec2(12.0, 12.0));
-    paint(p, chevron, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.icon);
-    let g = p.layout_no_wrap(title.to_string(), t.semibold(13.0), t.text_label);
-    let at = pos2(r.left() + 32.0, r.center().y - g.size().y / 2.0);
+    let (chev_x, title_x, colour) = if dense {
+        (r.left() + crate::widgets::PAD_L + 5.0, r.left() + crate::widgets::PAD_L + 16.0, t.text)
+    } else {
+        (r.left() + 20.0, r.left() + 32.0, t.text_label)
+    };
+    let chevron = Rect::from_center_size(pos2(chev_x, r.center().y), vec2(12.0, 12.0));
+    paint(p, chevron, if open { Icon::ChevronDown } else { Icon::ChevronRight }, if dense { t.text } else { t.icon });
+    let g = p.layout_no_wrap(title.to_string(), t.semibold(13.0), colour);
+    let at = pos2(title_x, r.center().y - g.size().y / 2.0);
     let end = at.x + g.size().x;
-    p.galley(at, g, t.text_label);
+    p.galley(at, g, colour);
     if changed {
         p.circle_filled(pos2(end + 8.0, r.center().y), 2.5, t.accent);
     }

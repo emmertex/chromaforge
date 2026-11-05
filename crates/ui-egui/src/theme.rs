@@ -57,6 +57,9 @@ pub struct Tokens {
     /// more against the grid.
     pub ring_selected: Color32,
     pub divider: Color32,
+    /// The fill of a section header's band in the Compact layout (LAYOUT-DENSE, ported from
+    /// OneSlips): a shade off the chrome, so the sections read as the panel's loudest rows.
+    pub section_band: Color32,
     pub inset: Color32,
     pub field: Color32,
     pub field_border: Color32,
@@ -157,6 +160,7 @@ impl Default for Tokens {
             ring_inner: Color32::from_rgb(0x00, 0x00, 0x00),
             ring_selected: Color32::from_rgb(0xc0, 0xc0, 0xc0),
             divider: Color32::from_rgb(0x1c, 0x1c, 0x1c),
+            section_band: Color32::from_rgb(0x3b, 0x3b, 0x3b),
             inset: Color32::from_rgb(0x23, 0x23, 0x23),
             field: Color32::from_rgb(0x22, 0x22, 0x22),
             field_border: Color32::from_rgb(0x3c, 0x3c, 0x3c),
@@ -206,6 +210,7 @@ impl Tokens {
                 cell_selected: rgb(0x262626),
                 skeleton: rgb(0x1d1d1d),
                 divider: rgb(0x0e0e0e),
+                section_band: rgb(0x2c2c2c),
                 inset: rgb(0x181818),
                 field: rgb(0x161616),
                 field_border: rgb(0x333333),
@@ -227,6 +232,7 @@ impl Tokens {
                 cell_selected: rgb(0xb4b4b4),
                 skeleton: rgb(0xa6a6a6),
                 divider: rgb(0xc4c4c4),
+                section_band: rgb(0xd0d0d0),
                 inset: rgb(0xdcdcdc),
                 field: rgb(0xffffff),
                 field_border: rgb(0xb8b8b8),
@@ -261,6 +267,7 @@ impl Tokens {
                 cell_selected: rgb(0xd2d2d2),
                 skeleton: rgb(0xbcbcbc),
                 divider: rgb(0xe0e0e0),
+                section_band: rgb(0xe4e4e4),
                 inset: rgb(0xf0f0f0),
                 field: rgb(0xffffff),
                 field_border: rgb(0xcccccc),
