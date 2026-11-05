@@ -932,6 +932,10 @@ impl Session {
                 self.auto_write_sidecars_since(log_start);
             }
         }
+        if self.depth == 0 {
+            // whatever the command changed, and however it ended: the view points at what is there
+            self.reconcile_view();
+        }
         if self.depth == 0 && self.library.is_none() && self.app_store.is_some() {
             // no library (`run --shared-settings`): the store is saved after each command
             if let Err(e) = self.save_app_store() {
@@ -1264,6 +1268,7 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        self.reconcile_view();
         let applied = e.op.clone();
         // AI masks still computing for what was undone stop
         self.segmenter.cancel_recompute(single_photo(&e.op, 0));
@@ -1309,6 +1314,7 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        self.reconcile_view();
         let applied = e.op.clone();
         // a redone preset or paste computes the AI masks it brings again
         if let Some(id) = single_photo(&e.op, 0) {
@@ -1878,8 +1884,31 @@ impl Session {
         self.shelved_filter.is_some()
     }
 
+    /// Makes the view show only albums the library holds: one that is gone is no longer the
+    /// source (All Photos is) or the filter's album. THE place this is checked: commands, undo
+    /// and redo, opening a library and every look at the grid run it, so whatever removed an
+    /// album (a command, an undo, a background task) or named one (a saved filter, a saved view)
+    /// need not know. Two lookups: it runs every time.
+    ///
+    /// An album that comes back (its deletion undone) is not shown again by itself, as after
+    /// `album.delete` and undo before: the grid stays where the person was put.
+    ///
+    /// What is only looked up when it is used is left as it is: the target album (a missing one
+    /// means the Quick Collection).
+    pub fn reconcile_view(&mut self) {
+        let cat = &self.catalog;
+        let gone = |a: &lcc_catalog::AlbumId| cat.album(*a).is_none();
+        if matches!(&self.source, LibrarySource::Album(a) if gone(a)) {
+            self.source = LibrarySource::All;
+        }
+        if self.filter.album.as_ref().is_some_and(gone) {
+            self.filter.album = None;
+        }
+    }
+
     /// Photos shown in the grid/filmstrip for the current source, filter and sort.
     pub fn visible(&mut self) -> &[PhotoId] {
+        self.reconcile_view();
         let mut key =
             (self.catalog.revision, format!("{:?}|{:?}|{:?}|{:?}|{:?}", self.source, self.filter, self.sort, self.browse, self.library_folder));
         // What a held view is told apart by: what is shown and how, and for a smart album its rules (rules that were
@@ -2098,6 +2127,7 @@ impl Session {
     /// Photos in the current source (folder, album, …) before the filter bar and search narrow
     /// them; `None` where that is not a separate number (Missing Photos).
     pub fn source_total(&mut self) -> Option<usize> {
+        self.reconcile_view();
         if self.source == LibrarySource::Missing {
             return None;
         }
@@ -2241,8 +2271,14 @@ impl Session {
     }
 
     /// The photos commands act on when a call names none: the selection, else the active photo.
+    /// As far as its photos are there.
     pub fn selected(&self) -> Vec<PhotoId> {
-        if self.selection.ids.is_empty() { self.selection.active.into_iter().collect() } else { self.selection.ids.clone() }
+        let there = |id: &PhotoId| self.catalog.photo(*id).is_some();
+        if self.selection.ids.is_empty() {
+            self.selection.active.into_iter().filter(there).collect()
+        } else {
+            self.selection.ids.iter().copied().filter(there).collect()
+        }
     }
 }
 
@@ -2491,6 +2527,8 @@ mod tests_upright_jobs;
 mod tests_video_posters;
 #[cfg(test)]
 mod tests_view_follow;
+#[cfg(test)]
+mod tests_view_reconcile;
 #[cfg(test)]
 mod tests_xmp;
 
