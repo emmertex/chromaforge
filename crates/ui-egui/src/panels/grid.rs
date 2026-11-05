@@ -926,11 +926,12 @@ fn group_header(app: &mut LccApp, ui: &mut egui::Ui, run: &DateRun, ids: &[Photo
 /// [`lcc_engine::media::Session::embedded_thumb_is_final`]), which for a folder of raws on a
 /// network share is the difference between reading every file whole and reading a preview each.
 pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) {
-    // A slider drag changes the photo it edits every frame. Under the loupe its thumbnail follows
-    // once the drag ends, so its renders (a raw decode the first time) don't compete with the
-    // loupe's drafts. In a grid the thumbnail is what the user watches: it follows live, one render
-    // at a time (the newest settings when the last one is in).
-    if app.session.interaction.as_ref().is_some_and(|i| i.photo == id) {
+    // A slider drag changes the photos it edits every frame (the active one, the others of a
+    // multi-photo edit, and those Auto Sync carries along). Under the loupe their thumbnails follow
+    // once the drag ends, so their renders (a raw decode the first time) don't compete with the
+    // loupe's drafts. In a grid the thumbnails are what the user watches: they follow live, one
+    // render at a time per photo (the newest settings when the last one is in).
+    if drag_edits(app.session.interaction.as_ref(), id) {
         let loupe = matches!(app.ui.view, ViewMode::Detail | ViewMode::Compare | ViewMode::Reference);
         if drag_waits(loupe, app.renderer.thumb(id).is_some(), app.renderer.is_pending(Slot::Thumb(id))) {
             return;
@@ -1102,7 +1103,13 @@ pub(crate) fn click_mode(m: egui::Modifiers, on_picture: bool) -> &'static str {
     }
 }
 
-/// During a slider drag, whether the photo it edits skips asking for a new thumbnail this frame:
+/// Whether the running interaction (a slider drag, a turning dial) edits photo `id`: the active
+/// photo, the others of a multi-photo edit, or one Auto Sync moves along with it.
+pub(crate) fn drag_edits(interaction: Option<&lcc_engine::Interaction>, id: PhotoId) -> bool {
+    interaction.is_some_and(|i| i.photo == id || i.others.iter().chain(&i.along).any(|(x, _)| *x == id))
+}
+
+/// During a slider drag, whether a photo it edits skips asking for a new thumbnail this frame:
 /// under the loupe (`loupe`) while it has one, anywhere while one is being rendered (`pending`);
 /// in a grid it follows the drag.
 pub(crate) fn drag_waits(loupe: bool, has_thumb: bool, pending: bool) -> bool {
@@ -2112,6 +2119,27 @@ mod tests {
         assert_eq!(group_digits(999), "999");
         assert_eq!(group_digits(1234), "1,234");
         assert_eq!(group_digits(2_233_000), "2,233,000");
+    }
+
+    /// Every photo a drag edits follows it the same way, not only the active one: the others of a
+    /// multi-photo edit and the photos Auto Sync carries along wait under the loupe and follow live
+    /// in a grid, one render at a time.
+    #[test]
+    fn every_photo_a_drag_edits_follows_it() {
+        let d = std::sync::Arc::new(lcc_develop::DevelopSettings::default());
+        let i = lcc_engine::Interaction {
+            label: "Exposure".into(),
+            photo: PhotoId(1),
+            original: d.clone(),
+            crop_edited: false,
+            others: vec![(PhotoId(2), d.clone())],
+            along: vec![(PhotoId(3), d)],
+        };
+        for id in [1, 2, 3] {
+            assert!(drag_edits(Some(&i), PhotoId(id)), "photo {id} is edited by the drag");
+        }
+        assert!(!drag_edits(Some(&i), PhotoId(4)), "a photo the drag doesn't edit");
+        assert!(!drag_edits(None, PhotoId(1)), "no drag");
     }
 
     #[test]

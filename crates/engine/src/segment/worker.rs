@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use lcc_develop::SegMask;
 use lcc_segment::{
-    Encoded, Sam2, Sam2Encoded, Sam3,
+    Encoded, Owl, OwlEncoded, Sam2, Sam2Encoded, Sam3,
     remote::{self, Operation, Request, text_logits},
 };
 
@@ -90,6 +90,8 @@ pub enum Kind {
 pub struct Job {
     /// The model folder.
     pub dir: PathBuf,
+    /// Describe runs on the OWLv2 object finder (this folder) and SAM 2.1 (`dir`), not SAM 3.
+    pub detector: Option<PathBuf>,
     /// Which photo and look the request is about (the encode cache's key).
     pub key: u64,
     /// Renders the model input when the cache doesn't hold `key` (always for a detail pass).
@@ -305,6 +307,10 @@ struct State {
     sam2_cache: Option<(u64, Sam2Encoded)>,
     /// The model input `sam2_cache` was encoded from (remembered objects read its colours).
     sam2_input: Option<Input>,
+    /// The OWLv2 object finder, for Describe without SAM 3 (with SAM 2.1).
+    owl: Option<(PathBuf, Owl)>,
+    /// OWLv2's boxes and class embeddings for a photo (each description of it reuses them).
+    owl_cache: Option<(u64, OwlEncoded)>,
     remote: Option<remote::Client>,
     /// The running job's [`Outcome::extra`].
     extra: Option<serde_json::Value>,
@@ -401,8 +407,9 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
         if result.is_err() && !is_detail {
             state.cache = None;
             state.sam2_cache = None;
+            state.owl_cache = None;
         }
-        shared.loaded.store(state.model.is_some() || state.sam2.is_some() || state.remote.is_some(), Ordering::SeqCst);
+        shared.loaded.store(state.model.is_some() || state.sam2.is_some() || state.owl.is_some() || state.remote.is_some(), Ordering::SeqCst);
         drop(done);
         let _ = job.reply.send(Outcome { tag: job.tag, result, superseded: false, notice, extra });
     }
@@ -428,8 +435,9 @@ fn model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path, place
     if state.model.as_ref().is_none_or(|(d, _)| d != dir) {
         state.model = None;
         state.cache = None;
-        // one model at a time: SAM 2.1 is freed
+        // one model at a time: SAM 2.1 (and the OWLv2 finder Describe pairs with it) is freed
         (state.sam2, state.sam2_cache) = (None, None);
+        (state.owl, state.owl_cache) = (None, None);
         let _busy = Flag::raise(&shared.encoding);
         let t = web_time::Instant::now();
         let m = match placement {
@@ -499,7 +507,92 @@ fn sam2_model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path, 
     state.sam2.as_mut().map(|(_, m)| m).ok_or_else(|| "the model did not load".into())
 }
 
-/// Object clicks (and their detail passes) with SAM 2.1; Describe needs SAM 3.
+/// The OWLv2 object finder for `dir`, loading it when needed (it runs on the CPU).
+fn owl_model(state: &mut State, shared: &Shared, dir: &std::path::Path) -> Result<(), Failure> {
+    if state.owl.as_ref().is_none_or(|(d, _)| d != dir) {
+        (state.owl, state.owl_cache) = (None, None);
+        let _busy = Flag::raise(&shared.encoding);
+        let t = web_time::Instant::now();
+        let m = Owl::load(dir)?;
+        log::info!("OWLv2 loaded in {:?}", t.elapsed());
+        state.owl = Some((dir.to_path_buf(), m));
+        shared.loaded.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+/// The folder of the OWLv2 finder a Describe job names.
+fn detector_of(job: &Job) -> Result<PathBuf, Failure> {
+    job.detector.clone().ok_or_else(|| "Describe needs the OWLv2 object finder or the SAM 3 model".into())
+}
+
+/// Describe on the open models: OWLv2's boxes for `text` on `job`'s photo, each segmented by
+/// SAM 2.1 (`job.dir`), merged; both analyses of the photo are kept for its next description.
+/// `None` when nothing matches.
+fn describe(state: &mut State, shared: &Shared, job: &mut Job, text: &str, placement: Placement) -> Result<Option<SegMask>, Failure> {
+    let detector = detector_of(job)?;
+    sam2_model(state, shared, &job.dir, placement)?;
+    owl_model(state, shared, &detector)?;
+    if state.sam2_cache.as_ref().is_none_or(|(k, _)| *k != job.key) {
+        (state.sam2_cache, state.sam2_input, state.owl_cache) = (None, None, None);
+        let input = render(job)?;
+        let _busy = Flag::raise(&shared.encoding);
+        let m = state.sam2.as_ref().map(|(_, m)| m).ok_or("the model did not load")?;
+        let t = web_time::Instant::now();
+        state.sam2_cache = Some((job.key, m.encode(&input.rgb, input.w, input.h)?));
+        log::info!("SAM 2.1 encoded {}×{} in {:?}", input.w, input.h, t.elapsed());
+        state.sam2_input = Some(input);
+    }
+    if state.owl_cache.as_ref().is_none_or(|(k, _)| *k != job.key) {
+        state.owl_cache = None;
+        let input = state.sam2_input.as_ref().ok_or("the photo is not available")?;
+        let owl = state.owl.as_ref().map(|(_, m)| m).ok_or("the object finder did not load")?;
+        let _busy = Flag::raise(&shared.encoding);
+        let t = web_time::Instant::now();
+        let enc = owl.encode(&input.rgb, input.w, input.h)?;
+        log::info!("OWLv2 analysed {}×{} in {:?}", input.w, input.h, t.elapsed());
+        state.owl_cache = Some((job.key, enc));
+    }
+    let (Some((_, owl)), Some((_, owl_enc)), Some((_, sam)), Some((_, sam_enc))) = (&state.owl, &state.owl_cache, &state.sam2, &state.sam2_cache)
+    else {
+        return Err("the Describe models are not ready".into());
+    };
+    let t = web_time::Instant::now();
+    let p = lcc_segment::describe::describe(owl, owl_enc, sam, sam_enc, text, &Default::default())?;
+    log::info!("Describe {text:?} in {:?}", t.elapsed());
+    Ok(p.map(|p| SegMask::from_logits(lcc_segment::SAM2_MASK_SIDE, &p.logits)))
+}
+
+/// A Describe detail pass on the open models: `region` of the photo rendered again and both
+/// analysed afresh (nothing kept).
+fn describe_detail(
+    state: &mut State,
+    shared: &Shared,
+    job: &mut Job,
+    text: &str,
+    region: [f64; 4],
+    placement: Placement,
+) -> Result<Option<SegMask>, Failure> {
+    let detector = detector_of(job)?;
+    let (rw, rh) = (region[2] - region[0], region[3] - region[1]);
+    if !(rw > 0.0 && rh > 0.0) {
+        return Ok(None);
+    }
+    let input = render(job)?;
+    let t = web_time::Instant::now();
+    sam2_model(state, shared, &job.dir, placement)?;
+    owl_model(state, shared, &detector)?;
+    let (Some((_, owl)), Some((_, sam))) = (&state.owl, &state.sam2) else { return Err("the Describe models did not load".into()) };
+    let (owl_enc, sam_enc) = {
+        let _busy = Flag::raise(&shared.encoding);
+        (owl.encode(&input.rgb, input.w, input.h)?, sam.encode(&input.rgb, input.w, input.h)?)
+    };
+    let p = lcc_segment::describe::describe(owl, &owl_enc, sam, &sam_enc, text, &Default::default())?;
+    log::info!("Describe detail pass ({}×{}) in {:?}", input.w, input.h, t.elapsed());
+    Ok(p.map(|p| SegMask::from_logits_in(lcc_segment::SAM2_MASK_SIDE, &p.logits, region)))
+}
+
+/// Object clicks (and their detail passes) with SAM 2.1; Describe on the OWLv2 finder and SAM 2.1.
 fn sam2_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
     let side = lcc_segment::SAM2_MASK_SIDE;
     let encode = |m: &Sam2, input: &Input| -> Result<Sam2Encoded, Failure> {
@@ -510,7 +603,10 @@ fn sam2_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placem
     };
     let kind = std::mem::replace(&mut job.kind, Kind::Prepare);
     if let Kind::Detail { prompt, region } = kind {
-        let Prompt::Clicks(clicks) = prompt else { return Err("Describe masks need the SAM 3 model".into()) };
+        let clicks = match prompt {
+            Prompt::Clicks(clicks) => clicks,
+            Prompt::Text(text) => return describe_detail(state, shared, job, &text, region, placement),
+        };
         let (rw, rh) = (region[2] - region[0], region[3] - region[1]);
         if !(rw > 0.0 && rh > 0.0) {
             return Ok(None);
@@ -533,8 +629,8 @@ fn sam2_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placem
         let p = m.segment_clicks(&enc, &inside)?;
         return Ok(Some(SegMask::from_logits_in(side, &p.logits, region)));
     }
-    if let Kind::Text(_) = kind {
-        return Err("Describe masks need the SAM 3 model".into());
+    if let Kind::Text(text) = kind {
+        return describe(state, shared, job, &text, placement);
     }
     sam2_model(state, shared, &job.dir, placement)?;
     if state.sam2_cache.as_ref().is_none_or(|(k, _)| *k != job.key) {
@@ -931,7 +1027,7 @@ mod tests {
     fn job(tag: Tag, reply: &mpsc::Sender<Outcome>) -> Job {
         // an empty folder: loading fails with an error (no model files)
         let dir = std::env::temp_dir().join(format!("lc-sam3-worker-none-{}", std::process::id()));
-        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone(), cancel: None, low: false }
+        Job { dir, detector: None, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone(), cancel: None, low: false }
     }
 
     /// OneSlips 9bb601286 (test notes 2026-10-25 note 6): a request the user makes is taken before the background work

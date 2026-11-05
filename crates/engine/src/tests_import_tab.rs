@@ -172,3 +172,70 @@ fn finishing_runs_the_ai_stages_and_notes_a_missing_model() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn kept_plan(s: &mut Session) -> Option<crate::finishing::FinishPlan> {
+    let bytes = s.library.as_mut()?.files.read(crate::finishing::FILE).ok()??;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn wait_for(s: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !done(s) {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// An import quit part-way through finishing (its previews not all built) is kept in the library
+/// and taken up when the library opens again; once done it is forgotten (ported from OneSlips'
+/// LR-IMP-WINDOW). A damaged plan file is left alone, never a failed open.
+#[test]
+fn an_unfinished_import_is_taken_up_after_a_restart() {
+    let dir = temp_dir("finish-restart");
+    let (lib, photos) = (dir.join("lib"), dir.join("photos"));
+    std::fs::create_dir_all(&photos).unwrap();
+    for i in 0..3u8 {
+        png(&photos.join(format!("p{i}.png")), i.wrapping_mul(60));
+    }
+    let ids: Vec<u64> = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let r = s.execute("library.import", &json!({"paths": [photos.to_string_lossy()]})).unwrap();
+        let ids: Vec<u64> = r["imported"].as_array().unwrap().iter().filter_map(serde_json::Value::as_u64).collect();
+        assert_eq!(ids.len(), 3, "{r}");
+        s.execute("library.finishImport", &json!({"ids": ids, "previews": "standard"})).unwrap();
+        let plan = kept_plan(&mut s).expect("the finish is kept in the library");
+        assert_eq!((plan.ids.len(), plan.previews.as_str()), (3, "standard"), "{plan:?}");
+        // the app quits before its frame loop saw the finish end
+        wait_for(&mut s, "the preview build", |s| s.preview_build.as_ref().is_some_and(|b| b.finished.load(std::sync::atomic::Ordering::Relaxed)));
+        s.close_library().unwrap();
+        ids
+    };
+    {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let mut kept = s.finish_pending.as_ref().map(|p| p.ids.clone()).expect("taken up after the restart");
+        kept.sort_unstable();
+        let mut want = ids.clone();
+        want.sort_unstable();
+        assert_eq!(kept, want);
+        assert!(s.finishing_tick(), "the finish is at work again");
+        assert!(s.preview_build.is_some(), "its previews are being built");
+        wait_for(&mut s, "the finish", |s| !s.finishing_tick());
+        assert!(kept_plan(&mut s).is_some_and(|p| p.ids.is_empty()), "done: forgotten");
+        s.close_library().unwrap();
+    }
+    {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        assert!(s.finish_pending.is_none(), "nothing left to take up");
+        s.library.as_mut().unwrap().files.write_atomic(crate::finishing::FILE, b"{not json").unwrap();
+        s.close_library().unwrap();
+    }
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    assert!(s.finish_pending.is_none() && !s.finishing_tick(), "a damaged plan is no plan");
+    assert_eq!(s.library.as_mut().unwrap().files.read(crate::finishing::FILE).unwrap().as_deref(), Some(&b"{not json"[..]), "and left alone");
+    s.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

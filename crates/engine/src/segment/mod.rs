@@ -1,5 +1,7 @@
-//! AI masks: Object (clicks) and Describe (text) selections computed with SAM 3
-//! (`lcc-segment`, cargo feature `sam`; the desktop app enables it).
+//! AI masks: Object (clicks) and Describe (text) selections computed with SAM 3, or with the
+//! openly licensed models when it isn't installed (Object: SAM 2.1; Describe: the OWLv2 object
+//! finder's boxes segmented by SAM 2.1) (`lcc-segment`, cargo feature `sam`; the desktop app
+//! enables it).
 //!
 //! **Nothing requires the model.** It is not part of the app (SAM License); the user
 //! downloads it when they first use an AI mask and agree to (`segment.model.download`), or
@@ -514,15 +516,23 @@ impl Session {
         reply: std::sync::mpsc::Sender<worker::Outcome>,
         region: Option<[f64; 4]>,
     ) -> Result<worker::Job, String> {
-        // Describe (text) needs SAM 3; Object clicks use the model the user chose
+        // Describe (text) runs on SAM 3, else on the OWLv2 finder with SAM 2.1; Object clicks use the model the user
+        // chose
         let text = matches!(&kind, worker::Kind::Text(_) | worker::Kind::Detail { prompt: Prompt::Text(_), .. });
         let concept = matches!(&kind, worker::Kind::Learn { .. } | worker::Kind::Find { .. });
+        let mut detector = None;
         let dir = if let worker::Kind::Faces { face, .. } | worker::Kind::People { face, .. } = &kind {
             face.clone()
         } else if concept {
             self.segmenter.require_sam2().map_err(|e| e.to_string())?
         } else if text {
-            self.segmenter.model_dir()?
+            match self.segmenter.describe_dir()? {
+                models::DescribeModel::Sam3(dir) => dir,
+                models::DescribeModel::Open { detector: d, sam2 } => {
+                    detector = Some(d);
+                    sam2
+                }
+            }
         } else {
             self.segmenter.object_dir()?
         };
@@ -555,6 +565,7 @@ impl Session {
         };
         Ok(worker::Job {
             dir,
+            detector,
             key: if region.is_some() { 0 } else { key },
             render: Some(render),
             missing,
@@ -782,7 +793,7 @@ impl Session {
     /// Segment everything `text` describes on photo `id`, waiting for the model; `Ok(None)`
     /// when nothing matches.
     pub fn segment_text(&mut self, id: PhotoId, text: &str) -> Result<Option<SegMask>, String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.describe_dir()?;
         let text = text.trim();
         if text.is_empty() {
             return Err("describe what to select".into());
@@ -840,7 +851,7 @@ impl Session {
     /// Background mode: queue a Describe selection; the mask (or component, combined by `op`
     /// into mask `mask`) is created by [`Session::segment_poll`] when something matches.
     pub(crate) fn segment_text_later(&mut self, id: PhotoId, mask: Option<u32>, op: &str, name: Option<String>, text: &str) -> Result<(), String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.describe_dir()?;
         let text = text.trim();
         if text.is_empty() {
             return Err("describe what to select".into());
@@ -864,7 +875,7 @@ impl Session {
     /// refine (no selection yet, or it is most of the photo) or a pass is running already.
     pub fn segment_detail(&mut self, id: PhotoId, mask: u32, comp: usize) -> Result<bool, String> {
         if self.segmenter.object_dir().is_err() {
-            self.segmenter.model_dir()?;
+            self.segmenter.describe_dir()?;
         }
         let d = self.develop_of(id).ok_or("no such photo")?;
         let shape = d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(comp)).map(|c| c.shape.clone()).ok_or("no such mask")?;
@@ -922,7 +933,11 @@ impl Session {
         if todo.is_empty() {
             return Ok(0);
         }
-        if todo.iter().any(|(_, _, sh)| !matches!(sh, MaskShape::People { .. })) {
+        // each kind needs its own models: Describe SAM 3 or the open pair, Object the model the user chose
+        if todo.iter().any(|(_, _, sh)| matches!(sh, MaskShape::Prompt { .. })) {
+            self.segmenter.describe_dir()?;
+        }
+        if todo.iter().any(|(_, _, sh)| !matches!(sh, MaskShape::People { .. } | MaskShape::Prompt { .. })) {
             self.segmenter.model_dir()?;
         }
         #[cfg(feature = "sam")]

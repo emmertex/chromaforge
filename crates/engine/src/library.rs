@@ -116,8 +116,8 @@ pub struct Library {
     /// The activity-stack row of the background compaction in flight (issue #448): held exactly
     /// while [`Journal::snapshot_running`], by [`Session::sync_compaction_row`].
     compaction_row: Option<crate::activity::TaskGuard>,
-    /// presets.json, view.json, prefs.json.
-    files: Box<dyn Store>,
+    /// presets.json, view.json, prefs.json (and the unfinished import, [`crate::finishing`]).
+    pub(crate) files: Box<dyn Store>,
     /// What happened when the catalog was loaded.
     pub report: LoadReport,
     /// Last persistence error (shown by the UI; ops stay pending and are retried).
@@ -876,6 +876,8 @@ impl Session {
         if on_disk {
             crate::cmd::previews::refresh_stale_smart_previews(self);
         }
+        // an import still being finished when the app closed picks up where it stopped
+        self.load_finishing();
         self.library_identity = std::sync::Arc::new(());
         Ok(())
     }
@@ -1424,6 +1426,22 @@ impl Session {
     /// Optimise the catalog: its store rewritten, indexes rebuilt, compacted.
     pub fn optimize_catalog(&mut self) -> Result<lcc_catalog::library::OptimizeReport> {
         self.with_catalog_journal(|j, c| j.optimize(c))
+    }
+
+    /// Whether quitting should back the catalog up: its schedule says one is due and something
+    /// changed since the last backup (ops waiting to be written count as a change). A library
+    /// opened, looked through and closed again is not backed up, and its user isn't asked to.
+    pub fn catalog_backup_wanted(&self) -> bool {
+        if self.catalog_dir().is_none() {
+            return false;
+        }
+        let settings = self.catalog_settings();
+        let now = lcc_catalog::library::now_secs();
+        if !self.pending_log.is_empty() || self.interaction.is_some() {
+            return settings.backup_due(now);
+        }
+        let mark = self.library.as_ref().and_then(|l| l.journal.backup_mark().ok());
+        settings.backup_wanted(now, mark.as_deref())
     }
 
     /// The exit-time backup: when the catalog's schedule says one is due (with the integrity

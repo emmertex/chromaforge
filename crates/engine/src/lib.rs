@@ -62,6 +62,7 @@ mod faces_index;
 mod faces_worker;
 pub mod files;
 pub mod filter_plugins;
+pub mod finishing;
 #[cfg(not(target_arch = "wasm32"))]
 mod focus_scan;
 pub mod folder_watch;
@@ -616,6 +617,10 @@ pub struct Session {
     /// known). The background preparation builds standard previews at least this big, so the
     /// loupe can use them.
     pub loupe_edge: usize,
+    /// Finishing an import, kept in the library until it is done ([`finishing`]).
+    pub finishing: Option<finishing::Finishing>,
+    /// An unfinished plan the library kept, taken up by the next [`Session::finishing_tick`].
+    pub finish_pending: Option<finishing::FinishPlan>,
     /// The camera sensor map build or batch Remove Dust running in the background, or the last one.
     pub sensor_job: Option<std::sync::Arc<cmd::sensor::SensorJob>>,
     /// The preview cache drive's free space as last looked up: (when, cache folder, bytes).
@@ -853,6 +858,8 @@ impl Session {
             preview_build: None,
             prep: Default::default(),
             loupe_edge: 0,
+            finishing: None,
+            finish_pending: None,
             cache_drive_free: std::sync::Mutex::new(None),
             slideshow_export: None,
             sensor_job: None,

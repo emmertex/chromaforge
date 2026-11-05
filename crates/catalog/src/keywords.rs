@@ -1873,13 +1873,14 @@ impl KeywordIndex {
                 list.dedup();
             }
         }
-        // (what `is_under` matches: the keyword itself, and each level path above it; each spelling
-        // once, the first found winning)
+        // (what `is_under` matches: the keyword itself, and each level path above it, down to the
+        // levels the tree keeps; each spelling once, the first found winning. Every level of a keyword
+        // thousands deep was a copy of most of it each: gigabytes for one keyword.)
         let listed = cat.keyword_list.values().map(|l| &l.path);
         let mut done = std::collections::HashSet::new();
         for x in listed.chain(library.iter().flat_map(|kws| kws.iter())).filter(|x| done.insert(x.as_str())) {
             let lower = x.to_lowercase();
-            let ends = lower.match_indices(SEP).map(|(i, _)| i).chain(std::iter::once(lower.len()));
+            let ends = lower.match_indices(SEP).map(|(i, _)| i).take(MAX_TREE_LEVELS).chain(std::iter::once(lower.len()));
             for end in ends {
                 if let Some(above) = lower.get(..end) {
                     ix.containing.entry(above.to_string()).or_insert_with(|| x.clone());
