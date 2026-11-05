@@ -1904,5 +1904,6 @@
   "{} selected": "已選取 {} 張",
   "{} wants to sync its library “{}” with this library.": "{} 想將其圖庫「{}」與此圖庫同步。",
   "‹ Library": "‹ 圖庫",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖動以拉直，⇧G 引導式垂直，變換時顯示格線。"
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖動以拉直，⇧G 引導式垂直，變換時顯示格線。",
+  "Country Code": "國家代碼"
 }

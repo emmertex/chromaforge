@@ -369,6 +369,7 @@ mod geocoding {
             meta.city = pl.city.clone();
             meta.state = pl.state.clone();
             meta.country = pl.country.clone();
+            meta.country_code = pl.iso.clone();
             if meta != ph.meta {
                 ops.push(Op::SetMeta { id, meta: Box::new(meta) });
             }
@@ -400,6 +401,7 @@ fn apply_given(s: &mut crate::Session, p: &Value) -> Result<Value> {
         meta.city = t("city");
         meta.state = t("state");
         meta.country = t("country");
+        meta.country_code = t("countryCode");
         if meta != ph.meta {
             ops.push(Op::SetMeta { id, meta: Box::new(meta) });
         }
@@ -441,7 +443,7 @@ pub fn specs() -> Vec<CommandSpec> {
     v.extend([
         cmd!(query "map.geocodeStatus", "Reverse Geocoding Status", [], None, "{dataset?: folder} → {offline: {downloaded, bytes, path, attribution}, online: {endpoint, attribution, rateLimit}}", always, geocoding::status),
         cmd!(query "map.geonamesDownload", "Download Place Names", [], None, "{consent: true — contacts download.geonames.org, dataset?: folder} → {places, path, attribution} — the offline GeoNames cities list (CC-BY 4.0) for reverse geocoding", always, geocoding::download),
-        cmd!("map.reverseGeocode", "Reverse Geocode", [], None, "{ids?, provider?: offline (default; needs map.geonamesDownload) | online (Nominatim-compatible, needs consent: true) | given (with places: [{id, sublocation, city, state, country}]), endpoint?, overwrite?: bool (also photos that have location fields), dryRun?} → {looked, found, photos: [{id, place: {sublocation, city, state, country, iso}}], attribution} — fills Sublocation/City/State/Country from GPS; one undo step", has_selection, geocoding::reverse),
+        cmd!("map.reverseGeocode", "Reverse Geocode", [], None, "{ids?, provider?: offline (default; needs map.geonamesDownload) | online (Nominatim-compatible, needs consent: true) | given (with places: [{id, sublocation, city, state, country, countryCode}]), endpoint?, overwrite?: bool (also photos that have location fields), dryRun?} → {looked, found, photos: [{id, place: {sublocation, city, state, country, iso}}], attribution} — fills Sublocation/City/State/Country from GPS; one undo step", has_selection, geocoding::reverse),
     ]);
     v
 }
@@ -546,12 +548,32 @@ mod tests {
         let r = s.execute("map.reverseGeocode", &json!({"ids": [ids[0].0, ids[1].0], "dataset": d, "overwrite": true})).unwrap();
         assert_eq!(r["found"], 1);
         let m = &s.catalog.photo(ids[0]).unwrap().meta;
-        assert_eq!((m.city.as_str(), m.country.as_str()), ("Paris", "France"));
+        assert_eq!((m.city.as_str(), m.country.as_str(), m.country_code.as_str()), ("Paris", "France", "FR"));
         // online without consent: refused before anything is sent
         let e = s.execute("map.reverseGeocode", &json!({"ids": [ids[0].0], "provider": "online", "overwrite": true})).unwrap_err();
         assert!(e.to_string().contains("consent"), "{e}");
         assert!(s.execute("map.geonamesDownload", &json!({"dataset": d})).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The UI's background online lookups come back as `provider: "given"`; their ISO country code
+    /// lands in the catalog like the place names (issue #784).
+    #[test]
+    fn reverse_geocode_given_applies_country_code() {
+        let (mut s, ids) = session_with(1);
+        s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 48.86, "lon": 2.34})).unwrap();
+        let r = s
+            .execute(
+                "map.reverseGeocode",
+                &json!({"provider": "given", "places": [{"id": ids[0].0, "sublocation": "Louvre", "city": "Paris", "state": "Île-de-France", "country": "France", "countryCode": "FR"}]}),
+            )
+            .unwrap();
+        assert_eq!(r["changed"], 1);
+        let m = &s.catalog.photo(ids[0]).unwrap().meta;
+        assert_eq!(
+            (m.location.as_str(), m.city.as_str(), m.country.as_str(), m.country_code.as_str()),
+            ("Louvre", "Paris", "France", "FR")
+        );
     }
 
     /// A photo inside a private saved location is exported without GPS or location fields; one

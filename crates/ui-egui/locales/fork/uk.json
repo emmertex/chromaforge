@@ -1656,5 +1656,6 @@
   "{} photos updated, {} copies": "Оновлено фото: {}, копій: {}",
   "{} selected": "Вибрано: {}",
   "{} wants to sync its library “{}” with this library.": "{} пропонує синхронізувати свою бібліотеку «{}» з цією бібліотекою.",
-  "‹ Library": "‹ Бібліотека"
+  "‹ Library": "‹ Бібліотека",
+  "Country Code": "Код країни"
 }

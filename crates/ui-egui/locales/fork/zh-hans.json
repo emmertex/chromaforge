@@ -1827,5 +1827,6 @@
   "{} selected": "已选择 {} 张",
   "{} wants to sync its library “{}” with this library.": "{} 想将其图库“{}”与此图库同步。",
   "‹ Library": "‹ 图库",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。"
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。",
+  "Country Code": "国家代码"
 }

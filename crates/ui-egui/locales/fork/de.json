@@ -1756,5 +1756,6 @@
   "{} photos updated, {} copies": "{} Fotos aktualisiert, {} Kopien",
   "{} selected": "{} ausgewählt",
   "{} wants to sync its library “{}” with this library.": "{} möchte seine Bibliothek „{}“ mit dieser Bibliothek synchronisieren.",
-  "‹ Library": "‹ Bibliothek"
+  "‹ Library": "‹ Bibliothek",
+  "Country Code": "Ländercode"
 }
