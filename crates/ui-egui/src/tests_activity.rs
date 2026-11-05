@@ -891,7 +891,12 @@ fn a_wait_is_translated_around_its_names() {
     crate::i18n::set_language(crate::i18n::Locale::En);
     assert!(header.iter().any(|t| t == "Warten, bis Converter fertig ist (Prog)"), "{header:?}");
     assert!(list.iter().any(|t| t.contains("Die Ergebnisse kommen zurück, wenn Converter geschlossen wird")), "{list:?}");
+    // the language is back to English: the row's text follows it around the names that stay
+    let id = g.id();
     drop(g);
+    h.step();
+    h.step();
+    assert!(!has(&h, &format!("activity:row:{id}")), "the wait row goes with the wait");
 }
 
 /// Nothing changed since the last backup: quitting neither asks for a backup nor makes one, even

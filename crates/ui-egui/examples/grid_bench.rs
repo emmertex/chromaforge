@@ -88,7 +88,7 @@ fn library(n: usize, local: bool) -> Session {
     }
     if local {
         s.source = LibrarySource::Folder;
-        s.browse = Some(Browse { path: ROOT.into(), subfolders: true });
+        s.browse = Some(Browse { path: ROOT.into(), subfolders: true, not_imported: false });
     }
     s
 }
