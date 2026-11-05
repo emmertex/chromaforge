@@ -1360,13 +1360,19 @@ fn gpu_card_rows(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     row(ui, t, crate::i18n::tr("Second graphics card"), |ui| {
         let off = crate::i18n::tr("Off").to_string();
+        // Automatic names the card it uses once that card is set up (short: the hint below says
+        // what it does, so the choice fits a small Settings window)
+        let auto_now = match gpu::helper_status() {
+            ("ready", Some(name)) => format!("{auto} ({name})"),
+            _ => auto.clone(),
+        };
         let current = match app.ui.settings.gpu_helper.as_str() {
-            "" => auto.clone(),
+            "" => auto_now.clone(),
             "off" => off.clone(),
             k => name_of(k).unwrap_or_else(|| auto.clone()),
         };
         let combo = crate::widgets::combo_box("settingsGpuHelper").selected_text(current).width(260.0).show_ui(ui, |ui| {
-            let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, String::new(), auto.as_str());
+            let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, String::new(), auto_now.as_str());
             register(ui.ctx(), "button:settingsGpuHelper-auto", r.rect);
             let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, "off".to_string(), off.as_str());
             register(ui.ctx(), "button:settingsGpuHelper-off", r.rect);

@@ -2357,6 +2357,7 @@ impl PreparedExport {
         let check = || if stop() { Err(CANCELLED.to_string()) } else { Ok(()) };
         let file_name = self.file_name;
         let mix = self.mix;
+        let gpu = self.gpu;
         match self.work {
             Work::Video(w) => {
                 let out = crate::export_video::run(*w)?;
@@ -2433,6 +2434,18 @@ impl PreparedExport {
                                 eprintln!("  export: the GPU is busy: rendering on the processor");
                             }
                             lcc_gpu::on_cpu(renders)
+                        }
+                    }
+                } else if gpu && two_cards() {
+                    // two cards: the photo waits for whichever has room and would finish it
+                    // soonest, holding that card's turn for both its renditions (one card: as
+                    // before, each render queues at the card after its plan)
+                    match lcc_gpu::wait_batch_turn_any(src_px, out_px, &|| stop() || lcc_gpu::shutting_down()) {
+                        Some(_turn) => renders(),
+                        // no GPU to wait for (the renders go to the processor by themselves), or cancelled
+                        None => {
+                            check()?;
+                            renders()
                         }
                     }
                 } else if one_turn {
@@ -2827,11 +2840,33 @@ pub fn export_parallelism(n: usize) -> usize {
     if cfg!(target_arch = "wasm32") {
         return 1;
     }
-    let lanes = export_lanes_override().unwrap_or_else(|| {
+    let env = lcc_brand::env("EXPORT_LANES").and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n > 0);
+    let set = Some(LANES.load(std::sync::atomic::Ordering::Relaxed)).filter(|n| *n > 0);
+    let jobs = if two_cards() { lcc_gpu::batch_jobs_per_card() } else { (0, 0) };
+    let lanes = env.or(set.map(|l| lanes_for_two_cards(l, jobs))).unwrap_or_else(|| {
         let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
-        (cores / 2).clamp(1, 12)
+        auto_lanes(cores, jobs.1)
     });
     lanes.clamp(1, MAX_EXPORT_LANES).min(n.max(1))
+}
+
+/// The lanes for `set` lanes chosen on one card ([`set_export_lanes`], from Test my machine) when
+/// two cards work: at least the turns both cards give out at once plus one, so a small setting
+/// doesn't keep every photo on the second card (`<PREFIX>_EXPORT_LANES` still means exactly that).
+fn lanes_for_two_cards(set: usize, jobs: (usize, usize)) -> usize {
+    if jobs.1 == 0 { set } else { set.max(jobs.0.saturating_add(jobs.1).saturating_add(1)) }
+}
+
+/// The automatic lanes on a computer with `cores` threads whose second graphics card takes
+/// `helper_jobs` renders at once: half the cores, up to 12, plus the second card's, so it has
+/// photos to take while the others decode and encode (memory still caps them).
+fn auto_lanes(cores: usize, helper_jobs: usize) -> usize {
+    (cores / 2).clamp(1, 12).saturating_add(helper_jobs).min(MAX_EXPORT_LANES)
+}
+
+/// Exports use two graphics cards now: GPU export is on and the second card is ready.
+fn two_cards() -> bool {
+    export_gpu() && lcc_gpu::batch_cards() >= 2
 }
 
 /// The most photos an export renders side by side, whatever is asked.
@@ -3274,6 +3309,23 @@ impl<'a> Placer<'a> {
             Err(err) => self.out.push(json!({"photo": photo.0, "file": file, "error": err})),
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests_two_cards {
+    // With a second card, the automatic lanes grow by the renders it takes at once (one card: as
+    // before), and a lanes setting made on one card is raised so both cards get photos
+    #[test]
+    fn a_second_card_gets_lanes_of_its_own() {
+        assert_eq!(super::auto_lanes(16, 0), 8);
+        assert_eq!(super::auto_lanes(16, 4), 12);
+        assert_eq!(super::auto_lanes(1, 0), 1);
+        assert!(super::auto_lanes(usize::MAX, usize::MAX) <= super::MAX_EXPORT_LANES);
+        assert_eq!(super::lanes_for_two_cards(2, (4, 0)), 2, "one card: the setting as it is");
+        assert_eq!(super::lanes_for_two_cards(2, (1, 4)), 6, "both cards' turns plus one");
+        assert_eq!(super::lanes_for_two_cards(10, (1, 4)), 10, "never fewer than set");
+        assert_eq!(super::lanes_for_two_cards(usize::MAX, (usize::MAX, usize::MAX)), usize::MAX);
     }
 }
 

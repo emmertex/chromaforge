@@ -1766,6 +1766,24 @@ fn develop_image(
     (rendered, fallback, None)
 }
 
+/// Run `f`, the renders of one photo made ahead of the user (a source of `src_px` pixels, results
+/// of at most `out_px`; Build Previews, the background preparation, the import's previews), as
+/// batch work: they wait for a turn on whichever graphics card has room and would finish them
+/// soonest ([`lcc_gpu::wait_batch_turn_any`]: with a second card, both cards get photos; the
+/// editing card only while the interface is idle, behind the photo on screen) and all run on that
+/// card. Without a GPU (or while the app closes) they render on the processor. A panic inside `f`
+/// is its error (`what` names the work); the thread's routing is restored whatever happens.
+pub fn background_photo<R>(what: &str, src_px: usize, out_px: usize, f: impl FnOnce() -> R) -> Result<R, String> {
+    lcc_gpu::as_batch(|| match lcc_gpu::wait_batch_turn_any(src_px, out_px, &lcc_gpu::shutting_down) {
+        Some(turn) => {
+            let r = crate::guard::catch(what, f);
+            drop(turn);
+            r
+        }
+        None => lcc_gpu::on_cpu(|| crate::guard::catch(what, f)),
+    })
+}
+
 /// Where a [`QuickJob`]'s stand-in image came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

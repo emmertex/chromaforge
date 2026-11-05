@@ -495,6 +495,33 @@ card (`lcc_gpu::ai_adapter`; `ai_card()` says which). Each AI device is made onc
 alone. Models that arrive later (SAM 2.1 / EoMT masks, MediaPipe people) should make their device
 through `ai_adapter` too. Not ported from OneSlips' DUAL-GPU-5: one denoise photo per card at once.
 
+## Two graphics cards: who renders batch work
+
+Settings ▸ Performance ▸ Second graphics card (`app.gpu {helper}`; `<PREFIX>_GPU_HELPER` wins) sets
+up a device on another card (`helper.rs`). Thumbnails sent there (`lcc_gpu::prefer_helper`) and AI
+models (`ai_adapter`) use it whenever it is ready. Batch photos (exports, Build Previews, the
+background preparation, the import's previews) take a **turn per photo** on either card
+(`lcc_gpu::batch_turn_any` / `wait_batch_turn_any`), and the photo's renders run on that card:
+
+- Each card's gate (`gate.rs`) measures its batch speed (bytes of finished turns per busy second,
+  the recent past first), and a photo goes to the card whose running photos plus this one would
+  finish soonest, so both cards work in proportion to their speed (the second card on a tie).
+  Before this, every batch render went to the second card while it was ready and the editing card
+  sat idle.
+- The editing card yields to the interface once the desktop app tracks it
+  (`lcc_gpu::track_interaction`, `note_interaction` on every frame with input): batch turns there
+  only after ~1 s with no input and no view render, one job at a time while the second card
+  works, and a batch render already running there pauses between its submissions the moment a
+  slider, brush, pan or photo change starts (`batch.pauses` in `app.gpu`). The second card draws no
+  window: it never waits for the interface, and its default batch budget is 80 % of its memory
+  (55 % on the editing card).
+- 1:1 Build Previews runs two photos per card (`batch_lanes_hint(2)`); exports' automatic lanes
+  grow by the second card's jobs, and a lanes setting made on one card is raised to both cards'
+  turns plus one (`<PREFIX>_EXPORT_LANES` still means exactly that many). The CLI, MCP and tests
+  don't track the interface: there both cards simply share photos by speed.
+- `app.gpu` → `batch.cards`, `batch.rate {editing, helper}`, `batch.renders` (GPU renders so far by
+  card and kind of work) and `batch.interfaceBusy` show it working.
+
 ## Open items
 - WebGPU in the browser build (async init, single device per canvas).
 - Defringe and spot removal kernels; Sky/Subject heuristics (replaced by the segmenter in M12).
