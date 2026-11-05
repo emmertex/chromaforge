@@ -194,6 +194,32 @@ fn try_turn_on(helper: bool, bytes: u64) -> Option<BatchTurn> {
     gate::try_turn(bytes, vram, helper).map(|t| BatchTurn { _turn: Some(t), helper })
 }
 
+/// [`batch_turn_any`] on one card only: the second card (`helper`) or the card for editing, if it
+/// has a device and room now (an export told to use one card). `None`: no device there, or busy.
+pub fn try_batch_turn_on(helper: bool, src_px: usize, out_px: usize) -> Option<BatchTurn> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        try_turn_on(helper, turn_bytes(src_px, out_px))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (helper, src_px, out_px);
+        None
+    }
+}
+
+/// Whether the second graphics card is set up and takes work now. Never blocks.
+pub fn helper_ready() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        allowed() && helper::current().is_some()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
 /// A turn for a batch photo of `src_px` source and `out_px` output pixels on whichever card has
 /// room now and would finish it soonest: each card's photos running now plus this one, at the
 /// card's measured speed for batch work, so both cards work in proportion to their speed and a

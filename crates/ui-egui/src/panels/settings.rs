@@ -1395,6 +1395,33 @@ fn gpu_card_rows(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     });
 }
 
+/// Settings ▸ Performance ▸ Exports: which graphics cards exports use, shown when the computer has
+/// a second one (or the choice isn't the default): both, the card for editing only, or the second
+/// card only (to measure its speed).
+#[cfg(not(target_arch = "wasm32"))]
+fn export_cards_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    use lcc_engine::export::ExportCards;
+    let two = lcc_engine::gpu::adapters().iter().filter(|e| e.usable).count() >= 2;
+    let st = &mut app.ui.settings;
+    if st.export_cpu_only || (!two && st.export_cards == ExportCards::Both) {
+        return;
+    }
+    let opts = [
+        (ExportCards::Both, crate::i18n::tr("Both cards")),
+        (ExportCards::Editing, crate::i18n::tr("Card for editing only")),
+        (ExportCards::Second, crate::i18n::tr("Second card only")),
+    ];
+    row(ui, t, crate::i18n::tr("Graphics cards for exports"), |ui| {
+        choices(ui, "settingsExportCards", &opts, &mut st.export_cards);
+    });
+    let why = match st.export_cards {
+        ExportCards::Both => "Each photo goes to the card that will finish it sooner.",
+        ExportCards::Editing => "The second graphics card is left free for previews and thumbnails.",
+        ExportCards::Second => "To measure the second card's speed. If it stops, the card for editing takes over.",
+    };
+    hint(ui, t, crate::i18n::tr(why));
+}
+
 /// The largest thumbnail cache Custom… offers (1 TB).
 const MAX_CACHE_GB: u32 = 1024;
 
@@ -1441,6 +1468,8 @@ fn exports_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if check(ui, "settings.exportGpu", &mut gpu_exports, "Use the GPU for exports") {
         app.ui.settings.export_cpu_only = !gpu_exports;
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    export_cards_row(app, ui, t);
     row(ui, t, crate::i18n::tr("Test my machine"), |ui| {
         let running = crate::machine_test::running(app);
         let label = if running { crate::i18n::tr("Testing…") } else { crate::i18n::tr("Test my machine") };

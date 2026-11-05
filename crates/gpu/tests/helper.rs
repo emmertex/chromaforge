@@ -51,6 +51,19 @@ fn the_second_device_renders_alike_and_its_loss_leaves_the_editing_card() {
     assert_eq!(lcc_gpu::helper_usage().0, 1, "the turn is the second device's");
     drop(turn);
     assert_eq!(lcc_gpu::helper_usage().0, 0);
+    // a turn asked for on one card (an export set to one card) is that card's, and its renders run there
+    assert!(lcc_gpu::helper_ready());
+    for helper in [false, true] {
+        lcc_gpu::as_batch(|| {
+            let turn = lcc_gpu::try_batch_turn_on(helper, 900 * 600, 900 * 600).expect("a free turn on that card");
+            assert_eq!(turn.on_helper(), helper);
+            let before = lcc_gpu::thread_render_counts();
+            lcc_gpu::try_render(&src, &raw, &s, &req, None).expect("renders on its card");
+            let after = lcc_gpu::thread_render_counts();
+            let (b, a) = if helper { (before.helper_batch, after.helper_batch) } else { (before.editing_batch, after.editing_batch) };
+            assert_eq!(a, b + 1, "the photo rendered on the card it asked for (second card: {helper})");
+        });
+    }
 
     // both devices take batch photos: two cards take work, a photo at a time goes to each, and
     // each photo's renders run on its turn's card
