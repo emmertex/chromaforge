@@ -520,9 +520,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             let right = r.right();
             let cy = r.center().y;
 
-            // show / hide on hover (and always while hidden)
+            // the eye, always on the row: the mask's effect on / off, a quick before / after of
+            // that mask; O is the overlay's
             let mut eye_clicked = false;
-            if ui.rect_contains_pointer(r) || !m.visible {
+            {
                 let er = Rect::from_center_size(pos2(right - 14.0, cy), vec2(22.0, 22.0));
                 register(ui.ctx(), format!("maskVisible:{}", m.id), er);
                 let eye = ui.interact(er, egui::Id::new(("maskVisible", m.id)), Sense::click());
@@ -533,6 +534,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     if m.visible { Icon::Eye } else { Icon::EyeOff },
                     if eye.hovered() { t.text } else { t.text_dim },
                 );
+                let eye = eye.on_hover_text(crate::i18n::tr("The mask's effect on / off"));
                 if eye.clicked() {
                     eye_clicked = true;
                     let _ = app.run("mask.visible", json!({"id": m.id}));

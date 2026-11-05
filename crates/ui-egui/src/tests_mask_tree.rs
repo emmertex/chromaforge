@@ -131,3 +131,22 @@ fn only_the_selected_masks_branch_opens_by_itself() {
     assert_eq!(count(&h, "component:0"), 1);
     assert!(at(&h, "component:0").bottom() <= at(&h, &format!("mask:{second}")).top(), "under the first mask now");
 }
+
+#[test]
+fn the_eye_is_always_on_the_mask_row_and_switches_its_effect() {
+    let mut h = masking();
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5]}));
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 1.0}}));
+    let mid = masks(&h)[0].id;
+    // the pointer away from the list
+    let r = h.request("ui.move", json!({"x": 5.0, "y": 5.0}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert_eq!(count(&h, &format!("maskVisible:{mid}")), 1, "the eye shows without the pointer on the row");
+    let r = h.request("ui.clickWidget", json!({"id": format!("maskVisible:{mid}")}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(!masks(&h)[0].visible, "the eye turns the mask's effect off");
+    assert_eq!(masks(&h)[0].adjust.exposure, 1.0, "and keeps its settings");
+}
