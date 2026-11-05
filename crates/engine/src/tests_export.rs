@@ -2124,3 +2124,49 @@ fn a_fitted_decode_keeps_alpha_only_for_real_transparency() {
     assert_eq!((a.width, a.height), (img.width, img.height));
     assert!(a.data.iter().all(|&v| (0.0..=1.0).contains(&v)), "straight alpha stays in 0..1");
 }
+
+/// A JPEG whose main XMP packet names an Extended XMP packet holding a GPS position and a caption
+/// (written by apps that move long properties out of the main packet).
+fn jpeg_with_extended_gps() -> Vec<u8> {
+    const GUID: &str = "0123456789ABCDEF0123456789ABCDEF";
+    let pixels = [96u8; 12];
+    let image = lcc_codecs::EncodeImage::new(2, 2, 3, lcc_codecs::Samples::U8(&pixels));
+    let jpeg = lcc_codecs::encode_jpeg(&image, 90, lcc_codecs::ChromaSubsampling::S444, &Default::default()).unwrap();
+    let main = format!(
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" xmlns:xmpNote=\"http://ns.adobe.com/xmp/note/\" xmpNote:HasExtendedXMP=\"{GUID}\"/></rdf:RDF></x:xmpmeta>"
+    );
+    let ext = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" xmlns:exif=\"http://ns.adobe.com/exif/1.0/\" exif:GPSLatitude=\"51,30.0N\" exif:GPSLongitude=\"0,7.5W\"/></rdf:RDF></x:xmpmeta>";
+    let segment = |payload: Vec<u8>| {
+        let mut s = vec![0xff, 0xe1];
+        s.extend(((payload.len() + 2) as u16).to_be_bytes());
+        s.extend(payload);
+        s
+    };
+    let mut p = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+    p.extend(main.as_bytes());
+    let mut e = b"http://ns.adobe.com/xmp/extension/\0".to_vec();
+    e.extend(GUID.as_bytes());
+    e.extend((ext.len() as u32).to_be_bytes());
+    e.extend(0u32.to_be_bytes());
+    e.extend(ext.as_bytes());
+    let mut out = jpeg[..2].to_vec();
+    out.extend(segment(p));
+    out.extend(segment(e));
+    out.extend(&jpeg[2..]);
+    out
+}
+
+/// All Metadata lists the properties a JPEG keeps in its Extended XMP (issue #2581).
+#[test]
+fn all_metadata_lists_extended_xmp_properties() {
+    let dir = temp_dir("all-metadata-extended-xmp");
+    let path = dir.join("Extended.jpg");
+    std::fs::write(&path, jpeg_with_extended_gps()).unwrap();
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let id = session.catalog.photos().next().unwrap().id;
+    let all = session.execute("photo.allMetadata", &json!({"id": id.0})).unwrap();
+    let names: Vec<&str> = all["xmp"].as_array().unwrap().iter().filter_map(|r| r["name"].as_str()).collect();
+    assert!(names.contains(&"exif:GPSLatitude") && names.contains(&"exif:GPSLongitude"), "{names:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
