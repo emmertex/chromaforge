@@ -986,6 +986,23 @@ impl LccApp {
         self.ui.settings.compact_layout && !self.ui.modern.enabled
     }
 
+    /// The right panel's default width follows the layout (Compact: [`state::COMPACT_RIGHT_WIDTH`],
+    /// LAYOUT-DENSE, ported from OneSlips) while it is at the other layout's default; a width the
+    /// user dragged to stays.
+    fn follow_compact_width(&mut self, ctx: &egui::Context) {
+        let key = egui::Id::new("compact-right-width");
+        let now = self.compact();
+        let was = ctx.data(|d| d.get_temp::<bool>(key));
+        if was == Some(now) {
+            return;
+        }
+        ctx.data_mut(|d| d.insert_temp(key, now));
+        // (at launch only Compact moves it: Classic's default needs no change)
+        if was.is_some() || now {
+            self.ui.right_width = state::follow_compact_width(self.ui.right_width, now);
+        }
+    }
+
     pub fn new(mut session: Session, services: Services) -> Self {
         if cfg!(test) {
             // unit tests never open the file manager or start other programs
@@ -1971,6 +1988,7 @@ impl LccApp {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
         theme::set_compact(ctx, self.compact());
+        self.follow_compact_width(ctx);
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         if !self.styled {

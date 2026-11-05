@@ -948,6 +948,17 @@ impl PanelWidth {
 pub const LEFT_WIDTH: PanelWidth = PanelWidth { min: 200.0, default: 268.0, max: 480.0 };
 /// The right panel (Edit, Masking, Info, …).
 pub const RIGHT_WIDTH: PanelWidth = PanelWidth { min: 250.0, default: 270.0, max: 520.0 };
+/// The right panel's default width in the Compact layout (LAYOUT-DENSE, ported from OneSlips): the
+/// tool row stands in the panel, so it gets the old strip's 48 points, and the tracks are about as
+/// long as Lightroom's.
+pub const COMPACT_RIGHT_WIDTH: f32 = 318.0;
+
+/// The right panel's width `w` after the layout turned Compact (`compact`) or Classic: a width at
+/// the other layout's default moves to this one's, any other stays.
+pub fn follow_compact_width(w: f32, compact: bool) -> f32 {
+    let (from, to) = if compact { (RIGHT_WIDTH.default, COMPACT_RIGHT_WIDTH) } else { (COMPACT_RIGHT_WIDTH, RIGHT_WIDTH.default) };
+    if (w - from).abs() < 0.5 { to } else { w }
+}
 /// The Import tab's settings column (Import Settings, on the right of the browsed photos).
 pub const IMPORT_SETTINGS_WIDTH: PanelWidth = PanelWidth { min: 260.0, default: 330.0, max: 720.0 };
 /// The photo area the side panels always leave free (as far as their minimum widths allow).
