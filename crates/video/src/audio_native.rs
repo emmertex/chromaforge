@@ -161,7 +161,7 @@ impl Mp3 {
 enum Dec {
     /// ADTS framing (MPEG-TS) is stripped before decoding.
     Aac {
-        dec: filmcraft_aac::Decoder,
+        dec: Box<filmcraft_aac::Decoder>,
         adts: bool,
     },
     Opus(filmcraft_opus::Decoder),
@@ -252,7 +252,7 @@ impl Reader {
                     }
                     let a = t.audio().cloned().unwrap_or_default();
                     let dec = match t.codec() {
-                        Some(CodecConfig::Aac(c)) => filmcraft_aac::Decoder::new(&c.asc).ok().map(|dec| (Dec::Aac { dec, adts: false }, "aac")),
+                        Some(CodecConfig::Aac(c)) => filmcraft_aac::Decoder::new(&c.asc).ok().map(|dec| (Dec::Aac { dec: Box::new(dec), adts: false }, "aac")),
                         Some(CodecConfig::Opus(c)) => opus_from_mp4(c, a.channels).map(|d| (Dec::Opus(d), "opus")),
                         Some(CodecConfig::Ac3 { .. }) => Some((Dec::Ac3(Box::default()), "ac3")),
                         Some(CodecConfig::Eac3 { .. }) => Some((Dec::Ac3(Box::default()), "eac3")),
@@ -287,7 +287,7 @@ impl Reader {
                     }
                     let a = t.audio.clone().unwrap_or_default();
                     let dec = match &t.codec {
-                        Codec::Aac { asc } => filmcraft_aac::Decoder::new(asc).ok().map(|dec| (Dec::Aac { dec, adts: false }, "aac")),
+                        Codec::Aac { asc } => filmcraft_aac::Decoder::new(asc).ok().map(|dec| (Dec::Aac { dec: Box::new(dec), adts: false }, "aac")),
                         Codec::Opus { head } => filmcraft_opus::Decoder::new(head).ok().map(|mut d| {
                             // the codec delay is applied through the timestamps below
                             d.set_trim_pre_skip(false);
@@ -330,7 +330,7 @@ impl Reader {
                         let first = file.read_unit(&clip.src, stream, 0).map_err(|e| VideoError::Invalid(e.to_string()))?;
                         let h = filmcraft_aac::AdtsHeader::parse(&first).map_err(|e| VideoError::Invalid(format!("ADTS: {e}")))?;
                         let dec = filmcraft_aac::Decoder::from_adts(&h).map_err(|e| VideoError::Unsupported(format!("AAC: {e}")))?;
-                        (Dec::Aac { dec, adts: true }, "aac")
+                        (Dec::Aac { dec: Box::new(dec), adts: true }, "aac")
                     }
                     T::Eac3 => (Dec::Ac3(Box::default()), "eac3"),
                     T::MpegAudio => (Dec::Mp3(Box::new(Mp3::new())), "mp3"),
