@@ -10,10 +10,12 @@
 //! - On a narrow window the rail is icons only while a section is open. Back widens it to show the
 //!   names (and the search field); Back again closes Settings. A tap on an icon switches section.
 //!
-//! The twelve tabs of the old dialog become eight sections (General, Library, Import, Editing,
-//! Display & Speed, Sync, Shortcuts, Controls; Slideshow only in the Classic layout, which has that module).
-//! Each section shows the old tabs' own rows ([`crate::panels::settings::tab_body`]), so every
-//! setting keeps its control and its command.
+//! The rail's sections are the Settings window's own tabs ([`crate::panels::settings::TABS`]:
+//! General, Import, Folders, Performance, Display, Interface, Slideshow, Faces, Profiles, AI
+//! Denoise, AI Models, Generative Fill, Shortcuts, Controls, Connections, Sync), one section per
+//! tab, in the same order, so both presentations of Settings read the same (PR #830). Slideshow
+//! only shows in the Classic layout, which has that module. Each section shows its tab's own rows
+//! ([`crate::panels::settings::tab_body`]), so every setting keeps its control and its command.
 //!
 //! Own design.
 
@@ -40,7 +42,8 @@ const WINDOW_PAD: f32 = 16.0;
 /// The rows' widest, so a large window doesn't stretch them.
 const CONTENT_MAX: f32 = 820.0;
 
-/// A section: its key, name, icon, the old tabs it holds, and words a search finds it by.
+/// A section: its key, name, icon, the tab whose rows it shows, and words a search finds it by.
+/// The keys and labels are [`crate::panels::settings::TABS`]'s, in its order.
 struct Section {
     key: &'static str,
     label: &'static str,
@@ -54,10 +57,9 @@ const SECTIONS: &[Section] = &[
         key: "general",
         label: "General",
         icon: Icon::Gear,
-        tabs: &["general", "interface"],
-        words: "layout classic modern language library location open new startup culling auto advance confirm external editing photocraft editor appearance mode dark light font size sliders slider text pill filmstrip grid badges ratings flags wheel scroll info overlay loupe",
+        tabs: &["general"],
+        words: "language library location open new startup culling auto advance confirm external editing photocraft editor",
     },
-    Section { key: "library", label: "Library", icon: Icon::Folder, tabs: &["folders"], words: "folders watch polling new photos forget unchanged" },
     Section {
         key: "import",
         label: "Import",
@@ -65,13 +67,26 @@ const SECTIONS: &[Section] = &[
         tabs: &["import"],
         words: "raw defaults non-raw metadata preset xmp sidecars names cameras cards auto import watched folder copy album lens profiles database",
     },
+    Section { key: "folders", label: "Folders", icon: Icon::Folder, tabs: &["folders"], words: "folders watch polling new photos forget unchanged" },
     Section {
-        key: "editing",
-        label: "Editing",
-        icon: Icon::Sliders,
-        tabs: &["denoise", "faces", "profiles", "genfill"],
-        words: "ai denoise faces people recognition profiles hide camera body serial generative fill openai service api key consent",
+        key: "performance",
+        label: "Performance",
+        icon: Icon::Activity,
+        tabs: &["performance"],
+        words: "performance rendering preview size memory cache thumbnail clear smart previews gpu",
     },
+    Section { key: "display", label: "Display", icon: Icon::Monitor, tabs: &["display"], words: "monitor profile icc srgb screen" },
+    Section {
+        key: "interface",
+        label: "Interface",
+        icon: Icon::Palette,
+        tabs: &["interface"],
+        words: "layout classic modern appearance mode dark light font size sliders slider text pill filmstrip grid badges ratings flags wheel scroll info overlay loupe",
+    },
+    Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"], words: "slide duration fade playback export" },
+    Section { key: "faces", label: "Faces", icon: Icon::FaceBox, tabs: &["faces"], words: "faces people recognition" },
+    Section { key: "profiles", label: "Profiles", icon: Icon::ProfileGrid, tabs: &["profiles"], words: "profiles hide camera body serial" },
+    Section { key: "denoise", label: "AI Denoise", icon: Icon::Sparkle, tabs: &["denoise"], words: "ai denoise" },
     Section {
         key: "ai",
         label: "AI Models",
@@ -80,18 +95,11 @@ const SECTIONS: &[Section] = &[
         words: "ai models download sam sam3 sam2 eomt birefnet mediapipe denoise faces recognition masks object describe subject sky landscape people folder location licence",
     },
     Section {
-        key: "display",
-        label: "Display & Speed",
-        icon: Icon::Monitor,
-        tabs: &["display", "performance"],
-        words: "monitor profile icc srgb screen performance rendering preview size memory cache thumbnail clear smart previews gpu",
-    },
-    Section {
-        key: "sync",
-        label: "Sync",
-        icon: Icon::Cloud,
-        tabs: &["sync", "connections"],
-        words: "devices peers immich server api key connections keychain",
+        key: "genfill",
+        label: "Generative Fill",
+        icon: Icon::Object,
+        tabs: &["genfill"],
+        words: "generative fill openai service api key consent",
     },
     Section { key: "shortcuts", label: "Shortcuts", icon: Icon::Help, tabs: &["shortcuts"], words: "keyboard keymap keys" },
     Section {
@@ -101,7 +109,8 @@ const SECTIONS: &[Section] = &[
         tabs: &["controls"],
         words: "control surfaces hardware console dial dials knob keys keypad dialpad actions ring logi logitech mx creative loupedeck tactilebridge plugin pairing",
     },
-    Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"], words: "slide duration fade playback export" },
+    Section { key: "connections", label: "Connections", icon: Icon::Share, tabs: &["connections"], words: "connections keychain" },
+    Section { key: "sync", label: "Sync", icon: Icon::Cloud, tabs: &["sync"], words: "devices peers immich server api key" },
 ];
 
 /// Settings' own state between frames (kept in `LccApp::modern_sheets`).
@@ -125,15 +134,29 @@ fn shown(app: &LccApp, s: &Section) -> bool {
     s.key != "slideshow" || !crate::modern::on(app)
 }
 
-/// The section a tab (or a section's own key) belongs to: an old tab name (`app.settings
-/// {tab: "performance"}`) opens the section that now holds it.
-pub fn section_of(tab: &str) -> &'static str {
-    SECTIONS.iter().find(|s| s.key == tab || s.tabs.contains(&tab)).map_or("general", |s| s.key)
+/// A section name of an older build (a saved `ui.json` may still say `library` or `editing`)
+/// becomes the tab that took its rows over.
+fn legacy(tab: &str) -> &str {
+    match tab {
+        "library" => "folders",
+        "editing" => "denoise",
+        other => other,
+    }
 }
 
-/// Whether `tab` names a section or one of the old dialog's tabs.
+/// The section a tab (or a section's own key) belongs to: a tab name (`app.settings
+/// {tab: "performance"}`) opens its section. An older build's section name opens the tab that
+/// took its rows over.
+pub fn section_of(tab: &str) -> &'static str {
+    let asked = legacy(tab);
+    SECTIONS.iter().find(|s| s.key == asked || s.tabs.contains(&asked)).map_or("general", |s| s.key)
+}
+
+/// Whether `tab` names a section, one of the Settings window's tabs, or an older build's
+/// section name.
 pub fn known(tab: &str) -> bool {
-    SECTIONS.iter().any(|s| s.key == tab || s.tabs.contains(&tab))
+    let asked = legacy(tab);
+    SECTIONS.iter().any(|s| s.key == asked || s.tabs.contains(&asked))
 }
 
 /// The section after (`step` 1) or before (-1) `open` among those shown, wrapping around.
@@ -536,4 +559,19 @@ pub(crate) fn reveal(h: &mut crate::headless::Headless, id: &str) {
         }
     }
     panic!("{id} never came into view in Settings");
+}
+
+#[cfg(test)]
+mod tests {
+    /// Both presentations of Settings show the same categories, in the same order: the rail's
+    /// sections are the Settings window's tabs ([`crate::panels::settings::TABS`], PR #830).
+    #[test]
+    fn sections_match_the_settings_window_s_tabs() {
+        let tabs = crate::panels::settings::TABS;
+        assert_eq!(super::SECTIONS.len(), tabs.len(), "one section per tab");
+        for (s, (id, label)) in super::SECTIONS.iter().zip(tabs) {
+            assert_eq!((s.key, s.label), (*id, *label), "same key and name, in the tab row's order");
+            assert_eq!(s.tabs, &[*id], "the section shows exactly its tab's rows");
+        }
+    }
 }
