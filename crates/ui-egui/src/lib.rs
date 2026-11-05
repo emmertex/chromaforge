@@ -2666,6 +2666,16 @@ impl LccApp {
             let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
             self.toast(ctx, msg);
         }
+        // an older install's presets (the app under an earlier name, on this computer) join too, once
+        // each, with no step of the user's: File ▸ More Imports ▸ Import Presets from Older Installs
+        // asks again
+        if let Ok(r) = self.run("store.importOlderInstalls", serde_json::json!({})) {
+            let n: u64 = r["merged"].as_array().into_iter().flatten().map(|m| m["presets"].as_u64().unwrap_or(0)).sum();
+            if n > 0 {
+                let msg = crate::i18n::tr_format!("{n} presets from an older install were added.", n = n);
+                self.toast(ctx, msg);
+            }
+        }
     }
 
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).
