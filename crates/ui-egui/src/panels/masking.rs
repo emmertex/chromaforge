@@ -213,6 +213,17 @@ fn kind_label(s: &MaskShape) -> (&'static str, Icon) {
     (label, kind_icon(kind))
 }
 
+/// The sign before a component's row in the mask tree: + Add, − Subtract, ∩ Intersect; none on the
+/// first component, which starts the mask.
+pub(crate) fn component_op_sign(index: usize, op: lcc_develop::MaskOp) -> &'static str {
+    match op {
+        _ if index == 0 => "",
+        lcc_develop::MaskOp::Add => "+",
+        lcc_develop::MaskOp::Subtract => "−",
+        lcc_develop::MaskOp::Intersect => "∩",
+    }
+}
+
 const TILE_MAX: f32 = 68.0;
 const TILE_GAP: f32 = 6.0;
 /// Room left and right of a tile's label.
@@ -663,12 +674,20 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             },
                         );
 
-                        let op = match c.op {
-                            lcc_develop::MaskOp::Add => "",
-                            lcc_develop::MaskOp::Subtract => "− ",
-                            lcc_develop::MaskOp::Intersect => "∩ ",
-                        };
-                        let icon_r = Rect::from_min_size(r.min + vec2(5.0, 5.0), vec2(18.0, 18.0));
+                        // a branch of the tree: a line from the mask down to this row, then across to it
+                        let x0 = full_r.left() + 10.0;
+                        let branch = Stroke::new(1.0, t.button_border);
+                        ui.painter().line_segment([pos2(x0, full_r.top() - 2.0), pos2(x0, r.center().y)], branch);
+                        ui.painter().line_segment([pos2(x0, r.center().y), pos2(r.left(), r.center().y)], branch);
+                        // how the component combines, in a column of its own (the first one starts the mask)
+                        let opr = Rect::from_center_size(pos2(r.left() + 11.0, r.center().y), vec2(14.0, 14.0));
+                        let op = component_op_sign(i, c.op);
+                        if !op.is_empty() {
+                            register(ui.ctx(), format!("componentOp:{i}"), opr);
+                            ui.painter().text(opr.center(), Align2::CENTER_CENTER, op, t.semibold(13.0), t.text_label);
+                        }
+                        let icon_r = Rect::from_min_size(pos2(opr.right() + 3.0, r.top() + 5.0), vec2(18.0, 18.0));
+                        register(ui.ctx(), format!("componentIcon:{i}"), icon_r);
                         // the component's own thumbnail (made into a mask of its own)
                         let alone = lcc_develop::Mask {
                             components: vec![lcc_develop::MaskComponent { op: lcc_develop::MaskOp::Add, ..c.clone() }],
@@ -688,9 +707,16 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             None => paint(ui.painter(), icon_r.shrink(1.0), icon, if comp_sel { t.text } else { t.text_label }),
                         }
 
-                        let text = format!("{op}{label}{}", if c.invert { crate::i18n::tr(" (inverted)") } else { "" });
-                        let g = one_line(ui.painter(), &text, t.font(12.5), if comp_sel { t.text } else { t.text_dim }, r.width() - 28.0 - 52.0);
-                        let at = pos2(r.left() + 26.0, r.center().y - g.size().y / 2.0);
+                        let text = format!("{label}{}", if c.invert { crate::i18n::tr(" (inverted)") } else { "" });
+                        let text_x = icon_r.right() + 4.0;
+                        let g = one_line(
+                            ui.painter(),
+                            &text,
+                            t.font(12.5),
+                            if comp_sel { t.text } else { t.text_dim },
+                            (r.right() - 52.0 - text_x).max(10.0),
+                        );
+                        let at = pos2(text_x, r.center().y - g.size().y / 2.0);
                         ui.painter().galley(at, g, if comp_sel { t.text } else { t.text_dim });
 
                         // Bin icon next to the three dots
