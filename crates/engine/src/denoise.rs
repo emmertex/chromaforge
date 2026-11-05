@@ -56,7 +56,7 @@ const AUTO_LOOK: usize = 64;
 /// How long a look at the model settings is trusted.
 const SETTINGS_TTL: Duration = Duration::from_secs(2);
 /// Stack of the threads that run the model (the runtime recurses through its graph).
-const STACK: usize = 16 << 20;
+pub(crate) const STACK: usize = 16 << 20;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // the model
@@ -975,6 +975,8 @@ pub(crate) struct Settings {
     pub model: Option<String>,
     /// The installed model in use for finished pictures (JPEG, PNG, TIFF …); `None`: denoise is off for them.
     pub rgb_model: Option<String>,
+    /// The installed upscaler AI Super Resolution and AI Sharpen use (`Domain::RgbToRgb4x`); `None`: none is chosen.
+    pub upscale_model: Option<String>,
     /// Photos with a Denoise amount above 0 that are being looked at (active, selected) get their picture made without
     /// being asked (`None`: yes).
     pub auto: Option<bool>,
@@ -1006,6 +1008,7 @@ impl Settings {
         match domain {
             Domain::BayerToRgb => self.model.as_deref(),
             Domain::RgbToRgb => self.rgb_model.as_deref(),
+            Domain::RgbToRgb4x => self.upscale_model.as_deref(),
         }
     }
 
@@ -1013,12 +1016,13 @@ impl Settings {
         match domain {
             Domain::BayerToRgb => &mut self.model,
             Domain::RgbToRgb => &mut self.rgb_model,
+            Domain::RgbToRgb4x => &mut self.upscale_model,
         }
     }
 
     /// Is `id` the model in use for one kind of photo?
     pub fn chosen(&self, id: &str) -> bool {
-        self.model.as_deref() == Some(id) || self.rgb_model.as_deref() == Some(id)
+        [&self.model, &self.rgb_model, &self.upscale_model].iter().any(|m| m.as_deref() == Some(id))
     }
 
     pub fn cache_bytes(&self) -> u64 {
@@ -1726,6 +1730,8 @@ impl Session {
         match domain_of(p)? {
             Domain::BayerToRgb => self.denoise.active.as_ref(),
             Domain::RgbToRgb => self.denoise.active_rgb.as_ref(),
+            // no photo is of an upscaler's kind
+            Domain::RgbToRgb4x => None,
         }
     }
 

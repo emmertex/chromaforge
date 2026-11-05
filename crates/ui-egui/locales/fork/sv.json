@@ -1,4 +1,6 @@
 {
+  "AI Sharpen": "AI-skärpa",
+  "AI Super Resolution": "AI-superupplösning",
   "All Photographs": "Alla foton",
   "All masks shown · O to hide": "Alla masker visas · O döljer",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Gäller från nästa start. Om appen startar långsamt med GPU:n på, prova Vulkan: på vissa datorer förbereder det GPU:n mycket snabbare.",
@@ -21,6 +23,7 @@
   "Face Count": "Antal ansikten",
   "File format, colour space and bit depth: Settings → External Editing.": "Filformat, färgrymd och bitdjup: Inställningar → Extern redigering.",
   "Film recipe": "Filmrecept",
+  "Finer detail from the AI upscaler at the same size, as a new TIFF.": "Finare detaljer från AI-uppskalaren i samma storlek, som en ny TIFF.",
   "Graphics card for editing": "Grafikkort för redigering",
   "Graphics interface": "Grafikgränssnitt",
   "Height (pixels)": "Höjd (pixlar)",
@@ -59,6 +62,7 @@
   "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Dessa styr hur fotot ser ut på SDR-skärmar och i SDR-exporter. Slå på Förhandsvisa för SDR-skärm för att se dem.",
   "This mask's AI selection wasn't computed for this photo yet.": "Den här maskens AI-markering har inte beräknats för det här fotot än.",
   "Tone": "Ton",
+  "Twice the width and height, filled in by the AI upscaler, as a new TIFF.": "Dubbel bredd och höjd, ifylld av AI-uppskalaren, som en ny TIFF.",
   "Update AI Mask": "Uppdatera AI-mask",
   "Update All AI Masks": "Uppdatera alla AI-masker",
   "Use the Default Folder": "Använd standardmappen",

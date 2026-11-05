@@ -1,4 +1,6 @@
 {
+  "AI Sharpen": "Tekoälyterävöinti",
+  "AI Super Resolution": "Tekoälyn superresoluutio",
   "All Photographs": "Kaikki kuvat",
   "All masks shown · O to hide": "Kaikki maskit näkyvissä · O piilottaa",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Tulee voimaan seuraavalla käynnistyksellä. Jos sovellus käynnistyy hitaasti GPU päällä, kokeile Vulkania: joillakin tietokoneilla se valmistelee GPU:n paljon nopeammin.",
@@ -20,6 +22,7 @@
   "Face Count": "Kasvojen määrä",
   "File format, colour space and bit depth: Settings → External Editing.": "Tiedostomuoto, väriavaruus ja bittisyvyys: Asetukset → Ulkoinen muokkaus.",
   "Film recipe": "Filmiresepti",
+  "Finer detail from the AI upscaler at the same size, as a new TIFF.": "Tarkemmat yksityiskohdat tekoälyskaalaimelta samassa koossa, uutena TIFF-tiedostona.",
   "Graphics card for editing": "Näytönohjain muokkaukseen",
   "Graphics interface": "Grafiikkarajapinta",
   "Height (pixels)": "Korkeus (pikseliä)",
@@ -58,6 +61,7 @@
   "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Nämä määrittävät, miltä kuva näyttää SDR-näytöillä ja SDR-vienneissä. Ota Esikatselu SDR-näytölle käyttöön nähdäksesi ne.",
   "This mask's AI selection wasn't computed for this photo yet.": "Tämän maskin tekoälyvalintaa ei ole vielä laskettu tälle kuvalle.",
   "Tone": "Sävy",
+  "Twice the width and height, filled in by the AI upscaler, as a new TIFF.": "Kaksinkertainen leveys ja korkeus tekoälyskaalaimen täydentämänä, uutena TIFF-tiedostona.",
   "Update AI Mask": "Päivitä tekoälymaski",
   "Update All AI Masks": "Päivitä kaikki tekoälymaskit",
   "Use the Default Folder": "Käytä oletuskansiota",

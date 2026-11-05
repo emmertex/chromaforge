@@ -1,4 +1,6 @@
 {
+  "AI Sharpen": "Penajaman AI",
+  "AI Super Resolution": "Super Resolusi AI",
   "All Photographs": "Semua foto",
   "All masks shown · O to hide": "Semua masker ditampilkan · O untuk menyembunyikan",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Berlaku pada peluncuran berikutnya. Jika aplikasi lambat dimulai dengan GPU aktif, coba Vulkan: di beberapa komputer, Vulkan menyiapkan GPU jauh lebih cepat.",
@@ -21,6 +23,7 @@
   "File format, colour space and bit depth: Settings → External Editing.": "Format file, ruang warna, dan kedalaman bit: Pengaturan → Pengeditan eksternal.",
   "Film recipe": "Resep film",
   "Filters": "Filter",
+  "Finer detail from the AI upscaler at the same size, as a new TIFF.": "Detail lebih halus dari upscaler AI pada ukuran yang sama, sebagai TIFF baru.",
   "Graphics card for editing": "Kartu grafis untuk mengedit",
   "Graphics interface": "Antarmuka grafis",
   "Height (pixels)": "Tinggi (piksel)",
@@ -59,6 +62,7 @@
   "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Ini mengatur tampilan foto di layar SDR dan dalam ekspor SDR. Aktifkan Pratinjau untuk Layar SDR untuk melihatnya.",
   "This mask's AI selection wasn't computed for this photo yet.": "Pilihan AI masker ini belum dihitung untuk foto ini.",
   "Tone": "Nada",
+  "Twice the width and height, filled in by the AI upscaler, as a new TIFF.": "Lebar dan tinggi dua kali lipat, diisi oleh upscaler AI, sebagai TIFF baru.",
   "Update AI Mask": "Perbarui Masker AI",
   "Update All AI Masks": "Perbarui Semua Masker AI",
   "Use the Default Folder": "Gunakan Folder Default",

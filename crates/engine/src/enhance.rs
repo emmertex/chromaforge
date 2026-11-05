@@ -6,6 +6,13 @@
 //! - **Super Resolution** does the same and then doubles each side ([`lcc_merge::super_resolve`]); it also takes
 //!   non-raw photos (JPEG, TIFF, …), whose linear pixels it enlarges.
 //!
+//! - **AI Super Resolution** and **AI Sharpen** (adapted from upstream #3493) render the photo with its import
+//!   defaults (none of its edits) to 16-bit sRGB at full size, run it through the installed upscaler
+//!   (`Domain::RgbToRgb4x`, the `upscaleModel` slot of the denoise models folder) and write a 16-bit TIFF
+//!   (`<name>-Enhanced-SR.tif`): 2× or 4× across, or (AI Sharpen) the model's answer averaged back down to the
+//!   photo's own size. `enhance.superResolution {method: "ai"}` picks it; `method: "auto"` does when an upscaler is
+//!   chosen.
+//!
 //! The pixels are made on a worker thread ([`plan`] → [`EnhanceWork`], `Send`), with a row in the activity stack for
 //! the whole run; `enhance.pump` (called every frame by the app) writes and imports the finished ones. `wait: true`
 //! (scripts, CLI, MCP; always on the web) runs inline instead.
@@ -15,15 +22,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use lcc_catalog::{PhotoId, Source};
+use lcc_denoise::manifest::{DenoiserManifest, Domain};
+use lcc_denoise::run::{Control, MAX_PIXELS, Params, Scales, upscale_rgb};
+use lcc_develop::DevelopSettings;
+use lcc_pipeline::{DeepImage, DeepSamples, OutputDepth, OutputSpace, Quality, RenderRequest};
+use lcc_raster::Rgb32f;
 use serde_json::{Value, json};
 
 use crate::activity::{Cancel, TaskGuard};
+use crate::denoise::{Loader, RunOn, STACK, installed_models, read_settings};
+use crate::export::{ExportFormat, ExportOptions};
 use crate::{EngineError, Result, Session};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnhanceKind {
     RawDetails,
     SuperResolution,
+    /// The installed upscaler, 2× or 4× across.
+    AiSuperResolution(u8),
+    /// The installed upscaler's answer averaged back down to the photo's size.
+    AiSharpen,
 }
 
 impl EnhanceKind {
@@ -31,14 +49,123 @@ impl EnhanceKind {
         match self {
             EnhanceKind::RawDetails => "Raw Details",
             EnhanceKind::SuperResolution => "Super Resolution",
+            EnhanceKind::AiSuperResolution(_) => "AI Super Resolution",
+            EnhanceKind::AiSharpen => "AI Sharpen",
         }
     }
     fn suffix(self) -> &'static str {
         match self {
             EnhanceKind::RawDetails => "Enhanced-RD",
-            EnhanceKind::SuperResolution => "Enhanced-SR",
+            EnhanceKind::SuperResolution | EnhanceKind::AiSuperResolution(_) | EnhanceKind::AiSharpen => "Enhanced-SR",
         }
     }
+    /// The factor of an AI result over the photo (`None`: not an AI kind).
+    pub fn ai_factor(self) -> Option<usize> {
+        match self {
+            EnhanceKind::AiSuperResolution(f) => Some(usize::from(f)),
+            EnhanceKind::AiSharpen => Some(1),
+            _ => None,
+        }
+    }
+    fn extension(self) -> &'static str {
+        if self.ai_factor().is_some() { "tif" } else { "dng" }
+    }
+}
+
+/// The largest 16-bit sample.
+const U16_MAX: f32 = 65535.0;
+
+/// The installed upscaler an AI job runs, loaded on the job's thread, and what goes into it.
+#[derive(Clone)]
+struct AiPlan {
+    loader: Loader,
+    onnx: std::path::PathBuf,
+    manifest: DenoiserManifest,
+    run_on: RunOn,
+    /// The photo's import defaults: none of its edits go into the model.
+    settings: DevelopSettings,
+    metadata: Option<lcc_meta::Metadata>,
+}
+
+fn tiff_options() -> ExportOptions {
+    ExportOptions { format: ExportFormat::Tiff, ..Default::default() }
+}
+
+/// Refuse a result over [`MAX_PIXELS`] before the full-size render of a `w` × `h` photo rather than after it. The
+/// render may come out a pixel smaller, so only a result too large even then is refused here; the tiling checks the
+/// rest.
+fn check_result_size(w: f64, h: f64, factor: usize) -> std::result::Result<(), String> {
+    let least = |v: f64| if v.is_finite() { (v.floor() as usize).saturating_sub(1) } else { 0 };
+    let pixels = least(w).saturating_mul(least(h)).saturating_mul(factor.saturating_mul(factor));
+    if pixels > MAX_PIXELS {
+        return Err(format!("the result would have {} megapixels, more than the {} a result may have", pixels / 1_000_000, MAX_PIXELS / 1_000_000));
+    }
+    Ok(())
+}
+
+impl AiPlan {
+    /// The photo with its import defaults, uncropped and full size, as gamma-encoded sRGB in 0 to 1.
+    fn render(&self, bytes: Vec<u8>, factor: usize) -> std::result::Result<Rgb32f, String> {
+        let (src, info) = crate::files::load_vec(bytes, usize::MAX)?;
+        let (w, h) = lcc_pipeline::native_output_size(src.width, src.height, &self.settings);
+        check_result_size(w, h, factor)?;
+        let req = RenderRequest {
+            quality: Quality::Full,
+            apply_crop: false,
+            space: OutputSpace::Srgb,
+            depth: OutputDepth::U16,
+            ..RenderRequest::fit(w.ceil() as usize, h.ceil() as usize)
+        };
+        let deep = lcc_pipeline::render(&src, &info, &self.settings, &req).deep.ok_or("the photo could not be rendered at 16 bits")?;
+        let DeepSamples::U16(samples) = deep.samples else { return Err("the photo was not rendered at 16 bits".into()) };
+        let data: Vec<[f32; 3]> = samples.as_chunks::<3>().0.iter().map(|p| p.map(|v| f32::from(v) / U16_MAX)).collect();
+        if data.len() != deep.width.saturating_mul(deep.height) {
+            return Err("the rendered photo does not hold width × height pixels".into());
+        }
+        Ok(Rgb32f { width: deep.width, height: deep.height, data })
+    }
+
+    /// Run the upscaler over `image` for a result `factor` times its size; `cancelled()` stops it at the next tile.
+    fn upscale(&self, image: &Rgb32f, factor: usize, cancelled: &(dyn Fn() -> bool + Sync)) -> std::result::Result<Rgb32f, String> {
+        let model = (self.loader)(&self.onnx, &self.manifest)?;
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let (runner, parallel) = model.runner(self.run_on, cores);
+        let params = Params {
+            tile: self.manifest.tile as usize,
+            overlap: self.manifest.overlap as usize,
+            gain: self.manifest.gain,
+            clip: None,
+            parallel: parallel.max(1),
+        };
+        let cancel = AtomicBool::new(false);
+        let report = |_: usize, _: usize| {
+            if cancelled() {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        };
+        let ctl = Control { cancel: Some(&cancel), progress: Some(&report) };
+        let scales = Scales { model: Domain::RgbToRgb4x.scale(), out: factor };
+        // the tiles run on threads of their own, so the window's renders keep theirs
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(params.parallel)
+            .stack_size(STACK)
+            .thread_name(|i| format!("enhance-{i}"))
+            .build()
+            .map_err(|e| format!("could not start the worker threads: {e}"))?;
+        pool.install(|| upscale_rgb(image, runner, &params, &ctl, scales)).map_err(|e| e.to_string())
+    }
+
+    fn encode(&self, image: &Rgb32f) -> std::result::Result<Vec<u8>, String> {
+        let samples = image.data.iter().flatten().map(|v| (v.clamp(0.0, 1.0) * U16_MAX).round() as u16).collect();
+        let deep = DeepImage { width: image.width, height: image.height, space: OutputSpace::Srgb, samples: DeepSamples::U16(samples) };
+        crate::export::encode_deep(&deep, &tiff_options(), self.metadata.as_ref())
+    }
+}
+
+/// An sRGB picture (0 to 1) as 8-bit pixels for the dialog.
+fn to_rgba8(img: &Rgb32f) -> lcc_raster::Rgba8 {
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    lcc_raster::Rgba8 { width: img.width, height: img.height, data: img.data.iter().map(|p| [q(p[0]), q(p[1]), q(p[2]), 255]).collect() }
 }
 
 /// Finished and failed photos `enhance.pump` reports (the most recent).
@@ -52,12 +179,14 @@ pub struct EnhanceWork {
     pub id: PhotoId,
     pub path: String,
     read: ByteReader,
+    ai: Option<AiPlan>,
 }
 
 /// The finished pixels of one photo.
 pub struct Enhanced {
     pub id: PhotoId,
     pub path: String,
+    /// The new file's bytes: a linear DNG, or (AI kinds) a 16-bit TIFF.
     pub dng: Vec<u8>,
     pub size: (usize, usize),
 }
@@ -66,6 +195,19 @@ impl EnhanceWork {
     /// Decode, enhance and encode. `cancelled()` is checked between stages and Super Resolution's passes.
     pub fn run(&self, cancelled: &(dyn Fn() -> bool + Sync)) -> std::result::Result<Enhanced, String> {
         let bytes = (self.read)(&self.path)?;
+        if let (Some(ai), Some(factor)) = (&self.ai, self.kind.ai_factor()) {
+            let image = ai.render(bytes, factor)?;
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            let big = ai.upscale(&image, factor, cancelled)?;
+            drop(image);
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            let tiff = ai.encode(&big)?;
+            return Ok(Enhanced { id: self.id, path: self.path.clone(), dng: tiff, size: (big.width, big.height) });
+        }
         let is_raw = lcc_raw::probe(&bytes).is_some();
         if self.kind == EnhanceKind::RawDetails && !is_raw {
             return Err(format!("{}: Raw Details needs a raw photo", self.path));
@@ -81,7 +223,7 @@ impl EnhanceWork {
             color.set_as_shot_multipliers(m);
         }
         let image = match self.kind {
-            EnhanceKind::RawDetails => frame.image,
+            EnhanceKind::RawDetails | EnhanceKind::AiSuperResolution(_) | EnhanceKind::AiSharpen => frame.image,
             EnhanceKind::SuperResolution => lcc_merge::super_resolve(&frame.image, &|_| !cancelled()).map_err(|e| e.to_string())?,
         };
         let size = (image.width, image.height);
@@ -147,6 +289,23 @@ impl EnhanceWork {
     /// The dialog's preview: the middle [`PREVIEW_CROP`] pixels before and after, and an estimate of the full run.
     pub fn preview(&self, cancelled: &(dyn Fn() -> bool + Sync)) -> std::result::Result<EnhancePreview, String> {
         let bytes = (self.read)(&self.path)?;
+        if let (Some(ai), Some(factor)) = (&self.ai, self.kind.ai_factor()) {
+            let t0 = std::time::Instant::now();
+            let image = ai.render(bytes, factor)?;
+            let render = t0.elapsed().as_secs_f64();
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            let source_size = (image.width, image.height);
+            let crop = middle(&image, PREVIEW_CROP);
+            drop(image);
+            let t1 = std::time::Instant::now();
+            let up = ai.upscale(&crop, factor, cancelled)?;
+            let area = |s: (usize, usize)| (s.0 as f64 * s.1 as f64).max(1.0);
+            let estimate_secs = render + t1.elapsed().as_secs_f64() * area(source_size) / area((crop.width, crop.height));
+            let out_size = (source_size.0.saturating_mul(factor), source_size.1.saturating_mul(factor));
+            return Ok(EnhancePreview { before: to_rgba8(&crop), after: to_rgba8(&up), source_size, out_size, estimate_secs });
+        }
         let is_raw = lcc_raw::probe(&bytes).is_some();
         if self.kind == EnhanceKind::RawDetails && !is_raw {
             return Err(format!("{}: Raw Details needs a raw photo", self.path));
@@ -173,7 +332,7 @@ impl EnhanceWork {
         let crop = middle(&frame.image, PREVIEW_CROP);
         let t1 = std::time::Instant::now();
         let (after, out_size, estimate_secs) = match self.kind {
-            EnhanceKind::RawDetails => (crop, source_size, decode),
+            EnhanceKind::RawDetails | EnhanceKind::AiSuperResolution(_) | EnhanceKind::AiSharpen => (crop, source_size, decode),
             EnhanceKind::SuperResolution => {
                 let up = lcc_merge::super_resolve(&crop, &|_| !cancelled()).map_err(|e| e.to_string())?;
                 let area = |s: (usize, usize)| (s.0 as f64 * s.1 as f64).max(1.0);
@@ -204,16 +363,47 @@ pub struct EnhanceJobs {
     failed: Vec<Value>,
 }
 
-fn output_names(first: &str, suffix: &str) -> impl Iterator<Item = std::path::PathBuf> {
+fn output_names(first: &str, suffix: &str, ext: &str) -> impl Iterator<Item = std::path::PathBuf> {
     let p = std::path::Path::new(first);
     let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
     let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "photo".into());
-    (0..10_000usize).map(move |i| if i == 0 { dir.join(format!("{stem}-{suffix}.dng")) } else { dir.join(format!("{stem}-{suffix}-{i}.dng")) })
+    let ext = ext.to_string();
+    (0..10_000usize).map(move |i| if i == 0 { dir.join(format!("{stem}-{suffix}.{ext}")) } else { dir.join(format!("{stem}-{suffix}-{i}.{ext}")) })
 }
 
 impl Session {
     /// The work for each of `ids` (a photo named twice is enhanced once).
+    /// Is an upscaler chosen and installed (what AI Super Resolution and AI Sharpen need)?
+    pub fn enhance_upscaler_ready(&self) -> bool {
+        self.upscaler().is_ok()
+    }
+
+    /// The installed upscaler in use, or why there is none.
+    fn upscaler(&self) -> Result<(crate::denoise::Installed, RunOn)> {
+        let fail = |m: String| EngineError::Other(m);
+        let dir = self.denoise.models_dir.as_deref().ok_or_else(|| fail("this build has nowhere to keep AI models (the desktop app does)".into()))?;
+        let settings = read_settings(dir);
+        let chosen = settings.upscale_model.as_deref().ok_or_else(|| {
+            fail("no upscaler is installed: add one in Settings ▸ AI Models (`denoise.models.list` shows the ones the app can fetch)".into())
+        })?;
+        let installed = installed_models(dir)
+            .into_iter()
+            .find(|i| i.manifest.id == chosen && i.manifest.domain == Domain::RgbToRgb4x)
+            .ok_or_else(|| fail(format!("the upscaler `{chosen}` is not installed any more: choose another in Settings ▸ AI Models")))?;
+        Ok((installed, settings.run_on()))
+    }
+
     pub fn plan_enhance(&self, kind: EnhanceKind, ids: &[PhotoId]) -> Result<Vec<EnhanceWork>> {
+        if let EnhanceKind::AiSuperResolution(f) = kind
+            && f != 2
+            && f != 4
+        {
+            return Err(EngineError::Other(format!("AI Super Resolution gives 2 or 4 times the photo's size, not {f}")));
+        }
+        let upscaler = match kind.ai_factor() {
+            Some(_) => Some(self.upscaler()?),
+            None => None,
+        };
         let read: ByteReader = match &self.media.file_bytes {
             Some(r) => r.clone(),
             None => Arc::new(|path: &str| std::fs::read(path).map_err(|e| format!("{path}: {e}"))),
@@ -223,7 +413,17 @@ impl Session {
         for id in ids.iter().filter(|id| seen.insert(**id)) {
             let p = self.catalog.photo(*id).ok_or(lcc_catalog::CatalogError::NoPhoto(*id))?;
             match &p.source {
-                Source::File { path } => out.push(EnhanceWork { kind, id: *id, path: path.clone(), read: read.clone() }),
+                Source::File { path } => {
+                    let ai = upscaler.as_ref().map(|(i, run_on)| AiPlan {
+                        loader: self.denoise.loader.clone(),
+                        onnx: i.onnx.clone(),
+                        manifest: i.manifest.clone(),
+                        run_on: *run_on,
+                        settings: p.import_defaults(),
+                        metadata: crate::export::export_metadata(p, &self.catalog, &tiff_options()),
+                    });
+                    out.push(EnhanceWork { kind, id: *id, path: path.clone(), read: read.clone(), ai });
+                }
                 Source::Demo { .. } => {
                     return Err(EngineError::Other(format!("{} is a demo photo; {} needs the photo's file", p.file_name, kind.label())));
                 }
@@ -251,8 +451,8 @@ impl Session {
                 json!({"id": id.0, "source": out.id.0, "path": path, "size": [out.size.0, out.size.1], "bytes": out.dng.len(), "reused": true}),
             );
         }
-        let path = lcc_catalog::safe_file::write_new_unique(&mut output_names(&out.path, kind.suffix()), &out.dng)
-            .map_err(|e| EngineError::Other(format!("could not write the enhanced DNG next to {}: {e}", out.path)))?
+        let path = lcc_catalog::safe_file::write_new_unique(&mut output_names(&out.path, kind.suffix(), kind.extension()), &out.dng)
+            .map_err(|e| EngineError::Other(format!("could not write the enhanced file next to {}: {e}", out.path)))?
             .to_string_lossy()
             .to_string();
         let report = match crate::import::import(self, std::slice::from_ref(&path), crate::import::ImportMode::Add) {
@@ -266,7 +466,10 @@ impl Session {
             let _ = std::fs::remove_file(&path);
             return Err(EngineError::Other(format!("the enhanced file {path} could not be imported: {:?}", report.failed)));
         };
-        if let Some(d) = self.develop_of(out.id) {
+        // an AI result is a rendered picture (the photo's import defaults): the source's edits don't fit it
+        if kind.ai_factor().is_none()
+            && let Some(d) = self.develop_of(out.id)
+        {
             let d = (*d).clone();
             self.set_develop(id, d, kind.label())?;
         }
@@ -276,7 +479,7 @@ impl Session {
         Ok(json!({"id": id.0, "source": out.id.0, "path": path, "size": [out.size.0, out.size.1], "bytes": out.dng.len()}))
     }
 
-    /// `enhance.rawDetails` / `enhance.superResolution` `{ids?, stack?: true, wait?: false}`.
+    /// `enhance.rawDetails` / `enhance.superResolution` / `enhance.aiSharpen` `{ids?, stack?: true, wait?: false}`.
     pub(crate) fn enhance_command(&mut self, kind: EnhanceKind, p: &Value) -> Result<Value> {
         let ids = self.targets(p)?;
         let work = self.plan_enhance(kind, &ids)?;
@@ -367,5 +570,20 @@ impl Session {
         }
         let running: usize = self.enhance.jobs.iter().map(|j| j.left).sum();
         json!({"active": running > 0, "running": running, "made": self.enhance.made, "failed": self.enhance.failed})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_result_size;
+
+    #[test]
+    fn a_result_too_large_is_refused_before_the_render() {
+        // 45 MP: too large at 2×, fine as AI Sharpen
+        assert!(check_result_size(8256.0, 5504.0, 2).unwrap_err().contains("more than the 110"));
+        assert!(check_result_size(8256.0, 5504.0, 1).is_ok());
+        // 27.5 MP at 2× (110 MP) may come out a pixel smaller after the render: the tiling decides
+        assert!(check_result_size(6400.0, 4297.5, 2).is_ok());
+        assert!(check_result_size(f64::NAN, f64::INFINITY, 4).is_ok());
     }
 }

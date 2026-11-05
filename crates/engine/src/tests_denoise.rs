@@ -55,7 +55,7 @@ fn dim_loader(runs: &Arc<AtomicUsize>) -> Loader {
     Arc::new(move |_, _| Ok(Arc::new(Dim { runs: runs.clone() }) as Arc<dyn Model>))
 }
 
-fn manifest(id: &str) -> DenoiserManifest {
+pub(crate) fn manifest(id: &str) -> DenoiserManifest {
     DenoiserManifest {
         id: id.into(),
         name: "Stand-in".into(),
@@ -1257,7 +1257,7 @@ fn a_finished_picture_has_a_model_of_its_own_and_its_amount_mixes_in_the_denoise
     x.s.denoise.loader = Arc::new(move |_, m: &DenoiserManifest| {
         Ok(match m.domain {
             Domain::RgbToRgb => Arc::new(Half { runs: half.clone() }) as Arc<dyn Model>,
-            Domain::BayerToRgb => Arc::new(Dim { runs: dim.clone() }) as Arc<dyn Model>,
+            Domain::BayerToRgb | Domain::RgbToRgb4x => Arc::new(Dim { runs: dim.clone() }) as Arc<dyn Model>,
         })
     });
     x.s.denoise_pump(crate::denoise::Pace::Pause);

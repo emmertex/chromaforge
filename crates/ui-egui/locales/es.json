@@ -1718,6 +1718,7 @@
   "Waiting to start…": "Esperando para empezar…",
   "Works on raw files from cameras with a standard (Bayer) sensor, and on JPEG, PNG, TIFF and other finished pictures with a model made for them. Other raw files keep their normal noise reduction.": "Funciona con archivos RAW de cámaras con sensor estándar (Bayer) y, con un modelo hecho para ellas, con JPEG, PNG, TIFF y otras imágenes terminadas. Los demás archivos RAW mantienen su reducción de ruido normal.",
   "For JPEG and other finished pictures": "Para JPEG y otras imágenes terminadas",
+  "For Super Resolution and AI Sharpen": "Para superresolución y enfoque con IA",
   "For raw photos": "Para fotos RAW",
   "cached picture": "imagen en caché",
   "cached pictures": "imágenes en caché",

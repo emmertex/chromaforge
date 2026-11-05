@@ -1,4 +1,5 @@
-//! Photo ▸ Enhance… (`dialog.enhance`): the Enhance Preview dialog. Raw Details or Super Resolution, a preview of
+//! Photo ▸ Enhance… (`dialog.enhance`): the Enhance Preview dialog. Raw Details or Super Resolution (and, when an
+//! upscaler is installed, AI Super Resolution and AI Sharpen, adapted from upstream #3493), a preview of
 //! the middle of the first selected photo before and after (click to zoom in, drag to pan), the estimated time and
 //! Create Stack; Enhance runs `enhance.rawDetails` / `enhance.superResolution` on the selection.
 //!
@@ -22,21 +23,43 @@ use crate::LccApp;
 pub struct EnhanceDialog {
     /// Super Resolution (else Raw Details).
     pub super_resolution: bool,
+    /// AI Super Resolution with the installed upscaler (2×; overrides the two above).
+    pub ai_super_resolution: bool,
+    /// AI Sharpen with the installed upscaler (overrides the others).
+    pub ai_sharpen: bool,
     pub stack: bool,
 }
 
 impl Default for EnhanceDialog {
     fn default() -> Self {
-        EnhanceDialog { super_resolution: false, stack: true }
+        EnhanceDialog { super_resolution: false, ai_super_resolution: false, ai_sharpen: false, stack: true }
     }
 }
 
 impl EnhanceDialog {
     fn kind(&self) -> EnhanceKind {
-        if self.super_resolution { EnhanceKind::SuperResolution } else { EnhanceKind::RawDetails }
+        if self.ai_sharpen {
+            EnhanceKind::AiSharpen
+        } else if self.ai_super_resolution {
+            EnhanceKind::AiSuperResolution(2)
+        } else if self.super_resolution {
+            EnhanceKind::SuperResolution
+        } else {
+            EnhanceKind::RawDetails
+        }
     }
     fn command(&self) -> &'static str {
-        if self.super_resolution { "enhance.superResolution" } else { "enhance.rawDetails" }
+        match self.kind() {
+            EnhanceKind::AiSharpen => "enhance.aiSharpen",
+            EnhanceKind::SuperResolution | EnhanceKind::AiSuperResolution(_) => "enhance.superResolution",
+            EnhanceKind::RawDetails => "enhance.rawDetails",
+        }
+    }
+    /// Pick one method (the radio buttons).
+    fn pick(&mut self, kind: EnhanceKind) {
+        self.super_resolution = kind == EnhanceKind::SuperResolution;
+        self.ai_super_resolution = matches!(kind, EnhanceKind::AiSuperResolution(_));
+        self.ai_sharpen = kind == EnhanceKind::AiSharpen;
     }
 }
 
@@ -101,7 +124,8 @@ pub fn open(app: &mut LccApp) -> Result<Value, String> {
 pub fn confirm(app: &mut LccApp, opts: &EnhanceDialog) -> Result<Value, String> {
     app.enhance.stop();
     let ids: Vec<u64> = app.enhance.ids.iter().map(|i| i.0).collect();
-    app.run(opts.command(), json!({"ids": ids, "stack": opts.stack}))
+    let method = if opts.ai_super_resolution { "ai" } else { "classical" };
+    app.run(opts.command(), json!({"ids": ids, "stack": opts.stack, "method": method}))
 }
 
 fn spawn(app: &LccApp, kind: EnhanceKind) -> Result<PreviewTask, String> {
@@ -250,20 +274,39 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut EnhanceDialog) {
         ui.vertical(|ui| {
             ui.set_width(240.0);
             ui.label(egui::RichText::new(crate::i18n::tr("Enhancements")).color(t.text_label));
-            if ui.radio(!opts.super_resolution, crate::i18n::tr("Raw Details")).clicked() {
-                opts.super_resolution = false;
+            let kind = opts.kind();
+            if ui.radio(kind == EnhanceKind::RawDetails, crate::i18n::tr("Raw Details")).clicked() {
+                opts.pick(EnhanceKind::RawDetails);
             }
             crate::dialog_frame::note(
                 ui,
                 egui::RichText::new(crate::i18n::tr("Finer detail and edges, less false colour, at the same size.")).color(t.text_dim),
             );
-            if ui.radio(opts.super_resolution, crate::i18n::tr("Super Resolution")).clicked() {
-                opts.super_resolution = true;
+            if ui.radio(kind == EnhanceKind::SuperResolution, crate::i18n::tr("Super Resolution")).clicked() {
+                opts.pick(EnhanceKind::SuperResolution);
             }
             crate::dialog_frame::note(
                 ui,
                 egui::RichText::new(crate::i18n::tr("Raw Details, then twice the width and height (four times the pixels).")).color(t.text_dim),
             );
+            // the installed upscaler (Settings ▸ AI Models): offered only when there is one
+            if app.session.enhance_upscaler_ready() || kind.ai_factor().is_some() {
+                if ui.radio(matches!(kind, EnhanceKind::AiSuperResolution(_)), crate::i18n::tr("AI Super Resolution")).clicked() {
+                    opts.pick(EnhanceKind::AiSuperResolution(2));
+                }
+                crate::dialog_frame::note(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr("Twice the width and height, filled in by the AI upscaler, as a new TIFF."))
+                        .color(t.text_dim),
+                );
+                if ui.radio(kind == EnhanceKind::AiSharpen, crate::i18n::tr("AI Sharpen")).clicked() {
+                    opts.pick(EnhanceKind::AiSharpen);
+                }
+                crate::dialog_frame::note(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr("Finer detail from the AI upscaler at the same size, as a new TIFF.")).color(t.text_dim),
+                );
+            }
             ui.add_space(6.0);
             ui.checkbox(&mut opts.stack, crate::i18n::tr("Create Stack"));
             ui.add_space(6.0);

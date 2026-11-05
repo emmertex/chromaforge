@@ -145,7 +145,11 @@ for finished pictures (JPEG, PNG, TIFF), "denoise-nind.dtmodel"
 the NIND dataset, images CC BY 4.0 and CC0), downloaded only at the user's request; its
 weights are licensed under the GNU General Public License v3
 (https://www.gnu.org/licenses/gpl-3.0.html) and are used under that licence. Enabling these
-offers in releases remains a maintainer decision. The ONNX reader and CPU/GPU executor are our Rust implementation;
+offers in releases remains a maintainer decision. The optional realesrgan-model feature offers Real-ESRGAN General v3
+("realesr-general-x4v3", Copyright (c) 2021 Xintao Wang, https://github.com/xinntao/Real-ESRGAN),
+a 4x upscaler for AI Super Resolution and AI Sharpen, as a separate download at the user's
+request; its code and weights are licensed under the BSD 3-Clause licence, whose notice is shown
+with the model's terms and kept with the downloaded file. The ONNX reader and CPU/GPU executor are our Rust implementation;
 no darktable, RawSpeed, LibRaw or other GPL decoder/runtime code is included.
 
 Builds made with craft-fonts (the optional CRAFT_FONTS_DIR build input; all official releases)

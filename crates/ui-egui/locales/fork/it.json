@@ -1,4 +1,6 @@
 {
+  "AI Sharpen": "Nitidezza IA",
+  "AI Super Resolution": "Super risoluzione IA",
   "Address": "Indirizzo",
   "All files": "Tutti i file",
   "All masks shown · O to hide": "Tutte le maschere visibili · O per nascondere",
@@ -51,6 +53,7 @@
   "Film recipe": "Ricetta pellicola",
   "Filters": "Filtri",
   "Finer detail and edges, less false colour, at the same size.": "Dettagli e bordi più fini, meno falsi colori, alla stessa dimensione.",
+  "Finer detail from the AI upscaler at the same size, as a new TIFF.": "Dettagli più fini dall’upscaler IA alle stesse dimensioni, in un nuovo TIFF.",
   "Full Size": "Dimensione piena",
   "Graphics card for editing": "Scheda grafica per la modifica",
   "Graphics interface": "Interfaccia grafica",
@@ -126,6 +129,7 @@
   "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Questi cursori definiscono l’aspetto della foto sui display SDR e nelle esportazioni SDR. Attiva Anteprima per display SDR per vederli.",
   "This mask's AI selection wasn't computed for this photo yet.": "La selezione IA di questa maschera non è ancora stata calcolata per questa foto.",
   "Tone": "Tono",
+  "Twice the width and height, filled in by the AI upscaler, as a new TIFF.": "Larghezza e altezza doppie, completate dall’upscaler IA, in un nuovo TIFF.",
   "Two Rows": "Due righe",
   "Update AI Mask": "Aggiorna maschera IA",
   "Update All AI Masks": "Aggiorna tutte le maschere IA",

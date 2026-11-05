@@ -1,4 +1,6 @@
 {
+  "AI Sharpen": "Doostření AI",
+  "AI Super Resolution": "Superrozlišení AI",
   "Address": "Adresa",
   "All files": "Všechny soubory",
   "All masks shown · O to hide": "Zobrazeny všechny masky · O skryje",
@@ -51,6 +53,7 @@
   "Film recipe": "Filmový recept",
   "Filters": "Filtry",
   "Finer detail and edges, less false colour, at the same size.": "Jemnější detaily a hrany, méně falešných barev, ve stejné velikosti.",
+  "Finer detail from the AI upscaler at the same size, as a new TIFF.": "Jemnější detaily od zvětšovače AI ve stejné velikosti jako nový TIFF.",
   "Full Size": "Plná velikost",
   "Graphics card for editing": "Grafická karta pro úpravy",
   "Graphics interface": "Grafické rozhraní",
@@ -126,6 +129,7 @@
   "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Tyto posuvníky určují vzhled fotografie na displejích SDR a v exportech SDR. Chcete-li je vidět, zapněte Náhled pro displej SDR.",
   "This mask's AI selection wasn't computed for this photo yet.": "Výběr AI této masky ještě nebyl pro tuto fotografii vypočten.",
   "Tone": "Tón",
+  "Twice the width and height, filled in by the AI upscaler, as a new TIFF.": "Dvojnásobná šířka a výška doplněná zvětšovačem AI jako nový TIFF.",
   "Two Rows": "Dva řádky",
   "Update AI Mask": "Aktualizovat masku AI",
   "Update All AI Masks": "Aktualizovat všechny masky AI",

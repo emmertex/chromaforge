@@ -1,4 +1,6 @@
 {
+  "AI Sharpen": "AI სიმკვეთრე",
+  "AI Super Resolution": "AI სუპერგარჩევადობა",
   "Address": "მისამართი",
   "All files": "ყველა ფაილი",
   "All masks shown · O to hide": "ყველა ნიღაბი ნაჩვენებია · O დასამალად",
@@ -50,6 +52,7 @@
   "Film recipe": "ფირის რეცეპტი",
   "Filters": "ფილტრები",
   "Finer detail and edges, less false colour, at the same size.": "უფრო წვრილი დეტალები და კიდეები, ნაკლები ცრუ ფერი, იმავე ზომაში.",
+  "Finer detail from the AI upscaler at the same size, as a new TIFF.": "უფრო წვრილი დეტალები AI გამადიდებლისგან იმავე ზომაზე, ახალ TIFF-ად.",
   "Full Size": "სრული ზომა",
   "Graphics card for editing": "გრაფიკული ბარათი რედაქტირებისთვის",
   "Graphics interface": "გრაფიკული ინტერფეისი",
@@ -123,6 +126,7 @@
   "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "ესენი განსაზღვრავს, როგორ გამოიყურება ფოტო SDR ეკრანებზე და SDR ექსპორტში. მათ სანახავად ჩართეთ „SDR ეკრანის გადახედვა“.",
   "This mask's AI selection wasn't computed for this photo yet.": "ამ ნიღბის AI მონიშვნა ამ ფოტოსთვის ჯერ არ გამოთვლილა.",
   "Tone": "ტონი",
+  "Twice the width and height, filled in by the AI upscaler, as a new TIFF.": "ორჯერ მეტი სიგანე და სიმაღლე, AI გამადიდებლით შევსებული, ახალ TIFF-ად.",
   "Two Rows": "ორ მწკრივად",
   "Update AI Mask": "AI ნიღბის განახლება",
   "Update All AI Masks": "ყველა AI ნიღბის განახლება",

@@ -1,4 +1,6 @@
 {
+  "AI Sharpen": "Wyostrzanie AI",
+  "AI Super Resolution": "Superrozdzielczość AI",
   "Address": "Adres",
   "All files": "Wszystkie pliki",
   "All masks shown · O to hide": "Wszystkie maski widoczne · O, aby ukryć",
@@ -53,6 +55,7 @@
   "Film recipe": "Przepis filmowy",
   "Filters": "Filtry",
   "Finer detail and edges, less false colour, at the same size.": "Drobniejsze szczegóły i krawędzie, mniej fałszywych kolorów, w tym samym rozmiarze.",
+  "Finer detail from the AI upscaler at the same size, as a new TIFF.": "Drobniejsze szczegóły od skalera AI w tym samym rozmiarze, jako nowy TIFF.",
   "Full Size": "Pełny rozmiar",
   "Graphics card for editing": "Karta graficzna do edycji",
   "Graphics interface": "Interfejs graficzny",
@@ -128,6 +131,7 @@
   "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.": "Te suwaki określają wygląd zdjęcia na ekranach SDR i w eksportach SDR. Włącz Podgląd dla ekranu SDR, aby je zobaczyć.",
   "This mask's AI selection wasn't computed for this photo yet.": "Zaznaczenie AI tej maski nie zostało jeszcze obliczone dla tego zdjęcia.",
   "Tone": "Ton",
+  "Twice the width and height, filled in by the AI upscaler, as a new TIFF.": "Dwukrotna szerokość i wysokość, uzupełnione przez skaler AI, jako nowy TIFF.",
   "Two Rows": "Dwa wiersze",
   "Update AI Mask": "Zaktualizuj maskę AI",
   "Update All AI Masks": "Zaktualizuj wszystkie maski AI",
