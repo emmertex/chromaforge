@@ -133,17 +133,7 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
             // culling happens in Library's grid and loupe
             app.ui.module = crate::module::ModuleId::Library;
             if !matches!(app.ui.view, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid | crate::state::ViewMode::Detail) {
-                let prev_grid = app
-                    .ui
-                    .layouts
-                    .get(&crate::module::ModuleId::Library)
-                    .and_then(|l| l.view)
-                    .filter(|v| matches!(v, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid));
-                app.ui.view = prev_grid.unwrap_or(if app.ui.settings.startup_view == crate::state::StartupView::SquareGrid {
-                    crate::state::ViewMode::SquareGrid
-                } else {
-                    crate::state::ViewMode::PhotoGrid
-                });
+                app.ui.view = app.ui.grid_style;
             }
             if let Some(b) = app.session.browse.clone()
                 && std::path::Path::new(&b.path).is_dir()
@@ -323,6 +313,8 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
 
 /// From this width the sources and the settings stand beside the photos.
 const WIDE: f32 = 900.0;
+const SOURCES_W: f32 = 230.0;
+const SETTINGS_W: f32 = 330.0;
 const BAR_H: f32 = 48.0;
 
 /// What a narrow window shows in the one column.
@@ -403,14 +395,17 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if wide {
         pane = Pane::Photos;
     }
-    // the same resizable sides, and widths, as the modules' left and right panels
-    let mut middle = area;
-    let (sources_r, settings_r) = if wide {
-        let settings = crate::panels::split_side(ui, &mut middle, false, "importTab:settings", &mut app.ui.right_width, crate::state::RIGHT_WIDTH);
-        let sources = crate::panels::split_side(ui, &mut middle, true, "importTab:sources", &mut app.ui.left_width, crate::state::LEFT_WIDTH);
-        (Some(sources), Some(settings))
+    let (sources_r, rest) = if wide {
+        let w = SOURCES_W.min(area.width() * 0.25);
+        (Some(Rect::from_min_max(area.min, pos2(area.left() + w, area.bottom()))), Rect::from_min_max(pos2(area.left() + w, area.top()), area.max))
     } else {
-        (None, None)
+        (None, area)
+    };
+    let (middle, settings_r) = if wide {
+        let w = SETTINGS_W.min(rest.width() * 0.4);
+        (Rect::from_min_max(rest.min, pos2(rest.right() - w, rest.bottom())), Some(Rect::from_min_max(pos2(rest.right() - w, rest.top()), rest.max)))
+    } else {
+        (rest, None)
     };
     if let Some(r) = sources_r {
         ui.painter().rect_filled(r, 0.0, t.chrome);

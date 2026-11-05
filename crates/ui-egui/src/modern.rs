@@ -874,17 +874,7 @@ fn back_to_library(app: &mut LccApp) {
     stop_holding(app);
     let _ = app.run("module.library", json!({}));
     if !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid) {
-        let prev_grid = app
-            .ui
-            .layouts
-            .get(&crate::module::ModuleId::Library)
-            .and_then(|l| l.view)
-            .filter(|v| matches!(v, ViewMode::PhotoGrid | ViewMode::SquareGrid));
-        app.ui.view = prev_grid.unwrap_or(if app.ui.settings.startup_view == crate::state::StartupView::SquareGrid {
-            ViewMode::SquareGrid
-        } else {
-            ViewMode::PhotoGrid
-        });
+        app.ui.view = app.ui.grid_style;
     }
 }
 

@@ -637,15 +637,7 @@ fn capture(app: &LccApp) -> ModuleLayout {
         solo: u.single_panel,
         order: u.panel_order.clone(),
         hidden: u.hidden_panels.clone(),
-        view: if u.module == ModuleId::Library {
-            if matches!(u.view, ViewMode::Detail | ViewMode::Reference) {
-                u.layouts.get(&ModuleId::Library).and_then(|l| l.view).or(Some(u.view))
-            } else {
-                Some(u.view)
-            }
-        } else {
-            None
-        },
+        view: (u.module == ModuleId::Library).then_some(u.view),
     }
 }
 

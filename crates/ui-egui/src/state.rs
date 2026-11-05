@@ -21,6 +21,13 @@ pub enum ViewMode {
     People,
 }
 
+impl ViewMode {
+    /// The two Library grids ([`Self::PhotoGrid`], [`Self::SquareGrid`]).
+    pub fn is_grid(self) -> bool {
+        matches!(self, ViewMode::PhotoGrid | ViewMode::SquareGrid)
+    }
+}
+
 /// The right-hand tool/panel shown next to the tool strip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1104,6 +1111,9 @@ pub struct UiState {
     #[serde(skip)]
     pub frame_rate: bool,
     pub view: ViewMode,
+    /// The grid style the user chose last (`view.photoGrid` / `view.squareGrid`; #794). Every path
+    /// back to a grid uses it, so Square Grid survives a restart and detours through a photo.
+    pub grid_style: ViewMode,
     /// The Modern layout (fork-owned; see [`crate::modern`]). Saved as `touch` before it replaced the touch layout.
     #[serde(alias = "touch")]
     pub modern: crate::modern::ModernUi,
@@ -2238,6 +2248,7 @@ impl Default for UiState {
             mask_drawing: None,
             collapsed_masks: Default::default(),
             view: ViewMode::Detail,
+            grid_style: ViewMode::PhotoGrid,
             modern: crate::modern::ModernUi::default(),
             tab: Default::default(),
             library_source: None,
@@ -2687,6 +2698,11 @@ impl UiState {
         }
         self.dialog = None;
         self.fullscreen = false;
+        // a hand-edited file (or a value from another version) must not leave a photo view in the
+        // grid-style slot (#794)
+        if !self.grid_style.is_grid() {
+            self.grid_style = ViewMode::PhotoGrid;
+        }
         match self.settings.startup_view {
             StartupView::Last => {}
             StartupView::Grid => self.view = ViewMode::PhotoGrid,

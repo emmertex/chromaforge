@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::LccApp;
 use crate::pick::{PickRequest, Picked};
-use crate::state::{BeforeAfter, Dialog, RightPanel, StartupView, ViewMode, Zoom};
+use crate::state::{BeforeAfter, Dialog, RightPanel, ViewMode, Zoom};
 
 /// (id, label, shortcut, menu path)
 pub type UiCommand = (&'static str, &'static str, Option<&'static str>, &'static str);
@@ -737,16 +737,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "view.photoGrid" => {
             app.ui.view = ViewMode::PhotoGrid;
-            if let Some(l) = app.ui.layouts.get_mut(&crate::module::ModuleId::Library) {
-                l.view = Some(ViewMode::PhotoGrid);
-            }
+            app.ui.grid_style = ViewMode::PhotoGrid;
             Ok(Value::Null)
         }
         "view.squareGrid" => {
             app.ui.view = ViewMode::SquareGrid;
-            if let Some(l) = app.ui.layouts.get_mut(&crate::module::ModuleId::Library) {
-                l.view = Some(ViewMode::SquareGrid);
-            }
+            app.ui.grid_style = ViewMode::SquareGrid;
             Ok(Value::Null)
         }
         "view.gridInfo" => {
@@ -765,6 +761,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             // the caption is drawn on Square Grid cells only: from Photo Grid, show it there
             if app.ui.view == ViewMode::PhotoGrid {
                 app.ui.view = ViewMode::SquareGrid;
+                app.ui.grid_style = ViewMode::SquareGrid;
             }
             Ok(json!({"info": app.ui.grid_info}))
         }
@@ -837,29 +834,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.run("library.select", json!({"ids": [active.0], "active": active.0}))
         }
         "view.gridToggle" => {
-            app.ui.view = match app.ui.view {
-                ViewMode::PhotoGrid => ViewMode::SquareGrid,
-                ViewMode::SquareGrid => ViewMode::PhotoGrid,
-                _ => {
-                    let prev_grid = app
-                        .ui
-                        .layouts
-                        .get(&crate::module::ModuleId::Library)
-                        .and_then(|l| l.view)
-                        .filter(|v| matches!(v, ViewMode::PhotoGrid | ViewMode::SquareGrid));
-                    prev_grid.unwrap_or(if app.ui.settings.startup_view == StartupView::SquareGrid {
-                        ViewMode::SquareGrid
-                    } else {
-                        ViewMode::PhotoGrid
-                    })
-                }
+            // G between the two grids; from a photo view it comes back to the grid style the user
+            // chose last (#794), not always to Photo Grid
+            app.ui.view = if app.ui.view.is_grid() {
+                if app.ui.view == ViewMode::PhotoGrid { ViewMode::SquareGrid } else { ViewMode::PhotoGrid }
+            } else {
+                app.ui.grid_style
             };
-            if let Some(l) = app.ui.layouts.get_mut(&crate::module::ModuleId::Library) {
-                l.view = Some(app.ui.view);
-            }
-            if app.ui.module == crate::module::ModuleId::Develop {
-                let _ = crate::module::switch(app, crate::module::ModuleId::Library);
-            }
+            app.ui.grid_style = app.ui.view;
             Ok(Value::Null)
         }
         "view.detail" => {
@@ -1007,19 +989,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                             .get(&crate::module::ModuleId::Library)
                             .and_then(|l| l.view)
                             // (not the People view: a photo opened from a person returns there by its own route, any other to the grid)
-                            .filter(|v| matches!(v, ViewMode::PhotoGrid | ViewMode::SquareGrid));
-                        let target_grid = prev_grid.unwrap_or(if app.ui.settings.startup_view == StartupView::SquareGrid {
-                            ViewMode::SquareGrid
-                        } else {
-                            ViewMode::PhotoGrid
-                        });
+                            .filter(|v| !matches!(v, ViewMode::Detail | ViewMode::Reference | ViewMode::People));
+                        // no view the Library was left in: the grid style the user chose last (#794)
+                        let target_grid = prev_grid.unwrap_or(app.ui.grid_style);
                         if app.ui.module == crate::module::ModuleId::Develop {
                             let _ = crate::module::switch(app, crate::module::ModuleId::Library);
                         }
                         app.ui.view = target_grid;
-                        if let Some(l) = app.ui.layouts.get_mut(&crate::module::ModuleId::Library) {
-                            l.view = Some(target_grid);
-                        }
                     }
                 }
             }
@@ -1677,17 +1653,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "view.filterBar" => {
             app.ui.filter_bar = !app.ui.filter_bar;
             if app.ui.filter_bar && !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid) {
-                let prev_grid = app
-                    .ui
-                    .layouts
-                    .get(&crate::module::ModuleId::Library)
-                    .and_then(|l| l.view)
-                    .filter(|v| matches!(v, ViewMode::PhotoGrid | ViewMode::SquareGrid));
-                app.ui.view = prev_grid.unwrap_or(if app.ui.settings.startup_view == StartupView::SquareGrid {
-                    ViewMode::SquareGrid
-                } else {
-                    ViewMode::PhotoGrid
-                });
+                app.ui.view = app.ui.grid_style;
             }
             // a hidden filter bar keeps no Metadata column search of its own
             if !app.ui.filter_bar {
