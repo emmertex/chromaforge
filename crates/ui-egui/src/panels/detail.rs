@@ -5605,6 +5605,11 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                         app.toast(ui.ctx(), e);
                     }
                 }
+                // fork #741: a double-clicked thumbnail centres the map on its pin and zooms in,
+                // even when the pin was already on screen
+                if map && resp.double_clicked() {
+                    let _ = app.run("map.reveal", json!({"force": true}));
+                }
                 // the same photo actions as the grid and loupe (Restore / Delete Permanently in Recently Deleted)
                 crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
             }

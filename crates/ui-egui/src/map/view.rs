@@ -60,6 +60,16 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let ctx = ui.ctx().clone();
     app.map.canvas = Some(r);
     register(&ctx, "map:canvas", r);
+    // fork #741: a filmstrip selection whose pins lie off screen brings the map to them (pan only).
+    // The first frame only records the selection, so entering the module never jumps.
+    let sel: Vec<u64> = app.session.selection.ids.iter().map(|p| p.0).collect();
+    if app.map.last_selection.as_ref().is_some_and(|prev| prev.as_slice() != sel.as_slice()) {
+        super::reveal_selection(app, false);
+    } else {
+        let mut sorted = sel;
+        sorted.sort_unstable();
+        app.map.last_selection = Some(sorted);
+    }
     let resp = ui.interact(r, egui::Id::new("map-canvas"), Sense::click_and_drag());
     crate::access::named(&resp, egui::WidgetType::Other, crate::i18n::tr("Map"));
     let painter = ui.painter_at(r);
