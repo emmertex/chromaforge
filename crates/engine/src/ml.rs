@@ -58,6 +58,23 @@ const LIGHT_REST: Duration = Duration::from_millis(25);
 /// Poll interval when `ml.pump` pauses background work.
 const PAUSE_POLL: Duration = Duration::from_millis(25);
 
+/// Default `topK` when semantic search filters the grid (`library.filter {semantic}` or `search.semantic {filter: true}`).
+pub const DEFAULT_FILTER_TOP_K: usize = 200;
+
+/// Default cosine-similarity threshold when semantic search filters the grid (`library.filter {semantic}` or `search.semantic {filter: true}`).
+pub const DEFAULT_FILTER_THRESHOLD: f32 = 0.21;
+
+/// Cached text query embedding for an active semantic filter so `drain_ml_results` can refresh
+/// `Session::filter.only` as new photo embeddings finish in the background.
+#[derive(Clone, Debug)]
+pub(crate) struct CachedQuery {
+    pub text: String,
+    pub tag: String,
+    pub vec: Vec<f32>,
+    pub top_k: usize,
+    pub threshold: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum Pace {
@@ -183,6 +200,10 @@ impl Drop for Downloads {
 pub(crate) struct State {
     /// Made on the first job (no thread, no GPU probe before).
     queue: Option<Queue<Output>>,
+    /// Dedicated interactive queue for text queries (`rows: None`) so a search query never waits behind
+    /// a running background photo embedding job on `queue` or flickers the `mlIndex` activity row.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    query_queue: Option<Queue<Output>>,
     /// Set by `ml.status {preference}` before the queue exists.
     preference: Option<Preference>,
     /// Whether background indexing is enabled (`ml.enable`).
@@ -212,12 +233,15 @@ pub(crate) struct State {
     last_checked: Option<web_time::Instant>,
     /// Monotonic counter for interactive text query keys.
     query_seq: u64,
+    /// Cached text query embedding for live semantic filter updates.
+    pub(crate) last_query: Option<CachedQuery>,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
             queue: None,
+            query_queue: None,
             preference: None,
             enabled: true,
             paused_by_user: false,
@@ -233,6 +257,7 @@ impl Default for State {
             last_saved: None,
             last_checked: None,
             query_seq: 0,
+            last_query: None,
         }
     }
 }
@@ -253,6 +278,7 @@ impl State {
         self.store = None;
         self.store_path = None;
         self.last_checked = None;
+        self.last_query = None;
         self.epoch = self.epoch.wrapping_add(1);
     }
 
@@ -291,6 +317,12 @@ impl State {
 /// The preference from `{ENV_PREFIX}_ML_DEVICE` (`auto` when unset or not understood).
 fn env_preference() -> Preference {
     lcc_brand::env("ML_DEVICE").and_then(|v| Preference::parse(&v.to_lowercase())).unwrap_or_default()
+}
+
+/// Write a tiny deterministic synthetic CLIP model directory at `dir` (for tests across crates).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn write_synthetic_clip_dir(dir: &std::path::Path, id: &str) -> crate::Result<()> {
+    lcc_ml::Clip::write_synthetic_dir(dir, id).map(|_| ()).map_err(|e| crate::EngineError::Other(e.to_string()))
 }
 
 /// The GPU the AI jobs may use, or why not: the rendering GPU's switches apply.
@@ -417,10 +449,16 @@ fn manifest_json(m: &ModelManifest, installed: bool, selected: bool, dl: Option<
         "installed": installed,
         "selected": selected,
         "download": dl_val,
+        "downloadHost": lcc_ml::known::download(&m.id).map(|_| "huggingface.co"),
     })
 }
 
 impl Session {
+    /// Active installed semantic search model id, if any (`None` when none is installed).
+    pub fn selected_ml_model(&self) -> Option<String> {
+        self.ml_models_dir.as_deref().and_then(active_embedder_id)
+    }
+
     /// The queue, made on first use with the engine's GPU probe and activity row.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn ml_queue(&mut self) -> &Queue<Output> {
@@ -441,6 +479,13 @@ impl Session {
         self.ml_queue().submit(job)
     }
 
+    /// Dedicated interactive queue for text queries (`rows: None`), made on first query.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    fn ml_query_queue(&mut self) -> &Queue<Output> {
+        let preference = self.ml.preference.unwrap_or_else(env_preference);
+        self.ml.query_queue.get_or_insert_with(|| Queue::new(Config { preference, ..Config::default() }, Box::new(gpu_probe), None))
+    }
+
     /// `ml.status {preference?}`.
     pub(crate) fn ml_status(&mut self, p: &Value) -> crate::Result<Value> {
         if let Some(v) = p.get("preference") {
@@ -451,6 +496,9 @@ impl Session {
             self.ml.preference = Some(pref);
             if let Some(q) = &self.ml.queue {
                 q.set_preference(pref);
+            }
+            if let Some(qq) = &self.ml.query_queue {
+                qq.set_preference(pref);
             }
         }
         let mut base = match &self.ml.queue {
@@ -529,6 +577,7 @@ impl Session {
             }
         }
         Ok(json!({
+            "dir": self.ml_models_dir.as_ref().map(|d| d.display().to_string()),
             "enabled": self.ml.enabled,
             "runtime": cfg!(not(target_arch = "wasm32")),
             "models": models,
@@ -668,7 +717,8 @@ impl Session {
         let models_dir = self.ml_models_dir.clone().ok_or_else(|| bad(C, "this session has no ML models folder configured"))?;
         let id = p.get("id").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad(C, "missing `id`"))?;
         let spec = lcc_ml::known::download(id).ok_or_else(|| bad(C, format!("unknown downloadable ML model {id:?}")))?;
-        let accepted = p.get("acceptLicence").or_else(|| p.get("acceptLicense")).and_then(Value::as_bool).unwrap_or(false);
+        let accepted =
+            p.get("acceptLicence").or_else(|| p.get("acceptLicense")).or_else(|| p.get("acknowledged")).and_then(Value::as_bool).unwrap_or(false);
         if !accepted {
             return Err(bad(
                 C,
@@ -837,7 +887,7 @@ impl Session {
             return Ok(enc);
         }
 
-        let clip = lcc_ml::Clip::load(&model_dir).map_err(|e| e.to_string())?;
+        let clip = lcc_ml::Clip::load_lazy(&model_dir).map_err(|e| e.to_string())?;
         let enc: Arc<dyn Encoder> = Arc::new(clip);
         self.ml.save_store_now();
         self.ml.encoder = Some((tag.clone(), Arc::clone(&enc)));
@@ -847,6 +897,14 @@ impl Session {
         self.ml.failed_photos.clear();
         self.ml.epoch = self.ml.epoch.wrapping_add(1);
         self.ensure_ml_store(&tag, manifest.embed_dim, expected_store_path)?;
+        let warm_enc = Arc::clone(&enc);
+        let _ = self.ml_query_queue().submit(
+            Job::new("prewarm:text", move |ctx: &Ctx| -> Result<Output, JobError> {
+                let _ = warm_enc.encode_text("", ctx)?;
+                Ok(Box::new(()))
+            })
+            .priority(Priority::Background),
+        );
         Ok(enc)
     }
 
@@ -914,7 +972,35 @@ impl Session {
         if should_save {
             self.ml.save_store_now();
         }
+        if added > 0 {
+            self.refresh_semantic_filter_from_cache();
+        }
         (added, failed)
+    }
+
+    /// Re-run the cached query vector against `ml.store` when new photo embeddings finish while
+    /// a semantic filter is active on `self.filter`.
+    pub(crate) fn refresh_semantic_filter_from_cache(&mut self) {
+        let Some(active_text) = self.filter.semantic.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string) else {
+            return;
+        };
+        let needs_encode = match (&self.ml.last_query, &self.ml.store) {
+            (Some(c), Some(st)) => c.text != active_text || c.tag != st.tag(),
+            _ => true,
+        };
+        if needs_encode {
+            let _ = self.apply_semantic_filter("ml.pump", Some(&active_text), None, None);
+            return;
+        }
+        let (Some(cached), Some(store)) = (self.ml.last_query.as_ref(), self.ml.store.as_ref()) else {
+            return;
+        };
+        let allowed: HashSet<u64> = self.catalog.photos().filter(|ph| ph.in_library()).map(|ph| ph.id.0).collect();
+        if let Ok(hits) = store.search(&cached.vec, cached.top_k, cached.threshold, Some(&allowed)) {
+            let ids: Vec<PhotoId> = hits.into_iter().map(|h| PhotoId(h.photo_id)).collect();
+            self.filter.only_none = ids.is_empty();
+            self.filter.only = ids;
+        }
     }
 
     /// Submit unindexed photos to `ml_queue`.
@@ -1117,27 +1203,153 @@ impl Session {
         }))
     }
 
-    /// `search.semantic {text, topK?: 50, threshold?: -1.0, scope?: "all" | "filtered" | "selected"}`.
+    /// Encode `text` using the active ML embedder (reusing `ml.last_query` when the text and model tag match).
+    fn encode_query_vec(&mut self, cmd_name: &'static str, text: &str) -> crate::Result<(Arc<dyn Encoder>, String, Vec<f32>)> {
+        let enc = self.ensure_ml_encoder(false).map_err(|e| bad(cmd_name, e))?;
+        let tag = enc.manifest().tag();
+        self.drain_ml_results();
+
+        if let Some(cached) = self.ml.last_query.as_ref()
+            && cached.text == text
+            && cached.tag == tag
+        {
+            return Ok((enc, tag, cached.vec.clone()));
+        }
+
+        self.ml.query_seq = self.ml.query_seq.wrapping_add(1);
+        let qkey = format!("query:{}", self.ml.query_seq);
+        let qtext = text.to_string();
+        let qenc = Arc::clone(&enc);
+        self.ml_query_queue()
+            .submit(
+                Job::new(qkey.clone(), move |ctx: &Ctx| -> Result<Output, JobError> {
+                    let vec = qenc.encode_text(&qtext, ctx)?;
+                    Ok(Box::new(QueryOutput(vec)))
+                })
+                .priority(Priority::Interactive),
+            )
+            .map_err(|e| bad(cmd_name, e.to_string()))?;
+
+        let started = web_time::Instant::now();
+        let mut query_vec: Option<Vec<f32>> = None;
+        while started.elapsed() < Duration::from_secs(30) {
+            let finished = self.ml.query_queue.as_ref().map(|q| q.drain()).unwrap_or_default();
+            for f in finished {
+                if f.key == qkey {
+                    match f.outcome {
+                        Outcome::Done(any) => {
+                            if let Ok(qout) = any.downcast::<QueryOutput>() {
+                                query_vec = Some(qout.0);
+                            }
+                        }
+                        Outcome::Failed(why) => return Err(bad(cmd_name, why)),
+                        Outcome::Cancelled => {
+                            return Err(crate::EngineError::Cancelled("semantic search cancelled".into()));
+                        }
+                    }
+                }
+            }
+            if query_vec.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        let qvec = query_vec.ok_or_else(|| bad(cmd_name, "semantic search timed out waiting for query embedding"))?;
+        Ok((enc, tag, qvec))
+    }
+
+    /// Set or clear the library's natural-language semantic filter (`library.filter {semantic}` or `search.semantic {filter: true}`).
+    pub(crate) fn apply_semantic_filter(
+        &mut self,
+        cmd_name: &'static str,
+        query: Option<&str>,
+        top_k: Option<usize>,
+        threshold: Option<f32>,
+    ) -> crate::Result<Vec<lcc_ml::Hit>> {
+        let Some(text) = query.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string) else {
+            self.filter.semantic = None;
+            self.filter.only.clear();
+            self.filter.only_none = false;
+            self.ml.last_query = None;
+            return Ok(Vec::new());
+        };
+        let top_k = top_k.unwrap_or(DEFAULT_FILTER_TOP_K);
+        let threshold = threshold.unwrap_or(DEFAULT_FILTER_THRESHOLD);
+        if cmd_name != "search.semantic" && self.selected_ml_model().is_none() {
+            self.shelved_filter = None;
+            self.filter.semantic = Some(text);
+            self.filter.only.clear();
+            self.filter.only_none = true;
+            self.ml.last_query = None;
+            return Ok(Vec::new());
+        }
+        let (enc, tag, qvec) = self.encode_query_vec(cmd_name, &text)?;
+        if self.ml.enabled && !self.ml.paused_by_user {
+            let _ = self.queue_ml_photos(&enc, None, Priority::Background);
+        }
+        let allowed: HashSet<u64> = self.catalog.photos().filter(|ph| ph.in_library()).map(|ph| ph.id.0).collect();
+        let hits = self
+            .ml
+            .store
+            .as_ref()
+            .map(|st| st.search(&qvec, top_k, threshold, Some(&allowed)))
+            .transpose()
+            .map_err(|e| bad(cmd_name, e.to_string()))?
+            .unwrap_or_default();
+        self.shelved_filter = None;
+        self.filter.semantic = Some(text.clone());
+        self.filter.only = hits.iter().map(|h| PhotoId(h.photo_id)).collect();
+        self.filter.only_none = self.filter.only.is_empty();
+        self.ml.last_query = Some(CachedQuery { text, tag, vec: qvec, top_k, threshold });
+        Ok(hits)
+    }
+
+    /// `search.semantic {text, topK?: 50, threshold?: -1.0, scope?: "all" | "filtered" | "selected", filter?: false, clear?: false}`.
     pub(crate) fn search_semantic(&mut self, p: &Value) -> crate::Result<Value> {
         const C: &str = "search.semantic";
-        let text = p
-            .get("text")
-            .or_else(|| p.get("query"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| bad(C, "missing non-empty `text` query"))?
-            .to_string();
-        let top_k = match p.get("topK") {
-            None | Some(Value::Null) => 50usize,
+        let filter_grid = p.get("filter").or_else(|| p.get("show")).and_then(Value::as_bool).unwrap_or(false);
+        let clear = p.get("clear").and_then(Value::as_bool).unwrap_or(false);
+        let raw_text = p.get("text").or_else(|| p.get("query")).and_then(Value::as_str).map(str::trim).unwrap_or("");
+        if clear || (filter_grid && raw_text.is_empty()) {
+            self.apply_semantic_filter(C, None, None, None)?;
+            self.reconcile_view();
+            self.save_view();
+            let filtered = self.visible().len();
+            return Ok(json!({
+                "query": "",
+                "cleared": true,
+                "hits": [],
+                "matches": [],
+                "filtered": filtered,
+            }));
+        }
+        if raw_text.is_empty() {
+            return Err(bad(C, "missing non-empty `text` query"));
+        }
+        let text = raw_text.to_string();
+        let top_k = match p.get("topK").or_else(|| p.get("limit")) {
+            None | Some(Value::Null) => {
+                if filter_grid {
+                    DEFAULT_FILTER_TOP_K
+                } else {
+                    50usize
+                }
+            }
             Some(v) => v
                 .as_u64()
                 .and_then(|n| usize::try_from(n).ok())
                 .filter(|&n| (1..=1000).contains(&n))
                 .ok_or_else(|| bad(C, "`topK` must be an integer between 1 and 1000"))?,
         };
-        let threshold = match p.get("threshold") {
-            None | Some(Value::Null) => -1.0f32,
+        let threshold = match p.get("threshold").or_else(|| p.get("minScore")) {
+            None | Some(Value::Null) => {
+                if filter_grid {
+                    DEFAULT_FILTER_THRESHOLD
+                } else {
+                    -1.0f32
+                }
+            }
             Some(v) => v
                 .as_f64()
                 .map(|x| x as f32)
@@ -1154,65 +1366,11 @@ impl Session {
             }
         };
 
-        let enc = self.ensure_ml_encoder(false).map_err(|e| bad(C, e))?;
+        let (enc, tag, qvec) = self.encode_query_vec(C, &text)?;
         let model_id = enc.manifest().id.clone();
-        self.drain_ml_results();
-
-        self.ml.query_seq = self.ml.query_seq.wrapping_add(1);
-        let qkey = format!("query:{}", self.ml.query_seq);
-        let qtext = text.clone();
-        let qenc = Arc::clone(&enc);
-        self.ml_submit(
-            Job::new(qkey.clone(), move |ctx: &Ctx| -> Result<Output, JobError> {
-                let vec = qenc.encode_text(&qtext, ctx)?;
-                Ok(Box::new(QueryOutput(vec)))
-            })
-            .priority(Priority::Interactive),
-        )
-        .map_err(|e| bad(C, e.to_string()))?;
-
-        let started = web_time::Instant::now();
-        let mut query_vec: Option<Vec<f32>> = None;
-        while started.elapsed() < Duration::from_secs(30) {
-            let finished = self.ml.queue.as_ref().map(|q| q.drain()).unwrap_or_default();
-            for f in finished {
-                if f.key == qkey {
-                    match f.outcome {
-                        Outcome::Done(any) => {
-                            if let Ok(qout) = any.downcast::<QueryOutput>() {
-                                query_vec = Some(qout.0);
-                            }
-                        }
-                        Outcome::Failed(why) => return Err(bad(C, why)),
-                        Outcome::Cancelled => {
-                            return Err(crate::EngineError::Cancelled("semantic search cancelled".into()));
-                        }
-                    }
-                } else if let Some(rest) = f.key.strip_prefix("embed:")
-                    && let Ok(raw_id) = rest.parse::<u64>()
-                {
-                    let pid = PhotoId(raw_id);
-                    self.ml.in_flight.remove(&pid);
-                    if let Outcome::Done(any) = f.outcome
-                        && let Ok(out) = any.downcast::<EmbedOutput>()
-                        && out.epoch == self.ml.epoch
-                        && let Some(photo) = self.catalog.photo(out.photo_id)
-                        && photo.in_library()
-                        && photo_fingerprint(photo) == out.fingerprint
-                        && let Some(store) = &mut self.ml.store
-                        && store.tag() == out.tag
-                    {
-                        let _ = store.insert(out.photo_id.0, out.fingerprint, out.embedding);
-                    }
-                }
-            }
-            if query_vec.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
+        if filter_grid && self.ml.enabled && !self.ml.paused_by_user {
+            let _ = self.queue_ml_photos(&enc, None, Priority::Background);
         }
-
-        let qvec = query_vec.ok_or_else(|| bad(C, "semantic search timed out waiting for query embedding"))?;
         let hits = self
             .ml
             .store
@@ -1224,20 +1382,50 @@ impl Session {
         let indexed = self.ml.store.as_ref().map_or(0, Store::len);
         let pending = self.unindexed_photo_count();
 
+        if filter_grid {
+            self.shelved_filter = None;
+            self.filter.semantic = Some(text.clone());
+            self.filter.only = hits.iter().map(|h| PhotoId(h.photo_id)).collect();
+            self.filter.only_none = self.filter.only.is_empty();
+            self.ml.last_query = Some(CachedQuery { text: text.clone(), tag, vec: qvec, top_k, threshold });
+            self.reconcile_view();
+            self.save_view();
+        }
+
         let rows: Vec<Value> = hits.iter().map(|h| json!({"id": h.photo_id, "score": h.score})).collect();
-        Ok(json!({
+        let mut out = json!({
             "query": text,
             "modelId": model_id,
             "hits": rows,
             "matches": rows,
             "indexedPhotos": indexed,
             "pendingPhotos": pending,
-        }))
+        });
+        if filter_grid && let Some(obj) = out.as_object_mut() {
+            obj.insert("filtered".into(), json!(self.visible().len()));
+        }
+        Ok(out)
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl Session {
+    pub(crate) fn apply_semantic_filter(
+        &mut self,
+        cmd_name: &'static str,
+        query: Option<&str>,
+        _top_k: Option<usize>,
+        _threshold: Option<f32>,
+    ) -> crate::Result<Vec<lcc_ml::Hit>> {
+        if query.map(str::trim).filter(|s| !s.is_empty()).is_none() {
+            self.filter.semantic = None;
+            self.filter.only.clear();
+            self.filter.only_none = false;
+            self.ml.last_query = None;
+            return Ok(Vec::new());
+        }
+        Err(bad(cmd_name, "semantic search is not available in the web build"))
+    }
     pub(crate) fn ml_pump(&mut self, _p: &Value) -> crate::Result<Value> {
         Ok(json!({
             "active": false,

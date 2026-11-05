@@ -34,6 +34,7 @@ pub mod mask_effects;
 pub mod mask_pickers;
 pub mod masking;
 pub mod metadata;
+pub mod ml_models;
 pub mod navigator;
 pub mod notices;
 #[cfg(not(target_arch = "wasm32"))]

@@ -1380,6 +1380,9 @@ pub struct UiState {
     #[serde(skip)]
     pub dragging_control: Option<String>,
     pub search: String,
+    /// Search box uses natural-language (semantic) search (`library.filter {"semantic": …}`) instead of text match.
+    #[serde(skip)]
+    pub semantic_search: bool,
     /// Focus the search field on the next frame (Edit → Find…).
     #[serde(skip)]
     pub focus_search: bool,
@@ -2336,6 +2339,7 @@ impl Default for UiState {
             sidecars_waiting: 0,
             known_cards: None,
             search: String::new(),
+            semantic_search: false,
             focus_search: false,
             renaming_mask: None,
             describe: None,

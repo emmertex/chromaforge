@@ -1274,13 +1274,41 @@ impl LccApp {
             };
         }
         if r.is_ok() && id == "library.toggleFilters" {
-            // the search field shows the text filter: empty while the filters are off, back with them
-            self.ui.search = self.session.filter.text.clone();
+            // the search field shows the active text or semantic filter: empty while the filters are off, back with them
+            if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                self.ui.search = q.clone();
+            } else if !self.session.filter.text.is_empty() {
+                self.ui.semantic_search = false;
+                self.ui.search = self.session.filter.text.clone();
+            } else {
+                self.ui.search.clear();
+            }
         }
         if r.is_ok() && id == "library.clearFilter" {
             // the search field shows the text filter: cleared from anywhere (the loupe's pill, the
             // menu), it must not keep a search that no longer applies (issue #1648)
             self.ui.search.clear();
+        }
+        if r.is_ok() && id == "search.semantic" {
+            if params.get("clear").and_then(Value::as_bool) == Some(true) {
+                if self.ui.semantic_search {
+                    self.ui.search.clear();
+                }
+            } else if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                self.ui.search = q.clone();
+            }
+        }
+        if r.is_ok() && id == "library.filter" && params.get("semantic").is_some() {
+            if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                if self.ui.search.trim() != q {
+                    self.ui.search = q.clone();
+                }
+            } else if self.ui.semantic_search && params.get("semantic").is_some_and(Value::is_null) {
+                self.ui.search.clear();
+            }
         }
         if r.is_ok() && id == "mask.addComponent" && matches!(self.ui.tool.as_str(), "colorRange" | "brush" | "object") {
             // The eyedropper, the brush and the object tool take every press on the photo, so the handles of a

@@ -29,7 +29,7 @@ cited here still exists. Formerly docs/parity.md.
 | A. Import (IMP) | 16 | 4 | 1 | 1 | 4/6 (67%) | 7/7 (100%) |
 | B. Library management (LIB) | 22 | 2 | 1 | 2 | 9/9 (100%) | 9/9 (100%) |
 | C. Views & navigation (VIEW) | 18 | 2 | 0 | 0 | 9/9 (100%) | 5/5 (100%) |
-| D. Search & filter (FILT) | 11 | 1 | 1 | 0 | 4/4 (100%) | 4/4 (100%) |
+| D. Search & filter (FILT) | 12 | 1 | 0 | 0 | 4/4 (100%) | 4/4 (100%) |
 | E. Metadata (META) | 5 | 1 | 0 | 0 | 2/2 (100%) | 2/2 (100%) |
 | F. Edit panel — global adjustments (EDIT) | 44 | 5 | 1 | 1 | 28/28 (100%) | 13/15 (87%) |
 | G. Profiles (PROF) | 8 | 5 | 3 | 0 | 3/4 (75%) | 3/4 (75%) |
@@ -54,9 +54,9 @@ cited here still exists. Formerly docs/parity.md.
 | Z. Keyboard shortcuts (desktop) | 77 | 5 | 2 | 1 | 48/52 (92%) | 24/26 (92%) |
 | Lightroom Classic extras | 105 | 20 | 3 | 0 | — | 36/40 (90%) |
 | IMM. Immich integration | 11 | 0 | 0 | 0 | — | 7/7 (100%) |
-| **Total** | 516 | 76 | 27 | 26 | 195/203 (96%) | 172/191 (90%) |
+| **Total** | 517 | 76 | 26 | 26 | 195/203 (96%) | 172/191 (90%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.5%** of 619 in-scope rows — P0 98.0% of 203 · P1 94.8% of 191 · P2 77.4% of 221.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.7%** of 619 in-scope rows — P0 98.0% of 203 · P1 94.8% of 191 · P2 77.8% of 221.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -227,7 +227,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | Id | Feature | Tier | Status | Evidence | Missing / notes |
 |---|---|---|---|---|---|
 | LR-FILT-SEARCH-META | Text search | P0 | ✅ | `cmd:library.filter` (`text`), `crates/ui-egui/src/panels/topbar.rs`, `crates/catalog/src/query.rs` | fielded tokens (`rating:3`, `iso:>800`, `camera:…`); plain words also match the people named on faces; double quotes keep several words in one token (`person:"Jane Doe"`, `"jane doe"`, issue #1449); no suggestions dropdown |
-| LR-FILT-SEARCH-AI | Natural-language search | P2 | ⬜ | | |
+| LR-FILT-SEARCH-AI | Natural-language search | P2 | ✅ | `cmd:search.semantic`, `cmd:library.filter` (`semantic`), `cmd:ml.models.download`, `cmd:ml.index`, `crates/ml/src/clip.rs`, `crates/engine/src/ml.rs`, `crates/ui-egui/src/panels/topbar.rs`, `crates/ui-egui/src/panels/ml_models.rs` | Search the library with descriptive phrases (e.g. “moody studio portraits”) using CLIP image-text embeddings (`clip-vit-b32-laion2b`, MIT, downloadable in Settings ▸ AI Models after licence acknowledgement) computed in the background on `ml-queue` (`ml.pump`) and cached in `ml-embeddings-<id>.bin`; top-bar and Modern search box `AI` toggle (`search:ai`, `modern:search:ai`), removable `AI search: “…”` filter chip, similarity ranking under the default sort, and full composition with ratings, flags, colour labels, keywords, smart-album rules and folders (issue #487) |
 | LR-FILT-RATING | Rating filter | P0 | ✅ | `cmd:library.filter` (`rating`, `ratingOp`), `crates/ui-egui/src/panels/filterbar.rs` | ≥ / = / ≤ stars in the filter bar (`cmd:view.filterBar`) and Library ▸ Filter by Rating (`crates/ui-egui/src/menubar.rs`; picking the same stars again clears it); unrated photos never pass ≥ 1 and count as below one star for ≤; = or ≤ no stars shows the unrated photos (chip “Unrated”), ≥ no stars everything; search `rating:>=N` / `rating:<=N` |
 | LR-FILT-FLAG | Flag filter | P0 | ✅ | `cmd:library.filter` (`flag`), `crates/ui-egui/src/panels/filterbar.rs` | picked / rejected / unflagged (one at a time); live counts beside the flag and label toggles (`cmd:library.tally`, ported from OneSlips) |
 | LR-FILT-LABEL | Colour-label filter | P1 | ✅ | `cmd:library.filter` (`label`), `crates/ui-egui/src/panels/filterbar.rs` | one label at a time; no “no label” choice |

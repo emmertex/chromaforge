@@ -582,13 +582,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "Filter",
             [],
             None,
-            "partial Filter: {text?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
+            "partial Filter: {text?, semantic?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
             always,
             |s, p| {
                 let mut v = serde_json::to_value(&s.filter).unwrap_or_default();
                 lcc_develop::presets::deep_merge(&mut v, p);
                 let f: Filter = serde_json::from_value(v).map_err(|e| bad("library.filter", e.to_string()))?;
                 let mut f = f;
+                f.semantic = f.semantic.map(|q| q.trim().to_string()).filter(|q| !q.is_empty());
                 // a blank folder is no folder: no hidden "filters active" state
                 f.library_folder = f.library_folder.filter(|d| !d.trim().is_empty());
                 if f.library_folder.is_some() && s.source == LibrarySource::LibraryFolder {
@@ -609,7 +610,23 @@ pub fn specs() -> Vec<CommandSpec> {
                 if p.get("album").is_some_and(|a| !a.is_null()) && f.album.is_some_and(|a| s.catalog.album(a).is_none()) {
                     return Err(bad("library.filter", "no such collection"));
                 }
+                let sets_semantic = p.get("semantic").is_some();
+                let sets_only = p.get("only").is_some();
                 s.filter = f;
+                if sets_semantic {
+                    if let Some(q) = s.filter.semantic.clone() {
+                        if !sets_only {
+                            s.apply_semantic_filter("library.filter", Some(&q), None, None)?;
+                        }
+                    } else if !sets_only {
+                        s.filter.only.clear();
+                        s.filter.only_none = false;
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            s.ml.last_query = None;
+                        }
+                    }
+                }
                 s.shelved_filter = None;
                 Ok(json!({"count": s.visible().len()}))
             }
@@ -705,6 +722,10 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("library.clearFilter", "Clear Filters", ["Library", "Filters"], None, "{}", always, |s, _| {
             s.filter = Default::default();
             s.shelved_filter = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                s.ml.last_query = None;
+            }
             Ok(json!({"count": s.visible().len()}))
         }),
         // Classic: Library > Enable Filters (Cmd+L) switches the filter off and on again as it was
