@@ -1325,6 +1325,19 @@ pub fn row_margin(ui: &Ui, classic: egui::Margin, top: i8, bottom: i8) -> egui::
     if crate::theme::compact(ui.ctx()) { egui::Margin { left: PAD_L as i8, right: PAD_R as i8, top, bottom } } else { classic }
 }
 
+/// A caption over a row of buttons (Upright, Adjust): Classic's body label as it always was; in the Compact layout a
+/// quiet one in the slider names' small type (`label:{id}`), so it reads below the section header and its buttons.
+pub fn row_caption(ui: &mut Ui, id: &str, text: &str) -> Response {
+    let r = if crate::theme::compact(ui.ctx()) {
+        let t = Tokens::get(ui.ctx());
+        ui.label(egui::RichText::new(crate::i18n::tr(text)).font(t.font(11.0)).color(t.text_dim))
+    } else {
+        ui.label(crate::i18n::tr(text))
+    };
+    register(ui.ctx(), format!("label:{id}"), r.rect);
+    r
+}
+
 /// Title size of a Compact section header (Basic, Detail…); sub-tool rows use [`SUB_TITLE`].
 pub(crate) const SECTION_TITLE: f32 = 13.0;
 /// Title size of a Compact sub-tool row (Defringe, SDR Rendition…): smaller and regular weight, so
