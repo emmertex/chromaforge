@@ -519,6 +519,11 @@ pub struct Plan<'a> {
     /// Key of the white-balanced, retouched, denoised, skin-smoothed image (and of the planes
     /// computed from it).
     pub lin_key: u64,
+    /// [`Self::lin_key`] of the whole output frame: the same for every window of it (a zoomed
+    /// view's tiles), so what is worked out from a window's linear pixels can be kept in the
+    /// whole frame's coordinates ([`Self::filter_frame`] places the window) and shared by the
+    /// windows around it.
+    pub frame_lin_key: u64,
     /// [`Self::lin_key`] before Smooth Skin (equal to it when Smooth Skin is off).
     pub nr_key: u64,
     /// [`Self::lin_key`] without the noise-reduction settings: draft renders reuse the smooth
@@ -629,6 +634,21 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     ));
     // a generated patch whose file appears (or goes) changes the image
     let shown: Vec<bool> = genpatch::shown(&s.spots, info.generated.as_ref()).iter().map(Option::is_some).collect();
+    // (what makes the linear image besides the window: the window's own geometry and red-eye
+    // positions are left out, so every window of the frame shares it)
+    let frame_lin_key = hash_of((
+        format!("{whole_frame:?}"),
+        (full_w, full_h),
+        [wb_t, wb_tint, info.as_shot_temp, info.as_shot_tint].map(f64::to_bits),
+        format!("{:?}", s.spots),
+        format!("{:?}", s.red_eye),
+        format!("{:?}", s.optics),
+        local_tone::enabled(info, s),
+        src_long,
+        source_filters.key,
+        &shown,
+        format!("{:?}", info.avoid),
+    ));
     let pre_nr_key = hash_of((pre_nr_key, shown, format!("{:?}", info.avoid)));
     // a draft's colour NR may take the half-resolution blur: its result is never a final render's
     let draft_nr = req.quality == Quality::Draft && d.nr_color > 0.0;
@@ -642,6 +662,14 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         (None, None) => nr_key,
         (k, r) => hash_of((nr_key, k, r)),
     };
+    let frame_lin_key = hash_of((
+        frame_lin_key,
+        [d.nr_luminance, d.nr_detail, d.nr_color, d.nr_color_detail, d.nr_color_smoothness].map(f64::to_bits),
+        detail_scale.to_bits(),
+        draft_nr,
+        skin::key(s),
+        retouch::key(s),
+    ));
     // AI masks without a model: analysed once per photo look on the whole frame (cached)
     let mattes = if auto_mask::needed(s) {
         let mut m = info.mattes.as_deref().cloned().unwrap_or_default();
@@ -661,6 +689,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         detail_scale,
         geo,
         lin_key,
+        frame_lin_key,
         nr_key,
         pre_nr_key,
         eyes,
