@@ -415,6 +415,11 @@ fn push_step(mesh: &mut Mesh, a: Pos2, b: Pos2, bottom: f32, color: Color32) {
 
 /// Fill the area under `bins` with `color`, inside `track`.
 fn fill_curve(p: &Painter, track: Rect, bins: &[f32], scale: HistogramScale, peak: f32, color: Color32) {
+    p.add(curve_mesh(track, bins, scale, peak, color));
+}
+
+/// The area under `bins` in `track`, as one mesh of `color`.
+fn curve_mesh(track: Rect, bins: &[f32], scale: HistogramScale, peak: f32, color: Color32) -> Mesh {
     let mut mesh = Mesh::default();
     let mut prev: Option<Pos2> = None;
     for i in 0..Histogram::BINS {
@@ -424,7 +429,7 @@ fn fill_curve(p: &Painter, track: Rect, bins: &[f32], scale: HistogramScale, pea
         }
         prev = Some(top);
     }
-    p.add(mesh);
+    mesh
 }
 
 /// The hairline of `bins` itself, over its fill.
@@ -632,6 +637,50 @@ fn paint_waveform(p: &Painter, plot: Rect, h: &Histogram, mode: HistogramMode, s
         };
         p.image(tex.id(), track, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
+}
+
+/// The Compact layout's channel fills (premultiplied with no alpha, so they add up where they
+/// overlap): red, green and blue alone, the secondary colours where two meet, a light grey where all
+/// three do, as Lightroom Classic's histogram reads (own design after its look).
+pub const SOFT_FILLS: [Color32; 3] = [
+    Color32::from_rgba_premultiplied(150, 28, 28, 0),
+    Color32::from_rgba_premultiplied(28, 140, 32, 0),
+    Color32::from_rgba_premultiplied(30, 42, 160, 0),
+];
+
+/// `bins` smoothed twice over ([`smooth`] of [`smooth`]: a nine-bin triangle), so the soft fills
+/// have rounded tops instead of the raw bins' needles.
+fn soft(bins: &[u32]) -> Vec<f32> {
+    let once = smooth(bins);
+    (0..Histogram::BINS)
+        .map(|i| {
+            let from = i.saturating_sub(2);
+            let to = (i + 3).min(Histogram::BINS);
+            let sum: f32 = once.get(from..to).map_or(0.0, |w| w.iter().sum());
+            sum / to.saturating_sub(from).max(1) as f32
+        })
+        .collect()
+}
+
+/// Draw `h`'s distribution in `plot` as the Compact layout does: in RGB Overlap the three channels as
+/// soft filled areas that add up where they overlap (no graticule, no luminance line); the other
+/// modes as [`paint_plot`] draws them.
+pub fn paint_plot_compact(p: &Painter, plot: Rect, h: &Histogram, mode: HistogramMode, scale: HistogramScale) {
+    if mode != HistogramMode::RgbOverlap || !(plot.width() > 1.0 && plot.height() > 1.0) {
+        paint_plot(p, plot, h, mode, scale);
+        return;
+    }
+    for mesh in soft_fills(plot, h, scale) {
+        p.add(mesh);
+    }
+}
+
+/// The Compact RGB Overlap's three filled areas (red, green, blue) in `plot`, one mesh each, in
+/// [`SOFT_FILLS`]' colours.
+pub fn soft_fills(plot: Rect, h: &Histogram, scale: HistogramScale) -> Vec<Mesh> {
+    let (r, g, b) = (soft(&h.r), soft(&h.g), soft(&h.b));
+    let peak = peak(&[&r, &g, &b]);
+    [&r, &g, &b].into_iter().zip(SOFT_FILLS).map(|(bins, fill)| curve_mesh(plot, bins, scale, peak, fill)).collect()
 }
 
 /// Draw `h`'s distribution in `plot`, in `mode` and at `scale`.
