@@ -5604,13 +5604,40 @@ pub(crate) fn shot_info(m: &lcc_catalog::Meta, size: [usize; 2]) -> Vec<String> 
         v.push(format!("{f:.0} mm"));
     }
     let lens = m.lens.trim();
-    if !lens.is_empty() {
-        v.push(lens.to_string());
+    // the lens's focal range (OneSlips PERF-CULL-7), in brackets after the focal length shot: added to a lens name
+    // that doesn't say it ("Sigma Art" → "Sigma Art (24–70 mm)"), or alone when the file names no lens
+    let range = m.lens_range.and_then(|r| lens_range_text(lens, r));
+    match (lens.is_empty(), range) {
+        (false, Some(r)) => v.push(format!("{lens} {r}")),
+        (false, None) => v.push(lens.to_string()),
+        (true, Some(r)) => v.push(r),
+        (true, None) => {}
     }
     if size[0] > 1 && size[1] > 1 {
         v.push(format!("{} × {}", size[0], size[1]));
     }
     v
+}
+
+/// "(24–70 mm)" or, for a prime, "(85 mm)": a lens's focal range for the shot info, unless `lens` already names it
+/// (its digits are in the name) or the range is unusable.
+fn lens_range_text(lens: &str, (a, b): (f32, f32)) -> Option<String> {
+    if !(a.is_finite() && b.is_finite() && a > 0.0 && b >= a && b < 100_000.0) {
+        return None;
+    }
+    let (short, long) = (format!("{a:.0}"), format!("{b:.0}"));
+    let named = |n: &str| {
+        // the number standing on its own in the name (`24-70mm`, `FE 85mm`), not inside a longer one
+        lens.match_indices(n).any(|(i, _)| {
+            let before = lens.get(..i).and_then(|s| s.chars().last());
+            let after = lens.get(i + n.len()..).and_then(|s| s.chars().next());
+            !before.is_some_and(|c| c.is_ascii_digit()) && !after.is_some_and(|c| c.is_ascii_digit())
+        })
+    };
+    if !lens.is_empty() && named(&short) && named(&long) {
+        return None;
+    }
+    Some(if short == long { format!("({short} mm)") } else { format!("({short}–{long} mm)") })
 }
 
 /// The shot info strip: one line under the photo, or a slim pill over the bottom edge of the part
