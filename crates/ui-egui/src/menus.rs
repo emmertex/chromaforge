@@ -1247,8 +1247,17 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.before_after = if app.ui.before_after == BeforeAfter::SplitTopBottom { BeforeAfter::Off } else { BeforeAfter::SplitTopBottom };
             Ok(Value::Null)
         }
+        // {on?}: the photo without its edit while on (the Compact histogram's Original Photo box);
+        // no params toggles
         "view.showOriginal" => {
-            app.ui.before_after = if app.ui.before_after == BeforeAfter::Original { BeforeAfter::Off } else { BeforeAfter::Original };
+            let shown = app.ui.before_after == BeforeAfter::Original;
+            let on = match bool_param(id, p, "on") {
+                Ok(v) => v.unwrap_or(!shown),
+                Err(e) => return Some(Err(e)),
+            };
+            if on != shown {
+                app.ui.before_after = if on { BeforeAfter::Original } else { BeforeAfter::Off };
+            }
             Ok(Value::Null)
         }
         "view.zoomFit" => {
