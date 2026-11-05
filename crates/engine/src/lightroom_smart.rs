@@ -18,8 +18,9 @@ use crate::preset_import::{Lua, parse_lua};
 const MAX_DEPTH: usize = 16;
 
 /// The rule set a smart collection's `content` describes, or why it can't be expressed.
-/// `collections` are the imported (non-folder) collections, name and album, which a `collection`
-/// rule (a text match on the names of the collections a photo is in) resolves against.
+/// `collections` are the imported ordinary collections (not sets, not smart collections), name and
+/// album, which a `collection` rule (a text match on the names of the collections a photo is in)
+/// resolves against.
 pub(crate) fn smart_rules(content: &str, collections: &[(&str, AlbumId)]) -> Result<RuleSet, String> {
     let root = parse_lua(content)?;
     group(&root, 0, collections)
