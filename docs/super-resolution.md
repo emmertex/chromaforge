@@ -14,7 +14,10 @@ The work runs in the background with a row in the activity stack that shows its 
 
 The photo is rendered **as an export renders it** — with all its edits, crop, masks and AI Denoise — to 16-bit sRGB
 at its full (cropped) size. The upscaler works on that picture, because models of this kind are trained on finished
-sRGB pictures. The new TIFF has the look baked in, so it starts with no edits of its own; edit it like any other
+sRGB pictures. The Enhance dialog (or `space`) also offers **Display P3** and **Adobe RGB**, which keep more
+saturated colours than sRGB and are close enough to it that the upscaler behaves the same; the TIFF is tagged with
+the space's profile. ProPhoto RGB and Rec. 2020 are refused: too far from what the model learned on. The dialog's
+preview is always shown in sRGB. The new TIFF has the look baked in, so it starts with no edits of its own; edit it like any other
 photo. Changing the source's edits afterwards doesn't change the TIFF: run the Enhance again.
 
 This differs from Lightroom, whose Super Resolution keeps a raw a raw (an enhanced DNG that the raw's edits carry

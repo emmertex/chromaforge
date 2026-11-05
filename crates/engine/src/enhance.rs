@@ -74,6 +74,20 @@ impl EnhanceKind {
 /// The largest 16-bit sample.
 const U16_MAX: f32 = 65535.0;
 
+/// The colour spaces an AI result may be made in, as `space` names them: the upscaler learned on sRGB pictures, and
+/// these keep close enough to it that it behaves the same; ProPhoto RGB and Rec. 2020 are too far.
+pub const AI_SPACES: [(&str, OutputSpace); 3] =
+    [("srgb", OutputSpace::Srgb), ("displayP3", OutputSpace::DisplayP3), ("adobeRgb", OutputSpace::AdobeRgb)];
+
+/// The colour space `name` stands for, if an AI result may be made in it.
+pub fn ai_space(name: &str) -> std::result::Result<OutputSpace, String> {
+    match OutputSpace::parse(name) {
+        Some(s) if AI_SPACES.iter().any(|(_, a)| *a == s) => Ok(s),
+        Some(s) => Err(format!("{} is too far from sRGB for the upscaler: use srgb, displayP3 or adobeRgb", s.label())),
+        None => Err(format!("unknown colour space `{name}`: use srgb, displayP3 or adobeRgb")),
+    }
+}
+
 /// The installed upscaler an AI job runs, loaded on the job's thread, and what goes into it.
 #[derive(Clone)]
 struct AiPlan {
@@ -81,6 +95,8 @@ struct AiPlan {
     onnx: std::path::PathBuf,
     manifest: DenoiserManifest,
     run_on: RunOn,
+    /// The colour space the photo is rendered in, the model works on and the TIFF is tagged with.
+    space: OutputSpace,
     /// The photo as an export renders it (its edits, crop and all), full size, 16-bit sRGB: what goes into the model.
     job: crate::media::RenderJob,
     metadata: Option<lcc_meta::Metadata>,
@@ -151,7 +167,7 @@ impl AiPlan {
 
     fn encode(&self, image: &Rgb32f) -> std::result::Result<Vec<u8>, String> {
         let samples = image.data.iter().flatten().map(|v| (v.clamp(0.0, 1.0) * U16_MAX).round() as u16).collect();
-        let deep = DeepImage { width: image.width, height: image.height, space: OutputSpace::Srgb, samples: DeepSamples::U16(samples) };
+        let deep = DeepImage { width: image.width, height: image.height, space: self.space, samples: DeepSamples::U16(samples) };
         crate::export::encode_deep(&deep, &tiff_options(), self.metadata.as_ref())
     }
 }
@@ -392,7 +408,8 @@ impl Session {
         Ok((installed, settings.run_on()))
     }
 
-    pub fn plan_enhance(&mut self, kind: EnhanceKind, ids: &[PhotoId]) -> Result<Vec<EnhanceWork>> {
+    /// `space` is the colour space of an AI result ([`ai_space`]); other kinds ignore it.
+    pub fn plan_enhance(&mut self, kind: EnhanceKind, ids: &[PhotoId], space: OutputSpace) -> Result<Vec<EnhanceWork>> {
         if let EnhanceKind::AiSuperResolution(f) = kind
             && f != 2
             && f != 4
@@ -420,12 +437,13 @@ impl Session {
                             let (w, h) = crate::export::output_size(p, &tiff_options());
                             check_result_size(w as f64, h as f64, factor).map_err(EngineError::Other)?;
                             let metadata = crate::export::export_metadata(p, &self.catalog, &tiff_options());
-                            let job = self.export_job(*id, w, h, OutputSpace::Srgb, OutputDepth::U16).map_err(EngineError::Other)?;
+                            let job = self.export_job(*id, w, h, space, OutputDepth::U16).map_err(EngineError::Other)?;
                             Some(AiPlan {
                                 loader: self.denoise.loader.clone(),
                                 onnx: i.onnx.clone(),
                                 manifest: i.manifest.clone(),
                                 run_on: *run_on,
+                                space,
                                 job,
                                 metadata,
                             })
@@ -492,7 +510,14 @@ impl Session {
     /// `enhance.rawDetails` / `enhance.superResolution` / `enhance.aiSharpen` `{ids?, stack?: true, wait?: false}`.
     pub(crate) fn enhance_command(&mut self, kind: EnhanceKind, p: &Value) -> Result<Value> {
         let ids = self.targets(p)?;
-        let work = self.plan_enhance(kind, &ids)?;
+        let space = match p.get("space") {
+            None | Some(Value::Null) => OutputSpace::Srgb,
+            Some(_) if kind.ai_factor().is_none() => {
+                return Err(EngineError::Other(format!("`space` is for AI Super Resolution and AI Sharpen; {} makes a DNG", kind.label())));
+            }
+            Some(v) => ai_space(v.as_str().unwrap_or("")).map_err(EngineError::Other)?,
+        };
+        let work = self.plan_enhance(kind, &ids, space)?;
         let stack = p.get("stack").and_then(Value::as_bool).unwrap_or(true);
         let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false) || cfg!(target_arch = "wasm32");
         let cancel = Arc::new(AtomicBool::new(false));
@@ -598,5 +623,15 @@ mod tests {
         assert!(check_result_size(f64::NAN, 4000.0, 2).is_err());
         assert!(check_result_size(6000.0, f64::INFINITY, 2).is_err());
         assert!(check_result_size(0.0, 4000.0, 2).is_err());
+    }
+
+    #[test]
+    fn an_ai_result_is_made_only_in_a_space_near_srgb() {
+        use super::ai_space;
+        use lcc_pipeline::OutputSpace;
+        assert_eq!(ai_space("displayP3"), Ok(OutputSpace::DisplayP3));
+        assert_eq!(ai_space("adobeRgb"), Ok(OutputSpace::AdobeRgb));
+        assert!(ai_space("prophoto").is_err());
+        assert!(ai_space("").is_err());
     }
 }

@@ -27,12 +27,14 @@ pub struct EnhanceDialog {
     pub ai_super_resolution: bool,
     /// AI Sharpen with the installed upscaler (overrides the others).
     pub ai_sharpen: bool,
+    /// The colour space of an AI result (`space` of the commands: srgb, displayP3, adobeRgb).
+    pub space: String,
     pub stack: bool,
 }
 
 impl Default for EnhanceDialog {
     fn default() -> Self {
-        EnhanceDialog { super_resolution: false, ai_super_resolution: false, ai_sharpen: false, stack: true }
+        EnhanceDialog { super_resolution: false, ai_super_resolution: false, ai_sharpen: false, space: "srgb".into(), stack: true }
     }
 }
 
@@ -125,12 +127,22 @@ pub fn confirm(app: &mut LccApp, opts: &EnhanceDialog) -> Result<Value, String> 
     app.enhance.stop();
     let ids: Vec<u64> = app.enhance.ids.iter().map(|i| i.0).collect();
     let method = if opts.ai_super_resolution { "ai" } else { "classical" };
-    app.run(opts.command(), json!({"ids": ids, "stack": opts.stack, "method": method}))
+    let mut p = json!({"ids": ids, "stack": opts.stack, "method": method});
+    if opts.kind().ai_factor().is_some() {
+        p["space"] = json!(opts.space);
+    }
+    app.run(opts.command(), p)
 }
 
 fn spawn(app: &mut LccApp, kind: EnhanceKind) -> Result<PreviewTask, String> {
     let first = app.enhance.ids.first().copied().ok_or("select a photo to enhance")?;
-    let work = app.session.plan_enhance(kind, &[first]).map_err(|e| e.to_string())?.into_iter().next().ok_or("nothing to enhance")?;
+    let work = app
+        .session
+        .plan_enhance(kind, &[first], lcc_pipeline::OutputSpace::Srgb)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .next()
+        .ok_or("nothing to enhance")?;
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = channel();
     let flag = cancel.clone();
@@ -306,6 +318,22 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut EnhanceDialog) {
                     ui,
                     egui::RichText::new(crate::i18n::tr("Finer detail from the AI upscaler at the same size, as a new TIFF.")).color(t.text_dim),
                 );
+                if kind.ai_factor().is_some() {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(crate::i18n::tr("Colour space of the TIFF")).color(t.text_label));
+                    for (key, space) in lcc_engine::enhance::AI_SPACES {
+                        if ui.radio(opts.space == key, space.label()).clicked() {
+                            opts.space = key.to_string();
+                        }
+                    }
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(
+                            "Display P3 and Adobe RGB keep more saturated colours than sRGB. The preview is shown in sRGB.",
+                        ))
+                        .color(t.text_dim),
+                    );
+                }
             } else if app.session.keeps_ai_models() {
                 // where the AI methods come from, in this app's own settings
                 crate::dialog_frame::note(
