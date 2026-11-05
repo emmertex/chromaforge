@@ -32,8 +32,8 @@ struct Entry {
     key: u64,
     /// The render pass that last used it.
     pass: u64,
-    /// Only batch renders used it (the windows around the one on screen, made ahead): those never
-    /// evict what an interactive render keeps.
+    /// Only batch renders used it (work made ahead in the background, `gate::is_batch`): those
+    /// never evict what an interactive render keeps.
     batch: bool,
     /// The photo it was worked out on (its identity: a live `Weak` keeps the address from reuse).
     src: Weak<Rgb32f>,
@@ -85,9 +85,8 @@ pub(crate) fn get(src: &Arc<Rgb32f>, key: u64, pass: u64, generation: u64, batch
 /// (for an interactive render only) the least recently used others; never one `pass` used (then
 /// `kept` isn't kept).
 ///
-/// At 100 % the loupe makes the eight windows around the one on screen ahead, as batch renders:
-/// each one's dozen big strokes filled the store, so returning to 100 % found none of the window
-/// on screen.
+/// Background renders (exports, neighbours made ahead) can work out a dozen big strokes each:
+/// without this they would fill the store and push out the strokes of the view on screen.
 pub(crate) fn put(src: &Arc<Rgb32f>, key: u64, pass: u64, batch: bool, kept: Arc<Kept>) {
     let mut store = lock();
     store.retain(|e| e.src.strong_count() > 0);
