@@ -55,7 +55,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let t0 = web_time::Instant::now();
     // the filmstrip runs under the Grid too, as in Lightroom Classic (the fork's)
     let full = ui.max_rect();
-    let film_h = Tokens::get(ui.ctx()).film_h;
+    let film_h = app.ui.film_height();
     if crate::module::edge_visible(app, crate::module::Edge::Bottom) && !app.ui.fullscreen && full.height() > film_h * 2.0 {
         let grid = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
         ui.scope_builder(egui::UiBuilder::new().max_rect(grid), |ui| show_inner(app, ui));

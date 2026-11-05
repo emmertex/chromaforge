@@ -191,6 +191,8 @@ mod tests_error_kinds;
 #[cfg(test)]
 mod tests_filmstrip;
 #[cfg(test)]
+mod tests_filmstrip_resize;
+#[cfg(test)]
 mod tests_filter_search;
 #[cfg(test)]
 mod tests_focus_point;

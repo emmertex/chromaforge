@@ -164,6 +164,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.fullScreenPreview", "Full Screen Preview", Some("F"), "Window>Screen Mode"),
     ("view.enterFullScreen", "Enter Full Screen", Some("Cmd+Shift+F"), "Window>Screen Mode"),
     ("view.infoOverlay", "Cycle Info Overlay", Some("Cmd+I"), "View>Loupe Info"),
+    ("view.shotInfo", "Shot Info", Some("Shift+I"), "View>Loupe Info"),
     ("view.viewOptions", "View Options…", None, "View>Loupe Info"),
     ("view.chooseLayoutImage", "Choose Layout Image…", None, "View"),
     ("view.layoutImage", "Layout Image", Some("Cmd+Alt+O"), "View"),
@@ -1200,6 +1201,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "view.filmstrip" => {
             app.ui.filmstrip = !app.ui.filmstrip;
             Ok(Value::Null)
+        }
+        "view.shotInfo" => {
+            // {on?: bool} (toggles when omitted): the line of shot info under the loupe's photo
+            app.ui.shot_info = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.shot_info);
+            Ok(json!({"on": app.ui.shot_info}))
         }
         "view.frameRate" => {
             // {show?: bool} (toggles when omitted)
