@@ -199,6 +199,12 @@ pub fn export_catalog(cat: &Catalog, opts: &ExportOptions, parent: &Path, name: 
 /// store read-only, the log replayed in memory; a v3 library read from copies of its files.
 pub fn load_readonly(path: &Path) -> Result<Catalog> {
     let dir = library::resolve(path)?;
+    // a LightCraft library, converted as it is read (File ▸ More Imports ▸ Import LightCraft Library…)
+    if crate::lightcraft::is_lightcraft(&dir) {
+        let (cat, report) = crate::lightcraft::load(&dir)?;
+        log::info!("LightCraft library {}: {report:?}", dir.display());
+        return Ok(cat);
+    }
     let db_path = dir.join(DB_FILE);
     if db_path.exists() {
         let mut db = CatalogDb::open(&db_path)?;

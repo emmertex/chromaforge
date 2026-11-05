@@ -368,6 +368,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.catalogSettings", "Catalog Settings…", None, "Edit"),
     ("dialog.exportCatalog", "Export as Catalog…", None, "File>Libraries"),
     ("dialog.importCatalog", "Import from Another Catalog…", None, "File>More Imports"),
+    ("dialog.importLightcraft", "Import LightCraft Library…", None, "File>More Imports"),
     ("app.recentLibraries", "Recent Libraries", None, ""),
     ("app.clearRecentLibraries", "Clear Recent Libraries", None, ""),
     // Settings ▸ Display
