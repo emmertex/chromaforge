@@ -1821,6 +1821,8 @@ mod tests_format_version;
 mod tests_index;
 #[cfg(test)]
 mod tests_journal;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests_lightcraft;
 #[cfg(test)]
 mod tests_local;
 #[cfg(test)]
@@ -1844,7 +1846,5 @@ mod tests_upgrade_backup;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_v4;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests_lightcraft;
 #[cfg(test)]
 mod tests_video;

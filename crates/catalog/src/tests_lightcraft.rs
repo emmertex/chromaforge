@@ -90,11 +90,7 @@ fn a_lightcraft_library_comes_in_with_its_edits_masks_and_picks_and_is_never_cha
     let before = files(&dir);
     assert!(lightcraft::is_lightcraft(&dir));
     let (cat, report) = lightcraft::load(&dir).unwrap();
-    assert_eq!(
-        report,
-        LightcraftReport { version: Some(10), photos: 2, replayed: 4, ..Default::default() },
-        "every record read, none left out"
-    );
+    assert_eq!(report, LightcraftReport { version: Some(10), photos: 2, replayed: 4, ..Default::default() }, "every record read, none left out");
 
     let p1 = cat.photo(PhotoId(1)).unwrap();
     assert_eq!((p1.flag, p1.rating), (Flag::Pick, 4), "the pick and the stars (the stale log record skipped)");

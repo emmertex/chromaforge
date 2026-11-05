@@ -375,7 +375,15 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
     (
         "File",
         "More Imports",
-        &["dialog.importCatalog", "dialog.importLightcraft", "file.importLightroom", "file.importImmich", "---", "file.importPresets", "file.importKeywords"],
+        &[
+            "dialog.importCatalog",
+            "dialog.importLightcraft",
+            "file.importLightroom",
+            "file.importImmich",
+            "---",
+            "file.importPresets",
+            "file.importKeywords",
+        ],
     ),
     ("Library", "Filters", &["view.filterBar", "library.toggleFilters", "library.clearFilter", "---", "library.refresh", "library.holdView"]),
     (

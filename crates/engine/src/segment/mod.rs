@@ -977,8 +977,15 @@ impl Session {
                 self.segmenter.run_seq = self.segmenter.run_seq.wrapping_add(1);
                 let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let guard = self.activity.start_batch("aiMasks", "Computing AI masks", crate::activity::Cancel::Flag(cancel.clone()));
-                self.segmenter.recompute =
-                    Some(RecomputeRun { id: self.segmenter.run_seq, cancel, guard, photos: Vec::new(), left: 0, total: 0, per_photo: Default::default() });
+                self.segmenter.recompute = Some(RecomputeRun {
+                    id: self.segmenter.run_seq,
+                    cancel,
+                    guard,
+                    photos: Vec::new(),
+                    left: 0,
+                    total: 0,
+                    per_photo: Default::default(),
+                });
             }
             let (run, cancel) = match &self.segmenter.recompute {
                 Some(r) => (r.id, r.cancel.clone()),

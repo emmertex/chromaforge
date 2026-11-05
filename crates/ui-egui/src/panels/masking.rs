@@ -1334,7 +1334,8 @@ fn overlay_button(app: &mut LccApp, ui: &mut egui::Ui) {
     let tip = if on { "Overlay always on: O turns it off" } else { "Show overlay (O)" };
     let b = icon_button(ui, "maskOverlayOn", Icon::MaskOverlay, vec2(20.0, 20.0), on, true, crate::i18n::tr(tip));
     let t = Tokens::get(ui.ctx());
-    let label = ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr("Show Overlay")).font(t.font(12.0)).color(t.text_label)).sense(Sense::click()));
+    let label =
+        ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr("Show Overlay")).font(t.font(12.0)).color(t.text_label)).sense(Sense::click()));
     register(ui.ctx(), "check:maskOverlay", b.rect);
     register(ui.ctx(), "maskOverlay", b.rect);
     if on {
