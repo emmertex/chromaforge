@@ -544,7 +544,7 @@ fn strengths(id: &str) -> (&'static str, &'static str) {
 fn provider_card(ui: &mut egui::Ui, t: &Tokens, p: &Value) {
     let (good, weak) = strengths(p["id"].as_str().unwrap_or_default());
     let row = |ui: &mut egui::Ui, label: &str, text: String| {
-        ui.scope(|ui| {
+        crate::dialog_frame::in_control_column(ui, |ui| {
             ui.set_max_width(ui.available_width().min(680.0));
             let mut job = egui::text::LayoutJob::default();
             job.append(
@@ -610,8 +610,10 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             Some("env") => crate::i18n::tr_format!("Key from the environment variable {}", p["keyEnv"].as_str().unwrap_or_default()),
             _ => crate::i18n::tr("No key").to_string(),
         };
-        ui.label(RichText::new(status).color(t.text_label));
-        ui.horizontal(|ui| {
+        crate::dialog_frame::form_row(ui, "API key", |ui| {
+            ui.label(RichText::new(status).color(t.text_label));
+        });
+        crate::dialog_frame::control_row(ui, |ui| {
             let text = app.ui.genfill.key_input.entry(id.clone()).or_default();
             let r = crate::text_field::TextField::singleline(&format!("genfillKey-{id}"), text)
                 .hint(crate::i18n::tr("Paste your API key"))
@@ -638,7 +640,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 app.ui.genfill.providers = None;
             }
         });
-        ui.horizontal(|ui| {
+        crate::dialog_frame::control_row(ui, |ui| {
             let r = ui.link(crate::i18n::tr("Get an API key"));
             register(ui.ctx(), format!("link:genfillKeyUrl-{id}"), r.rect);
             if r.clicked() {

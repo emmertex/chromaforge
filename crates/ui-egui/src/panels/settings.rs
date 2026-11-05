@@ -335,7 +335,7 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         hint(ui, t, crate::i18n::tr("Ask me lists your recent libraries at launch. Holding Alt (Option on a Mac) as the window appears asks once."));
     }
     // File ▸ Import Lightroom Catalog… (#2672): the window that asks where a catalog goes, or not
-    ui.label(RichText::new(crate::i18n::tr("When importing a Lightroom catalog")).color(t.text_label));
+    crate::dialog_frame::note(ui, RichText::new(crate::i18n::tr("When importing a Lightroom catalog")).color(t.text_label));
     row(ui, t, "", |ui| {
         use crate::state::LightroomImport;
         choices(
