@@ -2216,6 +2216,112 @@ fn a_wheel_notch_resizes_the_brush_instead_of_zooming() {
 }
 
 #[test]
+fn mask_brush_toggles_and_disarms_with_tile_done_button_or_escape() {
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+
+    // 1. Clicking the Brush tile arms it
+    click(&mut h, "maskNew:brush");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "brush", "clicking Brush tile arms it");
+    assert!(h.app.ui.mask_new.is_some(), "armed for a new mask");
+
+    // 2. Clicking the active Brush tile again toggles it off
+    click(&mut h, "maskNew:brush");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "clicking active Brush tile disarms it");
+    assert!(h.app.ui.mask_new.is_none(), "mask_new cleared");
+
+    // 3. Re-arm and paint a stroke to make a mask
+    click(&mut h, "maskNew:brush");
+    h.settle(SETTLE);
+    pointer(&mut h, json!([{"kind": "down", "x": 0.5, "y": 0.5}, {"kind": "drag", "x": 0.55, "y": 0.55}, {"kind": "up", "x": 0.55, "y": 0.55}]));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "brush", "brush active on the new mask");
+    assert!(!develop(&h).masks.is_empty(), "mask was created");
+
+    // 4. Clicking the 'Done' button in the brush header disarms the brush
+    click(&mut h, "button:brushDone");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "clicking Done disarms the brush");
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Masking, "stays in Masking panel");
+
+    // 5. Re-arming via shortcut/command, then pressing Escape disarms it
+    exec(&mut h, "tool.brush", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "brush", "re-armed brush");
+    let r = h.request("ui.key", json!({"key": "Escape"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "Escape disarms the active brush");
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Masking, "stays in Masking panel on first Escape");
+}
+
+#[test]
+fn mask_object_toggles_and_disarms_with_tile_done_button_or_escape() {
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+
+    // 1. Clicking Object tile arms it
+    click(&mut h, "maskNew:object");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "object", "clicking Object tile arms it");
+
+    // 2. Clicking active Object tile toggles it off
+    click(&mut h, "maskNew:object");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "clicking active Object tile disarms it");
+
+    // 3. Re-arm via command, verify Done button disarms it
+    exec(&mut h, "tool.object", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "object", "armed object");
+    click(&mut h, "button:objectDone");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "clicking Done disarms object tool");
+
+    // 4. Re-arm and verify Escape disarms it
+    exec(&mut h, "tool.object", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "object", "armed object");
+    let r = h.request("ui.key", json!({"key": "Escape"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "Escape disarms object tool");
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Masking, "stays in Masking panel");
+}
+
+#[test]
+fn tool_commands_toggle_off_when_invoked_while_active() {
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+
+    // tool.brush toggle
+    exec(&mut h, "tool.brush", json!({}));
+    assert_eq!(h.app.ui.tool, "brush");
+    exec(&mut h, "tool.brush", json!({"toggle": true}));
+    assert_eq!(h.app.ui.tool, "", "tool.brush with toggle toggles off");
+
+    // tool.object toggle
+    exec(&mut h, "tool.object", json!({}));
+    assert_eq!(h.app.ui.tool, "object");
+    exec(&mut h, "tool.object", json!({"toggle": true}));
+    assert_eq!(h.app.ui.tool, "", "tool.object with toggle toggles off");
+
+    // tool.linear toggle
+    exec(&mut h, "tool.linear", json!({}));
+    assert_eq!(h.app.ui.tool, "linear");
+    exec(&mut h, "tool.linear", json!({"toggle": true}));
+    assert_eq!(h.app.ui.tool, "", "tool.linear with toggle toggles off");
+
+    // tool.radial toggle
+    exec(&mut h, "tool.radial", json!({}));
+    assert_eq!(h.app.ui.tool, "radial");
+    exec(&mut h, "tool.radial", json!({"toggle": true}));
+    assert_eq!(h.app.ui.tool, "", "tool.radial with toggle toggles off");
+}
+
+#[test]
 fn effect_dropdown_applies_saves_and_shows_the_matching_effect() {
     let mut h = detail("panel.masking");
     exec(&mut h, "mask.add", json!({"kind": "radial"}));
