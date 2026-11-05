@@ -11,7 +11,7 @@
 //! with the projects and groups around them. Develop settings are not read yet.
 //!
 //! Sources: own design, from the database's own table and column names (`sqlite_schema`) observed in
-//! a catalog written by Capture One 15/16; no Capture One code or documentation was used.
+//! catalogs written by Capture One 16.9; no Capture One code or documentation was used.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -547,8 +547,7 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
         }
     }
     guard.verify().map_err(|e| e.replace("Lightroom", "Capture One"))?;
-    done.store(total.load(Ordering::Relaxed), Ordering::Relaxed);
-    Ok(CatalogImport {
+    let mut out = CatalogImport {
         source: db_path.to_string_lossy().into(),
         photos,
         collections: out_collections,
@@ -557,7 +556,14 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
         stacks: Vec::new(),
         warnings,
         skipped,
-    })
+    };
+    // Here, as the Lightroom reader does, not only where the records are made: the import job adds
+    // every photo it is handed before that, so a refused file would be added without its metadata.
+    crate::lightroom_catalog::refuse_non_media(&mut out);
+    let kept_photos: HashSet<i64> = out.photos.iter().map(|p| p.source_id).collect();
+    out.members.retain(|m| kept_photos.contains(&number(m, "image")));
+    done.store(total.load(Ordering::Relaxed), Ordering::Relaxed);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -655,6 +661,58 @@ mod tests {
         let here = read(tables(2));
         assert!(here.photos[0].original_is_file());
         assert_eq!(here.photos[0].image["captureTime"], "", "a file that is there keeps its own time");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file type the app doesn't read (here a `.NEFX` next to a `.jpg`) is left out where the
+    /// catalog is read, with its variants and album places, so the import job never adds the file:
+    /// the photo the job adds is the one the catalog's record becomes, nothing more.
+    #[test]
+    fn a_file_type_the_app_does_not_read_is_never_added() {
+        use lcc_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
+        let dir = std::env::temp_dir().join(format!("c1-non-media-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Originals")).unwrap();
+        let jpeg =
+            encode_jpeg(&EncodeImage::new(8, 8, 3, Samples::U8(&[128; 8 * 8 * 3])), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap();
+        // the same readable bytes under both names: only the file type decides
+        std::fs::write(dir.join("Originals").join("a.jpg"), &jpeg).unwrap();
+        std::fs::write(dir.join("Originals").join("b.NEFX"), &jpeg).unwrap();
+        let db = dir.join("Test.cocatalogdb");
+        let image = |pk: i64, name: &str| json!({"Z_PK": pk, "ZIMAGEFILENAME": name, "ZIMAGELOCATION": 1, "ZWIDTH": 8, "ZHEIGHT": 8});
+        std::fs::write(
+            &db,
+            sqlite(&[
+                ("ZPATHLOCATION", vec![json!({"Z_PK": 1, "ZRELATIVEPATH": "./Originals", "ZISRELATIVE": 1})]),
+                ("ZIMAGE", vec![image(1, "a.jpg"), image(2, "b.NEFX")]),
+                (
+                    "ZVARIANT",
+                    vec![
+                        json!({"Z_PK": 7, "ZIMAGE": 1, "ZVARIANTUUID": "a"}),
+                        json!({"Z_PK": 8, "ZIMAGE": 2, "ZVARIANTUUID": "b"}),
+                        json!({"Z_PK": 9, "ZIMAGE": 2, "ZVARIANTUUID": "b2"}),
+                    ],
+                ),
+                ("ZENTITIES", vec![json!({"Z_ENT": 2, "ZNAME": "AlbumCollection"})]),
+                ("ZCOLLECTION", vec![json!({"Z_PK": 1, "Z_ENT": 2, "ZPARENT": -1, "ZNAME": "Album"})]),
+                ("ZDOCUMENTCONTENT", vec![json!({"Z_PK": 1, "ZROOTCOLLECTION": 0})]),
+                ("ZIMAGEINCOLLECTION", vec![json!({"Z_PK": 1, "ZCOLLECTION": 1, "ZIMAGE": 1}), json!({"Z_PK": 2, "ZCOLLECTION": 1, "ZIMAGE": 2})]),
+            ]),
+        )
+        .unwrap();
+        let cancel = AtomicBool::new(false);
+        let read = read_with_progress(&db, &cancel, &AtomicUsize::new(0), &AtomicUsize::new(0)).unwrap();
+        assert_eq!(read.photos.iter().map(|p| p.source_id).collect::<Vec<_>>(), vec![7], "the NEFX and its second variant are left out");
+        assert!(read.members.iter().all(|m| number(m, "image") == 7), "no album place for a photo that isn't there: {:?}", read.members);
+        let warnings = read.warnings.join("\n");
+        assert!(warnings.contains("image 8: not imported") && warnings.contains("image 9: not imported"), "{warnings}");
+        // through the import job, which adds the originals before the records are made
+        let mut s = crate::Session::new();
+        let mut job = crate::lightroom_job::LightroomJob::new(&mut s, db.clone(), false).unwrap();
+        let prepared = job.prepare(&cancel).unwrap();
+        let completion = crate::lightroom_job::commit_prepared(&mut s, prepared).unwrap();
+        let names: Vec<String> = s.catalog.photos().map(|p| p.file_name.clone()).collect();
+        assert_eq!(names, vec!["a.jpg".to_string()], "only the catalog's readable photo is added: {}", completion.report);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

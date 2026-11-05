@@ -233,13 +233,14 @@ warning and leaves the photo and its virtual copies out of the library. A path t
 
 A Capture One catalog keeps its library in `<name>.cocatalogdb`, an SQLite database, which the same read-only
 reader opens (`crates/engine/src/capture_one_catalog.rs`) into the same import model, so the destination window,
-one undo step, reimport without duplicates and the result window are shared. Checked against a Capture One 16
-catalog on Windows.
+one undo step, reimport without duplicates and the result window are shared. Checked against catalogs written by
+Capture One 16.9.0 on Windows (catalog format 160906).
 
 - **Photos:** one per variant (`ZVARIANT`); the first variant of an image is the photo, later ones become virtual
   copies ("Variant 2", …). Originals inside the catalog are found relative to the folder holding the database,
   referenced ones by `ZPATHLOCATION` (`ZWINROOT` / `ZMACROOT` + `ZRELATIVEPATH`). Images in Capture One's trash
-  are left out, with a warning.
+  are left out, with a warning, and so is any image whose original is a file type the app doesn't read (a Nikon
+  `.NEFX`, say): it is named in the warnings and its file is never added.
 - **Offline originals** (a drive that isn't connected, a file that is gone) take the capture time (`ZEXP_DATE`, the
   camera's clock, no offset), camera make, model and lens from the catalog; a file that is there keeps its own.
   Capture One's stand-ins for a file without a camera ("Tiff File", "Jpeg File") are no camera.
