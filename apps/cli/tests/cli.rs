@@ -1595,9 +1595,13 @@ fn shared_settings_gathers_presets_without_a_library() {
     std::fs::create_dir_all(&backup).unwrap();
     let prefs = br#"{"exportPresets": [{"name": "Archive", "params": {}}]}"#;
     std::fs::write(backup.join("prefs.json"), prefs).unwrap();
-    let o = Command::new(BIN)
+    let mut cmd = Command::new(BIN);
+    // an inherited NO_PREFS under any prefix, the legacy ones included, turns the shared store off
+    for prefix in std::iter::once(lcc_brand::ENV_PREFIX).chain(lcc_brand::LEGACY_ENV_PREFIXES.iter().copied()) {
+        cmd.env_remove(format!("{prefix}_NO_PREFS"));
+    }
+    let o = cmd
         .env(lcc_brand::env_var("CONFIG_DIR"), &config)
-        .env_remove(lcc_brand::env_var("NO_PREFS"))
         .args(["run", "--shared-settings", "store.gatherPresets", &serde_json::json!({"paths": [old.to_string_lossy()]}).to_string()])
         .output()
         .unwrap();
