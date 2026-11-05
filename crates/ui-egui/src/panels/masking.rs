@@ -213,6 +213,20 @@ fn kind_label(s: &MaskShape) -> (&'static str, Icon) {
     (label, kind_icon(kind))
 }
 
+/// A component's row in the mask tree, named after its source as the mask is: the name the
+/// photographer gave it, else what it selects ("Groom - Clothes, Hair", "Wedding dress", "Water",
+/// "“white car”"), the kind's words in the photographer's language.
+pub(crate) fn component_label(c: &lcc_develop::MaskComponent) -> String {
+    if let Some(n) = c.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        return n.to_string();
+    }
+    match &c.shape {
+        // a person's role and parts, a taught object's or a prompt's own words: never translated
+        MaskShape::People { .. } | MaskShape::Concept { .. } | MaskShape::Prompt { .. } => lcc_develop::recipe::shape_name(&c.shape),
+        shape => crate::i18n::tr(&lcc_develop::recipe::shape_name(shape)).to_string(),
+    }
+}
+
 /// The sign before a component's row in the mask tree: + Add, − Subtract, ∩ Intersect; none on the
 /// first component, which starts the mask.
 pub(crate) fn component_op_sign(index: usize, op: lcc_develop::MaskOp) -> &'static str {
@@ -627,11 +641,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         }
                     }
                     for (i, c) in cur_m.components.iter().enumerate() {
-                        let (kind, icon) = kind_label(&c.shape);
-                        let label = c.name.clone().unwrap_or_else(|| match &c.shape {
-                            MaskShape::Prompt { text, .. } => format!("“{text}”"),
-                            _ => menu_label(kind).to_string(),
-                        });
+                        let (_, icon) = kind_label(&c.shape);
+                        let label = component_label(c);
                         let comp_sel = sel && app.ui.active_mask_component == Some(i);
                         if let Some((_, _, name)) = app.ui.renaming_component.as_mut().filter(|(mid, k, _)| *mid == m.id && *k == i) {
                             let r =

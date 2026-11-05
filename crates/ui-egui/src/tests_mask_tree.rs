@@ -86,3 +86,21 @@ fn each_component_row_inverts_that_component_alone() {
     h.settle(SETTLE);
     assert!(!masks(&h)[0].components[1].invert, "a second click turns it back");
 }
+
+#[test]
+fn component_rows_are_named_after_their_source() {
+    use crate::panels::masking::component_label;
+    use lcc_develop::recipe::Who;
+    use lcc_develop::{MaskComponent, MaskShape};
+    let comp = |shape: MaskShape| MaskComponent { name: None, anchor: None, op: lcc_develop::MaskOp::Add, invert: false, shape };
+    let groom = MaskShape::People { person: 0, parts: vec!["Clothes".into(), "Hair".into()], who: Some(Who::Role("Groom".into())), seg: None };
+    assert_eq!(component_label(&comp(groom)), "Groom - Clothes, Hair", "a person's role and parts");
+    assert_eq!(component_label(&comp(MaskShape::Concept { name: "Wedding dress".into(), seg: None })), "Wedding dress", "a taught object's name");
+    assert_eq!(component_label(&comp(MaskShape::Landscape { class: "water".into() })), "Water", "a landscape part's class");
+    assert_eq!(component_label(&comp(MaskShape::Sky)), "Sky");
+    // a name the photographer gave wins; an empty one doesn't count
+    let named = MaskComponent { name: Some("Veil".into()), ..comp(MaskShape::Sky) };
+    assert_eq!(component_label(&named), "Veil");
+    let blank = MaskComponent { name: Some("  ".into()), ..comp(MaskShape::Sky) };
+    assert_eq!(component_label(&blank), "Sky");
+}
