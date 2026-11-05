@@ -165,7 +165,27 @@ pub fn merge_hdr(frames: Vec<Frame>, opts: &HdrOptions, progress: &Progress) -> 
 }
 
 /// [`merge_hdr`] of frames already held as half floats.
-pub fn merge_hdr_frames(mut frames: Vec<HdrFrame>, opts: &HdrOptions, progress: &Progress) -> Result<HdrResult> {
+pub fn merge_hdr_frames(frames: Vec<HdrFrame>, opts: &HdrOptions, progress: &Progress) -> Result<HdrResult> {
+    merge_hdr_impl(frames, opts, progress, false).map(|(r, _)| r)
+}
+
+/// One input frame after the merge's alignment: resampled into the reference's geometry (global fit, full-size
+/// refinement, local flow, Lanczos-3), in its own exposure's units (not normalised to the reference).
+#[derive(Clone, Debug)]
+pub struct AlignedFrame {
+    pub pixels: HalfImage,
+    /// Which pixels the warp could fill (`false`: pulled from outside the frame); `None` when the frame was not
+    /// resampled (the reference, or alignment off), so every pixel is its own.
+    pub valid: Option<Vec<bool>>,
+}
+
+/// [`merge_hdr_frames`], also returning every input aligned to the reference (in the caller's order), as the
+/// merge used them: for writing the bracket as layers ready to blend by hand.
+pub fn merge_hdr_frames_aligned(frames: Vec<HdrFrame>, opts: &HdrOptions, progress: &Progress) -> Result<(HdrResult, Vec<AlignedFrame>)> {
+    merge_hdr_impl(frames, opts, progress, true)
+}
+
+fn merge_hdr_impl(mut frames: Vec<HdrFrame>, opts: &HdrOptions, progress: &Progress, keep: bool) -> Result<(HdrResult, Vec<AlignedFrame>)> {
     let n = frames.len();
     if n < 2 {
         return Err(MergeError::TooFew(n, 2));
@@ -415,7 +435,7 @@ pub fn merge_hdr_frames(mut frames: Vec<HdrFrame>, opts: &HdrOptions, progress: 
     if let Some(multipliers) = wb_multipliers {
         color.set_as_shot_multipliers(multipliers);
     }
-    Ok(HdrResult {
+    let result = HdrResult {
         radiance: out,
         ghost,
         reference: input[reference],
@@ -430,7 +450,22 @@ pub fn merge_hdr_frames(mut frames: Vec<HdrFrame>, opts: &HdrOptions, progress: 
         baseline_exposure: rf.baseline_exposure,
         lens: rf.lens.clone(),
         wb_multipliers,
-    })
+    };
+    if !keep {
+        return Ok((result, Vec::new()));
+    }
+    // back to the caller's order, moving each frame's pixels out (no copy)
+    let mut slots: Vec<Option<AlignedFrame>> = vec![None; n];
+    for (p, (f, v)) in frames.into_iter().zip(valid).enumerate() {
+        if let Some(s) = input.get(p).and_then(|&i| slots.get_mut(i)) {
+            *s = Some(AlignedFrame { pixels: f.pixels, valid: v });
+        }
+    }
+    let aligned: Vec<AlignedFrame> = slots.into_iter().flatten().collect();
+    if aligned.len() != n {
+        return Err(MergeError::Mismatch("HDR merge lost a frame while returning them".into()));
+    }
+    Ok((result, aligned))
 }
 
 /// [`align::median_luma`] of half-float pixels.
