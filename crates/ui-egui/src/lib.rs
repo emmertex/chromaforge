@@ -161,6 +161,8 @@ mod tests_crop_rotate;
 #[cfg(test)]
 mod tests_crop_tool;
 #[cfg(test)]
+mod tests_culling_cells;
+#[cfg(test)]
 mod tests_curve;
 #[cfg(test)]
 mod tests_date_picker;

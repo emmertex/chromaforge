@@ -86,7 +86,7 @@ const MAX_FOLLOWED: usize = 4096;
 pub struct GridCache {
     runs: Option<(RunsKey, Arc<Vec<DateRun>>)>,
     /// Layout by (runs key, width, thumbnail size, square).
-    layout: Option<((RunsKey, u32, u32, bool), Arc<GridLayout>)>,
+    layout: Option<((RunsKey, u32, u32, u32, bool), Arc<GridLayout>)>,
     /// Stack index by generation.
     stacks: Option<(u64, Arc<StackIndex>)>,
     /// How many of the photos are browsed (Local) ones, by generation.
@@ -504,13 +504,15 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
         _ => Some(app.session.sort.key),
     };
     let runs_key = (generation, group_key, by);
+    // Compact: the culling marks sit in a strip under each picture, which grows every cell
+    let footer = if app.compact() { BADGE_STRIP } else { 0.0 };
     let stats = &mut app.caches.grid_stats;
     // (read even for a published collection: the cell shapes the layout uses come with the runs)
     let date_runs = app.caches.grid.runs(stats, &app.session.catalog, &ids, runs_key, square);
     let runs = app.caches.grid.publish(&app.session, &ids, generation).unwrap_or(date_runs);
     // the layout only changes with the photos (and their shapes), the grouping, the width and
     // the thumbnail size
-    let lay_key = (runs_key, avail_w.to_bits(), target.to_bits(), square);
+    let lay_key = (runs_key, avail_w.to_bits(), target.to_bits(), footer.to_bits(), square);
     let lay = match &app.caches.grid.layout {
         Some((k, l)) if *k == lay_key => l.clone(),
         _ => {
@@ -523,7 +525,7 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
                 app.caches.grid.shapes()
             };
             let spans: Vec<(usize, usize)> = runs.iter().map(|r| (r.start, r.count)).collect();
-            let l = Arc::new(layout(shapes, &spans, avail_w, target, square));
+            let l = Arc::new(layout_with_footer(shapes, &spans, avail_w, target, square, footer));
             app.caches.grid.layout = Some((lay_key, l.clone()));
             l
         }
@@ -771,6 +773,14 @@ pub fn resolve_group(by: GroupBy, thumb_size: f32) -> GroupBy {
 /// below its header. Justified rows fill the width exactly except a group's last row, which keeps
 /// the target height.
 pub fn layout(aspects: &[f32], groups: &[(usize, usize)], avail_w: f32, target: f32, square: bool) -> GridLayout {
+    layout_with_footer(aspects, groups, avail_w, target, square, 0.0)
+}
+
+/// [`layout`] with a `footer` strip (points) under every cell's picture: the ratings, flags and
+/// labels the Compact layout shows under the thumbnails rather than over them. The pictures keep
+/// their sizes; each cell grows by the footer.
+pub fn layout_with_footer(aspects: &[f32], groups: &[(usize, usize)], avail_w: f32, target: f32, square: bool, footer: f32) -> GridLayout {
+    let footer = if footer.is_finite() { footer.max(0.0) } else { 0.0 };
     let n = aspects.len();
     let whole = [(0, n)];
     let (groups, headed) = if groups.is_empty() { (&whole[..], false) } else { (groups, true) };
@@ -792,15 +802,15 @@ pub fn layout(aspects: &[f32], groups: &[(usize, usize)], avail_w: f32, target: 
             for i in start..end {
                 let k = (i - start) as f32;
                 let (c, r) = (k % cols, (k / cols).floor());
-                out.cells[i] = Rect::from_min_size(pos2(4.0 + c * (cw + gap), y + r * (cw + gap)), vec2(cw, cw));
+                out.cells[i] = Rect::from_min_size(pos2(4.0 + c * (cw + gap), y + r * (cw + footer + gap)), vec2(cw, cw + footer));
             }
             let per_row = (cols as usize).max(1);
             for (r, row_start) in (start..end).step_by(per_row).enumerate() {
-                let top = y + r as f32 * (cw + gap);
-                out.rows.push(GridRow { top, bottom: top + cw, start: row_start, end: (row_start + per_row).min(end) });
+                let top = y + r as f32 * (cw + footer + gap);
+                out.rows.push(GridRow { top, bottom: top + cw + footer, start: row_start, end: (row_start + per_row).min(end) });
             }
             let rows = ((end - start) as f32 / cols).ceil();
-            y += rows * (cw + gap);
+            y += rows * (cw + footer + gap);
         } else {
             // justified rows: accumulate aspect ratios until the row is full
             let mut i = start;
@@ -820,11 +830,11 @@ pub fn layout(aspects: &[f32], groups: &[(usize, usize)], avail_w: f32, target: 
                 let mut x = 4.0;
                 for k in i..j {
                     let w = aspects[k].max(0.05) * h;
-                    out.cells[k] = Rect::from_min_size(pos2(x, y), vec2(w, h));
+                    out.cells[k] = Rect::from_min_size(pos2(x, y), vec2(w, h + footer));
                     x += w + gap;
                 }
-                out.rows.push(GridRow { top: y, bottom: y + h, start: i, end: j });
-                y += h + gap;
+                out.rows.push(GridRow { top: y, bottom: y + h + footer, start: i, end: j });
+                y += h + footer + gap;
                 i = j;
             }
         }
@@ -1141,12 +1151,27 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     spoken.push_str(&crate::video_ui::spoken_suffix(&photo));
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &spoken));
     let p = ui.painter();
+    // Compact: ratings, flags and labels in a strip under the picture (they cover nothing), the
+    // cell's level telling unselected, picked, rejected, selected and active apart
+    let under = app.compact();
+    let strip = if under { BADGE_STRIP.min(r.height() * 0.4) } else { 0.0 };
+    let pic = Rect::from_min_max(r.min, pos2(r.right(), r.bottom() - strip));
+    let bar = Rect::from_min_max(pos2(r.left(), pic.bottom()), r.max);
+    if under {
+        let base = if square { t.cell } else { t.canvas };
+        let fill = crate::theme::label_background(cell_fill(&t, state, photo.flag, resp.hovered(), base), photo.label, selected);
+        p.rect_filled(if square { r } else { bar }, 0.0, fill);
+        // the flag's glow behind the picture: it shows around and under it, never over it
+        flag_glow(p, &t, r, photo.flag);
+    }
     let img_rect = if square {
-        let base = if selected { t.cell_selected } else { t.cell };
-        p.rect_filled(r, 0.0, crate::theme::label_background(base, photo.label, selected));
-        super::cells::image_rect(app, r)
+        if !under {
+            let base = if selected { t.cell_selected } else { t.cell };
+            p.rect_filled(r, 0.0, crate::theme::label_background(base, photo.label, selected));
+        }
+        super::cells::image_rect(app, pic)
     } else {
-        r
+        pic
     };
     // thumbnail
     let size = thumb_px(img_rect.width().max(img_rect.height()), ppp);
@@ -1211,13 +1236,20 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
             crate::state::GridBadges::Always => true,
             crate::state::GridBadges::Never => false,
         };
+    if under {
+        let marks = bar.shrink2(vec2(if square { 8.0 } else { 3.0 }, 1.0));
+        register(ui.ctx(), format!("cellmarks:{}", id.0), marks);
+        if show_badges || photo.label.is_some() {
+            paint_badges(p, &t, marks, &photo, false);
+        }
+    }
     let badge_bar = Rect::from_min_max(pos2(img_rect.left(), img_rect.bottom() - 24.0), img_rect.right_bottom());
-    if !square && photo.label.is_some() {
+    if !under && !square && photo.label.is_some() {
         // Justified photos fill the whole cell, so the label shows as a translucent tinted footer
         // over the photo's bottom edge (opaque, it would hide 24 px of every labelled photo).
         p.rect_filled(badge_bar, 0.0, crate::theme::label_background(t.cell, photo.label, selected).gamma_multiply(0.7));
     }
-    if show_badges {
+    if show_badges && !under {
         let bar = badge_bar;
         if (resp.hovered() || selected) && (square || photo.label.is_none()) {
             p.rect_filled(bar, 0.0, Color32::from_black_alpha(120));
@@ -1270,7 +1302,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     }
     #[cfg(not(target_arch = "wasm32"))]
     super::connections::grid_badge(app, ui, id, img_rect);
-    if photo.flag == Flag::Reject {
+    if photo.flag == Flag::Reject && !under {
         p.rect_filled(img_rect, 0.0, Color32::from_black_alpha(110));
     }
     // interaction
@@ -1297,6 +1329,118 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         reorder_drop(app, ui, id, r, &dragged);
     }
     crate::widgets::context_menu(&resp, |ui| context_menu(app, ui, id));
+}
+
+/// Height (points) of the strip under each thumbnail that holds its rating, flag and label in the
+/// Compact layout.
+pub const BADGE_STRIP: f32 = 16.0;
+
+/// Inset (points) of a picked or rejected cell's glow from the cell's sides and bottom edge, so a
+/// run of marked cells reads as separate cells rather than one border between rows.
+pub const FLAG_GLOW_INSET: f32 = 3.0;
+
+/// A Compact thumbnail cell's background (grid and filmstrip): one set of levels, as in
+/// Lightroom: unselected (a pick a touch lighter, a reject darker) < hovered < selected < the
+/// active photo, each step plainly visible in every theme, so a selection of picks still reads as
+/// selected. `base` is the unselected cell's colour. The levels step towards the theme's text
+/// colour, so a light theme darkens where a dark one brightens.
+pub fn cell_fill(t: &Tokens, state: lcc_engine::SelectionState, flag: Flag, hovered: bool, base: Color32) -> Color32 {
+    use lcc_engine::SelectionState;
+    let selected = t.cell.lerp_to_gamma(t.text, 0.24);
+    match state {
+        SelectionState::Active => t.cell.lerp_to_gamma(t.text, 0.38),
+        SelectionState::Selected => selected,
+        SelectionState::NotSelected if hovered => base.lerp_to_gamma(selected, 0.4),
+        SelectionState::NotSelected => flag_tint(base, flag),
+    }
+}
+
+/// A cell's background with its flag in it: a pick slightly lighter, a reject darker, both well
+/// short of the selection's level ([`cell_fill`]).
+pub fn flag_tint(base: Color32, flag: Flag) -> Color32 {
+    match flag {
+        Flag::Pick => base.lerp_to_gamma(Color32::WHITE, 0.05),
+        Flag::Reject => base.lerp_to_gamma(Color32::BLACK, 0.35),
+        Flag::None => base,
+    }
+}
+
+/// Where a flag's glow sits in `cell`: inset from its sides and bottom edge, rising about a third
+/// of the cell (12–56 points). `None` for a cell too small to hold one.
+pub fn flag_glow_rect(cell: Rect) -> Option<Rect> {
+    let inner = cell.shrink2(vec2(FLAG_GLOW_INSET, 0.0));
+    let bottom = cell.bottom() - FLAG_GLOW_INSET;
+    let h = (cell.height() * 0.33).clamp(12.0, 56.0).min(bottom - cell.top());
+    (inner.width() > 0.0 && h > 0.0).then(|| Rect::from_min_max(pos2(inner.left(), bottom - h), pos2(inner.right(), bottom)))
+}
+
+/// The flag's mark in a Compact `cell`: a glow rising from just inside the bottom edge and fading
+/// out upwards, white for a pick and red for a reject, none for an unflagged photo. Drawn before
+/// the thumbnail, so it sits behind it, soft enough that the white pick flag over it stays
+/// readable.
+pub fn flag_glow(p: &egui::Painter, t: &Tokens, cell: Rect, flag: Flag) {
+    let (colour, alpha) = match flag {
+        Flag::Pick => (Color32::WHITE, 0.42),
+        Flag::Reject => (t.reject, 0.6),
+        Flag::None => return,
+    };
+    let Some(g) = flag_glow_rect(cell) else { return };
+    let mut mesh = egui::Mesh::default();
+    // a fade in two steps (bright at the edge, quickly softer, then gone), so it reads as a glow
+    // from the bottom rather than a band
+    let mid_y = g.bottom() - g.height() * 0.35;
+    let rows = [(g.top(), Color32::TRANSPARENT), (mid_y, colour.gamma_multiply(alpha * 0.35)), (g.bottom(), colour.gamma_multiply(alpha))];
+    for (y, c) in rows {
+        mesh.colored_vertex(pos2(g.left(), y), c);
+        mesh.colored_vertex(pos2(g.right(), y), c);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    mesh.add_triangle(2, 3, 4);
+    mesh.add_triangle(3, 5, 4);
+    p.add(egui::Shape::mesh(mesh));
+}
+
+/// A photo's culling marks along `bar` (the strip under a Compact thumbnail): its flag and stars
+/// from the left, its colour label and edited mark from the right, sized to the bar's height so
+/// they read at a glance. `on_photo`: drawn over the picture (white marks) rather than on the panel.
+pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalog::Photo, on_photo: bool) {
+    let h = bar.height().clamp(10.0, 40.0);
+    let y = bar.center().y;
+    let star = (h * 0.62).round().max(8.0);
+    let flag = (h * 0.8).round().max(10.0);
+    // the pick flag is white over a picture whatever the theme (the theme's colour is for panels)
+    let pick = if on_photo { Color32::WHITE } else { t.pick };
+    let mut x = bar.left() + 2.0;
+    match photo.flag {
+        Flag::Pick => paint(p, Rect::from_min_size(pos2(x, y - flag / 2.0), vec2(flag, flag)), Icon::FlagPickFilled, pick),
+        Flag::Reject => paint(p, Rect::from_min_size(pos2(x, y - flag / 2.0), vec2(flag, flag)), Icon::FlagReject, t.reject),
+        Flag::None => {}
+    }
+    if photo.flag != Flag::None {
+        x += flag + 4.0;
+    }
+    let room = (bar.right() - x - h * 1.6).max(0.0);
+    // every star where they fit; else one star and the number
+    if photo.rating > 0 && f32::from(photo.rating) * (star + 1.0) <= room {
+        for i in 0..photo.rating {
+            paint(p, Rect::from_min_size(pos2(x + f32::from(i) * (star + 1.0), y - star / 2.0), vec2(star, star)), Icon::StarFilled, t.star);
+        }
+    } else if photo.rating > 0 {
+        paint(p, Rect::from_min_size(pos2(x, y - star / 2.0), vec2(star, star)), Icon::StarFilled, t.star);
+        p.text(pos2(x + star + 2.0, y), Align2::LEFT_CENTER, photo.rating.to_string(), t.semibold(h * 0.46), t.star);
+    }
+    let mut right = bar.right() - 2.0;
+    if let Some(l) = photo.label {
+        let rad = (h * 0.22).max(4.0);
+        p.circle(pos2(right - rad, y), rad, label_color(l), Stroke::new(1.0, Color32::from_black_alpha(120)));
+        right -= rad * 2.0 + 5.0;
+    }
+    if photo.is_edited() {
+        let s = (h * 0.5).round();
+        let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
+        paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Sliders, colour);
+    }
 }
 
 /// A double-click on a grid photo: select it and show it in the loupe, or in Develop when the
@@ -2071,5 +2215,53 @@ mod tests {
         assert_eq!(resolve_group(GroupBy::Auto, 90.0), GroupBy::Year);
         assert_eq!(resolve_group(GroupBy::None, 220.0), GroupBy::None);
         assert_eq!(resolve_group(GroupBy::Year, 400.0), GroupBy::Year);
+    }
+
+    /// The Compact strip under the thumbnails adds the same height to every cell and keeps the
+    /// pictures' widths: the marks sit under the picture, never over it.
+    #[test]
+    fn a_footer_grows_each_cell_under_its_picture() {
+        let aspects = [1.5, 0.66, 1.0, 1.5, 1.5];
+        for square in [false, true] {
+            let plain = layout(&aspects, &[], 600.0, 150.0, square);
+            let under = layout_with_footer(&aspects, &[], 600.0, 150.0, square, BADGE_STRIP);
+            for (a, b) in plain.cells.iter().zip(&under.cells) {
+                assert!((b.width() - a.width()).abs() < 1e-3);
+                assert!((b.height() - a.height() - BADGE_STRIP).abs() < 1e-3);
+            }
+            for w in under.rows.windows(2) {
+                assert!(w[1].top >= w[0].bottom, "rows don't overlap");
+            }
+            assert_eq!(layout_with_footer(&aspects, &[], 600.0, 150.0, square, f32::NAN).cells, plain.cells);
+        }
+    }
+
+    /// In every theme the Compact cell levels are unselected < pick < selected < active (a
+    /// selection of picks still reads as selected), each step plainly visible.
+    #[test]
+    fn cell_levels_keep_picks_below_the_selection_in_every_theme() {
+        use crate::theme::{ThemeKind, Tokens};
+        use lcc_engine::SelectionState as S;
+        for kind in ThemeKind::ALL {
+            let t = Tokens::for_kind(kind);
+            // distance from the unselected cell, whichever way the theme brightens
+            let d = |c: Color32| (i32::from(c.r()) - i32::from(t.cell.r())).abs();
+            let pick = d(cell_fill(&t, S::NotSelected, Flag::Pick, false, t.cell));
+            let selected = d(cell_fill(&t, S::Selected, Flag::Pick, false, t.cell));
+            let active = d(cell_fill(&t, S::Active, Flag::None, false, t.cell));
+            assert!(pick < 16, "{kind:?}: a pick is only a touch lighter ({pick})");
+            assert!(selected >= pick + 20, "{kind:?}: selected ({selected}) is well above a pick ({pick})");
+            assert!(active >= selected + 16, "{kind:?}: active ({active}) is above selected ({selected})");
+        }
+    }
+
+    /// A cell too small for a glow gets none; any other gets one inside it.
+    #[test]
+    fn the_flag_glow_stays_inside_its_cell() {
+        let cell = Rect::from_min_size(pos2(10.0, 10.0), vec2(120.0, 90.0));
+        let g = flag_glow_rect(cell).expect("a glow");
+        assert!(cell.contains_rect(g));
+        assert!(g.bottom() < cell.bottom() && g.left() > cell.left() && g.right() < cell.right());
+        assert!(flag_glow_rect(Rect::from_min_size(pos2(0.0, 0.0), vec2(4.0, 2.0))).is_none());
     }
 }

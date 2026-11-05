@@ -5517,7 +5517,12 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                 let p = ui.painter();
                 let label = app.session.catalog.photo(*id).and_then(|ph| ph.label);
                 let selected = state != lcc_engine::SelectionState::NotSelected;
-                let base = if selected {
+                // Compact: the grid's cell levels, the flag's glow and the marks in a strip under the picture
+                let compact = app.compact();
+                let flag = app.session.catalog.photo(*id).map(|ph| ph.flag).unwrap_or_default();
+                let base = if compact {
+                    super::grid::cell_fill(&t, state, flag, resp.hovered(), t.canvas)
+                } else if selected {
                     t.cell_selected
                 } else if resp.hovered() {
                     t.cell_selected.gamma_multiply(0.6)
@@ -5525,13 +5530,24 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     t.canvas
                 };
                 p.rect_filled(cr, 0.0, crate::theme::label_background(base, label, selected));
+                if compact {
+                    super::grid::flag_glow(p, &t, cr, flag);
+                }
                 let names = app.ui.settings.film_names;
                 if let Some(ph) = app.session.catalog.photo(*id).filter(|_| names) {
                     let name = ph.file_name.rsplit_once('.').map(|(n, _)| n).unwrap_or(&ph.file_name);
                     p.text(pos2(cr.left() + 8.0, cr.top() + 10.0), Align2::LEFT_CENTER, film_label(name), t.font(10.0), t.text_dim);
                     p.text(pos2(cr.right() - 8.0, cr.top() + 10.0), Align2::RIGHT_CENTER, &ph.format, t.semibold(8.5), t.text_dim);
                 }
-                let img_area = Rect::from_min_max(cr.min + vec2(10.0, 22.0), cr.max - vec2(10.0, 8.0));
+                let under = compact && app.ui.settings.film_badges;
+                let strip = if under { (cr.height() * 0.11).clamp(12.0, 16.0) } else { 0.0 };
+                let img_area = Rect::from_min_max(cr.min + vec2(10.0, 22.0), cr.max - vec2(10.0, 8.0 + strip));
+                if under && let Some(ph) = app.session.catalog.photo(*id) {
+                    let bar =
+                        Rect::from_min_max(pos2(cr.left() + 8.0, img_area.bottom() + 3.0), pos2(cr.right() - 8.0, img_area.bottom() + 3.0 + strip));
+                    register(ui.ctx(), format!("filmmarks:{}", id.0), bar);
+                    super::grid::paint_badges(p, &t, bar, ph, false);
+                }
                 let thumb = app.renderer.thumb(*id);
                 // the picture: a click outside it (on the frame) selects this photo alone
                 let mut picture = img_area;
@@ -5551,6 +5567,7 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     p.image(tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                     super::grid::selection_ring(p, &t, fr, state);
                     if app.ui.settings.film_badges
+                        && !under
                         && let Some(ph) = app.session.catalog.photo(*id)
                     {
                         film_badges(p, &t, fr, ph);
