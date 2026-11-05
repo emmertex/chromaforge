@@ -751,7 +751,12 @@ fn load_bytes_now(
             }
         }
         // the photo's camera profile (`.dcp`), or its camera's default one, replaces the file's colour model
-        // (its own look, tone curve and look table, only "As profile": under one of the app's looks its calibration only)
+        // (its own look, tone curve and look table, only "As profile": under one of the app's looks its calibration only).
+        // A profile without a tone curve of its own (most chart-made ones) keeps the tone the photo has without it,
+        // fitted below with the file's own colour (`own_colour`), whichever look sits on top.
+        let own_colour = crate::camera_profiles::profile_for(&raw.color, &raw.metadata, &options.camera)
+            .filter(|d| crate::camera_preview::keeps_photo_tone(d))
+            .map(|_| raw.color.clone());
         let dcp = crate::camera_profiles::apply_choice_with(&mut raw.color, &raw.metadata, &options.camera, options.camera_look).is_some();
         // Embedded lens corrections are applied by the pipeline ("Enable Profile Corrections"), not baked in
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
@@ -770,16 +775,20 @@ fn load_bytes_now(
         // (whether the photo's Profile option can start from measured colour: decided before the colour is chosen)
         let colorimetric = crate::camera_preview::colorimetric_camera(&raw).is_some();
         // the source's segmentation mattes (DNG semantic masks), read while the starting colour is fitted
-        let ((xy, t, camera_look), mattes) = rayon::join(
+        let (((xy, t, camera_look), kept_tone), mattes) = rayon::join(
             || {
                 let removed = dng_lens_ops.map(|ops| std::mem::replace(&mut raw.opcodes.list3, ops));
                 // With the opcodes restored, the proxy already includes vignetting; do not apply it twice.
                 let embedded = if removed.is_some() { None } else { lens.as_ref() };
+                let kept_tone = own_colour.and_then(|own| {
+                    let mut trace = crate::camera_preview::StartTrace::default();
+                    crate::camera_preview::tone_without_profile(&mut raw, own, &bytes, lens_geometry.as_ref(), embedded, options.colour, &mut trace)
+                });
                 let colour = crate::camera_preview::starting_colour(&mut raw, &bytes, lens_geometry.as_ref(), embedded, options.colour, dcp);
                 if let Some(ops) = removed {
                     raw.opcodes.list3 = ops;
                 }
-                colour
+                (colour, kept_tone)
             },
             || dng_mattes(&bytes, &info),
         );
@@ -857,7 +866,9 @@ fn load_bytes_now(
                 let tags = lcc_raw::ColorData { profile: Default::default(), ..raw.color.clone() };
                 Arc::new(lcc_pipeline::CameraColor { tags, developed_for: xy })
             });
-        let camera_tone = camera_look.as_ref().map(|p| p.tone).or_else(|| raw.color.profile.tone_curve.as_ref().and_then(dng_tone_curve));
+        // a fitted look's tone, else the tone a profile without a curve of its own keeps, else the file's (or profile's) curve
+        let camera_tone =
+            camera_look.as_ref().map(|p| p.tone).or(kept_tone).or_else(|| raw.color.profile.tone_curve.as_ref().and_then(dng_tone_curve));
         let local_tone = local_tone(&raw);
         let (temp, tint) = scale.as_shot(xy);
         return Ok((
