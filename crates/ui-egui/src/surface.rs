@@ -184,6 +184,12 @@ impl SurfaceHost {
         self.runtime.settings()
     }
 
+    /// A dial (or another surface control) is adjusting the photo right now: its gesture's undo step is open. The
+    /// canvas hides overlays and tool graphics meanwhile (OneSlips 0c58de7ad).
+    pub fn adjusting(&self) -> bool {
+        self.gesture.is_some()
+    }
+
     /// The app clock at the last frame (egui time, s).
     pub fn now(&self) -> f64 {
         self.now

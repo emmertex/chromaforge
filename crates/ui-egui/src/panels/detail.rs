@@ -31,6 +31,10 @@ fn video_frame_mesh(tex: egui::TextureId, r: Rect, frame: &Frame) -> egui::Shape
     egui::Shape::mesh(mesh)
 }
 
+/// How long (s) after a brush stroke the photographer still counts as painting ([`crate::LccApp::paint_hold_until`]):
+/// long enough for the next stroke to start.
+pub(crate) const PAINT_HOLD_SECS: f64 = 1.0;
+
 /// An in-progress on-canvas gesture.
 #[derive(Clone, Debug)]
 pub enum Gesture {
@@ -1188,7 +1192,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     // fits (no render). Editing: the nearest are decoded and kept, ready for their edits.
     // (nor while a cell on screen waits for its first picture: those come before anything bigger;
     // nor while the user's own work runs, an export above all)
+    // (nor while the photographer paints: only the photo on screen renders, OneSlips NOTES-1028 note 29)
     if !interacting
+        && !app.paint_hold
         && !app.renderer.is_pending(Slot::Main)
         && app.renderer.textures.get(&Slot::Main).is_some_and(|t| t.photo == id)
         && !app.pictures_busy(app.renderer.frame())
@@ -2635,6 +2641,24 @@ pub(crate) fn mask_gesture(app: &LccApp) -> bool {
     matches!(app.gesture, Some(Gesture::MaskHandle { .. } | Gesture::Brush { .. } | Gesture::RangeArea { .. } | Gesture::ColorPin { .. }))
 }
 
+/// Whether a slider or a dial is adjusting the photo right now (OneSlips 0c58de7ad, the user's standard): then the
+/// mask overlay, the pins and the tool graphics (mask lines and handles, Remove spots, crop guides, red-eye circles)
+/// hide so the effect itself can be judged, even an overlay switched on with O; they come back as they were when the
+/// adjusting stops. Sliders that shape the tool's own graphics (a range's Refine, a radial's Feather, a spot's Size,
+/// the crop angle, a transform with its fine grid) keep them.
+pub(crate) fn adjusting(app: &LccApp) -> bool {
+    let slider = app.ui.dragging_control.as_deref().is_some_and(|c| !shapes_graphics(c));
+    let mask_slider = app.ui.right == RightPanel::Masking && app.ui.mask_adjusting_until.is_some_and(|t| std::time::Instant::now() < t);
+    slider || mask_slider || app.surface.adjusting()
+}
+
+/// Slider ids that change what the tool graphics show rather than the photo's look.
+fn shapes_graphics(id: &str) -> bool {
+    matches!(id, "refine" | "smoothness" | "edge" | "feather" | "maskFeather" | "ui.removeSize" | "ui.removeFeather")
+        || id.starts_with("geometry.")
+        || id.starts_with("crop.")
+}
+
 pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) -> lcc_pipeline::Overlay {
     use lcc_pipeline::{MaskView, Overlay};
     if app.ui.fullscreen {
@@ -2647,13 +2671,12 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
     if gesture && app.session.active_mask.and_then(|id| d.masks.iter().find(|m| m.id == id)).is_some_and(mask_has_settings) {
         return Overlay::None;
     }
-    // While a mask slider is at work nothing covers the photo: its effect is what is being judged.
-    if app.ui.right == RightPanel::Masking && app.ui.mask_adjusting_until.is_some_and(|t| std::time::Instant::now() < t) {
-        return Overlay::None;
-    }
+    // While a slider or a dial is at work no mask overlay or spot view covers the photo, in any panel: its effect is
+    // what is being judged (the ⌥ threshold view of a tone slider still shows: it is what that drag asks for).
+    let shown = !adjusting(app);
     // Show every visible mask's region at once (Ctrl+Shift+O / Cmd+Shift+O), ahead of the selected-mask overlay
     // so the shortcut is not shadowed by the always-on single-mask overlay.
-    if app.ui.right == RightPanel::Masking && app.ui.mask_overlay_all && d.masks.iter().any(|m| m.visible && !m.components.is_empty()) {
+    if shown && app.ui.right == RightPanel::Masking && app.ui.mask_overlay_all && d.masks.iter().any(|m| m.visible && !m.components.is_empty()) {
         return Overlay::AllMasks {
             view: MaskView::parse(&app.ui.mask_overlay_mode).unwrap_or_default(),
             color: app.ui.mask_overlay_color,
@@ -2661,7 +2684,8 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
         };
     }
     // the pointer on a mask's row in the list shows what that mask selects
-    if app.ui.right == RightPanel::Masking
+    if shown
+        && app.ui.right == RightPanel::Masking
         && !gesture
         && let Some(m) = app.ui.mask_hover.or(app.ui.mask_pin_hover).and_then(|id| d.masks.iter().find(|m| m.id == id))
         && !m.components.is_empty()
@@ -2673,7 +2697,8 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
             opacity: app.ui.mask_overlay_opacity.clamp(0.0, 100.0).round() as u8,
         };
     }
-    if app.ui.right == RightPanel::Masking
+    if shown
+        && app.ui.right == RightPanel::Masking
         && app.ui.mask_overlay
         && let Some(m) = app.session.active_mask.and_then(|id| d.masks.iter().find(|m| m.id == id))
         && !m.components.is_empty()
@@ -2686,7 +2711,7 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
             opacity: app.ui.mask_overlay_opacity.clamp(0.0, 100.0).round() as u8,
         };
     }
-    if app.ui.right == RightPanel::Remove && app.ui.visualize_spots {
+    if shown && app.ui.right == RightPanel::Remove && app.ui.visualize_spots {
         return Overlay::Spots(app.ui.spots_threshold.clamp(0.0, 100.0).round() as u8);
     }
     let edit = app.ui.right == RightPanel::Edit;
@@ -2937,6 +2962,12 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     // the box's centre: what a rotation turns the photo about (it stays put on screen)
     let box_centre = pos2(pts.iter().map(|q| q.x).sum::<f32>() / 4.0, pts.iter().map(|q| q.y).sum::<f32>() / 4.0);
     p.add(egui::Shape::closed_line(pts.clone(), Stroke::new(1.0, Color32::WHITE)));
+    // overlay guides and handles (hidden while a slider or dial adjusts the photo)
+    let mut p = p.clone();
+    if adjusting(app) {
+        p.set_invisible();
+    }
+    let p = &p;
     // overlay guides
     let lerp = |a: Pos2, b: Pos2, t: f32| a + (b - a) * t;
     let guide = Stroke::new(0.8, Color32::from_white_alpha(150));
@@ -3874,7 +3905,12 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     // no tool armed as this frame starts (a click that makes a mask puts its tool away: that click doesn't zoom)
     let idle = app.ui.tool.is_empty();
     let clip = app.canvas_rect.unwrap_or(map.rect);
-    let p = &ui.painter_at(clip);
+    let mut painter = ui.painter_at(clip);
+    // a slider or dial at work: no lines, handles or pins over the effect
+    if adjusting(app) {
+        painter.set_invisible();
+    }
+    let p = &painter;
     // (mask, component, handle, screen position) of everything that can be grabbed
     let mut grips: Vec<(u32, usize, u8, Pos2)> = Vec::new();
     // pins follow Show Pins and the Tool Overlay mode (Shift+H); Auto hides them while brushing
@@ -5037,7 +5073,11 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
     let (mode, live) = (app.ui.tool_overlay, pins_live(app, resp, map));
     // Auto also hides them while a new spot is painted
     let painting = mode == ToolOverlay::Auto && matches!(app.gesture, Some(Gesture::Spot { .. }));
-    let p = ui.painter_at(app.canvas_rect.unwrap_or(map.rect));
+    let mut p = ui.painter_at(app.canvas_rect.unwrap_or(map.rect));
+    // a slider or dial at work: the spots' outlines and pins hide over the result
+    if adjusting(app) {
+        p.set_invisible();
+    }
     let mut pins = p.clone();
     if painting {
         pins.set_invisible();
@@ -5335,7 +5375,10 @@ fn eye_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map: 
     let o = map.screen(Point::new(0.0, 0.0));
     let (sx, sy) = (map.screen(Point::new(1.0, 0.0)).distance(o), map.screen(Point::new(0.0, 1.0)).distance(o));
     let per_long = sx.max(sy);
-    let p = ui.painter().clone();
+    let mut p = ui.painter().clone();
+    if adjusting(app) {
+        p.set_invisible();
+    }
     for (i, e) in d.red_eye.iter().enumerate() {
         let c = map.screen(e.center);
         let r = vec2(e.rx as f32 * per_long, e.ry as f32 * per_long);

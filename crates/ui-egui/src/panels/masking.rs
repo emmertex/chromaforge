@@ -154,6 +154,23 @@ pub fn local_get(a: &LocalAdjustments, key: &str) -> f64 {
     serde_json::to_value(a).ok().and_then(|v| v.get(key).and_then(|x| x.as_f64())).unwrap_or(0.0)
 }
 
+/// Every kind of mask, in Create New Mask's order, with its tile label (OneSlips 1138a5edd): the tiles and the Add /
+/// Subtract / Intersect menus offer all of them, in the same order, with the same icons.
+pub(crate) const MASK_KINDS: [(&str, &str); 12] = [
+    ("object", "Object"),
+    ("prompt", "Describe"),
+    ("subject", "Subject"),
+    ("sky", "Sky"),
+    ("background", "Background"),
+    ("people", "People"),
+    ("concept", "Remembered"),
+    ("brush", "Brush"),
+    ("linear", "Linear"),
+    ("radial", "Radial"),
+    ("luminanceRange", "Luminance"),
+    ("colorRange", "Color"),
+];
+
 /// The icon of a mask kind, by its `mask.add` kind id: the one table the Create New Mask tiles and
 /// the mask list share.
 fn kind_icon(kind: &str) -> Icon {
@@ -234,20 +251,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.label(egui::RichText::new(crate::i18n::tr("Create New Mask")).font(t.semibold(13.0)).color(t.text_label));
         });
         ui.add_space(6.0);
-        let tiles: [(&str, &str); 12] = [
-            ("object", "Object"),
-            ("prompt", "Describe"),
-            ("subject", "Subject"),
-            ("sky", "Sky"),
-            ("background", "Background"),
-            ("people", "People"),
-            ("concept", "Remembered"),
-            ("brush", "Brush"),
-            ("linear", "Linear"),
-            ("radial", "Radial"),
-            ("luminanceRange", "Luminance"),
-            ("colorRange", "Color"),
-        ];
+        let tiles = MASK_KINDS;
         // four 52 pt tiles a row when they and their labels fit, else fewer (wider for a long label)
         let widest = |size: f32| {
             let font = t.font(size);
@@ -296,10 +300,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             // a picker under the tiles: who and which parts, or which object
                             "people" => {
                                 app.ui.concept_pick = false;
+                                app.mask_pick_op = None;
                                 app.ui.people_pick = if app.ui.people_pick.is_some() { None } else { Some((0, Vec::new())) };
                             }
                             "concept" => {
                                 app.ui.people_pick = None;
+                                app.mask_pick_op = None;
                                 app.ui.concept_pick = !app.ui.concept_pick;
                             }
                             "brush" | "linear" | "radial" => {
@@ -1919,46 +1925,65 @@ fn describe_field(app: &mut LccApp, ui: &mut egui::Ui, new_mask: bool) {
     }
 }
 
+/// Add / Subtract / Intersect with: every kind Create New Mask offers ([`MASK_KINDS`]), in its order and with its icons
+/// (OneSlips 1138a5edd; Background, People, Remembered and Color were missing). People and Remembered open their
+/// picker, whose selection then combines with the selected mask.
 fn component_menu(app: &mut LccApp, ui: &mut egui::Ui, op: &str) {
-    let b = ui.button(crate::i18n::tr("Object"));
-    register(ui.ctx(), format!("maskComp:{op}:object"), b.rect);
-    if b.clicked() {
-        start_object(app, ui.ctx(), op);
-    }
-    let b = ui.button(crate::i18n::tr("Describe…"));
-    register(ui.ctx(), format!("maskComp:{op}:prompt"), b.rect);
-    if b.clicked() {
-        start_describe(app, op);
-    }
-    for (kind, label) in [
-        ("brush", "Brush"),
-        ("linear", "Linear Gradient"),
-        ("radial", "Radial Gradient"),
-        ("sky", "Sky"),
-        ("subject", "Subject"),
-        ("luminanceRange", "Luminance Range"),
-    ] {
+    let t = Tokens::get(ui.ctx());
+    for (kind, label) in MASK_KINDS {
         // painting only adds or erases
         if kind == "brush" && op == "intersect" {
             continue;
         }
-        let b = ui.button(menu_label(label));
+        let label = match kind {
+            "prompt" => "Describe…",
+            "linear" => "Linear Gradient",
+            "radial" => "Radial Gradient",
+            "luminanceRange" => "Luminance Range",
+            "colorRange" => "Color Range",
+            "people" => "People…",
+            "concept" => "Remembered…",
+            _ => label,
+        };
+        // the tile's icon before the name
+        let b = ui.button(format!("      {}", menu_label(label)));
+        paint(ui.painter(), Rect::from_center_size(pos2(b.rect.left() + 13.0, b.rect.center().y), vec2(14.0, 14.0)), kind_icon(kind), t.text_label);
         register(ui.ctx(), format!("maskComp:{op}:{kind}"), b.rect);
         if b.clicked() {
-            if kind == "brush" {
-                let _ = app.run("tool.brush", json!({"op": op}));
-            } else {
-                let _ = app.run("mask.addComponent", json!({"op": op, "kind": kind}));
-                if matches!(kind, "linear" | "radial" | "colorRange" | "luminanceRange" | "depthRange") {
-                    app.ui.tool = kind.to_string();
-                }
+            start_component(app, ui.ctx(), kind, op);
+        }
+    }
+}
+
+/// A component of `kind` the selected mask combines by `op`: tools wait for the photo, pickers open, the rest is made
+/// at once.
+pub(crate) fn start_component(app: &mut LccApp, ctx: &egui::Context, kind: &str, op: &str) {
+    match kind {
+        "object" => return start_object(app, ctx, op),
+        "prompt" => return start_describe(app, op),
+        "people" | "concept" => {
+            // one picker at a time, its selection combined with the selected mask
+            app.mask_pick_op = Some(op.to_string());
+            app.ui.people_pick = (kind == "people").then(|| (0, Vec::new()));
+            app.ui.concept_pick = kind == "concept";
+            return;
+        }
+        "brush" => {
+            let _ = app.run("tool.brush", json!({"op": op}));
+        }
+        _ => {
+            if let Err(e) = app.run("mask.addComponent", json!({"op": op, "kind": kind})) {
+                return app.toast(ctx, e);
             }
-            if let Some(d) = app.session.active().and_then(|id| app.session.develop_of(id))
-                && let Some(m) = d.masks.iter().find(|m| Some(m.id) == app.session.active_mask)
-            {
-                app.ui.active_mask_component = Some(m.components.len().saturating_sub(1));
+            if matches!(kind, "linear" | "radial" | "colorRange" | "luminanceRange" | "depthRange") {
+                app.ui.tool = kind.to_string();
             }
         }
+    }
+    if let Some(d) = app.session.active().and_then(|id| app.session.develop_of(id))
+        && let Some(m) = d.masks.iter().find(|m| Some(m.id) == app.session.active_mask)
+    {
+        app.ui.active_mask_component = Some(m.components.len().saturating_sub(1));
     }
 }
 
@@ -2178,6 +2203,63 @@ pub(crate) fn put_tools_away(app: &mut LccApp) {
         app.ui.tool_photo = None;
     }
     app.ui.mask_held = photo.zip(app.session.active_mask).map(|(p, m)| (p, m, app.ui.active_mask_component));
+    keep_selection(app);
+}
+
+/// What Masks remembers to land on a mask (OneSlips 0d9d4fb7d, test notes 2026-10-25 notes 8 and 9).
+#[derive(Default)]
+pub(crate) struct Landing {
+    /// The mask selected last on each photo, this session.
+    memory: std::collections::HashMap<u64, u32>,
+    /// The photo on show and whether Masks was open, last frame: a change is "entering Masks".
+    seen: Option<(Option<u64>, bool)>,
+    /// The mask selected when a tool was armed for a new one (photo, mask).
+    before_arm: Option<(u64, Option<u32>)>,
+}
+
+/// Which mask Masks has selected, worked out every frame:
+///
+/// - entering Masks, or another photo while in Masks, lands on a mask when the photo has any and none is selected
+///   (another photo's linked copy is selected by the engine): the only one; else the one selected last on this
+///   photo; else the first;
+/// - a tool armed for a new mask deselects the selected one ([`arm_new`]); put away without making a mask (Esc, the
+///   tile again) the one selected before is selected again.
+pub(crate) fn keep_selection(app: &mut LccApp) {
+    let photo = app.session.active().map(|p| p.0);
+    let in_masks = app.ui.right == crate::state::RightPanel::Masking && app.ui.view == crate::state::ViewMode::Detail;
+    let d = app.session.active().and_then(|id| app.session.develop_of(id)).unwrap_or_default();
+    let has = |id: u32| d.masks.iter().any(|m| m.id == id);
+    let armed = app.ui.mask_new.is_some();
+    if armed {
+        if app.mask_landing.before_arm.is_none_or(|(q, _)| Some(q) != photo) {
+            let before = app.mask_landing.memory.get(&photo.unwrap_or_default()).copied();
+            app.mask_landing.before_arm = photo.map(|p| (p, app.session.active_mask.or(before)));
+        }
+    } else if let Some((p, before)) = app.mask_landing.before_arm.take()
+        && app.session.active_mask.is_none()
+        && photo == Some(p)
+        && let Some(id) = before.filter(|id| has(*id))
+    {
+        // put away without making a mask: the one selected before
+        let _ = app.run("mask.select", json!({"id": id}));
+    }
+    let seen = (photo, in_masks);
+    let entered = in_masks && app.mask_landing.seen != Some(seen);
+    app.mask_landing.seen = Some(seen);
+    let Some(p) = photo.filter(|_| in_masks) else { return };
+    if entered && !armed && !app.session.active_mask.is_some_and(has) {
+        let memory = app.mask_landing.memory.get(&p).copied().filter(|id| has(*id));
+        let landing = match d.masks.as_slice() {
+            [only] => Some(only.id),
+            masks => memory.or_else(|| masks.first().map(|m| m.id)),
+        };
+        if let Some(id) = landing {
+            let _ = app.run("mask.select", json!({"id": id}));
+        }
+    }
+    if let Some(id) = app.session.active_mask.filter(|id| has(*id)) {
+        app.mask_landing.memory.insert(p, id);
+    }
 }
 
 /// Keep "Reset settings on new mask" in the saved UI settings: the saved choice goes to the engine

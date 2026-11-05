@@ -582,6 +582,9 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
     }
     // profile row (Compact: "Profile:" in the label column's small type, the name, the browser at the
     // right margin, one row; room under it for the camera profile the look sits on)
+    // the camera profile the look sits on (OneSlips, LR-PROF-LAYERS): named in the row when the photo develops
+    // with its own look ("As profile"), else on a line of its own under the look
+    let (shown_look, on) = profile_row_names(app, id, d);
     egui::Frame::NONE.inner_margin(m(ui, egui::Margin { left: 12, right: 16, top: 12, bottom: 12 }, 2, 2)).show(ui, |ui| {
         ui.horizontal(|ui| {
             if dense {
@@ -590,13 +593,12 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
             } else {
                 ui.label(egui::RichText::new(crate::i18n::tr("Profile")).font(t.font(13.0)).color(t.text_dim));
             }
-            let name = app.session.profile_info(&d.profile.id).map(|(name, _)| name).unwrap_or("Color");
             // a long name is cut short before Browse Profiles: a wider row would widen the whole panel's
             // content, and the sliders below would run past its edge
             let browse = if dense { 20.0 } else { 28.0 };
             let max = ui.available_width() - browse - ui.spacing().item_spacing.x;
             let font = t.font(if dense { 12.5 } else { 15.0 });
-            let r = crate::widgets::dropdown_within(ui, "profile", crate::i18n::profile_label(&d.profile.id, name), font, t.text_label, max);
+            let r = crate::widgets::dropdown_within(ui, "profile", &shown_look, font, t.text_label, max);
             let below = r.rect.bottom();
             egui::Popup::menu(&r).show(|ui| profile_menu(app, ui, d, below));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -615,6 +617,10 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
                 }
             });
         });
+        if let Some(on) = &on {
+            let r = ui.add(egui::Label::new(egui::RichText::new(on).font(t.font(if dense { 11.0 } else { 12.0 })).color(t.text_dim)).truncate());
+            register(ui.ctx(), "label:profileCalibration", r.rect);
+        }
     });
     if d.profile.id != "lc.color" {
         control(app, ui, d, "profile.amount", true);
@@ -658,6 +664,41 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
 /// Browse…. Like the menu bar's menus, the dropdown and each submenu stay inside the window and
 /// scroll when their rows don't fit (issue #2059: a folder of many imported profiles ran past the
 /// window's bottom edge). `below` is the dropdown's bottom edge, which the menu hangs from.
+/// The profile row's name and the line under it (OneSlips, LR-PROF-LAYERS): a photo that develops with its camera
+/// profile's own look ("As profile") shows the camera profile's name and no line; one with a look of the app's on a
+/// camera profile shows the look and "on <camera profile>".
+pub(crate) fn profile_row_names(app: &LccApp, id: PhotoId, d: &DevelopSettings) -> (String, Option<String>) {
+    let look = app.session.profile_info(&d.profile.id).map(|(name, _)| name).unwrap_or("Color");
+    let look = crate::i18n::profile_label(&d.profile.id, look).to_string();
+    let Some(photo) = app.session.catalog.photo(id) else { return (look, None) };
+    let Some(camera) = lcc_engine::camera_profiles::photo_profile(photo) else { return (look, None) };
+    let camera_name = if camera.name.trim().is_empty() { camera.model.clone() } else { camera.name.clone() };
+    if d.keeps_camera_look() && camera.has_look() {
+        return (camera_name, None);
+    }
+    (look, Some(crate::i18n::tr_format!("on {calibration}", calibration = camera_name).to_string()))
+}
+
+/// The camera profiles a raw of `camera` can develop with (`profile.camera` choices): the camera's default, the
+/// app's own colour, the imported `.dcp` files for its camera and its calibrated looks.
+pub(crate) fn camera_profile_options(camera: &str) -> Vec<(String, String)> {
+    let default_name = match lcc_raw::dcp::resolve_camera("", camera) {
+        Some(p) => format!("{} ({})", crate::i18n::tr("Camera default"), p.name),
+        None => crate::i18n::tr("Camera default (built-in)").to_string(),
+    };
+    let mut options: Vec<(String, String)> = vec![(String::new(), default_name), ("lc".into(), crate::i18n::tr("Built-in colour").to_string())];
+    for (pid, p) in lcc_raw::dcp::library() {
+        if lcc_raw::dcp::covers_model(&p.model, camera) {
+            let name = if p.name.is_empty() { pid.trim_start_matches("dcp:").to_string() } else { p.name.clone() };
+            options.push((pid, name));
+        }
+    }
+    if let Some(cal) = lcc_raw::dcp::calibrated_for_camera(camera) {
+        options.extend(cal.looks.iter().map(|(pid, p)| (pid.clone(), p.name.clone())));
+    }
+    options
+}
+
 fn profile_menu(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, below: f32) {
     crate::menu_level::level(ui, 1, Some(below), |ui| profile_menu_rows(app, ui, d, below));
 }
@@ -710,7 +751,34 @@ fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, b
             crate::menu_level::set_anchor(ui.ctx(), 2, r.response.rect);
         }
     }
+    // the raw's camera profiles (OneSlips, LR-PROF-LAYERS): one with a look of its own comes with it ("As profile")
+    let mut camera_pick: Option<String> = None;
+    if let Some(photo) = app.session.active().and_then(|a| app.session.catalog.photo(a)).filter(|p| p.develops_raw()) {
+        let options = camera_profile_options(&photo.meta.camera);
+        let current = d.profile.camera.clone();
+        let r = crate::widgets::menu_button(ui, crate::i18n::tr("Camera Profiles"), |ui| {
+            crate::menu_level::level(ui, 2, Some(below), |ui| {
+                ui.set_min_width(170.0);
+                for (o, n) in &options {
+                    let r = ui.selectable_label(*o == current, n);
+                    register(ui.ctx(), format!("profileMenu:camera:{o}"), r.rect);
+                    if r.clicked() {
+                        camera_pick = Some(o.clone());
+                    }
+                }
+            });
+        });
+        register(ui.ctx(), "profileMenu:cameraMenu", r.response.rect);
+        if r.inner.is_some() {
+            crate::menu_level::set_anchor(ui.ctx(), 2, r.response.rect);
+        }
+    }
     ui.separator();
+    if let Some(choice) = camera_pick {
+        // (the camera's default keeps the look: there is no one profile to come with)
+        let c = if choice.is_empty() { "develop.cameraProfile" } else { "develop.profile" };
+        let _ = app.run(c, json!({"id": choice}));
+    }
     if let Some((name, _)) = app.session.profile_info(cur) {
         let fav = app.session.profile_favorites.iter().any(|f| f == cur);
         let label = if fav {

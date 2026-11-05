@@ -29,6 +29,10 @@ pub struct ProfileEdits {
     /// Built-in looks removed from this install.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub removed: Vec<String>,
+    /// Group names in the user's order, empty groups made with `profile.groupNew` too (others follow in their own
+    /// order).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub group_order: Vec<String>,
 }
 
 impl ProfileEdits {
@@ -39,6 +43,8 @@ impl ProfileEdits {
         self.groups = self.groups.into_iter().filter(|(k, v)| ok(k, v)).take(MAX_ENTRIES).collect();
         self.order.truncate(MAX_ENTRIES);
         self.removed.truncate(MAX_ENTRIES);
+        self.group_order.retain(|g| !g.trim().is_empty() && g.chars().count() <= MAX_NAME);
+        self.group_order.truncate(MAX_ENTRIES);
         self
     }
 
@@ -57,6 +63,8 @@ pub struct ShownProfile {
     /// Its own name.
     pub original_name: String,
     pub group: String,
+    /// Its own group.
+    pub original_group: String,
     /// `look` (built in) or `lut` (imported).
     pub kind: &'static str,
     pub hidden: bool,
@@ -86,6 +94,7 @@ impl crate::Session {
                 name: renamed.cloned().unwrap_or_else(|| name.to_string()),
                 original_name: name.to_string(),
                 group: regrouped.cloned().unwrap_or_else(|| group.to_string()),
+                original_group: group.to_string(),
                 kind,
                 hidden: self.profile_hidden.iter().any(|h| h == id),
                 builtin_label: kind == "look" && renamed.is_none() && regrouped.is_none(),
@@ -97,7 +106,29 @@ impl crate::Session {
         let rank = |id: &str| e.order.iter().position(|o| o == id).unwrap_or(usize::MAX);
         // (a stable sort: profiles the user didn't place keep their own order, after the placed ones)
         out.sort_by_key(|p| rank(&p.id));
+        // then the groups in the user's order (`profile.groupMove`); the others keep theirs, after them
+        if !e.group_order.is_empty() {
+            let group_rank = |g: &str| e.group_order.iter().position(|o| o == g).unwrap_or(usize::MAX);
+            out.sort_by_key(|p| group_rank(&p.group));
+        }
         out
+    }
+
+    /// Every group name in order: the groups of [`Self::all_profiles`] as they come, and the user's empty groups
+    /// (`profile.groupNew`) where the user's order puts them.
+    pub fn profile_group_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for p in self.all_profiles() {
+            if !names.contains(&p.group) {
+                names.push(p.group);
+            }
+        }
+        for (i, g) in self.profile_edits.group_order.iter().enumerate() {
+            if !names.contains(g) {
+                names.insert(i.min(names.len()), g.clone());
+            }
+        }
+        names
     }
 
     /// The groups the menus and the browser show: each with its shown profiles, in the order the

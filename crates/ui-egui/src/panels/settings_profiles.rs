@@ -44,6 +44,34 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
     }
+    // the imported camera profiles (.dcp): deleted here, with their copy as the camera's default (OneSlips,
+    // LR-PROF-IMPORT `profile.deleteCamera`)
+    let camera: Vec<Value> = m["camera"].as_array().cloned().unwrap_or_default();
+    if !camera.is_empty() {
+        heading(ui, t, "Camera profiles");
+        hint(
+            ui,
+            t,
+            "Delete removes an imported camera profile, and its use as its camera's default. Photos that chose it go back to their camera's default.",
+        );
+        for c in &camera {
+            let Some(id) = c["id"].as_str() else { continue };
+            let name = c["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(id);
+            let mut label = format!("{} · {name}", c["model"].as_str().unwrap_or(""));
+            if c["cameraDefault"] == true {
+                label = crate::i18n::tr_format!("{label} (camera default)", label = label).to_string();
+            }
+            row(ui, t, &label, |ui| {
+                let used = c["usedBy"].as_u64().unwrap_or(0);
+                if used > 0 {
+                    ui.label(egui::RichText::new(crate::i18n::tr_format!("{n} photos", n = used)).color(t.text_dim));
+                }
+                if text_button(ui, &format!("cameraProfileDelete:{id}"), crate::i18n::tr("Delete"), false).clicked() {
+                    let _ = app.run("profile.deleteCamera", json!({"id": id}));
+                }
+            });
+        }
+    }
     heading(ui, t, "Profiles");
     hint(
         ui,

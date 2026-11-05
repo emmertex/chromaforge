@@ -154,6 +154,9 @@ pub struct Segmenter {
     /// Run requests in the background and apply them in [`Session::segment_poll`] (the
     /// desktop app); otherwise commands wait for their result (CLI, MCP, tests).
     pub background: bool,
+    /// Requests sent now are background work ([`worker::Job::low`]: the user's go first). Set while work the user
+    /// didn't ask for right now sends its photos' masks, skin and retouch parts (an import's finishing queue).
+    pub low_priority: bool,
     /// The Subject / Background model (BiRefNet).
     pub subject: subject::Subject,
     /// Where the openly licensed models (SAM 2.1, Depth Anything) live; `None`: next to SAM 3's folder.
@@ -195,6 +198,7 @@ impl Default for Segmenter {
             dir: None,
             mirrors_file: None,
             background: false,
+            low_priority: false,
             subject: subject::Subject::default(),
             models_root: None,
             object_model: models::ObjectModel::default(),
@@ -549,7 +553,17 @@ impl Session {
                 job
             }
         };
-        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply, cancel: None })
+        Ok(worker::Job {
+            dir,
+            key: if region.is_some() { 0 } else { key },
+            render: Some(render),
+            missing,
+            kind,
+            tag,
+            reply,
+            cancel: None,
+            low: self.segmenter.low_priority,
+        })
     }
 
     /// Send a request and wait for its result (CLI, MCP, tests; or when not in background mode).
@@ -1194,26 +1208,27 @@ impl Session {
         match (skipped, result) {
             (true, _) => {}
             (false, Ok(Some(seg))) => {
-                let applied = self.develop_of(photo).and_then(|d| {
-                    let mut d = (*d).clone();
-                    let c = d.masks.iter_mut().find(|m| m.id == mask)?.components.get_mut(comp)?;
+                // merged into the photo's settings as they are now (an edit made while it ran stays, OneSlips
+                // 1c785da00 note 18), and into its undo / redo / History steps: only into the selection it was
+                // computed for (undone or edited meanwhile, it takes none)
+                let fill = |d: &mut lcc_develop::DevelopSettings| {
+                    let Some(c) = d.masks.iter_mut().find(|m| m.id == mask).and_then(|m| m.components.get_mut(comp)) else { return false };
                     if c.shape != *shape {
-                        return None; // undone or edited meanwhile
+                        return false;
                     }
                     match &mut c.shape {
                         MaskShape::Object { seg: s, .. }
                         | MaskShape::Prompt { seg: s, .. }
                         | MaskShape::People { seg: s, .. }
-                        | MaskShape::Concept { seg: s, .. } => *s = Some(seg),
-                        _ => return None,
+                        | MaskShape::Concept { seg: s, .. } => *s = Some(seg.clone()),
+                        _ => return false,
                     }
-                    Some(d)
-                });
-                if let Some(op) = applied.and_then(|d| self.develop_op(photo, d, "AI Masks")) {
-                    match self.apply_unrecorded(op) {
-                        Ok(()) => polled.changed = true,
-                        Err(e) => polled.messages.push(e.to_string()),
-                    }
+                    true
+                };
+                match self.merge_background(photo, "AI Masks", true, &fill) {
+                    Ok(true) => polled.changed = true,
+                    Ok(false) => {}
+                    Err(e) => polled.messages.push(e.to_string()),
                 }
                 report(self, None);
             }

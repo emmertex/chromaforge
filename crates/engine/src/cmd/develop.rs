@@ -21,6 +21,25 @@ fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettin
     ok()
 }
 
+/// `develop.profile` with a camera profile (OneSlips, LR-PROF-LAYERS `dcp_profiles::choose`): it becomes the photo's
+/// camera profile (`profile.camera`). One with a look of its own (tone curve, look table) comes with that look, "As
+/// profile": the look goes back to the default, so no look of the app's is stacked on it. One without keeps the look.
+fn choose_camera_profile(s: &mut Session, id: &str) -> Result<Value> {
+    const C: &str = "develop.profile";
+    let profile = crate::camera_profiles::choice_profile(id);
+    if id != "lc" && profile.is_none() {
+        return Err(bad(C, format!("unknown camera profile `{id}`")));
+    }
+    let own_look = profile.is_some_and(|d| d.has_look());
+    edit(s, C, "Profile", |d| {
+        d.profile.camera = id.to_string();
+        if own_look {
+            d.profile.id = lcc_develop::DEFAULT_LOOK.to_string();
+        }
+        Ok(())
+    })
+}
+
 /// `d` (photo with source `info`, crop frame `dims`) with control `ctl` moved by `delta` from its
 /// own value: white balance on the photo's own scale (As Shot read as the file's white first),
 /// clamped to the control's range. Quick Develop and the live multi-photo edit use it, so every
@@ -780,19 +799,30 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!("develop.profile", "Set Profile", [], None, "{id: profile id (see profiles.list), amount?: 0..200}", has_active, |s, p| {
-            let id = str_param(p, "id").ok_or_else(|| bad("develop.profile", "missing id"))?.to_string();
-            if !crate::presets::PROFILES.iter().any(|x| x.id == id) && !s.lut_profiles.iter().any(|x| x.id == id) {
-                return Err(bad("develop.profile", format!("unknown profile `{id}`")));
+        cmd!(
+            "develop.profile",
+            "Set Profile",
+            [],
+            None,
+            "{id: profile id (see profiles.list), or a camera profile (dcp:…, cal:…, lc: as develop.cameraProfile; one with a look of its own comes with it, \"As profile\": the look goes back to the default), amount?: 0..200}",
+            has_active,
+            |s, p| {
+                let id = str_param(p, "id").ok_or_else(|| bad("develop.profile", "missing id"))?.to_string();
+                if crate::camera_profiles::is_camera_choice(&id) {
+                    return choose_camera_profile(s, &id);
+                }
+                if !crate::presets::PROFILES.iter().any(|x| x.id == id) && !s.lut_profiles.iter().any(|x| x.id == id) {
+                    return Err(bad("develop.profile", format!("unknown profile `{id}`")));
+                }
+                edit(s, "develop.profile", "Profile", |d| {
+                    d.profile.id = id.clone();
+                    d.profile.amount = f64_or(p, "amount", d.profile.amount).clamp(0.0, 200.0);
+                    Ok(())
+                })?;
+                s.note_profile_used(&id);
+                ok()
             }
-            edit(s, "develop.profile", "Profile", |d| {
-                d.profile.id = id.clone();
-                d.profile.amount = f64_or(p, "amount", d.profile.amount).clamp(0.0, 200.0);
-                Ok(())
-            })?;
-            s.note_profile_used(&id);
-            ok()
-        }),
+        ),
         cmd!(
             "develop.cameraProfile",
             "Set Camera Profile",

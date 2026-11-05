@@ -293,3 +293,103 @@ fn an_import_applies_a_preset_stack_in_order_and_each_body_keeps_its_profile() {
     assert!(s.execute("library.import", &json!({"paths": [&e], "presets": ["no.such.preset"]})).is_err(), "an unknown preset refuses the import");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn groups_are_made_moved_and_profiles_placed() {
+    let mut s = Session::new();
+    let (a, b, c) = (crate::presets::PROFILES[0].id, crate::presets::PROFILES[1].id, crate::presets::PROFILES[8].id);
+    let groups = |s: &mut Session| -> Vec<String> {
+        s.execute("profiles.manager", &json!({})).unwrap()["groups"].as_array().unwrap().iter().map(|g| g.as_str().unwrap().to_string()).collect()
+    };
+    let r = s.execute("profile.groupNew", &json!({"name": "Weddings"})).unwrap();
+    assert_eq!(r["group"], "Weddings");
+    assert_eq!(groups(&mut s).last().map(String::as_str), Some("Weddings"), "an empty group is listed, last");
+    assert!(s.execute("profile.groupNew", &json!({"name": "Weddings"})).is_err(), "not twice");
+    s.execute("profile.groupMove", &json!({"group": "Weddings", "to": 0})).unwrap();
+    assert_eq!(groups(&mut s)[0], "Weddings");
+    s.execute("profile.groupMove", &json!({"group": "Weddings", "by": 1})).unwrap();
+    assert_eq!(groups(&mut s)[1], "Weddings");
+    // two profiles into it, then a third placed before the first of them
+    s.execute("profile.place", &json!({"ids": [c, a], "group": "Weddings"})).unwrap();
+    s.execute("profile.place", &json!({"ids": [b], "before": c})).unwrap();
+    let m = s.execute("profiles.manager", &json!({})).unwrap();
+    let mine: Vec<&str> = m["profiles"].as_array().unwrap().iter().filter(|p| p["group"] == "Weddings").map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(mine, [b, c, a]);
+    // placed back by a profile of its own group, it leaves the user's group
+    let home = crate::presets::PROFILES.iter().find(|p| p.group == crate::presets::PROFILES[0].group && ![a, b, c].contains(&p.id)).unwrap().id;
+    s.execute("profile.place", &json!({"ids": [a], "after": home})).unwrap();
+    assert!(!s.profile_edits.groups.contains_key(a));
+    for (cmd, p) in [
+        ("profile.place", json!({"ids": [a], "before": a})),
+        ("profile.place", json!({"ids": []})),
+        ("profile.place", json!({"ids": ["nope"], "group": "Weddings"})),
+        ("profile.place", json!({"ids": [a]})),
+        ("profile.groupMove", json!({"group": "No Such Group", "by": 1})),
+        ("profile.groupMove", json!({"group": "Weddings"})),
+        ("profile.groupNew", json!({"name": ""})),
+    ] {
+        assert!(s.execute(cmd, &p).is_err(), "{cmd} {p}");
+    }
+}
+
+#[test]
+fn a_body_adopts_releases_and_clears_its_camera_profile() {
+    let mut s = Session::new();
+    let a = raw(&mut s, "DSC0010.ARW", "55");
+    let edited = raw(&mut s, "DSC0011.ARW", "55");
+    let mut d = (*s.develop_of(edited).unwrap()).clone();
+    d.profile.camera = "dcp:the-users-own".into();
+    let op = s.develop_op(edited, d, "Camera Profile").unwrap();
+    s.commit("Edit", op).unwrap();
+    let undo = s.undo.len();
+    let r = s.execute("profile.adoptForBody", &json!({"profile": "lc", "photo": a.0})).unwrap();
+    assert_eq!((r["body"].as_str(), r["changed"].as_u64()), (Some("ILCE-9|55"), Some(1)));
+    assert_eq!(s.undo.len(), undo + 1, "one undo step");
+    assert_eq!(s.develop_of(a).unwrap().profile.camera, "lc");
+    assert_eq!(s.develop_of(edited).unwrap().profile.camera, "dcp:the-users-own", "a photo with its own choice keeps it");
+    assert_eq!(s.execute("profile.releaseFromBody", &json!({"profile": "dcp:other", "body": "ILCE-9|55"})).unwrap()["released"], false);
+    assert_eq!(s.execute("profile.releaseFromBody", &json!({"profile": "lc", "body": "ILCE-9|55"})).unwrap()["released"], true);
+    assert!(s.body_profiles.is_empty());
+    s.body_profiles.insert("ILCE-9|55".into(), "lc".into());
+    assert!(s.execute("profile.clearBodyDefault", &json!({"photo": a.0})).unwrap()["cleared"].is_string());
+    assert!(s.body_profiles.is_empty());
+    assert!(s.execute("profile.adoptForBody", &json!({"profile": "dcp:nope", "photo": a.0})).is_err());
+    assert!(s.execute("profile.clearBodyDefault", &json!({"body": ""})).is_err());
+}
+
+#[test]
+fn deleting_an_imported_camera_profile_removes_its_default_copy_and_frees_its_photos() {
+    let _lock = crate::camera_profiles::test_library_lock();
+    let root = std::env::temp_dir().join(format!("cf-delete-camera-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let library = root.join("dcp");
+    std::fs::create_dir_all(&library).unwrap();
+    let m = lcc_raw::Mat3([[0.7, -0.1, -0.05], [-0.5, 1.3, 0.2], [-0.1, 0.25, 0.65]]);
+    let dcp = lcc_raw::dcp::Dcp {
+        model: "Sony ILCE-9".into(),
+        name: "Mine".into(),
+        copyright: String::new(),
+        color: lcc_raw::ColorData { illuminant: [21, 0], color_matrix: [Some(m), None], ..Default::default() },
+    };
+    let bytes = lcc_raw::dcp::write(&dcp).unwrap();
+    std::fs::write(library.join("delete-test.dcp"), &bytes).unwrap();
+    // the same profile as the camera's default
+    let default_copy = root.join(crate::camera_profiles::dcp_file_name("Sony ILCE-9"));
+    std::fs::write(&default_copy, &bytes).unwrap();
+    let mut s = Session::new();
+    let a = raw(&mut s, "DSC0020.ARW", "9");
+    let mut d = (*s.develop_of(a).unwrap()).clone();
+    d.profile.camera = "dcp:delete-test".into();
+    let op = s.develop_op(a, d, "Camera Profile").unwrap();
+    s.commit("Edit", op).unwrap();
+    s.body_profiles.insert("ILCE-9|9".into(), "dcp:delete-test".into());
+    let r = crate::cmd::profile_manager::delete_camera_in(&mut s, "dcp:delete-test", &library, Some(&root)).unwrap();
+    assert_eq!((r["photos"].as_u64(), r["bodies"].as_u64(), r["wasCameraDefault"].as_bool()), (Some(1), Some(1), Some(true)));
+    assert!(!library.join("delete-test.dcp").exists() && !default_copy.exists(), "both files gone");
+    assert_eq!(s.develop_of(a).unwrap().profile.camera, "", "back to the camera's default");
+    assert!(s.body_profiles.is_empty());
+    assert!(crate::cmd::profile_manager::delete_camera_in(&mut s, "dcp:delete-test", &library, Some(&root)).is_err(), "gone");
+    assert!(crate::cmd::profile_manager::delete_camera_in(&mut s, "lc.color", &library, Some(&root)).is_err());
+    assert!(crate::cmd::profile_manager::delete_camera_in(&mut s, "dcp:../escape", &library, Some(&root)).is_err());
+    let _ = std::fs::remove_dir_all(&root);
+}

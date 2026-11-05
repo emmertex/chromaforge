@@ -20,6 +20,7 @@ pub mod app_store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos;
 pub mod availability;
+mod background_merge;
 pub mod base64;
 pub mod bounded_read;
 pub(crate) mod camera_preview;
@@ -2398,7 +2399,11 @@ mod tests_autosync_preset;
 #[cfg(test)]
 mod tests_autosync_wb;
 #[cfg(test)]
+mod tests_background_merge;
+#[cfg(test)]
 mod tests_browse_profile;
+#[cfg(test)]
+mod tests_camera_layers;
 #[cfg(test)]
 mod tests_camera_profile_defaults;
 #[cfg(test)]

@@ -936,6 +936,12 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
             return;
         }
     }
+    // painting on the loupe: the other photos a stroke reached (Auto Sync) keep the thumbnail they have until the
+    // strokes pause, so their renders don't take the workers from the photo on screen (ported from OneSlips,
+    // NOTES-1028 note 29); one without any thumbnail still gets one
+    if app.paint_hold && app.session.active() != Some(id) && app.renderer.thumb(id).is_some() {
+        return;
+    }
     // never less than the photo has or is getting: a smaller ask (the filmstrip beside a larger view) moving the
     // job up would otherwise swap it for a smaller one, and the larger view swap it back
     let size = app.session.catalog.photo(id).and_then(|p| app.renderer.thumb_bucket_kept(p)).map_or(size, |kept| kept.max(size));
