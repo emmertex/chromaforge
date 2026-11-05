@@ -281,7 +281,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     gpu_section(app, ui, t, &list["gpu"]);
     hint(ui, t, "The face models are downloaded and chosen under Settings ▸ AI Models.");
-    if ui.link(crate::i18n::tr("Open AI Models")).clicked() {
+    if crate::dialog_frame::link(ui, Some("faces:openAiModels"), "Open AI Models").clicked() {
         let _ = app.run("app.settings", json!({"tab": "ai"}));
     }
 }

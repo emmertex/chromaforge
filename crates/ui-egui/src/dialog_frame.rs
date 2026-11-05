@@ -323,6 +323,24 @@ pub fn note(ui: &mut Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
     in_control_column(ui, |ui| ui.label(text))
 }
 
+/// A row of controls without a label of its own (buttons, links), starting at the control column
+/// so it lines up with the rows above it; it wraps there instead of widening the form.
+pub fn control_row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    in_control_column(ui, |ui| ui.horizontal_wrapped(add).inner)
+}
+
+/// A link (translated `text`) in the control column; addressable as `link:{id}` when `id` is given.
+pub fn link(ui: &mut Ui, id: Option<&str>, text: &str) -> egui::Response {
+    let text = crate::i18n::tr(text).to_string();
+    in_control_column(ui, |ui| {
+        let r = ui.link(text);
+        if let Some(id) = id {
+            crate::widgets::register(ui.ctx(), format!("link:{id}"), r.rect);
+        }
+        r
+    })
+}
+
 /// The open group of a form: the reserved panel shape, filled in when the group closes.
 #[derive(Clone, Copy)]
 struct OpenGroup {

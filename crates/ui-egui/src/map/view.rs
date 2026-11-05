@@ -13,8 +13,6 @@ use crate::module::{Edge, edge_visible};
 use crate::theme::Tokens;
 use crate::widgets::register;
 
-/// Width of the map's side panel.
-pub const SIDE_W: f32 = 280.0;
 /// Height of the filter / search bar.
 const BAR_H: f32 = 34.0;
 
@@ -47,7 +45,7 @@ pub fn center(ui: &mut egui::Ui, app: &mut LccApp) {
     app.canvas_rect = Some(area);
     register(ui.ctx(), "view:module:map", area);
     super::side::poll_jobs(app, ui.ctx());
-    let side = Rect::from_min_max(pos2((area.right() - SIDE_W).max(area.left()), area.top()), area.max);
+    let side = crate::panels::split_side(ui, &mut area, false, "map:side", &mut app.ui.right_width, crate::state::RIGHT_WIDTH);
     let bar = Rect::from_min_max(area.min, pos2(side.left(), area.top() + BAR_H));
     let map = Rect::from_min_max(pos2(area.left(), bar.bottom()), pos2(side.left(), area.bottom()));
     super::side::bar(app, ui, bar);

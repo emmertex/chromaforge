@@ -21,3 +21,5 @@ proptest = { workspace = true }
 # tests record why they skip (`cargo xtask ci` lists the skips)
 lcc-testkit = { workspace = true }
 serde_json = { workspace = true }
+# Lossless synthetic HEIF files for the container reader's tests.
+lcc-heif = { workspace = true, features = ["testdata"] }

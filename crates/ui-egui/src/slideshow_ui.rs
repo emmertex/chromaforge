@@ -882,14 +882,22 @@ pub fn center(app: &mut LccApp, ui: &mut egui::Ui) {
     }
     let frame = egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(10, 8));
     if crate::module::module_edge(app, crate::module::Edge::Left) {
-        egui::Panel::left("slideshow-left").resizable(false).exact_size(220.0).frame(frame).show(ui, |ui| {
+        let width = app.ui.left_width;
+        let resized = crate::panels::resizable_side(ui, true, "slideshow-left", frame, width, crate::state::LEFT_WIDTH, 0.0, |ui| {
             egui::ScrollArea::vertical().id_salt("slideshow-left-scroll").show(ui, |ui| left_column(app, ui));
         });
+        if let Some(w) = resized {
+            app.ui.left_width = w;
+        }
     }
     if crate::module::module_edge(app, crate::module::Edge::Right) {
-        egui::Panel::right("slideshow-right").resizable(false).exact_size(290.0).frame(frame).show(ui, |ui| {
+        let width = app.ui.right_width;
+        let resized = crate::panels::resizable_side(ui, false, "slideshow-right", frame, width, crate::state::RIGHT_WIDTH, 0.0, |ui| {
             egui::ScrollArea::vertical().id_salt("slideshow-right-scroll").show(ui, |ui| right_column(app, ui));
         });
+        if let Some(w) = resized {
+            app.ui.right_width = w;
+        }
     }
     let mut area = ui.available_rect_before_wrap();
     if crate::module::edge_visible(app, crate::module::Edge::Bottom) {

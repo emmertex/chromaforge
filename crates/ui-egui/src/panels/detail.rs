@@ -161,11 +161,25 @@ impl CanvasMap {
             None => n,
         }
     }
+    /// Whether `norm` / `screen` go through a lens or perspective warp (a mask's coordinates on a
+    /// warped photo).
+    pub(crate) fn warped(&self) -> bool {
+        self.on_photo && self.warp.is_some()
+    }
     pub fn screen(&self, n: Point) -> Pos2 {
+        self.try_screen(n).unwrap_or_else(|| self.place(n))
+    }
+    /// [`Self::screen`], or `None` where the warp can't be undone at `n` (a point a strong
+    /// warp folds away), for drawing that must not join such a point to its neighbours.
+    pub(crate) fn try_screen(&self, n: Point) -> Option<Pos2> {
         let n = match self.warp.as_deref().filter(|_| self.on_photo) {
-            Some((w, ow, oh)) => w.from_source(Point::new(n.x * ow, n.y * oh)).map_or(n, |t| Point::new(t.x / ow, t.y / oh)),
+            Some((w, ow, oh)) => w.from_source(Point::new(n.x * ow, n.y * oh)).map(|t| Point::new(t.x / ow, t.y / oh))?,
             None => n,
         };
+        Some(self.place(n))
+    }
+    /// A point on the displayed frame (normalized) on screen.
+    fn place(&self, n: Point) -> Pos2 {
         let q = self.from_norm.apply(n);
         pos2(self.rect.left() + q.x as f32 / self.k, self.rect.top() + q.y as f32 / self.k)
     }
@@ -2089,14 +2103,11 @@ fn info_line(field: crate::state::LoupeInfoField, photo: &lcc_catalog::Photo) ->
     (!text.is_empty()).then_some(text)
 }
 
-/// `2026-09-30T12:00:00` → `2026-09-30 12:00`.
+/// The capture date the info overlay shows, in the same format as the metadata panel and the grid
+/// (`i18n::display_time`: "March 30, 2022 at 10:11:11 PM" in English; a year or a month alone, such
+/// as "1983" / "April 1983", shows at its own precision) so every capture date reads alike (#743).
 fn pretty_date(iso: &str) -> String {
-    // a year or a month alone shows as such ("1983", "April 1983")
-    if lcc_catalog::dates::partial_capture(iso).is_some() {
-        return crate::i18n::display_time(iso);
-    }
-    let d = iso.replacen('T', " ", 1);
-    d.get(..16).map(str::to_string).unwrap_or(d)
+    crate::i18n::display_time(iso)
 }
 
 /// Size of the Navigator mini map (points).
@@ -3829,13 +3840,13 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
                 }
                 MaskShape::Linear { start, end } if show_outline => {
                     let (a, b) = (map.screen(*start), map.screen(*end));
-                    let dir = (b - a).normalized();
-                    let perp = vec2(-dir.y, dir.x) * 3000.0;
                     let (a1, a2): (u8, u8) = if sel { (230, 110) } else { (170, 80) };
                     // start (full effect), the middle (50 %, with the pin) and the end (no effect)
-                    let mid = a.lerp(b, 0.5);
-                    for (q, alpha) in [(a, a1), (mid, a1.saturating_sub(70).max(80)), (b, a2)] {
-                        p.line_segment([q - perp, q + perp], Stroke::new(1.0, Color32::from_white_alpha(alpha)));
+                    let middle = Point::new((start.x + end.x) / 2.0, (start.y + end.y) / 2.0);
+                    for (at, alpha) in [(*start, a1), (middle, a1.saturating_sub(70).max(80)), (*end, a2)] {
+                        for run in linear_guide(map, *start, *end, at) {
+                            p.add(egui::Shape::line(run, Stroke::new(1.0, Color32::from_white_alpha(alpha))));
+                        }
                     }
                     if sel {
                         for (i, q) in [a, b].iter().enumerate() {
@@ -4169,14 +4180,19 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     {
         let grip = grab(q);
         if let Some((mask, comp, handle)) = grip
-            && let Some(original_shape) = d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(comp)).map(|c| c.shape.clone())
+            && d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(comp)).is_some()
         {
             if Some(mask) != active {
                 let _ = app.run("mask.select", json!({"id": mask}));
             }
             app.ui.active_mask_component = Some(comp);
             let _ = app.run("develop.beginInteraction", json!({"label": "Edit Mask"}));
-            app.gesture = Some(Gesture::MaskHandle { mask, comp, handle, original_shape });
+            // (read after it begins: an old mask is on the photo from then on, in its coordinates)
+            if let Some(original_shape) = current_shape(app, mask, comp)
+                .or_else(|| d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(comp)).map(|c| c.shape.clone()))
+            {
+                app.gesture = Some(Gesture::MaskHandle { mask, comp, handle, original_shape });
+            }
         } else if grip.is_none()
             && app.ui.tool.is_empty()
             && let (Some(img), Some(canvas)) = (app.image_rect, app.canvas_rect)
@@ -4201,7 +4217,8 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if resp.dragged()
         && let (Some(Gesture::MaskHandle { mask, comp, handle, original_shape }), Some(q)) = (app.gesture.clone(), resp.interact_pointer_pos())
     {
-        let map = &map.for_mask_id(d, Some(mask));
+        // (the live flag: the drag's first frame began the interaction, which put an old mask on the photo)
+        let map = &current_on_photo(app, mask).map_or_else(|| map.for_mask_id(d, Some(mask)), |on| map.for_mask(on));
         let n = map.norm(q);
         let press_origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(q);
         let n0 = map.norm(press_origin);
@@ -4428,12 +4445,114 @@ fn mask_keys(app: &mut LccApp, ui: &mut egui::Ui, map: &CanvasMap, d: &DevelopSe
         if app.session.active_mask != Some(mid) {
             let _ = app.run("mask.select", json!({"id": mid}));
         }
-        let to = Point::new(at.x + dx, at.y + dy);
-        let new_shape = moved_shape(shape, handle, Point::new(dx, dy), to, map, false);
         let _ = app.run("develop.beginInteraction", json!({"label": "Edit Mask"}));
+        // (read after it begins: an old mask is on the photo from then on, in its coordinates)
+        let (shape, map) = match (current_shape(app, mid, ci), current_on_photo(app, mid)) {
+            (Some(s), Some(on)) => (s, map.for_mask(on)),
+            _ => (shape.clone(), map.clone()),
+        };
+        let at = map.norm(q);
+        let to = Point::new(at.x + dx, at.y + dy);
+        let new_shape = moved_shape(&shape, handle, Point::new(dx, dy), to, &map, false);
         let _ = app.run("mask.update", json!({"id": mid, "component": ci, "shape": new_shape}));
         let _ = app.run("develop.endInteraction", json!({}));
     }
+}
+
+/// The shape of component `comp` of mask `mask` of the active photo as the session has it now.
+fn current_shape(app: &LccApp, mask: u32, comp: usize) -> Option<MaskShape> {
+    let d = app.session.develop_of(app.session.active()?)?;
+    d.masks.iter().find(|m| m.id == mask)?.components.get(comp).map(|c| c.shape.clone())
+}
+
+/// Whether mask `mask` of the active photo is on the photo now (`Mask::on_photo`).
+fn current_on_photo(app: &LccApp, mask: u32) -> Option<bool> {
+    let d = app.session.develop_of(app.session.active()?)?;
+    d.masks.iter().find(|m| m.id == mask).map(|m| m.on_photo)
+}
+
+/// A linear gradient's guide through `at` (its start, middle or end): the line at right angles to
+/// it, as screen points. In a mask's coordinates on the photo, a lens or perspective warp bends
+/// and turns it on screen, so it is drawn through the warp in steps; else it is a straight line.
+fn linear_guide(map: &CanvasMap, start: Point, end: Point, at: Point) -> Vec<Vec<Pos2>> {
+    let (a, b) = (map.screen(start), map.screen(end));
+    if !map.warped() {
+        let dir = (b - a).normalized();
+        let perp = vec2(-dir.y, dir.x) * 3000.0;
+        let q = map.screen(at);
+        return vec![vec![q - perp, q + perp]];
+    }
+    // in long-edge units the perpendicular is a right angle; it spans the whole photo
+    let l = frame_long_norm(map);
+    let d = ((end.x - start.x) / l.0, (end.y - start.y) / l.1);
+    let n = d.0.hypot(d.1);
+    if !(n.is_finite() && n > 1e-12) {
+        return Vec::new();
+    }
+    let perp = (-d.1 / n * l.0, d.0 / n * l.1);
+    // from where the line enters the photo to where it leaves it (with a margin), measured from
+    // `at`, so a guide whose end lies off the photo still reaches it
+    let pp = perp.0 * perp.0 + perp.1 * perp.1;
+    let ts = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].map(|(x, y)| ((x - at.x) * perp.0 + (y - at.y) * perp.1) / pp);
+    let (lo, hi) = ts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), t| (lo.min(*t), hi.max(*t)));
+    let pad = 0.1 * (hi - lo);
+    let (lo, hi) = (lo - pad, hi + pad);
+    if !(lo.is_finite() && hi.is_finite() && hi > lo) {
+        return Vec::new();
+    }
+    // 48 steps across about a photo's width, at most 256
+    let steps = ((hi - lo) * 16.0).ceil().clamp(48.0, 256.0) as usize;
+    split_jumps(guide_runs((0..=steps).map(|i| {
+        let t = lo + (hi - lo) * i as f64 / steps as f64;
+        map.try_screen(Point::new(at.x + perp.0 * t, at.y + perp.1 * t))
+    })))
+}
+
+/// `runs` cut again where a step is far longer than the run's usual one: a strong warp can fold
+/// the line, and a chord across the fold isn't part of it.
+fn split_jumps(runs: Vec<Vec<Pos2>>) -> Vec<Vec<Pos2>> {
+    let mut out = Vec::new();
+    for run in runs {
+        let mut steps: Vec<f32> = run.windows(2).filter_map(|w| Some(w.first()?.distance(*w.get(1)?))).collect();
+        steps.sort_by(f32::total_cmp);
+        let usual = steps.get(steps.len() / 2).copied().unwrap_or(0.0);
+        let limit = (8.0 * usual).max(2.0);
+        let mut cur: Vec<Pos2> = Vec::new();
+        for q in run {
+            if cur.last().is_some_and(|p: &Pos2| p.distance(q) > limit) {
+                if cur.len() >= 2 {
+                    out.push(std::mem::take(&mut cur));
+                }
+                cur.clear();
+            }
+            cur.push(q);
+        }
+        if cur.len() >= 2 {
+            out.push(cur);
+        }
+    }
+    out
+}
+
+/// The unbroken runs (two points or more) of a sampled line whose missing samples (`None`) cut it.
+fn guide_runs(samples: impl IntoIterator<Item = Option<Pos2>>) -> Vec<Vec<Pos2>> {
+    let mut out: Vec<Vec<Pos2>> = Vec::new();
+    let mut cur: Vec<Pos2> = Vec::new();
+    for s in samples {
+        match s {
+            Some(q) => cur.push(q),
+            None => {
+                if cur.len() >= 2 {
+                    out.push(std::mem::take(&mut cur));
+                }
+                cur.clear();
+            }
+        }
+    }
+    if cur.len() >= 2 {
+        out.push(cur);
+    }
+    out
 }
 
 /// Long-edge units → normalized units for x and y.
@@ -6148,14 +6267,20 @@ mod snap_tests {
 mod info_overlay_tests {
     use super::*;
 
-    /// The info overlay's capture date shows a year or a month alone at its own precision.
+    /// The info overlay's capture date shows a year or a month alone at its own precision, and a
+    /// full timestamp in the same format the metadata panel shows it (#743).
     #[test]
     fn the_info_overlay_shows_a_year_or_month_alone_as_such() {
         let mut photo =
             lcc_catalog::Photo::new(lcc_catalog::PhotoId(1), lcc_catalog::Source::Demo { scene: 0 }, "scan.jpg", "JPEG", 3, 2, "2026-10-01T00:00:00");
-        for (captured, shown) in [("1983-04", "April 1983"), ("1983", "1983"), ("2024-01-16T12:34:56", "2024-01-16 12:34")] {
+        for (captured, shown) in [("1983-04", "April 1983"), ("1983", "1983"), ("2024-01-16T12:34:56", "January 16, 2024 at 12:34:56 PM")] {
             photo.captured = Some(captured.into());
             assert_eq!(info_line(crate::state::LoupeInfoField::CaptureDate, &photo).as_deref(), Some(shown));
+            assert_eq!(
+                info_line(crate::state::LoupeInfoField::CaptureDate, &photo).as_deref(),
+                Some(crate::i18n::display_time(captured).as_str()),
+                "the overlay shows the capture date as the metadata panel does"
+            );
         }
     }
 
@@ -6394,3 +6519,66 @@ mod info_overlay_tests {
 #[cfg(test)]
 #[path = "detail_tools_tests.rs"]
 mod tools_tests;
+
+#[cfg(test)]
+mod mask_guide_tests {
+    use super::*;
+    use lcc_develop::DevelopSettings;
+
+    fn warped_map() -> CanvasMap {
+        let mut d = DevelopSettings::default();
+        d.geometry.vertical = 35.0;
+        d.optics.distortion = 50.0;
+        let frame = Frame::new(400, 300, &d, true);
+        CanvasMap::new(&frame, Rect::from_min_size(pos2(100.0, 50.0), vec2(400.0, 300.0))).for_mask(true)
+    }
+
+    /// A linear gradient's guides on a warped photo follow its bands through the warp: every
+    /// point drawn is on the band through the gradient's start or end (review of upstream #3550).
+    #[test]
+    fn a_linear_gradients_guides_follow_the_warp() {
+        let m = warped_map();
+        assert!(m.warped());
+        let (start, end) = (Point::new(0.3, 0.3), Point::new(0.5, 0.6));
+        // (long-edge units: the frame is 400 x 300)
+        let (sx, sy) = (1.0, 0.75);
+        let dd = ((end.x - start.x) * sx, (end.y - start.y) * sy);
+        let t = |q: Point| ((q.x - start.x) * sx * dd.0 + (q.y - start.y) * sy * dd.1) / (dd.0 * dd.0 + dd.1 * dd.1);
+        for (at, want) in [(start, 0.0), (end, 1.0)] {
+            let guide: Vec<Pos2> = linear_guide(&m, start, end, at).concat();
+            assert!(guide.len() > 2, "drawn in steps");
+            let inside: Vec<&Pos2> = guide.iter().filter(|g| m.rect.expand(-2.0).contains(**g)).collect();
+            assert!(inside.len() > 2, "the guide crosses the canvas: {}", inside.len());
+            for g in inside {
+                let got = t(m.norm(*g));
+                assert!((got - want).abs() < 1e-3, "{g:?}: band {got}, want {want}");
+            }
+        }
+    }
+
+    /// A guide is cut where a sample can't go through the warp, so no line joins a warped point
+    /// to an unwarped one (review of upstream #3550).
+    #[test]
+    fn a_guide_breaks_where_the_warp_cant_be_undone() {
+        let (a, b, c) = (pos2(1.0, 1.0), pos2(2.0, 2.0), pos2(3.0, 3.0));
+        let runs = guide_runs([Some(a), Some(b), None, Some(c), None, None, Some(a), Some(b)]);
+        assert_eq!(runs, vec![vec![a, b], vec![a, b]], "single points are dropped, the rest split");
+        assert!(guide_runs([None, Some(a), None]).is_empty());
+        // a chord far longer than the usual step (across a fold) cuts the run too
+        let line: Vec<Pos2> = (0..10).map(|i| pos2(i as f32, 0.0)).chain((0..10).map(|i| pos2(200.0 + i as f32, 0.0))).collect();
+        let cut = split_jumps(vec![line]);
+        assert_eq!(cut.len(), 2, "{cut:?}");
+        assert!(cut.iter().all(|r| r.len() == 10));
+    }
+
+    /// A guide through an end far off the photo still crosses the canvas (review of upstream #3550).
+    #[test]
+    fn a_guide_through_an_end_off_the_photo_still_crosses_it() {
+        let m = warped_map();
+        let (start, end) = (Point::new(3.5, 0.4), Point::new(3.5, 0.6));
+        for at in [start, end] {
+            let guide: Vec<Pos2> = linear_guide(&m, start, end, at).concat();
+            assert!(guide.iter().filter(|g| m.rect.expand(-2.0).contains(**g)).count() > 2, "{at:?}: the guide crosses the canvas");
+        }
+    }
+}

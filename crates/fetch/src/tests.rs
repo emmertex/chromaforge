@@ -535,3 +535,10 @@ fn file_urls_are_percent_decoded_but_bare_paths_keep_their_percent_signs() {
         assert_eq!(local_path(hostile), None, "{hostile}");
     }
 }
+
+#[test]
+fn names_differing_only_in_case_are_one_file() {
+    let spec = |name| FileSpec { name, size: Some(1), sha256: None, max: 1 };
+    assert!(super::validate_files(&[spec("Model.bin")]).is_ok());
+    assert!(super::validate_files(&[spec("Model.bin"), spec("model.BIN")]).is_err());
+}
