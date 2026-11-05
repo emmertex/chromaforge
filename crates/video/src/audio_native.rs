@@ -318,7 +318,7 @@ impl Reader {
                 let origin = file
                     .streams
                     .get(*vs)
-                    .and_then(|s| units.first().and_then(|&u| s.units.get(u)))
+                    .and_then(|s| units.first().and_then(|g| s.units.get(g.start)))
                     .and_then(|u| u.pts)
                     .map_or(0.0, |p| p as f64 / 90_000.0);
                 let stream = file
