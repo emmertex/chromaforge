@@ -140,7 +140,7 @@ fn commands_with_the_shared_store_do_not_copy_thousands_of_presets() {
 #[test]
 #[ignore]
 fn shared_store_bench() {
-    let Ok(src) = std::env::var("CHROMAFORGE_BENCH_STORE") else { return };
+    let Some(src) = lcc_brand::env("BENCH_STORE") else { return };
     let root = temp_dir("store-bench");
     let store = root.join("store");
     std::fs::create_dir_all(&store).unwrap();
