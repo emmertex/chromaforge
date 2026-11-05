@@ -2937,11 +2937,11 @@ mod thumbnail_tests {
         std::fs::remove_file(replacement).unwrap();
     }
 
-    /// An edited raw: its camera JPEG is still the
-    /// cell's first picture, ahead of every render, and the real thumbnail behind it is background
-    /// work that waits while another cell on screen still lacks its first picture.
+    /// An edited raw: a fast draft of its edit from the camera JPEG (never the camera JPEG itself,
+    /// unedited) is the cell's first picture, ahead of every render, and the real thumbnail behind
+    /// it is background work that waits while another cell on screen still lacks its first picture.
     #[test]
-    fn an_edited_raw_shows_its_camera_jpeg_first_and_the_render_waits_behind_the_stand_ins() {
+    fn an_edited_raw_shows_a_draft_of_its_edit_first_and_the_render_waits_behind_the_stand_ins() {
         let mut s = Session::new();
         s.media.preview_loader = Some(Arc::new(|_, _| Some(lcc_raster::Rgba8 { width: 4, height: 4, data: vec![[200, 100, 50, 255]; 16] })));
         let mut raw = (*photo()).clone();
@@ -2962,7 +2962,7 @@ mod thumbnail_tests {
         assert!(lcc_engine::prep::pictures_busy());
         assert_eq!(app.renderer.pool.run_inline(1), 1);
         app.renderer.poll(&ctx, &mut app.session);
-        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Embedded), "the camera JPEG is on screen");
+        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Draft), "the draft of the edit is on screen");
         // another cell still waits for its picture in this frame: the real render is held back
         app.pictures_missing(app.renderer.frame());
         crate::panels::grid::request_thumb(&mut app, id, 384, 10);
@@ -2974,7 +2974,7 @@ mod thumbnail_tests {
         crate::panels::grid::request_thumb(&mut app, id, 384, 10);
         let (slot, _) = take_job(&work);
         assert_eq!(slot, Slot::Thumb(id), "the edit is rendered behind the stand-in");
-        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Embedded), "the stand-in stays until then");
+        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Draft), "the stand-in stays until then");
     }
 
     #[test]

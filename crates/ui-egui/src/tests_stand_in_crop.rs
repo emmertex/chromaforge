@@ -139,7 +139,7 @@ fn a_preset_that_crops_shows_cropped_and_toned_in_the_first_picture() {
 }
 
 /// A crop synced to photos rendered before is on screen at once on each of them, drawn from
-/// their last picture: no render comes before the first cropped frame.
+/// their last picture (or a draft with the crop): no render comes before the first cropped frame.
 #[test]
 fn stepping_through_synced_crops_shows_each_crop_with_no_render() {
     let delay = Arc::new(AtomicU64::new(0));
@@ -171,7 +171,7 @@ fn stepping_through_synced_crops_shows_each_crop_with_no_render() {
                         first = Some((what, d, h.app.image_rect, h.app.renderer.loupe_log.len()));
                     }
                     let full = h.app.image_rect.is_some_and(|v| fills(&d, v));
-                    if !(d.placed && full) {
+                    if !((d.placed || d.known) && full) {
                         every.push((what, d.placed, full));
                     }
                 }
@@ -193,7 +193,9 @@ fn stepping_through_synced_crops_shows_each_crop_with_no_render() {
             )
         });
         assert_eq!(log, renders, "photo {id}: no render before its first frame");
-        assert!(d.placed, "photo {id}: drawn cut to the synced crop ({what}): {d:?}");
+        // cut to the synced crop from its last picture, or (that picture pruned from memory) a
+        // picture made with the crop (a draft of the edit, its thumbnail): the photo's own look and crop
+        assert!(d.placed || d.known, "photo {id}: drawn cut to the synced crop ({what}): {d:?}");
         let view = view.expect("a view");
         assert!(fills(&d, view), "photo {id}: the frame is full: {d:?} in {view:?}");
         assert!((view.width() / view.height() - 0.5 * 1.5 / 0.6).abs() < 0.03, "photo {id}: the crop's shape: {view:?}");
