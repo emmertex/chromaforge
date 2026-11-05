@@ -49,6 +49,7 @@ mod preview;
 pub mod profile;
 mod saturation;
 pub mod semantic;
+pub mod sensor_window;
 pub mod sparse;
 pub mod spectral;
 mod tiffraw;
@@ -76,6 +77,7 @@ pub use preview::{
     embedded_preview_dynamic_range_optimized, embedded_preview_from_range,
 };
 pub use semantic::{SemanticMask, semantic_masks};
+pub use sensor_window::{SensorWindow, sensor_window};
 
 use lcc_color::Xy;
 use lcc_tiff::{Tiff, TiffError};

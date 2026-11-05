@@ -226,7 +226,8 @@ pub fn lens_for_bytes(bytes: &[u8], picked: Option<&crate::lens_profiles::GivenL
     let raw = lcc_raw::probe_info(bytes).map_err(|e| e.to_string())?;
     let mut m = lcc_meta::extract(bytes);
     m.fill_missing(&raw.metadata);
-    let resolved = crate::lens_profiles::resolve_picked(&raw, || m.clone(), picked);
+    let window = lcc_raw::sensor_window(bytes, [raw.active_area.width, raw.active_area.height]);
+    let resolved = crate::lens_profiles::resolve_picked(&raw, window, || m.clone(), picked);
     let from_file = matches!(resolved, Some((_, crate::lens_profiles::Applied::Embedded)));
     Ok((resolved.map(|(l, _)| l), from_file))
 }
@@ -304,7 +305,8 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
         }
         let scale = WbScaleOf::new(raw.format, &raw.color, raw.wb_multipliers, &raw.metadata);
         let as_shot_wb = Some(scale.as_shot(lcc_raw::color::as_shot_white_xy_of(&raw)));
-        let resolved = crate::lens_profiles::resolve_raw(&raw, || m.clone(), None);
+        let window = lcc_raw::sensor_window(bytes, [raw.active_area.width, raw.active_area.height]);
+        let resolved = crate::lens_profiles::resolve_raw(&raw, window, || m.clone(), None);
         let lens_from_file = matches!(resolved, Some((_, crate::lens_profiles::Applied::Embedded)));
         return Ok(ProbeInfo {
             embedded_lens: resolved.map(|(l, _)| l),
@@ -755,7 +757,8 @@ fn load_bytes_now(
         // Embedded lens corrections are applied by the pipeline ("Enable Profile Corrections"), not baked in
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
         let info = raw.info();
-        let lens = crate::lens_profiles::for_raw(&info, || lcc_meta::extract(&bytes));
+        let window = lcc_raw::sensor_window(&bytes, [info.active_area.width, info.active_area.height]);
+        let lens = crate::lens_profiles::for_raw(&info, window, || lcc_meta::extract(&bytes));
         // (the camera look still pairs the sensor with the camera JPEG through the warp the camera applied to it)
         let lens_geometry = crate::camera_preview::lens_geometry(&raw.opcodes.list3);
         // A DNG's preview already has its lens opcodes applied. Keep them for its single tone fit,
