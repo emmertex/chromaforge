@@ -104,6 +104,7 @@ pub fn rows(preset: &str) -> Vec<Row> {
             Text("city", "City", 1),
             Text("state", "State / Province", 1),
             Text("country", "Country", 1),
+            Text("countryCode", "Country Code", 1),
             Section("Copyright"),
             Text("copyright", "Copyright", 1),
             CopyrightStatus,
@@ -176,6 +177,7 @@ pub fn value(p: &Photo, key: &str) -> String {
         "city" => m.city.clone(),
         "state" => m.state.clone(),
         "country" => m.country.clone(),
+        "countryCode" => m.country_code.clone(),
         "gps" => m.gps.map(|(la, lo)| format!("{la:.6}, {lo:.6}")).unwrap_or_default(),
         "fileName" => p.file_name.clone(),
         "folder" => match &p.source {
@@ -851,6 +853,7 @@ mod tests {
         assert_eq!(rows("nope"), rows("default"));
         assert!(rows("largeCaption").contains(&Row::Text("caption", "Caption", 12)));
         assert!(rows("location").contains(&Row::Gps));
+        assert!(rows("iptc").contains(&Row::Text("countryCode", "Country Code", 1)));
         assert!(rows("exif").contains(&Row::Info("lens", "Lens")));
     }
 
