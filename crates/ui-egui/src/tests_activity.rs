@@ -892,6 +892,8 @@ fn a_wait_is_translated_around_its_names() {
     assert!(header.iter().any(|t| t == "Warten, bis Converter fertig ist (Prog)"), "{header:?}");
     assert!(list.iter().any(|t| t.contains("Die Ergebnisse kommen zurück, wenn Converter geschlossen wird")), "{list:?}");
     drop(g);
+}
+
 /// Nothing changed since the last backup: quitting neither asks for a backup nor makes one, even
 /// with one due on every exit. A change since asks again (ported from OneSlips' LR-BACKUP).
 #[test]
