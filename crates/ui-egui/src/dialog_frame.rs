@@ -180,6 +180,11 @@ fn remember(ctx: &egui::Context, key: Id, value: f32) {
 // panels, a two-column **form** inside them (labels right-aligned in a fixed column, controls to
 // their right), checkboxes and **help** text aligned to the control column, and, for dialogs with
 // categories, a **sidebar** list on the left.
+//
+// The Classic Settings window draws the same rows as a **plain** form ([`plain_form`]): sections
+// are a bold header over a hairline (no panels), labels sit left-aligned in their column and wrap
+// there, and checkboxes and help text start at the left edge, the help wrapping at a readable
+// [`HELP_MAX_W`].
 
 use egui::{Align, Layout, RichText, Shape, StrokeKind, layers::ShapeIdx, vec2};
 
@@ -195,6 +200,8 @@ pub const GROUP_PAD: f32 = 10.0;
 const ROW_H: f32 = 24.0;
 /// A form row's height in the Compact layout's dense look.
 const DENSE_ROW_H: f32 = 20.0;
+/// The longest line of help text in a [`plain_form`].
+pub const HELP_MAX_W: f32 = 680.0;
 
 /// A form row's height: [`ROW_H`], or [`DENSE_ROW_H`] in the Compact layout.
 fn row_h(ui: &Ui) -> f32 {
@@ -213,7 +220,7 @@ fn set_label_width(ui: &Ui, width: f32) {
 
 /// The x offset of the control column from the form's left edge.
 pub fn control_indent(ui: &Ui) -> f32 {
-    if stacked(ui) {
+    if stacked(ui) || plain(ui) {
         return 0.0;
     }
     label_width(ui) + LABEL_GAP
@@ -251,10 +258,58 @@ pub fn stacked_form<R>(ui: &mut Ui, label_w: f32, add: impl FnOnce(&mut Ui) -> R
     out
 }
 
+/// A [`form`] in the plain look of the Classic Settings window: no group panels, section headers
+/// over a hairline, labels left-aligned (wrapping in their column, which gives up room in a narrow
+/// window), and checkboxes and help text at the left edge.
+pub fn plain_form<R>(ui: &mut Ui, label_w: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let key = Id::new("dialog-form-plain");
+    let outer = plain(ui);
+    ui.ctx().data_mut(|d| d.insert_temp(key, true));
+    let out = form(ui, label_w, add);
+    ui.ctx().data_mut(|d| d.insert_temp(key, outer));
+    out
+}
+
+/// The form in `ui` is a [`plain_form`].
+pub fn plain(ui: &Ui) -> bool {
+    ui.ctx().data(|d| d.get_temp::<bool>(Id::new("dialog-form-plain"))).unwrap_or(false)
+}
+
+/// The label column of a [`plain_form`] row `room` wide: the form's own, until the window is so
+/// narrow that the labels would take more than a third of it (never under 90 points).
+pub fn plain_label_width(label_w: f32, room: f32) -> f32 {
+    let third = if room.is_finite() { (room * 0.32).floor() } else { label_w };
+    label_w.min(third).max(90.0)
+}
+
 /// One form row: `label` right-aligned in the label column, then the control(s) `add` draws.
 pub fn form_row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     let w = label_width(ui);
     let t = Tokens::get(ui.ctx());
+    if plain(ui) {
+        let label_w = plain_label_width(w, ui.available_width());
+        // (the Compact layout's shorter rows too)
+        let h = row_h(ui);
+        return ui
+            .horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(vec2(label_w, h), Layout::top_down(Align::Min), |ui| {
+                    ui.set_width(label_w);
+                    if !label.is_empty() {
+                        // (level with the text of the row-high controls beside it)
+                        ui.add_space(4.0 + (h - ROW_H) / 2.0);
+                        ui.add(egui::Label::new(RichText::new(crate::i18n::tr(label)).color(t.text_label)).wrap());
+                    }
+                });
+                // a row of many choices wraps beside the label instead of widening the window
+                let room = vec2(ui.available_width().max(1.0), h);
+                ui.allocate_ui_with_layout(room, Layout::left_to_right(Align::Center).with_main_wrap(true), |ui| {
+                    ui.set_min_height(h);
+                    add(ui)
+                })
+                .inner
+            })
+            .inner;
+    }
     if stacked(ui) {
         return ui
             .vertical(|ui| {
@@ -305,8 +360,12 @@ pub fn in_control_column<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 pub fn help(ui: &mut Ui, text: &str) {
     let t = Tokens::get(ui.ctx());
     let text = RichText::new(crate::i18n::tr(text)).size(11.0).color(t.text_dim);
+    let max = if plain(ui) { HELP_MAX_W } else { f32::INFINITY };
     in_control_column(ui, |ui| {
-        ui.add(egui::Label::new(text).wrap());
+        ui.scope(|ui| {
+            ui.set_max_width(ui.available_width().min(max));
+            ui.add(egui::Label::new(text).wrap());
+        });
     });
 }
 
@@ -367,6 +426,24 @@ fn group_key(ui: &Ui) -> Id {
 pub fn group_begin(ui: &mut Ui, title: Option<&str>) {
     group_end(ui);
     let t = Tokens::get(ui.ctx());
+    if in_form(ui) && plain(ui) {
+        // a header over a hairline across the page (no room above the page's first one)
+        let first = ui.cursor().top() - ui.max_rect().top() <= 2.0;
+        match title.filter(|s| !s.is_empty()) {
+            Some(title) => {
+                if !first {
+                    ui.add_space(10.0);
+                }
+                ui.label(RichText::new(crate::i18n::tr(title)).font(t.semibold(12.5)).color(t.text));
+                let y = ui.cursor().top() - ui.spacing().item_spacing.y / 2.0;
+                ui.painter().hline(ui.available_rect_before_wrap().x_range(), y, egui::Stroke::new(1.0, t.divider));
+                ui.add_space(2.0);
+            }
+            None if !first => ui.add_space(6.0),
+            None => {}
+        }
+        return;
+    }
     if !in_form(ui) {
         if let Some(title) = title.filter(|s| !s.is_empty()) {
             ui.label(RichText::new(crate::i18n::tr(title)).font(t.semibold(12.0)).color(t.text));
@@ -545,7 +622,8 @@ pub fn form<R>(ui: &mut Ui, label_w: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     let active = Id::new("dialog-form-active");
     let outer = in_form(ui);
     ui.ctx().data_mut(|d| d.insert_temp(active, true));
-    let pad = GROUP_PAD as i8 + 1;
+    // (a plain form has no panels to make room for)
+    let pad = if plain(ui) { 0 } else { GROUP_PAD as i8 + 1 };
     egui::Frame::NONE
         .inner_margin(egui::Margin { left: pad, right: pad, top: 0, bottom: 0 })
         .show(ui, |ui| {

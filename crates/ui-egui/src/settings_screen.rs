@@ -341,13 +341,18 @@ fn window(app: &mut LccApp, ctx: &egui::Context, asked: &str) {
         ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(140));
     });
     // (the sizes are the content's, inside the frame's margin)
-    let size = crate::panels::settings::window_size(screen.shrink(WINDOW_PAD), app.ui.settings.settings_size);
+    // (at least as wide as the row of tabs, so none is under More until the user narrows it)
+    let tabs_w = crate::panels::settings::tab_row_width(ctx);
+    let size = crate::panels::settings::window_size(screen.shrink(WINDOW_PAD), app.ui.settings.settings_size, tabs_w);
     let frame = egui::Frame::window(&ctx.global_style())
         .inner_margin(egui::Margin::same(WINDOW_PAD as i8))
         .corner_radius(egui::CornerRadius::same(16))
         .stroke(Stroke::new(1.0, Color32::from_white_alpha(26)))
         .shadow(egui::epaint::Shadow { offset: [0, 10], blur: 32, spread: 0, color: Color32::from_black_alpha(110) });
-    let top = (screen.height() * 0.08).clamp(crate::dialog_frame::SCREEN_MARGIN, 96.0);
+    // near the top; a window as tall as the screen allows sits in the middle of it instead, so its
+    // bottom (and Close) stays on screen
+    let room = (screen.height() - size.default.y - 2.0 * WINDOW_PAD) / 2.0;
+    let top = (screen.height() * 0.08).clamp(crate::dialog_frame::SCREEN_MARGIN, 96.0).min(room.max(0.0));
     let shown = egui::Window::new(crate::i18n::tr("Settings"))
         .id(Id::new(LAYER))
         .title_bar(false)
@@ -362,8 +367,11 @@ fn window(app: &mut LccApp, ctx: &egui::Context, asked: &str) {
         .constrain(true)
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 8.0;
-            let h = ui.label(egui::RichText::new(crate::i18n::tr("Settings")).font(t.semibold(16.0)).color(t.text));
-            register(ui.ctx(), "dialog:title", h.rect);
+            // the title centred over the tabs
+            ui.vertical_centered(|ui| {
+                let h = ui.label(egui::RichText::new(crate::i18n::tr("Settings")).font(t.semibold(16.0)).color(t.text));
+                register(ui.ctx(), "dialog:title", h.rect);
+            });
             // under the page: a gap and the Close button's row
             let footer = 2.0 * ui.spacing().item_spacing.y + ui.spacing().interact_size.y + 6.0;
             crate::panels::settings::body(app, ui, &mut tab, footer);
@@ -374,7 +382,7 @@ fn window(app: &mut LccApp, ctx: &egui::Context, asked: &str) {
             });
         });
     if let Some(w) = &shown {
-        crate::panels::settings::remember_size(app, w.response.rect.size() - Vec2::splat(2.0 * WINDOW_PAD));
+        crate::panels::settings::remember_size(app, w.response.rect.size() - Vec2::splat(2.0 * WINDOW_PAD), size.default);
     }
     let layer = egui::LayerId::new(egui::Order::Middle, Id::new(LAYER));
     ctx.move_to_top(layer);

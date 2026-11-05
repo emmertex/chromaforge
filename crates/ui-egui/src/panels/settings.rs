@@ -54,12 +54,18 @@ pub(crate) const SLIDESHOW_W: f32 = SLIDESHOW_COLUMN_W + 12.0 + super::slide_lay
 /// Thumbnail cache sizes offered (MB).
 const CACHE_SIZES: [u32; 5] = [512, 1024, 2048, 4096, 8192];
 
-pub(super) const LABEL_W: f32 = 160.0;
+/// The label column of the Settings window's rows (it gives up room in a narrow window).
+pub(super) const LABEL_W: f32 = 170.0;
 /// The label column of the same rows outside the dialog (the slideshow panels).
 const PANEL_LABEL_W: f32 = 150.0;
 
-/// The Settings window's size (points) when it first opens, before the user resizes it.
-pub const DEFAULT_SIZE: [f32; 2] = [900.0, 640.0];
+/// The Settings window's size (points, inside its frame) when it first opens, before the user
+/// resizes it: tall, so most tabs show whole, and at least as wide as its row of tabs
+/// ([`tab_row_width`]), so every tab is in the row (the screen caps both).
+pub const DEFAULT_SIZE: [f32; 2] = [900.0, 1340.0];
+/// The size every window opened at before the default grew to fit the tabs (PR #830): a size
+/// kept at exactly this was never chosen, so it opens at the new default.
+const OLD_DEFAULT_SIZE: [f32; 2] = [900.0, 640.0];
 /// The smallest the user can make it (a small screen can make it smaller still).
 pub const MIN_SIZE: [f32; 2] = [620.0, 420.0];
 /// Room kept free around the window on the screen.
@@ -79,31 +85,48 @@ pub struct WindowSize {
 }
 
 /// The Settings window's sizes on `screen`: `saved` (the size the user left it at, else
-/// [`DEFAULT_SIZE`]) within [`MIN_SIZE`] and the screen. A saved size that is no size at all
-/// (NaN, negative: a hand-edited settings file) is the default.
-pub fn window_size(screen: egui::Rect, saved: Option<[f32; 2]>) -> WindowSize {
+/// [`DEFAULT_SIZE`], widened to `tabs_w`, the room its row of tabs takes) within [`MIN_SIZE`] and
+/// the screen. A saved size that is no size at all (NaN, negative: a hand-edited settings file),
+/// or the old default nobody chose, is the default.
+pub fn window_size(screen: egui::Rect, saved: Option<[f32; 2]>, tabs_w: f32) -> WindowSize {
     let finite = |v: f32| v.is_finite() && v > 0.0;
     let max = egui::vec2(
         if finite(screen.width()) { (screen.width() - 2.0 * SCREEN_MARGIN).max(200.0) } else { DEFAULT_SIZE[0] },
-        if finite(screen.height()) { (screen.height() - 2.0 * SCREEN_MARGIN).max(160.0) } else { DEFAULT_SIZE[1] },
+        if finite(screen.height()) { (screen.height() - 2.0 * SCREEN_MARGIN).max(160.0) } else { OLD_DEFAULT_SIZE[1] },
     );
     let min = egui::vec2(MIN_SIZE[0], MIN_SIZE[1]).min(max);
-    let want = saved.filter(|[w, h]| finite(*w) && finite(*h)).unwrap_or(DEFAULT_SIZE);
+    let fresh = [DEFAULT_SIZE[0].max(if finite(tabs_w) { tabs_w.ceil() } else { 0.0 }), DEFAULT_SIZE[1]];
+    let want = saved.filter(|[w, h]| finite(*w) && finite(*h) && [*w, *h] != OLD_DEFAULT_SIZE).unwrap_or(fresh);
     let default = egui::vec2(want[0], want[1]).max(min).min(max);
     WindowSize { default, min, max }
 }
 
-/// Keeps the Settings window's `size` (as the user left it) for the next time it opens.
-pub fn remember_size(app: &mut LccApp, size: egui::Vec2) {
+/// Keeps the Settings window's `size` (as the user left it) for the next time it opens. A window
+/// still at the size it opened at (`opened`) when nothing was saved was not sized by the user:
+/// nothing is kept, so it follows the default (a new tab, another language, another screen).
+pub fn remember_size(app: &mut LccApp, size: egui::Vec2, opened: egui::Vec2) {
     let saved = app.ui.settings.settings_size;
+    let differs = |a: egui::Vec2, [w, h]: [f32; 2]| (w - a.x).abs() > 0.5 || (h - a.y).abs() > 0.5;
     if size.x.is_finite()
         && size.y.is_finite()
         && size.x > 0.0
         && size.y > 0.0
-        && saved.is_none_or(|[w, h]| (w - size.x).abs() > 0.5 || (h - size.y).abs() > 0.5)
+        && saved.is_none_or(|kept| differs(size, kept))
+        && (saved.is_some() || differs(size, [opened.x, opened.y]))
     {
         app.ui.settings.settings_size = Some([size.x.round(), size.y.round()]);
     }
+}
+
+/// The width (points) the Settings window's row of tabs takes with the most room around each
+/// label: a window this wide shows every tab, none under More.
+pub fn tab_row_width(ctx: &egui::Context) -> f32 {
+    let t = Tokens::get(ctx);
+    let font = t.font(12.5);
+    let pad = TAB_PADS.first().copied().unwrap_or(12.0);
+    ctx.fonts_mut(|f| {
+        shown_tabs().map(|(_, label)| (f.layout_no_wrap(crate::i18n::tr(label).to_string(), font.clone(), t.text).size().x + 2.0 * pad).ceil()).sum()
+    })
 }
 
 /// The tabs this build shows (the browser has no device sync, no connections and no control surfaces).
@@ -196,7 +219,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, tab: &mut String, footer: f32) 
     egui::ScrollArea::both().id_salt(("settingsTab", tab.as_str())).auto_shrink([false, false]).show(&mut frame, |ui| {
         // room for the vertical scroll bar, so it never covers a control
         ui.set_max_width((ui.available_width() - 12.0).max(120.0));
-        crate::dialog_frame::form(ui, LABEL_W, |ui| {
+        crate::dialog_frame::plain_form(ui, LABEL_W, |ui| {
             crate::dialog_frame::group_begin(ui, None);
             tab_body(app, ui, &t, tab);
         });
@@ -449,6 +472,18 @@ pub(super) fn check(ui: &mut egui::Ui, id: &str, value: &mut bool, label: &str) 
 
 /// Mutually exclusive buttons (`button:{id}-{index}`).
 pub(super) fn choices<V: PartialEq + Copy>(ui: &mut egui::Ui, id: &str, options: &[(V, &str)], value: &mut V) -> bool {
+    if crate::dialog_frame::plain(ui) && crate::dialog_frame::in_form(ui) {
+        // the Settings window: small buttons side by side, the chosen one filled, wrapping in the row
+        let mut changed = false;
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (i, (v, l)) in options.iter().enumerate() {
+            if crate::widgets::text_button(ui, &format!("{id}-{i}"), l, *value == *v).clicked() && *value != *v {
+                *value = *v;
+                changed = true;
+            }
+        }
+        return changed;
+    }
     // one segmented control (`button:{id}-{i}` each)
     let labels: Vec<&str> = options.iter().map(|(_, l)| *l).collect();
     let chosen = options.iter().position(|(v, _)| *v == *value);
@@ -1867,7 +1902,8 @@ fn slideshow_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     } else {
         (ui.ctx().content_rect().height() - 260.0).clamp(300.0, 760.0)
     };
-    let pad = crate::dialog_frame::GROUP_PAD as i8;
+    // (no group panels in the plain Settings window, so no room for their edges)
+    let pad = if crate::dialog_frame::plain(ui) { 0 } else { crate::dialog_frame::GROUP_PAD as i8 };
     // the touch Settings screen on a narrow screen: the preview above, the settings under it, in
     // the page's own scrolling
     if crate::dialog_frame::finger_sized(ui) && ui.available_width() < SLIDESHOW_COLUMN_W + 12.0 + super::slide_layout::PREVIEW_W {
