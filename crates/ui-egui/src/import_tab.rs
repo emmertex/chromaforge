@@ -315,7 +315,6 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
 /// From this width the sources and the settings stand beside the photos.
 const WIDE: f32 = 900.0;
 const SOURCES_W: f32 = 230.0;
-const SETTINGS_W: f32 = 330.0;
 const BAR_H: f32 = 48.0;
 
 /// What a narrow window shows in the one column.
@@ -402,9 +401,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     } else {
         (None, area)
     };
+    // (the settings column's left edge is dragged to resize it, as the side panels are; the width
+    // is kept in the UI state)
     let (middle, settings_r) = if wide {
-        let w = SETTINGS_W.min(rest.width() * 0.4);
-        (Rect::from_min_max(rest.min, pos2(rest.right() - w, rest.bottom())), Some(Rect::from_min_max(pos2(rest.right() - w, rest.top()), rest.max)))
+        let mut middle = rest;
+        let limits = crate::state::IMPORT_SETTINGS_WIDTH;
+        let r = crate::panels::split_side(ui, &mut middle, false, "importSettings", &mut app.ui.import_settings_width, limits);
+        (middle, Some(r))
     } else {
         (rest, None)
     };
@@ -419,6 +422,22 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         ui.painter().vline(r.left(), r.y_range(), Stroke::new(1.0, t.divider));
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-settings").max_rect(r.shrink2(vec2(10.0, 0.0))));
         settings(app, &mut child);
+    }
+    // Library's toolbar under the browsed photos (View ▸ Show Toolbar): view modes, sort, flags,
+    // rating, colour labels and thumbnail size, for culling the card in place
+    let mut middle = middle;
+    if app.ui.toolbar
+        && app.ui.screen_mode != crate::module::ScreenMode::FullScreenHidePanels
+        && pane == Pane::Photos
+        && app.session.source == LibrarySource::Folder
+        && middle.height() > 2.0 * t.bottom_bar_h + BAR_H
+    {
+        let r = Rect::from_min_max(pos2(middle.left(), middle.bottom() - t.bottom_bar_h), middle.max);
+        let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-toolbar").max_rect(r));
+        child.set_clip_rect(r);
+        crate::panels::bottombar::show(app, &mut child);
+        register(ui.ctx(), "importToolbar", r);
+        middle.max.y = r.top();
     }
     let bar_r = Rect::from_min_max(middle.min, pos2(middle.right(), middle.top() + BAR_H));
     let body = Rect::from_min_max(pos2(middle.left(), bar_r.bottom()), middle.max);

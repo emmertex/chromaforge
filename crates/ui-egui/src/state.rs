@@ -948,6 +948,8 @@ impl PanelWidth {
 pub const LEFT_WIDTH: PanelWidth = PanelWidth { min: 200.0, default: 268.0, max: 480.0 };
 /// The right panel (Edit, Masking, Info, …).
 pub const RIGHT_WIDTH: PanelWidth = PanelWidth { min: 250.0, default: 270.0, max: 520.0 };
+/// The Import tab's settings column (Import Settings, on the right of the browsed photos).
+pub const IMPORT_SETTINGS_WIDTH: PanelWidth = PanelWidth { min: 260.0, default: 330.0, max: 720.0 };
 /// The photo area the side panels always leave free (as far as their minimum widths allow).
 pub const MIN_PHOTO_WIDTH: f32 = 360.0;
 
@@ -1155,6 +1157,9 @@ pub struct UiState {
     /// resizes them; within [`LEFT_WIDTH`] / [`RIGHT_WIDTH`]).
     pub left_width: f32,
     pub right_width: f32,
+    /// Width of the Import tab's settings column in points (its left edge is dragged to resize
+    /// it; within [`IMPORT_SETTINGS_WIDTH`]).
+    pub import_settings_width: f32,
     /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
     /// to go back to).
     pub presets: bool,
@@ -2261,6 +2266,7 @@ impl Default for UiState {
             left_panel: false,
             left_width: LEFT_WIDTH.default,
             right_width: RIGHT_WIDTH.default,
+            import_settings_width: IMPORT_SETTINGS_WIDTH.default,
             right: RightPanel::Edit,
             toggle_return: None,
             tool_return: None,
@@ -2748,6 +2754,7 @@ impl UiState {
         self.thumb_size = self.thumb_size.clamp(THUMB_SIZE_MIN, THUMB_SIZE_MAX);
         self.left_width = LEFT_WIDTH.clamp(self.left_width);
         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
+        self.import_settings_width = IMPORT_SETTINGS_WIDTH.clamp(self.import_settings_width);
         // a histogram mode or scale another build wrote (or a hand-edited file) is the default
         if lcc_raster::HistogramMode::parse(&self.histogram_mode).is_none() {
             self.histogram_mode = lcc_raster::HistogramMode::default().name().into();
