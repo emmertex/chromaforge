@@ -1522,7 +1522,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 None => cur.next(),
             };
             app.ui.mask_overlay_mode = next.name().into();
-            app.ui.mask_overlay = true;
+            // ⇧O shows the overlay in its new look; the overlay menu's choice of look (`show: false`) leaves it as it
+            // was, so picking a look never latches the overlay on (OneSlips 0c58de7ad: how it got stuck on)
+            if p.get("show").and_then(Value::as_bool) != Some(false) {
+                app.ui.mask_overlay = true;
+            }
             app.toast(&ctx, next.label());
             Ok(json!({"mode": next.name()}))
         }

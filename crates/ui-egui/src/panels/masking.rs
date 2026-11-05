@@ -1247,7 +1247,8 @@ pub(crate) fn overlay_menu(app: &mut LccApp, ui: &mut egui::Ui) {
             crate::icons::paint(ui.painter(), c, Icon::Check, t.text);
         }
         if r.clicked() {
-            let _ = app.run("view.maskOverlayMode", json!({"mode": v.name()}));
+            // choosing how it looks doesn't switch the overlay on for good (OneSlips 0c58de7ad; ⇧O and Show Overlay do)
+            let _ = app.run("view.maskOverlayMode", json!({"mode": v.name(), "show": false}));
             ui.close();
         }
     }
@@ -1324,16 +1325,44 @@ pub(crate) fn overlay_menu(app: &mut LccApp, ui: &mut egui::Ui) {
     });
 }
 
+/// The Compact Show Overlay switch (OneSlips 0c58de7ad): a button with the overlay's own icon (a frame with a tinted
+/// area, not the Masking tool's) and its name, lit in the overlay's colour while the overlay is switched on to stay
+/// (O); the tooltip says which state it is in. Same widget ids as Classic's checkbox (`check:maskOverlay`,
+/// `maskOverlay`).
+fn overlay_button(app: &mut LccApp, ui: &mut egui::Ui) {
+    let on = app.ui.mask_overlay;
+    let tip = if on { "Overlay always on: O turns it off" } else { "Show overlay (O)" };
+    let b = icon_button(ui, "maskOverlayOn", Icon::MaskOverlay, vec2(20.0, 20.0), on, true, crate::i18n::tr(tip));
+    let t = Tokens::get(ui.ctx());
+    let label = ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr("Show Overlay")).font(t.font(12.0)).color(t.text_label)).sense(Sense::click()));
+    register(ui.ctx(), "check:maskOverlay", b.rect);
+    register(ui.ctx(), "maskOverlay", b.rect);
+    if on {
+        // lit: the tinted area in the overlay's own colour, and a ring round the button
+        let [r, g, bl] = app.ui.mask_overlay_color;
+        let c = egui::Color32::from_rgb(r, g, bl);
+        ui.painter().circle_filled(b.rect.center() + vec2(0.7, 0.35), 3.2, c.gamma_multiply(0.85));
+        ui.painter().rect_stroke(b.rect.shrink(0.5), t.radius(3.0), Stroke::new(1.0, c), egui::StrokeKind::Inside);
+    }
+    if b.clicked() || label.clicked() {
+        let _ = app.run("view.maskOverlay", json!({"show": !on}));
+    }
+}
+
 /// The Show Overlay row with toggle checkbox, color swatch, and "..." menu.
 fn show_overlay_row(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
-        let mut show_overlay = app.ui.mask_overlay;
-        let r = ui.checkbox(&mut show_overlay, crate::i18n::tr("Show Overlay"));
-        register(ui.ctx(), "check:maskOverlay", r.rect);
-        register(ui.ctx(), "maskOverlay", r.rect);
-        if r.changed() {
-            let _ = app.run("view.maskOverlay", json!({"show": show_overlay}));
+        if crate::theme::compact(ui.ctx()) {
+            overlay_button(app, ui);
+        } else {
+            let mut show_overlay = app.ui.mask_overlay;
+            let r = ui.checkbox(&mut show_overlay, crate::i18n::tr("Show Overlay"));
+            register(ui.ctx(), "check:maskOverlay", r.rect);
+            register(ui.ctx(), "maskOverlay", r.rect);
+            if r.changed() {
+                let _ = app.run("view.maskOverlay", json!({"show": show_overlay}));
+            }
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

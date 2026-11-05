@@ -281,6 +281,8 @@ mod tests_mask_effects;
 #[cfg(test)]
 mod tests_mask_landing;
 #[cfg(test)]
+mod tests_overlay_on;
+#[cfg(test)]
 mod tests_mask_menus;
 #[cfg(test)]
 mod tests_mask_range_pick;
