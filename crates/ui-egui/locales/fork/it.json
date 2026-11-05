@@ -152,5 +152,10 @@
   "is yesterday": "è ieri",
   "{app} Export Presets": "Predefiniti di esportazione di {app}",
   "{app} Metadata Presets": "Predefiniti metadati di {app}",
-  "{n} photos": "{n} foto"
+  "{n} photos": "{n} foto",
+  "Browse": "Sfoglia",
+  "Develop without Import": "Sviluppa senza importare",
+  "Choose a folder or card to browse first": "Scegli prima una cartella o una scheda da sfogliare",
+  "Select a photo to develop": "Scegli una foto da sviluppare",
+  "Browse Tab": "Scheda Sfoglia"
 }

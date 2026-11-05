@@ -75,5 +75,10 @@
   "is in this year": "trong năm nay",
   "is today": "là hôm nay",
   "is yesterday": "là hôm qua",
-  "{n} photos": "{n} ảnh"
+  "{n} photos": "{n} ảnh",
+  "Browse": "Duyệt",
+  "Develop without Import": "Xử lý mà không nhập",
+  "Choose a folder or card to browse first": "Hãy chọn trước thư mục hoặc thẻ để duyệt",
+  "Select a photo to develop": "Hãy chọn ảnh để xử lý",
+  "Browse Tab": "Thẻ Duyệt"
 }

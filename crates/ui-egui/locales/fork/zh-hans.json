@@ -1836,5 +1836,10 @@
   "{} selected": "已选择 {} 张",
   "{} wants to sync its library “{}” with this library.": "{} 想将其图库“{}”与此图库同步。",
   "‹ Library": "‹ 图库",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。"
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。",
+  "Browse": "浏览",
+  "Develop without Import": "不导入直接修改",
+  "Choose a folder or card to browse first": "请先选择要浏览的文件夹或存储卡",
+  "Select a photo to develop": "请选择要修改的照片",
+  "Browse Tab": "浏览标签"
 }

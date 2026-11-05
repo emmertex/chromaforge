@@ -73,5 +73,10 @@
   "is in this year": "är detta år",
   "is today": "är idag",
   "is yesterday": "är igår",
-  "{n} photos": "{n} foton"
+  "{n} photos": "{n} foton",
+  "Browse": "Bläddra",
+  "Develop without Import": "Utveckla utan import",
+  "Choose a folder or card to browse first": "Välj först en mapp eller ett kort att bläddra i",
+  "Select a photo to develop": "Välj ett foto att utveckla",
+  "Browse Tab": "Fliken Bläddra"
 }

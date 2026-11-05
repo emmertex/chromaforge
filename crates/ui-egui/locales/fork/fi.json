@@ -72,5 +72,10 @@
   "is in this year": "on tänä vuonna",
   "is today": "on tänään",
   "is yesterday": "on eilen",
-  "{n} photos": "{n} kuvaa"
+  "{n} photos": "{n} kuvaa",
+  "Browse": "Selaa",
+  "Develop without Import": "Kehitä ilman tuontia",
+  "Choose a folder or card to browse first": "Valitse ensin selattava kansio tai kortti",
+  "Select a photo to develop": "Valitse kehitettävä kuva",
+  "Browse Tab": "Selaa-välilehti"
 }

@@ -1825,5 +1825,10 @@
   "{} selected": "{} sélectionnées",
   "{} wants to sync its library “{}” with this library.": "{} souhaite synchroniser sa bibliothèque « {} » avec cette bibliothèque.",
   "‹ Library": "‹ Bibliothèque",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-glisser pour redresser, ⇧G Upright guidé, une grille pendant la transformation."
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-glisser pour redresser, ⇧G Upright guidé, une grille pendant la transformation.",
+  "Browse": "Parcourir",
+  "Develop without Import": "Développer sans importer",
+  "Choose a folder or card to browse first": "Choisissez d'abord un dossier ou une carte à parcourir",
+  "Select a photo to develop": "Sélectionnez une photo à développer",
+  "Browse Tab": "Onglet Parcourir"
 }

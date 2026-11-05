@@ -1765,5 +1765,10 @@
   "{} photos updated, {} copies": "{} Fotos aktualisiert, {} Kopien",
   "{} selected": "{} ausgewählt",
   "{} wants to sync its library “{}” with this library.": "{} möchte seine Bibliothek „{}“ mit dieser Bibliothek synchronisieren.",
-  "‹ Library": "‹ Bibliothek"
+  "‹ Library": "‹ Bibliothek",
+  "Browse": "Durchsuchen",
+  "Develop without Import": "Entwickeln ohne Import",
+  "Choose a folder or card to browse first": "Wählen Sie zuerst einen Ordner oder eine Karte zum Durchsuchen",
+  "Select a photo to develop": "Wählen Sie ein Foto zum Entwickeln",
+  "Browse Tab": "Tab „Durchsuchen“"
 }

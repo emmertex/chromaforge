@@ -2130,5 +2130,10 @@
   "≥  at least": "≥  не менее",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-перетаскивание для выравнивания, ⇧G Upright по направляющим, сетка во время трансформации.",
   "日本語": "日本語",
-  "繁體中文（台灣）": "繁體中文（台灣）"
+  "繁體中文（台灣）": "繁體中文（台灣）",
+  "Browse": "Просмотр",
+  "Develop without Import": "Проявить без импорта",
+  "Choose a folder or card to browse first": "Сначала выберите папку или карту для просмотра",
+  "Select a photo to develop": "Выберите фото для проявки",
+  "Browse Tab": "Вкладка «Просмотр»"
 }

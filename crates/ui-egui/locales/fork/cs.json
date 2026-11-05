@@ -152,5 +152,10 @@
   "is yesterday": "je včera",
   "{app} Export Presets": "Předvolby exportu {app}",
   "{app} Metadata Presets": "Předvolby metadat {app}",
-  "{n} photos": "{n} fotografií"
+  "{n} photos": "{n} fotografií",
+  "Browse": "Procházet",
+  "Develop without Import": "Vyvíjet bez importu",
+  "Choose a folder or card to browse first": "Nejprve vyberte složku nebo kartu k procházení",
+  "Select a photo to develop": "Vyberte fotografii k vývoji",
+  "Browse Tab": "Karta Procházet"
 }

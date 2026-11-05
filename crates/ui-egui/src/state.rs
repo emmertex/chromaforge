@@ -1131,6 +1131,14 @@ pub struct UiState {
     /// The view showed a browsed folder last frame ([`crate::import_tab::keep_in_step`]).
     #[serde(skip)]
     pub import_was_browsing: bool,
+    /// Developing a browsed photo without importing it: the Library tab shows the Develop module
+    /// on the folder's active photo while the browse stays on ([`crate::import_tab::keep_in_step`]).
+    #[serde(skip)]
+    pub import_develop: bool,
+    /// The library filter the Import tab put aside on entering it (the tab has no filter bar and a
+    /// card's files must not hide behind a Library filter); restored when the Library tab returns.
+    #[serde(skip)]
+    pub import_shelved_filter: bool,
     pub left_panel: bool,
     pub right: RightPanel,
     /// The panel a toggle (a panel key or button: I, M, R, Q…) opened, with what the right column showed
@@ -2258,6 +2266,8 @@ impl Default for UiState {
             tab: Default::default(),
             library_source: None,
             import_was_browsing: false,
+            import_develop: false,
+            import_shelved_filter: false,
             left_panel: false,
             left_width: LEFT_WIDTH.default,
             right_width: RIGHT_WIDTH.default,

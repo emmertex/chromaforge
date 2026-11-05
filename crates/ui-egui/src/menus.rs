@@ -308,7 +308,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("merge.focusStackLast", "Focus Stack with Last Settings", None, "Photo>Photo Merge"),
     ("file.addPhotos", "Import Photos…", None, "File"),
     // the workspace tabs (Settings ▸ Import ▸ Import as a tab; OneSlips LR-IMP-WINDOW)
-    ("view.importTab", "Import Tab", None, "Window>Modules"),
+    ("view.importTab", "Browse Tab", None, "Window>Modules"),
     ("view.libraryTab", "Library Tab", None, "Window>Modules"),
     // {what?: picks|selected|all}: the Import tab's big button
     ("import.start", "Import from the Import Tab", None, ""),

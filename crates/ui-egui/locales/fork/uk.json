@@ -1665,5 +1665,10 @@
   "{} photos updated, {} copies": "Оновлено фото: {}, копій: {}",
   "{} selected": "Вибрано: {}",
   "{} wants to sync its library “{}” with this library.": "{} пропонує синхронізувати свою бібліотеку «{}» з цією бібліотекою.",
-  "‹ Library": "‹ Бібліотека"
+  "‹ Library": "‹ Бібліотека",
+  "Browse": "Перегляд",
+  "Develop without Import": "Опрацювати без імпорту",
+  "Choose a folder or card to browse first": "Спочатку виберіть папку або картку для перегляду",
+  "Select a photo to develop": "Виберіть фото для опрацювання",
+  "Browse Tab": "Вкладка «Перегляд»"
 }

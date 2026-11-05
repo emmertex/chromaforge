@@ -154,5 +154,10 @@
   "is yesterday": "jest wczoraj",
   "{app} Export Presets": "Ustawienia eksportu {app}",
   "{app} Metadata Presets": "Ustawienia metadanych {app}",
-  "{n} photos": "{n} zdjęć"
+  "{n} photos": "{n} zdjęć",
+  "Browse": "Przeglądaj",
+  "Develop without Import": "Rozwijaj bez importu",
+  "Choose a folder or card to browse first": "Najpierw wybierz folder lub kartę do przeglądania",
+  "Select a photo to develop": "Wybierz zdjęcie do rozwijania",
+  "Browse Tab": "Karta Przeglądaj"
 }

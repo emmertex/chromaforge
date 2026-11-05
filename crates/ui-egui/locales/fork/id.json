@@ -73,5 +73,10 @@
   "is in this year": "tahun ini",
   "is today": "hari ini",
   "is yesterday": "kemarin",
-  "{n} photos": "{n} foto"
+  "{n} photos": "{n} foto",
+  "Browse": "Jelajahi",
+  "Develop without Import": "Kembangkan tanpa Impor",
+  "Choose a folder or card to browse first": "Pilih dulu folder atau kartu untuk dijelajahi",
+  "Select a photo to develop": "Pilih foto untuk dikembangkan",
+  "Browse Tab": "Tab Jelajahi"
 }

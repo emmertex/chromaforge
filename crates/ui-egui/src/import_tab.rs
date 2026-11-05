@@ -106,6 +106,28 @@ pub fn showing(app: &LccApp) -> bool {
     enabled(app) && app.ui.tab == Tab::Import
 }
 
+/// Entering Import: put the Library's filter aside (as Library ▸ Enable Filters off does). A card
+/// or folder being culled for import must show all of its files, and the tab has no filter bar to
+/// clear one with. The filter comes back when the Library tab does ([`leave`]).
+pub(crate) fn enter(app: &mut LccApp) {
+    app.ui.import_develop = false;
+    if !app.session.filters_off()
+        && app.session.filter != lcc_catalog::Filter::default()
+        && app.run("library.toggleFilters", json!({})).is_ok()
+    {
+        app.ui.import_shelved_filter = true;
+    }
+}
+
+/// Leaving Import: bring back the filter the tab put aside — unless something else already
+/// touched the filter state (cleared, or toggled back on by hand), which wins.
+pub(crate) fn leave(app: &mut LccApp) {
+    if app.ui.import_shelved_filter && app.session.filters_off() {
+        let _ = app.run("library.toggleFilters", json!({}));
+    }
+    app.ui.import_shelved_filter = false;
+}
+
 /// The open library's name, as the Import button names it.
 pub fn library_name(app: &LccApp) -> String {
     app.session
@@ -127,6 +149,10 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
     }
     app.ui.tab = tab;
     match tab {
+        Tab::Import => enter(app),
+        Tab::Library => leave(app),
+    }
+    match tab {
         Tab::Import => {
             if app.session.source != LibrarySource::Folder {
                 app.ui.library_source = Some(app.session.source);
@@ -144,7 +170,9 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
             }
         }
         Tab::Library => {
-            if app.session.source == LibrarySource::Folder {
+            // developing a browsed photo without importing it keeps the folder view on: the grid
+            // comes back to the Browse tab when it ends ([`keep_in_step`])
+            if app.session.source == LibrarySource::Folder && !app.ui.import_develop {
                 let back = app.ui.library_source.take().filter(|s| *s != LibrarySource::Folder).unwrap_or(LibrarySource::All);
                 app.session.source = back;
                 app.session.refresh_view();
@@ -164,20 +192,30 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
 pub fn keep_in_step(app: &mut LccApp) {
     if !enabled(app) {
         app.ui.tab = Tab::Library;
+        leave(app);
         return;
     }
     // Show Alternatives looks at a folder too, but in the Library tab, under its own bar
     if app.session.alternatives.is_some() {
         app.ui.tab = Tab::Library;
         app.ui.import_was_browsing = false;
+        leave(app);
         return;
     }
     let browsing = app.session.source == LibrarySource::Folder;
-    if browsing && app.ui.tab != Tab::Import {
+    // "Develop without Import": the Library tab shows the Develop module on the browsed folder's
+    // active photo, the folder view (and so the Browse tab) waiting until it ends
+    let developing = app.ui.import_develop && app.ui.module == crate::module::ModuleId::Develop;
+    if !browsing || !developing {
+        app.ui.import_develop = browsing && developing;
+    }
+    if browsing && app.ui.tab != Tab::Import && !developing {
         app.ui.tab = Tab::Import;
         app.ui.module = crate::module::ModuleId::Library;
+        enter(app);
     } else if !browsing && app.ui.import_was_browsing && app.ui.tab == Tab::Import {
         app.ui.tab = Tab::Library;
+        leave(app);
     }
     app.ui.import_was_browsing = browsing;
 }
@@ -234,11 +272,31 @@ pub fn start(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     app.renderer.forget_imports();
     // the Library tab, where the photos come in (Recently Added shows them as they arrive)
     app.ui.tab = Tab::Library;
+    leave(app);
     app.ui.library_source = None;
     app.session.source = LibrarySource::RecentlyAdded;
     app.session.refresh_view();
     app.ui.import_was_browsing = false;
     Ok(json!({"importing": n, "into": library_name(app)}))
+}
+
+/// Develop the browsed folder's active photo without importing it (`import.develop`): the
+/// Library tab's Develop module on the local photo, the folder view kept on so returning to the
+/// Browse tab (or any change of source) brings it back. The edits go to the photo's XMP sidecar
+/// like any photo added in place; the library catalog stays untouched.
+pub fn develop_without_import(app: &mut LccApp) -> Result<Value, String> {
+    if app.session.source != LibrarySource::Folder {
+        return Err(crate::i18n::tr("Choose a folder or card to browse first").to_string());
+    }
+    if app.session.active().is_none() {
+        return Err(crate::i18n::tr("Select a photo to develop").to_string());
+    }
+    app.ui.import_develop = true;
+    app.ui.import_was_browsing = true;
+    leave(app);
+    app.ui.tab = Tab::Library;
+    crate::module::switch(app, crate::module::ModuleId::Develop)?;
+    Ok(json!({"tab": "library", "module": "develop", "photo": app.session.active()}))
 }
 
 /// Apply an import preset to the Import tab's settings (`import.usePreset {name}`).
@@ -296,6 +354,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
         "view.importTab" => switch(app, Tab::Import),
         "view.libraryTab" => switch(app, Tab::Library),
         "import.start" => start(app, p),
+        "import.develop" => develop_without_import(app),
         "import.configure" => configure(app, p),
         "import.usePreset" => match p.get("name").and_then(Value::as_str) {
             Some(n) => use_preset(app, n),
@@ -343,7 +402,7 @@ pub fn tabs_width(app: &LccApp, ui: &egui::Ui) -> f32 {
     let finger = crate::dialog_frame::finger_sized(ui);
     let font = t.semibold(if finger { 14.0 } else { 12.5 });
     6.0 + 4.0
-        + ["Import", "Library"]
+        + ["Browse", "Library"]
             .iter()
             .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + 24.0)
             .sum::<f32>()
@@ -357,7 +416,7 @@ pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
     let finger = crate::dialog_frame::finger_sized(ui);
     let h = if finger { 36.0 } else { 26.0 };
     let font = t.semibold(if finger { 14.0 } else { 12.5 });
-    let labels = [(Tab::Import, "Import", "tab-import"), (Tab::Library, "Library", "tab-library")];
+    let labels = [(Tab::Import, "Browse", "tab-import"), (Tab::Library, "Library", "tab-library")];
     let widths: Vec<f32> =
         labels.iter().map(|(_, l, _)| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + 24.0).collect();
     let (outer, _) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 4.0, h), Sense::hover());
@@ -575,8 +634,10 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
     // where: the folder's name, all of it in a tooltip
     let folder = app.session.browse.as_ref().filter(|_| browsing).map(|b| b.path.clone());
     let button_w = if wide { 220.0 } else { 150.0 };
+    let develop_w = if browsing { if wide { 190.0 } else { 170.0 } } else { 0.0 };
     let segs_w = if wide { 190.0 } else { 0.0 };
-    let room = (row.available_width() - button_w - segs_w - 24.0).max(40.0);
+    let view_w = if browsing { 200.0 } else { 0.0 };
+    let room = (row.available_width() - button_w - develop_w - segs_w - view_w - 24.0).max(40.0);
     let text = match &folder {
         Some(f) => {
             let name = std::path::Path::new(f).file_name().map_or_else(|| f.clone(), |n| n.to_string_lossy().to_string());
@@ -591,6 +652,21 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
         lr.on_hover_text(f);
     }
     row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // right of the Import button (first in the right-to-left row): develop the active photo
+        // here, without importing it — the Develop module in the Library tab, edits to the
+        // sidecar, the catalog untouched
+        if browsing
+            && crate::button::Button::new(&crate::i18n::tr("Develop without Import").to_string())
+                .enabled(app.session.active().is_some())
+                .widget("importDevelop")
+                .show(ui)
+                .clicked()
+        {
+            match app.run("import.develop", json!({})) {
+                Ok(_) => {}
+                Err(e) => app.toast(ui.ctx(), e),
+            }
+        }
         let label = crate::i18n::tr_format!("Import {n} into {library}", n = n, library = library_name(app));
         if crate::button::Button::new(&label).primary().enabled(n > 0).widget("importGo").show(ui).clicked() {
             match app.run("import.start", json!({})) {
@@ -601,10 +677,35 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
                 Err(e) => app.toast(ui.ctx(), e),
             }
         }
+        if browsing {
+            view_segments(app, ui);
+        }
         if wide {
             take_segments(app, ui);
         }
     });
+}
+
+/// Photo Grid / Grid / Detail: the view of the browsed folder's photos, the Library's view
+/// commands on the same state, so the tab shows what the Library would.
+fn view_segments(app: &mut LccApp, ui: &mut egui::Ui) {
+    use crate::state::ViewMode;
+    let chosen = match app.ui.view {
+        ViewMode::PhotoGrid => 0,
+        ViewMode::SquareGrid => 1,
+        _ => 2,
+    };
+    let Some(i) = crate::widgets::segments(ui, "browseView", &["Photo Grid", "Grid", "Detail"], Some(chosen)) else {
+        return;
+    };
+    app.ui.view = match i {
+        0 => ViewMode::PhotoGrid,
+        1 => ViewMode::SquareGrid,
+        _ => ViewMode::Detail,
+    };
+    if app.ui.view.is_grid() {
+        app.ui.grid_style = app.ui.view;
+    }
 }
 
 /// Picks / Selected / All: what the big button takes.
