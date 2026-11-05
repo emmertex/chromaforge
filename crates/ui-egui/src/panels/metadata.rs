@@ -450,8 +450,9 @@ fn info_row(ui: &mut egui::Ui, label: &str, v: Option<&str>) {
 
 /// A labelled text field: the typed text lives in egui memory while focused and is saved
 /// (photo.setMeta `key`, on every photo shown) when the field loses focus. A mixed field is empty
-/// with a `<mixed>` hint; leaving it empty changes nothing.
-fn text_field(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], ids: &[u64], label: &str, key: &str, lines: usize) {
+/// with a `<mixed>` hint; leaving it empty changes nothing. Shared with the Map module's side
+/// panel (fork #784).
+pub(crate) fn text_field(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], ids: &[u64], label: &str, key: &str, lines: usize) {
     small(ui, label);
     let shared = common(photos, key);
     let shown = shared.clone().unwrap_or_default();
@@ -563,8 +564,9 @@ fn captured(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>]) {
     ui.add_space(6.0);
 }
 
-/// GPS: typed as "lat, lon" (or degrees / minutes / seconds); empty clears it.
-fn gps(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], ids: &[u64]) {
+/// GPS: typed as "lat, lon" (or degrees / minutes / seconds); empty clears it. Shared with the Map
+/// module's side panel (fork #784).
+pub(crate) fn gps(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], ids: &[u64]) {
     let t = Tokens::get(ui.ctx());
     let shared = common(photos, "gps");
     let gps = shared.clone().unwrap_or_default();

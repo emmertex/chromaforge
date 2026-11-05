@@ -103,6 +103,9 @@ pub struct MapUi {
     pub menu_at: Option<LatLon>,
     /// Pins as drawn last frame: (screen centre, photo ids) — for `map.inspect`-style queries and tests.
     pub drawn: Vec<(egui::Pos2, Vec<u64>)>,
+    /// The selection the map last saw (sorted ids): a filmstrip selection change reveals the new
+    /// pins when they lie off screen (fork #741). `None` before the first frame.
+    pub last_selection: Option<Vec<u64>>,
     /// The map canvas (screen), last frame.
     pub canvas: Option<egui::Rect>,
     pins_cache: Option<(u64, usize, String, i64, std::sync::Arc<Vec<lcc_geo::Cluster<u64>>>)>,
@@ -128,6 +131,7 @@ impl Default for MapUi {
             dragging_pin: None,
             menu_at: None,
             drawn: Vec::new(),
+            last_selection: None,
             canvas: None,
             pins_cache: None,
         }
@@ -280,6 +284,37 @@ impl MapUi {
     }
 }
 
+// ---------- revealing a selection (fork #741)
+
+/// Move the map so the selected photos' pins are on screen. Only when at least one lies off the
+/// map canvas, and then only by panning (the zoom stays, so a look around isn't yanked); `force`
+/// re-frames and zooms in on the pins even when they are already visible — a double-clicked
+/// filmstrip thumbnail. Returns whether the view moved.
+pub fn reveal_selection(app: &mut LccApp, force: bool) -> bool {
+    let mut sel: Vec<u64> = app.session.selection.ids.iter().map(|p| p.0).collect();
+    sel.sort_unstable();
+    app.map.last_selection = Some(sel.clone());
+    let pts: Vec<LatLon> = sel
+        .iter()
+        .filter_map(|id| app.session.catalog.photo(lcc_catalog::PhotoId(*id)))
+        .filter_map(|p| p.meta.gps)
+        .filter(|g| LatLon::new(g.0, g.1).is_valid())
+        .map(|g| LatLon::new(g.0, g.1))
+        .collect();
+    if pts.is_empty() {
+        return false;
+    }
+    let r = app.map.canvas.unwrap_or_else(|| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 700.0)));
+    if !force && pts.iter().all(|p| r.expand(30.0).contains(view::geo_to_screen(&app.map, r, *p))) {
+        return false;
+    }
+    let Some((c, zf)) = lcc_geo::mercator::fit(&pts, f64::from(r.width()), f64::from(r.height())) else { return false };
+    // without `force`: only zoom out when the pins don't fit at the current zoom, never in
+    let zoom = if force { zf } else { zf.min(app.map.prefs.zoom) };
+    app.map.set_view(c, zoom);
+    true
+}
+
 // ---------- the Module
 
 pub struct MapModule;
@@ -324,6 +359,7 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("map.autoTag", "Auto-Tag Selected Photos", None, ""),
     ("map.geotagAt", "Geotag at Map Point", None, ""),
     ("map.fit", "Show All Pins", None, ""),
+    ("map.reveal", "Show Selected Pins", None, ""),
     ("map.search", "Find Place", None, ""),
     ("map.geocoder", "Reverse Geocoding Settings", None, ""),
     ("map.lookup", "Look Up Locations", None, ""),
@@ -510,6 +546,11 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             let size = app.map.canvas.map(|r| (f64::from(r.width()), f64::from(r.height()))).unwrap_or((1000.0, 700.0));
             let (c, z) = lcc_geo::mercator::fit(&pts, size.0, size.1).ok_or("no photos with a location in view")?;
             app.map.set_view(c, z);
+            Ok(view_json(app))
+        }
+        "map.reveal" => {
+            let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
+            reveal_selection(app, force);
             Ok(view_json(app))
         }
         "map.search" => {
