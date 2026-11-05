@@ -2245,6 +2245,12 @@ pub(crate) fn camera_profile_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mu
         }
     };
     row(ui, "Camera Profile", &mut |ui| profile_combo(ui, "importCameraProfile", &camera_profile_options(None), &mut d.camera_profile));
+    // browsed photos preview the choice as the import will apply it (`Session::browse_profile`)
+    app.session.import_profile_choice = if d.camera_profile.is_empty() {
+        lcc_engine::profile_bodies::ImportProfile::PerBody(d.per_body.clone())
+    } else {
+        lcc_engine::profile_bodies::ImportProfile::All(d.camera_profile.clone())
+    };
     if !d.camera_profile.is_empty() {
         return;
     }
