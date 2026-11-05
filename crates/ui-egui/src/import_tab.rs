@@ -106,6 +106,24 @@ pub fn showing(app: &LccApp) -> bool {
     enabled(app) && app.ui.tab == Tab::Import
 }
 
+/// Entering Import: put the Library's filter aside (as Library ▸ Enable Filters off does). A card
+/// or folder being culled for import must show all of its files, and the tab has no filter bar to
+/// clear one with. The filter comes back when the Library tab does ([`leave`]).
+pub(crate) fn enter(app: &mut LccApp) {
+    if !app.session.filters_off() && app.session.filter != lcc_catalog::Filter::default() && app.run("library.toggleFilters", json!({})).is_ok() {
+        app.ui.import_shelved_filter = true;
+    }
+}
+
+/// Leaving Import: bring back the filter the tab put aside — unless something else already
+/// touched the filter state (cleared, or toggled back on by hand), which wins.
+pub(crate) fn leave(app: &mut LccApp) {
+    if app.ui.import_shelved_filter && app.session.filters_off() {
+        let _ = app.run("library.toggleFilters", json!({}));
+    }
+    app.ui.import_shelved_filter = false;
+}
+
 /// The open library's name, as the Import button names it.
 pub fn library_name(app: &LccApp) -> String {
     app.session
@@ -126,6 +144,10 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
         return Ok(json!({"tab": tab}));
     }
     app.ui.tab = tab;
+    match tab {
+        Tab::Import => enter(app),
+        Tab::Library => leave(app),
+    }
     match tab {
         Tab::Import => {
             if app.session.source != LibrarySource::Folder {
@@ -164,20 +186,24 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
 pub fn keep_in_step(app: &mut LccApp) {
     if !enabled(app) {
         app.ui.tab = Tab::Library;
+        leave(app);
         return;
     }
     // Show Alternatives looks at a folder too, but in the Library tab, under its own bar
     if app.session.alternatives.is_some() {
         app.ui.tab = Tab::Library;
         app.ui.import_was_browsing = false;
+        leave(app);
         return;
     }
     let browsing = app.session.source == LibrarySource::Folder;
     if browsing && app.ui.tab != Tab::Import {
         app.ui.tab = Tab::Import;
         app.ui.module = crate::module::ModuleId::Library;
+        enter(app);
     } else if !browsing && app.ui.import_was_browsing && app.ui.tab == Tab::Import {
         app.ui.tab = Tab::Library;
+        leave(app);
     }
     app.ui.import_was_browsing = browsing;
 }
@@ -234,6 +260,7 @@ pub fn start(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     app.renderer.forget_imports();
     // the Library tab, where the photos come in (Recently Added shows them as they arrive)
     app.ui.tab = Tab::Library;
+    leave(app);
     app.ui.library_source = None;
     app.session.source = LibrarySource::RecentlyAdded;
     app.session.refresh_view();
