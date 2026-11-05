@@ -186,32 +186,34 @@ fn library_filters_dont_hide_the_browsed_folder() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A module switch while the Import tab is up leaves the tab first (the Classic module bar's rule,
+/// A module switch while the Browse tab is up leaves the tab first (the Classic module bar's rule,
 /// kept for the Modern Develop pill, shortcuts and agents too): the tab's sheet must never end up
-/// drawn under another module's chrome.
+/// drawn under another module's chrome. Develop with a browsed photo active is the exception that
+/// gives the rule a meaning: it develops the browsed photo without importing it.
 #[test]
-fn switching_modules_leaves_the_import_tab_first() {
+fn switching_modules_leaves_the_browse_tab_first() {
     for layout in ["classic", "modern"] {
         let mut h = app([1400.0, 900.0], layout);
         let dir = folder(&format!("switch-{layout}"), 2);
         exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
         assert_eq!(h.app.ui.tab, Tab::Import, "{layout}");
-        // a photo in the library, as in real use: Develop works on the library's photos, not on
-        // the browsed ones, so leaving Import for Develop hands the library view over
-        exec(&mut h, "import.configure", json!({"take": "all", "previews": "none"}));
-        exec(&mut h, "import.start", json!({}));
-        h.step_until(SETTLE, |h| h.app.import.is_none());
-        exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
-        assert_eq!(h.app.ui.tab, Tab::Import, "{layout}");
+        // Develop on the browsed photo, in place: the tab hands over and the edit adds no
+        // library photo
         exec(&mut h, "module.develop", json!({}));
         assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop, "{layout}");
-        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Import tab handed over");
+        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Browse tab handed over");
         h.settle(SETTLE);
-        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Import sheet under Develop");
-        // and the way back works
+        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Browse sheet under Develop");
+        assert!(h.app.session.catalog.photos().filter(|p| p.in_library()).count() == 0, "{layout}");
+        // and the way back works: the folder view is still on, so the Browse tab comes back
         exec(&mut h, "module.library", json!({}));
         assert_eq!(h.app.ui.module, crate::module::ModuleId::Library, "{layout}");
-        assert!(!matches!(h.app.session.source, lcc_engine::LibrarySource::Folder), "{layout}");
+        assert_eq!(h.app.ui.tab, Tab::Import, "{layout}: the folder view brings Browse back");
+        assert!(matches!(h.app.session.source, lcc_engine::LibrarySource::Folder), "{layout}");
+        // another module leaves the tab without developing anything
+        exec(&mut h, "module.map", json!({}));
+        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Browse tab handed over");
+        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Browse sheet under Map");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -357,6 +359,81 @@ fn the_review_imports_with_the_preset_stack_used_last_and_keeps_it() {
         assert_eq!(steps, ["Preset: Bright", "Preset: Contrast"]);
     }
     assert_eq!(h.app.ui.settings.import_tab.opts.presets, [bright, contrast], "kept for the next import");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// "Develop without Import" opens the browsed folder's active photo in the Library tab's Develop
+/// module without importing it: the browse stays on, an edit lands on the photo (the sidecar
+/// carries it, the catalog's library stays empty), and going back to the Browse tab brings the
+/// folder view back.
+#[test]
+fn develop_without_import_edits_a_browsed_photo_in_place() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.app.session = lcc_engine::Session::new().with_fs();
+    h.settle(SETTLE);
+    let dir = folder("develop-local", 2);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.session.visible_cloned().len(), 2);
+    let r = exec(&mut h, "import.develop", json!({}));
+    assert_eq!(r["module"], "develop");
+    assert_eq!(h.app.ui.tab, Tab::Library, "the Library tab shows the Develop module");
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop);
+    assert_eq!(h.app.session.source, lcc_engine::LibrarySource::Folder, "the folder view stays on");
+    // an edit on the browsed photo, without the photo joining the library
+    let active = h.app.session.active().expect("the browsed photo is active");
+    h.app.run("develop.set", json!({"control": "light.exposure", "value": 0.5})).unwrap();
+    let p = h.app.session.catalog.photo(active).expect("the photo is on record");
+    assert!((p.develop.light.exposure - 0.5).abs() < 1e-6, "the edit lands");
+    assert!(p.local && !p.in_library(), "browsed only: no library photo was added");
+    // the folder view comes back with the Browse tab
+    exec(&mut h, "view.importTab", json!({}));
+    assert_eq!(h.app.ui.tab, Tab::Import);
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Library);
+    assert_eq!(h.app.session.visible_cloned().len(), 2, "browsing again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// "Develop without Import" without a photo chosen refuses with a reason, and a library tab
+/// switch while not browsing refuses too.
+#[test]
+fn develop_without_import_needs_a_browse_and_a_photo() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.settle(SETTLE);
+    assert!(try_exec(&mut h, "import.develop", json!({}))["ok"] == false, "nothing browsed");
+    let dir = folder("develop-guard", 1);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    // the browse makes its first photo active; deselecting refuses
+    exec(&mut h, "library.select", json!({"ids": []}));
+    assert!(try_exec(&mut h, "import.develop", json!({}))["ok"] == false, "no photo chosen");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The browse quick filter: Show All / Show Not Imported in the bar — by default only the files
+/// an import would take, Show All adds the ones the library has already with an "In library"
+/// badge on their cells.
+#[test]
+fn browse_show_all_marks_photos_in_the_library() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.app.session = lcc_engine::Session::new().with_fs();
+    h.settle(SETTLE);
+    let dir = folder("show-all", 2);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert!(has_widget(&mut h, "button:browseShow-0") && has_widget(&mut h, "button:browseShow-1"), "the quick filter is in the bar");
+    // the first photo joins the library, as Add to My Photos does
+    let first = h.app.session.visible_cloned()[0];
+    exec(&mut h, "photo.addToLibrary", json!({"ids": [first.0]}));
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.session.visible_cloned().len(), 1, "not imported is the default");
+    // Show All: both files, the library one badged
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy(), "show": "all"}));
+    assert_eq!(h.app.session.visible_cloned().len(), 2);
+    let library_one = h.app.session.visible_cloned().into_iter().find(|id| h.app.session.catalog.photo(*id).is_some_and(|p| p.in_library()));
+    assert_eq!(library_one, Some(first), "the library photo shows");
+    h.step();
+    assert!(
+        library_one.is_some_and(|id| h.app.widgets.iter().any(|(n, _)| *n == format!("badge:inLibrary:{}", id.0))),
+        "the In library badge is on its cell"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

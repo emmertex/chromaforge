@@ -36,6 +36,10 @@ pub enum LibrarySource {
 pub struct Browse {
     pub path: String,
     pub subfolders: bool,
+    /// The Browse tab's quick filter on "Show Not Imported": only the files an import would take.
+    /// Off (the default), the view is everything on disk, the files the library has already
+    /// included — they carry an In library badge in the grid.
+    pub not_imported: bool,
 }
 
 /// How far back Recently Added reaches from the latest import.
