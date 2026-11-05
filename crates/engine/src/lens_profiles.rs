@@ -91,17 +91,51 @@ pub fn generation() -> u64 {
 
 /// Load the lensfun-format files in `dir`; `None` when it can't be read or holds no lenses.
 pub fn load(dir: &Path) -> Option<LensDb> {
+    load_from(dir, Origin::Folder)
+}
+
+/// What the log calls a database source: the environment variable by its full name, or the Settings folder.
+fn whose(origin: Origin) -> String {
+    match origin {
+        Origin::Env => lcc_brand::env_var(ENV),
+        Origin::Folder => "folder".to_string(),
+    }
+}
+
+/// [`load`], logging the folder, where it comes from and what it holds (a missing or empty folder is a warning).
+fn load_from(dir: &Path, origin: Origin) -> Option<LensDb> {
+    let whose = whose(origin);
+    if !dir.is_dir() {
+        log::warn!("lens database: {} ({whose}) is missing or not a folder", dir.display());
+        return None;
+    }
     match LensDb::load_dir(dir) {
         Ok((db, errors)) => {
             for (file, e) in errors {
                 log::warn!("lens database: skipped {file}: {e}");
             }
+            let (level, line) = summary(dir, &whose, &db);
+            log::log!(level, "{line}");
             (!db.lenses.is_empty()).then_some(db)
         }
         Err(e) => {
             log::warn!("lens database: {e}");
             None
         }
+    }
+}
+
+/// The log line for a database read from `dir`: where it is and how many lenses and cameras it has, so a user
+/// setting up the environment override can see whether it was found; a folder without lenses is a warning.
+fn summary(dir: &Path, whose: &str, db: &LensDb) -> (log::Level, String) {
+    let (lenses, cameras) = (db.lenses.len(), db.cameras.len());
+    if lenses == 0 {
+        (
+            log::Level::Warn,
+            format!("lens database: no lenses in {} ({whose}): lenses 0, cameras {cameras}; lens profiles are not applied", dir.display()),
+        )
+    } else {
+        (log::Level::Info, format!("lens database: read {} ({whose}): lenses {lenses}, cameras {cameras}", dir.display()))
     }
 }
 
@@ -112,9 +146,9 @@ pub fn database() -> Option<Arc<LensDb>> {
     if let Some(db) = &c.loaded {
         return db.clone();
     }
-    let dir = env.or_else(|| c.dir.clone());
+    let source = env.map(|d| (d, Origin::Env)).or_else(|| c.dir.clone().map(|d| (d, Origin::Folder)));
     // loaded under the lock: a second caller waits for this load instead of repeating it
-    let db = dir.as_deref().and_then(load).map(Arc::new);
+    let db = source.and_then(|(dir, origin)| load_from(&dir, origin)).map(Arc::new);
     c.loaded = Some(db.clone());
     db
 }
@@ -498,6 +532,18 @@ mod tests {
         assert!(database().is_none() && source().is_none());
         set_dir(before);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The log says where the database was read from and what it holds, and warns when it holds no lenses.
+    #[test]
+    fn the_log_names_the_folder_and_what_it_holds() {
+        let dir = Path::new("/lensfun/db");
+        let (level, line) = summary(dir, "folder", &LensDb::parse(DB).unwrap());
+        assert_eq!(level, log::Level::Info);
+        assert!(line.contains("lenses 1, cameras 1") && line.contains("/lensfun/db") && line.contains("folder"), "{line}");
+        let (level, line) = summary(dir, "folder", &LensDb::parse("<lensdatabase></lensdatabase>").unwrap());
+        assert_eq!(level, log::Level::Warn);
+        assert!(line.contains("no lenses") && line.contains("lenses 0, cameras"), "{line}");
     }
 
     #[test]
