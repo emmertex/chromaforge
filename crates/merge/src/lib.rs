@@ -34,7 +34,7 @@ pub mod synth;
 
 pub use focus::{FocusOptions, FocusResult, stack_focus};
 pub use frame::{Frame, FrameColor, RawColour, load_frame, load_frame_full, load_frame_with};
-pub use hdr::{Deghost, HdrFrame, HdrOptions, HdrResult, merge_hdr, merge_hdr_frames};
+pub use hdr::{AlignedFrame, Deghost, HdrFrame, HdrOptions, HdrResult, merge_hdr, merge_hdr_frames, merge_hdr_frames_aligned};
 pub use output::{DngSamples, write_linear_dng};
 pub use pano::{PanoOptions, PanoResult, Projection, stitch};
 pub use superres::super_resolve;

@@ -208,7 +208,8 @@ pub struct Meta {
     pub city: String,
     pub state: String,
     pub country: String,
-    /// 2-letter ISO 3166-1 country code (`Iptc4xmpCore:CountryCode`).
+    /// The ISO 3166-1 alpha-2 country code (IPTC Core `Iptc4xmpCore:CountryCode`); reverse geocoding
+    /// fills it when it can. Left out of the catalog JSON when empty, so older catalogs read unchanged.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub country_code: String,
     pub gps: Option<(f64, f64)>,

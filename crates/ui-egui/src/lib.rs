@@ -203,6 +203,8 @@ mod tests_grading;
 #[cfg(test)]
 mod tests_grid;
 #[cfg(test)]
+mod tests_grid_style;
+#[cfg(test)]
 mod tests_guided_guides;
 #[cfg(test)]
 mod tests_hdr_zoom_cache;
@@ -332,6 +334,8 @@ mod tests_rules_editor;
 mod tests_sam_setup;
 #[cfg(test)]
 mod tests_scroll;
+#[cfg(test)]
+mod tests_settings_back;
 #[cfg(test)]
 mod tests_settings_profiles;
 #[cfg(test)]
@@ -923,6 +927,12 @@ pub struct LccApp {
     pub activity_open: std::collections::HashSet<u64>,
     /// The last batch summary said (`Activity::finished` → `seq`): each is said once.
     pub activity_seen_seq: u64,
+    /// Classic: the list of tasks under the module bar's activity area is open (`view.activityList`).
+    pub activity_list: bool,
+    /// Classic: where the module bar drew its activity area this frame (set by `module_bar`, taken by the stack).
+    pub(crate) activity_plate_drawn: Option<egui::Rect>,
+    /// …and in the last frame: what the list opens under, and whether `view.activityList` can open it.
+    pub(crate) activity_plate: Option<egui::Rect>,
     /// The Map module's view state (P3.3).
     pub map: map::MapUi,
     /// The Classic module help sheet (⌘/, P6.3).
@@ -1115,6 +1125,9 @@ impl LccApp {
             activity_expanded: false,
             activity_open: Default::default(),
             activity_seen_seq: 0,
+            activity_list: false,
+            activity_plate_drawn: None,
+            activity_plate: None,
             surface: Default::default(),
         }
     }
@@ -1199,6 +1212,11 @@ impl LccApp {
         // ends it first, so its release can't land on the one picked
         if matches!(id, "mask.select" | "library.select") {
             self.cancel_brush_gesture();
+        }
+        // a MIDI turn still open when anyone else starts an interaction is closed first: its idle
+        // timeout would otherwise end the new interaction instead (the turn's own begin finds none open)
+        if id == "develop.beginInteraction" {
+            self.end_midi_interaction();
         }
         if let Some(r) = edit_in::intercept(self, id, &params) {
             return r.map_err(CommandError::from);

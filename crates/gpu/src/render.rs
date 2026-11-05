@@ -190,6 +190,9 @@ pub(crate) struct Cx<'a> {
 /// 24 MP export, several passes over a preview): no single submission runs long.
 const FLUSH_INVOCATIONS: u64 = 16 << 20;
 
+/// Longest [`Cx::pace`] waits for a step before it gives the GPU up.
+const PACE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Pixels per dispatch of the per-pixel stage (the heaviest kernel).
 const BAND_PIXELS: usize = 4 << 20;
 
@@ -236,6 +239,22 @@ impl<'a> Cx<'a> {
                 return;
             }
             self.last = Some(self.gpu.submit([enc.finish()]));
+        }
+    }
+
+    /// Submit what is recorded and wait for the submission before it: work recorded in steps (an
+    /// Auto Mask stroke each) then keeps at most one step queued ahead of the window's frames,
+    /// which slot in between. (A batch render's [`Self::flush`] waits already.)
+    pub fn pace(&mut self) {
+        let before = self.last.clone();
+        self.flush();
+        if crate::gate::is_batch() || crate::ctx::failed() {
+            return;
+        }
+        if let Some(prev) = before
+            && self.gpu.poll(wgpu::PollType::Wait { submission_index: Some(prev), timeout: Some(PACE_TIMEOUT) }).is_err()
+        {
+            fail(FailKind::Busy, "the GPU did not finish an earlier step in time (busy)".into());
         }
     }
 
@@ -808,7 +827,7 @@ pub fn render(
     lap("planes", &mut t, &mut cx);
 
     // 4. masks (kept with the planes)
-    let (masks, terms, curves) = masks(&mut cx, &lin, &prep, plan, &mut host, &mut planes);
+    let (masks, terms, curves) = masks(&mut cx, src, &lin, &prep, plan, &mut host, &mut planes);
     lap("masks", &mut t, &mut cx);
     if let Some(c) = stages {
         c.put(Entry { src: src.clone(), geo: plan.geo, sampled, lin: Some((plan.lin_key, lin.clone())), planes });
@@ -842,6 +861,9 @@ pub fn render(
         (None, None) => None,
     };
     let (p, aux) = finish_block(&fp, &terms, &curves, &present);
+    if crate::ctx::failed() {
+        return None; // a malformed parameter block failed the render: the CPU fallback redoes it
+    }
     let aux = gpu.upload(&aux);
     // cleared, so that work which never ran cannot pass for an image (see the check below)
     // the histogram's words follow the image (one readback for both)
@@ -1536,11 +1558,243 @@ fn guided_cross(cx: &mut Cx<'_>, guide: &Buf, p: &Buf, w: usize, h: usize, sigma
     q
 }
 
+/// Where an Auto Mask stroke is rendered: the photo, the plan (its pixels' keys), the render's
+/// [`crate::strokes::pass`] and how the stroke combines with the ones before it (`combine`'s op).
+struct StrokeAt<'p, 'a> {
+    src: &'p Arc<Rgb32f>,
+    plan: &'p Plan<'a>,
+    pass: u64,
+    op: u32,
+    /// The frame strokes are kept for ([`crate::strokes::view`]).
+    view: u64,
+    /// The mask is placed on the photo before its warp (its strokes land elsewhere in the frame).
+    on_photo: bool,
+}
+
+/// What an Auto Mask stroke combined into the plane took from the store: blocks taken, blocks
+/// it covers.
+#[derive(Clone, Copy, Default)]
+struct StrokeUse {
+    reused: usize,
+    blocks: usize,
+}
+
+/// A rectangle (x0, y0, x1, y1; exclusive ends).
+type Rect = (usize, usize, usize, usize);
+
+fn meet(a: Rect, b: Rect) -> Option<Rect> {
+    let r = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
+    (r.0 < r.2 && r.1 < r.3).then_some(r)
+}
+
+/// One Auto Mask stroke `d` (the stroke `st`, its brush data `aux`, the `shape` parameters `q`)
+/// combined into `brush`: stamped, refined over the rectangle it can reach
+/// (`masks::auto_stroke_reach`, as the CPU does), and kept in 16 bits for the next render
+/// ([`crate::strokes`]) in blocks of the whole frame, so the other windows of the frame (a zoomed
+/// view's tiles) take the blocks they share from there and work out only the rest.
+///
+/// A block is kept only when the rectangle refined holds every pixel the refine reads for it (its
+/// support, [`refine_support`], inside the rectangle or at the stroke's own reach): what this
+/// window worked out there is then what any window of the frame does. Blocks near the window's
+/// edge, in its margin, are used here and not kept.
+///
+/// Each stroke worked out is submitted on its own and the render waits for the one before it, so
+/// the window's frames slot in between: a dozen big strokes queued at once, each refined over the
+/// whole window, held the interface back for over a second at 100 %.
+#[allow(clippy::too_many_arguments)]
+fn auto_stroke(
+    cx: &mut Cx<'_>,
+    d: &lcc_pipeline::masks::BrushDabs,
+    st: &lcc_develop::BrushStroke,
+    aux: &[f32],
+    q: &[u32],
+    lin: &Buf,
+    log_l: &Buf,
+    stroke: &Buf,
+    brush: &Buf,
+    at: &StrokeAt<'_, '_>,
+) -> StrokeUse {
+    use crate::strokes::{BLOCK, Kept};
+    use lcc_pipeline::masks::{auto_refine, auto_stroke_reach, auto_stroke_reach_in, auto_stroke_sigma};
+    let (w, h) = (at.plan.w, at.plan.h);
+    // (a stroke that reaches no pixel of this plane paints nothing)
+    let Some(local) = auto_stroke_reach(d, w, h) else { return StrokeUse::default() };
+    // this plane in the whole frame, and the stroke's reach there (at least what it reaches here)
+    let ff = &at.plan.filter_frame;
+    let (ox, oy) = (ff.x as usize, ff.y as usize);
+    let need = (local.0 + ox, local.1 + oy, local.2 + ox, local.3 + oy);
+    let (fw, fh) = ((ff.full_w as usize).max(ox + w), (ff.full_h as usize).max(oy + h));
+    let whole = auto_stroke_reach_in(d, (ox as f64, oy as f64), fw, fh).unwrap_or(need);
+    let whole = (whole.0.min(need.0), whole.1.min(need.1), whole.2.max(need.2), whole.3.max(need.3));
+    let generation = cx.gpu.generation;
+    let batch = crate::gate::is_batch();
+    // the stroke itself, not its dabs (their positions in a window carry its rounding)
+    let stroke_key = {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        let brush = (
+            d.r.to_bits(),
+            d.hard.to_bits(),
+            d.flow.to_bits(),
+            d.density.to_bits(),
+            d.auto_scale.to_bits(),
+            d.lrc.map(|(a, p)| (a.to_bits(), p.to_bits())),
+        );
+        BuildHasherDefault::<DefaultHasher>::default().hash_one((format!("{st:?}"), d.dabs.len(), brush, d.erase, at.op, at.on_photo))
+    };
+    // blocks this window worked out up to its own edge, which only it can use
+    let loose = crate::strokes::loose_key(at.view, stroke_key, (at.plan.geo, at.plan.lin_key, need));
+    // the blocks of the frame this plane needs: each one's part of the stroke, and of this plane
+    let mut blocks: Vec<(u64, Rect, Rect, Option<(Rect, Arc<Kept>)>)> = Vec::new();
+    let mut cells: Vec<(usize, usize)> = Vec::new();
+    for by in need.1 / BLOCK..need.3.div_ceil(BLOCK) {
+        for bx in need.0 / BLOCK..need.2.div_ceil(BLOCK) {
+            let cell = (bx * BLOCK, by * BLOCK, (bx + 1) * BLOCK, (by + 1) * BLOCK);
+            let (Some(part), Some(here)) = (meet(cell, whole), meet(cell, need)) else { continue };
+            let key = crate::strokes::key(at.view, stroke_key, bx, by);
+            let kept = crate::strokes::get(at.src, key, at.pass, generation, batch).filter(|k| k.rect == part);
+            let kept = kept.map(|k| (part, k)).or_else(|| {
+                let edge = crate::strokes::key(at.view, loose, bx, by);
+                crate::strokes::get(at.src, edge, at.pass, generation, batch).filter(|k| k.rect == here).map(|k| (here, k))
+            });
+            blocks.push((key, part, here, kept));
+            cells.push((bx, by));
+        }
+    }
+    let mut used = StrokeUse { reused: blocks.iter().filter(|b| b.3.is_some()).count(), blocks: blocks.len() };
+    // the blocks not kept: worked out over their bounding box and the refine's support around it
+    let missing = blocks.iter().filter(|b| b.3.is_none()).map(|b| b.2).reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)));
+    let fresh = missing.and_then(|m| {
+        let sigma = auto_stroke_sigma(d);
+        let support = refine_support(sigma);
+        let grown = (m.0.saturating_sub(support), m.1.saturating_sub(support), m.2.saturating_add(support), m.3.saturating_add(support));
+        let c = meet(grown, need)?;
+        let (rw, rh) = (c.2 - c.0, c.3 - c.1);
+        let rn = rw * rh;
+        let pr = [w as u32, (c.0 - ox) as u32, (c.1 - oy) as u32, rw as u32, rh as u32];
+        crate::strokes::note_refined();
+        let cap = crate::strokes::store_bytes(cx.gpu.vram);
+        let aux = cx.gpu.upload(aux);
+        cx.run("shape", q, &[Some(lin), Some(log_l), Some(&aux), Some(stroke), Some(brush)], groups2(w, h, [16, 16]));
+        let cut = |cx: &mut Cx<'_>, plane: &Buf| {
+            let out = cx.gpu.buffer(rn);
+            cx.run("crop", &pr, &[Some(plane), None, Some(&out)], groups2(rw, rh, [16, 16]));
+            out
+        };
+        let s_r = cut(cx, stroke);
+        // (a Lightroom-model stroke keeps its pixel-sharp cut)
+        let q_r = if d.lrc.is_none() {
+            let l_r = cut(cx, log_l);
+            let (sigma, eps) = auto_refine(d.r);
+            guided_cross(cx, &l_r, &s_r, rw, rh, sigma, eps, Combine::Max)
+        } else {
+            s_r
+        };
+        let packed = cx.gpu.buffer(rn.div_ceil(2));
+        cx.run("pack16", &[rn as u32], &[Some(&q_r), Some(&packed), None], groups1(rn.div_ceil(2)));
+        let packed = Arc::new(Kept { rect: c, packed });
+        // keep the blocks whose refine saw all it reads: each side inside the rectangle by the
+        // support, or the stroke's own edge (not kept when the render failed: its buffers may
+        // hold nothing)
+        if !crate::ctx::failed() {
+            // `to`: where each side may stop instead (the stroke's reach, give or take `slack`,
+            // for a block any window may use; this window's own edge for one only it may use)
+            let sees = |p: Rect, to: Rect, slack: usize| {
+                p.0 >= c.0
+                    && p.1 >= c.1
+                    && p.2 <= c.2
+                    && p.3 <= c.3
+                    && (c.0 <= to.0 + slack || p.0 >= c.0 + support)
+                    && (c.1 <= to.1 + slack || p.1 >= c.1 + support)
+                    && (c.2 + slack >= to.2 || p.2 + support <= c.2)
+                    && (c.3 + slack >= to.3 || p.3 + support <= c.3)
+            };
+            for (bx_by, (key, part, here, kept)) in cells.iter().zip(&mut blocks) {
+                if kept.is_some() {
+                    continue;
+                }
+                // (a block this window saw too little around: what it worked out there is kept
+                // for this window, so its next render refines nothing)
+                let (key, part, loose) = if sees(*part, whole, REACH_SLACK) {
+                    (*key, *part, false)
+                } else if sees(*here, need, 0) {
+                    (crate::strokes::key(at.view, loose, bx_by.0, bx_by.1), *here, true)
+                } else {
+                    continue;
+                };
+                let (bw, bh) = (part.2 - part.0, part.3 - part.1);
+                let bn = bw * bh;
+                let one = cx.gpu.buffer(bn);
+                cx.run(
+                    "crop",
+                    &[rw as u32, (part.0 - c.0) as u32, (part.1 - c.1) as u32, bw as u32, bh as u32],
+                    &[Some(&q_r), None, Some(&one)],
+                    groups2(bw, bh, [16, 16]),
+                );
+                let bpacked = cx.gpu.buffer(bn.div_ceil(2));
+                cx.run("pack16", &[bn as u32], &[Some(&one), Some(&bpacked), None], groups1(bn.div_ceil(2)));
+                let k = Arc::new(Kept { rect: part, packed: bpacked });
+                if loose {
+                    crate::strokes::put_loose(at.src, key, at.view, at.pass, batch, cap, k);
+                } else {
+                    crate::strokes::put(at.src, key, at.view, at.pass, batch, cap, k);
+                }
+            }
+        }
+        cx.pace();
+        Some((c, packed))
+    });
+    // every block's part of this plane, from the store or from what was just worked out
+    for (_, _, here, kept) in &blocks {
+        let (src_rect, packed) = match (kept, &fresh) {
+            (Some((rect, k)), _) => (*rect, &k.packed),
+            (None, Some((c, p))) if meet(*here, *c) == Some(*here) => (*c, &p.packed),
+            // (outside what was worked out: nothing the stroke paints here)
+            _ => {
+                used.blocks = used.blocks.saturating_sub(1);
+                continue;
+            }
+        };
+        let (rw, rh) = (here.2 - here.0, here.3 - here.1);
+        let pc = [
+            w as u32,
+            (here.0 - ox) as u32,
+            (here.1 - oy) as u32,
+            rw as u32,
+            rh as u32,
+            d.density.to_bits(),
+            at.op,
+            (src_rect.2 - src_rect.0) as u32,
+            (here.0 - src_rect.0) as u32,
+            (here.1 - src_rect.1) as u32,
+        ];
+        cx.run("combine16", &pc, &[None, Some(packed), Some(brush)], groups2(rw, rh, [16, 16]));
+    }
+    used
+}
+
+/// Pixels short of a stroke's reach (`masks::auto_stroke_reach`) a window may stop and still count
+/// as reaching its edge: the reach ends two pixels past what the refine reads (dab extent and six
+/// sigmas), and a window grown for the stroke (`spots::window_for_reads`: two and a half radii)
+/// stops there, give or take a pixel of rounding.
+const REACH_SLACK: usize = 4;
+
+/// Pixels around a pixel the Auto Mask refine (`guided_cross` at `sigma`) reads: two Gaussians,
+/// each three box passes, plus a pixel of slack.
+fn refine_support(sigma: f32) -> usize {
+    if sigma <= 0.0 {
+        return 0;
+    }
+    let one: usize = lcc_raster::blur::box_radii(sigma).iter().sum();
+    one.saturating_mul(2).saturating_add(1)
+}
+
 /// Evaluate the masks (`lcc_pipeline::masks::evaluate`): their alpha planes (concatenated,
 /// followed by the blurred chromaticity when local Moiré / Noise need it; kept with the view's
 /// planes, [`MaskBufs`]), their adjustment terms and their local Curves. Shapes without a kernel (Sky, Subject, …) run on the CPU.
+#[allow(clippy::too_many_arguments)]
 fn masks(
     cx: &mut Cx<'_>,
+    src: &Arc<Rgb32f>,
     lin: &Buf,
     prep: &Prep,
     plan: &Plan<'_>,
@@ -1562,13 +1816,14 @@ fn masks(
     if let Some(m) = planes.masks.as_ref().filter(|m| m.fits(key, chroma, plan.mattes.as_ref())) {
         return (Some(m.alpha.clone()), terms, curves);
     }
-    let alpha = Arc::new(mask_alpha(cx, lin, prep, plan, host, &list));
+    let alpha = Arc::new(mask_alpha(cx, src, lin, prep, plan, host, &list));
     planes.masks = Some(MaskBufs { key, chroma, mattes: plan.mattes.clone(), alpha: alpha.clone() });
     (Some(alpha), terms, curves)
 }
 
 /// The alpha planes of the visible masks `list` (concatenated, then the blurred chromaticity).
-fn mask_alpha(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Host, list: &[&lcc_develop::Mask]) -> Buf {
+#[allow(clippy::too_many_arguments)]
+fn mask_alpha(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Host, list: &[&lcc_develop::Mask]) -> Buf {
     use lcc_develop::{MaskOp, MaskShape};
     let s = &*plan.settings;
     let (w, h) = (plan.w, plan.h);
@@ -1659,18 +1914,10 @@ fn mask_alpha(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &m
                         // Auto Mask: stroke by stroke (each one refined before it's combined)
                         let brush = cx.zeroed(n);
                         let stroke = cx.gpu.buffer(n);
-                        for (d, aux) in dabs.iter().zip(auxes.unwrap_or_default()) {
-                            let mut q = p.clone();
-                            q[2] = 4;
-                            q[3] = 0;
-                            q.push(1);
-                            let aux = cx.gpu.upload(&aux);
-                            cx.run("shape", &q, &[Some(lin), Some(&prep.log_l), Some(&aux), Some(&stroke), Some(&brush)], groups2(w, h, [16, 16]));
-                            // (a Lightroom-model stroke keeps its pixel-sharp cut)
-                            let refined = (d.auto && d.lrc.is_none()).then(|| {
-                                let (sigma, eps) = lcc_pipeline::masks::auto_refine(d.r);
-                                guided_cross(cx, &prep.log_l, &stroke, w, h, sigma, eps, Combine::Max)
-                            });
+                        let pass = crate::strokes::pass();
+                        let view = crate::strokes::view(plan.frame_lin_key, cx.gpu.generation);
+                        let (mut kept, mut auto) = (StrokeUse::default(), 0);
+                        for ((d, aux), st) in dabs.iter().zip(auxes.unwrap_or_default()).zip(strokes) {
                             // a Lightroom-model stroke adds up with the ones before it (`masks::combine_stroke`)
                             let op = if d.erase {
                                 2
@@ -1679,11 +1926,31 @@ fn mask_alpha(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &m
                             } else {
                                 1
                             };
-                            cx.run(
-                                "combine",
-                                &[n as u32, d.density.to_bits(), 0, op],
-                                &[None, None, None, Some(refined.as_ref().unwrap_or(&stroke)), Some(&brush)],
-                                groups1(n),
+                            let mut q = p.clone();
+                            q[2] = 4;
+                            q[3] = 0;
+                            q.push(1);
+                            if d.auto {
+                                let at = StrokeAt { src, plan, pass, op, view, on_photo: m.on_photo };
+                                let u = auto_stroke(cx, d, st, &aux, &q, lin, &prep.log_l, &stroke, &brush, &at);
+                                kept.reused += u.reused;
+                                kept.blocks += u.blocks;
+                                auto += 1;
+                                continue;
+                            }
+                            let aux = cx.gpu.upload(&aux);
+                            cx.run("shape", &q, &[Some(lin), Some(&prep.log_l), Some(&aux), Some(&stroke), Some(&brush)], groups2(w, h, [16, 16]));
+                            cx.run("combine", &[n as u32, d.density.to_bits(), 0, op], &[None, None, None, Some(&stroke), Some(&brush)], groups1(n));
+                        }
+                        if profiling() {
+                            eprintln!(
+                                "  gpu auto mask strokes: {auto}, {} of {} blocks kept from before ({w}×{h} at {}, {}; {} MB kept; batch {})",
+                                kept.reused,
+                                kept.blocks,
+                                plan.filter_frame.x,
+                                plan.filter_frame.y,
+                                crate::strokes::bytes() >> 20,
+                                crate::gate::is_batch()
                             );
                         }
                         if comp.invert {

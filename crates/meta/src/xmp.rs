@@ -346,9 +346,10 @@ fn parse_tree(s: &str) -> Result<Node, XmpError> {
                 }
             }
             Event::End(_) if stack.len() > 1 => {
-                let n = stack.pop().expect("len > 1");
                 scopes.pop();
-                if let Some(parent) = stack.last_mut() {
+                if let Some(n) = stack.pop()
+                    && let Some(parent) = stack.last_mut()
+                {
                     parent.children.push(n);
                 }
             }
@@ -381,10 +382,12 @@ fn parse_tree(s: &str) -> Result<Node, XmpError> {
     }
     // close unterminated elements leniently
     while stack.len() > 1 {
-        let n = stack.pop().expect("len > 1");
-        stack.last_mut().expect("root").children.push(n);
+        let Some(n) = stack.pop() else { break };
+        if let Some(parent) = stack.last_mut() {
+            parent.children.push(n);
+        }
     }
-    Ok(stack.pop().expect("root"))
+    stack.pop().ok_or_else(|| XmpError::Xml("no root element".into()))
 }
 
 fn is_rdf_meta_attr(k: &str) -> bool {

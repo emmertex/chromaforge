@@ -114,6 +114,49 @@ pub fn resizable_side(
     Some(w.round().clamp(limits.min, max))
 }
 
+/// Split a side column off `area` for a module that lays out its own sides (Map, Book, Print,
+/// Web, the Import tab): the column takes `width` (clamped to `limits`, and leaving the photo area
+/// [`crate::state::MIN_PHOTO_WIDTH`] where it can) from the left or right of `area`, which shrinks
+/// to the rest. Its inner edge is dragged to resize it, as the Library and Develop panels are; a
+/// drag writes the new width back to `width` (the shared [`crate::UiState`] width, so the column
+/// keeps its size across modules and restarts). Returns the column.
+pub fn split_side(ui: &mut egui::Ui, area: &mut Rect, left: bool, id: &str, width: &mut f32, limits: crate::state::PanelWidth) -> Rect {
+    let room = area.width().max(0.0);
+    let max = (room - crate::state::MIN_PHOTO_WIDTH).clamp(limits.min, limits.max).min(room * 0.5).max(0.0);
+    let w = limits.clamp(*width).min(max);
+    let col = if left {
+        Rect::from_min_max(area.min, pos2(area.left() + w, area.bottom()))
+    } else {
+        Rect::from_min_max(pos2(area.right() - w, area.top()), area.max)
+    };
+    if left {
+        area.min.x = col.right();
+    } else {
+        area.max.x = col.left();
+    }
+    let edge_x = if left { col.right() } else { col.left() };
+    let handle = Rect::from_min_max(pos2(edge_x - 3.0, col.top()), pos2(edge_x + 3.0, col.bottom()));
+    let pid = egui::Id::new(id).with("__resize");
+    let r = ui.interact(handle, pid, egui::Sense::drag());
+    crate::widgets::register(ui.ctx(), format!("panel:{id}"), col);
+    let name = if left { "Resize the left panel" } else { "Resize the right panel" };
+    crate::widgets::screen_reader_name(ui.ctx(), pid, crate::i18n::tr(name));
+    if r.hovered() || r.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        let t = Tokens::get(ui.ctx());
+        ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, pid)).vline(edge_x, col.y_range(), egui::Stroke::new(2.0, t.accent));
+    }
+    if r.dragged()
+        && let Some(x) = ui.ctx().pointer_interact_pos()
+    {
+        let outer = if left { x.x - col.left() } else { col.right() - x.x };
+        if outer.is_finite() {
+            *width = outer.round().clamp(limits.min, max.max(limits.min));
+        }
+    }
+    col
+}
+
 /// The HUD toasts at the bottom centre of the canvas: the newest where a single toast always was, the older ones
 /// stacked above it (below it during a slideshow, whose toasts sit at the top), each fading out at its own time.
 pub fn toast(app: &mut LccApp, ctx: &egui::Context) {

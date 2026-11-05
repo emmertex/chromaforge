@@ -395,6 +395,83 @@ fn zooming_over_a_pin_keeps_zooming_and_suppresses_hover_preview() {
     assert!(widget(&h, "map:hover").is_some(), "hover preview reappears when zooming stops");
 }
 
+/// Fork #741: a filmstrip selection whose pins lie off screen pans the map to them (without
+/// zooming in), a selection already on screen leaves the view alone, `map.reveal {force}` (the
+/// filmstrip's double-click) frames and zooms in even then, and photos without a location don't
+/// move the map.
+#[test]
+fn selecting_offscreen_photos_reveals_their_pins() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 48.8566, "lon": 2.3522}));
+    run(&mut h, "map.geotag", json!({"ids": [ids[1]], "lat": -33.87, "lon": 151.21}));
+    run(&mut h, "map.view", json!({"lat": 48.85, "lon": 2.35, "zoom": 12}));
+    h.settle(SETTLE);
+    // the pin is already in view: selecting it doesn't move the map
+    run(&mut h, "library.select", json!({"ids": [ids[0]]}));
+    h.settle(SETTLE);
+    let v = run(&mut h, "map.view", json!({}));
+    assert!((v["lat"].as_f64().unwrap() - 48.85).abs() < 0.01, "{v}");
+    // Sydney is off screen: selecting it pans there, at the same zoom
+    run(&mut h, "library.select", json!({"ids": [ids[1]]}));
+    h.settle(SETTLE);
+    let v = run(&mut h, "map.view", json!({}));
+    assert!((v["lat"].as_f64().unwrap() + 33.87).abs() < 0.05 && (v["lon"].as_f64().unwrap() - 151.21).abs() < 0.05, "{v}");
+    assert!((v["zoom"].as_f64().unwrap() - 12.0).abs() < 0.01, "reveal pans without zooming in: {v}");
+    // force (a double-clicked thumbnail): frames the pin and zooms in on it
+    let v = run(&mut h, "map.reveal", json!({"force": true}));
+    assert!((v["lat"].as_f64().unwrap() + 33.87).abs() < 0.05, "{v}");
+    assert!(v["zoom"].as_f64().unwrap() > 12.0, "{v}");
+    // a photo without a location: the map stays
+    run(&mut h, "map.view", json!({"lat": 10.0, "lon": 10.0, "zoom": 5.0}));
+    h.settle(SETTLE);
+    run(&mut h, "library.select", json!({"ids": [ids[2]]}));
+    h.settle(SETTLE);
+    let v = run(&mut h, "map.view", json!({}));
+    assert!((v["lat"].as_f64().unwrap() - 10.0).abs() < 0.01, "{v}");
+    // nothing selected: reveal is a no-op, not an error
+    run(&mut h, "library.select", json!({"ids": []}));
+    let v = run(&mut h, "map.reveal", json!({}));
+    assert_eq!(v["lat"].as_f64().unwrap(), 10.0);
+}
+
+/// Fork #784: the Map side panel shows the selected photos' location and IPTC fields, and edits
+/// apply to every selected photo (the Library Metadata panel's widgets on `photo.setMeta`).
+#[test]
+fn the_side_panel_shows_and_edits_the_selection_metadata() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    run(&mut h, "map.geotag", json!({"ids": ids, "lat": 48.8566, "lon": 2.3522}));
+    run(&mut h, "library.select", json!({"ids": ids}));
+    h.settle(SETTLE);
+    for field in [
+        "field:gps",
+        "field:location",
+        "field:city",
+        "field:state",
+        "field:country",
+        "field:title",
+        "field:headline",
+        "field:caption",
+        "field:keywords",
+    ] {
+        assert!(widget(&h, field).is_some(), "{field} is on the side panel");
+    }
+    // an edit reaches both photos of the pin (one undo step)
+    h.request("ui.clickWidget", json!({"id": "field:city"}), T);
+    h.settle(SETTLE);
+    h.request("ui.text", json!({"text": "Paris"}), T);
+    h.settle(SETTLE);
+    h.request("ui.key", json!({"key": "Enter"}), T);
+    h.settle(SETTLE);
+    for id in ids {
+        assert_eq!(h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).unwrap().meta.city, "Paris", "the edit reached every photo at the pin");
+    }
+    // no selection: the section says so instead of showing fields
+    run(&mut h, "library.select", json!({"ids": []}));
+    h.settle(SETTLE);
+    assert!(widget(&h, "field:city").is_none(), "no fields without a selection");
+}
 /// Fork #783: the Location Filter bar filters the filmstrip, as Lightroom Classic's does, not only
 /// the pins: Untagged hides the geotagged photos, Tagged keeps only them, Visible on Map keeps the
 /// photos positioned inside the map view, and None shows every photo again.

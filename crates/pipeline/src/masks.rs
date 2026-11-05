@@ -173,7 +173,7 @@ pub fn alpha_key(masks: &[Mask], ev: f32, w: usize, h: usize, mattes: Option<&Ma
     let mut exposure = false;
     let mut automatic = false;
     for m in masks.iter().filter(|m| m.visible && !m.components.is_empty()) {
-        let _ = write!(parts, "{}|{}|{}|{}|{}", m.id, m.invert, m.refine.to_bits(), m.feather.to_bits(), m.adjust.amount.to_bits());
+        let _ = write!(parts, "{}|{}|{}|{}|{}|{}", m.id, m.invert, m.refine.to_bits(), m.feather.to_bits(), m.adjust.amount.to_bits(), m.on_photo);
         for c in &m.components {
             // (the whole component: a field added to it later counts too)
             let _ = write!(parts, "|{c:?}");
@@ -737,7 +737,8 @@ pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max
         if emitted >= max {
             break;
         }
-        let q = to_out(*p);
+        // (a point the warp can't place lays no dab, rather than one at its unwarped place)
+        let Some(q) = to_out(*p) else { continue };
         let before = dabs.len();
         if push_dabs_within(&mut dabs, &mut emitted, prev, q, r, max) {
             let pq = s.pressure_at(i);
@@ -786,10 +787,11 @@ fn lrc_brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max: usize
         if dabs.len() >= max {
             break;
         }
+        let Some(q_out) = to_out(*q) else { continue };
         let pq = s.pressure_at(i);
         let had = walk.prev.is_some();
         ts.clear();
-        if walk_dabs(&mut dabs, &mut emitted, &mut walk, to_out(*q), DAB_SPACING * r, &mut ts) {
+        if walk_dabs(&mut dabs, &mut emitted, &mut walk, q_out, DAB_SPACING * r, &mut ts) {
             if with_pressure {
                 let from = if had { prev_p } else { pq };
                 pressure.extend(ts.iter().map(|t| from + (pq - from) * *t as f32));
@@ -1005,6 +1007,32 @@ pub fn auto_refine(r: f64) -> (f32, f32) {
     ((0.25 * r).max(1.0) as f32, 0.02)
 }
 
+/// The pixels (x0, y0, x1, y1; exclusive ends) of a `w × h` plane an Auto Mask stroke's coverage
+/// can reach: its dabs' extent plus the reach of its refine (none for a Lightroom-model stroke,
+/// which keeps its pixel-sharp cut), clipped to the plane; `None` when it reaches none. Both
+/// renderers refine a stroke over this rectangle only, with the blur's edges clamped to it.
+pub fn auto_stroke_reach(bd: &BrushDabs, w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
+    auto_stroke_reach_in(bd, (0.0, 0.0), w, h)
+}
+
+/// [`auto_stroke_reach`] in a larger `w × h` frame in which the stroke's plane starts at `origin`
+/// (a window of it: its dabs move by `origin`); in the frame's pixels.
+pub fn auto_stroke_reach_in(bd: &BrushDabs, origin: (f64, f64), w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
+    auto_stroke::refine_reach(bd, origin, w, h, auto_stroke_sigma(bd))
+}
+
+/// The sigma (pixels) of an Auto Mask stroke's refine: 0 for a Lightroom-model stroke, which keeps
+/// its pixel-sharp cut.
+pub fn auto_stroke_sigma(bd: &BrushDabs) -> f32 {
+    if bd.lrc.is_none() { auto_refine(bd.r).0 } else { 0.0 }
+}
+
+/// What an Auto Mask stroke's coverage depends on besides the pixels it reads: its dabs as placed
+/// in this `w × h` plane and its brush (the GPU renderer keeps strokes under it).
+pub fn auto_stroke_key(bd: &BrushDabs, w: usize, h: usize) -> u64 {
+    auto_stroke::stroke_key(bd, w, h, 0)
+}
+
 /// Guided filter of `p` steered by `guide` (He et al.), clamped to 0..1: `p`'s edges snap to the
 /// guide's.
 pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
@@ -1145,7 +1173,10 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
         return;
     }
     // (each pixel's chromaticity once for every Auto Mask stroke)
-    let chroma = if strokes.iter().any(|s| s.auto_mask) { chroma_plane(img) } else { Vec::new() };
+    let any_auto = strokes.iter().any(|s| s.auto_mask);
+    let chroma = if any_auto { chroma_plane(img) } else { Vec::new() };
+    let pixels = if any_auto { auto_stroke::pixels_key(img, log_l) } else { 0 };
+    let pass = auto_stroke::pass();
     // one dab budget for the whole mask, as the GPU path keeps: a stroke's own cap alone let a thousand far-flung
     // two-point strokes build and stamp a billion dabs (upstream #3681)
     let mut room = MAX_STROKE_DABS;
@@ -1155,21 +1186,22 @@ fn rasterize_brush(strokes: &[BrushStroke], frame: &Frame, w: usize, h: usize, i
         }
         let bd = brush_dabs_within(s, frame, w, h, room);
         room = room.saturating_sub(bd.dabs.len());
-        let auto = bd.auto;
+        // an Auto Mask stroke: kept from the last render of these pixels, refined within its reach
+        // (the budget above is charged for a kept stroke too: its dabs are part of its key)
+        if bd.auto {
+            auto_stroke::auto_stroke(&bd, w, h, log_l, &chroma, pixels, pass).0.combine_into(out, |o, a| bd.combine(o, a));
+            continue;
+        }
         let mut stroke_alpha = Plane::new(w, h);
         stamp_dabs_with(&bd, w, h, log_l, &chroma, &mut stroke_alpha);
-        // (a Lightroom-model stroke keeps its pixel-sharp cut)
-        if auto && bd.lrc.is_none() {
-            let (sigma, eps) = auto_refine(bd.r);
-            let q = guided_cross(log_l, &stroke_alpha, sigma, eps);
-            // the refinement fills gaps along edges; it never takes paint away
-            stroke_alpha = stroke_alpha.zip_map(&q, f32::max);
-        }
         for (o, a) in out.data.iter_mut().zip(&stroke_alpha.data) {
             *o = bd.combine(*o, *a);
         }
     }
 }
+
+#[path = "auto_stroke.rs"]
+mod auto_stroke;
 
 #[cfg(test)]
 #[path = "tests_brush_lrc.rs"]
@@ -1211,6 +1243,12 @@ mod tests {
         assert_eq!(alpha_key(&masks, 0.0, 100, 50, None), k2, "the mask's own curve");
         masks[0].invert = true;
         assert_ne!(alpha_key(&masks, 0.0, 100, 50, None), k2, "inverted");
+        masks[0].invert = false;
+        let before = alpha_key(&masks, 0.0, 100, 50, None);
+        masks[0].on_photo = !masks[0].on_photo;
+        assert_ne!(alpha_key(&masks, 0.0, 100, 50, None), before, "the frame the coordinates are on (under a warp they differ)");
+        masks[0].on_photo = !masks[0].on_photo;
+        masks[0].invert = true;
         masks.push(Mask {
             id: 2,
             components: vec![comp(MaskShape::LuminanceRange { lo: 0.2, hi: 0.8, lo_feather: 0.1, hi_feather: 0.1 })],

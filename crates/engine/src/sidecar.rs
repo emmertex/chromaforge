@@ -198,6 +198,7 @@ pub struct SidecarData {
     pub city: Option<String>,
     pub state: Option<String>,
     pub country: Option<String>,
+    /// The ISO 3166-1 alpha-2 country code (`Iptc4xmpCore:CountryCode`).
     pub country_code: Option<String>,
     pub alt_text: Option<String>,
     pub extended_description: Option<String>,
@@ -270,7 +271,7 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         city: m.city.clone(),
         state: m.state.clone(),
         country: m.country.clone(),
-        country_code: lc("countryCode").or_else(|| m.country_code.clone()),
+        country_code: m.country_code.clone(),
         alt_text: m.alt_text.clone(),
         extended_description: m.extended_description.clone(),
         headline: m.headline.clone(),

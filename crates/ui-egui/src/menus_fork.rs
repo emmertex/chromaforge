@@ -141,6 +141,7 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
             let r = app.run("view.gridCellStyle", json!({"style": style}));
             if r.is_ok() && !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid) {
                 app.ui.view = ViewMode::SquareGrid;
+                app.ui.grid_style = ViewMode::SquareGrid;
             }
             r
         }

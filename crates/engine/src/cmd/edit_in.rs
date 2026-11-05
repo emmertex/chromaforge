@@ -43,11 +43,11 @@ pub use link::stack_derived;
 /// Files an image editor opens as they are (Edit a Copy / Edit Original).
 const EDITABLE: &[&str] = &["jpg", "jpeg", "tif", "tiff", "png", "psd", "psb", "webp"];
 /// Most photos in one Open as Layers.
-const MAX_LAYERS: usize = 64;
+pub(crate) const MAX_LAYERS: usize = 64;
 /// Most pixels (canvas × layers) one Open as Layers holds in memory at 16 bits.
-const MAX_LAYER_PIXELS: u64 = 800_000_000;
+pub(crate) const MAX_LAYER_PIXELS: u64 = 800_000_000;
 /// PSD's (version 1) largest side; larger documents are PSB.
-const PSD_MAX_SIDE: u32 = 30_000;
+pub(crate) const PSD_MAX_SIDE: u32 = 30_000;
 
 /// How Edit In hands the photo over.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,7 +154,7 @@ pub fn builtin_presets() -> Vec<EditorPreset> {
     ]
 }
 
-fn space(s: &str) -> std::result::Result<lcc_pipeline::OutputSpace, String> {
+pub(crate) fn space(s: &str) -> std::result::Result<lcc_pipeline::OutputSpace, String> {
     Ok(match s {
         "srgb" | "sRGB" => lcc_pipeline::OutputSpace::Srgb,
         "adobeRgb" => lcc_pipeline::OutputSpace::AdobeRgb,

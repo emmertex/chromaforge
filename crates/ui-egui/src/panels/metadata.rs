@@ -63,7 +63,7 @@ pub fn rows(preset: &str) -> Vec<Row> {
         Text("city", "City", 1),
         Text("state", "State / Province", 1),
         Text("country", "Country", 1),
-        Text("countryCode", "ISO Country Code", 1),
+        Text("countryCode", "Country Code", 1),
     ];
     let exif = [
         Info("dimensions", "Dimensions"),
@@ -110,7 +110,7 @@ pub fn rows(preset: &str) -> Vec<Row> {
             Text("city", "City", 1),
             Text("state", "State / Province", 1),
             Text("country", "Country", 1),
-            Text("countryCode", "ISO Country Code", 1),
+            Text("countryCode", "Country Code", 1),
             Section("Copyright"),
             Text("copyright", "Copyright", 1),
             CopyrightStatus,
@@ -282,12 +282,6 @@ fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 
 /// The panel. `id` is the active photo; the fields show (and edit) every selected photo.
 pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
-    super::right::header(ui, "Metadata");
-    show_embedded(app, ui, id);
-}
-
-/// The body of the metadata panel (toolbar and rows), embeddable without the right panel header.
-pub fn show_embedded(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let t = Tokens::get(ui.ctx());
     let targets: Vec<PhotoId> = app.session.selected();
     let photos: Vec<Arc<Photo>> = {
@@ -302,6 +296,7 @@ pub fn show_embedded(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let Some(active) = photos.iter().find(|p| p.id == id).or(photos.first()).cloned() else { return };
     let ids: Vec<u64> = photos.iter().map(|p| p.id.0).collect();
 
+    super::right::header(ui, "Metadata");
     padded(ui, |ui| {
         toolbar(app, ui, &ids);
         if photos.len() > 1 {
@@ -473,8 +468,9 @@ fn info_row(ui: &mut egui::Ui, label: &str, v: Option<&str>) {
 
 /// A labelled text field: the typed text lives in egui memory while focused and is saved
 /// (photo.setMeta `key`, on every photo shown) when the field loses focus. A mixed field is empty
-/// with a `<mixed>` hint; leaving it empty changes nothing.
-fn text_field(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], ids: &[u64], label: &str, key: &str, lines: usize) {
+/// with a `<mixed>` hint; leaving it empty changes nothing. Shared with the Map module's side
+/// panel (fork #784).
+pub(crate) fn text_field(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], ids: &[u64], label: &str, key: &str, lines: usize) {
     small(ui, label);
     let shared = common(photos, key);
     let shown = shared.clone().unwrap_or_default();
@@ -586,8 +582,9 @@ fn captured(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>]) {
     ui.add_space(6.0);
 }
 
-/// GPS: typed as "lat, lon" (or degrees / minutes / seconds); empty clears it.
-fn gps(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], ids: &[u64]) {
+/// GPS: typed as "lat, lon" (or degrees / minutes / seconds); empty clears it. Shared with the Map
+/// module's side panel (fork #784).
+pub(crate) fn gps(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], ids: &[u64]) {
     let t = Tokens::get(ui.ctx());
     let shared = common(photos, "gps");
     let gps = shared.clone().unwrap_or_default();
@@ -872,6 +869,7 @@ mod tests {
         assert_eq!(rows("nope"), rows("default"));
         assert!(rows("largeCaption").contains(&Row::Text("caption", "Caption", 12)));
         assert!(rows("location").contains(&Row::Gps));
+        assert!(rows("iptc").contains(&Row::Text("countryCode", "Country Code", 1)));
         assert!(rows("exif").contains(&Row::Info("lens", "Lens")));
     }
 
