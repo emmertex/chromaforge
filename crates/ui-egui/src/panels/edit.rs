@@ -679,6 +679,14 @@ pub(crate) fn profile_row_names(app: &LccApp, id: PhotoId, d: &DevelopSettings) 
     (look, Some(crate::i18n::tr_format!("on {calibration}", calibration = camera_name).to_string()))
 }
 
+/// [`camera_profile_options`] as the menus offer them: without the ones the Profile Manager hides (`hidden`), except
+/// the photo's own (`current`), which stays so it can be seen and changed.
+pub(crate) fn shown_camera_profile_options(hidden: &[String], camera: &str, current: &str) -> Vec<(String, String)> {
+    let mut options = camera_profile_options(camera);
+    options.retain(|(o, _)| o == current || !hidden.iter().any(|h| h == o));
+    options
+}
+
 /// The camera profiles a raw of `camera` can develop with (`profile.camera` choices): the camera's default, the
 /// app's own colour, the imported `.dcp` files for its camera and its calibrated looks.
 pub(crate) fn camera_profile_options(camera: &str) -> Vec<(String, String)> {
@@ -754,8 +762,8 @@ fn profile_menu_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, b
     // the raw's camera profiles (OneSlips, LR-PROF-LAYERS): one with a look of its own comes with it ("As profile")
     let mut camera_pick: Option<String> = None;
     if let Some(photo) = app.session.active().and_then(|a| app.session.catalog.photo(a)).filter(|p| p.develops_raw()) {
-        let options = camera_profile_options(&photo.meta.camera);
         let current = d.profile.camera.clone();
+        let options = shown_camera_profile_options(&app.session.profile_hidden, &photo.meta.camera, &current);
         let r = crate::widgets::menu_button(ui, crate::i18n::tr("Camera Profiles"), |ui| {
             crate::menu_level::level(ui, 2, Some(below), |ui| {
                 ui.set_min_width(170.0);
@@ -3196,6 +3204,21 @@ mod curve_histogram_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Profile Manager's hidden camera profiles are left out of the Camera Profiles submenu too, except the
+    /// photo's own.
+    #[test]
+    fn the_camera_profiles_submenu_leaves_out_hidden_profiles() {
+        let ids = |v: Vec<(String, String)>| v.into_iter().map(|(o, _)| o).collect::<Vec<_>>();
+        let all = ids(camera_profile_options("Sony ILCE-9"));
+        assert!(all.iter().any(|o| o == "lc"), "built-in colour is offered: {all:?}");
+        let hidden = vec!["lc".to_string()];
+        let shown = ids(shown_camera_profile_options(&hidden, "Sony ILCE-9", ""));
+        assert!(!shown.iter().any(|o| o == "lc"), "a hidden profile is left out: {shown:?}");
+        assert!(shown.iter().any(|o| o.is_empty()), "the camera default stays: {shown:?}");
+        let own = ids(shown_camera_profile_options(&hidden, "Sony ILCE-9", "lc"));
+        assert!(own.iter().any(|o| o == "lc"), "the photo's own stays: {own:?}");
+    }
 
     #[test]
     fn an_hdr_edit_keeps_its_hdr_histogram_through_8_bit_renders() {

@@ -30,10 +30,9 @@ fn camera_profile_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, 
     let camera = photo.meta.camera.clone();
     // (with the camera's Lightroom-matched calibrated looks: Lightroom's "Adobe Color" shown as "Eboda Colour",
     // `lcc_camdb::calibration::display_name`)
-    let mut options = super::edit::camera_profile_options(&camera);
     let current = d.profile.camera.clone();
     // the ones the Profile Manager hides are left out (the photo's own stays)
-    options.retain(|(o, _)| *o == current || !app.session.profile_hidden.iter().any(|h| h == o));
+    let options = super::edit::shown_camera_profile_options(&app.session.profile_hidden, &camera, &current);
     let shown = options.iter().find(|(o, _)| *o == current).map(|(_, n)| n.clone()).unwrap_or_else(|| current.clone());
     let mut choice = current.clone();
     ui.horizontal(|ui| {
