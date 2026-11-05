@@ -6,7 +6,7 @@
 use std::cmp::Ordering;
 
 use lcc_catalog::PhotoId;
-use lcc_develop::{DevelopSettings, LocalAdjustments, Mask};
+use lcc_develop::{DevelopSettings, LocalAdjustments, MAX_POINT_COLORS, Mask, PointColor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -100,6 +100,10 @@ pub struct MaskEffect {
     /// Brush settings the brush takes when the effect is applied.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brush: Option<BrushSettings>,
+    /// The mask's Point Color samples; applying replaces the mask's samples with them (none = the
+    /// mask keeps its own).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub point_colors: Vec<PointColor>,
     /// Settings of an imported preset that we have no slider for (Lightroom key → value), kept so
     /// an export carries them.
     #[serde(skip_serializing_if = "Map::is_empty")]
@@ -117,6 +121,7 @@ impl Default for MaskEffect {
             with_amount: false,
             brush: None,
             extra: Map::new(),
+            point_colors: Vec::new(),
         }
     }
 }
@@ -173,7 +178,7 @@ impl MaskEffect {
     }
     /// Does the effect set nothing (all its sliders at 0, nothing kept from an import)?
     pub fn is_empty(&self) -> bool {
-        self.extra.is_empty() && changed_fields(&self.adjust).iter().all(|k| !self.field_list().contains(&k.as_str()))
+        self.extra.is_empty() && self.point_colors.is_empty() && changed_fields(&self.adjust).iter().all(|k| !self.field_list().contains(&k.as_str()))
     }
     /// The same effect with its values in range and its field list normalised.
     pub fn normalized(mut self) -> Self {
@@ -191,7 +196,30 @@ impl MaskEffect {
             self.fields.clear();
         }
         self.brush = self.brush.map(BrushSettings::clamped);
+        self.point_colors.truncate(MAX_POINT_COLORS);
+        for pc in &mut self.point_colors {
+            *pc = clamp_point(*pc);
+        }
         self
+    }
+}
+
+/// A sample with its numbers in range (NaN → the default's).
+fn clamp_point(p: PointColor) -> PointColor {
+    let d = PointColor::default();
+    let c = |v: f64, lo: f64, hi: f64, def: f64| if v.is_finite() { v.clamp(lo, hi) } else { def };
+    PointColor {
+        lum: c(p.lum, 0.0, 1.0, d.lum),
+        chroma: c(p.chroma, 0.0, 0.5, d.chroma),
+        hue: c(p.hue, -360.0, 720.0, d.hue).rem_euclid(360.0),
+        hue_shift: c(p.hue_shift, -100.0, 100.0, 0.0),
+        sat_shift: c(p.sat_shift, -100.0, 100.0, 0.0),
+        lum_shift: c(p.lum_shift, -100.0, 100.0, 0.0),
+        variance: c(p.variance, -100.0, 100.0, 0.0),
+        range: c(p.range, 0.0, 100.0, d.range),
+        hue_range: c(p.hue_range, 0.0, 100.0, d.hue_range),
+        sat_range: c(p.sat_range, 0.0, 100.0, d.sat_range),
+        lum_range: c(p.lum_range, 0.0, 100.0, d.lum_range),
     }
 }
 
@@ -370,6 +398,9 @@ fn apply_effect(s: &mut Session, p: &Value) -> Result<Value> {
         let mut d = d.clone();
         for m in d.masks.iter_mut().filter(|m| ids.contains(&m.id)) {
             m.adjust = super::masks::clamp_local(effect.apply(&m.adjust));
+            if !effect.point_colors.is_empty() {
+                m.point_colors = effect.point_colors.clone();
+            }
         }
         d
     };
@@ -439,7 +470,8 @@ fn brush_param(p: &Value, c: &str) -> Result<Option<BrushSettings>> {
 fn save_effect(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "mask.saveEffect";
     let name = name_param(p, C)?;
-    let adjust = selected_mask(s, p, C)?.adjust;
+    let mask = selected_mask(s, p, C)?;
+    let (adjust, point_colors) = (mask.adjust, mask.point_colors.clone());
     let group = str_param(p, "group").map(|g| g.trim().to_string()).unwrap_or_default();
     let e = MaskEffect {
         name,
@@ -448,6 +480,7 @@ fn save_effect(s: &mut Session, p: &Value) -> Result<Value> {
         fields: fields_param(p, &adjust, C)?,
         with_amount: p.get("amount").and_then(Value::as_bool).unwrap_or(false),
         brush: brush_param(p, C)?,
+        point_colors,
         ..Default::default()
     };
     upsert(s, e.normalized());
@@ -461,10 +494,11 @@ fn update_effect(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "mask.updateEffect";
     let name = name_param(p, C)?;
     let i = effect_index(s, &name, C)?;
-    let adjust = selected_mask(s, p, C)?.adjust;
+    let mask = selected_mask(s, p, C)?;
+    let (adjust, point_colors) = (mask.adjust, mask.point_colors.clone());
     let brush = brush_param(p, C)?;
     let e = s.mask_effects.get_mut(i).ok_or_else(|| bad(C, format!("no effect `{name}`")))?;
-    let mut next = MaskEffect { adjust, extra: Map::new(), ..e.clone() };
+    let mut next = MaskEffect { adjust, point_colors, extra: Map::new(), ..e.clone() };
     if let Some(f) = p.get("fields").filter(|v| !v.is_null()) {
         next.fields = fields_param(&json!({"fields": f}), &adjust, C)?;
     }
@@ -697,6 +731,20 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Point Color samples saved with an effect stay in range and within the limit, whatever a
+    /// file says.
+    #[test]
+    fn effect_point_colors_are_clamped_and_capped() {
+        let wild = PointColor { lum: f64::NAN, hue: -30.0, hue_shift: 500.0, range: f64::INFINITY, ..Default::default() };
+        let e = MaskEffect { name: "x".into(), point_colors: vec![wild; MAX_POINT_COLORS + 3], ..Default::default() }.normalized();
+        assert_eq!(e.point_colors.len(), MAX_POINT_COLORS);
+        let p = e.point_colors[0];
+        assert!(p.lum.is_finite() && p.range.is_finite() && (0.0..360.0).contains(&p.hue) && p.hue_shift <= 100.0);
+        assert!(!e.is_empty(), "an effect with only Point Color sets something");
+        let back: MaskEffect = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
+        assert_eq!(back.point_colors, e.point_colors, ".lceffect carries the samples");
+    }
 
     #[test]
     fn apply_keeps_amount_and_matches_ignore_it() {

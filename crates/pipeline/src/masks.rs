@@ -173,7 +173,7 @@ pub fn alpha_key(masks: &[Mask], ev: f32, w: usize, h: usize, mattes: Option<&Ma
     let mut exposure = false;
     let mut automatic = false;
     for m in masks.iter().filter(|m| m.visible && !m.components.is_empty()) {
-        let _ = write!(parts, "{}|{}|{}|{}|{}", m.id, m.invert, m.refine.to_bits(), m.feather.to_bits(), m.adjust.amount.to_bits());
+        let _ = write!(parts, "{}|{}|{}|{}|{}|{}", m.id, m.invert, m.refine.to_bits(), m.feather.to_bits(), m.adjust.amount.to_bits(), m.on_photo);
         for c in &m.components {
             // (the whole component: a field added to it later counts too)
             let _ = write!(parts, "|{c:?}");
@@ -737,7 +737,8 @@ pub fn brush_dabs_within(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max
         if emitted >= max {
             break;
         }
-        let q = to_out(*p);
+        // (a point the warp can't place lays no dab, rather than one at its unwarped place)
+        let Some(q) = to_out(*p) else { continue };
         let before = dabs.len();
         if push_dabs_within(&mut dabs, &mut emitted, prev, q, r, max) {
             let pq = s.pressure_at(i);
@@ -786,10 +787,11 @@ fn lrc_brush_dabs(s: &BrushStroke, frame: &Frame, w: usize, h: usize, max: usize
         if dabs.len() >= max {
             break;
         }
+        let Some(q_out) = to_out(*q) else { continue };
         let pq = s.pressure_at(i);
         let had = walk.prev.is_some();
         ts.clear();
-        if walk_dabs(&mut dabs, &mut emitted, &mut walk, to_out(*q), DAB_SPACING * r, &mut ts) {
+        if walk_dabs(&mut dabs, &mut emitted, &mut walk, q_out, DAB_SPACING * r, &mut ts) {
             if with_pressure {
                 let from = if had { prev_p } else { pq };
                 pressure.extend(ts.iter().map(|t| from + (pq - from) * *t as f32));
@@ -1241,6 +1243,12 @@ mod tests {
         assert_eq!(alpha_key(&masks, 0.0, 100, 50, None), k2, "the mask's own curve");
         masks[0].invert = true;
         assert_ne!(alpha_key(&masks, 0.0, 100, 50, None), k2, "inverted");
+        masks[0].invert = false;
+        let before = alpha_key(&masks, 0.0, 100, 50, None);
+        masks[0].on_photo = !masks[0].on_photo;
+        assert_ne!(alpha_key(&masks, 0.0, 100, 50, None), before, "the frame the coordinates are on (under a warp they differ)");
+        masks[0].on_photo = !masks[0].on_photo;
+        masks[0].invert = true;
         masks.push(Mask {
             id: 2,
             components: vec![comp(MaskShape::LuminanceRange { lo: 0.2, hi: 0.8, lo_feather: 0.1, hi_feather: 0.1 })],

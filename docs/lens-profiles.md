@@ -31,7 +31,8 @@ lens database (a link to the Settings section), no lens named in the photo's met
 Commands: `lens.db.status`, `lens.db.setDir {dir}`, `lens.db.download {wait?}`, `lens.db.downloadCancel`,
 `lens.db.remove`, `lens.db.refresh {ids}`, `lens.db.photo {id, lens?}`, `lens.db.list {mount?, crop?, query?, limit?,
 offset?}`; `app.settings {section: "lensProfiles"}` opens the section. Invalid files are skipped with a warning in the
-log.
+log. Each read logs the folder, whether it is the Settings folder or `<PREFIX>_LENSFUN_DIR`, and how many lenses and
+cameras it holds; a folder that is missing or holds no lenses is logged as a warning.
 
 ## Which correction applies
 

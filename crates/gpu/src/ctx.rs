@@ -748,6 +748,12 @@ impl Gpu {
     pub fn upload<T: bytemuck::Pod>(&self, data: &[T]) -> Buf {
         let bytes: &[u8] = bytemuck::cast_slice(data);
         let len = bytes.len() / 4;
+        // A failed render runs no further GPU work (the render is redone on the CPU): staging the
+        // bytes would only queue a copy for a submission nobody needs, so the caller gets the
+        // placeholder with the requested length instead.
+        if failed() {
+            return Buf { buf: Some(Tracked::new(self.placeholder(), self.generation)), len };
+        }
         if bytes.is_empty() {
             return self.buffer(1);
         }
@@ -842,7 +848,12 @@ impl Gpu {
             fail(FailKind::Fatal, format!("unknown kernel {name}"));
             return;
         };
-        assert_eq!(bufs.len(), k.nbuf, "{name}: binding count");
+        if bufs.len() != k.nbuf {
+            // a caller/kernel mismatch would bind the wrong buffers: fail this render over to the
+            // CPU instead of crashing
+            fail(FailKind::Fatal, format!("{name}: binding count {} != {}", bufs.len(), k.nbuf));
+            return;
+        }
         let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(if p.is_empty() { &[0u32] } else { p }),
@@ -876,11 +887,22 @@ impl Gpu {
     /// `lens[1]` after them, …), each into its own vector, with one submission and one mapping.
     pub fn finish_and_read_parts<T: bytemuck::Pod>(&self, mut enc: wgpu::CommandEncoder, src: &Buf, lens: &[usize]) -> Vec<Vec<T>> {
         let len: usize = lens.iter().sum();
-        assert!(len <= src.len, "readback of {len} values from a buffer of {}", src.len);
         // (lengths are in 32-bit values, as for `finish_and_read`; a part holds as many `T` as fit)
         let count = |l: usize| l * 4 / std::mem::size_of::<T>().max(1);
         let zeros = || lens.iter().map(|&l| vec![<T as bytemuck::Zeroable>::zeroed(); count(l)]).collect::<Vec<_>>();
         if failed() {
+            return zeros();
+        }
+        // a zero-length readback would issue a `copy_buffer_to_buffer` of size 0, which wgpu
+        // rejects as an invalid copy: submit the (possibly staged) work untouched and return
+        // zeros instead
+        if len == 0 {
+            self.submit([enc.finish()]);
+            return zeros();
+        }
+        if len > src.len {
+            // a caller bug would read past the buffer: fail this render over to the CPU
+            fail(FailKind::Fatal, format!("readback of {len} values from a buffer of {}", src.len));
             return zeros();
         }
         let size = (len * 4) as u64;
@@ -1225,6 +1247,36 @@ mod tests {
         for e in entries {
             assert!(g.kernels.contains_key(e), "no kernel for {e}");
         }
+    }
+
+    /// Caller mistakes the render used to panic on fail the render over to the CPU instead: a
+    /// readback past the buffer, a kernel run with the wrong number of bindings, and an upload
+    /// after a failure (which returns the placeholder with the requested length). A zero-length
+    /// readback is no failure.
+    #[test]
+    fn caller_mistakes_fail_the_render_instead_of_panicking() {
+        let Some(g) = crate::device() else {
+            lcc_testkit::skip!(Gpu, "no GPU device");
+            return;
+        };
+        let b = g.upload(&[1u32; 8]);
+        let none: Vec<u32> = g.finish_and_read(g.encoder(), &b, 0);
+        assert!(none.is_empty() && !super::failed(), "an empty readback is not a failure");
+
+        let past: Vec<u32> = g.finish_and_read(g.encoder(), &b, 1 << 20);
+        assert!(past.iter().all(|v| *v == 0));
+        assert_eq!(super::take_failure().map(|f| f.kind), Some(super::FailKind::Fatal), "a readback past the buffer fails the render");
+
+        let mut enc = g.encoder();
+        let kernel = super::MODULES.iter().flat_map(|m| m.entries.iter().copied()).next().unwrap_or("?");
+        g.run(&mut enc, kernel, &[], &[], [1, 1, 1]);
+        assert_eq!(super::take_failure().map(|f| f.kind), Some(super::FailKind::Fatal), "a binding count mismatch fails the render");
+
+        super::fail(super::FailKind::Fatal, "simulated failure before an upload".into());
+        let up = g.upload(&[7u32; 1024]);
+        assert_eq!(up.len, 1024, "the requested length is preserved");
+        assert_eq!(up.raw().size(), 16, "the placeholder, not a staged 4 KiB buffer");
+        assert_eq!(super::take_failure().map(|f| f.kind), Some(super::FailKind::Fatal));
     }
 
     /// Run `child` (an ignored test in this module) in its own process: it loses the device, which

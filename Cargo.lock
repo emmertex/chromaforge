@@ -5128,6 +5128,7 @@ dependencies = [
  "chrono",
  "lcc-brand",
  "lcc-geom",
+ "lcc-heif",
  "lcc-testkit",
  "lcc-tiff",
  "proptest",

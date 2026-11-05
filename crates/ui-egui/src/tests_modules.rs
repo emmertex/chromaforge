@@ -116,6 +116,7 @@ fn library_returns_to_its_own_view_after_develop() {
     run(&mut h, "view.photoGrid", json!({}));
     run(&mut h, "module.develop", json!({}));
     let saved = serde_json::to_string(&h.app.ui).unwrap();
+    eprintln!("SAVED UI: {}", saved);
     let back = serde_json::from_str::<crate::UiState>(&saved).unwrap().sanitized();
     assert_eq!(back.layouts.get(&ModuleId::Library).and_then(|l| l.view), Some(ViewMode::PhotoGrid));
 }
@@ -171,6 +172,7 @@ fn panel_state_is_per_module_and_persists() {
     assert!(!h.app.ui.left_panel && !h.app.ui.right_edge && h.app.ui.auto_show.left);
     // across a save/load of ui.json
     let saved = serde_json::to_string(&h.app.ui).unwrap();
+    eprintln!("SAVED UI: {}", saved);
     let back = serde_json::from_str::<crate::UiState>(&saved).unwrap().sanitized();
     assert_eq!(back.module, ModuleId::Develop);
     assert_eq!(back.layouts.get(&ModuleId::Library).map(|l| (l.shown.left, l.toolbar)), Some((true, true)));
@@ -527,4 +529,73 @@ fn file_export_opens_the_module() {
     h.settle(SETTLE);
     assert_eq!(h.app.ui.module, ModuleId::Export);
     assert!(h.app.ui.dialog.is_none());
+}
+
+#[test]
+fn test_square_grid_view_state_persists_across_restart() {
+    let ui = crate::UiState::default();
+
+    let services = Services { png: None, ..Default::default() };
+    let session = lcc_engine::Session::with_demo();
+    let mut app = LccApp::new(session, services);
+    app.ui = ui;
+    crate::panels::empty_library::open_on_empty_library(&mut app);
+    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+    h.step();
+
+    // User switches to Square Grid:
+    h.app.run("view.squareGrid", serde_json::json!({})).unwrap();
+    h.step();
+    assert_eq!(h.app.ui.view, ViewMode::SquareGrid);
+
+    // User opens photo in Detail view (e.g. double-click or D):
+    h.app.run("view.detail", serde_json::json!({})).unwrap();
+    h.step();
+    assert_eq!(h.app.ui.view, ViewMode::Detail);
+
+    // Simulate saving settings on quit:
+    let saved_bytes = serde_json::to_vec_pretty(&h.app.ui).unwrap();
+
+    // Simulate relaunch with StartupView::Last:
+    let (loaded_ui, _recovered) = match serde_json::from_slice::<crate::UiState>(&saved_bytes) {
+        Ok(u) => (u.sanitized(), false),
+        Err(e) => panic!("failed to decode: {e}"),
+    };
+    assert_eq!(loaded_ui.view, ViewMode::Detail);
+
+    let mut app2 = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    app2.ui = loaded_ui;
+    crate::panels::empty_library::open_on_empty_library(&mut app2);
+    let mut h2 = Headless::new(app2, [1400.0, 900.0], 1.0);
+    h2.step();
+
+    // When user presses G (view.gridToggle) to go back to grid:
+    h2.app.run("view.gridToggle", serde_json::json!({})).unwrap();
+    h2.step();
+    assert_eq!(h2.app.ui.view, ViewMode::SquareGrid, "G returns to SquareGrid");
+
+    // Pressing G while in SquareGrid toggles to PhotoGrid:
+    h2.app.run("view.gridToggle", serde_json::json!({})).unwrap();
+    h2.step();
+    assert_eq!(h2.app.ui.view, ViewMode::PhotoGrid, "G toggles to PhotoGrid");
+
+    // Pressing G while in PhotoGrid toggles back to SquareGrid:
+    h2.app.run("view.gridToggle", serde_json::json!({})).unwrap();
+    h2.step();
+    assert_eq!(h2.app.ui.view, ViewMode::SquareGrid, "G toggles back to SquareGrid");
+
+    // Enter Detail view and press Esc (view.back) - should also return to SquareGrid:
+    h2.app.run("view.detail", serde_json::json!({})).unwrap();
+    h2.step();
+    assert_eq!(h2.app.ui.view, ViewMode::Detail);
+    h2.app.run("view.back", serde_json::json!({})).unwrap();
+    h2.step();
+    assert_eq!(h2.app.ui.view, ViewMode::SquareGrid, "Esc returns to SquareGrid");
+
+    // Test StartupView::SquareGrid explicitly:
+    let mut ui_square = h2.app.ui.clone();
+    ui_square.settings.startup_view = crate::state::StartupView::SquareGrid;
+    ui_square.view = ViewMode::Detail;
+    let sanitized_square = ui_square.sanitized();
+    assert_eq!(sanitized_square.view, ViewMode::SquareGrid, "StartupView::SquareGrid opens in SquareGrid");
 }

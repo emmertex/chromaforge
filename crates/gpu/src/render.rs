@@ -861,6 +861,9 @@ pub fn render(
         (None, None) => None,
     };
     let (p, aux) = finish_block(&fp, &terms, &curves, &present);
+    if crate::ctx::failed() {
+        return None; // a malformed parameter block failed the render: the CPU fallback redoes it
+    }
     let aux = gpu.upload(&aux);
     // cleared, so that work which never ran cannot pass for an image (see the check below)
     // the histogram's words follow the image (one readback for both)

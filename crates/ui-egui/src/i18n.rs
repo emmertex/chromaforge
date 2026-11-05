@@ -459,16 +459,24 @@ pub fn date_group_label(key: &str, short: bool) -> String {
 
 /// A capture time for display in the UI language (English: "March 30, 2022 at 10:11:11 PM");
 /// the metadata itself is never rewritten, and a value that doesn't parse is shown as it is.
+/// Every language reads the same second precision English does: sub-second digits and a time-zone
+/// suffix in the metadata are not shown (#743).
 pub fn display_time(iso: &str) -> String {
     // a year or a month alone ("1983", "April 1983"), as the grid's date headers show it
     if lcc_catalog::dates::partial_capture(iso).is_some() {
         return date_group_label(iso, false);
     }
-    if language() == Locale::En || lcc_catalog::dates::normalize_iso(iso).is_none() {
+    // the normalized form carries only whole seconds, so every language shows what English shows;
+    // a value that doesn't normalize falls back (shown as it is, as English's fallback does)
+    let normalized = match lcc_catalog::dates::normalize_iso(iso) {
+        Some(n) => n,
+        None => return lcc_catalog::dates::display_time(iso),
+    };
+    if language() == Locale::En {
         return lcc_catalog::dates::display_time(iso);
     }
-    let date = date_group_label(iso.get(..10).unwrap_or(iso), false);
-    match iso.get(11..).filter(|time| !time.is_empty()) {
+    let date = date_group_label(normalized.get(..10).unwrap_or(iso), false);
+    match normalized.get(11..).filter(|time| !time.is_empty()) {
         Some(time) => format!("{date} {time}"),
         None => date,
     }
@@ -1519,6 +1527,27 @@ mod tests {
             }
         }
         set_language(Locale::En);
+    }
+
+    /// Every language shows a capture time to the same second precision English does: sub-second
+    /// digits and a time-zone suffix in the metadata are not shown (#743). A value that doesn't
+    /// normalize is shown as it is in every language.
+    #[test]
+    fn display_time_shows_whole_seconds_in_every_language() {
+        set_language(Locale::En);
+        assert_eq!(display_time("2026-09-20T16:04:05.123+02:00"), "September 20, 2026 at 4:04:05 PM");
+        for language in Locale::ALL {
+            set_language(*language);
+            if *language == Locale::En {
+                continue;
+            }
+            let shown = display_time("2026-09-20T16:04:05.123+02:00");
+            assert!(!shown.contains("123"), "{language:?}: {shown}");
+            assert!(!shown.contains("+02"), "{language:?}: {shown}");
+            assert!(shown.contains("16:04:05"), "{language:?}: {shown}");
+        }
+        set_language(Locale::En);
+        assert_eq!(display_time("not a date"), "not a date", "an unparseable value shows as it is");
     }
 
     /// Stock presets and panel headers are translated; a user preset keeps its name, also when it

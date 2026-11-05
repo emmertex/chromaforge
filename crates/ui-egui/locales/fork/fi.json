@@ -1,6 +1,7 @@
 {
   "All Photographs": "Kaikki kuvat",
   "All masks shown · O to hide": "Kaikki maskit näkyvissä · O piilottaa",
+  "Also Write Aligned Layers (PSD)": "Kirjoita myös kohdistetut tasot (PSD)",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Tulee voimaan seuraavalla käynnistyksellä. Jos sovellus käynnistyy hitaasti GPU päällä, kokeile Vulkania: joillakin tietokoneilla se valmistelee GPU:n paljon nopeammin.",
   "Ask": "Kysy",
   "Choose SAM 3 Model Folder": "Valitse SAM 3 -mallin kansio",
@@ -26,6 +27,7 @@
   "High quality adjustment previews": "Laadukkaat esikatselut säädettäessä",
   "Immich": "Immich",
   "Import dropped photos without review": "Tuo pudotetut kuvat ilman tarkistusta",
+  "Include Merged Layer": "Sisällytä yhdistetty taso",
   "Include subfolders": "Sisällytä alikansiot",
   "Indexing photos": "Indeksoidaan kuvia",
   "Install Older Version": "Asenna vanhempi versio",
@@ -51,6 +53,7 @@
   "SAM 3 model folder": "SAM 3 -mallin kansio",
   "Second graphics card": "Toinen näytönohjain",
   "Second graphics card: starting…": "Toinen näytönohjain: käynnistyy…",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Valitse kuva kartalta tai filmikaistaleelta nähdäksesi ja muokataksesi sen sijaintia ja metatietoja.",
   "Setting up the chosen graphics card…": "Valittua näytönohjainta otetaan käyttöön…",
   "Settings → External Editing → Edit In turns the question back on": "Asetukset → Ulkoinen muokkaus → Muokkaa ohjelmassa ottaa kysymyksen taas käyttöön",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Näyttää kuvan niin kuin SDR-näytöt ja SDR-viennit sen näyttävät, jotta voit säätää sen SDR-versiota",

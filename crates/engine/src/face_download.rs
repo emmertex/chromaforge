@@ -246,7 +246,8 @@ fn run(spec: &Download, mirror: &str, staging: &Path, shared: &Shared) {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use lcc_faces::hash::sha256_hex;

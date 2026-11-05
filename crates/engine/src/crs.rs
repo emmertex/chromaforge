@@ -243,6 +243,15 @@ pub fn to_partial(props: &Props, target: Target) -> Value {
         let stops = if v > HDR_MAX_STOPS_READ { v.log2() } else { v };
         put(o, "hdr.max_ev", json!(stops.clamp(0.0, lcc_develop::Hdr::MAX_EV_LIMIT)));
     }
+    // The raw's own local tone mapping (DNG `ProfileGainTableMap`, Apple ProRAW): Lightroom keeps
+    // its strength (0–100) in the parameters of the profile look that renders it ("Apple ProRaw",
+    // with the "Apple Embedded Color Profile"); ours is on or off.
+    if let Some(v) = num(props, "crs:Look/crs:Parameters/crs:ProfileGainTableMap") {
+        put(o, "profile.camera_local_tone", json!(v > 0.0));
+        if v > 0.0 && v < 100.0 {
+            skipped("Look: ProfileGainTableMap below 100 (rendered at 100)");
+        }
+    }
     // older process versions (most `.lrtemplate` presets): approximate the 2012 sliders from the
     // earlier ones, relative to their defaults (contrast 25, blacks 5, brightness 50)
     let has = |o: &Value, path: &str| path.split('.').try_fold(o, |v, k| v.get(k)).is_some();
@@ -1109,5 +1118,32 @@ mod tests {
         assert!(apply_partial(&d, &to_partial(&p, Target::Any), 1.0).optics.lens_profile);
         let on = props(&preset_packet("", "").replace(r#"crs:LensProfileEnable="0""#, r#"crs:LensProfileEnable="1""#));
         assert!(apply_partial(&DevelopSettings::default(), &to_partial(&on, Target::Any), 1.0).optics.lens_profile);
+    }
+
+    /// An Apple ProRAW edit in Lightroom: the "Apple ProRaw" look keeps the strength of the raw's
+    /// own local tone mapping (`ProfileGainTableMap`) in its parameters. Any strength turns ours on,
+    /// 0 turns it off, a packet without it leaves it alone; below 100 % is reported (ours is on/off).
+    #[test]
+    fn apple_proraw_look_carries_the_camera_local_tone_mapping() {
+        let look = |gain: &str| {
+            format!(
+                r#"<crs:Look><rdf:Description crs:Name="Apple ProRaw" crs:Amount="1" crs:UUID="D866CAE82BD24C3F896B6762BDDA6C50">
+                     <crs:Parameters><rdf:Description crs:Version="18.5.1" crs:ProcessVersion="15.4" {gain}/></crs:Parameters>
+                   </rdf:Description></crs:Look>"#
+            )
+        };
+        let partial = |gain: &str| {
+            to_partial_report(&props(&preset_packet(r#"crs:CameraProfile="Apple Embedded Color Profile""#, &look(gain))), None, Target::Any, 1.5)
+        };
+        let (on, report) = partial(r#"crs:ProfileGainTableMap="100""#);
+        assert_eq!(on["profile"]["camera_local_tone"], true, "{on}");
+        assert!(!report.iter().any(|r| r.contains("ProfileGainTableMap")), "{report:?}");
+        let (off, _) = partial(r#"crs:ProfileGainTableMap="0""#);
+        assert_eq!(off["profile"]["camera_local_tone"], false, "{off}");
+        let (half, report) = partial(r#"crs:ProfileGainTableMap="50""#);
+        assert_eq!(half["profile"]["camera_local_tone"], true, "{half}");
+        assert!(report.iter().any(|r| r.contains("ProfileGainTableMap below 100")), "{report:?}");
+        let (none, _) = partial("");
+        assert!(none.pointer("/profile/camera_local_tone").is_none(), "{none}");
     }
 }
