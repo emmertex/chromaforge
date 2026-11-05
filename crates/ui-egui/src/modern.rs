@@ -545,8 +545,7 @@ pub(crate) fn center(app: &mut LccApp, ui: &mut egui::Ui, m: &'static dyn module
         hint(ui, area);
         return;
     }
-    let t = Tokens::get(ui.ctx());
-    let film = if app.ui.modern.filmstrip { t.film_h } else { 0.0 };
+    let film = if app.ui.modern.filmstrip { app.ui.film_height() } else { 0.0 };
     let room = Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - film));
     histogram(app, ui, room);
     let dock = crate::modern_dock::dock(app, ui, room);
@@ -789,7 +788,7 @@ fn import_menu(app: &mut LccApp, ui: &egui::Ui, right_top: Pos2) {
         items.push(("modern:import:cameraRoll", "Camera Roll", "file.addCameraRoll"));
     }
     if crate::import_tab::enabled(app) {
-        items.push(("modern:import:tab", "Import Tab", "view.importTab"));
+        items.push(("modern:import:tab", "Browse Tab", "view.importTab"));
     }
     let size = vec2(220.0, BUTTON * items.len() as f32 + 8.0);
     let min = pos2(right_top.x - size.x, right_top.y);

@@ -732,6 +732,10 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
         }
     };
     let row_h = ui.spacing().interact_size.y;
+    // wide enough for the longest name it can show (a narrow combo cut 10 000 names to "01 Ava Ce…"),
+    // within the screen
+    let want = picker_width(ui, session, row_h);
+    ui.set_min_width(want.min((ui.ctx().content_rect().width() - 2.0 * PICKER_MARGIN).max(160.0)));
     let mut out = None;
     let mut fold: Option<(String, bool)> = None;
     egui::ScrollArea::vertical().id_salt(("preset-picker", salt)).max_height(300.0).auto_shrink([false, true]).show_rows(
@@ -747,7 +751,7 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
                         register(ui.ctx(), format!("presetPickerGroup:{salt}:{key}"), r);
                         crate::widgets::announce(&resp, label.clone());
                         if resp.hovered() {
-                            ui.painter().rect_filled(r, 3.0, t.hover.gamma_multiply(0.5));
+                            ui.painter().rect_filled(r, t.radius(3.0), t.hover.gamma_multiply(0.5));
                         }
                         let chevron = Rect::from_center_size(pos2(r.left() + 8.0, r.center().y), vec2(9.0, 9.0));
                         paint(ui.painter(), chevron, if *open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
@@ -764,7 +768,10 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
                             let w = (ui.available_width() - row_h - 2.0).max(40.0);
-                            let resp = ui.add_sized(vec2(w, row_h), egui::Button::selectable(selected == Some(p.id.as_str()), label).truncate());
+                            let resp = ui.add_sized(
+                                vec2(w, row_h),
+                                egui::Button::selectable(selected == Some(p.id.as_str()), label).truncate().right_text(""),
+                            );
                             register(ui.ctx(), format!("presetPick:{salt}:{}", p.id), resp.rect);
                             if resp.clicked() {
                                 out = Some(p.id.clone());
@@ -798,6 +805,45 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
         ui.ctx().data_mut(|d| d.insert_temp(fid, folds));
     }
     out
+}
+
+/// The room a picker keeps from the screen's edges.
+const PICKER_MARGIN: f32 = 16.0;
+/// How many of the longest names (by characters) a picker measures to find its width.
+const PICKER_MEASURED: usize = 48;
+
+/// The width a picker needs for its longest shown name (a preset with its star, or a group with
+/// its count), measured once per change of the presets: the [`PICKER_MEASURED`] longest names by
+/// characters are laid out, not all 10 000.
+pub(crate) fn picker_width(ui: &egui::Ui, session: &lcc_engine::Session, row_h: f32) -> f32 {
+    let key = (session.presets.generation(), session.preset_hidden.len(), row_h.to_bits());
+    let id = egui::Id::new("preset-picker-width");
+    if let Some((k, w)) = ui.ctx().data(|d| d.get_temp::<((u64, usize, u32), f32)>(id))
+        && k == key
+    {
+        return w;
+    }
+    let t = Tokens::get(ui.ctx());
+    let hidden: std::collections::HashSet<&str> = session.preset_hidden.iter().map(String::as_str).collect();
+    let shown = || session.presets.iter().filter(|p| !hidden.contains(p.id.as_str()));
+    let mut names: Vec<String> = shown().map(|p| crate::i18n::builtin_label(&p.name, p.builtin).to_string()).collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.chars().count()));
+    names.truncate(PICKER_MEASURED);
+    let mut groups: Vec<&str> = shown().map(|p| p.group.as_str()).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups.sort_by_key(|g| std::cmp::Reverse(g.chars().count()));
+    groups.truncate(PICKER_MEASURED);
+    let body = egui::TextStyle::Button.resolve(ui.style());
+    let pad = ui.spacing().button_padding.x * 2.0;
+    let measure = |text: String, font: egui::FontId| ui.painter().layout_no_wrap(text, font, t.text).size().x;
+    let name_w = names.into_iter().map(|n| measure(n, body.clone())).fold(0.0_f32, f32::max) + pad + row_h + 2.0;
+    // (a header: chevron, name and "  (12345)")
+    let group_w = groups.into_iter().map(|g| measure(format!("{g}  (00000)"), t.semibold(11.0))).fold(0.0_f32, f32::max) + 22.0;
+    // and the search field's least width
+    let w = name_w.max(group_w).max(160.0) + ui.spacing().scroll.bar_width + 8.0;
+    ui.ctx().data_mut(|d| d.insert_temp(id, (key, w)));
+    w
 }
 
 /// Where a picker leaves the preset the pointer rests on (frame, id, row) and the stars clicked

@@ -19,6 +19,9 @@ pub enum AiModel {
     Sam3,
     /// SAM 2.1, behind Object masks when the user chose it (`ai.models.download {"id": "sam2"}`).
     Sam2,
+    /// The open models behind Describe masks without SAM 3: the OWLv2 object finder and SAM 2.1
+    /// (`ai.models.download {"id": "describe"}`, then `"sam2"`).
+    Describe,
 }
 
 /// The kind of an [`EngineError`] (or of an error a frontend raised itself: [`ErrorKind::Other`]).

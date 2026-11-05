@@ -182,6 +182,8 @@ fn ml_models_list_install_select_remove_and_tamper_rejection() {
     // Must acknowledge licence
     assert!(s.execute("ml.models.install", &json!({"path": src.to_string_lossy()})).is_err());
     assert!(s.execute("ml.models.install", &json!({"path": src.to_string_lossy(), "acknowledged": false})).is_err());
+    assert!(s.execute("ml.models.download", &json!({"id": lcc_ml::known::CLIP_VIT_B32_ID})).is_err());
+    assert!(s.execute("ml.models.download", &json!({"id": lcc_ml::known::CLIP_VIT_B32_ID, "acknowledged": false})).is_err());
 
     // Tampered file is rejected
     let bad_src = d.join("bad-src");
@@ -328,6 +330,77 @@ fn content_replaced_invalidates_embedding_and_background_pump_reindexes() {
         ocean["matches"][0]["score"].as_f64().unwrap() > sunset["matches"][0]["score"].as_f64().unwrap(),
         "replaced photo now matches ocean better than sunset"
     );
+
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn semantic_search_filters_grid_composes_with_ratings_and_updates_as_photos_index() {
+    let d = temp_dir("semantic-filter");
+    let models_dir = d.join("ml-models");
+    let src = d.join("synthetic-src");
+    lcc_ml::Clip::write_synthetic_dir(&src, "test-clip").unwrap();
+
+    let warm1 = d.join("photos").join("a_warm.png");
+    let warm2 = d.join("photos").join("b_warm_bright.png");
+    let cool1 = d.join("photos").join("c_ocean.png");
+    write_solid_png(&warm1, [180, 60, 40, 255]);
+    write_solid_png(&warm2, [250, 20, 10, 255]);
+    write_solid_png(&cool1, [15, 40, 245, 255]);
+
+    let mut s = Session::new().with_fs();
+    s.ml_models_dir = Some(models_dir);
+    s.execute("library.import", &json!({"paths": [warm1.to_string_lossy(), warm2.to_string_lossy(), cool1.to_string_lossy()]})).unwrap();
+    let warm1_id = s.catalog.photos().find(|p| p.file_name == "a_warm.png").unwrap().id;
+    let warm2_id = s.catalog.photos().find(|p| p.file_name == "b_warm_bright.png").unwrap().id;
+    let cool1_id = s.catalog.photos().find(|p| p.file_name == "c_ocean.png").unwrap().id;
+
+    // Rate warm1 = 4, warm2 = 2, cool1 = 5
+    s.execute("photo.rate", &json!({"ids": [warm1_id.0], "rating": 4})).unwrap();
+    s.execute("photo.rate", &json!({"ids": [warm2_id.0], "rating": 2})).unwrap();
+    s.execute("photo.rate", &json!({"ids": [cool1_id.0], "rating": 5})).unwrap();
+
+    // Set a semantic filter BEFORE the model is installed: shows 0 photos initially,
+    // then once the model is installed and background indexing finishes, automatically encodes and populates the view!
+    let f0 = s.execute("library.filter", &json!({"semantic": "golden sunset"})).unwrap();
+    assert_eq!(f0["count"], 0, "before model is installed or embeddings finish, semantic filter matches 0");
+    assert_eq!(s.filter.semantic.as_deref(), Some("golden sunset"));
+    s.execute("ml.models.install", &json!({"path": src.to_string_lossy(), "acknowledged": true})).unwrap();
+
+    wait_for(|| {
+        let r = s.execute("ml.pump", &json!({"pace": "fast"})).unwrap();
+        r["indexedPhotos"] == 3 && r["pendingPhotos"] == 0 && r["inFlight"] == 0
+    });
+
+    // Now the semantic filter has refreshed automatically from the newly indexed embeddings:
+    // Both warm photos match "golden sunset" (above default threshold 0.15), while the blue ocean photo does not.
+    // Under the default sort (CaptureDate), `visible()` ranks the stronger match (`warm2_id`) before `warm1_id`.
+    let vis = s.visible().to_vec();
+    assert_eq!(vis, vec![warm2_id, warm1_id], "ranked by similarity: strongest warm match first, cool excluded");
+
+    // Composes with rating filter (`rating >= 3`): keeps only `warm1_id`
+    let f_rated = s.execute("library.filter", &json!({"rating": 3, "ratingOp": "atLeast"})).unwrap();
+    assert_eq!(f_rated["count"], 1);
+    assert_eq!(s.visible(), &[warm1_id]);
+
+    // Filter chips include both `Rating ≥ 3★` and `AI search: “golden sunset”`
+    let chips = crate::filter_chips(&s.filter, &s.catalog);
+    let ai_chip = chips.iter().find(|c| c.label.starts_with("AI search:")).expect("AI search chip present");
+    assert_eq!(ai_chip.label, "AI search: “golden sunset”");
+
+    // Removing the rating filter brings back both warm photos; switching to "deep blue ocean" via search.semantic {filter: true}
+    // switches the grid to `cool1_id`
+    s.execute("library.filter", &json!({"rating": 0})).unwrap();
+    let ocean = s.execute("search.semantic", &json!({"text": "deep blue ocean", "filter": true})).unwrap();
+    assert_eq!(ocean["filtered"], 1);
+    assert_eq!(s.visible(), &[cool1_id]);
+
+    // Clearing the AI search chip clears the semantic filter and restores all 3 photos
+    let chips = crate::filter_chips(&s.filter, &s.catalog);
+    let clear = chips.iter().find(|c| c.label.starts_with("AI search:")).unwrap().clear.clone();
+    s.execute("library.filter", &clear).unwrap();
+    assert!(s.filter.semantic.is_none());
+    assert_eq!(s.visible().len(), 3);
 
     let _ = std::fs::remove_dir_all(&d);
 }

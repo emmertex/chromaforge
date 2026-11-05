@@ -1,10 +1,14 @@
 //! A camera profile per camera body (ported from OneSlips, LR-PROF-BODY): two bodies of one model
 //! can each start with their own profile — a `.dcp` made from that body's chart, say. A body is
 //! known by its serial number (Exif `BodySerialNumber`), else, for cameras that write none, by the
-//! first two characters of its file names after any leading `_` (`_SA94454.ARW` → `file:SA`). The
+//! first two characters of its camera-style file names after any leading `_` (`_SA94454.ARW` →
+//! `file:SA`, never a renamed file's `10-…`: [`file_body`]). The
 //! default is applied to the body's raws at import while they are on the camera's default profile
 //! ([`crate::import::apply_import_defaults`]; a Lightroom sidecar that names a profile still wins),
 //! and to photos already in the library on request (`profile.applyBodyDefaults`).
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Weak, mpsc};
 
 use lcc_catalog::Photo;
 
@@ -13,15 +17,31 @@ pub fn body(p: &Photo) -> Option<String> {
     body_from(&p.meta.camera_serial, &p.file_name)
 }
 
-/// A body from a serial number, else from a file name's first two characters (as [`body`]).
+/// A body from a serial number, else from a camera-style file name ([`file_body`]).
 pub fn body_from(serial: &str, file_name: &str) -> Option<String> {
     let serial = serial.trim();
     if !serial.is_empty() {
         return Some(serial.to_string());
     }
-    let name = file_name.trim_start_matches('_');
-    let key: String = name.chars().take(2).collect();
-    (key.chars().count() == 2 && key.chars().all(|c| c.is_ascii_alphanumeric())).then(|| format!("file:{}", key.to_ascii_uppercase()))
+    file_body(file_name).map(|k| format!("file:{k}"))
+}
+
+/// The body a file name names as cameras write them: its first two characters after any leading
+/// `_`, letters or digits, followed by the camera's counter or `_` (`_SA94454.ARW` -> `SA`,
+/// `IMG_0001.CR3` -> `IM`, `_74_0338.CR3` -> `74`). Two digits count only after a leading `_`, and
+/// a dash or space after them (`10-B+B-0042.CR3`, `1-B+B-...`, `07 ceremony.CR3`) is a renamed
+/// file's number, not a body: `None`, and the photo gets its camera's default.
+pub fn file_body(file_name: &str) -> Option<String> {
+    let underscore = file_name.starts_with('_');
+    let mut chars = file_name.trim_start_matches('_').chars();
+    let (a, b, next) = (chars.next()?, chars.next()?, chars.next()?);
+    if !(a.is_ascii_alphanumeric() && b.is_ascii_alphanumeric() && (next.is_ascii_alphanumeric() || next == '_')) {
+        return None;
+    }
+    if a.is_ascii_digit() && b.is_ascii_digit() && !underscore {
+        return None;
+    }
+    Some(format!("{a}{b}").to_ascii_uppercase())
 }
 
 /// The key a body default is kept under: the camera model and the body, so a serial reused by
@@ -89,7 +109,7 @@ pub fn plan(s: &crate::Session, candidates: &[crate::import::ImportCandidate], c
 
 /// [`plan`] for photos already read (the Import tab's browsed photos): a row per body.
 pub fn plan_photos(s: &crate::Session, photos: &[&Photo], choice: &ImportProfile) -> Vec<PlanRow> {
-    plan_bodies(s, photos.iter().filter_map(|p| Some((key_of(p)?, p.meta.camera.clone()))), choice)
+    plan_bodies(s, photos.iter().filter_map(|p| Some((s.body_key(p, false)?, p.meta.camera.clone()))), choice)
 }
 
 fn plan_bodies(s: &crate::Session, bodies: impl Iterator<Item = (String, String)>, choice: &ImportProfile) -> Vec<PlanRow> {
@@ -169,12 +189,12 @@ impl ImportProfile {
     }
 
     /// The camera profile photo `p` gets from this choice (`None`: the automatic one stays): never
-    /// one made for another camera model.
-    pub fn for_photo(&self, p: &Photo) -> Option<String> {
+    /// one made for another camera model. `wait`: as [`crate::Session::body_key`].
+    pub fn for_photo(&self, s: &crate::Session, p: &Photo, wait: bool) -> Option<String> {
         let id = match self {
             Self::Auto => return None,
             Self::All(id) => id.clone(),
-            Self::PerBody(m) => m.get(&key_of(p)?)?.clone(),
+            Self::PerBody(m) => m.get(&s.body_key(p, wait)?)?.clone(),
         };
         if !p.develops_raw() {
             return None;
@@ -196,7 +216,167 @@ pub fn known_profile(id: &str) -> bool {
 impl crate::Session {
     /// The camera profile photo `p`'s body starts with, when one was chosen and still exists.
     pub fn body_default(&self, p: &Photo) -> Option<&str> {
-        let id = self.body_profiles.get(&key_of(p)?)?;
+        self.body_default_of(p, false)
+    }
+
+    /// [`Self::body_default`], `wait` as [`Self::body_key`].
+    pub fn body_default_of(&self, p: &Photo, wait: bool) -> Option<&str> {
+        let id = self.body_profiles.get(&self.body_key(p, wait)?)?;
         known_profile(id).then_some(id.as_str())
     }
+
+    /// Photo `p`'s body key ([`key_of`]). A raw catalogued without a serial number (browsed or
+    /// imported before serials were kept) is known by the serial its file states
+    /// ([`FileSerials`]): read now with `wait` (a command, an import), else in the background
+    /// (a render: until it lands, the photo is known as [`key_of`] knows it).
+    pub fn body_key(&self, p: &Photo, wait: bool) -> Option<String> {
+        if let Some(serial) = self.missing_serial(p, wait) {
+            let model = if p.meta.camera_model.trim().is_empty() { p.meta.camera.trim() } else { p.meta.camera_model.trim() };
+            if !model.is_empty() {
+                return Some(key(model, &serial));
+            }
+        }
+        key_of(p)
+    }
+
+    /// The serial number raw `p` was catalogued without, as its file states it (`wait` as
+    /// [`Self::body_key`]).
+    pub fn missing_serial(&self, p: &Photo, wait: bool) -> Option<String> {
+        if !p.meta.camera_serial.trim().is_empty() || !p.develops_raw() {
+            return None;
+        }
+        let lcc_catalog::Source::File { path } = &p.source else { return None };
+        self.file_serials.get(path, wait)
+    }
+
+    /// The camera profile an unedited raw gets at import with `choice` (the Import panel's), else
+    /// its body's default, when that isn't the one it has (`None`: it keeps its own). A photo the
+    /// user edited, or whose sidecar brought settings, keeps what it has.
+    pub fn import_profile_for(&self, p: &Photo, choice: &ImportProfile, wait: bool) -> Option<String> {
+        if p.edited.is_some() || !p.develops_raw() {
+            return None;
+        }
+        choice.for_photo(self, p, wait).or_else(|| self.body_default_of(p, wait).map(str::to_string)).filter(|id| *id != p.develop.profile.camera)
+    }
+
+    /// The camera profile a browsed (Local) photo renders with in place of its own: what importing
+    /// it now would give it ([`Self::import_profile_for`] with the Import panel's choice). Worked
+    /// out at render time and never stored: the photo is not edited and no sidecar is written,
+    /// and a body default set (or changed) after the folder was browsed shows at once.
+    pub fn browse_profile(&self, p: &Photo) -> Option<String> {
+        if !p.local || p.deleted {
+            return None;
+        }
+        self.import_profile_for(p, &self.import_profile_choice, false)
+    }
+
+    /// Photo `p` as it renders: a browsed photo with [`Self::browse_profile`] in its settings, else
+    /// `p` itself. The same `Arc` comes back while nothing changed, so render caches keep working.
+    pub fn rendered_photo(&self, p: &Arc<Photo>) -> Arc<Photo> {
+        let Some(camera) = self.browse_profile(p) else { return p.clone() };
+        let mut held = lock(&self.browse_renders.0);
+        if let Some((of, cam, r)) = held.get(&p.id)
+            && std::ptr::eq(of.as_ptr(), Arc::as_ptr(p))
+            && *cam == camera
+        {
+            return r.clone();
+        }
+        let mut shown = (**p).clone();
+        let mut d = (*shown.develop).clone();
+        d.profile.camera.clone_from(&camera);
+        shown.develop = Arc::new(d);
+        let shown = Arc::new(shown);
+        if held.len() >= BROWSE_RENDERS {
+            held.clear();
+        }
+        held.insert(p.id, (Arc::downgrade(p), camera, shown.clone()));
+        shown
+    }
+
+    /// [`Self::rendered_photo`] of photo `id`.
+    pub fn rendered_photo_of(&self, id: lcc_catalog::PhotoId) -> Option<Arc<Photo>> {
+        self.catalog.photo(id).map(|p| self.rendered_photo(p))
+    }
+}
+
+/// At most this many browsed photos' render settings are held ([`crate::Session::rendered_photo`]).
+const BROWSE_RENDERS: usize = 50_000;
+
+/// Browsed photos as they render: photo → (the record it was made from, the profile, the photo as rendered).
+#[derive(Default)]
+pub struct BrowseRenders(Mutex<HashMap<lcc_catalog::PhotoId, (Weak<Photo>, String, Arc<Photo>)>>);
+
+/// How much of a raw is read for its serial number: a CR3 keeps its metadata (`moov`) at the start,
+/// a TIFF-based raw its Exif near the start.
+const SERIAL_HEAD: u64 = 1 << 20;
+
+/// At most this many files' serial numbers are held.
+const SERIAL_ENTRIES: usize = 200_000;
+
+/// Serial numbers read from the files of raws catalogued without one (browsed before the app kept
+/// serials, say: their body would otherwise be guessed from the file name). Read once per file, in
+/// the background for renders.
+#[derive(Default)]
+pub struct FileSerials {
+    /// File → its serial (`None`: being read, or the file states none).
+    read: Arc<Mutex<HashMap<String, Option<String>>>>,
+    queue: Mutex<Option<mpsc::Sender<String>>>,
+}
+
+impl FileSerials {
+    /// The serial number file `path` states. `wait`: read it now when it isn't known yet; else a
+    /// read is queued and `None` comes back until it lands.
+    pub fn get(&self, path: &str, wait: bool) -> Option<String> {
+        let known = lock(&self.read).get(path).cloned();
+        match known {
+            Some(Some(serial)) => return Some(serial),
+            Some(None) if !wait => return None,
+            _ => {}
+        }
+        if wait {
+            let serial = read_serial(path);
+            store(&self.read, path, serial.clone());
+            return serial;
+        }
+        store(&self.read, path, None);
+        let mut queue = lock(&self.queue);
+        if queue.as_ref().is_none_or(|q| q.send(path.to_string()).is_err()) {
+            let (tx, rx) = mpsc::channel::<String>();
+            let read = self.read.clone();
+            let started = std::thread::Builder::new().name("body-serials".into()).spawn(move || {
+                while let Ok(path) = rx.recv() {
+                    let serial = read_serial(&path);
+                    store(&read, &path, serial);
+                }
+            });
+            match started {
+                Ok(_) if tx.send(path.to_string()).is_ok() => *queue = Some(tx),
+                Ok(_) => {}
+                Err(e) => log::warn!("could not start the serial number reader: {e}"),
+            }
+        }
+        None
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn store(read: &Mutex<HashMap<String, Option<String>>>, path: &str, serial: Option<String>) {
+    let mut m = lock(read);
+    if m.len() >= SERIAL_ENTRIES && !m.contains_key(path) {
+        m.clear();
+    }
+    m.insert(path.to_string(), serial);
+}
+
+/// The body serial number in the first [`SERIAL_HEAD`] bytes of file `path` (`None`: unreadable, or none).
+pub fn read_serial(path: &str) -> Option<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut head = Vec::new();
+    file.take(SERIAL_HEAD).read_to_end(&mut head).ok()?;
+    let serial: String = lcc_meta::extract(&head).serial_number?.trim().chars().take(64).collect();
+    (!serial.is_empty()).then_some(serial)
 }

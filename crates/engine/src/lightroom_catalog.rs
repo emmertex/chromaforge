@@ -22,7 +22,7 @@ use lcc_geom::{Affine, Orientation, Point, Rect};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-type Row = BTreeMap<String, Value>;
+pub(crate) type Row = BTreeMap<String, Value>;
 const COMMAND: &str = "library.importLightroom";
 
 fn error(why: impl Into<String>) -> crate::EngineError {
@@ -70,7 +70,7 @@ fn source_path(p: &Photo) -> Option<&str> {
     }
 }
 
-struct Reader {
+pub(crate) struct Reader {
     db: Database,
 }
 /// Expanded XMP packets kept from one catalog, all rows together (each is bounded on its own).
@@ -141,7 +141,7 @@ impl Reader {
         walked.map_err(|e| format!("{name}: {e}"))
     }
 
-    fn table(&self, name: &str, required: bool, cancel: &AtomicBool) -> Result<Vec<Row>, String> {
+    pub(crate) fn table(&self, name: &str, required: bool, cancel: &AtomicBool) -> Result<Vec<Row>, String> {
         let mut out = Vec::new();
         self.each_row(name, required, true, cancel, |row, _| {
             out.try_reserve(1).map_err(|_| format!("{name}: unable to reserve bounded rows"))?;
@@ -580,7 +580,7 @@ impl GuardedFile {
     }
 }
 
-struct SourceGuard {
+pub(crate) struct SourceGuard {
     main: GuardedFile,
     wal_path: PathBuf,
     wal: Option<GuardedFile>,
@@ -606,7 +606,7 @@ impl SourceGuard {
         self.wal.as_ref().map(|file| file.initial.stamp.len)
     }
 
-    fn verify(&self) -> Result<(), String> {
+    pub(crate) fn verify(&self) -> Result<(), String> {
         self.main.verify()?;
         match (&self.wal, optional_path_stamp(&self.wal_path)?) {
             (Some(file), Some(_)) => file.verify(),
@@ -692,9 +692,20 @@ pub fn read(path: &Path) -> Result<CatalogImport, String> {
 /// stopping when `cancel` is set. Images whose catalog records are incomplete are left out and
 /// listed in [`CatalogImport::skipped`] instead of failing the read.
 pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize, done: &AtomicUsize) -> Result<CatalogImport, String> {
+    // A Capture One catalog takes the same road from here on (the same model, job and report).
+    if crate::capture_one_catalog::is_capture_one(path) {
+        return crate::capture_one_catalog::read_with_progress(path, cancel, total, done);
+    }
     // 14 catalog tables plus one validation stage; ImportJob adds one unit per original path.
     total.store(15, Ordering::Relaxed);
     done.store(0, Ordering::Relaxed);
+    let (reader, source_guard) = open_catalog(path, cancel)?;
+    read_lightroom(path, reader, source_guard, cancel, done)
+}
+
+/// Open a catalog's SQLite file (and its committed `-wal` pages) read-only, with a guard that tells
+/// whether either file changed while it was read.
+pub(crate) fn open_catalog(path: &Path, cancel: &AtomicBool) -> Result<(Reader, SourceGuard), String> {
     ensure_read_active(cancel)?;
     let wal_path = PathBuf::from(format!("{}-wal", path.display()));
     let main_file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -721,7 +732,10 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
             hook(path);
         }
     }
-    let reader = Reader { db };
+    Ok((Reader { db }, source_guard))
+}
+
+fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel: &AtomicBool, done: &AtomicUsize) -> Result<CatalogImport, String> {
     let mut warnings = Vec::new();
     let table = |name: &str, required: bool| -> Result<Vec<Row>, String> {
         ensure_read_active(cancel)?;
@@ -979,7 +993,7 @@ pub(crate) fn refuse_non_media(data: &mut CatalogImport) {
     data.warnings.extend(warnings);
 }
 
-fn ensure_read_active(cancel: &AtomicBool) -> Result<(), String> {
+pub(crate) fn ensure_read_active(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) { Err("Lightroom import cancelled".into()) } else { Ok(()) }
 }
 
@@ -1398,6 +1412,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             _ => Flag::None,
         };
         p.label = s.catalog.label_from_name(text(&src.image, "colorLabels"));
+        fill_camera(&mut p.meta, &src.image);
         // A capture time the library can't hold would fail the whole batch at `SetCaptured`, and an
         // impossible date (2026-02-30) would roll over to another day in date grouping: it is left
         // out with a warning (the catalog's value stays in the import archive). A year or a month
@@ -1734,14 +1749,34 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         }
     }
     let stacks = stack_ops(s, &data, &ids, &mut ops, &mut warnings);
+    // the undo step names the program the catalog comes from
+    let step =
+        if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Import Capture One Catalog" } else { "Import Lightroom Catalog" };
     if !ops.is_empty() {
-        s.commit("Import Lightroom Catalog", Op::Batch { ops })?;
+        s.commit(step, Op::Batch { ops })?;
     }
-    s.merge_undo(s.undo.len().saturating_sub(undo0), "Import Lightroom Catalog");
+    s.merge_undo(s.undo.len().saturating_sub(undo0), step);
     Ok(AppliedImport {
         report: json!({"source":data.source,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
         index: index.clone(),
     })
+}
+
+/// The camera and lens a catalog row names (`cameraMake`, `cameraModel`, `lens`: the Capture One
+/// read has them; Lightroom's rows don't), for what the photo's file didn't give: an offline
+/// original is never read, a file that was read keeps its own.
+fn fill_camera(m: &mut lcc_catalog::Meta, row: &Row) {
+    let mut filled = false;
+    for (key, field) in [("cameraMake", &mut m.camera_make), ("cameraModel", &mut m.camera_model), ("lens", &mut m.lens)] {
+        let value = text(row, key).trim();
+        if field.is_empty() && !value.is_empty() {
+            *field = value.to_string();
+            filled |= key != "lens";
+        }
+    }
+    if filled && m.camera.is_empty() {
+        m.camera = lcc_catalog::camera_label(&m.camera_make, &m.camera_model);
+    }
 }
 
 /// Whether albums `from` test album `to`, directly or through the smart albums they test: those of the library, and
@@ -1817,8 +1852,35 @@ fn collection_parent(collection: &Row, collections: &HashMap<i64, &Row>, sets: &
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A catalog's camera and lens fill only what the file left empty, and a Lightroom row (which
+    /// names none) changes nothing.
+    #[test]
+    fn a_catalogs_camera_fills_only_what_the_file_left_empty() {
+        let row: Row = serde_json::from_value(json!({"cameraMake": "EXAMPLE CORP", "cameraModel": " EXAMPLE X1 ", "lens": "EXAMPLE 50mm"})).unwrap();
+        let mut offline = lcc_catalog::Meta::default();
+        fill_camera(&mut offline, &row);
+        assert_eq!(
+            (offline.camera_make.as_str(), offline.camera_model.as_str(), offline.lens.as_str()),
+            ("EXAMPLE CORP", "EXAMPLE X1", "EXAMPLE 50mm")
+        );
+        assert_eq!(offline.camera, lcc_catalog::camera_label("EXAMPLE CORP", "EXAMPLE X1"));
+        let mut read = lcc_catalog::Meta {
+            camera: "OTHER OT-2".into(),
+            camera_make: "OTHER".into(),
+            camera_model: "OT-2".into(),
+            lens: "Other 35mm".into(),
+            ..Default::default()
+        };
+        let before = read.clone();
+        fill_camera(&mut read, &row);
+        assert_eq!(read, before, "the file's own camera wins");
+        let mut lightroom = lcc_catalog::Meta::default();
+        fill_camera(&mut lightroom, &Row::new());
+        assert_eq!(lightroom, lcc_catalog::Meta::default());
+    }
     use lcc_geom::CropGeometry;
 
     static CANCEL_DURING_PAGE_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -3028,6 +3090,10 @@ mod tests {
                     body.extend(s.as_bytes());
                     13 + 2 * s.len() as u64
                 }
+                SqlValue::Real(n) => {
+                    body.extend(n.to_be_bytes());
+                    7
+                }
                 _ => panic!("unexpected SqlValue in a test record: {value:?}"),
             };
             header.extend(varint(serial));
@@ -3077,7 +3143,7 @@ mod tests {
     }
     /// A SQLite file with one leaf page per table: `(name, columns, rows)` each. `last_page` overrides the last
     /// table's root page.
-    fn native_catalog_rows(tables: &[(&str, &str, Vec<Vec<SqlValue>>)], last_page: Option<i64>) -> Vec<u8> {
+    pub(crate) fn native_catalog_rows(tables: &[(&str, &str, Vec<Vec<SqlValue>>)], last_page: Option<i64>) -> Vec<u8> {
         use SqlValue::{Integer as I, Text as T};
         let pages = tables.len() + 1;
         let mut bytes = vec![0u8; pages * 2048];
@@ -3179,14 +3245,14 @@ mod tests {
                 .output()
                 .expect("run fsutil sparse setflag on new synthetic fixture");
             assert!(set_sparse.status.success(), "fsutil sparse setflag failed: {}", String::from_utf8_lossy(&set_sparse.stderr));
-            let query_sparse = std::process::Command::new("C:/Windows/System32/fsutil.exe")
-                .args(["sparse", "queryflag"])
-                .arg(&path)
-                .output()
-                .expect("verify sparse flag on synthetic fixture");
-            assert!(query_sparse.status.success(), "fsutil sparse queryflag failed: {}", String::from_utf8_lossy(&query_sparse.stderr));
-            let query = format!("{}{}", String::from_utf8_lossy(&query_sparse.stdout), String::from_utf8_lossy(&query_sparse.stderr));
-            assert!(query.to_ascii_lowercase().contains("sparse"), "fsutil did not confirm a sparse fixture: {query}");
+            // fsutil's own answer is in the system's language; the file attribute isn't
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
+                let attributes = std::fs::metadata(&path).expect("read synthetic fixture attributes").file_attributes();
+                assert!(attributes & FILE_ATTRIBUTE_SPARSE_FILE != 0, "synthetic fixture is not sparse (attributes {attributes:#x})");
+            }
         }
 
         let mut file = std::fs::OpenOptions::new().write(true).open(&path).expect("open synthetic catalog");

@@ -175,15 +175,24 @@ pub const WHATS_NEW: &str = include_str!(concat!(env!("OUT_DIR"), "/whats-new.md
 
 /// The import review, Export and Settings keep window ids of their own, so the size each is given
 /// doesn't carry over to the other dialogs.
-fn window_id(dialog: &Dialog) -> egui::Id {
-    egui::Id::new(match dialog {
+///
+/// Every other dialog has a window id of its own kind: egui keeps a window's size (and never
+/// shrinks it to its content), so a wide dialog (the Presets Manager, Chart Profile) left every
+/// later one that shared its id as wide, e.g. Create Collection ~2000 points with a full-width
+/// Name field. Each kind now starts at its own default width.
+pub(crate) fn window_id(dialog: &Dialog) -> egui::Id {
+    let own = match dialog {
         Dialog::Import { .. } => "app-import-dialog",
         Dialog::Print => "app-print-dialog",
         Dialog::Export { .. } => "app-export-dialog",
+        // (its own id: the size the user gives it doesn't carry over to the other dialogs)
+        Dialog::PresetsManager { .. } => crate::panels::presets_manager::WINDOW,
+        Dialog::ProfileManager { .. } => crate::panels::profile_manager::WINDOW,
         // (the Settings screen's own layer: `settings_screen::LAYER`)
         Dialog::Settings { .. } => crate::settings_screen::LAYER,
-        _ => "app-dialog",
-    })
+        _ => return egui::Id::new("app-dialog").with(std::mem::discriminant(dialog)),
+    };
+    egui::Id::new(own)
 }
 
 /// Block the underlying panels from the first frame, before the window establishes its modal
@@ -236,6 +245,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::RenamePhoto { .. } => "Rename Photo",
         Dialog::Rename { .. } => "Rename Photos",
         Dialog::Import { .. } => "Import Photos",
+        Dialog::LightroomResult { capture_one: true, .. } => "Capture One Catalog Import",
         Dialog::LightroomResult { .. } => "Lightroom Catalog Import",
         Dialog::LabelNames { .. } => "Edit Color Label Names",
         Dialog::CaptureTime { .. } => "Edit Capture Time",
@@ -277,13 +287,18 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::ConfirmPurge { .. } => "Delete Permanently",
         Dialog::MovePhotos { .. } => "Move Photos",
         Dialog::LightroomCatalog { .. } => "Lightroom Classic Catalog",
+        Dialog::LightroomDestination { catalog, .. } if crate::lightroom_import::is_capture_one(std::path::Path::new(catalog)) => {
+            "Import Capture One Catalog"
+        }
         Dialog::LightroomDestination { .. } => "Import Lightroom Catalog",
         Dialog::SaveEffect { .. } => "New Effect Preset",
         Dialog::ManageEffects { .. } => "Manage Effect Presets",
         Dialog::PresetsManager { .. } => "Presets Manager",
+        Dialog::ProfileManager { .. } => "Profile Manager",
         Dialog::DeleteEffects { names } if names.len() == 1 => "Delete Effect Preset",
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
         Dialog::DeleteRejected { .. } => "Delete Rejected Photos",
+        Dialog::StopWaiting { .. } => "Stop Waiting",
         Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Library",
         Dialog::RemoveFolder { .. } => "Remove Folder from Library",
         Dialog::SynchronizeFolder { .. } => "Synchronize Folder",
@@ -320,6 +335,14 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     // Export lays out its own columns (presets beside the settings, which scroll) and can be made
     // wider (a large UI font); its height follows its content, capped to the window.
     let export = matches!(dlg, Dialog::Export { .. });
+    // The Presets Manager can be resized and keeps the size it is given (remembered across
+    // starts), capped to the screen; its list fills it and never widens it.
+    // (the Profile Manager is sized the same way, with a size of its own)
+    let profiles_manager = matches!(dlg, Dialog::ProfileManager { .. });
+    let presets = matches!(dlg, Dialog::PresetsManager { .. }) || profiles_manager;
+    let remembered = if profiles_manager { app.ui.profile_manager_size } else { app.ui.presets_manager_size };
+    let presets_size = crate::panels::presets_manager::window_size(remembered, screen);
+    let presets_max = crate::panels::presets_manager::max_size(screen);
     let window_id = window_id(&dlg);
     // Settings keeps its top edge, and the widest it has been, while tabs of different sizes are
     // shown, so its tab row stays under the pointer (centred like the others, the row jumped with
@@ -335,9 +358,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let shown = egui::Window::new(heading.clone()).id(window_id)
         .title_bar(false)
         .collapsible(false)
-        .resizable([import || export, import])
+        .resizable([import || export || presets, import || presets])
         .vscroll(import)
-        .resize(|r| if import { r.default_height(crate::import::DIALOG_SIZE[1]) } else { r })
+        .resize(|r| {
+            if import {
+                r.default_height(crate::import::DIALOG_SIZE[1])
+            } else if presets {
+                r.default_height(presets_size.y).min_size(crate::panels::presets_manager::MIN_SIZE).max_size(presets_max)
+            } else {
+                r
+            }
+        })
         .frame(frame)
         .anchor(
             if sheet {
@@ -349,10 +380,20 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             },
             [(insets.left - insets.right) / 2.0, if sheet { -insets.bottom } else if settings { top } else { 0.0 }],
         )
-        .min_width(if sheet { sheet_w(screen, insets) } else { widest })
+        .min_width(if sheet {
+            sheet_w(screen, insets)
+        } else if presets {
+            crate::panels::presets_manager::MIN_SIZE[0].min(presets_max.x)
+        } else {
+            widest
+        })
         .max_width(if sheet {
             sheet_w(screen, insets)
-        } else if export {
+        } else if presets {
+            // (before the others: the Presets Manager keeps its own cap)
+            presets_max.x
+        } else if export || !settings {
+            // never wider than the window (a full-width field fills the dialog, not the screen)
             (screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN).max(320.0)
         } else {
             f32::INFINITY
@@ -368,7 +409,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::LightroomCatalog { .. } => 440.0,
             Dialog::LightroomDestination { .. } => 480.0,
             Dialog::ManageEffects { .. } => 560.0,
-            Dialog::PresetsManager { .. } => 640.0,
+            Dialog::PresetsManager { .. } | Dialog::ProfileManager { .. } => presets_size.x,
             // (the preset column beside a form: its label column, then the controls)
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
             Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } => 480.0,
@@ -518,13 +559,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 }
                 Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::model_dialog(app, ui, &t, info, accepted),
                 Dialog::FaceModel { info, accepted, .. } => crate::panels::faces::model_dialog(app, ui, &t, info, accepted),
-                Dialog::LightroomResult { summary, library, details, .. } => {
+                Dialog::LightroomResult { summary, library, details, capture_one, .. } => {
                     ui.label(summary.as_str());
                     ui.add_space(8.0);
                     if let Some(library) = library {
                         ui.label(crate::i18n::tr("Destination library"));
                         ui.add(egui::Label::new(library.as_str()).wrap().selectable(true));
-                        ui.label(crate::i18n::tr("Lightroom catalogs import into the open library; no separate catalog folder is created."));
+                        ui.label(crate::i18n::tr(if *capture_one {
+                            "Capture One catalogs import into the open library; no separate catalog folder is created."
+                        } else {
+                            "Lightroom catalogs import into the open library; no separate catalog folder is created."
+                        }));
                     } else {
                         ui.label(crate::i18n::tr("These photos are only in memory. Open a library on disk and import the catalog again to save them."));
                     }
@@ -1156,6 +1201,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::PresetsManager { query, confirm, rename } => crate::panels::presets_manager::body(app, ui, query, confirm, rename),
+                Dialog::ProfileManager { query, confirm, rename } => crate::panels::profile_manager::body(app, ui, query, confirm, rename),
                 Dialog::ManageEffects { search, selected, rename, confirm_delete, new_group } => {
                     crate::panels::mask_effects::manage_body(app, ui, search, selected, rename, confirm_delete, new_group)
                 }
@@ -1221,6 +1267,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(what)).color(t.text_dim));
                 }
                 d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::body(app, ui, d),
+                Dialog::StopWaiting { task, warning, .. } => {
+                    ui.label(crate::i18n::tr_format!("Stop waiting: {task}?", task = task));
+                    crate::dialog_frame::note(ui, egui::RichText::new(warning.as_str()).color(t.text_dim));
+                }
                 Dialog::DeleteRejected { count, recycle } => {
                     ui.label(crate::i18n::tr_format!("Delete the {n} rejected photos of this view?", n = count));
                     ui.add_space(6.0);
@@ -1417,7 +1467,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 Dialog::Print => crate::print_view::body(app, ui, &t),
             };
             // the import review and Print size and scroll themselves
-            if import || print || export {
+            if import || print || export || presets {
                 body(ui);
             } else if formed {
                 // labels right-aligned in a column, controls, checkboxes and notes beside them
@@ -1506,6 +1556,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::RemoveFolder { .. } => "Remove",
                     Dialog::DeleteRejected { recycle: true, .. } => "Move to Trash",
                     Dialog::DeleteRejected { .. } => "Remove",
+                    Dialog::StopWaiting { .. } => "Stop Waiting",
                     Dialog::LightroomCatalog { .. } => "Import Lightroom Catalog…",
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
@@ -1606,6 +1657,15 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     if !import {
         crate::dialog_frame::ModalLayout::finish(ctx, window_id, shown.as_ref().map(|w| w.response.rect));
+    }
+    // the size the Presets Manager was left at (once the pointer is up: not in the middle of a drag)
+    if let Some(w) = shown.as_ref().filter(|_| presets) {
+        if profiles_manager {
+            let window = crate::panels::profile_manager::WINDOW;
+            crate::panels::presets_manager::note_size_of(ctx, window, &mut app.ui.profile_manager_size, presets_size, w.response.rect.size());
+        } else {
+            crate::panels::presets_manager::note_size(ctx, &mut app.ui.presets_manager_size, presets_size, w.response.rect.size());
+        }
     }
     if let Some(w) = &shown {
         // (the import review keeps its hand-picked photos however the click lands)
@@ -2255,7 +2315,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
             Ok(json!({"moved": moved}))
         }
-        // the catalog found: no file dialog; none: File ▸ Import Lightroom Catalog… asks for it
+        // the catalog found: no file dialog; none: File ▸ Import Lightroom or Capture One Catalog… asks for it
         Dialog::LightroomCatalog { catalog, .. } => {
             app.run("file.importLightroom", catalog.as_ref().map_or_else(|| json!({}), |c| json!({"path": c})))
         }
@@ -2265,6 +2325,11 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::DeleteEffects { names } => app.run("mask.deleteEffect", json!({"names": names})),
         Dialog::RemoveFolder { path, disk, .. } => app.run("library.removeFolder", json!({"path": path, "disk": disk})),
+        Dialog::StopWaiting { id, .. } => {
+            // the task may have ended meanwhile: then there is nothing left to stop
+            crate::panels::activity::cancel(app, *id);
+            Ok(serde_json::Value::Null)
+        }
         Dialog::DeleteRejected { recycle, .. } => {
             let r = app.run("library.deleteRejected", json!({"files": if *recycle { "recycle" } else { "keep" }, "confirm": true}));
             if let Ok(v) = &r {
@@ -2297,7 +2362,8 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         | Dialog::Settings { .. }
         | Dialog::Update
         | Dialog::ManageEffects { .. }
-        | Dialog::PresetsManager { .. } => Ok(serde_json::Value::Null),
+        | Dialog::PresetsManager { .. }
+        | Dialog::ProfileManager { .. } => Ok(serde_json::Value::Null),
     }
 }
 
@@ -3934,7 +4000,8 @@ pub fn confirm_style(dlg: &Dialog) -> ConfirmStyle {
         | Dialog::DeleteKeyword { .. }
         | Dialog::DeleteEffects { .. }
         | Dialog::RemoveFolder { .. }
-        | Dialog::DeleteRejected { .. } => ConfirmStyle::Plain,
+        | Dialog::DeleteRejected { .. }
+        | Dialog::StopWaiting { .. } => ConfirmStyle::Plain,
         _ if only_shows(dlg) => ConfirmStyle::Plain,
         _ => ConfirmStyle::Primary,
     }
@@ -3956,6 +4023,7 @@ fn only_shows(dlg: &Dialog) -> bool {
             // each model has its own Download button in the body
             | Dialog::AiModels { .. }
             | Dialog::PresetsManager { .. }
+            | Dialog::ProfileManager { .. }
             // the updater has its own buttons in the body; the footer only closes
             | Dialog::Update
     ) || matches!(dlg, Dialog::SynchronizeFolder { counts: Some(c), .. } if c.up_to_date())

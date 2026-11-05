@@ -533,7 +533,9 @@ fn object_clicks_follow_the_chosen_model() {
     let p = s.execute("mask.add", &json!({"kind": "prompt", "text": "sky"})).unwrap_err();
     if Segmenter::AVAILABLE {
         assert_eq!(e.kind(), ErrorKind::ModelMissing(AiModel::Sam2), "{e}");
-        assert_eq!(p.kind(), ErrorKind::ModelMissing(AiModel::Sam3), "{p}");
+        // without SAM 3, Describe runs on the open models: the OWLv2 finder and SAM 2.1
+        assert_eq!(p.kind(), ErrorKind::ModelMissing(AiModel::Describe), "{p}");
+        assert_eq!(s.segmenter.describe_needs(), vec!["describe", "sam2"]);
     }
     let _ = std::fs::remove_dir_all(&root);
 }

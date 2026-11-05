@@ -58,7 +58,13 @@ pub enum Row {
 /// The rows of a field preset (unknown ids fall back to Default).
 pub fn rows(preset: &str) -> Vec<Row> {
     use Row::*;
-    let place = [Text("location", "Sublocation", 1), Text("city", "City", 1), Text("state", "State / Province", 1), Text("country", "Country", 1)];
+    let place = [
+        Text("location", "Sublocation", 1),
+        Text("city", "City", 1),
+        Text("state", "State / Province", 1),
+        Text("country", "Country", 1),
+        Text("countryCode", "Country Code", 1),
+    ];
     let exif = [
         Info("dimensions", "Dimensions"),
         Info("cropped", "Cropped"),
@@ -97,7 +103,7 @@ pub fn rows(preset: &str) -> Vec<Row> {
             Text("category", "Category", 1),
             Text("supplementalCategories", "Other Categories", 1),
             Text("subjectCode", "IPTC Subject Code", 1),
-            Info("keywords", "Keywords"),
+            Text("keywords", "Keywords", 2),
             Section("Image"),
             Captured,
             Text("location", "Sublocation", 1),
@@ -120,7 +126,14 @@ pub fn rows(preset: &str) -> Vec<Row> {
             Text("copyrightUrl", "Web Statement of Rights", 1),
         ],
         "location" => {
-            let mut v = vec![FileName, Text("title", "Title", 1), Text("caption", "Caption", 2), Captured];
+            let mut v = vec![
+                FileName,
+                Text("title", "Title", 1),
+                Text("headline", "Headline", 1),
+                Text("caption", "Caption", 2),
+                Text("keywords", "Keywords", 2),
+                Captured,
+            ];
             v.extend(place);
             v.push(Gps);
             v
@@ -135,7 +148,9 @@ pub fn rows(preset: &str) -> Vec<Row> {
                 Rating,
                 Label,
                 Text("title", "Title", 1),
+                Text("headline", "Headline", 1),
                 Text("caption", "Caption", 2),
+                Text("keywords", "Keywords", 2),
                 Text("altText", "Alt Text", 2),
                 Text("extendedDescription", "Extended Description", 3),
                 Text("copyright", "Copyright", 1),
@@ -379,7 +394,7 @@ fn toolbar(app: &mut LccApp, ui: &mut egui::Ui, ids: &[u64]) {
                     hint: "Preset name".into(),
                     value: String::new(),
                     command: "metadata.savePreset".into(),
-                    params: json!({"only": ["title", "headline", "caption", "descriptionWriter", "category", "supplementalCategories", "subjectCode", "copyright", "copyrightStatus", "usageTerms", "copyrightUrl", "creator", "creatorJobTitle", "creatorAddress", "creatorCity", "creatorState", "creatorPostalCode", "creatorCountry", "creatorPhone", "creatorEmail", "creatorWebsite", "location", "city", "state", "country", "keywords"]}),
+                    params: json!({"only": ["title", "headline", "caption", "descriptionWriter", "category", "supplementalCategories", "subjectCode", "copyright", "copyrightStatus", "usageTerms", "copyrightUrl", "creator", "creatorJobTitle", "creatorAddress", "creatorCity", "creatorState", "creatorPostalCode", "creatorCountry", "creatorPhone", "creatorEmail", "creatorWebsite", "location", "city", "state", "country", "countryCode", "keywords"]}),
                     key: "name".into(),
                 });
             }

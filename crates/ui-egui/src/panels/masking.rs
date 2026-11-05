@@ -90,21 +90,31 @@ fn section_header(app: &mut LccApp, ui: &mut egui::Ui, key: &str, title: &str, c
     let id = format!("mask:{key}");
     let open = !app.ui.section_folded(&id);
     let title = crate::i18n::tr(title);
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+    // (Compact: the Edit panel's banded section header, LAYOUT-DENSE)
+    let dense = t.dense;
+    let h = if dense { crate::theme::COMPACT_SECTION_H } else { 30.0 };
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
     register(ui.ctx(), format!("section:{id}"), r);
     // the section's sliders share one name column (Compact)
     crate::widgets::begin_slider_group(ui, &id);
     let p = ui.painter();
-    if resp.hovered() {
+    if dense {
+        crate::widgets::paint_section_band(p, r, &t, resp.hovered());
+    } else if resp.hovered() {
         p.rect_filled(r, 0.0, t.chrome.gamma_multiply(1.06));
     }
-    let chevron = Rect::from_center_size(pos2(r.left() + 20.0, r.center().y), vec2(12.0, 12.0));
-    paint(p, chevron, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.icon);
-    let g = p.layout_no_wrap(title.to_string(), t.semibold(13.0), t.text_label);
-    let at = pos2(r.left() + 32.0, r.center().y - g.size().y / 2.0);
+    let (chev_x, title_x, colour) = if dense {
+        (r.left() + crate::widgets::PAD_L + 5.0, r.left() + crate::widgets::PAD_L + 16.0, t.text)
+    } else {
+        (r.left() + 20.0, r.left() + 32.0, t.text_label)
+    };
+    let chevron = Rect::from_center_size(pos2(chev_x, r.center().y), vec2(12.0, 12.0));
+    paint(p, chevron, if open { Icon::ChevronDown } else { Icon::ChevronRight }, if dense { t.text } else { t.icon });
+    let g = p.layout_no_wrap(title.to_string(), t.semibold(13.0), colour);
+    let at = pos2(title_x, r.center().y - g.size().y / 2.0);
     let end = at.x + g.size().x;
-    p.galley(at, g, t.text_label);
+    p.galley(at, g, colour);
     if changed {
         p.circle_filled(pos2(end + 8.0, r.center().y), 2.5, t.accent);
     }
@@ -143,6 +153,23 @@ fn grading_section(app: &mut LccApp, ui: &mut egui::Ui, a: &LocalAdjustments) {
 pub fn local_get(a: &LocalAdjustments, key: &str) -> f64 {
     serde_json::to_value(a).ok().and_then(|v| v.get(key).and_then(|x| x.as_f64())).unwrap_or(0.0)
 }
+
+/// Every kind of mask, in Create New Mask's order, with its tile label (OneSlips 1138a5edd): the tiles and the Add /
+/// Subtract / Intersect menus offer all of them, in the same order, with the same icons.
+pub(crate) const MASK_KINDS: [(&str, &str); 12] = [
+    ("object", "Object"),
+    ("prompt", "Describe"),
+    ("subject", "Subject"),
+    ("sky", "Sky"),
+    ("background", "Background"),
+    ("people", "People"),
+    ("concept", "Remembered"),
+    ("brush", "Brush"),
+    ("linear", "Linear"),
+    ("radial", "Radial"),
+    ("luminanceRange", "Luminance"),
+    ("colorRange", "Color"),
+];
 
 /// The icon of a mask kind, by its `mask.add` kind id: the one table the Create New Mask tiles and
 /// the mask list share.
@@ -224,20 +251,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.label(egui::RichText::new(crate::i18n::tr("Create New Mask")).font(t.semibold(13.0)).color(t.text_label));
         });
         ui.add_space(6.0);
-        let tiles: [(&str, &str); 12] = [
-            ("object", "Object"),
-            ("prompt", "Describe"),
-            ("subject", "Subject"),
-            ("sky", "Sky"),
-            ("background", "Background"),
-            ("people", "People"),
-            ("concept", "Remembered"),
-            ("brush", "Brush"),
-            ("linear", "Linear"),
-            ("radial", "Radial"),
-            ("luminanceRange", "Luminance"),
-            ("colorRange", "Color"),
-        ];
+        let tiles = MASK_KINDS;
         // four 52 pt tiles a row when they and their labels fit, else fewer (wider for a long label)
         let widest = |size: f32| {
             let font = t.font(size);
@@ -260,43 +274,72 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     let (r, resp) = ui.allocate_exact_size(vec2(tile, tile_h), Sense::click());
                     crate::widgets::announce(&resp, crate::i18n::tr(label));
                     register(ui.ctx(), format!("maskNew:{kind}"), r);
-                    ui.painter().rect_filled(r, 4.0, if resp.hovered() { t.hover } else { t.inset });
-                    paint(ui.painter(), Rect::from_center_size(r.center() - vec2(0.0, icon_up), vec2(icon, icon)), kind_icon(kind), t.text_label);
+                    let active = app.ui.tool == *kind
+                        || (matches!(*kind, "luminanceRange") && (app.ui.tool == "lumRange" || app.ui.tool == "luminanceRange"))
+                        || (matches!(*kind, "concept") && app.ui.concept_pick)
+                        || (matches!(*kind, "people") && app.ui.people_pick.is_some())
+                        || app.ui.mask_new.as_ref().is_some_and(|(_, k)| k == *kind);
+                    ui.painter().rect_filled(
+                        r,
+                        4.0,
+                        if active {
+                            t.tool_active
+                        } else if resp.hovered() {
+                            t.hover
+                        } else {
+                            t.inset
+                        },
+                    );
+                    paint(
+                        ui.painter(),
+                        Rect::from_center_size(r.center() - vec2(0.0, icon_up), vec2(icon, icon)),
+                        kind_icon(kind),
+                        if active { t.text } else { t.text_label },
+                    );
                     // (cut short only in a panel too narrow for the label: the full name on hover)
                     let label = crate::i18n::tr(label);
-                    let g = one_line(ui.painter(), label, t.font(size), t.text_dim, tile - 2.0 * TILE_PAD);
+                    let g = one_line(ui.painter(), label, t.font(size), if active { t.text } else { t.text_dim }, tile - 2.0 * TILE_PAD);
                     let elided = g.elided;
                     let at = pos2(r.center().x, r.bottom() - label_up) - g.size() / 2.0;
                     register(ui.ctx(), format!("maskNewLabel:{kind}"), Rect::from_min_size(at, g.size()));
-                    ui.painter().galley(at, g, t.text_dim);
+                    ui.painter().galley(at, g, if active { t.text } else { t.text_dim });
                     let resp = if elided { resp.on_hover_text(label) } else { resp };
                     if resp.clicked() {
-                        match *kind {
-                            // armed: the first click on the photo makes the mask and picks there
-                            "colorRange" => match arm_new(app, "colorRange") {
-                                Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more")),
-                                Err(e) => app.toast(ui.ctx(), e),
-                            },
-                            "object" if !needs_model(app, "object", "new") => match arm_new(app, "object") {
-                                Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out")),
-                                Err(e) => app.toast(ui.ctx(), e),
-                            },
-                            "object" => {}
-                            "prompt" => start_describe(app, "new"),
-                            // a picker under the tiles: who and which parts, or which object
-                            "people" => {
-                                app.ui.concept_pick = false;
-                                app.ui.people_pick = if app.ui.people_pick.is_some() { None } else { Some((0, Vec::new())) };
-                            }
-                            "concept" => {
-                                app.ui.people_pick = None;
-                                app.ui.concept_pick = !app.ui.concept_pick;
-                            }
-                            "brush" | "linear" | "radial" => {
-                                let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
-                            }
-                            k => {
-                                let _ = app.run("mask.add", json!({"kind": k}));
+                        if active {
+                            disarm(app);
+                            app.ui.people_pick = None;
+                            app.ui.concept_pick = false;
+                            app.mask_pick_op = None;
+                        } else {
+                            match *kind {
+                                // armed: the first click on the photo makes the mask and picks there
+                                "colorRange" => match arm_new(app, "colorRange") {
+                                    Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more")),
+                                    Err(e) => app.toast(ui.ctx(), e),
+                                },
+                                "object" if !needs_model(app, "object", "new") => match arm_new(app, "object") {
+                                    Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out")),
+                                    Err(e) => app.toast(ui.ctx(), e),
+                                },
+                                "object" => {}
+                                "prompt" => start_describe(app, "new"),
+                                // a picker under the tiles: who and which parts, or which object
+                                "people" => {
+                                    app.ui.concept_pick = false;
+                                    app.mask_pick_op = None;
+                                    app.ui.people_pick = Some((0, Vec::new()));
+                                }
+                                "concept" => {
+                                    app.ui.people_pick = None;
+                                    app.mask_pick_op = None;
+                                    app.ui.concept_pick = true;
+                                }
+                                "brush" | "linear" | "radial" => {
+                                    let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
+                                }
+                                k => {
+                                    let _ = app.run("mask.add", json!({"kind": k}));
+                                }
                             }
                         }
                     }
@@ -774,10 +817,14 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 show_overlay_row(app, ui);
             });
         }
-        // the brush armed for a new mask: its settings before the first stroke
-        if app.ui.tool == "brush" && app.ui.mask_new.is_some() {
+        // the brush or object tool armed for a new mask: its settings before the first stroke
+        if app.ui.tool == "brush" {
             divider(ui);
             brush_settings(app, ui);
+        }
+        if app.ui.tool == "object" {
+            divider(ui);
+            object_settings(app, ui);
         }
         next_mask_settings(app, ui);
         return;
@@ -790,6 +837,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     if app.ui.tool == "brush" {
         divider(ui);
         brush_settings(app, ui);
+    }
+    if app.ui.tool == "object" {
+        divider(ui);
+        object_settings(app, ui);
     }
     divider(ui);
     super::mask_effects::effect_row(app, ui, &m);
@@ -1760,13 +1811,22 @@ fn component_row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: u32, k: usize, 
     }
 }
 
-/// Whether the SAM 3 model is missing in a build that could use it: then the download is
-/// offered (with `then` to start afterwards) instead of starting an AI mask.
+/// Whether the model an AI mask needs is missing in a build that could use it (SAM 3, or the open
+/// models chosen for Object or serving Describe): then the download is offered (with `then` to start afterwards) instead of starting an AI mask.
 fn needs_model(app: &mut LccApp, kind: &str, op: &str) -> bool {
     let seg = &app.session.segmenter;
     if kind == "object" && seg.object_model_in_use() == "sam2" {
         // SAM 2.1 was chosen for Object masks: without it, the AI Models dialog offers it
         let missing = lcc_engine::segment::Segmenter::AVAILABLE && !seg.open_model_installed("sam2");
+        if missing && app.ui.dialog.is_none() {
+            app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "ai".into() });
+        }
+        return missing;
+    }
+    if kind == "prompt" && seg.models_root.is_some() && !seg.installed() && seg.remote_endpoint().is_none() {
+        // without SAM 3, Describe runs on the open OWLv2 finder and SAM 2.1: the AI Models dialog
+        // offers whichever is missing
+        let missing = lcc_engine::segment::Segmenter::AVAILABLE && !seg.describe_needs().is_empty();
         if missing && app.ui.dialog.is_none() {
             app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "ai".into() });
         }
@@ -1909,46 +1969,65 @@ fn describe_field(app: &mut LccApp, ui: &mut egui::Ui, new_mask: bool) {
     }
 }
 
+/// Add / Subtract / Intersect with: every kind Create New Mask offers ([`MASK_KINDS`]), in its order and with its icons
+/// (OneSlips 1138a5edd; Background, People, Remembered and Color were missing). People and Remembered open their
+/// picker, whose selection then combines with the selected mask.
 fn component_menu(app: &mut LccApp, ui: &mut egui::Ui, op: &str) {
-    let b = ui.button(crate::i18n::tr("Object"));
-    register(ui.ctx(), format!("maskComp:{op}:object"), b.rect);
-    if b.clicked() {
-        start_object(app, ui.ctx(), op);
-    }
-    let b = ui.button(crate::i18n::tr("Describe…"));
-    register(ui.ctx(), format!("maskComp:{op}:prompt"), b.rect);
-    if b.clicked() {
-        start_describe(app, op);
-    }
-    for (kind, label) in [
-        ("brush", "Brush"),
-        ("linear", "Linear Gradient"),
-        ("radial", "Radial Gradient"),
-        ("sky", "Sky"),
-        ("subject", "Subject"),
-        ("luminanceRange", "Luminance Range"),
-    ] {
+    let t = Tokens::get(ui.ctx());
+    for (kind, label) in MASK_KINDS {
         // painting only adds or erases
         if kind == "brush" && op == "intersect" {
             continue;
         }
-        let b = ui.button(menu_label(label));
+        let label = match kind {
+            "prompt" => "Describe…",
+            "linear" => "Linear Gradient",
+            "radial" => "Radial Gradient",
+            "luminanceRange" => "Luminance Range",
+            "colorRange" => "Color Range",
+            "people" => "People…",
+            "concept" => "Remembered…",
+            _ => label,
+        };
+        // the tile's icon before the name
+        let b = ui.button(format!("      {}", menu_label(label)));
+        paint(ui.painter(), Rect::from_center_size(pos2(b.rect.left() + 13.0, b.rect.center().y), vec2(14.0, 14.0)), kind_icon(kind), t.text_label);
         register(ui.ctx(), format!("maskComp:{op}:{kind}"), b.rect);
         if b.clicked() {
-            if kind == "brush" {
-                let _ = app.run("tool.brush", json!({"op": op}));
-            } else {
-                let _ = app.run("mask.addComponent", json!({"op": op, "kind": kind}));
-                if matches!(kind, "linear" | "radial" | "colorRange" | "luminanceRange" | "depthRange") {
-                    app.ui.tool = kind.to_string();
-                }
+            start_component(app, ui.ctx(), kind, op);
+        }
+    }
+}
+
+/// A component of `kind` the selected mask combines by `op`: tools wait for the photo, pickers open, the rest is made
+/// at once.
+pub(crate) fn start_component(app: &mut LccApp, ctx: &egui::Context, kind: &str, op: &str) {
+    match kind {
+        "object" => return start_object(app, ctx, op),
+        "prompt" => return start_describe(app, op),
+        "people" | "concept" => {
+            // one picker at a time, its selection combined with the selected mask
+            app.mask_pick_op = Some(op.to_string());
+            app.ui.people_pick = (kind == "people").then(|| (0, Vec::new()));
+            app.ui.concept_pick = kind == "concept";
+            return;
+        }
+        "brush" => {
+            let _ = app.run("tool.brush", json!({"op": op}));
+        }
+        _ => {
+            if let Err(e) = app.run("mask.addComponent", json!({"op": op, "kind": kind})) {
+                return app.toast(ctx, e);
             }
-            if let Some(d) = app.session.active().and_then(|id| app.session.develop_of(id))
-                && let Some(m) = d.masks.iter().find(|m| Some(m.id) == app.session.active_mask)
-            {
-                app.ui.active_mask_component = Some(m.components.len().saturating_sub(1));
+            if matches!(kind, "linear" | "radial" | "colorRange" | "luminanceRange" | "depthRange") {
+                app.ui.tool = kind.to_string();
             }
         }
+    }
+    if let Some(d) = app.session.active().and_then(|id| app.session.develop_of(id))
+        && let Some(m) = d.masks.iter().find(|m| Some(m.id) == app.session.active_mask)
+    {
+        app.ui.active_mask_component = Some(m.components.len().saturating_sub(1));
     }
 }
 
@@ -1996,6 +2075,10 @@ fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
                 if text_button(ui, id, label, app.ui.brush_slot == slot).clicked() && app.ui.brush_slot != slot {
                     let _ = app.run("brush.preset", json!({"slot": label.to_ascii_lowercase()}));
                 }
+            }
+            ui.add_space(8.0);
+            if text_button(ui, "brushDone", crate::i18n::tr("Done"), false).clicked() {
+                disarm(app);
             }
         });
         let mut auto = app.ui.brush_auto_mask;
@@ -2066,9 +2149,31 @@ fn mask_icon(ui: &mut egui::Ui, id: &str, icon: Icon, label: &str, active: bool)
 
 /// The on-photo tools that belong to Masking (armed from its panel or a shortcut). Colour Range's
 /// eyedropper is not one: it also samples from Edit.
+fn object_settings(app: &mut LccApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 6 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(crate::i18n::tr("Object Selection")).font(t.semibold(13.0)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if text_button(ui, "objectDone", crate::i18n::tr("Done"), false).clicked() {
+                    disarm(app);
+                }
+            });
+        });
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new(crate::i18n::tr("Click an object on the photo to select it · ⌥-click leaves a part out"))
+                .font(t.font(11.5))
+                .color(t.text_dim),
+        );
+    });
+}
+
 pub(crate) fn is_mask_tool(tool: &str) -> bool {
-    matches!(tool, "brush" | "linear" | "radial" | "object" | "prompt" | "depthRange" | "luminanceRange" | "maskPointColor")
-        || tool.starts_with("maskMixer:")
+    matches!(
+        tool,
+        "brush" | "linear" | "radial" | "object" | "prompt" | "depthRange" | "luminanceRange" | "lumRange" | "colorRange" | "maskPointColor"
+    ) || tool.starts_with("maskMixer:")
 }
 
 /// Arm mask tool `kind` (`brush`, `linear`, `radial`, `colorRange`, `object`) for a new mask: no mask is selected, and the
@@ -2168,6 +2273,63 @@ pub(crate) fn put_tools_away(app: &mut LccApp) {
         app.ui.tool_photo = None;
     }
     app.ui.mask_held = photo.zip(app.session.active_mask).map(|(p, m)| (p, m, app.ui.active_mask_component));
+    keep_selection(app);
+}
+
+/// What Masks remembers to land on a mask (OneSlips 0d9d4fb7d, test notes 2026-10-25 notes 8 and 9).
+#[derive(Default)]
+pub(crate) struct Landing {
+    /// The mask selected last on each photo, this session.
+    memory: std::collections::HashMap<u64, u32>,
+    /// The photo on show and whether Masks was open, last frame: a change is "entering Masks".
+    seen: Option<(Option<u64>, bool)>,
+    /// The mask selected when a tool was armed for a new one (photo, mask).
+    before_arm: Option<(u64, Option<u32>)>,
+}
+
+/// Which mask Masks has selected, worked out every frame:
+///
+/// - entering Masks, or another photo while in Masks, lands on a mask when the photo has any and none is selected
+///   (another photo's linked copy is selected by the engine): the only one; else the one selected last on this
+///   photo; else the first;
+/// - a tool armed for a new mask deselects the selected one ([`arm_new`]); put away without making a mask (Esc, the
+///   tile again) the one selected before is selected again.
+pub(crate) fn keep_selection(app: &mut LccApp) {
+    let photo = app.session.active().map(|p| p.0);
+    let in_masks = app.ui.right == crate::state::RightPanel::Masking && app.ui.view == crate::state::ViewMode::Detail;
+    let d = app.session.active().and_then(|id| app.session.develop_of(id)).unwrap_or_default();
+    let has = |id: u32| d.masks.iter().any(|m| m.id == id);
+    let armed = app.ui.mask_new.is_some();
+    if armed {
+        if app.mask_landing.before_arm.is_none_or(|(q, _)| Some(q) != photo) {
+            let before = app.mask_landing.memory.get(&photo.unwrap_or_default()).copied();
+            app.mask_landing.before_arm = photo.map(|p| (p, app.session.active_mask.or(before)));
+        }
+    } else if let Some((p, before)) = app.mask_landing.before_arm.take()
+        && app.session.active_mask.is_none()
+        && photo == Some(p)
+        && let Some(id) = before.filter(|id| has(*id))
+    {
+        // put away without making a mask: the one selected before
+        let _ = app.run("mask.select", json!({"id": id}));
+    }
+    let seen = (photo, in_masks);
+    let entered = in_masks && app.mask_landing.seen != Some(seen);
+    app.mask_landing.seen = Some(seen);
+    let Some(p) = photo.filter(|_| in_masks) else { return };
+    if entered && !armed && !app.session.active_mask.is_some_and(has) {
+        let memory = app.mask_landing.memory.get(&p).copied().filter(|id| has(*id));
+        let landing = match d.masks.as_slice() {
+            [only] => Some(only.id),
+            masks => memory.or_else(|| masks.first().map(|m| m.id)),
+        };
+        if let Some(id) = landing {
+            let _ = app.run("mask.select", json!({"id": id}));
+        }
+    }
+    if let Some(id) = app.session.active_mask.filter(|id| has(*id)) {
+        app.mask_landing.memory.insert(p, id);
+    }
 }
 
 /// Keep "Reset settings on new mask" in the saved UI settings: the saved choice goes to the engine

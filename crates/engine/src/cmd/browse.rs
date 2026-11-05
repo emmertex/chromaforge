@@ -47,13 +47,22 @@ fn browse(s: &mut Session, p: &Value) -> Result<Value> {
     let report = import_with(s, &files, &opts)?;
     let forgotten = forget_gone(s, &dir_s, subfolders, &files);
     stamp_browsed(s, &dir_s, &files);
-    s.browse = Some(Browse { path: dir_s.clone(), subfolders });
+    // the Browse tab's quick filter: `show: all|notImported`; left out, a re-browse of the same
+    // folder keeps the choice and a new folder shows everything on disk
+    let not_imported = match p.get("show").and_then(Value::as_str) {
+        Some("all") => false,
+        Some("notImported") => true,
+        Some(other) => return Err(bad(C, format!("unknown show `{other}` (all|notImported)"))),
+        None => s.browse.as_ref().is_some_and(|b| b.not_imported && b.path == dir_s),
+    };
+    s.browse = Some(Browse { path: dir_s.clone(), subfolders, not_imported });
     s.source = LibrarySource::Folder;
     s.keep_active_in_view();
     let shown = s.visible().len();
     Ok(json!({
         "path": dir_s,
         "subfolders": subfolders,
+        "notImported": not_imported,
         "photos": shown,
         "new": report.imported.len(),
         "failed": report.failed.len(),
@@ -242,7 +251,23 @@ fn add_to_library(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"added": 0}));
     }
     let n = ids.len();
-    let ops = ids.into_iter().map(|id| Op::SetLocal { id, local: false }).collect();
+    let mut ops: Vec<Op> = Vec::new();
+    for id in ids {
+        ops.push(Op::SetLocal { id, local: false });
+        let Some(ph) = s.catalog.photo(id) else { continue };
+        // the camera profile it was shown with (`Session::browse_profile`) and the serial its file
+        // states, as an import keeps them
+        if let Some(serial) = s.missing_serial(ph, true) {
+            let mut meta = ph.meta.clone();
+            meta.camera_serial = serial;
+            ops.push(Op::SetMeta { id, meta: Box::new(meta) });
+        }
+        if let Some(camera) = s.import_profile_for(ph, &s.import_profile_choice, true) {
+            let mut d = (*ph.develop).clone();
+            d.profile.camera = camera;
+            ops.push(Op::SetDevelop { id, settings: std::sync::Arc::new(d), label: "Camera Profile".into(), edited: ph.edited.clone() });
+        }
+    }
     s.commit("Add to My Photos", Op::Batch { ops })?;
     Ok(json!({"added": n}))
 }
@@ -306,7 +331,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Browse Folder",
             [],
             None,
-            "{path, subfolders?: bool} — show a folder's photos without adding them to the library (they're read in place; edits go to XMP sidecars) → {path, photos, new}",
+            "{path, subfolders?: bool, show?: all|notImported} — show a folder's photos without adding them to the library (they're read in place; edits go to XMP sidecars; `show` picks the quick filter: everything on disk — the default — or just the files an import would take) → {path, photos, new, notImported}",
             always,
             browse
         ),
