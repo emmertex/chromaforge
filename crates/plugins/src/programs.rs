@@ -155,6 +155,8 @@ pub struct Found {
 pub struct StartRequest {
     /// The plug-in.
     pub plugin: String,
+    /// The plug-in's display name (its manifest's `name`), for the user.
+    pub plugin_name: String,
     pub program: ProgramDecl,
     /// The installed copy to start.
     pub found: Found,

@@ -84,6 +84,7 @@
   "Sent {n} page(s) to the printer (job {j})": "პრინტერს გაეგზავნა {n} გვერდი (დავალება {j})",
   "Service: {name}": "სერვისი: {name}",
   "Slideshow {n}": "სლაიდშოუ {n}",
+  "Stop waiting: {task}?": "ლოდინის შეწყვეტა: {task}?",
   "Style {n}": "სტილი {n}",
   "Tagged {n} photos from the tracklog": "ტრეკლოგიდან მონიშნულია {n} ფოტო",
   "Target: {name}": "სამიზნე: {name}",

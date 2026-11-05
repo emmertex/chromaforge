@@ -71,6 +71,7 @@
   "Sent {n} page(s) to the printer (job {j})": "Отправлено страниц на принтер: {n} (задание {j})",
   "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.": "Показывает условия модели, затем загружает {} с {host}, устанавливает её и начинает использовать. Больше ничего не отправляется.",
   "Slideshow {n}": "Слайд-шоу {n}",
+  "Stop waiting: {task}?": "Прекратить ожидание: {task}?",
   "Style {n}": "Стиль {n}",
   "Tagged {n} photos from the tracklog": "Отмечено фото по треку: {n}",
   "Target: {name}": "Цель: {name}",

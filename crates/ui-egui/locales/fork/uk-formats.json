@@ -64,6 +64,7 @@
   "Second graphics card not used: {why}": "Друга відеокарта не використовується: {why}",
   "Sent {n} page(s) to the printer (job {j})": "Надіслано сторінок на принтер: {n} (завдання {j})",
   "Slideshow {n}": "Слайд-шоу {n}",
+  "Stop waiting: {task}?": "Припинити очікування: {task}?",
   "Style {n}": "Стиль {n}",
   "Tagged {n} photos from the tracklog": "Позначено фото за треком: {n}",
   "Target: {name}": "Ціль: {name}",

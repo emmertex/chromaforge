@@ -85,6 +85,7 @@
   "Sent {n} page(s) to the printer (job {j})": "Sent {n} page(s) to the printer (job {j})",
   "Service: {name}": "Tjänst: {name}",
   "Slideshow {n}": "Slideshow {n}",
+  "Stop waiting: {task}?": "Sluta vänta: {task}?",
   "Style {n}": "Style {n}",
   "Tagged {n} photos from the tracklog": "Tagged {n} photos from the tracklog",
   "Target: {name}": "Target: {name}",

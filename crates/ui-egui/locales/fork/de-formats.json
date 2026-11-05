@@ -71,6 +71,7 @@
   "Sent {n} page(s) to the printer (job {j})": "{n} Seite(n) an den Drucker gesendet (Auftrag {j})",
   "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.": "Zeigt die Bedingungen des Modells, lädt dann {} von {host} herunter, installiert es und verwendet es. Sonst wird nichts gesendet.",
   "Slideshow {n}": "Diashow {n}",
+  "Stop waiting: {task}?": "Warten beenden: {task}?",
   "Style {n}": "Stil {n}",
   "Tagged {n} photos from the tracklog": "{n} Fotos aus dem Tracklog getaggt",
   "Target: {name}": "Ziel: {name}",
