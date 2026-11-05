@@ -166,7 +166,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             ui.painter().text(
                 ai_r.center(),
                 Align2::CENTER_CENTER,
-                "AI",
+                crate::i18n::tr("AI"),
                 t.semibold(10.5),
                 if app.ui.semantic_search {
                     t.canvas
