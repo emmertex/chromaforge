@@ -2170,3 +2170,21 @@ fn all_metadata_lists_extended_xmp_properties() {
     assert!(names.contains(&"exif:GPSLatitude") && names.contains(&"exif:GPSLongitude"), "{names:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A GPS position that lives only in a JPEG's Extended XMP (issue #2581): an Original export that
+/// removes the location is refused, and writes no file.
+#[test]
+fn remove_location_refuses_original_with_gps_in_extended_xmp() {
+    let dir = temp_dir("export-noloc-extended-xmp");
+    let path = dir.join("Extended.jpg");
+    let bytes = jpeg_with_extended_gps();
+    assert!(lcc_meta::embedded(&bytes).xmp.as_deref().is_some_and(|x| !x.contains("GPSLatitude")), "the main packet holds no position");
+    std::fs::write(&path, bytes).unwrap();
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let id = session.catalog.photos().next().unwrap().id;
+    let options = ExportOptions { format: ExportFormat::Original, remove_location: true, ..Default::default() };
+    let error = export_photo(&mut session, id, &options, 1).err().expect("a position in the Extended XMP must refuse the Original export");
+    assert!(error.contains("can't remove the location"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
