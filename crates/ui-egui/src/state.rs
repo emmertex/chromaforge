@@ -21,6 +21,13 @@ pub enum ViewMode {
     People,
 }
 
+impl ViewMode {
+    /// The two Library grids ([`Self::PhotoGrid`], [`Self::SquareGrid`]).
+    pub fn is_grid(self) -> bool {
+        matches!(self, ViewMode::PhotoGrid | ViewMode::SquareGrid)
+    }
+}
+
 /// The right-hand tool/panel shown next to the tool strip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -170,6 +177,7 @@ pub enum StartupView {
     #[default]
     Last,
     Grid,
+    SquareGrid,
     Detail,
 }
 
@@ -448,6 +456,10 @@ pub struct AppSettings {
     /// The Settings section shown last: Settings… opens there again (LR-PREF-WINDOW).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub settings_tab: String,
+    /// The Settings window's size in points as the user left it (`None`: the default size; fitted
+    /// to the screen when the window opens; OneSlips, LR-PREF-WINDOW).
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub settings_size: Option<[f32; 2]>,
     /// GPU rendering allowed (`app.gpu`).
     pub gpu: bool,
     /// The graphics interface GPU rendering uses (Settings ▸ Performance; applies at next launch).
@@ -675,6 +687,7 @@ impl Default for AppSettings {
             import_as_tab: true,
             import_tab: Default::default(),
             settings_tab: String::new(),
+            settings_size: None,
             gpu: true,
             gpu_backend: GpuBackend::Auto,
             gpu_card: String::new(),
@@ -1103,6 +1116,9 @@ pub struct UiState {
     #[serde(skip)]
     pub frame_rate: bool,
     pub view: ViewMode,
+    /// The grid style the user chose last (`view.photoGrid` / `view.squareGrid`; #794). Every path
+    /// back to a grid uses it, so Square Grid survives a restart and detours through a photo.
+    pub grid_style: ViewMode,
     /// The Modern layout (fork-owned; see [`crate::modern`]). Saved as `touch` before it replaced the touch layout.
     #[serde(alias = "touch")]
     pub modern: crate::modern::ModernUi,
@@ -2239,6 +2255,7 @@ impl Default for UiState {
             mask_drawing: None,
             collapsed_masks: Default::default(),
             view: ViewMode::Detail,
+            grid_style: ViewMode::PhotoGrid,
             modern: crate::modern::ModernUi::default(),
             tab: Default::default(),
             library_source: None,
@@ -2688,9 +2705,15 @@ impl UiState {
         }
         self.dialog = None;
         self.fullscreen = false;
+        // a hand-edited file (or a value from another version) must not leave a photo view in the
+        // grid-style slot (#794)
+        if !self.grid_style.is_grid() {
+            self.grid_style = ViewMode::PhotoGrid;
+        }
         match self.settings.startup_view {
             StartupView::Last => {}
             StartupView::Grid => self.view = ViewMode::PhotoGrid,
+            StartupView::SquareGrid => self.view = ViewMode::SquareGrid,
             StartupView::Detail => self.view = ViewMode::Detail,
         }
         self

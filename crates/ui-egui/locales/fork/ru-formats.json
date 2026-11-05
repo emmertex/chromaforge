@@ -110,6 +110,7 @@
   "{n} keywords removed": "Удалено ключевых слов: {n}",
   "{n} new photos in {folders} folders: see the badges in Folders": "Новых фото: {n} в папках ({folders}). См. отметки в разделе «Папки»",
   "{n} new photos in “{folder}”: right-click the folder ▸ Add New Photos": "Новых фото в «{folder}»: {n}. Щёлкните папку правой кнопкой ▸ Добавить новые фото",
+  "{n} operations in progress…": "Выполняется операций: {n}…",
   "{n} paper size(s) from the printer": "Форматов бумаги от принтера: {n}",
   "{n} photos relinked": "Перепривязано фото: {n}",
   "{n} photos shared: {u}": "Опубликовано фото: {n}: {u}",

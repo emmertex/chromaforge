@@ -67,7 +67,7 @@ fn rejects_unknown_fields_and_bounds_the_values() {
     assert_eq!(r["keyword"]["values"].as_array().unwrap().len(), 1);
     assert!(r["keyword"]["distinct"].as_u64().unwrap() > 1, "distinct counts them all");
     let all = s.execute("library.facets", &json!({})).unwrap();
-    assert_eq!(all.as_object().unwrap().len(), crate::cmd::facets::FIELDS.len());
+    assert_eq!(all.as_object().unwrap().len(), crate::cmd::facets::fields().len());
 }
 
 /// Issue #218: a Metadata column's click (`library.facetPick`) narrows the view; the next column counts only what
@@ -129,12 +129,12 @@ fn bad_picks_are_refused() {
     let (mut s, _) = library();
     for p in [
         json!({}),
-        json!({"field": "iso", "value": "100"}),
         json!({"field": "shoe size", "value": "9"}),
         json!({"field": "camera", "value": 3}),
         json!({"field": "camera", "value": "  "}),
         json!({"field": "rating", "value": "9"}),
-        json!({"field": "rating", "value": "0"}),
+        json!({"field": "rating", "none": true}),
+        json!({"field": "camera", "none": "yes"}),
         json!({"field": "rating", "value": "-1"}),
         json!({"field": "flag", "value": "maybe"}),
         json!({"field": "kind", "value": "hologram"}),
@@ -145,4 +145,54 @@ fn bad_picks_are_refused() {
         assert!(s.execute("library.facetPick", &p).is_err(), "{p}");
         assert_eq!(s.filter, lcc_catalog::Filter::default(), "{p} left the filter alone");
     }
+}
+
+/// Photos without a value can be picked (issue #777): unrated photos, photos without a keyword or camera.
+#[test]
+fn unknown_values_can_be_picked() {
+    let (mut s, ids) = library();
+    let shown = s.visible().len();
+    // unrated
+    s.execute("library.facetPick", &json!({"field": "rating", "value": "0"})).unwrap();
+    let v = s.visible().to_vec();
+    assert!(v.iter().all(|id| s.catalog.photo(*id).unwrap().rating == 0));
+    s.execute("library.facetPick", &json!({"field": "rating", "value": null})).unwrap();
+    // no keyword
+    let r = s.execute("library.facetPick", &json!({"field": "keyword", "none": true})).unwrap();
+    assert_eq!(r["none"], true);
+    let without: Vec<_> = s.visible().to_vec();
+    assert!(without.iter().all(|id| s.catalog.photo(*id).unwrap().meta.keywords.is_empty()));
+    assert!(!without.iter().any(|id| ids.contains(id)), "the photos with keywords are left out");
+    let f = s.execute("library.facets", &json!({"fields": ["keyword"]})).unwrap();
+    assert_eq!(f["keyword"]["noneChosen"], true);
+    // a value as well: those photos, or the ones without
+    s.execute("library.facetPick", &json!({"field": "keyword", "value": "qq-two"})).unwrap();
+    assert_eq!(s.visible().len(), without.len() + 2);
+    // clearing the column drops both
+    s.execute("library.facetPick", &json!({"field": "keyword", "value": null})).unwrap();
+    assert_eq!(s.visible().len(), shown);
+    assert_eq!(s.filter, lcc_catalog::Filter::default());
+}
+
+/// The fields without a filter field of their own (issue #777): file format, IPTC text, aspect ratio.
+#[test]
+fn new_fields_are_counted_and_picked() {
+    let (mut s, ids) = library();
+    let mut m = s.catalog.photo(ids[0]).unwrap().meta.clone();
+    m.headline = "Facet Headline".into();
+    s.catalog.apply(Op::SetMeta { id: ids[0], meta: Box::new(m) }).unwrap();
+    let r = s.execute("library.facets", &json!({"fields": ["format", "headline", "aspect", "preset", "ai"]})).unwrap();
+    assert!(!values(&r, "format").is_empty(), "every demo photo has a format");
+    assert!(!values(&r, "aspect").is_empty(), "every demo photo has a size");
+    assert_eq!(values(&r, "headline"), vec![("Facet Headline".to_string(), 1)]);
+    s.execute("library.facetPick", &json!({"field": "headline", "value": "facet headline"})).unwrap();
+    assert_eq!(s.visible().to_vec(), vec![ids[0]]);
+    s.execute("library.facetPick", &json!({"field": "headline", "value": "Facet Headline"})).unwrap();
+    s.execute("library.facetPick", &json!({"field": "headline", "none": true})).unwrap();
+    assert!(!s.visible().contains(&ids[0]));
+    let format = values(&r, "format")[0].0.clone();
+    s.execute("library.facetPick", &json!({"field": "headline", "value": null})).unwrap();
+    s.execute("library.facetPick", &json!({"field": "format", "value": format})).unwrap();
+    let v = s.visible().to_vec();
+    assert!(!v.is_empty() && v.iter().all(|id| s.catalog.photo(*id).unwrap().format.eq_ignore_ascii_case(&format)));
 }

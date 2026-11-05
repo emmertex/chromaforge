@@ -109,6 +109,7 @@
   "{n} keywords removed": "已移除 {n} 個關鍵字",
   "{n} new photos in {folders} folders: see the badges in Folders": "{folders} 個資料夾中有 {n} 張新照片：請查看「資料夾」中的標記",
   "{n} new photos in “{folder}”: right-click the folder ▸ Add New Photos": "「{folder}」中有 {n} 張新照片：在資料夾上按右鍵 ▸ 加入新照片",
+  "{n} operations in progress…": "正在進行 {n} 項作業…",
   "{n} paper size(s) from the printer": "印表機提供 {n} 種紙張尺寸",
   "{n} photos relinked": "已重新連結 {n} 張相片",
   "{n} photos shared: {u}": "已分享 {n} 張相片：{u}",

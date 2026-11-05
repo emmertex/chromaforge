@@ -9,6 +9,7 @@
 //! of decoded source proxies. Rendering is done by [`RenderJob`]s that are `Send` so frontends can
 //! run them off the UI thread.
 #![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 // Model/cache types remain available without linking the optional inference crate.
 #[cfg(not(feature = "denoise"))]
@@ -88,6 +89,7 @@ pub mod machine_test;
 pub mod media;
 pub mod memory;
 pub mod merge;
+pub mod merge_layers;
 pub mod midi;
 /// The shared AI backend's queue and activity row (#491).
 mod ml;
@@ -933,6 +935,10 @@ impl Session {
                 self.auto_write_sidecars_since(log_start);
             }
         }
+        if self.depth == 0 {
+            // whatever the command changed, and however it ended: the view points at what is there
+            self.reconcile_view();
+        }
         if self.depth == 0 && self.library.is_none() && self.app_store.is_some() {
             // no library (`run --shared-settings`): the store is saved after each command
             if let Err(e) = self.save_app_store() {
@@ -1265,6 +1271,7 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        self.reconcile_view();
         let applied = e.op.clone();
         // AI masks still computing for what was undone stop
         self.segmenter.cancel_recompute(single_photo(&e.op, 0));
@@ -1310,6 +1317,7 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        self.reconcile_view();
         let applied = e.op.clone();
         // a redone preset or paste computes the AI masks it brings again
         if let Some(id) = single_photo(&e.op, 0) {
@@ -1697,14 +1705,27 @@ impl Session {
     pub fn develop_op(&self, id: PhotoId, settings: DevelopSettings, label: &str) -> Option<Op> {
         let p = self.catalog.photo(id)?;
         let mut settings = settings;
-        // old masks (on the corrected frame) go onto the photo, from the frame they were drawn on
-        if settings.masks.iter().any(|m| !m.on_photo) {
-            let before = match &self.interaction {
-                Some(i) if i.photo == id => Some(i.original.clone()),
-                _ => self.develop_of(id),
-            };
-            if let Some(b) = before {
-                self.attach_masks(id, &b, &mut settings);
+        // old masks (on the corrected frame) go onto the photo, from the frame they were drawn on:
+        // masks this edit kept, under the photo's settings before it (a geometry edit then moves
+        // the photo, not them); masks it brought in (paste, sync, a preset, a history step, a
+        // sidecar), under the settings they came with, where they render now. Kept masks also
+        // turn with an orientation change the edit makes (a sync or paste of the Crop group).
+        let before = match &self.interaction {
+            Some(i) if i.photo == id => Some(i.original.clone()),
+            _ => self.develop_of(id),
+        };
+        let turn = before.as_ref().and_then(|b| orientation_change(b.orientation, settings.orientation));
+        if settings.masks.iter().any(|m| !m.on_photo) || turn.is_some() {
+            let kept_frame = before.as_ref().and_then(|b| self.mask_frame(id, b));
+            let new_frame = self.mask_frame(id, &settings);
+            for m in &mut settings.masks {
+                let kept = before.as_ref().is_some_and(|b| b.masks.contains(m));
+                if let Some(f) = if kept { kept_frame.as_ref() } else { new_frame.as_ref() } {
+                    lcc_pipeline::mask_space::attach(m, f);
+                }
+                if let (true, Some(t)) = (kept, turn) {
+                    lcc_pipeline::mask_space::turn(m, t);
+                }
             }
         }
         // a clip takes only the global grading controls and the crop: presets, paste and sync drop the rest
@@ -1746,17 +1767,23 @@ impl Session {
         if d.masks.iter().all(|m| m.on_photo) {
             return;
         }
-        let Some(p) = self.catalog.photo(id) else { return };
-        let frame = lcc_pipeline::geometry::Frame::with_lens(
-            p.width.max(1) as usize,
-            p.height.max(1) as usize,
-            &drawn.effective(),
-            false,
-            p.embedded_lens.as_deref(),
-        );
+        let Some(frame) = self.mask_frame(id, drawn) else { return };
         for m in &mut d.masks {
             lcc_pipeline::mask_space::attach(m, &frame);
         }
+    }
+
+    /// The uncropped frame of photo `id` under settings `d`, with its lens: where mask
+    /// coordinates go through its warp ([`lcc_pipeline::geometry::Frame::for_mask`]).
+    pub(crate) fn mask_frame(&self, id: PhotoId, d: &DevelopSettings) -> Option<lcc_pipeline::geometry::Frame> {
+        let p = self.catalog.photo(id)?;
+        Some(lcc_pipeline::geometry::Frame::with_lens(
+            p.width.max(1) as usize,
+            p.height.max(1) as usize,
+            &d.effective(),
+            false,
+            p.embedded_lens.as_deref(),
+        ))
     }
 
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
@@ -1879,8 +1906,31 @@ impl Session {
         self.shelved_filter.is_some()
     }
 
+    /// Makes the view show only albums the library holds: one that is gone is no longer the
+    /// source (All Photos is) or the filter's album. THE place this is checked: commands, undo
+    /// and redo, opening a library and every look at the grid run it, so whatever removed an
+    /// album (a command, an undo, a background task) or named one (a saved filter, a saved view)
+    /// need not know. Two lookups: it runs every time.
+    ///
+    /// An album that comes back (its deletion undone) is not shown again by itself, as after
+    /// `album.delete` and undo before: the grid stays where the person was put.
+    ///
+    /// What is only looked up when it is used is left as it is: the target album (a missing one
+    /// means the Quick Collection).
+    pub fn reconcile_view(&mut self) {
+        let cat = &self.catalog;
+        let gone = |a: &lcc_catalog::AlbumId| cat.album(*a).is_none();
+        if matches!(&self.source, LibrarySource::Album(a) if gone(a)) {
+            self.source = LibrarySource::All;
+        }
+        if self.filter.album.as_ref().is_some_and(gone) {
+            self.filter.album = None;
+        }
+    }
+
     /// Photos shown in the grid/filmstrip for the current source, filter and sort.
     pub fn visible(&mut self) -> &[PhotoId] {
+        self.reconcile_view();
         let mut key =
             (self.catalog.revision, format!("{:?}|{:?}|{:?}|{:?}|{:?}", self.source, self.filter, self.sort, self.browse, self.library_folder));
         // What a held view is told apart by: what is shown and how, and for a smart album its rules (rules that were
@@ -2099,6 +2149,7 @@ impl Session {
     /// Photos in the current source (folder, album, …) before the filter bar and search narrow
     /// them; `None` where that is not a separate number (Missing Photos).
     pub fn source_total(&mut self) -> Option<usize> {
+        self.reconcile_view();
         if self.source == LibrarySource::Missing {
             return None;
         }
@@ -2242,8 +2293,14 @@ impl Session {
     }
 
     /// The photos commands act on when a call names none: the selection, else the active photo.
+    /// As far as its photos are there.
     pub fn selected(&self) -> Vec<PhotoId> {
-        if self.selection.ids.is_empty() { self.selection.active.into_iter().collect() } else { self.selection.ids.clone() }
+        let there = |id: &PhotoId| self.catalog.photo(*id).is_some();
+        if self.selection.ids.is_empty() {
+            self.selection.active.into_iter().filter(there).collect()
+        } else {
+            self.selection.ids.iter().copied().filter(there).collect()
+        }
     }
 }
 
@@ -2346,17 +2403,20 @@ mod tests_crop_aspect;
 mod tests_crop_aspects;
 #[cfg(test)]
 mod tests_denoise;
-#[cfg(all(test, feature = "denoise"))]
+#[cfg(test)]
+#[cfg(feature = "denoise")]
 mod tests_denoise_own;
 #[cfg(test)]
 mod tests_edit_in;
 #[cfg(test)]
 mod tests_edit_roundtrip;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_enhance;
 #[cfg(test)]
 mod tests_export;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_export_video;
 #[cfg(test)]
 mod tests_eye_store;
@@ -2372,9 +2432,11 @@ mod tests_face_tiles;
 mod tests_facets;
 #[cfg(test)]
 mod tests_filesystem_history;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_focus_scan;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_folder_metadata;
 #[cfg(test)]
 mod tests_folder_watch;
@@ -2408,7 +2470,8 @@ mod tests_import_move;
 mod tests_import_tab;
 #[cfg(test)]
 mod tests_keyword_list;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_lens_db;
 #[cfg(test)]
 mod tests_libops;
@@ -2428,7 +2491,8 @@ mod tests_mask_links;
 mod tests_mask_next;
 #[cfg(test)]
 mod tests_merge;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_ml;
 #[cfg(test)]
 mod tests_move_to_share;
@@ -2436,7 +2500,8 @@ mod tests_move_to_share;
 mod tests_naming;
 #[cfg(test)]
 mod tests_organize;
-#[cfg(all(test, feature = "sam"))]
+#[cfg(test)]
+#[cfg(feature = "sam")]
 mod tests_people_corpus;
 #[cfg(test)]
 mod tests_people_masks;
@@ -2444,7 +2509,8 @@ mod tests_people_masks;
 mod tests_persist;
 #[cfg(test)]
 mod tests_plugin_filters;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_plugin_library;
 #[cfg(test)]
 mod tests_prefs;
@@ -2484,14 +2550,37 @@ mod tests_spots;
 mod tests_sync;
 #[cfg(test)]
 mod tests_target_params;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_timelapse;
 #[cfg(test)]
 mod tests_upright_jobs;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_video_posters;
+/// The turn or flip that takes orientation `from` to `to` (`None` when they are the same): what the
+/// masks, on the oriented photo, must follow ([`lcc_pipeline::mask_space::turn`]).
+pub(crate) fn orientation_change(from: lcc_geom::Orientation, to: lcc_geom::Orientation) -> Option<lcc_geom::Orientation> {
+    use lcc_geom::Orientation;
+    if from == to {
+        return None;
+    }
+    let inv = from.inverse();
+    let probes = [(0.2, 0.3), (0.7, 0.1), (0.4, 0.9)];
+    let close = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9;
+    (0..8u8).map(|k| Orientation::from_parts(k >= 4, k % 4)).find(|t| {
+        probes.iter().all(|&(x, y)| {
+            let (rx, ry) = inv.map(x, y, 1.0, 1.0);
+            let (tx, ty) = from.map(rx, ry, 1.0, 1.0);
+            close(t.map(tx, ty, 1.0, 1.0), to.map(rx, ry, 1.0, 1.0))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests_view_follow;
+#[cfg(test)]
+mod tests_view_reconcile;
 #[cfg(test)]
 mod tests_xmp;
 

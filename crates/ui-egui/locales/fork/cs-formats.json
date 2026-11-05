@@ -114,6 +114,7 @@
   "{n} keywords removed": "Odebráno klíčových slov: {n}",
   "{n} new photos in {folders} folders: see the badges in Folders": "Nové fotky: {n} ve složkách ({folders}). Viz značky v části Složky",
   "{n} new photos in “{folder}”: right-click the folder ▸ Add New Photos": "Nové fotky ve složce „{folder}“: {n}. Klikněte na složku pravým tlačítkem ▸ Přidat nové fotky",
+  "{n} operations in progress…": "Probíhající operace: {n}…",
   "{n} paper size(s) from the printer": "Formáty papíru z tiskárny: {n}",
   "{n} photos relinked": "Znovu propojeno fotek: {n}",
   "{n} photos shared: {u}": "Sdíleno fotek: {n}: {u}",

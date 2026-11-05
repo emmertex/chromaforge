@@ -109,6 +109,7 @@
   "{n} keywords removed": "{n} 個のキーワードを削除しました",
   "{n} new photos in {folders} folders: see the badges in Folders": "{folders} 個のフォルダーに新しい写真が {n} 枚あります: フォルダーのバッジを参照",
   "{n} new photos in “{folder}”: right-click the folder ▸ Add New Photos": "「{folder}」に新しい写真が {n} 枚あります: フォルダーを右クリック ▸ 新しい写真を追加",
+  "{n} operations in progress…": "{n} 件の処理を実行中…",
   "{n} paper size(s) from the printer": "プリンターの用紙サイズ {n} 件",
   "{n} photos relinked": "{n} 枚の写真を再リンク",
   "{n} photos shared: {u}": "{n} 枚の写真を共有しました: {u}",

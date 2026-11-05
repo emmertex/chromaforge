@@ -62,7 +62,7 @@ impl SettingsHashes {
 }
 
 /// Bump when the pipeline's output changes, to invalidate cached thumbnails.
-pub const RENDER_CACHE_VERSION: u64 = 76;
+pub const RENDER_CACHE_VERSION: u64 = 77;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];
@@ -224,13 +224,20 @@ pub type PairLoader = Arc<dyn Fn(&str, usize, &DenoiseSpec, LoadOptions) -> Resu
 /// A photo's denoised picture next to its plain one, and the last mix of the two that was asked for.
 pub struct Twin {
     pub image: Arc<Rgb32f>,
+    /// The denoised product it was read from ([`DenoiseSpec::key`]); `None` when not known.
+    pub key: Option<String>,
     /// The Amount (in thousandths) and the picture mixed for it, so dragging other sliders keeps one source picture.
     mix: std::sync::Mutex<Option<(u32, Arc<Rgb32f>)>>,
 }
 
 impl Twin {
     pub fn new(image: Arc<Rgb32f>) -> Twin {
-        Twin { image, mix: std::sync::Mutex::new(None) }
+        Twin { image, key: None, mix: std::sync::Mutex::new(None) }
+    }
+
+    /// A twin read from the denoised product with key `key`.
+    pub fn from_product(image: Arc<Rgb32f>, key: &str) -> Twin {
+        Twin { key: Some(key.to_string()), ..Twin::new(image) }
     }
 
     /// Bytes reserved for the twin and its lazy mix, before either cache cost can grow.
@@ -373,6 +380,13 @@ impl SourceRef {
     }
 
     pub fn load_source(&self) -> Result<DecodedSource, String> {
+        self.load_source_of(None)
+    }
+
+    /// [`Self::load_source`] for a job whose photo's file content is `content` (its [`RenderJob::source_key`]): a
+    /// decode is shared only with jobs for the same content, so a photo reloaded after its file changed never takes
+    /// a decode of the old file that is still running or held (review of upstream PR #3569).
+    pub fn load_source_of(&self, content: Option<Hash128>) -> Result<DecodedSource, String> {
         let image = match self {
             SourceRef::Loaded(a) => return Ok((**a).clone()),
             SourceRef::Fit { from, max_edge } => {
@@ -396,7 +410,7 @@ impl SourceRef {
             SourceRef::File { path, max_edge, loader, fallback, denoise, options, reduced } => {
                 // (a job that comes while another decodes the same pixels waits for that decode)
                 let decode = || Self::decode_file(path, *max_edge, loader.as_ref(), fallback.as_deref(), denoise.as_ref(), options, reduced.as_ref());
-                return match share_key(path, *max_edge, loader.as_ref(), fallback.as_deref(), denoise.as_ref(), options, reduced.as_ref()) {
+                return match share_key(path, content, *max_edge, loader.as_ref(), fallback.as_deref(), denoise.as_ref(), options, reduced.as_ref()) {
                     Some(key) => {
                         let mut anchors: crate::decode_share::Anchors = Vec::new();
                         if let Some(l) = loader {
@@ -461,7 +475,7 @@ impl SourceRef {
                             image: Arc::new(image),
                             info: Some(info),
                             camera_tone: None,
-                            denoised: twin.map(|t| Arc::new(Twin::new(Arc::new(t)))),
+                            denoised: twin.map(|t| Arc::new(Twin::from_product(Arc::new(t), &spec.key))),
                             options: options.clone(),
                             from_proxy: false,
                             reduced: false,
@@ -489,6 +503,7 @@ impl SourceRef {
 /// makes the photo's denoised picture first, for an export).
 fn share_key(
     path: &str,
+    content: Option<Hash128>,
     max_edge: usize,
     loader: Option<&FileLoader>,
     fallback: Option<&std::path::Path>,
@@ -504,7 +519,7 @@ fn share_key(
     let reduced = at(reduced.map(|l| Arc::as_ptr(l) as *const ()));
     let pair = at(denoise.map(|(_, l)| Arc::as_ptr(l) as *const ()));
     let denoised = denoise.map(|(spec, _)| (spec.key.as_str(), spec.product.as_path()));
-    Some(format!("{path}|{max_edge}|{loader:x}|{reduced:x}|{pair:x}|{denoised:?}|{options:?}|{fallback:?}"))
+    Some(format!("{path}|{content:?}|{max_edge}|{loader:x}|{reduced:x}|{pair:x}|{denoised:?}|{options:?}|{fallback:?}"))
 }
 
 /// A clip's poster frame (linear Rec.709, the JPEG/TIFF input path), `max_edge` long at most. An
@@ -1459,7 +1474,7 @@ impl RenderJob {
         let closing = || lcc_gpu::shutting_down().then(|| "the app is closing".to_string());
         let source = match closing() {
             Some(e) => Err(e),
-            None => self.source.load_source().and_then(|s| closing().map_or(Ok(s), Err)),
+            None => self.source.load_source_of(self.source_key).and_then(|s| closing().map_or(Ok(s), Err)),
         };
         match source {
             Ok(source) if self.superseded.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) => {
@@ -2379,6 +2394,28 @@ impl crate::Session {
         }
     }
 
+    /// [`Self::accept`] for a render replaced before it finished ([`SUPERSEDED`]): its source was built before it ran,
+    /// so it is taken only while it is still what the photo's renders load. A plain source of a photo whose denoised
+    /// picture became ready meanwhile is not (the readiness cleared the photo's sources; keeping this one would show
+    /// the photo without its noise reduction). Nor is one whose denoised picture came from another product than the
+    /// photo's current one (a denoise redone meanwhile), nor one with a denoised picture once the photo has none
+    /// (review of upstream PR #3569).
+    pub fn accept_replaced(&mut self, r: &RenderResult) {
+        let current = self.media.denoise.get(r.photo).map(|(spec, _)| spec.key.as_str());
+        let stale = r.loaded.as_ref().is_some_and(|src| {
+            !src.from_proxy
+                && match (&src.denoised, current) {
+                    (None, None) => false,
+                    (None, Some(_)) | (Some(_), None) => true,
+                    (Some(t), Some(key)) => t.key.as_deref() != Some(key),
+                }
+        });
+        if stale {
+            return;
+        }
+        self.accept(r);
+    }
+
     /// Record the as-shot white balance a decode of photo `id`'s file read (`info`) when the catalog has another:
     /// a raw imported before its camera's matrices gave it a Kelvin scale keeps 6500 / 0 (the relative scale's
     /// reference) until its file is next decoded (issue #730). Bookkeeping, not an undo step; the look does not
@@ -3056,6 +3093,108 @@ mod tests {
         assert_eq!(r.rendered.unwrap().image.data, again.rendered.unwrap().image.data);
         s.media.forget(id);
         assert!(s.media.get_source(id, r.level).is_none());
+    }
+
+    /// A replaced render's plain source is not kept once the photo's denoised picture is ready: the
+    /// photo's next render must load the pair, not develop the plain picture (review of upstream PR #3569).
+    #[test]
+    fn a_replaced_renders_plain_source_is_not_kept_once_the_denoised_picture_is_ready() {
+        let mut s = crate::Session::with_demo();
+        let id = s.active().unwrap();
+        let mut job = s.render_job(id, 64, 64, false, true).unwrap();
+        job.source = SourceRef::File {
+            path: "synthetic.arw".into(),
+            max_edge: 64,
+            loader: Some(Arc::new(|_, _, _| Ok((Rgb32f::new(64, 64), SourceInfo::default())))),
+            fallback: None,
+            denoise: None,
+            options: Default::default(),
+            reduced: None,
+        };
+        let r = job.run();
+        assert!(r.loaded.as_ref().is_some_and(|src| src.denoised.is_none()));
+        // the denoised picture became ready while the render ran
+        let pair: PairLoader = Arc::new(|_, _, _, _| Err("not read in this test".into()));
+        s.media.denoise.loader = Some(pair);
+        s.media.denoise.set(id, DenoiseSpec { product: "denoised.bin".into(), key: "k".into(), make: None });
+        s.media.forget(id);
+        s.accept_replaced(&r);
+        assert!(!s.media.has_source(id, r.level), "the plain source is not kept");
+        // without a denoised picture it is kept, as before
+        s.media.denoise.remove(id);
+        s.accept_replaced(&r);
+        assert!(s.media.has_source(id, r.level));
+    }
+
+    /// A replaced render whose denoised picture came from an older product (the denoise was redone while it ran) is
+    /// not kept: later renders would show the old picture (review of upstream PR #3569). One from the current
+    /// product is.
+    #[test]
+    fn a_replaced_renders_source_from_an_older_denoise_is_not_kept() {
+        let mut s = crate::Session::with_demo();
+        let id = s.active().unwrap();
+        let pair: PairLoader = Arc::new(|_, _, _, _| Ok((Rgb32f::new(64, 64), Some(Rgb32f::new(64, 64)), SourceInfo::default())));
+        s.media.denoise.loader = Some(pair.clone());
+        let spec = |key: &str| DenoiseSpec { product: format!("{key}.bin").into(), key: key.into(), make: None };
+        let mut job = s.render_job(id, 64, 64, false, true).unwrap();
+        job.source = SourceRef::File {
+            path: "synthetic-twin.arw".into(),
+            max_edge: 64,
+            loader: Some(Arc::new(|_, _, _| Ok((Rgb32f::new(64, 64), SourceInfo::default())))),
+            fallback: None,
+            denoise: Some((spec("old"), pair)),
+            options: Default::default(),
+            reduced: None,
+        };
+        let r = job.run();
+        assert!(r.loaded.as_ref().is_some_and(|src| src.denoised.as_ref().is_some_and(|t| t.key.as_deref() == Some("old"))));
+        // the denoise was redone while the render ran
+        s.media.denoise.set(id, spec("new"));
+        s.media.forget(id);
+        s.accept_replaced(&r);
+        assert!(!s.media.has_source(id, r.level), "the old product's picture is not kept");
+        // the same product: kept
+        s.media.denoise.set(id, spec("old"));
+        s.accept_replaced(&r);
+        assert!(s.media.has_source(id, r.level));
+    }
+
+    /// A decode is shared only with jobs for the same file content: after the photo's file changed (a new content
+    /// key), a decode of the old file that is still held is not taken (review of upstream PR #3569).
+    #[test]
+    fn a_decode_is_shared_only_with_jobs_for_the_same_file_content() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut s = crate::Session::with_demo();
+        let id = s.active().unwrap();
+        let decodes = Arc::new(AtomicUsize::new(0));
+        let d = decodes.clone();
+        // (one loader for all three jobs: the share key names it by address)
+        let loader: FileLoader = Arc::new(move |_, _, _| {
+            d.fetch_add(1, Ordering::SeqCst);
+            Ok((Rgb32f::new(64, 64), SourceInfo::default()))
+        });
+        let mut job = |content: u128| {
+            let mut job = s.render_job(id, 64, 64, false, true).unwrap();
+            job.source = SourceRef::File {
+                path: "synthetic-content-key.arw".into(),
+                max_edge: 64,
+                loader: Some(loader.clone()),
+                fallback: None,
+                denoise: None,
+                options: Default::default(),
+                reduced: None,
+            };
+            job.source_key = Some(Hash128(content));
+            job
+        };
+        let (a, same, changed) = (job(1), job(1), job(2));
+        let first = a.run();
+        assert_eq!(decodes.load(Ordering::SeqCst), 1);
+        let again = same.run();
+        assert_eq!(decodes.load(Ordering::SeqCst), 1, "the same content takes the held decode");
+        let other = changed.run();
+        assert_eq!(decodes.load(Ordering::SeqCst), 2, "a changed file is decoded again");
+        drop((first, again, other));
     }
 
     /// Issue #730: an ILCE-7M3 ARW from an older catalog (white balance relative to the as-shot look, 6500 / 0 as

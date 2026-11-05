@@ -32,6 +32,16 @@ fn error(why: impl Into<String>) -> crate::EngineError {
 fn text<'a>(r: &'a Row, k: &str) -> &'a str {
     r.get(k).and_then(Value::as_str).unwrap_or("")
 }
+/// Whether a collection row is a smart collection: its `creationId` names one (`com.adobe.ag.library.smart_collection`).
+/// The import's smart albums and the collections a Collection rule can match both go by this one test.
+fn is_smart_collection(r: &Row) -> bool {
+    text(r, "creationId").contains("smart")
+}
+/// Whether a collection row is a collection set: its `creationId` names one (`com.adobe.ag.library.group`). The
+/// import's folders and the collections a Collection rule can match both go by this one test.
+fn is_collection_set(r: &Row) -> bool {
+    text(r, "creationId").contains("group")
+}
 fn number(r: &Row, k: &str) -> i64 {
     r.get(k).and_then(Value::as_f64).filter(|n| n.is_finite()).unwrap_or(0.0) as i64
 }
@@ -1534,7 +1544,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         .iter()
         .filter(|(lr, id)| match s.catalog.album(**id) {
             Some(album) => album.folder,
-            None => collections.get(*lr).is_some_and(|r| text(r, "creationId").contains("group")),
+            None => collections.get(*lr).is_some_and(|r| is_collection_set(r)),
         })
         .map(|(lr, _)| *lr)
         .collect();
@@ -1552,13 +1562,17 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         .filter(|r| text(r, "owningModule") == "ag.library.smart_collection")
         .map(|r| (number(r, "collection"), text(r, "content")))
         .collect();
+    // Lightroom's Collection rule matches ordinary collections only: never a set, nor a smart collection (so a smart
+    // collection never matches itself, nor one whose rules match it back).
     let named_collections: Vec<(&str, lcc_catalog::AlbumId)> = data
         .collections
         .iter()
-        .filter(|r| !text(r, "creationId").contains("group"))
+        .filter(|r| !is_collection_set(r) && !is_smart_collection(r))
         .filter_map(|r| Some((text(r, "name"), albums.get(&number(r, "id_local")).copied()?)))
         .collect();
     let (mut smart_albums, mut static_smart, mut smart_kept) = (0usize, 0usize, 0usize);
+    // the albums each smart album added in this batch tests, which the library doesn't know yet
+    let mut queued_smart: HashMap<lcc_catalog::AlbumId, Vec<lcc_catalog::AlbumId>> = HashMap::new();
     let mut ordered = rows.clone();
     ordered.sort_by_key(|r| {
         let mut depth = 0;
@@ -1572,8 +1586,8 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     for collection in ordered {
         let Some(id) = albums.get(&number(collection, "id_local")).copied() else { continue };
         let mut album = Album::new(id, text(collection, "name"));
-        album.folder = text(collection, "creationId").contains("group");
-        let is_smart = text(collection, "creationId").contains("smart");
+        album.folder = is_collection_set(collection);
+        let is_smart = is_smart_collection(collection);
         let rules = if is_smart {
             Some(match smart_content.get(&number(collection, "id_local")) {
                 Some(c) => crate::lightroom_smart::smart_rules(c, &named_collections),
@@ -1620,6 +1634,20 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                 ops.push(Op::SetAlbumPhotos { id, photos });
             }
             None => {
+                // `Catalog::apply_new` refuses an album that would include itself, and that would roll back the whole
+                // batch: such a collection keeps its current membership instead. The rules test ordinary collections
+                // only, so only a library album that already tests this new id (a damaged library) can close a loop.
+                let rules = rules.map(|r| {
+                    r.and_then(|rules| {
+                        let tested = rules.albums_tested();
+                        if leads_to(s, &queued_smart, tested.clone(), id) {
+                            Err("its rules would make it include itself through the albums they test".into())
+                        } else {
+                            queued_smart.insert(id, tested);
+                            Ok(rules)
+                        }
+                    })
+                });
                 match rules {
                     Some(Ok(rules)) => {
                         album.smart = Some(Box::new(lcc_catalog::Filter { rule_set: Some(rules), ..Default::default() }));
@@ -1655,7 +1683,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                         None => "its parent collection isn't in the catalog".to_string(),
                         Some(r) => match albums.get(&lr_parent).and_then(|id| s.catalog.album(*id)) {
                             // a set imported earlier whose album is no longer a folder
-                            Some(a) if text(r, "creationId").contains("group") => {
+                            Some(a) if is_collection_set(r) => {
                                 format!("its collection set “{}” is the album “{}” in this library, which isn't a folder", text(r, "name"), a.name)
                             }
                             _ => format!("Lightroom keeps it inside “{}”, which isn't a collection set", text(r, "name")),
@@ -1706,6 +1734,31 @@ fn fill_camera(m: &mut lcc_catalog::Meta, row: &Row) {
     if filled && m.camera.is_empty() {
         m.camera = lcc_catalog::camera_label(&m.camera_make, &m.camera_model);
     }
+}
+
+/// Whether albums `from` test album `to`, directly or through the smart albums they test: those of the library, and
+/// `queued`, the smart albums this import adds (each with the albums it tests). Loops already there end the search.
+fn leads_to(
+    s: &crate::Session,
+    queued: &HashMap<lcc_catalog::AlbumId, Vec<lcc_catalog::AlbumId>>,
+    from: Vec<lcc_catalog::AlbumId>,
+    to: lcc_catalog::AlbumId,
+) -> bool {
+    let mut seen = HashSet::new();
+    let mut next = from;
+    while let Some(a) = next.pop() {
+        if a == to {
+            return true;
+        }
+        if !seen.insert(a) {
+            continue;
+        }
+        match queued.get(&a) {
+            Some(tested) => next.extend(tested.iter().copied()),
+            None => next.extend(s.catalog.album(a).and_then(|al| al.smart.as_deref()).map(lcc_catalog::Filter::albums_tested).unwrap_or_default()),
+        }
+    }
+    false
 }
 
 /// Lightroom folder stacks → stacks, top (position 1) first. Photos already stacked in the library
@@ -2813,6 +2866,137 @@ pub(crate) mod tests {
         s.close_library().unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
+    /// A smart collection with a Collection rule, as Lightroom stores it.
+    fn smart_collection(data: &mut CatalogImport, id: i64, name: &str, op: &str, value: &str) {
+        data.collections.push(row(json!({"id_local":id,"name":name,"creationId":"com.adobe.ag.library.smart_collection"})));
+        let content = format!("s = {{ {{ criteria = \"collection\", operation = \"{op}\", value = \"{value}\" }}, combine = \"intersect\" }}");
+        data.collection_content.push(row(json!({"collection":id,"owningModule":"ag.library.smart_collection","content":content})));
+    }
+    #[test]
+    fn collection_rules_match_ordinary_collections_only() {
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        data.collections.push(row(json!({"id_local":13,"name":"Trip 2024","creationId":"com.adobe.ag.library.collection"})));
+        data.members.push(row(json!({"collection":13,"image":1})));
+        // Each matches its own name and the other's ("collection" holds both letters); of the ordinary collections,
+        // "e" matches Keepers and "i" Trip 2024 (Travel is a set).
+        smart_collection(&mut data, 20, "In a collection 'e'", "all", "e");
+        smart_collection(&mut data, 21, "In a collection 'i'", "all", "i");
+        // matches Trip 2024 and its own name
+        smart_collection(&mut data, 22, "Trip picks", "beginsWith", "trip");
+        let r = apply(&mut s, data, false).expect("the catalog imports");
+        assert_eq!((r["smartAlbums"].as_u64(), r["smartAsStatic"].as_u64()), (Some(3), Some(0)), "{}", r["warnings"]);
+        assert_eq!(s.catalog.photos().count(), 2);
+        let (keepers, trip) = (album_named(&s, "Keepers").id, album_named(&s, "Trip 2024").id);
+        for (name, tests) in [("In a collection 'e'", keepers), ("In a collection 'i'", trip), ("Trip picks", trip)] {
+            let album = album_named(&s, name);
+            let tested = album.smart.as_deref().map(lcc_catalog::Filter::albums_tested);
+            assert_eq!(tested, Some(vec![tests]), "“{name}” is a smart album testing only the ordinary collection its rule matches");
+        }
+        // Trip picks finds Trip 2024's photo, as in Lightroom
+        let picks = album_named(&s, "Trip picks").id;
+        assert_eq!(s.catalog.album_photos(picks), s.catalog.album_photos(trip));
+        assert_eq!(s.catalog.album_photos(trip).len(), 1);
+    }
+    #[test]
+    fn a_collection_rule_matching_only_smart_collections_matches_nothing() {
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        smart_collection(&mut data, 20, "In a collection 'e'", "all", "e");
+        smart_collection(&mut data, 21, "Smart ones", "beginsWith", "in a");
+        data.members.push(row(json!({"collection":21,"image":1})));
+        let r = apply(&mut s, data, false).expect("the catalog imports");
+        assert_eq!((r["smartAlbums"].as_u64(), r["smartAsStatic"].as_u64()), (Some(1), Some(1)), "{}", r["warnings"]);
+        assert!(
+            r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("Smart ones:")
+                && w.contains("matches no imported collection")
+                && w.contains("imported current membership"))),
+            "{}",
+            r["warnings"]
+        );
+        let smart_ones = album_named(&s, "Smart ones");
+        assert!(!smart_ones.is_smart() && smart_ones.photos.len() == 1, "falls back to a static album with its current members");
+    }
+    #[test]
+    fn a_smart_collection_that_would_include_itself_falls_back_alone() {
+        let dir = std::env::temp_dir().join(format!("app-lrcat-a_smart_collection_that-{}", std::process::id()));
+        let mut s = crate::Session::new();
+        s.open_library(&dir, false).unwrap();
+        let mut data = sample();
+        smart_collection(&mut data, 11, "Best", "beginsWith", "keep");
+        data.members.push(row(json!({"collection":11,"image":1})));
+        let r = apply(&mut s, data.clone(), false).unwrap();
+        assert_eq!(r["smartAlbums"], 1);
+        // A damaged library: Best's album is deleted, and Keepers' album is a smart album testing the id the reimport
+        // gives Best, which tests Keepers.
+        let best = album_named(&s, "Best").id;
+        s.commit("Delete", Op::RemoveAlbum { id: best }).unwrap();
+        let next = lcc_catalog::AlbumId(s.catalog.alloc_album_id().0 + 1);
+        let mut keepers = album_named(&s, "Keepers").clone();
+        let rules = lcc_catalog::RuleSet {
+            mode: lcc_catalog::Match::All,
+            rules: vec![lcc_catalog::Rule::Field { field: "album".into(), op: "is".into(), value: json!(next) }],
+        };
+        keepers.smart = Some(Box::new(lcc_catalog::Filter { rule_set: Some(rules), ..Default::default() }));
+        keepers.photos.clear();
+        s.catalog.apply(Op::RemoveAlbum { id: keepers.id }).unwrap();
+        s.catalog.apply(Op::AddAlbum { album: keepers }).unwrap();
+        let albums = s.catalog.albums().count();
+        let r = apply(&mut s, data, false).expect("the rest of the catalog imports");
+        assert_eq!((r["smartAlbums"].as_u64(), r["smartAsStatic"].as_u64()), (Some(0), Some(1)), "{}", r["warnings"]);
+        assert!(
+            r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("Best:") && w.contains("include itself"))),
+            "{}",
+            r["warnings"]
+        );
+        let best = album_named(&s, "Best");
+        assert_eq!(best.id, next);
+        assert!(!best.is_smart() && best.photos.len() == 1, "Best keeps its members as a static album");
+        assert_eq!(s.catalog.albums().count(), albums + 1);
+        assert_eq!(s.catalog.photos().count(), 2);
+        s.close_library().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn a_loop_through_a_smart_collection_of_the_same_import_falls_back_alone() {
+        let dir = std::env::temp_dir().join(format!("app-lrcat-a_loop_through_a_smart-{}", std::process::id()));
+        let mut s = crate::Session::new();
+        s.open_library(&dir, false).unwrap();
+        let mut data = sample();
+        data.collections.push(row(json!({"id_local":13,"name":"Trip 2024","creationId":"com.adobe.ag.library.collection"})));
+        apply(&mut s, data.clone(), false).unwrap();
+        // A damaged library: the albums of Keepers and Trip 2024 are smart albums testing the ids the next import gives
+        // Best and Picks. Best tests Keepers (→ Picks), and Picks tests Trip 2024 (→ Best), added just before it.
+        smart_collection(&mut data, 11, "Best", "beginsWith", "keep");
+        smart_collection(&mut data, 12, "Picks", "beginsWith", "trip");
+        data.members.push(row(json!({"collection":12,"image":1})));
+        let first = s.catalog.alloc_album_id().0 + 1;
+        let (best, picks) = (lcc_catalog::AlbumId(first), lcc_catalog::AlbumId(first + 1));
+        for (name, tests) in [("Keepers", picks), ("Trip 2024", best)] {
+            let mut album = album_named(&s, name).clone();
+            let rules = lcc_catalog::RuleSet {
+                mode: lcc_catalog::Match::All,
+                rules: vec![lcc_catalog::Rule::Field { field: "album".into(), op: "is".into(), value: json!(tests) }],
+            };
+            album.smart = Some(Box::new(lcc_catalog::Filter { rule_set: Some(rules), ..Default::default() }));
+            album.photos.clear();
+            s.catalog.apply(Op::RemoveAlbum { id: album.id }).unwrap();
+            s.catalog.apply(Op::AddAlbum { album }).unwrap();
+        }
+        let r = apply(&mut s, data, false).expect("the rest of the catalog imports");
+        assert_eq!((r["smartAlbums"].as_u64(), r["smartAsStatic"].as_u64()), (Some(1), Some(1)), "{}", r["warnings"]);
+        assert_eq!((album_named(&s, "Best").id, album_named(&s, "Picks").id), (best, picks));
+        assert!(album_named(&s, "Best").is_smart());
+        let picks = album_named(&s, "Picks");
+        assert!(!picks.is_smart() && picks.photos.len() == 1, "Picks keeps its members as a static album");
+        assert!(
+            r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("Picks:") && w.contains("include itself"))),
+            "{}",
+            r["warnings"]
+        );
+        s.close_library().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn persistent_reimport_keeps_copy_and_collection_ids_and_capture_time() {
         let dir = std::env::temp_dir().join(format!("app-lrcat-reimport-{}", std::process::id()));
@@ -2867,7 +3051,7 @@ pub(crate) mod tests {
                     body.extend(n.to_be_bytes());
                     7
                 }
-                _ => unreachable!(),
+                _ => panic!("unexpected SqlValue in a test record: {value:?}"),
             };
             header.extend(varint(serial));
         }
@@ -4064,6 +4248,29 @@ pub(crate) mod tests {
         let rows = reader.optional_table("optional_history", &mut warnings, &cancel).unwrap();
         assert!(rows.is_empty());
         assert!(warnings.iter().any(|warning| warning.contains("optional_history")));
+    }
+
+    /// A Lightroom catalog's Apple ProRAW edit keeps the look's parameters as a nested table
+    /// (`Look = { Name = "Apple ProRaw", Parameters = { ProfileGainTableMap = 100 } }`): the raw's own
+    /// local tone mapping comes over, so the photo renders as bright as in Lightroom.
+    #[test]
+    fn apple_proraw_look_turns_on_the_camera_local_tone_mapping() {
+        let settings = |gain: u32| {
+            format!(
+                "s = {{ CameraProfile = \"Apple Embedded Color Profile\", Exposure2012 = 0.4, Contrast2012 = 10, Vibrance = 30, \
+                 Look = {{ Name = \"Apple ProRaw\", Amount = 1, UUID = \"D866CAE82BD24C3F896B6762BDDA6C50\", \
+                 Parameters = {{ Version = \"18.5.1\", ProcessVersion = \"15.4\", ConvertToGrayscale = false, ProfileGainTableMap = {gain} }} }} }}"
+            )
+        };
+        let map = |s: &str| mapped_settings(s, crate::crs::Target::RawAbsolute, 1.5, Orientation::Normal, 1.5).unwrap();
+        let (partial, _) = map(&settings(100));
+        assert_eq!(partial["profile"]["camera_local_tone"], true, "{partial}");
+        assert_eq!(partial["light"]["exposure"], 0.4);
+        let (partial, _) = map(&settings(0));
+        assert_eq!(partial["profile"]["camera_local_tone"], false, "{partial}");
+        // an edit without the look leaves the option alone
+        let (partial, _) = map("s = { Exposure2012 = 0.4 }");
+        assert!(partial.pointer("/profile/camera_local_tone").is_none(), "{partial}");
     }
 
     /// Issue #1234: develop settings are streamed into the photos, and a develop table that can't be read fails the

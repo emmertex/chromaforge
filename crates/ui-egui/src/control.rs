@@ -152,6 +152,8 @@ pub fn inspect(app: &LccApp, ctx: &egui::Context) -> Value {
         "tasks": app.tasks.labels(),
         // every long-running task in flight, as the activity stack shows them (`activity.list`)
         "activity": app.session.activity.list(),
+        // Classic: the list under the module bar's activity area is open (`view.activityList`)
+        "activityList": app.activity_list,
         // commands waiting on a native file dialog shown off the UI thread (`pick`)
         "fileDialogs": app.pending_picks.iter().map(|p| p.command.clone()).collect::<Vec<_>>(),
         "memory": memory(app),

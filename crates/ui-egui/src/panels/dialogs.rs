@@ -1029,7 +1029,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 Dialog::Merge { opts } => crate::merge::body(app, ui, opts),
                 Dialog::Enhance { opts } => crate::enhance_ui::body(app, ui, opts),
                 Dialog::Import { opts } => crate::import::body(app, ui, opts),
-                Dialog::Settings { tab } => crate::panels::settings::body(app, ui, tab, settings_height),
+                Dialog::Settings { tab } => crate::panels::settings::body(app, ui, tab, 0.0),
                 Dialog::ChartProfile { opts } => crate::chart_profile::body(app, ui, opts),
                 Dialog::SamModel { error, .. } => sam_model_body(app, ui, error.as_deref()),
                 Dialog::AiModels { error } => crate::panels::ai_models::body(app, ui, error),
