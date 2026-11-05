@@ -220,3 +220,76 @@ fn browsed_raws_take_the_import_profile_choice_and_a_later_body_default() {
     assert!(s.catalog.photo(c).unwrap().develop.profile.camera.is_empty(), "an edited photo keeps its profile");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A wedding import (IMPORT-STACK, ported from OneSlips LR-IMP-WINDOW / LR-IMP-PROFILE): a stack of
+/// presets applies in order, the old single `preset` first, one History step each; each body keeps
+/// the camera profile chosen for it through a preset that names another, unless `presetProfile`.
+#[test]
+fn an_import_applies_a_preset_stack_in_order_and_each_body_keeps_its_profile() {
+    let dir = std::env::temp_dir().join(format!("lcc-import-stack-bodies-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let corners = lcc_camprof::ChartCorners::from_rect(10.0, 10.0, 40.0, 30.0);
+    let write = |name: &str, serial: &str| {
+        let p = dir.join(name);
+        std::fs::write(&p, crate::chart_profiling::demo_chart_dng_of_body(64, 48, &corners, "D55", true, Some(serial)).unwrap()).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let mut s = Session::new().with_fs();
+    let preset = |id: &str, settings: serde_json::Value| lcc_develop::Preset {
+        id: id.into(),
+        name: id.into(),
+        group: "Wedding".into(),
+        settings,
+        favorite: false,
+        builtin: false,
+    };
+    let ids = s.add_presets(vec![
+        preset("user.base", json!({"light": {"exposure": 0.3, "contrast": 10.0}})),
+        // names the camera's default profile: the body's own must stay
+        preset("user.look", json!({"light": {"exposure": 0.6}, "profile": {"camera": ""}})),
+        preset("user.finish", json!({"light": {"contrast": 25.0}, "color": {"vibrance": 15.0}})),
+    ]);
+    assert_eq!(ids.len(), 3, "{ids:?}");
+    let key_of_file = |s: &mut Session, path: &str| {
+        let plan = s.execute("import.profilePlan", &json!({"paths": [path]})).unwrap();
+        plan["rows"][0]["body"].as_str().unwrap().to_string()
+    };
+    let (a, b) = (write("SA0001.dng", "SN1"), write("SB0001.dng", "SN2"));
+    let key_a = key_of_file(&mut s, &a);
+    let params = json!({
+        "paths": [&a, &b],
+        "preset": ids[0],
+        "presets": [ids[1], ids[2]],
+        "cameraProfile": {"perBody": {&key_a: "lc"}},
+    });
+    let r = s.execute("library.import", &params).unwrap();
+    let got: Vec<PhotoId> = r["imported"].as_array().unwrap().iter().map(|v| PhotoId(v.as_u64().unwrap())).collect();
+    assert_eq!(got.len(), 2, "{r}");
+    for id in &got {
+        let p = s.catalog.photo(*id).unwrap();
+        let d = &p.develop;
+        assert!((d.light.exposure - 0.6).abs() < 1e-6, "the later preset's exposure wins: {}", d.light.exposure);
+        assert!((d.light.contrast - 25.0).abs() < 1e-6, "the last preset's contrast: {}", d.light.contrast);
+        assert!((d.color.vibrance - 15.0).abs() < 1e-6);
+        let steps: Vec<&str> = p.history.iter().filter(|h| h.label.starts_with("Preset: ")).map(|h| h.label.as_str()).collect();
+        assert_eq!(steps, ["Preset: user.base", "Preset: user.look", "Preset: user.finish"], "one History step each, in order");
+        let body = crate::profile_bodies::key_of(p).unwrap();
+        let want = if body == key_a { "lc" } else { "" };
+        assert_eq!(d.profile.camera, want, "{body}: its own profile through the stack");
+    }
+    // the old single `preset` alone still works (the same synthetic bytes: imported as a copy)
+    let c = write("SA0002.dng", "SN1");
+    let r = s.execute("library.import", &json!({"paths": [&c], "preset": ids[0], "importDuplicates": true})).unwrap();
+    let p = s.catalog.photo(PhotoId(r["imported"][0].as_u64().unwrap())).unwrap();
+    assert!((p.develop.light.exposure - 0.3).abs() < 1e-6 && (p.develop.light.contrast - 10.0).abs() < 1e-6);
+    // presetProfile: the preset's profile replaces the body's
+    let e = write("SA0003.dng", "SN1");
+    let r = s
+        .execute("library.import", &json!({"paths": [&e], "presets": [ids[1]], "presetProfile": true, "importDuplicates": true, "cameraProfile": {"perBody": {&key_a: "lc"}}}))
+        .unwrap();
+    let p = s.catalog.photo(PhotoId(r["imported"][0].as_u64().unwrap())).unwrap();
+    assert_eq!(p.develop.profile.camera, "", "the preset's profile");
+    assert!(s.execute("library.import", &json!({"paths": [&e], "presets": ["no.such.preset"]})).is_err(), "an unknown preset refuses the import");
+    let _ = std::fs::remove_dir_all(&dir);
+}
