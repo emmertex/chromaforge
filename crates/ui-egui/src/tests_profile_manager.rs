@@ -45,7 +45,7 @@ fn manage_in_the_browser_opens_the_manager_which_hides_profiles() {
     assert!(has(&h, "button:profilesManage"), "the browser has Manage…");
     click(&mut h, "button:profilesManage");
     assert!(manager_open(&h), "Manage… opens the Profile Manager");
-    h.step();
+    search(&mut h, "vivid");
     assert!(has(&h, "profileManagerRow:lc.vivid"), "the built-in looks are listed");
     click(&mut h, "icon:profileManagerHide:lc.vivid");
     assert!(h.app.session.profile_hidden.iter().any(|x| x == "lc.vivid"), "Hide hides it");
@@ -70,7 +70,7 @@ fn deleting_a_profile_a_photo_uses_does_not_break_it() {
     run(&mut h, "develop.profile", json!({"id": lut, "amount": 100}));
     let id = h.app.session.active().unwrap();
     run(&mut h, "dialog.profileManager", json!({}));
-    h.step();
+    search(&mut h, "Test LUT");
     assert!(has(&h, &format!("profileManagerRow:{lut}")), "the LUT profile is listed");
     click(&mut h, &format!("icon:profileManagerDelete:{lut}"));
     let confirm = format!("button:profileManager:{lut}DeleteConfirm");
@@ -183,4 +183,14 @@ fn profile_manager_snapshots() {
     save(&mut h, "02-manager.png");
     click(&mut h, "icon:profileManagerDelete:lut:snapshot-look");
     save(&mut h, "03-delete-asks.png");
+}
+
+/// Narrow the open manager to `q`, so the row under test is in view whatever else other tests put
+/// in the process-wide profile registries.
+fn search(h: &mut Headless, q: &str) {
+    if let Some(crate::state::Dialog::ProfileManager { query, .. }) = h.app.ui.dialog.as_mut() {
+        *query = q.into();
+    }
+    h.step();
+    h.step();
 }

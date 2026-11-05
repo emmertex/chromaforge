@@ -10,6 +10,16 @@ use crate::widgets::{register, text_button};
 
 pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let m = app.session.execute("profiles.manager", &json!({})).unwrap_or_default();
+    // first: a long list of bodies or camera profiles below never pushes it out of view
+    heading(ui, t, "Profiles");
+    hint(
+        ui,
+        t,
+        "The Profile Manager lists every look, LUT profile and camera profile: hide them from the menus, rename and group them, import new ones, and delete your own.",
+    );
+    if crate::dialog_frame::control_row(ui, |ui| text_button(ui, "profilesOpenManager", crate::i18n::tr("Profile Manager…"), false).clicked()) {
+        let _ = app.run("dialog.profileManager", json!({}));
+    }
     heading(ui, t, "Camera bodies");
     hint(
         ui,
@@ -73,15 +83,6 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 }
             });
         }
-    }
-    heading(ui, t, "Profiles");
-    hint(
-        ui,
-        t,
-        "The Profile Manager lists every look, LUT profile and camera profile: hide them from the menus, rename and group them, import new ones, and delete your own.",
-    );
-    if crate::dialog_frame::control_row(ui, |ui| text_button(ui, "profilesOpenManager", crate::i18n::tr("Profile Manager…"), false).clicked()) {
-        let _ = app.run("dialog.profileManager", json!({}));
     }
 }
 

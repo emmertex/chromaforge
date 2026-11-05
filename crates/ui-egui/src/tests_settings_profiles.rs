@@ -24,6 +24,12 @@ fn the_profile_manager_hides_profiles_and_sets_body_profiles() {
     click(&mut h, "button:profilesOpenManager");
     h.step();
     let profile = lcc_engine::presets::PROFILES[0].id;
+    let name = lcc_engine::presets::PROFILES[0].name;
+    if let Some(crate::state::Dialog::ProfileManager { query, .. }) = h.app.ui.dialog.as_mut() {
+        *query = name.into();
+    }
+    h.step();
+    h.step();
     let hide = format!("icon:profileManagerHide:{profile}");
     assert!(has(&h, &hide), "every profile has a Hide button");
     click(&mut h, &hide);

@@ -275,7 +275,7 @@ fn groups(ui: &egui::Ui, app: &mut LccApp) -> Arc<Built> {
     let mut built = build(&m);
     for g in &mut built.groups {
         for i in &mut g.items {
-            i.favorite = app.session.profile_favorites.iter().any(|f| *f == i.id);
+            i.favorite = app.session.profile_favorites.contains(&i.id);
         }
     }
     let built = Arc::new(built);
