@@ -1614,9 +1614,9 @@ impl LccApp {
         if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
             self.offer_sam_download(then);
         } else if lcc_engine::segment::Segmenter::AVAILABLE
-            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::People | AiModel::FaceDetector))
+            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::Describe | AiModel::People | AiModel::FaceDetector))
         {
-            // SAM 2.1 was chosen for Object masks, or Retouch needs the MediaPipe models: their downloads are in the
+            // SAM 2.1 was chosen for Object masks, Describe needs the open models, or Retouch needs the MediaPipe models: their downloads are in the
             // AI Models dialog
             if self.ui.dialog.is_none() {
                 self.ui.dialog = Some(state::Dialog::Settings { tab: "ai".into() });
@@ -2164,6 +2164,10 @@ impl LccApp {
             self.ui.known_cards = None;
         }
         self.session.persist_if_dirty();
+        // an import being finished: kept in the library until done, taken up again after a restart
+        if self.session.finishing_tick() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         panels::denoise::pump(self, ctx);
         panels::plugin_filters::pump(self, ctx);
         panels::right::dust_pump(self, ctx);

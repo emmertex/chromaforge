@@ -103,6 +103,13 @@ Platforms, Inc., licensed under the Apache License 2.0, modified the same way. T
 (facebook/sam2.1-hiera-tiny, Apache License 2.0) are not part of this software; the app downloads
 them from Meta's Hugging Face repository only when the user asks for them.
 
+crates/segment/src/owl.rs and describe.rs (ported by OneSlips, 2026) port the OWLv2 model and
+image-processor code of Hugging Face Transformers (src/transformers/models/owlv2:
+modeling_owlv2.py, image_processing_owlv2.py, processing_owlv2.py), Copyright The HuggingFace Team
+and Google, licensed under the Apache License 2.0, modified the same way. The OWLv2 weights
+(google/owlv2-base-patch16-ensemble, Apache License 2.0) are not part of this software; the app
+downloads them from Google's Hugging Face repository only when the user asks for them.
+
 crates/segment/src/dino.rs, depth.rs and grid.rs (ported by OneSlips, 2026) port the DINOv2,
 Depth Anything and DPT image-processor code of Hugging Face Transformers (models/dinov2,
 depth_anything and dpt), Copyright The HuggingFace Team, Meta Platforms, Inc. and the model

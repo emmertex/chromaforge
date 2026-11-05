@@ -1760,13 +1760,22 @@ fn component_row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: u32, k: usize, 
     }
 }
 
-/// Whether the SAM 3 model is missing in a build that could use it: then the download is
-/// offered (with `then` to start afterwards) instead of starting an AI mask.
+/// Whether the model an AI mask needs is missing in a build that could use it (SAM 3, or the open
+/// models chosen for Object or serving Describe): then the download is offered (with `then` to start afterwards) instead of starting an AI mask.
 fn needs_model(app: &mut LccApp, kind: &str, op: &str) -> bool {
     let seg = &app.session.segmenter;
     if kind == "object" && seg.object_model_in_use() == "sam2" {
         // SAM 2.1 was chosen for Object masks: without it, the AI Models dialog offers it
         let missing = lcc_engine::segment::Segmenter::AVAILABLE && !seg.open_model_installed("sam2");
+        if missing && app.ui.dialog.is_none() {
+            app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "ai".into() });
+        }
+        return missing;
+    }
+    if kind == "prompt" && seg.models_root.is_some() && !seg.installed() && seg.remote_endpoint().is_none() {
+        // without SAM 3, Describe runs on the open OWLv2 finder and SAM 2.1: the AI Models dialog
+        // offers whichever is missing
+        let missing = lcc_engine::segment::Segmenter::AVAILABLE && !seg.describe_needs().is_empty();
         if missing && app.ui.dialog.is_none() {
             app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "ai".into() });
         }

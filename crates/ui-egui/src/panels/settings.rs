@@ -433,6 +433,34 @@ pub(super) fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnc
 }
 
 /// Help text: small and muted; in a dialog form, under the control column.
+/// "8 GB", "1.5 GB", "512 MB"; within a few per cent of whole gigabytes it reads as whole ones (a computer's "64 GB"
+/// is a little less, so its automatic quarter is "16 GB", not "15.9 GB").
+fn memory_size(mb: u64) -> String {
+    if mb < 1024 {
+        return format!("{mb} MB");
+    }
+    let gb = mb as f64 / 1024.0;
+    if (gb - gb.round()).abs() <= gb * 0.02 { format!("{:.0} GB", gb.round()) } else { format!("{gb:.1} GB") }
+}
+
+/// Settings ▸ Performance ▸ Memory for caches: Automatic (what it is on this computer), then the sizes up to the most
+/// this computer allows (`max`, [`lcc_engine::memory::max_budget`]), and a size set elsewhere (an agent, another
+/// computer's settings) as its own choice. Values in MB, 0 = automatic. Before, the choices stopped at 4 GB whatever
+/// the computer had, though the engine takes up to three quarters of its memory.
+pub(crate) fn memory_choices(current: u32, auto: usize, max: usize) -> Vec<(u32, String)> {
+    let max_mb = u64::try_from(max >> 20).unwrap_or(u64::MAX);
+    let mut opts = vec![(0u32, format!("{} ({})", crate::i18n::tr("Automatic"), memory_size(u64::try_from(auto >> 20).unwrap_or(u64::MAX))))];
+    for mb in [512u32, 1024, 2048, 4096, 8192, 16_384, 32_768, 65_536, 131_072] {
+        if u64::from(mb) <= max_mb {
+            opts.push((mb, memory_size(u64::from(mb))));
+        }
+    }
+    if current > 0 && !opts.iter().any(|(v, _)| *v == current) {
+        opts.push((current, memory_size(u64::from(current))));
+    }
+    opts
+}
+
 pub(super) fn hint(ui: &mut egui::Ui, t: &Tokens, text: &str) {
     if crate::dialog_frame::in_form(ui) {
         crate::dialog_frame::help(ui, text);
@@ -1446,10 +1474,17 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         ),
     );
     row(ui, t, crate::i18n::tr("Memory for caches"), |ui| {
-        let auto = crate::i18n::tr_format!("Automatic ({} MB)", lcc_engine::memory::default_budget() >> 20);
-        let opts = [(0u32, auto.as_str()), (512, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB")];
+        let opts = memory_choices(app.ui.settings.memory_mb, lcc_engine::memory::default_budget(), lcc_engine::memory::max_budget());
+        let opts: Vec<(u32, &str)> = opts.iter().map(|(v, l)| (*v, l.as_str())).collect();
         choices(ui, "settingsMemory", &opts, &mut app.ui.settings.memory_mb);
     });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.",
+        ),
+    );
     exports_section(app, ui, t);
     heading(ui, t, crate::i18n::tr("Thumbnail cache"));
     let cur = (app.session.cache_bytes() >> 20) as u32;
@@ -2543,6 +2578,26 @@ fn in_use_text(used: Option<Option<u64>>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{memory_choices, memory_size};
+
+    /// The memory choices follow the computer: Automatic says what it is here, sizes go up to the most this computer
+    /// allows (not 4 GB on every computer), and a size set elsewhere stays choosable.
+    #[test]
+    fn memory_choices_follow_the_computer() {
+        let gb = 1usize << 30;
+        let o = memory_choices(0, 16 * gb, 48 * gb);
+        let values: Vec<u32> = o.iter().map(|(v, _)| *v).collect();
+        assert_eq!(values, [0, 512, 1024, 2048, 4096, 8192, 16_384, 32_768], "up to three quarters of a 64 GB computer");
+        assert!(o[0].1.ends_with("(16 GB)"), "Automatic says what it is here: {}", o[0].1);
+        let small = memory_choices(0, 2 * gb, 6 * gb);
+        assert_eq!(small.last().map(|(v, _)| *v), Some(4096));
+        let other = memory_choices(20_480, 2 * gb, 6 * gb);
+        assert_eq!(other.last().map(|(v, l)| (*v, l.as_str())), Some((20_480, "20 GB")), "a size from elsewhere stays");
+        assert_eq!(memory_size(1536), "1.5 GB");
+        assert_eq!(memory_size(16_300), "16 GB", "a quarter of a computer's 64 GB");
+        assert_eq!(memory_size(512), "512 MB");
+    }
+
     use super::*;
     use serde_json::json;
 

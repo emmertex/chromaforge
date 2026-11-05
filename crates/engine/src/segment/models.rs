@@ -4,7 +4,8 @@
 //!
 //! Which model computes Object clicks is the user's choice ([`ObjectModel`]): `auto` keeps
 //! SAM 3 when it is installed (as before) and otherwise uses SAM 2.1 when that is installed.
-//! Describe (text) needs SAM 3 either way. Sky, Landscape and People masks keep the photo
+//! Describe (text) uses SAM 3 when it is installed, else the OWLv2 object finder with SAM 2.1
+//! ([`Segmenter::describe_model`]). Sky, Landscape and People masks keep the photo
 //! analysis unless the user chose the EoMT scene model ([`SceneModel`]) and it is installed.
 //!
 //! Nothing is downloaded unless asked for (`ai.models.download {"id", "acknowledged": true}`);
@@ -302,6 +303,37 @@ impl Segmenter {
         Err(crate::EngineError::ModelMissing { model, msg })
     }
 
+    /// The models Describe (text) masks run on: SAM 3 when it is installed (or a remote worker
+    /// serves it), else the open pair, the OWLv2 object finder (`describe`) and SAM 2.1 (`sam2`)
+    /// segmenting its boxes. Without a folder for the open models only SAM 3 can be offered (its
+    /// [`crate::EngineError::ModelMissing`]); otherwise the error names the first open model
+    /// missing ([`crate::AiModel::Describe`]: its download is offered).
+    pub fn describe_model(&self) -> crate::Result<DescribeModel> {
+        if !Self::AVAILABLE {
+            return Err(crate::EngineError::Other("AI masks are not available in this build".into()));
+        }
+        if self.installed() || self.remote_endpoint().is_some() || self.models_root.is_none() {
+            return self.require_model().map(DescribeModel::Sam3);
+        }
+        let detector = self.require_open_model("describe", crate::AiModel::Describe)?;
+        let sam2 = self.require_open_model("sam2", crate::AiModel::Describe)?;
+        Ok(DescribeModel::Open { detector, sam2 })
+    }
+
+    /// The open models Describe still needs (keys for `ai.models.download`, in the order to get
+    /// them); empty when it is ready, or SAM 3 serves it.
+    pub fn describe_needs(&self) -> Vec<&'static str> {
+        if !Self::AVAILABLE || self.installed() || self.remote_endpoint().is_some() || self.models_root.is_none() {
+            return Vec::new();
+        }
+        ["describe", "sam2"].into_iter().filter(|k| !self.open_model_installed(k)).collect()
+    }
+
+    /// [`Segmenter::describe_model`] as text.
+    pub fn describe_dir(&self) -> Result<DescribeModel, String> {
+        self.describe_model().map_err(|e| e.to_string())
+    }
+
     /// [`Segmenter::require_object_model`] as text.
     pub fn object_dir(&self) -> Result<PathBuf, String> {
         self.require_object_model().map_err(|e| e.to_string())
@@ -416,6 +448,15 @@ impl Segmenter {
             _ => false,
         }
     }
+}
+
+/// The models a Describe selection runs on ([`Segmenter::describe_model`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DescribeModel {
+    /// SAM 3's text prompt (its folder; empty with a remote worker).
+    Sam3(PathBuf),
+    /// OWLv2's boxes segmented by SAM 2.1 (their folders).
+    Open { detector: PathBuf, sam2: PathBuf },
 }
 
 /// The choices file in the models folder.

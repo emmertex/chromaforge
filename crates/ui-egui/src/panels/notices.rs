@@ -56,10 +56,10 @@ pub fn may_close(app: &mut LccApp) -> bool {
         }));
         return false;
     }
-    // a catalog backup due: asked once, as Lightroom Classic asks when it closes (the web keeps no catalog folder)
+    // a catalog backup due: asked once, as Lightroom Classic asks when it closes (the web keeps no catalog folder);
+    // nothing changed since the last backup, nothing to ask
     #[cfg(not(target_arch = "wasm32"))]
-    if app.exit_backup.is_none() && app.session.catalog_dir().is_some() && app.session.catalog_settings().backup_due(lcc_catalog::library::now_secs())
-    {
+    if app.exit_backup.is_none() && app.session.catalog_backup_wanted() {
         app.quit_prompt =
             Some(QuitPrompt::Backup(crate::i18n::tr("A backup of the catalog is due. Back it up now, before {app} quits?").to_string()));
         return false;

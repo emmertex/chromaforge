@@ -20,9 +20,12 @@
 //! verified before use). Nothing in the app requires the model: without it, AI masks report
 //! that it isn't installed and everything else works.
 //!
+//! [`owl`] runs OWLv2 (`google/owlv2-base-patch16-ensemble`, Apache-2.0), an open-vocabulary
+//! detector: with SAM 2.1's box prompts it gives Describe without SAM 3 ([`describe`]).
+//!
 //! Modified work (Apache License 2.0, §4(b)): ported by the project contributors in 2026 from
-//! the Python/PyTorch SAM 3 code of Hugging Face Transformers (`src/transformers/models/sam3` and `sam3_tracker`), Copyright The HuggingFace
-//! Team and Meta Platforms, Inc.; translated to Rust on candle and restructured. See NOTICE.
+//! the Python/PyTorch SAM 3 and OWLv2 code of Hugging Face Transformers (`src/transformers/models/sam3`, `sam3_tracker` and `owlv2`), Copyright The HuggingFace
+//! Team, Meta Platforms, Inc. and Google; translated to Rust on candle and restructured. See NOTICE.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -37,9 +40,13 @@ mod cpu;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod depth;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod describe;
+#[cfg(not(target_arch = "wasm32"))]
 mod detector;
 #[cfg(not(target_arch = "wasm32"))]
 mod dino;
+#[cfg(not(target_arch = "wasm32"))]
+mod feat;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fetch;
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,6 +65,9 @@ pub mod models;
 mod neck;
 #[cfg(not(target_arch = "wasm32"))]
 mod nn;
+/// OWLv2, an open-vocabulary detector: with SAM 2.1's box prompts it gives Describe without SAM 3 ([`describe`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod owl;
 /// People masks from MediaPipe's models, run by `lcc-tflite`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod people;
@@ -90,6 +100,8 @@ use candle_core::{DType, Device, Tensor};
 #[cfg(not(target_arch = "wasm32"))]
 use candle_nn::VarBuilder;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use owl::{Owl, OwlEncoded, is_owl_dir};
 #[cfg(not(target_arch = "wasm32"))]
 pub use sam2::{SAM2_INPUT, SAM2_MASK_SIDE, Sam2, Sam2Encoded, is_sam2_dir};
 #[cfg(not(target_arch = "wasm32"))]
