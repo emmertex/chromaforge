@@ -106,7 +106,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.beforeAfterSplit", "Before/After Split", Some("Shift+Y"), "View>Before/After"),
     ("view.beforeAfterTopBottom", "Before/After Top/Bottom", Some("Alt+Y"), "View>Before/After"),
     ("view.beforeAfterSplitTopBottom", "Before/After Split Top/Bottom", Some("Alt+Shift+Y"), "View>Before/After"),
-    ("view.showOriginal", "Show Original", Some("\\"), "View>Before/After"),
+    ("view.showOriginal", "Show Before", Some("\\"), "View>Before/After"),
     ("view.zoomFit", "Zoom to Fit", Some("Cmd+0"), "View>Zoom"),
     ("view.zoom100", "Zoom 100%", Some("Cmd+Alt+0"), "View>Zoom"),
     ("view.zoomToggle", "Toggle Zoom", Some("Z"), "View>Zoom"),

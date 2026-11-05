@@ -637,7 +637,7 @@ visible menu bar yet: the menu model is only exposed through the control channel
 | MENU-VIEW-VERSIONS | Show/Hide versions | P1 | ✅ | `cmd:panel.versions` | |
 | MENU-VIEW-HISTOGRAM | Show/Hide histogram | P0 | ✅ | `cmd:view.histogram` | |
 | MENU-VIEW-INFOOVERLAY | Show info overlay | P1 | ✅ | `cmd:view.infoOverlay` | cycles |
-| MENU-VIEW-SHOWORIGINAL | Show Original | P0 | ✅ | `cmd:view.showOriginal` | |
+| MENU-VIEW-SHOWORIGINAL | Show Before | P0 | ✅ | `cmd:view.showOriginal` | |
 | MENU-VIEW-BEFOREAFTER | Before/After submenu | P0 | ✅ | `cmd:view.beforeAfter`, `cmd:view.beforeAfterSplit`, `cmd:view.beforeAfterTopBottom`, `cmd:view.beforeAfterSplitTopBottom` | |
 | MENU-VIEW-ZOOM | Zoom in / out / toggle / fit / 1:1 | P0 | ✅ | `cmd:view.zoomIn`, `cmd:view.zoomOut`, `cmd:view.zoomToggle`, `cmd:view.zoomFit`, `cmd:view.zoom100` | |
 | MENU-VIEW-CLIPPING | Clipping | P0 | ✅ | `cmd:view.clipping` | |
