@@ -219,7 +219,8 @@ fn the_classic_window_draws_its_rows_without_panels() {
     let mut h = demo([1920.0, 1080.0]);
     settings(&mut h, json!({"tab": "performance"}));
     let room = rect(&h, "settings:rows").expect("the page's room");
-    let check = h.app.widgets.iter().rev().find(|(w, _)| w.starts_with("check:")).map(|(_, r)| *r).expect("a checkbox on Performance");
+    // (a checkbox of its own, not one in a labelled row such as background preparation's)
+    let check = rect(&h, "check:settings.gpu").expect("the GPU checkbox on Performance");
     assert!((check.left() - room.left()).abs() < 2.0, "the checkbox {check:?} starts at the page's edge {room:?}");
 }
 
