@@ -186,25 +186,34 @@ fn library_filters_dont_hide_the_browsed_folder() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A module switch while the Import tab is up leaves the tab first (the Classic module bar's rule,
+/// A module switch while the Browse tab is up leaves the tab first (the Classic module bar's rule,
 /// kept for the Modern Develop pill, shortcuts and agents too): the tab's sheet must never end up
-/// drawn under another module's chrome.
+/// drawn under another module's chrome. Develop with a browsed photo active is the exception that
+/// gives the rule a meaning: it develops the browsed photo without importing it.
 #[test]
-fn switching_modules_leaves_the_import_tab_first() {
+fn switching_modules_leaves_the_browse_tab_first() {
     for layout in ["classic", "modern"] {
         let mut h = app([1400.0, 900.0], layout);
         let dir = folder(&format!("switch-{layout}"), 2);
         exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
         assert_eq!(h.app.ui.tab, Tab::Import, "{layout}");
+        // Develop on the browsed photo, in place: the tab hands over and the edit adds no
+        // library photo
         exec(&mut h, "module.develop", json!({}));
         assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop, "{layout}");
-        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Import tab handed over");
+        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Browse tab handed over");
         h.settle(SETTLE);
-        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Import sheet under Develop");
-        // and the way back works
+        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Browse sheet under Develop");
+        assert!(h.app.session.catalog.photos().filter(|p| p.in_library()).count() == 0, "{layout}");
+        // and the way back works: the folder view is still on, so the Browse tab comes back
         exec(&mut h, "module.library", json!({}));
         assert_eq!(h.app.ui.module, crate::module::ModuleId::Library, "{layout}");
-        assert!(!matches!(h.app.session.source, lcc_engine::LibrarySource::Folder), "{layout}");
+        assert_eq!(h.app.ui.tab, Tab::Import, "{layout}: the folder view brings Browse back");
+        assert!(matches!(h.app.session.source, lcc_engine::LibrarySource::Folder), "{layout}");
+        // another module leaves the tab without developing anything
+        exec(&mut h, "module.map", json!({}));
+        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Browse tab handed over");
+        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Browse sheet under Map");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

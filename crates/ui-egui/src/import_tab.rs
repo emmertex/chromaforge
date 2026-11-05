@@ -111,10 +111,7 @@ pub fn showing(app: &LccApp) -> bool {
 /// clear one with. The filter comes back when the Library tab does ([`leave`]).
 pub(crate) fn enter(app: &mut LccApp) {
     app.ui.import_develop = false;
-    if !app.session.filters_off()
-        && app.session.filter != lcc_catalog::Filter::default()
-        && app.run("library.toggleFilters", json!({})).is_ok()
-    {
+    if !app.session.filters_off() && app.session.filter != lcc_catalog::Filter::default() && app.run("library.toggleFilters", json!({})).is_ok() {
         app.ui.import_shelved_filter = true;
     }
 }
@@ -656,7 +653,7 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
         // here, without importing it — the Develop module in the Library tab, edits to the
         // sidecar, the catalog untouched
         if browsing
-            && crate::button::Button::new(&crate::i18n::tr("Develop without Import").to_string())
+            && crate::button::Button::new(crate::i18n::tr("Develop without Import"))
                 .enabled(app.session.active().is_some())
                 .widget("importDevelop")
                 .show(ui)

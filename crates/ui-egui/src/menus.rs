@@ -312,6 +312,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.libraryTab", "Library Tab", None, "Window>Modules"),
     // {what?: picks|selected|all}: the Import tab's big button
     ("import.start", "Import from the Import Tab", None, ""),
+    // the Browse tab's "Develop without Import": the Library tab's Develop module on the browsed
+    // folder's active photo, the edits to the XMP sidecar, the catalog untouched
+    ("import.develop", "Develop without Import", None, ""),
     // {take?, previews?, copy?, moveFiles?, destination?, organize?, rename?, preset?, presets?, keywords?, metadataPreset?, album?, newAlbum?…}
     ("import.configure", "Import Tab Settings", None, ""),
     ("import.settings", "Show Import Tab Settings", None, ""),

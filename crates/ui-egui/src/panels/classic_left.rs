@@ -426,4 +426,3 @@ fn folders_body(app: &mut LccApp, ui: &mut egui::Ui) {
         }
     }
 }
-
