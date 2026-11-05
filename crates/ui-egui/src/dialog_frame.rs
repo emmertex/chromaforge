@@ -193,6 +193,13 @@ pub const LABEL_GAP: f32 = 10.0;
 pub const GROUP_PAD: f32 = 10.0;
 /// The height of one form row.
 const ROW_H: f32 = 24.0;
+/// A form row's height in the Compact layout's dense look.
+const DENSE_ROW_H: f32 = 20.0;
+
+/// A form row's height: [`ROW_H`], or [`DENSE_ROW_H`] in the Compact layout.
+fn row_h(ui: &Ui) -> f32 {
+    if Tokens::get(ui.ctx()).dense { DENSE_ROW_H } else { ROW_H }
+}
 
 /// The label column width the form in `ui` uses (set by [`form`], else [`LABEL_W`]).
 pub fn label_width(ui: &Ui) -> f32 {
@@ -254,14 +261,14 @@ pub fn form_row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> 
                 if !label.is_empty() {
                     ui.add(egui::Label::new(RichText::new(crate::i18n::tr(label)).color(t.text_label)).wrap());
                 }
-                let room = vec2(ui.available_width().max(40.0), ROW_H);
+                let room = vec2(ui.available_width().max(40.0), row_h(ui));
                 ui.allocate_ui_with_layout(room, Layout::left_to_right(Align::Center).with_main_wrap(true), add).inner
             })
             .inner;
     }
     ui.horizontal(|ui| {
         let gap = ui.spacing().item_spacing.x;
-        ui.allocate_ui_with_layout(vec2(w, ROW_H), Layout::right_to_left(Align::Center), |ui| {
+        ui.allocate_ui_with_layout(vec2(w, row_h(ui)), Layout::right_to_left(Align::Center), |ui| {
             ui.set_min_width(w);
             if !label.is_empty() {
                 ui.add(egui::Label::new(RichText::new(crate::i18n::tr(label)).color(t.text_label)).truncate());
@@ -269,7 +276,7 @@ pub fn form_row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> 
         });
         ui.add_space((LABEL_GAP - gap).max(0.0));
         // a row of many choices wraps inside the control column instead of widening the dialog
-        let room = vec2(ui.available_width().max(40.0), ROW_H);
+        let room = vec2(ui.available_width().max(40.0), row_h(ui));
         ui.allocate_ui_with_layout(room, Layout::left_to_right(Align::Center).with_main_wrap(true), add).inner
     })
     .inner
@@ -366,9 +373,18 @@ pub fn group_begin(ui: &mut Ui, title: Option<&str>) {
         }
         return;
     }
-    ui.add_space(6.0);
-    if let Some(title) = title.filter(|s| !s.is_empty()) {
-        heading(ui, title);
+    if t.dense {
+        // Compact (LAYOUT-DENSE): a flat band across the form with a thin title, the rows under it
+        // unboxed
+        ui.add_space(2.0);
+        if let Some(title) = title.filter(|s| !s.is_empty()) {
+            band(ui, title);
+        }
+    } else {
+        ui.add_space(6.0);
+        if let Some(title) = title.filter(|s| !s.is_empty()) {
+            heading(ui, title);
+        }
     }
     let shape = ui.painter().add(Shape::Noop);
     let rect = ui.max_rect();
@@ -382,7 +398,7 @@ pub fn group_begin(ui: &mut Ui, title: Option<&str>) {
 pub fn card_frame(ctx: &egui::Context) -> egui::Frame {
     egui::Frame::window(&ctx.global_style())
         .inner_margin(egui::Margin { left: 18, right: 18, top: 14, bottom: 14 })
-        .corner_radius(16.0)
+        .corner_radius(Tokens::get(ctx).radius(16.0))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(26)))
         .shadow(egui::epaint::Shadow { offset: [0, 10], blur: 32, spread: 0, color: egui::Color32::from_black_alpha(110) })
 }
@@ -415,6 +431,21 @@ pub fn esc_closes(app_dialog_open: bool, ctx: &egui::Context) -> bool {
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
 }
 
+/// A group's header in the Compact layout: a flat band across the form (past the group padding),
+/// a divider on top, the title at the left in small semibold text.
+fn band(ui: &mut Ui, title: &str) {
+    let t = Tokens::get(ui.ctx());
+    let rect = ui.max_rect();
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), egui::Sense::hover());
+    let bar = Rect::from_min_max(egui::pos2(rect.left() - GROUP_PAD, row.top()), egui::pos2(rect.right() + GROUP_PAD, row.bottom()));
+    let p = ui.painter();
+    p.rect_filled(bar, 0.0, t.inset);
+    p.hline(bar.x_range(), bar.top(), egui::Stroke::new(1.0, t.divider));
+    let g = p.layout_no_wrap(crate::i18n::tr(title).to_string(), t.semibold(11.0), t.text_label);
+    p.galley(egui::pos2(bar.left() + GROUP_PAD, bar.center().y - g.size().y / 2.0), g, t.text_label);
+    crate::widgets::register(ui.ctx(), format!("formBand:{title}"), bar);
+}
+
 /// A group's heading: small spaced capitals in the dim text colour, above its card.
 fn heading(ui: &mut Ui, title: &str) {
     let t = Tokens::get(ui.ctx());
@@ -437,6 +468,11 @@ pub fn group_end(ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let bottom = ui.cursor().top() - ui.spacing().item_spacing.y + 2.0;
     let rect = Rect::from_min_max(egui::pos2(open.left, open.top), egui::pos2(open.right, bottom.max(open.top)));
+    if t.dense {
+        // Compact: the band above is the group's frame; its rows sit on the chrome
+        ui.add_space(2.0);
+        return;
+    }
     // a rounded card with a faint edge
     let panel = egui::epaint::RectShape::new(rect, 12.0, t.inset, egui::Stroke::new(1.0, t.divider.gamma_multiply(0.7)), StrokeKind::Inside);
     ui.painter().set(open.shape, panel);
@@ -452,7 +488,7 @@ pub fn fold_group(ui: &mut Ui, widget: &str, title: &str, summary: &str, open: &
     let t = Tokens::get(ui.ctx());
     let title = crate::i18n::tr(title).to_string();
     let rect = ui.max_rect();
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H + 2.0), egui::Sense::hover());
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h(ui) + 2.0), egui::Sense::hover());
     let bar = Rect::from_min_max(egui::pos2(rect.left() - GROUP_PAD, row.top()), egui::pos2(rect.right() + GROUP_PAD, row.bottom()));
     let resp = ui.interact(bar, ui.id().with(("fold-group", widget)), egui::Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, *open, &title));
@@ -463,7 +499,7 @@ pub fn fold_group(ui: &mut Ui, widget: &str, title: &str, summary: &str, open: &
     }
     let p = ui.painter();
     let fill = if resp.hovered() { t.hover } else { t.inset };
-    p.rect(bar, 4.0, fill, egui::Stroke::new(1.0, t.divider), StrokeKind::Inside);
+    p.rect(bar, t.radius(4.0), fill, egui::Stroke::new(1.0, t.divider), StrokeKind::Inside);
     // ▶ folded, ▼ open
     let c = egui::pos2(bar.left() + 14.0, bar.center().y);
     let pts = if *open {

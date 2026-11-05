@@ -360,7 +360,7 @@ pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
     let widths: Vec<f32> =
         labels.iter().map(|(_, l, _)| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + 24.0).collect();
     let (outer, _) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 4.0, h), Sense::hover());
-    ui.painter().rect(outer, h / 2.0, t.field, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    ui.painter().rect(outer, t.radius(h / 2.0), t.field, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let mut x = outer.left() + 2.0;
     for ((tab, label, wid), w) in labels.iter().zip(widths) {
         let r = Rect::from_min_size(pos2(x, outer.top() + 2.0), vec2(w, h - 4.0));
@@ -370,9 +370,9 @@ pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
         let on = app.ui.tab == *tab;
         crate::access::choice(&resp, label, on);
         if on {
-            ui.painter().rect_filled(r, (h - 4.0) / 2.0, t.accent);
+            ui.painter().rect_filled(r, t.radius((h - 4.0) / 2.0), t.accent);
         } else if resp.hovered() {
-            ui.painter().rect_filled(r, (h - 4.0) / 2.0, t.hover);
+            ui.painter().rect_filled(r, t.radius((h - 4.0) / 2.0), t.hover);
         }
         let color = if on { t.canvas } else { t.text };
         ui.painter().text(r.center(), Align2::CENTER_CENTER, crate::i18n::tr(label), font.clone(), color);
@@ -488,9 +488,9 @@ fn source_row(app: &mut LccApp, ui: &mut egui::Ui, wid: &str, label: &str, path:
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     register(ui.ctx(), format!("button:{wid}"), r);
     if on {
-        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), 4.0, t.cell_selected);
+        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), t.radius(4.0), t.cell_selected);
     } else if resp.hovered() {
-        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), 4.0, t.hover);
+        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), t.radius(4.0), t.hover);
     }
     let shown = crate::widgets::elide_head(label, r.width() - 30.0, |s| ui.painter().layout_no_wrap(s.to_string(), t.font(12.5), t.text).size().x);
     ui.painter().text(pos2(r.left() + 16.0, r.center().y), Align2::LEFT_CENTER, shown, t.font(12.5), t.text);

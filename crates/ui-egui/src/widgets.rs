@@ -2,7 +2,7 @@
 //! flyout rows, bordered buttons. Every interactive widget registers an automation id + rect
 //! ([`register`]) so the control channel can find and click it by name.
 
-use egui::{Align2, Color32, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use lcc_develop::{ControlSpec, Shade, Track};
 
 use crate::icons::{Icon, paint};
@@ -1352,7 +1352,7 @@ fn text_button_sized(ui: &mut Ui, id: &str, label: &str, active: bool, width: Op
     let p = ui.painter();
     // #122: an "on" choice gets a brighter edge as well as a brighter fill, so it reads as selected.
     let edge = if active { t.text_dim } else { t.button_border };
-    p.rect(r, CornerRadius::same(if finger { 10 } else { 6 }), fill, Stroke::new(1.0, edge), StrokeKind::Inside);
+    p.rect(r, t.radius(if finger { 10.0 } else { 6.0 }), fill, Stroke::new(1.0, edge), StrokeKind::Inside);
     p.with_clip_rect(r.intersect(p.clip_rect())).galley(r.center() - galley.size() / 2.0, galley, t.text);
     resp
 }
@@ -1364,7 +1364,8 @@ pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -
     let t = Tokens::get(ui.ctx());
     let finger = crate::dialog_frame::finger_sized(ui);
     let font = t.semibold(if finger { 13.5 } else { 11.5 });
-    let (h, pad) = if finger { (34.0, 3.0) } else { (24.0, 2.0) };
+    // (Compact: a tighter track)
+    let (h, pad) = if finger { (34.0, 3.0) } else if t.dense { (20.0, 1.0) } else { (24.0, 2.0) };
     let widths: Vec<f32> = labels
         .iter()
         .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + if finger { 26.0 } else { 16.0 })
@@ -1375,7 +1376,7 @@ pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -
     let draw = |ui: &mut Ui, range: std::ops::Range<usize>, clicked: &mut Option<usize>| {
         let w = range.clone().map(|i| widths.get(i).copied().unwrap_or(0.0)).sum::<f32>() + 2.0 * pad;
         let (track, _) = ui.allocate_exact_size(vec2(w, h + 2.0 * pad), Sense::hover());
-        ui.painter().rect_filled(track, (h + 2.0 * pad) / 2.0, t.button);
+        ui.painter().rect_filled(track, t.radius((h + 2.0 * pad) / 2.0), t.button);
         let mut x = track.left() + pad;
         for i in range {
             let cw = widths.get(i).copied().unwrap_or(0.0);
@@ -1387,9 +1388,9 @@ pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -
             resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
             register(ui.ctx(), format!("button:{id}-{i}"), cell);
             if on {
-                ui.painter().rect(cell, h / 2.0, t.pressed, Stroke::new(1.0, t.text_dim.gamma_multiply(0.5)), StrokeKind::Inside);
+                ui.painter().rect(cell, t.radius(h / 2.0), t.pressed, Stroke::new(1.0, t.text_dim.gamma_multiply(0.5)), StrokeKind::Inside);
             } else if resp.hovered() {
-                ui.painter().rect_filled(cell, h / 2.0, t.hover);
+                ui.painter().rect_filled(cell, t.radius(h / 2.0), t.hover);
             }
             ui.painter().text(cell.center(), Align2::CENTER_CENTER, label, font.clone(), if on { t.text } else { t.text_label });
             if resp.clicked() {
@@ -1444,7 +1445,7 @@ pub fn segmented(ui: &mut Ui, id: &str, items: &[(&str, &str)], active: Option<u
                     t.button
                 };
                 let p = ui.painter();
-                p.rect(r, CornerRadius::same(4), fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
+                p.rect(r, t.radius(4.0), fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
                 p.text(r.center(), Align2::CENTER_CENTER, label, font.clone(), t.text);
                 if resp.clicked() {
                     clicked = Some(i);
@@ -1479,7 +1480,7 @@ pub fn icon_segmented(ui: &mut Ui, id: &str, items: &[(Icon, &str, &str)], activ
                 t.button
             };
             let p = ui.painter();
-            p.rect(r, CornerRadius::same(4), fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
+            p.rect(r, t.radius(4.0), fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
             let c = if on {
                 t.pick
             } else if resp.hovered() {

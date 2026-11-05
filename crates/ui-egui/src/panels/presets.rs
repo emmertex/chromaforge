@@ -751,7 +751,7 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
                         register(ui.ctx(), format!("presetPickerGroup:{salt}:{key}"), r);
                         crate::widgets::announce(&resp, label.clone());
                         if resp.hovered() {
-                            ui.painter().rect_filled(r, 3.0, t.hover.gamma_multiply(0.5));
+                            ui.painter().rect_filled(r, t.radius(3.0), t.hover.gamma_multiply(0.5));
                         }
                         let chevron = Rect::from_center_size(pos2(r.left() + 8.0, r.center().y), vec2(9.0, 9.0));
                         paint(ui.painter(), chevron, if *open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
