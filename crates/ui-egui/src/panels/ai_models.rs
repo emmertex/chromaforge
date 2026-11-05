@@ -151,6 +151,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
         }
     }
     crate::panels::denoise::ai_models_section(app, ui, &t);
+    crate::panels::ml_models::models_section(app, ui, &t);
     crate::dialog_frame::group_begin(ui, Some("Object masks use"));
     let current = app.session.segmenter.object_model().key();
     let items: Vec<(&str, &str)> = OBJECT_MODELS.iter().map(|(k, l)| (*l, *k)).collect();

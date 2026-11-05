@@ -82,7 +82,8 @@ pub fn chosen(s: &Session, field: &str) -> Vec<String> {
         }
         out
     };
-    match field {
+    // a column whose no-value row is picked keeps its values in `Filter::facets`
+    let mut out = match field {
         "camera" => list(&f.camera, &f.cameras),
         "lens" => list(&f.lens, &f.lenses),
         "keyword" => list(&f.keyword, &f.keywords),
@@ -98,7 +99,15 @@ pub fn chosen(s: &Session, field: &str) -> Vec<String> {
         "rating" if f.rating_op == RatingOp::Exactly && f.rating == 0 => vec!["0".to_string()],
         "year" => f.date.iter().filter(|d| d.len() == 4).cloned().collect(),
         _ => facet(f, field).map(|p| p.values.clone()).unwrap_or_default(),
+    };
+    if let Some(pk) = facet(f, field) {
+        for value in &pk.values {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(value)) {
+                out.push(value.clone());
+            }
+        }
     }
+    out
 }
 
 /// `library.facetPick`: a click on a Metadata column's value. Fields that take several values (camera, lens,
@@ -117,6 +126,29 @@ fn pick(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad(C, format!("every photo has a {field}: pick its value (flag none, rating 0) instead")));
             }
             let on = !none_chosen(s, field);
+            // turning the no-value row on unites it with values picked before: they move from the
+            // dedicated fields into the `Filter::facets` entry (the union), the dedicated fields
+            // would AND with it and the column would come out empty
+            if on && matches!(field, "camera" | "lens" | "keyword" | "person" | "label") {
+                let mut values = chosen(s, field);
+                match field {
+                    "camera" => (s.filter.camera, s.filter.cameras) = (None, Vec::new()),
+                    "lens" => (s.filter.lens, s.filter.lenses) = (None, Vec::new()),
+                    "keyword" => (s.filter.keyword, s.filter.keywords) = (None, Vec::new()),
+                    "person" => (s.filter.person, s.filter.people) = (None, Vec::new()),
+                    _ => (s.filter.label, s.filter.labels) = (None, Vec::new()),
+                }
+                match s.filter.facets.iter_mut().find(|p| p.field == field) {
+                    Some(pk) => {
+                        pk.values.clear();
+                        pk.values.append(&mut values);
+                        pk.none = true;
+                    }
+                    None => s.filter.facets.push(FacetPick { field: field.to_string(), values, none: true }),
+                }
+                s.filter.facets.retain(|p| !p.is_empty());
+                return Ok(json!({"field": field, "chosen": chosen(s, field), "none": none_chosen(s, field), "count": s.visible().len()}));
+            }
             match s.filter.facets.iter_mut().find(|p| p.field == field) {
                 Some(pk) => pk.none = on,
                 None => s.filter.facets.push(FacetPick { field: field.to_string(), values: Vec::new(), none: on }),
@@ -145,6 +177,17 @@ fn pick(s: &mut Session, p: &Value) -> Result<Value> {
         s.filter.facets.retain(|p| p.field != field);
     }
     match field {
+        // with the column's no-value row picked, the values go into the `Filter::facets` entry
+        // (which unites them with the photos without a value): the dedicated fields would AND
+        // with it and the union would come out empty
+        "camera" | "lens" | "keyword" | "person" | "label" if none_chosen(s, field) => {
+            let none = none_chosen(s, field);
+            s.filter.facets.retain(|p| p.field != field);
+            let pk = FacetPick { field: field.to_string(), values: next, none };
+            if !pk.is_empty() {
+                s.filter.facets.push(pk);
+            }
+        }
         "camera" => (s.filter.camera, s.filter.cameras) = (None, next),
         "lens" => (s.filter.lens, s.filter.lenses) = (None, next),
         "keyword" => (s.filter.keyword, s.filter.keywords) = (None, next),

@@ -1,5 +1,5 @@
 //! A library with no photos yet: what the grid and the Detail view show instead of a dead end,
-//! with Import Photos… and Import Lightroom Catalog… as buttons, and the view it opens on.
+//! with Import Photos… and Import Lightroom or Capture One Catalog… as buttons, and the view it opens on.
 
 use egui::Rect;
 use serde_json::json;
@@ -51,7 +51,7 @@ pub fn hint(keymap: &Keymap, mac: bool) -> String {
 
 const IMPORT_PHOTOS: EmptyAction = EmptyAction { command: "file.addPhotos", label: "Import Photos…", widget: "button:emptyImportPhotos" };
 const IMPORT_LIGHTROOM: EmptyAction =
-    EmptyAction { command: "file.importLightroom", label: "Import Lightroom Catalog…", widget: "button:emptyImportLightroom" };
+    EmptyAction { command: "file.importLightroom", label: "Import Lightroom or Capture One Catalog…", widget: "button:emptyImportLightroom" };
 
 const IMPORT_FOLDER: EmptyAction = EmptyAction { command: "file.addFolder", label: "Import Folder…", widget: "button:emptyImportFolder" };
 const CAMERA_ROLL: EmptyAction = EmptyAction { command: "file.addCameraRoll", label: "Camera Roll", widget: "button:emptyCameraRoll" };

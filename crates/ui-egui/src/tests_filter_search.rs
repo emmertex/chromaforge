@@ -318,3 +318,56 @@ fn picker_values_survive_changes_to_other_things() {
     app.session.catalog.apply(Op::SetMeta { id: PhotoId(2), meta: Box::new(meta) }).unwrap();
     assert_eq!(app.caches.filter_values(&app.session.catalog).cameras, ["ILCE-1", "NIKON Z 6_2", "nikon z 6_2"]);
 }
+
+/// Issue #487: the top bar's AI search toggle switches the search box to natural-language (semantic) search,
+/// narrows the grid by image-text similarity, shows a removable `AI search: “…”` chip, and lists the
+/// Semantic search model in Settings ▸ AI Models.
+#[test]
+fn semantic_search_toggle_filters_the_grid_and_shows_chip_and_ai_models_section() {
+    let d = std::env::temp_dir().join(format!("lcc-ui-semantic-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let models_dir = d.join("ml-models");
+    let src = d.join("synthetic-src");
+    lcc_engine::ml::write_synthetic_clip_dir(&src, "test-clip").unwrap();
+
+    let mut s = lcc_engine::Session::with_demo();
+    s.ml_models_dir = Some(models_dir);
+    s.execute("ml.models.install", &json!({"path": src.to_string_lossy(), "acknowledged": true})).unwrap();
+    s.execute("ml.index", &json!({"wait": true})).unwrap();
+
+    let app = LccApp::new(s, Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1600.0, 1000.0], 1.0);
+    h.app.ui.view = crate::state::ViewMode::PhotoGrid;
+    h.settle(SETTLE);
+    let all = h.app.session.visible_cloned().len();
+    assert!(all >= 2);
+
+    // Toggle AI search on via the top bar's `search:ai` button
+    assert!(!h.app.ui.semantic_search);
+    ok(&mut h, "ui.clickWidget", json!({"id": "search:ai"}));
+    assert!(h.app.ui.semantic_search);
+
+    // Type a natural-language description into the search box
+    ok(&mut h, "ui.clickWidget", json!({"id": "field:search"}));
+    ok(&mut h, "ui.text", json!({"text": "golden sunset"}));
+    assert_eq!(h.app.session.filter.semantic.as_deref(), Some("golden sunset"));
+    let narrowed = h.app.session.visible_cloned().len();
+    assert!(narrowed > 0 && narrowed < all, "semantic search narrowed {all} demo photos to {narrowed}");
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "chip:0"), "removable AI search filter chip shown");
+
+    // Removing the chip clears the semantic filter and the search box
+    ok(&mut h, "ui.clickWidget", json!({"id": "chip:0"}));
+    assert!(h.app.session.filter.semantic.is_none());
+    assert_eq!(h.app.ui.search, "");
+    assert_eq!(h.app.session.visible_cloned().len(), all);
+
+    // Settings ▸ AI Models (`dialog.aiModels`) shows the Semantic search model row
+    ok(&mut h, "engine.execute", json!({"command": "dialog.aiModels"}));
+    assert!(
+        h.app.widgets.iter().any(|(w, _)| w.starts_with("ml:download:") || w.starts_with("ml:remove:")),
+        "Semantic search model controls shown in AI Models dialog: {:?}",
+        h.app.widgets.iter().map(|(w, _)| w).filter(|w| w.starts_with("ml:")).collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -109,7 +109,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Semantic Photo Search",
             [],
             None,
-            "{text: string, topK?: 50, threshold?: -1.0, scope?: all | filtered | selected} → {query, modelId, hits: [{id, score}], indexedPhotos, pendingPhotos} — encode `text` with the active CLIP text tower at interactive priority and rank library photos by cosine similarity",
+            "{text: string, topK?: 50, threshold?: -1.0, scope?: all | filtered | selected, filter?: false, clear?: false} → {query, modelId, hits: [{id, score}], indexedPhotos, pendingPhotos} — encode `text` with the active CLIP text tower at interactive priority, rank library photos by cosine similarity, and optionally filter the library grid (`filter: true`)",
             super::always,
             |s, p| s.search_semantic(p)
         ),

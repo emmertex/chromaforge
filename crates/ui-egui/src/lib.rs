@@ -1370,13 +1370,41 @@ impl LccApp {
             };
         }
         if r.is_ok() && id == "library.toggleFilters" {
-            // the search field shows the text filter: empty while the filters are off, back with them
-            self.ui.search = self.session.filter.text.clone();
+            // the search field shows the active text or semantic filter: empty while the filters are off, back with them
+            if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                self.ui.search = q.clone();
+            } else if !self.session.filter.text.is_empty() {
+                self.ui.semantic_search = false;
+                self.ui.search = self.session.filter.text.clone();
+            } else {
+                self.ui.search.clear();
+            }
         }
         if r.is_ok() && id == "library.clearFilter" {
             // the search field shows the text filter: cleared from anywhere (the loupe's pill, the
             // menu), it must not keep a search that no longer applies (issue #1648)
             self.ui.search.clear();
+        }
+        if r.is_ok() && id == "search.semantic" {
+            if params.get("clear").and_then(Value::as_bool) == Some(true) {
+                if self.ui.semantic_search {
+                    self.ui.search.clear();
+                }
+            } else if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                self.ui.search = q.clone();
+            }
+        }
+        if r.is_ok() && id == "library.filter" && params.get("semantic").is_some() {
+            if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                if self.ui.search.trim() != q {
+                    self.ui.search = q.clone();
+                }
+            } else if self.ui.semantic_search && params.get("semantic").is_some_and(Value::is_null) {
+                self.ui.search.clear();
+            }
         }
         if r.is_ok() && id == "mask.addComponent" && matches!(self.ui.tool.as_str(), "colorRange" | "brush" | "object") {
             // The eyedropper, the brush and the object tool take every press on the photo, so the handles of a
@@ -3048,8 +3076,8 @@ pub struct Caches {
     keyword_groups: Option<(u64, u64, std::sync::Arc<Vec<panels::keywording::Group>>)>,
     /// The Keyword List's tick boxes, by library revision and selection.
     keyword_ticks: Option<(u64, u64, std::sync::Arc<panels::keyword_list::Ticks>)>,
-    /// The folder tree, made at a catalog revision and a disk folder listing generation.
-    folder_tree: Option<((u64, u64), std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
+    /// The folder tree, made at a catalog revision.
+    folder_tree: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     /// The catalog's part of the folder tree (before the disk folders are added), by catalog revision.
     folder_base: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     people: Option<(u64, lcc_catalog::Filter, std::sync::Arc<Vec<lcc_catalog::Person>>)>,
@@ -3189,32 +3217,25 @@ const READS_CAPTURED: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with
 const READS_FLAG: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with(lcc_catalog::Aspects::FLAG);
 
 impl Caches {
-    /// The folders the library's photos were imported from.
+    /// The folders the library's photos were imported from (only those: the Folders panel lists
+    /// where the library's photos live, not the disk around them).
     pub fn folder_tree(&mut self, cat: &lcc_catalog::Catalog) -> std::sync::Arc<Vec<lcc_catalog::FolderNode>> {
-        let key = (cat.revision, crate::panels::left::classic::disk_generation());
+        let key = cat.revision;
         if let Some((k, t)) = &self.folder_tree
             && *k == key
         {
             return t.clone();
         }
-        // a catalog change lists the disk folders again: a folder created, moved or removed changes no
-        // photo, so the catalog's own record of what changed can't tell
-        if self.folder_tree.as_ref().is_none_or(|((r, _), _)| *r != cat.revision) {
-            crate::panels::left::classic::invalidate_disk_folders();
-        }
-        // the catalog's part is made again only when a photo's file or presence changed
+        // the tree is made again only when a photo's file or presence changed
         let base = self.folder_base.take().filter(|(r, _)| still_right(cat, *r, READS_FILE)).map(|(_, b)| b);
         let base = base.unwrap_or_else(|| std::sync::Arc::new(crate::panels::left::sidebar_folders(cat.folder_tree())));
         self.folder_base = Some((cat.revision, base.clone()));
-        let t = std::sync::Arc::new(crate::panels::left::classic::with_disk_folders(base.as_ref().clone()));
-        self.folder_tree = Some((key, t.clone()));
-        t
+        self.folder_tree = Some((key, base.clone()));
+        base
     }
     /// The folder tree as last built, when it still holds (a read-only check cannot rebuild it).
     pub(crate) fn folder_tree_if_fresh(&self, cat: &lcc_catalog::Catalog) -> Option<std::sync::Arc<Vec<lcc_catalog::FolderNode>>> {
-        // (the fork's key also carries the disk folders' generation: a folder made on disk is a change too)
-        let disk = crate::panels::left::classic::disk_generation();
-        self.folder_tree.as_ref().filter(|((r, g), _)| *g == disk && still_right(cat, *r, READS_FILE)).map(|(_, t)| t.clone())
+        self.folder_tree.as_ref().filter(|(r, _)| still_right(cat, *r, READS_FILE)).map(|(_, t)| t.clone())
     }
     /// The library's keyword tree.
     pub fn keyword_tree(&mut self, cat: &lcc_catalog::Catalog) -> std::sync::Arc<Vec<lcc_catalog::KeywordNode>> {

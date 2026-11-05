@@ -21,6 +21,7 @@ pub fn start(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
                 kind: PickKind::Save,
                 title: Some(crate::i18n::tr("Export Slideshow: folder for the JPEG files").to_string()),
                 filter: None,
+                more_filters: Vec::new(),
                 file_name: Some("Slideshow".into()),
             },
             Some("video") if p.get("container").and_then(Value::as_str) == Some("webm") => {

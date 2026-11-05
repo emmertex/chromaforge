@@ -2732,7 +2732,11 @@ fn local_photos_cannot_be_added_to_albums_until_they_join_my_photos() {
 
     // in My Photos: the menu entries come on, the submenu opens, and the album takes the photo
     h.app.run("photo.addToLibrary", json!({"ids": [local.0]})).unwrap();
-    h.step();
+    // the photo joined the library, so the quick filter's not-imported view would leave it out:
+    // Show All keeps it in the folder view for the rest of the test
+    let r = h.request("engine.execute", json!({"command": "library.browse", "params": {"path": dir.to_string_lossy(), "show": "all"}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
     let nodes = add_to_album(&h.app);
     assert!(!matches!(nodes.first(), Some(crate::menubar::MenuNode::Item { id, .. }) if id == "photo.addToLibrary"), "{nodes:?}");
     assert_eq!(enabled_of(&nodes, "album.addPhotos"), Some(true), "{nodes:?}");
