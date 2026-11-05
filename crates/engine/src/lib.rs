@@ -88,6 +88,7 @@ pub mod machine_test;
 pub mod media;
 pub mod memory;
 pub mod merge;
+pub mod merge_layers;
 pub mod midi;
 /// The shared AI backend's queue and activity row (#491).
 mod ml;

@@ -85,6 +85,8 @@ pub struct MergeFinish {
     pub stack: bool,
     /// Preview only: tint deghosted areas red.
     pub show_overlay: bool,
+    /// HDR only: also write the aligned frames as a layered PSD/PSB ([`crate::merge_layers`]).
+    pub layers: Option<crate::merge_layers::LayerOutput>,
 }
 
 /// The decoded photos of recent merge previews, so a preview whose options change (another projection, a deghost
@@ -167,6 +169,8 @@ pub struct MergeOutput {
     pub crop: Option<[f64; 4]>,
     /// Statistics for the caller (exposures, alignment, projection, …).
     pub info: Value,
+    /// The layered PSD/PSB when [`MergeFinish::layers`] asked for one (full-size runs only).
+    pub layers: Option<Vec<u8>>,
 }
 
 pub type ProgressFn<'a> = dyn Fn(f32, &str) -> bool + Sync + 'a;
@@ -252,11 +256,28 @@ impl MergeJob {
         let sub = |a: f32, b: f32| move |f: f32, s: &str| progress(a + (b - a) * f, s);
         // the reference frame's lens corrections (HDR); panoramas carry none
         let mut lens = Vec::new();
+        let mut layers = None;
         let (image, color, orientation, metadata, baseline, samples, crop, mut info, ghost) = match &self.kind {
             MergeKind::Hdr { hdr } => {
                 let frames = self.load_sources_as(&self.sources, false, progress, (0.0, 0.3), lcc_merge::HdrFrame::new)?;
-                let p = sub(0.3, 0.9);
-                let mut r = lcc_merge::merge_hdr_frames(frames, hdr, &p).map_err(err)?;
+                let want_layers = self.finish.layers.as_ref().filter(|_| self.preview.is_none());
+                let mut r = if let Some(lo) = want_layers {
+                    let p = sub(0.3, 0.6);
+                    let (r, aligned) = lcc_merge::merge_hdr_frames_aligned(frames, hdr, &p).map_err(err)?;
+                    let names: Vec<String> = self
+                        .sources
+                        .iter()
+                        .map(|(_, path)| {
+                            std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.clone())
+                        })
+                        .collect();
+                    let lp = |f: f32| progress(0.6 + 0.3 * f, "Writing layers");
+                    layers = Some(crate::merge_layers::write(&r, aligned, &names, lo, &lp)?);
+                    r
+                } else {
+                    let p = sub(0.3, 0.9);
+                    lcc_merge::merge_hdr_frames(frames, hdr, &p).map_err(err)?
+                };
                 lens = std::mem::take(&mut r.lens);
                 let info = json!({
                     "reference": self.sources[r.reference].0.0,
@@ -389,7 +410,7 @@ impl MergeJob {
             None => None,
         };
         progress(1.0, "Done");
-        Ok(MergeOutput { dng, preview, crop, info })
+        Ok(MergeOutput { dng, preview, crop, info, layers })
     }
 }
 
@@ -752,11 +773,15 @@ fn apply_auto(s: &mut DevelopSettings, src: &Rgb32f, info: &SourceInfo) {
 
 /// `dir/<stem>-<suffix>.dng`, then `-2`, `-3`… (the candidates for a merge's output).
 fn output_names(first: &str, suffix: &str) -> impl Iterator<Item = std::path::PathBuf> {
+    output_names_ext(first, suffix, "dng")
+}
+
+fn output_names_ext(first: &str, suffix: &str, ext: &'static str) -> impl Iterator<Item = std::path::PathBuf> {
     let p = std::path::Path::new(first);
     let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
     let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Merge".into());
     let suffix = suffix.to_string();
-    (1u64..).map(move |k| dir.join(if k == 1 { format!("{stem}-{suffix}.dng") } else { format!("{stem}-{suffix}-{k}.dng") }))
+    (1u64..).map(move |k| dir.join(if k == 1 { format!("{stem}-{suffix}.{ext}") } else { format!("{stem}-{suffix}-{k}.{ext}") }))
 }
 
 /// Parse `merge.*` command parameters into a kind and finishing options.
@@ -784,8 +809,39 @@ pub fn parse(id: &str, p: &Value) -> Result<(MergeKind, MergeFinish)> {
         auto_settings: p.get("autoSettings").and_then(Value::as_bool).unwrap_or(true),
         stack: p.get("stack").and_then(Value::as_bool).unwrap_or(false),
         show_overlay: p.get("showOverlay").and_then(Value::as_bool).unwrap_or(false),
+        layers: layer_output(id, p).map_err(bad)?,
     };
     Ok((kind, finish))
+}
+
+/// `layers: true` and its options (`layersFormat`, `bitDepth`, `colorSpace`, `includeMerged`, `deghostMask`).
+fn layer_output(id: &str, p: &Value) -> std::result::Result<Option<crate::merge_layers::LayerOutput>, String> {
+    use crate::merge_layers::{LayerOutput, LayersFormat};
+    if !p.get("layers").and_then(Value::as_bool).unwrap_or(false) {
+        return Ok(None);
+    }
+    if id != "merge.hdr" {
+        return Err("layers: Merge to Layers is for HDR merges only".into());
+    }
+    let format = match p.get("layersFormat").and_then(Value::as_str).unwrap_or("psd") {
+        "psd" => LayersFormat::Psd,
+        "psb" => LayersFormat::Psb,
+        "tiff" => return Err("layersFormat: layered TIFF is not supported; use psd or psb".into()),
+        other => return Err(format!("layersFormat: unknown `{other}` (psd, psb)")),
+    };
+    let bit_depth = match p.get("bitDepth").and_then(Value::as_u64).unwrap_or(16) {
+        8 => 8,
+        16 => 16,
+        other => return Err(format!("bitDepth: {other} (8 or 16)")),
+    };
+    let color_space = crate::cmd::edit_in::space(p.get("colorSpace").and_then(Value::as_str).unwrap_or("srgb"))?;
+    Ok(Some(LayerOutput {
+        format,
+        bit_depth,
+        color_space,
+        include_merged: p.get("includeMerged").and_then(Value::as_bool).unwrap_or(false),
+        deghost_mask: p.get("deghostMask").and_then(Value::as_bool).unwrap_or(false),
+    }))
 }
 
 impl Session {
@@ -834,6 +890,12 @@ impl Session {
         }
         let estimated = dimensions.working_bytes(&kind, preview, available).map_err(EngineError::Other)?;
         check_merge_memory_budget(estimated, available).map_err(EngineError::Other)?;
+        if let Some(lo) = finish.layers.as_ref().filter(|_| !preview) {
+            if !matches!(kind, MergeKind::Hdr { .. }) {
+                return Err(EngineError::Other("Merge to Layers is for HDR merges only".into()));
+            }
+            lo.check_size(sources.len(), dimensions.largest_frame).map_err(EngineError::Other)?;
+        }
         let frames = preview.then(|| self.media.merge_frames.clone());
         Ok(MergeJob { kind, finish, sources, preview: preview_edge, read, frames })
     }
@@ -896,11 +958,21 @@ impl Session {
                 return Err(EngineError::Other(format!("the merged file {path} could not be imported: {:?}", report.failed)));
             }
         };
+        let layered = match (&out.layers, &job.finish.layers) {
+            (Some(bytes), Some(lo)) => Some(self.add_merge_layers(first, bytes, lo.format.extension())?),
+            _ => None,
+        };
+        let mut under: Vec<PhotoId> = Vec::new();
         if !reused && job.finish.stack {
-            let sources: Vec<PhotoId> = job.sources.iter().map(|(p, _)| *p).collect();
-            if let Some(op) = self.catalog.stack_with_ops(id, &sources) {
-                self.commit("Stack with Sources", op)?;
-            }
+            under.extend(job.sources.iter().map(|(p, _)| *p));
+        }
+        if let Some((lid, _)) = &layered {
+            under.push(*lid);
+        }
+        if !under.is_empty()
+            && let Some(op) = self.catalog.stack_with_ops(id, &under)
+        {
+            self.commit("Stack with Sources", op)?;
         }
         self.selection = crate::Selection::single(id);
         if !reused && job.finish.auto_settings {
@@ -920,7 +992,32 @@ impl Session {
         info["bytes"] = json!(out.dng.len());
         // a repeated identical merge gives the verified result it already made (no new file, edits kept)
         info["reused"] = json!(reused);
+        if let Some((lid, lpath)) = layered {
+            info["layers"] = json!({"id": lid.0, "path": lpath, "bytes": out.layers.as_ref().map(Vec::len)});
+        }
         Ok(info)
+    }
+
+    /// Write a Merge to Layers document next to `first` under a free name and import it.
+    fn add_merge_layers(&mut self, first: &str, bytes: &[u8], ext: &'static str) -> Result<(PhotoId, String)> {
+        let path = lcc_catalog::safe_file::write_new_unique(&mut output_names_ext(first, "HDR-Layers", ext), bytes)
+            .map_err(|e| EngineError::Other(format!("could not write the layered file next to {first}: {e}")))?
+            .to_string_lossy()
+            .to_string();
+        let report = match crate::import::import(self, std::slice::from_ref(&path), crate::import::ImportMode::Add) {
+            Ok(report) => report,
+            Err(e) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(e);
+            }
+        };
+        match report.imported.first().copied().map(PhotoId) {
+            Some(id) => Ok((id, path)),
+            None => {
+                let _ = std::fs::remove_file(&path);
+                Err(EngineError::Other(format!("the layered file {path} could not be imported: {:?}", report.failed)))
+            }
+        }
     }
 
     /// Plan, run and finish a merge synchronously (CLI, MCP, control channel).
