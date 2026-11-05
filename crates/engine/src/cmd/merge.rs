@@ -67,7 +67,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "HDR Merge",
             [],
             None,
-            "{ids?, align=true, deghost=none|low|medium|high, autoSettings=true, stack=false, preview=false, showOverlay=false, previewPath?}",
+            "{ids?, align=true, deghost=none|low|medium|high, autoSettings=true, stack=false, preview=false, showOverlay=false, previewPath?, layers=false, layersFormat=psd|psb, bitDepth=16|8, colorSpace=srgb|adobeRgb|displayP3|proPhoto, includeMerged=false, deghostMask=false}: layers also writes <name>-HDR-Layers.psd, one layer per photo aligned as the merge aligned it (transparent where the warp left the frame), the merged result at the bottom and the deghost map as a hidden layer on top when asked; added to the library and stacked under the DNG → {id, path, …, layers?: {id, path, bytes}}",
             can_merge,
             |s, p| run(s, "merge.hdr", p)
         ),

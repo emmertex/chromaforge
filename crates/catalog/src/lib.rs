@@ -16,6 +16,7 @@
 pub mod dates;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod db;
+pub mod facets;
 pub mod folders;
 pub mod incoming;
 mod index;
@@ -47,6 +48,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use dates::{DateRun, GroupBy};
+pub use facets::FacetPick;
 pub use folders::{FolderNode, FolderRecord};
 pub use journal::{Journal, LoadReport, PersistStats, SnapshotPolicy, SnapshotTiming};
 pub use keywords::KeywordNode;

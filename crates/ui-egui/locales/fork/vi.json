@@ -1,6 +1,7 @@
 {
   "All Photographs": "Tất cả ảnh",
   "All masks shown · O to hide": "Đang hiện mọi mặt nạ · O để ẩn",
+  "Also Write Aligned Layers (PSD)": "Ghi thêm các lớp đã căn chỉnh (PSD)",
   "Applies at next launch. If the app is slow to start with the GPU on, try Vulkan: it prepares the GPU much faster on some computers.": "Áp dụng từ lần khởi động sau. Nếu ứng dụng khởi động chậm khi bật GPU, hãy thử Vulkan: trên một số máy tính, nó chuẩn bị GPU nhanh hơn nhiều.",
   "Ask": "Hỏi",
   "Choose SAM 3 Model Folder": "Chọn thư mục mô hình SAM 3",
@@ -29,6 +30,7 @@
   "High quality adjustment previews": "Xem trước điều chỉnh chất lượng cao",
   "Immich": "Immich",
   "Import dropped photos without review": "Nhập ảnh được thả vào mà không xem lại",
+  "Include Merged Layer": "Bao gồm lớp đã hợp nhất",
   "Include subfolders": "Bao gồm thư mục con",
   "Indexing photos": "Đang lập chỉ mục ảnh",
   "Install Older Version": "Cài phiên bản cũ hơn",
