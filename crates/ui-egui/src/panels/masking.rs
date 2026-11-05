@@ -714,10 +714,25 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             &text,
                             t.font(12.5),
                             if comp_sel { t.text } else { t.text_dim },
-                            (r.right() - 52.0 - text_x).max(10.0),
+                            (r.right() - 74.0 - text_x).max(10.0),
                         );
                         let at = pos2(text_x, r.center().y - g.size().y / 2.0);
                         ui.painter().galley(at, g, if comp_sel { t.text } else { t.text_dim });
+
+                        // Invert this component alone, lit while it is inverted
+                        let inv_r = Rect::from_center_size(pos2(r.right() - 58.0, r.center().y), vec2(20.0, 20.0));
+                        register(ui.ctx(), format!("componentInvert:{i}"), inv_r);
+                        register(ui.ctx(), format!("button:componentInvert:{i}"), inv_r);
+                        let comp_inv = ui.interact(inv_r, egui::Id::new(("componentInvert", m.id, i)), Sense::click());
+                        crate::widgets::announce_selected(&comp_inv, crate::i18n::tr("Invert"), c.invert);
+                        if c.invert {
+                            ui.painter().rect_filled(inv_r, 3.0, t.pressed);
+                        }
+                        paint(ui.painter(), inv_r.shrink(3.0), Icon::MaskInvert, if comp_inv.hovered() || c.invert { t.text } else { t.text_dim });
+                        let comp_inv = comp_inv.on_hover_text(crate::i18n::tr("Invert"));
+                        if comp_inv.clicked() {
+                            let _ = app.run("mask.component", json!({"id": m.id, "component": i, "action": "invert"}));
+                        }
 
                         // Bin icon next to the three dots
                         let bin_r = Rect::from_center_size(pos2(r.right() - 36.0, r.center().y), vec2(20.0, 20.0));
@@ -748,6 +763,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
 
                         if resp.clicked()
                             && !comp_bin.clicked()
+                            && !comp_inv.clicked()
                             && !more.clicked()
                             && !popup_open_at_start
                             && let Err(e) = app.run("mask.editComponent", json!({"id": m.id, "component": i}))

@@ -66,3 +66,23 @@ fn components_hang_under_the_mask_with_their_operation_in_a_column() {
     // the sign and the thumbnail line up on every row
     assert!((at(&h, "componentIcon:0").left() - thumb.left()).abs() < 0.5);
 }
+
+#[test]
+fn each_component_row_inverts_that_component_alone() {
+    let mut h = masking();
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5]}));
+    exec(&mut h, "mask.addComponent", json!({"op": "subtract", "kind": "linear", "start": [0.5, 0.0], "end": [0.5, 0.4]}));
+    let before = masks(&h)[0].invert;
+    let edited = h.app.ui.active_mask_component;
+    let r = h.request("ui.clickWidget", json!({"id": "componentInvert:1"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let m = &masks(&h)[0];
+    assert!(m.components[1].invert && !m.components[0].invert, "only that component");
+    assert_eq!(m.invert, before, "the mask itself is left alone");
+    assert_eq!(h.app.ui.active_mask_component, edited, "inverting doesn't switch the component edited");
+    let r = h.request("ui.clickWidget", json!({"id": "componentInvert:1"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(!masks(&h)[0].components[1].invert, "a second click turns it back");
+}
