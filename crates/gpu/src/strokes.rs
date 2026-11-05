@@ -61,7 +61,7 @@ struct Entry {
     /// Only batch renders used it (work made ahead in the background, `gate::is_batch`): those
     /// never evict what an interactive render keeps.
     batch: bool,
-    /// A whole stroke over one window's plane ([`put_loose`]), not a block of the frame.
+    /// A block one window worked out up to its own edge ([`put_loose`]), which only it can use.
     loose: bool,
     /// The photo it was worked out on (its identity: a live `Weak` keeps the address from reuse).
     src: Weak<Rgb32f>,
@@ -99,9 +99,9 @@ pub(crate) fn view(frame_lin_key: u64, generation: u64) -> u64 {
     hash((frame_lin_key, generation))
 }
 
-/// The key of a whole stroke `stroke` over the plane of one window (`plane`: its geometry and
-/// linear-stage keys) of frame `view` ([`put_loose`]).
-pub(crate) fn loose_key(view: u64, stroke: u64, plane: (u64, u64)) -> u64 {
+/// The stroke key under which one window (`plane`: its geometry, linear-stage keys and
+/// rectangle) of frame `view` keeps its own edge blocks ([`put_loose`], keyed with [`key`]).
+pub(crate) fn loose_key(view: u64, stroke: u64, plane: impl std::hash::Hash) -> u64 {
     hash(("window", view, stroke, plane))
 }
 
@@ -149,10 +149,10 @@ pub(crate) fn put(src: &Arc<Rgb32f>, key: u64, view: u64, pass: u64, batch: bool
     put_entry(src, key, (view, pass), batch, false, cap, kept);
 }
 
-/// Keep `kept`, a whole stroke over the plane of one window (`key`: [`loose_key`]), whose blocks
-/// near the window's edges couldn't be kept (the window saw too little around them): a window
-/// with no margin around it (a slider drag's, an export's) still finds its strokes on the next
-/// render. These go before any block, and take the place of no block.
+/// Keep `kept`, a block near one window's edge that no other window may use (the window saw too
+/// little past its edge; key: [`key`] of a [`loose_key`]): at the edges of the view, and in a
+/// window with no margin (a slider drag's, an export's), the next render still finds it. These
+/// go before any shared block, and take the place of none.
 pub(crate) fn put_loose(src: &Arc<Rgb32f>, key: u64, view: u64, pass: u64, batch: bool, cap: usize, kept: Arc<Kept>) {
     put_entry(src, key, (view, pass), batch, true, cap, kept);
 }

@@ -1638,23 +1638,23 @@ fn auto_stroke(
         );
         BuildHasherDefault::<DefaultHasher>::default().hash_one((format!("{st:?}"), d.dabs.len(), brush, d.erase, at.op, at.on_photo))
     };
-    // the whole stroke over this plane, kept by a window that could keep no blocks there
-    let loose = crate::strokes::loose_key(at.view, stroke_key, (at.plan.geo, at.plan.lin_key));
-    if let Some(k) = crate::strokes::get(at.src, loose, at.pass, generation, batch).filter(|k| k.rect == need) {
-        let (rw, rh) = (need.2 - need.0, need.3 - need.1);
-        let pc = [w as u32, local.0 as u32, local.1 as u32, rw as u32, rh as u32, d.density.to_bits(), at.op, rw as u32, 0, 0];
-        cx.run("combine16", &pc, &[None, Some(&k.packed), Some(brush)], groups2(rw, rh, [16, 16]));
-        return StrokeUse { reused: 1, blocks: 1 };
-    }
+    // blocks this window worked out up to its own edge, which only it can use
+    let loose = crate::strokes::loose_key(at.view, stroke_key, (at.plan.geo, at.plan.lin_key, need));
     // the blocks of the frame this plane needs: each one's part of the stroke, and of this plane
-    let mut blocks: Vec<(u64, Rect, Rect, Option<Arc<Kept>>)> = Vec::new();
+    let mut blocks: Vec<(u64, Rect, Rect, Option<(Rect, Arc<Kept>)>)> = Vec::new();
+    let mut cells: Vec<(usize, usize)> = Vec::new();
     for by in need.1 / BLOCK..need.3.div_ceil(BLOCK) {
         for bx in need.0 / BLOCK..need.2.div_ceil(BLOCK) {
             let cell = (bx * BLOCK, by * BLOCK, (bx + 1) * BLOCK, (by + 1) * BLOCK);
             let (Some(part), Some(here)) = (meet(cell, whole), meet(cell, need)) else { continue };
             let key = crate::strokes::key(at.view, stroke_key, bx, by);
             let kept = crate::strokes::get(at.src, key, at.pass, generation, batch).filter(|k| k.rect == part);
+            let kept = kept.map(|k| (part, k)).or_else(|| {
+                let edge = crate::strokes::key(at.view, loose, bx, by);
+                crate::strokes::get(at.src, edge, at.pass, generation, batch).filter(|k| k.rect == here).map(|k| (here, k))
+            });
             blocks.push((key, part, here, kept));
+            cells.push((bx, by));
         }
     }
     let mut used = StrokeUse { reused: blocks.iter().filter(|b| b.3.is_some()).count(), blocks: blocks.len() };
@@ -1693,25 +1693,31 @@ fn auto_stroke(
         // support, or the stroke's own edge (not kept when the render failed: its buffers may
         // hold nothing)
         if !crate::ctx::failed() {
-            let sees = |p: Rect| {
+            // `to`: where each side may stop instead (the stroke's reach, give or take `slack`,
+            // for a block any window may use; this window's own edge for one only it may use)
+            let sees = |p: Rect, to: Rect, slack: usize| {
                 p.0 >= c.0
                     && p.1 >= c.1
                     && p.2 <= c.2
                     && p.3 <= c.3
-                    && (c.0 == whole.0 || p.0 >= c.0 + support)
-                    && (c.1 == whole.1 || p.1 >= c.1 + support)
-                    && (c.2 == whole.2 || p.2 + support <= c.2)
-                    && (c.3 == whole.3 || p.3 + support <= c.3)
+                    && (c.0 <= to.0 + slack || p.0 >= c.0 + support)
+                    && (c.1 <= to.1 + slack || p.1 >= c.1 + support)
+                    && (c.2 + slack >= to.2 || p.2 + support <= c.2)
+                    && (c.3 + slack >= to.3 || p.3 + support <= c.3)
             };
-            let mut unseen = false;
-            for (key, part, _, kept) in &mut blocks {
+            for (bx_by, (key, part, here, kept)) in cells.iter().zip(&mut blocks) {
                 if kept.is_some() {
                     continue;
                 }
-                if !sees(*part) {
-                    unseen = true;
+                // (a block this window saw too little around: what it worked out there is kept
+                // for this window, so its next render refines nothing)
+                let (key, part, loose) = if sees(*part, whole, REACH_SLACK) {
+                    (*key, *part, false)
+                } else if sees(*here, need, 0) {
+                    (crate::strokes::key(at.view, loose, bx_by.0, bx_by.1), *here, true)
+                } else {
                     continue;
-                }
+                };
                 let (bw, bh) = (part.2 - part.0, part.3 - part.1);
                 let bn = bw * bh;
                 let one = cx.gpu.buffer(bn);
@@ -1723,22 +1729,21 @@ fn auto_stroke(
                 );
                 let bpacked = cx.gpu.buffer(bn.div_ceil(2));
                 cx.run("pack16", &[bn as u32], &[Some(&one), Some(&bpacked), None], groups1(bn.div_ceil(2)));
-                let k = Arc::new(Kept { rect: *part, packed: bpacked });
-                crate::strokes::put(at.src, *key, at.view, at.pass, batch, cap, k);
-            }
-            // (this window saw too little around some blocks to keep them, a window with no margin
-            // most of all: the whole stroke over this plane is kept for this window instead)
-            if unseen && c == need {
-                crate::strokes::put_loose(at.src, loose, at.view, at.pass, batch, cap, packed.clone());
+                let k = Arc::new(Kept { rect: part, packed: bpacked });
+                if loose {
+                    crate::strokes::put_loose(at.src, key, at.view, at.pass, batch, cap, k);
+                } else {
+                    crate::strokes::put(at.src, key, at.view, at.pass, batch, cap, k);
+                }
             }
         }
         cx.pace();
         Some((c, packed))
     });
     // every block's part of this plane, from the store or from what was just worked out
-    for (_, part, here, kept) in &blocks {
+    for (_, _, here, kept) in &blocks {
         let (src_rect, packed) = match (kept, &fresh) {
-            (Some(k), _) => (*part, &k.packed),
+            (Some((rect, k)), _) => (*rect, &k.packed),
             (None, Some((c, p))) if meet(*here, *c) == Some(*here) => (*c, &p.packed),
             // (outside what was worked out: nothing the stroke paints here)
             _ => {
@@ -1763,6 +1768,12 @@ fn auto_stroke(
     }
     used
 }
+
+/// Pixels short of a stroke's reach (`masks::auto_stroke_reach`) a window may stop and still count
+/// as reaching its edge: the reach ends two pixels past what the refine reads (dab extent and six
+/// sigmas), and a window grown for the stroke (`spots::window_for_reads`: two and a half radii)
+/// stops there, give or take a pixel of rounding.
+const REACH_SLACK: usize = 4;
 
 /// Pixels around a pixel the Auto Mask refine (`guided_cross` at `sigma`) reads: two Gaussians,
 /// each three box passes, plus a pixel of slack.
