@@ -77,5 +77,6 @@
   "Develop without Import": "Kehitä ilman tuontia",
   "Choose a folder or card to browse first": "Valitse ensin selattava kansio tai kortti",
   "Select a photo to develop": "Valitse kehitettävä kuva",
-  "Browse Tab": "Selaa-välilehti"
+  "Browse Tab": "Selaa-välilehti",
+  "Show Not Imported": "Näytä tuomattomat"
 }

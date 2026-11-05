@@ -407,3 +407,32 @@ fn develop_without_import_needs_a_browse_and_a_photo() {
     assert!(try_exec(&mut h, "import.develop", json!({}))["ok"] == false, "no photo chosen");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The browse quick filter: Show All / Show Not Imported in the bar — by default only the files
+/// an import would take, Show All adds the ones the library has already with an "In library"
+/// badge on their cells.
+#[test]
+fn browse_show_all_marks_photos_in_the_library() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.app.session = lcc_engine::Session::new().with_fs();
+    h.settle(SETTLE);
+    let dir = folder("show-all", 2);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert!(has_widget(&mut h, "button:browseShow-0") && has_widget(&mut h, "button:browseShow-1"), "the quick filter is in the bar");
+    // the first photo joins the library, as Add to My Photos does
+    let first = h.app.session.visible_cloned()[0];
+    exec(&mut h, "photo.addToLibrary", json!({"ids": [first.0]}));
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.session.visible_cloned().len(), 1, "not imported is the default");
+    // Show All: both files, the library one badged
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy(), "show": "all"}));
+    assert_eq!(h.app.session.visible_cloned().len(), 2);
+    let library_one = h.app.session.visible_cloned().into_iter().find(|id| h.app.session.catalog.photo(*id).is_some_and(|p| p.in_library()));
+    assert_eq!(library_one, Some(first), "the library photo shows");
+    h.step();
+    assert!(
+        library_one.is_some_and(|id| h.app.widgets.iter().any(|(n, _)| *n == format!("badge:inLibrary:{}", id.0))),
+        "the In library badge is on its cell"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

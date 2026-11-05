@@ -1918,5 +1918,6 @@
   "Develop without Import": "不匯入直接修改",
   "Choose a folder or card to browse first": "請先選擇要瀏覽的資料夾或記憶卡",
   "Select a photo to develop": "請選擇要修改的照片",
-  "Browse Tab": "瀏覽標籤"
+  "Browse Tab": "瀏覽標籤",
+  "Show Not Imported": "顯示未匯入"
 }

@@ -47,13 +47,22 @@ fn browse(s: &mut Session, p: &Value) -> Result<Value> {
     let report = import_with(s, &files, &opts)?;
     let forgotten = forget_gone(s, &dir_s, subfolders, &files);
     stamp_browsed(s, &dir_s, &files);
-    s.browse = Some(Browse { path: dir_s.clone(), subfolders });
+    // the Browse tab's quick filter: `show: all|notImported`; left out, a re-browse of the same
+    // folder keeps the choice and a new folder shows everything on disk
+    let not_imported = match p.get("show").and_then(Value::as_str) {
+        Some("all") => false,
+        Some("notImported") => true,
+        Some(other) => return Err(bad(C, format!("unknown show `{other}` (all|notImported)"))),
+        None => s.browse.as_ref().is_some_and(|b| b.not_imported && b.path == dir_s),
+    };
+    s.browse = Some(Browse { path: dir_s.clone(), subfolders, not_imported });
     s.source = LibrarySource::Folder;
     s.keep_active_in_view();
     let shown = s.visible().len();
     Ok(json!({
         "path": dir_s,
         "subfolders": subfolders,
+        "notImported": not_imported,
         "photos": shown,
         "new": report.imported.len(),
         "failed": report.failed.len(),
@@ -306,7 +315,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Browse Folder",
             [],
             None,
-            "{path, subfolders?: bool} — show a folder's photos without adding them to the library (they're read in place; edits go to XMP sidecars) → {path, photos, new}",
+            "{path, subfolders?: bool, show?: all|notImported} — show a folder's photos without adding them to the library (they're read in place; edits go to XMP sidecars; `show` picks the quick filter: everything on disk — the default — or just the files an import would take) → {path, photos, new, notImported}",
             always,
             browse
         ),

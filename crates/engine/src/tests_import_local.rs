@@ -80,3 +80,33 @@ fn browsing_writes_no_sidecars_until_import() {
     assert!(side("b.png").exists(), "asked for: browsed photos too");
     let _ = std::fs::remove_dir_all(&dir);
 }
+/// The browse quick filter (`library.browse`'s `show`): the folder view is everything on disk —
+/// the files the library has already included; `show: notImported` narrows it to the files an
+/// import would take, and a re-browse of the same folder keeps the choice.
+#[test]
+fn browse_show_all_and_not_imported() {
+    let dir = temp_dir("show");
+    png(&dir.join("a.png"), 1);
+    png(&dir.join("b.png"), 2);
+    let mut s = Session::new().with_fs();
+    s.execute("library.browse", &json!({"path": dir.to_string_lossy()})).unwrap();
+    let id_of = |s: &Session, name: &str| s.catalog.photos().find(|p| p.file_name == name).map(|p| p.id).unwrap();
+    let a = id_of(&s, "a.png");
+    s.execute("photo.addToLibrary", &json!({"ids": [a.0]})).unwrap();
+
+    // everything on disk (the default): a.png is in the library, b.png isn't
+    s.execute("library.browse", &json!({"path": dir.to_string_lossy()})).unwrap();
+    assert_eq!(s.visible_cloned().len(), 2, "both files");
+    assert!(s.browse.as_ref().is_some_and(|b| !b.not_imported));
+
+    // not imported: only the file an import would take, and the choice survives a re-browse
+    let r = s.execute("library.browse", &json!({"path": dir.to_string_lossy(), "show": "notImported"})).unwrap();
+    assert_eq!(r["notImported"], true, "{r}");
+    assert_eq!(s.visible_cloned(), vec![id_of(&s, "b.png")], "only the file an import would take");
+    s.execute("library.browse", &json!({"path": dir.to_string_lossy()})).unwrap();
+    assert_eq!(s.visible_cloned().len(), 1, "kept across a re-browse");
+    // back to everything
+    s.execute("library.browse", &json!({"path": dir.to_string_lossy(), "show": "all"})).unwrap();
+    assert_eq!(s.visible_cloned().len(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}

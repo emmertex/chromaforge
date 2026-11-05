@@ -2097,6 +2097,11 @@ impl Session {
             let b = self.browse.clone().unwrap_or_default();
             f.folder = Some(b.path);
             f.subfolders = b.subfolders;
+            // the Browse tab's quick filter on "Show Not Imported": only the files an import
+            // would take
+            if b.not_imported {
+                f.in_library = Some(false);
+            }
         }
         if source == LibrarySource::LibraryFolder {
             // no folder chosen: nothing (`.` names no folder)
@@ -2177,6 +2182,9 @@ impl Session {
                 let b = self.browse.clone().unwrap_or_default();
                 f.folder = Some(b.path);
                 f.subfolders = b.subfolders;
+                if b.not_imported {
+                    f.in_library = Some(false);
+                }
             }
             if self.source == LibrarySource::LibraryFolder {
                 f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));

@@ -163,7 +163,7 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
                 && std::path::Path::new(&b.path).is_dir()
                 && app.session.source != LibrarySource::Folder
             {
-                let _ = crate::import::browse(app, &b.path, Some(b.subfolders));
+                let _ = crate::import::browse(app, &b.path, Some(b.subfolders), None);
             }
         }
         Tab::Library => {
@@ -634,7 +634,8 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
     let develop_w = if browsing { if wide { 190.0 } else { 170.0 } } else { 0.0 };
     let segs_w = if wide { 190.0 } else { 0.0 };
     let view_w = if browsing { 200.0 } else { 0.0 };
-    let room = (row.available_width() - button_w - develop_w - segs_w - view_w - 24.0).max(40.0);
+    let show_w = if browsing { 250.0 } else { 0.0 };
+    let room = (row.available_width() - button_w - develop_w - segs_w - view_w - show_w - 24.0).max(40.0);
     let text = match &folder {
         Some(f) => {
             let name = std::path::Path::new(f).file_name().map_or_else(|| f.clone(), |n| n.to_string_lossy().to_string());
@@ -676,11 +677,29 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
         }
         if browsing {
             view_segments(app, ui);
+            show_segments(app, ui);
         }
         if wide {
             take_segments(app, ui);
         }
     });
+}
+
+/// Show All / Show Not Imported: the browse quick filter (`library.browse`'s `show`). Not
+/// imported is the default: the files an import would take. Show All adds the files the library
+/// has already, each marked In library in the grid.
+fn show_segments(app: &mut LccApp, ui: &mut egui::Ui) {
+    let Some(b) = app.session.browse.clone() else { return };
+    let chosen = if b.not_imported { 1 } else { 0 };
+    let Some(i) = crate::widgets::segments(ui, "browseShow", &["Show All", "Show Not Imported"], Some(chosen)) else {
+        return;
+    };
+    let show = if i == 0 { "all" } else { "notImported" };
+    if (i == 1) != b.not_imported
+        && let Err(e) = app.run("library.browse", json!({"path": b.path, "subfolders": b.subfolders, "show": show}))
+    {
+        app.toast(ui.ctx(), e);
+    }
 }
 
 /// Photo Grid / Grid / Detail: the view of the browsed folder's photos, the Library's view

@@ -84,7 +84,7 @@ fn show(s: &mut Session, p: &Value) -> Result<Value> {
     } else if let Some(a) = s.alternatives.as_mut() {
         a.original = id;
     }
-    s.browse = Some(Browse { path: dir_s, subfolders: false });
+    s.browse = Some(Browse { path: dir_s, subfolders: false, not_imported: false });
     s.source = LibrarySource::Folder;
     s.filter = Filter { only: ids.clone(), ..Default::default() };
     s.selection = Selection::single(id);

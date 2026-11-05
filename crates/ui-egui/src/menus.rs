@@ -2256,7 +2256,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             // listed and read in the background (see `import::browse`)
             let path = p.get("path").and_then(Value::as_str)?;
-            crate::import::browse(app, path, p.get("subfolders").and_then(Value::as_bool))
+            let show = p.get("show").and_then(Value::as_str);
+            crate::import::browse(app, path, p.get("subfolders").and_then(Value::as_bool), show)
         }
         "dialog.import" => {
             if crate::lightroom_import::is_running(app) {
@@ -2529,7 +2530,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             if crate::import_tab::enabled(app) && p.get("path").is_none() && p.get("album").is_none() {
                 let dcim = std::path::Path::new(&path).join("DCIM");
                 let at = if dcim.is_dir() { dcim.to_string_lossy().to_string() } else { path };
-                return Some(crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &at, None)));
+                return Some(
+                    crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &at, None, None)),
+                );
             }
             let r = crate::import::open(app, vec![path]);
             // only the scan just started (an error means another scan is running)
@@ -2555,7 +2558,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             match path {
                 // a folder picked here (not given by a script): the Import tab browses it
                 Some(path) if crate::import_tab::enabled(app) && p.get("path").is_none() && p.get("album").is_none() => {
-                    crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &path, None))
+                    crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &path, None, None))
                 }
                 Some(path) => {
                     let subfolders = p.get("subfolders").and_then(Value::as_bool).unwrap_or(true);
