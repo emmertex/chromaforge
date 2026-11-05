@@ -1308,6 +1308,10 @@ pub struct UiState {
     /// Mask IDs whose sub-actions are collapsed in the masking panel.
     #[serde(default)]
     pub collapsed_masks: std::collections::HashSet<u32>,
+    /// Masks other than the selected one whose components are shown all the same (the chevron):
+    /// only the selected mask's branch is open by itself.
+    #[serde(skip)]
+    pub expanded_masks: std::collections::HashSet<u32>,
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
@@ -2312,6 +2316,7 @@ impl Default for UiState {
             mask_held: None,
             mask_drawing: None,
             collapsed_masks: Default::default(),
+            expanded_masks: Default::default(),
             view: ViewMode::Detail,
             grid_style: ViewMode::PhotoGrid,
             modern: crate::modern::ModernUi::default(),
@@ -2678,6 +2683,21 @@ impl UiState {
             self.collapsed_masks.remove(&id);
         } else {
             self.collapsed_masks.insert(id);
+        }
+    }
+
+    /// Whether a mask's components show under it in the Masking panel: the selected mask's unless
+    /// its chevron folded them, another mask's only when its chevron opened them.
+    pub fn mask_branch_open(&self, id: u32, selected: bool) -> bool {
+        if selected { !self.collapsed_masks.contains(&id) } else { self.expanded_masks.contains(&id) }
+    }
+
+    /// The chevron on a mask's row: folds or opens its components (see [`Self::mask_branch_open`]).
+    pub fn toggle_mask_branch(&mut self, id: u32, selected: bool) {
+        if selected {
+            self.toggle_mask_collapsed(id);
+        } else if !self.expanded_masks.remove(&id) {
+            self.expanded_masks.insert(id);
         }
     }
 

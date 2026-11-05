@@ -213,6 +213,31 @@ fn kind_label(s: &MaskShape) -> (&'static str, Icon) {
     (label, kind_icon(kind))
 }
 
+/// A component's row in the mask tree, named after its source as the mask is: the name the
+/// photographer gave it, else what it selects ("Groom - Clothes, Hair", "Wedding dress", "Water",
+/// "“white car”"), the kind's words in the photographer's language.
+pub(crate) fn component_label(c: &lcc_develop::MaskComponent) -> String {
+    if let Some(n) = c.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        return n.to_string();
+    }
+    match &c.shape {
+        // a person's role and parts, a taught object's or a prompt's own words: never translated
+        MaskShape::People { .. } | MaskShape::Concept { .. } | MaskShape::Prompt { .. } => lcc_develop::recipe::shape_name(&c.shape),
+        shape => crate::i18n::tr(&lcc_develop::recipe::shape_name(shape)).to_string(),
+    }
+}
+
+/// The sign before a component's row in the mask tree: + Add, − Subtract, ∩ Intersect; none on the
+/// first component, which starts the mask.
+pub(crate) fn component_op_sign(index: usize, op: lcc_develop::MaskOp) -> &'static str {
+    match op {
+        _ if index == 0 => "",
+        lcc_develop::MaskOp::Add => "+",
+        lcc_develop::MaskOp::Subtract => "−",
+        lcc_develop::MaskOp::Intersect => "∩",
+    }
+}
+
 const TILE_MAX: f32 = 68.0;
 const TILE_GAP: f32 = 6.0;
 /// Room left and right of a tile's label.
@@ -400,13 +425,15 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 } else if r.lost_focus() {
                     let name = name.trim().to_string();
                     app.ui.renaming_mask = None;
-                    if !name.is_empty() && name != m.name {
+                    // an empty name gives the mask back its automatic one (what it selects)
+                    if name != m.name && (!name.is_empty() || !m.components.is_empty()) {
                         let _ = app.run("mask.rename", json!({"id": rid, "name": name}));
                     }
                 }
                 continue;
             }
-            let collapsed = app.ui.is_mask_collapsed(m.id);
+            // only the selected mask's branch opens by itself; the chevron folds it, or opens another's
+            let collapsed = !app.ui.mask_branch_open(m.id, sel);
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
             crate::widgets::announce_selected(&resp, m.name.clone(), Some(m.id) == app.session.active_mask);
             register(ui.ctx(), format!("mask:{}", m.id), r);
@@ -436,7 +463,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 if chev_resp.hovered() { t.text } else { t.text_dim },
             );
             if chev_resp.clicked() {
-                app.ui.toggle_mask_collapsed(m.id);
+                app.ui.toggle_mask_branch(m.id, sel);
             }
 
             // the mask's thumbnail (white on black over the photo); its kind's icon until it is ready
@@ -494,9 +521,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             let right = r.right();
             let cy = r.center().y;
 
-            // show / hide on hover (and always while hidden)
+            // the eye, always on the row: the mask's effect on / off, a quick before / after of
+            // that mask; O is the overlay's
             let mut eye_clicked = false;
-            if ui.rect_contains_pointer(r) || !m.visible {
+            {
                 let er = Rect::from_center_size(pos2(right - 14.0, cy), vec2(22.0, 22.0));
                 register(ui.ctx(), format!("maskVisible:{}", m.id), er);
                 let eye = ui.interact(er, egui::Id::new(("maskVisible", m.id)), Sense::click());
@@ -507,6 +535,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     if m.visible { Icon::Eye } else { Icon::EyeOff },
                     if eye.hovered() { t.text } else { t.text_dim },
                 );
+                let eye = eye.on_hover_text(crate::i18n::tr("The mask's effect on / off"));
                 if eye.clicked() {
                     eye_clicked = true;
                     let _ = app.run("mask.visible", json!({"id": m.id}));
@@ -616,11 +645,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         }
                     }
                     for (i, c) in cur_m.components.iter().enumerate() {
-                        let (kind, icon) = kind_label(&c.shape);
-                        let label = c.name.clone().unwrap_or_else(|| match &c.shape {
-                            MaskShape::Prompt { text, .. } => format!("“{text}”"),
-                            _ => menu_label(kind).to_string(),
-                        });
+                        let (_, icon) = kind_label(&c.shape);
+                        let label = component_label(c);
                         let comp_sel = sel && app.ui.active_mask_component == Some(i);
                         if let Some((_, _, name)) = app.ui.renaming_component.as_mut().filter(|(mid, k, _)| *mid == m.id && *k == i) {
                             let r =
@@ -663,12 +689,20 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             },
                         );
 
-                        let op = match c.op {
-                            lcc_develop::MaskOp::Add => "",
-                            lcc_develop::MaskOp::Subtract => "− ",
-                            lcc_develop::MaskOp::Intersect => "∩ ",
-                        };
-                        let icon_r = Rect::from_min_size(r.min + vec2(5.0, 5.0), vec2(18.0, 18.0));
+                        // a branch of the tree: a line from the mask down to this row, then across to it
+                        let x0 = full_r.left() + 10.0;
+                        let branch = Stroke::new(1.0, t.button_border);
+                        ui.painter().line_segment([pos2(x0, full_r.top() - 2.0), pos2(x0, r.center().y)], branch);
+                        ui.painter().line_segment([pos2(x0, r.center().y), pos2(r.left(), r.center().y)], branch);
+                        // how the component combines, in a column of its own (the first one starts the mask)
+                        let opr = Rect::from_center_size(pos2(r.left() + 11.0, r.center().y), vec2(14.0, 14.0));
+                        let op = component_op_sign(i, c.op);
+                        if !op.is_empty() {
+                            register(ui.ctx(), format!("componentOp:{i}"), opr);
+                            ui.painter().text(opr.center(), Align2::CENTER_CENTER, op, t.semibold(13.0), t.text_label);
+                        }
+                        let icon_r = Rect::from_min_size(pos2(opr.right() + 3.0, r.top() + 5.0), vec2(18.0, 18.0));
+                        register(ui.ctx(), format!("componentIcon:{i}"), icon_r);
                         // the component's own thumbnail (made into a mask of its own)
                         let alone = lcc_develop::Mask {
                             components: vec![lcc_develop::MaskComponent { op: lcc_develop::MaskOp::Add, ..c.clone() }],
@@ -688,10 +722,32 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             None => paint(ui.painter(), icon_r.shrink(1.0), icon, if comp_sel { t.text } else { t.text_label }),
                         }
 
-                        let text = format!("{op}{label}{}", if c.invert { crate::i18n::tr(" (inverted)") } else { "" });
-                        let g = one_line(ui.painter(), &text, t.font(12.5), if comp_sel { t.text } else { t.text_dim }, r.width() - 28.0 - 52.0);
-                        let at = pos2(r.left() + 26.0, r.center().y - g.size().y / 2.0);
+                        let text = format!("{label}{}", if c.invert { crate::i18n::tr(" (inverted)") } else { "" });
+                        let text_x = icon_r.right() + 4.0;
+                        let g = one_line(
+                            ui.painter(),
+                            &text,
+                            t.font(12.5),
+                            if comp_sel { t.text } else { t.text_dim },
+                            (r.right() - 74.0 - text_x).max(10.0),
+                        );
+                        let at = pos2(text_x, r.center().y - g.size().y / 2.0);
                         ui.painter().galley(at, g, if comp_sel { t.text } else { t.text_dim });
+
+                        // Invert this component alone, lit while it is inverted
+                        let inv_r = Rect::from_center_size(pos2(r.right() - 58.0, r.center().y), vec2(20.0, 20.0));
+                        register(ui.ctx(), format!("componentInvert:{i}"), inv_r);
+                        register(ui.ctx(), format!("button:componentInvert:{i}"), inv_r);
+                        let comp_inv = ui.interact(inv_r, egui::Id::new(("componentInvert", m.id, i)), Sense::click());
+                        crate::widgets::announce_selected(&comp_inv, crate::i18n::tr("Invert"), c.invert);
+                        if c.invert {
+                            ui.painter().rect_filled(inv_r, 3.0, t.pressed);
+                        }
+                        paint(ui.painter(), inv_r.shrink(3.0), Icon::MaskInvert, if comp_inv.hovered() || c.invert { t.text } else { t.text_dim });
+                        let comp_inv = comp_inv.on_hover_text(crate::i18n::tr("Invert"));
+                        if comp_inv.clicked() {
+                            let _ = app.run("mask.component", json!({"id": m.id, "component": i, "action": "invert"}));
+                        }
 
                         // Bin icon next to the three dots
                         let bin_r = Rect::from_center_size(pos2(r.right() - 36.0, r.center().y), vec2(20.0, 20.0));
@@ -722,6 +778,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
 
                         if resp.clicked()
                             && !comp_bin.clicked()
+                            && !comp_inv.clicked()
                             && !more.clicked()
                             && !popup_open_at_start
                             && let Err(e) = app.run("mask.editComponent", json!({"id": m.id, "component": i}))
