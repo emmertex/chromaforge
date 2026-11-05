@@ -2380,5 +2380,9 @@
   "New album…": "Album baru…",
   "Albums": "Album",
   "This is the album you're editing": "Ini album yang sedang Anda edit",
-  "It tests this album, so testing it back would loop": "Album itu sudah menjadikan album ini sebagai syarat; menjadikannya syarat di sini akan menimbulkan perulangan"
+  "It tests this album, so testing it back would loop": "Album itu sudah menjadikan album ini sebagai syarat; menjadikannya syarat di sini akan menimbulkan perulangan",
+  "Import to This Folder…": "Impor ke folder ini…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Menyalin foto dari folder yang Anda pilih ke folder ini; di tinjauan Anda bisa mengubahnya",
+  "Add to My Photos…": "Tambahkan ke Foto saya…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Meninjau foto di folder ini, lalu menambahkannya ke pustaka di tempatnya; tidak ada berkas yang disentuh"
 }

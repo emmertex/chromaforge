@@ -187,9 +187,8 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         }
     }
     if let Some(e) = app.peer_sync.error.clone() {
-        ui.label(RichText::new(e).size(11.0).color(t.reject));
+        crate::dialog_frame::note(ui, RichText::new(e).size(11.0).color(t.reject));
     }
-    ui.add_space(8.0);
 
     // a pairing under way takes the place of the device list
     let pairing = st.get("pairing").filter(|p| !p.is_null()).cloned();
@@ -198,7 +197,6 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         Some(p) => pairing_box(app, ui, t, p),
         None => found_list(app, ui, t, &st),
     }
-    ui.add_space(8.0);
 
     super::settings::heading(ui, t, "Paired Devices");
     let paired = st.get("paired").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -213,7 +211,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     for d in &paired {
         let id = s(d, "deviceId").to_string();
-        ui.horizontal(|ui| {
+        crate::dialog_frame::control_row(ui, |ui| {
             let online = d.get("online").and_then(Value::as_bool).unwrap_or(false);
             ui.label(RichText::new(if online { "●" } else { "○" }).color(if online { t.accent } else { t.text_dim }));
             ui.label(RichText::new(s(d, "name")).color(t.text));
@@ -229,12 +227,14 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 
     let offers = st.get("offers").and_then(Value::as_array).cloned().unwrap_or_default();
     if !offers.is_empty() {
-        ui.add_space(8.0);
         super::settings::heading(ui, t, "Offers");
         for o in &offers {
             let id = s(o, "deviceId").to_string();
-            ui.label(RichText::new(trf!("{} wants to sync its library “{}” with this library.", s(o, "name"), s(o, "library"))).color(t.text));
-            ui.horizontal(|ui| {
+            crate::dialog_frame::note(
+                ui,
+                RichText::new(trf!("{} wants to sync its library “{}” with this library.", s(o, "name"), s(o, "library"))).color(t.text),
+            );
+            crate::dialog_frame::control_row(ui, |ui| {
                 for (key, label, accept, primary) in
                     [("syncOfferAccept", "Sync With This Library", true, true), ("syncOfferDecline", "Decline", false, false)]
                 {
@@ -253,38 +253,40 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 fn device_library(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, st: &Value, id: &str) {
     let Some(lib) = st.get("library").filter(|l| !l.is_null()) else { return };
     let shared = lib.get("sharedWith").and_then(Value::as_array).is_some_and(|a| a.iter().any(|d| d.as_str() == Some(id)));
-    ui.indent(format!("syncDev-{id}"), |ui| {
-        let mut on = shared;
-        let r = ui.checkbox(&mut on, tr("Sync this library"));
-        register(ui.ctx(), format!("check:syncShare-{id}"), r.rect);
-        if r.changed()
-            && let Some(v) = run(app, "sync.share", json!({"device": id, "on": on}))
-        {
-            app.peer_sync.status = v;
-        }
-        let Some(x) = st.get("exchanges").and_then(|e| e.get(id)) else { return };
-        if x.get("running").and_then(Value::as_bool).unwrap_or(false) {
-            ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().size(10.0));
-                ui.label(RichText::new(tr("Syncing…")).size(11.0).color(t.text_dim));
-            });
-        } else if let Some(last) = x.get("last").and_then(Value::as_i64).filter(|l| *l > 0) {
-            ui.label(RichText::new(last_synced(last)).size(11.0).color(t.text_dim));
-        }
-        let err = s(x, "error");
-        if !err.is_empty() {
-            ui.label(RichText::new(err).size(11.0).color(t.reject));
-        }
-        let taken = x.get("taken").and_then(Value::as_u64).unwrap_or(0);
-        let copies = x.get("copies").and_then(Value::as_u64).unwrap_or(0);
-        if taken > 0 || copies > 0 {
-            ui.label(RichText::new(trf!("{} photos updated, {} copies", taken, copies)).size(11.0).color(t.text_dim));
-        }
+    crate::dialog_frame::in_control_column(ui, |ui| {
+        ui.indent(format!("syncDev-{id}"), |ui| {
+            let mut on = shared;
+            let r = ui.checkbox(&mut on, tr("Sync this library"));
+            register(ui.ctx(), format!("check:syncShare-{id}"), r.rect);
+            if r.changed()
+                && let Some(v) = run(app, "sync.share", json!({"device": id, "on": on}))
+            {
+                app.peer_sync.status = v;
+            }
+            let Some(x) = st.get("exchanges").and_then(|e| e.get(id)) else { return };
+            if x.get("running").and_then(Value::as_bool).unwrap_or(false) {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(10.0));
+                    ui.label(RichText::new(tr("Syncing…")).size(11.0).color(t.text_dim));
+                });
+            } else if let Some(last) = x.get("last").and_then(Value::as_i64).filter(|l| *l > 0) {
+                ui.label(RichText::new(last_synced(last)).size(11.0).color(t.text_dim));
+            }
+            let err = s(x, "error");
+            if !err.is_empty() {
+                ui.label(RichText::new(err).size(11.0).color(t.reject));
+            }
+            let taken = x.get("taken").and_then(Value::as_u64).unwrap_or(0);
+            let copies = x.get("copies").and_then(Value::as_u64).unwrap_or(0);
+            if taken > 0 || copies > 0 {
+                ui.label(RichText::new(trf!("{} photos updated, {} copies", taken, copies)).size(11.0).color(t.text_dim));
+            }
+        });
     });
 }
 
 fn found_list(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, st: &Value) {
-    ui.horizontal(|ui| {
+    crate::dialog_frame::control_row(ui, |ui| {
         ui.add(egui::Spinner::new().size(12.0));
         ui.label(RichText::new(tr("Looking for devices on this network…")).color(t.text_label));
     });
@@ -295,7 +297,7 @@ fn found_list(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, st: &Value) {
     }
     for d in &found {
         let id = s(d, "deviceId").to_string();
-        ui.horizontal(|ui| {
+        crate::dialog_frame::control_row(ui, |ui| {
             ui.label(RichText::new(s(d, "name")).color(t.text));
             if text_button(ui, &format!("syncPair-{id}"), tr("Pair"), false).clicked()
                 && let Some(v) = run(app, "sync.pair", json!({"device": id}))

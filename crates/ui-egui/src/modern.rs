@@ -874,7 +874,7 @@ fn back_to_library(app: &mut LccApp) {
     stop_holding(app);
     let _ = app.run("module.library", json!({}));
     if !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid) {
-        app.ui.view = ViewMode::PhotoGrid;
+        app.ui.view = app.ui.grid_style;
     }
 }
 

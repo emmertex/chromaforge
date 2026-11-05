@@ -2680,5 +2680,9 @@
   "No colour picked": "未取色",
   "Selecting the object…": "正在選取物件…",
   "Settings for the next mask": "下一個遮色片的設定",
-  "Reset settings on new mask": "新增遮色片時重設設定"
+  "Reset settings on new mask": "新增遮色片時重設設定",
+  "Import to This Folder…": "匯入到此資料夾…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "將所選資料夾中的照片複製到此資料夾；可在審閱中更改",
+  "Add to My Photos…": "加入我的照片…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "審閱此資料夾中的照片，然後就地加入照片庫；不會更動任何檔案"
 }

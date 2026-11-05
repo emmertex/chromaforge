@@ -3953,5 +3953,9 @@
   "No colour picked": "Keine Farbe aufgenommen",
   "Selecting the object…": "Wähle das Objekt aus…",
   "Settings for the next mask": "Einstellungen für die nächste Maske",
-  "Reset settings on new mask": "Einstellungen bei neuer Maske zurücksetzen"
+  "Reset settings on new mask": "Einstellungen bei neuer Maske zurücksetzen",
+  "Import to This Folder…": "In diesen Ordner importieren…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Kopiert die Fotos eines gewählten Ordners in diesen Ordner; in der Überprüfung kannst du das ändern",
+  "Add to My Photos…": "Zu „Meine Fotos“ hinzufügen…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Zeigt die Fotos dieses Ordners zur Überprüfung und fügt sie dann der Bibliothek hinzu, wo sie liegen; keine Datei wird angefasst"
 }

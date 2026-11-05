@@ -34,6 +34,7 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
         city: m.city.clone().unwrap_or_default(),
         state: m.state.clone().unwrap_or_default(),
         country: m.country.clone().unwrap_or_default(),
+        country_code: m.country_code.clone().unwrap_or_default(),
         alt_text: m.alt_text.clone().unwrap_or_default(),
         extended_description: m.extended_description.clone().unwrap_or_default(),
         gps: m.gps.as_ref().map(|g| (g.latitude, g.longitude)),

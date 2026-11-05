@@ -208,6 +208,10 @@ pub struct Meta {
     pub city: String,
     pub state: String,
     pub country: String,
+    /// The ISO 3166-1 alpha-2 country code (IPTC Core `Iptc4xmpCore:CountryCode`); reverse geocoding
+    /// fills it when it can. Left out of the catalog JSON when empty, so older catalogs read unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub country_code: String,
     pub gps: Option<(f64, f64)>,
     /// The position (latitude, longitude) that was cleared from [`Meta::gps`], while it stays cleared: saving the
     /// sidecar removes the GPS tags it still states for that very position (a different one was written by another

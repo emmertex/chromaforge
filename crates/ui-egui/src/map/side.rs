@@ -103,7 +103,7 @@ pub fn lookup(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                             };
                             if let Some(pl) = pl {
                                 places.push(
-                                    json!({"id": id, "sublocation": pl.sublocation, "city": pl.city, "state": pl.state, "country": pl.country}),
+                                    json!({"id": id, "sublocation": pl.sublocation, "city": pl.city, "state": pl.state, "country": pl.country, "countryCode": pl.iso}),
                                 );
                             }
                         }
@@ -253,6 +253,7 @@ pub fn panel(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     egui::ScrollArea::vertical().id_salt("map-side-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
         style_section(app, ui);
+        selected_section(app, ui);
         locations_section(app, ui);
         track_section(app, ui);
         geocode_section(app, ui);
@@ -266,6 +267,49 @@ pub fn panel(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     }
                 }
             });
+        }
+    });
+}
+
+/// The selected photos' location and IPTC fields (fork #784), in the Library Metadata panel's
+/// widgets (`photo.setMeta`): GPS, Sublocation, City, State / Region, Country, Title, Headline,
+/// Caption and Keywords. Every edit applies to every selected photo (the photos sharing a pin, say).
+/// The ISO country code has no catalog field (see LR-MAP-REVGEO), so it has no row here.
+fn selected_section(app: &mut LccApp, ui: &mut egui::Ui) {
+    let photos: Vec<std::sync::Arc<lcc_catalog::Photo>> =
+        app.session.selected().iter().filter_map(|i| app.session.catalog.photo(*i).cloned()).collect();
+    section(ui, "Metadata", true, |ui| {
+        if photos.is_empty() {
+            ui.label(RichText::new(tr("Select a photo on the map or in the filmstrip to see and edit its location and metadata.")).weak().size(11.0));
+            return;
+        }
+        let ids: Vec<u64> = photos.iter().map(|p| p.id.0).collect();
+        if photos.len() > 1 {
+            ui.label(
+                RichText::new(format!(
+                    "{} {} · {} {}",
+                    photos.len(),
+                    tr("selected photos"),
+                    tr("differing values show"),
+                    crate::panels::metadata::MIXED
+                ))
+                .weak()
+                .size(11.0),
+            );
+        }
+        crate::panels::metadata::gps(app, ui, &photos, &ids);
+        for (key, label, lines) in [
+            ("location", "Sublocation", 1usize),
+            ("city", "City", 1),
+            ("state", "State / Region", 1),
+            ("country", "Country", 1),
+            ("countryCode", "Country Code", 1),
+        ] {
+            crate::panels::metadata::text_field(app, ui, &photos, &ids, label, key, lines);
+        }
+        ui.separator();
+        for (key, label, lines) in [("title", "Title", 1usize), ("headline", "Headline", 1), ("caption", "Caption", 3), ("keywords", "Keywords", 2)] {
+            crate::panels::metadata::text_field(app, ui, &photos, &ids, label, key, lines);
         }
     });
 }

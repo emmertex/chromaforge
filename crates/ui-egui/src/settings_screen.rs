@@ -1,5 +1,8 @@
-//! Settings (fork-owned), the one Settings screen of every layout: a full-window sheet with an icon
-//! rail of eight sections down its left side and the open section's rows beside it.
+//! Settings (fork-owned). In the Classic layout on a window at least [`ROOMY`] points wide it is a
+//! window with one row of tabs, one tab's settings at a time (OneSlips, LR-PREF-WINDOW:
+//! [`crate::panels::settings::body`]). In the Modern layout and on a narrow window it is a
+//! full-window sheet with an icon rail of sections down its left side and the open section's rows
+//! beside it:
 //!
 //! - With room (a window at least [`ROOMY`] points wide: desktops, tablets) the rail always shows
 //!   each section's name and a search field; Back (the ‹ button, Esc, Android's Back) closes
@@ -7,10 +10,12 @@
 //! - On a narrow window the rail is icons only while a section is open. Back widens it to show the
 //!   names (and the search field); Back again closes Settings. A tap on an icon switches section.
 //!
-//! The twelve tabs of the old dialog become eight sections (General, Library, Import, Editing,
-//! Display & Speed, Sync, Shortcuts, Controls; Slideshow only in the Classic layout, which has that module).
-//! Each section shows the old tabs' own rows ([`crate::panels::settings::tab_body`]), so every
-//! setting keeps its control and its command.
+//! The rail's sections are the Settings window's own tabs ([`crate::panels::settings::TABS`]:
+//! General, Import, Folders, Performance, Display, Interface, Slideshow, Faces, Profiles, AI
+//! Denoise, AI Models, Generative Fill, Shortcuts, Controls, Connections, Sync), one section per
+//! tab, in the same order, so both presentations of Settings read the same (PR #830). Slideshow
+//! only shows in the Classic layout, which has that module. Each section shows its tab's own rows
+//! ([`crate::panels::settings::tab_body`]), so every setting keeps its control and its command.
 //!
 //! Own design.
 
@@ -32,10 +37,13 @@ const HEADER_H: f32 = 56.0;
 const RAIL_WIDE: f32 = 220.0;
 const RAIL_NARROW: f32 = 60.0;
 const ITEM_H: f32 = 44.0;
+/// The Settings window's margin inside its frame.
+const WINDOW_PAD: f32 = 16.0;
 /// The rows' widest, so a large window doesn't stretch them.
 const CONTENT_MAX: f32 = 820.0;
 
-/// A section: its key, name, icon, the old tabs it holds, and words a search finds it by.
+/// A section: its key, name, icon, the tab whose rows it shows, and words a search finds it by.
+/// The keys and labels are [`crate::panels::settings::TABS`]'s, in its order.
 struct Section {
     key: &'static str,
     label: &'static str,
@@ -49,10 +57,9 @@ const SECTIONS: &[Section] = &[
         key: "general",
         label: "General",
         icon: Icon::Gear,
-        tabs: &["general", "interface"],
-        words: "layout classic modern language library location open new startup culling auto advance confirm external editing photocraft editor appearance mode dark light font size sliders slider text pill filmstrip grid badges ratings flags wheel scroll info overlay loupe",
+        tabs: &["general"],
+        words: "language library location open new startup culling auto advance confirm external editing photocraft editor",
     },
-    Section { key: "library", label: "Library", icon: Icon::Folder, tabs: &["folders"], words: "folders watch polling new photos forget unchanged" },
     Section {
         key: "import",
         label: "Import",
@@ -60,13 +67,26 @@ const SECTIONS: &[Section] = &[
         tabs: &["import"],
         words: "raw defaults non-raw metadata preset xmp sidecars names cameras cards auto import watched folder copy album lens profiles database",
     },
+    Section { key: "folders", label: "Folders", icon: Icon::Folder, tabs: &["folders"], words: "folders watch polling new photos forget unchanged" },
     Section {
-        key: "editing",
-        label: "Editing",
-        icon: Icon::Sliders,
-        tabs: &["denoise", "faces", "profiles", "genfill"],
-        words: "ai denoise faces people recognition profiles hide camera body serial generative fill openai service api key consent",
+        key: "performance",
+        label: "Performance",
+        icon: Icon::Activity,
+        tabs: &["performance"],
+        words: "performance rendering preview size memory cache thumbnail clear smart previews gpu",
     },
+    Section { key: "display", label: "Display", icon: Icon::Monitor, tabs: &["display"], words: "monitor profile icc srgb screen" },
+    Section {
+        key: "interface",
+        label: "Interface",
+        icon: Icon::Palette,
+        tabs: &["interface"],
+        words: "layout classic modern appearance mode dark light font size sliders slider text pill filmstrip grid badges ratings flags wheel scroll info overlay loupe",
+    },
+    Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"], words: "slide duration fade playback export" },
+    Section { key: "faces", label: "Faces", icon: Icon::FaceBox, tabs: &["faces"], words: "faces people recognition" },
+    Section { key: "profiles", label: "Profiles", icon: Icon::ProfileGrid, tabs: &["profiles"], words: "profiles hide camera body serial" },
+    Section { key: "denoise", label: "AI Denoise", icon: Icon::Sparkle, tabs: &["denoise"], words: "ai denoise" },
     Section {
         key: "ai",
         label: "AI Models",
@@ -75,18 +95,11 @@ const SECTIONS: &[Section] = &[
         words: "ai models download sam sam3 sam2 eomt birefnet mediapipe denoise faces recognition masks object describe subject sky landscape people folder location licence",
     },
     Section {
-        key: "display",
-        label: "Display & Speed",
-        icon: Icon::Monitor,
-        tabs: &["display", "performance"],
-        words: "monitor profile icc srgb screen performance rendering preview size memory cache thumbnail clear smart previews gpu",
-    },
-    Section {
-        key: "sync",
-        label: "Sync",
-        icon: Icon::Cloud,
-        tabs: &["sync", "connections"],
-        words: "devices peers immich server api key connections keychain",
+        key: "genfill",
+        label: "Generative Fill",
+        icon: Icon::Object,
+        tabs: &["genfill"],
+        words: "generative fill openai service api key consent",
     },
     Section { key: "shortcuts", label: "Shortcuts", icon: Icon::Help, tabs: &["shortcuts"], words: "keyboard keymap keys" },
     Section {
@@ -96,7 +109,8 @@ const SECTIONS: &[Section] = &[
         tabs: &["controls"],
         words: "control surfaces hardware console dial dials knob keys keypad dialpad actions ring logi logitech mx creative loupedeck tactilebridge plugin pairing",
     },
-    Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"], words: "slide duration fade playback export" },
+    Section { key: "connections", label: "Connections", icon: Icon::Share, tabs: &["connections"], words: "connections keychain" },
+    Section { key: "sync", label: "Sync", icon: Icon::Cloud, tabs: &["sync"], words: "devices peers immich server api key" },
 ];
 
 /// Settings' own state between frames (kept in `LccApp::modern_sheets`).
@@ -120,15 +134,29 @@ fn shown(app: &LccApp, s: &Section) -> bool {
     s.key != "slideshow" || !crate::modern::on(app)
 }
 
-/// The section a tab (or a section's own key) belongs to: an old tab name (`app.settings
-/// {tab: "performance"}`) opens the section that now holds it.
-pub fn section_of(tab: &str) -> &'static str {
-    SECTIONS.iter().find(|s| s.key == tab || s.tabs.contains(&tab)).map_or("general", |s| s.key)
+/// A section name of an older build (a saved `ui.json` may still say `library` or `editing`)
+/// becomes the tab that took its rows over.
+fn legacy(tab: &str) -> &str {
+    match tab {
+        "library" => "folders",
+        "editing" => "denoise",
+        other => other,
+    }
 }
 
-/// Whether `tab` names a section or one of the old dialog's tabs.
+/// The section a tab (or a section's own key) belongs to: a tab name (`app.settings
+/// {tab: "performance"}`) opens its section. An older build's section name opens the tab that
+/// took its rows over.
+pub fn section_of(tab: &str) -> &'static str {
+    let asked = legacy(tab);
+    SECTIONS.iter().find(|s| s.key == asked || s.tabs.contains(&asked)).map_or("general", |s| s.key)
+}
+
+/// Whether `tab` names a section, one of the Settings window's tabs, or an older build's
+/// section name.
 pub fn known(tab: &str) -> bool {
-    SECTIONS.iter().any(|s| s.key == tab || s.tabs.contains(&tab))
+    let asked = legacy(tab);
+    SECTIONS.iter().any(|s| s.key == asked || s.tabs.contains(&asked))
 }
 
 /// The section after (`step` 1) or before (-1) `open` among those shown, wrapping around.
@@ -177,8 +205,13 @@ fn close(app: &mut LccApp) {
 /// Draws Settings over the whole window (every layout).
 pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
     let Some(Dialog::Settings { tab }) = app.ui.dialog.clone() else { return };
-    let open = section_of(&tab).to_string();
     let screen = ctx.content_rect();
+    // the Classic layout with room: a window with one row of tabs (OneSlips, LR-PREF-WINDOW)
+    if screen.width() >= ROOMY && !crate::modern::on(app) {
+        window(app, ctx, &tab);
+        return;
+    }
+    let open = section_of(&tab).to_string();
     let roomy = screen.width() >= ROOMY;
     if roomy {
         app.modern_sheets.settings.wide = false;
@@ -211,7 +244,11 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
         ui.painter().rect_filled(bg, 0.0, t.chrome);
         // the header: ‹ (Back), the title, what Back does
         let header = Rect::from_min_size(bg.min, vec2(bg.width(), HEADER_H));
-        let b = Rect::from_min_size(pos2(header.left() + 10.0, header.center().y - 18.0), Vec2::splat(36.0));
+        // macOS draws the traffic lights over the header's top-left corner: clear them like the
+        // top bar does (`panels::topbar`, the same 78 the sidebar button starts at); in full
+        // screen they are gone, and the room comes back (issue #793).
+        let traffic = if app.integrated_titlebar && !app.window_is_fullscreen { 68.0 } else { 0.0 };
+        let b = Rect::from_min_size(pos2(header.left() + 10.0 + traffic, header.center().y - 18.0), Vec2::splat(36.0));
         let resp = ui.interact(b, ui.id().with("settings-back"), Sense::click());
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::tr("Back")));
         register(ui.ctx(), "settings:back", b);
@@ -283,6 +320,83 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     if picked.is_some() || app.modern_sheets.settings.wide && picked_any {
         app.modern_sheets.settings.wide = false;
+    }
+}
+
+/// Settings as a window (the Classic layout on a window at least [`ROOMY`] wide; OneSlips,
+/// LR-PREF-WINDOW): one row of tabs, a tab's settings in a page that scrolls inside the window,
+/// and Close (`settings:back`). It opens at the size it was left at (`settingsSize` in `ui.json`)
+/// and on the tab shown last, can be resized from its edges, and keeps its size and place
+/// whatever the tab. Esc closes it.
+fn window(app: &mut LccApp, ctx: &egui::Context, asked: &str) {
+    let t = Tokens::get(ctx);
+    let screen = ctx.content_rect();
+    let mut tab = crate::panels::settings::window_tab(asked).to_string();
+    // Esc: Close (a popup or a text field being edited takes it first)
+    let mut closing = !egui::Popup::is_any_open(ctx)
+        && !ctx.egui_wants_keyboard_input()
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    // the backdrop: an area below the window
+    egui::Area::new(Id::new("settings-dim")).order(egui::Order::Middle).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
+        ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(140));
+    });
+    // (the sizes are the content's, inside the frame's margin)
+    let size = crate::panels::settings::window_size(screen.shrink(WINDOW_PAD), app.ui.settings.settings_size);
+    let frame = egui::Frame::window(&ctx.global_style())
+        .inner_margin(egui::Margin::same(WINDOW_PAD as i8))
+        .corner_radius(egui::CornerRadius::same(16))
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(26)))
+        .shadow(egui::epaint::Shadow { offset: [0, 10], blur: 32, spread: 0, color: Color32::from_black_alpha(110) });
+    let top = (screen.height() * 0.08).clamp(crate::dialog_frame::SCREEN_MARGIN, 96.0);
+    let shown = egui::Window::new(crate::i18n::tr("Settings"))
+        .id(Id::new(LAYER))
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(true)
+        .frame(frame)
+        .default_size(size.default)
+        .min_size(size.min)
+        .max_size(size.max)
+        .pivot(Align2::CENTER_TOP)
+        .default_pos(pos2(screen.center().x, screen.top() + top))
+        .constrain(true)
+        .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            let h = ui.label(egui::RichText::new(crate::i18n::tr("Settings")).font(t.semibold(16.0)).color(t.text));
+            register(ui.ctx(), "dialog:title", h.rect);
+            // under the page: a gap and the Close button's row
+            let footer = 2.0 * ui.spacing().item_spacing.y + ui.spacing().interact_size.y + 6.0;
+            crate::panels::settings::body(app, ui, &mut tab, footer);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if crate::button::Button::new("Close").widget("settings:back").min_width(72.0).show(ui).clicked() {
+                    closing = true;
+                }
+            });
+        });
+    if let Some(w) = &shown {
+        crate::panels::settings::remember_size(app, w.response.rect.size() - Vec2::splat(2.0 * WINDOW_PAD));
+    }
+    let layer = egui::LayerId::new(egui::Order::Middle, Id::new(LAYER));
+    ctx.move_to_top(layer);
+    ctx.memory_mut(|m| m.set_modal_layer(layer));
+    if closing {
+        crate::panels::settings::save_pending_cache_size(app, ctx);
+        close(app);
+        return;
+    }
+    // the rows may have closed Settings or opened another dialog (e.g. a folder picker's)
+    if let Some(Dialog::Settings { tab: now }) = &mut app.ui.dialog
+        && *now != tab
+    {
+        if crate::panels::settings::window_tab(now) != tab {
+            // another tab was picked: a section asked for (`app.settings {section}`) was the old tab's
+            app.ui.settings_section = None;
+        }
+        *now = tab.clone();
+    }
+    // Settings… opens on the tab shown last
+    if matches!(app.ui.dialog, Some(Dialog::Settings { .. })) && app.ui.settings.settings_tab != tab {
+        app.ui.settings.settings_tab = tab;
     }
 }
 
@@ -445,4 +559,19 @@ pub(crate) fn reveal(h: &mut crate::headless::Headless, id: &str) {
         }
     }
     panic!("{id} never came into view in Settings");
+}
+
+#[cfg(test)]
+mod tests {
+    /// Both presentations of Settings show the same categories, in the same order: the rail's
+    /// sections are the Settings window's tabs ([`crate::panels::settings::TABS`], PR #830).
+    #[test]
+    fn sections_match_the_settings_window_s_tabs() {
+        let tabs = crate::panels::settings::TABS;
+        assert_eq!(super::SECTIONS.len(), tabs.len(), "one section per tab");
+        for (s, (id, label)) in super::SECTIONS.iter().zip(tabs) {
+            assert_eq!((s.key, s.label), (*id, *label), "same key and name, in the tab row's order");
+            assert_eq!(s.tabs, &[*id], "the section shows exactly its tab's rows");
+        }
+    }
 }

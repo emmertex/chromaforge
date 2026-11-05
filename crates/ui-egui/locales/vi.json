@@ -2274,5 +2274,9 @@
   "New album…": "Album mới…",
   "Albums": "Album",
   "This is the album you're editing": "Đây là album bạn đang chỉnh sửa",
-  "It tests this album, so testing it back would loop": "Nó kiểm tra album này, nên kiểm tra ngược lại sẽ tạo vòng lặp"
+  "It tests this album, so testing it back would loop": "Nó kiểm tra album này, nên kiểm tra ngược lại sẽ tạo vòng lặp",
+  "Import to This Folder…": "Nhập vào thư mục này…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Sao chép ảnh từ một thư mục bạn chọn vào thư mục này; bạn có thể đổi điều đó ở bước xem lại",
+  "Add to My Photos…": "Thêm vào Ảnh của tôi…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Cho xem lại ảnh trong thư mục này, rồi thêm vào thư viện tại chỗ; không tệp nào bị đụng đến"
 }

@@ -2035,6 +2035,7 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
         out.city = text(&m.city);
         out.state = text(&m.state);
         out.country = text(&m.country);
+        out.country_code = text(&m.country_code);
     }
     let keywords = catalog.export_keywords(&m.keywords);
     out.keywords = keywords.flat;

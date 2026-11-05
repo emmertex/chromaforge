@@ -164,6 +164,21 @@ fn xmp_local_fields(d: &lcc_meta::XmpData) -> Option<Map<String, Value>> {
     Some(out)
 }
 
+/// The Point Color samples of a Camera Raw local preset: `crs:LocalPointColors` at its top
+/// level, else in its first correction.
+fn local_xmp_points(d: &lcc_meta::XmpData) -> Vec<lcc_develop::PointColor> {
+    let top = |k: &str| d.properties.get(k).map(|v| v.iter().map(String::as_str).collect::<Vec<_>>()).unwrap_or_default();
+    let (lines, var) = (top("crs:LocalPointColors"), top("crs:LocalColorVariance"));
+    if !lines.is_empty() {
+        return crate::crs_point_color::read(lines, &crate::crs_point_color::variances(var));
+    }
+    let Some(c) = crate::crs_masks::CONTAINERS.iter().find_map(|c| d.values.get(*c).and_then(|l| l.items().first())) else { return Vec::new() };
+    let texts = |k: &str| -> Vec<&str> {
+        c.field(k).map(lcc_meta::XmpValue::items).unwrap_or_default().iter().filter_map(lcc_meta::XmpValue::text).collect()
+    };
+    crate::crs_point_color::read(texts("crs:LocalPointColors"), &crate::crs_point_color::variances(texts("crs:LocalColorVariance")))
+}
+
 /// Is `text` a Camera Raw local correction preset (XMP)?
 pub fn is_local_xmp(text: &str) -> bool {
     lcc_meta::parse_xmp(text.trim_start_matches('\u{feff}')).ok().and_then(|d| xmp_local_fields(&d)).is_some()
@@ -188,8 +203,16 @@ pub fn parse_local_xmp(text: &str, stem: &str) -> std::result::Result<(MaskEffec
     }
     let first = |k: &str| d.properties.get(k).and_then(|v| v.first()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let name = first("crs:Name").unwrap_or_else(|| stem.to_string());
+    // Point Color: a Seq of sample lines with their variances, at the top or in the first correction
+    let points = local_xmp_points(&d);
+    if !points.is_empty() {
+        extra.remove("LocalPointColors");
+        extra.remove("LocalColorVariance");
+    }
     let (mut e, unmapped) = build(name, values, extra)?;
     e.group = first("crs:Group").unwrap_or_default();
+    e.point_colors = points;
+    let e = e.normalized();
     Ok((e, unmapped))
 }
 
@@ -614,6 +637,24 @@ mod tests {
  <crs:Name><rdf:Alt><rdf:li xml:lang="x-default">Lift Shadows</rdf:li></rdf:Alt></crs:Name>
  <crs:Group><rdf:Alt><rdf:li xml:lang="x-default">Faces</rdf:li></rdf:Alt></crs:Group>
 </rdf:Description></rdf:RDF></x:xmpmeta>"#;
+
+    /// A local preset's Point Color samples land in the effect (not in the unmapped list), and
+    /// unreadable ones are skipped without a panic.
+    #[test]
+    fn camera_raw_local_point_colors_are_carried() {
+        let sample = "0.8, 0.5, 0.3, -0.1, 0.2, 0, 0.5, 0, 0.333333, 0.666667, 1, 0.1, 0.3, 0.6, 0.9, 0.2, 0.4, 0.7, 0.9";
+        let seq = format!(
+            "<crs:LocalPointColors><rdf:Seq><rdf:li>{sample}</rdf:li><rdf:li>nonsense</rdf:li><rdf:li>NaN, 1</rdf:li></rdf:Seq></crs:LocalPointColors>\n \
+             <crs:LocalColorVariance><rdf:Seq><rdf:li>-40</rdf:li></rdf:Seq></crs:LocalColorVariance>\n <crs:Name>"
+        );
+        let text = ACR.replacen("<crs:Name>", &seq, 1);
+        let (e, unmapped) = parse_local_xmp(&text, "x").unwrap();
+        assert_eq!(e.point_colors.len(), 1, "{:?}", e.point_colors);
+        assert!(e.point_colors[0].hue_shift < 0.0 && e.point_colors[0].sat_shift > 0.0);
+        assert!((e.point_colors[0].variance + 40.0).abs() < 1e-6);
+        assert!(!unmapped.iter().any(|u| u == "Point Color"), "{unmapped:?}");
+        assert!(!e.is_empty());
+    }
 
     #[test]
     fn reads_a_camera_raw_local_preset() {

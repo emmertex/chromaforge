@@ -2874,5 +2874,9 @@
   "No colour picked": "色が拾われていません",
   "Selecting the object…": "オブジェクトを選択しています…",
   "Settings for the next mask": "次のマスクの設定",
-  "Reset settings on new mask": "新しいマスクで設定をリセット"
+  "Reset settings on new mask": "新しいマスクで設定をリセット",
+  "Import to This Folder…": "このフォルダに読み込む…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "選んだフォルダの写真をこのフォルダにコピーします。レビューで変更できます",
+  "Add to My Photos…": "マイフォトに追加…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "このフォルダの写真をレビューしてから、そのままの場所でライブラリに追加します。ファイルには触れません"
 }

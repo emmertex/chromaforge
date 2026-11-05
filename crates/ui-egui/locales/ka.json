@@ -2817,5 +2817,9 @@
   "New album…": "ახალი ალბომი…",
   "Albums": "ალბომები",
   "This is the album you're editing": "ეს ის ალბომია, რომელსაც არედაქტირებთ",
-  "It tests this album, so testing it back would loop": "ის ამ ალბომს ამოწმებს, ამიტომ მისი უკუშემოწმება ჩაიციკლებოდა"
+  "It tests this album, so testing it back would loop": "ის ამ ალბომს ამოწმებს, ამიტომ მისი უკუშემოწმება ჩაიციკლებოდა",
+  "Import to This Folder…": "ამ საქაღალდეში იმპორტი…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "ირჩევ საქაღალდეს და მისი ფოტოები ამ საქაღალდეში კოპირდება; განხილვაში ამის შეცვლა შეგიძლია",
+  "Add to My Photos…": "ჩემს ფოტოებში დამატება…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "ამ საქაღალდის ფოტოებს გადაამოწმებ და ბიბლიოთეკაში იქვე დაამატებ; არცერთ ფაილს არ ეხება"
 }

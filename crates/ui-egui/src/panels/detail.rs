@@ -2103,14 +2103,11 @@ fn info_line(field: crate::state::LoupeInfoField, photo: &lcc_catalog::Photo) ->
     (!text.is_empty()).then_some(text)
 }
 
-/// `2026-09-30T12:00:00` → `2026-09-30 12:00`.
+/// The capture date the info overlay shows, in the same format as the metadata panel and the grid
+/// (`i18n::display_time`: "March 30, 2022 at 10:11:11 PM" in English; a year or a month alone, such
+/// as "1983" / "April 1983", shows at its own precision) so every capture date reads alike (#743).
 fn pretty_date(iso: &str) -> String {
-    // a year or a month alone shows as such ("1983", "April 1983")
-    if lcc_catalog::dates::partial_capture(iso).is_some() {
-        return crate::i18n::display_time(iso);
-    }
-    let d = iso.replacen('T', " ", 1);
-    d.get(..16).map(str::to_string).unwrap_or(d)
+    crate::i18n::display_time(iso)
 }
 
 /// Size of the Navigator mini map (points).
@@ -5608,6 +5605,11 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                         app.toast(ui.ctx(), e);
                     }
                 }
+                // fork #741: a double-clicked thumbnail centres the map on its pin and zooms in,
+                // even when the pin was already on screen
+                if map && resp.double_clicked() {
+                    let _ = app.run("map.reveal", json!({"force": true}));
+                }
                 // the same photo actions as the grid and loupe (Restore / Delete Permanently in Recently Deleted)
                 crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
             }
@@ -6265,14 +6267,20 @@ mod snap_tests {
 mod info_overlay_tests {
     use super::*;
 
-    /// The info overlay's capture date shows a year or a month alone at its own precision.
+    /// The info overlay's capture date shows a year or a month alone at its own precision, and a
+    /// full timestamp in the same format the metadata panel shows it (#743).
     #[test]
     fn the_info_overlay_shows_a_year_or_month_alone_as_such() {
         let mut photo =
             lcc_catalog::Photo::new(lcc_catalog::PhotoId(1), lcc_catalog::Source::Demo { scene: 0 }, "scan.jpg", "JPEG", 3, 2, "2026-10-01T00:00:00");
-        for (captured, shown) in [("1983-04", "April 1983"), ("1983", "1983"), ("2024-01-16T12:34:56", "2024-01-16 12:34")] {
+        for (captured, shown) in [("1983-04", "April 1983"), ("1983", "1983"), ("2024-01-16T12:34:56", "January 16, 2024 at 12:34:56 PM")] {
             photo.captured = Some(captured.into());
             assert_eq!(info_line(crate::state::LoupeInfoField::CaptureDate, &photo).as_deref(), Some(shown));
+            assert_eq!(
+                info_line(crate::state::LoupeInfoField::CaptureDate, &photo).as_deref(),
+                Some(crate::i18n::display_time(captured).as_str()),
+                "the overlay shows the capture date as the metadata panel does"
+            );
         }
     }
 

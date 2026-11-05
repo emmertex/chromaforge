@@ -2608,5 +2608,9 @@
   "No colour picked": "Nessun colore prelevato",
   "Selecting the object…": "Seleziono l'oggetto…",
   "Settings for the next mask": "Impostazioni per la prossima maschera",
-  "Reset settings on new mask": "Azzera le impostazioni a ogni nuova maschera"
+  "Reset settings on new mask": "Azzera le impostazioni a ogni nuova maschera",
+  "Import to This Folder…": "Importa in questa cartella…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Copia le foto di una cartella scelta in questa cartella; nella revisione puoi cambiarlo",
+  "Add to My Photos…": "Aggiungi a Le mie foto…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Rivede le foto di questa cartella e poi le aggiunge alla libreria dove si trovano; nessun file viene toccato"
 }

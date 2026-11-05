@@ -478,6 +478,8 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     let popup_open = popup_open || app.text_focus;
     // Esc during a sidebar section's drag gives the drag up (`panels::left`), and does not also leave the loupe
     let popup_open = popup_open || app.ui.dragging_section.is_some();
+    // the activity list (`panels::activity`) is a popup too: Esc closes it, and only it; Enter waits
+    let popup_open = popup_open || app.activity_list;
     let (module_keys, mut consumed) = (classic::module_keys(app.ui.module), Vec::new());
     classic::deferred_tabs(&mut app.deferred_tabs, keymap, &mut fire);
     // the mouse's Back / Forward buttons: the previous / next photo, as ← / → (issue #3303)

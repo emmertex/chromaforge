@@ -3075,5 +3075,9 @@
   "Set up face recognition": "Настроить распознавание лиц",
   "Face recognition needs a model to suggest names: a one-time download, in Settings.": "Для подсказок имён распознаванию лиц нужна модель: однократная загрузка в Настройках.",
   "Turn on name suggestions": "Включить подсказки имён",
-  "Set up name suggestions…": "Настроить подсказки имён…"
+  "Set up name suggestions…": "Настроить подсказки имён…",
+  "Import to This Folder…": "Импортировать в эту папку…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Копирует фото из выбранной папки в эту папку; в окне проверки это можно изменить",
+  "Add to My Photos…": "Добавить в «Мои фото»…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Показывает фото этой папки для проверки, затем добавляет их в библиотеку на месте; ни один файл не затрагивается"
 }

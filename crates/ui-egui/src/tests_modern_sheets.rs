@@ -55,7 +55,7 @@ fn settings_on_a_phone_is_a_section_with_an_icon_rail_and_back_shows_the_list() 
     assert_eq!(exec(&mut h, "app.settings", json!({}))["ok"], true);
     // a section open beside the icons of the others
     assert!(rail_w(&h) > 0.0 && rail_w(&h) < 80.0, "icons only: {}", rail_w(&h));
-    assert!(has(&h, "settings:section:library") && has(&h, "settings:back"));
+    assert!(has(&h, "settings:section:folders") && has(&h, "settings:back"));
     assert!(has(&h, "button:settingsLayout-0") && has(&h, "button:settingsLayout-1"), "the Layout row");
     // the same setting Classic changes
     crate::settings_screen::reveal(&mut h, "button:settingsStartup-1");
@@ -65,9 +65,9 @@ fn settings_on_a_phone_is_a_section_with_an_icon_rail_and_back_shows_the_list() 
     click(&mut h, "settings:back");
     assert!(matches!(h.app.ui.dialog, Some(Dialog::Settings { .. })), "Back from a section keeps Settings open");
     assert!(rail_w(&h) > 200.0, "the list: {}", rail_w(&h));
-    click(&mut h, "settings:section:library");
+    click(&mut h, "settings:section:folders");
     assert!(rail_w(&h) < 80.0, "a section again");
-    assert!(matches!(&h.app.ui.dialog, Some(Dialog::Settings { tab }) if tab == "library"));
+    assert!(matches!(&h.app.ui.dialog, Some(Dialog::Settings { tab }) if tab == "folders"));
     click(&mut h, "settings:back");
     click(&mut h, "settings:back");
     assert!(h.app.ui.dialog.is_none());

@@ -186,6 +186,8 @@ impl CaptureState {
         data: Vec<UserData>,
         tx: CaptureSender,
         viewport_id: ViewportId,
+        output_scale: f32,
+        pq_output: bool,
     ) {
         #[allow(clippy::allow_attributes, clippy::arc_with_non_send_sync)] // For wasm
         let buffer = Arc::new(buffer);
@@ -227,7 +229,14 @@ impl CaptureState {
                     // highlights above SDR white clip)
                     for color in row.chunks(8) {
                         let c = |i: usize| f16_to_f32(u16::from_le_bytes([color[i], color[i + 1]]));
-                        let [r, g, b] = [c(0), c(2), c(4)].map(epaint::ecolor::gamma_u8_from_linear_f32);
+                        // Patch (HDR display output): a BT.2100 PQ surface holds absolute cd/m² in
+                        // BT.2020: decode, back to sRGB primaries, SDR white (`output_scale`, cd/m²) = 1
+                        let lin = if pq_output {
+                            bt2020_to_srgb([c(0), c(2), c(4)].map(pq_to_nits)).map(|v| v / output_scale)
+                        } else {
+                            [c(0), c(2), c(4)]
+                        };
+                        let [r, g, b] = lin.map(epaint::ecolor::gamma_u8_from_linear_f32);
                         let a = epaint::ecolor::linear_u8_from_linear_f32(c(6));
                         pixels.push(epaint::Color32::from_rgba_premultiplied(r, g, b, a));
                     }
@@ -292,6 +301,31 @@ impl BufferPadding {
     }
 }
 
+/// Patch (HDR display output): SMPTE ST 2084 EOTF, PQ signal (0..1) to cd/m² (the inverse of the
+/// shader's `pq_from_nits`).
+fn pq_to_nits(signal: f32) -> f32 {
+    const M1: f32 = 0.159_301_76;
+    const M2: f32 = 78.84375;
+    const C1: f32 = 0.835_937_5;
+    const C2: f32 = 18.851_562;
+    const C3: f32 = 18.6875;
+    if !signal.is_finite() {
+        return 0.0;
+    }
+    let p = signal.clamp(0.0, 1.0).powf(1.0 / M2);
+    let y = ((p - C1).max(0.0) / (C2 - C3 * p)).powf(1.0 / M1);
+    y * 10_000.0
+}
+
+/// Patch (HDR display output): linear BT.2020 to linear sRGB / Rec.709 primaries.
+fn bt2020_to_srgb(c: [f32; 3]) -> [f32; 3] {
+    [
+        1.660_491 * c[0] - 0.587_641 * c[1] - 0.072_850 * c[2],
+        -0.124_550 * c[0] + 1.132_900 * c[1] - 0.008_349 * c[2],
+        -0.018_151 * c[0] - 0.100_579 * c[1] + 1.118_730 * c[2],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +353,39 @@ mod tests {
         // negative (out-of-gamut scRGB) and above-white values clamp when encoded
         assert_eq!(epaint::ecolor::gamma_u8_from_linear_f32(f16_to_f32(0xB800)), 0);
         assert_eq!(epaint::ecolor::gamma_u8_from_linear_f32(f16_to_f32(0x4000)), 255);
+    }
+
+    #[test]
+    fn pq_decoding_matches_the_standard() {
+        assert_eq!(pq_to_nits(0.0), 0.0);
+        assert!((pq_to_nits(1.0) - 10_000.0).abs() < 1.0);
+        // 203 cd/m² (SDR reference white) is a PQ signal of about 0.5807
+        assert!((pq_to_nits(0.5807) - 203.0).abs() < 1.0, "{}", pq_to_nits(0.5807));
+        assert_eq!(pq_to_nits(f32::NAN), 0.0);
+        // white stays white across primaries
+        let w = bt2020_to_srgb([1.0; 3]);
+        assert!(w.iter().all(|v| (v - 1.0).abs() < 1e-3), "{w:?}");
+    }
+
+
+    /// The shader's `pq_from_nits` (egui.wgsl), written out here: the decoder must undo it.
+    fn pq_from_nits(nits: f32) -> f32 {
+        let y = (nits.clamp(0.0, 10_000.0) / 10_000.0).powf(0.159_301_76);
+        ((0.835_937_5 + 18.851_562 * y) / (1.0 + 18.6875 * y)).powf(78.84375)
+    }
+
+    #[test]
+    fn pq_encoding_round_trips_and_the_shader_uses_the_same_constants() {
+        assert!((pq_from_nits(203.0) - 0.5807).abs() < 1e-3);
+        assert_eq!(pq_to_nits(pq_from_nits(0.0)), 0.0);
+        assert!((pq_from_nits(10_000.0) - 1.0).abs() < 1e-5);
+        for nits in [0.5, 10.0, 100.0, 203.0, 650.0, 1000.0, 4000.0] {
+            let back = pq_to_nits(pq_from_nits(nits));
+            assert!((back - nits).abs() / nits < 5e-3, "{nits} -> {back}");
+        }
+        let shader = include_str!("egui.wgsl");
+        for c in ["0.1593017578125", "78.84375", "0.8359375", "18.8515625", "18.6875", "0.627404, 0.329283, 0.043313", "0.069097, 0.919540, 0.011362", "0.016391, 0.088013, 0.895595"] {
+            assert!(shader.contains(c), "egui.wgsl lacks {c}");
+        }
     }
 }
