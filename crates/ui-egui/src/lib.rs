@@ -51,6 +51,7 @@ pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
+pub mod loupe_timing;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
@@ -374,6 +375,8 @@ mod tests_solo_sections;
 mod tests_space_hand;
 #[cfg(test)]
 mod tests_space_hold;
+#[cfg(test)]
+mod tests_stand_in_crop;
 #[cfg(test)]
 mod tests_surface;
 #[cfg(test)]
@@ -816,6 +819,14 @@ pub struct LccApp {
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
     /// "thumb", "none").
     pub loupe_shown: Option<(lcc_catalog::PhotoId, &'static str)>,
+    /// When each photo stepped to in the loupe first showed (`ui.inspect` → `perf.loupeSteps`).
+    pub loupe_timing: loupe_timing::LoupeTiming,
+    /// How the loupe drew its picture last frame ([`panels::detail::LoupeDrawn`]): where the
+    /// picture's corners went and the rect it fills (tests check that no part of it is empty).
+    pub loupe_drawn: Option<panels::detail::LoupeDrawn>,
+    /// What the loupe's look-ahead was made for last (photo, stepping back, catalog revision,
+    /// edge), so it is worked out again only when one of them changes ([`panels::detail`]).
+    pub(crate) look_ahead_made_for: Option<(lcc_catalog::PhotoId, bool, u64, usize)>,
     /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked
     /// its first picture ([`LccApp::pictures_missing`]).
     pub pictures_missing_pass: Option<u64>,
@@ -1138,6 +1149,9 @@ impl LccApp {
             space_hand: None,
             brush_live: None,
             loupe_shown: None,
+            loupe_timing: Default::default(),
+            loupe_drawn: None,
+            look_ahead_made_for: None,
             pictures_missing_pass: None,
             prep_at: None,
             prep_backward: false,
@@ -3755,6 +3769,8 @@ mod cache_tests {
     }
 }
 
+#[cfg(test)]
+mod tests_display_truth;
 #[cfg(test)]
 mod tests_docking_acceptance;
 #[cfg(test)]
