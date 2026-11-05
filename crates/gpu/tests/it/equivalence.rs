@@ -1392,13 +1392,23 @@ fn returning_to_100_percent_after_big_auto_mask_strokes_is_quick() {
     let src = scene(1, 2048, 1366);
     let info = SourceInfo { raw: true, ..Default::default() };
     let win = RenderRequest { window: Some(PixelWindow { x: 1500, y: 1200, w: 1920, h: 1080 }), ..RenderRequest::fit(8192, 5464) };
+    // (the kernels and the source warmed up first)
     let _ = lcc_gpu::render(&src, &info, &s, &win, None).expect("gpu render");
-    let _ = lcc_gpu::render(&src, &info, &s, &RenderRequest::fit(1600, 1067), None).expect("gpu render");
-    let t = std::time::Instant::now();
-    let _ = lcc_gpu::render(&src, &info, &s, &win, None).expect("gpu render");
-    let ms = t.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("Fit → 100 % again with 12 big Auto Mask strokes: {ms:.0} ms");
-    assert!(ms < 1500.0, "returning to 100 % took {ms:.0} ms");
+    // the same strokes moved a little: every one is worked out anew
+    let mut moved = s.clone();
+    if let MaskShape::Brush { strokes } = &mut moved.masks[0].components[0].shape {
+        strokes.iter_mut().flat_map(|st| st.points.iter_mut()).for_each(|p| p.x += 0.002);
+    }
+    let timed = |s: &DevelopSettings| {
+        let t = std::time::Instant::now();
+        let _ = lcc_gpu::render(&src, &info, s, &win, None).expect("gpu render");
+        t.elapsed().as_secs_f64() * 1000.0
+    };
+    let first = timed(&moved);
+    let _ = lcc_gpu::render(&src, &info, &moved, &RenderRequest::fit(1600, 1067), None).expect("gpu render");
+    let again = timed(&moved);
+    eprintln!("100 % with 12 big Auto Mask strokes: {first:.0} ms; Fit → 100 % again: {again:.0} ms");
+    assert!(again < 0.5 * first && again < 1500.0, "returning to 100 % took {again:.0} ms (the first 100 %: {first:.0} ms)");
 }
 
 /// Issue #323: a window of a 24 MP photo is cut from a source of 288 MB on the device. Keeping that
