@@ -539,7 +539,7 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
                 // the separator between the treatment and HDR, as in Classic
                 let (sep, _) = ui.allocate_exact_size(vec2(1.0, if dense { 14.0 } else { 18.0 }), Sense::hover());
                 ui.painter().vline(sep.center().x, sep.y_range(), egui::Stroke::new(1.0, t.button_border));
-                let bw = crate::is_bw(&d);
+                let bw = crate::is_bw(d);
                 if text_button(ui, "treatment-bw", crate::i18n::tr("B&W"), bw).on_hover_text(crate::i18n::tr("Black & White")).clicked() {
                     let _ = app.run("develop.treatment", json!({"bw": !bw}));
                 }
@@ -598,7 +598,7 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
             let font = t.font(if dense { 12.5 } else { 15.0 });
             let r = crate::widgets::dropdown_within(ui, "profile", crate::i18n::profile_label(&d.profile.id, name), font, t.text_label, max);
             let below = r.rect.bottom();
-            egui::Popup::menu(&r).show(|ui| profile_menu(app, ui, &d, below));
+            egui::Popup::menu(&r).show(|ui| profile_menu(app, ui, d, below));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if crate::widgets::icon_button(
                     ui,
@@ -617,7 +617,7 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
         });
     });
     if d.profile.id != "lc.color" {
-        control(app, ui, &d, "profile.amount", true);
+        control(app, ui, d, "profile.amount", true);
         ui.add_space(if dense { 2.0 } else { 6.0 });
     }
     // whether to offer the two file options below: facts of the file that stay put while sources are decoded again
@@ -770,7 +770,7 @@ pub fn sub_title(ui: &mut egui::Ui, title: &str) {
         let text_right = left + g.size().x;
         ui.painter().galley(pos2(left, y - g.size().y / 2.0), g, t.text_dim);
         if right > text_right + 12.0 {
-            ui.painter().hline((text_right + 6.0)..=right, y.round() + 0.5, Stroke::new(1.0, t.divider.gamma_multiply(0.75)));
+            ui.painter().hline((text_right + 6.0)..=right, y.round() + 0.5, Stroke::new(1.0, t.text_dim.gamma_multiply(0.3)));
         }
         return;
     }
@@ -2393,7 +2393,10 @@ fn wb_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, raw: bool) 
         ui.horizontal(|ui| {
             // Lightroom Classic: the selector on the left, then "WB:" and the preset menu
             let active = app.ui.tool == "wbPicker";
-            if crate::widgets::icon_button(ui, "wbPicker", Icon::Picker, vec2(28.0, 28.0), active, true, "White Balance Selector (W)").clicked() {
+            // (Compact: the profile row's sizes, so the two rows line up)
+            let dense = t.dense;
+            let icon = if dense { 20.0 } else { 28.0 };
+            if crate::widgets::icon_button(ui, "wbPicker", Icon::Picker, vec2(icon, icon), active, true, "White Balance Selector (W)").clicked() {
                 if active {
                     app.ui.tool.clear();
                 } else if let Err(e) = app.run("tool.wbPicker", json!({})) {
@@ -2414,8 +2417,8 @@ fn wb_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, raw: bool) 
                     }
                 });
             }
-            ui.label(egui::RichText::new(crate::i18n::tr("WB:")).font(t.font(13.0)).color(t.text_dim));
-            let r = crate::widgets::dropdown(ui, "wbMode", crate::i18n::tr(d.wb.mode.label()), t.font(14.0), t.text_label);
+            ui.label(egui::RichText::new(crate::i18n::tr("WB:")).font(t.font(if dense { 11.0 } else { 13.0 })).color(t.text_dim));
+            let r = crate::widgets::dropdown(ui, "wbMode", crate::i18n::tr(d.wb.mode.label()), t.font(if dense { 12.5 } else { 14.0 }), t.text_label);
             egui::Popup::menu(&r).show(|ui| {
                 for m in WbMode::ALL {
                     if m == WbMode::Custom {

@@ -87,6 +87,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             });
             let scrolled = area.show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
+                // Compact: checkboxes, labels and notes in the panel's small type, so they line up with
+                // the slider rows (LAYOUT-DENSE)
+                if crate::theme::compact(ui.ctx()) {
+                    ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(12.0));
+                    ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(12.0));
+                }
                 match app.ui.right {
                     RightPanel::Edit => super::edit::show_controls(app, ui, id),
                     RightPanel::Profiles => super::profiles::show(app, ui, id),
