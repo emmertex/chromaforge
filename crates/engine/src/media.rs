@@ -1950,7 +1950,7 @@ impl crate::Session {
         apply_crop: bool,
         thumb_bucket: Option<usize>,
     ) -> Option<RenderJob> {
-        let p = self.catalog.photo(id)?.clone();
+        let p = self.rendered_photo_of(id)?;
         let settings = if before { Arc::new(self.before_settings(&p)) } else { p.develop.clone() };
         // a clip's poster is graded and cropped like its frames (`lcc_pipeline::grade::video_develop`)
         let settings = if p.kind == MediaKind::Video { Arc::new(lcc_pipeline::grade::video_develop(&settings)) } else { settings };
@@ -2100,7 +2100,7 @@ impl crate::Session {
     /// library's thumbnail cache on disk) like [`Self::variant_job`], and `key` likewise follows
     /// the content: a later launch shows the tile without reading the original.
     pub fn face_job(&mut self, id: PhotoId, face: lcc_geom::Rect, edge: usize) -> Option<RenderJob> {
-        let p = self.catalog.photo(id)?.clone();
+        let p = self.rendered_photo_of(id)?;
         // `face` is on the upright (EXIF-oriented) photo; the crop below is in the frame after the
         // user's Rotate Left/Right, so carry the box (and the photo's size) over to it.
         let orient = p.develop.orientation;
@@ -2188,8 +2188,8 @@ impl crate::Session {
     /// photo's view preview (memory, and disk with a library) for [`Self::quick_view_job`].
     pub fn loupe_job(&mut self, id: PhotoId, max_w: usize, max_h: usize, apply_crop: bool) -> Option<RenderJob> {
         let mut job = self.render_job(id, max_w, max_h, false, apply_crop)?;
-        let p = self.catalog.photo(id)?;
-        job.view_cache = Some((self.media.rendered.clone(), Self::view_key(p, apply_crop)));
+        let p = self.rendered_photo_of(id)?;
+        job.view_cache = Some((self.media.rendered.clone(), Self::view_key(&p, apply_crop)));
         Some(job)
     }
 
@@ -2306,8 +2306,8 @@ impl crate::Session {
     /// it is held in memory: what a zoomed loupe shows at once while its tiles render. With
     /// `load`, one held only on disk is read into memory on a background thread for next time.
     pub fn full_preview_in_memory(&self, id: PhotoId, load: bool) -> Option<Arc<lcc_raster::Rgba8>> {
-        let p = self.catalog.photo(id)?;
-        let key = Self::full_view_key(p);
+        let p = self.rendered_photo_of(id)?;
+        let key = Self::full_view_key(&p);
         if let Some(img) = self.media.rendered.get_in_memory(key) {
             return Some(img);
         }
@@ -2327,7 +2327,7 @@ impl crate::Session {
     /// render, else the embedded preview of a raw (edited or not: a stand-in until the render
     /// arrives), else a cached or fresh thumbnail.
     pub fn quick_view_job(&mut self, id: PhotoId, max_edge: usize, apply_crop: bool) -> Option<QuickJob> {
-        let p = self.catalog.photo(id)?.clone();
+        let p = self.rendered_photo_of(id)?;
         let small = self.thumb_job(id, THUMB_SIZES[THUMB_SIZES.len() - 1])?;
         // (the thumbnail job itself starts with the cached thumbnail, after the sharper embedded preview)
         let mut cached = vec![(self.media.rendered.clone(), Self::view_key(&p, apply_crop))];
@@ -2385,7 +2385,7 @@ impl crate::Session {
         if let Some(src) = &r.loaded
             && r.source_key.is_none_or(|key| self.catalog.photo(r.photo).is_some_and(|p| Hasher128::new().str(&pixels_key(p)).finish() == key))
             // (not a source decoded with settings the photo no longer has: one decoded for them replaces it)
-            && self.catalog.photo(r.photo).is_none_or(|p| src.serves(&LoadOptions::of(&p.develop)))
+            && self.rendered_photo_of(r.photo).is_none_or(|p| src.serves(&LoadOptions::of(&p.develop)))
         {
             if let Some(info) = &src.info {
                 self.learn_as_shot_wb(r.photo, info);
@@ -2492,13 +2492,13 @@ impl crate::Session {
             _ => false,
         };
         if reduced {
-            let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
+            let p = self.rendered_photo_of(id).ok_or("no such photo")?;
             job.source = self.media.source_ref_uncached(&p, job.level);
         }
         // An export is made from the denoised picture its Denoise amount asks for, made when the job runs if the
         // background queue has not got to it. (A source kept in memory may lack the picture, so the job reads the file.)
         if let Some(wanted) = self.denoise_for_export(id, &job.settings)? {
-            let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
+            let p = self.rendered_photo_of(id).ok_or("no such photo")?;
             job.source = self.media.source_ref_uncached(&p, job.level);
             if let SourceRef::File { denoise, .. } = &mut job.source {
                 *denoise = Some(wanted);
@@ -2525,7 +2525,7 @@ impl crate::Session {
 
     /// The source proxy for pixel-statistics commands (auto tone/WB), loading synchronously.
     pub fn source_now(&mut self, id: PhotoId, level: SourceLevel) -> Result<Arc<Rgb32f>, String> {
-        let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
+        let p = self.rendered_photo_of(id).ok_or("no such photo")?;
         let r = self.media.source_ref(&p, level).load_source()?;
         let image = r.image.clone();
         if let Some(info) = &r.info {
@@ -2543,7 +2543,7 @@ impl crate::Session {
     pub(crate) fn sources_now(&mut self, ids: &[PhotoId], level: SourceLevel) -> Vec<(PhotoId, Result<(Arc<Rgb32f>, SourceInfo), String>)> {
         use rayon::prelude::*;
         let refs: Vec<(PhotoId, Option<SourceRef>)> =
-            ids.iter().map(|&id| (id, self.catalog.photo(id).cloned().map(|p| self.media.source_ref(&p, level)))).collect();
+            ids.iter().map(|&id| (id, self.rendered_photo_of(id).map(|p| self.media.source_ref(&p, level)))).collect();
         let loaded: Vec<(PhotoId, Result<DecodedSource, String>)> =
             refs.into_par_iter().map(|(id, r)| (id, r.ok_or_else(|| "no such photo".to_string()).and_then(|r| r.load_source()))).collect();
         loaded

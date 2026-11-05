@@ -195,8 +195,8 @@ fn hide(s: &mut Session, p: &Value) -> Result<Value> {
 fn bodies(s: &mut Session, _p: &Value) -> Result<Value> {
     let mut found: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
     for p in s.catalog.photos() {
-        let Some(k) = profile_bodies::key_of(p) else { continue };
-        let Some(body) = profile_bodies::body(p) else { continue };
+        let Some(k) = s.body_key(p, false) else { continue };
+        let body = k.rsplit_once('|').map_or(k.as_str(), |(_, b)| b).to_string();
         let e = found.entry(k).or_insert_with(|| (p.meta.camera.clone(), body, 0));
         e.2 = e.2.saturating_add(1);
     }
@@ -229,7 +229,7 @@ fn body_param(s: &Session, p: &Value, c: &str) -> Result<String> {
         None => s.active().ok_or_else(|| bad(c, "no body given and no active photo"))?,
     };
     let photo = s.catalog.photo(id).ok_or_else(|| bad(c, "no such photo"))?;
-    profile_bodies::key_of(photo).ok_or_else(|| bad(c, "this photo isn't a raw with a known camera body"))
+    s.body_key(photo, true).ok_or_else(|| bad(c, "this photo isn't a raw with a known camera body"))
 }
 
 fn set_body_default(s: &mut Session, p: &Value) -> Result<Value> {

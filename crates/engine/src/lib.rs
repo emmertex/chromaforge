@@ -470,6 +470,13 @@ pub struct Session {
     /// The camera profile each camera body starts with (`profile_bodies::key` → `dcp:…`, `cal:…` or `lc`),
     /// applied to that body's raws at import ([`profile_bodies`]).
     pub body_profiles: std::collections::BTreeMap<String, String>,
+    /// The Import panel's camera profile choice as it stands (Automatic / one for all / per body):
+    /// browsed photos preview it as the import will apply it ([`Session::browse_profile`]).
+    pub import_profile_choice: profile_bodies::ImportProfile,
+    /// Serial numbers read from raws catalogued without one ([`profile_bodies::FileSerials`]).
+    pub(crate) file_serials: profile_bodies::FileSerials,
+    /// Browsed photos as they render with their body's camera profile ([`Session::rendered_photo`]).
+    pub(crate) browse_renders: profile_bodies::BrowseRenders,
     /// The app-wide store of presets, profiles and habits shared by every library (`None`: each
     /// library keeps its own; see [`app_store`]).
     pub app_store: Option<app_store::AppStore>,
@@ -777,6 +784,9 @@ impl Session {
             profile_hidden: Vec::new(),
             profile_edits: Default::default(),
             body_profiles: Default::default(),
+            import_profile_choice: Default::default(),
+            file_serials: Default::default(),
+            browse_renders: Default::default(),
             app_store: None,
             journal: Vec::new(),
             workflow: Default::default(),
@@ -2378,6 +2388,8 @@ mod tests_autosync_live;
 mod tests_autosync_preset;
 #[cfg(test)]
 mod tests_autosync_wb;
+#[cfg(test)]
+mod tests_browse_profile;
 #[cfg(test)]
 mod tests_camera_profile_defaults;
 #[cfg(test)]
