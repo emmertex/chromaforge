@@ -313,8 +313,6 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
 
 /// From this width the sources and the settings stand beside the photos.
 const WIDE: f32 = 900.0;
-const SOURCES_W: f32 = 230.0;
-const SETTINGS_W: f32 = 330.0;
 const BAR_H: f32 = 48.0;
 
 /// What a narrow window shows in the one column.
@@ -395,17 +393,14 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if wide {
         pane = Pane::Photos;
     }
-    let (sources_r, rest) = if wide {
-        let w = SOURCES_W.min(area.width() * 0.25);
-        (Some(Rect::from_min_max(area.min, pos2(area.left() + w, area.bottom()))), Rect::from_min_max(pos2(area.left() + w, area.top()), area.max))
+    // the same resizable sides, and widths, as the modules' left and right panels
+    let mut middle = area;
+    let (sources_r, settings_r) = if wide {
+        let settings = crate::panels::split_side(ui, &mut middle, false, "importTab:settings", &mut app.ui.right_width, crate::state::RIGHT_WIDTH);
+        let sources = crate::panels::split_side(ui, &mut middle, true, "importTab:sources", &mut app.ui.left_width, crate::state::LEFT_WIDTH);
+        (Some(sources), Some(settings))
     } else {
-        (None, area)
-    };
-    let (middle, settings_r) = if wide {
-        let w = SETTINGS_W.min(rest.width() * 0.4);
-        (Rect::from_min_max(rest.min, pos2(rest.right() - w, rest.bottom())), Some(Rect::from_min_max(pos2(rest.right() - w, rest.top()), rest.max)))
-    } else {
-        (rest, None)
+        (None, None)
     };
     if let Some(r) = sources_r {
         ui.painter().rect_filled(r, 0.0, t.chrome);
