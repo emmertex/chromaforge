@@ -1902,5 +1902,6 @@
   "{} selected": "{} 枚を選択",
   "{} wants to sync its library “{}” with this library.": "{} がライブラリ「{}」をこのライブラリと同期しようとしています。",
   "‹ Library": "‹ ライブラリ",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-ドラッグで水平補正、⇧G でガイド付き Upright、変形中はグリッドを表示。"
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-ドラッグで水平補正、⇧G でガイド付き Upright、変形中はグリッドを表示。",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "地図やフィルムストリップで写真を選択すると、位置情報とメタデータを表示・編集できます。"
 }

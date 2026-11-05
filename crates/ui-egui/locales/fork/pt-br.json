@@ -1902,5 +1902,6 @@
   "{} selected": "{} selecionadas",
   "{} wants to sync its library “{}” with this library.": "{} quer sincronizar a biblioteca “{}” com esta biblioteca.",
   "‹ Library": "‹ Biblioteca",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastar para endireitar, ⇧G Upright guiado, uma grade ao transformar."
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastar para endireitar, ⇧G Upright guiado, uma grade ao transformar.",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Selecione uma foto no mapa ou na tira de filmes para ver e editar sua localização e seus metadados."
 }

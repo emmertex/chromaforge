@@ -138,5 +138,6 @@
   "is yesterday": "გუშინაა",
   "{app} Export Presets": "{app}-ის ექსპორტის პრესეტები",
   "{app} Metadata Presets": "{app}-ის მეტამონაცემების პრესეტები",
-  "{n} photos": "{n} ფოტო"
+  "{n} photos": "{n} ფოტო",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "აირჩიეთ ფოტო რუკაზე ან ფირის ზოლზე, რომ ნახოთ და შეცვალოთ მისი მდებარეობა და მეტამონაცემები."
 }

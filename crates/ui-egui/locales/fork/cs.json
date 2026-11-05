@@ -141,5 +141,6 @@
   "is yesterday": "je včera",
   "{app} Export Presets": "Předvolby exportu {app}",
   "{app} Metadata Presets": "Předvolby metadat {app}",
-  "{n} photos": "{n} fotografií"
+  "{n} photos": "{n} fotografií",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Vyberte fotografii na mapě nebo ve filmovém pásu a zobrazte či upravte její polohu a metadata."
 }

@@ -141,5 +141,6 @@
   "is yesterday": "è ieri",
   "{app} Export Presets": "Predefiniti di esportazione di {app}",
   "{app} Metadata Presets": "Predefiniti metadati di {app}",
-  "{n} photos": "{n} foto"
+  "{n} photos": "{n} foto",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Seleziona una foto sulla mappa o nella strip per vedere e modificare posizione e metadati."
 }

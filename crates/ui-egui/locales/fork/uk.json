@@ -1653,5 +1653,6 @@
   "{} photos updated, {} copies": "Оновлено фото: {}, копій: {}",
   "{} selected": "Вибрано: {}",
   "{} wants to sync its library “{}” with this library.": "{} пропонує синхронізувати свою бібліотеку «{}» з цією бібліотекою.",
-  "‹ Library": "‹ Бібліотека"
+  "‹ Library": "‹ Бібліотека",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Виберіть фото на карті або на плівці, щоб побачити й змінити його місце та метадані."
 }

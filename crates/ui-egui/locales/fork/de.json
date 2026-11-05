@@ -1753,5 +1753,6 @@
   "{} photos updated, {} copies": "{} Fotos aktualisiert, {} Kopien",
   "{} selected": "{} ausgewählt",
   "{} wants to sync its library “{}” with this library.": "{} möchte seine Bibliothek „{}“ mit dieser Bibliothek synchronisieren.",
-  "‹ Library": "‹ Bibliothek"
+  "‹ Library": "‹ Bibliothek",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Wähle ein Foto auf der Karte oder im Filmstreifen, um seinen Ort und seine Metadaten zu sehen und zu bearbeiten."
 }

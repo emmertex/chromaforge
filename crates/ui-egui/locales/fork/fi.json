@@ -67,5 +67,6 @@
   "is in this year": "on tänä vuonna",
   "is today": "on tänään",
   "is yesterday": "on eilen",
-  "{n} photos": "{n} kuvaa"
+  "{n} photos": "{n} kuvaa",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Valitse kuva kartalta tai filmikaistaleelta nähdäksesi ja muokataksesi sen sijaintia ja metatietoja."
 }

@@ -435,6 +435,43 @@ fn selecting_offscreen_photos_reveals_their_pins() {
     assert_eq!(v["lat"].as_f64().unwrap(), 10.0);
 }
 
+/// Fork #784: the Map side panel shows the selected photos' location and IPTC fields, and edits
+/// apply to every selected photo (the Library Metadata panel's widgets on `photo.setMeta`).
+#[test]
+fn the_side_panel_shows_and_edits_the_selection_metadata() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    run(&mut h, "map.geotag", json!({"ids": ids, "lat": 48.8566, "lon": 2.3522}));
+    run(&mut h, "library.select", json!({"ids": ids}));
+    h.settle(SETTLE);
+    for field in [
+        "field:gps",
+        "field:location",
+        "field:city",
+        "field:state",
+        "field:country",
+        "field:title",
+        "field:headline",
+        "field:caption",
+        "field:keywords",
+    ] {
+        assert!(widget(&h, field).is_some(), "{field} is on the side panel");
+    }
+    // an edit reaches both photos of the pin (one undo step)
+    h.request("ui.clickWidget", json!({"id": "field:city"}), T);
+    h.settle(SETTLE);
+    h.request("ui.text", json!({"text": "Paris"}), T);
+    h.settle(SETTLE);
+    h.request("ui.key", json!({"key": "Enter"}), T);
+    h.settle(SETTLE);
+    for id in ids {
+        assert_eq!(h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).unwrap().meta.city, "Paris", "the edit reached every photo at the pin");
+    }
+    // no selection: the section says so instead of showing fields
+    run(&mut h, "library.select", json!({"ids": []}));
+    h.settle(SETTLE);
+    assert!(widget(&h, "field:city").is_none(), "no fields without a selection");
+}
 /// Fork #783: the Location Filter bar filters the filmstrip, as Lightroom Classic's does, not only
 /// the pins: Untagged hides the geotagged photos, Tagged keeps only them, Visible on Map keeps the
 /// photos positioned inside the map view, and None shows every photo again.
