@@ -570,10 +570,7 @@ mod tests {
             .unwrap();
         assert_eq!(r["changed"], 1);
         let m = &s.catalog.photo(ids[0]).unwrap().meta;
-        assert_eq!(
-            (m.location.as_str(), m.city.as_str(), m.country.as_str(), m.country_code.as_str()),
-            ("Louvre", "Paris", "France", "FR")
-        );
+        assert_eq!((m.location.as_str(), m.city.as_str(), m.country.as_str(), m.country_code.as_str()), ("Louvre", "Paris", "France", "FR"));
     }
 
     /// A photo inside a private saved location is exported without GPS or location fields; one
