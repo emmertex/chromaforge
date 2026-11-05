@@ -38,7 +38,7 @@ impl SidebarSection {
     pub const fn title(self) -> &'static str {
         match self {
             SidebarSection::Albums => "Collections",
-            SidebarSection::Local => "Local",
+            SidebarSection::Local => "Favorites",
             SidebarSection::ByDate => "By Date",
             SidebarSection::Folders => "Folders",
             SidebarSection::Keywords => "Keywords",
@@ -274,6 +274,21 @@ mod tests {
     use super::SidebarSection::{Albums, ByDate, Folders, Keywords, Local};
     use super::*;
     use serde_json::json;
+
+    /// The folders to browse are called Favorites (ported from OneSlips, LR-SIDEBAR), in the section's
+    /// heading and in every command and menu that lists folders there, in every language.
+    #[test]
+    fn the_browse_folders_section_is_called_favorites_everywhere() {
+        assert_eq!(Local.title(), "Favorites");
+        assert_eq!(crate::panels::classic::title(crate::module::PanelId::Local), "Favorites");
+        for id in ["local.addRoot", "local.hide", "local.restoreHidden"] {
+            let c = crate::menus::UI_COMMANDS.iter().find(|c| c.0 == id).expect("the command");
+            assert!(c.1.contains("Favorites") && !c.1.contains("Local"), "{id}: {}", c.1);
+            for l in crate::i18n::Locale::ALL.iter().filter(|l| **l != crate::i18n::Locale::En) {
+                assert_ne!(l.tr(c.1), c.1, "{id} in {l:?}");
+            }
+        }
+    }
 
     fn order(layout: &SidebarLayout) -> Vec<SidebarSection> {
         layout.sections().iter().map(|s| s.id).collect()

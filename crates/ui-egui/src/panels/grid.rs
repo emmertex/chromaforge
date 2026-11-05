@@ -502,7 +502,7 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
                 "A filter is hiding this view's photos: change it, or clear it (View → Clear Filters)",
             );
         } else if app.session.source == lcc_engine::LibrarySource::Folder {
-            super::empty_message(ui, ui.max_rect(), "No photos in this folder", "Turn on Include subfolders, or pick another folder under Local");
+            super::empty_message(ui, ui.max_rect(), "No photos in this folder", "Turn on Include subfolders, or pick another folder under Favorites");
         } else if super::empty_library::shown(&app.session) {
             super::empty_library::show(app, ui, ui.max_rect());
         } else {

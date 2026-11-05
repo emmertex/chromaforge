@@ -1,6 +1,6 @@
 //! The bottom bar: view modes, sort, rating/flags pill, copy/paste settings, zoom and view toggles.
 
-use egui::{Align2, Rect, Sense, pos2, vec2};
+use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use lcc_catalog::Flag;
 use serde_json::json;
 
@@ -18,6 +18,10 @@ const VIEW_MODES: &[(&str, Icon, ViewMode, &str)] = &[
     ("survey", Icon::Survey, ViewMode::Survey, "Survey (N)"),
     ("people", Icon::People, ViewMode::People, "People"),
 ];
+
+/// From this bar width the Compact Auto Sync switch carries its name; narrower, the switch alone
+/// (its tooltip names it), so the rest of the bar keeps its room.
+pub const LABELLED_SWITCH_WIDTH: f32 = 1600.0;
 
 pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
@@ -241,10 +245,28 @@ fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: boo
     let t = Tokens::get(ui.ctx());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(Rect::from_min_max(pos2((full.right() - 360.0).max(full.left()), full.top()), full.right_bottom()))
+            .max_rect(Rect::from_min_max(
+                pos2((full.right() - if app.compact() { 540.0 } else { 360.0 }).max(full.left()), full.top()),
+                full.right_bottom(),
+            ))
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
     child.spacing_mut().item_spacing.x = 6.0;
+    // Compact: Auto Sync at the far right in the library, so one glance says whether an edit goes to
+    // every selected photo (gone on a very narrow bar, its name too on a narrow one: Edit ▸ Auto Sync
+    // and the switch under the Edit panel are always there)
+    if app.compact() && !app.importing() && full.width() >= 360.0 {
+        let on = app.session.auto_sync;
+        if auto_sync_switch(&mut child, &t, on, full.width() >= LABELLED_SWITCH_WIDTH).clicked()
+            && let Err(e) = app.run("develop.autoSync", json!({"on": !on}))
+        {
+            app.toast_error(child.ctx(), e);
+        }
+        child.add_space(10.0);
+        let (sep, _) = child.allocate_exact_size(vec2(1.0, 22.0), Sense::hover());
+        child.painter().rect_filled(sep, 0.0, t.button_border);
+        child.add_space(10.0);
+    }
     if matches!(app.ui.view, ViewMode::Compare | ViewMode::Survey)
         && icon_button(
             &mut child,
@@ -328,6 +350,39 @@ fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: boo
         }
     }
     if child.min_rect().width() > 0.0 { child.min_rect().left() } else { full.right() }
+}
+
+/// The Compact bottom bar's Auto Sync switch (widget `toggle:autoSync`): its name (when `labelled`)
+/// and a small switch, filled with the accent colour while on.
+fn auto_sync_switch(ui: &mut egui::Ui, t: &Tokens, on: bool, labelled: bool) -> egui::Response {
+    let label = crate::i18n::tr("Auto Sync");
+    let text = if on { Color32::WHITE } else { t.text_label };
+    let g = ui.painter().layout_no_wrap(if labelled { label.to_string() } else { String::new() }, t.font(12.0), text);
+    let knob_w = 22.0;
+    let w = if labelled { g.size().x + knob_w + 22.0 } else { knob_w + 14.0 };
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, label));
+    register(ui.ctx(), "toggle:autoSync", r);
+    let p = ui.painter();
+    let fill = if on {
+        t.accent
+    } else if resp.hovered() {
+        t.hover
+    } else {
+        t.button
+    };
+    p.rect_filled(r, 0.0, fill);
+    p.rect_stroke(r, 0.0, Stroke::new(1.0, if on { t.accent } else { t.button_border }), StrokeKind::Inside);
+    if labelled {
+        p.galley(pos2(r.left() + 8.0, r.center().y - g.size().y / 2.0), g, text);
+    }
+    // the switch: a track with its knob at the right when on
+    let track = Rect::from_center_size(pos2(r.right() - 8.0 - knob_w / 2.0, r.center().y), vec2(knob_w, 12.0));
+    p.rect_filled(track, 6.0, if on { Color32::from_white_alpha(90) } else { t.track });
+    let kx = if on { track.right() - 6.0 } else { track.left() + 6.0 };
+    p.circle_filled(pos2(kx, track.center().y), 5.0, if on { Color32::WHITE } else { t.thumb });
+    let tip = if on { "Auto Sync is on: edits change every selected photo" } else { "Auto Sync is off: edits change the active photo only" };
+    resp.on_hover_text(crate::i18n::tr(tip))
 }
 
 /// The thumbnail size slider at the right end of a grid's toolbar.

@@ -126,3 +126,45 @@ fn while_painting_the_other_photos_thumbnails_wait() {
     h.settle(SETTLE);
     assert_ne!(key(&h), before, "its thumbnail follows once the painting pauses");
 }
+
+/// The mean brightness (0..255) of the loupe's picture in the headless frame.
+fn loupe_brightness(h: &Headless) -> f64 {
+    let img = h.app.image_rect.expect("the photo on screen");
+    let shot = h.paint();
+    let [w, ht] = shot.size;
+    let (x0, x1) = ((img.left().max(0.0) as usize).min(w), (img.right().max(0.0) as usize).min(w));
+    let (y0, y1) = ((img.top().max(0.0) as usize).min(ht), (img.bottom().max(0.0) as usize).min(ht));
+    let (mut sum, mut n) = (0.0, 0.0);
+    for y in (y0..y1).step_by(4) {
+        for x in (x0..x1).step_by(4) {
+            let c = shot.pixels[y * w + x];
+            sum += f64::from(c.r()) + f64::from(c.g()) + f64::from(c.b());
+            n += 3.0;
+        }
+    }
+    if n > 0.0 { sum / n } else { 0.0 }
+}
+
+/// Ported from OneSlips (NOTES-1028 note 14): dragging an Optics slider (a lens correction changes the
+/// warp) keeps the photo on screen: a picture is drawn until the next draft arrives, never a black
+/// loupe.
+#[test]
+fn an_optics_drag_never_shows_a_black_loupe() {
+    let mut h = detail();
+    h.settle(SETTLE);
+    let rest = loupe_brightness(&h);
+    assert!(rest > 60.0, "the demo photo is on screen: {rest}");
+    for (ctl, v) in [("optics.distortion", 30.0), ("optics.vignetting", 50.0), ("optics.defringePurple", 10.0), ("optics.caRed", 20.0)] {
+        exec(&mut h, "develop.beginInteraction", json!({"label": ctl}));
+        for k in 1..=6 {
+            exec(&mut h, "develop.set", json!({"control": ctl, "value": v * f64::from(k) / 6.0}));
+            h.step();
+            let shown = h.app.loupe_shown.map(|l| l.1);
+            assert_ne!(shown, Some("none"), "{ctl} step {k}: the loupe draws a picture");
+            let b = loupe_brightness(&h);
+            assert!(b > rest * 0.6, "{ctl} step {k}: not black ({b} against {rest} at rest)");
+        }
+        exec(&mut h, "develop.endInteraction", json!({}));
+        h.settle(SETTLE);
+    }
+}
