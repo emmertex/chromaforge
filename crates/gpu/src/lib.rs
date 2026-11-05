@@ -1022,6 +1022,27 @@ pub(crate) fn ai_adapter(instance: &wgpu::Instance, backends: wgpu::Backends) ->
     }
 }
 
+/// The adapter for AI work on the second graphics card (`second`: `Err` when there is none, or it is
+/// turned off) or on the card for editing. AI Denoise keeps a device on each ([`nn::Card`]).
+#[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
+pub(crate) fn ai_adapter_on(instance: &wgpu::Instance, backends: wgpu::Backends, second: bool) -> Result<wgpu::Adapter, String> {
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    let entries = remember_adapters(&adapters);
+    let res = cards::resolve_card(&entries, backend::wanted_adapter().as_deref(), cards::card().as_ref());
+    let editing = EDITING_CARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let primary = editing.and_then(|k| entries.iter().position(|e| e.key == k)).or(res.index);
+    if second {
+        let pins = backend::wanted_adapter().is_some();
+        return cards::resolve_helper(&entries, primary, &cards::helper_choice(), pins)
+            .and_then(|i| adapters.into_iter().nth(i))
+            .ok_or_else(|| nn::NO_SECOND_CARD.to_string());
+    }
+    match primary.and_then(|i| adapters.into_iter().nth(i)) {
+        Some(a) => Ok(a),
+        None => backend::pick_adapter(instance, backends),
+    }
+}
+
 /// The card the next AI device would be made on ([`ai_adapter`]); asks the drivers.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn ai_card() -> Option<String> {

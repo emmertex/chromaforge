@@ -521,6 +521,17 @@ background preparation, the import's previews) take a **turn per photo** on eith
   don't track the interface: there both cards simply share photos by speed.
 - `app.gpu` → `batch.cards`, `batch.rate {editing, helper}`, `batch.renders` (GPU renders so far by
   card and kind of work) and `batch.interfaceBusy` show it working.
+- Exports follow Settings ▸ Performance ▸ Exports ▸ Graphics cards for exports
+  (`lcc_engine::export::ExportCards`, `app.exportTuning {cards}`): both cards (above), the card for
+  editing only (`try_batch_turn_on(false, …)`), or the second card only, to measure it (the card
+  for editing takes the photo when the second card isn't ready or is lost).
+- AI Denoise keeps a denoise device on each card (`nn::Card`: `Second`, `Editing`; `nn::dev_on`,
+  `nn::runner_on`, `bm3d::Bm3dGpu::new_on`), each set up, checked against the processor and given
+  up on alone (`nn::broken_reason_on`). A batch makes one photo on each card at once, the second
+  card first (`Model::lanes`; one photo at a light pace), and one photo's tiles stay on its card.
+  While the second card works too, a tile for the editing card waits for an idle interface
+  (`nn::background_turn`); with one card nothing waits. The second card's set-up marker is
+  `gpu-setup-helper.marker` beside the editing card's.
 
 ## Open items
 - WebGPU in the browser build (async init, single device per canvas).
