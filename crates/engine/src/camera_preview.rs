@@ -997,7 +997,9 @@ fn fit_dng_tone(raw: &RawImage, bytes: &[u8], transform: &CameraTransform, lens:
         }
         None
     };
-    let Some((mut sensor, reference, clipped)) = proxies(raw, bytes, transform, PROXY, MIN_PREVIEW_FRACTION, None, None) else { return refuse("preview") };
+    let Some((mut sensor, reference, clipped)) = proxies(raw, bytes, transform, PROXY, MIN_PREVIEW_FRACTION, None, None) else {
+        return refuse("preview");
+    };
     // As the loader renders it: the profile's tables around the baseline exposure.
     let xy = lcc_raw::color::as_shot_white_xy(raw);
     if let Some(tables) = lcc_raw::profile::ProfileTables::new(&raw.color.profile, lcc_raw::color::illuminant_weight(&raw.color, xy)) {
@@ -5047,8 +5049,7 @@ mod tests {
 
     /// A vignette and its gain at a pixel of a `w`x`h` image, for the fit tests below.
     fn test_vignette(w: usize, h: usize) -> (lcc_develop::EmbeddedVignette, impl Fn(usize, usize) -> f32) {
-        let vignette =
-            lcc_develop::EmbeddedVignette { k: [1.0, 0.0, 0.0, 0.0, 0.0], center: lcc_geom::Point::new(0.5, 0.5), radius: 0.6 };
+        let vignette = lcc_develop::EmbeddedVignette { k: [1.0, 0.0, 0.0, 0.0, 0.0], center: lcc_geom::Point::new(0.5, 0.5), radius: 0.6 };
         let gain = move |x: usize, y: usize| {
             let point = lcc_geom::Point::new(x as f64 + 0.5, y as f64 + 0.5);
             lcc_pipeline::optics::embedded_vignette_gain(&vignette, point, w as f64, h as f64) as f32

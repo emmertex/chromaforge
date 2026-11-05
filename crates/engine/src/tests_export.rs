@@ -1098,8 +1098,7 @@ fn remove_location_refuses_heic_with_incomplete_exif_catalog() {
 
 #[test]
 fn remove_location_refuses_heic_with_incomplete_xmp_catalog() {
-    let gps =
-        lcc_meta::Metadata { gps: Some(lcc_meta::Gps { latitude: 48.85, longitude: 2.35, altitude: None }), ..Default::default() };
+    let gps = lcc_meta::Metadata { gps: Some(lcc_meta::Gps { latitude: 48.85, longitude: 2.35, altitude: None }), ..Default::default() };
     let xmp = lcc_meta::write_xmp(&gps, None);
     assert!(lcc_meta::parse_xmp(&xmp).unwrap().metadata.gps.is_some(), "real XMP payload");
     assert_incomplete_catalog_refused(&heic_with_metadata_in_its_thumbnail(b"mime", xmp.as_bytes()), "xmp");
@@ -2118,7 +2117,12 @@ fn a_fitted_decode_keeps_alpha_only_for_real_transparency() {
     let opaque = lcc_raster::Rgba8::from_fn(600, 400, |x, y| [(x % 256) as u8, (y % 256) as u8, 90, 255]);
     let (_, info) = crate::files::load_bytes(&png(&opaque), 300).unwrap();
     assert!(info.alpha.is_none(), "an opaque RGBA file has no transparency");
-    let clear = lcc_raster::Rgba8::from_fn(600, 400, |x, y| if (150..450).contains(&x) && (100..300).contains(&y) { [200, 40, 30, 255] } else { [0, 0, 0, 0] });
+    let clear =
+        lcc_raster::Rgba8::from_fn(
+            600,
+            400,
+            |x, y| if (150..450).contains(&x) && (100..300).contains(&y) { [200, 40, 30, 255] } else { [0, 0, 0, 0] },
+        );
     let (img, info) = crate::files::load_bytes(&png(&clear), 300).unwrap();
     let a = info.alpha.expect("a transparent file keeps its alpha");
     assert_eq!((a.width, a.height), (img.width, img.height));
