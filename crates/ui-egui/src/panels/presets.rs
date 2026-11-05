@@ -768,7 +768,7 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
                             let w = (ui.available_width() - row_h - 2.0).max(40.0);
-                            let resp = ui.add_sized(vec2(w, row_h), egui::Button::selectable(selected == Some(p.id.as_str()), label).truncate());
+                            let resp = ui.add_sized(vec2(w, row_h), egui::Button::selectable(selected == Some(p.id.as_str()), label).truncate().right_text(""));
                             register(ui.ctx(), format!("presetPick:{salt}:{}", p.id), resp.rect);
                             if resp.clicked() {
                                 out = Some(p.id.clone());

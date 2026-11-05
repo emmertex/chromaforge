@@ -733,7 +733,9 @@ fn preset_row(app: &mut LccApp, ui: &mut egui::Ui, s: &mut ImportSettings) {
     let mut chosen: Option<String> = None;
     form_row(ui, "Preset", |ui| {
         let shown = if s.preset_name.is_empty() { crate::i18n::tr("None").to_string() } else { s.preset_name.clone() };
-        let combo = crate::widgets::combo_box("import-tab-preset").selected_text(shown).show_ui(ui, |ui| {
+        let list_w = crate::import::combo_list_width(ui, names.iter().map(String::as_str));
+        let combo = crate::widgets::combo_box("import-tab-preset").selected_text(shown).width(ui.available_width().max(120.0)).show_ui(ui, |ui| {
+            ui.set_min_width(list_w);
             for (i, n) in names.iter().enumerate() {
                 let r = ui.selectable_label(*n == s.preset_name, n);
                 register(ui.ctx(), format!("button:importPreset-{i}"), r.rect);
