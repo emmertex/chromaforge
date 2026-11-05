@@ -183,3 +183,16 @@ fn a_raw_catalogued_without_a_serial_is_known_by_its_files() {
     assert_eq!(crate::profile_bodies::read_serial(&dir.join("gone.CR3").to_string_lossy()), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A browsed raw shown with its body's profile is still as shot (`import::looks_as_shot`): culling
+/// may show its camera JPEG, and the photo as rendered agrees with the record.
+#[test]
+fn a_browsed_raw_with_its_body_profile_still_looks_as_shot() {
+    let mut s = Session::new();
+    s.body_profiles.insert(BODY.into(), "lc".into());
+    let id = browsed(&mut s, "/nowhere/IMG_0002.CR3", "653499300171");
+    let shown = s.rendered_photo_of(id).unwrap();
+    assert_eq!(shown.develop.profile.camera, "lc", "rendered with the body's profile");
+    assert!(crate::import::looks_as_shot(s.catalog.photo(id).unwrap()), "the record is as shot");
+    assert!(crate::import::looks_as_shot(&shown), "and so is the photo as rendered");
+}

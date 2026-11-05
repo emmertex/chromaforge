@@ -968,6 +968,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         _ => vec![area],
     };
     let main_area = *areas.last().unwrap_or(&area);
+    // where the view's picture lies in the photo now: any picture of it that says where it lies is
+    // drawn cut to that, at once (a synced or new crop shows with no render)
+    let view_place = app.session.placement_of(id, !crop_tool);
+    let placed = |t: &crate::render::Tex| t.placement.is_some_and(|p| lcc_engine::placement::fits_shape(&p, t.size[0], t.size[1]));
     let visible_texture_aspect = app
         .renderer
         .textures
@@ -975,6 +979,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         .filter(|t| t.photo == id)
         .or_else(|| app.renderer.textures.get(&Slot::Preview).filter(|t| t.photo == id))
         .or_else(|| app.renderer.thumb(id))
+        // (a picture that says where it lies is drawn in the photo's own shape)
+        .filter(|t| !(view_place.is_some() && placed(t)))
         .map(|tex| tex.size[0].max(1) as f32 / tex.size[1].max(1) as f32);
     // Follow the texture only where it really differs (an unsupported raw's embedded JPEG with
     // another crop): a texture's whole-pixel size is a little off the exact aspect, and the crop
@@ -1130,7 +1136,18 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     // (a drag that shows its HDR frames needs no 8-bit drafts as well: the final render follows
     // the release)
     let hdr_drafts = interacting && hdr_texture(app, crate::render::HDR_LOUPE, id, hdr_key).is_some();
-    let main_job = if drafting {
+    // stepping fast (an arrow held down): the render waits until the photo stays, the camera JPEG
+    // or thumbnail shows meanwhile, and a render queued for a photo already left is dropped
+    let settling = !interacting && app.loupe_timing.settling(id, now);
+    if settling {
+        if app.renderer.textures.get(&Slot::Main).is_none_or(|t| t.photo != id) {
+            app.renderer.drop_queued(Slot::Main);
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(crate::loupe_timing::SETTLE_SECS / 2.0));
+    }
+    let main_job = if settling {
+        None
+    } else if drafting {
         app.session.loupe_job(id, rw.max(8), rh.max(8), !crop_tool).map(|job| {
             let job = job.draft().with_overlay(overlay).with_proof(app.ui.soft_proof.then_some(app.ui.proof));
             job.with_hidden_grading(app.ui.grading_hidden_for(id))
@@ -1300,6 +1317,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     {
         app.renderer.request_quick(Slot::Preview, q, 110);
     }
+    if !interacting && let Some(i) = here {
+        look_ahead(app, &ids, i, want.max(8), !crop_tool);
+    }
     let show_before = app.ui.before_after == BeforeAfter::Original || ui.input(|i| i.key_down(egui::Key::Backslash));
     let mut hdr_before_key = None;
     if (split || show_before || split_view)
@@ -1397,11 +1417,28 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         let side = (target_rect.width().max(target_rect.height()) * ppp) as u32;
         crate::video_view::update(app, ui.ctx(), *vid, vs, side).map(|(t, s)| (t, s, vs.playing))
     });
+    // zoomed in on a raw as shot: its camera JPEG at full size under the window render, so a focus
+    // check doesn't wait for the raw (Capture One's Cull view shows the embedded JPEG at 100 % too).
+    // Released when the view is not zoomed any more (180 MB).
+    let mut camera_full = !windows.is_empty() && hover_key.is_none() && !split && !show_before && !split_view && !interacting;
+    if camera_full && let Some(q) = app.session.embedded_full_job(id, native_long.min(texture_side)) {
+        app.renderer.request_quick(Slot::QuickFull, q, 98);
+    } else {
+        camera_full = false;
+        if app.renderer.textures.contains_key(&Slot::QuickFull) || app.renderer.is_pending(Slot::QuickFull) {
+            app.renderer.forget(Slot::QuickFull);
+        }
+    }
     let p = ui.painter_at(canvas);
     // what a view slot shows: its own render of this photo, else the stand-ins (no blank frame
     // between photos, and the full render replaces them in place)
     let hdr_view = hdr_texture(app, crate::render::HDR_LOUPE, id, hdr_key);
     let hdr_before = hdr_texture(app, crate::render::HDR_BEFORE, id, hdr_before_key);
+    // an edited photo never shows the camera's JPEG (unedited, uncropped), not even one made while
+    // the photo was still as shot
+    let as_shot = lcc_engine::import::looks_as_shot(&photo);
+    let truthful = |t: &&crate::render::Tex| as_shot || t.quick != Some(lcc_engine::media::QuickSource::Embedded);
+    let drawn = std::cell::Cell::new(None);
     let draw = |slot: Slot, r: Rect, clip: Rect| -> &'static str {
         // (headless screenshots: the HDR texture is GPU-only, so they show the 8-bit render)
         let hdr = match slot {
@@ -1415,15 +1452,43 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             return "hdr";
         }
         let mine = |s: Slot| app.renderer.textures.get(&s).filter(|t| t.photo == id);
-        let (tex, what) = if let Some(t) = mine(slot) {
-            (t, "render")
-        } else if let Some(t) = mine(Slot::Preview) {
-            (t, t.quick.map(quick_name).unwrap_or("preview"))
-        } else if let Some(t) = app.renderer.thumb(id) {
-            (t, "thumb")
-        } else {
-            return "none";
+        let candidates = [
+            mine(slot).map(|t| (t, "render")),
+            mine(Slot::Preview).filter(truthful).map(|t| (t, t.quick.map(quick_name).unwrap_or("preview"))),
+            app.renderer.thumb(id).filter(truthful).map(|t| (t, "thumb")),
+        ];
+        // each picture's corners on the view, when it says where it lies (`Some(None)`: drawn as it
+        // is; `None`: it can't be drawn for this view)
+        let quad_of = |t: &crate::render::Tex, own: bool| -> Option<Option<[Pos2; 4]>> {
+            let (Some(have), Some(want)) = (t.placement.filter(|_| placed(t) && crop_view.is_none()), view_place) else {
+                return Some(None);
+            };
+            // a picture with another look (the as-shot preview of a photo with a preset since)
+            // never stands in; the view's own render is always shown while the next one is made
+            // (an edit in progress: a brush stroke, a curve)
+            if !own && !have.look.close_to(&want.look) {
+                return None;
+            }
+            let uv = lcc_engine::placement::stand_in_uv(&have, &want)?;
+            if lcc_engine::placement::is_identity(&uv, 1e-3) {
+                return Some(None);
+            }
+            placed_quad(r, &uv).map(Some)
         };
+        // the first picture that fills the view (as it is, or cut to the crop); else the first that
+        // fills part of it, where it lies
+        let view = r.intersect(clip);
+        let pick = candidates
+            .iter()
+            .flatten()
+            .find_map(|(t, w)| quad_of(t, *w == "render").filter(|q| q.is_none_or(|q| quad_covers(&q, view))).map(|q| (*t, *w, q)))
+            .or_else(|| candidates.iter().flatten().find_map(|(t, w)| quad_of(t, *w == "render").map(|q| (*t, *w, q))));
+        let Some((tex, what, quad)) = pick else { return "none" };
+        if let Some(quad) = quad {
+            p.with_clip_rect(view).add(placed_mesh(tex.id(), &quad));
+            drawn.set(Some(LoupeDrawn { quad, rect: view, placed: true, known: true }));
+            return what;
+        }
         match &crop_view {
             Some(v) if r == img_rect => {
                 p.with_clip_rect(clip).add(crop_view_mesh(tex.id(), v));
@@ -1435,6 +1500,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     render_texture_rect(r, tex.size)
                 };
                 p.with_clip_rect(clip).image(tex.id(), image_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                let corners = [image_rect.left_top(), image_rect.right_top(), image_rect.right_bottom(), image_rect.left_bottom()];
+                let known = tex.placement.is_some_and(|h| placed(tex) && view_place.is_some_and(|w| h.look.close_to(&w.look)));
+                drawn.set(Some(LoupeDrawn { quad: corners, rect: image_rect.intersect(clip), placed: false, known }));
             }
         }
         what
@@ -1512,6 +1580,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         }
     }
     app.loupe_shown = Some((id, shown));
+    app.loupe_drawn = drawn.get();
+    app.loupe_timing.observe(id, shown, now);
+    // the camera's own JPEG is on screen, not the app's rendering of the raw: say so, so colour and
+    // tone are not judged on it
+    if shown == "embedded" || (shown == "thumb" && app.session.embedded_thumb_is_final(&photo)) {
+        camera_preview_badge(ui, canvas, img_rect.intersect(canvas));
+    }
     // no picture of this photo yet, its first one on its way: background work waits (the photo on
     // screen comes first, at its cheapest first)
     if shown == "none" && (app.renderer.is_pending(Slot::Preview) || app.renderer.is_pending(Slot::Main)) {
@@ -1553,8 +1628,23 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         let top = Rect::from_min_max(before_rect.min, pos2(before_rect.right(), before_rect.top() + v * before_rect.height()));
         p.image(tex, top, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, v)), Color32::WHITE);
     }
+    // the camera JPEG at full size, magnified like the whole-frame render, until the window is there
+    let mut camera_full_drawn = false;
+    if camera_full
+        && let Some(tex) = app.renderer.textures.get(&Slot::QuickFull).filter(|t| t.photo == id)
+        && (tex.size[0].max(1) as f32 / tex.size[1].max(1) as f32 / display_aspect - 1.0).abs() <= 0.02
+    {
+        p.image(tex.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        camera_full_drawn = true;
+    }
     // …and the window renders go over the whole-frame ones, all of them, where they belong in the
     // frame (clipped to their pane, or their side of the line)
+    let window_drawn =
+        app.renderer.tiles.has_render_of(id) || app.renderer.window_texture(crate::render::PANE_AFTER).is_some_and(|(_, g)| g.photo == id);
+    if camera_full_drawn && !window_drawn {
+        app.loupe_shown = Some((id, "embedded"));
+        camera_preview_badge(ui, canvas, img_rect.intersect(canvas));
+    }
     for (v, view) in &windows {
         // (holding `\` in a wipe shows the Before everywhere: it is the Before view alone then)
         let mode = if show_before { BeforeAfter::Original } else { app.ui.before_after };
@@ -2231,6 +2321,69 @@ fn navigator(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, img: Rect, id: P
     Some(frame.expand(5.0))
 }
 
+/// How many photos ahead (in the direction of travel) the loupe makes its stand-in for, and how
+/// many behind (a step back is common when culling).
+const AHEAD: usize = 5;
+const BEHIND: usize = 1;
+/// The look-ahead's priority: below the loupe's own render (100), above everything else.
+const AHEAD_PRIORITY: u32 = 96;
+/// Thumbnails the loupe keeps while stepping (as many as the grid keeps), and how many photos on
+/// either side of the open one stay when it trims them.
+const MAX_LOUPE_THUMBS: usize = 600;
+const KEEP_AROUND: usize = 64;
+/// The thumbnail size the look-ahead asks for (the filmstrip's at 2x).
+const AHEAD_THUMB_EDGE: usize = 256;
+
+/// `ahead` photos in the direction of travel from position `i` of `ids`, nearest first, then
+/// `behind` the other way.
+pub(crate) fn ahead_and_behind(ids: &[PhotoId], i: usize, backward: bool, ahead: usize, behind: usize) -> Vec<PhotoId> {
+    let dir: isize = if backward { -1 } else { 1 };
+    let at = |k: isize| i.checked_add_signed(k).and_then(|j| ids.get(j)).copied();
+    let cap = |n: usize| n.min(ids.len()) as isize;
+    let ahead = (1..=cap(ahead)).filter_map(|k| at(dir * k));
+    let behind = (1..=cap(behind)).filter_map(|k| at(-dir * k));
+    ahead.chain(behind).collect()
+}
+
+/// Culling: make the loupe's stand-ins (the camera JPEG of a raw as shot, or a cached render) of
+/// the next photos in the direction of travel, and their thumbnails, so that a step shows the next
+/// one at once instead of after reading and decoding it (see [`Slot::QuickAhead`]). Worked out
+/// again only when the photo, the direction, the catalog or the size changes.
+fn look_ahead(app: &mut LccApp, ids: &[PhotoId], i: usize, edge: usize, crop: bool) {
+    let Some(&id) = ids.get(i) else { return };
+    let want = (id, app.prep_backward, app.session.catalog.revision, edge);
+    if app.look_ahead_made_for == Some(want) {
+        return;
+    }
+    app.look_ahead_made_for = Some(want);
+    let targets = ahead_and_behind(ids, i, app.prep_backward, AHEAD, BEHIND);
+    // stepping through a whole wedding in the loupe would keep every thumbnail it ever drew: keep
+    // the ones around the photo (what the filmstrip can show) once there are many
+    if app.renderer.thumb_textures() > MAX_LOUPE_THUMBS {
+        let keep = ids.iter().skip(i.saturating_sub(KEEP_AROUND)).take(2 * KEEP_AROUND + 1).copied().collect();
+        app.renderer.evict_thumbs(&keep, MAX_LOUPE_THUMBS);
+    }
+    // their thumbnails first (a small embedded JPEG each, a few ms): something to show at once
+    // even when a step outruns the full-size previews, and in full screen, where no filmstrip
+    // asks for them
+    for &nid in &targets {
+        super::grid::request_thumb(app, nid, AHEAD_THUMB_EDGE, AHEAD_PRIORITY + 2);
+    }
+    // (an edited photo's stand-in made ahead is its last render, if any: never a raw decode for a
+    // thumbnail ahead, which would take the cores from the render the user waits for)
+    let jobs = targets
+        .into_iter()
+        .filter_map(|nid| app.session.quick_view_job(nid, edge, crop))
+        .map(|mut q| {
+            if !q.latest.is_empty() {
+                q.small = None;
+            }
+            q
+        })
+        .collect();
+    app.renderer.look_ahead(jobs, AHEAD_PRIORITY);
+}
+
 /// Neighbour prefetch: below on-screen thumbnails, above background thumbnail refreshes.
 const PREFETCH_PRIORITY: u32 = 4;
 /// Photos prepared ahead at once (each render spreads over the cores already): the others wait,
@@ -2423,7 +2576,96 @@ fn quick_name(q: lcc_engine::media::QuickSource) -> &'static str {
         QuickSource::Cached => "cached",
         QuickSource::Embedded => "embedded",
         QuickSource::Small => "small",
+        QuickSource::Last => "last",
+        QuickSource::Draft => "draft",
     }
+}
+
+/// How the loupe drew its picture ([`crate::LccApp::loupe_drawn`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoupeDrawn {
+    /// Where the picture's top-left, top-right, bottom-right and bottom-left corners went.
+    pub quad: [Pos2; 4],
+    /// The part of the screen it was drawn in (clipped to).
+    pub rect: Rect,
+    /// Cut to the photo's current crop from a picture made with another ([`placed_quad`]).
+    pub placed: bool,
+    /// The picture said where it lies and has the photo's look ([`lcc_engine::placement`]).
+    pub known: bool,
+}
+
+/// Where a picture's corners go on screen when the view `r` shows the part of it whose corners
+/// (top-left, top-right, bottom-right, bottom-left of `r`) are `uv` on it
+/// ([`lcc_engine::placement::stand_in_uv`]). `None` for a degenerate mapping.
+fn placed_quad(r: Rect, uv: &[[f64; 2]; 4]) -> Option<[Pos2; 4]> {
+    // uv = u0 + sx (u1 - u0) + sy (u3 - u0), with (sx, sy) across `r` from 0 to 1
+    let [u0, u1, _, u3] = *uv;
+    let (ax, ay) = (u1[0] - u0[0], u1[1] - u0[1]);
+    let (bx, by) = (u3[0] - u0[0], u3[1] - u0[1]);
+    let det = ax * by - bx * ay;
+    if !det.is_finite() || det.abs() < 1e-12 {
+        return None;
+    }
+    let at = |c: [f64; 2]| {
+        let (dx, dy) = (c[0] - u0[0], c[1] - u0[1]);
+        let sx = (dx * by - bx * dy) / det;
+        let sy = (ax * dy - dx * ay) / det;
+        pos2(r.left() + (sx as f32) * r.width(), r.top() + (sy as f32) * r.height())
+    };
+    let q = [at([0.0, 0.0]), at([1.0, 0.0]), at([1.0, 1.0]), at([0.0, 1.0])];
+    q.iter().all(|p| p.x.is_finite() && p.y.is_finite()).then_some(q)
+}
+
+/// Whether the convex quad `q` holds every corner of `r` (half a pixel of slack).
+pub(crate) fn quad_covers(q: &[Pos2; 4], r: Rect) -> bool {
+    let inside = |p: Pos2| {
+        let mut sign = 0.0f32;
+        for i in 0..4 {
+            let (Some(&a), Some(&b)) = (q.get(i), q.get((i + 1) % 4)) else { return false };
+            let edge = b - a;
+            let len = edge.length().max(1e-6);
+            let c = (edge.x * (p.y - a.y) - edge.y * (p.x - a.x)) / len;
+            if c.abs() <= 0.5 {
+                continue;
+            }
+            if sign == 0.0 {
+                sign = c.signum();
+            } else if c.signum() != sign {
+                return false;
+            }
+        }
+        true
+    };
+    r.is_positive() && [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()].into_iter().all(inside)
+}
+
+/// `tex` with its corners at `quad` (a picture cut to the view by the clip around it).
+fn placed_mesh(tex: egui::TextureId, quad: &[Pos2; 4]) -> egui::epaint::Mesh {
+    let mut mesh = egui::epaint::Mesh::with_texture(tex);
+    for (at, uv) in quad.iter().zip([pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)]) {
+        mesh.vertices.push(egui::epaint::Vertex { pos: *at, uv, color: Color32::WHITE });
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    mesh
+}
+
+/// A small "Camera preview" label at the top right of the photo while the loupe shows the camera's
+/// embedded JPEG (widget `loupe:cameraPreview`), with what that means on hover.
+fn camera_preview_badge(ui: &egui::Ui, canvas: Rect, over: Rect) {
+    let t = Tokens::get(ui.ctx());
+    let p = ui.painter_at(canvas);
+    let text = crate::i18n::tr("Camera preview");
+    let g = p.layout_no_wrap(text.to_string(), t.font(11.5), Color32::from_gray(225));
+    let size = vec2(g.size().x + 16.0, 18.0);
+    let over = if over.is_positive() { over } else { canvas };
+    let r = Rect::from_min_size(pos2(over.right() - size.x - 8.0, over.top() + 8.0), size);
+    p.rect_filled(r, 9.0, Color32::from_black_alpha(165));
+    p.galley(pos2(r.left() + 8.0, r.center().y - g.size().y / 2.0), g, Color32::from_gray(225));
+    register(ui.ctx(), "loupe:cameraPreview", r);
+    let tip = crate::i18n::tr("The camera's own JPEG, shown until {app} has rendered the raw. Judge colour and tone on the rendered photo.");
+    let resp = ui.interact(r, egui::Id::new("camera-preview-badge"), Sense::hover()).on_hover_text(tip);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{text}: {tip}")));
 }
 
 /// Targeted adjustment tool: dragging up/down on the photo raises/lowers the tone-curve region or
@@ -6421,6 +6663,8 @@ mod tests {
             display_fit: None,
             hdr_texels: None,
             superseded: None,
+            latest: None,
+            placement: None,
             settings: Default::default(),
             request: lcc_pipeline::RenderRequest {
                 max_w: 100,
