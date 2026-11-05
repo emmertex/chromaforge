@@ -819,6 +819,7 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("view.screenModeNormal", "Normal", None, "Window>Screen Mode"),
     ("view.lightsOut", "Next Lights Out Mode", None, "Window>Lights Out"),
     ("view.identityPlate", "Identity Plate", None, ""),
+    ("view.activityList", "Show Running Tasks", None, ""),
     ("dialog.identityPlateImage", "Choose Identity Plate Image…", None, ""),
     ("dialog.identityPlateSetup", "Identity Plate Setup…", None, "Edit"),
     ("second.grid", "Secondary Grid", None, "Window>Secondary Display"),
@@ -953,6 +954,17 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
     }
     match id {
         "second.filter" => crate::panels::second::set_filter(app, p),
+        // Classic: the list of every task under the module bar's activity area ({open?: bool}; toggles without)
+        "view.activityList" => {
+            let open = bool_param(p, "open").unwrap_or(!app.activity_list);
+            if open && app.activity_plate.is_none() {
+                return Err("view.activityList: no tasks show in the identity plate (it needs the Classic layout, the module bar, \
+                            Show Status and Activity, and a task running)"
+                    .into());
+            }
+            app.activity_list = open;
+            Ok(json!({"open": open}))
+        }
         "second.filmstrip" => {
             app.ui.second_filmstrip = bool_param(p, "show").unwrap_or(!app.ui.second_filmstrip);
             Ok(json!({"filmstrip": app.ui.second_filmstrip}))
@@ -1279,7 +1291,9 @@ fn plate_menu(app: &mut LccApp, ui: &mut egui::Ui, plate: Rect) {
             let _ = app.run("view.identityPlate", json!({"mark": mark}));
         }
         let mut bold = app.ui.identity_plate.bold;
-        if ui.checkbox(&mut bold, crate::i18n::tr("Bold")).changed() {
+        let r = ui.checkbox(&mut bold, crate::i18n::tr("Bold"));
+        register(ui.ctx(), "plate:bold", r.rect);
+        if r.changed() {
             let _ = app.run("view.identityPlate", json!({"bold": bold}));
         }
         ui.separator();
@@ -1304,13 +1318,26 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             let full = ui.max_rect();
             register(ui.ctx(), "region:moduleBar", full);
-            // identity plate
+            // the bar's own context menu; registered before the plate, the tasks, the status line and the module names so they sit on top and get the clicks
+            let bg = ui.interact(full, egui::Id::new("module-bar-bg"), Sense::click());
+            crate::access::button(&bg, "Module Picker");
+            bg.context_menu(|ui| picker_menu(app, ui));
+            // identity plate; while tasks run they take its place, as in Lightroom Classic's activity centre
             let ip = app.ui.identity_plate.clone();
-            let plate = paint_plate(ui, &ip, pos2(full.left(), full.center().y), full.width() * 0.4);
-            register(ui.ctx(), "region:identityPlate", plate);
-            plate_menu(app, ui, plate);
-            // activity: the status line (imports, exports, builds report here)
-            if ip.show_status && !app.ui.status.is_empty() {
+            let busy = ip.show_status && crate::panels::activity::in_plate(app);
+            let plate = if busy {
+                let w = (full.width() * 0.4).min(crate::panels::activity::WIDTH);
+                let area = Rect::from_min_size(pos2(full.left(), full.top() + 4.0), vec2(w, full.height() - 8.0));
+                crate::panels::activity::plate(app, ui, area);
+                area
+            } else {
+                let plate = paint_plate(ui, &ip, pos2(full.left(), full.center().y), full.width() * 0.4);
+                register(ui.ctx(), "region:identityPlate", plate);
+                plate_menu(app, ui, plate);
+                plate
+            };
+            // the status line beside the plate (imports, exports, builds report here), while no task runs
+            if ip.show_status && !busy && !app.ui.status.is_empty() {
                 let w = (full.width() * 0.3).max(120.0);
                 let status: String = app.ui.status.chars().take(120).collect();
                 let g = ui.painter().layout(status, t.font(12.0), t.text_dim, w);
@@ -1323,6 +1350,7 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
                 let since = if seen_text == app.ui.status { since } else { now };
                 ui.data_mut(|d| d.insert_temp(key, (app.ui.status.clone(), since)));
                 let rect = Rect::from_min_size(at, g.size());
+                register(ui.ctx(), "status:message", rect);
                 let dismiss = ui.interact(rect, egui::Id::new("status-dismiss"), Sense::click());
                 crate::access::button(&dismiss, "Dismiss Message");
                 let dismiss = dismiss.on_hover_text(crate::i18n::tr("Click to dismiss")).clicked();
@@ -1333,10 +1361,6 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
                     ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((STATUS_SECS - (now - since)).max(0.05)));
                 }
             }
-            // the bar's own context menu; registered before the module names so they sit on top and get the clicks
-            let bg = ui.interact(full, egui::Id::new("module-bar-bg"), Sense::click());
-            crate::access::button(&bg, "Module Picker");
-            bg.context_menu(|ui| picker_menu(app, ui));
             // module picker, right-aligned
             // Import is the first entry (Settings ▸ Import ▸ Import as a tab); it is a tab, not a module
             let tab = crate::import_tab::enabled(app);

@@ -1,4 +1,5 @@
-//! Issue #345: the activity stack — one place, top-left, for every long-running task, with ✕ to cancel.
+//! Issue #345: the activity stack — one place for every long-running task, with ✕ to cancel. In the Classic layout
+//! the tasks take the identity plate's place in the module bar, and a click there lists them all; Modern keeps its card.
 
 use std::time::Duration;
 
@@ -6,7 +7,7 @@ use lcc_engine::activity::{Cancel, Unit};
 use serde_json::json;
 
 use crate::headless::Headless;
-use crate::panels::activity::WIDTH;
+use crate::panels::activity::{LIST, PLATE, WIDTH};
 use crate::{LccApp, Services};
 
 // generous: merges and renders run on worker threads that a busy machine (a full workspace test run) slows a lot
@@ -50,29 +51,250 @@ fn click(h: &mut Headless, id: &str) {
     }
 }
 
-#[test]
-fn rows_appear_after_half_a_second_and_cancel_by_click() {
+fn bars(h: &Headless) -> usize {
+    h.app.widgets.iter().filter(|(w, _)| w.starts_with("activity:bar:")).count()
+}
+
+/// Open the Classic list by clicking the tasks in the module bar.
+fn open_list(h: &mut Headless) {
+    click(h, PLATE);
+    assert!(h.app.activity_list, "the list opened");
+    h.step();
+    assert!(has(h, LIST), "the list is drawn");
+}
+
+/// The demo library in the Modern layout, whose activity is a floating card.
+fn modern() -> Headless {
     let mut h = demo();
+    let r = h.request("engine.execute", json!({"command": "view.modernLayout", "params": {"on": true}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(T);
+    h
+}
+
+#[test]
+fn a_task_takes_the_identity_plates_place_and_gives_it_back() {
+    let mut h = demo();
+    assert!(has(&h, "region:identityPlate"), "the plate shows while nothing runs");
     let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
     g.progress(2, 5);
     h.step();
     // a frame on a loaded machine can outlast the half second: only judge a task still young after it
     if h.app.session.activity.list()[0].age_ms < crate::panels::activity::SHOW_AFTER_MS {
-        assert!(!has(&h, &format!("activity:row:{}", g.id())), "not before 0.5 s");
+        assert!(!has(&h, PLATE), "not before 0.5 s");
+        assert!(has(&h, "region:identityPlate"), "the plate stays until then");
     }
     wait_visible(&mut h);
-    assert!(has(&h, &format!("activity:row:{}", g.id())));
+    assert!(has(&h, PLATE), "the task shows in the module bar");
+    assert!(!has(&h, "region:identityPlate"), "in the plate's place");
+    let bar = rect(&h, "region:moduleBar");
+    assert!(bar.contains_rect(rect(&h, PLATE)), "inside the module bar: {:?} in {bar:?}", rect(&h, PLATE));
+    assert!(has(&h, &format!("activity:cancel:{}", g.id())), "one task has its ✕ in the header");
+    let card = h.view.ctx.memory(|m| m.area_rect(egui::Id::new("activity-stack")));
+    assert!(card.is_none() && rows(&h) == 0, "no floating card in the Classic layout: {card:?}");
+    drop(g);
+    h.step();
+    h.step();
+    assert!(!has(&h, PLATE), "gone with the task");
+    assert!(has(&h, "region:identityPlate"), "the plate comes back");
+}
+
+#[test]
+fn the_cross_in_the_header_cancels_the_task() {
+    let mut h = demo();
+    let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+    wait_visible(&mut h);
     click(&mut h, &format!("activity:cancel:{}", g.id()));
     assert!(g.is_cancelled());
+    assert!(!h.app.activity_list, "✕ cancels; it doesn't open the list");
     let inspect = h.request("ui.inspect", json!({}), T);
     assert_eq!(inspect["result"]["activity"][0]["cancelling"], true, "{}", inspect["result"]["activity"]);
 }
 
 #[test]
-fn more_than_three_rows_overflow_and_expand() {
+fn not_cancellable_tasks_have_no_cross() {
+    let mut h = demo();
+    let g = h.app.session.activity.start("faces", "Finding faces", Cancel::No);
+    wait_visible(&mut h);
+    assert!(has(&h, PLATE));
+    assert!(!has(&h, &format!("activity:cancel:{}", g.id())));
+    open_list(&mut h);
+    assert!(has(&h, &format!("activity:row:{}", g.id())));
+    assert!(!has(&h, &format!("activity:cancel:{}", g.id())));
+}
+
+/// Several tasks: a thin bar each, oldest first, with no ✕; a batch's photos add none; past what fits in the
+/// module bar, the oldest show.
+#[test]
+fn several_tasks_show_a_thin_bar_each_inside_the_module_bar() {
+    let mut h = demo();
+    let a = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+    let b = h.app.session.activity.start_batch("denoise", "AI Denoise", Cancel::Yes);
+    let _photo = b.child("denoise", "AI Denoise");
+    wait_visible(&mut h);
+    assert_eq!(bars(&h), 2, "one bar per task, the batch's photo adds none");
+    for g in [&a, &b] {
+        assert!(!has(&h, &format!("activity:cancel:{}", g.id())), "no ✕ while several run");
+    }
+    assert!(rect(&h, &format!("activity:bar:{}", a.id())).top() < rect(&h, &format!("activity:bar:{}", b.id())).top(), "oldest first");
+    let more: Vec<_> = (0..8).map(|i| h.app.session.activity.start("export", &format!("Task {i}"), Cancel::Yes)).collect();
+    wait_visible(&mut h);
+    let module_bar = rect(&h, "region:moduleBar");
+    let shown: Vec<egui::Rect> = h.app.widgets.iter().filter(|(w, _)| w.starts_with("activity:bar:")).map(|(_, r)| *r).collect();
+    assert!(!shown.is_empty() && shown.len() < 10, "{} of 10 bars fit", shown.len());
+    for r in &shown {
+        assert!(module_bar.contains_rect(*r), "bar {r:?} spills out of the module bar {module_bar:?}");
+    }
+    assert!(has(&h, &format!("activity:bar:{}", a.id())), "the oldest show");
+    assert!(!has(&h, &format!("activity:bar:{}", more[7].id())), "the newest wait");
+}
+
+/// A click on the tasks lists every one under the module bar, each with its row and ✕; Esc, a click outside or the
+/// last task ending closes it.
+#[test]
+fn the_list_shows_every_task_and_closes() {
     let mut h = demo();
     let guards: Vec<_> = (0..5).map(|i| h.app.session.activity.start("export", &format!("Task {i}"), Cancel::Yes)).collect();
     wait_visible(&mut h);
+    assert_eq!(rows(&h), 0, "closed at first");
+    open_list(&mut h);
+    let inspect = h.request("ui.inspect", json!({}), T);
+    assert_eq!(inspect["result"]["activityList"], true, "{}", inspect["result"]["activityList"]);
+    let list = rect(&h, LIST);
+    assert!(list.top() >= rect(&h, "region:moduleBar").bottom() - 1.0, "under the module bar: {list:?}");
+    for g in &guards {
+        let r = rect(&h, &format!("activity:row:{}", g.id()));
+        assert!(list.contains_rect(r), "row {} at {r:?} is cut off by the list at {list:?}", g.id());
+        assert!(has(&h, &format!("activity:cancel:{}", g.id())), "each has its ✕");
+    }
+    // ✕ in the list cancels that task, and the list stays
+    click(&mut h, &format!("activity:cancel:{}", guards[1].id()));
+    assert!(guards[1].is_cancelled() && !guards[0].is_cancelled());
+    assert!(h.app.activity_list, "still open");
+    // Esc closes it, and only it: the loupe stays (Esc alone would go back to the grid)
+    let first = h.app.session.visible_cloned()[0].0;
+    h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [first]}}), T);
+    assert_eq!(h.request("engine.execute", json!({"command": "view.loupe", "params": {}}), T)["ok"], true);
+    h.step();
+    let loupe = h.app.ui.view;
+    assert!(h.app.activity_list, "still open in the loupe");
+    h.request("ui.key", json!({"key": "Escape"}), T);
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(!h.app.activity_list && !has(&h, LIST), "Esc closed it");
+    assert_eq!(h.app.ui.view, loupe, "Esc did nothing else");
+    // a click outside closes it
+    open_list(&mut h);
+    h.request("ui.click", json!({"x": 600.0, "y": 500.0}), T);
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(!h.app.activity_list, "a click outside closed it");
+    // the last task ending closes it
+    open_list(&mut h);
+    drop(guards);
+    h.step();
+    h.step();
+    assert!(!h.app.activity_list && !has(&h, LIST));
+}
+
+#[test]
+fn the_list_opens_and_closes_by_command() {
+    let mut h = demo();
+    let exec = |h: &mut Headless, p: serde_json::Value| h.request("engine.execute", json!({"command": "view.activityList", "params": p}), T);
+    let r = exec(&mut h, json!({"open": true}));
+    assert_eq!(r["ok"], false, "nothing to list yet: {r}");
+    assert!(!h.app.activity_list);
+    let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+    wait_visible(&mut h);
+    let r = exec(&mut h, json!({"open": true}));
+    assert_eq!((r["ok"].clone(), r["result"]["open"].clone()), (json!(true), json!(true)), "{r}");
+    h.step();
+    assert!(has(&h, &format!("activity:row:{}", g.id())));
+    // without a parameter it toggles
+    let r = exec(&mut h, json!({}));
+    assert_eq!(r["result"]["open"], false, "{r}");
+    h.step();
+    assert!(!has(&h, LIST));
+    assert_eq!(h.request("ui.inspect", json!({}), T)["result"]["activityList"], false);
+}
+
+/// With the module bar hidden or Show Status and Activity off, no activity shows; the tasks run on, are listed, and
+/// Quit still asks.
+#[test]
+fn hidden_module_bar_or_status_off_shows_nothing_and_tasks_run_on() {
+    let mut h = demo();
+    let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+    wait_visible(&mut h);
+    assert!(has(&h, PLATE));
+    open_list(&mut h);
+    let hide = h.request("engine.execute", json!({"command": "panel.top", "params": {"show": false}}), T);
+    assert_eq!(hide["ok"], true, "{hide}");
+    h.step();
+    h.step();
+    assert!(!has(&h, PLATE) && !has(&h, LIST) && rows(&h) == 0, "nothing shows with the module bar hidden");
+    assert!(!h.app.activity_list, "the list closed with it");
+    assert!(!g.is_cancelled());
+    assert_eq!(h.request("engine.execute", json!({"command": "activity.list", "params": {}}), T)["result"]["tasks"][0]["id"], g.id());
+    h.request("engine.execute", json!({"command": "panel.top", "params": {"show": true}}), T);
+    let off = h.request("engine.execute", json!({"command": "view.identityPlate", "params": {"showStatus": false}}), T);
+    assert_eq!(off["ok"], true, "{off}");
+    h.step();
+    h.step();
+    assert!(!has(&h, PLATE) && rows(&h) == 0, "nothing shows with Show Status and Activity off");
+    assert!(has(&h, "region:identityPlate"), "the plate stays");
+    assert_eq!(h.request("engine.execute", json!({"command": "view.activityList", "params": {"open": true}}), T)["ok"], false);
+    assert!(!g.is_cancelled() && h.app.session.activity.list().len() == 1, "still running");
+    assert!(!crate::panels::notices::may_close(&mut h.app), "Quit still asks");
+}
+
+/// The status line shows beside the plate while no task runs; a task takes its place.
+#[test]
+fn the_status_text_gives_way_to_tasks() {
+    let mut h = demo();
+    h.app.ui.status = "Ready".into();
+    h.step();
+    h.step();
+    assert!(has(&h, "region:identityPlate") && has(&h, "status:message"), "the status beside the plate");
+    let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+    wait_visible(&mut h);
+    assert!(has(&h, PLATE));
+    assert!(!has(&h, "status:message"), "the task takes the status line's place");
+    drop(g);
+    h.step();
+    h.step();
+    assert!(!has(&h, PLATE) && has(&h, "region:identityPlate"));
+    assert!(has(&h, "status:message"), "the status line is back");
+}
+
+/// The module bar's own click area sits under the plate and the status line, so they get their clicks: a right-click
+/// on the plate opens the plate's menu (not the module picker's), and a click on the status line dismisses it.
+#[test]
+fn the_plate_and_the_status_line_get_their_own_clicks() {
+    let mut h = demo();
+    let bold = h.app.ui.identity_plate.bold;
+    h.step();
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "region:identityPlate", "button": "right"}), T)["ok"], true);
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(has(&h, "plate:bold"), "the plate's menu opened");
+    click(&mut h, "plate:bold");
+    assert_eq!(h.app.ui.identity_plate.bold, !bold, "Bold in the plate's menu");
+    h.app.ui.status = "Ready".into();
+    h.step();
+    h.step();
+    click(&mut h, "status:message");
+    assert!(h.app.ui.status.is_empty(), "a click dismissed the message");
+}
+
+#[test]
+fn modern_keeps_its_card_and_overflows() {
+    let mut h = modern();
+    let guards: Vec<_> = (0..5).map(|i| h.app.session.activity.start("export", &format!("Task {i}"), Cancel::Yes)).collect();
+    wait_visible(&mut h);
+    assert!(!has(&h, PLATE), "no module bar activity in Modern");
     assert_eq!(rows(&h), 3);
     assert!(has(&h, "activity:more"));
     click(&mut h, "activity:more");
@@ -88,17 +310,23 @@ fn more_than_three_rows_overflow_and_expand() {
     assert_eq!(rows(&h), 0);
 }
 
+/// A list opened in Classic closes when the layout changes to Modern, so it holds Esc back no longer.
 #[test]
-fn not_cancellable_rows_have_no_cross() {
+fn switching_to_modern_closes_the_list() {
     let mut h = demo();
-    let g = h.app.session.activity.start("faces", "Finding faces", Cancel::No);
+    let _g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
     wait_visible(&mut h);
-    assert!(has(&h, &format!("activity:row:{}", g.id())));
-    assert!(!has(&h, &format!("activity:cancel:{}", g.id())));
+    open_list(&mut h);
+    let r = h.request("engine.execute", json!({"command": "view.modernLayout", "params": {"on": true}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(!h.app.activity_list, "closed with the Classic layout");
+    assert_eq!(h.request("ui.inspect", json!({}), T)["result"]["activityList"], false);
 }
 
-/// a batch is one row with the time left and the failures; its photos fold under it; when it ends,
-/// what it did shows once as a message.
+/// a batch row in the list folds its photos, with the time left and the failures; when it ends, what it did shows
+/// once as a message.
 #[test]
 fn a_batch_row_folds_its_photos_and_says_how_it_went() {
     use crate::panels::activity::{eta_text, summary_text};
@@ -114,6 +342,7 @@ fn a_batch_row_folds_its_photos_and_says_how_it_went() {
     let photo = b.child("denoise", "AI Denoise");
     photo.detail("IMG_0003.CR3");
     wait_visible(&mut h);
+    open_list(&mut h);
     let parent = format!("activity:row:{}", b.id());
     let child = format!("activity:row:{}", photo.id());
     assert!(has(&h, &parent));
@@ -123,6 +352,7 @@ fn a_batch_row_folds_its_photos_and_says_how_it_went() {
     let fold = format!("activity:children:{}", b.id());
     click(&mut h, &fold);
     assert!(has(&h, &child), "opened");
+    assert!(h.app.activity_list, "a click inside the list keeps it open");
     assert!(rect(&h, &child).left() > rect(&h, &parent).left(), "set in under its batch");
     click(&mut h, &fold);
     assert!(!has(&h, &child), "folded again");
@@ -166,11 +396,13 @@ fn stale_cancel_is_harmless() {
 }
 
 #[test]
-fn long_detail_stays_inside_the_stack() {
+fn long_detail_stays_inside_the_list() {
     let mut h = demo();
     let g = h.app.session.activity.start("export", "Exportieren", Cancel::Yes);
     g.detail(&"IMG_".repeat(75));
     wait_visible(&mut h);
+    assert!(rect(&h, PLATE).width() <= WIDTH + 1.0, "{:?}", rect(&h, PLATE));
+    open_list(&mut h);
     let row = rect(&h, &format!("activity:row:{}", g.id()));
     assert!(row.width() <= WIDTH + 1.0, "{row:?}");
 }
@@ -504,23 +736,24 @@ fn auto_import_listing_has_no_row() {
 }
 
 #[test]
-fn rows_added_later_grow_the_stack() {
+fn rows_added_later_grow_the_list() {
     let mut h = demo();
     let a = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
     a.progress(1, 24);
     a.detail("LC01347.jpg");
     wait_visible(&mut h);
-    // two more tasks while the stack already shows one row: it grows to show them, nothing is cut off
+    open_list(&mut h);
+    // two more tasks while the list already shows one row: it grows to show them, nothing is cut off
     let b = h.app.session.activity.start("previews", "Building previews", Cancel::Yes);
     let c = h.app.session.activity.start("lightroom", "Reading Lightroom catalog", Cancel::Yes);
     wait_visible(&mut h);
     for _ in 0..5 {
         h.step();
     }
-    let stack = h.view.ctx.memory(|m| m.area_rect(egui::Id::new("activity-stack"))).expect("the stack is drawn");
+    let list = rect(&h, LIST);
     for g in [&a, &b, &c] {
         let r = rect(&h, &format!("activity:row:{}", g.id()));
-        assert!(stack.contains_rect(r), "row {} at {r:?} is cut off by the stack at {stack:?}", g.id());
+        assert!(list.contains_rect(r), "row {} at {r:?} is cut off by the list at {list:?}", g.id());
     }
 }
 

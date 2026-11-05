@@ -927,6 +927,12 @@ pub struct LccApp {
     pub activity_open: std::collections::HashSet<u64>,
     /// The last batch summary said (`Activity::finished` → `seq`): each is said once.
     pub activity_seen_seq: u64,
+    /// Classic: the list of tasks under the module bar's activity area is open (`view.activityList`).
+    pub activity_list: bool,
+    /// Classic: where the module bar drew its activity area this frame (set by `module_bar`, taken by the stack).
+    pub(crate) activity_plate_drawn: Option<egui::Rect>,
+    /// …and in the last frame: what the list opens under, and whether `view.activityList` can open it.
+    pub(crate) activity_plate: Option<egui::Rect>,
     /// The Map module's view state (P3.3).
     pub map: map::MapUi,
     /// The Classic module help sheet (⌘/, P6.3).
@@ -1119,6 +1125,9 @@ impl LccApp {
             activity_expanded: false,
             activity_open: Default::default(),
             activity_seen_seq: 0,
+            activity_list: false,
+            activity_plate_drawn: None,
+            activity_plate: None,
             surface: Default::default(),
         }
     }
