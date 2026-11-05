@@ -1431,6 +1431,16 @@ pub fn flag_glow(p: &egui::Painter, t: &Tokens, cell: Rect, flag: Flag) {
     p.add(egui::Shape::mesh(mesh));
 }
 
+/// The flag a Compact cell's strip shows (OneSlips LR-FLAGS cff75fcf5): one flag shape, solid for a pick, solid with a
+/// bold cross for a reject, so the two differ in shape as well as colour; none for an unflagged photo.
+pub fn flag_mark_icon(flag: Flag) -> Option<Icon> {
+    match flag {
+        Flag::Pick => Some(Icon::FlagMarkPick),
+        Flag::Reject => Some(Icon::FlagMarkReject),
+        Flag::None => None,
+    }
+}
+
 /// A photo's culling marks along `bar` (the strip under a Compact thumbnail): its flag and stars
 /// from the left, its colour label and edited mark from the right, sized to the bar's height so
 /// they read at a glance. `on_photo`: drawn over the picture (white marks) rather than on the panel.
@@ -1442,10 +1452,9 @@ pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalo
     // the pick flag is white over a picture whatever the theme (the theme's colour is for panels)
     let pick = if on_photo { Color32::WHITE } else { t.pick };
     let mut x = bar.left() + 2.0;
-    match photo.flag {
-        Flag::Pick => paint(p, Rect::from_min_size(pos2(x, y - flag / 2.0), vec2(flag, flag)), Icon::FlagPickFilled, pick),
-        Flag::Reject => paint(p, Rect::from_min_size(pos2(x, y - flag / 2.0), vec2(flag, flag)), Icon::FlagReject, t.reject),
-        Flag::None => {}
+    if let Some(icon) = flag_mark_icon(photo.flag) {
+        let colour = if photo.flag == Flag::Reject { t.reject } else { pick };
+        paint(p, Rect::from_min_size(pos2(x, y - flag / 2.0), vec2(flag, flag)), icon, colour);
     }
     if photo.flag != Flag::None {
         x += flag + 4.0;
@@ -2341,5 +2350,41 @@ mod tests {
         assert!(cell.contains_rect(g));
         assert!(g.bottom() < cell.bottom() && g.left() > cell.left() && g.right() < cell.right());
         assert!(flag_glow_rect(Rect::from_min_size(pos2(0.0, 0.0), vec2(4.0, 2.0))).is_none());
+    }
+
+    /// The Compact strip's flags are one shape (OneSlips LR-FLAGS): a pick is a solid flag, a reject the same solid
+    /// flag with a bold cross below its banner, so they differ in shape, not only in colour; both are bold enough to
+    /// read at a glance (the reject no longer a thin struck-through outline).
+    #[test]
+    fn compact_pick_and_reject_marks_differ_in_shape() {
+        // lit pixels of the mark drawn white at 40 points: the whole icon, and its lower right quarter (under the banner)
+        let ink = |icon: Icon| {
+            let mut view = crate::headless::HeadlessView::new();
+            let raw = crate::headless::HeadlessView::raw_input(vec2(40.0, 40.0), 1.0, 0.0, vec![]);
+            view.run(raw, |ui| {
+                ui.painter().rect_filled(ui.max_rect(), 0.0, Color32::BLACK);
+                paint(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 40.0)), icon, Color32::WHITE);
+            });
+            let image = view.paint(&Default::default());
+            let w = image.size[0];
+            let lit = |p: &Color32| p.r() > 100;
+            let all = image.pixels.iter().filter(|p| lit(p)).count();
+            let corner = image.pixels.iter().enumerate().filter(|(i, p)| i % w >= w / 2 && i / w >= image.size[1] * 6 / 10 && lit(p)).count();
+            // the middle of the banner (grid point 9, 6.4 of 20, at 2 pixels a point)
+            let middle = image.pixels.get(13 * w + 18).is_some_and(lit);
+            (all, corner, middle)
+        };
+        let pick = flag_mark_icon(Flag::Pick).expect("a pick has a mark");
+        let reject = flag_mark_icon(Flag::Reject).expect("a reject has a mark");
+        assert!(flag_mark_icon(Flag::None).is_none(), "an unflagged photo has no mark in the strip");
+        let (pick_all, pick_corner, pick_middle) = ink(pick);
+        let (reject_all, reject_corner, reject_middle) = ink(reject);
+        assert!(pick_corner < 5, "nothing under the pick's banner ({pick_corner})");
+        assert!(reject_corner > 30, "the reject's cross sits under its banner ({reject_corner})");
+        // the banner is solid in both, where an outline is hollow
+        let (outline, _, outline_middle) = ink(Icon::FlagMarkNone);
+        assert!(pick_middle && reject_middle && !outline_middle, "solid banners, a hollow outline");
+        assert!(pick_all > outline, "the pick's banner is filled ({pick_all} vs outline {outline})");
+        assert!(reject_all > pick_all, "the reject adds its cross to the solid flag");
     }
 }
