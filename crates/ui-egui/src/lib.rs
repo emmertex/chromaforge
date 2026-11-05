@@ -47,6 +47,7 @@ pub mod import;
 pub mod import_report;
 mod import_screen;
 pub mod import_tab;
+pub mod legacy;
 pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;
@@ -309,6 +310,8 @@ mod tests_offline;
 mod tests_open_lightroom;
 #[cfg(test)]
 mod tests_osd;
+#[cfg(test)]
+mod tests_overlay_on;
 #[cfg(test)]
 mod tests_panel_restore;
 #[cfg(test)]

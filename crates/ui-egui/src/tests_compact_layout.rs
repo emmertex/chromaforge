@@ -300,3 +300,49 @@ fn compact_right_panel_default_width() {
         let _ = crate::state::follow_compact_width(w, true);
     }
 }
+
+/// Develop at the Compact layout with `sections` open, every name column settled.
+fn compact_with(sections: &[&str]) -> Headless {
+    let mut h = develop();
+    run(&mut h, "view.compactLayout", json!({"on": true}));
+    h.app.ui.open_sections = sections.iter().map(|s| s.to_string()).collect();
+    redraw(&mut h);
+    h
+}
+
+/// The right edge of the panel's value column: where the slider values of the open sections end.
+fn value_column(h: &Headless) -> f32 {
+    h.app.widgets.iter().filter(|(w, _)| w.starts_with("sliderValue:")).map(|(_, r)| r.right()).fold(f32::NEG_INFINITY, f32::max)
+}
+
+/// The Color Mixer's Adjust row: its caption and HSL | Color fit the panel's column, the track ending on the value
+/// column like the sliders under it (the caption pushed it past the column's right edge).
+#[test]
+fn compact_mixer_adjust_row_stays_in_the_column() {
+    let h = compact_with(&["mixer"]);
+    let hsl = button(&h, "mixerAdjust-hsl").expect("HSL");
+    let color = button(&h, "mixerAdjust-color").expect("Color");
+    let right = value_column(&h);
+    assert!(right.is_finite(), "the mixer's sliders are drawn");
+    assert!(color.right() <= right + 0.5, "Color {color:?} ends on the value column {right}");
+    assert!(hsl.left() < color.left() && hsl.width() > 20.0, "HSL {hsl:?} then Color {color:?}");
+}
+
+/// With every section open (the panel scrolls, so it has a scroll bar) Auto · B&W | HDR still end on the value
+/// column, not past it.
+#[test]
+fn compact_treatment_row_ends_on_the_value_column_with_a_scroll_bar() {
+    let h = compact_with(&["light", "curve", "mixer", "grading", "detail", "optics", "geometry", "effects", "calibration"]);
+    let hdr = button(&h, "hdr").expect("HDR");
+    let exposure = rect(&h, "sliderValue:light.exposure").expect("Exposure's value");
+    assert!(hdr.right() <= exposure.right() + 0.5, "HDR {hdr:?} ends on the value column {exposure:?}");
+}
+
+/// The Transform section's Upright caption reads as a caption: no larger than the slider names, in Compact.
+#[test]
+fn compact_upright_caption_is_no_larger_than_the_slider_names() {
+    let h = compact_with(&["geometry"]);
+    let caption = rect(&h, "label:upright").expect("the Upright caption");
+    let name = h.app.widgets.iter().find(|(w, _)| w.starts_with("sliderLabel:geometry.")).map(|(_, r)| *r).expect("a transform slider's name");
+    assert!(caption.height() <= name.height() + 0.5, "Upright {caption:?} vs a slider name {name:?}");
+}

@@ -1767,6 +1767,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     }
     // Space held over a tool: the view's hand takes the pointer from it (#1895)
     crate::space_hand::interact(app, ui, canvas, (main_area, img_rect), split.then(|| (areas[0], before_img)));
+    // Compact (OneSlips 0c58de7ad): the overlay switched on to stay (O) overrides showing it only when useful, so the
+    // photo says so; it steps aside while a slider or dial adjusts (the overlay does too)
+    if right == RightPanel::Masking && crate::theme::compact(ui.ctx()) && app.ui.mask_overlay && !adjusting(app) && !fullscreen {
+        overlay_on_hint(ui, canvas, app.ui.mask_overlay_color);
+    }
     // drawn and hit-tested above the loupe and its tools: clicks on it pan
     let nav = navigator(app, ui, canvas, img_rect, id);
     // an AI mask on its way: what is being found, on the photo, with Cancel (no stand-in overlay)
@@ -1872,6 +1877,20 @@ fn label_badge_rect(photo: Rect, pane: Rect, text: egui::Vec2, top_inset: f32) -
 /// The info overlay at the canvas' top left (`view.infoOverlay`): the lines View Options chose for
 /// Info 1 or Info 2 (`view.viewOptions`). If an active filter pill sits in the top-left corner, the
 /// info overlay begins cleanly below it to avoid collision (issue #266).
+/// "Overlay on · O" at the canvas' bottom left, a swatch of the overlay's colour before it (OneSlips 0c58de7ad): the
+/// mask overlay was switched on to stay (widget `canvas:overlayOn`).
+fn overlay_on_hint(ui: &egui::Ui, canvas: Rect, color: [u8; 3]) {
+    let t = Tokens::get(ui.ctx());
+    let p = ui.painter_at(canvas);
+    let g = p.layout_no_wrap(crate::i18n::tr("Overlay on · O").to_string(), t.font(12.0), Color32::WHITE);
+    let bg = Rect::from_min_size(pos2(canvas.left() + 10.0, canvas.bottom() - 18.0 - g.size().y), g.size() + vec2(30.0, 8.0));
+    p.rect_filled(bg, t.radius(bg.height() / 2.0), Color32::from_black_alpha(150));
+    let [r, gg, b] = color;
+    p.circle_filled(pos2(bg.left() + 12.0, bg.center().y), 4.5, Color32::from_rgb(r, gg, b));
+    p.galley(pos2(bg.left() + 22.0, bg.top() + 4.0), g, Color32::WHITE);
+    register(ui.ctx(), "canvas:overlayOn", bg);
+}
+
 fn info_overlay(app: &LccApp, p: &egui::Painter, canvas: Rect, photo: &lcc_catalog::Photo, pill: Option<Rect>) {
     let Some(lines) = info_overlay_lines(app, photo) else { return };
     let t = Tokens::get(p.ctx());
@@ -5827,13 +5846,40 @@ pub(crate) fn shot_info(m: &lcc_catalog::Meta, size: [usize; 2]) -> Vec<String> 
         v.push(format!("{f:.0} mm"));
     }
     let lens = m.lens.trim();
-    if !lens.is_empty() {
-        v.push(lens.to_string());
+    // the lens's focal range (OneSlips PERF-CULL-7), in brackets after the focal length shot: added to a lens name
+    // that doesn't say it ("Sigma Art" → "Sigma Art (24–70 mm)"), or alone when the file names no lens
+    let range = m.lens_range.and_then(|r| lens_range_text(lens, r));
+    match (lens.is_empty(), range) {
+        (false, Some(r)) => v.push(format!("{lens} {r}")),
+        (false, None) => v.push(lens.to_string()),
+        (true, Some(r)) => v.push(r),
+        (true, None) => {}
     }
     if size[0] > 1 && size[1] > 1 {
         v.push(format!("{} × {}", size[0], size[1]));
     }
     v
+}
+
+/// "(24–70 mm)" or, for a prime, "(85 mm)": a lens's focal range for the shot info, unless `lens` already names it
+/// (its digits are in the name) or the range is unusable.
+fn lens_range_text(lens: &str, (a, b): (f32, f32)) -> Option<String> {
+    if !(a.is_finite() && b.is_finite() && a > 0.0 && b >= a && b < 100_000.0) {
+        return None;
+    }
+    let (short, long) = (format!("{a:.0}"), format!("{b:.0}"));
+    let named = |n: &str| {
+        // the number standing on its own in the name (`24-70mm`, `FE 85mm`), not inside a longer one
+        lens.match_indices(n).any(|(i, _)| {
+            let before = lens.get(..i).and_then(|s| s.chars().last());
+            let after = lens.get(i + n.len()..).and_then(|s| s.chars().next());
+            !before.is_some_and(|c| c.is_ascii_digit()) && !after.is_some_and(|c| c.is_ascii_digit())
+        })
+    };
+    if !lens.is_empty() && named(&short) && named(&long) {
+        return None;
+    }
+    Some(if short == long { format!("({short} mm)") } else { format!("({short}–{long} mm)") })
 }
 
 /// The shot info strip: one line under the photo, or a slim pill over the bottom edge of the part
@@ -5927,6 +5973,8 @@ pub(crate) fn film_thumb_px(cell_w: f32, ppp: f32) -> usize {
 fn film_resize(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let edge = Rect::from_min_size(r.min - vec2(0.0, 2.0), vec2(r.width(), 7.0));
     let resp = ui.interact(edge, egui::Id::new("filmstrip-resize"), Sense::click_and_drag());
+    // a screen reader names the edge after what it resizes
+    crate::access::named(&resp, egui::WidgetType::Other, crate::i18n::tr("Filmstrip"));
     register(ui.ctx(), "filmstrip:resize", edge);
     // (screen readers get its name)
     crate::widgets::announce(&resp, crate::i18n::tr("Resize the filmstrip"));

@@ -106,10 +106,12 @@ fn detail_line(t: &TaskInfo) -> String {
             count += &format!(" · {}", tr_format!("{n} failed", n = t.failed));
         }
     }
-    match (count.is_empty(), t.detail.is_empty()) {
-        (false, false) => format!("{count} · {}", t.detail),
+    // (a detail is a name, kept as it is, or one of the engine's few messages, such as what a batch waits for)
+    let detail = tr(&t.detail);
+    match (count.is_empty(), detail.is_empty()) {
+        (false, false) => format!("{count} · {detail}"),
         (false, true) => count,
-        (true, _) => t.detail.clone(),
+        (true, _) => detail.to_string(),
     }
 }
 
