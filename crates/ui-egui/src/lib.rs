@@ -125,6 +125,8 @@ mod tests_bar_buttons;
 #[cfg(test)]
 mod tests_before_after;
 #[cfg(test)]
+mod tests_bottom_bar_compact;
+#[cfg(test)]
 mod tests_breadcrumb_more;
 #[cfg(test)]
 mod tests_browse_active;
