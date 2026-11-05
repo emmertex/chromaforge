@@ -105,6 +105,10 @@ pub struct Filter {
     /// Smart-album rules (all / any / none, nested groups; see [`crate::rules`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_set: Option<crate::RuleSet>,
+    /// Metadata column picks on fields without a filter field of their own (file format, IPTC text, aspect,
+    /// preset, AI tools), and "no value" picks on every field (issue #777); each must let the photo through.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub facets: Vec<crate::FacetPick>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -921,6 +925,13 @@ impl Filter {
             (None, Some(b)) => v.push(format!("captured until {b}")),
             _ => {}
         }
+        for f in self.facets.iter().filter(|f| !f.is_empty()) {
+            let mut any: Vec<&str> = f.values.iter().map(String::as_str).collect();
+            if f.none {
+                any.push("none");
+            }
+            v.push(format!("{} {}", f.field, any.join(" or ")));
+        }
         if let Some(fcs) = &self.faces {
             v.push(format!("faces {fcs}"));
         }
@@ -1006,6 +1017,9 @@ impl Filter {
             return false;
         }
         if !self.labels.is_empty() && !p.label.is_some_and(|l| self.labels.contains(&l)) {
+            return false;
+        }
+        if !self.facets.iter().all(|f| f.matches(p, cat)) {
             return false;
         }
         if self.only_none {

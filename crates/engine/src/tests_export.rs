@@ -1004,17 +1004,24 @@ fn remove_location_refuses_a_raw_that_embeds_gps() {
 /// export never decodes it). Item 1 is the photo, 2 its thumbnail, 3 the thumbnail's EXIF, kept in
 /// the `meta` box's `idat`.
 fn heic_with_gps_in_its_thumbnail() -> Vec<u8> {
-    let bx = |kind: &[u8], body: &[u8]| [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat();
-    let full = |kind: &[u8], body: &[u8]| bx(kind, &[&[0u8, 0, 0, 0][..], body].concat());
     let gps = lcc_meta::Gps { latitude: 48.85, longitude: 2.35, altitude: None };
     let exif = [&[0u8, 0, 0, 0][..], &lcc_meta::write_exif(&lcc_meta::Metadata { gps: Some(gps), ..Default::default() })].concat();
-    let infe = |id: u8, kind: &[u8]| bx(b"infe", &[&[2, 0, 0, 0, 0, id, 0, 0][..], kind, &[0]].concat());
-    let iinf = full(b"iinf", &[&[0, 3][..], &infe(1, b"hvc1"), &infe(2, b"hvc1"), &infe(3, b"Exif")].concat());
+    heic_with_metadata_in_its_thumbnail(b"Exif", &exif)
+}
+
+fn heic_with_metadata_in_its_thumbnail(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let bx = |kind: &[u8], body: &[u8]| [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat();
+    let full = |kind: &[u8], body: &[u8]| bx(kind, &[&[0u8, 0, 0, 0][..], body].concat());
+    let infe = |id: u8, kind: &[u8]| {
+        let fields = if kind == b"mime" { b"\0application/rdf+xml\0".as_slice() } else { b"\0" };
+        bx(b"infe", &[&[2, 0, 0, 0, 0, id, 0, 0][..], kind, fields].concat())
+    };
+    let iinf = full(b"iinf", &[&[0, 3][..], &infe(1, b"hvc1"), &infe(2, b"hvc1"), &infe(3, kind)].concat());
     let iref = full(b"iref", &[bx(b"thmb", &[0, 2, 0, 1, 0, 1]), bx(b"cdsc", &[0, 3, 0, 1, 0, 2])].concat());
     // `iloc` version 1, 4-byte offsets and lengths: item 3 from `idat` (construction method 1)
     let mut iloc = vec![1, 0, 0, 0, 0x44, 0, 0, 1, 0, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0];
-    iloc.extend_from_slice(&(exif.len() as u32).to_be_bytes());
-    let meta = full(b"meta", &[full(b"pitm", &[0, 1]), iinf, iref, bx(b"iloc", &iloc), bx(b"idat", &exif)].concat());
+    iloc.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    let meta = full(b"meta", &[full(b"pitm", &[0, 1]), iinf, iref, bx(b"iloc", &iloc), bx(b"idat", payload)].concat());
     [bx(b"ftyp", b"heic\0\0\0\0mif1heic"), meta].concat()
 }
 
@@ -1034,6 +1041,101 @@ fn remove_location_refuses_a_heic_whose_thumbnail_has_gps() {
     assert!(export_photo(&mut s, id, &opts(false), 1).is_ok(), "copied as is when the location may stay");
     let err = export_photo(&mut s, id, &opts(true), 1).err().expect("refused: the thumbnail's EXIF has GPS");
     assert!(err.contains("can't remove the location") && err.contains("export as JPEG or TIFF"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A listed metadata item with an unreadable placement is not proof that an original has no GPS.
+/// Exercise the real file-copy path; these damaged containers do not need a working decoder.
+#[test]
+fn remove_location_refuses_heic_with_unresolved_iloc() {
+    use lcc_catalog::{Op, Photo, Source};
+    let dir = temp_dir("export-noloc-heic-iloc");
+    let path = dir.join("Placement.HEIC");
+    let mut s = Session::new().with_fs();
+    let id = s.catalog.alloc_photo_id();
+    let p = Photo::new(id, Source::File { path: path.to_string_lossy().into() }, "Placement.HEIC", "HEIC", 32, 32, "2026-10-12T00:00:00");
+    s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    let opts = |remove: bool| ExportOptions::from_json(&json!({"format": "original", "removeLocation": remove}));
+
+    let original = heic_with_gps_in_its_thumbnail();
+    assert!(lcc_meta::embeds_location(&original), "the intact fixture has GPS");
+    let kind_at = original.windows(4).position(|w| w == b"iloc").unwrap();
+    let body = kind_at + 4;
+    for damage in ["none", "missing", "version", "field size", "truncated entry"] {
+        let mut bytes = original.clone();
+        match damage {
+            "missing" => bytes[kind_at..body].copy_from_slice(b"free"),
+            "version" => bytes[body] = 3,
+            "field size" => bytes[body + 4] = 0x24,
+            "truncated entry" => bytes[body + 15] = 2, // two extents declared, only one present
+            _ => {}
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(export_photo(&mut s, id, &opts(false), 1).unwrap().bytes, bytes, "location may stay: {damage}");
+        let err = export_photo(&mut s, id, &opts(true), 1).err().expect("unresolved GPS must not be copied");
+        assert!(err.contains("can't remove the location") && err.contains("export as JPEG or TIFF"), "{damage}: {err}");
+    }
+
+    // Ordinary files without GPS still export, with and without an EXIF item.
+    for exif in [None, Some(lcc_meta::write_exif(&lcc_meta::Metadata { model: Some("Synthetic".into()), ..Default::default() }))] {
+        let mut spec = lcc_heif::testdata::Spec::new(32, 32, &|_, _| [0, 0, 0]);
+        spec.exif = exif;
+        let bytes = lcc_heif::testdata::build(&spec);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(export_photo(&mut s, id, &opts(true), 1).unwrap().bytes, bytes);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A damaged item catalog cannot authorize copying the GPS bytes that `iloc` still references.
+#[test]
+fn remove_location_refuses_heic_with_incomplete_exif_catalog() {
+    let original = heic_with_gps_in_its_thumbnail();
+    let idat = original.windows(4).position(|w| w == b"idat").unwrap();
+    assert!(lcc_meta::try_read_exif(&original[idat + 8..]).unwrap().gps.is_some(), "real EXIF payload");
+    assert_incomplete_catalog_refused(&original, "exif");
+}
+
+#[test]
+fn remove_location_refuses_heic_with_incomplete_xmp_catalog() {
+    let gps = lcc_meta::Metadata { gps: Some(lcc_meta::Gps { latitude: 48.85, longitude: 2.35, altitude: None }), ..Default::default() };
+    let xmp = lcc_meta::write_xmp(&gps, None);
+    assert!(lcc_meta::parse_xmp(&xmp).unwrap().metadata.gps.is_some(), "real XMP payload");
+    assert_incomplete_catalog_refused(&heic_with_metadata_in_its_thumbnail(b"mime", xmp.as_bytes()), "xmp");
+}
+
+fn assert_incomplete_catalog_refused(original: &[u8], label: &str) {
+    use lcc_catalog::{Op, Photo, Source};
+    let dir = temp_dir(&format!("export-noloc-heic-catalog-{label}"));
+    let path = dir.join("Catalog.HEIC");
+    let mut s = Session::new().with_fs();
+    let id = s.catalog.alloc_photo_id();
+    let p = Photo::new(id, Source::File { path: path.to_string_lossy().into() }, "Catalog.HEIC", "HEIC", 32, 32, "2026-10-12T00:00:00");
+    s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    let opts = |remove: bool| ExportOptions::from_json(&json!({"format": "original", "removeLocation": remove}));
+    let iinf = original.windows(4).position(|w| w == b"iinf").unwrap();
+    let infe = original.windows(4).rposition(|w| w == b"infe").unwrap();
+    let idat = original.windows(4).position(|w| w == b"idat").unwrap();
+    assert!(lcc_meta::embeds_location(original), "intact GPS container");
+    for damage in ["truncated type", "missing catalog", "unsupported table", "unsupported entry", "unknown entry", "truncated catalog"] {
+        let mut bytes = original.to_vec();
+        match damage {
+            "truncated type" => bytes[infe - 4..infe].copy_from_slice(&18u32.to_be_bytes()),
+            "missing catalog" => bytes[iinf..iinf + 4].copy_from_slice(b"free"),
+            "unsupported table" => bytes[iinf + 4] = 2,
+            "unsupported entry" => bytes[infe + 4] = 4,
+            "unknown entry" => bytes[infe..infe + 4].copy_from_slice(b"free"),
+            "truncated catalog" => bytes[iinf - 4..iinf].copy_from_slice(&u32::MAX.to_be_bytes()),
+            _ => panic!("unknown case"),
+        }
+        assert_eq!(&bytes[idat..], &original[idat..], "GPS bytes retained");
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(export_photo(&mut s, id, &opts(false), 1).unwrap().bytes, bytes, "location may stay: {damage}");
+        let result = export_photo(&mut s, id, &opts(true), 1);
+        assert!(result.is_err(), "Remove location copied the original with {damage}");
+        let err = result.err().unwrap();
+        assert!(err.contains("can't remove the location") && err.contains("export as JPEG or TIFF"), "{damage}: {err}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2002,6 +2104,91 @@ fn remove_location_refuses_original_with_malformed_xmp_gps() {
     let photo_id = session.catalog.photos().find(|p| p.file_name == "Gps.jpg").unwrap().id;
     let options = ExportOptions { format: ExportFormat::Original, remove_location: true, ..Default::default() };
     let error = export_photo(&mut session, photo_id, &options, 1).err().expect("the embedded XMP GPS should refuse Original export");
-    assert!(error.contains("embeds GPS") || error.contains("can't verify"), "{error}");
+    assert!(error.contains("can't remove the location") || error.contains("can't verify"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review of upstream #3116: a decode the decoder fits down keeps a straight 0..1 alpha plane for a
+/// transparent file, and none for an RGBA file that is opaque everywhere (the fit brings 1.0 back
+/// as 0.99999994: that must not send an opaque photo down the transparent export path).
+#[test]
+fn a_fitted_decode_keeps_alpha_only_for_real_transparency() {
+    let png = |img: &lcc_raster::Rgba8| lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(img), &Default::default()).unwrap();
+    let opaque = lcc_raster::Rgba8::from_fn(600, 400, |x, y| [(x % 256) as u8, (y % 256) as u8, 90, 255]);
+    let (_, info) = crate::files::load_bytes(&png(&opaque), 300).unwrap();
+    assert!(info.alpha.is_none(), "an opaque RGBA file has no transparency");
+    let clear =
+        lcc_raster::Rgba8::from_fn(
+            600,
+            400,
+            |x, y| if (150..450).contains(&x) && (100..300).contains(&y) { [200, 40, 30, 255] } else { [0, 0, 0, 0] },
+        );
+    let (img, info) = crate::files::load_bytes(&png(&clear), 300).unwrap();
+    let a = info.alpha.expect("a transparent file keeps its alpha");
+    assert_eq!((a.width, a.height), (img.width, img.height));
+    assert!(a.data.iter().all(|&v| (0.0..=1.0).contains(&v)), "straight alpha stays in 0..1");
+}
+
+/// A JPEG whose main XMP packet names an Extended XMP packet holding a GPS position and a caption
+/// (written by apps that move long properties out of the main packet).
+fn jpeg_with_extended_gps() -> Vec<u8> {
+    const GUID: &str = "0123456789ABCDEF0123456789ABCDEF";
+    let pixels = [96u8; 12];
+    let image = lcc_codecs::EncodeImage::new(2, 2, 3, lcc_codecs::Samples::U8(&pixels));
+    let jpeg = lcc_codecs::encode_jpeg(&image, 90, lcc_codecs::ChromaSubsampling::S444, &Default::default()).unwrap();
+    let main = format!(
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" xmlns:xmpNote=\"http://ns.adobe.com/xmp/note/\" xmpNote:HasExtendedXMP=\"{GUID}\"/></rdf:RDF></x:xmpmeta>"
+    );
+    let ext = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" xmlns:exif=\"http://ns.adobe.com/exif/1.0/\" exif:GPSLatitude=\"51,30.0N\" exif:GPSLongitude=\"0,7.5W\"/></rdf:RDF></x:xmpmeta>";
+    let segment = |payload: Vec<u8>| {
+        let mut s = vec![0xff, 0xe1];
+        s.extend(((payload.len() + 2) as u16).to_be_bytes());
+        s.extend(payload);
+        s
+    };
+    let mut p = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+    p.extend(main.as_bytes());
+    let mut e = b"http://ns.adobe.com/xmp/extension/\0".to_vec();
+    e.extend(GUID.as_bytes());
+    e.extend((ext.len() as u32).to_be_bytes());
+    e.extend(0u32.to_be_bytes());
+    e.extend(ext.as_bytes());
+    let mut out = jpeg[..2].to_vec();
+    out.extend(segment(p));
+    out.extend(segment(e));
+    out.extend(&jpeg[2..]);
+    out
+}
+
+/// All Metadata lists the properties a JPEG keeps in its Extended XMP (issue #2581).
+#[test]
+fn all_metadata_lists_extended_xmp_properties() {
+    let dir = temp_dir("all-metadata-extended-xmp");
+    let path = dir.join("Extended.jpg");
+    std::fs::write(&path, jpeg_with_extended_gps()).unwrap();
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let id = session.catalog.photos().next().unwrap().id;
+    let all = session.execute("photo.allMetadata", &json!({"id": id.0})).unwrap();
+    let names: Vec<&str> = all["xmp"].as_array().unwrap().iter().filter_map(|r| r["name"].as_str()).collect();
+    assert!(names.contains(&"exif:GPSLatitude") && names.contains(&"exif:GPSLongitude"), "{names:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A GPS position that lives only in a JPEG's Extended XMP (issue #2581): an Original export that
+/// removes the location is refused, and writes no file.
+#[test]
+fn remove_location_refuses_original_with_gps_in_extended_xmp() {
+    let dir = temp_dir("export-noloc-extended-xmp");
+    let path = dir.join("Extended.jpg");
+    let bytes = jpeg_with_extended_gps();
+    assert!(lcc_meta::embedded(&bytes).xmp.as_deref().is_some_and(|x| !x.contains("GPSLatitude")), "the main packet holds no position");
+    std::fs::write(&path, bytes).unwrap();
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let id = session.catalog.photos().next().unwrap().id;
+    let options = ExportOptions { format: ExportFormat::Original, remove_location: true, ..Default::default() };
+    let error = export_photo(&mut session, id, &options, 1).err().expect("a position in the Extended XMP must refuse the Original export");
+    assert!(error.contains("can't remove the location"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
 }

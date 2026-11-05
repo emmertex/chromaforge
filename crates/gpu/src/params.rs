@@ -6,6 +6,8 @@ use lcc_develop::VignetteStyle;
 use lcc_pipeline::colorops::{MIXER_WORDS, POINT_WORDS};
 use lcc_pipeline::finish::{CURVE_LUT_N, FinishParams, MASK_TERMS, srgb_lut};
 
+use crate::ctx::{FailKind, fail};
+
 /// Entries per tone-curve table (`lcc_pipeline::finish` builds them at this size).
 pub const CURVE_N: u32 = CURVE_LUT_N as u32;
 
@@ -216,6 +218,9 @@ pub struct Present {
 /// The `finish` kernel's parameter block and auxiliary table (tone LUT | chroma curve | sRGB LUT | curve LUTs |
 /// mask terms | local-curve slots | local-curve LUTs) for `fp` with `masks` (their local adjustments' terms) and
 /// `curves` (their local Curves, [`lcc_pipeline::finish::local_curve_luts`], in the same order).
+///
+/// A curve whose length is not [`CURVE_N`] fails the render ([`FailKind::Fatal`]) and returns an
+/// empty parameter block with a truncated aux table, which the caller discards (CPU fallback).
 pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Option<[Lut1; 3]>], present: &Present) -> (Vec<u32>, Vec<f32>) {
     let mut aux: Vec<f32> = fp.tone.lut().to_vec();
     aux.extend_from_slice(fp.tone.chroma_lut());
@@ -224,7 +229,13 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     let curve_off = aux.len();
     if let Some(c) = &fp.curves {
         for l in c {
-            assert_eq!(l.v.len(), CURVE_N as usize);
+            if l.v.len() != CURVE_N as usize {
+                // a wrong-length curve would shift every later aux offset and make the kernel read
+                // the wrong data. `fail()` records the failure on this thread so the render falls
+                // back to the CPU; the empty block returned here is never bound to a pipeline.
+                fail(FailKind::Fatal, format!("curve table has {} entries, expected {}", l.v.len(), CURVE_N));
+                return (Vec::new(), aux);
+            }
             aux.extend_from_slice(&l.v);
         }
     }

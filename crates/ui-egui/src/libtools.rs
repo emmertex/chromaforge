@@ -301,7 +301,7 @@ fn painter_command(app: &mut LccApp, p: &Value) -> Result<Value, String> {
         _ => {}
     }
     if !matches!(app.ui.view, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid) {
-        app.ui.view = crate::state::ViewMode::PhotoGrid;
+        app.ui.view = app.ui.grid_style;
     }
     app.ui.lib.last_painter = Some(painter.clone());
     app.ui.lib.painter = Some(painter.clone());

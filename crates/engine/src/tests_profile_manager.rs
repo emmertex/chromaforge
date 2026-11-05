@@ -207,7 +207,7 @@ fn browsed_raws_take_the_import_profile_choice_and_a_later_body_default() {
     s.execute("profile.setBodyDefault", &json!({"id": "lc", "photo": a.0})).unwrap();
     let path = |s: &Session, id: PhotoId| match &s.catalog.photo(id).unwrap().source {
         Source::File { path } => path.clone(),
-        _ => unreachable!(),
+        _ => panic!("unexpected case in a test"),
     };
     s.execute("library.import", &json!({"paths": [path(&s, a)]})).unwrap();
     assert!(!s.catalog.photo(a).unwrap().local);

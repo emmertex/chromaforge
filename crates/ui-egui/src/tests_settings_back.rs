@@ -1,0 +1,48 @@
+//! Issue #793: Settings' ‹ back button clears the macOS traffic lights (an integrated title bar
+//! draws them over the header's top-left corner), and gives their room back in full screen, where
+//! the host hides them — the same 78 the top bar's sidebar button starts at.
+
+use std::time::Duration;
+
+use serde_json::json;
+
+use crate::headless::Headless;
+use crate::state::Dialog;
+use crate::{LccApp, Services};
+
+const T: Duration = Duration::from_secs(20);
+
+fn rect(h: &Headless, id: &str) -> egui::Rect {
+    h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r).unwrap_or_else(|| panic!("no {id}"))
+}
+
+fn open(integrated_titlebar: bool, fullscreen: bool) -> Headless {
+    let services = Services { png: None, ..Default::default() };
+    let mut app = LccApp::new(lcc_engine::Session::with_demo(), services);
+    app.integrated_titlebar = integrated_titlebar;
+    app.window_is_fullscreen = fullscreen;
+    let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
+    h.app.ui.dialog = Some(Dialog::Settings { tab: "general".into() });
+    // (the first request switches the widget list on)
+    h.request("ui.widgets", json!({}), T);
+    for _ in 0..6 {
+        h.step();
+    }
+    h
+}
+
+// Scenario: with an integrated title bar the ‹ button starts right of the traffic lights
+#[test]
+fn back_clears_the_traffic_lights() {
+    let b = rect(&open(true, false), "settings:back");
+    assert!((b.left() - 78.0).abs() < 0.5, "{b:?}");
+}
+
+// Scenario: without one (and in macOS full screen, where the lights hide) nothing moves
+#[test]
+fn no_traffic_lights_no_offset() {
+    for h in [open(false, false), open(true, true)] {
+        let b = rect(&h, "settings:back");
+        assert!((b.left() - 10.0).abs() < 0.5, "{b:?}");
+    }
+}

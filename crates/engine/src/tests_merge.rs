@@ -561,3 +561,42 @@ fn merge_memory_estimate_is_checked_and_uses_a_controlled_budget() {
     assert!(estimate_merge_working_bytes(&kind, &[(0, 100), (100, 100)], None).is_err(), "zero dimensions must be refused");
     assert!(estimate_merge_working_bytes(&kind, &[(u32::MAX, u32::MAX), (1, 1)], None).is_err(), "overflow must be refused");
 }
+
+/// Merge to Layers (#769): `layers: true` also writes a layered PSD of the aligned frames, named with their exposure
+/// steps, with the merged result at the bottom when asked, added to the library and stacked under the DNG.
+#[test]
+fn hdr_merge_writes_aligned_layers() {
+    let dir = temp_dir("hdr-layers");
+    let mut paths = Vec::new();
+    for (i, b) in lcc_merge::synth::bracket_dngs(240, 160, &[-2.0, 0.0, 2.0]).unwrap().into_iter().enumerate() {
+        let p = dir.join(format!("IMG_{i}.dng"));
+        std::fs::write(&p, b).unwrap();
+        paths.push(p.to_string_lossy().to_string());
+    }
+    let mut s = Session::new().with_fs();
+    let ids = import(&mut s, paths);
+    let r = s
+        .execute("merge.hdr", &json!({"ids": ids, "autoSettings": false, "stack": true, "layers": true, "includeMerged": true, "bitDepth": 8}))
+        .unwrap();
+    let lpath = r["layers"]["path"].as_str().expect("layers written").to_string();
+    assert!(lpath.ends_with("IMG_0-HDR-Layers.psd"), "{lpath}");
+    let f = lcc_psd::PsdFile::from_bytes(&std::fs::read(&lpath).unwrap()).unwrap();
+    assert_eq!((f.header.width, f.header.height, f.header.depth), (240, 160, 8));
+    let names: Vec<String> = (0..4).map(|i| f.layer(i).unwrap().name().to_string()).collect();
+    assert_eq!(names[0], "Merged", "{names:?}");
+    // the first source on top, each named with its exposure step
+    assert!(names[3].starts_with("IMG_0 (EV \u{2212}2"), "{names:?}");
+    assert!(names[2].starts_with("IMG_1 (EV 0"), "{names:?}");
+    // imported and stacked under the merged DNG with the sources
+    let dng = lcc_catalog::PhotoId(r["id"].as_u64().unwrap());
+    let lid = lcc_catalog::PhotoId(r["layers"]["id"].as_u64().unwrap());
+    let st = s.catalog.stack_of(dng).expect("stacked").clone();
+    assert_eq!(st.top(), dng);
+    assert!(st.photos.contains(&lid) && ids.iter().all(|i| st.photos.contains(&lcc_catalog::PhotoId(*i))));
+    // a preview never writes layers; non-HDR merges refuse them
+    s.execute("merge.hdr", &json!({"ids": ids, "preview": true, "layers": true})).unwrap();
+    assert!(!dir.join("IMG_0-HDR-Layers-2.psd").exists());
+    assert!(s.execute("merge.panorama", &json!({"ids": ids, "layers": true})).is_err());
+    assert!(s.execute("merge.hdr", &json!({"ids": ids, "layers": true, "layersFormat": "tiff"})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}

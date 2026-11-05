@@ -1831,7 +1831,7 @@ impl Renderer {
                     // photo's: kept, or the next render decodes it again)
                     let replaced = matches!(&r.rendered, Err(e) if e == lcc_engine::media::SUPERSEDED);
                     if replaced && slot.is_view() && r.loaded.is_some() && r.request_id >= self.epoch {
-                        session.accept(&r);
+                        session.accept_replaced(&r);
                     }
                     continue;
                 }

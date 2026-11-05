@@ -53,7 +53,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let removed = m["removed"].as_array().map_or(0, Vec::len);
     if removed > 0 {
         let label = crate::i18n::tr_format!("Restore Built-in Looks ({n})", n = removed);
-        if text_button(ui, "profileRestoreBuiltins", &label, false).clicked() {
+        if crate::dialog_frame::control_row(ui, |ui| text_button(ui, "profileRestoreBuiltins", &label, false).clicked()) {
             let _ = app.run("profile.restoreBuiltins", json!({}));
         }
     }
