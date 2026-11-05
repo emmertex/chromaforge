@@ -2,10 +2,11 @@
 //! threads, each taking `wait_batch_turn_any` inside `as_batch` per photo. Prints the time and how
 //! many photos each card rendered, to compare one card with two.
 //!
-//! `cargo run --release -p lcc-gpu --example batch_bench -- [--helper off|auto|same|<name>]
+//! `cargo run --release -p lcc-gpu --example batch_bench -- [--helper off|auto|same|<card key>]
 //! [--photos 24] [--lanes 4] [--mp 24] [--all-to-helper]`
 //!
-//! - `--helper same`: a second device on the editing card itself (the two-card logic on one card).
+//! - `--helper same`: a second device on the editing card itself (the two-card logic on one card);
+//!   `--helper auto` with `<PREFIX>_GPU_HELPER=<part of a card's name>` picks a card by name.
 //! - `--all-to-helper`: the previous design, every batch render on the second card while it is
 //!   ready (no turn per photo), to compare.
 //!
@@ -39,9 +40,13 @@ fn main() {
         return;
     }
     eprintln!("editing card: {} ({:.1} s)", lcc_gpu::adapter_name().unwrap_or_default(), t.elapsed().as_secs_f64());
+    // (a choice is applied when it changes: from another one first, so it starts now; with
+    // `<PREFIX>_GPU_HELPER` set, that variable picks the card)
+    lcc_gpu::set_helper(if helper == "off" { "auto" } else { "off" });
     lcc_gpu::set_helper(&helper);
     let t = Instant::now();
-    while matches!(lcc_gpu::helper_status().0, "starting") && t.elapsed() < Duration::from_secs(240) {
+    // (the set-up starts on a thread of its own: off until it has listed the cards)
+    while helper != "off" && !matches!(lcc_gpu::helper_status().0, "ready" | "failed" | "lost") && t.elapsed() < Duration::from_secs(240) {
         std::thread::sleep(Duration::from_millis(50));
     }
     eprintln!("second card: {:?} ({:.1} s)", lcc_gpu::helper_status(), t.elapsed().as_secs_f64());
