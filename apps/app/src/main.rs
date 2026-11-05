@@ -1404,6 +1404,9 @@ fn main() -> eframe::Result {
     }
     let gpu_on = prefs.as_ref().is_none_or(|u| u.settings.gpu) && gpu_crash.is_none();
     lcc_engine::gpu::set_enabled(gpu_on);
+    // batch work (exports, previews being built) leaves the editing card to the interface while it
+    // is used, and goes to a second graphics card first
+    lcc_engine::gpu::track_interaction(true);
     if let Some(u) = &prefs {
         lcc_engine::gpu::backend::set_compute_preference(u.settings.gpu_backend.name());
     }

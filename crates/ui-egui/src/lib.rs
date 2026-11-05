@@ -2122,6 +2122,11 @@ impl LccApp {
             surface::tick(self, ctx);
         }
         self.apply_settings(ctx);
+        // input this frame: batch work leaves the editing card to the interface for a moment
+        // (only where the app tracks it: `gpu::track_interaction`)
+        if ctx.input(|i| !i.events.is_empty() || i.pointer.any_down()) {
+            lcc_engine::gpu::note_interaction();
+        }
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         }
