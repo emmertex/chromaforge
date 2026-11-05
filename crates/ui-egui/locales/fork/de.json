@@ -1268,6 +1268,7 @@
   "Seed": "Seed",
   "Select None": "Keine auswählen",
   "Select a Catalog": "Katalog auswählen",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Wähle ein Foto auf der Karte oder im Filmstreifen, um seinen Ort und seine Metadaten zu sehen und zu bearbeiten.",
   "Select a text cell, or turn on photo or page text.": "Wählen Sie eine Textzelle oder schalten Sie Foto- oder Seitentext ein.",
   "Select photos to import": "Zu importierende Fotos auswählen",
   "Selected photos": "Ausgewählte Fotos",
@@ -1753,6 +1754,5 @@
   "{} photos updated, {} copies": "{} Fotos aktualisiert, {} Kopien",
   "{} selected": "{} ausgewählt",
   "{} wants to sync its library “{}” with this library.": "{} möchte seine Bibliothek „{}“ mit dieser Bibliothek synchronisieren.",
-  "‹ Library": "‹ Bibliothek",
-  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Wähle ein Foto auf der Karte oder im Filmstreifen, um seinen Ort und seine Metadaten zu sehen und zu bearbeiten."
+  "‹ Library": "‹ Bibliothek"
 }

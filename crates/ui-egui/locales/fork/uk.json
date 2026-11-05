@@ -1212,6 +1212,7 @@
   "Seed": "Зерно",
   "Select None": "Зняти вибір",
   "Select a Catalog": "Вибрати каталог",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Виберіть фото на карті або на плівці, щоб побачити й змінити його місце та метадані.",
   "Select a text cell, or turn on photo or page text.": "Виберіть текстову комірку або увімкніть текст фото чи сторінки.",
   "Select photos to import": "Виберіть фото для імпорту",
   "Selected photos": "Вибрані фото",
@@ -1653,6 +1654,5 @@
   "{} photos updated, {} copies": "Оновлено фото: {}, копій: {}",
   "{} selected": "Вибрано: {}",
   "{} wants to sync its library “{}” with this library.": "{} пропонує синхронізувати свою бібліотеку «{}» з цією бібліотекою.",
-  "‹ Library": "‹ Бібліотека",
-  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Виберіть фото на карті або на плівці, щоб побачити й змінити його місце та метадані."
+  "‹ Library": "‹ Бібліотека"
 }

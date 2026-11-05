@@ -52,6 +52,7 @@
   "SAM 3 model folder": "Mapp för SAM 3-modellen",
   "Second graphics card": "Andra grafikkortet",
   "Second graphics card: starting…": "Andra grafikkortet: startar…",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Välj ett foto på kartan eller i filmremsan för att se och redigera dess plats och metadata.",
   "Setting up the chosen graphics card…": "Det valda grafikkortet förbereds…",
   "Settings → External Editing → Edit In turns the question back on": "Inställningar → Extern redigering → Redigera i slår på frågan igen",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Visar fotot som SDR-skärmar och SDR-exporter visar det, så att du kan justera dess SDR-version",
@@ -68,6 +69,5 @@
   "is in this year": "är detta år",
   "is today": "är idag",
   "is yesterday": "är igår",
-  "{n} photos": "{n} foton",
-  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Välj ett foto på kartan eller i filmremsan för att se och redigera dess plats och metadata."
+  "{n} photos": "{n} foton"
 }

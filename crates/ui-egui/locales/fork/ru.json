@@ -1480,6 +1480,7 @@
   "Seed": "Зерно",
   "Select None": "Снять выделение",
   "Select a Catalog": "Выберите каталог",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Выберите фото на карте или в плёнке, чтобы увидеть и изменить его место и метаданные.",
   "Select a text cell, or turn on photo or page text.": "Выберите текстовую ячейку или включите текст фото или страницы.",
   "Select photos to import": "Выберите фото для импорта",
   "Selected photos": "Выбранные фото",
@@ -2118,6 +2119,5 @@
   "≥  at least": "≥  не менее",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-перетаскивание для выравнивания, ⇧G Upright по направляющим, сетка во время трансформации.",
   "日本語": "日本語",
-  "繁體中文（台灣）": "繁體中文（台灣）",
-  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Выберите фото на карте или в плёнке, чтобы увидеть и изменить его место и метаданные."
+  "繁體中文（台灣）": "繁體中文（台灣）"
 }

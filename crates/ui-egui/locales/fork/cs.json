@@ -116,6 +116,7 @@
   "Screen Mode": "Režim obrazovky",
   "Second graphics card": "Druhá grafická karta",
   "Second graphics card: starting…": "Druhá grafická karta: spouští se…",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Vyberte fotografii na mapě nebo ve filmovém pásu a zobrazte či upravte její polohu a metadata.",
   "Setting up the chosen graphics card…": "Připravuje se zvolená grafická karta…",
   "Settings → External Editing → Edit In turns the question back on": "Nastavení → Externí úpravy → Upravit v znovu zapne dotaz",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Zobrazí fotografii tak, jak ji ukážou displeje SDR a exporty SDR, abyste mohli upravit její verzi SDR",
@@ -141,6 +142,5 @@
   "is yesterday": "je včera",
   "{app} Export Presets": "Předvolby exportu {app}",
   "{app} Metadata Presets": "Předvolby metadat {app}",
-  "{n} photos": "{n} fotografií",
-  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Vyberte fotografii na mapě nebo ve filmovém pásu a zobrazte či upravte její polohu a metadata."
+  "{n} photos": "{n} fotografií"
 }

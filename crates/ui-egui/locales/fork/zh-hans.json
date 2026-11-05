@@ -1282,6 +1282,7 @@
   "Seed": "种子",
   "Select None": "取消全选",
   "Select a Catalog": "选择目录",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "在地图或胶片显示栏中选择照片，即可查看和编辑其位置与元数据。",
   "Select a text cell, or turn on photo or page text.": "选择一个文本单元格，或开启照片或页面文本。",
   "Select photos to import": "选择要导入的照片",
   "Selected photos": "所选照片",
@@ -1824,6 +1825,5 @@
   "{} selected": "已选择 {} 张",
   "{} wants to sync its library “{}” with this library.": "{} 想将其图库“{}”与此图库同步。",
   "‹ Library": "‹ 图库",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。",
-  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "在地图或胶片显示栏中选择照片，即可查看和编辑其位置与元数据。"
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。"
 }

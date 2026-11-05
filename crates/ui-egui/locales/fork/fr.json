@@ -1274,6 +1274,7 @@
   "Seed": "Graine",
   "Select None": "Ne rien sélectionner",
   "Select a Catalog": "Sélectionner un catalogue",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Sélectionnez une photo sur la carte ou dans le film pour voir et modifier son lieu et ses métadonnées.",
   "Select a text cell, or turn on photo or page text.": "Sélectionnez une cellule de texte, ou activez le texte de photo ou de page.",
   "Select photos to import": "Sélectionnez les photos à importer",
   "Selected photos": "Photos sélectionnées",
@@ -1813,6 +1814,5 @@
   "{} selected": "{} sélectionnées",
   "{} wants to sync its library “{}” with this library.": "{} souhaite synchroniser sa bibliothèque « {} » avec cette bibliothèque.",
   "‹ Library": "‹ Bibliothèque",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-glisser pour redresser, ⇧G Upright guidé, une grille pendant la transformation.",
-  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Sélectionnez une photo sur la carte ou dans le film pour voir et modifier son lieu et ses métadonnées."
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-glisser pour redresser, ⇧G Upright guidé, une grille pendant la transformation."
 }

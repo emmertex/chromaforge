@@ -54,6 +54,7 @@
   "SAM 3 model folder": "Thư mục mô hình SAM 3",
   "Second graphics card": "Card đồ họa thứ hai",
   "Second graphics card: starting…": "Card đồ họa thứ hai: đang khởi động…",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Chọn ảnh trên bản đồ hoặc trong dải phim để xem và chỉnh sửa vị trí cũng như siêu dữ liệu của ảnh.",
   "Setting up the chosen graphics card…": "Đang chuẩn bị card đồ họa đã chọn…",
   "Settings → External Editing → Edit In turns the question back on": "Cài đặt → Chỉnh sửa bên ngoài → Sửa trong bật lại câu hỏi",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Hiển thị ảnh như màn hình SDR và bản xuất SDR hiển thị, để điều chỉnh phiên bản SDR của ảnh",
@@ -70,6 +71,5 @@
   "is in this year": "trong năm nay",
   "is today": "là hôm nay",
   "is yesterday": "là hôm qua",
-  "{n} photos": "{n} ảnh",
-  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Chọn ảnh trên bản đồ hoặc trong dải phim để xem và chỉnh sửa vị trí cũng như siêu dữ liệu của ảnh."
+  "{n} photos": "{n} ảnh"
 }

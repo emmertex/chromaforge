@@ -51,6 +51,7 @@
   "SAM 3 model folder": "SAM 3 -mallin kansio",
   "Second graphics card": "Toinen näytönohjain",
   "Second graphics card: starting…": "Toinen näytönohjain: käynnistyy…",
+  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Valitse kuva kartalta tai filmikaistaleelta nähdäksesi ja muokataksesi sen sijaintia ja metatietoja.",
   "Setting up the chosen graphics card…": "Valittua näytönohjainta otetaan käyttöön…",
   "Settings → External Editing → Edit In turns the question back on": "Asetukset → Ulkoinen muokkaus → Muokkaa ohjelmassa ottaa kysymyksen taas käyttöön",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Näyttää kuvan niin kuin SDR-näytöt ja SDR-viennit sen näyttävät, jotta voit säätää sen SDR-versiota",
@@ -67,6 +68,5 @@
   "is in this year": "on tänä vuonna",
   "is today": "on tänään",
   "is yesterday": "on eilen",
-  "{n} photos": "{n} kuvaa",
-  "Select a photo on the map or in the filmstrip to see and edit its location and metadata.": "Valitse kuva kartalta tai filmikaistaleelta nähdäksesi ja muokataksesi sen sijaintia ja metatietoja."
+  "{n} photos": "{n} kuvaa"
 }
