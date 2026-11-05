@@ -845,11 +845,13 @@ impl Session {
 
     /// What the session holds of the store's content.
     pub(crate) fn content(&self) -> Content {
+        #[cfg(test)]
+        CONTENT_COPIES.with(|c| c.set(c.get() + 1));
         Content {
             lut_profiles: self.lut_profiles.clone(),
             mask_effects: self.mask_effects.clone(),
             mask_tool_effects: self.mask_tool_effects.clone(),
-            import: ImportDefaults { auto_folder: None, auto_copy: false, auto_album: None, ..self.import_defaults.clone() },
+            import: self.store_import_defaults(),
             habits: self.habits(),
             marks: PresetMarks::of(self),
             presets: self.presets.iter().filter(|p| !p.builtin).cloned().collect(),
@@ -858,6 +860,11 @@ impl Session {
             profile_favorites: self.profile_favorites.clone(),
             profile_recent: self.profile_recent.clone(),
         }
+    }
+
+    /// The import defaults the store keeps (auto import stays with each library).
+    fn store_import_defaults(&self) -> ImportDefaults {
+        ImportDefaults { auto_folder: None, auto_copy: false, auto_album: None, ..self.import_defaults.clone() }
     }
 
     pub(crate) fn habits(&self) -> Habits {
@@ -939,15 +946,16 @@ impl Session {
 
     fn shared_json(&self) -> Vec<u8> {
         let (merged, gathered) = self.app_store.as_ref().map(|s| (s.merged.clone(), s.gathered.clone())).unwrap_or_default();
-        let c = self.content();
+        // only what shared.json holds: never `content()`, which copies every preset (it runs after
+        // every command; 250 ms each with a ten-thousand-preset collection)
         let f = SharedFile {
             version: SHARED_VERSION,
-            lut_profiles: c.lut_profiles,
-            mask_effects: c.mask_effects,
-            mask_tool_effects: c.mask_tool_effects,
-            import: c.import,
-            preset_marks: c.marks,
-            habits: c.habits,
+            lut_profiles: self.lut_profiles.clone(),
+            mask_effects: self.mask_effects.clone(),
+            mask_tool_effects: self.mask_tool_effects.clone(),
+            import: self.store_import_defaults(),
+            preset_marks: PresetMarks::of(self),
+            habits: self.habits(),
             merged,
             gathered,
         };
@@ -1274,4 +1282,15 @@ impl Session {
     pub(crate) fn take_store_warnings(&mut self) -> Vec<String> {
         self.app_store.as_mut().map(AppStore::take_warnings).unwrap_or_default()
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CONTENT_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How often this thread copied the store's whole content (every preset) since the last call.
+#[cfg(test)]
+pub(crate) fn content_copies() -> usize {
+    CONTENT_COPIES.with(|c| c.replace(0))
 }
