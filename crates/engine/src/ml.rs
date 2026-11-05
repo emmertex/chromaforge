@@ -62,7 +62,7 @@ const PAUSE_POLL: Duration = Duration::from_millis(25);
 pub const DEFAULT_FILTER_TOP_K: usize = 200;
 
 /// Default cosine-similarity threshold when semantic search filters the grid (`library.filter {semantic}` or `search.semantic {filter: true}`).
-pub const DEFAULT_FILTER_THRESHOLD: f32 = 0.21;
+pub const DEFAULT_FILTER_THRESHOLD: f32 = 0.25;
 
 /// Cached text query embedding for an active semantic filter so `drain_ml_results` can refresh
 /// `Session::filter.only` as new photo embeddings finish in the background.
