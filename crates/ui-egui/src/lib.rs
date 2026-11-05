@@ -335,6 +335,8 @@ mod tests_sam_setup;
 #[cfg(test)]
 mod tests_scroll;
 #[cfg(test)]
+mod tests_settings_back;
+#[cfg(test)]
 mod tests_settings_profiles;
 #[cfg(test)]
 mod tests_settings_window;
