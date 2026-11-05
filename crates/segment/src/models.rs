@@ -97,6 +97,49 @@ pub const SAM2_FILES: &[FileSpec<'static>] = &[
     },
 ];
 
+/// OWLv2 base patch16 ensemble, transformers format (`google/owlv2-base-patch16-ensemble`).
+pub const DESCRIBE_FILES: &[FileSpec<'static>] = &[
+    FileSpec { name: "config.json", size: Some(414), sha256: Some("ba9df8c25a4b8461887dd0a93d9252c9cd84697fe8d49a9d8794ce409af9acb2"), max: 414 },
+    FileSpec {
+        name: "vocab.json",
+        size: Some(1_059_962),
+        sha256: Some("e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349"),
+        max: 1_059_962,
+    },
+    FileSpec {
+        name: "merges.txt",
+        size: Some(524_619),
+        sha256: Some("9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a"),
+        max: 524_619,
+    },
+    FileSpec {
+        name: "model.safetensors",
+        size: Some(619_918_824),
+        sha256: Some("e1e130b9e404cf91a75ad45644c1da9d7fa5284085eecc864266a6923efb99e7"),
+        max: 619_918_824,
+    },
+];
+
+/// OWLv2 (Apache-2.0 code and weights, by Google): finds boxes around what a Describe mask names,
+/// which SAM 2.1 then segments, so Describe works without SAM 3 (ported from OneSlips' fork,
+/// MASK-DESCRIBE). Trained on web image-text pairs (WebLI) with pseudo-labels: offered as an
+/// on-request download like the other open models.
+pub const DESCRIBE: ModelInfo = ModelInfo {
+    key: "describe",
+    dir_name: "owlv2-base-patch16-ensemble",
+    title: "OWLv2 object finder",
+    purpose: "Describe: select what you type (with SAM 2.1)",
+    files: DESCRIBE_FILES,
+    license_name: "Apache-2.0",
+    license_url: "https://huggingface.co/google/owlv2-base-patch16-ensemble",
+    page_url: "https://huggingface.co/google/owlv2-base-patch16-ensemble",
+    default_mirrors: &["https://huggingface.co/google/owlv2-base-patch16-ensemble/resolve/cfd3195ba4ea9592eec887ded089f4c08eff231d"],
+    mirrors_env: "DESCRIBE_MIRRORS",
+    offered: true,
+    companions: &[],
+    credit: "",
+};
+
 /// Depth Anything V2 Small, transformers format (`depth-anything/Depth-Anything-V2-Small-hf`).
 pub const DEPTH_FILES: &[FileSpec<'static>] = &[
     FileSpec { name: "config.json", size: Some(950), sha256: Some("c56698d3643dde1f83ea2212759e6b31a22b8f827246a36dd007ee8a22b3ff75"), max: 950 },
@@ -221,7 +264,7 @@ pub const FACE: ModelInfo = ModelInfo {
 };
 
 /// Every model of this registry, in display order.
-pub const MODELS: &[&ModelInfo] = &[&PEOPLE, &FACE, &SAM2, &SCENE, &DEPTH];
+pub const MODELS: &[&ModelInfo] = &[&PEOPLE, &FACE, &SAM2, &DESCRIBE, &SCENE, &DEPTH];
 
 /// The model with command key `key`.
 pub fn by_key(key: &str) -> Option<&'static ModelInfo> {
@@ -254,6 +297,14 @@ mod tests {
                 assert_eq!(format!("{base}/{}", f.name), f.url);
             }
         }
+    }
+
+    /// Describe's open detector downloads the files its loader reads, pinned, from the publisher.
+    #[test]
+    fn the_describe_entry_downloads_what_the_detector_loads() {
+        let d = by_key("describe").unwrap();
+        assert!(d.offered && d.default_mirrors.iter().all(|u| u.starts_with("https://huggingface.co/google/")));
+        assert!(crate::owl::OWL_FILES.iter().all(|f| d.files.iter().any(|s| s.name == *f)), "the loader's files are the pinned ones");
     }
 
     #[test]

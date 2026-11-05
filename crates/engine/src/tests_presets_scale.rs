@@ -101,3 +101,74 @@ fn importing_thousands_of_presets_is_not_quadratic() {
     // quadratic was ~200 M comparisons here (tens of seconds in debug builds)
     assert!(t.elapsed().as_secs() < 20, "took {:?}", t.elapsed());
 }
+
+/// With the shared settings store (`Library Store`), a command that leaves the presets alone
+/// doesn't copy or serialize them: shared.json is checked after every command, and building it
+/// from a deep copy of every preset made each command (and the frame loop) take seconds with a
+/// ten-thousand-preset collection.
+#[test]
+fn commands_with_the_shared_store_do_not_copy_thousands_of_presets() {
+    let root = temp_dir("shared-store");
+    let (store, lib) = (root.join("store"), root.join("lib"));
+    let mut s = Session::new().with_app_store(&store);
+    s.open_library(&lib, true).unwrap();
+    let added = s.add_presets(many(10_000));
+    s.preset_hidden = added.iter().take(9_500).cloned().collect();
+    s.persist().unwrap();
+    let _ = crate::app_store::content_copies();
+    let t = Instant::now();
+    for i in 0..20 {
+        s.execute("develop.set", &json!({"control": "light.exposure", "value": i as f64 / 10.0})).unwrap();
+    }
+    let per = t.elapsed() / 20;
+    eprintln!("develop.set with 10 000 presets in the shared store: {per:?} each");
+    assert_eq!(crate::app_store::content_copies(), 0, "no command copied the preset list for shared.json");
+    // a mark is still saved
+    let pid = added[9_999].clone();
+    s.execute("preset.favorite", &json!({"id": pid})).unwrap();
+    s.close_library().unwrap();
+    drop(s);
+    let mut t = Session::new().with_app_store(&store);
+    t.open_library(&lib, false).unwrap();
+    assert!(t.presets.iter().any(|p| p.id == pid && p.favorite), "favourite saved in the store");
+    assert_eq!(t.preset_hidden.len(), 9_500, "hidden marks kept");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A real store copied in (`<PREFIX>_BENCH_STORE` = a `Library Store` folder copy): how long a
+/// slider command takes with it. Ignored: needs the folder.
+#[test]
+#[ignore]
+fn shared_store_bench() {
+    let Some(src) = lcc_brand::env_os("BENCH_STORE") else { return };
+    let root = temp_dir("store-bench");
+    let store = root.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    for e in std::fs::read_dir(&src).unwrap() {
+        let e = e.unwrap();
+        if e.path().is_file() {
+            std::fs::copy(e.path(), store.join(e.file_name())).unwrap();
+        }
+    }
+    let t = Instant::now();
+    let mut s = Session::new().with_app_store(&store);
+    s.open_library(root.join("lib"), true).unwrap();
+    eprintln!("open: {:?}, {} presets, {} hidden", t.elapsed(), s.presets.len(), s.preset_hidden.len());
+    s.persist().unwrap();
+    let t = Instant::now();
+    for i in 0..10 {
+        s.execute("develop.set", &json!({"control": "light.exposure", "value": i as f64 / 10.0})).unwrap();
+    }
+    eprintln!("develop.set: {:?} each", t.elapsed() / 10);
+    let t = Instant::now();
+    for _ in 0..10 {
+        s.persist().unwrap();
+    }
+    eprintln!("persist alone: {:?} each", t.elapsed() / 10);
+    let t = Instant::now();
+    for _ in 0..10 {
+        let _ = s.content();
+    }
+    eprintln!("content(): {:?} each", t.elapsed() / 10);
+    let _ = std::fs::remove_dir_all(&root);
+}

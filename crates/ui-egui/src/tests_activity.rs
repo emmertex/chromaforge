@@ -802,3 +802,122 @@ fn quitting_with_a_backup_due_asks_and_skip_quits() {
     let _ = h.app.session.close_library();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A plug-in's wait for a program, as `plugin_programs` starts it: named, and stopping it throws the run away.
+fn wait(h: &Headless) -> (lcc_engine::activity::TaskGuard, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let g = h.app.session.activity.start("pluginProgram", "Waiting for {program} to finish ({plugin})", Cancel::Flag(flag.clone()));
+    g.name("program", "Converter");
+    g.name("plugin", "Prog");
+    g.detail("The results come back when {program} closes");
+    g.warn_on_stop("What {program} makes from now on won't come back to the library, and {program} keeps running.");
+    (g, flag)
+}
+
+fn stopped(flag: &std::sync::atomic::AtomicBool) -> bool {
+    flag.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Stop Waiting… then the dialog's `button` (Cancel or OK): the question names the wait and says what it costs.
+fn stop_waiting(h: &mut Headless, id: u64, button: &str) {
+    click(h, &format!("activity:stop:{id}"));
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::StopWaiting { id: d, .. }) if d == id), "it asks first");
+    let text = h.painted_text().join("\n");
+    assert!(text.contains("Converter keeps running"), "the question says what stopping costs:\n{text}");
+    click(h, button);
+    assert!(h.app.ui.dialog.is_none(), "{button} closed the question");
+}
+
+#[test]
+fn a_wait_has_no_cross_and_stops_only_once_confirmed() {
+    let mut h = demo();
+    let (g, flag) = wait(&h);
+    wait_visible(&mut h);
+    let cross = format!("activity:cancel:{}", g.id());
+    // the header names the program and the plug-in, with no ✕
+    assert!(has(&h, PLATE));
+    assert!(!has(&h, &cross), "no ✕ in the header");
+    assert!(h.painted_text().iter().any(|t| t == "Waiting for Converter to finish (Prog)"), "{:?}", h.painted_text());
+    // the list: no ✕, the detail says when the results come back, and Stop Waiting… asks first
+    open_list(&mut h);
+    assert!(!has(&h, &cross), "no ✕ in the list");
+    assert!(h.painted_text().iter().any(|t| t.contains("The results come back when Converter closes")), "{:?}", h.painted_text());
+    stop_waiting(&mut h, g.id(), "button:dialogCancel");
+    assert!(!stopped(&flag), "Cancel leaves the run waiting");
+    assert!(!h.app.session.activity.list()[0].cancelling);
+    open_list(&mut h);
+    stop_waiting(&mut h, g.id(), "button:dialogOk");
+    assert!(stopped(&flag), "confirming stops the wait");
+}
+
+#[test]
+fn modern_card_asks_before_it_stops_a_wait() {
+    let mut h = modern();
+    let (g, flag) = wait(&h);
+    wait_visible(&mut h);
+    assert!(has(&h, &format!("activity:row:{}", g.id())));
+    assert!(!has(&h, &format!("activity:cancel:{}", g.id())), "no ✕ in the card");
+    stop_waiting(&mut h, g.id(), "button:dialogCancel");
+    assert!(!stopped(&flag), "Cancel leaves the run waiting");
+    stop_waiting(&mut h, g.id(), "button:dialogOk");
+    assert!(stopped(&flag), "confirming stops the wait");
+}
+
+#[test]
+fn a_wait_that_ends_takes_its_question_with_it() {
+    let mut h = demo();
+    let (g, _flag) = wait(&h);
+    wait_visible(&mut h);
+    open_list(&mut h);
+    click(&mut h, &format!("activity:stop:{}", g.id()));
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::StopWaiting { .. })));
+    drop(g);
+    h.step();
+    h.step();
+    assert!(h.app.ui.dialog.is_none(), "nothing left to stop: the question goes");
+}
+
+/// The text around the names is translated; the names stay as they are.
+#[test]
+fn a_wait_is_translated_around_its_names() {
+    let mut h = demo();
+    h.app.ui.language = crate::i18n::Locale::De;
+    crate::i18n::set_language(crate::i18n::Locale::De);
+    let (g, _flag) = wait(&h);
+    wait_visible(&mut h);
+    let header = h.painted_text();
+    open_list(&mut h);
+    let list = h.painted_text();
+    crate::i18n::set_language(crate::i18n::Locale::En);
+    assert!(header.iter().any(|t| t == "Warten, bis Converter fertig ist (Prog)"), "{header:?}");
+    assert!(list.iter().any(|t| t.contains("Die Ergebnisse kommen zurück, wenn Converter geschlossen wird")), "{list:?}");
+    drop(g);
+/// Nothing changed since the last backup: quitting neither asks for a backup nor makes one, even
+/// with one due on every exit. A change since asks again (ported from OneSlips' LR-BACKUP).
+#[test]
+fn quitting_with_nothing_changed_since_the_backup_does_not_ask() {
+    let dir = std::env::temp_dir().join(format!("lcc-quit-backup-same-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut session = lcc_engine::Session::new().with_fs();
+    session.open_library(&dir, false).unwrap();
+    let settings = lcc_catalog::library::CatalogSettings {
+        backup: lcc_catalog::library::BackupSchedule::EveryExit,
+        last_backup: None,
+        ..session.catalog_settings()
+    };
+    session.set_catalog_settings(&settings).unwrap();
+    session.backup_catalog(None).unwrap();
+    assert!(!session.catalog_backup_wanted(), "just backed up, nothing changed since");
+    assert_eq!(session.backup_catalog_if_due().unwrap(), None, "and the exit makes none");
+    let app = LccApp::new(session, Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
+    h.settle(T);
+    assert!(crate::panels::notices::may_close(&mut h.app), "{:?}", h.app.quit_prompt);
+    assert!(!matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))));
+    h.app.session.execute("album.create", &json!({"name": "Picks"})).unwrap();
+    assert!(h.app.session.catalog_backup_wanted(), "a change since the backup");
+    assert!(!crate::panels::notices::may_close(&mut h.app));
+    assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
+    let _ = h.app.session.close_library();
+    let _ = std::fs::remove_dir_all(&dir);
+}

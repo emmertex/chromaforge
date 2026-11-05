@@ -30,10 +30,12 @@ pub mod keywording;
 pub mod layout_overlay;
 pub mod left;
 pub mod library_problem;
+pub mod manager_table;
 pub mod mask_effects;
 pub mod mask_pickers;
 pub mod masking;
 pub mod metadata;
+pub mod ml_models;
 pub mod navigator;
 pub mod notices;
 #[cfg(not(target_arch = "wasm32"))]
@@ -47,6 +49,7 @@ pub mod plugin_icon;
 pub mod plugins;
 pub mod presets;
 pub mod presets_manager;
+pub mod profile_manager;
 pub mod profiles;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod publish;

@@ -42,6 +42,10 @@ pub struct Filter {
     /// `only` means "no constraint".
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub only_none: bool,
+    /// Natural-language (semantic) search query (`LR-FILT-SEARCH-AI`). The matching photo IDs
+    /// (in descending cosine-similarity order) are stored in `only` / `only_none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<String>,
     /// Any of these labels (the filter bar's multi-select); empty = no constraint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<ColorLabel>,
@@ -937,6 +941,9 @@ impl Filter {
         }
         if !self.text.trim().is_empty() {
             v.push(format!("“{}”", self.text.trim()));
+        }
+        if let Some(q) = self.semantic.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            v.push(format!("AI search “{q}”"));
         }
         if let Some(rs) = self.rule_set.as_ref().filter(|r| !r.rules.is_empty()) {
             v.push(cat.map_or_else(|| rs.describe(), |c| rs.describe_with(c)));
