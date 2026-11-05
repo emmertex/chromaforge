@@ -47,6 +47,7 @@ pub mod import;
 pub mod import_report;
 mod import_screen;
 pub mod import_tab;
+pub mod legacy;
 pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;

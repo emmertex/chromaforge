@@ -1,3 +1,0 @@
-## Library
-
-- **Import LightCraft Library:** File ▸ More Imports ▸ Import LightCraft Library… reads a LightCraft library (`lightcraft-catalog` v10 and older) and merges its photos, edits, masks, picks, ratings, labels and collections through the Import from Catalog preview. LightCraft's records are converted as they are read; the library itself is only read, never locked, upgraded or changed. A mask of a kind this app doesn't know is left out with the rest of the photo's edits kept.

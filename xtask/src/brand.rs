@@ -45,6 +45,9 @@ pub const LEGACY_FILES: &[&str] = &[
     "crates/engine/src/legacy.rs",
     // IndexedDB name holding users' browser libraries, cross-tab lock name
     "apps/web/src/legacy.rs",
+    // the earlier name's catalog format, read by File > More Imports, and that command's menu label
+    "crates/catalog/src/legacy.rs",
+    "crates/ui-egui/src/legacy.rs",
     // thumbnail-cache marker file written into existing preview folders
     "crates/preview/src/legacy.rs",
     // built-in slideshow templates carry the slideshow-template format tag (`crates/engine/src/legacy.rs`)

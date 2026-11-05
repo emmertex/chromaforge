@@ -377,7 +377,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
         "More Imports",
         &[
             "dialog.importCatalog",
-            "dialog.importLightcraft",
+            crate::legacy::IMPORT_LIBRARY_ID,
             "file.importLightroom",
             "file.importImmich",
             "---",

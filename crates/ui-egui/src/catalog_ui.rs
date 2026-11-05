@@ -154,7 +154,7 @@ fn str_of<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 /// Ask for a folder for `command` (answer under `key`).
-fn pick_folder(app: &mut LccApp, command: &str, p: &Value, key: &'static str, title: &str) -> Result<Option<String>, String> {
+pub(crate) fn pick_folder(app: &mut LccApp, command: &str, p: &Value, key: &'static str, title: &str) -> Result<Option<String>, String> {
     let req = crate::pick::PickRequest::folder(crate::i18n::tr(title));
     match crate::pick::ask(app, command, p, key, req, |s| s.pick_folder.as_mut().and_then(|f| f()).map(|x| vec![x])) {
         Picked::Now(v) => Ok(v.into_iter().next()),
@@ -213,22 +213,8 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
                 Some(CatalogDialog::ExportCatalog { parent, name: "Exported Catalog".into(), scope: scope.into(), originals: false, previews: true });
             Ok(Value::Null)
         }
-        // a LightCraft library: the same preview and merge, its records converted as they are read, the library
-        // itself never changed (test notes 2026-11-05, 19:33)
-        "dialog.importLightcraft" => match str_of(p, "path") {
-            Some(path) => {
-                let is_lightcraft = lcc_catalog::library::resolve(Path::new(path)).is_ok_and(|d| lcc_catalog::lightcraft::is_lightcraft(&d));
-                if !is_lightcraft {
-                    return Some(Err(format!("{path} {}", crate::i18n::tr("holds no LightCraft library (its catalog.snap)"))));
-                }
-                run(app, "dialog.importCatalog", &json!({"path": path}))?
-            }
-            None => match pick_folder(app, id, p, "path", "Import LightCraft Library") {
-                Ok(Some(path)) => run(app, id, &json!({"path": path}))?,
-                Ok(None) => Ok(Value::Null),
-                Err(e) => Err(e),
-            },
-        },
+        // a library in the catalog format of this app's earlier name (`crate::legacy`)
+        crate::legacy::IMPORT_LIBRARY_ID => crate::legacy::import_library(app, id, p),
         "dialog.importCatalog" => match str_of(p, "path") {
             Some(path) => {
                 let plan = app.session.execute("catalog.import", &json!({"path": path, "preview": true})).map_err(|e| e.to_string());
@@ -297,7 +283,7 @@ pub fn enabled(app: &LccApp, id: &str) -> Option<bool> {
     let busy = crate::lightroom_import::is_running(app);
     Some(match id {
         "catalog.new" | "catalog.open" | "catalog.chooser" | "catalog.openRecent" | "catalog.welcome" => !busy,
-        "dialog.importCatalog" | "dialog.importLightcraft" => !busy && app.services.pick_folder.is_some(),
+        "dialog.importCatalog" | crate::legacy::IMPORT_LIBRARY_ID => !busy && app.services.pick_folder.is_some(),
         "dialog.catalogSettings" => app.session.catalog_dir().is_some(),
         "dialog.exportCatalog" => !app.session.catalog.is_empty(),
         _ => return None,

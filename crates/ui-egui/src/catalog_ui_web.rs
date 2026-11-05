@@ -20,7 +20,7 @@ pub fn run(_: &mut LccApp, _: &str, _: &Value) -> Option<Result<Value, String>> 
 
 pub fn enabled(_: &LccApp, id: &str) -> Option<bool> {
     (id.starts_with("catalog.")
-        || matches!(id, "dialog.catalogSettings" | "dialog.exportCatalog" | "dialog.importCatalog" | "dialog.importLightcraft"))
+        || matches!(id, "dialog.catalogSettings" | "dialog.exportCatalog" | "dialog.importCatalog" | crate::legacy::IMPORT_LIBRARY_ID))
     .then_some(false)
 }
 

@@ -23,9 +23,9 @@ mod index;
 pub mod journal;
 pub mod keywords;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod library;
+pub mod legacy;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod lightcraft;
+pub mod library;
 pub mod local;
 pub mod lock;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1821,8 +1821,6 @@ mod tests_format_version;
 mod tests_index;
 #[cfg(test)]
 mod tests_journal;
-#[cfg(test)]
-mod tests_lightcraft;
 #[cfg(test)]
 mod tests_local;
 #[cfg(test)]
