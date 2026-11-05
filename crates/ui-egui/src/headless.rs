@@ -4082,8 +4082,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Switching Settings sections keeps the screen still: the rail and the rows' column stay where
-    /// they are, though the sections are of different heights.
+    /// Switching Settings tabs keeps the window still: the tab row and the page stay where they
+    /// are, though the tabs are of different heights (LR-PREF-WINDOW).
     #[test]
     fn settings_tabs_keep_the_window_in_place() {
         let mut h = demo([1300.0, 820.0]);
@@ -4092,20 +4092,16 @@ mod tests {
         let r = h.request("engine.execute", json!({"command": "app.settings", "params": {"tab": "general"}}), t);
         assert_eq!(r["ok"], true, "{r}");
         h.settle(SETTLE);
-        let (rows, rail) = (at(&h, "settings:rows"), at(&h, "settings:section:general"));
+        let (rows, rail) = (at(&h, "settings:rows"), at(&h, "button:settingsTab-general"));
         for tab in ["display", "import", "performance", "general", "interface", "display"] {
             h.request("ui.clickWidget", json!({"id": format!("button:settingsTab-{tab}")}), t);
             h.settle(SETTLE);
-            assert_eq!(
-                crate::settings_screen::section_of(match &h.app.ui.dialog {
-                    Some(crate::state::Dialog::Settings { tab }) => tab,
-                    other => panic!("{tab}: {other:?}"),
-                }),
-                crate::settings_screen::section_of(tab),
-                "{tab}"
-            );
-            assert_eq!(at(&h, "settings:rows"), rows, "{tab}: the rows' column moved");
-            assert_eq!(at(&h, "settings:section:general"), rail, "{tab}: the rail moved");
+            match &h.app.ui.dialog {
+                Some(crate::state::Dialog::Settings { tab: now }) => assert_eq!(now, tab),
+                other => panic!("{tab}: {other:?}"),
+            }
+            assert_eq!(at(&h, "settings:rows"), rows, "{tab}: the page moved");
+            assert_eq!(at(&h, "button:settingsTab-general"), rail, "{tab}: the tab row moved");
         }
     }
 

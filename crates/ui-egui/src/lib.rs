@@ -339,6 +339,8 @@ mod tests_settings_back;
 #[cfg(test)]
 mod tests_settings_profiles;
 #[cfg(test)]
+mod tests_settings_tab_row;
+#[cfg(test)]
 mod tests_settings_window;
 #[cfg(test)]
 mod tests_slider_drag;

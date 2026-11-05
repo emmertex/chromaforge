@@ -1,5 +1,8 @@
-//! Settings (fork-owned), the one Settings screen of every layout: a full-window sheet with an icon
-//! rail of eight sections down its left side and the open section's rows beside it.
+//! Settings (fork-owned). In the Classic layout on a window at least [`ROOMY`] points wide it is a
+//! window with one row of tabs, one tab's settings at a time (OneSlips, LR-PREF-WINDOW:
+//! [`crate::panels::settings::body`]). In the Modern layout and on a narrow window it is a
+//! full-window sheet with an icon rail of sections down its left side and the open section's rows
+//! beside it:
 //!
 //! - With room (a window at least [`ROOMY`] points wide: desktops, tablets) the rail always shows
 //!   each section's name and a search field; Back (the ‹ button, Esc, Android's Back) closes
@@ -32,6 +35,8 @@ const HEADER_H: f32 = 56.0;
 const RAIL_WIDE: f32 = 220.0;
 const RAIL_NARROW: f32 = 60.0;
 const ITEM_H: f32 = 44.0;
+/// The Settings window's margin inside its frame.
+const WINDOW_PAD: f32 = 16.0;
 /// The rows' widest, so a large window doesn't stretch them.
 const CONTENT_MAX: f32 = 820.0;
 
@@ -177,8 +182,13 @@ fn close(app: &mut LccApp) {
 /// Draws Settings over the whole window (every layout).
 pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
     let Some(Dialog::Settings { tab }) = app.ui.dialog.clone() else { return };
-    let open = section_of(&tab).to_string();
     let screen = ctx.content_rect();
+    // the Classic layout with room: a window with one row of tabs (OneSlips, LR-PREF-WINDOW)
+    if screen.width() >= ROOMY && !crate::modern::on(app) {
+        window(app, ctx, &tab);
+        return;
+    }
+    let open = section_of(&tab).to_string();
     let roomy = screen.width() >= ROOMY;
     if roomy {
         app.modern_sheets.settings.wide = false;
@@ -287,6 +297,83 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     if picked.is_some() || app.modern_sheets.settings.wide && picked_any {
         app.modern_sheets.settings.wide = false;
+    }
+}
+
+/// Settings as a window (the Classic layout on a window at least [`ROOMY`] wide; OneSlips,
+/// LR-PREF-WINDOW): one row of tabs, a tab's settings in a page that scrolls inside the window,
+/// and Close (`settings:back`). It opens at the size it was left at (`settingsSize` in `ui.json`)
+/// and on the tab shown last, can be resized from its edges, and keeps its size and place
+/// whatever the tab. Esc closes it.
+fn window(app: &mut LccApp, ctx: &egui::Context, asked: &str) {
+    let t = Tokens::get(ctx);
+    let screen = ctx.content_rect();
+    let mut tab = crate::panels::settings::window_tab(asked).to_string();
+    // Esc: Close (a popup or a text field being edited takes it first)
+    let mut closing = !egui::Popup::is_any_open(ctx)
+        && !ctx.egui_wants_keyboard_input()
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    // the backdrop: an area below the window
+    egui::Area::new(Id::new("settings-dim")).order(egui::Order::Middle).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
+        ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(140));
+    });
+    // (the sizes are the content's, inside the frame's margin)
+    let size = crate::panels::settings::window_size(screen.shrink(WINDOW_PAD), app.ui.settings.settings_size);
+    let frame = egui::Frame::window(&ctx.global_style())
+        .inner_margin(egui::Margin::same(WINDOW_PAD as i8))
+        .corner_radius(egui::CornerRadius::same(16))
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(26)))
+        .shadow(egui::epaint::Shadow { offset: [0, 10], blur: 32, spread: 0, color: Color32::from_black_alpha(110) });
+    let top = (screen.height() * 0.08).clamp(crate::dialog_frame::SCREEN_MARGIN, 96.0);
+    let shown = egui::Window::new(crate::i18n::tr("Settings"))
+        .id(Id::new(LAYER))
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(true)
+        .frame(frame)
+        .default_size(size.default)
+        .min_size(size.min)
+        .max_size(size.max)
+        .pivot(Align2::CENTER_TOP)
+        .default_pos(pos2(screen.center().x, screen.top() + top))
+        .constrain(true)
+        .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            let h = ui.label(egui::RichText::new(crate::i18n::tr("Settings")).font(t.semibold(16.0)).color(t.text));
+            register(ui.ctx(), "dialog:title", h.rect);
+            // under the page: a gap and the Close button's row
+            let footer = 2.0 * ui.spacing().item_spacing.y + ui.spacing().interact_size.y + 6.0;
+            crate::panels::settings::body(app, ui, &mut tab, footer);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if crate::button::Button::new("Close").widget("settings:back").min_width(72.0).show(ui).clicked() {
+                    closing = true;
+                }
+            });
+        });
+    if let Some(w) = &shown {
+        crate::panels::settings::remember_size(app, w.response.rect.size() - Vec2::splat(2.0 * WINDOW_PAD));
+    }
+    let layer = egui::LayerId::new(egui::Order::Middle, Id::new(LAYER));
+    ctx.move_to_top(layer);
+    ctx.memory_mut(|m| m.set_modal_layer(layer));
+    if closing {
+        crate::panels::settings::save_pending_cache_size(app, ctx);
+        close(app);
+        return;
+    }
+    // the rows may have closed Settings or opened another dialog (e.g. a folder picker's)
+    if let Some(Dialog::Settings { tab: now }) = &mut app.ui.dialog
+        && *now != tab
+    {
+        if crate::panels::settings::window_tab(now) != tab {
+            // another tab was picked: a section asked for (`app.settings {section}`) was the old tab's
+            app.ui.settings_section = None;
+        }
+        *now = tab.clone();
+    }
+    // Settings… opens on the tab shown last
+    if matches!(app.ui.dialog, Some(Dialog::Settings { .. })) && app.ui.settings.settings_tab != tab {
+        app.ui.settings.settings_tab = tab;
     }
 }
 

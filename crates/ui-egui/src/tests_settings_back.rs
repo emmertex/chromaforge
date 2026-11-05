@@ -21,6 +21,8 @@ fn open(integrated_titlebar: bool, fullscreen: bool) -> Headless {
     let mut app = LccApp::new(lcc_engine::Session::with_demo(), services);
     app.integrated_titlebar = integrated_titlebar;
     app.window_is_fullscreen = fullscreen;
+    // (the full-window Settings, with its ‹: the Modern layout's; Classic shows a window)
+    app.ui.modern.enabled = true;
     let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
     h.app.ui.dialog = Some(Dialog::Settings { tab: "general".into() });
     // (the first request switches the widget list on)

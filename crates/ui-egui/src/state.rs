@@ -456,6 +456,10 @@ pub struct AppSettings {
     /// The Settings section shown last: Settings… opens there again (LR-PREF-WINDOW).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub settings_tab: String,
+    /// The Settings window's size in points as the user left it (`None`: the default size; fitted
+    /// to the screen when the window opens; OneSlips, LR-PREF-WINDOW).
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub settings_size: Option<[f32; 2]>,
     /// GPU rendering allowed (`app.gpu`).
     pub gpu: bool,
     /// The graphics interface GPU rendering uses (Settings ▸ Performance; applies at next launch).
@@ -683,6 +687,7 @@ impl Default for AppSettings {
             import_as_tab: true,
             import_tab: Default::default(),
             settings_tab: String::new(),
+            settings_size: None,
             gpu: true,
             gpu_backend: GpuBackend::Auto,
             gpu_card: String::new(),
