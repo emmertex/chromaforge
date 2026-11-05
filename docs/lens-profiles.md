@@ -90,6 +90,19 @@ Normalisation follows lensfun's documentation: distortion and TCA radii are 1 at
 calibration frame (its `cropfactor` and `aspect-ratio`), vignetting radii 1 at its corner; the optical centre is
 the image centre (lensfun's `<center>` offsets are not read).
 
+**Smaller image areas of a full-frame sensor** (Nikon's 5:4, 1:1, 16:9 and DX crops) get the part of the profile
+under their pixels, as a full-frame photo of the same lens has it at those sensor positions.
+- Nikon records where the stored frame sits on the sensor in its maker note (tag `0x001b`, read by
+  `lcc_raw::sensor_window`; e.g. a Z 7's 5:4 frame is 6912 × 5520 px at (688, 0) of 8288 × 5520).
+- The profile is evaluated for the camera's normal frame with the body's crop factor, centred on the sensor, then
+  re-expressed for the picture with its coefficients rescaled exactly (`lcc_pipeline::optics::reframe_lens`):
+  distortion and lateral CA as `kᵢ·s²ⁱ`, vignetting as `kᵢ·s^(2i+2)`, `s` the ratio of the two half diagonals.
+- Before, such a picture got the whole full-frame profile stretched over it. The Z 7 writes a 35 mm equivalent of
+  only ×1.10 for 5:4, which the crop-factor rule takes for rounding. On a Z 50 mm f/1.8 S at f/1.8 that was
+  +0.46 EV too much vignetting correction and 16 px of distortion error at the corners.
+- Without a recorded window (other makers, DNGs) or for the full sensor, nothing changes: the 35 mm equivalent
+  focal length still picks a larger crop factor, as described above.
+
 ## Limits
 
 - Only raws: rendered images (JPEG, HEIF, TIFF) are often already corrected in camera.

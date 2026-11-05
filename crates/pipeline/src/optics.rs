@@ -445,6 +445,59 @@ pub fn reorient_lens(lens: &EmbeddedLens, o: Orientation, w: f64, h: f64) -> Emb
     EmbeddedLens { warp, vignette, stages }
 }
 
+/// Re-express lens data computed for a `from` frame (`[w, h]` px) for a `to` frame (`[w, h]` px) of the same pixels
+/// whose top-left corner sits at `origin` px in `from` (a smaller image area of the same sensor: `from` the camera's
+/// normal frame, `to` a 5:4 or DX crop of it). Every sensor position gets exactly the correction it had: the centres
+/// move with the frame, each radius becomes `to`'s standard one (half its diagonal, as a correction computed for it
+/// would have) and the coefficients are rescaled for it, `s` = new radius / old radius:
+///
+/// - `WarpRectilinear` (`r_src = r · Σ kᵢ r²ⁱ` + tangential terms): `kᵢ · s²ⁱ`, tangential `kt · s`;
+/// - `WarpRectilinear2` (`f(r) = Σ krₚ rᵖ` on `r` clamped to the valid radii): `krₚ · sᵖ`, tangential `kt · s`, valid
+///   radii `/ s`;
+/// - `FixVignetteRadial` (`1 + Σ kᵢ r^(2i+2)`): `kᵢ · s^(2i+2)`.
+///
+/// Exact (no refit): `f'(r') = f(s · r')` term by term.
+pub fn reframe_lens(lens: &EmbeddedLens, from: [f64; 2], to: [f64; 2], origin: [f64; 2]) -> EmbeddedLens {
+    let ([fw, fh], [tw, th]) = (from, to);
+    let to_radius = tw.hypot(th) / 2.0 / tw.max(th).max(1e-9);
+    // a centre (relative to `from`) relative to `to`, and the scale from a radius (relative to `from`) to `to`'s
+    let centre = |c: Point| Point::new((c.x * fw - origin[0]) / tw.max(1e-9), (c.y * fh - origin[1]) / th.max(1e-9));
+    let scale = |radius: f64| (to_radius * tw.max(th)) / (radius * fw.max(fh)).max(1e-9);
+    let warp = lens.warp.map(|wp| {
+        let s = scale(wp.radius);
+        let (s2, s4, s6) = (s * s, s.powi(4), s.powi(6));
+        let planes = wp.planes.map(|[a, b, c, d, kt0, kt1]| [a, b * s2, c * s4, d * s6, kt0 * s, kt1 * s]);
+        EmbeddedWarp { planes, center: centre(wp.center), radius: to_radius }
+    });
+    let vignette = lens.vignette.map(|v| {
+        let s = scale(v.radius);
+        let mut k = v.k;
+        let mut p = s * s;
+        for ki in &mut k {
+            *ki *= p;
+            p *= s * s;
+        }
+        EmbeddedVignette { k, center: centre(v.center), radius: to_radius }
+    });
+    let stages = lens.stages.map(|st| {
+        st.map(|st| {
+            let s = scale(st.radius);
+            let planes = st.planes.map(|mut k| {
+                let mut p = 1.0;
+                for kr in k.iter_mut().take(15) {
+                    *kr *= p;
+                    p *= s;
+                }
+                let [.., kt0, kt1, lo, hi] = &mut k;
+                (*kt0, *kt1, *lo, *hi) = (*kt0 * s, *kt1 * s, *lo / s, *hi / s);
+                k
+            });
+            EmbeddedWarpStage { planes, center: centre(st.center), radius: to_radius, reciprocal: st.reciprocal }
+        })
+    });
+    EmbeddedLens { warp, vignette, stages }
+}
+
 // ------------------------------------------------------------------------------------------ lateral CA
 
 /// Estimate lateral chromatic aberration: the radial magnification of the red and blue planes relative to green
@@ -1159,5 +1212,40 @@ mod tests {
         };
         assert_eq!(at(1e300, 1.0).data, at(20.0, 1.0).data);
         assert_eq!(at(f64::MAX, 1e300).data.len(), 800, "a huge scale too");
+    }
+
+    /// `reframe_lens` gives every position of a smaller frame the correction it had in the frame it was computed
+    /// for: warp (radial and tangential), `WarpRectilinear2` stages (with their valid radii) and vignette, exactly.
+    #[test]
+    fn reframing_keeps_every_positions_correction() {
+        let (from, to, origin) = ([8256.0, 5504.0], [6880.0, 5504.0], [688.0, 0.0]);
+        let planes = |d: f64| [1.0 - d, 0.02 + d, -0.01, 0.003, 0.0004, -0.0002];
+        let warp = EmbeddedWarp { planes: [planes(0.001), planes(0.0), planes(-0.001)], center: Point::new(0.49, 0.52), radius: 0.6 };
+        let mut k = [0.0; 19];
+        for (i, v) in k.iter_mut().take(15).enumerate() {
+            *v = if i == 0 { 1.0 } else { 0.01 / (i as f64 * i as f64) };
+        }
+        (k[15], k[16], k[17], k[18]) = (0.0003, -0.0001, 0.05, 0.9);
+        let stage = EmbeddedWarpStage { planes: [k; 3], center: Point::new(0.5, 0.5), radius: 0.6, reciprocal: false };
+        let vignette = EmbeddedVignette { k: [-0.6, 0.2, -0.05, 0.01, 0.0], center: Point::new(0.51, 0.49), radius: 0.6 };
+        let lens = EmbeddedLens { warp: Some(warp), vignette: Some(vignette), stages: [Some(stage), None, None] };
+        let re = reframe_lens(&lens, from, to, origin);
+        let (rw, rst, rv) = (re.warp.unwrap(), re.stages[0].unwrap(), re.vignette.unwrap());
+        for j in 0..=8 {
+            for i in 0..=8 {
+                let p = Point::new(to[0] * i as f64 / 8.0, to[1] * j as f64 / 8.0);
+                let q = Point::new(p.x + origin[0], p.y + origin[1]);
+                let g = embedded_vignette_gain(&rv, p, to[0], to[1]) / embedded_vignette_gain(&vignette, q, from[0], from[1]);
+                assert!((g - 1.0).abs() < 1e-12, "vignette at {p:?}: {g}");
+                for ch in 0..3 {
+                    let (a, b) = (embedded_warp(&rw, p, ch, to[0], to[1]), embedded_warp(&warp, q, ch, from[0], from[1]));
+                    assert!((a.x + origin[0] - b.x).abs() < 1e-7 && (a.y + origin[1] - b.y).abs() < 1e-7, "warp {ch} at {p:?}");
+                    let (a, b) = (embedded_stage(&rst, p, ch, to[0], to[1]), embedded_stage(&stage, q, ch, from[0], from[1]));
+                    assert!((a.x + origin[0] - b.x).abs() < 1e-7 && (a.y + origin[1] - b.y).abs() < 1e-7, "stage {ch} at {p:?}");
+                }
+            }
+        }
+        // the new radius is the frame's standard one
+        assert!((rv.radius - to[0].hypot(to[1]) / 2.0 / to[0]).abs() < 1e-15);
     }
 }
