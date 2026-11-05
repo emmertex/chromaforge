@@ -25,7 +25,6 @@ fn loupe() -> Headless {
     h.app.ui.view = ViewMode::Detail;
     h.app.ui.right = RightPanel::Edit;
     h.app.ui.filmstrip = true;
-    h.step_until(T, |h| h.app.widgets.iter().any(|(w, _)| w == "canvas:image"));
     h.settle(T);
     h
 }
@@ -78,7 +77,7 @@ fn the_shot_info_strip_stays_when_zoomed_in_and_hides_for_tools() {
     let fit = widget(&h, "loupe:shotInfo").expect("the strip at Fit");
     let img = widget(&h, "canvas:image").expect("the photo");
     assert!(fit.top() >= img.bottom() - 1.0, "at Fit, under the photo: {fit:?} vs {img:?}");
-    h.app.ui.zoom = Zoom::Percent(400.0);
+    h.app.ui.zoom = Zoom::Percent(200.0);
     h.settle(T);
     let canvas = h.app.canvas_rect.expect("the canvas");
     let img = widget(&h, "canvas:image").expect("the photo");

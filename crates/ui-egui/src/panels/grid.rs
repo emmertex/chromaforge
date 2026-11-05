@@ -1572,7 +1572,23 @@ fn folder_breadcrumbs(app: &mut LccApp, ui: &mut egui::Ui, path: &str) {
         paint(ui.painter(), Rect::from_center_size(r.center(), vec2(16.0, 16.0)), Icon::ChevronRight, t.text_dim);
     };
     if skip > 0 {
-        ui.label(egui::RichText::new("…").color(t.text_dim)).on_hover_text(path);
+        // the folders "…" stands for: a click lists them, each one opens
+        let dots = ui.add(egui::Label::new(egui::RichText::new("…").size(13.0).color(t.text_dim)).sense(Sense::click()));
+        register(ui.ctx(), "crumb:more", dots.rect);
+        if dots.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let dots = dots.on_hover_text(path);
+        egui::Popup::menu(&dots).show(|ui| {
+            for (i, (name, to)) in crumbs.iter().enumerate().take(skip) {
+                let item = ui.button(*name);
+                register(ui.ctx(), format!("crumb:{i}"), item.rect);
+                if item.on_hover_text(to).clicked() {
+                    let _ = app.run("library.browse", json!({"path": to}));
+                    ui.close();
+                }
+            }
+        });
         separator(ui);
     }
     let separator_w = 16.0 + 2.0 * ui.spacing().item_spacing.x;

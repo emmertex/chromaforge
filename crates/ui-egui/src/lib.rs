@@ -121,6 +121,8 @@ mod tests_bar_buttons;
 #[cfg(test)]
 mod tests_before_after;
 #[cfg(test)]
+mod tests_breadcrumb_more;
+#[cfg(test)]
 mod tests_browse_active;
 #[cfg(test)]
 mod tests_button;
@@ -177,6 +179,8 @@ mod tests_dialog_settings;
 #[cfg(test)]
 mod tests_dialog_tab;
 #[cfg(test)]
+mod tests_dialog_width;
+#[cfg(test)]
 mod tests_dialogs;
 #[cfg(test)]
 mod tests_drop_import;
@@ -222,6 +226,8 @@ mod tests_i18n_coverage;
 mod tests_immich_ui;
 #[cfg(test)]
 mod tests_import_body_profiles;
+#[cfg(test)]
+mod tests_import_drives;
 #[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
