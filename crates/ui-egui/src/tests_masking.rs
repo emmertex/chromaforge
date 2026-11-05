@@ -2215,6 +2215,90 @@ fn a_wheel_notch_resizes_the_brush_instead_of_zooming() {
     assert_ne!(h.app.ui.zoom, zoom0, "with the preference off the wheel zooms");
 }
 
+/// Issue #808: with the brush active, a trackpad two-finger vertical scroll over the photo resizes the brush
+/// instead of panning; holding Space bar lets the gesture move the frame around (pan).
+#[test]
+fn trackpad_scroll_resizes_brush_and_space_pans() {
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    pointer(&mut h, json!([{"kind": "move", "x": 0.5, "y": 0.5}]));
+    h.settle(SETTLE);
+
+    let scroll_trackpad = |h: &mut Headless, dy: f32| {
+        h.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        for _ in 0..10 {
+            h.step();
+        }
+    };
+
+    let (size0, zoom0) = (h.app.ui.brush_size, h.app.ui.zoom);
+    scroll_trackpad(&mut h, 50.0);
+    assert!(h.app.ui.brush_size > size0, "scrolling up on trackpad grows the brush: {size0} -> {}", h.app.ui.brush_size);
+    assert_eq!(h.app.ui.zoom, zoom0, "and does not zoom");
+    let size1 = h.app.ui.brush_size;
+    scroll_trackpad(&mut h, -50.0);
+    assert!(h.app.ui.brush_size < size1, "scrolling down shrinks it: {size1} -> {}", h.app.ui.brush_size);
+
+    // Zoom in so panning is possible
+    let r = h.app.run("view.navigate", json!({"zoom": {"percent": 200.0}, "pan": [0.5, 0.5]}));
+    assert!(r.is_ok(), "{r:?}");
+    for _ in 0..5 {
+        h.step();
+    }
+    let pan0 = h.app.ui.pan;
+    let size_before_space = h.app.ui.brush_size;
+
+    // Holding Space bar + scroll moves the frame around (pan) instead of resizing the brush
+    let r = h.request("ui.key", json!({"key": "Space", "action": "down"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    scroll_trackpad(&mut h, 50.0);
+    assert_eq!(h.app.ui.brush_size, size_before_space, "holding Space does not resize the brush");
+    assert_ne!(h.app.ui.pan, pan0, "holding Space moves the frame around (pans)");
+    let r = h.request("ui.key", json!({"key": "Space", "action": "up"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+
+    // With the preference off: trackpad scroll does not resize the brush
+    h.app.ui.settings.wheel_resizes_brush = false;
+    let size_off = h.app.ui.brush_size;
+    scroll_trackpad(&mut h, 50.0);
+    assert_eq!(h.app.ui.brush_size, size_off, "with preference off, trackpad scroll does not resize brush");
+}
+
+#[test]
+fn trackpad_scroll_resizes_remove_brush() {
+    let mut h = detail("panel.remove");
+    h.settle(SETTLE);
+    pointer(&mut h, json!([{"kind": "move", "x": 0.5, "y": 0.5}]));
+    h.settle(SETTLE);
+
+    let scroll_trackpad = |h: &mut Headless, dy: f32| {
+        h.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        for _ in 0..10 {
+            h.step();
+        }
+    };
+
+    let size0 = h.app.ui.remove_size;
+    scroll_trackpad(&mut h, 50.0);
+    assert!(h.app.ui.remove_size > size0, "trackpad scroll up grows remove brush: {size0} -> {}", h.app.ui.remove_size);
+    let size1 = h.app.ui.remove_size;
+    scroll_trackpad(&mut h, -50.0);
+    assert!(h.app.ui.remove_size < size1, "trackpad scroll down shrinks remove brush: {size1} -> {}", h.app.ui.remove_size);
+}
+
 #[test]
 fn effect_dropdown_applies_saves_and_shows_the_matching_effect() {
     let mut h = detail("panel.masking");

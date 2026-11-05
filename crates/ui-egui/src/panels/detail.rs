@@ -395,6 +395,21 @@ fn wheel_notches(events: &[egui::Event]) -> f32 {
         .sum()
 }
 
+/// Net delta (up/right is positive) of unmodified point-unit wheel events: a trackpad scroll, not a notched mouse wheel.
+fn trackpad_scroll_delta(events: &[egui::Event]) -> egui::Vec2 {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, modifiers, .. }
+                if *modifiers == egui::Modifiers::NONE && delta.is_finite() =>
+            {
+                Some(*delta)
+            }
+            _ => None,
+        })
+        .fold(egui::Vec2::ZERO, |acc, d| acc + d)
+}
+
 /// Native pinch (also modifier-wheel zoom) and two-finger scroll, scoped to this image view.
 pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, area: Rect, img: Rect, native: [usize; 2]) -> bool {
     // While the White Balance Selector is armed, a wheel notch steps its sample size instead of zooming
@@ -411,19 +426,49 @@ pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui:
         }
     }
 
-    if !resp.hovered() {
+    // While Space is held over a tool, `loupe:hand` sits above `loupe` and takes the hover from it;
+    // wheel/scroll gestures over the canvas still belong to the view.
+    if !resp.hovered() && !(app.space_hand.is_some() && resp.contains_pointer()) {
         return false;
     }
     let (mut factor, mut delta, anchor) =
         ui.input(|i| (i.zoom_delta(), i.translation_delta(), i.multi_touch().map(|t| t.center_pos).or(i.pointer.hover_pos())));
 
     let notches = ui.input(|i| wheel_notches(&i.events));
-    // With the Masking brush active, a plain wheel notch resizes the brush (like `[` / `]`) instead of zooming
-    // (Preferences → Interface); Ctrl/Cmd+wheel still zooms.
-    if app.ui.settings.wheel_resizes_brush && notches != 0.0 && app.ui.tool == "brush" {
-        crate::menus::adjust_brush(app, 1.0 + (notches * 0.1).clamp(-0.5, 0.5), 0.0);
-        ui.ctx().request_repaint();
-        return true;
+    let trackpad_delta = ui.input(|i| trackpad_scroll_delta(&i.events));
+    if delta == egui::Vec2::ZERO && trackpad_delta != egui::Vec2::ZERO {
+        delta = trackpad_delta;
+    }
+    let is_brush = app.ui.tool == "brush" || app.ui.right == RightPanel::Remove;
+    let space_held = ui.input(|i| i.key_down(egui::Key::Space)) || app.space_hand.is_some();
+    let cmd_or_ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+
+    // With the Masking or Remove brush active, a plain wheel notch or two-finger trackpad scroll
+    // resizes the brush (like `[` / `]`) instead of zooming or panning (Preferences → Interface).
+    // Holding Space lends the hand tool back so the scroll gesture moves the frame around instead;
+    // Ctrl/Cmd+wheel still zooms.
+    if app.ui.settings.wheel_resizes_brush && is_brush && !cmd_or_ctrl && !space_held {
+        if notches != 0.0 {
+            crate::menus::adjust_brush(app, 1.0 + (notches * 0.1).clamp(-0.5, 0.5), 0.0);
+            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            ui.ctx().request_repaint();
+            return true;
+        }
+        if trackpad_delta.y != 0.0 {
+            let k = (trackpad_delta.y * (0.1 / crate::theme::WHEEL_LINE_POINTS)).exp().clamp(0.5, 2.0);
+            crate::menus::adjust_brush(app, k, 0.0);
+            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            ui.ctx().request_repaint();
+            return true;
+        }
+        if factor == 1.0 && delta != egui::Vec2::ZERO {
+            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            delta = egui::Vec2::ZERO;
+        }
+    }
+
+    if space_held && delta != egui::Vec2::ZERO {
+        crate::space_hand::mark_used(app);
     }
 
     // A notched mouse wheel (line/page units, no modifier) zooms around the pointer, through egui's smoothed wheel
@@ -6161,6 +6206,18 @@ mod wheel_zoom_tests {
         assert_eq!(wheel_notches(&[wheel(egui::MouseWheelUnit::Point, 40.0, m)]), 0.0);
         assert_eq!(wheel_notches(&[wheel(egui::MouseWheelUnit::Line, 1.0, egui::Modifiers::CTRL)]), 0.0);
         assert_eq!(wheel_notches(&[wheel(egui::MouseWheelUnit::Line, f32::NAN, m)]), 0.0);
+    }
+
+    #[test]
+    fn trackpad_scroll_delta_reads_point_events_only() {
+        let m = egui::Modifiers::NONE;
+        assert_eq!(
+            trackpad_scroll_delta(&[wheel(egui::MouseWheelUnit::Point, 40.0, m), wheel(egui::MouseWheelUnit::Point, -15.0, m)]),
+            egui::vec2(0.0, 25.0)
+        );
+        assert_eq!(trackpad_scroll_delta(&[wheel(egui::MouseWheelUnit::Line, 1.0, m)]), egui::Vec2::ZERO);
+        assert_eq!(trackpad_scroll_delta(&[wheel(egui::MouseWheelUnit::Point, 40.0, egui::Modifiers::CTRL)]), egui::Vec2::ZERO);
+        assert_eq!(trackpad_scroll_delta(&[wheel(egui::MouseWheelUnit::Point, f32::NAN, m)]), egui::Vec2::ZERO);
     }
 }
 
