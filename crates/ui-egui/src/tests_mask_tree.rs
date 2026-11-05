@@ -104,3 +104,30 @@ fn component_rows_are_named_after_their_source() {
     let blank = MaskComponent { name: Some("  ".into()), ..comp(MaskShape::Sky) };
     assert_eq!(component_label(&blank), "Sky");
 }
+
+#[test]
+fn only_the_selected_masks_branch_opens_by_itself() {
+    let mut h = masking();
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.3, 0.5]}));
+    exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.0], "end": [0.5, 0.4]}));
+    let [first, second] = [masks(&h)[0].id, masks(&h)[1].id];
+    assert_eq!(h.app.session.active_mask, Some(second));
+    h.step();
+    let at = |h: &Headless, id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r).unwrap_or_else(|| panic!("no {id}"));
+    assert_eq!(count(&h, "component:0"), 1, "one branch open: the selected mask's");
+    assert!(at(&h, "component:0").top() >= at(&h, &format!("mask:{second}")).bottom(), "under the selected mask");
+    // the chevron opens another mask's branch as well
+    let r = h.request("ui.clickWidget", json!({"id": format!("button:maskCollapse:{first}")}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(count(&h, "component:0"), 2, "both branches open");
+    let r = h.request("ui.clickWidget", json!({"id": format!("button:maskCollapse:{first}")}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(count(&h, "component:0"), 1, "and folds it again");
+    // selecting the other mask moves the open branch to it
+    exec(&mut h, "mask.select", json!({"id": first}));
+    h.step();
+    assert_eq!(count(&h, "component:0"), 1);
+    assert!(at(&h, "component:0").bottom() <= at(&h, &format!("mask:{second}")).top(), "under the first mask now");
+}

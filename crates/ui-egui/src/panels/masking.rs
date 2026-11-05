@@ -431,7 +431,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 }
                 continue;
             }
-            let collapsed = app.ui.is_mask_collapsed(m.id);
+            // only the selected mask's branch opens by itself; the chevron folds it, or opens another's
+            let collapsed = !app.ui.mask_branch_open(m.id, sel);
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
             crate::widgets::announce_selected(&resp, m.name.clone(), Some(m.id) == app.session.active_mask);
             register(ui.ctx(), format!("mask:{}", m.id), r);
@@ -461,7 +462,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 if chev_resp.hovered() { t.text } else { t.text_dim },
             );
             if chev_resp.clicked() {
-                app.ui.toggle_mask_collapsed(m.id);
+                app.ui.toggle_mask_branch(m.id, sel);
             }
 
             // the mask's thumbnail (white on black over the photo); its kind's icon until it is ready
