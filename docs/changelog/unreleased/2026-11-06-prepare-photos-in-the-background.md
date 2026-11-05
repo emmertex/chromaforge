@@ -1,0 +1,3 @@
+## Features
+
+- **Prepare photos in the background (Settings ▸ Performance):** the photos around the one in the loupe are made ready before you reach them, eye focus is found ahead, and the previews of every photo in view are built in the spare time, with separate settings for culling, the library and editing, a choice of which photos, and a library's own settings. The work waits for the photo on screen, pauses for exports and imports, skips photos whose previews are there, re-renders photos synced off screen, and is one cancellable row in the activity list. Commands `prefs.backgroundPrep` and `prefs.setBackgroundPrep`.

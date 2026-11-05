@@ -7,7 +7,7 @@
 //! automated tests ([`Clip::write_synthetic_dir`]).
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use candle_core::{D, Device as CandleDevice, Tensor};
 use thiserror::Error;
@@ -160,6 +160,7 @@ impl TransformerBlock {
 }
 
 struct VisionTower {
+    device: CandleDevice,
     class_embedding: Tensor,
     patch_weight: Tensor,
     position_embedding: Tensor,
@@ -172,6 +173,7 @@ struct VisionTower {
 }
 
 struct TextTower {
+    device: CandleDevice,
     token_embedding: Tensor,
     position_embedding: Tensor,
     blocks: Vec<TransformerBlock>,
@@ -182,7 +184,6 @@ struct TextTower {
 }
 
 struct DeviceTowers {
-    device: CandleDevice,
     vision: VisionTower,
     text: TextTower,
 }
@@ -303,19 +304,17 @@ fn infer_arch(st: &SafetensorsFile, manifest: &ModelManifest) -> Result<ArchSpec
     })
 }
 
-fn load_towers(weights_path: &Path, arch: ArchSpec, device: CandleDevice) -> Result<DeviceTowers, WeightsError> {
-    let mut st = SafetensorsFile::open(weights_path)?;
-
+fn load_vision_tower(st: &mut SafetensorsFile, arch: ArchSpec, device: CandleDevice) -> Result<VisionTower, WeightsError> {
     let class_embedding = st.load_tensor("vision_model.embeddings.class_embedding", &[arch.vision_hidden], &device)?;
     let patch_weight =
         st.load_tensor("vision_model.embeddings.patch_embedding.weight", &[arch.vision_hidden, 3, arch.patch_size, arch.patch_size], &device)?;
     let position_embedding =
         st.load_tensor("vision_model.embeddings.position_embedding.weight", &[arch.num_positions, arch.vision_hidden], &device)?;
-    let pre_ln = LayerNorm::load(&mut st, "vision_model.pre_layrnorm", arch.vision_hidden, &device)?;
+    let pre_ln = LayerNorm::load(st, "vision_model.pre_layrnorm", arch.vision_hidden, &device)?;
     let mut vision_blocks = Vec::with_capacity(arch.vision_layers);
     for i in 0..arch.vision_layers {
         vision_blocks.push(TransformerBlock::load(
-            &mut st,
+            st,
             &format!("vision_model.encoder.layers.{i}"),
             arch.vision_hidden,
             arch.vision_intermediate,
@@ -323,16 +322,31 @@ fn load_towers(weights_path: &Path, arch: ArchSpec, device: CandleDevice) -> Res
             &device,
         )?);
     }
-    let post_ln = LayerNorm::load(&mut st, "vision_model.post_layernorm", arch.vision_hidden, &device)?;
-    let visual_projection = Linear::load(&mut st, "visual_projection", arch.embed_dim, arch.vision_hidden, false, &device)?;
+    let post_ln = LayerNorm::load(st, "vision_model.post_layernorm", arch.vision_hidden, &device)?;
+    let visual_projection = Linear::load(st, "visual_projection", arch.embed_dim, arch.vision_hidden, false, &device)?;
 
+    Ok(VisionTower {
+        device,
+        class_embedding,
+        patch_weight,
+        position_embedding,
+        pre_ln,
+        blocks: vision_blocks,
+        post_ln,
+        projection: visual_projection,
+        patch_size: arch.patch_size,
+        hidden: arch.vision_hidden,
+    })
+}
+
+fn load_text_tower(st: &mut SafetensorsFile, arch: ArchSpec, device: CandleDevice) -> Result<TextTower, WeightsError> {
     let token_embedding = st.load_tensor("text_model.embeddings.token_embedding.weight", &[arch.vocab_size, arch.text_hidden], &device)?;
     let text_position_embedding =
         st.load_tensor("text_model.embeddings.position_embedding.weight", &[arch.context_len, arch.text_hidden], &device)?;
     let mut text_blocks = Vec::with_capacity(arch.text_layers);
     for i in 0..arch.text_layers {
         text_blocks.push(TransformerBlock::load(
-            &mut st,
+            st,
             &format!("text_model.encoder.layers.{i}"),
             arch.text_hidden,
             arch.text_intermediate,
@@ -340,8 +354,8 @@ fn load_towers(weights_path: &Path, arch: ArchSpec, device: CandleDevice) -> Res
             &device,
         )?);
     }
-    let final_ln = LayerNorm::load(&mut st, "text_model.final_layer_norm", arch.text_hidden, &device)?;
-    let text_projection = Linear::load(&mut st, "text_projection", arch.embed_dim, arch.text_hidden, false, &device)?;
+    let final_ln = LayerNorm::load(st, "text_model.final_layer_norm", arch.text_hidden, &device)?;
+    let text_projection = Linear::load(st, "text_projection", arch.embed_dim, arch.text_hidden, false, &device)?;
 
     let mut mask_vals = vec![0.0f32; arch.context_len * arch.context_len];
     for q in 0..arch.context_len {
@@ -354,29 +368,23 @@ fn load_towers(weights_path: &Path, arch: ArchSpec, device: CandleDevice) -> Res
     let causal_mask = Tensor::from_vec(mask_vals, (1, 1, arch.context_len, arch.context_len), &device)
         .map_err(|e| WeightsError::Device { name: "causal_mask".into(), message: e.to_string() })?;
 
-    Ok(DeviceTowers {
+    Ok(TextTower {
         device,
-        vision: VisionTower {
-            class_embedding,
-            patch_weight,
-            position_embedding,
-            pre_ln,
-            blocks: vision_blocks,
-            post_ln,
-            projection: visual_projection,
-            patch_size: arch.patch_size,
-            hidden: arch.vision_hidden,
-        },
-        text: TextTower {
-            token_embedding,
-            position_embedding: text_position_embedding,
-            blocks: text_blocks,
-            final_ln,
-            projection: text_projection,
-            causal_mask,
-            context_len: arch.context_len,
-        },
+        token_embedding,
+        position_embedding: text_position_embedding,
+        blocks: text_blocks,
+        final_ln,
+        projection: text_projection,
+        causal_mask,
+        context_len: arch.context_len,
     })
+}
+
+fn load_towers(weights_path: &Path, arch: ArchSpec, device: CandleDevice) -> Result<DeviceTowers, WeightsError> {
+    let mut st = SafetensorsFile::open(weights_path)?;
+    let vision = load_vision_tower(&mut st, arch, device.clone())?;
+    let text = load_text_tower(&mut st, arch, device)?;
+    Ok(DeviceTowers { vision, text })
 }
 
 /// Loaded CLIP ViT + Text encoder ready for [`crate::Queue`] execution.
@@ -385,7 +393,8 @@ pub struct Clip {
     weights_path: std::path::PathBuf,
     arch: ArchSpec,
     tokenizer: Tokenizer,
-    cpu: DeviceTowers,
+    cpu_vision: Mutex<Option<Arc<VisionTower>>>,
+    cpu_text: Mutex<Option<Arc<TextTower>>>,
     gpu: Mutex<Option<DeviceTowers>>,
 }
 
@@ -406,10 +415,59 @@ impl Clip {
         let tokenizer = Tokenizer::from_json_and_merges(&vocab_bytes, &merges_str, arch.context_len)?;
         let cpu = load_towers(&weights_path, arch, CandleDevice::Cpu)?;
 
-        Ok(Self { manifest, weights_path, arch, tokenizer, cpu, gpu: Mutex::new(None) })
+        Ok(Self {
+            manifest,
+            weights_path,
+            arch,
+            tokenizer,
+            cpu_vision: Mutex::new(Some(Arc::new(cpu.vision))),
+            cpu_text: Mutex::new(Some(Arc::new(cpu.text))),
+            gpu: Mutex::new(None),
+        })
     }
 
-    fn forward_images_on(&self, towers: &DeviceTowers, batch: &[RgbImage], ctx: &Ctx) -> Result<Vec<Vec<f32>>, JobError> {
+    /// Open an already-installed model directory (`manifest.json` + exact file sizes + `.safetensors` header + BPE
+    /// tokenizer) without re-computing SHA-256 over multi-hundred-megabyte weights on the UI thread, deferring weight
+    /// tensor loading to the worker thread on first `encode_images` / `encode_text`.
+    pub fn load_lazy(dir: &Path) -> Result<Self, ClipError> {
+        let manifest = ModelManifest::verify_dir_sizes(dir)?;
+        let weights_path = dir.join("model.safetensors");
+        let st = SafetensorsFile::open(&weights_path)?;
+        let arch = infer_arch(&st, &manifest)?;
+        drop(st);
+
+        let vocab_bytes = std::fs::read(dir.join("vocab.json"))
+            .map_err(|e| TokenizerError::Io { path: dir.join("vocab.json").display().to_string(), message: e.to_string() })?;
+        let merges_str = std::fs::read_to_string(dir.join("merges.txt"))
+            .map_err(|e| TokenizerError::Io { path: dir.join("merges.txt").display().to_string(), message: e.to_string() })?;
+        let tokenizer = Tokenizer::from_json_and_merges(&vocab_bytes, &merges_str, arch.context_len)?;
+
+        Ok(Self { manifest, weights_path, arch, tokenizer, cpu_vision: Mutex::new(None), cpu_text: Mutex::new(None), gpu: Mutex::new(None) })
+    }
+
+    fn ensure_cpu_vision(&self) -> Result<Arc<VisionTower>, JobError> {
+        let mut guard = self.cpu_vision.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(v) = guard.as_ref() {
+            return Ok(Arc::clone(v));
+        }
+        let mut st = SafetensorsFile::open(&self.weights_path).map_err(|e| JobError::Failed(e.to_string()))?;
+        let tower = Arc::new(load_vision_tower(&mut st, self.arch, CandleDevice::Cpu).map_err(|e| JobError::Failed(e.to_string()))?);
+        *guard = Some(Arc::clone(&tower));
+        Ok(tower)
+    }
+
+    fn ensure_cpu_text(&self) -> Result<Arc<TextTower>, JobError> {
+        let mut guard = self.cpu_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(t) = guard.as_ref() {
+            return Ok(Arc::clone(t));
+        }
+        let mut st = SafetensorsFile::open(&self.weights_path).map_err(|e| JobError::Failed(e.to_string()))?;
+        let tower = Arc::new(load_text_tower(&mut st, self.arch, CandleDevice::Cpu).map_err(|e| JobError::Failed(e.to_string()))?);
+        *guard = Some(Arc::clone(&tower));
+        Ok(tower)
+    }
+
+    fn forward_images_on(&self, vision: &VisionTower, batch: &[RgbImage], ctx: &Ctx) -> Result<Vec<Vec<f32>>, JobError> {
         if batch.is_empty() {
             return Ok(Vec::new());
         }
@@ -428,27 +486,26 @@ impl Clip {
             if ctx.device().is_gpu() { JobError::Device(e.to_string()) } else { JobError::Failed(e.to_string()) }
         };
 
-        let x = Tensor::from_vec(flat, (b, 3, h, w), &towers.device).map_err(map_err)?;
+        let x = Tensor::from_vec(flat, (b, 3, h, w), &vision.device).map_err(map_err)?;
         let patches = x
-            .conv2d(&towers.vision.patch_weight, 0, towers.vision.patch_size, 1, 1)
+            .conv2d(&vision.patch_weight, 0, vision.patch_size, 1, 1)
             .and_then(|t| t.flatten_from(2))
             .and_then(|t| t.transpose(1, 2))
             .and_then(|t| t.contiguous())
             .map_err(map_err)?;
 
-        let cls = towers
-            .vision
+        let cls = vision
             .class_embedding
-            .reshape((1, 1, towers.vision.hidden))
-            .and_then(|t| t.broadcast_as((b, 1, towers.vision.hidden)))
+            .reshape((1, 1, vision.hidden))
+            .and_then(|t| t.broadcast_as((b, 1, vision.hidden)))
             .and_then(|t| t.contiguous())
             .map_err(map_err)?;
 
-        let pos = towers.vision.position_embedding.unsqueeze(0).map_err(map_err)?;
+        let pos = vision.position_embedding.unsqueeze(0).map_err(map_err)?;
         let mut hidden =
-            Tensor::cat(&[&cls, &patches], 1).and_then(|t| t.broadcast_add(&pos)).and_then(|t| towers.vision.pre_ln.forward(&t)).map_err(map_err)?;
+            Tensor::cat(&[&cls, &patches], 1).and_then(|t| t.broadcast_add(&pos)).and_then(|t| vision.pre_ln.forward(&t)).map_err(map_err)?;
 
-        for block in &towers.vision.blocks {
+        for block in &vision.blocks {
             ctx.check()?;
             hidden = block.forward(&hidden, None).map_err(map_err)?;
         }
@@ -456,8 +513,8 @@ impl Clip {
         let pooled: Vec<Vec<f32>> = hidden
             .narrow(1, 0, 1)
             .and_then(|t| t.squeeze(1))
-            .and_then(|t| towers.vision.post_ln.forward(&t))
-            .and_then(|t| towers.vision.projection.forward(&t))
+            .and_then(|t| vision.post_ln.forward(&t))
+            .and_then(|t| vision.projection.forward(&t))
             .and_then(|t| t.to_vec2::<f32>())
             .map_err(map_err)?;
 
@@ -471,38 +528,56 @@ impl Clip {
         Ok(out)
     }
 
-    fn forward_text_on(&self, towers: &DeviceTowers, text: &str, ctx: &Ctx) -> Result<Vec<f32>, JobError> {
+    fn forward_text_on(&self, text_tower: &TextTower, text: &str, ctx: &Ctx) -> Result<Vec<f32>, JobError> {
         ctx.check()?;
-        let encoded = self.tokenizer.encode(text);
+        let prompts = if text_tower.context_len >= 16 { prompt_variants(text) } else { vec![text.to_string()] };
+        let b = prompts.len().max(1);
+        let seq = text_tower.context_len;
+        let mut flat_ids = Vec::with_capacity(b * seq);
+        let mut eos_indices = Vec::with_capacity(b);
+        for p in &prompts {
+            let encoded = self.tokenizer.encode(p);
+            eos_indices.push(encoded.eos_index.min(seq.saturating_sub(1)));
+            flat_ids.extend_from_slice(&encoded.ids);
+        }
         let map_err = |e: candle_core::Error| {
             if ctx.device().is_gpu() { JobError::Device(e.to_string()) } else { JobError::Failed(e.to_string()) }
         };
 
-        let ids_tensor = Tensor::from_slice(&encoded.ids, (encoded.ids.len(),), &towers.device).map_err(map_err)?;
-        let tok_emb = towers.text.token_embedding.index_select(&ids_tensor, 0).and_then(|t| t.unsqueeze(0)).map_err(map_err)?;
-        let pos = towers.text.position_embedding.unsqueeze(0).map_err(map_err)?;
+        let ids_tensor = Tensor::from_slice(&flat_ids, (b * seq,), &text_tower.device).map_err(map_err)?;
+        let tok_emb =
+            text_tower.token_embedding.index_select(&ids_tensor, 0).and_then(|t| t.reshape((b, seq, self.arch.text_hidden))).map_err(map_err)?;
+        let pos = text_tower.position_embedding.unsqueeze(0).map_err(map_err)?;
         let mut hidden = tok_emb.broadcast_add(&pos).map_err(map_err)?;
 
-        for block in &towers.text.blocks {
+        for block in &text_tower.blocks {
             ctx.check()?;
-            hidden = block.forward(&hidden, Some(&towers.text.causal_mask)).map_err(map_err)?;
+            hidden = block.forward(&hidden, Some(&text_tower.causal_mask)).map_err(map_err)?;
         }
 
-        let normed = towers.text.final_ln.forward(&hidden).map_err(map_err)?;
-        let eos_idx = encoded.eos_index.min(towers.text.context_len.saturating_sub(1));
-        let pooled = normed
-            .narrow(1, eos_idx, 1)
-            .and_then(|t| t.squeeze(1))
-            .and_then(|t| towers.text.projection.forward(&t))
-            .and_then(|t| t.squeeze(0))
-            .and_then(|t| t.to_vec1::<f32>())
-            .map_err(map_err)?;
-
-        let mut vec = pooled;
-        if !l2_normalize(&mut vec) {
+        let normed = text_tower.final_ln.forward(&hidden).map_err(map_err)?;
+        let mut sum = vec![0.0f32; self.arch.embed_dim];
+        for (row, &eos_idx) in eos_indices.iter().enumerate() {
+            let pooled = normed
+                .narrow(0, row, 1)
+                .and_then(|t| t.narrow(1, eos_idx, 1))
+                .and_then(|t| t.squeeze(1))
+                .and_then(|t| text_tower.projection.forward(&t))
+                .and_then(|t| t.squeeze(0))
+                .and_then(|t| t.to_vec1::<f32>())
+                .map_err(map_err)?;
+            let mut vec = pooled;
+            if !l2_normalize(&mut vec) {
+                return Err(JobError::Failed("text encoder produced non-finite or zero-norm embedding".into()));
+            }
+            for (s, &v) in sum.iter_mut().zip(vec.iter()) {
+                *s += v;
+            }
+        }
+        if !l2_normalize(&mut sum) {
             return Err(JobError::Failed("text encoder produced non-finite or zero-norm embedding".into()));
         }
-        Ok(vec)
+        Ok(sum)
     }
 
     #[cfg(target_os = "macos")]
@@ -585,6 +660,9 @@ impl Clip {
         let mut text_proj = vec![0.0f32; embed_dim * d];
         text_proj[0] = 1.0;
         text_proj[d + 1] = 1.0;
+        // Map dim 2 (carried by the SOT/EOT residual) to axis 2 so unknown queries still
+        // normalize to a valid unit vector orthogonal to image axes 0 and 1.
+        text_proj[2 * d + 2] = 0.2;
 
         let st_bytes = encode_f32_safetensors(&[
             ("vision_model.embeddings.class_embedding", &[d], &cls_emb),
@@ -689,6 +767,37 @@ impl Clip {
     }
 }
 
+/// Expand a user search query into zero-shot CLIP photo prompt variants (Radford et al., ICML 2021 §3.1.4).
+///
+/// CLIP text towers are trained on image captions (`"a photo of …"`); bare nouns (`"human"`, `"dog"`, `"car"`)
+/// otherwise sit in a narrower similarity band and can align with text/signage in images. Wrapping bare queries in
+/// `"a photo of …"` / `"a photo of a …"` and averaging their unit text embeddings boosts visual matches while
+/// pushing unrelated photos well below the filter threshold.
+pub fn prompt_variants(text: &str) -> Vec<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return vec![String::new()];
+    }
+    let lower = trimmed.to_lowercase();
+    for prefix in ["a photo of ", "photo of ", "photos of ", "an image of ", "image of ", "a picture of ", "picture of "] {
+        if lower.starts_with(prefix) {
+            return vec![trimmed.to_string()];
+        }
+    }
+    let has_determiner = ["a ", "an ", "the ", "some ", "two ", "three ", "four ", "many ", "several "].iter().any(|p| lower.starts_with(p));
+    let last_word = lower.split_whitespace().last().unwrap_or("");
+    let is_plural = matches!(last_word, "people" | "men" | "women" | "children")
+        || (last_word.len() > 3 && last_word.ends_with('s') && !last_word.ends_with("ss") && !last_word.ends_with("us"));
+    if has_determiner || is_plural {
+        if last_word == "people" || last_word == "humans" {
+            return vec![format!("a photo of {trimmed}"), "a photo of a person".to_string()];
+        }
+        return vec![format!("a photo of {trimmed}")];
+    }
+    let article = if lower.chars().next().is_some_and(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u')) { "an" } else { "a" };
+    vec![format!("a photo of {trimmed}"), format!("a photo of {article} {trimmed}")]
+}
+
 impl Encoder for Clip {
     fn manifest(&self) -> &ModelManifest {
         &self.manifest
@@ -700,11 +809,12 @@ impl Encoder for Clip {
             self.ensure_gpu_towers()?;
             let guard = self.gpu.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(gpu_towers) = guard.as_ref() {
-                return self.forward_images_on(gpu_towers, batch, ctx);
+                return self.forward_images_on(&gpu_towers.vision, batch, ctx);
             }
         }
-        let _ = (&self.weights_path, &self.arch, &self.gpu);
-        self.forward_images_on(&self.cpu, batch, ctx)
+        let _ = &self.gpu;
+        let vision = self.ensure_cpu_vision()?;
+        self.forward_images_on(&vision, batch, ctx)
     }
 
     fn encode_text(&self, text: &str, ctx: &Ctx) -> Result<Vec<f32>, JobError> {
@@ -713,10 +823,11 @@ impl Encoder for Clip {
             self.ensure_gpu_towers()?;
             let guard = self.gpu.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(gpu_towers) = guard.as_ref() {
-                return self.forward_text_on(gpu_towers, text, ctx);
+                return self.forward_text_on(&gpu_towers.text, text, ctx);
             }
         }
-        self.forward_text_on(&self.cpu, text, ctx)
+        let text_tower = self.ensure_cpu_text()?;
+        self.forward_text_on(&text_tower, text, ctx)
     }
 }
 
@@ -800,6 +911,13 @@ mod tests {
         assert!(sunset_red > sunset_blue + 0.5, "expected sunset to match red ({sunset_red}) > blue ({sunset_blue})");
         assert!(ocean_blue > ocean_red + 0.5, "expected ocean to match blue ({ocean_blue}) > red ({ocean_red})");
 
+        // Lazy loading defers tower weight reads to the worker thread and produces identical embeddings
+        let lazy_clip = Arc::new(Clip::load_lazy(&dir).unwrap());
+        let lazy_sunset = Arc::clone(&lazy_clip);
+        q_text.submit(Job::new("lazy-sunset", move |ctx| lazy_sunset.encode_text("sunset", ctx)).priority(Priority::Interactive)).unwrap();
+        let lazy_sunset_emb = wait_result(&q_text, "lazy-sunset");
+        assert!((cosine(&sunset_emb, &lazy_sunset_emb) - 1.0).abs() < 1e-5);
+
         // Verify tamper detection on weights file
         let weights_path = dir.join("model.safetensors");
         let mut bytes = std::fs::read(&weights_path).unwrap();
@@ -809,5 +927,14 @@ mod tests {
         assert!(matches!(Clip::load(&dir), Err(ClipError::Verify(VerifyError::HashMismatch { .. }))));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prompt_variants_wrap_bare_queries_and_keep_explicit_photo_prompts() {
+        assert_eq!(prompt_variants("Human"), vec!["a photo of Human", "a photo of a Human"]);
+        assert_eq!(prompt_variants("ocean"), vec!["a photo of ocean", "a photo of an ocean"]);
+        assert_eq!(prompt_variants("dogs"), vec!["a photo of dogs"]);
+        assert_eq!(prompt_variants("people"), vec!["a photo of people", "a photo of a person"]);
+        assert_eq!(prompt_variants("a photo of a cat"), vec!["a photo of a cat"]);
     }
 }

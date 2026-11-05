@@ -1195,7 +1195,7 @@ pub(crate) fn fs_cached<T: Clone + Send + 'static>(ui: &egui::Ui, kind: &'static
 /// tree (Pictures on its own and inside Home): each row opens and closes by itself, and their
 /// triangles have ids of their own, else the copy drawn last takes the other's clicks (#1093).
 #[allow(clippy::too_many_arguments)]
-fn folder_tree(
+pub(crate) fn folder_tree(
     app: &mut LccApp,
     ui: &mut egui::Ui,
     place: &str,

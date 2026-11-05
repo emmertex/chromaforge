@@ -1077,7 +1077,7 @@ fn dropped_import_params(app: &LccApp) -> Value {
 pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
     ctx.request_repaint();
     if app.lightroom.is_some() {
-        app.toast(ctx, crate::i18n::tr("Finish Lightroom catalog import before adding photos"));
+        app.toast(ctx, crate::i18n::tr("Finish the catalog import before adding photos"));
         return;
     }
     // an import (or a scan, a review waiting behind a dialog) stays the one that runs: a drop
@@ -2231,14 +2231,28 @@ fn camera_profile_options(camera: Option<&str>) -> Vec<(String, String)> {
     options
 }
 
+/// A camera profile menu across the column, its list as wide as its longest name (within the
+/// screen): a narrow menu cut "R5 C · 74 (4)"'s profiles to a few letters.
 fn profile_combo(ui: &mut egui::Ui, id: &str, options: &[(String, String)], value: &mut String) {
     let cur = options.iter().find(|(o, _)| o == value).map(|(_, n)| n.clone()).unwrap_or_else(|| value.clone());
-    let combo = crate::widgets::combo_box(id.to_string()).selected_text(cur).height(300.0).show_ui(ui, |ui| {
+    let list_w = combo_list_width(ui, options.iter().map(|(_, n)| n.as_str()));
+    let width = ui.available_width().max(120.0);
+    let combo = crate::widgets::combo_box(id.to_string()).selected_text(cur).width(width).height(300.0).show_ui(ui, |ui| {
+        ui.set_min_width(list_w);
         for (o, name) in options {
             ui.selectable_value(value, o.clone(), name);
         }
     });
     register(ui.ctx(), format!("combo:{id}"), combo.response.rect);
+}
+
+/// The width a drop-down's list needs to show the longest of `names` whole, within the screen.
+pub(crate) fn combo_list_width<'a>(ui: &egui::Ui, names: impl Iterator<Item = &'a str>) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let t = Tokens::get(ui.ctx());
+    let widest = names.map(|n| ui.painter().layout_no_wrap(n.to_string(), font.clone(), t.text).size().x).fold(0.0_f32, f32::max);
+    let want = widest + ui.spacing().button_padding.x * 2.0 + ui.spacing().scroll.bar_width + 12.0;
+    want.min((ui.ctx().content_rect().width() - 32.0).max(120.0))
 }
 
 /// Camera Profile: automatic (each body's own, else the camera's default) with a row per camera
@@ -2254,6 +2268,12 @@ pub(crate) fn camera_profile_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mu
         }
     };
     row(ui, "Camera Profile", &mut |ui| profile_combo(ui, "importCameraProfile", &camera_profile_options(None), &mut d.camera_profile));
+    // browsed photos preview the choice as the import will apply it (`Session::browse_profile`)
+    app.session.import_profile_choice = if d.camera_profile.is_empty() {
+        lcc_engine::profile_bodies::ImportProfile::PerBody(d.per_body.clone())
+    } else {
+        lcc_engine::profile_bodies::ImportProfile::All(d.camera_profile.clone())
+    };
     if !d.camera_profile.is_empty() {
         return;
     }
@@ -2361,9 +2381,15 @@ pub(crate) fn preset_stack_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut 
     }
     let add_label = crate::i18n::tr(if d.presets.is_empty() { "Add a preset…" } else { "Add another preset…" }).to_string();
     let mut added: Option<String> = None;
+    let mut manage = false;
     row(ui, if n == 0 { "Presets" } else { "" }, &mut |ui: &mut egui::Ui| {
+        let manage_w =
+            ui.painter().layout_no_wrap(crate::i18n::tr("Manage Presets…").to_string(), egui::TextStyle::Button.resolve(ui.style()), t.text).size().x
+                + ui.spacing().button_padding.x * 2.0;
+        let combo_w = (ui.available_width() - manage_w - ui.spacing().item_spacing.x - 2.0).max(120.0);
         let combo = crate::widgets::combo_box("import-preset")
             .selected_text(add_label.as_str())
+            .width(combo_w)
             .height(300.0)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show_ui(ui, |ui| {
@@ -2373,7 +2399,14 @@ pub(crate) fn preset_stack_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut 
                 }
             });
         register(ui.ctx(), "combo:importPresetAdd", combo.response.rect);
+        // the presets themselves: folders, hide, import (Presets Manager)
+        if crate::widgets::text_button(ui, "importPresetsManage", "Manage Presets…", false).clicked() {
+            manage = true;
+        }
     });
+    if manage && let Err(e) = app.run("dialog.presetsManager", serde_json::json!({})) {
+        app.toast(ui.ctx(), e);
+    }
     if let Some(pid) = added {
         d.presets.push(pid);
     }

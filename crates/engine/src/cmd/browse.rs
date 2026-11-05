@@ -251,7 +251,23 @@ fn add_to_library(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"added": 0}));
     }
     let n = ids.len();
-    let ops = ids.into_iter().map(|id| Op::SetLocal { id, local: false }).collect();
+    let mut ops: Vec<Op> = Vec::new();
+    for id in ids {
+        ops.push(Op::SetLocal { id, local: false });
+        let Some(ph) = s.catalog.photo(id) else { continue };
+        // the camera profile it was shown with (`Session::browse_profile`) and the serial its file
+        // states, as an import keeps them
+        if let Some(serial) = s.missing_serial(ph, true) {
+            let mut meta = ph.meta.clone();
+            meta.camera_serial = serial;
+            ops.push(Op::SetMeta { id, meta: Box::new(meta) });
+        }
+        if let Some(camera) = s.import_profile_for(ph, &s.import_profile_choice, true) {
+            let mut d = (*ph.develop).clone();
+            d.profile.camera = camera;
+            ops.push(Op::SetDevelop { id, settings: std::sync::Arc::new(d), label: "Camera Profile".into(), edited: ph.edited.clone() });
+        }
+    }
     s.commit("Add to My Photos", Op::Batch { ops })?;
     Ok(json!({"added": n}))
 }

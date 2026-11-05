@@ -164,6 +164,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.fullScreenPreview", "Full Screen Preview", Some("F"), "Window>Screen Mode"),
     ("view.enterFullScreen", "Enter Full Screen", Some("Cmd+Shift+F"), "Window>Screen Mode"),
     ("view.infoOverlay", "Cycle Info Overlay", Some("Cmd+I"), "View>Loupe Info"),
+    ("view.shotInfo", "Shot Info", Some("Shift+I"), "View>Loupe Info"),
     ("view.viewOptions", "View Options…", None, "View>Loupe Info"),
     ("view.chooseLayoutImage", "Choose Layout Image…", None, "View"),
     ("view.layoutImage", "Layout Image", Some("Cmd+Alt+O"), "View"),
@@ -276,6 +277,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.newSmartAlbum", "New Smart Collection from Filter…", Some("Cmd+Alt+N"), "Library"),
     ("dialog.createPreset", "Create Preset…", Some("Cmd+Shift+P"), "Photo>Develop Settings"),
     ("dialog.presetsManager", "Manage Presets…", None, "Photo>Develop Settings"),
+    // {query?}: the Profile Manager (looks, LUT profiles and camera profiles: hide, delete, rename)
+    ("dialog.profileManager", "Manage Profiles…", None, "Photo>Develop Settings"),
     ("dialog.autoStack", "Auto-Stack by Capture Time…", None, "Photo>Stack"),
     ("dialog.copySettings", "Choose Edit Settings to Copy…", Some("Cmd+Shift+C"), "Photo>Develop Settings"),
     // {id}: Update Preset with Current Settings, pre-ticked with what the preset holds
@@ -323,7 +326,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("file.addFolder", "Import from Folder…", None, "File"),
     // {path?, into?: open | new, name?, location?}: asks where the catalog goes unless `into` (or
     // Settings) says (#2672, `lightroom_destination`)
-    ("file.importLightroom", "Import Lightroom Catalog…", None, "File>More Imports"),
+    ("file.importLightroom", "Import Lightroom or Capture One Catalog…", None, "File>More Imports"),
     ("file.importImmich", "Import from Immich…", None, "File>More Imports"),
     ("immich.connections", "Immich Settings…", None, "Library>Immich"),
     ("file.addFromDevice", "Import from Device", None, ""),
@@ -973,6 +976,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 app.ui.slideshow = None;
             } else if !app.ui.tool.is_empty() {
                 app.ui.tool.clear();
+                // a tool waiting for a new mask is put away with it (the mask selected before comes back)
+                app.ui.mask_new = None;
             } else if app.ui.right == RightPanel::Crop && app.ui.view == ViewMode::Detail {
                 // Esc leaves the crop tool (the crop stays), as C does; the next Esc goes back
                 panel(app, &ctx, RightPanel::Crop, "Crop, Rotate, Geometry");
@@ -1204,6 +1209,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.filmstrip = !app.ui.filmstrip;
             Ok(Value::Null)
         }
+        "view.shotInfo" => {
+            // {on?: bool} (toggles when omitted): the line of shot info under the loupe's photo
+            app.ui.shot_info = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.shot_info);
+            Ok(json!({"on": app.ui.shot_info}))
+        }
         "view.frameRate" => {
             // {show?: bool} (toggles when omitted)
             app.ui.frame_rate = p.get("show").and_then(Value::as_bool).unwrap_or(!app.ui.frame_rate);
@@ -1250,8 +1260,17 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.before_after = if app.ui.before_after == BeforeAfter::SplitTopBottom { BeforeAfter::Off } else { BeforeAfter::SplitTopBottom };
             Ok(Value::Null)
         }
+        // {on?}: the photo without its edit while on (the Compact histogram's Original Photo box);
+        // no params toggles
         "view.showOriginal" => {
-            app.ui.before_after = if app.ui.before_after == BeforeAfter::Original { BeforeAfter::Off } else { BeforeAfter::Original };
+            let shown = app.ui.before_after == BeforeAfter::Original;
+            let on = match bool_param(id, p, "on") {
+                Ok(v) => v.unwrap_or(!shown),
+                Err(e) => return Some(Err(e)),
+            };
+            if on != shown {
+                app.ui.before_after = if on { BeforeAfter::Original } else { BeforeAfter::Off };
+            }
             Ok(Value::Null)
         }
         "view.zoomFit" => {
@@ -1986,6 +2005,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.dialog = Some(Dialog::PresetsManager { query, confirm: None, rename: None });
             Ok(Value::Null)
         }
+        "dialog.profileManager" => {
+            let query = p.get("query").and_then(Value::as_str).unwrap_or("").to_string();
+            app.ui.dialog = Some(Dialog::ProfileManager { query, confirm: None, rename: None });
+            Ok(Value::Null)
+        }
         "dialog.pasteSettings" => {
             let groups = app.session.dialogs.copy.to_ids();
             app.ui.dialog = Some(Dialog::PasteSettings { groups });
@@ -2317,8 +2341,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             let path = match p.get("path").and_then(Value::as_str).map(str::to_string) {
                 Some(path) => Some(path),
                 None => {
-                    let req =
-                        PickRequest::file(crate::i18n::tr("Import Lightroom Catalog"), crate::i18n::tr("Lightroom Classic Catalog"), &["lrcat"]);
+                    let req = PickRequest::file(
+                        crate::i18n::tr("Import Lightroom or Capture One Catalog"),
+                        crate::i18n::tr("Lightroom or Capture One Catalog"),
+                        &["lrcat", "cocatalogdb"],
+                    )
+                    .with_filter(crate::i18n::tr("Lightroom Classic Catalog"), &["lrcat"])
+                    .with_filter(crate::i18n::tr("Capture One Catalog"), &["cocatalogdb"]);
                     match crate::pick::ask(app, id, p, "path", req, |s| s.pick_lightroom_catalog.as_mut().and_then(|f| f()).map(|x| vec![x])) {
                         Picked::Now(v) => v.into_iter().next(),
                         Picked::Later | Picked::Unavailable => None,

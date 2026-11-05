@@ -43,9 +43,9 @@ pub fn look_first(v: Verdict) -> u8 {
     }
 }
 
-/// The most photos after the one on screen whose eyes are found ahead (fixed:
-/// the app has no preparation scheduler to set it).
-pub const AHEAD: usize = 3;
+/// The most photos after the one on screen whose eyes are found ahead (how many is set in
+/// Settings ▸ Performance ▸ Prepare photos in the background: `prep::ModePrep::eye_ahead`).
+pub const AHEAD: usize = lcc_engine::prep::MAX_AHEAD as usize;
 
 /// What the strip keeps between frames.
 #[derive(Default)]

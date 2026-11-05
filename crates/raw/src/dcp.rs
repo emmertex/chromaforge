@@ -107,6 +107,27 @@ impl Dcp {
             gain_table_map: color.profile.gain_table_map.take(),
         };
     }
+
+    /// Whether the profile carries a look of its own beside its calibration: a `ProfileLookTable`, or a
+    /// `ProfileToneCurve` that isn't the identity (some profiles carry an identity curve only to stop
+    /// converters adding theirs).
+    pub fn has_look(&self) -> bool {
+        let p = &self.color.profile;
+        p.look_table.is_some()
+            || p.tone_curve.as_ref().is_some_and(|c| (0..=32u8).any(|i| (c.eval(f32::from(i) / 32.0) - f32::from(i) / 32.0).abs() >= 0.005))
+    }
+
+    /// [`Self::apply`] with `look` false: only the profile's calibration (matrices, illuminants, baseline exposure,
+    /// hue/saturation map), without its look table and tone curve. One of the app's looks sits on the calibration
+    /// alone, so the profile's look isn't stacked under it (OneSlips, LR-PROF-LAYERS: "As profile" is the profile
+    /// with its own look; any other look gets its calibration only).
+    pub fn apply_with(&self, color: &mut ColorData, look: bool) {
+        self.apply(color);
+        if !look {
+            color.profile.look_table = None;
+            color.profile.tone_curve = None;
+        }
+    }
 }
 
 /// Upper-cased words, so `NIKON Z 50`, `Nikon  Z 50` and `NIKON_Z_50` compare equal.

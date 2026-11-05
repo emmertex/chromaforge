@@ -274,6 +274,25 @@ impl ModelManifest {
         Ok(manifest)
     }
 
+    /// Read `<dir>/manifest.json` and verify the exact byte size of every declared file without re-computing
+    /// SHA-256 over multi-hundred-megabyte weights on the UI thread (full SHA-256 verification runs on install/download).
+    pub fn verify_dir_sizes(dir: &Path) -> Result<Self, VerifyError> {
+        let manifest = Self::read_dir(dir)?;
+        for f in &manifest.files {
+            let file_path = dir.join(&f.name);
+            let meta =
+                std::fs::metadata(&file_path).map_err(|e| VerifyError::Io { path: file_path.display().to_string(), message: e.to_string() })?;
+            let actual_size = meta.len();
+            if actual_size > MAX_MODEL_BYTES {
+                return Err(VerifyError::FileTooLarge { name: f.name.clone(), max: MAX_MODEL_BYTES });
+            }
+            if actual_size != f.size_bytes {
+                return Err(VerifyError::SizeMismatch { name: f.name.clone(), expected: f.size_bytes, actual: actual_size });
+            }
+        }
+        Ok(manifest)
+    }
+
     /// Validate all fields, bounds, file names and hashes.
     pub fn validate(&self) -> Result<(), ManifestError> {
         if self.version != MANIFEST_VERSION {

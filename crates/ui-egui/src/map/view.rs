@@ -35,10 +35,9 @@ pub fn screen_to_geo(m: &MapUi, r: Rect, s: Pos2) -> LatLon {
 /// The Map module's centre: filter bar, map canvas, side panel; the filmstrip below.
 pub fn center(ui: &mut egui::Ui, app: &mut LccApp) {
     app.map.start(app.headless_host);
-    let t = Tokens::get(ui.ctx());
     let mut area = ui.available_rect_before_wrap();
     if edge_visible(app, Edge::Bottom) {
-        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - t.film_h), area.max);
+        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - app.ui.film_height()), area.max);
         area.max.y = film.top();
         crate::panels::detail::filmstrip(app, ui, film);
     }
