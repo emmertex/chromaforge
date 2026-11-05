@@ -252,7 +252,9 @@ impl Reader {
                     }
                     let a = t.audio().cloned().unwrap_or_default();
                     let dec = match t.codec() {
-                        Some(CodecConfig::Aac(c)) => filmcraft_aac::Decoder::new(&c.asc).ok().map(|dec| (Dec::Aac { dec: Box::new(dec), adts: false }, "aac")),
+                        Some(CodecConfig::Aac(c)) => {
+                            filmcraft_aac::Decoder::new(&c.asc).ok().map(|dec| (Dec::Aac { dec: Box::new(dec), adts: false }, "aac"))
+                        }
                         Some(CodecConfig::Opus(c)) => opus_from_mp4(c, a.channels).map(|d| (Dec::Opus(d), "opus")),
                         Some(CodecConfig::Ac3 { .. }) => Some((Dec::Ac3(Box::default()), "ac3")),
                         Some(CodecConfig::Eac3 { .. }) => Some((Dec::Ac3(Box::default()), "eac3")),
