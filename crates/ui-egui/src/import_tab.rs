@@ -672,7 +672,12 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
     let folder = app.session.browse.as_ref().filter(|_| browsing).map(|b| b.path.clone());
     let button_w = if wide { 220.0 } else { 150.0 };
     let segs_w = if wide { 190.0 } else { 0.0 };
-    let room = (row.available_width() - button_w - segs_w - 24.0).max(40.0);
+    let mut room = (row.available_width() - button_w - segs_w - 24.0).max(40.0);
+    // the folders above it as a breadcrumb (OneSlips LR-IMP-WINDOW 6e4fa44d0): each opens, those that don't fit
+    // go under "…", whose menu lists them
+    if let Some(f) = &folder {
+        room = (room - folder_crumbs(app, &mut row, f, room * 0.5)).max(40.0);
+    }
     let text = match &folder {
         Some(f) => {
             let name = std::path::Path::new(f).file_name().map_or_else(|| f.clone(), |n| n.to_string_lossy().to_string());
@@ -701,6 +706,80 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
             take_segments(app, ui);
         }
     });
+}
+
+/// The browsed folder's parents, nearest last, as a breadcrumb in the bar at most `max_w` wide (widgets
+/// `importCrumb:{i}`, `i` the folder's place in the path; `importCrumb:more` for "…"): a click on one opens it. The
+/// parents that don't fit, from the top of the path down, are listed by "…"'s menu. → the width it took.
+fn folder_crumbs(app: &mut LccApp, ui: &mut egui::Ui, path: &str, max_w: f32) -> f32 {
+    let t = Tokens::get(ui.ctx());
+    let crumbs = crate::panels::grid::crumbs(path);
+    // every folder above the browsed one (the last part is the bar's own label)
+    let parents = crumbs.len().saturating_sub(1);
+    if parents == 0 || !max_w.is_finite() || max_w <= 0.0 {
+        return 0.0;
+    }
+    let font = t.font(12.5);
+    let sep_w = 14.0 + 2.0 * ui.spacing().item_spacing.x;
+    let painter = ui.painter().clone();
+    let width = |s: &str| painter.layout_no_wrap(s.to_string(), font.clone(), t.text_label).size().x.min(140.0);
+    let dots_w = width("…") + sep_w;
+    // the nearest parents that fit, keeping room for "…" when any are left out
+    let mut shown = 0;
+    let mut used = 0.0;
+    for (name, _) in crumbs.iter().take(parents).rev() {
+        let w = width(name) + sep_w;
+        let need = if shown + 1 < parents { dots_w } else { 0.0 };
+        if used + w + need > max_w {
+            break;
+        }
+        used += w;
+        shown += 1;
+    }
+    let hidden = parents - shown;
+    let start = ui.cursor().left();
+    let separator = |ui: &mut egui::Ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(14.0, 20.0), Sense::hover());
+        crate::icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(12.0, 12.0)), crate::icons::Icon::ChevronRight, t.text_dim);
+    };
+    let mut open: Option<String> = None;
+    if hidden > 0 {
+        let dots = ui.add(egui::Label::new(egui::RichText::new("…").font(font.clone()).color(t.text_dim)).sense(Sense::click()));
+        register(ui.ctx(), "importCrumb:more", dots.rect);
+        if dots.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let dots = dots.on_hover_text(path);
+        egui::Popup::menu(&dots).show(|ui| {
+            for (i, (name, to)) in crumbs.iter().enumerate().take(hidden) {
+                let item = ui.button(*name);
+                register(ui.ctx(), format!("importCrumb:{i}"), item.rect);
+                if item.on_hover_text(to).clicked() {
+                    open = Some(to.clone());
+                    ui.close();
+                }
+            }
+        });
+        separator(ui);
+    }
+    for (i, (name, to)) in crumbs.iter().enumerate().take(parents).skip(hidden) {
+        let r = ui.add_sized(
+            vec2(width(name), 20.0),
+            egui::Label::new(egui::RichText::new(*name).font(font.clone()).color(t.text_label)).truncate().sense(Sense::click()),
+        );
+        register(ui.ctx(), format!("importCrumb:{i}"), r.rect);
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if r.on_hover_text(to).clicked() {
+            open = Some(to.clone());
+        }
+        separator(ui);
+    }
+    if let Some(to) = open {
+        browse(app, ui.ctx(), &to);
+    }
+    (ui.cursor().left() - start).max(0.0)
 }
 
 /// Picks / Selected / All: what the big button takes.

@@ -488,3 +488,45 @@ fn manage_presets_opens_the_presets_manager() {
     h.settle(SETTLE);
     assert!(h.app.ui.dialog.is_some(), "a dialog is open: {:?}", h.app.ui.dialog);
 }
+
+/// The Import bar names the browsed folder after its parents as a breadcrumb (OneSlips LR-IMP-WINDOW 6e4fa44d0): the
+/// nearest parent opens with a click; on a narrow bar the parents that don't fit go under "…", whose menu lists them,
+/// and each one opens.
+#[test]
+fn the_import_bar_shows_the_folder_as_a_breadcrumb() {
+    let deep_root = folder("crumbs", 0);
+    let deep = deep_root.join("a").join("b").join("c").join("d").join("e");
+    std::fs::create_dir_all(&deep).unwrap();
+    let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
+    let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 40, 255]);
+    std::fs::write(deep.join("p.png"), lcc_engine::export::encode_image(&img, &o).unwrap()).unwrap();
+    let crumbs: Vec<String> = crate::panels::grid::crumbs(&deep.to_string_lossy()).into_iter().map(|(_, to)| to).collect();
+    let parent = crumbs.len() - 2;
+
+    let mut h = app([1600.0, 900.0], "compact");
+    exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
+    assert_eq!(h.app.ui.tab, Tab::Import);
+    let id = format!("importCrumb:{parent}");
+    assert!(has_widget(&mut h, &id), "the nearest parent {id} is in the bar");
+    assert!(!has_widget(&mut h, &format!("importCrumb:{}", crumbs.len() - 1)), "the folder itself is the bar's label");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": id}), T)["ok"], true);
+    h.settle(SETTLE);
+    let browsed = h.app.session.browse.as_ref().map(|b| std::path::PathBuf::from(&b.path));
+    assert_eq!(browsed.as_deref(), Some(deep.parent().unwrap()), "the parent opens");
+
+    // narrow: the top of the path hides under "…", and its menu opens a hidden folder
+    let mut h = app([900.0, 700.0], "compact");
+    exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
+    assert!(has_widget(&mut h, "importCrumb:more"), "the parents that don't fit are under …");
+    assert!(!has_widget(&mut h, "importCrumb:0"), "the first folder is hidden until the menu opens");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "importCrumb:more"}), T)["ok"], true);
+    assert!(has_widget(&mut h, "importCrumb:0"), "the menu lists it");
+    let top = crumbs.len() - 6;
+    let id = format!("importCrumb:{top}");
+    assert!(has_widget(&mut h, &id), "the menu lists {id}");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": id}), T)["ok"], true);
+    h.settle(SETTLE);
+    let browsed = h.app.session.browse.as_ref().map(|b| std::path::PathBuf::from(&b.path));
+    assert_eq!(browsed.as_deref(), Some(deep_root.as_path()), "the hidden folder opens");
+    let _ = std::fs::remove_dir_all(&deep_root);
+}
