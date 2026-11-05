@@ -1202,6 +1202,11 @@ impl LccApp {
         if matches!(id, "mask.select" | "library.select") {
             self.cancel_brush_gesture();
         }
+        // a MIDI turn still open when anyone else starts an interaction is closed first: its idle
+        // timeout would otherwise end the new interaction instead (the turn's own begin finds none open)
+        if id == "develop.beginInteraction" {
+            self.end_midi_interaction();
+        }
         if let Some(r) = edit_in::intercept(self, id, &params) {
             return r.map_err(CommandError::from);
         }

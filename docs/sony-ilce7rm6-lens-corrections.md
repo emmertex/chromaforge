@@ -5,7 +5,7 @@ chromatic aberration (CA). The app reads them and turns distortion into a DNG `W
 reaches the same **Optics ▸ Enable Lens Corrections** (`optics.lens_profile`) as a DNG's embedded warp and Panasonic's
 RW2 distortion data. Lateral CA is parsed and converts to the warp's red and blue planes, but it is **off by default**:
 applied after demosaic it made the render's CA worse (Verification). Vignetting is read but not applied (below). The
-conversion is verified on the **ILCE-7RM6** only; the ILCE-7RM4A has its own conversion, with other conventions
+conversion is verified on the **ILCE-7RM6** and, for distortion, the APS-C **ZV-E10** ([ZV-E10](#zv-e10)); the ILCE-7RM4A has its own conversion, with other conventions
 ([Two conventions](#two-conventions)), and other Sony bodies' tables give no correction until they are verified.
 
 The correction is on by default for new imports, as for any file with embedded lens data (`Photo::camera_defaults`).
@@ -101,13 +101,35 @@ the photo (portrait files are covered) and is carried by DNG export, as RW2's is
 
 ## Which bodies get it
 
-Only bodies listed in `FULL_FRAME_CROP` (`arw_lens_rm6.rs`) get an opcode: today `ILCE-7RM6` (9984 × 6656). The unit and
+Only bodies on one of two allowlists in `arw_lens_rm6.rs` get an opcode: `FULL_FRAME_CROP` (today `ILCE-7RM6`, 9984 × 6656) and `APSC_BODIES` (today `ILCE-6700` and `ZV-E10`, each with its own distortion unit, [ZV-E10](#zv-e10)). For `APSC_BODIES` the knots span the file's own default crop: spacing = its half diagonal / (knot count − 1). The unit and
 the knot spacing are verified on that body alone; the spacing is defined by its full-frame crop, and a body with
 another sensor size or another unit would be warped wrongly. Other bodies get no correction from this conversion; the
 ILCE-7RM4A gets its own, with other conventions (below). To add a body: collect photos of it shot with distortion
 correction on (several lenses and focal lengths), repeat the camera-JPEG registration below against the uncorrected
 render, confirm the unit, the knot spacing and the zoom rule (or measure the body's own), then add its full-frame
 default crop to the table with a test.
+
+## ZV-E10
+
+The ZV-E10 (APS-C, 6000 × 4000 default crop at (12, 12) in 6048 × 4024 storage) writes 11-knot tables, zero-padded to
+the same 17 values. Measured as above on 4 photos shot with distortion correction Auto (the E PZ 16-50 mm F3.5-5.6 OSS,
+which forces it; the contributor's own photos, only the summary numbers here): 2 at 16 mm, 1 at 29 mm (portrait) and
+1 at 32 mm. Feature matches between the uncorrected render and the camera JPEG, the camera's map applied to the render's
+points in a scan of knot spacing 340–380 px and unit 15000–17800:
+
+| | p95 residual at 1440 px |
+|---|---|
+| Uncorrected | 2.7–18.7 px (16 mm: 18.6–18.7 px) |
+| Half diagonal / 10 = 360.56 px, unit 15000 (the ILCE-6700's), as rendered | 0.45–2.18 px: the 16 mm photos over-corrected by about 9 % |
+| Sensor-fixed 400 px, unit 16384 | 0.43–3.21 px |
+| **Half diagonal / 10 = 360.56 px, unit 16384** (exact table) | **0.27–0.61 px** |
+| The same as rendered (`<cli> render`, Enable Lens Corrections on, fitted polynomial) | **0.26–0.64 px** (median residual 0.07–0.36 px) |
+
+At 360.56 px every unit from 16300 to 17000 lands within 0.60–0.64 px worst (the measurement's floor on these scenes);
+spacing and unit trade off along a ridge, so the body keeps the crop-based spacing and takes its own unit, 16384, in
+`APSC_BODIES`. The fitted polynomial passes the 0.5 px APS-C fit gate on all four tables, the strongest (16 mm, −1905 at
+the last knot) included. An HDR merge of a ZV-E10 bracket keeps the warp in the merged DNG's `OpcodeList3`, as for any
+raw with embedded corrections.
 
 ## Two conventions
 
@@ -287,10 +309,13 @@ the resampled source by the source, framing and output size, so tone, colour and
 
 ## Limits
 
-- **ILCE-7RM6 only.** Other Sony bodies record the same tags; their knot spacing (defined here by the full-frame crop),
+- **ILCE-7RM6 and the APS-C ZV-E10 only.** Other Sony bodies record the same tags; their knot spacing (defined here by the full-frame crop),
   unit and zoom rule are unverified, so they get no correction from this conversion (the ILCE-7RM4A's distortion has
   its own: [Two conventions](#two-conventions)).
-- **APS-C distortion is unverified in camera:** no APS-C photo with distortion correction on was available; the APS-C
+- **ZV-E10: one lens, four photos.** Only the E PZ 16-50 mm (16–32 mm) is measured. Its unit, 16384, differs from
+  the ILCE-6700's 15000, so the unit may belong to the lens rather than the body. Other lenses on the ZV-E10 are
+  unmeasured and take 16384. The ZV-E10M2 (another sensor) is not covered.
+- **APS-C distortion is unverified in camera on the ILCE-7RM6:** no APS-C photo with distortion correction on was available; the APS-C
   knot spacing is verified on CA only, and the APS-C zoom follows the full-frame rule.
 - **Aspect-ratio crops** (in-camera 4:3, 16:9, 1:1) were not measured; the correction uses the crop the file records.
 - **One distortion unit for every lens.** Fitted per lens the unit is 14826 (24–70 mm, 23 photos, very consistent),

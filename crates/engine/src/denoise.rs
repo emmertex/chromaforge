@@ -2072,7 +2072,8 @@ impl Session {
     }
 }
 
-#[cfg(all(test, feature = "denoise"))]
+#[cfg(test)]
+#[cfg(feature = "denoise")]
 mod gpu_tests {
     use super::*;
     use lcc_denoise::manifest::{Domain, Gain};

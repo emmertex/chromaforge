@@ -358,7 +358,8 @@ pub fn unflatten(img: &Rgb32f, alpha: &Plane) -> Option<Rgb32f> {
     for (p, &av) in out.data.iter_mut().zip(&alpha.data) {
         if av.is_finite() && av >= VISIBLE {
             let av = av.min(1.0);
-            *p = p.map(|f| (f - (1.0 - av)) / av);
+            // (clamped at 0: a prefilter's negative lobe next to an edge, divided by a small alpha, undershoots)
+            *p = p.map(|f| ((f - (1.0 - av)) / av).max(0.0));
         }
     }
     Some(out)
