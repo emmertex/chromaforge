@@ -886,6 +886,8 @@ fn load_bytes_now(
     }
     let d = lcc_codecs::decode(&bytes, fit_box(max_edge)).map_err(|e| e.to_string())?;
     drop(bytes);
+    // the denoised picture of a finished picture, brought to this decode's size and through the same conversion
+    let twin = denoise.and_then(|spec| denoised_finished(&d, spec));
     let img = d.to_working();
     let orientation = Orientation::from_exif(d.orientation);
     // the transparency, fitted and oriented with the pixels, for exports that keep it (issue #2976);
@@ -896,8 +898,43 @@ fn load_bytes_now(
         let a = if a.width.max(a.height) > max_edge { fit(&a, max_edge, max_edge, Filter::Mitchell) } else { a };
         Arc::new(a.into_oriented(orientation))
     });
-    let img = if img.width.max(img.height) > max_edge { fit(&img, max_edge, max_edge, Filter::Mitchell) } else { img };
-    Ok((img.into_oriented(orientation), None, SourceInfo { alpha, ..SourceInfo::default() }, false))
+    let finish = |img: Rgb32f| {
+        let img = if img.width.max(img.height) > max_edge { fit(&img, max_edge, max_edge, Filter::Mitchell) } else { img };
+        img.into_oriented(orientation)
+    };
+    let img = finish(img);
+    let twin = twin.map(finish).filter(|t| t.width == img.width && t.height == img.height);
+    Ok((img, twin, SourceInfo { alpha, ..SourceInfo::default() }, false))
+}
+
+/// The cached denoised picture of a finished picture (gamma-encoded sRGB at the file's full size, see
+/// `crate::denoise`), at the size of `d` (a reduced decode is matched by binning and resampling) and in the working
+/// space, as [`lcc_codecs::Decoded::to_working`] has `d`. `None` when the product is missing, damaged, made from
+/// something else or not the shape of this picture.
+fn denoised_finished(d: &lcc_codecs::Decoded, spec: &DenoiseSpec) -> Option<Rgb32f> {
+    use lcc_denoise::product;
+    let header = product::read_header_at(&spec.product).ok()?;
+    let (w, h) = (d.image.width, d.image.height);
+    if header.key != spec.key || w == 0 || h == 0 || header.width < w || header.height < h {
+        return None;
+    }
+    // the same picture: the aspect ratios agree to within the rounding of a reduced decode
+    let (fw, fh) = (header.width as f64 / w as f64, header.height as f64 / h as f64);
+    if (fw - fh).abs() > 0.02 * fw.max(fh) + 2.0 / (w.min(h) as f64) {
+        return None;
+    }
+    let factor = (header.width / w).min(header.height / h).max(1);
+    let encoded = product::read(&spec.product, &spec.key, factor).ok()?;
+    let encoded = if (encoded.width, encoded.height) == (w, h) { encoded } else { lcc_raster::resample::resize(&encoded, w, h, Filter::Mitchell) };
+    let linear = encoded.map(|p| p.map(lcc_color::transfer::srgb_to_linear));
+    let m = lcc_codecs::SourceSpace::named(lcc_codecs::NamedSpace::Srgb, lcc_codecs::SpaceOrigin::Untagged).to_working().to_f32();
+    Some(linear.map(|p| {
+        [
+            m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2],
+            m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2],
+            m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2],
+        ]
+    }))
 }
 
 /// Which white-balance scale a raw is edited on, decided from the file alone, the way the catalog decides it from

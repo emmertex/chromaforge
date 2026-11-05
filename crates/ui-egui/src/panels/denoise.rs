@@ -258,7 +258,11 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if !runtime {
         hint(ui, t, "This build cannot run other denoise models.");
     }
-    hint(ui, t, "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.");
+    hint(
+        ui,
+        t,
+        "Works on raw files from cameras with a standard (Bayer) sensor, and on JPEG, PNG, TIFF and other finished pictures with a model made for them. Other raw files keep their normal noise reduction.",
+    );
     hint(ui, t, "Denoise models are downloaded and chosen under Settings ▸ AI Models.");
     if ui.link(tr("Open AI Models")).clicked() {
         let _ = app.run("app.settings", json!({"tab": "ai"}));
@@ -480,6 +484,8 @@ fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Opt
                         ui.label(RichText::new(tr("installed")).color(t.text_dim));
                     }
                 });
+                let made_for = if m["domain"] == "rgbToRgb" { tr("For JPEG and other finished pictures") } else { tr("For raw photos") };
+                ui.label(RichText::new(made_for).font(t.font(11.5)).color(t.text_dim));
                 ui.label(RichText::new(licence_line(m)).font(t.font(11.5)).color(if m["licence"]["commercial"] == "yes" {
                     t.text_dim
                 } else {
@@ -533,7 +539,8 @@ fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Opt
                         let r = ui.button(tr("Stop using"));
                         register(ui.ctx(), format!("denoise:off:{id}"), r.rect);
                         if r.clicked() {
-                            let _ = app.run("denoise.models.select", json!({"id": null}));
+                            let kind = if m["domain"] == "rgbToRgb" { "rgb" } else { "raw" };
+                            let _ = app.run("denoise.models.select", json!({"id": null, "kind": kind}));
                             app.caches.denoise.epoch += 1;
                         }
                     } else {
