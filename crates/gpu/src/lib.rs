@@ -59,6 +59,8 @@ mod render;
 #[cfg(not(target_arch = "wasm32"))]
 mod slot;
 #[cfg(not(target_arch = "wasm32"))]
+mod strokes;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod video_lut;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -976,11 +978,24 @@ pub fn trim_pool(keep: u64) {
     {
         if keep == 0 {
             render::release_shared_source();
+            strokes::clear();
         }
         g.trim(keep);
     }
     #[cfg(target_arch = "wasm32")]
     let _ = keep;
+}
+
+/// Device bytes of the Auto Mask strokes kept between renders (every device).
+pub fn kept_stroke_bytes() -> usize {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        strokes::bytes()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
 }
 
 /// Device bytes of the one big source (a zoom window's original) shared by every view of the photo.
@@ -1308,6 +1323,8 @@ fn try_render_inner(
                 (Ok(None), None) => "GPU render: no image came back".to_string(),
             };
         };
+        // Auto Mask strokes kept by the failed render may hold results of its failed passes
+        strokes::clear();
         record_fallback(reason.clone());
         Err(Fallback::Failed(reason))
     }

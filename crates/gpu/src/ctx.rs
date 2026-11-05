@@ -83,6 +83,11 @@ const MODULES: &[Module] = &[
         entries: &["shape", "combine", "finalize"],
     },
     Module {
+        src: include_str!("wgsl/stroke.wgsl"),
+        bindings: &[("src", false, "f32"), ("packed", true, "u32"), ("dst", true, "f32")],
+        entries: &["crop", "pack16", "combine16"],
+    },
+    Module {
         src: include_str!("wgsl/hist.wgsl"),
         bindings: &[("img", false, "u32"), ("cov", false, "u32"), ("hist", true, "atomic<u32>")],
         entries: &["hist_k"],

@@ -1359,6 +1359,48 @@ fn a_zoomed_window_of_a_big_brush_matches_and_is_quick() {
     }
 }
 
+/// After Auto Mask mouse strokes with a big brush, each return to 100 % of a 45 MP photo refined
+/// every stroke again over the whole view, all queued ahead of the window's frames (over a second
+/// at 4K, with no stage cache or once its geometries were pushed out). Each stroke is now refined
+/// over the rectangle it reaches, one stroke queued at a time, and kept on the device between
+/// renders: Fit → 100 % again takes no refine.
+#[test]
+fn returning_to_100_percent_after_big_auto_mask_strokes_is_quick() {
+    if !gpu() {
+        return;
+    }
+    use lcc_pipeline::PixelWindow;
+    let mut strokes = Vec::new();
+    for k in 0..12 {
+        let y0 = 0.25 + 0.04 * k as f64;
+        let points: Vec<Point> = (0..=200)
+            .map(|i| {
+                let t = i as f64 / 200.0;
+                Point::new(0.3 + 0.4 * (t * 6.0 * std::f64::consts::PI).sin().abs(), y0 + 0.08 * t)
+            })
+            .collect();
+        strokes.push(BrushStroke { points, size: 0.06, auto_mask: true, ..Default::default() });
+    }
+    let s = DevelopSettings {
+        masks: vec![Mask {
+            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: MaskShape::Brush { strokes } }],
+            adjust: lcc_develop::LocalAdjustments { exposure: 0.5, ..Default::default() },
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let src = scene(1, 2048, 1366);
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let win = RenderRequest { window: Some(PixelWindow { x: 1500, y: 1200, w: 1920, h: 1080 }), ..RenderRequest::fit(8192, 5464) };
+    let _ = lcc_gpu::render(&src, &info, &s, &win, None).expect("gpu render");
+    let _ = lcc_gpu::render(&src, &info, &s, &RenderRequest::fit(1600, 1067), None).expect("gpu render");
+    let t = std::time::Instant::now();
+    let _ = lcc_gpu::render(&src, &info, &s, &win, None).expect("gpu render");
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("Fit → 100 % again with 12 big Auto Mask strokes: {ms:.0} ms");
+    assert!(ms < 1500.0, "returning to 100 % took {ms:.0} ms");
+}
+
 /// Issue #323: a window of a 24 MP photo is cut from a source of 288 MB on the device. Keeping that
 /// upload with the view's stages counted it against the stage budget on every tick of a drag and
 /// got the stages cleared, and the upload and resampling redone: the window's stages are its own

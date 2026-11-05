@@ -190,6 +190,9 @@ pub(crate) struct Cx<'a> {
 /// 24 MP export, several passes over a preview): no single submission runs long.
 const FLUSH_INVOCATIONS: u64 = 16 << 20;
 
+/// Longest [`Cx::pace`] waits for a step before it gives the GPU up.
+const PACE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Pixels per dispatch of the per-pixel stage (the heaviest kernel).
 const BAND_PIXELS: usize = 4 << 20;
 
@@ -236,6 +239,22 @@ impl<'a> Cx<'a> {
                 return;
             }
             self.last = Some(self.gpu.submit([enc.finish()]));
+        }
+    }
+
+    /// Submit what is recorded and wait for the submission before it: work recorded in steps (an
+    /// Auto Mask stroke each) then keeps at most one step queued ahead of the window's frames,
+    /// which slot in between. (A batch render's [`Self::flush`] waits already.)
+    pub fn pace(&mut self) {
+        let before = self.last.clone();
+        self.flush();
+        if crate::gate::is_batch() || crate::ctx::failed() {
+            return;
+        }
+        if let Some(prev) = before
+            && self.gpu.poll(wgpu::PollType::Wait { submission_index: Some(prev), timeout: Some(PACE_TIMEOUT) }).is_err()
+        {
+            fail(FailKind::Busy, "the GPU did not finish an earlier step in time (busy)".into());
         }
     }
 
@@ -808,7 +827,7 @@ pub fn render(
     lap("planes", &mut t, &mut cx);
 
     // 4. masks (kept with the planes)
-    let (masks, terms, curves) = masks(&mut cx, &lin, &prep, plan, &mut host, &mut planes);
+    let (masks, terms, curves) = masks(&mut cx, src, &lin, &prep, plan, &mut host, &mut planes);
     lap("masks", &mut t, &mut cx);
     if let Some(c) = stages {
         c.put(Entry { src: src.clone(), geo: plan.geo, sampled, lin: Some((plan.lin_key, lin.clone())), planes });
@@ -1536,11 +1555,92 @@ fn guided_cross(cx: &mut Cx<'_>, guide: &Buf, p: &Buf, w: usize, h: usize, sigma
     q
 }
 
+/// Where an Auto Mask stroke is rendered: the photo, the plan (its pixels' keys), the render's
+/// [`crate::strokes::pass`] and how the stroke combines with the ones before it (`combine`'s op).
+struct StrokeAt<'p, 'a> {
+    src: &'p Arc<Rgb32f>,
+    plan: &'p Plan<'a>,
+    pass: u64,
+    op: u32,
+}
+
+/// One Auto Mask stroke `d` (its brush data `aux`, the `shape` parameters `q`) combined into
+/// `brush`: stamped, refined over the rectangle it can reach (`masks::auto_stroke_reach`, as the
+/// CPU does), kept in 16 bits for the next render ([`crate::strokes`]), or taken from there
+/// (`true`: nothing was worked out).
+///
+/// Each stroke worked out is submitted on its own and the render waits for the one before it, so
+/// the window's frames slot in between: a dozen big strokes queued at once, each refined over the
+/// whole window, held the interface back for over a second at 100 %.
+#[allow(clippy::too_many_arguments)]
+fn auto_stroke(
+    cx: &mut Cx<'_>,
+    d: &lcc_pipeline::masks::BrushDabs,
+    aux: &[f32],
+    q: &[u32],
+    lin: &Buf,
+    log_l: &Buf,
+    stroke: &Buf,
+    brush: &Buf,
+    at: &StrokeAt<'_, '_>,
+) -> bool {
+    use lcc_pipeline::masks::{auto_refine, auto_stroke_key, auto_stroke_reach};
+    let (w, h) = (at.plan.w, at.plan.h);
+    // (a stroke that reaches no pixel of this plane paints nothing)
+    let Some(rect) = auto_stroke_reach(d, w, h) else { return true };
+    let generation = cx.gpu.generation;
+    let key = crate::strokes::key(auto_stroke_key(d, w, h), at.plan.geo, at.plan.lin_key, generation);
+    let (x0, y0, x1, y1) = rect;
+    let (rw, rh) = (x1 - x0, y1 - y0);
+    let pr = [w as u32, x0 as u32, y0 as u32, rw as u32, rh as u32];
+    let mut hit = true;
+    let batch = crate::gate::is_batch();
+    let kept = match crate::strokes::get(at.src, key, at.pass, generation, batch) {
+        Some(k) => k,
+        None => {
+            let aux = cx.gpu.upload(aux);
+            cx.run("shape", q, &[Some(lin), Some(log_l), Some(&aux), Some(stroke), Some(brush)], groups2(w, h, [16, 16]));
+            let rn = rw * rh;
+            let cut = |cx: &mut Cx<'_>, plane: &Buf| {
+                let out = cx.gpu.buffer(rn);
+                cx.run("crop", &pr, &[Some(plane), None, Some(&out)], groups2(rw, rh, [16, 16]));
+                out
+            };
+            let s_r = cut(cx, stroke);
+            // (a Lightroom-model stroke keeps its pixel-sharp cut)
+            let q_r = if d.lrc.is_none() {
+                let l_r = cut(cx, log_l);
+                let (sigma, eps) = auto_refine(d.r);
+                guided_cross(cx, &l_r, &s_r, rw, rh, sigma, eps, Combine::Max)
+            } else {
+                s_r
+            };
+            let packed = cx.gpu.buffer(rn.div_ceil(2));
+            cx.run("pack16", &[rn as u32], &[Some(&q_r), Some(&packed), None], groups1(rn.div_ceil(2)));
+            let kept = Arc::new(crate::strokes::Kept { rect, packed });
+            // (not kept when the render failed: its buffers may hold nothing)
+            if !crate::ctx::failed() {
+                crate::strokes::put(at.src, key, at.pass, batch, kept.clone());
+            }
+            cx.pace();
+            hit = false;
+            kept
+        }
+    };
+    let (x0, y0, x1, y1) = kept.rect;
+    let (rw, rh) = (x1 - x0, y1 - y0);
+    let pc = [w as u32, x0 as u32, y0 as u32, rw as u32, rh as u32, d.density.to_bits(), at.op];
+    cx.run("combine16", &pc, &[None, Some(&kept.packed), Some(brush)], groups2(rw, rh, [16, 16]));
+    hit
+}
+
 /// Evaluate the masks (`lcc_pipeline::masks::evaluate`): their alpha planes (concatenated,
 /// followed by the blurred chromaticity when local Moiré / Noise need it; kept with the view's
 /// planes, [`MaskBufs`]), their adjustment terms and their local Curves. Shapes without a kernel (Sky, Subject, …) run on the CPU.
+#[allow(clippy::too_many_arguments)]
 fn masks(
     cx: &mut Cx<'_>,
+    src: &Arc<Rgb32f>,
     lin: &Buf,
     prep: &Prep,
     plan: &Plan<'_>,
@@ -1562,13 +1662,14 @@ fn masks(
     if let Some(m) = planes.masks.as_ref().filter(|m| m.fits(key, chroma, plan.mattes.as_ref())) {
         return (Some(m.alpha.clone()), terms, curves);
     }
-    let alpha = Arc::new(mask_alpha(cx, lin, prep, plan, host, &list));
+    let alpha = Arc::new(mask_alpha(cx, src, lin, prep, plan, host, &list));
     planes.masks = Some(MaskBufs { key, chroma, mattes: plan.mattes.clone(), alpha: alpha.clone() });
     (Some(alpha), terms, curves)
 }
 
 /// The alpha planes of the visible masks `list` (concatenated, then the blurred chromaticity).
-fn mask_alpha(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Host, list: &[&lcc_develop::Mask]) -> Buf {
+#[allow(clippy::too_many_arguments)]
+fn mask_alpha(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Host, list: &[&lcc_develop::Mask]) -> Buf {
     use lcc_develop::{MaskOp, MaskShape};
     let s = &*plan.settings;
     let (w, h) = (plan.w, plan.h);
@@ -1659,18 +1760,9 @@ fn mask_alpha(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &m
                         // Auto Mask: stroke by stroke (each one refined before it's combined)
                         let brush = cx.zeroed(n);
                         let stroke = cx.gpu.buffer(n);
+                        let pass = crate::strokes::pass();
+                        let (mut kept, mut auto) = (0, 0);
                         for (d, aux) in dabs.iter().zip(auxes.unwrap_or_default()) {
-                            let mut q = p.clone();
-                            q[2] = 4;
-                            q[3] = 0;
-                            q.push(1);
-                            let aux = cx.gpu.upload(&aux);
-                            cx.run("shape", &q, &[Some(lin), Some(&prep.log_l), Some(&aux), Some(&stroke), Some(&brush)], groups2(w, h, [16, 16]));
-                            // (a Lightroom-model stroke keeps its pixel-sharp cut)
-                            let refined = (d.auto && d.lrc.is_none()).then(|| {
-                                let (sigma, eps) = lcc_pipeline::masks::auto_refine(d.r);
-                                guided_cross(cx, &prep.log_l, &stroke, w, h, sigma, eps, Combine::Max)
-                            });
                             // a Lightroom-model stroke adds up with the ones before it (`masks::combine_stroke`)
                             let op = if d.erase {
                                 2
@@ -1679,11 +1771,25 @@ fn mask_alpha(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &m
                             } else {
                                 1
                             };
-                            cx.run(
-                                "combine",
-                                &[n as u32, d.density.to_bits(), 0, op],
-                                &[None, None, None, Some(refined.as_ref().unwrap_or(&stroke)), Some(&brush)],
-                                groups1(n),
+                            let mut q = p.clone();
+                            q[2] = 4;
+                            q[3] = 0;
+                            q.push(1);
+                            if d.auto {
+                                let at = StrokeAt { src, plan, pass, op };
+                                kept += auto_stroke(cx, d, &aux, &q, lin, &prep.log_l, &stroke, &brush, &at) as usize;
+                                auto += 1;
+                                continue;
+                            }
+                            let aux = cx.gpu.upload(&aux);
+                            cx.run("shape", &q, &[Some(lin), Some(&prep.log_l), Some(&aux), Some(&stroke), Some(&brush)], groups2(w, h, [16, 16]));
+                            cx.run("combine", &[n as u32, d.density.to_bits(), 0, op], &[None, None, None, Some(&stroke), Some(&brush)], groups1(n));
+                        }
+                        if profiling() {
+                            eprintln!(
+                                "  gpu auto mask strokes: {kept} of {auto} kept from before ({w}×{h}; {} MB kept; batch {})",
+                                crate::strokes::bytes() >> 20,
+                                crate::gate::is_batch()
                             );
                         }
                         if comp.invert {
