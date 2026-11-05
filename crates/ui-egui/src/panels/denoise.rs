@@ -324,8 +324,8 @@ pub fn other_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
 }
 
-/// The AI Models dialog's AI Denoise group: each denoise model the app knows how to download, with its size and
-/// licence, under the same Download (terms first, then the activity stack), Use and Remove as Settings ▸ AI Denoise.
+/// The AI Models dialog's AI Denoise and AI Super Resolution groups: each denoise model and upscaler the app knows how
+/// to download, with its size and licence, under the same Download (terms first, then the activity stack), Use and Remove as Settings ▸ AI Denoise.
 pub fn ai_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let list = models(app, ui.ctx());
     let known: Vec<Value> = list["models"].as_array().map(|a| a.iter().filter(|m| m["known"] == true).cloned().collect()).unwrap_or_default();
@@ -338,13 +338,32 @@ pub fn ai_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         .execute("denoise.models.downloads", &json!({}))
         .map(|v| v["downloads"].as_array().cloned().unwrap_or_default())
         .unwrap_or_default();
-    crate::dialog_frame::group_begin(ui, Some("AI Denoise"));
-    ui.label(tr("Cleans noise out of raw photos (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used."));
-    for m in &known {
-        let dl = downloads.iter().find(|d| d["id"] == m["id"]);
-        model_row(app, ui, t, m, dl, runtime);
+    // denoise models and upscalers share the models folder, but each gets its own group under its own name
+    let (upscalers, denoisers): (Vec<&Value>, Vec<&Value>) = known.iter().partition(|m| slot_kind(m) == "upscale");
+    let groups = [
+        (
+            "AI Denoise",
+            "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.",
+            denoisers,
+        ),
+        (
+            "AI Super Resolution",
+            "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.",
+            upscalers,
+        ),
+    ];
+    for (title, about, models) in groups {
+        if models.is_empty() {
+            continue;
+        }
+        crate::dialog_frame::group_begin(ui, Some(title));
+        crate::dialog_frame::note(ui, RichText::new(tr(about)).color(t.text_dim));
+        for m in models {
+            let dl = downloads.iter().find(|d| d["id"] == m["id"]);
+            model_row(app, ui, t, m, dl, runtime);
+        }
+        crate::dialog_frame::group_end(ui);
     }
-    crate::dialog_frame::group_end(ui);
 }
 
 /// What the cache holds, its limit, and what is being made.

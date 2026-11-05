@@ -1,6 +1,7 @@
 {
   "AI Sharpen": "Làm nét AI",
   "AI Super Resolution": "Siêu phân giải AI",
+  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "Siêu phân giải AI và Làm nét AI cần một bộ phóng to AI, trong Cài đặt ▸ Mô hình AI.",
   "Adding Capture One photos…": "Đang thêm ảnh Capture One…",
   "All Photographs": "Tất cả ảnh",
   "All masks shown · O to hide": "Đang hiện mọi mặt nạ · O để ẩn",
@@ -11,6 +12,7 @@
   "Capture One import cancelled": "Đã hủy nhập Capture One",
   "Capture One inspection cancelled": "Đã hủy kiểm tra Capture One",
   "Choose SAM 3 Model Folder": "Chọn thư mục mô hình SAM 3",
+  "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Khử nhiễu ảnh raw và, với mô hình dành cho chúng, cả JPEG và các ảnh hoàn thiện khác (thanh trượt Mức khử nhiễu AI trong Chi tiết). Không có mô hình thì dùng bộ khử nhiễu tích hợp.",
   "Click to dismiss": "Nhấp để đóng",
   "Click to hide the overlay": "Nhấp để ẩn lớp phủ",
   "Click to update it.": "Nhấp để cập nhật.",
@@ -24,6 +26,7 @@
   "Edit Photo": "Sửa ảnh",
   "Edit a Copy": "Sửa bản sao",
   "Edit a Copy with Adjustments": "Sửa bản sao kèm điều chỉnh",
+  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Phóng to hoặc làm nét ảnh qua Ảnh ▸ Tăng cường…: Siêu phân giải AI và Làm nét AI. Không có mô hình thì chỉ có Siêu phân giải cổ điển.",
   "Every selected photo is edited the same way.": "Mọi ảnh đã chọn được sửa theo cùng một cách.",
   "Exports, previews and thumbnails use the graphics card for editing.": "Xuất, bản xem trước và hình thu nhỏ dùng card đồ họa chỉnh sửa.",
   "Face Count": "Số khuôn mặt",

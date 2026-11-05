@@ -1,6 +1,7 @@
 {
   "AI Sharpen": "AI-skärpa",
   "AI Super Resolution": "AI-superupplösning",
+  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "AI-superupplösning och AI-skärpa behöver en AI-uppskalare, under Inställningar ▸ AI-modeller.",
   "Adding Capture One photos…": "Lägger till Capture One-foton…",
   "All Photographs": "Alla foton",
   "All masks shown · O to hide": "Alla masker visas · O döljer",
@@ -13,6 +14,7 @@
   "Capture One import cancelled": "Capture One-importen avbröts",
   "Capture One inspection cancelled": "Capture One-granskningen avbröts",
   "Choose SAM 3 Model Folder": "Välj mapp för SAM 3-modellen",
+  "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Tar bort brus från raw-foton och, med en modell gjord för dem, från JPEG och andra färdiga bilder (reglaget Mängd AI-brusreducering under Detalj). Utan modell används den inbyggda brusreduceringen.",
   "Click to dismiss": "Klicka för att stänga",
   "Click to hide the overlay": "Klicka för att dölja överlägget",
   "Click to update it.": "Klicka för att uppdatera den.",
@@ -25,6 +27,7 @@
   "Edit Photo": "Redigera foto",
   "Edit a Copy": "Redigera en kopia",
   "Edit a Copy with Adjustments": "Redigera en kopia med justeringar",
+  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Förstorar eller skärper ett foto med Foto ▸ Förbättra…: AI-superupplösning och AI-skärpa. Utan modell erbjuds bara den klassiska superupplösningen.",
   "Every selected photo is edited the same way.": "Alla markerade foton redigeras på samma sätt.",
   "Exports, previews and thumbnails use the graphics card for editing.": "Exporter, förhandsvisningar och miniatyrer använder grafikkortet för redigering.",
   "Face Count": "Antal ansikten",

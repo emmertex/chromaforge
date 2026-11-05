@@ -12,14 +12,14 @@ The work runs in the background with a row in the activity stack that shows its 
 
 ## What goes into the model
 
-The photo is rendered with its **import defaults** — none of its edits — to 16-bit sRGB at full size, uncropped and
-upright. Raw photos are demosaiced and get their as-shot white balance and camera look this way; finished pictures
-(JPEG, PNG, TIFF …) come out as they are. The upscaler works on that picture, because models of this kind are
-trained on finished sRGB pictures. Edit the new TIFF like any other photo.
+The photo is rendered **as an export renders it** — with all its edits, crop, masks and AI Denoise — to 16-bit sRGB
+at its full (cropped) size. The upscaler works on that picture, because models of this kind are trained on finished
+sRGB pictures. The new TIFF has the look baked in, so it starts with no edits of its own; edit it like any other
+photo. Changing the source's edits afterwards doesn't change the TIFF: run the Enhance again.
 
 This differs from Lightroom, whose Super Resolution keeps a raw a raw (an enhanced DNG that the raw's edits carry
-over to). Doing the same here needs the model to run before the colour pipeline, on data it was not trained on;
-that is a later step (gap 11 in [gaps.md](gaps.md)).
+over to and stay editable). Doing the same here needs the model to run before the colour pipeline, on data it was
+not trained on; that is a later step (gap 11 in [gaps.md](gaps.md)).
 
 What an upscaler does is limited to what it learned. Real-ESRGAN General v3 was trained on pictures blurred, made
 noisy and compressed on purpose: it restores slight softness, noise and compression artefacts well. It does not

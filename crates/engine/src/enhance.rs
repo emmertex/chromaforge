@@ -6,8 +6,8 @@
 //! - **Super Resolution** does the same and then doubles each side ([`lcc_merge::super_resolve`]); it also takes
 //!   non-raw photos (JPEG, TIFF, …), whose linear pixels it enlarges.
 //!
-//! - **AI Super Resolution** and **AI Sharpen** (adapted from upstream #3493) render the photo with its import
-//!   defaults (none of its edits) to 16-bit sRGB at full size, run it through the installed upscaler
+//! - **AI Super Resolution** and **AI Sharpen** (adapted from upstream #3493) render the photo as an export
+//!   would (its edits, crop and masks) to 16-bit sRGB at full size, run it through the installed upscaler
 //!   (`Domain::RgbToRgb4x`, the `upscaleModel` slot of the denoise models folder) and write a 16-bit TIFF
 //!   (`<name>-Enhanced-SR.tif`): 2× or 4× across, or (AI Sharpen) the model's answer averaged back down to the
 //!   photo's own size. `enhance.superResolution {method: "ai"}` picks it; `method: "auto"` does when an upscaler is
@@ -24,8 +24,7 @@ use std::sync::mpsc;
 use lcc_catalog::{PhotoId, Source};
 use lcc_denoise::manifest::{DenoiserManifest, Domain};
 use lcc_denoise::run::{Control, MAX_PIXELS, Params, Scales, upscale_rgb};
-use lcc_develop::DevelopSettings;
-use lcc_pipeline::{DeepImage, DeepSamples, OutputDepth, OutputSpace, Quality, RenderRequest};
+use lcc_pipeline::{DeepImage, DeepSamples, OutputDepth, OutputSpace};
 use lcc_raster::Rgb32f;
 use serde_json::{Value, json};
 
@@ -82,8 +81,8 @@ struct AiPlan {
     onnx: std::path::PathBuf,
     manifest: DenoiserManifest,
     run_on: RunOn,
-    /// The photo's import defaults: none of its edits go into the model.
-    settings: DevelopSettings,
+    /// The photo as an export renders it (its edits, crop and all), full size, 16-bit sRGB: what goes into the model.
+    job: crate::media::RenderJob,
     metadata: Option<lcc_meta::Metadata>,
 }
 
@@ -95,7 +94,10 @@ fn tiff_options() -> ExportOptions {
 /// render may come out a pixel smaller, so only a result too large even then is refused here; the tiling checks the
 /// rest.
 fn check_result_size(w: f64, h: f64, factor: usize) -> std::result::Result<(), String> {
-    let least = |v: f64| if v.is_finite() { (v.floor() as usize).saturating_sub(1) } else { 0 };
+    if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+        return Err(format!("the photo's size ({w} × {h}) is not one a result can be made from"));
+    }
+    let least = |v: f64| (v.floor() as usize).saturating_sub(1);
     let pixels = least(w).saturating_mul(least(h)).saturating_mul(factor.saturating_mul(factor));
     if pixels > MAX_PIXELS {
         return Err(format!("the result would have {} megapixels, more than the {} a result may have", pixels / 1_000_000, MAX_PIXELS / 1_000_000));
@@ -104,19 +106,11 @@ fn check_result_size(w: f64, h: f64, factor: usize) -> std::result::Result<(), S
 }
 
 impl AiPlan {
-    /// The photo with its import defaults, uncropped and full size, as gamma-encoded sRGB in 0 to 1.
-    fn render(&self, bytes: Vec<u8>, factor: usize) -> std::result::Result<Rgb32f, String> {
-        let (src, info) = crate::files::load_vec(bytes, usize::MAX)?;
-        let (w, h) = lcc_pipeline::native_output_size(src.width, src.height, &self.settings);
-        check_result_size(w, h, factor)?;
-        let req = RenderRequest {
-            quality: Quality::Full,
-            apply_crop: false,
-            space: OutputSpace::Srgb,
-            depth: OutputDepth::U16,
-            ..RenderRequest::fit(w.ceil() as usize, h.ceil() as usize)
-        };
-        let deep = lcc_pipeline::render(&src, &info, &self.settings, &req).deep.ok_or("the photo could not be rendered at 16 bits")?;
+    /// The photo with its edits (as an export renders it), full size, as gamma-encoded sRGB in 0 to 1.
+    fn render(&self, factor: usize) -> std::result::Result<Rgb32f, String> {
+        let r = &self.job.request;
+        check_result_size(r.max_w as f64, r.max_h as f64, factor)?;
+        let deep = self.job.clone().run().rendered?.deep.ok_or("the photo could not be rendered at 16 bits")?;
         let DeepSamples::U16(samples) = deep.samples else { return Err("the photo was not rendered at 16 bits".into()) };
         let data: Vec<[f32; 3]> = samples.as_chunks::<3>().0.iter().map(|p| p.map(|v| f32::from(v) / U16_MAX)).collect();
         if data.len() != deep.width.saturating_mul(deep.height) {
@@ -194,9 +188,8 @@ pub struct Enhanced {
 impl EnhanceWork {
     /// Decode, enhance and encode. `cancelled()` is checked between stages and Super Resolution's passes.
     pub fn run(&self, cancelled: &(dyn Fn() -> bool + Sync)) -> std::result::Result<Enhanced, String> {
-        let bytes = (self.read)(&self.path)?;
         if let (Some(ai), Some(factor)) = (&self.ai, self.kind.ai_factor()) {
-            let image = ai.render(bytes, factor)?;
+            let image = ai.render(factor)?;
             if cancelled() {
                 return Err("cancelled".into());
             }
@@ -208,6 +201,7 @@ impl EnhanceWork {
             let tiff = ai.encode(&big)?;
             return Ok(Enhanced { id: self.id, path: self.path.clone(), dng: tiff, size: (big.width, big.height) });
         }
+        let bytes = (self.read)(&self.path)?;
         let is_raw = lcc_raw::probe(&bytes).is_some();
         if self.kind == EnhanceKind::RawDetails && !is_raw {
             return Err(format!("{}: Raw Details needs a raw photo", self.path));
@@ -288,10 +282,9 @@ fn middle(img: &lcc_raster::Rgb32f, side: usize) -> lcc_raster::Rgb32f {
 impl EnhanceWork {
     /// The dialog's preview: the middle [`PREVIEW_CROP`] pixels before and after, and an estimate of the full run.
     pub fn preview(&self, cancelled: &(dyn Fn() -> bool + Sync)) -> std::result::Result<EnhancePreview, String> {
-        let bytes = (self.read)(&self.path)?;
         if let (Some(ai), Some(factor)) = (&self.ai, self.kind.ai_factor()) {
             let t0 = std::time::Instant::now();
-            let image = ai.render(bytes, factor)?;
+            let image = ai.render(factor)?;
             let render = t0.elapsed().as_secs_f64();
             if cancelled() {
                 return Err("cancelled".into());
@@ -306,6 +299,7 @@ impl EnhanceWork {
             let out_size = (source_size.0.saturating_mul(factor), source_size.1.saturating_mul(factor));
             return Ok(EnhancePreview { before: to_rgba8(&crop), after: to_rgba8(&up), source_size, out_size, estimate_secs });
         }
+        let bytes = (self.read)(&self.path)?;
         let is_raw = lcc_raw::probe(&bytes).is_some();
         if self.kind == EnhanceKind::RawDetails && !is_raw {
             return Err(format!("{}: Raw Details needs a raw photo", self.path));
@@ -373,6 +367,11 @@ fn output_names(first: &str, suffix: &str, ext: &str) -> impl Iterator<Item = st
 
 impl Session {
     /// The work for each of `ids` (a photo named twice is enhanced once).
+    /// Whether this build keeps AI models (the desktop app does), so an upscaler could be installed.
+    pub fn keeps_ai_models(&self) -> bool {
+        self.denoise.models_dir.is_some()
+    }
+
     /// Is an upscaler chosen and installed (what AI Super Resolution and AI Sharpen need)?
     pub fn enhance_upscaler_ready(&self) -> bool {
         self.upscaler().is_ok()
@@ -393,7 +392,7 @@ impl Session {
         Ok((installed, settings.run_on()))
     }
 
-    pub fn plan_enhance(&self, kind: EnhanceKind, ids: &[PhotoId]) -> Result<Vec<EnhanceWork>> {
+    pub fn plan_enhance(&mut self, kind: EnhanceKind, ids: &[PhotoId]) -> Result<Vec<EnhanceWork>> {
         if let EnhanceKind::AiSuperResolution(f) = kind
             && f != 2
             && f != 4
@@ -414,15 +413,26 @@ impl Session {
             let p = self.catalog.photo(*id).ok_or(lcc_catalog::CatalogError::NoPhoto(*id))?;
             match &p.source {
                 Source::File { path } => {
-                    let ai = upscaler.as_ref().map(|(i, run_on)| AiPlan {
-                        loader: self.denoise.loader.clone(),
-                        onnx: i.onnx.clone(),
-                        manifest: i.manifest.clone(),
-                        run_on: *run_on,
-                        settings: p.import_defaults(),
-                        metadata: crate::export::export_metadata(p, &self.catalog, &tiff_options()),
-                    });
-                    out.push(EnhanceWork { kind, id: *id, path: path.clone(), read: read.clone(), ai });
+                    let path = path.clone();
+                    // an AI result is the photo as an export renders it: its edits, crop and masks go into the model
+                    let ai = match (&upscaler, kind.ai_factor()) {
+                        (Some((i, run_on)), Some(factor)) => {
+                            let (w, h) = crate::export::output_size(p, &tiff_options());
+                            check_result_size(w as f64, h as f64, factor).map_err(EngineError::Other)?;
+                            let metadata = crate::export::export_metadata(p, &self.catalog, &tiff_options());
+                            let job = self.export_job(*id, w, h, OutputSpace::Srgb, OutputDepth::U16).map_err(EngineError::Other)?;
+                            Some(AiPlan {
+                                loader: self.denoise.loader.clone(),
+                                onnx: i.onnx.clone(),
+                                manifest: i.manifest.clone(),
+                                run_on: *run_on,
+                                job,
+                                metadata,
+                            })
+                        }
+                        _ => None,
+                    };
+                    out.push(EnhanceWork { kind, id: *id, path, read: read.clone(), ai });
                 }
                 Source::Demo { .. } => {
                     return Err(EngineError::Other(format!("{} is a demo photo; {} needs the photo's file", p.file_name, kind.label())));
@@ -466,7 +476,7 @@ impl Session {
             let _ = std::fs::remove_file(&path);
             return Err(EngineError::Other(format!("the enhanced file {path} could not be imported: {:?}", report.failed)));
         };
-        // an AI result is a rendered picture (the photo's import defaults): the source's edits don't fit it
+        // an AI result has the source's edits baked in: giving it them again would apply them twice
         if kind.ai_factor().is_none()
             && let Some(d) = self.develop_of(out.id)
         {
@@ -584,6 +594,9 @@ mod tests {
         assert!(check_result_size(8256.0, 5504.0, 1).is_ok());
         // 27.5 MP at 2× (110 MP) may come out a pixel smaller after the render: the tiling decides
         assert!(check_result_size(6400.0, 4297.5, 2).is_ok());
-        assert!(check_result_size(f64::NAN, f64::INFINITY, 4).is_ok());
+        // a size that is not a number never gets through to the render
+        assert!(check_result_size(f64::NAN, 4000.0, 2).is_err());
+        assert!(check_result_size(6000.0, f64::INFINITY, 2).is_err());
+        assert!(check_result_size(0.0, 4000.0, 2).is_err());
     }
 }

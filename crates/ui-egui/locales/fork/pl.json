@@ -1,6 +1,7 @@
 {
   "AI Sharpen": "Wyostrzanie AI",
   "AI Super Resolution": "Superrozdzielczość AI",
+  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "Superrozdzielczość AI i Wyostrzanie AI wymagają modelu powiększającego AI, w Ustawienia ▸ Modele AI.",
   "Add a preset…": "Dodaj ustawienie…",
   "Add another preset…": "Dodaj kolejne ustawienie…",
   "Adding Capture One photos…": "Dodawanie zdjęć z Capture One…",
@@ -25,6 +26,7 @@
   "Capture One inspection cancelled": "Anulowano sprawdzanie Capture One",
   "Catalog": "Katalog",
   "Choose SAM 3 Model Folder": "Wybierz folder modelu SAM 3",
+  "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Usuwa szum ze zdjęć raw oraz, z modelem do tego przeznaczonym, z plików JPEG i innych gotowych obrazów (suwak Ilość odszumiania AI w sekcji Szczegóły). Bez modelu używany jest wbudowany odszumiacz.",
   "Click to dismiss": "Kliknij, aby zamknąć",
   "Click to hide the overlay": "Kliknij, aby ukryć nakładkę",
   "Click to update it.": "Kliknij, aby je zaktualizować.",
@@ -48,6 +50,7 @@
   "Enhance Preview": "Podgląd ulepszenia",
   "Enhancements": "Ulepszenia",
   "Enhance…": "Ulepsz…",
+  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Powiększa lub wyostrza zdjęcie przez Zdjęcie ▸ Ulepsz…: Superrozdzielczość AI i Wyostrzanie AI. Bez modelu dostępna jest tylko klasyczna Super rozdzielczość.",
   "Estimating time…": "Szacowanie czasu…",
   "Every selected photo is edited the same way.": "Wszystkie zaznaczone zdjęcia są edytowane tak samo.",
   "Exact 1:1 pixel copy": "Dokładna kopia pikseli 1:1",

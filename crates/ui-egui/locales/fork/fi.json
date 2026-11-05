@@ -1,6 +1,7 @@
 {
   "AI Sharpen": "Tekoälyterävöinti",
   "AI Super Resolution": "Tekoälyn superresoluutio",
+  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "Tekoälyn superresoluutio ja Tekoälyterävöinti tarvitsevat tekoälysuurentimen: Asetukset ▸ Tekoälymallit.",
   "Adding Capture One photos…": "Lisätään Capture One -kuvia…",
   "All Photographs": "Kaikki kuvat",
   "All masks shown · O to hide": "Kaikki maskit näkyvissä · O piilottaa",
@@ -13,6 +14,7 @@
   "Capture One import cancelled": "Capture One -tuonti peruttu",
   "Capture One inspection cancelled": "Capture One -tarkastelu peruttu",
   "Choose SAM 3 Model Folder": "Valitse SAM 3 -mallin kansio",
+  "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Poistaa kohinaa raw-kuvista ja niille tehdyllä mallilla myös JPEG- ja muista valmiista kuvista (Yksityiskohdat-osion tekoälykohinanpoiston määrä -liukusäädin). Ilman mallia käytetään sisäänrakennettua kohinanpoistoa.",
   "Click to dismiss": "Sulje napsauttamalla",
   "Click to hide the overlay": "Piilota peittokuva napsauttamalla",
   "Click to update it.": "Päivitä napsauttamalla.",
@@ -24,6 +26,7 @@
   "Edit Photo": "Muokkaa kuvaa",
   "Edit a Copy": "Muokkaa kopiota",
   "Edit a Copy with Adjustments": "Muokkaa kopiota säädöin",
+  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Suurentaa tai terävöittää kuvan kohdassa Kuva ▸ Paranna…: Tekoälyn superresoluutio ja Tekoälyterävöinti. Ilman mallia tarjolla on vain perinteinen superresoluutio.",
   "Every selected photo is edited the same way.": "Kaikki valitut kuvat muokataan samalla tavalla.",
   "Exports, previews and thumbnails use the graphics card for editing.": "Viennit, esikatselut ja pikkukuvat käyttävät muokkauksen näytönohjainta.",
   "Face Count": "Kasvojen määrä",

@@ -128,7 +128,7 @@ pub fn confirm(app: &mut LccApp, opts: &EnhanceDialog) -> Result<Value, String> 
     app.run(opts.command(), json!({"ids": ids, "stack": opts.stack, "method": method}))
 }
 
-fn spawn(app: &LccApp, kind: EnhanceKind) -> Result<PreviewTask, String> {
+fn spawn(app: &mut LccApp, kind: EnhanceKind) -> Result<PreviewTask, String> {
     let first = app.enhance.ids.first().copied().ok_or("select a photo to enhance")?;
     let work = app.session.plan_enhance(kind, &[first]).map_err(|e| e.to_string())?.into_iter().next().ok_or("nothing to enhance")?;
     let cancel = Arc::new(AtomicBool::new(false));
@@ -306,6 +306,16 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut EnhanceDialog) {
                     ui,
                     egui::RichText::new(crate::i18n::tr("Finer detail from the AI upscaler at the same size, as a new TIFF.")).color(t.text_dim),
                 );
+            } else if app.session.keeps_ai_models() {
+                // where the AI methods come from, in this app's own settings
+                crate::dialog_frame::note(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr("AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models."))
+                        .color(t.text_dim),
+                );
+                if crate::dialog_frame::link(ui, Some("enhance:openAiModels"), "Open AI Models").clicked() {
+                    let _ = app.run("app.settings", json!({"tab": "ai"}));
+                }
             }
             ui.add_space(6.0);
             ui.checkbox(&mut opts.stack, crate::i18n::tr("Create Stack"));

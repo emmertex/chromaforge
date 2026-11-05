@@ -54,7 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Super Resolution",
             [],
             None,
-            "{ids?, stack?: true, wait?: false, method?: classical | ai | auto, scale?: 2 | 4} → as `enhance.rawDetails` — `classical` (the default): Raw Details, then twice the width and height (four times the pixels) by iterative back-projection, into `<name>-Enhanced-SR.dng`; also takes JPEG, TIFF and other photos; at most 400 MP out. `ai`: the photo with its import defaults (none of its edits), enlarged `scale` times across by the installed upscaler (`denoise.models.select {kind: \"upscale\"}`), into a 16-bit TIFF `<name>-Enhanced-SR.tif` stacked with it; at most 110 MP out. `auto`: `ai` when an upscaler is chosen, else `classical`",
+            "{ids?, stack?: true, wait?: false, method?: classical | ai | auto, scale?: 2 | 4} → as `enhance.rawDetails` — `classical` (the default): Raw Details, then twice the width and height (four times the pixels) by iterative back-projection, into `<name>-Enhanced-SR.dng`; also takes JPEG, TIFF and other photos; at most 400 MP out. `ai`: the photo as an export renders it (its edits and crop baked in), enlarged `scale` times across by the installed upscaler (`denoise.models.select {kind: \"upscale\"}`), into a 16-bit TIFF `<name>-Enhanced-SR.tif` stacked with it; at most 110 MP out. `auto`: `ai` when an upscaler is chosen, else `classical`",
             can_enhance,
             super_resolution
         ),

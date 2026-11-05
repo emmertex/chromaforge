@@ -1,6 +1,7 @@
 {
   "AI Sharpen": "AI სიმკვეთრე",
   "AI Super Resolution": "AI სუპერგარჩევადობა",
+  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "AI სუპერგარჩევადობასა და AI სიმკვეთრეს სჭირდება AI გამადიდებელი: პარამეტრები ▸ AI მოდელები.",
   "Adding Capture One photos…": "Capture One-ის ფოტოების დამატება…",
   "Address": "მისამართი",
   "All files": "ყველა ფაილი",
@@ -20,6 +21,7 @@
   "Capture One inspection cancelled": "Capture One-ის შემოწმება გაუქმდა",
   "Catalog": "კატალოგი",
   "Choose SAM 3 Model Folder": "SAM 3 მოდელის საქაღალდის არჩევა",
+  "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "აშორებს ხმაურს raw ფოტოებიდან და, მათთვის შექმნილი მოდელით, JPEG-ისა და სხვა მზა სურათებიდანაც (AI ხმაურის მოცილების რაოდენობის სლაიდერი დეტალში). მოდელის გარეშე ჩაშენებული ხმაურის მომცილებელი გამოიყენება.",
   "Click to dismiss": "დააწკაპუნეთ დასახურად",
   "Click to hide the overlay": "დააწკაპუნეთ ზედდების დასამალად",
   "Click to update it.": "დააწკაპუნეთ განსაახლებლად.",
@@ -43,6 +45,7 @@
   "Enhance Preview": "გაუმჯობესების გადახედვა",
   "Enhancements": "გაუმჯობესებები",
   "Enhance…": "გაუმჯობესება…",
+  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "ადიდებს ან ამკვეთრებს ფოტოს: ფოტო ▸ გაუმჯობესება…: AI სუპერგარჩევადობა და AI სიმკვეთრე. მოდელის გარეშე მხოლოდ კლასიკური სუპერ გარჩევადობაა ხელმისაწვდომი.",
   "Estimating time…": "დრო ფასდება…",
   "Every selected photo is edited the same way.": "ყველა მონიშნული ფოტო ერთნაირად რედაქტირდება.",
   "Exact 1:1 pixel copy": "ზუსტი 1:1 პიქსელების ასლი",
