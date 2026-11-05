@@ -58,6 +58,7 @@
   "Second graphics card not used: {why}": "Deuxième carte graphique non utilisée : {why}",
   "Sent {n} page(s) to the printer (job {j})": "{n} page(s) envoyée(s) à l'imprimante (tâche {j})",
   "Slideshow {n}": "Diaporama {n}",
+  "Stop waiting: {task}?": "Arrêter d’attendre : {task} ?",
   "Style {n}": "Style {n}",
   "Tagged {n} photos from the tracklog": "{n} photos marquées depuis le tracé",
   "Target: {name}": "Cible : {name}",

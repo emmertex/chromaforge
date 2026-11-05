@@ -284,6 +284,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::DeleteEffects { names } if names.len() == 1 => "Delete Effect Preset",
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
         Dialog::DeleteRejected { .. } => "Delete Rejected Photos",
+        Dialog::StopWaiting { .. } => "Stop Waiting",
         Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Library",
         Dialog::RemoveFolder { .. } => "Remove Folder from Library",
         Dialog::SynchronizeFolder { .. } => "Synchronize Folder",
@@ -1221,6 +1222,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(what)).color(t.text_dim));
                 }
                 d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::body(app, ui, d),
+                Dialog::StopWaiting { task, warning, .. } => {
+                    ui.label(crate::i18n::tr_format!("Stop waiting: {task}?", task = task));
+                    crate::dialog_frame::note(ui, egui::RichText::new(warning.as_str()).color(t.text_dim));
+                }
                 Dialog::DeleteRejected { count, recycle } => {
                     ui.label(crate::i18n::tr_format!("Delete the {n} rejected photos of this view?", n = count));
                     ui.add_space(6.0);
@@ -1506,6 +1511,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::RemoveFolder { .. } => "Remove",
                     Dialog::DeleteRejected { recycle: true, .. } => "Move to Trash",
                     Dialog::DeleteRejected { .. } => "Remove",
+                    Dialog::StopWaiting { .. } => "Stop Waiting",
                     Dialog::LightroomCatalog { .. } => "Import Lightroom Catalog…",
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
@@ -2265,6 +2271,11 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::DeleteEffects { names } => app.run("mask.deleteEffect", json!({"names": names})),
         Dialog::RemoveFolder { path, disk, .. } => app.run("library.removeFolder", json!({"path": path, "disk": disk})),
+        Dialog::StopWaiting { id, .. } => {
+            // the task may have ended meanwhile: then there is nothing left to stop
+            crate::panels::activity::cancel(app, *id);
+            Ok(serde_json::Value::Null)
+        }
         Dialog::DeleteRejected { recycle, .. } => {
             let r = app.run("library.deleteRejected", json!({"files": if *recycle { "recycle" } else { "keep" }, "confirm": true}));
             if let Ok(v) = &r {
@@ -3934,7 +3945,8 @@ pub fn confirm_style(dlg: &Dialog) -> ConfirmStyle {
         | Dialog::DeleteKeyword { .. }
         | Dialog::DeleteEffects { .. }
         | Dialog::RemoveFolder { .. }
-        | Dialog::DeleteRejected { .. } => ConfirmStyle::Plain,
+        | Dialog::DeleteRejected { .. }
+        | Dialog::StopWaiting { .. } => ConfirmStyle::Plain,
         _ if only_shows(dlg) => ConfirmStyle::Plain,
         _ => ConfirmStyle::Primary,
     }

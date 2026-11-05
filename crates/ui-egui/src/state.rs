@@ -2099,6 +2099,13 @@ pub enum Dialog {
         prompt: String,
         variations: u32,
     },
+    /// Stop a task whose stop throws work away (a plug-in's wait for a program: "Stop Waiting…" in the activity list).
+    /// `task` and `warning` are shown as given (translated, names in); confirming runs `activity.cancel` for `id`.
+    StopWaiting {
+        id: u64,
+        task: String,
+        warning: String,
+    },
     /// Confirm moving photos to Recently Deleted or deleting from disk.
     ConfirmDelete {
         count: usize,

@@ -65,6 +65,7 @@
   "Sent {n} page(s) to the printer (job {j})": "{n} ページをプリンターに送信しました（ジョブ {j}）",
   "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.": "モデルの利用条件を表示してから、{host}から{}をダウンロードし、インストールして使い始めます。それ以外の情報は送信しません。",
   "Slideshow {n}": "スライドショー {n}",
+  "Stop waiting: {task}?": "待機を中止しますか: {task}",
   "Style {n}": "スタイル {n}",
   "Tagged {n} photos from the tracklog": "トラックログから {n} 枚の写真にタグ付けしました",
   "Target: {name}": "ターゲット: {name}",

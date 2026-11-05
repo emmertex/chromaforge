@@ -70,6 +70,7 @@
   "Second graphics card not used: {why}": "Druga karta graficzna nieużywana: {why}",
   "Sent {n} page(s) to the printer (job {j})": "Wysłano do drukarki stron: {n} (zadanie {j})",
   "Slideshow {n}": "Pokaz slajdów {n}",
+  "Stop waiting: {task}?": "Przestać czekać: {task}?",
   "Style {n}": "Styl {n}",
   "Tagged {n} photos from the tracklog": "Oznaczono zdjęcia na podstawie śladu GPS: {n}",
   "Target: {name}": "Cel: {name}",

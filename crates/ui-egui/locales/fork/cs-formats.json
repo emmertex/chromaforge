@@ -70,6 +70,7 @@
   "Second graphics card not used: {why}": "Druhá grafická karta se nepoužívá: {why}",
   "Sent {n} page(s) to the printer (job {j})": "Na tiskárnu odesláno stran: {n} (úloha {j})",
   "Slideshow {n}": "Prezentace {n}",
+  "Stop waiting: {task}?": "Přestat čekat: {task}?",
   "Style {n}": "Styl {n}",
   "Tagged {n} photos from the tracklog": "Podle záznamu trasy označeno {n} fotek",
   "Target: {name}": "Cíl: {name}",
