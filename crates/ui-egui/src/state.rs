@@ -1156,6 +1156,10 @@ pub struct UiState {
     /// Widths of the left sidebar and of the right panel in points (dragging their inner edge
     /// resizes them; within [`LEFT_WIDTH`] / [`RIGHT_WIDTH`]).
     pub left_width: f32,
+    /// The Presets Manager's size as the user left it (its content, in points); opened at it
+    /// again, capped to the screen (`panels::presets_manager::window_size`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presets_manager_size: Option<[f32; 2]>,
     pub right_width: f32,
     /// Width of the Import tab's settings column in points (its left edge is dragged to resize
     /// it; within [`IMPORT_SETTINGS_WIDTH`]).
@@ -2265,6 +2269,7 @@ impl Default for UiState {
             import_was_browsing: false,
             left_panel: false,
             left_width: LEFT_WIDTH.default,
+            presets_manager_size: None,
             right_width: RIGHT_WIDTH.default,
             import_settings_width: IMPORT_SETTINGS_WIDTH.default,
             right: RightPanel::Edit,
