@@ -1562,12 +1562,38 @@ struct StrokeAt<'p, 'a> {
     plan: &'p Plan<'a>,
     pass: u64,
     op: u32,
+    /// The frame strokes are kept for ([`crate::strokes::view`]).
+    view: u64,
+    /// The mask is placed on the photo before its warp (its strokes land elsewhere in the frame).
+    on_photo: bool,
 }
 
-/// One Auto Mask stroke `d` (its brush data `aux`, the `shape` parameters `q`) combined into
-/// `brush`: stamped, refined over the rectangle it can reach (`masks::auto_stroke_reach`, as the
-/// CPU does), kept in 16 bits for the next render ([`crate::strokes`]), or taken from there
-/// (`true`: nothing was worked out).
+/// What an Auto Mask stroke combined into the plane took from the store: blocks taken, blocks
+/// it covers.
+#[derive(Clone, Copy, Default)]
+struct StrokeUse {
+    reused: usize,
+    blocks: usize,
+}
+
+/// A rectangle (x0, y0, x1, y1; exclusive ends).
+type Rect = (usize, usize, usize, usize);
+
+fn meet(a: Rect, b: Rect) -> Option<Rect> {
+    let r = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
+    (r.0 < r.2 && r.1 < r.3).then_some(r)
+}
+
+/// One Auto Mask stroke `d` (the stroke `st`, its brush data `aux`, the `shape` parameters `q`)
+/// combined into `brush`: stamped, refined over the rectangle it can reach
+/// (`masks::auto_stroke_reach`, as the CPU does), and kept in 16 bits for the next render
+/// ([`crate::strokes`]) in blocks of the whole frame, so the other windows of the frame (a zoomed
+/// view's tiles) take the blocks they share from there and work out only the rest.
+///
+/// A block is kept only when the rectangle refined holds every pixel the refine reads for it (its
+/// support, [`refine_support`], inside the rectangle or at the stroke's own reach): what this
+/// window worked out there is then what any window of the frame does. Blocks near the window's
+/// edge, in its margin, are used here and not kept.
 ///
 /// Each stroke worked out is submitted on its own and the render waits for the one before it, so
 /// the window's frames slot in between: a dozen big strokes queued at once, each refined over the
@@ -1576,6 +1602,7 @@ struct StrokeAt<'p, 'a> {
 fn auto_stroke(
     cx: &mut Cx<'_>,
     d: &lcc_pipeline::masks::BrushDabs,
+    st: &lcc_develop::BrushStroke,
     aux: &[f32],
     q: &[u32],
     lin: &Buf,
@@ -1583,55 +1610,168 @@ fn auto_stroke(
     stroke: &Buf,
     brush: &Buf,
     at: &StrokeAt<'_, '_>,
-) -> bool {
-    use lcc_pipeline::masks::{auto_refine, auto_stroke_key, auto_stroke_reach};
+) -> StrokeUse {
+    use crate::strokes::{BLOCK, Kept};
+    use lcc_pipeline::masks::{auto_refine, auto_stroke_reach, auto_stroke_reach_in, auto_stroke_sigma};
     let (w, h) = (at.plan.w, at.plan.h);
     // (a stroke that reaches no pixel of this plane paints nothing)
-    let Some(rect) = auto_stroke_reach(d, w, h) else { return true };
+    let Some(local) = auto_stroke_reach(d, w, h) else { return StrokeUse::default() };
+    // this plane in the whole frame, and the stroke's reach there (at least what it reaches here)
+    let ff = &at.plan.filter_frame;
+    let (ox, oy) = (ff.x as usize, ff.y as usize);
+    let need = (local.0 + ox, local.1 + oy, local.2 + ox, local.3 + oy);
+    let (fw, fh) = ((ff.full_w as usize).max(ox + w), (ff.full_h as usize).max(oy + h));
+    let whole = auto_stroke_reach_in(d, (ox as f64, oy as f64), fw, fh).unwrap_or(need);
+    let whole = (whole.0.min(need.0), whole.1.min(need.1), whole.2.max(need.2), whole.3.max(need.3));
     let generation = cx.gpu.generation;
-    let key = crate::strokes::key(auto_stroke_key(d, w, h), at.plan.geo, at.plan.lin_key, generation);
-    let (x0, y0, x1, y1) = rect;
-    let (rw, rh) = (x1 - x0, y1 - y0);
-    let pr = [w as u32, x0 as u32, y0 as u32, rw as u32, rh as u32];
-    let mut hit = true;
     let batch = crate::gate::is_batch();
-    let kept = match crate::strokes::get(at.src, key, at.pass, generation, batch) {
-        Some(k) => k,
-        None => {
-            let aux = cx.gpu.upload(aux);
-            cx.run("shape", q, &[Some(lin), Some(log_l), Some(&aux), Some(stroke), Some(brush)], groups2(w, h, [16, 16]));
-            let rn = rw * rh;
-            let cut = |cx: &mut Cx<'_>, plane: &Buf| {
-                let out = cx.gpu.buffer(rn);
-                cx.run("crop", &pr, &[Some(plane), None, Some(&out)], groups2(rw, rh, [16, 16]));
-                out
-            };
-            let s_r = cut(cx, stroke);
-            // (a Lightroom-model stroke keeps its pixel-sharp cut)
-            let q_r = if d.lrc.is_none() {
-                let l_r = cut(cx, log_l);
-                let (sigma, eps) = auto_refine(d.r);
-                guided_cross(cx, &l_r, &s_r, rw, rh, sigma, eps, Combine::Max)
-            } else {
-                s_r
-            };
-            let packed = cx.gpu.buffer(rn.div_ceil(2));
-            cx.run("pack16", &[rn as u32], &[Some(&q_r), Some(&packed), None], groups1(rn.div_ceil(2)));
-            let kept = Arc::new(crate::strokes::Kept { rect, packed });
-            // (not kept when the render failed: its buffers may hold nothing)
-            if !crate::ctx::failed() {
-                crate::strokes::put(at.src, key, at.pass, batch, kept.clone());
-            }
-            cx.pace();
-            hit = false;
-            kept
-        }
+    // the stroke itself, not its dabs (their positions in a window carry its rounding)
+    let stroke_key = {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        let brush = (
+            d.r.to_bits(),
+            d.hard.to_bits(),
+            d.flow.to_bits(),
+            d.density.to_bits(),
+            d.auto_scale.to_bits(),
+            d.lrc.map(|(a, p)| (a.to_bits(), p.to_bits())),
+        );
+        BuildHasherDefault::<DefaultHasher>::default().hash_one((format!("{st:?}"), d.dabs.len(), brush, d.erase, at.op, at.on_photo))
     };
-    let (x0, y0, x1, y1) = kept.rect;
-    let (rw, rh) = (x1 - x0, y1 - y0);
-    let pc = [w as u32, x0 as u32, y0 as u32, rw as u32, rh as u32, d.density.to_bits(), at.op];
-    cx.run("combine16", &pc, &[None, Some(&kept.packed), Some(brush)], groups2(rw, rh, [16, 16]));
-    hit
+    // the whole stroke over this plane, kept by a window that could keep no blocks there
+    let loose = crate::strokes::loose_key(at.view, stroke_key, (at.plan.geo, at.plan.lin_key));
+    if let Some(k) = crate::strokes::get(at.src, loose, at.pass, generation, batch).filter(|k| k.rect == need) {
+        let (rw, rh) = (need.2 - need.0, need.3 - need.1);
+        let pc = [w as u32, local.0 as u32, local.1 as u32, rw as u32, rh as u32, d.density.to_bits(), at.op, rw as u32, 0, 0];
+        cx.run("combine16", &pc, &[None, Some(&k.packed), Some(brush)], groups2(rw, rh, [16, 16]));
+        return StrokeUse { reused: 1, blocks: 1 };
+    }
+    // the blocks of the frame this plane needs: each one's part of the stroke, and of this plane
+    let mut blocks: Vec<(u64, Rect, Rect, Option<Arc<Kept>>)> = Vec::new();
+    for by in need.1 / BLOCK..need.3.div_ceil(BLOCK) {
+        for bx in need.0 / BLOCK..need.2.div_ceil(BLOCK) {
+            let cell = (bx * BLOCK, by * BLOCK, (bx + 1) * BLOCK, (by + 1) * BLOCK);
+            let (Some(part), Some(here)) = (meet(cell, whole), meet(cell, need)) else { continue };
+            let key = crate::strokes::key(at.view, stroke_key, bx, by);
+            let kept = crate::strokes::get(at.src, key, at.pass, generation, batch).filter(|k| k.rect == part);
+            blocks.push((key, part, here, kept));
+        }
+    }
+    let mut used = StrokeUse { reused: blocks.iter().filter(|b| b.3.is_some()).count(), blocks: blocks.len() };
+    // the blocks not kept: worked out over their bounding box and the refine's support around it
+    let missing = blocks.iter().filter(|b| b.3.is_none()).map(|b| b.2).reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)));
+    let fresh = missing.and_then(|m| {
+        let sigma = auto_stroke_sigma(d);
+        let support = refine_support(sigma);
+        let grown = (m.0.saturating_sub(support), m.1.saturating_sub(support), m.2.saturating_add(support), m.3.saturating_add(support));
+        let c = meet(grown, need)?;
+        let (rw, rh) = (c.2 - c.0, c.3 - c.1);
+        let rn = rw * rh;
+        let pr = [w as u32, (c.0 - ox) as u32, (c.1 - oy) as u32, rw as u32, rh as u32];
+        crate::strokes::note_refined();
+        let cap = crate::strokes::store_bytes(cx.gpu.vram);
+        let aux = cx.gpu.upload(aux);
+        cx.run("shape", q, &[Some(lin), Some(log_l), Some(&aux), Some(stroke), Some(brush)], groups2(w, h, [16, 16]));
+        let cut = |cx: &mut Cx<'_>, plane: &Buf| {
+            let out = cx.gpu.buffer(rn);
+            cx.run("crop", &pr, &[Some(plane), None, Some(&out)], groups2(rw, rh, [16, 16]));
+            out
+        };
+        let s_r = cut(cx, stroke);
+        // (a Lightroom-model stroke keeps its pixel-sharp cut)
+        let q_r = if d.lrc.is_none() {
+            let l_r = cut(cx, log_l);
+            let (sigma, eps) = auto_refine(d.r);
+            guided_cross(cx, &l_r, &s_r, rw, rh, sigma, eps, Combine::Max)
+        } else {
+            s_r
+        };
+        let packed = cx.gpu.buffer(rn.div_ceil(2));
+        cx.run("pack16", &[rn as u32], &[Some(&q_r), Some(&packed), None], groups1(rn.div_ceil(2)));
+        let packed = Arc::new(Kept { rect: c, packed });
+        // keep the blocks whose refine saw all it reads: each side inside the rectangle by the
+        // support, or the stroke's own edge (not kept when the render failed: its buffers may
+        // hold nothing)
+        if !crate::ctx::failed() {
+            let sees = |p: Rect| {
+                p.0 >= c.0
+                    && p.1 >= c.1
+                    && p.2 <= c.2
+                    && p.3 <= c.3
+                    && (c.0 == whole.0 || p.0 >= c.0 + support)
+                    && (c.1 == whole.1 || p.1 >= c.1 + support)
+                    && (c.2 == whole.2 || p.2 + support <= c.2)
+                    && (c.3 == whole.3 || p.3 + support <= c.3)
+            };
+            let mut unseen = false;
+            for (key, part, _, kept) in &mut blocks {
+                if kept.is_some() {
+                    continue;
+                }
+                if !sees(*part) {
+                    unseen = true;
+                    continue;
+                }
+                let (bw, bh) = (part.2 - part.0, part.3 - part.1);
+                let bn = bw * bh;
+                let one = cx.gpu.buffer(bn);
+                cx.run(
+                    "crop",
+                    &[rw as u32, (part.0 - c.0) as u32, (part.1 - c.1) as u32, bw as u32, bh as u32],
+                    &[Some(&q_r), None, Some(&one)],
+                    groups2(bw, bh, [16, 16]),
+                );
+                let bpacked = cx.gpu.buffer(bn.div_ceil(2));
+                cx.run("pack16", &[bn as u32], &[Some(&one), Some(&bpacked), None], groups1(bn.div_ceil(2)));
+                let k = Arc::new(Kept { rect: *part, packed: bpacked });
+                crate::strokes::put(at.src, *key, at.view, at.pass, batch, cap, k);
+            }
+            // (this window saw too little around some blocks to keep them, a window with no margin
+            // most of all: the whole stroke over this plane is kept for this window instead)
+            if unseen && c == need {
+                crate::strokes::put_loose(at.src, loose, at.view, at.pass, batch, cap, packed.clone());
+            }
+        }
+        cx.pace();
+        Some((c, packed))
+    });
+    // every block's part of this plane, from the store or from what was just worked out
+    for (_, part, here, kept) in &blocks {
+        let (src_rect, packed) = match (kept, &fresh) {
+            (Some(k), _) => (*part, &k.packed),
+            (None, Some((c, p))) if meet(*here, *c) == Some(*here) => (*c, &p.packed),
+            // (outside what was worked out: nothing the stroke paints here)
+            _ => {
+                used.blocks = used.blocks.saturating_sub(1);
+                continue;
+            }
+        };
+        let (rw, rh) = (here.2 - here.0, here.3 - here.1);
+        let pc = [
+            w as u32,
+            (here.0 - ox) as u32,
+            (here.1 - oy) as u32,
+            rw as u32,
+            rh as u32,
+            d.density.to_bits(),
+            at.op,
+            (src_rect.2 - src_rect.0) as u32,
+            (here.0 - src_rect.0) as u32,
+            (here.1 - src_rect.1) as u32,
+        ];
+        cx.run("combine16", &pc, &[None, Some(packed), Some(brush)], groups2(rw, rh, [16, 16]));
+    }
+    used
+}
+
+/// Pixels around a pixel the Auto Mask refine (`guided_cross` at `sigma`) reads: two Gaussians,
+/// each three box passes, plus a pixel of slack.
+fn refine_support(sigma: f32) -> usize {
+    if sigma <= 0.0 {
+        return 0;
+    }
+    let one: usize = lcc_raster::blur::box_radii(sigma).iter().sum();
+    one.saturating_mul(2).saturating_add(1)
 }
 
 /// Evaluate the masks (`lcc_pipeline::masks::evaluate`): their alpha planes (concatenated,
@@ -1761,8 +1901,9 @@ fn mask_alpha(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, lin: &Buf, prep: &Prep, plan: 
                         let brush = cx.zeroed(n);
                         let stroke = cx.gpu.buffer(n);
                         let pass = crate::strokes::pass();
-                        let (mut kept, mut auto) = (0, 0);
-                        for (d, aux) in dabs.iter().zip(auxes.unwrap_or_default()) {
+                        let view = crate::strokes::view(plan.frame_lin_key, cx.gpu.generation);
+                        let (mut kept, mut auto) = (StrokeUse::default(), 0);
+                        for ((d, aux), st) in dabs.iter().zip(auxes.unwrap_or_default()).zip(strokes) {
                             // a Lightroom-model stroke adds up with the ones before it (`masks::combine_stroke`)
                             let op = if d.erase {
                                 2
@@ -1776,8 +1917,10 @@ fn mask_alpha(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, lin: &Buf, prep: &Prep, plan: 
                             q[3] = 0;
                             q.push(1);
                             if d.auto {
-                                let at = StrokeAt { src, plan, pass, op };
-                                kept += auto_stroke(cx, d, &aux, &q, lin, &prep.log_l, &stroke, &brush, &at) as usize;
+                                let at = StrokeAt { src, plan, pass, op, view, on_photo: m.on_photo };
+                                let u = auto_stroke(cx, d, st, &aux, &q, lin, &prep.log_l, &stroke, &brush, &at);
+                                kept.reused += u.reused;
+                                kept.blocks += u.blocks;
                                 auto += 1;
                                 continue;
                             }
@@ -1787,7 +1930,11 @@ fn mask_alpha(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, lin: &Buf, prep: &Prep, plan: 
                         }
                         if profiling() {
                             eprintln!(
-                                "  gpu auto mask strokes: {kept} of {auto} kept from before ({w}×{h}; {} MB kept; batch {})",
+                                "  gpu auto mask strokes: {auto}, {} of {} blocks kept from before ({w}×{h} at {}, {}; {} MB kept; batch {})",
+                                kept.reused,
+                                kept.blocks,
+                                plan.filter_frame.x,
+                                plan.filter_frame.y,
                                 crate::strokes::bytes() >> 20,
                                 crate::gate::is_batch()
                             );

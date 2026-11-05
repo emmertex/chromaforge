@@ -104,17 +104,18 @@ pub(super) fn stroke_key(bd: &BrushDabs, w: usize, h: usize, pixels: u64) -> u64
 /// The pixels (x0, y0, x1, y1; exclusive ends) of a `w × h` plane an Auto Mask stroke's refine can
 /// change: its dabs' extent plus six sigmas (the guided filter blurs twice, each blur reaching
 /// three), clipped to the plane; `None` when it reaches none.
-pub(super) fn refine_reach(bd: &BrushDabs, w: usize, h: usize, sigma: f32) -> Option<(usize, usize, usize, usize)> {
+pub(super) fn refine_reach(bd: &BrushDabs, origin: (f64, f64), w: usize, h: usize, sigma: f32) -> Option<(usize, usize, usize, usize)> {
     let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     for (k, d) in bd.dabs.iter().enumerate() {
         let r = bd.dab(k).0;
         if !(d.x.is_finite() && d.y.is_finite() && r.is_finite()) {
             continue;
         }
-        x0 = x0.min(d.x - r);
-        y0 = y0.min(d.y - r);
-        x1 = x1.max(d.x + r);
-        y1 = y1.max(d.y + r);
+        let (x, y) = (d.x + origin.0, d.y + origin.1);
+        x0 = x0.min(x - r);
+        y0 = y0.min(y - r);
+        x1 = x1.max(x + r);
+        y1 = y1.max(y + r);
     }
     let m = 6.0 * f64::from(sigma) + 2.0;
     let clip = |v: f64, n: usize| v.clamp(0.0, n as f64) as usize;
@@ -272,7 +273,7 @@ mod tests {
     fn the_refine_is_bounded_by_the_strokes_reach() {
         let (img, l, bd) = scene(0.7);
         let (sigma, eps) = auto_refine(bd.r);
-        let (x0, y0, x1, y1) = refine_reach(&bd, W, H, sigma).expect("the stroke is on the plane");
+        let (x0, y0, x1, y1) = refine_reach(&bd, (0.0, 0.0), W, H, sigma).expect("the stroke is on the plane");
         assert!((x1 - x0) * (y1 - y0) < W * H / 2, "a short stroke refines a small part of the plane");
         let chroma = chroma_plane(&img);
         let mut whole = Plane::new(W, H);
@@ -284,7 +285,7 @@ mod tests {
         assert!(worst < 2e-3, "bounded refine differs from the whole-plane one by {worst}");
         let mut off = bd;
         off.dabs = vec![Point::new(-5000.0, -5000.0)];
-        assert_eq!(refine_reach(&off, W, H, sigma), None, "a stroke off the plane refines nothing");
+        assert_eq!(refine_reach(&off, (0.0, 0.0), W, H, sigma), None, "a stroke off the plane refines nothing");
         let (gone, _) = auto_stroke(&off, W, H, &l, &chroma, 7, pass());
         let mut out = Plane::new(W, H);
         gone.combine_into(&mut out, f32::max);

@@ -1010,7 +1010,19 @@ pub fn auto_refine(r: f64) -> (f32, f32) {
 /// which keeps its pixel-sharp cut), clipped to the plane; `None` when it reaches none. Both
 /// renderers refine a stroke over this rectangle only, with the blur's edges clamped to it.
 pub fn auto_stroke_reach(bd: &BrushDabs, w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
-    auto_stroke::refine_reach(bd, w, h, if bd.lrc.is_none() { auto_refine(bd.r).0 } else { 0.0 })
+    auto_stroke_reach_in(bd, (0.0, 0.0), w, h)
+}
+
+/// [`auto_stroke_reach`] in a larger `w × h` frame in which the stroke's plane starts at `origin`
+/// (a window of it: its dabs move by `origin`); in the frame's pixels.
+pub fn auto_stroke_reach_in(bd: &BrushDabs, origin: (f64, f64), w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
+    auto_stroke::refine_reach(bd, origin, w, h, auto_stroke_sigma(bd))
+}
+
+/// The sigma (pixels) of an Auto Mask stroke's refine: 0 for a Lightroom-model stroke, which keeps
+/// its pixel-sharp cut.
+pub fn auto_stroke_sigma(bd: &BrushDabs) -> f32 {
+    if bd.lrc.is_none() { auto_refine(bd.r).0 } else { 0.0 }
 }
 
 /// What an Auto Mask stroke's coverage depends on besides the pixels it reads: its dabs as placed

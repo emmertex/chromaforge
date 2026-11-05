@@ -31,8 +31,9 @@ fn pack16(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) 
     packed[i] = pack2x16unorm(vec2<f32>(src[j], b));
 }
 
-// Combine packed coverage over the rectangle P[1..5] (as `crop`) into the plane dst (P[0] wide):
-// P[5] density, P[6] the op of `combine` (1 add, 2 subtract, 4 add up to the density).
+// Combine packed coverage into the plane dst (P[0] wide) over the rectangle P[1], P[2] (x0, y0),
+// P[3] × P[4] (rw × rh): P[5] density, P[6] the op of `combine` (1 add, 2 subtract, 4 add up to the
+// density). The coverage is read from a packed rectangle P[7] pixels wide, from its pixel P[8], P[9].
 @compute @workgroup_size(16, 16)
 fn combine16(@builtin(global_invocation_id) g: vec3<u32>) {
     let w = pu(0u);
@@ -41,7 +42,7 @@ fn combine16(@builtin(global_invocation_id) g: vec3<u32>) {
     if (g.x >= rw || g.y >= rh) {
         return;
     }
-    let k = g.y * rw + g.x;
+    let k = (pu(9u) + g.y) * pu(7u) + pu(8u) + g.x;
     let pair = unpack2x16unorm(packed[k / 2u]);
     var v = pair.x;
     if (k % 2u == 1u) {

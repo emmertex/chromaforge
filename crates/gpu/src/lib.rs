@@ -998,6 +998,32 @@ pub fn kept_stroke_bytes() -> usize {
     }
 }
 
+/// Blocks of Auto Mask strokes this thread's renders have taken from those kept so far (a window
+/// of a frame reusing what another window of it worked out counts its blocks here).
+pub fn reused_stroke_blocks() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        strokes::reused()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
+/// Auto Mask strokes this thread's renders refined so far, whole or in part (none when every
+/// stroke a render needs was kept).
+pub fn refined_auto_mask_strokes() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        strokes::refined()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
 /// Device bytes of the one big source (a zoom window's original) shared by every view of the photo.
 pub fn shared_source_bytes() -> usize {
     #[cfg(not(target_arch = "wasm32"))]
