@@ -485,12 +485,21 @@ fn extract_embedded(e: Embedded, mut m: Metadata, xmp: Option<XmpData>) -> Metad
     m
 }
 
-/// Does the file embed a GPS position anywhere it can be read from? Export's "remove location"
+/// Does the file embed GPS or a place name anywhere it can be read from? Export's "remove location"
 /// asks before copying an original byte for byte. For HEIF, HEIC and AVIF that is any EXIF or XMP
 /// item, whichever image it describes (a thumbnail's too), and an item that can't be read counts
 /// as a location; for other files, what [`extract`] reads.
 pub fn embeds_location(bytes: &[u8]) -> bool {
-    heif::embeds_location(bytes).unwrap_or_else(|| extract(bytes).gps.is_some())
+    heif::embeds_location(bytes).unwrap_or_else(|| has_location(&extract(bytes)))
+}
+
+/// Location includes the place names removed by export, as well as GPS coordinates.
+fn has_location(metadata: &Metadata) -> bool {
+    metadata.gps.is_some()
+        || [metadata.sublocation.as_deref(), metadata.city.as_deref(), metadata.state.as_deref(), metadata.country.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|value| !value.trim().is_empty())
 }
 
 /// Turn regions drawn on a photo as it is stored onto the upright photo. MWG gives each box as a fraction of
