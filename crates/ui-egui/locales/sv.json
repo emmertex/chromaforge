@@ -2465,5 +2465,9 @@
   "New album…": "Nytt album…",
   "Albums": "Album",
   "This is the album you're editing": "Det här är albumet du redigerar",
-  "It tests this album, so testing it back would loop": "Det testar det här albumet, så att testa det tillbaka skulle ge en loop"
+  "It tests this album, so testing it back would loop": "Det testar det här albumet, så att testa det tillbaka skulle ge en loop",
+  "Import to This Folder…": "Importera till den här mappen…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Kopierar fotona i en mapp du väljer till den här mappen; i granskningen kan du ändra det",
+  "Add to My Photos…": "Lägg till i Mina foton…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Granskar fotona i den här mappen och lägger sedan till dem i biblioteket där de ligger; ingen fil rörs"
 }
