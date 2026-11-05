@@ -67,13 +67,13 @@ lcc-tflite = { workspace = true, optional = true }
 # video clips: probe and poster frames (every call is `Unsupported` on wasm32)
 lcc-video = { workspace = true }
 lcc-audio-out = { workspace = true }
+# capture times: face recognition, and a Capture One catalog's offline originals (no clock: builds for wasm32 too)
+chrono = { workspace = true }
 
 # model downloads run natively only (the web build fetches no models)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lcc-fetch = { workspace = true }
 lcc-genfill = { workspace = true, features = ["cloud"] }
-# capture-time parsing for face recognition (native only)
-chrono = { workspace = true }
 # auto updates: the release feed, the download, and starting the install
 lcc-updater = { workspace = true }
 lcc-immich = { workspace = true }

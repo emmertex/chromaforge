@@ -1,5 +1,5 @@
-//! Settings ▸ Profiles, the Profile Manager (ported from OneSlips): its Hide button takes a profile out of
-//! the menu, and each camera body of the library a row for its own camera profile.
+//! Settings ▸ Profiles (ported from OneSlips): each camera body of the library has a row for its own
+//! camera profile, and the Profile Manager opens from there (its own tests: `tests_profile_manager`).
 
 use serde_json::json;
 
@@ -18,13 +18,20 @@ fn the_profile_manager_hides_profiles_and_sets_body_profiles() {
     run(&mut h, "app.settings", json!({"tab": "profiles"}));
     h.step();
     h.step();
-    let profile = lcc_engine::presets::PROFILES[0].id;
-    let hide = format!("button:profileHide:{profile}");
     assert!(has(&h, "combo:bodyProfile:ILCE-9|4012345"), "the body has a row");
-
-    assert!(has(&h, &hide), "every profile has a Hide button");
     // the dialog's content slides into place over its first frames: click once it has settled
     h.settle(std::time::Duration::from_secs(60));
+    click(&mut h, "button:profilesOpenManager");
+    h.step();
+    let profile = lcc_engine::presets::PROFILES[0].id;
+    let name = lcc_engine::presets::PROFILES[0].name;
+    if let Some(crate::state::Dialog::ProfileManager { query, .. }) = h.app.ui.dialog.as_mut() {
+        *query = name.into();
+    }
+    h.step();
+    h.step();
+    let hide = format!("icon:profileManagerHide:{profile}");
+    assert!(has(&h, &hide), "every profile has a Hide button");
     click(&mut h, &hide);
     h.step();
     assert_eq!(h.app.session.profile_hidden, [profile.to_string()], "the click hid that profile");

@@ -22,7 +22,19 @@ pub use settings::*;
 
 use serde_json::Value;
 
+/// The default look (Craft Colour): adds nothing of its own, so over a camera profile with a look of its own (a
+/// tone curve or look table) the photo develops with that look, "As profile".
+pub const DEFAULT_LOOK: &str = "lc.color";
+
 impl DevelopSettings {
+    /// Whether the camera profile's own look (its tone curve and look table) applies: with the default look ("As
+    /// profile", [`DEFAULT_LOOK`]). Any other look sits on the camera profile's calibration only, so two looks are
+    /// never stacked (OneSlips, LR-PROF-LAYERS). Settings from before this rule keep their JSON: a photo on the
+    /// default look renders as it did, one on another look loses the camera profile's look under it.
+    pub fn keeps_camera_look(&self) -> bool {
+        self.profile.id.is_empty() || self.profile.id == DEFAULT_LOOK
+    }
+
     /// Settings for a freshly imported raw file (Lightroom applies capture sharpening and colour
     /// noise reduction by default to raw files).
     pub fn for_raw(as_shot_temp: f64, as_shot_tint: f64) -> DevelopSettings {

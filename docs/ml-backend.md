@@ -62,14 +62,23 @@ embedding cache store.
     licence acknowledgement;
   - `ml.pump {pace?: fast | idle | pause}` and `ml.index {ids?, wait?, batchSize?}`: drive background or synchronous
     embedding indexing;
-  - `search.semantic {text, limit?, minScore?, scope?: all | filtered | selected}`: encodes a natural-language query
-    with the CLIP text tower and ranks indexed photos by cosine similarity.
+  - `search.semantic {text, limit?, minScore?, scope?: all | filtered | selected, filter?: bool, clear?: bool}`: encodes a natural-language query
+    with the CLIP text tower, ranks indexed photos by cosine similarity, and (when `filter: true` or via
+    `library.filter {semantic: text}`) filters the library grid in similarity order while composing with ratings, flags,
+    colour labels, keywords and folders (issue #487); as background `ml.pump` batches finish, an active semantic filter
+    refreshes automatically.
+
+**The interface** (`crates/ui-egui/src/panels/topbar.rs`, `crates/ui-egui/src/modern_library.rs`,
+`crates/ui-egui/src/panels/ml_models.rs`) exposes natural-language search (`search:ai` in the top bar,
+`modern:search:ai` in the Modern search pill, a removable `AI search: “…”` chip in the filter-chips bar) and a
+**Semantic search** section in Settings ▸ AI Models (`dialog.aiModels`) to download, select or remove the CLIP model and
+toggle background indexing.
 
 ## What's next
 
 In the order of the plan on issue #491:
 
-1. **Downstream AI features (#487–#490)** on the cached embeddings: UI search integration (#487), aesthetic scoring
+1. **Downstream AI features (#488–#490)** on the cached embeddings: aesthetic scoring
    head (#488), culling suggestions (#489), and orientation suggestions (#490). Suggestions are proposals the user
    accepts, never silent writes.
 2. **GPU on Linux and Windows** (wgpu), if measurements show CPU inference is too slow; checked against the CPU result
@@ -79,6 +88,8 @@ In the order of the plan on issue #491:
 
 `crates/ml/src/tests.rs` and unit tests across `manifest.rs`, `known.rs`, `store.rs`, `encoder.rs`, `tokenizer.rs`,
 `weights.rs`, and `clip.rs` cover the queue, manifests, SHA-256 verification, hostile `.safetensors` / tokenizer /
-store inputs, and synthetic CLIP image/text encoding. `crates/engine/src/tests_ml.rs` covers the session's activity
-row, GPU-to-CPU fallback, model installation and tamper rejection, background and synchronous indexing, persistent
-embedding stores across library reopen, content-replacement invalidation, and `search.semantic`.
+store inputs, and synthetic CLIP image/text encoding. `crates/engine/src/tests_ml.rs` and
+`crates/ui-egui/src/tests_filter_search.rs` cover the session's activity row, GPU-to-CPU fallback, model installation
+and tamper rejection, background and synchronous indexing, persistent embedding stores across library reopen,
+content-replacement invalidation, `search.semantic`, `library.filter {semantic}`, filter composition, and the UI toggle
+and Settings ▸ AI Models controls.

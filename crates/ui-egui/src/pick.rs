@@ -35,25 +35,51 @@ pub struct PickRequest {
     pub title: Option<String>,
     /// One file-type filter: its name and the extensions it admits (without dots).
     pub filter: Option<(String, &'static [&'static str])>,
+    /// Narrower file-type filters offered after `filter`, in order ([`PickRequest::with_filter`]); a host
+    /// that offers one filter only (Android) shows `filter`, so it admits every extension these do.
+    pub more_filters: Vec<(String, &'static [&'static str])>,
     /// [`PickKind::Save`]: the suggested file name.
     pub file_name: Option<String>,
 }
 
 impl PickRequest {
     pub fn files(title: Option<String>, filter: impl Into<String>, extensions: &'static [&'static str]) -> Self {
-        PickRequest { kind: PickKind::Files, title, filter: Some((filter.into(), extensions)), file_name: None }
+        PickRequest { kind: PickKind::Files, title, filter: Some((filter.into(), extensions)), file_name: None, more_filters: Vec::new() }
     }
 
     pub fn file(title: impl Into<String>, filter: impl Into<String>, extensions: &'static [&'static str]) -> Self {
-        PickRequest { kind: PickKind::File, title: Some(title.into()), filter: Some((filter.into(), extensions)), file_name: None }
+        PickRequest {
+            kind: PickKind::File,
+            title: Some(title.into()),
+            filter: Some((filter.into(), extensions)),
+            file_name: None,
+            more_filters: Vec::new(),
+        }
     }
 
     pub fn folder(title: impl Into<String>) -> Self {
-        PickRequest { kind: PickKind::Folder, title: Some(title.into()), filter: None, file_name: None }
+        PickRequest { kind: PickKind::Folder, title: Some(title.into()), filter: None, file_name: None, more_filters: Vec::new() }
+    }
+
+    /// Offer one more file-type filter after the ones already there.
+    pub fn with_filter(mut self, filter: impl Into<String>, extensions: &'static [&'static str]) -> Self {
+        self.more_filters.push((filter.into(), extensions));
+        self
+    }
+
+    /// Every file-type filter, `filter` first.
+    pub fn filters(&self) -> impl Iterator<Item = &(String, &'static [&'static str])> {
+        self.filter.iter().chain(self.more_filters.iter())
     }
 
     pub fn save(title: impl Into<String>, filter: impl Into<String>, extensions: &'static [&'static str], file_name: impl Into<String>) -> Self {
-        PickRequest { kind: PickKind::Save, title: Some(title.into()), filter: Some((filter.into(), extensions)), file_name: Some(file_name.into()) }
+        PickRequest {
+            kind: PickKind::Save,
+            title: Some(title.into()),
+            filter: Some((filter.into(), extensions)),
+            file_name: Some(file_name.into()),
+            more_filters: Vec::new(),
+        }
     }
 }
 

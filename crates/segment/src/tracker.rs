@@ -223,25 +223,38 @@ impl Tracker {
 
     /// Sparse prompt embeddings `[1, n + 1, 256]` (a padding point closes the list).
     pub fn embed_clicks(&self, clicks: &[Click]) -> Result<Tensor> {
+        self.embed_prompt(clicks, None)
+    }
+
+    /// Sparse prompt embeddings of `clicks` and an optional box (x0, y0, x1, y1, normalized):
+    /// SAM 2 gives a box as two points labelled 2 (top left) and 3 (bottom right) ahead of the
+    /// clicks (`Sam2ImagePredictor._predict`); a padding point closes the list.
+    pub fn embed_prompt(&self, clicks: &[Click], rect: Option<[f32; 4]>) -> Result<Tensor> {
         let point_embed = to_vec(&self.point_embed)?;
         let not_a_point = to_vec(&self.not_a_point)?;
-        let mut rows = Vec::with_capacity((clicks.len() + 1) * HIDDEN);
-        for c in clicks {
+        let corners: Vec<(f32, f32, usize)> = rect.map(|r| vec![(r[0], r[1], 2), (r[2], r[3], 3)]).unwrap_or_default();
+        let points: Vec<(f32, f32, usize)> = corners.into_iter().chain(clicks.iter().map(|c| (c.x, c.y, usize::from(c.positive)))).collect();
+        let mut rows = Vec::with_capacity((points.len() + 1) * HIDDEN);
+        for (x, y, label) in &points {
             // the reference shifts pixel coordinates (in the square input) by half a pixel
             let side = self.image as f32;
-            let (x, y) = ((c.x * side + 0.5) / side, (c.y * side + 0.5) / side);
+            let (x, y) = ((x * side + 0.5) / side, (y * side + 0.5) / side);
             let e = self.point_pe.encode(x, y);
-            let label = usize::from(c.positive);
             rows.extend(e.iter().enumerate().map(|(i, v)| v + point_embed.get(label * HIDDEN + i).copied().unwrap_or(0.0)));
         }
         rows.extend_from_slice(&not_a_point);
-        Ok(Tensor::from_vec(rows, (1, clicks.len() + 1, HIDDEN), &self.device)?)
+        Ok(Tensor::from_vec(rows, (1, points.len() + 1, HIDDEN), &self.device)?)
     }
 
     /// Predict masks for `clicks`. `multimask`: the three alternatives (best by predicted IoU is
     /// returned), else the single-mask output with SAM 2's stability fallback.
     pub fn predict(&self, f: &Features, clicks: &[Click], multimask: bool) -> Result<Prediction> {
-        let Decoded { masks, iou, object_score } = self.decode(f, clicks)?;
+        self.predict_prompt(f, clicks, None, multimask)
+    }
+
+    /// [`Self::predict`] with an optional box prompt (x0, y0, x1, y1, normalized).
+    pub fn predict_prompt(&self, f: &Features, clicks: &[Click], rect: Option<[f32; 4]>, multimask: bool) -> Result<Prediction> {
+        let Decoded { masks, iou, object_score } = self.decode_prompt(f, clicks, rect)?;
         let pick = |i: usize| -> Result<Prediction> {
             Ok(Prediction { logits: to_vec(&masks.i(i)?)?, iou: iou.get(i).copied().unwrap_or(0.0), object_score })
         };
@@ -259,7 +272,12 @@ impl Tracker {
 
     /// Run the decoder for `clicks`: all four masks with their predicted IoU and the object score.
     pub fn decode(&self, f: &Features, clicks: &[Click]) -> Result<Decoded> {
-        let sparse = self.embed_clicks(clicks)?;
+        self.decode_prompt(f, clicks, None)
+    }
+
+    /// [`Self::decode`] with an optional box prompt (x0, y0, x1, y1, normalized).
+    pub fn decode_prompt(&self, f: &Features, clicks: &[Click], rect: Option<[f32; 4]>) -> Result<Decoded> {
+        let sparse = self.embed_prompt(clicks, rect)?;
         let tokens = Tensor::cat(&[self.output_tokens.unsqueeze(0)?, sparse], 1)?; // [1, T, 256]
         let image = f.image.broadcast_add(&self.no_mask)?; // dense prompt: "no mask"
         let (b, c, h, w) = image.dims4()?;
@@ -285,5 +303,28 @@ impl Tracker {
         let iou = to_vec(&self.iou_head.forward(&iou_token)?)?;
         let object_score = to_vec(&self.obj_head.forward(&q.i((.., 0, ..))?)?)?.first().copied().unwrap_or(0.0);
         Ok(Decoded { masks: masks.i(0)?, iou, object_score })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SAM 2's box prompt: two corner points (labels 2 and 3) ahead of the clicks and the padding
+    /// point; without a box, the clicks alone. The corners carry their own label embeddings.
+    #[test]
+    fn a_box_prompt_is_two_labelled_corners_ahead_of_the_clicks() {
+        let map = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&map, DType::F32, &Device::Cpu);
+        let t = Tracker::with_geometry(vb, 128, 8).unwrap();
+        let clicks = [Click { x: 0.3, y: 0.6, positive: true }, Click { x: 1.0, y: 0.0, positive: false }];
+        assert_eq!(t.embed_clicks(&clicks).unwrap().dims(), &[1, 3, HIDDEN]);
+        let boxed = t.embed_prompt(&clicks, Some([0.1, 0.2, 0.6, 0.9])).unwrap();
+        assert_eq!(boxed.dims(), &[1, 5, HIDDEN]);
+        assert_eq!(t.embed_prompt(&[], Some([0.1, 0.2, 0.6, 0.9])).unwrap().dims(), &[1, 3, HIDDEN]);
+        // the clicks follow the corners unchanged
+        let plain = to_vec(&t.embed_clicks(&clicks).unwrap()).unwrap();
+        let rows = to_vec(&boxed).unwrap();
+        assert_eq!(&rows[2 * HIDDEN..], &plain[..]);
     }
 }

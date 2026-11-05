@@ -23,14 +23,10 @@ pub fn pump(app: &mut LccApp, ctx: &egui::Context) {
         && let Ok(v) = app.session.execute("ml.pump", &json!({"pace": pace}))
     {
         let busy = v["active"] == true && (v["pendingPhotos"].as_u64().unwrap_or(0) > 0 || v["inFlight"].as_u64().unwrap_or(0) > 0);
-        app.caches.ml_next_pump = now
-            + if busy {
-                0.05
-            } else if v["active"] == true {
-                1.0
-            } else {
-                0.0
-            };
+        app.caches.ml_next_pump = now + if busy { 0.05 } else { 1.0 };
+        if v["added"].as_u64().unwrap_or(0) > 0 {
+            ctx.request_repaint();
+        }
         if busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }

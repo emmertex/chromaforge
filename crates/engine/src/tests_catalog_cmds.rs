@@ -82,8 +82,12 @@ fn backup_integrity_and_optimise_on_a_disk_catalog() {
     let set = s.execute("catalog.settings", &json!({"backup": "weekly"})).unwrap();
     assert!(set["lastBackup"].is_i64(), "{set}");
     assert_eq!(s.execute("catalog.backupIfDue", &json!({})).unwrap()["backup"], json!(null));
-    // every exit: due now
+    // every exit: due now, but nothing changed since the backup, so none is made
     s.execute("catalog.settings", &json!({"backup": "everyExit", "optimize": true})).unwrap();
+    assert_eq!(s.execute("catalog.backupIfDue", &json!({})).unwrap()["backup"], json!(null));
+    // a change: backed up
+    s.execute("album.create", &json!({"name": "Picks"})).unwrap();
+    s.persist_if_dirty();
     let r = s.execute("catalog.backupIfDue", &json!({})).unwrap();
     assert!(r["backup"].is_string(), "{r}");
     assert!(s.execute("catalog.settings", &json!({"backup": "hourly"})).is_err());

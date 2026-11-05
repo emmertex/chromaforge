@@ -11,8 +11,6 @@
 //! app ([`super::Segmenter::background`]), at once in the CLI, MCP and tests. Results are kept for the
 //! session, so undoing and redoing never runs the models again.
 
-use std::sync::Arc;
-
 use lcc_catalog::{Op, PhotoId};
 use lcc_develop::{DevelopSettings, SegMask, SkinAnalysis, SkinArea, SkinFace, SkinSmoothing};
 use lcc_geom::Orientation;
@@ -241,7 +239,7 @@ pub(super) mod loaded {
 
 /// The face model in `dir`, loaded once (Detect Faces and the face scan share it with Retouch).
 #[cfg(feature = "sam")]
-pub(crate) fn face_model(dir: &std::path::Path) -> Result<Arc<lcc_segment::people::FaceModel>, String> {
+pub(crate) fn face_model(dir: &std::path::Path) -> Result<std::sync::Arc<lcc_segment::people::FaceModel>, String> {
     loaded::face(dir)
 }
 
@@ -373,17 +371,18 @@ impl Session {
         }
     }
 
-    /// Give photo `id` Smooth Skin's analysis `a` when its settings want it (an edit made
-    /// meanwhile wins). Saved like any change, without an undo step: the app found it, not the user.
+    /// Give photo `id` Smooth Skin's analysis `a` wherever its settings want it (an edit made meanwhile wins): its
+    /// settings, every undo and redo step, an interaction's starting points and the History steps
+    /// ([`Session::merge_background`]). Saved like any change, without an undo step: the app found it, not the user.
     pub(crate) fn store_skin_analysis(&mut self, id: PhotoId, a: &SkinAnalysis) -> crate::Result<()> {
-        let Some(photo) = self.catalog.photo(id) else { return Ok(()) };
-        let mut d = (*photo.develop).clone();
-        if !a.is_for(&d.skin, d.orientation) || d.skin_analysis.as_ref() == Some(a) {
-            return Ok(());
-        }
-        d.skin_analysis = Some(a.clone());
-        let op = Op::SetDevelop { id, settings: Arc::new(d), label: "Find Skin".into(), edited: photo.edited.clone() };
-        self.apply_unrecorded(op)
+        let give = |d: &mut DevelopSettings| {
+            if !a.is_for(&d.skin, d.orientation) || d.skin_analysis.as_ref() == Some(a) {
+                return false;
+            }
+            d.skin_analysis = Some(a.clone());
+            true
+        };
+        self.merge_background(id, "Find Skin", false, &give).map(|_| ())
     }
 
     /// Whether photo `id`'s Smooth Skin wants an analysis it doesn't have (`Some(key)`).

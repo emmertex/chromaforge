@@ -296,6 +296,14 @@ pub fn install_dcps() {
     });
 }
 
+/// Tests that rewrite the decoder's list of imported profiles hold this, so one never drops another's entries.
+#[cfg(test)]
+pub(crate) fn test_library_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    install_dcps();
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Folder of calibration files under development (debug and test builds only): `{ENV_PREFIX}_CAMERA_CALIBRATIONS`.
 fn dev_calibrations_dir() -> Option<PathBuf> {
     if cfg!(debug_assertions) { lcc_brand::env_os("CAMERA_CALIBRATIONS").map(PathBuf::from) } else { None }
@@ -347,8 +355,14 @@ fn merge_calibrations(
 /// (the app's own colour). Returns the profile's name when one was applied. A DNG of rendered RGB keeps its colour
 /// ([`lcc_raw::color::is_rendered_rgb`]).
 pub fn apply_choice(color: &mut lcc_raw::ColorData, meta: &lcc_meta::Metadata, choice: &str) -> Option<String> {
+    apply_choice_with(color, meta, choice, true)
+}
+
+/// [`apply_choice`]; `look` false applies the profile's calibration only, without its own look (tone curve, look
+/// table): the photo has one of the app's looks on top ([`lcc_develop::DevelopSettings::keeps_camera_look`]).
+pub fn apply_choice_with(color: &mut lcc_raw::ColorData, meta: &lcc_meta::Metadata, choice: &str, look: bool) -> Option<String> {
     let dcp = profile_for(color, meta, choice)?;
-    dcp.apply(color);
+    dcp.apply_with(color, look);
     if lcc_pipeline::profiling() {
         eprintln!("[profile] camera colour from {:?} ({})", dcp.name, dcp.model);
     }
@@ -361,6 +375,39 @@ pub(crate) fn profile_for(color: &lcc_raw::ColorData, meta: &lcc_meta::Metadata,
         return None;
     }
     lcc_raw::dcp::resolve(choice, meta.make.as_deref(), meta.model.as_deref()?)
+}
+
+/// Whether `id` names a camera-profile choice (`profile.camera`) rather than a look: `lc` (the app's own colour),
+/// `dcp:…` (an imported `.dcp`) or `cal:…` (a calibrated look).
+pub fn is_camera_choice(id: &str) -> bool {
+    id == "lc" || id.starts_with("dcp:") || id.starts_with("cal:")
+}
+
+/// The camera profile a choice names, whatever camera it is for: an imported `.dcp` (`dcp:…`) or a calibrated look
+/// (`cal:…`); `None` for `lc`, the camera's default (`""`) or an id that names nothing.
+pub fn choice_profile(id: &str) -> Option<std::sync::Arc<lcc_raw::dcp::Dcp>> {
+    if id.starts_with("dcp:") {
+        return lcc_raw::dcp::library_get(id);
+    }
+    if id.starts_with("cal:") {
+        return lcc_raw::dcp::calibrated().iter().flat_map(|c| c.looks.iter()).find(|(i, _)| i == id).map(|(_, d)| d.clone());
+    }
+    None
+}
+
+/// The camera profile photo `p` develops with, as the catalog knows the photo (its choice and camera): `None` for a
+/// photo not developed from raw data, the app's own colour, or a camera without a profile.
+pub fn photo_profile(p: &lcc_catalog::Photo) -> Option<std::sync::Arc<lcc_raw::dcp::Dcp>> {
+    if !p.develops_raw() {
+        return None;
+    }
+    lcc_raw::dcp::resolve_camera(&p.develop.profile.camera, &p.meta.camera)
+}
+
+/// Whether photo `p` develops "As profile": its camera profile has a look of its own and the photo keeps it (the
+/// default look), so the profile row names the camera profile rather than the app's look.
+pub fn as_profile(p: &lcc_catalog::Photo) -> bool {
+    p.develop.keeps_camera_look() && photo_profile(p).is_some_and(|d| d.has_look())
 }
 
 /// [`apply_choice`] with the camera's default.

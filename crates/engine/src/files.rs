@@ -753,7 +753,8 @@ fn load_bytes_now(
             }
         }
         // the photo's camera profile (`.dcp`), or its camera's default one, replaces the file's colour model
-        let dcp = crate::camera_profiles::apply_choice(&mut raw.color, &raw.metadata, &options.camera).is_some();
+        // (its own look, tone curve and look table, only "As profile": under one of the app's looks its calibration only)
+        let dcp = crate::camera_profiles::apply_choice_with(&mut raw.color, &raw.metadata, &options.camera, options.camera_look).is_some();
         // Embedded lens corrections are applied by the pipeline ("Enable Profile Corrections"), not baked in
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
         let info = raw.info();
