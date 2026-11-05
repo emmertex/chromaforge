@@ -219,7 +219,10 @@ fn an_unfinished_import_is_taken_up_after_a_restart() {
         let mut want = ids.clone();
         want.sort_unstable();
         assert_eq!(kept, want);
-        assert!(s.finishing_tick(), "the finish is at work again");
+        // taken up: its preview build starts again (which may be done at once: the previews built
+        // before the quit are there, and a build skips them)
+        let _at_work = s.finishing_tick();
+        assert!(s.finish_pending.is_none(), "the finish is taken up again");
         assert!(s.preview_build.is_some(), "its previews are being built");
         wait_for(&mut s, "the finish", |s| !s.finishing_tick());
         assert!(kept_plan(&mut s).is_some_and(|p| p.ids.is_empty()), "done: forgotten");
