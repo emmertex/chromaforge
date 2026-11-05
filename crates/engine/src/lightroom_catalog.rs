@@ -2801,7 +2801,7 @@ mod tests {
                     body.extend(s.as_bytes());
                     13 + 2 * s.len() as u64
                 }
-                _ => unreachable!(),
+                _ => panic!("unexpected SqlValue in a test record: {value:?}"),
             };
             header.extend(varint(serial));
         }

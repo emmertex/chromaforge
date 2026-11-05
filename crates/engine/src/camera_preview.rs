@@ -5238,9 +5238,9 @@ mod tests {
         let look = with_profile_colour(None, Some(colour.clone()), None, |c| Some(CameraLook { matrix: c.0, ..toned.clone() })).unwrap();
         assert_eq!((look.matrix, look.tone), (colour.0, toned.tone));
         // a photo's own look wins; without a profile there is nothing to keep (the neutral fallback follows)
-        let own = with_profile_colour(Some(toned.clone()), Some(colour), None, |_| unreachable!()).unwrap();
+        let own = with_profile_colour(Some(toned.clone()), Some(colour), None, |_| panic!("the neutral fallback must not run")).unwrap();
         assert_eq!(own.matrix, toned.matrix);
-        assert!(with_profile_colour(None, None, None, |_| unreachable!()).is_none());
+        assert!(with_profile_colour(None, None, None, |_| panic!("the neutral fallback must not run")).is_none());
     }
 
     /// `photo.sourceReport` tells a profile's colour kept for a photo no look fits from a fitted look, and names its tone.

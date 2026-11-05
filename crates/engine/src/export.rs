@@ -3673,7 +3673,7 @@ mod tests {
         let mut deep = DeepImage { width: 32, height: 8, space: OutputSpace::Srgb, samples: DeepSamples::F32(samples) };
         output_sharpen(&mut img8, OutputSpace::Srgb, SharpenFor::Screen, SharpenAmount::High);
         output_sharpen_deep(&mut deep, SharpenFor::Screen, SharpenAmount::High);
-        let DeepSamples::F32(out) = &deep.samples else { unreachable!() };
+        let DeepSamples::F32(out) = &deep.samples else { panic!("expected F32 samples") };
         for x in [15usize, 16] {
             let base = if x < 16 { dark } else { light } as f32;
             let d8 = img8.data[x][0] as f32 - base;
@@ -3695,7 +3695,7 @@ mod tests {
         for target in [SharpenFor::Screen, SharpenFor::Glossy, SharpenFor::Matte] {
             let mut img = DeepImage { width: 3, height: 3, space: OutputSpace::Srgb, samples: DeepSamples::F32(samples.clone()) };
             output_sharpen_deep(&mut img, target, SharpenAmount::High);
-            let DeepSamples::F32(out) = &img.samples else { unreachable!() };
+            let DeepSamples::F32(out) = &img.samples else { panic!("expected F32 samples") };
             assert!(out.iter().all(|v| v.is_finite() && *v >= 0.0), "{target:?}: {out:?}");
         }
         let mut all_nan = DeepImage { width: 3, height: 3, space: OutputSpace::Srgb, samples: DeepSamples::F32(vec![nan; 27]) };

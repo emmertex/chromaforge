@@ -9,6 +9,7 @@
 //! of decoded source proxies. Rendering is done by [`RenderJob`]s that are `Send` so frontends can
 //! run them off the UI thread.
 #![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 // Model/cache types remain available without linking the optional inference crate.
 #[cfg(not(feature = "denoise"))]
@@ -2381,17 +2382,20 @@ mod tests_crop_aspect;
 mod tests_crop_aspects;
 #[cfg(test)]
 mod tests_denoise;
-#[cfg(all(test, feature = "denoise"))]
+#[cfg(test)]
+#[cfg(feature = "denoise")]
 mod tests_denoise_own;
 #[cfg(test)]
 mod tests_edit_in;
 #[cfg(test)]
 mod tests_edit_roundtrip;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_enhance;
 #[cfg(test)]
 mod tests_export;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_export_video;
 #[cfg(test)]
 mod tests_eye_store;
@@ -2407,9 +2411,11 @@ mod tests_face_tiles;
 mod tests_facets;
 #[cfg(test)]
 mod tests_filesystem_history;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_focus_scan;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_folder_metadata;
 #[cfg(test)]
 mod tests_folder_watch;
@@ -2443,7 +2449,8 @@ mod tests_import_move;
 mod tests_import_tab;
 #[cfg(test)]
 mod tests_keyword_list;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_lens_db;
 #[cfg(test)]
 mod tests_libops;
@@ -2463,7 +2470,8 @@ mod tests_mask_links;
 mod tests_mask_next;
 #[cfg(test)]
 mod tests_merge;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_ml;
 #[cfg(test)]
 mod tests_move_to_share;
@@ -2471,7 +2479,8 @@ mod tests_move_to_share;
 mod tests_naming;
 #[cfg(test)]
 mod tests_organize;
-#[cfg(all(test, feature = "sam"))]
+#[cfg(test)]
+#[cfg(feature = "sam")]
 mod tests_people_corpus;
 #[cfg(test)]
 mod tests_people_masks;
@@ -2479,7 +2488,8 @@ mod tests_people_masks;
 mod tests_persist;
 #[cfg(test)]
 mod tests_plugin_filters;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_plugin_library;
 #[cfg(test)]
 mod tests_prefs;
@@ -2519,11 +2529,13 @@ mod tests_spots;
 mod tests_sync;
 #[cfg(test)]
 mod tests_target_params;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_timelapse;
 #[cfg(test)]
 mod tests_upright_jobs;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_video_posters;
 #[cfg(test)]
 mod tests_view_follow;
