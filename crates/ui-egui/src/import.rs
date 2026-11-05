@@ -2368,8 +2368,9 @@ pub(crate) fn preset_stack_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut 
     let mut added: Option<String> = None;
     let mut manage = false;
     row(ui, if n == 0 { "Presets" } else { "" }, &mut |ui: &mut egui::Ui| {
-        let manage_w = ui.painter().layout_no_wrap(crate::i18n::tr("Manage Presets…").to_string(), egui::TextStyle::Button.resolve(ui.style()), t.text).size().x
-            + ui.spacing().button_padding.x * 2.0;
+        let manage_w =
+            ui.painter().layout_no_wrap(crate::i18n::tr("Manage Presets…").to_string(), egui::TextStyle::Button.resolve(ui.style()), t.text).size().x
+                + ui.spacing().button_padding.x * 2.0;
         let combo_w = (ui.available_width() - manage_w - ui.spacing().item_spacing.x - 2.0).max(120.0);
         let combo = crate::widgets::combo_box("import-preset")
             .selected_text(add_label.as_str())

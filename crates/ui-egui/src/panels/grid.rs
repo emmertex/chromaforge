@@ -1,6 +1,5 @@
 //! Photo Grid (justified rows) and Square Grid. Virtualized: only visible cells request thumbnails.
 
-
 /// A photo's exposure as a cell shows it: shutter · aperture · ISO · focal length, the parts the
 /// file has (`None`: none of them).
 pub(crate) fn exposure_line(m: &lcc_catalog::Meta) -> Option<String> {

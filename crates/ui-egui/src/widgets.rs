@@ -1365,7 +1365,13 @@ pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -
     let finger = crate::dialog_frame::finger_sized(ui);
     let font = t.semibold(if finger { 13.5 } else { 11.5 });
     // (Compact: a tighter track)
-    let (h, pad) = if finger { (34.0, 3.0) } else if t.dense { (20.0, 1.0) } else { (24.0, 2.0) };
+    let (h, pad) = if finger {
+        (34.0, 3.0)
+    } else if t.dense {
+        (20.0, 1.0)
+    } else {
+        (24.0, 2.0)
+    };
     let widths: Vec<f32> = labels
         .iter()
         .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + if finger { 26.0 } else { 16.0 })
