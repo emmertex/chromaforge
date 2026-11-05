@@ -2108,3 +2108,19 @@ fn remove_location_refuses_original_with_malformed_xmp_gps() {
     assert!(error.contains("can't remove the location") || error.contains("can't verify"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review of upstream #3116: a decode the decoder fits down keeps a straight 0..1 alpha plane for a
+/// transparent file, and none for an RGBA file that is opaque everywhere (the fit brings 1.0 back
+/// as 0.99999994: that must not send an opaque photo down the transparent export path).
+#[test]
+fn a_fitted_decode_keeps_alpha_only_for_real_transparency() {
+    let png = |img: &lcc_raster::Rgba8| lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(img), &Default::default()).unwrap();
+    let opaque = lcc_raster::Rgba8::from_fn(600, 400, |x, y| [(x % 256) as u8, (y % 256) as u8, 90, 255]);
+    let (_, info) = crate::files::load_bytes(&png(&opaque), 300).unwrap();
+    assert!(info.alpha.is_none(), "an opaque RGBA file has no transparency");
+    let clear = lcc_raster::Rgba8::from_fn(600, 400, |x, y| if (150..450).contains(&x) && (100..300).contains(&y) { [200, 40, 30, 255] } else { [0, 0, 0, 0] });
+    let (img, info) = crate::files::load_bytes(&png(&clear), 300).unwrap();
+    let a = info.alpha.expect("a transparent file keeps its alpha");
+    assert_eq!((a.width, a.height), (img.width, img.height));
+    assert!(a.data.iter().all(|&v| (0.0..=1.0).contains(&v)), "straight alpha stays in 0..1");
+}
