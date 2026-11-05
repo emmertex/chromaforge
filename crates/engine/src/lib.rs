@@ -608,6 +608,13 @@ pub struct Session {
     pub genfill: genfill::GenfillState,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
+    /// Preparing photos in the background: settings (app-wide and this library's) and the build
+    /// it runs ([`prep`]).
+    pub prep: prep::PrepState,
+    /// The long edge (px) the loupe renders at on this screen, as the frontend last said (0: not
+    /// known). The background preparation builds standard previews at least this big, so the
+    /// loupe can use them.
+    pub loupe_edge: usize,
     /// The camera sensor map build or batch Remove Dust running in the background, or the last one.
     pub sensor_job: Option<std::sync::Arc<cmd::sensor::SensorJob>>,
     /// The preview cache drive's free space as last looked up: (when, cache folder, bytes).
@@ -843,6 +850,8 @@ impl Session {
             genfill: Default::default(),
             upright_jobs: Default::default(),
             preview_build: None,
+            prep: Default::default(),
+            loupe_edge: 0,
             cache_drive_free: std::sync::Mutex::new(None),
             slideshow_export: None,
             sensor_job: None,
@@ -2531,6 +2540,8 @@ mod tests_preset_interop;
 mod tests_preset_marks;
 #[cfg(test)]
 mod tests_presets_scale;
+#[cfg(test)]
+mod tests_preview_prep;
 #[cfg(test)]
 mod tests_previews;
 #[cfg(test)]

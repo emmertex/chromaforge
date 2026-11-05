@@ -117,6 +117,8 @@ mod tests_album_remove;
 #[cfg(test)]
 mod tests_appearance;
 #[cfg(test)]
+mod tests_background_prep;
+#[cfg(test)]
 mod tests_bar_buttons;
 #[cfg(test)]
 mod tests_before_after;
@@ -785,6 +787,10 @@ pub struct LccApp {
     /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked
     /// its first picture ([`LccApp::pictures_missing`]).
     pub pictures_missing_pass: Option<u64>,
+    /// The loupe's last photo and its place in the view, and whether the user stepped back to
+    /// the one now on screen: the background preparation goes their way ([`lcc_engine::prep`]).
+    pub prep_at: Option<(lcc_catalog::PhotoId, usize)>,
+    pub prep_backward: bool,
     /// The loupe's video frames (playback worker, paused still).
     pub video_view: video_view::VideoView,
     /// The zoomed view the loupe asked tiles for last (see [`region`]): the frame, the part its
@@ -956,6 +962,22 @@ impl LccApp {
         lcc_engine::prep::pictures_missing();
     }
 
+    /// Preparing photos in the background ([`lcc_engine::prep`]): the whole view's previews once
+    /// the user is culling in the loupe, built from the photo on screen in the direction of travel;
+    /// held back while a slider drags.
+    fn background_prep(&mut self, ctx: &egui::Context) {
+        if self.session.interaction.is_some() {
+            lcc_engine::prep::foreground();
+        }
+        let mode = panels::detail::prep_mode(self);
+        let loupe = self.ui.fullscreen || self.ui.view == state::ViewMode::Detail;
+        let at = if loupe { self.session.active() } else { None };
+        self.session.prep_tick(mode, at, self.prep_backward);
+        if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+
     /// Whether a picture was missing in frame `pass` or the one before.
     pub fn pictures_busy(&self, pass: u64) -> bool {
         self.pictures_missing_pass.is_some_and(|p| pass.saturating_sub(p) <= 1)
@@ -1064,6 +1086,8 @@ impl LccApp {
             brush_live: None,
             loupe_shown: None,
             pictures_missing_pass: None,
+            prep_at: None,
+            prep_backward: false,
             video_view: Default::default(),
             region_view: None,
             region_before_view: None,
@@ -2620,6 +2644,7 @@ impl LccApp {
         // …and the histogram sets this while the pointer rests on a clipping indicator
         self.clipping_preview = false;
         self.ai_mask_detail(&ctx);
+        self.background_prep(&ctx);
         crate::panels::genfill::frame(self, &ctx);
         self.place_names_outcome(&ctx);
         if self.ui.fullscreen {
