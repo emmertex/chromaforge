@@ -91,6 +91,7 @@ let photo = batch.child("denoise", "AI Denoise"); // the photo in progress, unde
 |---|---|---|
 | Export, contact sheet | `crates/ui-egui/src/export_task.rs` | adopt the job's flag; update the row each frame; an export is a batch that reports itself, its failures counted when it ends |
 | Build Previews | `crates/engine/src/cmd/previews.rs` | move the guard into the worker thread |
+| Preparing photos in the background | `crates/engine/src/prep.rs`, `crates/engine/src/cmd/previews.rs` | a background build in one row ("Preparing photos in the background") whose ✕ sets the build's flag; it waits while the photo on screen is being made and says "Paused while exporting" in its detail while the user's own work runs (`Activity::user_work`); a build asked for replaces it |
 | Slideshow export | `crates/engine/src/cmd/slideshow.rs`, `crates/engine/src/slideshow_export.rs` | an engine command that owns its worker and row; progress from the worker through a `TaskHandle`; results read back by command |
 | Folder metadata save / read | `crates/engine/src/cmd/folder_metadata.rs` | a job that needs the session, so a per-frame pump (`folder.metadataPump`) does a few photos at a time and the row's flag stops it |
 | Model downloads | `crates/engine/src/face_download.rs` | report progress through a `TaskHandle` in shared state |

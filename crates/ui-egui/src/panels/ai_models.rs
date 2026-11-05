@@ -155,7 +155,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
     let current = app.session.segmenter.object_model().key();
     let items: Vec<(&str, &str)> = OBJECT_MODELS.iter().map(|(k, l)| (*l, *k)).collect();
     let active = OBJECT_MODELS.iter().position(|(k, _)| *k == current);
-    if let Some(i) = crate::widgets::segmented(ui, "aiObjectModel", &items, active, OBJECT_MODELS.len())
+    if let Some(i) = choice_row(ui, "aiObjectModel", &items, active)
         && let Some((k, _)) = OBJECT_MODELS.get(i)
     {
         *error = app.run("ai.models.setObjectModel", json!({"model": k})).err();
@@ -170,7 +170,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
     let current = app.session.segmenter.scene_model().key();
     let items: Vec<(&str, &str)> = SCENE_MODELS.iter().map(|(k, l)| (*l, *k)).collect();
     let active = SCENE_MODELS.iter().position(|(k, _)| *k == current);
-    if let Some(i) = crate::widgets::segmented(ui, "aiSceneModel", &items, active, SCENE_MODELS.len())
+    if let Some(i) = choice_row(ui, "aiSceneModel", &items, active)
         && let Some((k, _)) = SCENE_MODELS.get(i)
     {
         *error = app.run("ai.models.setSceneModel", json!({"model": k})).err();
@@ -189,4 +189,16 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
     if running {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
     }
+}
+
+/// The model choices side by side, each sharing the row; in the Classic Settings window the row is
+/// no wider than its help text, so two or three buttons don't stretch across a wide window.
+fn choice_row(ui: &mut egui::Ui, id: &str, items: &[(&str, &str)], active: Option<usize>) -> Option<usize> {
+    ui.scope(|ui| {
+        if crate::dialog_frame::plain(ui) {
+            ui.set_max_width(ui.available_width().min(crate::dialog_frame::HELP_MAX_W));
+        }
+        crate::widgets::segmented(ui, id, items, active, items.len())
+    })
+    .inner
 }

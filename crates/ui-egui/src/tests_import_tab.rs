@@ -359,3 +359,132 @@ fn the_review_imports_with_the_preset_stack_used_last_and_keeps_it() {
     assert_eq!(h.app.ui.settings.import_tab.opts.presets, [bright, contrast], "kept for the next import");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn widget_rect(h: &Headless, id: &str) -> Option<egui::Rect> {
+    h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r)
+}
+
+/// The Import Settings column resizes by its left edge, as the side panels do, and the width is
+/// part of the saved UI state (ui.json).
+#[test]
+fn the_import_settings_column_resizes_by_its_left_edge_and_remembers_it() {
+    let mut h = app([1600.0, 900.0], "compact");
+    h.settle(SETTLE);
+    exec(&mut h, "dialog.import", json!({}));
+    assert!(has_widget(&mut h, "panel:importSettings"));
+    let before = widget_rect(&h, "panel:importSettings").unwrap();
+    assert!((before.width() - crate::state::IMPORT_SETTINGS_WIDTH.default).abs() <= 1.0, "{before:?}");
+    let (x, y) = (before.left() + 1.0, before.center().y);
+    let r = h.request("ui.drag", json!({"x": x, "y": y, "toX": x - 120.0, "toY": y, "steps": 12}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    for _ in 0..3 {
+        h.step();
+    }
+    let w = h.app.ui.import_settings_width;
+    assert!((w - (crate::state::IMPORT_SETTINGS_WIDTH.default + 120.0)).abs() <= 2.0, "{w}");
+    assert!((widget_rect(&h, "panel:importSettings").unwrap().width() - w).abs() <= 1.0);
+    // kept in the saved UI state
+    let saved = serde_json::to_value(&h.app.ui).unwrap();
+    let back: crate::state::UiState = serde_json::from_value(saved).unwrap();
+    assert_eq!(back.import_settings_width, w);
+}
+
+/// The Import tab culls with Library's toolbar (flags, rating, labels, sort, thumbnail size) and
+/// filter bar when they are on, as the Library grid does.
+#[test]
+fn the_import_tab_draws_the_toolbar_and_the_filter_bar_when_they_are_on() {
+    let mut h = app([1600.0, 900.0], "classic");
+    h.app.ui.toolbar = true;
+    h.app.ui.filter_bar = true;
+    h.settle(SETTLE);
+    let dir = folder("toolbar", 2);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.ui.tab, Tab::Import);
+    assert!(has_widget(&mut h, "importToolbar"), "the toolbar under the browsed photos");
+    assert!(has_widget(&mut h, "filterbar"), "the filter bar above them");
+    let bar = widget_rect(&h, "importToolbar").unwrap();
+    let settings = widget_rect(&h, "panel:importSettings").unwrap();
+    assert!(bar.right() <= settings.left() + 1.0, "under the photos, beside the settings: {bar:?} {settings:?}");
+    // off: neither
+    h.app.ui.toolbar = false;
+    h.app.ui.filter_bar = false;
+    assert!(!has_widget(&mut h, "importToolbar") && !has_widget(&mut h, "filterbar"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `n` synthetic presets in `folders` folders (favourites when `favorite`), named so that one of
+/// them, `long`, is much longer than the rest.
+fn many_presets(h: &mut Headless, n: usize, folders: usize, favorite: bool, long: &str) {
+    let base = lcc_develop::Preset { builtin: false, ..h.app.session.presets.iter().next().expect("a built-in preset").clone() };
+    for i in 0..n {
+        let name = if i == 0 { long.to_string() } else { format!("{i:05} Look") };
+        h.app.session.presets.push(lcc_develop::Preset {
+            id: format!("user.synthetic.{i}"),
+            name,
+            group: format!("{:03}-Folder", i % folders.max(1)),
+            favorite,
+            ..base.clone()
+        });
+    }
+}
+
+fn open_add_preset(h: &mut Headless) {
+    exec(h, "dialog.import", json!({}));
+    assert!(has_widget(h, "combo:importPresetAdd"));
+    let r = h.request("ui.clickWidget", json!({"id": "combo:importPresetAdd"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    for _ in 0..4 {
+        h.step();
+    }
+}
+
+fn text_width(h: &Headless, text: &str) -> f32 {
+    h.view.ctx.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), egui::Color32::WHITE).size().x)
+}
+
+/// LR-PRESET-PICKER: the Add a preset list is as wide as its longest name (a narrow list showed
+/// "01 Ava Ce…"), within the screen; Manage Presets… sits beside it.
+#[test]
+fn the_preset_picker_is_as_wide_as_its_longest_name_within_the_screen() {
+    let long = "01 Ava Ceremony Warm Film Look With Soft Highlights";
+    for layout in ["classic", "compact"] {
+        let mut h = app([1600.0, 900.0], layout);
+        h.settle(SETTLE);
+        many_presets(&mut h, 20, 3, true, long);
+        open_add_preset(&mut h);
+        let row = widget_rect(&h, "presetPick:import-preset:user.synthetic.0").expect("the long preset's row");
+        assert!(row.width() >= text_width(&h, long), "{layout}: row {row:?} for a {} pt name", text_width(&h, long));
+        assert!(has_widget(&mut h, "button:importPresetsManage"), "{layout}: Manage Presets… beside the list");
+    }
+    // a name wider than the screen: the list stops at the screen's edge
+    let mut h = app([900.0, 700.0], "classic");
+    h.settle(SETTLE);
+    many_presets(&mut h, 5, 1, true, &"Very long name ".repeat(40));
+    open_add_preset(&mut h);
+    let row = widget_rect(&h, "presetPick:import-preset:user.synthetic.0").expect("the long preset's row");
+    assert!(row.width() <= 900.0, "{row:?}");
+}
+
+/// With 10 000 presets in 40 folders, all on show, the picker lays out only the rows in view.
+#[test]
+fn the_preset_picker_lays_out_only_the_rows_in_view_of_ten_thousand() {
+    let mut h = app([1600.0, 900.0], "compact");
+    h.settle(SETTLE);
+    many_presets(&mut h, 10_000, 40, true, "First");
+    open_add_preset(&mut h);
+    let rows = h.app.widgets.iter().filter(|(w, _)| w.starts_with("presetPick:import-preset:")).count();
+    assert!(rows > 0 && rows < 80, "{rows} rows laid out of 10 000");
+}
+
+/// The Manage Presets… button opens the Presets Manager.
+#[test]
+fn manage_presets_opens_the_presets_manager() {
+    let mut h = app([1600.0, 900.0], "classic");
+    h.settle(SETTLE);
+    exec(&mut h, "dialog.import", json!({}));
+    assert!(has_widget(&mut h, "button:importPresetsManage"));
+    let r = h.request("ui.clickWidget", json!({"id": "button:importPresetsManage"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(h.app.ui.dialog.is_some(), "a dialog is open: {:?}", h.app.ui.dialog);
+}

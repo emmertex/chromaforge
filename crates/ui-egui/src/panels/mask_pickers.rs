@@ -118,6 +118,7 @@ pub fn people_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId) {
         let cancel = text_button(ui, "maskPeople:cancel", tr("Cancel"), false);
         if cancel.clicked() {
             app.ui.people_pick = None;
+            app.mask_pick_op = None;
             return;
         }
         if create.clicked() {
@@ -128,7 +129,7 @@ pub fn people_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId) {
                 p["person"] = json!(0);
             }
             app.ui.people_pick = None;
-            if let Err(e) = app.run("mask.add", p) {
+            if let Err(e) = add_picked(app, p) {
                 app.ai_error(ui.ctx(), e, None);
             }
             return;
@@ -162,7 +163,7 @@ pub fn concept_picker(app: &mut LccApp, ui: &mut egui::Ui) {
             register(ui.ctx(), format!("maskConcept:{k}"), b.rect);
             if b.clicked() {
                 app.ui.concept_pick = false;
-                if let Err(e) = app.run("mask.add", json!({"kind": "concept", "name": n})) {
+                if let Err(e) = add_picked(app, json!({"kind": "concept", "name": n})) {
                     app.ai_error(ui.ctx(), e, None);
                 }
             }
@@ -170,6 +171,19 @@ pub fn concept_picker(app: &mut LccApp, ui: &mut egui::Ui) {
     });
     if text_button(ui, "maskConcept:cancel", tr("Cancel"), false).clicked() {
         app.ui.concept_pick = false;
+        app.mask_pick_op = None;
+    }
+}
+
+/// A picker's mask: a new one, or (opened from Add / Subtract / Intersect, OneSlips 1138a5edd) a component the
+/// selected mask combines by that op.
+fn add_picked(app: &mut LccApp, mut p: serde_json::Value) -> Result<serde_json::Value, String> {
+    match app.mask_pick_op.take().filter(|_| app.session.active_mask.is_some()) {
+        Some(op) => {
+            p["op"] = json!(op);
+            app.run("mask.addComponent", p)
+        }
+        None => app.run("mask.add", p),
     }
 }
 

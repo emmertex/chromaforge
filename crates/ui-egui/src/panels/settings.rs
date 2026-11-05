@@ -54,12 +54,18 @@ pub(crate) const SLIDESHOW_W: f32 = SLIDESHOW_COLUMN_W + 12.0 + super::slide_lay
 /// Thumbnail cache sizes offered (MB).
 const CACHE_SIZES: [u32; 5] = [512, 1024, 2048, 4096, 8192];
 
-pub(super) const LABEL_W: f32 = 160.0;
+/// The label column of the Settings window's rows (it gives up room in a narrow window).
+pub(super) const LABEL_W: f32 = 170.0;
 /// The label column of the same rows outside the dialog (the slideshow panels).
 const PANEL_LABEL_W: f32 = 150.0;
 
-/// The Settings window's size (points) when it first opens, before the user resizes it.
-pub const DEFAULT_SIZE: [f32; 2] = [900.0, 640.0];
+/// The Settings window's size (points, inside its frame) when it first opens, before the user
+/// resizes it: tall, so most tabs show whole, and at least as wide as its row of tabs
+/// ([`tab_row_width`]), so every tab is in the row (the screen caps both).
+pub const DEFAULT_SIZE: [f32; 2] = [900.0, 1340.0];
+/// The size every window opened at before the default grew to fit the tabs (PR #830): a size
+/// kept at exactly this was never chosen, so it opens at the new default.
+const OLD_DEFAULT_SIZE: [f32; 2] = [900.0, 640.0];
 /// The smallest the user can make it (a small screen can make it smaller still).
 pub const MIN_SIZE: [f32; 2] = [620.0, 420.0];
 /// Room kept free around the window on the screen.
@@ -79,31 +85,48 @@ pub struct WindowSize {
 }
 
 /// The Settings window's sizes on `screen`: `saved` (the size the user left it at, else
-/// [`DEFAULT_SIZE`]) within [`MIN_SIZE`] and the screen. A saved size that is no size at all
-/// (NaN, negative: a hand-edited settings file) is the default.
-pub fn window_size(screen: egui::Rect, saved: Option<[f32; 2]>) -> WindowSize {
+/// [`DEFAULT_SIZE`], widened to `tabs_w`, the room its row of tabs takes) within [`MIN_SIZE`] and
+/// the screen. A saved size that is no size at all (NaN, negative: a hand-edited settings file),
+/// or the old default nobody chose, is the default.
+pub fn window_size(screen: egui::Rect, saved: Option<[f32; 2]>, tabs_w: f32) -> WindowSize {
     let finite = |v: f32| v.is_finite() && v > 0.0;
     let max = egui::vec2(
         if finite(screen.width()) { (screen.width() - 2.0 * SCREEN_MARGIN).max(200.0) } else { DEFAULT_SIZE[0] },
-        if finite(screen.height()) { (screen.height() - 2.0 * SCREEN_MARGIN).max(160.0) } else { DEFAULT_SIZE[1] },
+        if finite(screen.height()) { (screen.height() - 2.0 * SCREEN_MARGIN).max(160.0) } else { OLD_DEFAULT_SIZE[1] },
     );
     let min = egui::vec2(MIN_SIZE[0], MIN_SIZE[1]).min(max);
-    let want = saved.filter(|[w, h]| finite(*w) && finite(*h)).unwrap_or(DEFAULT_SIZE);
+    let fresh = [DEFAULT_SIZE[0].max(if finite(tabs_w) { tabs_w.ceil() } else { 0.0 }), DEFAULT_SIZE[1]];
+    let want = saved.filter(|[w, h]| finite(*w) && finite(*h) && [*w, *h] != OLD_DEFAULT_SIZE).unwrap_or(fresh);
     let default = egui::vec2(want[0], want[1]).max(min).min(max);
     WindowSize { default, min, max }
 }
 
-/// Keeps the Settings window's `size` (as the user left it) for the next time it opens.
-pub fn remember_size(app: &mut LccApp, size: egui::Vec2) {
+/// Keeps the Settings window's `size` (as the user left it) for the next time it opens. A window
+/// still at the size it opened at (`opened`) when nothing was saved was not sized by the user:
+/// nothing is kept, so it follows the default (a new tab, another language, another screen).
+pub fn remember_size(app: &mut LccApp, size: egui::Vec2, opened: egui::Vec2) {
     let saved = app.ui.settings.settings_size;
+    let differs = |a: egui::Vec2, [w, h]: [f32; 2]| (w - a.x).abs() > 0.5 || (h - a.y).abs() > 0.5;
     if size.x.is_finite()
         && size.y.is_finite()
         && size.x > 0.0
         && size.y > 0.0
-        && saved.is_none_or(|[w, h]| (w - size.x).abs() > 0.5 || (h - size.y).abs() > 0.5)
+        && saved.is_none_or(|kept| differs(size, kept))
+        && (saved.is_some() || differs(size, [opened.x, opened.y]))
     {
         app.ui.settings.settings_size = Some([size.x.round(), size.y.round()]);
     }
+}
+
+/// The width (points) the Settings window's row of tabs takes with the most room around each
+/// label: a window this wide shows every tab, none under More.
+pub fn tab_row_width(ctx: &egui::Context) -> f32 {
+    let t = Tokens::get(ctx);
+    let font = t.font(12.5);
+    let pad = TAB_PADS.first().copied().unwrap_or(12.0);
+    ctx.fonts_mut(|f| {
+        shown_tabs().map(|(_, label)| (f.layout_no_wrap(crate::i18n::tr(label).to_string(), font.clone(), t.text).size().x + 2.0 * pad).ceil()).sum()
+    })
 }
 
 /// The tabs this build shows (the browser has no device sync, no connections and no control surfaces).
@@ -196,7 +219,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, tab: &mut String, footer: f32) 
     egui::ScrollArea::both().id_salt(("settingsTab", tab.as_str())).auto_shrink([false, false]).show(&mut frame, |ui| {
         // room for the vertical scroll bar, so it never covers a control
         ui.set_max_width((ui.available_width() - 12.0).max(120.0));
-        crate::dialog_frame::form(ui, LABEL_W, |ui| {
+        crate::dialog_frame::plain_form(ui, LABEL_W, |ui| {
             crate::dialog_frame::group_begin(ui, None);
             tab_body(app, ui, &t, tab);
         });
@@ -433,6 +456,34 @@ pub(super) fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnc
 }
 
 /// Help text: small and muted; in a dialog form, under the control column.
+/// "8 GB", "1.5 GB", "512 MB"; within a few per cent of whole gigabytes it reads as whole ones (a computer's "64 GB"
+/// is a little less, so its automatic quarter is "16 GB", not "15.9 GB").
+fn memory_size(mb: u64) -> String {
+    if mb < 1024 {
+        return format!("{mb} MB");
+    }
+    let gb = mb as f64 / 1024.0;
+    if (gb - gb.round()).abs() <= gb * 0.02 { format!("{:.0} GB", gb.round()) } else { format!("{gb:.1} GB") }
+}
+
+/// Settings ▸ Performance ▸ Memory for caches: Automatic (what it is on this computer), then the sizes up to the most
+/// this computer allows (`max`, [`lcc_engine::memory::max_budget`]), and a size set elsewhere (an agent, another
+/// computer's settings) as its own choice. Values in MB, 0 = automatic. Before, the choices stopped at 4 GB whatever
+/// the computer had, though the engine takes up to three quarters of its memory.
+pub(crate) fn memory_choices(current: u32, auto: usize, max: usize) -> Vec<(u32, String)> {
+    let max_mb = u64::try_from(max >> 20).unwrap_or(u64::MAX);
+    let mut opts = vec![(0u32, format!("{} ({})", crate::i18n::tr("Automatic"), memory_size(u64::try_from(auto >> 20).unwrap_or(u64::MAX))))];
+    for mb in [512u32, 1024, 2048, 4096, 8192, 16_384, 32_768, 65_536, 131_072] {
+        if u64::from(mb) <= max_mb {
+            opts.push((mb, memory_size(u64::from(mb))));
+        }
+    }
+    if current > 0 && !opts.iter().any(|(v, _)| *v == current) {
+        opts.push((current, memory_size(u64::from(current))));
+    }
+    opts
+}
+
 pub(super) fn hint(ui: &mut egui::Ui, t: &Tokens, text: &str) {
     if crate::dialog_frame::in_form(ui) {
         crate::dialog_frame::help(ui, text);
@@ -449,6 +500,18 @@ pub(super) fn check(ui: &mut egui::Ui, id: &str, value: &mut bool, label: &str) 
 
 /// Mutually exclusive buttons (`button:{id}-{index}`).
 pub(super) fn choices<V: PartialEq + Copy>(ui: &mut egui::Ui, id: &str, options: &[(V, &str)], value: &mut V) -> bool {
+    if crate::dialog_frame::plain(ui) && crate::dialog_frame::in_form(ui) {
+        // the Settings window: small buttons side by side, the chosen one filled, wrapping in the row
+        let mut changed = false;
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (i, (v, l)) in options.iter().enumerate() {
+            if crate::widgets::text_button(ui, &format!("{id}-{i}"), l, *value == *v).clicked() && *value != *v {
+                *value = *v;
+                changed = true;
+            }
+        }
+        return changed;
+    }
     // one segmented control (`button:{id}-{i}` each)
     let labels: Vec<&str> = options.iter().map(|(_, l)| *l).collect();
     let chosen = options.iter().position(|(v, _)| *v == *value);
@@ -1446,10 +1509,17 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         ),
     );
     row(ui, t, crate::i18n::tr("Memory for caches"), |ui| {
-        let auto = crate::i18n::tr_format!("Automatic ({} MB)", lcc_engine::memory::default_budget() >> 20);
-        let opts = [(0u32, auto.as_str()), (512, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB")];
+        let opts = memory_choices(app.ui.settings.memory_mb, lcc_engine::memory::default_budget(), lcc_engine::memory::max_budget());
+        let opts: Vec<(u32, &str)> = opts.iter().map(|(v, l)| (*v, l.as_str())).collect();
         choices(ui, "settingsMemory", &opts, &mut app.ui.settings.memory_mb);
     });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.",
+        ),
+    );
     exports_section(app, ui, t);
     heading(ui, t, crate::i18n::tr("Thumbnail cache"));
     let cur = (app.session.cache_bytes() >> 20) as u32;
@@ -1515,6 +1585,7 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             let _ = app.run("library.clearPreviews", json!({}));
         }
     });
+    background_prep(app, ui, t);
     heading(ui, t, crate::i18n::tr("Local folders"));
     row(ui, t, crate::i18n::tr("Forget unchanged photos"), |ui| {
         let opts = [(0u32, "Never"), (7, "After 7 days"), (30, "After 30 days"), (90, "After 90 days"), (365, "After a year")];
@@ -1532,6 +1603,96 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
     #[cfg(not(target_arch = "wasm32"))]
     smart_previews(app, ui, t);
+}
+
+/// Settings ▸ Performance ▸ Prepare photos in the background: per mode, what is made ready before
+/// the user gets to it (`prefs.backgroundPrep`), app-wide or for this library.
+fn background_prep(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    use lcc_engine::prep::{Mode, Scope};
+    heading(ui, t, crate::i18n::tr("Prepare photos in the background"));
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "While you go through photos in the loupe, the next ones are made ready before you reach them, and when the computer is otherwise idle the previews of every photo in view are built. The photo on screen always comes first; the work shows in the activity list, where it can be stopped.",
+        ),
+    );
+    let own = app.session.prep.library.is_some();
+    if app.session.library.is_some() {
+        let mut v = own;
+        if check(ui, "settings.prepOwn", &mut v, "Use different settings for this library") {
+            let r = if v {
+                let cur = app.session.prep_settings();
+                app.run("prefs.setBackgroundPrep", json!({"library": true, "settings": cur}))
+            } else {
+                app.run("prefs.setBackgroundPrep", json!({"reset": true}))
+            };
+            if let Err(e) = r {
+                log::warn!("background preparation: {e}");
+            }
+        }
+        hint(ui, t, crate::i18n::tr("For example, a timelapse library can prepare nothing while a wedding library prepares everything."));
+    }
+    let cur = app.session.prep_settings();
+    let mut patch: Option<Value> = None;
+    let scopes = [(Scope::All, "Every photo"), (Scope::Marked, "Picks, rated and labelled"), (Scope::OnScreen, "Only the photo on screen")];
+    for (mode, key, title) in [(Mode::Culling, "culling", "Culling (a folder before import)"), (Mode::Library, "library", "Library")] {
+        let m = cur.mode(mode);
+        heading(ui, t, crate::i18n::tr(title));
+        let mut previews = m.previews;
+        row(ui, t, crate::i18n::tr("Previews"), |ui| {
+            if check(ui, &format!("settings.prep.{key}.previews"), &mut previews, "Build previews for every photo in view") {
+                patch = Some(json!({key: {"previews": previews}}));
+            }
+        });
+        hint(ui, t, crate::i18n::tr("Starts once you step through a few photos. Uses about 1.5 MB of disk a photo, and the computer's spare time."));
+        let mut ahead = m.ahead;
+        row(ui, t, crate::i18n::tr("Photos ahead"), |ui| {
+            let opts = [(0u8, "Off"), (3, "3"), (5, "5"), (10, "10"), (20, "20")];
+            if choices(ui, &format!("settingsPrepAhead-{key}"), &opts, &mut ahead) {
+                patch = Some(json!({key: {"ahead": ahead}}));
+            }
+        });
+        let mut eye = m.eye_ahead;
+        row(ui, t, crate::i18n::tr("Eye focus ahead"), |ui| {
+            let opts = [(0u8, "Off"), (3, "3"), (5, "5"), (8, "8"), (10, "10"), (20, "20")];
+            if choices(ui, &format!("settingsPrepEyes-{key}"), &opts, &mut eye) {
+                patch = Some(json!({key: {"eyeAhead": eye}}));
+            }
+        });
+        let mut scope = m.scope;
+        row(ui, t, crate::i18n::tr("Which photos"), |ui| {
+            if choices(ui, &format!("settingsPrepScope-{key}"), &scopes, &mut scope) {
+                patch = Some(json!({key: {"scope": scope}}));
+            }
+        });
+    }
+    heading(ui, t, crate::i18n::tr("Editing"));
+    let mut ahead = cur.develop.ahead;
+    row(ui, t, crate::i18n::tr("Photos ahead"), |ui| {
+        let opts = [(0u8, "Off"), (1, "1"), (2, "2"), (3, "3"), (5, "5")];
+        if choices(ui, "settingsPrepAhead-develop", &opts, &mut ahead) {
+            patch = Some(json!({"develop": {"ahead": ahead}}));
+        }
+    });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "The photos each side of the one you edit are made ready with their settings, and the nearest two kept open, so stepping to one and the first slider move on it are quick. Uses memory: a few hundred MB a photo.",
+        ),
+    );
+    let mut scope = cur.develop.scope;
+    row(ui, t, crate::i18n::tr("Which photos"), |ui| {
+        if choices(ui, "settingsPrepScope-develop", &scopes, &mut scope) {
+            patch = Some(json!({"develop": {"scope": scope}}));
+        }
+    });
+    if let Some(patch) = patch
+        && let Err(e) = app.run("prefs.setBackgroundPrep", json!({"library": own, "settings": patch}))
+    {
+        log::warn!("background preparation: {e}");
+    }
 }
 
 /// Where this library keeps its smart previews (the offline-editing proxies, which can be large):
@@ -1867,7 +2028,8 @@ fn slideshow_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     } else {
         (ui.ctx().content_rect().height() - 260.0).clamp(300.0, 760.0)
     };
-    let pad = crate::dialog_frame::GROUP_PAD as i8;
+    // (no group panels in the plain Settings window, so no room for their edges)
+    let pad = if crate::dialog_frame::plain(ui) { 0 } else { crate::dialog_frame::GROUP_PAD as i8 };
     // the touch Settings screen on a narrow screen: the preview above, the settings under it, in
     // the page's own scrolling
     if crate::dialog_frame::finger_sized(ui) && ui.available_width() < SLIDESHOW_COLUMN_W + 12.0 + super::slide_layout::PREVIEW_W {
@@ -2543,6 +2705,26 @@ fn in_use_text(used: Option<Option<u64>>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{memory_choices, memory_size};
+
+    /// The memory choices follow the computer: Automatic says what it is here, sizes go up to the most this computer
+    /// allows (not 4 GB on every computer), and a size set elsewhere stays choosable.
+    #[test]
+    fn memory_choices_follow_the_computer() {
+        let gb = 1usize << 30;
+        let o = memory_choices(0, 16 * gb, 48 * gb);
+        let values: Vec<u32> = o.iter().map(|(v, _)| *v).collect();
+        assert_eq!(values, [0, 512, 1024, 2048, 4096, 8192, 16_384, 32_768], "up to three quarters of a 64 GB computer");
+        assert!(o[0].1.ends_with("(16 GB)"), "Automatic says what it is here: {}", o[0].1);
+        let small = memory_choices(0, 2 * gb, 6 * gb);
+        assert_eq!(small.last().map(|(v, _)| *v), Some(4096));
+        let other = memory_choices(20_480, 2 * gb, 6 * gb);
+        assert_eq!(other.last().map(|(v, l)| (*v, l.as_str())), Some((20_480, "20 GB")), "a size from elsewhere stays");
+        assert_eq!(memory_size(1536), "1.5 GB");
+        assert_eq!(memory_size(16_300), "16 GB", "a quarter of a computer's 64 GB");
+        assert_eq!(memory_size(512), "512 MB");
+    }
+
     use super::*;
     use serde_json::json;
 

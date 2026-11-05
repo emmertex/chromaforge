@@ -946,8 +946,24 @@ impl PanelWidth {
 
 /// The left sidebar (sources, albums, folders).
 pub const LEFT_WIDTH: PanelWidth = PanelWidth { min: 200.0, default: 268.0, max: 480.0 };
+/// The filmstrip's height (points; 142 was its fixed height): small enough for a few rows of
+/// tiny thumbnails, large enough to judge expressions on them. Its top edge drags it.
+pub const FILM_HEIGHT: PanelWidth = PanelWidth { min: 96.0, default: 142.0, max: 360.0 };
 /// The right panel (Edit, Masking, Info, …).
 pub const RIGHT_WIDTH: PanelWidth = PanelWidth { min: 250.0, default: 270.0, max: 520.0 };
+/// The right panel's default width in the Compact layout (LAYOUT-DENSE, ported from OneSlips): the
+/// tool row stands in the panel, so it gets the old strip's 48 points, and the tracks are about as
+/// long as Lightroom's.
+pub const COMPACT_RIGHT_WIDTH: f32 = 318.0;
+
+/// The right panel's width `w` after the layout turned Compact (`compact`) or Classic: a width at
+/// the other layout's default moves to this one's, any other stays.
+pub fn follow_compact_width(w: f32, compact: bool) -> f32 {
+    let (from, to) = if compact { (RIGHT_WIDTH.default, COMPACT_RIGHT_WIDTH) } else { (COMPACT_RIGHT_WIDTH, RIGHT_WIDTH.default) };
+    if (w - from).abs() < 0.5 { to } else { w }
+}
+/// The Import tab's settings column (Import Settings, on the right of the browsed photos).
+pub const IMPORT_SETTINGS_WIDTH: PanelWidth = PanelWidth { min: 260.0, default: 330.0, max: 720.0 };
 /// The photo area the side panels always leave free (as far as their minimum widths allow).
 pub const MIN_PHOTO_WIDTH: f32 = 360.0;
 
@@ -1158,13 +1174,29 @@ pub struct UiState {
     /// Widths of the left sidebar and of the right panel in points (dragging their inner edge
     /// resizes them; within [`LEFT_WIDTH`] / [`RIGHT_WIDTH`]).
     pub left_width: f32,
+    /// The Presets Manager's size as the user left it (its content, in points); opened at it
+    /// again, capped to the screen (`panels::presets_manager::window_size`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presets_manager_size: Option<[f32; 2]>,
+    /// The Profile Manager's size as the user left it (as `presets_manager_size`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_manager_size: Option<[f32; 2]>,
     pub right_width: f32,
+    /// Width of the Import tab's settings column in points (its left edge is dragged to resize
+    /// it; within [`IMPORT_SETTINGS_WIDTH`]).
+    pub import_settings_width: f32,
     /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
     /// to go back to).
     pub presets: bool,
     /// Presets column: show a live thumbnail of the photo with each preset.
     pub preset_thumbs: bool,
     pub filmstrip: bool,
+    /// Height of the filmstrip (points): its top edge drags it between [`FILM_HEIGHT`]'s bounds;
+    /// kept with the UI settings, so it comes back after a restart.
+    pub film_height: f32,
+    /// The shot info strip under the photo in the loupe (`view.shotInfo`): aperture, shutter,
+    /// ISO, focal length, lens, size in pixels.
+    pub shot_info: bool,
     pub zoom: Zoom,
     /// Pan offset of the loupe when zoomed (image-normalized centre).
     pub pan: (f32, f32),
@@ -2091,6 +2123,14 @@ pub enum Dialog {
         confirm: Option<String>,
         rename: Option<(String, String)>,
     },
+    /// The Profile Manager (LR-PROF-MANAGE): looks, LUT profiles and camera profiles in one
+    /// table. The search; the row whose Delete waits for a yes (`profile:<id>`, `group:<key>`);
+    /// the row renamed in place and its text (`profile:<id>`, `group:<key>`).
+    ProfileManager {
+        query: String,
+        confirm: Option<String>,
+        rename: Option<(String, String)>,
+    },
     /// Confirm deleting mask effect presets.
     DeleteEffects {
         names: Vec<String>,
@@ -2265,7 +2305,10 @@ impl Default for UiState {
             import_shelved_filter: false,
             left_panel: false,
             left_width: LEFT_WIDTH.default,
+            presets_manager_size: None,
+            profile_manager_size: None,
             right_width: RIGHT_WIDTH.default,
+            import_settings_width: IMPORT_SETTINGS_WIDTH.default,
             right: RightPanel::Edit,
             toggle_return: None,
             tool_return: None,
@@ -2276,6 +2319,8 @@ impl Default for UiState {
             presets: false,
             preset_thumbs: false,
             filmstrip: true,
+            film_height: FILM_HEIGHT.default,
+            shot_info: true,
             zoom: Zoom::Fit,
             pan: (0.5, 0.5),
             click_zoom: 100,
@@ -2747,12 +2792,19 @@ impl UiState {
         }
     }
 
+    /// The filmstrip's height (points) every view that shows it leaves room for.
+    pub fn film_height(&self) -> f32 {
+        FILM_HEIGHT.clamp(self.film_height)
+    }
+
     /// Put the numeric and enumerated settings back in their valid ranges. Shared by loading a
     /// settings file ([`Self::sanitized`]) and `ui.set`, which merges values from a script.
     pub fn clamp_ranges(&mut self) {
         self.thumb_size = self.thumb_size.clamp(THUMB_SIZE_MIN, THUMB_SIZE_MAX);
         self.left_width = LEFT_WIDTH.clamp(self.left_width);
         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
+        self.import_settings_width = IMPORT_SETTINGS_WIDTH.clamp(self.import_settings_width);
+        self.film_height = FILM_HEIGHT.clamp(self.film_height);
         // a histogram mode or scale another build wrote (or a hand-edited file) is the default
         if lcc_raster::HistogramMode::parse(&self.histogram_mode).is_none() {
             self.histogram_mode = lcc_raster::HistogramMode::default().name().into();
