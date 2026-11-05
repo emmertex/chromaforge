@@ -230,3 +230,79 @@ fn the_tab_offers_a_camera_profile_per_body_and_imports_with_it() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn recipe_preset(h: &mut Headless, name: &str, control: &str, value: f64) -> String {
+    let r = exec(h, "preset.saveRecipe", json!({"name": name, "recipe": [{"id": control, "value": value}]}));
+    r["id"].as_str().unwrap().to_string()
+}
+
+/// The preset stack (IMPORT-STACK, ported from OneSlips' Import panel): the Apply card lists the
+/// presets in order (a single preset from older settings first), a row moves later or goes, and
+/// the tab imports with the stack in that order.
+#[test]
+fn the_tab_imports_with_a_preset_stack_in_the_order_shown() {
+    let mut h = app([1400.0, 1000.0], "classic");
+    h.app.session = lcc_engine::Session::new().with_fs();
+    let dir = folder("stack", 2);
+    let bright = recipe_preset(&mut h, "Bright", "light.exposure", 0.5);
+    let brighter = recipe_preset(&mut h, "Brighter", "light.exposure", 1.0);
+    let contrast = recipe_preset(&mut h, "Contrast", "light.contrast", 20.0);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    // an old single preset and a stack: one list, the single one first
+    exec(&mut h, "import.configure", json!({"take": "all", "previews": "none", "preset": bright, "presets": [brighter, contrast]}));
+    assert!(has_widget(&mut h, "label:importPreset-2"), "three rows");
+    assert_eq!(h.app.ui.settings.import_tab.opts.presets, [bright.clone(), brighter.clone(), contrast.clone()]);
+    assert!(h.app.ui.settings.import_tab.opts.preset.is_empty(), "folded into the stack");
+    assert!(has_widget(&mut h, "combo:importPresetAdd") && has_widget(&mut h, "check:importPresetProfile"));
+    // Bright goes after Brighter: it is applied last, so its exposure wins
+    let r = h.request("ui.clickWidget", json!({"id": "icon:importPresetDown-0"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.settings.import_tab.opts.presets, [brighter.clone(), bright.clone(), contrast.clone()]);
+    // Contrast goes
+    let r = h.request("ui.clickWidget", json!({"id": "icon:importPresetRemove-2"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.settings.import_tab.opts.presets, [brighter.clone(), bright.clone()]);
+    let ids = h.app.session.visible_cloned();
+    exec(&mut h, "import.start", json!({}));
+    h.step_until(SETTLE, |h| h.app.import.is_none());
+    let p = h.app.session.catalog.photo(ids[0]).unwrap();
+    assert!(!p.local);
+    assert!((p.develop.light.exposure - 0.5).abs() < 1e-6, "Bright last: {}", p.develop.light.exposure);
+    assert!(p.develop.light.contrast.abs() < 1e-6, "Contrast was taken off the stack");
+    let steps: Vec<&str> = p.history.iter().filter(|s| s.label.starts_with("Preset: ")).map(|s| s.label.as_str()).collect();
+    assert_eq!(steps, ["Preset: Brighter", "Preset: Bright"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The import review (Import as a tab off) shows the same stack, starts with the one used last,
+/// imports with it in order and keeps what it ran with for the next import.
+#[test]
+fn the_review_imports_with_the_preset_stack_used_last_and_keeps_it() {
+    let mut h = app([1400.0, 1000.0], "classic");
+    h.app.ui.settings.import_as_tab = false;
+    h.app.session = lcc_engine::Session::new().with_fs();
+    let bright = recipe_preset(&mut h, "Bright", "light.exposure", 0.5);
+    let contrast = recipe_preset(&mut h, "Contrast", "light.contrast", 20.0);
+    h.app.ui.settings.import_tab.opts.presets = vec![bright.clone()];
+    let dir = folder("review-stack", 2);
+    exec(&mut h, "dialog.import", json!({"path": dir.to_string_lossy()}));
+    h.step_until(SETTLE, |h| matches!(&h.app.ui.dialog, Some(Dialog::Import { opts }) if opts.candidates.len() == 2));
+    let Some(Dialog::Import { opts }) = &mut h.app.ui.dialog else { panic!("no review") };
+    assert_eq!(opts.presets, std::slice::from_ref(&bright), "the stack used last");
+    opts.presets.push(contrast.clone());
+    assert!(has_widget(&mut h, "label:importPreset-1") && has_widget(&mut h, "combo:importPresetAdd"), "the review lists the stack");
+    let r = h.request("ui.dialog.confirm", json!({}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step_until(SETTLE, |h| h.app.import.is_none());
+    let photos: Vec<_> = h.app.session.catalog.photos().filter(|p| !p.local).cloned().collect();
+    assert_eq!(photos.len(), 2);
+    for p in photos {
+        assert!((p.develop.light.exposure - 0.5).abs() < 1e-6 && (p.develop.light.contrast - 20.0).abs() < 1e-6, "both presets");
+        let steps: Vec<&str> = p.history.iter().filter(|s| s.label.starts_with("Preset: ")).map(|s| s.label.as_str()).collect();
+        assert_eq!(steps, ["Preset: Bright", "Preset: Contrast"]);
+    }
+    assert_eq!(h.app.ui.settings.import_tab.opts.presets, [bright, contrast], "kept for the next import");
+    let _ = std::fs::remove_dir_all(&dir);
+}
