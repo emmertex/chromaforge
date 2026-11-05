@@ -120,6 +120,8 @@ impl Session {
         if !crate::segment::Segmenter::AVAILABLE {
             return (0, 0, notes);
         }
+        // (work the user didn't ask for right now: the user's own AI masks go first, `Segmenter::low_priority`)
+        let was_low = std::mem::replace(&mut self.segmenter.low_priority, true);
         for id in ordered.iter().copied().map(PhotoId) {
             // (in the app the AI worker computes them; headless, the next edit or Update AI Mask does)
             if self.segmenter.background {
@@ -134,6 +136,7 @@ impl Session {
                 Err(e) => note(e.to_string()),
             }
         }
+        self.segmenter.low_priority = was_low;
         (masks, skin, notes)
     }
 
