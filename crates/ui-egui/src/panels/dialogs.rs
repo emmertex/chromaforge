@@ -180,6 +180,8 @@ fn window_id(dialog: &Dialog) -> egui::Id {
         Dialog::Import { .. } => "app-import-dialog",
         Dialog::Print => "app-print-dialog",
         Dialog::Export { .. } => "app-export-dialog",
+        // (its own id: the size the user gives it doesn't carry over to the other dialogs)
+        Dialog::PresetsManager { .. } => crate::panels::presets_manager::WINDOW,
         // (the Settings screen's own layer: `settings_screen::LAYER`)
         Dialog::Settings { .. } => crate::settings_screen::LAYER,
         _ => "app-dialog",
@@ -320,6 +322,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     // Export lays out its own columns (presets beside the settings, which scroll) and can be made
     // wider (a large UI font); its height follows its content, capped to the window.
     let export = matches!(dlg, Dialog::Export { .. });
+    // The Presets Manager can be resized and keeps the size it is given (remembered across
+    // starts), capped to the screen; its list fills it and never widens it.
+    let presets = matches!(dlg, Dialog::PresetsManager { .. });
+    let presets_size = crate::panels::presets_manager::window_size(app.ui.presets_manager_size, screen);
+    let presets_max = crate::panels::presets_manager::max_size(screen);
     let window_id = window_id(&dlg);
     // Settings keeps its top edge, and the widest it has been, while tabs of different sizes are
     // shown, so its tab row stays under the pointer (centred like the others, the row jumped with
@@ -335,9 +342,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let shown = egui::Window::new(heading.clone()).id(window_id)
         .title_bar(false)
         .collapsible(false)
-        .resizable([import || export, import])
+        .resizable([import || export || presets, import || presets])
         .vscroll(import)
-        .resize(|r| if import { r.default_height(crate::import::DIALOG_SIZE[1]) } else { r })
+        .resize(|r| {
+            if import {
+                r.default_height(crate::import::DIALOG_SIZE[1])
+            } else if presets {
+                r.default_height(presets_size.y).min_size(crate::panels::presets_manager::MIN_SIZE).max_size(presets_max)
+            } else {
+                r
+            }
+        })
         .frame(frame)
         .anchor(
             if sheet {
@@ -349,11 +364,19 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             },
             [(insets.left - insets.right) / 2.0, if sheet { -insets.bottom } else if settings { top } else { 0.0 }],
         )
-        .min_width(if sheet { sheet_w(screen, insets) } else { widest })
+        .min_width(if sheet {
+            sheet_w(screen, insets)
+        } else if presets {
+            crate::panels::presets_manager::MIN_SIZE[0].min(presets_max.x)
+        } else {
+            widest
+        })
         .max_width(if sheet {
             sheet_w(screen, insets)
         } else if export {
             (screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN).max(320.0)
+        } else if presets {
+            presets_max.x
         } else {
             f32::INFINITY
         })
@@ -368,7 +391,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::LightroomCatalog { .. } => 440.0,
             Dialog::LightroomDestination { .. } => 480.0,
             Dialog::ManageEffects { .. } => 560.0,
-            Dialog::PresetsManager { .. } => 640.0,
+            Dialog::PresetsManager { .. } => presets_size.x,
             // (the preset column beside a form: its label column, then the controls)
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
             Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } => 480.0,
@@ -1417,7 +1440,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 Dialog::Print => crate::print_view::body(app, ui, &t),
             };
             // the import review and Print size and scroll themselves
-            if import || print || export {
+            if import || print || export || presets {
                 body(ui);
             } else if formed {
                 // labels right-aligned in a column, controls, checkboxes and notes beside them
@@ -1606,6 +1629,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     if !import {
         crate::dialog_frame::ModalLayout::finish(ctx, window_id, shown.as_ref().map(|w| w.response.rect));
+    }
+    // the size the Presets Manager was left at (once the pointer is up: not in the middle of a drag)
+    if let Some(w) = shown.as_ref().filter(|_| presets) {
+        crate::panels::presets_manager::note_size(ctx, &mut app.ui.presets_manager_size, presets_size, w.response.rect.size());
     }
     if let Some(w) = &shown {
         // (the import review keeps its hand-picked photos however the click lands)

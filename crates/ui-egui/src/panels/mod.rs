@@ -30,6 +30,7 @@ pub mod keywording;
 pub mod layout_overlay;
 pub mod left;
 pub mod library_problem;
+pub mod manager_table;
 pub mod mask_effects;
 pub mod mask_pickers;
 pub mod masking;
