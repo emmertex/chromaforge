@@ -109,6 +109,8 @@ mod tests_access;
 #[cfg(test)]
 mod tests_activity;
 #[cfg(test)]
+mod tests_adjust_overlay;
+#[cfg(test)]
 mod tests_adjustment_quality;
 #[cfg(test)]
 mod tests_album_picker;
@@ -265,6 +267,10 @@ mod tests_loading_cell;
 #[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
+mod tests_mask_landing;
+#[cfg(test)]
+mod tests_mask_menus;
+#[cfg(test)]
 mod tests_mask_range_pick;
 #[cfg(test)]
 mod tests_mask_sections;
@@ -378,6 +384,8 @@ mod tests_tool_row;
 mod tests_unsaved;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_update;
+#[cfg(test)]
+mod tests_viewperf;
 #[cfg(test)]
 mod tests_wb_selector;
 #[cfg(test)]
@@ -729,6 +737,18 @@ pub struct LccApp {
     headless_screenshotting: bool,
     /// Synthetic input events (from the control channel) injected one step per frame.
     pub synthetic: Vec<egui::Event>,
+    /// Until when (frame time, s) the photographer counts as painting on the loupe: a brush stroke in progress and a
+    /// short while after it, as strokes follow one another. Meanwhile only the photo on screen renders; the other
+    /// photos a stroke reached (Auto Sync) keep their thumbnails, and the neighbours aren't prepared (ported from
+    /// OneSlips, NOTES-1028 note 29).
+    pub(crate) paint_hold_until: f64,
+    /// [`Self::paint_hold_until`] not reached in this frame.
+    pub(crate) paint_hold: bool,
+    /// Masks' mask selection, worked out each frame ([`panels::masking::keep_selection`], OneSlips 0d9d4fb7d).
+    pub(crate) mask_landing: panels::masking::Landing,
+    /// The op (`add`, `subtract`, `intersect`) a People or Remembered picker opened from the selected mask's menu
+    /// combines its selection by (`None`: a new mask).
+    pub(crate) mask_pick_op: Option<String>,
     /// Files the control channel (`ui.dropFiles`) holds over the window: every frame reports them
     /// as hovered, as the OS does while a drag is over the window.
     drop_hover: Vec<String>,
@@ -1038,6 +1058,10 @@ impl LccApp {
             shadow: None,
             headless_screenshotting: false,
             synthetic: vec![],
+            paint_hold_until: f64::NEG_INFINITY,
+            paint_hold: false,
+            mask_landing: Default::default(),
+            mask_pick_op: None,
             drop_hover: vec![],
             drop_pending: vec![],
             copied: None,
@@ -1946,6 +1970,17 @@ impl LccApp {
     pub fn logic(&mut self, ctx: &egui::Context) {
         i18n::set_language(self.ui.language);
         self.frame_log.clear();
+        // painting on the loupe (OneSlips, NOTES-1028 note 29): a brush stroke in progress and a moment after it
+        let now = ctx.input(|i| i.time);
+        let painting = matches!(self.gesture, Some(panels::detail::Gesture::Brush { .. }));
+        if painting {
+            self.paint_hold_until = now + panels::detail::PAINT_HOLD_SECS;
+        }
+        // (a clock that went back never holds for longer than the hold)
+        self.paint_hold = painting || (now < self.paint_hold_until && self.paint_hold_until - now <= 2.0 * panels::detail::PAINT_HOLD_SECS);
+        if self.paint_hold {
+            ctx.request_repaint_after(std::time::Duration::try_from_secs_f64((self.paint_hold_until - now).clamp(0.0, 2.0)).unwrap_or_default());
+        }
         widgets::sync_section_folds(ctx, &mut self.ui.section_open);
         let t0 = now_ms();
         panels::library_problem::logic(self, ctx);
