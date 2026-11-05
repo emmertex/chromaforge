@@ -1653,7 +1653,7 @@ mod upstream_tests {
 
     /// Issue #2284: a photo taken at 13:00 in UTC-5 must stay 13:00, not become 18:00. Before the
     /// HEIF items were read a HEIC carried no capture time at all, and the import fell back to the
-    /// file's modification time, which LightCraft writes as UTC.
+    /// file's modification time, which the app writes as UTC.
     #[test]
     fn an_iphone_heic_keeps_the_time_the_camera_wrote() {
         let file = heic(&exif_only(&iphone_exif("2026:10:18 13:00:00", "-05:00")), 1, false);
@@ -1745,7 +1745,7 @@ mod upstream_tests {
         assert!(embedded(&lying).exif.is_none());
     }
 
-    /// The real container writer of `lightcraft-heif`, so the reader is proved against the layout
+    /// The real container writer of `lcc-heif`, so the reader is proved against the layout
     /// a HEIF encoder produces and not only against this module's own test builder.
     #[test]
     fn a_synthetic_heif_file_carries_its_exif() {
