@@ -1821,7 +1821,7 @@ mod tests_format_version;
 mod tests_index;
 #[cfg(test)]
 mod tests_journal;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests_lightcraft;
 #[cfg(test)]
 mod tests_local;

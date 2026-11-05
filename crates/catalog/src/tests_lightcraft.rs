@@ -2,6 +2,8 @@
 //! with its edits, masks, picks and collections, converted to this app's records, and never changed. The records
 //! below are what LightCraft itself writes (made by its own catalog code for this test, a synthetic library).
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
