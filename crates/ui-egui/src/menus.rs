@@ -206,6 +206,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.linear", "Linear Gradient", Some("L"), "Window>Tools"),
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
+    ("tool.object", "Object Selection", None, "Window>Tools"),
     ("tool.none", "No Tool", None, ""),
     // {id?, component}: the component edited on the photo (a Brush component arms the brush on it)
     ("mask.editComponent", "Edit Mask Component", None, ""),
@@ -974,10 +975,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             } else if app.ui.fullscreen {
                 app.ui.fullscreen = false;
                 app.ui.slideshow = None;
-            } else if !app.ui.tool.is_empty() {
-                app.ui.tool.clear();
-                // a tool waiting for a new mask is put away with it (the mask selected before comes back)
-                app.ui.mask_new = None;
+            } else if !app.ui.tool.is_empty() || app.ui.mask_new.is_some() {
+                if app.ui.right == RightPanel::Masking {
+                    crate::panels::masking::disarm(app);
+                } else {
+                    app.ui.tool.clear();
+                    // a tool waiting for a new mask is put away with it (the mask selected before comes back)
+                    app.ui.mask_new = None;
+                }
             } else if app.ui.right == RightPanel::Crop && app.ui.view == ViewMode::Detail {
                 // Esc leaves the crop tool (the crop stays), as C does; the next Esc goes back
                 panel(app, &ctx, RightPanel::Crop, "Crop, Rotate, Geometry");
@@ -1778,6 +1783,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 app.end_midi_interaction();
                 let _ = app.session.end_interaction();
                 app.ui.tool.clear();
+                if app.ui.right == RightPanel::Masking {
+                    crate::panels::masking::disarm(app);
+                }
                 // back to the panel shown before the tool (hidden if it was)
                 app.ui.right = app.ui.leave_tool();
             }
@@ -1812,7 +1820,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         s if s.starts_with("tool.") => {
             let tool = &s["tool.".len()..];
             match tool {
-                "none" => app.ui.tool.clear(),
+                "none" => {
+                    app.ui.tool.clear();
+                    if app.ui.right == RightPanel::Masking {
+                        crate::panels::masking::disarm(app);
+                    }
+                }
                 "guidedUpright" => {
                     // Crop & Geometry with Guided Upright on, ready to draw guides
                     app.ui.right = RightPanel::Crop;
@@ -1828,6 +1841,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "guidedUpright".into();
                 }
                 "brush" => {
+                    if p.get("toggle").and_then(Value::as_bool) == Some(true) && app.ui.tool == "brush" {
+                        crate::panels::masking::disarm(app);
+                        return Some(Ok(json!({"disarmed": "brush"})));
+                    }
                     // A new mask is armed: the first stroke makes it. Add/Subtract are selection
                     // operations, not the brush's Erase mode: paint positively into a new component.
                     if p.get("new").and_then(Value::as_bool) == Some(true) {
@@ -1855,8 +1872,29 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "brush".into();
                 }
                 "linear" | "radial" => {
+                    if p.get("toggle").and_then(Value::as_bool) == Some(true) && app.ui.tool == tool {
+                        crate::panels::masking::disarm(app);
+                        return Some(Ok(json!({"disarmed": tool})));
+                    }
                     // armed: a drag on the photo draws the gradient (a click places a default one)
                     return Some(crate::panels::masking::arm_new(app, tool));
+                }
+                "object" => {
+                    if p.get("toggle").and_then(Value::as_bool) == Some(true) && app.ui.tool == "object" {
+                        crate::panels::masking::disarm(app);
+                        return Some(Ok(json!({"disarmed": "object"})));
+                    }
+                    let r = if p.get("new").and_then(Value::as_bool) == Some(true) || app.session.active_mask.is_none() || app.ui.mask_new.is_some() {
+                        crate::panels::masking::arm_new(app, "object")
+                    } else if let Some(op) = p.get("op").and_then(Value::as_str) {
+                        app.run("mask.addComponent", json!({"kind": "object", "op": op}))
+                    } else {
+                        app.ui.right = RightPanel::Masking;
+                        app.ui.view = ViewMode::Detail;
+                        app.ui.tool = "object".into();
+                        Ok(json!({"armed": "object"}))
+                    };
+                    return Some(r);
                 }
                 // W again puts the selector away without sampling (OneSlips, test notes 2026-10-25 note 13)
                 "wbPicker" if app.ui.tool == "wbPicker" && p.get("sample").is_none() => app.ui.tool.clear(),
