@@ -384,7 +384,7 @@ impl<'a> Button<'a> {
         // (its own rectangle and its focus ring: a long text never runs over its neighbours)
         let p = &ui.painter_at(rect.expand(5.0));
         // softly rounded, a pill when short
-        let radius = (rect.height() / 2.0).min(self.size.radius() + 5.0);
+        let radius = t.radius((rect.height() / 2.0).min(self.size.radius() + 5.0));
         if let Some(fill) = lk.fill {
             p.rect_filled(rect, radius, fill);
         }

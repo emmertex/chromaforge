@@ -315,7 +315,6 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
 /// From this width the sources and the settings stand beside the photos.
 const WIDE: f32 = 900.0;
 const SOURCES_W: f32 = 230.0;
-const SETTINGS_W: f32 = 330.0;
 const BAR_H: f32 = 48.0;
 
 /// What a narrow window shows in the one column.
@@ -361,7 +360,7 @@ pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
     let widths: Vec<f32> =
         labels.iter().map(|(_, l, _)| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + 24.0).collect();
     let (outer, _) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 4.0, h), Sense::hover());
-    ui.painter().rect(outer, h / 2.0, t.field, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    ui.painter().rect(outer, t.radius(h / 2.0), t.field, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let mut x = outer.left() + 2.0;
     for ((tab, label, wid), w) in labels.iter().zip(widths) {
         let r = Rect::from_min_size(pos2(x, outer.top() + 2.0), vec2(w, h - 4.0));
@@ -371,9 +370,9 @@ pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
         let on = app.ui.tab == *tab;
         crate::access::choice(&resp, label, on);
         if on {
-            ui.painter().rect_filled(r, (h - 4.0) / 2.0, t.accent);
+            ui.painter().rect_filled(r, t.radius((h - 4.0) / 2.0), t.accent);
         } else if resp.hovered() {
-            ui.painter().rect_filled(r, (h - 4.0) / 2.0, t.hover);
+            ui.painter().rect_filled(r, t.radius((h - 4.0) / 2.0), t.hover);
         }
         let color = if on { t.canvas } else { t.text };
         ui.painter().text(r.center(), Align2::CENTER_CENTER, crate::i18n::tr(label), font.clone(), color);
@@ -402,9 +401,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     } else {
         (None, area)
     };
+    // (the settings column's left edge is dragged to resize it, as the side panels are; the width
+    // is kept in the UI state)
     let (middle, settings_r) = if wide {
-        let w = SETTINGS_W.min(rest.width() * 0.4);
-        (Rect::from_min_max(rest.min, pos2(rest.right() - w, rest.bottom())), Some(Rect::from_min_max(pos2(rest.right() - w, rest.top()), rest.max)))
+        let mut middle = rest;
+        let limits = crate::state::IMPORT_SETTINGS_WIDTH;
+        let r = crate::panels::split_side(ui, &mut middle, false, "importSettings", &mut app.ui.import_settings_width, limits);
+        (middle, Some(r))
     } else {
         (rest, None)
     };
@@ -419,6 +422,22 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         ui.painter().vline(r.left(), r.y_range(), Stroke::new(1.0, t.divider));
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-settings").max_rect(r.shrink2(vec2(10.0, 0.0))));
         settings(app, &mut child);
+    }
+    // Library's toolbar under the browsed photos (View ▸ Show Toolbar): view modes, sort, flags,
+    // rating, colour labels and thumbnail size, for culling the card in place
+    let mut middle = middle;
+    if app.ui.toolbar
+        && app.ui.screen_mode != crate::module::ScreenMode::FullScreenHidePanels
+        && pane == Pane::Photos
+        && app.session.source == LibrarySource::Folder
+        && middle.height() > 2.0 * t.bottom_bar_h + BAR_H
+    {
+        let r = Rect::from_min_max(pos2(middle.left(), middle.bottom() - t.bottom_bar_h), middle.max);
+        let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-toolbar").max_rect(r));
+        child.set_clip_rect(r);
+        crate::panels::bottombar::show(app, &mut child);
+        register(ui.ctx(), "importToolbar", r);
+        middle.max.y = r.top();
     }
     let bar_r = Rect::from_min_max(middle.min, pos2(middle.right(), middle.top() + BAR_H));
     let body = Rect::from_min_max(pos2(middle.left(), bar_r.bottom()), middle.max);
@@ -469,9 +488,9 @@ fn source_row(app: &mut LccApp, ui: &mut egui::Ui, wid: &str, label: &str, path:
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     register(ui.ctx(), format!("button:{wid}"), r);
     if on {
-        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), 4.0, t.cell_selected);
+        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), t.radius(4.0), t.cell_selected);
     } else if resp.hovered() {
-        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), 4.0, t.hover);
+        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), t.radius(4.0), t.hover);
     }
     let shown = crate::widgets::elide_head(label, r.width() - 30.0, |s| ui.painter().layout_no_wrap(s.to_string(), t.font(12.5), t.text).size().x);
     ui.painter().text(pos2(r.left() + 16.0, r.center().y), Align2::LEFT_CENTER, shown, t.font(12.5), t.text);
@@ -714,7 +733,9 @@ fn preset_row(app: &mut LccApp, ui: &mut egui::Ui, s: &mut ImportSettings) {
     let mut chosen: Option<String> = None;
     form_row(ui, "Preset", |ui| {
         let shown = if s.preset_name.is_empty() { crate::i18n::tr("None").to_string() } else { s.preset_name.clone() };
-        let combo = crate::widgets::combo_box("import-tab-preset").selected_text(shown).show_ui(ui, |ui| {
+        let list_w = crate::import::combo_list_width(ui, names.iter().map(String::as_str));
+        let combo = crate::widgets::combo_box("import-tab-preset").selected_text(shown).width(ui.available_width().max(120.0)).show_ui(ui, |ui| {
+            ui.set_min_width(list_w);
             for (i, n) in names.iter().enumerate() {
                 let r = ui.selectable_label(*n == s.preset_name, n);
                 register(ui.ctx(), format!("button:importPreset-{i}"), r.rect);

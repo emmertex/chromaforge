@@ -89,6 +89,21 @@ pub struct Tokens {
     pub slider_row_h: f32,
     pub section_h: f32,
     pub film_h: f32,
+    /// The Compact layout's dense look (LAYOUT-DENSE, ported from OneSlips): square-ish corners
+    /// ([`DENSE_RADIUS`]) on pills, segments, buttons and cards, and form groups as flat bands
+    /// under a thin header. False in Classic, which keeps its rounded look.
+    pub dense: bool,
+}
+
+/// The largest corner radius (points) anything has in the Compact layout.
+pub const DENSE_RADIUS: f32 = 2.0;
+
+impl Tokens {
+    /// The corner radius of a shape Classic rounds by `classic` (a pill: half its height): the
+    /// same in Classic, at most [`DENSE_RADIUS`] in Compact.
+    pub fn radius(&self, classic: f32) -> f32 {
+        if self.dense { classic.min(DENSE_RADIUS) } else { classic }
+    }
 }
 
 /// An interface theme. Each belongs to the dark or the light family.
@@ -171,6 +186,7 @@ impl Default for Tokens {
             slider_row_h: 24.0,
             section_h: 57.0,
             film_h: 142.0,
+            dense: false,
         }
     }
 }
@@ -621,17 +637,17 @@ pub fn set_compact(ctx: &egui::Context, on: bool) {
 }
 
 /// The Compact layout's style over the theme's: tighter spacing, shorter controls, sharper
-/// corners (2 on controls, 3 on cards, menus and windows). Only called when Compact is on, so
-/// Classic's style is untouched.
+/// corners ([`DENSE_RADIUS`] on controls, cards, menus and windows). Only called when Compact is
+/// on, so Classic's style is untouched.
 fn apply_compact(ctx: &egui::Context) {
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         ctx.style_mut_of(theme, |s| {
             let v = &mut s.visuals;
-            v.window_corner_radius = CornerRadius::same(3);
-            v.menu_corner_radius = CornerRadius::same(3);
+            v.window_corner_radius = CornerRadius::same(DENSE_RADIUS as u8);
+            v.menu_corner_radius = CornerRadius::same(DENSE_RADIUS as u8);
             for state in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open]
             {
-                state.corner_radius = CornerRadius::same(2);
+                state.corner_radius = CornerRadius::same(DENSE_RADIUS as u8);
             }
             s.spacing.item_spacing = egui::vec2(4.0, 2.0);
             s.spacing.button_padding = egui::vec2(6.0, 2.0);
@@ -770,7 +786,7 @@ pub fn apply_kind(ctx: &egui::Context, kind: ThemeKind) {
         o.input_options.line_scroll_speed = WHEEL_LINE_POINTS;
         o.input_options.scroll_zoom_speed = WHEEL_ZOOM_PER_POINT;
     });
-    let t = Tokens::for_kind(kind);
+    let t = Tokens { dense: compact(ctx), ..Tokens::for_kind(kind) };
     ctx.data_mut(|d| {
         d.insert_temp(egui::Id::NULL, t);
         d.insert_temp(theme_id(), kind);
@@ -836,6 +852,36 @@ mod tests {
     use super::*;
     use crate::button::contrast;
     use crate::i18n::{Locale, set_language};
+
+    /// LAYOUT-DENSE: Compact's corner radii are at most 2 everywhere (tokens and egui's widgets,
+    /// menus and windows); Classic keeps its rounded shapes.
+    #[test]
+    fn compact_corner_radius_tokens() {
+        let ctx = egui::Context::default();
+        apply_kind(&ctx, ThemeKind::Charcoal);
+        let classic = Tokens::get(&ctx);
+        assert!(!classic.dense);
+        assert_eq!(classic.radius(12.0), 12.0, "Classic keeps its card radius");
+        assert_eq!(ctx.style_of(egui::Theme::Dark).visuals.window_corner_radius, CornerRadius::same(14));
+        set_compact(&ctx, true);
+        let dense = Tokens::get(&ctx);
+        assert!(dense.dense);
+        for classic_r in [3.0, 7.0, 12.0, 16.0, 40.0] {
+            assert!(dense.radius(classic_r) <= DENSE_RADIUS, "{classic_r}");
+        }
+        assert_eq!(dense.radius(1.0), 1.0, "a smaller radius stays");
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            let v = ctx.style_of(theme).visuals.clone();
+            let max = DENSE_RADIUS as u8;
+            assert!(v.window_corner_radius.nw <= max && v.menu_corner_radius.nw <= max);
+            for w in [v.widgets.noninteractive, v.widgets.inactive, v.widgets.hovered, v.widgets.active, v.widgets.open] {
+                assert!(w.corner_radius.nw <= max);
+            }
+        }
+        set_compact(&ctx, false);
+        assert!(!Tokens::get(&ctx).dense);
+        assert_eq!(ctx.style_of(egui::Theme::Dark).visuals.window_corner_radius, CornerRadius::same(14));
+    }
 
     /// The selection ring is a mark on the grid: 3:1 or more against what it is drawn over, in
     /// every theme. The active photo's ring reads on the grid and on a selected or unselected

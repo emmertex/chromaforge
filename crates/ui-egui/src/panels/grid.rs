@@ -1,5 +1,22 @@
 //! Photo Grid (justified rows) and Square Grid. Virtualized: only visible cells request thumbnails.
 
+/// A photo's exposure as a cell shows it: shutter · aperture · ISO · focal length, the parts the
+/// file has (`None`: none of them).
+pub(crate) fn exposure_line(m: &lcc_catalog::Meta) -> Option<String> {
+    let parts: Vec<String> = [
+        // whole seconds read "8 s"; the camera notation (1/250, 1.3″) already carries its unit
+        (!m.shutter.is_empty())
+            .then(|| if m.shutter.contains('/') || m.shutter.ends_with(['s', '″']) { m.shutter.clone() } else { format!("{} s", m.shutter) }),
+        m.aperture.map(|a| format!("f/{a:.1}").replace(".0", "")),
+        m.iso.map(|i| format!("ISO {i}")),
+        m.focal_mm.map(|f| format!("{f:.0} mm")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 #[cfg(test)]
 #[path = "grid_header_tests.rs"]
 mod header_tests;
@@ -1179,21 +1196,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     } else if square && app.ui.show_filenames {
         let m = &photo.meta;
         let name = match app.ui.grid_info.as_str() {
-            "exposure" => {
-                let parts: Vec<String> = [
-                    // whole seconds read "8 s"; the camera notation (1/250, 1.3″) already carries its unit
-                    (!m.shutter.is_empty()).then(|| {
-                        if m.shutter.contains('/') || m.shutter.ends_with(['s', '″']) { m.shutter.clone() } else { format!("{} s", m.shutter) }
-                    }),
-                    m.aperture.map(|a| format!("f/{a:.1}").replace(".0", "")),
-                    m.iso.map(|i| format!("ISO {i}")),
-                    m.focal_mm.map(|f| format!("{f:.0} mm")),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                if parts.is_empty() { "—".to_string() } else { parts.join(" · ") }
-            }
+            "exposure" => exposure_line(m).unwrap_or_else(|| "—".to_string()),
             "date" => photo.captured.as_deref().map(crate::i18n::display_time).unwrap_or_else(|| crate::i18n::tr("No date").into()),
             _ => photo.file_name.rsplit_once('.').map(|(n, _)| n.to_string()).unwrap_or(photo.file_name.clone()),
         };
@@ -1203,6 +1206,20 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         let br = Rect::from_min_size(pos2(r.right() - g.size().x - 14.0, r.top() + 5.0), g.size() + vec2(8.0, 3.0));
         p.rect_filled(br, 2.0, Color32::from_gray(26));
         p.galley(br.min + vec2(4.0, 1.5), g, t.text_label);
+    }
+    // the Import tab: what each frame was shot at, in a strip over the photo's top edge (the
+    // cull of a card reads shutter, aperture, ISO and focal length at a glance)
+    if crate::import_tab::showing(app)
+        && !(square && app.ui.show_filenames && app.ui.grid_info == "exposure")
+        && let Some(line) = exposure_line(&photo.meta)
+    {
+        let strip = Rect::from_min_max(img_rect.left_top(), pos2(img_rect.right(), (img_rect.top() + 17.0).min(img_rect.bottom())));
+        if strip.width() >= 60.0 {
+            p.rect_filled(strip, 0.0, Color32::from_black_alpha(140));
+            let g = crate::widgets::one_line(p, &line, t.font(10.5), Color32::from_gray(225), strip.width() - 10.0);
+            p.galley(pos2(strip.left() + 5.0, strip.center().y - g.size().y / 2.0), g, Color32::from_gray(225));
+            register(ui.ctx(), format!("cellInfo:{}", id.0), strip);
+        }
     }
     let expanded = square && app.ui.lib.cell_style == crate::libtools::CellStyle::Expanded;
     let show_badges = expanded
@@ -1908,6 +1925,17 @@ fn quick_collection_item(app: &mut LccApp, ui: &mut egui::Ui) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_exposure_line_names_the_parts_a_file_has() {
+        let mut m = lcc_catalog::Meta { shutter: "1/250".into(), aperture: Some(2.8), iso: Some(400), focal_mm: Some(85.0), ..Default::default() };
+        assert_eq!(super::exposure_line(&m).as_deref(), Some("1/250 · f/2.8 · ISO 400 · 85 mm"));
+        m.shutter = "8".into();
+        m.aperture = Some(4.0);
+        m.iso = None;
+        assert_eq!(super::exposure_line(&m).as_deref(), Some("8 s · f/4 · 85 mm"));
+        assert_eq!(super::exposure_line(&lcc_catalog::Meta::default()), None);
+    }
+
     use super::*;
 
     /// A grid's thumbnail follows a slider drag (one render at a time); under the loupe it waits
