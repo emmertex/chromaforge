@@ -260,6 +260,8 @@ pub struct GroupHead<'a> {
     pub all_hidden: bool,
     /// Delete is offered (groups holding built-in presets are hidden, not deleted).
     pub deletable: bool,
+    /// Rename is offered (a camera model's group of camera profiles keeps its name).
+    pub renamable: bool,
 }
 
 /// What a group header asked for.
@@ -307,7 +309,7 @@ pub fn group_header(ui: &mut Ui, t: &Tokens, c: &Columns, h: &GroupHead, renamin
             if h.open { "Collapse" } else { "Expand" },
         )
     });
-    if resp.double_clicked() && rr.name.contains(resp.interact_pointer_pos().unwrap_or_default()) {
+    if h.renamable && resp.double_clicked() && rr.name.contains(resp.interact_pointer_pos().unwrap_or_default()) {
         *renaming = Some((h.name.to_string(), leaf(h.name).to_string()));
     } else if fold_r.clicked() || (resp.clicked() && !renaming_this) {
         out = out.or(Some(GroupAction::Fold(!h.open)));
@@ -343,7 +345,9 @@ pub fn group_header(ui: &mut Ui, t: &Tokens, c: &Columns, h: &GroupHead, renamin
         }
     }
     if rr
-        .in_col(ui, Col::Rename, |ui| icon_button(ui, &format!("{}GroupRename:{}", h.key, h.name), Icon::Pencil, sz, false, true, "Rename Group"))
+        .in_col(ui, Col::Rename, |ui| {
+            icon_button(ui, &format!("{}GroupRename:{}", h.key, h.name), Icon::Pencil, sz, false, h.renamable, "Rename Group")
+        })
         .clicked()
     {
         *renaming = Some((h.name.to_string(), leaf(h.name).to_string()));

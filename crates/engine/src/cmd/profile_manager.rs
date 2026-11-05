@@ -428,7 +428,10 @@ fn group_remove(s: &mut Session, p: &Value) -> Result<Value> {
 fn hide(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "profile.hide";
     let id = str_param(p, "id").ok_or_else(|| bad(C, "missing id"))?.to_string();
-    if crate::presets::profile(&id).is_none() && !s.lut_profiles.iter().any(|x| x.id == id) {
+    // (camera profiles too, imported `dcp:…` and bundled `cal:…`: the Profile Manager hides them from
+    // the camera profile choices)
+    let camera = lcc_raw::dcp::library_get(&id).is_some() || lcc_raw::dcp::calibrated_look_exists(&id);
+    if crate::presets::profile(&id).is_none() && !s.lut_profiles.iter().any(|x| x.id == id) && !camera {
         return Err(bad(C, format!("unknown profile `{id}`")));
     }
     let on = s.profile_hidden.contains(&id);
@@ -612,7 +615,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hide Profile",
             [],
             None,
-            "{id, hidden?: bool (toggles when omitted)} — out of the profile menu and browser (still in profiles.manager; photos using it keep it) → {hidden}",
+            "{id (a look, lut:…, dcp:… or cal:…), hidden?: bool (toggles when omitted)} — out of the profile menu, the browser and the camera profile choices (still in profiles.manager; photos using it keep it) → {hidden}",
             always,
             hide
         ),
@@ -691,4 +694,38 @@ pub fn specs() -> Vec<CommandSpec> {
             place
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Profile Manager hides camera profiles too (out of the camera profile choices); an id no
+    /// profile has is an error, never a hidden entry.
+    #[test]
+    fn camera_profiles_can_be_hidden() {
+        let mut s = Session::with_demo();
+        // a bundled calibration of a camera of its own (the registry is process-wide: add one and take it out again)
+        let dcp = std::sync::Arc::new(lcc_raw::dcp::Dcp {
+            model: "PMHIDE ONE".into(),
+            name: "Hide Me".into(),
+            copyright: String::new(),
+            color: lcc_raw::ColorData::default(),
+        });
+        let others = || lcc_raw::dcp::calibrated().iter().filter(|c| c.make != "PMHIDE").map(|c| (**c).clone()).collect::<Vec<_>>();
+        let mut list = others();
+        list.push(lcc_raw::dcp::Calibrated {
+            make: "PMHIDE".into(),
+            names: vec!["PMHIDE ONE".into()],
+            looks: vec![("cal:pmhide-me".into(), dcp)],
+            default: None,
+        });
+        lcc_raw::dcp::install_calibrated(list);
+        let hidden = s.execute("profile.hide", &json!({"id": "cal:pmhide-me", "hidden": true}));
+        let unknown = s.execute("profile.hide", &json!({"id": "dcp:pm-no-such-profile"}));
+        lcc_raw::dcp::install_calibrated(others());
+        assert_eq!(hidden.unwrap()["hidden"], true);
+        assert!(s.profile_hidden.iter().any(|h| h == "cal:pmhide-me"));
+        assert!(unknown.is_err());
+    }
 }

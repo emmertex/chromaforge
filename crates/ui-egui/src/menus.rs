@@ -277,6 +277,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.newSmartAlbum", "New Smart Collection from Filter…", Some("Cmd+Alt+N"), "Library"),
     ("dialog.createPreset", "Create Preset…", Some("Cmd+Shift+P"), "Photo>Develop Settings"),
     ("dialog.presetsManager", "Manage Presets…", None, "Photo>Develop Settings"),
+    // {query?}: the Profile Manager (looks, LUT profiles and camera profiles: hide, delete, rename)
+    ("dialog.profileManager", "Manage Profiles…", None, "Photo>Develop Settings"),
     ("dialog.autoStack", "Auto-Stack by Capture Time…", None, "Photo>Stack"),
     ("dialog.copySettings", "Choose Edit Settings to Copy…", Some("Cmd+Shift+C"), "Photo>Develop Settings"),
     // {id}: Update Preset with Current Settings, pre-ticked with what the preset holds
@@ -1998,6 +2000,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "dialog.presetsManager" => {
             let query = p.get("query").and_then(Value::as_str).unwrap_or("").to_string();
             app.ui.dialog = Some(Dialog::PresetsManager { query, confirm: None, rename: None });
+            Ok(Value::Null)
+        }
+        "dialog.profileManager" => {
+            let query = p.get("query").and_then(Value::as_str).unwrap_or("").to_string();
+            app.ui.dialog = Some(Dialog::ProfileManager { query, confirm: None, rename: None });
             Ok(Value::Null)
         }
         "dialog.pasteSettings" => {
