@@ -2113,7 +2113,7 @@ impl Renderer {
         let tex: usize = self.textures.values().map(|t| t.size[0] * t.size[1] * 4).sum();
         let copies: usize = self.textures.values().filter_map(|t| t.pixels.as_ref()).map(|p| p.pixels.len() * 4).sum();
         serde_json::json!({
-            "stageCaches": {"count": self.stages.len(), "cpuBytes": cpu, "gpuBytes": gpu, "budgetBytes": self.stage_budget(), "trimmed": self.stages_trimmed, "sharedSourceBytes": lcc_engine::gpu::shared_source_bytes()},
+            "stageCaches": {"count": self.stages.len(), "cpuBytes": cpu, "gpuBytes": gpu, "budgetBytes": self.stage_budget(), "trimmed": self.stages_trimmed, "sharedSourceBytes": lcc_engine::gpu::shared_source_bytes(), "autoMaskStrokeBytes": lcc_engine::gpu::kept_stroke_bytes()},
             "textures": {"count": self.textures.len(), "bytes": tex, "cpuCopyBytes": copies},
             "tiles": {"count": self.tiles.len(), "bytes": self.tiles.bytes(), "budgetBytes": self.tiles.budget()},
         })
