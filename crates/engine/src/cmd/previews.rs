@@ -570,12 +570,14 @@ type SmartJob = (lcc_catalog::PhotoId, std::path::PathBuf, Option<crate::media::
 
 /// DNG tone fits also go stale, although DNGs keep their own matrix and Kelvin white-balance scale.
 /// So do preview-only raws: their proxy is the embedded JPEG, read in the colour space the raw
-/// declares, which a look version bump can change too (#2654).
+/// declares, which a look version bump can change too (#2654). And so does a raw developed through a camera
+/// profile without a tone curve of its own: it keeps the tone fitted with the photo's own colour.
 #[cfg(not(target_arch = "wasm32"))]
 fn preview_fitted_look(photo: &lcc_catalog::Photo) -> bool {
     photo.fitted_look()
         || (photo.develops_raw() && photo.format.eq_ignore_ascii_case("DNG"))
         || (photo.kind == lcc_catalog::MediaKind::Raw && photo.preview_only.is_some())
+        || crate::camera_profiles::photo_profile(photo).is_some_and(|d| crate::camera_preview::keeps_photo_tone(&d))
 }
 
 /// Held while one proxy is checked and (re)written, so Build Smart Previews and the opening look
