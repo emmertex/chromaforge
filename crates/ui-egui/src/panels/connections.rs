@@ -381,7 +381,6 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }
     key_storage(app, ui, t);
-    ui.add_space(8.0);
     super::settings::heading(ui, t, "Immich servers");
     let st = app.session.execute("immich.status", &json!({})).unwrap_or_default();
     // a background connect that finished
@@ -406,7 +405,6 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         account_card(app, ui, t, i, a);
     }
 
-    ui.add_space(8.0);
     super::settings::heading(ui, t, "Add Immich server");
     row(ui, t, "Server URL", |ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut app.immich.url).hint_text("https://photos.example.org").desired_width(300.0));

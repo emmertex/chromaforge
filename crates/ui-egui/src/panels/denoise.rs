@@ -11,7 +11,7 @@ use lcc_catalog::PhotoId;
 use lcc_engine::denoise::PhotoState;
 use serde_json::{Value, json};
 
-use super::settings::{check, choices, heading, hint};
+use super::settings::{check, choices, heading, hint, row};
 use crate::LccApp;
 use crate::theme::Tokens;
 use crate::widgets::register;
@@ -260,7 +260,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     hint(ui, t, "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.");
     hint(ui, t, "Denoise models are downloaded and chosen under Settings ▸ AI Models.");
-    if ui.link(tr("Open AI Models")).clicked() {
+    if crate::dialog_frame::link(ui, Some("denoise:openAiModels"), "Open AI Models").clicked() {
         let _ = app.run("app.settings", json!({"tab": "ai"}));
     }
     work_section(app, ui, t, &list);
@@ -353,7 +353,7 @@ fn work_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value) {
     let current = list["runOn"].as_str().unwrap_or("auto").to_string();
     let mut run_on = current.as_str();
     let options = [("auto", "Automatic"), ("gpu", "Graphics card"), ("cpu", "Processor")];
-    if ui.horizontal(|ui| choices(ui, "denoiseRunOn", &options, &mut run_on)).inner {
+    if crate::dialog_frame::control_row(ui, |ui| choices(ui, "denoiseRunOn", &options, &mut run_on)) {
         let _ = app.run("denoise.settings", json!({"runOn": run_on}));
         app.caches.denoise.epoch += 1;
     }
@@ -364,7 +364,7 @@ fn work_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value) {
     );
     hint(ui, t, &device_line(&status["device"], run_on));
     if run_on != "cpu" && status["device"]["retry"] == true {
-        let r = ui.small_button(crate::i18n::tr("Try the graphics card again"));
+        let r = crate::dialog_frame::control_row(ui, |ui| ui.small_button(crate::i18n::tr("Try the graphics card again")));
         register(ui.ctx(), "denoise:retryGpu", r.rect);
         if r.clicked() {
             // choosing where it runs, even the same again, forgets the failed set-up
@@ -393,7 +393,7 @@ fn work_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value) {
                 done = done,
                 total = total
             );
-            settings_bar(ui, done, total, text);
+            crate::dialog_frame::in_control_column(ui, |ui| settings_bar(ui, done, total, text));
         }
         None if queued > 0 => hint(ui, t, &count(queued, "photo waiting", "photos waiting")),
         None => {
@@ -401,7 +401,7 @@ fn work_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value) {
             hint(ui, t, &count(ready, "photo has its denoised picture.", "photos have their denoised picture."))
         }
     }
-    ui.horizontal(|ui| {
+    crate::dialog_frame::control_row(ui, |ui| {
         let r = ui.button(tr("Denoise all photos with an Amount"));
         register(ui.ctx(), "denoise:queueAll", r.rect);
         if r.clicked() {
@@ -426,8 +426,7 @@ fn work_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value) {
             mb(Some(bytes))
         ),
     );
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(crate::i18n::tr("Limit")).color(t.text_label));
+    row(ui, t, "Limit", |ui| {
         let current = list["cacheGb"].as_u64().unwrap_or(20) as u32;
         let mut choice = current;
         crate::widgets::combo_box("denoise-cache-limit").selected_text(tr_format!("{size} GB", size = current)).show_ui(ui, |ui| {
