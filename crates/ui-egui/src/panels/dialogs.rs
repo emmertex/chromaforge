@@ -182,6 +182,7 @@ fn window_id(dialog: &Dialog) -> egui::Id {
         Dialog::Export { .. } => "app-export-dialog",
         // (its own id: the size the user gives it doesn't carry over to the other dialogs)
         Dialog::PresetsManager { .. } => crate::panels::presets_manager::WINDOW,
+        Dialog::ProfileManager { .. } => crate::panels::profile_manager::WINDOW,
         // (the Settings screen's own layer: `settings_screen::LAYER`)
         Dialog::Settings { .. } => crate::settings_screen::LAYER,
         _ => "app-dialog",
@@ -283,6 +284,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::SaveEffect { .. } => "New Effect Preset",
         Dialog::ManageEffects { .. } => "Manage Effect Presets",
         Dialog::PresetsManager { .. } => "Presets Manager",
+        Dialog::ProfileManager { .. } => "Profile Manager",
         Dialog::DeleteEffects { names } if names.len() == 1 => "Delete Effect Preset",
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
         Dialog::DeleteRejected { .. } => "Delete Rejected Photos",
@@ -324,8 +326,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let export = matches!(dlg, Dialog::Export { .. });
     // The Presets Manager can be resized and keeps the size it is given (remembered across
     // starts), capped to the screen; its list fills it and never widens it.
-    let presets = matches!(dlg, Dialog::PresetsManager { .. });
-    let presets_size = crate::panels::presets_manager::window_size(app.ui.presets_manager_size, screen);
+    // (the Profile Manager is sized the same way, with a size of its own)
+    let profiles_manager = matches!(dlg, Dialog::ProfileManager { .. });
+    let presets = matches!(dlg, Dialog::PresetsManager { .. }) || profiles_manager;
+    let remembered = if profiles_manager { app.ui.profile_manager_size } else { app.ui.presets_manager_size };
+    let presets_size = crate::panels::presets_manager::window_size(remembered, screen);
     let presets_max = crate::panels::presets_manager::max_size(screen);
     let window_id = window_id(&dlg);
     // Settings keeps its top edge, and the widest it has been, while tabs of different sizes are
@@ -391,7 +396,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::LightroomCatalog { .. } => 440.0,
             Dialog::LightroomDestination { .. } => 480.0,
             Dialog::ManageEffects { .. } => 560.0,
-            Dialog::PresetsManager { .. } => presets_size.x,
+            Dialog::PresetsManager { .. } | Dialog::ProfileManager { .. } => presets_size.x,
             // (the preset column beside a form: its label column, then the controls)
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
             Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } => 480.0,
@@ -1179,6 +1184,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::PresetsManager { query, confirm, rename } => crate::panels::presets_manager::body(app, ui, query, confirm, rename),
+                Dialog::ProfileManager { query, confirm, rename } => crate::panels::profile_manager::body(app, ui, query, confirm, rename),
                 Dialog::ManageEffects { search, selected, rename, confirm_delete, new_group } => {
                     crate::panels::mask_effects::manage_body(app, ui, search, selected, rename, confirm_delete, new_group)
                 }
@@ -1632,7 +1638,12 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     // the size the Presets Manager was left at (once the pointer is up: not in the middle of a drag)
     if let Some(w) = shown.as_ref().filter(|_| presets) {
-        crate::panels::presets_manager::note_size(ctx, &mut app.ui.presets_manager_size, presets_size, w.response.rect.size());
+        if profiles_manager {
+            let window = crate::panels::profile_manager::WINDOW;
+            crate::panels::presets_manager::note_size_of(ctx, window, &mut app.ui.profile_manager_size, presets_size, w.response.rect.size());
+        } else {
+            crate::panels::presets_manager::note_size(ctx, &mut app.ui.presets_manager_size, presets_size, w.response.rect.size());
+        }
     }
     if let Some(w) = &shown {
         // (the import review keeps its hand-picked photos however the click lands)
@@ -2324,7 +2335,8 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         | Dialog::Settings { .. }
         | Dialog::Update
         | Dialog::ManageEffects { .. }
-        | Dialog::PresetsManager { .. } => Ok(serde_json::Value::Null),
+        | Dialog::PresetsManager { .. }
+        | Dialog::ProfileManager { .. } => Ok(serde_json::Value::Null),
     }
 }
 
@@ -3983,6 +3995,7 @@ fn only_shows(dlg: &Dialog) -> bool {
             // each model has its own Download button in the body
             | Dialog::AiModels { .. }
             | Dialog::PresetsManager { .. }
+            | Dialog::ProfileManager { .. }
             // the updater has its own buttons in the body; the footer only closes
             | Dialog::Update
     ) || matches!(dlg, Dialog::SynchronizeFolder { counts: Some(c), .. } if c.up_to_date())

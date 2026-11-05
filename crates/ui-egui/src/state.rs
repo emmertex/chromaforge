@@ -1158,6 +1158,9 @@ pub struct UiState {
     /// again, capped to the screen (`panels::presets_manager::window_size`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presets_manager_size: Option<[f32; 2]>,
+    /// The Profile Manager's size as the user left it (as `presets_manager_size`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_manager_size: Option<[f32; 2]>,
     pub right_width: f32,
     /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
     /// to go back to).
@@ -2091,6 +2094,14 @@ pub enum Dialog {
         confirm: Option<String>,
         rename: Option<(String, String)>,
     },
+    /// The Profile Manager (LR-PROF-MANAGE): looks, LUT profiles and camera profiles in one
+    /// table. The search; the row whose Delete waits for a yes (`profile:<id>`, `group:<key>`);
+    /// the row renamed in place and its text (`profile:<id>`, `group:<key>`).
+    ProfileManager {
+        query: String,
+        confirm: Option<String>,
+        rename: Option<(String, String)>,
+    },
     /// Confirm deleting mask effect presets.
     DeleteEffects {
         names: Vec<String>,
@@ -2265,6 +2276,7 @@ impl Default for UiState {
             left_panel: false,
             left_width: LEFT_WIDTH.default,
             presets_manager_size: None,
+            profile_manager_size: None,
             right_width: RIGHT_WIDTH.default,
             right: RightPanel::Edit,
             toggle_return: None,

@@ -46,6 +46,8 @@ fn camera_profile_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, 
         options.extend(cal.looks.iter().map(|(pid, p)| (pid.clone(), p.name.clone())));
     }
     let current = d.profile.camera.clone();
+    // the ones the Profile Manager hides are left out (the photo's own stays)
+    options.retain(|(o, _)| *o == current || !app.session.profile_hidden.iter().any(|h| h == o));
     let shown = options.iter().find(|(o, _)| *o == current).map(|(_, n)| n.clone()).unwrap_or_else(|| current.clone());
     let mut choice = current.clone();
     ui.horizontal(|ui| {
@@ -77,6 +79,25 @@ fn camera_profile_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, 
     ui.add_space(4.0);
 }
 
+/// The look the "None" choice sets: the app's own rendering, which adds nothing on top of the camera
+/// profile (`lcc_pipeline::profiles::effective` leaves the settings as they are).
+pub const NO_LOOK: &str = "lc.color";
+
+/// "None": no creative profile, so only the camera profile applies (one click; LR-PROF-MANAGE).
+fn none_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
+    let t = Tokens::get(ui.ctx());
+    let none = d.profile.id == NO_LOOK || d.profile.id.is_empty();
+    ui.horizontal(|ui| {
+        ui.add_space(24.0);
+        ui.label(egui::RichText::new(crate::i18n::tr("Look")).color(t.text_dim).font(t.font(13.0)));
+        let r = crate::widgets::text_button(ui, "profileNone", crate::i18n::tr("None (camera profile only)"), none)
+            .on_hover_text(crate::i18n::tr("No creative profile on top: the photo shows its camera profile alone"));
+        if r.clicked() && !none {
+            let _ = app.run("develop.profile", json!({"id": NO_LOOK, "amount": 100}));
+        }
+    });
+}
+
 pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let t = Tokens::get(ui.ctx());
     let d = (*app.session.develop_of(id).unwrap_or_default()).clone();
@@ -87,6 +108,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         app.ui.right = RightPanel::Edit;
     }
     ui.painter().text(pos2(hr.left() + 46.0, hr.center().y + 2.0), Align2::LEFT_CENTER, crate::i18n::tr("Profiles"), t.semibold(15.0), t.text);
+    // Manage…: the Profile Manager (hide, delete, rename, import; LR-PROF-MANAGE)
+    let manage_rect = Rect::from_min_max(pos2(hr.right() - 130.0, hr.top() + 9.0), pos2(hr.right() - 12.0, hr.bottom() - 9.0));
+    let mut manage = ui.new_child(egui::UiBuilder::new().max_rect(manage_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    if crate::widgets::text_button(&mut manage, "profilesManage", crate::i18n::tr("Manage…"), false).clicked() {
+        let _ = app.run("dialog.profileManager", json!({}));
+    }
     divider(ui);
     // the applied profile and its amount
     let (cr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
@@ -99,6 +126,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         super::edit::control(app, ui, &d, "profile.amount", true);
         ui.add_space(6.0);
     }
+    none_row(app, ui, &d);
     camera_profile_row(app, ui, &d, id);
     divider(ui);
     let shown_groups = app.session.shown_groups();

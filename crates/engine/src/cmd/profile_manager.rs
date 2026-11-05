@@ -15,7 +15,121 @@ use crate::{Result, Session};
 /// the built-in looks removed from this install, and the camera bodies.
 fn manager(s: &mut Session, _p: &Value) -> Result<Value> {
     let bodies = bodies(s, &json!({}))?;
-    Ok(json!({"profiles": s.all_profiles(), "removed": s.profile_edits.removed, "bodies": bodies["bodies"]}))
+    // how many photos of this library use each look and each camera profile
+    let mut looks: BTreeMap<String, u64> = BTreeMap::new();
+    let mut cameras: BTreeMap<String, u64> = BTreeMap::new();
+    for p in s.catalog.photos() {
+        let n = looks.entry(p.develop.profile.id.clone()).or_default();
+        *n = n.saturating_add(1);
+        if !p.develop.profile.camera.is_empty() {
+            let n = cameras.entry(p.develop.profile.camera.clone()).or_default();
+            *n = n.saturating_add(1);
+        }
+    }
+    let profiles: Vec<Value> = s
+        .all_profiles()
+        .into_iter()
+        .map(|x| {
+            let used = looks.get(&x.id).copied().unwrap_or(0);
+            let mut v = json!(x);
+            if let Some(o) = v.as_object_mut() {
+                o.insert("usedBy".into(), json!(used));
+            }
+            v
+        })
+        .collect();
+    let defaults_of = |id: &str| -> Vec<String> { s.body_profiles.iter().filter(|(_, v)| v.as_str() == id).map(|(k, _)| k.clone()).collect() };
+    let hidden = |id: &str| s.profile_hidden.iter().any(|h| h == id);
+    // camera profiles: the user's imported .dcp files (deletable), then the bundled calibrated looks
+    let mut camera: Vec<Value> = lcc_raw::dcp::library()
+        .into_iter()
+        .map(|(id, d)| {
+            let name = if d.name.is_empty() { id.trim_start_matches("dcp:").to_string() } else { d.name.clone() };
+            json!({"id": id, "name": name, "model": d.model, "kind": "camera", "builtin": false, "hidden": hidden(&id),
+                "usedBy": cameras.get(&id).copied().unwrap_or(0), "bodyDefaults": defaults_of(&id)})
+        })
+        .collect();
+    for c in lcc_raw::dcp::calibrated() {
+        for (id, d) in &c.looks {
+            camera.push(json!({"id": id, "name": d.name, "model": d.model, "kind": "camera", "builtin": true, "hidden": hidden(id),
+                "usedBy": cameras.get(id).copied().unwrap_or(0), "bodyDefaults": defaults_of(id)}));
+        }
+    }
+    Ok(json!({"profiles": profiles, "cameras": camera, "removed": s.profile_edits.removed, "bodies": bodies["bodies"]}))
+}
+
+/// A camera profile id the manager knows: an imported `.dcp` (`dcp:…`) or a bundled calibrated look (`cal:…`).
+fn known_camera(id: &str) -> bool {
+    lcc_raw::dcp::library_get(id).is_some() || lcc_raw::dcp::calibrated_look_exists(id)
+}
+
+/// Delete the imported camera profile `id` (`dcp:<file stem>`) from the `.dcp` library folder
+/// `library`; when it is also its camera's active (default) profile in `active_dir`, that copy goes
+/// too. Returns whether it was the active one. `id` comes from outside: only a plain file name in
+/// `library` is ever removed.
+pub(crate) fn delete_dcp_file(library: &std::path::Path, active_dir: &std::path::Path, id: &str) -> std::result::Result<bool, String> {
+    let not_ours = || format!("`{id}` is not an imported camera profile");
+    let stem = id.strip_prefix("dcp:").ok_or_else(not_ours)?;
+    let plain = !stem.is_empty()
+        && stem != "."
+        && stem != ".."
+        && !stem.contains(['/', '\\', ':'])
+        && std::path::Path::new(stem).file_name().is_some_and(|n| n == stem);
+    if !plain {
+        return Err(not_ours());
+    }
+    let file = library.join(format!("{stem}.dcp"));
+    if !file.is_file() {
+        return Err(format!("no imported camera profile `{id}`"));
+    }
+    // its camera's active copy, when it is this profile (the same bytes)
+    let mut was_active = false;
+    if let Ok(d) = crate::camera_profiles::load_dcp(&file) {
+        let active = active_dir.join(crate::camera_profiles::dcp_file_name(&d.model));
+        let same = std::fs::read(&active).ok().zip(std::fs::read(&file).ok()).is_some_and(|(a, b)| a == b);
+        if same {
+            std::fs::remove_file(&active).map_err(|e| format!("{}: {e}", active.display()))?;
+            was_active = true;
+        }
+    }
+    std::fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+    Ok(was_active)
+}
+
+/// Delete one of the user's own profiles from the Profile Manager: an imported LUT profile with
+/// its file (as profile.deleteImported), an imported `.dcp` camera profile from the
+/// camera-profiles folder. Built-in looks and bundled camera profiles are hidden, not deleted.
+/// Photos using a deleted profile keep their settings and fall back safely: a gone LUT renders
+/// without it, a gone camera profile gives the camera's default (`lcc_raw::dcp::resolve`).
+fn delete(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "profile.delete";
+    let id = str_param(p, "id").ok_or_else(|| bad(C, "missing id"))?.trim().to_string();
+    if crate::presets::profile(&id).is_some() || lcc_raw::dcp::calibrated_look_exists(&id) {
+        return Err(bad(C, "a built-in profile can be hidden, not deleted"));
+    }
+    if s.lut_profiles.iter().any(|x| x.id == id) {
+        s.execute("profile.deleteImported", &json!({"id": id}))?;
+        return Ok(json!({"deleted": id, "kind": "lut"}));
+    }
+    if !id.starts_with("dcp:") {
+        return Err(bad(C, format!("unknown profile `{id}`")));
+    }
+    let active_dir = crate::camera_profiles::dir().ok_or_else(|| bad(C, "no camera-profiles folder (no configuration folder on this system)"))?;
+    let library = crate::camera_profiles::dcp_library_dir().ok_or_else(|| bad(C, "no camera-profiles folder"))?;
+    let was_active = delete_dcp_file(&library, &active_dir, &id).map_err(|e| bad(C, e))?;
+    forget_camera_profile(s, &id);
+    lcc_raw::dcp::install_library(crate::camera_profiles::library_dcps());
+    if was_active {
+        lcc_raw::dcp::install(crate::camera_profiles::active_dcps().into_iter().map(|(_, d)| d).collect());
+    }
+    s.save_prefs()?;
+    Ok(json!({"deleted": id, "kind": "camera", "wasDefault": was_active}))
+}
+
+/// After camera profile `id` is gone: no body starts with it, and it is no longer hidden.
+pub(crate) fn forget_camera_profile(s: &mut Session, id: &str) {
+    s.body_profiles.retain(|_, v| v != id);
+    s.profile_hidden.retain(|h| h != id);
 }
 
 /// A profile id the manager knows: a built-in look (removed ones too) or an imported LUT profile.
@@ -177,7 +291,7 @@ fn group_remove(s: &mut Session, p: &Value) -> Result<Value> {
 fn hide(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "profile.hide";
     let id = str_param(p, "id").ok_or_else(|| bad(C, "missing id"))?.to_string();
-    if crate::presets::profile(&id).is_none() && !s.lut_profiles.iter().any(|x| x.id == id) {
+    if crate::presets::profile(&id).is_none() && !s.lut_profiles.iter().any(|x| x.id == id) && !known_camera(&id) {
         return Err(bad(C, format!("unknown profile `{id}`")));
     }
     let on = s.profile_hidden.contains(&id);
@@ -291,7 +405,16 @@ fn profile_plan(s: &mut Session, p: &Value) -> Result<Value> {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "import.profilePlan", "Camera Profiles for Import", [], None, "{paths: [file or folder], cameraProfile?: as library.import} → {rows: [{body (model|serial or model|file:XX, as cameraProfile.perBody takes it), camera, serial, photos, profile (\"\": the camera's default), profileName, how: auto|chosen|all}], photos}: the camera profile each body's new raws would get", always, profile_plan),
-        cmd!(query "profiles.manager", "Manage Profiles", [], None, "{} → {profiles: [{id, name, originalName, group, kind: look|lut, hidden, builtinLabel}] (the user's names, groups and order), removed: [built-in look ids], bodies (as profiles.bodies)}", always, manager),
+        cmd!(query "profiles.manager", "Manage Profiles", [], None, "{} → {profiles: [{id, name, originalName, group, kind: look|lut, hidden, builtinLabel, usedBy}] (the user's names, groups and order), cameras: [{id (dcp:… or cal:…), name, model, kind: camera, builtin, hidden, usedBy, bodyDefaults: [body]}], removed: [built-in look ids], bodies (as profiles.bodies)}", always, manager),
+        cmd!(
+            "profile.delete",
+            "Delete Profile",
+            [],
+            None,
+            "{id} — an imported LUT profile (lut:…) or camera profile (dcp:…) is deleted with its file; built-in looks and bundled camera profiles (cal:…) can only be hidden (profile.hide). Photos using it keep their settings: a gone LUT renders without it, a gone camera profile gives the camera's default → {deleted, kind: lut|camera, wasDefault?}",
+            always,
+            delete
+        ),
         cmd!("profile.rename", "Rename Profile", [], None, "{id, name: string (\"\" or null: its own name again)} → {id, name}", always, rename),
         cmd!(
             "profile.setGroup",
@@ -361,7 +484,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hide Profile",
             [],
             None,
-            "{id, hidden?: bool (toggles when omitted)} — out of the profile menu and browser (still in profiles.manager; photos using it keep it) → {hidden}",
+            "{id (a look, lut:…, dcp:… or cal:…), hidden?: bool (toggles when omitted)} — out of the profile menu, the browser and the camera profile choices (still in profiles.manager; photos using it keep it) → {hidden}",
             always,
             hide
         ),
@@ -385,4 +508,116 @@ pub fn specs() -> Vec<CommandSpec> {
             apply_body_defaults
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dcp_bytes(model: &str, name: &str) -> Vec<u8> {
+        let m = lcc_raw::Mat3([[0.8, -0.1, -0.05], [-0.4, 1.3, 0.2], [-0.1, 0.25, 0.7]]);
+        lcc_raw::dcp::write(&lcc_raw::dcp::Dcp {
+            model: model.into(),
+            name: name.into(),
+            copyright: String::new(),
+            color: lcc_raw::ColorData { illuminant: [21, 0], color_matrix: [Some(m), None], ..Default::default() },
+        })
+        .unwrap()
+    }
+
+    fn temp(name: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("pm-dcp-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (active, library) = (root.join("camera-profiles"), root.join("camera-profiles").join("dcp"));
+        std::fs::create_dir_all(&library).unwrap();
+        (root, active, library)
+    }
+
+    /// Delete removes the imported `.dcp` and, when it is its camera's default, the default's copy;
+    /// another profile for the same camera stays.
+    #[test]
+    fn deleting_a_camera_profile_removes_its_file_and_its_default_copy() {
+        let (root, active, library) = temp("delete");
+        let mine = dcp_bytes("TESTCAM PM", "Mine");
+        let other = dcp_bytes("TESTCAM PM", "Other");
+        std::fs::write(library.join("testcam-pm-mine.dcp"), &mine).unwrap();
+        std::fs::write(library.join("testcam-pm-other.dcp"), &other).unwrap();
+        let default_copy = active.join(crate::camera_profiles::dcp_file_name("TESTCAM PM"));
+        std::fs::write(&default_copy, &mine).unwrap();
+        assert_eq!(delete_dcp_file(&library, &active, "dcp:testcam-pm-mine"), Ok(true));
+        assert!(!library.join("testcam-pm-mine.dcp").exists() && !default_copy.exists());
+        assert!(library.join("testcam-pm-other.dcp").exists(), "the camera's other profile stays");
+        // not the default: only its own file goes
+        assert_eq!(delete_dcp_file(&library, &active, "dcp:testcam-pm-other"), Ok(false));
+        assert!(delete_dcp_file(&library, &active, "dcp:testcam-pm-other").is_err(), "deleted twice is an error, not a panic");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An id from a control-channel or MCP caller never deletes anything outside the library folder.
+    #[test]
+    fn hostile_camera_profile_ids_delete_nothing() {
+        let (root, active, library) = temp("hostile");
+        let outside = root.join("camera-profiles").join("keep.dcp");
+        std::fs::write(&outside, dcp_bytes("TESTCAM PM", "Keep")).unwrap();
+        for id in ["dcp:../keep", "dcp:", "dcp:.", "dcp:..", "dcp:a/b", r"dcp:a\b", "dcp:C:keep", "lut:keep", "keep", "dcp:nothing-here"] {
+            assert!(delete_dcp_file(&library, &active, id).is_err(), "{id}");
+        }
+        assert!(outside.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The manager lists how many photos use each profile and the bodies a camera profile starts;
+    /// deleting a LUT profile a photo uses leaves the photo's settings alone and it renders without
+    /// the LUT; a camera profile that is gone falls back to the camera's default; built-ins can't be
+    /// deleted.
+    #[test]
+    fn deleting_a_profile_photos_use_keeps_them_working() {
+        let mut s = Session::with_demo();
+        let id = s.catalog.photos().next().map(|p| p.id).unwrap();
+        s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+        // a LUT profile of this session only (no file: nothing on disk is touched)
+        let lut = "lut:pm-test-in-use";
+        let cube = "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+        lcc_pipeline::lut::register(lut, lcc_pipeline::lut::Lut3d::parse_cube(cube).unwrap());
+        s.lut_profiles.push(super::super::lut_profiles::LutProfile {
+            id: lut.into(),
+            name: "In Use".into(),
+            group: "Mine".into(),
+            file: String::new(),
+        });
+        s.execute("develop.profile", &json!({"id": lut, "amount": 100})).unwrap();
+        // the photo names an imported camera profile too (the registry is process-wide: an id of its own)
+        let mut d = (*s.develop_of(id).unwrap()).clone();
+        d.profile.camera = "dcp:pm-test-gone".into();
+        let op = s.develop_op(id, d, "Camera Profile").unwrap();
+        s.commit("test", op).unwrap();
+        s.body_profiles.insert("PMTEST|1".into(), "dcp:pm-test-gone".into());
+        let m = s.execute("profiles.manager", &json!({})).unwrap();
+        let mine = m["profiles"].as_array().unwrap().iter().find(|p| p["id"] == lut).cloned().unwrap();
+        assert_eq!(mine["usedBy"], 1, "{mine}");
+        assert!(m["cameras"].is_array());
+        // built-ins are hidden, not deleted
+        assert!(s.execute("profile.delete", &json!({"id": "lc.vivid"})).is_err());
+        assert!(s.execute("profiles.list", &json!({})).unwrap().as_array().unwrap().iter().any(|p| p["id"] == "lc.vivid"));
+        // the LUT profile is deleted while the photo uses it: the photo keeps its settings and
+        // renders without it
+        let r = s.execute("profile.delete", &json!({"id": lut})).unwrap();
+        assert_eq!(r["kind"], "lut");
+        let d = s.develop_of(id).unwrap();
+        assert_eq!(d.profile.id, lut, "the photo keeps its settings");
+        assert!(lcc_pipeline::lut::get(lut).is_none());
+        let _ = lcc_pipeline::profiles::effective(&d);
+        assert!(s.profile_info(lut).is_none());
+        assert!(s.execute("profiles.manager", &json!({})).is_ok());
+        // a camera profile that is gone: the camera's default, no panic
+        let camera = s.catalog.photo(id).unwrap().meta.camera.clone();
+        let gone = lcc_raw::dcp::resolve_camera("dcp:pm-test-gone", &camera).map(|d| d.name.clone());
+        assert_eq!(gone, lcc_raw::dcp::resolve_camera("", &camera).map(|d| d.name.clone()));
+        forget_camera_profile(&mut s, "dcp:pm-test-gone");
+        assert!(s.body_profiles.is_empty(), "no body starts with a deleted camera profile");
+        // bad ids are errors, built-in camera profiles can't be deleted
+        assert!(s.execute("profile.delete", &json!({"id": "nothing"})).is_err());
+        assert!(s.execute("profile.delete", &json!({})).is_err());
+        assert!(s.execute("profile.hide", &json!({"id": "dcp:pm-test-gone"})).is_err(), "an unknown camera profile isn't hidden");
+    }
 }

@@ -62,7 +62,12 @@ pub fn max_size(screen: egui::Rect) -> egui::Vec2 {
 /// rectangle's. The two differ by a constant (the frame's parts the rectangle leaves out), learnt
 /// on the first frames it is open, so the size remembered opens the window at the size it was left.
 pub fn note_size(ctx: &egui::Context, remembered: &mut Option<[f32; 2]>, asked: egui::Vec2, shown: egui::Vec2) {
-    let id = egui::Id::new(WINDOW).with("sizeDelta");
+    note_size_of(ctx, WINDOW, remembered, asked, shown);
+}
+
+/// [`note_size`] for the manager window `window` (the Profile Manager sizes itself the same way).
+pub fn note_size_of(ctx: &egui::Context, window: &str, remembered: &mut Option<[f32; 2]>, asked: egui::Vec2, shown: egui::Vec2) {
+    let id = egui::Id::new(window).with("sizeDelta");
     let now = ctx.cumulative_frame_nr();
     // (the last frame it was seen, frames shown since it opened, asked less shown)
     let (last, n, delta) = ctx.data(|d| d.get_temp::<(u64, u32, Option<egui::Vec2>)>(id)).unwrap_or((0, 0, None));
@@ -278,6 +283,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, query: &mut String, confirm: &m
                     open: *open,
                     all_hidden: *all_hidden,
                     deletable: !*builtin,
+                    renamable: true,
                 };
                 let mut renaming = rename.as_ref().and_then(|(k, text)| k.strip_prefix("group:").map(|g| (g.to_string(), text.clone())));
                 let was = renaming.clone();
