@@ -274,45 +274,72 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     let (r, resp) = ui.allocate_exact_size(vec2(tile, tile_h), Sense::click());
                     crate::widgets::announce(&resp, crate::i18n::tr(label));
                     register(ui.ctx(), format!("maskNew:{kind}"), r);
-                    ui.painter().rect_filled(r, 4.0, if resp.hovered() { t.hover } else { t.inset });
-                    paint(ui.painter(), Rect::from_center_size(r.center() - vec2(0.0, icon_up), vec2(icon, icon)), kind_icon(kind), t.text_label);
+                    let active = app.ui.tool == *kind
+                        || (matches!(*kind, "luminanceRange") && (app.ui.tool == "lumRange" || app.ui.tool == "luminanceRange"))
+                        || (matches!(*kind, "concept") && app.ui.concept_pick)
+                        || (matches!(*kind, "people") && app.ui.people_pick.is_some())
+                        || app.ui.mask_new.as_ref().is_some_and(|(_, k)| k == *kind);
+                    ui.painter().rect_filled(
+                        r,
+                        4.0,
+                        if active {
+                            t.tool_active
+                        } else if resp.hovered() {
+                            t.hover
+                        } else {
+                            t.inset
+                        },
+                    );
+                    paint(
+                        ui.painter(),
+                        Rect::from_center_size(r.center() - vec2(0.0, icon_up), vec2(icon, icon)),
+                        kind_icon(kind),
+                        if active { t.text } else { t.text_label },
+                    );
                     // (cut short only in a panel too narrow for the label: the full name on hover)
                     let label = crate::i18n::tr(label);
-                    let g = one_line(ui.painter(), label, t.font(size), t.text_dim, tile - 2.0 * TILE_PAD);
+                    let g = one_line(ui.painter(), label, t.font(size), if active { t.text } else { t.text_dim }, tile - 2.0 * TILE_PAD);
                     let elided = g.elided;
                     let at = pos2(r.center().x, r.bottom() - label_up) - g.size() / 2.0;
                     register(ui.ctx(), format!("maskNewLabel:{kind}"), Rect::from_min_size(at, g.size()));
-                    ui.painter().galley(at, g, t.text_dim);
+                    ui.painter().galley(at, g, if active { t.text } else { t.text_dim });
                     let resp = if elided { resp.on_hover_text(label) } else { resp };
                     if resp.clicked() {
-                        match *kind {
-                            // armed: the first click on the photo makes the mask and picks there
-                            "colorRange" => match arm_new(app, "colorRange") {
-                                Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more")),
-                                Err(e) => app.toast(ui.ctx(), e),
-                            },
-                            "object" if !needs_model(app, "object", "new") => match arm_new(app, "object") {
-                                Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out")),
-                                Err(e) => app.toast(ui.ctx(), e),
-                            },
-                            "object" => {}
-                            "prompt" => start_describe(app, "new"),
-                            // a picker under the tiles: who and which parts, or which object
-                            "people" => {
-                                app.ui.concept_pick = false;
-                                app.mask_pick_op = None;
-                                app.ui.people_pick = if app.ui.people_pick.is_some() { None } else { Some((0, Vec::new())) };
-                            }
-                            "concept" => {
-                                app.ui.people_pick = None;
-                                app.mask_pick_op = None;
-                                app.ui.concept_pick = !app.ui.concept_pick;
-                            }
-                            "brush" | "linear" | "radial" => {
-                                let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
-                            }
-                            k => {
-                                let _ = app.run("mask.add", json!({"kind": k}));
+                        if active {
+                            disarm(app);
+                            app.ui.people_pick = None;
+                            app.ui.concept_pick = false;
+                            app.mask_pick_op = None;
+                        } else {
+                            match *kind {
+                                // armed: the first click on the photo makes the mask and picks there
+                                "colorRange" => match arm_new(app, "colorRange") {
+                                    Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more")),
+                                    Err(e) => app.toast(ui.ctx(), e),
+                                },
+                                "object" if !needs_model(app, "object", "new") => match arm_new(app, "object") {
+                                    Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out")),
+                                    Err(e) => app.toast(ui.ctx(), e),
+                                },
+                                "object" => {}
+                                "prompt" => start_describe(app, "new"),
+                                // a picker under the tiles: who and which parts, or which object
+                                "people" => {
+                                    app.ui.concept_pick = false;
+                                    app.mask_pick_op = None;
+                                    app.ui.people_pick = Some((0, Vec::new()));
+                                }
+                                "concept" => {
+                                    app.ui.people_pick = None;
+                                    app.mask_pick_op = None;
+                                    app.ui.concept_pick = true;
+                                }
+                                "brush" | "linear" | "radial" => {
+                                    let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
+                                }
+                                k => {
+                                    let _ = app.run("mask.add", json!({"kind": k}));
+                                }
                             }
                         }
                     }
@@ -790,10 +817,14 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 show_overlay_row(app, ui);
             });
         }
-        // the brush armed for a new mask: its settings before the first stroke
-        if app.ui.tool == "brush" && app.ui.mask_new.is_some() {
+        // the brush or object tool armed for a new mask: its settings before the first stroke
+        if app.ui.tool == "brush" {
             divider(ui);
             brush_settings(app, ui);
+        }
+        if app.ui.tool == "object" {
+            divider(ui);
+            object_settings(app, ui);
         }
         next_mask_settings(app, ui);
         return;
@@ -806,6 +837,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     if app.ui.tool == "brush" {
         divider(ui);
         brush_settings(app, ui);
+    }
+    if app.ui.tool == "object" {
+        divider(ui);
+        object_settings(app, ui);
     }
     divider(ui);
     super::mask_effects::effect_row(app, ui, &m);
@@ -2041,6 +2076,10 @@ fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
                     let _ = app.run("brush.preset", json!({"slot": label.to_ascii_lowercase()}));
                 }
             }
+            ui.add_space(8.0);
+            if text_button(ui, "brushDone", crate::i18n::tr("Done"), false).clicked() {
+                disarm(app);
+            }
         });
         let mut auto = app.ui.brush_auto_mask;
         if ui
@@ -2110,9 +2149,31 @@ fn mask_icon(ui: &mut egui::Ui, id: &str, icon: Icon, label: &str, active: bool)
 
 /// The on-photo tools that belong to Masking (armed from its panel or a shortcut). Colour Range's
 /// eyedropper is not one: it also samples from Edit.
+fn object_settings(app: &mut LccApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 6 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(crate::i18n::tr("Object Selection")).font(t.semibold(13.0)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if text_button(ui, "objectDone", crate::i18n::tr("Done"), false).clicked() {
+                    disarm(app);
+                }
+            });
+        });
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new(crate::i18n::tr("Click an object on the photo to select it · ⌥-click leaves a part out"))
+                .font(t.font(11.5))
+                .color(t.text_dim),
+        );
+    });
+}
+
 pub(crate) fn is_mask_tool(tool: &str) -> bool {
-    matches!(tool, "brush" | "linear" | "radial" | "object" | "prompt" | "depthRange" | "luminanceRange" | "maskPointColor")
-        || tool.starts_with("maskMixer:")
+    matches!(
+        tool,
+        "brush" | "linear" | "radial" | "object" | "prompt" | "depthRange" | "luminanceRange" | "lumRange" | "colorRange" | "maskPointColor"
+    ) || tool.starts_with("maskMixer:")
 }
 
 /// Arm mask tool `kind` (`brush`, `linear`, `radial`, `colorRange`, `object`) for a new mask: no mask is selected, and the
