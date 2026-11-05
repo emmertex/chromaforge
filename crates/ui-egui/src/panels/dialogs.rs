@@ -245,6 +245,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::RenamePhoto { .. } => "Rename Photo",
         Dialog::Rename { .. } => "Rename Photos",
         Dialog::Import { .. } => "Import Photos",
+        Dialog::LightroomResult { capture_one: true, .. } => "Capture One Catalog Import",
         Dialog::LightroomResult { .. } => "Lightroom Catalog Import",
         Dialog::LabelNames { .. } => "Edit Color Label Names",
         Dialog::CaptureTime { .. } => "Edit Capture Time",
@@ -286,6 +287,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::ConfirmPurge { .. } => "Delete Permanently",
         Dialog::MovePhotos { .. } => "Move Photos",
         Dialog::LightroomCatalog { .. } => "Lightroom Classic Catalog",
+        Dialog::LightroomDestination { catalog, .. } if crate::lightroom_import::is_capture_one(std::path::Path::new(catalog)) => {
+            "Import Capture One Catalog"
+        }
         Dialog::LightroomDestination { .. } => "Import Lightroom Catalog",
         Dialog::SaveEffect { .. } => "New Effect Preset",
         Dialog::ManageEffects { .. } => "Manage Effect Presets",
@@ -554,13 +558,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 }
                 Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::model_dialog(app, ui, &t, info, accepted),
                 Dialog::FaceModel { info, accepted, .. } => crate::panels::faces::model_dialog(app, ui, &t, info, accepted),
-                Dialog::LightroomResult { summary, library, details, .. } => {
+                Dialog::LightroomResult { summary, library, details, capture_one, .. } => {
                     ui.label(summary.as_str());
                     ui.add_space(8.0);
                     if let Some(library) = library {
                         ui.label(crate::i18n::tr("Destination library"));
                         ui.add(egui::Label::new(library.as_str()).wrap().selectable(true));
-                        ui.label(crate::i18n::tr("Lightroom catalogs import into the open library; no separate catalog folder is created."));
+                        ui.label(crate::i18n::tr(if *capture_one {
+                            "Capture One catalogs import into the open library; no separate catalog folder is created."
+                        } else {
+                            "Lightroom catalogs import into the open library; no separate catalog folder is created."
+                        }));
                     } else {
                         ui.label(crate::i18n::tr("These photos are only in memory. Open a library on disk and import the catalog again to save them."));
                     }
@@ -2301,7 +2309,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
             Ok(json!({"moved": moved}))
         }
-        // the catalog found: no file dialog; none: File ▸ Import Lightroom Catalog… asks for it
+        // the catalog found: no file dialog; none: File ▸ Import Lightroom or Capture One Catalog… asks for it
         Dialog::LightroomCatalog { catalog, .. } => {
             app.run("file.importLightroom", catalog.as_ref().map_or_else(|| json!({}), |c| json!({"path": c})))
         }

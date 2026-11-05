@@ -323,7 +323,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("file.addFolder", "Import from Folder…", None, "File"),
     // {path?, into?: open | new, name?, location?}: asks where the catalog goes unless `into` (or
     // Settings) says (#2672, `lightroom_destination`)
-    ("file.importLightroom", "Import Lightroom Catalog…", None, "File>More Imports"),
+    ("file.importLightroom", "Import Lightroom or Capture One Catalog…", None, "File>More Imports"),
     ("file.importImmich", "Import from Immich…", None, "File>More Imports"),
     ("immich.connections", "Immich Settings…", None, "Library>Immich"),
     ("file.addFromDevice", "Import from Device", None, ""),
@@ -2337,8 +2337,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             let path = match p.get("path").and_then(Value::as_str).map(str::to_string) {
                 Some(path) => Some(path),
                 None => {
-                    let req =
-                        PickRequest::file(crate::i18n::tr("Import Lightroom Catalog"), crate::i18n::tr("Lightroom Classic Catalog"), &["lrcat"]);
+                    let req = PickRequest::file(
+                        crate::i18n::tr("Import Lightroom or Capture One Catalog"),
+                        crate::i18n::tr("Lightroom or Capture One Catalog"),
+                        &["lrcat", "cocatalogdb"],
+                    )
+                    .with_filter(crate::i18n::tr("Lightroom Classic Catalog"), &["lrcat"])
+                    .with_filter(crate::i18n::tr("Capture One Catalog"), &["cocatalogdb"]);
                     match crate::pick::ask(app, id, p, "path", req, |s| s.pick_lightroom_catalog.as_mut().and_then(|f| f()).map(|x| vec![x])) {
                         Picked::Now(v) => v.into_iter().next(),
                         Picked::Later | Picked::Unavailable => None,

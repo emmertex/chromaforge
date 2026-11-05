@@ -1068,7 +1068,7 @@ fn dropped_import_params(app: &LccApp) -> Value {
 pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
     ctx.request_repaint();
     if app.lightroom.is_some() {
-        app.toast(ctx, crate::i18n::tr("Finish Lightroom catalog import before adding photos"));
+        app.toast(ctx, crate::i18n::tr("Finish the catalog import before adding photos"));
         return;
     }
     // an import (or a scan, a review waiting behind a dialog) stays the one that runs: a drop

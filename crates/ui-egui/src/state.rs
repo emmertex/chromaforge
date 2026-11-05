@@ -586,7 +586,7 @@ pub struct AppSettings {
     /// View ▸ View Options: the lines the loupe's info overlay shows in Info 1 and Info 2.
     #[serde(deserialize_with = "lenient")]
     pub loupe_info: LoupeInfo,
-    /// File ▸ Import Lightroom Catalog…: ask whether the catalog merges into the open library or
+    /// File ▸ Import Lightroom or Capture One Catalog…: ask whether the catalog merges into the open library or
     /// gets a new one, or always merge (issue #2672; the window's "Don't ask again" picks that).
     #[serde(deserialize_with = "lenient")]
     pub lightroom_import: LightroomImport,
@@ -635,7 +635,7 @@ impl EditInMode {
     }
 }
 
-/// Where File ▸ Import Lightroom Catalog… puts a catalog (Settings ▸ General ▸ Library). Saved as
+/// Where File ▸ Import Lightroom or Capture One Catalog… puts a catalog (Settings ▸ General ▸ Library). Saved as
 /// `"ask"` / `"alwaysMerge"`; anything else in a hand-edited `ui.json` reads as [`Self::Ask`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1799,6 +1799,8 @@ pub enum Dialog {
         library: Option<String>,
         details: Vec<String>,
         first: Option<u64>,
+        /// The catalog was Capture One's (the same import reads it); the title and note say so.
+        capture_one: bool,
     },
     /// File ▸ Print…: the Print module. Its state is the session's (`print.*`); the page on show
     /// and the selected cell are [`UiState::print`].
@@ -2074,7 +2076,7 @@ pub enum Dialog {
         folder: String,
         catalog: Option<String>,
     },
-    /// File ▸ Import Lightroom Catalog…: where the catalog at `catalog` goes (issue #2672, see
+    /// File ▸ Import Lightroom or Capture One Catalog…: where the catalog at `catalog` goes (issue #2672, see
     /// [`crate::lightroom_destination`]). Merge into the open library `library` (`photos` in it), or
     /// (`new_library`) create the library `name` in the folder `location`, switch to it and import
     /// there. `dont_ask`: merge from now on without asking. `generation`: the library the window
