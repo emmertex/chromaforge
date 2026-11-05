@@ -25,6 +25,19 @@ fn the_profile_manager_hides_profiles_and_sets_body_profiles() {
     assert!(has(&h, &hide), "every profile has a Hide button");
     // the dialog's content slides into place over its first frames: click once it has settled
     h.settle(std::time::Duration::from_secs(60));
+    // the profiles are under the bodies and the plain page's rows: scroll the page until the button shows
+    let at = |h: &crate::headless::Headless, id: &str| h.app.widgets.iter().rev().find(|(w, _)| w == id).map(|(_, r)| *r);
+    for _ in 0..30 {
+        let (Some(rows), Some(button)) = (at(&h, "settings:rows"), at(&h, &hide)) else { break };
+        if rows.contains_rect(button) {
+            break;
+        }
+        h.request("ui.move", json!({"x": rows.center().x, "y": rows.center().y}), std::time::Duration::from_secs(20));
+        h.request("ui.scroll", json!({"dy": -200.0}), std::time::Duration::from_secs(20));
+        for _ in 0..4 {
+            h.step();
+        }
+    }
     click(&mut h, &hide);
     h.step();
     assert_eq!(h.app.session.profile_hidden, [profile.to_string()], "the click hid that profile");
