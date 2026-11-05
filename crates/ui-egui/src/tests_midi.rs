@@ -117,3 +117,24 @@ fn a_mouse_drag_started_inside_the_midi_idle_window_stays_one_undo_step() {
     h.app.run("edit.undo", json!({})).unwrap();
     assert_eq!(value(&h, "light.contrast"), start);
 }
+
+#[test]
+fn the_midi_idle_timeout_does_not_close_a_replacement_interaction() {
+    let (mut h, tx) = edit_view();
+    send(&tx, Message::ControlChange { channel: 0, cc: 17, value: 1 });
+    h.step();
+    assert!(h.app.session.interaction.is_some(), "the knob turn opened an interaction");
+
+    // something else ends that interaction and begins its own before the turn's idle gap is over
+    h.app.run("develop.endInteraction", json!({})).unwrap();
+    h.app.run("develop.beginInteraction", json!({"label": "Exposure"})).unwrap();
+    h.app.run("develop.set", json!({"control": "light.exposure", "value": 1.0})).unwrap();
+
+    let idle_from = h.time();
+    while h.time() - idle_from < 0.6 {
+        h.step();
+    }
+    assert!(h.app.session.interaction.is_some(), "the idle timeout left the other interaction open");
+    h.app.run("develop.endInteraction", json!({})).unwrap();
+    assert_eq!(value(&h, "light.exposure"), 1.0);
+}
