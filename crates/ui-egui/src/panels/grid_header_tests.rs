@@ -53,7 +53,7 @@ fn local_folder_header_text_and_controls_do_not_overlap() {
                     ("/Pictures", 0),
                 ] {
                     let mut app = LccApp::new(lcc_engine::Session::new(), Services::default());
-                    let browse = lcc_engine::Browse { path: path.into(), subfolders: false };
+                    let browse = lcc_engine::Browse { path: path.into(), subfolders: false, not_imported: false };
                     let ctx = egui::Context::default();
                     crate::i18n::set_language(locale);
                     crate::theme::install_fonts(&ctx);
