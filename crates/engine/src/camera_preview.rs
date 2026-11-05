@@ -49,7 +49,11 @@ use lcc_raw::{
 /// 18: ISO 50 on the ILCE-7CR fits and renders one stop darker (`vendor::arw::extended_iso_exposure`, upstream #2854).
 /// 19: the Canon CR3/CR2 camera JPEG read in the colour space of the Canon maker note (upstream #2664).
 /// 20: the bundled Canon EOS R5 C profile (OneSlips).
-pub const LOOK_VERSION: u32 = 20;
+/// 21: the sensor proxy of every per-file fit gets the embedded vignetting correction the render applies (Fujifilm
+/// RAF; other makes with a lens database), so the render no longer applies it twice, at the position a lens warp samples;
+/// the warped candidate's alignment leaves out the pixels outside the sensor instead of reading them as black (upstream
+/// #3402).
+pub const LOOK_VERSION: u32 = 21;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CameraLook {
@@ -103,7 +107,8 @@ pub(crate) fn file_local_look(format: RawFormat) -> bool {
 /// and the fitted look.
 /// `lens` is the file's own lens-correction warp ([`lens_geometry`], read before the caller removes it from
 /// `OpcodeList3`): the camera applied it to its JPEG, so the sensor proxy is warped the same way before pairing.
-/// `embedded` is the file's embedded lens vignetting, for the DNG tone fit.
+/// `embedded` is the file's embedded lens correction: its vignetting is applied to the sensor proxy of every fit, as
+/// the render applies it.
 /// `colour` is the photo's Profile option: [`CameraColour::Colorimetric`] skips the JPEG (fit and black-and-white tone)
 /// for a model with spectral matrices, which then give the colour with the app's default tone curve. `dcp`: an imported
 /// camera profile (`.dcp`) replaced the raw's colour model; its tone is its own tone curve, else the default tone,
@@ -133,7 +138,7 @@ pub(crate) fn starting_colour_traced(
     let entry = raw.metadata.model.as_deref().and_then(|model| lcc_camdb::find(raw.metadata.make.as_deref(), model));
     let from = std::cell::Cell::new(None);
     let fit = |raw: &RawImage, t: &CameraTransform| {
-        let (look, black_and_white, f) = fit_preview_from(raw, bytes, t, lens);
+        let (look, black_and_white, f) = fit_preview_from(raw, bytes, t, lens, embedded);
         from.set(f);
         (look, black_and_white)
     };
@@ -141,10 +146,10 @@ pub(crate) fn starting_colour_traced(
         if !file_local_look(raw.format) {
             return None;
         }
-        let (sensor, reference, clipped) = proxies(raw, bytes, t, PROXY, 0.0, lens)?;
+        let (sensor, reference, clipped) = proxies(raw, bytes, t, PROXY, 0.0, lens, embedded)?;
         fit_dark_tone(&sensor, &reference, &clipped)
     };
-    let (xy, t, look) = starting_colour_traced_from(raw, entry, colour, fit, |raw, t| monochrome_look(raw, bytes, t, lens), dark, trace);
+    let (xy, t, look) = starting_colour_traced_from(raw, entry, colour, fit, |raw, t| monochrome_look(raw, bytes, t, lens, embedded), dark, trace);
     // a look that is the camera profile's colour, the photo's own fit having failed
     if matches!(trace.colour, ColourSource::CameraJpeg { .. }) {
         let tone = match from.get() {
@@ -562,8 +567,14 @@ fn dng_tone_curve(tone: &CameraTone) -> Option<ToneCurve> {
 
 /// The look fitted to the file's camera JPEG, and whether that JPEG is black and white ([`monochrome`]).
 #[cfg(test)]
-pub(crate) fn fit_preview(raw: &RawImage, bytes: &[u8], transform: &CameraTransform, lens: Option<&LensGeometry>) -> (Option<CameraLook>, bool) {
-    let (look, black_and_white, _) = fit_preview_from(raw, bytes, transform, lens);
+pub(crate) fn fit_preview(
+    raw: &RawImage,
+    bytes: &[u8],
+    transform: &CameraTransform,
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lcc_develop::EmbeddedLens>,
+) -> (Option<CameraLook>, bool) {
+    let (look, black_and_white, _) = fit_preview_from(raw, bytes, transform, lens, embedded);
     (look, black_and_white)
 }
 
@@ -580,17 +591,19 @@ pub(crate) enum LookFrom {
     ProfileDefaultTone,
 }
 
-/// [`fit_preview`], saying where its look came from.
+/// [`fit_preview`], saying where its look came from. `embedded`: the file's embedded lens correction, whose vignetting
+/// the render applies (see [`proxies`]).
 pub(crate) fn fit_preview_from(
     raw: &RawImage,
     bytes: &[u8],
     transform: &CameraTransform,
     lens: Option<&LensGeometry>,
+    embedded: Option<&lcc_develop::EmbeddedLens>,
 ) -> (Option<CameraLook>, bool, Option<LookFrom>) {
     if !transform.matrix_is_fallback || !file_local_look(raw.format) {
         return (None, false, None);
     }
-    let Some((sensor, reference, clipped)) = proxies(raw, bytes, transform, PROXY, 0.0, lens) else { return (None, false, None) };
+    let Some((sensor, reference, clipped)) = proxies(raw, bytes, transform, PROXY, 0.0, lens, embedded) else { return (None, false, None) };
     let black_and_white = monochrome(&reference);
     // A camera profile pooled from many photos knows colours this photo shows too little of;
     // try its colour first and fit tone/chroma per photo (picture styles vary).
@@ -984,7 +997,7 @@ fn fit_dng_tone(raw: &RawImage, bytes: &[u8], transform: &CameraTransform, lens:
         }
         None
     };
-    let Some((mut sensor, reference, clipped)) = proxies(raw, bytes, transform, PROXY, MIN_PREVIEW_FRACTION, None) else { return refuse("preview") };
+    let Some((mut sensor, reference, clipped)) = proxies(raw, bytes, transform, PROXY, MIN_PREVIEW_FRACTION, None, None) else { return refuse("preview") };
     // As the loader renders it: the profile's tables around the baseline exposure.
     let xy = lcc_raw::color::as_shot_white_xy(raw);
     if let Some(tables) = lcc_raw::profile::ProfileTables::new(&raw.color.profile, lcc_raw::color::illuminant_weight(&raw.color, xy)) {
@@ -1127,7 +1140,9 @@ fn structure_agrees(sensor: &Rgb32f, reference: &Rgb32f) -> bool {
 
 /// Same-size proxies of the sensor (white-balanced, baseline exposure, through `transform`'s
 /// matrix: the generic camera ≈ sRGB model) and of the file's embedded camera JPEG (linear Rec.2020),
-/// and per proxy pixel whether any sensor sample it covers is clipped.
+/// and per proxy pixel whether any sensor sample it covers is clipped. `embedded`'s vignetting correction is applied to
+/// the sensor ([`correct_vignetting`]) before any `lens` warp, at the source position, as the render applies it: the
+/// camera JPEG has it applied, so a tone fitted without it would brighten the render's corners twice.
 fn proxies(
     raw: &RawImage,
     bytes: &[u8],
@@ -1135,6 +1150,7 @@ fn proxies(
     size: usize,
     min_fraction: f64,
     lens: Option<&LensGeometry>,
+    embedded: Option<&lcc_develop::EmbeddedLens>,
 ) -> Option<(Rgb32f, Rgb32f, Vec<bool>)> {
     let edge = (2 * size).max(384) as u32;
     let decoded = crate::files::decode_raw_preview(
@@ -1170,6 +1186,7 @@ fn proxies(
     let k = (crop.width.max(crop.height).div_ceil(edge as usize).max(2)).div_ceil(2) * 2;
     let mut sensor = sensor_proxy(raw, k, edge as usize)?;
     let mut clipped = clip_mask(&sensor, sensor_clip(raw));
+    correct_vignetting(&mut sensor, embedded, raw.orientation);
     // The camera may have corrected its JPEG with the lens warp the file carries (Nikon Z lenses always, at up to 9 %
     // zoom; other cameras when their correction setting is on): the sensor moved into that geometry is a candidate,
     // kept below when it lines up with the JPEG better than the uncorrected one.
@@ -1374,7 +1391,7 @@ pub(crate) fn profile_samples(raw: &RawImage, bytes: &[u8], lens: Option<&LensGe
         return None;
     }
     let transform = lcc_raw::color::camera_transform(raw, lcc_raw::color::as_shot_white_xy(raw));
-    let (sensor, reference, clipped) = proxies(raw, bytes, &transform, PROFILE_PROXY, 0.0, lens)?;
+    let (sensor, reference, clipped) = proxies(raw, bytes, &transform, PROFILE_PROXY, 0.0, lens, None)?;
     let to_camera = transform.matrix.inverse()?;
     // clipped sensor pixels don't record the scene's colour (see `fit_look`)
     let sensor = without_clipped(&sensor, &clipped).unwrap_or(sensor);
@@ -1489,7 +1506,10 @@ fn alignment(a: &Rgb32f, b: &Rgb32f) -> f64 {
     if (b.width, b.height) != (w, h) || w < 3 || h < 3 {
         return -1.0;
     }
-    let lum = |img: &Rgb32f| img.data.iter().map(|p| (luminance_2020(*p).max(1e-4) as f64).ln()).collect::<Vec<f64>>();
+    // NaN (outside a lens-warped proxy) stays NaN: `max` would turn it into a black border and a false edge
+    let lum = |img: &Rgb32f| {
+        img.data.iter().map(|p| luminance_2020(*p)).map(|y| if y.is_nan() { f64::NAN } else { (y.max(1e-4) as f64).ln() }).collect::<Vec<f64>>()
+    };
     let high = |l: &[f64]| -> Vec<f64> {
         (0..w * h)
             .map(|i| {
@@ -2071,11 +2091,17 @@ fn monochrome(reference: &Rgb32f) -> bool {
 /// `transform` is the colour the photo gets otherwise (the spectral matrices or the fallback's); the look keeps it and
 /// adds the tone curve alone ([`fit_tone_only_with`]), as [`fit_look_with`] tries the photo's own colour after a profile's. The
 /// chroma curve stays neutral: the JPEG has no colourfulness to learn.
-fn monochrome_look(raw: &RawImage, bytes: &[u8], transform: &CameraTransform, lens: Option<&LensGeometry>) -> Option<CameraLook> {
+fn monochrome_look(
+    raw: &RawImage,
+    bytes: &[u8],
+    transform: &CameraTransform,
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lcc_develop::EmbeddedLens>,
+) -> Option<CameraLook> {
     if !file_local_look(raw.format) {
         return None;
     }
-    let (sensor, reference, clipped) = proxies(raw, bytes, transform, PROXY, 0.0, lens)?;
+    let (sensor, reference, clipped) = proxies(raw, bytes, transform, PROXY, 0.0, lens, embedded)?;
     if !monochrome(&reference) {
         return None;
     }
@@ -3385,7 +3411,7 @@ mod tests {
             raw.opcodes.list3.retain(|op| !op.is_lens_correction());
             let t = lcc_raw::color::camera_transform(&raw, lcc_raw::color::as_shot_white_xy(&raw));
             let (Some((plain, reference, _)), Some((chosen, chosen_reference, _))) =
-                (proxies(&raw, &bytes, &t, PROXY, 0.0, None), proxies(&raw, &bytes, &t, PROXY, 0.0, Some(&lens)))
+                (proxies(&raw, &bytes, &t, PROXY, 0.0, None, None), proxies(&raw, &bytes, &t, PROXY, 0.0, Some(&lens), None))
             else {
                 continue;
             };
@@ -3851,7 +3877,7 @@ mod tests {
         let lens = lens_geometry(&raw.opcodes.list3);
         raw.opcodes.list3.retain(|op| !op.is_lens_correction());
         let transform = lcc_raw::color::camera_transform(&raw, lcc_raw::color::as_shot_white_xy(&raw));
-        let look = fit_preview(&raw, &bytes, &transform, lens.as_ref()).0.expect("fit accepted");
+        let look = fit_preview(&raw, &bytes, &transform, lens.as_ref(), None).0.expect("fit accepted");
         let expected = bundled.matrix().mul(&transform.matrix.inverse().unwrap());
         for (row, want) in look.matrix.0.iter().zip(expected.0) {
             for (got, want) in row.iter().zip(want) {
@@ -4300,9 +4326,9 @@ mod tests {
             let mut raw = lcc_raw::decode(&bytes).unwrap();
             raw.opcodes.list3.retain(|op| !op.is_lens_correction());
             let transform = lcc_raw::color::camera_transform(&raw, lcc_raw::color::as_shot_white_xy(&raw));
-            let look = fit_preview(&raw, &bytes, &transform, None).0.expect("a camera look");
+            let look = fit_preview(&raw, &bytes, &transform, None, None).0.expect("a camera look");
             // the look fitted to the JPEG, as before this change
-            let (sensor, reference, clipped) = proxies(&raw, &bytes, &transform, PROXY, 0.0, None).unwrap();
+            let (sensor, reference, clipped) = proxies(&raw, &bytes, &transform, PROXY, 0.0, None, None).unwrap();
             let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
             let colour = profile.as_ref().and_then(|p| Some((p.matrix().mul(&transform.matrix.inverse()?), p.hue_sat.clone())));
             let fitted = fit_look(&sensor, &reference, &clipped, colour).unwrap();
@@ -4947,20 +4973,22 @@ mod tests {
         assert!(look.is_some() && !t.matrix_is_fallback);
     }
 
-    /// [`monochrome_look`] on a synthetic raw file: an ILCE-7M4 (it has a bundled camera profile) whose camera JPEG,
-    /// in a minimal TIFF, is black and white gets the tone curve, on the colour of the transform it is given; the
-    /// same file with a tinted JPEG gets nothing from this step.
-    #[test]
-    fn monochrome_look_reads_the_files_black_and_white_jpeg() {
+    /// A synthetic ILCE-7M4 raw (it has a bundled camera profile; demosaiced grey `sensor` levels) and its file bytes:
+    /// a minimal TIFF holding the camera JPEG, a bright camera curve on the `scene` luminance as an 8-bit sRGB JPEG in
+    /// `tint` (grey for `[1.0; 3]`).
+    fn grey_raw_with_jpeg(
+        (w, h): (usize, usize),
+        sensor: impl Fn(usize, usize) -> f32,
+        scene: impl Fn(usize, usize) -> f32,
+        tint: [f32; 3],
+    ) -> (RawImage, Vec<u8>) {
         use lcc_raw::{BlackLevel, ColorData, OpcodeLists, Orientation, RawData, Rect};
-        let (w, h) = (192usize, 128usize);
-        let level = |x: usize, y: usize| 0.01 + 0.5 * (x as f32 / w as f32) * (0.3 + 0.7 * y as f32 / h as f32);
         let raw = RawImage {
             format: RawFormat::Arw,
             width: w,
             height: h,
             cpp: 3,
-            data: RawData::F32((0..w * h).flat_map(|i| [level(i % w, i / w); 3]).collect()),
+            data: RawData::F32((0..w * h).flat_map(|i| [sensor(i % w, i / w); 3]).collect()),
             cfa: None,
             bits: 16,
             black: BlackLevel::uniform(0.0),
@@ -4976,38 +5004,145 @@ mod tests {
             metadata: lcc_meta::Metadata { make: Some("SONY".into()), model: Some("ILCE-7M4".into()), ..Default::default() },
             lens_metadata: Default::default(),
         };
+        let srgb = |v: f32| if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        let pixels: Vec<u8> = (0..w * h)
+            .flat_map(|i| {
+                let v = 1.0 - (-3.0 * scene(i % w, i / w)).exp();
+                tint.map(|t| (srgb(v * t).clamp(0.0, 1.0) * 255.0).round() as u8)
+            })
+            .collect();
+        let image = lcc_codecs::EncodeImage::new(w as u32, h as u32, 3, lcc_codecs::Samples::U8(&pixels));
+        let jpeg = lcc_codecs::encode_jpeg(&image, 95, lcc_codecs::ChromaSubsampling::S444, &Default::default()).unwrap();
+        // II*, IFD0 at 8 with JPEGInterchangeFormat (0x201) and its length (0x202), the JPEG after it
+        let mut tiff = b"II*\0\x08\0\0\0\x02\0".to_vec();
+        for (tag, value) in [(0x0201u16, 38u32), (0x0202, jpeg.len() as u32)] {
+            tiff.extend(tag.to_le_bytes());
+            tiff.extend(4u16.to_le_bytes());
+            tiff.extend(1u32.to_le_bytes());
+            tiff.extend(value.to_le_bytes());
+        }
+        tiff.extend(0u32.to_le_bytes());
+        assert_eq!(tiff.len(), 38);
+        tiff.extend(jpeg);
+        (raw, tiff)
+    }
+
+    /// [`monochrome_look`] on a synthetic raw file: an ILCE-7M4 whose camera JPEG is black and white gets the tone curve,
+    /// on the colour of the transform it is given; the same file with a tinted JPEG gets nothing from this step.
+    #[test]
+    fn monochrome_look_reads_the_files_black_and_white_jpeg() {
+        let (w, h) = (192usize, 128usize);
+        let level = |x: usize, y: usize| 0.01 + 0.5 * (x as f32 / w as f32) * (0.3 + 0.7 * y as f32 / h as f32);
+        let (raw, grey) = grey_raw_with_jpeg((w, h), level, level, [1.0; 3]);
         assert!(crate::camera_profiles::get("ILCE-7M4").is_some());
-        // the camera's rendering: a bright curve on the scene's luminance, as a grey (or tinted) 8-bit sRGB JPEG
-        let file = |tint: [f32; 3]| {
-            let srgb = |v: f32| if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
-            let pixels: Vec<u8> = (0..w * h)
-                .flat_map(|i| {
-                    let v = 1.0 - (-3.0 * level(i % w, i / w)).exp();
-                    tint.map(|t| (srgb(v * t).clamp(0.0, 1.0) * 255.0).round() as u8)
-                })
-                .collect();
-            let image = lcc_codecs::EncodeImage::new(w as u32, h as u32, 3, lcc_codecs::Samples::U8(&pixels));
-            let jpeg = lcc_codecs::encode_jpeg(&image, 95, lcc_codecs::ChromaSubsampling::S444, &Default::default()).unwrap();
-            // II*, IFD0 at 8 with JPEGInterchangeFormat (0x201) and its length (0x202), the JPEG after it
-            let mut tiff = b"II*\0\x08\0\0\0\x02\0".to_vec();
-            for (tag, value) in [(0x0201u16, 38u32), (0x0202, jpeg.len() as u32)] {
-                tiff.extend(tag.to_le_bytes());
-                tiff.extend(4u16.to_le_bytes());
-                tiff.extend(1u32.to_le_bytes());
-                tiff.extend(value.to_le_bytes());
-            }
-            tiff.extend(0u32.to_le_bytes());
-            assert_eq!(tiff.len(), 38);
-            tiff.extend(jpeg);
-            tiff
-        };
         let t = lcc_raw::color::camera_transform(&raw, lcc_raw::color::as_shot_white_xy(&raw));
-        let look = monochrome_look(&raw, &file([1.0; 3]), &t, None).expect("a tone curve from the black-and-white JPEG");
+        let look = monochrome_look(&raw, &grey, &t, None, None).expect("a tone curve from the black-and-white JPEG");
         assert!(look.matrix == Mat3::IDENTITY && look.hue_sat.is_none(), "on the transform's colour");
         let curve = ToneMap::camera(&look.tone, 0.0, 0.0, 0.0);
         let mid = curve.apply(0.25);
         assert!((mid - (1.0 - (-0.75f32).exp())).abs() < 0.05, "the camera's curve at 0.25: {mid}");
-        assert!(monochrome_look(&raw, &file([1.0, 0.9, 0.8]), &t, None).is_none(), "a tinted JPEG is not black and white");
+        let (_, tinted) = grey_raw_with_jpeg((w, h), level, level, [1.0, 0.9, 0.8]);
+        assert!(monochrome_look(&raw, &tinted, &t, None, None).is_none(), "a tinted JPEG is not black and white");
+    }
+
+    /// A vignette and its gain at a pixel of a `w`x`h` image, for the fit tests below.
+    fn test_vignette(w: usize, h: usize) -> (lcc_develop::EmbeddedVignette, impl Fn(usize, usize) -> f32) {
+        let vignette =
+            lcc_develop::EmbeddedVignette { k: [1.0, 0.0, 0.0, 0.0, 0.0], center: lcc_geom::Point::new(0.5, 0.5), radius: 0.6 };
+        let gain = move |x: usize, y: usize| {
+            let point = lcc_geom::Point::new(x as f64 + 0.5, y as f64 + 0.5);
+            lcc_pipeline::optics::embedded_vignette_gain(&vignette, point, w as f64, h as f64) as f32
+        };
+        (vignette, gain)
+    }
+
+    /// The look is fitted on the sensor as the render shows it, with the file's embedded vignetting correction: the
+    /// camera corrected its JPEG, so a curve fitted to the uncorrected sensor learns that brightening, and the render
+    /// then applies it twice (X-S10 RAFs up to 0.3 EV brighter than their camera JPEGs).
+    #[test]
+    fn the_look_is_fitted_on_the_vignetting_corrected_sensor() {
+        use lcc_develop::EmbeddedLens;
+        let (w, h) = (192usize, 128usize);
+        let (vignette, gain) = test_vignette(w, h);
+        let scene = |x: usize, y: usize| 0.01 + 0.5 * (x as f32 / w as f32) * (0.3 + 0.7 * y as f32 / h as f32);
+        let (raw, bytes) = grey_raw_with_jpeg((w, h), |x, y| scene(x, y) / gain(x, y), scene, [1.0; 3]);
+        let t = lcc_raw::color::camera_transform(&raw, lcc_raw::color::as_shot_white_xy(&raw));
+        let lens = EmbeddedLens { vignette: Some(vignette), ..Default::default() };
+        let camera = 1.0 - (-0.75f32).exp();
+        let at_quarter = |embedded: Option<&EmbeddedLens>| {
+            let look = monochrome_look(&raw, &bytes, &t, None, embedded).expect("a tone curve");
+            ToneMap::camera(&look.tone, 0.0, 0.0, 0.0).apply(0.25)
+        };
+        let (corrected, uncorrected) = (at_quarter(Some(&lens)), at_quarter(None));
+        assert!((corrected - camera).abs() < 0.03, "the camera's curve at 0.25: {corrected} vs {camera}");
+        assert!(uncorrected > camera + 0.03, "without the correction the curve brightens: {uncorrected} vs {camera}");
+    }
+
+    /// The colour fit gets the embedded vignetting correction too ([`starting_colour`] forwards it to every fit): the
+    /// tinted camera JPEG of the vignetted sensor takes the colour path, not the black-and-white one.
+    #[test]
+    fn the_colour_look_is_fitted_on_the_vignetting_corrected_sensor() {
+        use lcc_develop::EmbeddedLens;
+        let (w, h) = (192usize, 128usize);
+        let (vignette, gain) = test_vignette(w, h);
+        let scene = |x: usize, y: usize| 0.01 + 0.5 * (x as f32 / w as f32) * (0.3 + 0.7 * y as f32 / h as f32);
+        let (raw, bytes) = grey_raw_with_jpeg((w, h), |x, y| scene(x, y) / gain(x, y), scene, [1.0, 0.9, 0.8]);
+        let lens = EmbeddedLens { vignette: Some(vignette), ..Default::default() };
+        let at_quarter = |embedded: Option<&EmbeddedLens>| {
+            let (_, _, look) = starting_colour(&mut raw.clone(), &bytes, None, embedded, CameraColour::Auto, false);
+            let look = look.expect("a colour look");
+            assert!(look.matrix != Mat3::IDENTITY || look.hue_sat.is_some(), "the colour fit, not the black-and-white one");
+            ToneMap::camera(&look.tone, 0.0, 0.0, 0.0).apply(0.25)
+        };
+        let (corrected, uncorrected) = (at_quarter(Some(&lens)), at_quarter(None));
+        assert!(uncorrected > corrected + 0.03, "without the correction the curve brightens: {uncorrected} vs {corrected}");
+    }
+
+    /// A lens-warped sensor proxy gets the vignetting gain of the position it samples, as the render applies it: the
+    /// vignetted sensor, corrected, gives the proxy of the same sensor without vignetting.
+    #[test]
+    fn the_vignetting_correction_is_applied_before_the_lens_warp() {
+        use lcc_develop::EmbeddedLens;
+        // twice the 384 px proxy edge: the demosaiced proxy of this linear raw is then the size a warp needs (bins of 2)
+        let (w, h) = (768usize, 512usize);
+        let (vignette, gain) = test_vignette(w, h);
+        // a texture for the warped candidate to line up with: the JPEG shows the sensor's centre zoomed by 1 / 0.8
+        let texture = |x: f64, y: f64| 0.2 * (1.0 + 0.3 * ((x / 48.0).floor() + (y / 48.0).floor()).rem_euclid(2.0)) as f32;
+        let warp = LensGeometry { k: [0.8, 0.0, 0.0, 0.0], center: [0.5, 0.5] };
+        let (cx, cy) = ((w - 1) as f64 / 2.0, (h - 1) as f64 / 2.0);
+        let jpeg = |x: usize, y: usize| texture(cx + (x as f64 - cx) * 0.8, cy + (y as f64 - cy) * 0.8);
+        let sensor_proxy = |vignetted: bool, embedded: Option<&EmbeddedLens>| {
+            let sensor = |x: usize, y: usize| texture(x as f64, y as f64) / if vignetted { gain(x, y) } else { 1.0 };
+            let (raw, bytes) = grey_raw_with_jpeg((w, h), sensor, jpeg, [1.0; 3]);
+            let t = lcc_raw::color::camera_transform(&raw, lcc_raw::color::as_shot_white_xy(&raw));
+            let (plain, _, _) = proxies(&raw, &bytes, &t, PROXY, 0.0, None, embedded).unwrap();
+            let (sensor, _, _) = proxies(&raw, &bytes, &t, PROXY, 0.0, Some(&warp), embedded).unwrap();
+            assert!(sensor.data.iter().zip(&plain.data).any(|(a, b)| a != b), "the warped candidate is chosen");
+            sensor
+        };
+        let lens = EmbeddedLens { vignette: Some(vignette), ..Default::default() };
+        let (corrected, expected) = (sensor_proxy(true, Some(&lens)), sensor_proxy(false, None));
+        let worst = corrected.data.iter().zip(&expected.data).map(|(a, b)| (a[1] / b[1] - 1.0).abs()).filter(|d| d.is_finite()).fold(0.0, f32::max);
+        assert!(worst < 0.02, "largest deviation {worst}");
+    }
+
+    /// [`alignment`] leaves out the pixels a proxy lacks (NaN outside a lens-warped one): read as black, they made a
+    /// false edge around the border, and the warped candidate lost against a worse unwarped one.
+    #[test]
+    fn alignment_leaves_out_missing_pixels() {
+        let (w, h) = (48usize, 32usize);
+        let mut a = Rgb32f::new(w, h);
+        for (i, p) in a.data.iter_mut().enumerate() {
+            *p = [0.1 + 0.05 * ((i * 7919) % 13) as f32; 3];
+        }
+        let mut b = a.clone();
+        for (i, p) in b.data.iter_mut().enumerate() {
+            let (x, y) = (i % w, i / w);
+            if x < 4 || y < 4 || x >= w - 4 || y >= h - 4 {
+                *p = [f32::NAN; 3];
+            }
+        }
+        assert!(alignment(&a, &b) > 0.999, "{}", alignment(&a, &b));
     }
 
     /// The black-and-white fit has the partial look's checks: a JPEG of another picture, or one the default curve
