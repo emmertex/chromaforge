@@ -150,3 +150,25 @@ fn the_eye_is_always_on_the_mask_row_and_switches_its_effect() {
     assert!(!masks(&h)[0].visible, "the eye turns the mask's effect off");
     assert_eq!(masks(&h)[0].adjust.exposure, 1.0, "and keeps its settings");
 }
+
+#[test]
+fn clearing_a_masks_name_gives_it_back_its_automatic_name() {
+    let mut h = masking();
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5]}));
+    exec(&mut h, "mask.addComponent", json!({"op": "subtract", "kind": "linear", "start": [0.5, 0.0], "end": [0.5, 0.4]}));
+    let automatic = masks(&h)[0].name.clone();
+    assert_eq!(automatic, "Radial Gradient − Linear Gradient");
+    exec(&mut h, "mask.rename", json!({"name": "Vignette"}));
+    assert_eq!(masks(&h)[0].name, "Vignette");
+    let mid = masks(&h)[0].id;
+    let r = h.request("ui.clickWidget", json!({"id": format!("mask:{mid}"), "count": 2}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(Duration::from_secs(5));
+    assert_eq!(h.app.ui.renaming_mask.as_ref().map(|r| r.0), Some(mid), "double-click starts renaming");
+    h.request("ui.key", json!({"key": "A", "cmd": true}), T);
+    h.request("ui.key", json!({"key": "Backspace"}), T);
+    h.request("ui.key", json!({"key": "Enter"}), T);
+    h.settle(Duration::from_secs(5));
+    assert!(h.app.ui.renaming_mask.is_none());
+    assert_eq!(masks(&h)[0].name, automatic, "an empty name: the automatic one again");
+}

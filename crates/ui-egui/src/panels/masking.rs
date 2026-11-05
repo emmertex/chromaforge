@@ -425,7 +425,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 } else if r.lost_focus() {
                     let name = name.trim().to_string();
                     app.ui.renaming_mask = None;
-                    if !name.is_empty() && name != m.name {
+                    // an empty name gives the mask back its automatic one (what it selects)
+                    if name != m.name && (!name.is_empty() || !m.components.is_empty()) {
                         let _ = app.run("mask.rename", json!({"id": rid, "name": name}));
                     }
                 }
