@@ -1515,6 +1515,7 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             let _ = app.run("library.clearPreviews", json!({}));
         }
     });
+    background_prep(app, ui, t);
     heading(ui, t, crate::i18n::tr("Local folders"));
     row(ui, t, crate::i18n::tr("Forget unchanged photos"), |ui| {
         let opts = [(0u32, "Never"), (7, "After 7 days"), (30, "After 30 days"), (90, "After 90 days"), (365, "After a year")];
@@ -1532,6 +1533,96 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
     #[cfg(not(target_arch = "wasm32"))]
     smart_previews(app, ui, t);
+}
+
+/// Settings ▸ Performance ▸ Prepare photos in the background: per mode, what is made ready before
+/// the user gets to it (`prefs.backgroundPrep`), app-wide or for this library.
+fn background_prep(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    use lcc_engine::prep::{Mode, Scope};
+    heading(ui, t, crate::i18n::tr("Prepare photos in the background"));
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "While you go through photos in the loupe, the next ones are made ready before you reach them, and when the computer is otherwise idle the previews of every photo in view are built. The photo on screen always comes first; the work shows in the activity list, where it can be stopped.",
+        ),
+    );
+    let own = app.session.prep.library.is_some();
+    if app.session.library.is_some() {
+        let mut v = own;
+        if check(ui, "settings.prepOwn", &mut v, "Use different settings for this library") {
+            let r = if v {
+                let cur = app.session.prep_settings();
+                app.run("prefs.setBackgroundPrep", json!({"library": true, "settings": cur}))
+            } else {
+                app.run("prefs.setBackgroundPrep", json!({"reset": true}))
+            };
+            if let Err(e) = r {
+                log::warn!("background preparation: {e}");
+            }
+        }
+        hint(ui, t, crate::i18n::tr("For example, a timelapse library can prepare nothing while a wedding library prepares everything."));
+    }
+    let cur = app.session.prep_settings();
+    let mut patch: Option<Value> = None;
+    let scopes = [(Scope::All, "Every photo"), (Scope::Marked, "Picks, rated and labelled"), (Scope::OnScreen, "Only the photo on screen")];
+    for (mode, key, title) in [(Mode::Culling, "culling", "Culling (a folder before import)"), (Mode::Library, "library", "Library")] {
+        let m = cur.mode(mode);
+        heading(ui, t, crate::i18n::tr(title));
+        let mut previews = m.previews;
+        row(ui, t, crate::i18n::tr("Previews"), |ui| {
+            if check(ui, &format!("settings.prep.{key}.previews"), &mut previews, "Build previews for every photo in view") {
+                patch = Some(json!({key: {"previews": previews}}));
+            }
+        });
+        hint(ui, t, crate::i18n::tr("Starts once you step through a few photos. Uses about 1.5 MB of disk a photo, and the computer's spare time."));
+        let mut ahead = m.ahead;
+        row(ui, t, crate::i18n::tr("Photos ahead"), |ui| {
+            let opts = [(0u8, "Off"), (3, "3"), (5, "5"), (10, "10"), (20, "20")];
+            if choices(ui, &format!("settingsPrepAhead-{key}"), &opts, &mut ahead) {
+                patch = Some(json!({key: {"ahead": ahead}}));
+            }
+        });
+        let mut eye = m.eye_ahead;
+        row(ui, t, crate::i18n::tr("Eye focus ahead"), |ui| {
+            let opts = [(0u8, "Off"), (3, "3"), (5, "5"), (8, "8"), (10, "10"), (20, "20")];
+            if choices(ui, &format!("settingsPrepEyes-{key}"), &opts, &mut eye) {
+                patch = Some(json!({key: {"eyeAhead": eye}}));
+            }
+        });
+        let mut scope = m.scope;
+        row(ui, t, crate::i18n::tr("Which photos"), |ui| {
+            if choices(ui, &format!("settingsPrepScope-{key}"), &scopes, &mut scope) {
+                patch = Some(json!({key: {"scope": scope}}));
+            }
+        });
+    }
+    heading(ui, t, crate::i18n::tr("Editing"));
+    let mut ahead = cur.develop.ahead;
+    row(ui, t, crate::i18n::tr("Photos ahead"), |ui| {
+        let opts = [(0u8, "Off"), (1, "1"), (2, "2"), (3, "3"), (5, "5")];
+        if choices(ui, "settingsPrepAhead-develop", &opts, &mut ahead) {
+            patch = Some(json!({"develop": {"ahead": ahead}}));
+        }
+    });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "The photos each side of the one you edit are made ready with their settings, and the nearest two kept open, so stepping to one and the first slider move on it are quick. Uses memory: a few hundred MB a photo.",
+        ),
+    );
+    let mut scope = cur.develop.scope;
+    row(ui, t, crate::i18n::tr("Which photos"), |ui| {
+        if choices(ui, "settingsPrepScope-develop", &scopes, &mut scope) {
+            patch = Some(json!({"develop": {"scope": scope}}));
+        }
+    });
+    if let Some(patch) = patch
+        && let Err(e) = app.run("prefs.setBackgroundPrep", json!({"library": own, "settings": patch}))
+    {
+        log::warn!("background preparation: {e}");
+    }
 }
 
 /// Where this library keeps its smart previews (the offline-editing proxies, which can be large):

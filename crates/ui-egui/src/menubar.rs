@@ -620,7 +620,9 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
     let has = active.is_some();
     Some(match name {
         "Previews" => {
-            let running = app.session.preview_build.as_ref().is_some_and(|b| !b.finished.load(std::sync::atomic::Ordering::Relaxed));
+            // (the background preparation's build gives way to one asked for here)
+            let running = app.session.preview_build.as_ref().is_some_and(|b| b.running() && !b.background);
+            let stoppable = app.session.preview_build.as_ref().is_some_and(|b| b.running());
             let scope = if app.session.selection.ids.len() > 1 { "Selected" } else { "Visible" };
             vec![
                 item(
@@ -639,7 +641,7 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
                     !running,
                     None,
                 ),
-                item("library.cancelPreviews", Value::Null, "Stop Building Previews", None, running, None),
+                item("library.cancelPreviews", Value::Null, "Stop Building Previews", None, stoppable, None),
                 item(
                     "library.discardPreviews",
                     json!({"size": "full"}),

@@ -1165,20 +1165,63 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         }),
         _ => None,
     };
-    // once this photo is on screen: prepare its neighbours in filmstrip order (source decoded and
-    // kept, view render cached) so stepping to them is instant
-    // (nor while a cell on screen waits for its first picture: those come before anything bigger)
+    // the most the loupe shows a whole photo at (the canvas's long side; a photo of another shape
+    // than this one may fill it): the background preparation builds previews at least this big
+    if matches!(app.ui.zoom, Zoom::Fit) && !interacting && sizes.canvas_long.is_finite() && sizes.canvas_long >= 1.0 {
+        app.session.loupe_edge = sizes.canvas_long.ceil() as usize;
+    }
+    // which way the user steps (the photos ahead are those in the direction of travel)
+    let ids = app.session.visible_cloned();
+    let here = ids.iter().position(|p| *p == id);
+    if let Some(i) = here {
+        if let Some((was, at)) = app.prep_at
+            && was != id
+        {
+            app.prep_backward = i < at;
+        }
+        app.prep_at = Some((id, i));
+    }
+    // once this photo is on screen: prepare the photos around it, as many each way as Settings ▸
+    // Performance ▸ Prepare photos in the background says (nearest first, the direction of travel
+    // first at each distance): the nearest each way are rendered as the loupe will ask for them and
+    // adopted at the step, those further rendered into the preview cache, which the loupe then
+    // fits (no render). Editing: the nearest are decoded and kept, ready for their edits.
+    // (nor while a cell on screen waits for its first picture: those come before anything bigger;
+    // nor while the user's own work runs, an export above all)
     if !interacting
         && !app.renderer.is_pending(Slot::Main)
         && app.renderer.textures.get(&Slot::Main).is_some_and(|t| t.photo == id)
         && !app.pictures_busy(app.renderer.frame())
+        && app.session.activity.user_work().is_none()
     {
-        let ids = app.session.visible_cloned();
-        if let Some(i) = ids.iter().position(|p| *p == id) {
-            let next = ids.get(i + 1).copied();
-            let prev = i.checked_sub(1).and_then(|j| ids.get(j)).copied();
-            for (n, nid) in [next, prev].into_iter().enumerate() {
-                let Some(nid) = nid else { continue };
+        let mode = prep_mode(app);
+        let prep = app.session.prep_settings();
+        let ahead = prep.ahead(mode);
+        let develop = mode == lcc_engine::prep::Mode::Develop;
+        if let Some(i) = here.filter(|_| ahead > 0) {
+            let mut targets = nearest_each_way(&ids, i, ahead, app.prep_backward);
+            if prep.scope(mode) == lcc_engine::prep::Scope::Marked {
+                targets.retain(|t| lcc_engine::prep::marked(&app.session, *t));
+            }
+            // a few at a time, nearest first (the pool keeps workers free for the photo the user goes to)
+            let mut room = PREFETCH_AT_ONCE.saturating_sub(app.renderer.prefetches_pending());
+            let mut nearest = [false; 2];
+            for nid in targets {
+                if room == 0 {
+                    break;
+                }
+                let Some(at) = ids.iter().position(|p| *p == nid) else { continue };
+                // the nearest one each way in slots 0 (ahead) and 1 (behind), kept to be adopted at
+                // the step; the others by their place in the view, so a step keeps them where they are
+                let side = usize::from((at < i) != app.prep_backward);
+                let slot = if nearest.get(side).is_some_and(|taken| !taken) {
+                    if let Some(taken) = nearest.get_mut(side) {
+                        *taken = true;
+                    }
+                    Slot::Prefetch(side as u8)
+                } else {
+                    far_prefetch_slot(at)
+                };
                 let Some(np) = app.session.catalog.photo(nid).cloned() else { continue };
                 let nf = Frame::with_lens(np.width.max(1) as usize, np.height.max(1) as usize, &np.develop, !crop_tool, np.embedded_lens.as_deref());
                 let na = nf.aspect() as f32;
@@ -1199,11 +1242,25 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     let (w, h) = render_box(app.ui.settings.prefetch_edge(nr.width().max(nr.height()) * ppp, nlong, texture_side), na);
                     app.session.loupe_job(nid, w.max(8), h.max(8), !crop_tool)
                 };
-                if let Some(job) = job {
-                    app.renderer.prefetch(Slot::Prefetch(n as u8), job, PREFETCH_PRIORITY);
+                if let Some(mut job) = job {
+                    // (editing: the nearest are decoded and kept, not taken from a cached render)
+                    if develop && at.abs_diff(i) <= DECODED_AHEAD {
+                        job.view_cache = None;
+                    }
+                    // (asked for already, in this slot: queued, running or made)
+                    if app.renderer.prefetch_asked(slot, job.key) {
+                        continue;
+                    }
+                    room -= 1;
+                    app.renderer.prefetch(slot, job, PREFETCH_PRIORITY);
                 }
             }
         }
+    }
+    // the photo on screen and its neighbours' renders hold back background work (the background
+    // preparation's preview build, eye finding) while they are being made
+    if app.renderer.is_pending(Slot::Main) || app.renderer.prefetches_pending() > 0 {
+        lcc_engine::prep::foreground();
     }
     // After a short look at the whole photo, its full-resolution source, decoded in the background
     // below the neighbours when nothing else is waiting, so a zoom to 1:1 (to check focus) starts
@@ -1500,9 +1557,14 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     }
     // each person's sharper eye at 100 %, found for this photo and the next ones (never waited for)
     if app.eye_focus_on() {
+        // the photos ahead in the direction of travel, as many as Settings ▸ Performance says
         let ids = app.session.visible_cloned();
-        let upcoming: Vec<PhotoId> =
-            ids.iter().position(|p| *p == id).map(|i| ids.iter().skip(i + 1).take(crate::eye_strip::AHEAD).copied().collect()).unwrap_or_default();
+        let eye_ahead = app.session.prep_settings().eye_ahead(prep_mode(app));
+        let mut upcoming: Vec<PhotoId> =
+            ids.iter().position(|p| *p == id).map(|i| ahead_only(&ids, i, eye_ahead, app.prep_backward)).unwrap_or_default();
+        if app.session.prep_settings().scope(prep_mode(app)) == lcc_engine::prep::Scope::Marked {
+            upcoming.retain(|t| lcc_engine::prep::marked(&app.session, *t));
+        }
         crate::eye_strip::show(app, ui, canvas, id, &upcoming);
     } else if wants_eyes(app, id) {
         // Space zooms to the eyes without the strip: they are found quietly for this photo
@@ -2160,6 +2222,44 @@ fn navigator(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, img: Rect, id: P
 
 /// Neighbour prefetch: below on-screen thumbnails, above background thumbnail refreshes.
 const PREFETCH_PRIORITY: u32 = 4;
+/// Photos prepared ahead at once (each render spreads over the cores already): the others wait,
+/// so the photo the user steps to next finds a worker free.
+const PREFETCH_AT_ONCE: usize = 2;
+/// Editing: the neighbours this near each way are decoded and kept, ready for their edits; those
+/// further are rendered with their settings and cached.
+const DECODED_AHEAD: usize = 2;
+/// The slots of the photos prepared further than the nearest each way ([`Slot::Prefetch`] 3 and
+/// up; 0 and 1 are the nearest, 2 the open photo's full-resolution source), by the photo's place
+/// in the view: a step keeps the photos still ahead in the slots they have (nothing is asked for
+/// twice), and a jump to another part of the shoot replaces what was waiting.
+const FAR_PREFETCH_SLOTS: usize = 2 * lcc_engine::prep::MAX_AHEAD as usize + 2;
+
+fn far_prefetch_slot(at: usize) -> Slot {
+    Slot::Prefetch((FIRST_FAR_PREFETCH + at % FAR_PREFETCH_SLOTS) as u8)
+}
+
+/// The first [`Slot::Prefetch`] of the photos prepared further than the nearest each way.
+pub(crate) const FIRST_FAR_PREFETCH: usize = 3;
+
+/// `n` photos each way from position `i` of `ids`, nearest first, the direction of travel first
+/// at each distance.
+pub(crate) fn nearest_each_way(ids: &[PhotoId], i: usize, n: usize, backward: bool) -> Vec<PhotoId> {
+    let dir: isize = if backward { -1 } else { 1 };
+    let at = |k: isize| i.checked_add_signed(k).and_then(|j| ids.get(j)).copied();
+    (1..=n.min(ids.len()) as isize).flat_map(|k| [at(dir * k), at(-dir * k)]).flatten().collect()
+}
+
+/// `n` photos from position `i` of `ids` in the direction of travel, nearest first.
+pub(crate) fn ahead_only(ids: &[PhotoId], i: usize, n: usize, backward: bool) -> Vec<PhotoId> {
+    let dir: isize = if backward { -1 } else { 1 };
+    (1..=n.min(ids.len()) as isize).filter_map(|k| i.checked_add_signed(dir * k).and_then(|j| ids.get(j)).copied()).collect()
+}
+
+/// What the user is doing, for the background preparation: editing (a tool panel open), else
+/// culling a folder or browsing the library.
+pub fn prep_mode(app: &LccApp) -> lcc_engine::prep::Mode {
+    if app.ui.right.is_edit_tool() { lcc_engine::prep::Mode::Develop } else { lcc_engine::prep::Mode::of(&app.session) }
+}
 
 /// How long (s) the whole photo is shown before its full-resolution source is decoded in the
 /// background (a photographer stepping through photos doesn't decode each).
