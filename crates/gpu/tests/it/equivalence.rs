@@ -1098,6 +1098,12 @@ fn overlays_match() {
     };
     let req = RenderRequest { overlay: lcc_pipeline::Overlay::PointColorRange(0), ..RenderRequest::fit(640, 640) };
     check("point color range overlay", &src, &raw, &s, &req);
+    let s = DevelopSettings {
+        masks: vec![lcc_develop::Mask { id: 3, point_colors: s.point_colors.clone(), ..Default::default() }],
+        ..Default::default()
+    };
+    let req = RenderRequest { overlay: lcc_pipeline::Overlay::MaskPointColorRange { mask: 3, index: 0 }, ..RenderRequest::fit(640, 640) };
+    check("mask point color range overlay", &src, &raw, &s, &req);
     // Visualize Spots is a binary threshold of a high-pass: a 1-LSB difference near the threshold
     // flips a pixel, so compare the share of differing pixels instead of LSBs.
     let s = DevelopSettings::default();

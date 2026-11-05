@@ -1038,10 +1038,18 @@ fn mask_point_color(app: &mut LccApp, ui: &mut egui::Ui, m: &lcc_develop::Mask) 
         apply_slider_out(app, &spec, out, |app, v| app.run("mask.pointColorSet", json!({"id": m.id, "index": sel, "values": {key: v}})));
     }
     egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 8 }).show(ui, |ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if text_button(ui, "maskPointColorDelete", crate::i18n::tr("Delete"), false).clicked() {
-                let _ = app.run("mask.pointColorDelete", json!({"id": m.id, "index": sel}));
+        ui.horizontal(|ui| {
+            let mut v = app.ui.mask_point_color_visualize;
+            let r = ui.checkbox(&mut v, crate::i18n::tr("Visualize range"));
+            register(ui.ctx(), "check:maskPointColorVisualize", r.rect);
+            if r.changed() {
+                app.ui.mask_point_color_visualize = v;
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if text_button(ui, "maskPointColorDelete", crate::i18n::tr("Delete"), false).clicked() {
+                    let _ = app.run("mask.pointColorDelete", json!({"id": m.id, "index": sel}));
+                }
+            });
         });
     });
 }

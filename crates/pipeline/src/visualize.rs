@@ -28,6 +28,9 @@ pub enum Overlay {
     None,
     /// Point Color sample `i`: its range in colour, everything else grey.
     PointColorRange(u8),
+    /// Point Color sample `index` of mask `mask` (a [`lcc_develop::Mask`] id): its range in colour,
+    /// everything else grey, as [`Overlay::PointColorRange`].
+    MaskPointColorRange { mask: u16, index: u8 },
     /// Visualize Spots with a threshold 0..100 (higher = more sensitive).
     Spots(u8),
     /// The evaluated alpha of mask `id` (a [`lcc_develop::Mask`] id), drawn as `view` in
@@ -130,6 +133,7 @@ impl Overlay {
         match self {
             Overlay::None => (0, 0.0),
             Overlay::PointColorRange(i) => (1, i as f64),
+            Overlay::MaskPointColorRange { mask, index } => (7, (mask as u32 * 256 + index as u32) as f64),
             Overlay::Spots(t) => (2, t as f64),
             Overlay::Mask { id, view, color, opacity } => (3, pack_mask(id, view, color, opacity) as f64),
             Overlay::AllMasks { view, color, opacity } => (5, pack_mask(0, view, color, opacity) as f64),
@@ -155,6 +159,10 @@ impl Overlay {
                     opacity: ((v as u64 >> 44) & 0x7f).min(100) as u8,
                 }
             }
+            7 if v.is_finite() && v >= 0.0 => {
+                let v = (v as u64).min(u32::MAX as u64);
+                Overlay::MaskPointColorRange { mask: ((v >> 8) & 0xffff) as u16, index: (v & 0xff) as u8 }
+            }
             6 => Overlay::Clipping(match v as u64 {
                 1 => Some(true),
                 2 => Some(false),
@@ -169,6 +177,7 @@ impl Overlay {
         match self {
             Overlay::None => 0,
             Overlay::PointColorRange(i) => 0x1000 + i as u64,
+            Overlay::MaskPointColorRange { mask, index } => 7 << 60 | (mask as u64) << 8 | index as u64,
             Overlay::Spots(t) => 0x2000 + t as u64,
             Overlay::Mask { id, view, color, opacity } => 3 << 60 | pack_mask(id, view, color, opacity),
             Overlay::AllMasks { view, color, opacity } => 5 << 60 | pack_mask(0, view, color, opacity),
@@ -203,6 +212,13 @@ pub fn adjust_settings(o: Overlay, s: &mut Cow<'_, DevelopSettings>) {
         let p = &mut s.to_mut().point_colors[i as usize];
         (p.hue_shift, p.sat_shift, p.lum_shift, p.variance) = (0.0, 0.0, 0.0, 0.0);
     }
+    if let Overlay::MaskPointColorRange { mask, index } = o
+        && let Some(m) = s.masks.iter().position(|m| m.id == mask as u32)
+        && s.masks.get(m).and_then(|m| m.point_colors.get(index as usize)).is_some_and(|p| !p.is_neutral())
+        && let Some(p) = s.to_mut().masks.get_mut(m).and_then(|m| m.point_colors.get_mut(index as usize))
+    {
+        (p.hue_shift, p.sat_shift, p.lum_shift, p.variance) = (0.0, 0.0, 0.0, 0.0);
+    }
 }
 
 /// Draw overlay `o` over `img` (rendered with `plan`). `mask` is the evaluated alpha of the mask
@@ -215,6 +231,11 @@ pub fn apply(img: &mut Rgba8, o: Overlay, plan: &Plan<'_>, mask: Option<&Plane>,
         Overlay::Clipping(mode) => clipping(img, mode),
         Overlay::PointColorRange(i) => {
             if let Some(p) = plan.settings.point_colors.get(i as usize) {
+                point_color_range(img, &PointK::new(p));
+            }
+        }
+        Overlay::MaskPointColorRange { mask, index } => {
+            if let Some(p) = plan.settings.masks.iter().find(|m| m.id == mask as u32).and_then(|m| m.point_colors.get(index as usize)) {
                 point_color_range(img, &PointK::new(p));
             }
         }
@@ -399,6 +420,29 @@ mod tests {
         assert!(spot_threshold(0) > spot_threshold(50) && spot_threshold(50) > spot_threshold(100));
         let (k, v) = Overlay::Spots(37).to_parts();
         assert_eq!(Overlay::from_parts(k, v), Overlay::Spots(37));
+    }
+
+    #[test]
+    fn mask_point_color_range_round_trips_and_shows_the_selection() {
+        let o = Overlay::MaskPointColorRange { mask: 513, index: 7 };
+        let (k, v) = o.to_parts();
+        assert_eq!(Overlay::from_parts(k, v), o);
+        assert_ne!(o.key(), Overlay::PointColorRange(7).key());
+        for v in [f64::NAN, -1.0, f64::INFINITY, 1e30] {
+            let _ = Overlay::from_parts(7, v);
+        }
+        // the visualized sample's adjustment is left out; other masks and the photo's samples aren't touched
+        let pc = lcc_develop::PointColor { hue_shift: 40.0, ..Default::default() };
+        let mask = |id| lcc_develop::Mask { id, point_colors: vec![pc], ..Default::default() };
+        let s = DevelopSettings { masks: vec![mask(1), mask(2)], point_colors: vec![pc], ..Default::default() };
+        let mut c = Cow::Borrowed(&s);
+        adjust_settings(Overlay::MaskPointColorRange { mask: 2, index: 0 }, &mut c);
+        assert_eq!(c.masks[1].point_colors[0].hue_shift, 0.0);
+        assert_eq!((c.masks[0].point_colors[0].hue_shift, c.point_colors[0].hue_shift), (40.0, 40.0));
+        // a mask or sample that isn't there changes nothing
+        let mut c = Cow::Borrowed(&s);
+        adjust_settings(Overlay::MaskPointColorRange { mask: 9, index: 3 }, &mut c);
+        assert!(matches!(c, Cow::Borrowed(_)));
     }
 
     #[test]

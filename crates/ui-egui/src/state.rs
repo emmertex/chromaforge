@@ -1515,6 +1515,8 @@ pub struct UiState {
     pub mask_mixer_group: String,
     /// Point Color "Visualize range": the selected sample's range in colour, the rest grey.
     pub point_color_visualize: bool,
+    /// Visualize range for the selected sample of the active mask's Point Color.
+    pub mask_point_color_visualize: bool,
     /// Light panel "Visualize HDR": grey below SDR white, colour bands above (HDR edits).
     pub hdr_visualize: bool,
     /// The sRGB colour under the pointer in the loupe and the pass it was read in (shown under
@@ -2385,6 +2387,7 @@ impl Default for UiState {
             mask_point_color: 0,
             mask_mixer_group: "hue".into(),
             point_color_visualize: false,
+            mask_point_color_visualize: false,
             hdr_visualize: false,
             hover_color: None,
             eye: 0,

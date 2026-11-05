@@ -2568,6 +2568,16 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
             opacity: app.ui.mask_overlay_opacity.clamp(0.0, 100.0).round() as u8,
         };
     }
+    // Visualize range of the active mask's selected Point Color sample (over the mask overlay)
+    if app.ui.right == RightPanel::Masking
+        && app.ui.mask_point_color_visualize
+        && app.ui.flyout_open("maskPointColor")
+        && let Some(m) = app.session.active_mask.and_then(|id| d.masks.iter().find(|m| m.id == id))
+        && app.ui.mask_point_color < m.point_colors.len()
+        && let Ok(mask) = u16::try_from(m.id)
+    {
+        return Overlay::MaskPointColorRange { mask, index: app.ui.mask_point_color.min(u8::MAX as usize) as u8 };
+    }
     if app.ui.right == RightPanel::Masking
         && app.ui.mask_overlay
         && let Some(m) = app.session.active_mask.and_then(|id| d.masks.iter().find(|m| m.id == id))
