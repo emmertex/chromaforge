@@ -298,7 +298,9 @@ fn list(app: &mut LccApp, ctx: &egui::Context, tasks: &[(&TaskInfo, u8, usize)],
     let max_height = (ctx.content_rect().bottom() - origin.y - 60.0).max(80.0);
     let open = app.activity_open.clone();
     let mut picked = Picked::default();
-    let frame = egui::Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.field_border)).corner_radius(6).inner_margin(Margin::same(MARGIN));
+    // Compact's sharper corners, as its other cards (Classic's otherwise)
+    let frame =
+        egui::Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.field_border)).corner_radius(t.radius(6.0)).inner_margin(Margin::same(MARGIN));
     let area = egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(origin).show(ctx, |ui| {
         // as the Modern card: lay out in all the room below, not last frame's size, so the list grows with its rows
         ui.set_max_height((ctx.content_rect().bottom() - origin.y - 16.0).max(80.0));
