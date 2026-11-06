@@ -580,7 +580,8 @@ fn the_import_bar_shows_the_folder_as_a_breadcrumb() {
     let crumbs: Vec<String> = crate::panels::grid::crumbs(&deep.to_string_lossy()).into_iter().map(|(_, to)| to).collect();
     let parent = crumbs.len() - 2;
 
-    let mut h = app([1600.0, 900.0], "compact");
+    // wide enough for the bar's Develop, View and Show controls to leave the breadcrumb room
+    let mut h = app([2400.0, 900.0], "compact");
     exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
     assert_eq!(h.app.ui.tab, Tab::Import);
     let id = format!("importCrumb:{parent}");
