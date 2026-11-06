@@ -1469,7 +1469,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             if !own && !have.look.close_to(&want.look) {
                 return None;
             }
-            let uv = lcc_engine::placement::stand_in_uv(&have, &want)?;
+            // another warp (an Optics drag) can't be mapped: the view's own render is drawn as it is
+            // until the new one lands, never a black loupe; a stand-in is left out
+            let Some(uv) = lcc_engine::placement::stand_in_uv(&have, &want) else {
+                return own.then_some(None);
+            };
             if lcc_engine::placement::is_identity(&uv, 1e-3) {
                 return Some(None);
             }
