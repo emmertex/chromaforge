@@ -172,3 +172,20 @@ fn clearing_a_masks_name_gives_it_back_its_automatic_name() {
     assert!(h.app.ui.renaming_mask.is_none());
     assert_eq!(masks(&h)[0].name, automatic, "an empty name: the automatic one again");
 }
+
+/// Two radial components each show a Feather slider under their row; each slider has an egui id of
+/// its own (they shared one, and a debug build painted "First use of widget ID" / "Second use of
+/// widget ID" over the component rows below them).
+#[test]
+fn two_radial_components_have_feather_sliders_of_their_own() {
+    let mut h = masking();
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5]}));
+    exec(&mut h, "mask.addComponent", json!({"op": "subtract", "kind": "radial", "center": [0.5, 0.5], "rx": 0.1, "ry": 0.1}));
+    h.step();
+    h.step();
+    assert_eq!(masks(&h)[0].components.len(), 2);
+    let text = h.painted_text();
+    assert!(text.iter().filter(|s| s.as_str() == "Feather").count() >= 2, "both radial components show Feather: {text:?}");
+    let clash: Vec<_> = text.iter().filter(|s| s.contains("use of widget ID")).collect();
+    assert!(clash.is_empty(), "no egui id clash: {clash:?}");
+}
