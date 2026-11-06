@@ -515,6 +515,54 @@ fn open_add_preset(h: &mut Headless) {
     }
 }
 
+/// The import bar with main's Show All / Show Not Imported and Photo Grid / Grid / Detail segments and
+/// Develop without Import: the browsed folder's own name always shows whole (its parents fold into
+/// "…" first, then the segments go), and nothing of the bar runs over the panels beside it (at
+/// 1000 wide the segments wrapped and spilled over Import from).
+#[test]
+fn the_import_bar_keeps_the_folder_name_whole_and_stays_inside_its_row() {
+    let root = folder("barfit", 0);
+    let deep = root.join("Archive").join("2026").join("November").join("Demo Shoot").join("Ceremony Selects");
+    std::fs::create_dir_all(&deep).unwrap();
+    let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
+    let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 40, 255]);
+    std::fs::write(deep.join("p.png"), lcc_engine::export::encode_image(&img, &o).unwrap()).unwrap();
+    for size in [[1600.0, 1000.0], [1000.0, 800.0]] {
+        let mut h = app(size, "compact");
+        exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
+        assert!(has_widget(&mut h, "label:importWhere"), "{size:?}: the bar is up");
+        let bar = widget_rect(&h, "importBar").expect("the bar");
+        let label = widget_rect(&h, "label:importWhere").expect("the folder's label");
+        let name = h
+            .view
+            .ctx
+            .fonts_mut(|f| f.layout_no_wrap("Ceremony Selects".to_string(), egui::FontId::proportional(12.5), egui::Color32::WHITE).size().x);
+        assert!(label.width() + 0.5 >= name, "{size:?}: the folder's name shows whole ({} of {name})", label.width());
+        let items: Vec<(String, egui::Rect)> = h
+            .app
+            .widgets
+            .iter()
+            .filter(|(w, r)| {
+                (w.starts_with("button:browse")
+                    || w.starts_with("button:importTake-")
+                    || w.starts_with("importCrumb:")
+                    || w.contains("importGo")
+                    || w.contains("importDevelop"))
+                    && r.width() > 0.0
+            })
+            .cloned()
+            .collect();
+        assert!(items.iter().any(|(w, _)| w.contains("importGo")), "{size:?}: the Import button is on the bar");
+        for (w, r) in &items {
+            assert!(bar.expand(0.5).contains_rect(*r), "{size:?}: {w} {r:?} stays inside the bar {bar:?}");
+            if !w.starts_with("importCrumb:") {
+                assert!(r.left() >= label.right() - 0.5, "{size:?}: {w} {r:?} clears the folder's label {label:?}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn text_width(h: &Headless, text: &str) -> f32 {
     h.view.ctx.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), egui::Color32::WHITE).size().x)
 }
