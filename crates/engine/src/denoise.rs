@@ -12,6 +12,10 @@
 //! its mosaic tile by tile and writes the product ([`make_product`]); an export that finds its photo's product missing
 //! makes it itself, on its own thread, so it never comes out without the denoise it was asked for.
 //!
+//! A finished picture (JPEG, PNG, TIFF …) has no mosaic: it is denoised by a model made for finished pictures
+//! ([`Domain::RgbToRgb`], `settings.rgbModel`), run over its gamma-encoded sRGB pixels ([`make_rgb_product`]), and its
+//! cached picture is swapped in when the file is loaded (`crate::files`). The built-in denoiser is for raw photos only.
+//!
 //! Failure is a message, never a panic: a file that is not a Bayer raw, a model that does not load, a full disk, a
 //! panic inside the runtime and a cancelled job all end as an [`Outcome`] the pump records.
 
@@ -23,7 +27,7 @@ use std::time::{Duration, SystemTime};
 
 use lcc_catalog::{Photo, PhotoId, Source};
 use lcc_denoise::bayer::Layout;
-use lcc_denoise::manifest::DenoiserManifest;
+use lcc_denoise::manifest::{DenoiserManifest, Domain};
 use lcc_denoise::run::{Control, Params, TileRunner, denoise_bayer};
 use lcc_denoise::{Error as RunError, product};
 use lcc_develop::DevelopSettings;
@@ -52,7 +56,7 @@ const AUTO_LOOK: usize = 64;
 /// How long a look at the model settings is trusted.
 const SETTINGS_TTL: Duration = Duration::from_secs(2);
 /// Stack of the threads that run the model (the runtime recurses through its graph).
-const STACK: usize = 16 << 20;
+pub(crate) const STACK: usize = 16 << 20;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // the model
@@ -534,11 +538,19 @@ fn card_tile_ms(runner: &dyn TileRunner, input: &[f32]) -> f64 {
     best
 }
 
+/// Threads for a single tile that is waited on (the card's check tile, the installation self-test): as many as a job at
+/// full pace may take, and of their own, as the jobs have, so a busy window's renders keep theirs.
+#[cfg(feature = "denoise")]
+fn check_pool() -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
+    let threads = Pace::Full.parallel(std::thread::available_parallelism().map_or(1, |n| n.get()), None);
+    rayon::ThreadPoolBuilder::new().num_threads(threads).stack_size(STACK).thread_name(|i| format!("denoise-check-{i}")).build()
+}
+
 /// Set `card` up for the model at `path`: kernels built, the check tile run on both and compared, both timed.
 #[cfg(feature = "denoise")]
 fn make_gpu(cpu: &lcc_denoise::runtime::CpuRunner, path: &Path, tile: usize, card: lcc_gpu::nn::Card) -> Result<GpuSide, String> {
     card_exists(card)?;
-    let input = Arc::new(lcc_denoise::runtime::check_tile(tile));
+    let input = Arc::new(lcc_denoise::runtime::check_tile_for(cpu.manifest().domain, tile));
     let (on_card, net) = (input.clone(), cpu.net().clone());
     let card_work = move || -> Result<_, String> {
         let runner = lcc_gpu::nn::runner_on(card, &net, tile)?;
@@ -546,9 +558,18 @@ fn make_gpu(cpu: &lcc_denoise::runtime::CpuRunner, path: &Path, tile: usize, car
         let card_ms = card_tile_ms(&runner, &on_card);
         Ok((runner, got, card_ms))
     };
+    // The CPU's answer on the cores a job at full pace may take, so an older CPU doesn't keep the card waiting for
+    // minutes; its time summed over the threads stands for one tile on one thread, which is what the card is compared
+    // with.
     let on_cpu = || {
-        let started = web_time::Instant::now();
-        (cpu.run(&input), started.elapsed().as_secs_f64() * 1000.0)
+        let wide = match check_pool() {
+            Ok(pool) => pool.install(|| cpu.run_wide(&input)),
+            Err(e) => Err(lcc_denoise::run::Error::Runtime(format!("could not start the worker threads: {e}"))),
+        };
+        match wide {
+            Ok((want, cpu_ms)) => (Ok(want), cpu_ms),
+            Err(e) => (Err(e), f64::INFINITY),
+        }
     };
     let marker = marker_of(&path.with_file_name(GPU_SETUP_MARKER), card);
     let ((runner, got, card_ms), (want, cpu_ms)) = set_up_card(&marker, GPU_SETUP_LIMIT, card_work, on_cpu)?;
@@ -767,7 +788,11 @@ impl Model for Network {
     }
 
     fn self_test(&self, run_on: RunOn) -> Result<Value, String> {
-        let t = self.cpu.self_test();
+        // its two tiles on the check tile's threads; without them, on this thread's pool
+        let t = match check_pool() {
+            Ok(pool) => pool.install(|| self.cpu.self_test()),
+            Err(_) => self.cpu.self_test(),
+        };
         if !t.ok {
             let failed: Vec<&str> = t.checks.iter().filter(|(_, ok)| !*ok).map(|(c, _)| c.as_str()).collect();
             return Err(format!("the model failed its self-test: it does not {}", failed.join(", and does not ")));
@@ -1212,8 +1237,12 @@ pub(crate) type ModelSlot = Arc<Mutex<Option<Arc<dyn Model>>>>;
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct Settings {
-    /// The installed model in use; `None`: denoise is off.
+    /// The installed model in use for raw photos; `None`: the built-in denoiser.
     pub model: Option<String>,
+    /// The installed model in use for finished pictures (JPEG, PNG, TIFF …); `None`: denoise is off for them.
+    pub rgb_model: Option<String>,
+    /// The installed upscaler AI Super Resolution and AI Sharpen use (`Domain::RgbToRgb4x`); `None`: none is chosen.
+    pub upscale_model: Option<String>,
     /// Photos with a Denoise amount above 0 that are being looked at (active, selected) get their picture made without
     /// being asked (`None`: yes).
     pub auto: Option<bool>,
@@ -1238,6 +1267,28 @@ impl Settings {
             None if self.gpu == Some(false) => RunOn::Cpu,
             None => RunOn::Auto,
         }
+    }
+
+    /// The setting that names the model in use for photos of `domain`.
+    pub fn slot(&self, domain: Domain) -> Option<&str> {
+        match domain {
+            Domain::BayerToRgb => self.model.as_deref(),
+            Domain::RgbToRgb => self.rgb_model.as_deref(),
+            Domain::RgbToRgb4x => self.upscale_model.as_deref(),
+        }
+    }
+
+    pub fn slot_mut(&mut self, domain: Domain) -> &mut Option<String> {
+        match domain {
+            Domain::BayerToRgb => &mut self.model,
+            Domain::RgbToRgb => &mut self.rgb_model,
+            Domain::RgbToRgb4x => &mut self.upscale_model,
+        }
+    }
+
+    /// Is `id` the model in use for one kind of photo?
+    pub fn chosen(&self, id: &str) -> bool {
+        [&self.model, &self.rgb_model, &self.upscale_model].iter().any(|m| m.as_deref() == Some(id))
     }
 
     pub fn cache_bytes(&self) -> u64 {
@@ -1272,6 +1323,7 @@ pub(crate) fn write_settings(dir: &Path, st: &Settings) -> Result<(), String> {
 }
 
 /// An installed model folder: `<id>/model.onnx`, `denoise-model.json`, `installed.json`.
+#[derive(Clone)]
 pub(crate) struct Installed {
     pub manifest: DenoiserManifest,
     pub onnx: PathBuf,
@@ -1340,9 +1392,20 @@ pub(crate) struct Active {
 // ---------------------------------------------------------------------------------------------------------------------
 // products
 
-/// The photos whose files can be denoised at all: raw files developed from their sensor data and read from disk.
+/// Which kind of model photo `p` takes: a raw developed from its sensor data takes a Bayer model, a finished picture
+/// (JPEG, PNG, TIFF …) a model for finished pictures; anything else (a video, a raw shown from its embedded preview)
+/// none.
+pub(crate) fn domain_of(p: &Photo) -> Option<Domain> {
+    if p.develops_raw() {
+        return Some(Domain::BayerToRgb);
+    }
+    (p.kind == lcc_catalog::MediaKind::Image).then_some(Domain::RgbToRgb)
+}
+
+/// The photos whose files can be denoised at all: raw files developed from their sensor data and finished pictures,
+/// read from disk.
 pub(crate) fn eligible(p: &Photo) -> bool {
-    p.develops_raw() && matches!(p.source, Source::File { .. }) && !p.deleted
+    domain_of(p).is_some() && matches!(p.source, Source::File { .. }) && !p.deleted
 }
 
 /// A product's name: what it was made from and with.
@@ -1490,6 +1553,9 @@ pub(crate) fn make_product(spec: &JobSpec, progress: Option<&Progress>) -> Resul
         Some(r) => r(&spec.path).map_err(MakeError::Failed)?,
         None => std::fs::read(&spec.path).map_err(|e| MakeError::Failed(format!("{}: {e}", spec.path)))?,
     };
+    if spec.manifest.domain == Domain::RgbToRgb {
+        return make_rgb_product(spec, bytes, progress, began);
+    }
     // the decode and the normalised mosaic wait their turn at the process-wide memory gate, as every decode does
     let (mosaic, layout) = {
         let _held = crate::memory::work_gate().acquire(bytes.len().saturating_mul(4));
@@ -1564,6 +1630,87 @@ pub(crate) fn make_product(spec: &JobSpec, progress: Option<&Progress>) -> Resul
             (ran - decoded).as_secs_f64() * 1e3,
             (began.elapsed() - ran).as_secs_f64() * 1e3
         );
+    }
+    Ok(true)
+}
+
+/// A finished picture as the model for finished pictures takes it: decoded at full size, unrotated (the product is the
+/// file's own pixels, as a raw's is its mosaic's), transparency flattened onto white as the plain picture's is
+/// ([`lcc_codecs::Decoded::to_working`]), in gamma-encoded sRGB clipped to 0 to 1 (colours outside sRGB and values above
+/// white are clipped: the denoised picture of a wide-gamut or HDR file is the sRGB part of it).
+pub(crate) fn srgb_encoded(d: &lcc_codecs::Decoded) -> lcc_raster::Rgb32f {
+    let m = d.space.to_space(&lcc_color::SRGB).to_f32();
+    let enc = lcc_color::transfer::linear_to_srgb;
+    let mut image = d.image.clone();
+    if let Some(a) = d.alpha.as_ref().filter(|a| a.width == image.width && a.height == image.height) {
+        // white is (1, 1, 1) in every space here, so it is flattened before the conversion as after it
+        for (p, &av) in image.data.iter_mut().zip(&a.data) {
+            let av = av.clamp(0.0, 1.0);
+            *p = p.map(|c| c * av + (1.0 - av));
+        }
+    }
+    image.map(|p| {
+        let q = [
+            m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2],
+            m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2],
+            m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2],
+        ];
+        q.map(|v| enc(v.clamp(0.0, 1.0)))
+    })
+}
+
+/// [`make_product`] for a finished picture: decode it whole, run the model over it, write what it gives.
+fn make_rgb_product(spec: &JobSpec, bytes: Vec<u8>, progress: Option<&Progress>, began: web_time::Instant) -> Result<bool, MakeError> {
+    let cancelled = || progress.is_some_and(|p| p.cancel.load(Ordering::Relaxed));
+    let image = {
+        let _held = crate::memory::work_gate().acquire(bytes.len().saturating_mul(16));
+        if lcc_raw::probe(&bytes).is_some() {
+            return Err(MakeError::Unsupported("a raw file takes a model for raw files".into()));
+        }
+        let d = lcc_codecs::decode(&bytes, lcc_codecs::DecodeOptions::default())
+            .map_err(|e| MakeError::Unsupported(format!("not a picture this model can read: {e}")))?;
+        drop(bytes);
+        // the decode and its sRGB copy (12 bytes a pixel each), counted once their size is known; it does not wait (a
+        // second wait on the gate while this job holds a permit could wait for itself)
+        let _pixels = crate::memory::work_gate().acquire_urgent(d.image.data.len().saturating_mul(24));
+        srgb_encoded(&d)
+    };
+    if cancelled() {
+        return Err(MakeError::Cancelled);
+    }
+    let model = loaded(spec)?;
+    let t = spec.manifest.tile as usize;
+    let scratch = model.bytes_per_tile().saturating_add(32usize.saturating_mul(t).saturating_mul(t));
+    let (_, budget) = crate::memory::work_gate().usage();
+    let parallel = spec.parallel.clamp(1, 4).min((budget / scratch.max(1)).max(1));
+    // the picture, the blended result and its weights wait their turn (32 bytes a pixel); the colour restore's two
+    // blurred copies and their working buffers (48 more at the peak) are counted without waiting, so a big picture does
+    // not hold the whole gate (and the grid's thumbnails) for its whole run
+    let _held = crate::memory::work_gate().acquire(image.data.len().saturating_mul(32).saturating_add(scratch.saturating_mul(parallel)));
+    let _restore = crate::memory::work_gate().acquire_urgent(image.data.len().saturating_mul(48));
+    let (runner, parallel) = model.runner(spec.run_on, parallel);
+    let params = Params { tile: t, overlap: spec.manifest.overlap as usize, gain: spec.manifest.gain, clip: None, parallel: parallel.max(1) };
+    let report = |done: usize, total: usize| {
+        if let Some(p) = progress {
+            p.total.store(total, Ordering::Relaxed);
+            p.done.store(done, Ordering::Relaxed);
+        }
+    };
+    let ctl = Control { cancel: progress.map(|p| &p.cancel), progress: Some(&report) };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(params.parallel)
+        .stack_size(STACK)
+        .thread_name(|i| format!("denoise-{i}"))
+        .build()
+        .map_err(|e| MakeError::Failed(format!("could not start the worker threads: {e}")))?;
+    let rgb = pool.install(|| lcc_denoise::run::denoise_rgb(&image, &*runner, &params, &ctl))?;
+    drop(image);
+    if cancelled() {
+        return Err(MakeError::Cancelled);
+    }
+    product::write(&spec.product, &rgb, &spec.key).map_err(|e| MakeError::Failed(format!("could not save the denoised picture: {e}")))?;
+    if lcc_brand::env_os("PROFILE").is_some() {
+        eprintln!("[denoise] finished picture {}×{}: {:.0} ms", rgb.width, rgb.height, began.elapsed().as_secs_f64() * 1e3);
     }
     Ok(true)
 }
@@ -1668,6 +1815,8 @@ pub(crate) struct State {
     /// How a model is loaded (tests put another in).
     pub loader: Loader,
     pub(crate) active: Option<Active>,
+    /// The model in use for finished pictures (`Settings::rgb_model`); `None`: they are not denoised.
+    pub(crate) active_rgb: Option<Active>,
     active_seen: Option<web_time::Instant>,
     /// `settings.json` as last read (with the model choice).
     pub(crate) settings: Settings,
@@ -1704,6 +1853,7 @@ impl Default for State {
             install: None,
             loader: default_loader(),
             active: None,
+            active_rgb: None,
             active_seen: None,
             settings: Settings::default(),
             dirty: true,
@@ -1758,7 +1908,10 @@ impl State {
 impl Session {
     /// Where the active model's tiles run (see [`Model::device`]); `{kind: "none"}` while no model is loaded.
     pub(crate) fn denoise_device(&self) -> Value {
-        let loaded = self.denoise.active.as_ref().and_then(|a| a.model.lock().unwrap_or_else(PoisonError::into_inner).clone());
+        let loaded = [&self.denoise.active, &self.denoise.active_rgb]
+            .into_iter()
+            .flatten()
+            .find_map(|a| a.model.lock().unwrap_or_else(PoisonError::into_inner).clone());
         match loaded {
             Some(m) => m.device(self.denoise.settings.run_on()),
             // the built-in denoiser is made afresh for each photo; what it knows about the card is kept apart
@@ -1785,10 +1938,20 @@ impl Session {
         }
         self.denoise.active_seen = Some(web_time::Instant::now());
         self.denoise.settings = self.denoise.models_dir.as_deref().map(read_settings).unwrap_or_default();
-        let chosen = self.denoise.models_dir.as_deref().and_then(|dir| {
-            let id = self.denoise.settings.model.clone()?;
-            installed_models(dir).into_iter().find(|i| i.manifest.id == id)
-        });
+        let installed = self.denoise.models_dir.as_deref().map(installed_models).unwrap_or_default();
+        // each slot takes the installed model its setting names, and only one made for its kind of photo
+        let pick = |id: Option<&String>, domain: Domain| {
+            let id = id?;
+            installed.iter().find(|i| &i.manifest.id == id && i.manifest.domain == domain).cloned()
+        };
+        let chosen = pick(self.denoise.settings.model.as_ref(), Domain::BayerToRgb);
+        let rgb = pick(self.denoise.settings.rgb_model.as_ref(), Domain::RgbToRgb);
+        let rgb = rgb.map(|i| (i.fingerprint(), i));
+        let rgb_same = match (&self.denoise.active_rgb, &rgb) {
+            (None, None) => true,
+            (Some(a), Some((fp, _))) => a.fingerprint == *fp,
+            _ => false,
+        };
         // without a model of the user's own the built-in denoiser is in use, so AI Denoise needs no set-up; its
         // (made-up) file is in the models folder, which is where its graphics-card set-up is recorded
         let (fingerprint, manifest, onnx) = match chosen {
@@ -1799,21 +1962,57 @@ impl Session {
                 (format!("{}@{}", manifest.id, manifest.version), manifest, onnx)
             }
         };
-        if self.denoise.active.as_ref().is_some_and(|a| a.fingerprint == fingerprint) {
+        let raw_same = self.denoise.active.as_ref().is_some_and(|a| a.fingerprint == fingerprint);
+        if raw_same && rgb_same {
             return;
         }
-        // another model: what was made with the old one is not this one's, and what failed may work now
-        self.denoise.active = Some(Active { id: manifest.id.clone(), manifest, onnx, fingerprint, model: Arc::new(Mutex::new(None)) });
-        for r in self.denoise.running.drain(..) {
+        // another model: what was made with the old one is not this one's, and what failed may work now; the photos of
+        // the other kind keep their job and their place in the queue
+        let mut changed: Vec<Domain> = Vec::new();
+        if !raw_same {
+            self.denoise.active = Some(Active { id: manifest.id.clone(), manifest, onnx, fingerprint, model: Arc::new(Mutex::new(None)) });
+            changed.push(Domain::BayerToRgb);
+        }
+        if !rgb_same {
+            self.denoise.active_rgb = rgb.map(|(fingerprint, i)| Active {
+                id: i.manifest.id.clone(),
+                manifest: i.manifest,
+                onnx: i.onnx,
+                fingerprint,
+                model: Arc::new(Mutex::new(None)),
+            });
+            changed.push(Domain::RgbToRgb);
+        }
+        let affected =
+            |catalog: &lcc_catalog::Catalog, id: PhotoId| catalog.photo(id).and_then(|p| domain_of(p)).is_none_or(|d| changed.contains(&d));
+        let (stop, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.denoise.running).into_iter().partition(|r| affected(&self.catalog, r.photo));
+        self.denoise.running = keep;
+        for r in stop {
             r.progress.cancel_now();
         }
-        self.denoise.queue.clear();
-        self.denoise.failed.clear();
+        let catalog = &self.catalog;
+        self.denoise.queue.retain(|id| !affected(catalog, *id));
+        self.denoise.failed.retain(|id, _| !affected(catalog, *id));
         self.denoise.dirty = true;
     }
 
+    /// The model in use for photo `p`'s kind (raw or finished picture).
+    pub(crate) fn denoise_active_for(&self, p: &Photo) -> Option<&Active> {
+        match domain_of(p)? {
+            Domain::BayerToRgb => self.denoise.active.as_ref(),
+            Domain::RgbToRgb => self.denoise.active_rgb.as_ref(),
+            // no photo is of an upscaler's kind
+            Domain::RgbToRgb4x => None,
+        }
+    }
+
+    /// Is any model in use (for raw photos or for finished pictures)?
+    pub(crate) fn denoise_any_active(&self) -> bool {
+        self.denoise.active.is_some() || self.denoise.active_rgb.is_some()
+    }
+
     fn denoise_spec(&self, p: &Photo) -> Option<(DenoiseSpec, String)> {
-        let (dir, active) = (self.denoise_products_dir()?, self.denoise.active.as_ref()?);
+        let (dir, active) = (self.denoise_products_dir()?, self.denoise_active_for(p)?);
         let key = product_key(&active.fingerprint, p);
         Some((DenoiseSpec { product: product_path(&dir, &key), key: key.clone(), make: None }, key))
     }
@@ -1826,11 +2025,12 @@ impl Session {
         self.denoise.reindexed = Some((self.catalog.revision, web_time::Instant::now()));
         let running: Vec<PhotoId> = self.denoise.running.iter().map(|r| r.photo).collect();
         let mut now: HashMap<PhotoId, DenoiseSpec> = HashMap::new();
-        if let (Some(dir), Some(active)) = (self.denoise_products_dir(), self.denoise.active.as_ref()) {
+        if let Some(dir) = self.denoise_products_dir().filter(|_| self.denoise_any_active()) {
             let names: HashSet<String> =
                 products_in(&dir).into_iter().filter_map(|(p, _, _)| p.file_stem().and_then(|s| s.to_str()).map(str::to_string)).collect();
             if !names.is_empty() {
                 for p in self.catalog.photos().filter(|p| eligible(p) && !running.contains(&p.id)) {
+                    let Some(active) = self.denoise_active_for(p) else { continue };
                     let key = product_key(&active.fingerprint, p);
                     if names.contains(&key) {
                         now.insert(p.id, DenoiseSpec { product: product_path(&dir, &key), key, make: None });
@@ -1895,6 +2095,12 @@ impl Session {
             // the model in use has not been looked at yet (just started)
             return PhotoState::Idle;
         }
+        if self.denoise_active_for(p).is_none() {
+            return PhotoState::Failed {
+                why: "AI Denoise needs a model for finished pictures: install one in Settings ▸ AI Denoise.".into(),
+                unsupported: true,
+            };
+        }
         if self.denoise_products_dir().is_none() {
             return PhotoState::Failed {
                 why: "AI Denoise keeps its pictures in the library folder, and this session has none.".into(),
@@ -1921,7 +2127,7 @@ impl Session {
     /// a photo that failed before is tried again. A photo that is not raw is skipped. Returns how many were queued.
     pub(crate) fn denoise_enqueue(&mut self, ids: &[PhotoId], front: bool, retry: bool) -> usize {
         self.denoise_refresh_active(false);
-        if self.denoise.active.is_none() || self.denoise_products_dir().is_none() {
+        if !self.denoise_any_active() || self.denoise_products_dir().is_none() {
             return 0;
         }
         let mut added = 0;
@@ -2025,7 +2231,7 @@ impl Session {
     fn denoise_job_spec(&self, p: &Photo, parallel: usize) -> Option<JobSpec> {
         let Source::File { path } = &p.source else { return None };
         let (spec, _) = self.denoise_spec(p)?;
-        let active = self.denoise.active.as_ref()?;
+        let active = self.denoise_active_for(p)?;
         Some(JobSpec {
             path: path.clone(),
             read: self.media.file_bytes.clone(),
@@ -2219,7 +2425,7 @@ impl Session {
             self.denoise_reindex();
         }
         self.denoise_poll();
-        if self.denoise.active.is_none() || self.denoise_products_dir().is_none() {
+        if !self.denoise_any_active() || self.denoise_products_dir().is_none() {
             return;
         }
         self.denoise_refill();
@@ -2261,7 +2467,7 @@ impl Session {
 
     /// Is a picture being made, or waiting for its turn with a model to make it? (Headless runs wait for this.)
     pub fn denoise_busy(&self) -> bool {
-        !self.denoise.running.is_empty() || ((!self.denoise.queue.is_empty() || !self.denoise.backlog.is_empty()) && self.denoise.active.is_some())
+        !self.denoise.running.is_empty() || ((!self.denoise.queue.is_empty() || !self.denoise.backlog.is_empty()) && self.denoise_any_active())
     }
 
     /// Keep AI Denoise's rows in the activity stack up to date (each `denoise.pump`). One batch row while a photo is
@@ -2362,8 +2568,11 @@ impl Session {
         }
         self.denoise_refresh_active(false);
         let name = &p.file_name;
-        if self.denoise.active.is_none() {
-            return Err(format!("{name}: Denoise is on for this photo but no denoise model is chosen; choose one in Settings, or set Denoise to 0"));
+        if self.denoise_active_for(&p).is_none() {
+            let kind = if domain_of(&p) == Some(Domain::RgbToRgb) { "finished pictures" } else { "raw photos" };
+            return Err(format!(
+                "{name}: Denoise is on for this photo but no denoise model is chosen for {kind}; choose one in Settings, or set Denoise to 0"
+            ));
         }
         if self.denoise_products_dir().is_none() {
             return Err(format!("{name}: Denoise needs a library on disk to keep its pictures in"));

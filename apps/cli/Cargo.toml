@@ -37,6 +37,7 @@ dhat = { workspace = true, optional = true }
 default = ["denoise", "heif"]
 denoise = ["lcc-engine/denoise"]
 rawnind-model = ["denoise", "lcc-engine/rawnind-model"]
+realesrgan-model = ["denoise", "lcc-engine/realesrgan-model"]
 own-model = ["denoise", "lcc-engine/own-model"]
 # Heap profiling: `cargo run --release -p lcc-cli --features dhat-heap -- snapshot …` counts
 # every allocation (live/peak bytes in `library.memory` / `ui.inspect`) and writes dhat-heap.json

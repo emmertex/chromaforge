@@ -32,7 +32,8 @@ pub fn report(bytes: &[u8], camera: &str) -> Result<Value, String> {
         json!({"name": d.name, "model": d.model, "source": if calibrated.is_some() { "calibrated" } else { "dcp" }, "look": calibrated})
     });
     let info = raw.info();
-    let lens = crate::lens_profiles::resolve_raw(&info, || lcc_meta::extract(bytes), None);
+    let window = lcc_raw::sensor_window(bytes, [info.active_area.width, info.active_area.height]);
+    let lens = crate::lens_profiles::resolve_raw(&info, window, || lcc_meta::extract(bytes), None);
     let lens_geometry = crate::camera_preview::lens_geometry(&raw.opcodes.list3);
     raw.opcodes.list3.retain(|op| !op.is_lens_correction());
     let scale = crate::files::WbScaleOf::new(raw.format, &raw.color, raw.wb_multipliers, &raw.metadata);
