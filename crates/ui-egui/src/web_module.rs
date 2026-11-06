@@ -91,7 +91,6 @@ pub static WEB: WebModule = WebModule;
 
 /// Most thumbnails the preview draws.
 const PREVIEW_MAX: usize = 60;
-const COLUMN_W: f32 = 300.0;
 
 impl Module for WebModule {
     fn id(&self) -> ModuleId {
@@ -108,7 +107,7 @@ impl Module for WebModule {
         let t = Tokens::get(ui.ctx());
         let mut area = ui.available_rect_before_wrap();
         if crate::module::edge_visible(app, Edge::Bottom) {
-            let film = Rect::from_min_max(pos2(area.left(), area.bottom() - t.film_h), area.max);
+            let film = Rect::from_min_max(pos2(area.left(), area.bottom() - app.ui.film_height()), area.max);
             area.max.y = film.top();
             crate::panels::detail::filmstrip(app, ui, film);
         }
@@ -126,13 +125,12 @@ impl Module for WebModule {
             refresh_lists(app, &mut st);
             st.loaded = true;
         }
-        let col_w = COLUMN_W.min(area.width() * 0.5);
-        let preview_rect = Rect::from_min_max(area.min, pos2(area.right() - col_w, area.bottom()));
-        let col_rect = Rect::from_min_max(pos2(preview_rect.right(), area.top()), area.max);
+        let mut preview_rect = area;
+        let col_rect = crate::panels::split_side(ui, &mut preview_rect, false, "web:settings", &mut app.ui.right_width, crate::state::RIGHT_WIDTH);
         ui.painter().rect_filled(col_rect, 0.0, t.chrome);
+        ui.painter().vline(col_rect.left(), col_rect.y_range(), egui::Stroke::new(1.0, t.divider));
         preview(ui, app, &st.settings, preview_rect);
         let mut col = ui.new_child(egui::UiBuilder::new().max_rect(col_rect.shrink2(vec2(10.0, 8.0))).id_salt("web-settings"));
-        register(ui.ctx(), "panel:web:settings", col_rect);
         egui::ScrollArea::vertical().id_salt("web-settings-scroll").auto_shrink([false, false]).show(&mut col, |ui| {
             settings_column(ui, app, &mut st);
         });

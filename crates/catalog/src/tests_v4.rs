@@ -867,3 +867,34 @@ fn an_older_store_that_cant_be_marked_is_refused_untouched() {
     assert_eq!(r.upgraded_from, Some(11));
     assert!(c.photos().any(|p| p.rating == 4), "the log's record was replayed");
 }
+
+/// An exit backup is made only when the catalog changed since the last one: its ops or the
+/// library's prefs.json (ported from OneSlips' LR-BACKUP).
+#[test]
+fn exit_backup_skips_a_catalog_unchanged_since_the_last() {
+    let s = Scratch::new("bk-same");
+    let (mut j, mut c, _) = open(s.path());
+    fill(&mut j, &mut c, 4);
+    let st = CatalogSettings { backup: BackupSchedule::EveryExit, ..CatalogSettings::load(s.path()) };
+    st.save(s.path()).unwrap();
+    assert!(j.backup_if_due(&c).unwrap().is_some(), "the first one");
+    let mark = j.backup_mark().unwrap();
+    assert_eq!(CatalogSettings::load(s.path()).backup_mark.as_deref(), Some(mark.as_str()), "kept with the settings");
+    assert!(j.backup_if_due(&c).unwrap().is_none(), "nothing changed");
+    assert!(!CatalogSettings::load(s.path()).backup_wanted(library::now_secs(), Some(&mark)));
+    // an op since
+    let mut album = Album::new(c.alloc_album_id(), "More");
+    album.photos = Vec::new();
+    let op = Op::AddAlbum { album };
+    c.apply(op.clone()).unwrap();
+    j.append(&[op]).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(j.backup_if_due(&c).unwrap().is_some(), "an op since");
+    assert!(j.backup_if_due(&c).unwrap().is_none());
+    // the library's presets and habits since
+    std::fs::write(s.path().join("prefs.json"), b"{\"presets\": []}").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(j.backup_if_due(&c).unwrap().is_some(), "prefs.json changed");
+    // unknown: changed
+    assert!(CatalogSettings::load(s.path()).backup_wanted(library::now_secs(), None));
+}

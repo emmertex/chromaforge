@@ -163,6 +163,61 @@ fn import_presets_keep_the_tabs_settings() {
     assert!(try_exec(&mut h, "import.usePreset", json!({"name": "none such"}))["ok"] == false);
 }
 
+/// A Library filter must not hide the folder the Import tab browses (the tab has no filter bar of
+/// its own): it is put aside while the tab is up, and back when the Library tab returns.
+#[test]
+fn library_filters_dont_hide_the_browsed_folder() {
+    let mut h = app([1400.0, 900.0], "classic");
+    let dir = folder("filtered", 3);
+    exec(&mut h, "library.filter", json!({"rating": 5, "ratingOp": "atLeast"}));
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.ui.tab, Tab::Import);
+    assert!(h.app.session.filters_off(), "the filter is put aside");
+    assert_eq!(h.app.session.visible_cloned().len(), 3, "every file of the folder is shown");
+    // the filter comes back with the Library tab
+    exec(&mut h, "view.libraryTab", json!({}));
+    assert!(!h.app.session.filters_off());
+    assert_eq!(h.app.session.visible_cloned().len(), 0, "the rating-5 filter is back");
+    // and it is put aside again the next time the folder is browsed
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.session.visible_cloned().len(), 3);
+    exec(&mut h, "view.libraryTab", json!({}));
+    assert!(!h.app.session.filters_off());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A module switch while the Browse tab is up leaves the tab first (the Classic module bar's rule,
+/// kept for the Modern Develop pill, shortcuts and agents too): the tab's sheet must never end up
+/// drawn under another module's chrome. Develop with a browsed photo active is the exception that
+/// gives the rule a meaning: it develops the browsed photo without importing it.
+#[test]
+fn switching_modules_leaves_the_browse_tab_first() {
+    for layout in ["classic", "modern"] {
+        let mut h = app([1400.0, 900.0], layout);
+        let dir = folder(&format!("switch-{layout}"), 2);
+        exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+        assert_eq!(h.app.ui.tab, Tab::Import, "{layout}");
+        // Develop on the browsed photo, in place: the tab hands over and the edit adds no
+        // library photo
+        exec(&mut h, "module.develop", json!({}));
+        assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop, "{layout}");
+        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Browse tab handed over");
+        h.settle(SETTLE);
+        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Browse sheet under Develop");
+        assert!(h.app.session.catalog.photos().filter(|p| p.in_library()).count() == 0, "{layout}");
+        // and the way back works: the folder view is still on, so the Browse tab comes back
+        exec(&mut h, "module.library", json!({}));
+        assert_eq!(h.app.ui.module, crate::module::ModuleId::Library, "{layout}");
+        assert_eq!(h.app.ui.tab, Tab::Import, "{layout}: the folder view brings Browse back");
+        assert!(matches!(h.app.session.source, lcc_engine::LibrarySource::Folder), "{layout}");
+        // another module leaves the tab without developing anything
+        exec(&mut h, "module.map", json!({}));
+        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Browse tab handed over");
+        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Browse sheet under Map");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// The tab in every layout: its bar and button are drawn, and on a narrow window the sources and
 /// settings are a tap away.
 #[test]
@@ -229,4 +284,284 @@ fn the_tab_offers_a_camera_profile_per_body_and_imports_with_it() {
         assert_eq!(profile(&h, &keys[1]), "", "the other body: automatic");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn recipe_preset(h: &mut Headless, name: &str, control: &str, value: f64) -> String {
+    let r = exec(h, "preset.saveRecipe", json!({"name": name, "recipe": [{"id": control, "value": value}]}));
+    r["id"].as_str().unwrap().to_string()
+}
+
+/// The preset stack (IMPORT-STACK, ported from OneSlips' Import panel): the Apply card lists the
+/// presets in order (a single preset from older settings first), a row moves later or goes, and
+/// the tab imports with the stack in that order.
+#[test]
+fn the_tab_imports_with_a_preset_stack_in_the_order_shown() {
+    let mut h = app([1400.0, 1000.0], "classic");
+    h.app.session = lcc_engine::Session::new().with_fs();
+    let dir = folder("stack", 2);
+    let bright = recipe_preset(&mut h, "Bright", "light.exposure", 0.5);
+    let brighter = recipe_preset(&mut h, "Brighter", "light.exposure", 1.0);
+    let contrast = recipe_preset(&mut h, "Contrast", "light.contrast", 20.0);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    // an old single preset and a stack: one list, the single one first
+    exec(&mut h, "import.configure", json!({"take": "all", "previews": "none", "preset": bright, "presets": [brighter, contrast]}));
+    assert!(has_widget(&mut h, "label:importPreset-2"), "three rows");
+    assert_eq!(h.app.ui.settings.import_tab.opts.presets, [bright.clone(), brighter.clone(), contrast.clone()]);
+    assert!(h.app.ui.settings.import_tab.opts.preset.is_empty(), "folded into the stack");
+    assert!(has_widget(&mut h, "combo:importPresetAdd") && has_widget(&mut h, "check:importPresetProfile"));
+    // Bright goes after Brighter: it is applied last, so its exposure wins
+    let r = h.request("ui.clickWidget", json!({"id": "icon:importPresetDown-0"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.settings.import_tab.opts.presets, [brighter.clone(), bright.clone(), contrast.clone()]);
+    // Contrast goes
+    let r = h.request("ui.clickWidget", json!({"id": "icon:importPresetRemove-2"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.settings.import_tab.opts.presets, [brighter.clone(), bright.clone()]);
+    let ids = h.app.session.visible_cloned();
+    exec(&mut h, "import.start", json!({}));
+    h.step_until(SETTLE, |h| h.app.import.is_none());
+    let p = h.app.session.catalog.photo(ids[0]).unwrap();
+    assert!(!p.local);
+    assert!((p.develop.light.exposure - 0.5).abs() < 1e-6, "Bright last: {}", p.develop.light.exposure);
+    assert!(p.develop.light.contrast.abs() < 1e-6, "Contrast was taken off the stack");
+    let steps: Vec<&str> = p.history.iter().filter(|s| s.label.starts_with("Preset: ")).map(|s| s.label.as_str()).collect();
+    assert_eq!(steps, ["Preset: Brighter", "Preset: Bright"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The import review (Import as a tab off) shows the same stack, starts with the one used last,
+/// imports with it in order and keeps what it ran with for the next import.
+#[test]
+fn the_review_imports_with_the_preset_stack_used_last_and_keeps_it() {
+    let mut h = app([1400.0, 1000.0], "classic");
+    h.app.ui.settings.import_as_tab = false;
+    h.app.session = lcc_engine::Session::new().with_fs();
+    let bright = recipe_preset(&mut h, "Bright", "light.exposure", 0.5);
+    let contrast = recipe_preset(&mut h, "Contrast", "light.contrast", 20.0);
+    h.app.ui.settings.import_tab.opts.presets = vec![bright.clone()];
+    let dir = folder("review-stack", 2);
+    exec(&mut h, "dialog.import", json!({"path": dir.to_string_lossy()}));
+    h.step_until(SETTLE, |h| matches!(&h.app.ui.dialog, Some(Dialog::Import { opts }) if opts.candidates.len() == 2));
+    let Some(Dialog::Import { opts }) = &mut h.app.ui.dialog else { panic!("no review") };
+    assert_eq!(opts.presets, std::slice::from_ref(&bright), "the stack used last");
+    opts.presets.push(contrast.clone());
+    assert!(has_widget(&mut h, "label:importPreset-1") && has_widget(&mut h, "combo:importPresetAdd"), "the review lists the stack");
+    let r = h.request("ui.dialog.confirm", json!({}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step_until(SETTLE, |h| h.app.import.is_none());
+    let photos: Vec<_> = h.app.session.catalog.photos().filter(|p| !p.local).cloned().collect();
+    assert_eq!(photos.len(), 2);
+    for p in photos {
+        assert!((p.develop.light.exposure - 0.5).abs() < 1e-6 && (p.develop.light.contrast - 20.0).abs() < 1e-6, "both presets");
+        let steps: Vec<&str> = p.history.iter().filter(|s| s.label.starts_with("Preset: ")).map(|s| s.label.as_str()).collect();
+        assert_eq!(steps, ["Preset: Bright", "Preset: Contrast"]);
+    }
+    assert_eq!(h.app.ui.settings.import_tab.opts.presets, [bright, contrast], "kept for the next import");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// "Develop without Import" opens the browsed folder's active photo in the Library tab's Develop
+/// module without importing it: the browse stays on, an edit lands on the photo (the sidecar
+/// carries it, the catalog's library stays empty), and going back to the Browse tab brings the
+/// folder view back.
+#[test]
+fn develop_without_import_edits_a_browsed_photo_in_place() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.app.session = lcc_engine::Session::new().with_fs();
+    h.settle(SETTLE);
+    let dir = folder("develop-local", 2);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.session.visible_cloned().len(), 2);
+    let r = exec(&mut h, "import.develop", json!({}));
+    assert_eq!(r["module"], "develop");
+    assert_eq!(h.app.ui.tab, Tab::Library, "the Library tab shows the Develop module");
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop);
+    assert_eq!(h.app.session.source, lcc_engine::LibrarySource::Folder, "the folder view stays on");
+    // an edit on the browsed photo, without the photo joining the library
+    let active = h.app.session.active().expect("the browsed photo is active");
+    h.app.run("develop.set", json!({"control": "light.exposure", "value": 0.5})).unwrap();
+    let p = h.app.session.catalog.photo(active).expect("the photo is on record");
+    assert!((p.develop.light.exposure - 0.5).abs() < 1e-6, "the edit lands");
+    assert!(p.local && !p.in_library(), "browsed only: no library photo was added");
+    // the folder view comes back with the Browse tab
+    exec(&mut h, "view.importTab", json!({}));
+    assert_eq!(h.app.ui.tab, Tab::Import);
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Library);
+    assert_eq!(h.app.session.visible_cloned().len(), 2, "browsing again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// "Develop without Import" without a photo chosen refuses with a reason, and a library tab
+/// switch while not browsing refuses too.
+#[test]
+fn develop_without_import_needs_a_browse_and_a_photo() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.settle(SETTLE);
+    assert!(try_exec(&mut h, "import.develop", json!({}))["ok"] == false, "nothing browsed");
+    let dir = folder("develop-guard", 1);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    // the browse makes its first photo active; deselecting refuses
+    exec(&mut h, "library.select", json!({"ids": []}));
+    assert!(try_exec(&mut h, "import.develop", json!({}))["ok"] == false, "no photo chosen");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The browse quick filter: Show All / Show Not Imported in the bar — by default only the files
+/// an import would take, Show All adds the ones the library has already with an "In library"
+/// badge on their cells.
+#[test]
+fn browse_show_all_marks_photos_in_the_library() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.app.session = lcc_engine::Session::new().with_fs();
+    h.settle(SETTLE);
+    let dir = folder("show-all", 2);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert!(has_widget(&mut h, "button:browseShow-0") && has_widget(&mut h, "button:browseShow-1"), "the quick filter is in the bar");
+    // the first photo joins the library, as Add to My Photos does
+    let first = h.app.session.visible_cloned()[0];
+    exec(&mut h, "photo.addToLibrary", json!({"ids": [first.0]}));
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.session.visible_cloned().len(), 1, "not imported is the default");
+    // Show All: both files, the library one badged
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy(), "show": "all"}));
+    assert_eq!(h.app.session.visible_cloned().len(), 2);
+    let library_one = h.app.session.visible_cloned().into_iter().find(|id| h.app.session.catalog.photo(*id).is_some_and(|p| p.in_library()));
+    assert_eq!(library_one, Some(first), "the library photo shows");
+    h.step();
+    assert!(
+        library_one.is_some_and(|id| h.app.widgets.iter().any(|(n, _)| *n == format!("badge:inLibrary:{}", id.0))),
+        "the In library badge is on its cell"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn widget_rect(h: &Headless, id: &str) -> Option<egui::Rect> {
+    h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r)
+}
+
+/// The Import Settings column resizes by its left edge, as the side panels do, and the width is
+/// part of the saved UI state (ui.json).
+#[test]
+fn the_import_settings_column_resizes_by_its_left_edge_and_remembers_it() {
+    let mut h = app([1600.0, 900.0], "compact");
+    h.settle(SETTLE);
+    exec(&mut h, "dialog.import", json!({}));
+    assert!(has_widget(&mut h, "panel:importSettings"));
+    let before = widget_rect(&h, "panel:importSettings").unwrap();
+    assert!((before.width() - crate::state::IMPORT_SETTINGS_WIDTH.default).abs() <= 1.0, "{before:?}");
+    let (x, y) = (before.left() + 1.0, before.center().y);
+    let r = h.request("ui.drag", json!({"x": x, "y": y, "toX": x - 120.0, "toY": y, "steps": 12}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    for _ in 0..3 {
+        h.step();
+    }
+    let w = h.app.ui.import_settings_width;
+    assert!((w - (crate::state::IMPORT_SETTINGS_WIDTH.default + 120.0)).abs() <= 2.0, "{w}");
+    assert!((widget_rect(&h, "panel:importSettings").unwrap().width() - w).abs() <= 1.0);
+    // kept in the saved UI state
+    let saved = serde_json::to_value(&h.app.ui).unwrap();
+    let back: crate::state::UiState = serde_json::from_value(saved).unwrap();
+    assert_eq!(back.import_settings_width, w);
+}
+
+/// The Import tab culls with Library's toolbar (flags, rating, labels, sort, thumbnail size) and
+/// filter bar when they are on, as the Library grid does.
+#[test]
+fn the_import_tab_draws_the_toolbar_and_the_filter_bar_when_they_are_on() {
+    let mut h = app([1600.0, 900.0], "classic");
+    h.app.ui.toolbar = true;
+    h.app.ui.filter_bar = true;
+    h.settle(SETTLE);
+    let dir = folder("toolbar", 2);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.ui.tab, Tab::Import);
+    assert!(has_widget(&mut h, "importToolbar"), "the toolbar under the browsed photos");
+    assert!(has_widget(&mut h, "filterbar"), "the filter bar above them");
+    let bar = widget_rect(&h, "importToolbar").unwrap();
+    let settings = widget_rect(&h, "panel:importSettings").unwrap();
+    assert!(bar.right() <= settings.left() + 1.0, "under the photos, beside the settings: {bar:?} {settings:?}");
+    // off: neither
+    h.app.ui.toolbar = false;
+    h.app.ui.filter_bar = false;
+    assert!(!has_widget(&mut h, "importToolbar") && !has_widget(&mut h, "filterbar"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `n` synthetic presets in `folders` folders (favourites when `favorite`), named so that one of
+/// them, `long`, is much longer than the rest.
+fn many_presets(h: &mut Headless, n: usize, folders: usize, favorite: bool, long: &str) {
+    let base = lcc_develop::Preset { builtin: false, ..h.app.session.presets.iter().next().expect("a built-in preset").clone() };
+    for i in 0..n {
+        let name = if i == 0 { long.to_string() } else { format!("{i:05} Look") };
+        h.app.session.presets.push(lcc_develop::Preset {
+            id: format!("user.synthetic.{i}"),
+            name,
+            group: format!("{:03}-Folder", i % folders.max(1)),
+            favorite,
+            ..base.clone()
+        });
+    }
+}
+
+fn open_add_preset(h: &mut Headless) {
+    exec(h, "dialog.import", json!({}));
+    assert!(has_widget(h, "combo:importPresetAdd"));
+    let r = h.request("ui.clickWidget", json!({"id": "combo:importPresetAdd"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    for _ in 0..4 {
+        h.step();
+    }
+}
+
+fn text_width(h: &Headless, text: &str) -> f32 {
+    h.view.ctx.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), egui::Color32::WHITE).size().x)
+}
+
+/// LR-PRESET-PICKER: the Add a preset list is as wide as its longest name (a narrow list showed
+/// "01 Ava Ce…"), within the screen; Manage Presets… sits beside it.
+#[test]
+fn the_preset_picker_is_as_wide_as_its_longest_name_within_the_screen() {
+    let long = "01 Ava Ceremony Warm Film Look With Soft Highlights";
+    for layout in ["classic", "compact"] {
+        let mut h = app([1600.0, 900.0], layout);
+        h.settle(SETTLE);
+        many_presets(&mut h, 20, 3, true, long);
+        open_add_preset(&mut h);
+        let row = widget_rect(&h, "presetPick:import-preset:user.synthetic.0").expect("the long preset's row");
+        assert!(row.width() >= text_width(&h, long), "{layout}: row {row:?} for a {} pt name", text_width(&h, long));
+        assert!(has_widget(&mut h, "button:importPresetsManage"), "{layout}: Manage Presets… beside the list");
+    }
+    // a name wider than the screen: the list stops at the screen's edge
+    let mut h = app([900.0, 700.0], "classic");
+    h.settle(SETTLE);
+    many_presets(&mut h, 5, 1, true, &"Very long name ".repeat(40));
+    open_add_preset(&mut h);
+    let row = widget_rect(&h, "presetPick:import-preset:user.synthetic.0").expect("the long preset's row");
+    assert!(row.width() <= 900.0, "{row:?}");
+}
+
+/// With 10 000 presets in 40 folders, all on show, the picker lays out only the rows in view.
+#[test]
+fn the_preset_picker_lays_out_only_the_rows_in_view_of_ten_thousand() {
+    let mut h = app([1600.0, 900.0], "compact");
+    h.settle(SETTLE);
+    many_presets(&mut h, 10_000, 40, true, "First");
+    open_add_preset(&mut h);
+    let rows = h.app.widgets.iter().filter(|(w, _)| w.starts_with("presetPick:import-preset:")).count();
+    assert!(rows > 0 && rows < 80, "{rows} rows laid out of 10 000");
+}
+
+/// The Manage Presets… button opens the Presets Manager.
+#[test]
+fn manage_presets_opens_the_presets_manager() {
+    let mut h = app([1600.0, 900.0], "classic");
+    h.settle(SETTLE);
+    exec(&mut h, "dialog.import", json!({}));
+    assert!(has_widget(&mut h, "button:importPresetsManage"));
+    let r = h.request("ui.clickWidget", json!({"id": "button:importPresetsManage"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(h.app.ui.dialog.is_some(), "a dialog is open: {:?}", h.app.ui.dialog);
 }

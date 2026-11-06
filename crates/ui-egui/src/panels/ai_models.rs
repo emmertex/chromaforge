@@ -55,25 +55,23 @@ fn sam3_folder(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     super::settings::row(ui, t, crate::i18n::tr("Folder"), |ui| {
         ui.add(egui::Label::new(egui::RichText::new(if current.is_empty() { "—".to_string() } else { current.clone() }).color(t.text)).truncate());
     });
-    ui.horizontal(|ui| {
+    crate::dialog_frame::control_row(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
         let can = app.services.picker.is_some() || app.services.pick_folder.is_some();
-        let r = ui.add_enabled(can, egui::Button::new(crate::i18n::tr("Choose…")));
-        crate::widgets::register(ui.ctx(), "button:samFolderChoose", r.rect);
+        let r = ui.add_enabled_ui(can, |ui| crate::widgets::text_button(ui, "samFolderChoose", "Choose…", false)).inner;
         if r.clicked()
             && let Err(e) = app.run("app.sam3Folder", json!({}))
         {
             app.toast_error(ui.ctx(), e);
         }
         if custom {
-            let r = ui.button(crate::i18n::tr("Use the Default Folder"));
-            crate::widgets::register(ui.ctx(), "button:samFolderDefault", r.rect);
+            let r = crate::widgets::text_button(ui, "samFolderDefault", "Use the Default Folder", false);
             if r.clicked() {
                 let _ = app.run("app.sam3Folder", json!({"dir": ""}));
             }
         }
         if app.session.segmenter.dir.is_some() && crate::menus::ui_enabled(app, "app.openSamModelFolder") {
-            let r = ui.button(crate::i18n::tr(crate::menus::reveal_label()));
-            crate::widgets::register(ui.ctx(), "button:samFolder", r.rect);
+            let r = crate::widgets::text_button(ui, "samFolder", crate::menus::reveal_label(), false);
             if r.clicked()
                 && let Err(e) = app.run("app.openSamModelFolder", json!({}))
             {
@@ -88,8 +86,7 @@ fn sam3_folder(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "This build has no download address for SAM 3: put model.safetensors, vocab.json and merges.txt from Meta's facebook/sam3 in the folder above, and Object and Describe masks work as soon as they are there.",
         );
         let help = super::dialogs::SAM_HELP;
-        let r = ui.link(crate::i18n::tr("How to install the model")).on_hover_text(help);
-        crate::widgets::register(ui.ctx(), "link:samHelp", r.rect);
+        let r = crate::dialog_frame::link(ui, Some("samHelp"), "How to install the model").on_hover_text(help);
         if r.clicked()
             && let Err(e) = crate::links::open(app, help)
         {
@@ -154,11 +151,12 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
         }
     }
     crate::panels::denoise::ai_models_section(app, ui, &t);
+    crate::panels::ml_models::models_section(app, ui, &t);
     crate::dialog_frame::group_begin(ui, Some("Object masks use"));
     let current = app.session.segmenter.object_model().key();
     let items: Vec<(&str, &str)> = OBJECT_MODELS.iter().map(|(k, l)| (*l, *k)).collect();
     let active = OBJECT_MODELS.iter().position(|(k, _)| *k == current);
-    if let Some(i) = crate::widgets::segmented(ui, "aiObjectModel", &items, active, OBJECT_MODELS.len())
+    if let Some(i) = choice_row(ui, "aiObjectModel", &items, active)
         && let Some((k, _)) = OBJECT_MODELS.get(i)
     {
         *error = app.run("ai.models.setObjectModel", json!({"model": k})).err();
@@ -173,7 +171,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
     let current = app.session.segmenter.scene_model().key();
     let items: Vec<(&str, &str)> = SCENE_MODELS.iter().map(|(k, l)| (*l, *k)).collect();
     let active = SCENE_MODELS.iter().position(|(k, _)| *k == current);
-    if let Some(i) = crate::widgets::segmented(ui, "aiSceneModel", &items, active, SCENE_MODELS.len())
+    if let Some(i) = choice_row(ui, "aiSceneModel", &items, active)
         && let Some((k, _)) = SCENE_MODELS.get(i)
     {
         *error = app.run("ai.models.setSceneModel", json!({"model": k})).err();
@@ -192,4 +190,16 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, error: &mut Option<String>) {
     if running {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
     }
+}
+
+/// The model choices side by side, each sharing the row; in the Classic Settings window the row is
+/// no wider than its help text, so two or three buttons don't stretch across a wide window.
+fn choice_row(ui: &mut egui::Ui, id: &str, items: &[(&str, &str)], active: Option<usize>) -> Option<usize> {
+    ui.scope(|ui| {
+        if crate::dialog_frame::plain(ui) {
+            ui.set_max_width(ui.available_width().min(crate::dialog_frame::HELP_MAX_W));
+        }
+        crate::widgets::segmented(ui, id, items, active, items.len())
+    })
+    .inner
 }

@@ -346,9 +346,10 @@ fn parse_tree(s: &str) -> Result<Node, XmpError> {
                 }
             }
             Event::End(_) if stack.len() > 1 => {
-                let n = stack.pop().expect("len > 1");
                 scopes.pop();
-                if let Some(parent) = stack.last_mut() {
+                if let Some(n) = stack.pop()
+                    && let Some(parent) = stack.last_mut()
+                {
                     parent.children.push(n);
                 }
             }
@@ -381,10 +382,12 @@ fn parse_tree(s: &str) -> Result<Node, XmpError> {
     }
     // close unterminated elements leniently
     while stack.len() > 1 {
-        let n = stack.pop().expect("len > 1");
-        stack.last_mut().expect("root").children.push(n);
+        let Some(n) = stack.pop() else { break };
+        if let Some(parent) = stack.last_mut() {
+            parent.children.push(n);
+        }
     }
-    Ok(stack.pop().expect("root"))
+    stack.pop().ok_or_else(|| XmpError::Xml("no root element".into()))
 }
 
 fn is_rdf_meta_attr(k: &str) -> bool {
@@ -635,6 +638,7 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         city: first("photoshop:City"),
         state: first("photoshop:State"),
         country: first("photoshop:Country"),
+        country_code: first("Iptc4xmpCore:CountryCode"),
         copyright: first("dc:rights"),
         copyright_marked: first("xmpRights:Marked").and_then(|s| match s.to_ascii_lowercase().as_str() {
             "true" => Some(true),
@@ -875,6 +879,7 @@ pub fn write_xmp_filters(
     push("photoshop:City", meta.city.clone());
     push("photoshop:State", meta.state.clone());
     push("photoshop:Country", meta.country.clone());
+    push("Iptc4xmpCore:CountryCode", meta.country_code.clone());
     push("xmpRights:Marked", meta.copyright_marked.map(|m| if m { "True" } else { "False" }.to_string()));
     push("xmpRights:WebStatement", meta.copyright_url.clone());
     push("photoshop:AuthorsPosition", Some(meta.contact.job_title.trim().to_string()).filter(|v| !v.is_empty()));
@@ -1103,6 +1108,7 @@ mod tests {
             city: Some("Paris".into()),
             state: Some("Île-de-France".into()),
             country: Some("France".into()),
+            country_code: Some("FR".into()),
             contact: crate::CreatorContact { job_title: "Lead".into(), email: "a@b.c".into(), city: "Lyon & co".into(), ..Default::default() },
             keywords: vec!["tree".into(), "sky & sea".into()],
             hierarchical_keywords: vec!["Places|France|Paris".into()],

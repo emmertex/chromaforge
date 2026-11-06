@@ -80,7 +80,7 @@ fn file_name(path: &str) -> String {
 fn body_keys(s: &Session, ids: &[lcc_catalog::PhotoId]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for id in ids {
-        if let Some(k) = s.catalog.photo(*id).and_then(|ph| crate::profile_bodies::key_of(ph))
+        if let Some(k) = s.catalog.photo(*id).and_then(|ph| s.body_key(ph, true))
             && !out.contains(&k)
         {
             out.push(k);

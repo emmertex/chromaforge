@@ -72,7 +72,7 @@ pub fn canon(ifd: &Ifd, orientation: Orientation) -> Option<FocusPoint> {
         return None;
     }
     let n = usize::try_from(at(2)?).ok().filter(|n| (1..=MAX_POINTS).contains(n))?;
-    let valid = usize::try_from(at(3)?).ok()?.clamp(1, n);
+    let valid = usize::try_from(at(3)?).ok().filter(|&v| v > 0)?.min(n);
     let (fw, fh) = (f64::from(at(6)?), f64::from(at(7)?));
     if !(fw >= 16.0 && fh >= 16.0) {
         return None;
@@ -167,6 +167,10 @@ mod tests {
         zero[6] = 0;
         assert!(canon(&ifd(AF_INFO2, zero), Orientation::Normal).is_none());
         assert!(canon(&Ifd::default(), Orientation::Normal).is_none());
+        // a record with no valid point gives none, not a clamped first one
+        let mut none_valid = record(6, 115, 115, 1087, 911, true);
+        none_valid[3] = 0;
+        assert!(canon(&ifd(AF_INFO2, none_valid), Orientation::Normal).is_none(), "no valid points");
         // the mask says nothing in focus: the only valid point still makes the box
         assert!(canon(&ifd(AF_INFO2, record(7, 576, 480, -348, 270, false)), Orientation::Normal).is_some());
     }

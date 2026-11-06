@@ -1,5 +1,7 @@
-//! The Settings dialog (⌘,): General, Import, Folders, Performance, Display, Interface, Slideshow, Faces,
-//! AI Denoise, Controls (control surfaces, `panels::controls`).
+//! The Settings window (⌘,): one row of tabs ([`TABS`]: General, Import, Folders, Performance,
+//! Display, Interface, Slideshow, Faces, Profiles, AI Denoise, AI Models, Generative Fill,
+//! Shortcuts, Controls, Connections, Sync), those that don't fit under More. The touch screen
+//! (`crate::settings_screen`) shows the same tabs' rows by section.
 //!
 //! Changes apply immediately (no OK/Cancel). Where they are stored:
 //! - **app settings** ([`crate::state::AppSettings`]: startup view, delete confirmation, GPU,
@@ -23,7 +25,10 @@ use crate::widgets::register;
 /// Sections `app.settings {section}` can open, with their tab.
 pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import")];
 
-/// (id, label) of the tabs, in order.
+/// (id, label) of the tabs, in the order of the Settings window's one row of tabs (OneSlips,
+/// LR-PREF-WINDOW): the settings used most first, the editing helpers and the AI next, the
+/// keyboard, control surfaces and other devices last. Tabs that don't fit the window's width are
+/// under More at the end of the row.
 pub const TABS: &[(&str, &str)] = &[
     ("general", "General"),
     ("import", "Import"),
@@ -33,14 +38,14 @@ pub const TABS: &[(&str, &str)] = &[
     ("interface", "Interface"),
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
+    ("profiles", "Profiles"),
     ("denoise", "AI Denoise"),
     ("ai", "AI Models"),
-    ("profiles", "Profiles"),
-    ("connections", "Connections"),
-    ("sync", "Sync"),
+    ("genfill", "Generative Fill"),
     ("shortcuts", "Shortcuts"),
     ("controls", "Controls"),
-    ("genfill", "Generative Fill"),
+    ("connections", "Connections"),
+    ("sync", "Sync"),
 ];
 
 /// The room Settings ▸ Slideshow wants: its settings column, the gap and the live preview.
@@ -49,56 +54,299 @@ pub(crate) const SLIDESHOW_W: f32 = SLIDESHOW_COLUMN_W + 12.0 + super::slide_lay
 /// Thumbnail cache sizes offered (MB).
 const CACHE_SIZES: [u32; 5] = [512, 1024, 2048, 4096, 8192];
 
-pub(super) const LABEL_W: f32 = 160.0;
+/// The label column of the Settings window's rows (it gives up room in a narrow window).
+pub(super) const LABEL_W: f32 = 170.0;
 /// The label column of the same rows outside the dialog (the slideshow panels).
 const PANEL_LABEL_W: f32 = 150.0;
-/// The category list's width.
-const SIDEBAR_W: f32 = 150.0;
-/// The content column's width (the dialog keeps one size whatever the category).
-const CONTENT_W: f32 = 600.0;
-/// The dialog's body height, at most (it shrinks to fit a short window).
-const BODY_H: f32 = 560.0;
 
-/// The dialog: the category list on the left, the selected category's settings on the right in
-/// titled groups, scrolling on their own (the list stays put). `max_height` is the room the dialog
-/// has for its body.
-pub fn body(app: &mut LccApp, ui: &mut egui::Ui, tab: &mut String, max_height: f32) {
+/// The Settings window's size (points, inside its frame) when it first opens, before the user
+/// resizes it: tall, so most tabs show whole, and at least as wide as its row of tabs
+/// ([`tab_row_width`]), so every tab is in the row (the screen caps both).
+pub const DEFAULT_SIZE: [f32; 2] = [900.0, 1340.0];
+/// The size every window opened at before the default grew to fit the tabs (PR #830): a size
+/// kept at exactly this was never chosen, so it opens at the new default.
+const OLD_DEFAULT_SIZE: [f32; 2] = [900.0, 640.0];
+/// The smallest the user can make it (a small screen can make it smaller still).
+pub const MIN_SIZE: [f32; 2] = [620.0, 420.0];
+/// Room kept free around the window on the screen.
+const SCREEN_MARGIN: f32 = 12.0;
+/// Height of the tab row.
+const TAB_H: f32 = 30.0;
+/// Room on each side of a tab's label: the most that lets every tab fit the row (long names, as
+/// in Russian or German, get less before any tab goes to the More menu).
+const TAB_PADS: [f32; 3] = [12.0, 9.0, 7.0];
+
+/// The sizes the Settings window opens at and may be resized between on `screen`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowSize {
+    pub default: egui::Vec2,
+    pub min: egui::Vec2,
+    pub max: egui::Vec2,
+}
+
+/// The Settings window's sizes on `screen`: `saved` (the size the user left it at, else
+/// [`DEFAULT_SIZE`], widened to `tabs_w`, the room its row of tabs takes) within [`MIN_SIZE`] and
+/// the screen. A saved size that is no size at all (NaN, negative: a hand-edited settings file),
+/// or the old default nobody chose, is the default.
+pub fn window_size(screen: egui::Rect, saved: Option<[f32; 2]>, tabs_w: f32) -> WindowSize {
+    let finite = |v: f32| v.is_finite() && v > 0.0;
+    let max = egui::vec2(
+        if finite(screen.width()) { (screen.width() - 2.0 * SCREEN_MARGIN).max(200.0) } else { DEFAULT_SIZE[0] },
+        if finite(screen.height()) { (screen.height() - 2.0 * SCREEN_MARGIN).max(160.0) } else { OLD_DEFAULT_SIZE[1] },
+    );
+    let min = egui::vec2(MIN_SIZE[0], MIN_SIZE[1]).min(max);
+    let fresh = [DEFAULT_SIZE[0].max(if finite(tabs_w) { tabs_w.ceil() } else { 0.0 }), DEFAULT_SIZE[1]];
+    let want = saved.filter(|[w, h]| finite(*w) && finite(*h) && [*w, *h] != OLD_DEFAULT_SIZE).unwrap_or(fresh);
+    let default = egui::vec2(want[0], want[1]).max(min).min(max);
+    WindowSize { default, min, max }
+}
+
+/// Keeps the Settings window's `size` (as the user left it) for the next time it opens. A window
+/// still at the size it opened at (`opened`) when nothing was saved was not sized by the user:
+/// nothing is kept, so it follows the default (a new tab, another language, another screen).
+pub fn remember_size(app: &mut LccApp, size: egui::Vec2, opened: egui::Vec2) {
+    let saved = app.ui.settings.settings_size;
+    let differs = |a: egui::Vec2, [w, h]: [f32; 2]| (w - a.x).abs() > 0.5 || (h - a.y).abs() > 0.5;
+    if size.x.is_finite()
+        && size.y.is_finite()
+        && size.x > 0.0
+        && size.y > 0.0
+        && saved.is_none_or(|kept| differs(size, kept))
+        && (saved.is_some() || differs(size, [opened.x, opened.y]))
+    {
+        app.ui.settings.settings_size = Some([size.x.round(), size.y.round()]);
+    }
+}
+
+/// The width (points) the Settings window's row of tabs takes with the most room around each
+/// label: a window this wide shows every tab, none under More.
+pub fn tab_row_width(ctx: &egui::Context) -> f32 {
+    let t = Tokens::get(ctx);
+    let font = t.font(12.5);
+    let pad = TAB_PADS.first().copied().unwrap_or(12.0);
+    ctx.fonts_mut(|f| {
+        shown_tabs().map(|(_, label)| (f.layout_no_wrap(crate::i18n::tr(label).to_string(), font.clone(), t.text).size().x + 2.0 * pad).ceil()).sum()
+    })
+}
+
+/// The tabs this build shows (the browser has no device sync, no connections and no control surfaces).
+pub fn shown_tabs() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    TABS.iter().filter(|(id, _)| !cfg!(target_arch = "wasm32") || !matches!(*id, "connections" | "sync" | "controls"))
+}
+
+/// The tab of the Settings window that `asked` opens: a tab's own id, or one of the touch screen's
+/// section names (`library`, `editing`, …: the first tab it holds).
+pub fn window_tab(asked: &str) -> &'static str {
+    if let Some((id, _)) = shown_tabs().find(|(id, _)| *id == asked) {
+        return id;
+    }
+    match asked {
+        "library" => "folders",
+        "editing" => "denoise",
+        _ => "general",
+    }
+}
+
+/// Which tabs fit one row `room` wide, given each tab's width: the indices shown (in order)
+/// and the ones left for the More menu (`more_w` wide). The `selected` tab is always shown: when it
+/// would be in the menu it takes the place of the last tab that fits.
+pub fn fit_tabs(widths: &[f32], selected: usize, room: f32, more_w: f32) -> (Vec<usize>, Vec<usize>) {
+    let total: f32 = widths.iter().sum();
+    if total <= room {
+        return ((0..widths.len()).collect(), Vec::new());
+    }
+    let budget = room - more_w;
+    let mut shown = Vec::new();
+    let mut used = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        shown.push(i);
+    }
+    if selected < widths.len() && !shown.contains(&selected) {
+        let need = widths.get(selected).copied().unwrap_or(0.0);
+        while used + need > budget {
+            let Some(last) = shown.pop() else { break };
+            used -= widths.get(last).copied().unwrap_or(0.0);
+        }
+        shown.push(selected);
+    }
+    let hidden = (0..widths.len()).filter(|i| !shown.contains(i)).collect();
+    (shown, hidden)
+}
+
+/// The tab after (`step` 1) or before (-1) `tab` among those shown, wrapping around.
+pub fn step_tab(tab: &str, step: isize) -> &'static str {
+    let tabs: Vec<&'static str> = shown_tabs().map(|(id, _)| *id).collect();
+    let n = tabs.len() as isize;
+    let at = tabs.iter().position(|id| *id == tab).unwrap_or(0) as isize;
+    let next = (at + step).rem_euclid(n.max(1)) as usize;
+    tabs.get(next).copied().unwrap_or("general")
+}
+
+fn tab_focus_id(id: &str) -> egui::Id {
+    egui::Id::new("settingsTab").with(id)
+}
+
+/// The Settings window's body for `tab` (OneSlips, LR-PREF-WINDOW): one row of tabs, then the
+/// tab's settings in a page that scrolls inside the window (`settings:rows`), so a tab never
+/// changes the window's size. `footer` is the room to leave under it for the Close button.
+pub fn body(app: &mut LccApp, ui: &mut egui::Ui, tab: &mut String, footer: f32) {
     let t = Tokens::get(ui.ctx());
-    let room = ui.ctx().content_rect().width() - 96.0;
-    // the slideshow category is an editor with its preview beside it: wider
-    // (Controls draws the device beside its editor: it takes more room too)
-    let wanted = match tab.as_str() {
-        "slideshow" => SLIDESHOW_COLUMN_W + 12.0 + super::slide_layout::PREVIEW_W + 40.0,
-        "controls" => CONTENT_W.max(900.0),
-        _ => CONTENT_W,
-    };
-    // (and once the window was that wide, every category fills it)
-    let window = ui.available_width() - SIDEBAR_W - 9.0 - 2.0 * ui.spacing().item_spacing.x;
-    let content_w = (room - SIDEBAR_W - 24.0).min(wanted.max(window)).max(240.0);
-    let height = max_height.clamp(120.0, BODY_H);
-    ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-            ui.set_height(height);
-            ui.add_space(2.0);
-            let before = tab.clone();
-            crate::dialog_frame::sidebar(ui, "settingsTab", TABS, tab, SIDEBAR_W);
-            if before == "performance" && *tab != before {
-                save_pending_cache_size(app, ui.ctx());
+    if !shown_tabs().any(|(id, _)| *id == tab.as_str()) {
+        *tab = window_tab(tab).to_string();
+    }
+    let full = ui.available_size();
+    let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(full.x.max(1.0), (full.y - footer).max(80.0)));
+    // the tabs draw in a child of exactly this size: what they hold can't widen or heighten the window
+    ui.advance_cursor_after_rect(rect);
+    let mut frame = ui.new_child(egui::UiBuilder::new().id_salt("settingsFrame").max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+    frame.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let before = tab.clone();
+    keyboard(&mut frame, tab);
+    tab_strip(&mut frame, &t, tab);
+    if before == "performance" && *tab != before {
+        save_pending_cache_size(app, frame.ctx());
+    }
+    frame.add_space(8.0);
+    // (the page's room: where a pointer scrolls it)
+    register(frame.ctx(), "settings:rows", frame.available_rect_before_wrap());
+    // a page that goes on below shows its scroll handle all the time: without it, a page a line or
+    // two too long looks cut off, not scrollable
+    frame.spacing_mut().scroll.dormant_handle_opacity = 0.6;
+    egui::ScrollArea::both().id_salt(("settingsTab", tab.as_str())).auto_shrink([false, false]).show(&mut frame, |ui| {
+        // room for the vertical scroll bar, so it never covers a control
+        ui.set_max_width((ui.available_width() - 12.0).max(120.0));
+        crate::dialog_frame::plain_form(ui, LABEL_W, |ui| {
+            crate::dialog_frame::group_begin(ui, None);
+            tab_body(app, ui, &t, tab);
+        });
+        register(ui.ctx(), "settings:page", ui.min_rect());
+        ui.add_space(8.0);
+    });
+}
+
+/// Consume a press of `key` with Ctrl held (and Shift as `shift` says, no Alt): the Control key
+/// itself on every platform (on macOS ⌘Tab is the system's), whatever egui reads as Command.
+fn ctrl_key(ctx: &egui::Context, key: egui::Key, shift: bool) -> bool {
+    ctx.input_mut(|i| {
+        let hit = |e: &egui::Event| matches!(e, egui::Event::Key { key: k, pressed: true, modifiers: m, .. } if *k == key && m.ctrl && m.shift == shift && !m.alt);
+        let found = i.events.iter().any(hit);
+        if found {
+            i.events.retain(|e| !hit(e));
+        }
+        found
+    })
+}
+
+/// Ctrl+Tab / Ctrl+Page Down: the next tab; Ctrl+Shift+Tab / Ctrl+Page Up: the previous one;
+/// ← / → while a tab has the keyboard focus: the tab beside it (the focus follows).
+fn keyboard(ui: &mut egui::Ui, tab: &mut String) {
+    let ctx = ui.ctx().clone();
+    let back = ctrl_key(&ctx, egui::Key::Tab, true) || ctrl_key(&ctx, egui::Key::PageUp, false);
+    let forward = !back && (ctrl_key(&ctx, egui::Key::Tab, false) || ctrl_key(&ctx, egui::Key::PageDown, false));
+    if back || forward {
+        *tab = step_tab(tab, if back { -1 } else { 1 }).to_string();
+        return;
+    }
+    let focused = ctx.memory(|m| m.focused());
+    let Some(on_tab) = shown_tabs().find(|(id, _)| Some(tab_focus_id(id)) == focused).map(|(id, _)| *id) else { return };
+    let step = ctx.input_mut(|i| {
+        if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
+            1
+        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+            -1
+        } else {
+            0
+        }
+    });
+    if step != 0 {
+        let next = step_tab(on_tab, step);
+        *tab = next.to_string();
+        ctx.memory_mut(|m| {
+            // (egui would move the focus by the arrow too, past the tab chosen here)
+            m.move_focus(egui::FocusDirection::None);
+            m.request_focus(tab_focus_id(next));
+        });
+    }
+}
+
+/// One row of tabs (`button:settingsTab-{id}`), the chosen one underlined. Tabs that don't fit
+/// the window's width are in a More menu at its end (`button:settingsTabMore`) rather than on a
+/// second row; the chosen tab is always in the row.
+fn tab_strip(ui: &mut egui::Ui, t: &Tokens, tab: &mut String) {
+    let tabs: Vec<&(&str, &str)> = shown_tabs().collect();
+    let font = t.font(12.5);
+    let galleys: Vec<_> =
+        tabs.iter().map(|(_, label)| ui.painter().layout_no_wrap(crate::i18n::tr(label).to_string(), font.clone(), t.text)).collect();
+    let room = ui.available_width();
+    let widths_with = |pad: f32| -> Vec<f32> { galleys.iter().map(|g| (g.size().x + 2.0 * pad).ceil()).collect() };
+    let pad = TAB_PADS.iter().copied().find(|pad| widths_with(*pad).iter().sum::<f32>() <= room).unwrap_or(7.0);
+    let widths = widths_with(pad);
+    let more_label = crate::i18n::tr("More").to_string();
+    let more_galley = ui.painter().layout_no_wrap(more_label.clone(), font.clone(), t.text);
+    let more_w = (more_galley.size().x + 2.0 * pad + 12.0).ceil();
+    let selected = tabs.iter().position(|(id, _)| *id == tab.as_str()).unwrap_or(0);
+    let (shown, hidden) = fit_tabs(&widths, selected, room, more_w);
+    let (strip, _) = ui.allocate_exact_size(egui::vec2(room, TAB_H), egui::Sense::hover());
+    let painter = ui.painter_at(strip.expand2(egui::vec2(0.0, 1.0)));
+    painter.hline(strip.x_range(), strip.bottom() - 0.5, egui::Stroke::new(1.0, t.divider));
+    let mut x = strip.left();
+    for i in shown {
+        let (Some((id, label)), Some(galley), Some(w)) = (tabs.get(i), galleys.get(i), widths.get(i)) else { continue };
+        let r = egui::Rect::from_min_size(egui::pos2(x, strip.top()), egui::vec2(*w, TAB_H));
+        x += w;
+        let resp = ui.interact(r, tab_focus_id(id), egui::Sense::click());
+        let active = i == selected;
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, crate::i18n::tr(label)));
+        register(ui.ctx(), format!("button:settingsTab-{id}"), r);
+        if resp.hovered() && !active {
+            painter.rect_filled(r.shrink2(egui::vec2(2.0, 3.0)), 4.0, t.hover);
+        }
+        let color = if active {
+            t.text
+        } else if resp.hovered() {
+            t.text_label
+        } else {
+            t.text_dim
+        };
+        painter.galley(r.center() - galley.size() / 2.0, galley.clone(), color);
+        if active {
+            let line = egui::Rect::from_min_max(egui::pos2(r.left() + 6.0, r.bottom() - 2.0), egui::pos2(r.right() - 6.0, r.bottom()));
+            painter.rect_filled(line, 1.0, t.accent);
+        }
+        if resp.has_focus() {
+            painter.rect_stroke(r.shrink(2.0), 4.0, egui::Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+        }
+        if resp.clicked() {
+            *tab = id.to_string();
+        }
+    }
+    if hidden.is_empty() {
+        return;
+    }
+    let r = egui::Rect::from_min_size(egui::pos2(strip.right() - more_w, strip.top()), egui::vec2(more_w, TAB_H));
+    let resp = ui.interact(r, egui::Id::new("settingsTabMore"), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &more_label));
+    register(ui.ctx(), "button:settingsTabMore", r);
+    if resp.hovered() {
+        painter.rect_filled(r.shrink2(egui::vec2(2.0, 3.0)), 4.0, t.hover);
+    }
+    let text_at = egui::pos2(r.left() + pad, r.center().y - more_galley.size().y / 2.0);
+    painter.galley(text_at, more_galley.clone(), if resp.hovered() { t.text_label } else { t.text_dim });
+    let chevron = egui::Rect::from_center_size(egui::pos2(r.right() - pad - 3.0, r.center().y), egui::vec2(8.0, 8.0));
+    crate::icons::paint(&painter, chevron, crate::icons::Icon::ChevronDown, t.text_dim);
+    egui::Popup::menu(&resp).show(|ui| {
+        for i in &hidden {
+            let Some((id, label)) = tabs.get(*i) else { continue };
+            let r = ui.button(crate::i18n::tr(label));
+            register(ui.ctx(), format!("button:settingsTab-{id}"), r.rect);
+            if r.clicked() {
+                *tab = id.to_string();
             }
-        });
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, height), egui::Sense::hover());
-        ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.0, t.divider));
-        ui.vertical(|ui| {
-            ui.set_width(content_w);
-            ui.set_height(height);
-            egui::ScrollArea::vertical().id_salt(("settings-content", tab.as_str())).max_height(height).auto_shrink([false, false]).show(ui, |ui| {
-                ui.set_width(content_w - 14.0);
-                crate::dialog_frame::form(ui, LABEL_W, |ui| {
-                    crate::dialog_frame::group_begin(ui, None);
-                    tab_body(app, ui, &t, tab);
-                });
-            });
-        });
+        }
     });
 }
 
@@ -208,6 +456,34 @@ pub(super) fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnc
 }
 
 /// Help text: small and muted; in a dialog form, under the control column.
+/// "8 GB", "1.5 GB", "512 MB"; within a few per cent of whole gigabytes it reads as whole ones (a computer's "64 GB"
+/// is a little less, so its automatic quarter is "16 GB", not "15.9 GB").
+fn memory_size(mb: u64) -> String {
+    if mb < 1024 {
+        return format!("{mb} MB");
+    }
+    let gb = mb as f64 / 1024.0;
+    if (gb - gb.round()).abs() <= gb * 0.02 { format!("{:.0} GB", gb.round()) } else { format!("{gb:.1} GB") }
+}
+
+/// Settings ▸ Performance ▸ Memory for caches: Automatic (what it is on this computer), then the sizes up to the most
+/// this computer allows (`max`, [`lcc_engine::memory::max_budget`]), and a size set elsewhere (an agent, another
+/// computer's settings) as its own choice. Values in MB, 0 = automatic. Before, the choices stopped at 4 GB whatever
+/// the computer had, though the engine takes up to three quarters of its memory.
+pub(crate) fn memory_choices(current: u32, auto: usize, max: usize) -> Vec<(u32, String)> {
+    let max_mb = u64::try_from(max >> 20).unwrap_or(u64::MAX);
+    let mut opts = vec![(0u32, format!("{} ({})", crate::i18n::tr("Automatic"), memory_size(u64::try_from(auto >> 20).unwrap_or(u64::MAX))))];
+    for mb in [512u32, 1024, 2048, 4096, 8192, 16_384, 32_768, 65_536, 131_072] {
+        if u64::from(mb) <= max_mb {
+            opts.push((mb, memory_size(u64::from(mb))));
+        }
+    }
+    if current > 0 && !opts.iter().any(|(v, _)| *v == current) {
+        opts.push((current, memory_size(u64::from(current))));
+    }
+    opts
+}
+
 pub(super) fn hint(ui: &mut egui::Ui, t: &Tokens, text: &str) {
     if crate::dialog_frame::in_form(ui) {
         crate::dialog_frame::help(ui, text);
@@ -224,6 +500,18 @@ pub(super) fn check(ui: &mut egui::Ui, id: &str, value: &mut bool, label: &str) 
 
 /// Mutually exclusive buttons (`button:{id}-{index}`).
 pub(super) fn choices<V: PartialEq + Copy>(ui: &mut egui::Ui, id: &str, options: &[(V, &str)], value: &mut V) -> bool {
+    if crate::dialog_frame::plain(ui) && crate::dialog_frame::in_form(ui) {
+        // the Settings window: small buttons side by side, the chosen one filled, wrapping in the row
+        let mut changed = false;
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (i, (v, l)) in options.iter().enumerate() {
+            if crate::widgets::text_button(ui, &format!("{id}-{i}"), l, *value == *v).clicked() && *value != *v {
+                *value = *v;
+                changed = true;
+            }
+        }
+        return changed;
+    }
     // one segmented control (`button:{id}-{i}` each)
     let labels: Vec<&str> = options.iter().map(|(_, l)| *l).collect();
     let chosen = options.iter().position(|(v, _)| *v == *value);
@@ -334,8 +622,8 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         });
         hint(ui, t, crate::i18n::tr("Ask me lists your recent libraries at launch. Holding Alt (Option on a Mac) as the window appears asks once."));
     }
-    // File ▸ Import Lightroom Catalog… (#2672): the window that asks where a catalog goes, or not
-    ui.label(RichText::new(crate::i18n::tr("When importing a Lightroom catalog")).color(t.text_label));
+    // File ▸ Import Lightroom or Capture One Catalog… (#2672): the window that asks where a catalog goes, or not
+    crate::dialog_frame::note(ui, RichText::new(crate::i18n::tr("When importing a Lightroom or Capture One catalog")).color(t.text_label));
     row(ui, t, "", |ui| {
         use crate::state::LightroomImport;
         choices(
@@ -350,7 +638,12 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         choices(
             ui,
             "settingsStartup",
-            &[(StartupView::Last, "Last view"), (StartupView::Grid, "Photo Grid"), (StartupView::Detail, "Detail View")],
+            &[
+                (StartupView::Last, "Last view"),
+                (StartupView::Grid, "Photo Grid"),
+                (StartupView::SquareGrid, "Square Grid"),
+                (StartupView::Detail, "Detail View"),
+            ],
             &mut app.ui.settings.startup_view,
         );
     });
@@ -1216,10 +1509,17 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         ),
     );
     row(ui, t, crate::i18n::tr("Memory for caches"), |ui| {
-        let auto = crate::i18n::tr_format!("Automatic ({} MB)", lcc_engine::memory::default_budget() >> 20);
-        let opts = [(0u32, auto.as_str()), (512, "512 MB"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB")];
+        let opts = memory_choices(app.ui.settings.memory_mb, lcc_engine::memory::default_budget(), lcc_engine::memory::max_budget());
+        let opts: Vec<(u32, &str)> = opts.iter().map(|(v, l)| (*v, l.as_str())).collect();
         choices(ui, "settingsMemory", &opts, &mut app.ui.settings.memory_mb);
     });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "Photos and previews kept in memory, so the photos you go back to show at once. Automatic uses a quarter of this computer's memory, up to 16 GB. Choose more for big shoots, but leave some for other apps.",
+        ),
+    );
     exports_section(app, ui, t);
     heading(ui, t, crate::i18n::tr("Thumbnail cache"));
     let cur = (app.session.cache_bytes() >> 20) as u32;
@@ -1285,6 +1585,7 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             let _ = app.run("library.clearPreviews", json!({}));
         }
     });
+    background_prep(app, ui, t);
     heading(ui, t, crate::i18n::tr("Local folders"));
     row(ui, t, crate::i18n::tr("Forget unchanged photos"), |ui| {
         let opts = [(0u32, "Never"), (7, "After 7 days"), (30, "After 30 days"), (90, "After 90 days"), (365, "After a year")];
@@ -1302,6 +1603,96 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
     #[cfg(not(target_arch = "wasm32"))]
     smart_previews(app, ui, t);
+}
+
+/// Settings ▸ Performance ▸ Prepare photos in the background: per mode, what is made ready before
+/// the user gets to it (`prefs.backgroundPrep`), app-wide or for this library.
+fn background_prep(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    use lcc_engine::prep::{Mode, Scope};
+    heading(ui, t, crate::i18n::tr("Prepare photos in the background"));
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "While you go through photos in the loupe, the next ones are made ready before you reach them, and when the computer is otherwise idle the previews of every photo in view are built. The photo on screen always comes first; the work shows in the activity list, where it can be stopped.",
+        ),
+    );
+    let own = app.session.prep.library.is_some();
+    if app.session.library.is_some() {
+        let mut v = own;
+        if check(ui, "settings.prepOwn", &mut v, "Use different settings for this library") {
+            let r = if v {
+                let cur = app.session.prep_settings();
+                app.run("prefs.setBackgroundPrep", json!({"library": true, "settings": cur}))
+            } else {
+                app.run("prefs.setBackgroundPrep", json!({"reset": true}))
+            };
+            if let Err(e) = r {
+                log::warn!("background preparation: {e}");
+            }
+        }
+        hint(ui, t, crate::i18n::tr("For example, a timelapse library can prepare nothing while a wedding library prepares everything."));
+    }
+    let cur = app.session.prep_settings();
+    let mut patch: Option<Value> = None;
+    let scopes = [(Scope::All, "Every photo"), (Scope::Marked, "Picks, rated and labelled"), (Scope::OnScreen, "Only the photo on screen")];
+    for (mode, key, title) in [(Mode::Culling, "culling", "Culling (a folder before import)"), (Mode::Library, "library", "Library")] {
+        let m = cur.mode(mode);
+        heading(ui, t, crate::i18n::tr(title));
+        let mut previews = m.previews;
+        row(ui, t, crate::i18n::tr("Previews"), |ui| {
+            if check(ui, &format!("settings.prep.{key}.previews"), &mut previews, "Build previews for every photo in view") {
+                patch = Some(json!({key: {"previews": previews}}));
+            }
+        });
+        hint(ui, t, crate::i18n::tr("Starts once you step through a few photos. Uses about 1.5 MB of disk a photo, and the computer's spare time."));
+        let mut ahead = m.ahead;
+        row(ui, t, crate::i18n::tr("Photos ahead"), |ui| {
+            let opts = [(0u8, "Off"), (3, "3"), (5, "5"), (10, "10"), (20, "20")];
+            if choices(ui, &format!("settingsPrepAhead-{key}"), &opts, &mut ahead) {
+                patch = Some(json!({key: {"ahead": ahead}}));
+            }
+        });
+        let mut eye = m.eye_ahead;
+        row(ui, t, crate::i18n::tr("Eye focus ahead"), |ui| {
+            let opts = [(0u8, "Off"), (3, "3"), (5, "5"), (8, "8"), (10, "10"), (20, "20")];
+            if choices(ui, &format!("settingsPrepEyes-{key}"), &opts, &mut eye) {
+                patch = Some(json!({key: {"eyeAhead": eye}}));
+            }
+        });
+        let mut scope = m.scope;
+        row(ui, t, crate::i18n::tr("Which photos"), |ui| {
+            if choices(ui, &format!("settingsPrepScope-{key}"), &scopes, &mut scope) {
+                patch = Some(json!({key: {"scope": scope}}));
+            }
+        });
+    }
+    heading(ui, t, crate::i18n::tr("Editing"));
+    let mut ahead = cur.develop.ahead;
+    row(ui, t, crate::i18n::tr("Photos ahead"), |ui| {
+        let opts = [(0u8, "Off"), (1, "1"), (2, "2"), (3, "3"), (5, "5")];
+        if choices(ui, "settingsPrepAhead-develop", &opts, &mut ahead) {
+            patch = Some(json!({"develop": {"ahead": ahead}}));
+        }
+    });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "The photos each side of the one you edit are made ready with their settings, and the nearest two kept open, so stepping to one and the first slider move on it are quick. Uses memory: a few hundred MB a photo.",
+        ),
+    );
+    let mut scope = cur.develop.scope;
+    row(ui, t, crate::i18n::tr("Which photos"), |ui| {
+        if choices(ui, "settingsPrepScope-develop", &scopes, &mut scope) {
+            patch = Some(json!({"develop": {"scope": scope}}));
+        }
+    });
+    if let Some(patch) = patch
+        && let Err(e) = app.run("prefs.setBackgroundPrep", json!({"library": own, "settings": patch}))
+    {
+        log::warn!("background preparation: {e}");
+    }
 }
 
 /// Where this library keeps its smart previews (the offline-editing proxies, which can be large):
@@ -1637,7 +2028,8 @@ fn slideshow_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     } else {
         (ui.ctx().content_rect().height() - 260.0).clamp(300.0, 760.0)
     };
-    let pad = crate::dialog_frame::GROUP_PAD as i8;
+    // (no group panels in the plain Settings window, so no room for their edges)
+    let pad = if crate::dialog_frame::plain(ui) { 0 } else { crate::dialog_frame::GROUP_PAD as i8 };
     // the touch Settings screen on a narrow screen: the preview above, the settings under it, in
     // the page's own scrolling
     if crate::dialog_frame::finger_sized(ui) && ui.available_width() < SLIDESHOW_COLUMN_W + 12.0 + super::slide_layout::PREVIEW_W {
@@ -2313,6 +2705,26 @@ fn in_use_text(used: Option<Option<u64>>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{memory_choices, memory_size};
+
+    /// The memory choices follow the computer: Automatic says what it is here, sizes go up to the most this computer
+    /// allows (not 4 GB on every computer), and a size set elsewhere stays choosable.
+    #[test]
+    fn memory_choices_follow_the_computer() {
+        let gb = 1usize << 30;
+        let o = memory_choices(0, 16 * gb, 48 * gb);
+        let values: Vec<u32> = o.iter().map(|(v, _)| *v).collect();
+        assert_eq!(values, [0, 512, 1024, 2048, 4096, 8192, 16_384, 32_768], "up to three quarters of a 64 GB computer");
+        assert!(o[0].1.ends_with("(16 GB)"), "Automatic says what it is here: {}", o[0].1);
+        let small = memory_choices(0, 2 * gb, 6 * gb);
+        assert_eq!(small.last().map(|(v, _)| *v), Some(4096));
+        let other = memory_choices(20_480, 2 * gb, 6 * gb);
+        assert_eq!(other.last().map(|(v, l)| (*v, l.as_str())), Some((20_480, "20 GB")), "a size from elsewhere stays");
+        assert_eq!(memory_size(1536), "1.5 GB");
+        assert_eq!(memory_size(16_300), "16 GB", "a quarter of a computer's 64 GB");
+        assert_eq!(memory_size(512), "512 MB");
+    }
+
     use super::*;
     use serde_json::json;
 

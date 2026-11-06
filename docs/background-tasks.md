@@ -1,13 +1,26 @@
 # Long-running tasks and the activity stack
 
-Everything that takes a while runs off the UI thread and shows up in **one** place: the activity stack in the
-top-left corner under the top bar (issue #345). Each task has a row with its name, a progress bar (a sweep while
-the amount of work isn't known), the count and what it's working on, and ✕ if it can stop. Quitting asks first while
-a task that can stop is running. Agents see the same list through `activity.list` / `activity.cancel`, and
-`ui.inspect` reports it as `activity`.
+Everything that takes a while runs off the UI thread and shows up in **one** place, the activity stack (issue #345).
+Each task has a row with its name, a progress bar (a sweep while the amount of work isn't known), the count and what
+it's working on, and ✕ if it can stop. A task shows once it is half a second old. Quitting asks first while a task
+that can stop is running. Agents see the same list through `activity.list` / `activity.cancel`, and `ui.inspect`
+reports it as `activity`.
 
-The registry is `lcc_engine::activity` (`crates/engine/src/activity.rs`, `Session::activity`). The stack is
-`crates/ui-egui/src/panels/activity.rs`. Every job that can last more than a moment uses it; **don't add a progress
+Where the tasks show depends on the layout:
+
+- **Classic**, as Lightroom Classic's activity centre: in the module bar, in the identity plate's place, while tasks
+  run. One task shows its name, its bar and ✕ (`activity:cancel:<id>`); several show "N operations in progress…" over
+  a thin bar each (`activity:bar:<id>`), oldest first, as many as fit in the bar, with no ✕. A batch is one task: its
+  per-photo rows add no bar. A click on the area (`activity:plate`) opens the list of every task under it
+  (`activity:list`, rows `activity:row:<id>` with their ✕), as does `view.activityList {open?}`; `ui.inspect` →
+  `activityList` says whether it is open. Esc, a click outside or the last task ending closes it. The plate and the
+  status line come back once nothing runs. With the module bar hidden, or Edit ▸ Identity Plate Setup's Show Status
+  and Activity off, no activity shows: the tasks run on, in `activity.list`, and Quit still asks.
+- **Modern**: a floating card centred under the Library / Develop switch, three rows and "+N more"
+  (`activity:more`).
+
+The registry is `lcc_engine::activity` (`crates/engine/src/activity.rs`, `Session::activity`). The stack (both layouts) is
+`crates/ui-egui/src/panels/activity.rs`; the module bar calls it from `crates/ui-egui/src/module.rs`. Every job that can last more than a moment uses it; **don't add a progress
 window, panel or progress toast of your own**. A dialog may still show progress inline (the Synchronize Folder
 dialog counts files while it scans), and a toast at the end saying what happened is fine. A view saying its pixels
 aren't final isn't progress either: the loupe's "Rendering…" pill (`loupe:rendering`) marks a stand-in or an
@@ -38,14 +51,27 @@ guard.detail(&file_name);
 - **Progress:** `progress(done, total)`. A `total` of 0 means the amount of work isn't known yet, and the bar sweeps.
   `set_unit(Unit::Bytes)` makes the count read "12 of 340 MB"; `Unit::Percent` reads "40 %". The default `Unit::Count`
   reads "3 of 25".
-- **Detail:** what the job is on (a file name, a model's name). Detail set by engine code is a name, never a sentence.
-  UI code may set translated text.
+- **Detail:** what the job is on (a file name, a model's name). Detail set by engine code is a name, never a sentence,
+  unless it is a translatable text with names (below). UI code may set translated text.
+- **Names in the text:** a label or detail that names something no catalog translates (a program, a plug-in) says
+  `{key}` where the name goes, and `guard.name(key, value)` gives the name: "Waiting for {program} to finish
+  ({plugin})". `activity.list` shows the English with the names in; the app translates the text as written and puts
+  the names in after (`TaskInfo::templates`, `activity::fill`). Add the text with its `{key}`s to every catalog.
+  Never `format!` a name into a label: the label then matches no catalog entry and is never translated.
+  Once a task has names, the app translates its detail too, so give it a text with `{key}`s, not a bare value such as
+  a file name. Batch end summaries don't carry names yet: a batch with names gets an untranslated summary.
 - **Cancel:**
   - `Cancel::Flag(Arc<AtomicBool>)` adopts the flag the job already checks. The row's ✕, `activity.cancel` and the
     job's own Cancel then all set the same atomic.
   - `Cancel::Yes`: the job polls `guard.is_cancelled()` itself.
   - `Cancel::No`: the job can't stop; it gets no ✕ and doesn't make Quit ask.
   - `set_cancellable(false)` for a phase that has to finish once started (a Lightroom import adding its photos).
+  - **A stop that throws work away:** `guard.warn_on_stop(text)` for a task that waits on something outside the app
+    and loses what it would still bring back when stopped (a plug-in's wait for a program: what the program makes
+    afterwards never comes back). The row then has no ✕ anywhere; the Classic list and the Modern card give it
+    "Stop Waiting…", which shows `text` (translated, names in) and asks first. `activity.list` reports it as
+    `stopWarning`, and `activity.cancel` and Quit Anyway still stop it at once. A job that stops between files
+    loses nothing already done and needs none.
 - **Quiet periodic work** shows no row: the auto-import folder listing runs every few seconds through
   `tasks::spawn(.., None, ..)`.
 
@@ -78,6 +104,7 @@ let photo = batch.child("denoise", "AI Denoise"); // the photo in progress, unde
 |---|---|---|
 | Export, contact sheet | `crates/ui-egui/src/export_task.rs` | adopt the job's flag; update the row each frame; an export is a batch that reports itself, its failures counted when it ends |
 | Build Previews | `crates/engine/src/cmd/previews.rs` | move the guard into the worker thread |
+| Preparing photos in the background | `crates/engine/src/prep.rs`, `crates/engine/src/cmd/previews.rs` | a background build in one row ("Preparing photos in the background") whose ✕ sets the build's flag; it waits while the photo on screen is being made and says "Paused while exporting" in its detail while the user's own work runs (`Activity::user_work`); a build asked for replaces it |
 | Slideshow export | `crates/engine/src/cmd/slideshow.rs`, `crates/engine/src/slideshow_export.rs` | an engine command that owns its worker and row; progress from the worker through a `TaskHandle`; results read back by command |
 | Folder metadata save / read | `crates/engine/src/cmd/folder_metadata.rs` | a job that needs the session, so a per-frame pump (`folder.metadataPump`) does a few photos at a time and the row's flag stops it |
 | Model downloads | `crates/engine/src/face_download.rs` | report progress through a `TaskHandle` in shared state |
@@ -88,6 +115,7 @@ let photo = batch.child("denoise", "AI Denoise"); // the photo in progress, unde
 | Find Missing Photos | `crates/ui-egui/src/tasks.rs` | a generic background task with a row (`kind: Some(..)`) |
 | Background XMP sidecar writes | `crates/engine/src/sidecar_writer.rs` | one row per batch from a worker thread, no ✕; the stack's 0.5 s delay keeps a quick write after an edit from showing |
 | Reload from Disk | `crates/ui-egui/src/reload.rs`, `crates/engine/src/cmd/reload.rs` | a command split into plan / probe / apply so the app reads the files on a worker thread (`tasks::spawn_tracked`: progress and `Cancel::Flag`); the result is committed through `Session::execute_fn` (undo step, save, XMP auto-write), and dropped for a photo a later-started reload has already updated; `wait: true` runs it in place |
+| Automatic preview-only RAW recheck | `crates/ui-egui/src/recheck.rs`, `crates/engine/src/cmd/recheck.rs` | the app-version recheck uses `tasks::spawn_tracked`, reports completed files out of the known total, and checks a shared `Cancel::Flag` between files; completed successful probes may be applied while failed or unstarted files remain unchanged and stale; cancellation is cooperative: a file already being read may finish, and the once-per-library guard keeps a cancelled recheck from restarting every frame |
 | Reading focus points | `crates/engine/src/focus_scan.rs` | a worker paced by the UI's per-frame pump (`focus.pump {pace}`); `Cancel::Flag`; commits in batches without undo steps |
 | AI jobs (models) | `crates/ml/src/queue.rs`, `crates/engine/src/ml.rs` | a queue in a crate below the engine that holds its row through a small trait (`lcc_ml::Rows`); the worker makes the batch row when work arrives and drops it when idle; the row's ✕ is the batch's `Cancel::Flag` (`docs/ml-backend.md`) |
 | Camera sensor maps, Remove Dust on a selection | `crates/engine/src/cmd/sensor.rs` | one job in session state; results applied on the UI thread by a pump (`dust.pump`) |

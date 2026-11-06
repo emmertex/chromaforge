@@ -66,8 +66,9 @@ pub enum Slot {
     Before,
     Compare(u8),
     /// Background preparation of a neighbouring photo (no texture: its decoded source and view
-    /// render are cached by the engine). 0 = next, 1 = previous; 2 = the open photo's
-    /// full-resolution source, for a zoom to 1:1.
+    /// render are cached by the engine). 0 = the nearest ahead, 1 = the nearest behind; 2 = the
+    /// open photo's full-resolution source, for a zoom to 1:1; 3 and up = the photos prepared
+    /// further each way (Settings ▸ Performance ▸ Prepare photos in the background).
     Prefetch(u8),
     /// A variant thumbnail (profile / preset browsers), by its job key ([`Session::variant_job`]).
     /// Kept in a bounded LRU ([`VARIANT_TEXTURES`]).
@@ -1377,8 +1378,31 @@ impl Renderer {
             slot,
             key,
             priority,
-            Box::new(move || Self::run_for(slot, || lcc_engine::memory::in_background(|| job.run()), &display, None)),
+            // (behind the view's own renders at the GPU, one short submission queued at a time)
+            Box::new(move || Self::run_for(slot, || lcc_engine::memory::in_background(|| lcc_engine::gpu::as_batch(|| job.run())), &display, None)),
         );
+    }
+
+    /// Prepared-ahead jobs ([`Slot::Prefetch`]) queued or running.
+    pub fn prefetches_pending(&self) -> usize {
+        self.pending.keys().filter(|s| matches!(s, Slot::Prefetch(_))).count()
+    }
+
+    /// Slots of photos prepared around the one on screen asked for since the renderer last forgot
+    /// everything (not the open photo's full-resolution source, [`Slot::Prefetch`] 2).
+    pub fn prefetch_slots_asked(&self) -> usize {
+        self.prefetch_keys().len()
+    }
+
+    /// The jobs asked for in the slots of photos prepared around the one on screen (queued,
+    /// running or made).
+    pub fn prefetch_keys(&self) -> Vec<u64> {
+        self.prefetched.iter().filter(|(s, _)| matches!(s, Slot::Prefetch(n) if *n != 2)).map(|(_, k)| *k).collect()
+    }
+
+    /// Whether `slot` was last asked for the job of `key` (queued, running or done).
+    pub fn prefetch_asked(&self, slot: Slot, key: u64) -> bool {
+        self.prefetched.get(&slot) == Some(&key)
     }
 
     /// Drop the slideshow slides other than `keep`: their textures and their requests that have
@@ -1831,7 +1855,7 @@ impl Renderer {
                     // photo's: kept, or the next render decodes it again)
                     let replaced = matches!(&r.rendered, Err(e) if e == lcc_engine::media::SUPERSEDED);
                     if replaced && slot.is_view() && r.loaded.is_some() && r.request_id >= self.epoch {
-                        session.accept(&r);
+                        session.accept_replaced(&r);
                     }
                     continue;
                 }
@@ -1921,9 +1945,10 @@ impl Renderer {
                     continue;
                 }
             };
-            if matches!(slot, Slot::Prefetch(_)) {
-                // (its source was accepted above)
-                if self.prefetched.get(&slot) == Some(&r.key) {
+            if let Slot::Prefetch(n) = slot {
+                // (its source was accepted above; the photos prepared further than the nearest each
+                // way are in the preview cache, which the loupe fits: their pictures are not kept here)
+                if self.prefetched.get(&slot) == Some(&r.key) && usize::from(n) < crate::panels::detail::FIRST_FAR_PREFETCH {
                     self.ready_views.insert(slot, (RenderResult { rendered: Ok(rendered), loaded: None, ..r }, color, ms));
                 }
                 continue;
@@ -2113,7 +2138,7 @@ impl Renderer {
         let tex: usize = self.textures.values().map(|t| t.size[0] * t.size[1] * 4).sum();
         let copies: usize = self.textures.values().filter_map(|t| t.pixels.as_ref()).map(|p| p.pixels.len() * 4).sum();
         serde_json::json!({
-            "stageCaches": {"count": self.stages.len(), "cpuBytes": cpu, "gpuBytes": gpu, "budgetBytes": self.stage_budget(), "trimmed": self.stages_trimmed, "sharedSourceBytes": lcc_engine::gpu::shared_source_bytes()},
+            "stageCaches": {"count": self.stages.len(), "cpuBytes": cpu, "gpuBytes": gpu, "budgetBytes": self.stage_budget(), "trimmed": self.stages_trimmed, "sharedSourceBytes": lcc_engine::gpu::shared_source_bytes(), "autoMaskStrokeBytes": lcc_engine::gpu::kept_stroke_bytes()},
             "textures": {"count": self.textures.len(), "bytes": tex, "cpuCopyBytes": copies},
             "tiles": {"count": self.tiles.len(), "bytes": self.tiles.bytes(), "budgetBytes": self.tiles.budget()},
         })

@@ -478,6 +478,8 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     let popup_open = popup_open || app.text_focus;
     // Esc during a sidebar section's drag gives the drag up (`panels::left`), and does not also leave the loupe
     let popup_open = popup_open || app.ui.dragging_section.is_some();
+    // the activity list (`panels::activity`) is a popup too: Esc closes it, and only it; Enter waits
+    let popup_open = popup_open || app.activity_list;
     let (module_keys, mut consumed) = (classic::module_keys(app.ui.module), Vec::new());
     classic::deferred_tabs(&mut app.deferred_tabs, keymap, &mut fire);
     // the mouse's Back / Forward buttons: the previous / next photo, as ← / → (issue #3303)
@@ -689,17 +691,17 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             cull(app, &f, json!({}), false);
             let flag = active.and_then(|id| app.session.catalog.photo(id)).map(|p| p.flag);
             match flag {
-                Some(lcc_catalog::Flag::Pick) => app.toast(ctx, crate::i18n::tr("Flagged as Pick")),
-                Some(lcc_catalog::Flag::Reject) => app.toast(ctx, crate::i18n::tr("Flagged as Reject")),
-                Some(lcc_catalog::Flag::None) => app.toast(ctx, crate::i18n::tr("Unflagged")),
+                Some(lcc_catalog::Flag::Pick) => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
+                Some(lcc_catalog::Flag::Reject) => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
+                Some(lcc_catalog::Flag::None) => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
                 None => {}
             }
         } else if matches!(f.as_str(), "photo.pick" | "photo.reject" | "photo.unflag") && app.ui.right != crate::state::RightPanel::Crop {
             cull(app, &f, json!({}), false);
             match f.as_str() {
-                "photo.pick" => app.toast(ctx, crate::i18n::tr("Flagged as Pick")),
-                "photo.reject" => app.toast(ctx, crate::i18n::tr("Flagged as Reject")),
-                _ => app.toast(ctx, crate::i18n::tr("Unflagged")),
+                "photo.pick" => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
+                "photo.reject" => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
+                _ => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
             }
         } else {
             // in the full-screen preview (no panels) I cycles the info overlay instead
@@ -849,15 +851,29 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 app.toast(ctx, e);
             }
             match f.as_str() {
-                "photo.pick" => app.toast(ctx, crate::i18n::tr("Flagged as Pick")),
-                "photo.reject" => app.toast(ctx, crate::i18n::tr("Flagged as Reject")),
-                "photo.unflag" => app.toast(ctx, crate::i18n::tr("Unflagged")),
-                "edit.undo" => app.toast(ctx, crate::i18n::tr("Undo")),
-                "edit.redo" => app.toast(ctx, crate::i18n::tr("Redo")),
+                "photo.pick" => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
+                "photo.reject" => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
+                "photo.unflag" => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
+                "edit.undo" => change_toast(app, ctx, crate::i18n::tr("Undo")),
+                "edit.redo" => change_toast(app, ctx, crate::i18n::tr("Redo")),
                 _ => {}
             }
         }
     }
+}
+
+/// The toast a flag, undo or redo key gives: skipped while the on-screen overlay already reports
+/// every change (Settings ▸ Interface ▸ Overlay: Always), so one press shows one note, not two.
+fn change_toast(app: &mut LccApp, ctx: &egui::Context, text: impl Into<String>) {
+    if overlay_reports_changes(app) {
+        return;
+    }
+    app.toast(ctx, text);
+}
+
+/// Whether the on-screen overlay (`panels::surface_osd`) reports the changes keys make.
+pub(crate) fn overlay_reports_changes(app: &LccApp) -> bool {
+    app.surface.settings().osd.effective_mode() == lcc_surface::settings::OsdMode::Always
 }
 
 /// Arrow keys reach the canvas tools from the keyboard (accessibility; the tools are otherwise

@@ -85,11 +85,12 @@ pub enum Container {
         file: Box<filmcraft_matroska::MkvFile>,
         track: usize,
     },
-    /// `units[i]` is the stream unit of sample i.
+    /// Each sample's stream units, one range per picture: consecutive access units without their
+    /// own timestamp (a PAFF field pair, or the later pictures of one PES packet) are one sample.
     Ts {
         file: Box<filmcraft_mpegts::File>,
         stream: usize,
-        units: Vec<usize>,
+        units: Vec<std::ops::Range<usize>>,
     },
     /// MPEG-1/2 video elementary stream, read whole (capped) at open.
     Es {
@@ -121,8 +122,12 @@ impl Clip {
             Container::Mp4 { file, track } => file.read_sample(&self.src, *track, i).map_err(demux_error),
             Container::Mkv { file, track } => file.read_sample(&self.src, *track, i).map_err(|e| invalid(e.to_string())),
             Container::Ts { file, stream, units } => {
-                let u = *units.get(i).ok_or_else(|| invalid("sample index".into()))?;
-                file.read_unit(&self.src, *stream, u).map_err(|e| invalid(e.to_string()))
+                let r = units.get(i).ok_or_else(|| invalid("sample index".into()))?.clone();
+                let mut out = Vec::new();
+                for u in r {
+                    out.extend_from_slice(&file.read_unit(&self.src, *stream, u).map_err(|e| invalid(e.to_string()))?);
+                }
+                Ok(out)
             }
             Container::Es { data, units } => {
                 let r = units.get(i).ok_or_else(|| invalid("sample index".into()))?;
@@ -749,9 +754,31 @@ fn open_ts(src: FileSource) -> Result<Clip, VideoError> {
     let first_key = st.units.iter().position(|u| u.key);
     let sel = first_key.and_then(|k| st.units.get(k..)).unwrap_or(&[]);
     let mpeg = matches!(st.codec, T::Mpeg1Video | T::Mpeg2Video);
-    // display keys: PTS when every unit has one, else (MPEG video) GOP start + temporal reference
-    let keys: Vec<i64> = if sel.iter().all(|u| u.pts.is_some()) {
-        sel.iter().map(|u| u.pts.unwrap_or(0)).collect()
+    // One sample per picture: filmcraft-mpegts splits an H.264/HEVC stream at access-unit
+    // boundaries and only the first access unit of a PES packet keeps its timestamp, so a PAFF
+    // field pair (two access units, one frame) and the later pictures of one PES arrive as
+    // timestamp-less follow-up units. Grouping each of them with the unit it follows gives the
+    // one sample per frame the decoders produce (with the timestamps the stream was muxed with).
+    let nal = matches!(st.codec, T::H264 | T::Hevc);
+    let groups: Vec<std::ops::Range<usize>> = {
+        let mut g: Vec<Vec<usize>> = Vec::new();
+        for (i, u) in sel.iter().enumerate() {
+            let k = first_key.unwrap_or(0) + i;
+            if nal
+                && u.pts.is_none()
+                && let Some(last) = g.last_mut().filter(|last| last.last() == Some(&(k - 1)))
+            {
+                last.push(k);
+            } else {
+                g.push(vec![k]);
+            }
+        }
+        g.into_iter().map(|v| v.first().copied().unwrap_or(0)..v.last().copied().unwrap_or(0) + 1).collect()
+    };
+    let heads: Vec<&filmcraft_mpegts::Unit> = groups.iter().filter_map(|g| st.units.get(g.start)).collect();
+    // display keys: PTS when every sample has one, else (MPEG video) GOP start + temporal reference
+    let keys: Vec<i64> = if heads.iter().all(|u| u.pts.is_some()) {
+        heads.iter().map(|u| u.pts.unwrap_or(0)).collect()
     } else if mpeg {
         let mut base = 0i64;
         sel.iter()
@@ -766,10 +793,10 @@ fn open_ts(src: FileSource) -> Result<Clip, VideoError> {
             })
             .collect()
     } else {
-        (0..sel.len() as i64).collect()
+        (0..groups.len() as i64).collect()
     };
-    let units: Vec<usize> = first_key.map_or(Vec::new(), |k| (k..st.units.len()).collect());
-    let key: Vec<bool> = sel.iter().map(|u| u.key).collect();
+    let key: Vec<bool> = groups.iter().map(|g| st.units[g.clone()].iter().any(|u| u.key)).collect();
+    let units = groups;
     let mut clip_codec: Result<Codec, String>;
     let name: String;
     let (mut w, mut h) = (0, 0);
@@ -813,10 +840,10 @@ fn open_ts(src: FileSource) -> Result<Clip, VideoError> {
     }
     // rate: the coded one unless the timestamps say otherwise (3:2 pulldown, field-rate coding)
     let pts_rate = {
-        let mut shown: Vec<i64> = sel.iter().filter_map(|u| u.pts).collect();
+        let mut shown: Vec<i64> = heads.iter().filter_map(|u| u.pts).collect();
         shown.sort_unstable();
         match (shown.first(), shown.last()) {
-            (Some(&a), Some(&b)) if shown.len() >= 2 && b > a && shown.len() == sel.len() => {
+            (Some(&a), Some(&b)) if shown.len() >= 2 && b > a && shown.len() == heads.len() => {
                 Some((shown.len() - 1) as f64 * 90_000.0 / (b - a) as f64)
             }
             _ => None,

@@ -204,3 +204,31 @@ fn the_overlay_stays_off_the_photo_while_a_tool_is_in_use() {
     assert_eq!(h.app.widgets.iter().filter(|(w, _)| w == "osd:surface").count(), 1, "one overlay");
     assert_eq!(shown(&mut h)["value"], "+0.70");
 }
+
+#[test]
+fn a_flag_or_undo_key_shows_one_note_not_a_toast_as_well() {
+    let mut h = demo();
+    open(&mut h, 1);
+    let press = |h: &mut Headless, key: &str, cmd: bool| {
+        h.app.ui.toasts.clear();
+        let r = h.request("ui.key", json!({"key": key, "cmd": cmd}), T);
+        assert_eq!(r["ok"], true, "{key}: {r}");
+        h.step();
+        h.step();
+    };
+    // Always (the default): the overlay names the change and no toast repeats it
+    press(&mut h, "p", false);
+    assert_eq!(shown(&mut h)["title"], "Picked");
+    assert!(h.app.ui.toast().is_none(), "one note on P, not two: {:?}", h.app.ui.toasts);
+    press(&mut h, "x", false);
+    assert_eq!(shown(&mut h)["title"], "Rejected");
+    assert!(h.app.ui.toast().is_none(), "{:?}", h.app.ui.toasts);
+    press(&mut h, "z", true);
+    assert!(shown(&mut h)["title"].as_str().is_some_and(|t| t.starts_with("Undo")));
+    assert!(h.app.ui.toast().is_none(), "{:?}", h.app.ui.toasts);
+    // with the overlay for the control surface only, the toast is the one note
+    run(&mut h, "osd.settings", json!({"mode": "surface"}));
+    press(&mut h, "p", false);
+    assert!(shown(&mut h).is_null());
+    assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Flagged as Pick"));
+}

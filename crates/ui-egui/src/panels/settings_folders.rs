@@ -9,7 +9,7 @@
 use egui::RichText;
 use serde_json::{Value, json};
 
-use super::settings::{LABEL_W, heading, hint, row};
+use super::settings::{heading, hint, row};
 use crate::LccApp;
 use crate::theme::Tokens;
 use crate::widgets::register;
@@ -89,7 +89,11 @@ pub fn folders(app: &mut LccApp) -> Value {
         false,
         "The lens database lens corrections fall back to.",
     ));
-    for (id, label, cmd) in [("faceModels", "Face models", "faces.models.list"), ("denoiseModels", "Denoise models", "denoise.models.list")] {
+    for (id, label, cmd) in [
+        ("faceModels", "Face models", "faces.models.list"),
+        ("denoiseModels", "Denoise models", "denoise.models.list"),
+        ("mlModels", "Semantic search models", "ml.models.list"),
+    ] {
         let dir = app.session.execute(cmd, &json!({})).ok().and_then(|v| v["dir"].as_str().map(str::to_string));
         out.push(entry(id, label, dir, false, false, false, "Models you install are kept here."));
     }
@@ -211,8 +215,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             register(ui.ctx(), format!("label:folder-{id}"), l.rect);
         });
         let (change, reset) = (f["change"].as_bool().unwrap_or(false), f["reset"].as_bool().unwrap_or(false));
-        ui.horizontal(|ui| {
-            ui.add_space(LABEL_W + ui.spacing().item_spacing.x);
+        crate::dialog_frame::control_row(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let change_label = if id == "cameraRoll" { "Import…" } else { "Change…" };
             if change && crate::widgets::text_button(ui, &format!("folderChange-{id}"), change_label, false).clicked() {

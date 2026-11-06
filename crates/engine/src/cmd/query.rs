@@ -143,15 +143,23 @@ pub fn specs() -> Vec<CommandSpec> {
                 .into_iter()
                 .map(|r| json!({"group": r.group, "tag": r.tag, "name": r.name, "value": r.value}))
                 .collect();
-            // XMP: the sidecar if there is one, else the packet in the bytes already loaded
-            let packet = match crate::sidecar::find_sidecar(path, s.sidecar_naming(ph.id)) {
-                Some(sc) => std::fs::read_to_string(sc).ok(),
-                None => lcc_meta::embedded(&bytes).xmp,
+            // XMP: the sidecar if there is one, else the packet in the bytes already loaded, with the
+            // JPEG's Extended XMP (what did not fit in the main packet; the main packet wins)
+            let (packet, extended) = match crate::sidecar::find_sidecar(path, s.sidecar_naming(ph.id)) {
+                Some(sc) => (std::fs::read_to_string(sc).ok(), None),
+                None => {
+                    let e = lcc_meta::embedded(&bytes);
+                    (e.xmp, e.xmp_extended)
+                }
             };
-            let xmp: Vec<Value> = packet
-                .and_then(|x| lcc_meta::parse_xmp(&x).ok())
-                .map(|d| d.properties.into_iter().filter(|(k, _)| !k.starts_with("lc:")).map(|(k, v)| json!({"name": k, "value": v.join("; ")})).collect())
-                .unwrap_or_default();
+            let mut properties = packet.and_then(|x| lcc_meta::parse_xmp(&x).ok()).map(|d| d.properties).unwrap_or_default();
+            if let Some(ext) = extended.and_then(|x| lcc_meta::parse_xmp(&x).ok()) {
+                for (k, v) in ext.properties {
+                    properties.entry(k).or_insert(v);
+                }
+            }
+            let xmp: Vec<Value> =
+                properties.into_iter().filter(|(k, _)| !k.starts_with("lc:")).map(|(k, v)| json!({"name": k, "value": v.join("; ")})).collect();
             Ok(json!({"exif": exif, "xmp": xmp}))
         }),
         cmd!(query "photo.fujiRecipe", "Fujifilm Recipe", [], None, "{id?} → {present, text, lines: [{tag, label, value}]} — in-camera film settings from a Fujifilm MakerNote, or present: false", always, |s, p| {

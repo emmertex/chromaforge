@@ -42,6 +42,10 @@ pub struct Filter {
     /// `only` means "no constraint".
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub only_none: bool,
+    /// Natural-language (semantic) search query (`LR-FILT-SEARCH-AI`). The matching photo IDs
+    /// (in descending cosine-similarity order) are stored in `only` / `only_none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<String>,
     /// Any of these labels (the filter bar's multi-select); empty = no constraint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<ColorLabel>,
@@ -50,6 +54,9 @@ pub struct Filter {
     pub album: Option<AlbumId>,
     /// Show "Recently Deleted" instead of the library.
     pub deleted: bool,
+    /// Keep only the library's photos (`Some(true)`) or only the ones outside it — browsed
+    /// (Local), deleted or demo photos (`Some(false)`).
+    pub in_library: Option<bool>,
     /// Capture date prefix (`2026`, `2026-04`, `2026-04-12`).
     pub date: Option<String>,
     /// A folder the library's photos were imported from: those photos and the ones imported from
@@ -105,6 +112,10 @@ pub struct Filter {
     /// Smart-album rules (all / any / none, nested groups; see [`crate::rules`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_set: Option<crate::RuleSet>,
+    /// Metadata column picks on fields without a filter field of their own (file format, IPTC text, aspect,
+    /// preset, AI tools), and "no value" picks on every field (issue #777); each must let the photo through.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub facets: Vec<crate::FacetPick>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -921,11 +932,21 @@ impl Filter {
             (None, Some(b)) => v.push(format!("captured until {b}")),
             _ => {}
         }
+        for f in self.facets.iter().filter(|f| !f.is_empty()) {
+            let mut any: Vec<&str> = f.values.iter().map(String::as_str).collect();
+            if f.none {
+                any.push("none");
+            }
+            v.push(format!("{} {}", f.field, any.join(" or ")));
+        }
         if let Some(fcs) = &self.faces {
             v.push(format!("faces {fcs}"));
         }
         if !self.text.trim().is_empty() {
             v.push(format!("“{}”", self.text.trim()));
+        }
+        if let Some(q) = self.semantic.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            v.push(format!("AI search “{q}”"));
         }
         if let Some(rs) = self.rule_set.as_ref().filter(|r| !r.rules.is_empty()) {
             v.push(cat.map_or_else(|| rs.describe(), |c| rs.describe_with(c)));
@@ -973,6 +994,9 @@ impl Filter {
         if p.deleted != self.deleted {
             return false;
         }
+        if self.in_library.is_some_and(|want| p.in_library() != want) {
+            return false;
+        }
         match &self.folder {
             // browsed photos only show in folder views, and in Recently Deleted once deleted (#1430)
             None if p.local && !p.deleted => return false,
@@ -1006,6 +1030,9 @@ impl Filter {
             return false;
         }
         if !self.labels.is_empty() && !p.label.is_some_and(|l| self.labels.contains(&l)) {
+            return false;
+        }
+        if !self.facets.iter().all(|f| f.matches(p, cat)) {
             return false;
         }
         if self.only_none {

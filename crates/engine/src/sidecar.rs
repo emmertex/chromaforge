@@ -198,6 +198,8 @@ pub struct SidecarData {
     pub city: Option<String>,
     pub state: Option<String>,
     pub country: Option<String>,
+    /// The ISO 3166-1 alpha-2 country code (`Iptc4xmpCore:CountryCode`).
+    pub country_code: Option<String>,
     pub alt_text: Option<String>,
     pub extended_description: Option<String>,
     /// The IPTC Content fields other editors write (headline, description writer, legacy category).
@@ -269,6 +271,7 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         city: m.city.clone(),
         state: m.state.clone(),
         country: m.country.clone(),
+        country_code: m.country_code.clone(),
         alt_text: m.alt_text.clone(),
         extended_description: m.extended_description.clone(),
         headline: m.headline.clone(),
@@ -439,6 +442,7 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
         (&sc.city, &mut m.city),
         (&sc.state, &mut m.state),
         (&sc.country, &mut m.country),
+        (&sc.country_code, &mut m.country_code),
         (&sc.alt_text, &mut m.alt_text),
         (&sc.extended_description, &mut m.extended_description),
         (&sc.headline, &mut m.headline),
@@ -722,6 +726,7 @@ fn packet(p: &Photo, cat: &lcc_catalog::Catalog, remove_location: bool, gps: boo
         city: nz(&p.meta.city),
         state: nz(&p.meta.state),
         country: nz(&p.meta.country),
+        country_code: nz(&p.meta.country_code),
         copyright: nz(&p.meta.copyright),
         copyright_marked: p.meta.copyright_status.marked(),
         usage_terms: nz(&p.meta.usage_terms),
@@ -739,7 +744,7 @@ fn packet(p: &Photo, cat: &lcc_catalog::Catalog, remove_location: bool, gps: boo
     };
     let mut meta = meta;
     if remove_location {
-        (meta.sublocation, meta.city, meta.state, meta.country, meta.gps) = (None, None, None, None, None);
+        (meta.sublocation, meta.city, meta.state, meta.country, meta.country_code, meta.gps) = (None, None, None, None, None, None);
     }
     // the pixel-filter stack goes in its own namespace, not in `lc:settings`
     let filters: Vec<lcc_meta::XmpPluginFilter> = p.develop.plugin_filters.iter().map(crate::cmd::plugin_filters::to_xmp).collect();

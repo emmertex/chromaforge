@@ -1716,7 +1716,10 @@
   "Unknown licence": "Licença desconhecida",
   "Use": "Usar",
   "Waiting to start…": "Aguardando para iniciar…",
-  "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.": "Funciona com arquivos RAW de câmeras com sensor padrão (Bayer). Outros arquivos mantêm a redução de ruído normal.",
+  "Works on raw files from cameras with a standard (Bayer) sensor, and on JPEG, PNG, TIFF and other finished pictures with a model made for them. Other raw files keep their normal noise reduction.": "Funciona com arquivos RAW de câmeras com sensor padrão (Bayer) e, com um modelo feito para elas, com JPEG, PNG, TIFF e outras imagens finalizadas. Os demais arquivos RAW mantêm a redução de ruído normal.",
+  "For JPEG and other finished pictures": "Para JPEG e outras imagens finalizadas",
+  "For Super Resolution and AI Sharpen": "Para super resolução e nitidez com IA",
+  "For raw photos": "Para fotos RAW",
   "cached picture": "imagem em cache",
   "cached pictures": "imagens em cache",
   "commercial use allowed": "uso comercial permitido",
@@ -2716,5 +2719,9 @@
   "No colour picked": "Nenhuma cor coletada",
   "Selecting the object…": "Selecionando o objeto…",
   "Settings for the next mask": "Ajustes para a próxima máscara",
-  "Reset settings on new mask": "Redefinir ajustes em cada máscara nova"
+  "Reset settings on new mask": "Redefinir ajustes em cada máscara nova",
+  "Import to This Folder…": "Importar para esta pasta…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Copia as fotos de uma pasta que você escolher para esta pasta; na revisão você pode mudar isso",
+  "Add to My Photos…": "Adicionar às Minhas fotos…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Revisa as fotos desta pasta e depois as adiciona à biblioteca onde estão; nenhum arquivo é tocado"
 }

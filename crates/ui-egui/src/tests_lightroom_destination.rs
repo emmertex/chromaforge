@@ -1,4 +1,4 @@
-//! Issue #2672: before File ▸ Import Lightroom Catalog… starts, a window asks whether the catalog
+//! Issue #2672: before File ▸ Import Lightroom or Capture One Catalog… starts, a window asks whether the catalog
 //! merges into the open library or goes into a new library (named after the catalog, next to the
 //! open one), unless Settings (or the window's "Don't ask again") says to always merge.
 //!

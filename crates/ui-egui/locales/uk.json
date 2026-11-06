@@ -1717,7 +1717,10 @@
   "Unknown licence": "Невідома ліцензія",
   "Use": "Використовувати",
   "Waiting to start…": "Очікування запуску…",
-  "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.": "Працює з файлами RAW від камер зі стандартним сенсором (Баєра). Інші файли зберігають звичайне зменшення шуму.",
+  "Works on raw files from cameras with a standard (Bayer) sensor, and on JPEG, PNG, TIFF and other finished pictures with a model made for them. Other raw files keep their normal noise reduction.": "Працює з RAW-файлами камер зі стандартною матрицею (Байєра), а з моделлю для них — і з JPEG, PNG, TIFF та іншими готовими зображеннями. Інші RAW-файли зберігають звичайне шумозаглушення.",
+  "For JPEG and other finished pictures": "Для JPEG та інших готових зображень",
+  "For Super Resolution and AI Sharpen": "Для суперроздільності та різкості ШІ",
+  "For raw photos": "Для фото RAW",
   "cached picture": "Кешовані зображення",
   "cached pictures": "Кешовані зображення",
   "commercial use allowed": "комерційне використання дозволено",
@@ -2870,5 +2873,9 @@
   "No colour picked": "Колір не вибрано",
   "Selecting the object…": "Виділяю об’єкт…",
   "Settings for the next mask": "Налаштування для наступної маски",
-  "Reset settings on new mask": "Скидати налаштування для нової маски"
+  "Reset settings on new mask": "Скидати налаштування для нової маски",
+  "Import to This Folder…": "Імпортувати в цю теку…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Копіює фото з обраної теки в цю теку; у перевірці це можна змінити",
+  "Add to My Photos…": "Додати до моїх фото…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Показує фото цієї теки для перевірки, потім додає їх до бібліотеки на місці; жоден файл не змінюється"
 }

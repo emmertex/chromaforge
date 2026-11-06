@@ -208,6 +208,10 @@ pub struct Meta {
     pub city: String,
     pub state: String,
     pub country: String,
+    /// The ISO 3166-1 alpha-2 country code (IPTC Core `Iptc4xmpCore:CountryCode`); reverse geocoding
+    /// fills it when it can. Left out of the catalog JSON when empty, so older catalogs read unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub country_code: String,
     pub gps: Option<(f64, f64)>,
     /// The position (latitude, longitude) that was cleared from [`Meta::gps`], while it stays cleared: saving the
     /// sidecar removes the GPS tags it still states for that very position (a different one was written by another
@@ -351,7 +355,8 @@ pub struct Photo {
     /// settings, metadata and history).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_of: Option<PhotoId>,
-    /// Virtual copies' name ("Copy 1").
+    /// Copy Name: a virtual copy's name ("Copy 1"), or any photo's that a Lightroom catalog gave one (some people
+    /// use it as a short title). Whether a photo is a virtual copy is [`Photo::copy_of`], not this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_name: Option<String>,
     /// The settings import gave the photo when a user default (a raw/JPEG default preset, see
@@ -740,6 +745,11 @@ impl Photo {
             defaults.wb = self.develop.wb;
         }
         *self.develop != defaults && !self.develop.is_unedited()
+    }
+    /// The name a virtual copy is shown with (its Copy Name), and `None` for a photo that isn't one, whatever Copy
+    /// Name it carries.
+    pub fn virtual_copy_name(&self) -> Option<&str> {
+        self.copy_of.and(self.copy_name.as_deref())
     }
     /// Capture time if known, else import time (sort key).
     pub fn date(&self) -> &str {

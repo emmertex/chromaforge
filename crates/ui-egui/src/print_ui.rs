@@ -33,8 +33,6 @@ use crate::widgets::register;
 
 /// Most photos one print job takes from the filmstrip.
 const MAX_JOB_PHOTOS: usize = lcc_print::job::MAX_PHOTOS;
-const LEFT_W: f32 = 220.0;
-const RIGHT_W: f32 = 320.0;
 const RULER: f32 = 18.0;
 
 /// The module's state (lives in [`LccApp::print`]).
@@ -906,7 +904,7 @@ fn center(ui: &mut egui::Ui, app: &mut LccApp) {
     }
     let mut area = ui.available_rect_before_wrap();
     if crate::module::edge_visible(app, Edge::Bottom) {
-        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - t.film_h), area.max);
+        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - app.ui.film_height()), area.max);
         area.max.y = film.top();
         crate::panels::detail::filmstrip(app, ui, film);
     }
@@ -914,16 +912,14 @@ fn center(ui: &mut egui::Ui, app: &mut LccApp) {
     register(&ctx, "view:module:print", area);
     let p = ui.painter().clone();
     if crate::module::module_edge(app, Edge::Left) {
-        let left = Rect::from_min_max(area.min, pos2(area.left() + LEFT_W, area.bottom()));
-        area.min.x = left.right();
+        let left = crate::panels::split_side(ui, &mut area, true, "print:left", &mut app.ui.left_width, crate::state::LEFT_WIDTH);
         p.rect_filled(left, 0.0, t.chrome);
         p.line_segment([left.right_top(), left.right_bottom()], Stroke::new(1.0, t.divider));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(left.shrink(10.0)));
         template_browser(&mut child, app);
     }
     if crate::module::module_edge(app, Edge::Right) {
-        let right = Rect::from_min_max(pos2(area.right() - RIGHT_W, area.top()), area.max);
-        area.max.x = right.left();
+        let right = crate::panels::split_side(ui, &mut area, false, "print:right", &mut app.ui.right_width, crate::state::RIGHT_WIDTH);
         p.rect_filled(right, 0.0, t.chrome);
         p.line_segment([right.left_top(), right.left_bottom()], Stroke::new(1.0, t.divider));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(right.shrink(10.0)));

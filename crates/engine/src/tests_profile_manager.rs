@@ -207,7 +207,7 @@ fn browsed_raws_take_the_import_profile_choice_and_a_later_body_default() {
     s.execute("profile.setBodyDefault", &json!({"id": "lc", "photo": a.0})).unwrap();
     let path = |s: &Session, id: PhotoId| match &s.catalog.photo(id).unwrap().source {
         Source::File { path } => path.clone(),
-        _ => unreachable!(),
+        _ => panic!("unexpected case in a test"),
     };
     s.execute("library.import", &json!({"paths": [path(&s, a)]})).unwrap();
     assert!(!s.catalog.photo(a).unwrap().local);
@@ -219,4 +219,177 @@ fn browsed_raws_take_the_import_profile_choice_and_a_later_body_default() {
     assert_eq!(s.catalog.photo(b).unwrap().develop.profile.camera, "lc", "the import's per-body choice");
     assert!(s.catalog.photo(c).unwrap().develop.profile.camera.is_empty(), "an edited photo keeps its profile");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A wedding import (IMPORT-STACK, ported from OneSlips LR-IMP-WINDOW / LR-IMP-PROFILE): a stack of
+/// presets applies in order, the old single `preset` first, one History step each; each body keeps
+/// the camera profile chosen for it through a preset that names another, unless `presetProfile`.
+#[test]
+fn an_import_applies_a_preset_stack_in_order_and_each_body_keeps_its_profile() {
+    let dir = std::env::temp_dir().join(format!("lcc-import-stack-bodies-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let corners = lcc_camprof::ChartCorners::from_rect(10.0, 10.0, 40.0, 30.0);
+    let write = |name: &str, serial: &str| {
+        let p = dir.join(name);
+        std::fs::write(&p, crate::chart_profiling::demo_chart_dng_of_body(64, 48, &corners, "D55", true, Some(serial)).unwrap()).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let mut s = Session::new().with_fs();
+    let preset = |id: &str, settings: serde_json::Value| lcc_develop::Preset {
+        id: id.into(),
+        name: id.into(),
+        group: "Wedding".into(),
+        settings,
+        favorite: false,
+        builtin: false,
+    };
+    let ids = s.add_presets(vec![
+        preset("user.base", json!({"light": {"exposure": 0.3, "contrast": 10.0}})),
+        // names the camera's default profile: the body's own must stay
+        preset("user.look", json!({"light": {"exposure": 0.6}, "profile": {"camera": ""}})),
+        preset("user.finish", json!({"light": {"contrast": 25.0}, "color": {"vibrance": 15.0}})),
+    ]);
+    assert_eq!(ids.len(), 3, "{ids:?}");
+    let key_of_file = |s: &mut Session, path: &str| {
+        let plan = s.execute("import.profilePlan", &json!({"paths": [path]})).unwrap();
+        plan["rows"][0]["body"].as_str().unwrap().to_string()
+    };
+    let (a, b) = (write("SA0001.dng", "SN1"), write("SB0001.dng", "SN2"));
+    let key_a = key_of_file(&mut s, &a);
+    let params = json!({
+        "paths": [&a, &b],
+        "preset": ids[0],
+        "presets": [ids[1], ids[2]],
+        "cameraProfile": {"perBody": {&key_a: "lc"}},
+    });
+    let r = s.execute("library.import", &params).unwrap();
+    let got: Vec<PhotoId> = r["imported"].as_array().unwrap().iter().map(|v| PhotoId(v.as_u64().unwrap())).collect();
+    assert_eq!(got.len(), 2, "{r}");
+    for id in &got {
+        let p = s.catalog.photo(*id).unwrap();
+        let d = &p.develop;
+        assert!((d.light.exposure - 0.6).abs() < 1e-6, "the later preset's exposure wins: {}", d.light.exposure);
+        assert!((d.light.contrast - 25.0).abs() < 1e-6, "the last preset's contrast: {}", d.light.contrast);
+        assert!((d.color.vibrance - 15.0).abs() < 1e-6);
+        let steps: Vec<&str> = p.history.iter().filter(|h| h.label.starts_with("Preset: ")).map(|h| h.label.as_str()).collect();
+        assert_eq!(steps, ["Preset: user.base", "Preset: user.look", "Preset: user.finish"], "one History step each, in order");
+        let body = crate::profile_bodies::key_of(p).unwrap();
+        let want = if body == key_a { "lc" } else { "" };
+        assert_eq!(d.profile.camera, want, "{body}: its own profile through the stack");
+    }
+    // the old single `preset` alone still works (the same synthetic bytes: imported as a copy)
+    let c = write("SA0002.dng", "SN1");
+    let r = s.execute("library.import", &json!({"paths": [&c], "preset": ids[0], "importDuplicates": true})).unwrap();
+    let p = s.catalog.photo(PhotoId(r["imported"][0].as_u64().unwrap())).unwrap();
+    assert!((p.develop.light.exposure - 0.3).abs() < 1e-6 && (p.develop.light.contrast - 10.0).abs() < 1e-6);
+    // presetProfile: the preset's profile replaces the body's
+    let e = write("SA0003.dng", "SN1");
+    let r = s
+        .execute("library.import", &json!({"paths": [&e], "presets": [ids[1]], "presetProfile": true, "importDuplicates": true, "cameraProfile": {"perBody": {&key_a: "lc"}}}))
+        .unwrap();
+    let p = s.catalog.photo(PhotoId(r["imported"][0].as_u64().unwrap())).unwrap();
+    assert_eq!(p.develop.profile.camera, "", "the preset's profile");
+    assert!(s.execute("library.import", &json!({"paths": [&e], "presets": ["no.such.preset"]})).is_err(), "an unknown preset refuses the import");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn groups_are_made_moved_and_profiles_placed() {
+    let mut s = Session::new();
+    let (a, b, c) = (crate::presets::PROFILES[0].id, crate::presets::PROFILES[1].id, crate::presets::PROFILES[8].id);
+    let groups = |s: &mut Session| -> Vec<String> {
+        s.execute("profiles.manager", &json!({})).unwrap()["groups"].as_array().unwrap().iter().map(|g| g.as_str().unwrap().to_string()).collect()
+    };
+    let r = s.execute("profile.groupNew", &json!({"name": "Weddings"})).unwrap();
+    assert_eq!(r["group"], "Weddings");
+    assert_eq!(groups(&mut s).last().map(String::as_str), Some("Weddings"), "an empty group is listed, last");
+    assert!(s.execute("profile.groupNew", &json!({"name": "Weddings"})).is_err(), "not twice");
+    s.execute("profile.groupMove", &json!({"group": "Weddings", "to": 0})).unwrap();
+    assert_eq!(groups(&mut s)[0], "Weddings");
+    s.execute("profile.groupMove", &json!({"group": "Weddings", "by": 1})).unwrap();
+    assert_eq!(groups(&mut s)[1], "Weddings");
+    // two profiles into it, then a third placed before the first of them
+    s.execute("profile.place", &json!({"ids": [c, a], "group": "Weddings"})).unwrap();
+    s.execute("profile.place", &json!({"ids": [b], "before": c})).unwrap();
+    let m = s.execute("profiles.manager", &json!({})).unwrap();
+    let mine: Vec<&str> = m["profiles"].as_array().unwrap().iter().filter(|p| p["group"] == "Weddings").map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(mine, [b, c, a]);
+    // placed back by a profile of its own group, it leaves the user's group
+    let home = crate::presets::PROFILES.iter().find(|p| p.group == crate::presets::PROFILES[0].group && ![a, b, c].contains(&p.id)).unwrap().id;
+    s.execute("profile.place", &json!({"ids": [a], "after": home})).unwrap();
+    assert!(!s.profile_edits.groups.contains_key(a));
+    for (cmd, p) in [
+        ("profile.place", json!({"ids": [a], "before": a})),
+        ("profile.place", json!({"ids": []})),
+        ("profile.place", json!({"ids": ["nope"], "group": "Weddings"})),
+        ("profile.place", json!({"ids": [a]})),
+        ("profile.groupMove", json!({"group": "No Such Group", "by": 1})),
+        ("profile.groupMove", json!({"group": "Weddings"})),
+        ("profile.groupNew", json!({"name": ""})),
+    ] {
+        assert!(s.execute(cmd, &p).is_err(), "{cmd} {p}");
+    }
+}
+
+#[test]
+fn a_body_adopts_releases_and_clears_its_camera_profile() {
+    let mut s = Session::new();
+    let a = raw(&mut s, "DSC0010.ARW", "55");
+    let edited = raw(&mut s, "DSC0011.ARW", "55");
+    let mut d = (*s.develop_of(edited).unwrap()).clone();
+    d.profile.camera = "dcp:the-users-own".into();
+    let op = s.develop_op(edited, d, "Camera Profile").unwrap();
+    s.commit("Edit", op).unwrap();
+    let undo = s.undo.len();
+    let r = s.execute("profile.adoptForBody", &json!({"profile": "lc", "photo": a.0})).unwrap();
+    assert_eq!((r["body"].as_str(), r["changed"].as_u64()), (Some("ILCE-9|55"), Some(1)));
+    assert_eq!(s.undo.len(), undo + 1, "one undo step");
+    assert_eq!(s.develop_of(a).unwrap().profile.camera, "lc");
+    assert_eq!(s.develop_of(edited).unwrap().profile.camera, "dcp:the-users-own", "a photo with its own choice keeps it");
+    assert_eq!(s.execute("profile.releaseFromBody", &json!({"profile": "dcp:other", "body": "ILCE-9|55"})).unwrap()["released"], false);
+    assert_eq!(s.execute("profile.releaseFromBody", &json!({"profile": "lc", "body": "ILCE-9|55"})).unwrap()["released"], true);
+    assert!(s.body_profiles.is_empty());
+    s.body_profiles.insert("ILCE-9|55".into(), "lc".into());
+    assert!(s.execute("profile.clearBodyDefault", &json!({"photo": a.0})).unwrap()["cleared"].is_string());
+    assert!(s.body_profiles.is_empty());
+    assert!(s.execute("profile.adoptForBody", &json!({"profile": "dcp:nope", "photo": a.0})).is_err());
+    assert!(s.execute("profile.clearBodyDefault", &json!({"body": ""})).is_err());
+}
+
+#[test]
+fn deleting_an_imported_camera_profile_removes_its_default_copy_and_frees_its_photos() {
+    let _lock = crate::camera_profiles::test_library_lock();
+    let root = std::env::temp_dir().join(format!("cf-delete-camera-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let library = root.join("dcp");
+    std::fs::create_dir_all(&library).unwrap();
+    let m = lcc_raw::Mat3([[0.7, -0.1, -0.05], [-0.5, 1.3, 0.2], [-0.1, 0.25, 0.65]]);
+    let dcp = lcc_raw::dcp::Dcp {
+        model: "Sony ILCE-9".into(),
+        name: "Mine".into(),
+        copyright: String::new(),
+        color: lcc_raw::ColorData { illuminant: [21, 0], color_matrix: [Some(m), None], ..Default::default() },
+    };
+    let bytes = lcc_raw::dcp::write(&dcp).unwrap();
+    std::fs::write(library.join("delete-test.dcp"), &bytes).unwrap();
+    // the same profile as the camera's default
+    let default_copy = root.join(crate::camera_profiles::dcp_file_name("Sony ILCE-9"));
+    std::fs::write(&default_copy, &bytes).unwrap();
+    let mut s = Session::new();
+    let a = raw(&mut s, "DSC0020.ARW", "9");
+    let mut d = (*s.develop_of(a).unwrap()).clone();
+    d.profile.camera = "dcp:delete-test".into();
+    let op = s.develop_op(a, d, "Camera Profile").unwrap();
+    s.commit("Edit", op).unwrap();
+    s.body_profiles.insert("ILCE-9|9".into(), "dcp:delete-test".into());
+    let r = crate::cmd::profile_manager::delete_camera_in(&mut s, "dcp:delete-test", &library, Some(&root)).unwrap();
+    assert_eq!((r["photos"].as_u64(), r["bodies"].as_u64(), r["wasCameraDefault"].as_bool()), (Some(1), Some(1), Some(true)));
+    assert!(!library.join("delete-test.dcp").exists() && !default_copy.exists(), "both files gone");
+    assert_eq!(s.develop_of(a).unwrap().profile.camera, "", "back to the camera's default");
+    assert!(s.body_profiles.is_empty());
+    assert!(crate::cmd::profile_manager::delete_camera_in(&mut s, "dcp:delete-test", &library, Some(&root)).is_err(), "gone");
+    assert!(crate::cmd::profile_manager::delete_camera_in(&mut s, "lc.color", &library, Some(&root)).is_err());
+    assert!(crate::cmd::profile_manager::delete_camera_in(&mut s, "dcp:../escape", &library, Some(&root)).is_err());
+    let _ = std::fs::remove_dir_all(&root);
 }
