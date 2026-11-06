@@ -652,7 +652,10 @@ mod tests {
         let text = shown(&mut h, jpeg);
         assert!(text.contains(NEEDS_MODEL) && !text.contains(PREVIEW), "a JPEG says it needs a finished-picture model: {text}");
         let text = shown(&mut h, raw);
-        assert!(!text.contains(RAW_ONLY) && !text.contains(NEEDS_MODEL) && !text.contains(PREVIEW), "a raw denoise applies to explains nothing: {text}");
+        assert!(
+            !text.contains(RAW_ONLY) && !text.contains(NEEDS_MODEL) && !text.contains(PREVIEW),
+            "a raw denoise applies to explains nothing: {text}"
+        );
     }
 
     /// Install from file… with a model the engine rejects says why in the AI Denoise section (#1381), instead of
