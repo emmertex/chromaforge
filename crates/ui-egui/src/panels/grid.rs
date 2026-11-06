@@ -1441,6 +1441,22 @@ pub fn flag_mark_icon(flag: Flag) -> Option<Icon> {
     }
 }
 
+/// The colour of a reject's mark in the Compact strip: the theme's reject red, lightened so it
+/// stands out from the red glow ([`flag_glow`]) the strip sits in.
+pub fn reject_mark_colour(t: &Tokens) -> Color32 {
+    t.reject.lerp_to_gamma(Color32::WHITE, 0.55)
+}
+
+/// `icon` in `colour` with a one-point dark outline round it, so it reads on a background of a
+/// similar hue.
+fn paint_outlined(p: &egui::Painter, rect: Rect, icon: Icon, colour: Color32) {
+    let outline = Color32::from_black_alpha(210);
+    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-0.7, -0.7), (0.7, -0.7), (-0.7, 0.7), (0.7, 0.7)] {
+        paint(p, rect.translate(vec2(dx, dy)), icon, outline);
+    }
+    paint(p, rect, icon, colour);
+}
+
 /// A photo's culling marks along `bar` (the strip under a Compact thumbnail): its flag and stars
 /// from the left, its colour label and edited mark from the right, sized to the bar's height so
 /// they read at a glance. `on_photo`: drawn over the picture (white marks) rather than on the panel.
@@ -1453,8 +1469,14 @@ pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalo
     let pick = if on_photo { Color32::WHITE } else { t.pick };
     let mut x = bar.left() + 2.0;
     if let Some(icon) = flag_mark_icon(photo.flag) {
-        let colour = if photo.flag == Flag::Reject { t.reject } else { pick };
-        paint(p, Rect::from_min_size(pos2(x, y - flag / 2.0), vec2(flag, flag)), icon, colour);
+        let at = Rect::from_min_size(pos2(x, y - flag / 2.0), vec2(flag, flag));
+        if photo.flag == Flag::Reject {
+            // the reject's strip glows red (`flag_glow`), so its red mark sat red on red: a lighter red
+            // with a dark outline reads on it (and over a picture)
+            paint_outlined(p, at, icon, reject_mark_colour(t));
+        } else {
+            paint(p, at, icon, pick);
+        }
     }
     if photo.flag != Flag::None {
         x += flag + 4.0;
@@ -2343,6 +2365,66 @@ mod tests {
     }
 
     /// A cell too small for a glow gets none; any other gets one inside it.
+    /// A rejected photo's mark sat red on its red-glowing strip and hardly showed: it is a lighter
+    /// red with a dark outline now, at least 3:1 against the strip, with the outline darker still.
+    #[test]
+    fn a_rejected_photos_mark_reads_on_its_red_strip() {
+        use serde_json::json;
+        let t = std::time::Duration::from_secs(20);
+        let app = crate::LccApp::new(lcc_engine::Session::with_demo(), crate::Services { png: None, ..Default::default() });
+        let mut h = crate::headless::Headless::new(app, [1400.0, 900.0], 1.0);
+        h.settle(std::time::Duration::from_secs(120));
+        for (method, params) in
+            [("engine.execute", json!({"command": "view.compactLayout", "params": {"on": true}})), ("ui.set", json!({"view": "photoGrid"}))]
+        {
+            let r = h.request(method, params, t);
+            assert_eq!(r["ok"], true, "{method}: {r}");
+        }
+        h.settle(std::time::Duration::from_secs(120));
+        h.step();
+        // a photo in the grid's top row that isn't the active one (its strip in plain view)
+        let active = h.app.session.active().map(|p| p.0);
+        let (id, _) = h
+            .app
+            .widgets
+            .iter()
+            .filter_map(|(w, r)| w.strip_prefix("cellmarks:").and_then(|n| n.parse::<u64>().ok()).map(|n| (n, *r)))
+            .filter(|(n, _)| Some(*n) != active)
+            .min_by(|a, b| (a.1.top(), a.1.left()).partial_cmp(&(b.1.top(), b.1.left())).unwrap_or(std::cmp::Ordering::Equal))
+            .expect("a photo's strip");
+        let r = h.request("engine.execute", json!({"command": "photo.flag", "params": {"flag": "reject", "ids": [id]}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(std::time::Duration::from_secs(120));
+        h.step();
+        let marks = h.app.widgets.iter().find(|(w, _)| *w == format!("cellmarks:{id}")).map(|(_, r)| *r).expect("the rejected photo's strip");
+        let image = h.paint();
+        let w = image.size[0];
+        let px = |x: f32, y: f32| image.pixels[y.round() as usize * w + x.round() as usize];
+        // relative luminance (WCAG)
+        let lum = |c: Color32| {
+            let lin = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+        };
+        let hgt = marks.height().clamp(10.0, 40.0);
+        let flag = (hgt * 0.8).round().max(10.0);
+        let (x0, y) = (marks.left() + 2.0, marks.center().y);
+        let bg = lum(px(x0 + flag + 2.5, y));
+        let (mut bright, mut dark) = (0.0f32, 1.0f32);
+        for yy in (y - flag / 2.0).round() as i32..(y + flag / 2.0).round() as i32 {
+            for xx in (x0 - 1.0).round() as i32..(x0 + flag + 1.0).round() as i32 {
+                let l = lum(px(xx as f32, yy as f32));
+                bright = bright.max(l);
+                dark = dark.min(l);
+            }
+        }
+        let contrast = (bright + 0.05) / (bg + 0.05);
+        assert!(contrast >= 3.0, "the reject mark stands out from its strip ({contrast:.2}:1)");
+        assert!(dark < bg * 0.6, "a dark outline round it ({dark:.3} vs strip {bg:.3})");
+    }
+
     #[test]
     fn the_flag_glow_stays_inside_its_cell() {
         let cell = Rect::from_min_size(pos2(10.0, 10.0), vec2(120.0, 90.0));
