@@ -1736,7 +1736,6 @@
   "With access to all files, folders on the device are read where they are instead of being copied.": "有了所有檔案的存取權限，裝置上的資料夾會就地讀取，而不是複製。",
   "Without Saving and Quit (issue #100). It no longer quietly starts a demo session that looked like a reset library and": "不保存並退出（issue #100）。它不再悄悄啟動一個看起來像照片庫被重置的演示會話，",
   "Working… (see Activity)": "處理中…（請參閱活動）",
-  "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.": "適用於標準（拜耳）感光元件相機的 RAW 檔。其他檔案仍使用一般的雜訊抑制。",
   "Write XMP Sidecars": "寫入 XMP 附屬檔案",
   "Write XMP for Immich": "為 Immich 寫入 XMP",
   "Write photo metadata": "寫入相片中繼資料",
