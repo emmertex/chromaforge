@@ -2427,7 +2427,7 @@ impl PreparedExport {
                 let (r, hdr, gpu_fallback) = if mix {
                     // the GPU and the processor at once: this photo takes the GPU when it is free,
                     // else it renders on the processor rather than wait
-                    match lcc_gpu::try_batch_turn(src_px, out_px) {
+                    match card_turn_now(src_px, out_px) {
                         Some(_turn) => renders(),
                         None => {
                             if lcc_pipeline::profiling() {
@@ -2440,7 +2440,7 @@ impl PreparedExport {
                     // two cards: the photo waits for whichever has room and would finish it
                     // soonest, holding that card's turn for both its renditions (one card: as
                     // before, each render queues at the card after its plan)
-                    match lcc_gpu::wait_batch_turn_any(src_px, out_px, &|| stop() || lcc_gpu::shutting_down()) {
+                    match card_turn_waiting(src_px, out_px, &|| stop() || lcc_gpu::shutting_down()) {
                         Some(_turn) => renders(),
                         // no GPU to wait for (the renders go to the processor by themselves), or cancelled
                         None => {
@@ -2842,7 +2842,12 @@ pub fn export_parallelism(n: usize) -> usize {
     }
     let env = lcc_brand::env("EXPORT_LANES").and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n > 0);
     let set = Some(LANES.load(std::sync::atomic::Ordering::Relaxed)).filter(|n| *n > 0);
-    let jobs = if two_cards() { lcc_gpu::batch_jobs_per_card() } else { (0, 0) };
+    let jobs = match export_cards() {
+        _ if !two_cards() => (0, 0),
+        // (the card for editing alone: as on one card)
+        ExportCards::Editing => (0, 0),
+        _ => lcc_gpu::batch_jobs_per_card(),
+    };
     let lanes = env.or(set.map(|l| lanes_for_two_cards(l, jobs))).unwrap_or_else(|| {
         let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
         auto_lanes(cores, jobs.1)
@@ -2871,6 +2876,104 @@ fn two_cards() -> bool {
 
 /// The most photos an export renders side by side, whatever is asked.
 pub const MAX_EXPORT_LANES: usize = 64;
+
+/// The graphics cards exports use when the computer has a second one (Settings ▸ Performance ▸
+/// Graphics cards for exports; [`set_export_cards`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportCards {
+    /// Both cards, each photo on the one that would finish it soonest (the default).
+    #[default]
+    Both,
+    /// The card for editing only: the second card is left alone.
+    Editing,
+    /// The second card only, while it works (to measure it; the card for editing takes over when
+    /// it isn't ready or stops).
+    Second,
+}
+
+impl ExportCards {
+    /// `both`, `editing` or `second` (and a benchmark's `on`, `off`, `only`).
+    pub fn parse(s: &str) -> Option<ExportCards> {
+        match s.trim() {
+            "both" | "on" => Some(ExportCards::Both),
+            "editing" | "off" => Some(ExportCards::Editing),
+            "second" | "only" | "helper" => Some(ExportCards::Second),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ExportCards::Both => "both",
+            ExportCards::Editing => "editing",
+            ExportCards::Second => "second",
+        }
+    }
+}
+
+static EXPORT_CARDS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Use `cards` for exports from now on (Settings, benchmarks).
+pub fn set_export_cards(cards: ExportCards) {
+    let v = match cards {
+        ExportCards::Both => 0,
+        ExportCards::Editing => 1,
+        ExportCards::Second => 2,
+    };
+    EXPORT_CARDS.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The cards exports use ([`set_export_cards`]).
+pub fn export_cards() -> ExportCards {
+    match EXPORT_CARDS.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => ExportCards::Editing,
+        2 => ExportCards::Second,
+        _ => ExportCards::Both,
+    }
+}
+
+/// Which card a photo of an export under `cards` may take a turn on now, in order (`true`: the
+/// second card), when the second card is `helper_ready`; empty: either, whichever would finish it
+/// soonest ([`lcc_gpu::batch_turn_any`]).
+fn cards_for(cards: ExportCards, helper_ready: bool) -> &'static [bool] {
+    match cards {
+        ExportCards::Both => &[],
+        ExportCards::Editing => &[false],
+        ExportCards::Second if helper_ready => &[true],
+        // (no second card ready: the card for editing, so the export isn't stuck)
+        ExportCards::Second => &[false],
+    }
+}
+
+/// A photo's turn on a card with room now ([`export_cards`]); `None`: busy (or no GPU), the photo
+/// renders on the processor.
+fn card_turn_now(src_px: usize, out_px: usize) -> Option<lcc_gpu::BatchTurn> {
+    match cards_for(export_cards(), lcc_gpu::helper_ready()) {
+        [] => lcc_gpu::try_batch_turn(src_px, out_px),
+        only => only.iter().find_map(|h| lcc_gpu::try_batch_turn_on(*h, src_px, out_px)),
+    }
+}
+
+/// [`card_turn_now`], waiting until the card has room. `None` when `stop()` says so (cancelled),
+/// or at once without a GPU to wait for. A second card lost while the photo waits for it stops
+/// being waited for: the card for editing takes the photo.
+fn card_turn_waiting(src_px: usize, out_px: usize, stop: &dyn Fn() -> bool) -> Option<lcc_gpu::BatchTurn> {
+    loop {
+        let only = cards_for(export_cards(), lcc_gpu::helper_ready());
+        if only.is_empty() {
+            return lcc_gpu::wait_batch_turn_any(src_px, out_px, stop);
+        }
+        if let Some(t) = only.iter().find_map(|h| lcc_gpu::try_batch_turn_on(*h, src_px, out_px)) {
+            return Some(t);
+        }
+        // (no GPU at all: the renders go to the processor by themselves)
+        if lcc_gpu::batch_cards() == 0 || stop() || lcc_gpu::shutting_down() {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+}
 
 /// Export lanes chosen by [`set_export_lanes`] (`0`: automatic).
 static LANES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -3316,6 +3419,25 @@ impl<'a> Placer<'a> {
 mod tests_two_cards {
     // With a second card, the automatic lanes grow by the renders it takes at once (one card: as
     // before), and a lanes setting made on one card is raised so both cards get photos
+    #[test]
+    fn each_export_choice_takes_its_own_cards() {
+        use super::{ExportCards, cards_for};
+        assert_eq!(cards_for(ExportCards::Both, true), &[] as &[bool], "both: whichever would finish soonest");
+        assert_eq!(cards_for(ExportCards::Editing, true), &[false], "the card for editing only");
+        assert_eq!(cards_for(ExportCards::Second, true), &[true], "the second card only");
+        assert_eq!(cards_for(ExportCards::Second, false), &[false], "no second card: the card for editing");
+        // (the process-wide choice is left alone: other exports run beside this test)
+        for c in [ExportCards::Both, ExportCards::Editing, ExportCards::Second] {
+            assert_eq!(ExportCards::parse(c.name()), Some(c));
+        }
+        assert_eq!(
+            (ExportCards::parse("off"), ExportCards::parse("only"), ExportCards::parse("x")),
+            (Some(ExportCards::Editing), Some(ExportCards::Second), None)
+        );
+        let saved: ExportCards = serde_json::from_value(serde_json::json!("second")).unwrap();
+        assert_eq!(saved, ExportCards::Second);
+    }
+
     #[test]
     fn a_second_card_gets_lanes_of_its_own() {
         assert_eq!(super::auto_lanes(16, 0), 8);

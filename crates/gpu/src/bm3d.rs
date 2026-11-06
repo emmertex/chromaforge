@@ -17,7 +17,7 @@ use lcc_denoise::nlm::hadamard;
 use lcc_denoise::run::{Error, TileRunner};
 use wgpu::util::DeviceExt;
 
-use crate::nn::{CLOSING, Dev, TIMEOUT, dev, entry, mark_broken, pipeline, storage};
+use crate::nn::{CLOSING, Card, Dev, TIMEOUT, dev, dev_on, entry, mark_broken, pipeline, storage};
 
 /// Tiles that can be on the GPU at once (each has buffers of its own).
 const WORKSPACES: usize = 2;
@@ -129,6 +129,15 @@ impl Bm3dGpu {
     /// The filter with `params` for tiles of `t × t` cells on the GPU, or why it cannot be (no GPU, parameters or a size
     /// the kernels do not do, the device refusing the buffers). Creates the device on first use and compiles the kernels.
     pub fn new(params: &Params, t: usize) -> Result<Bm3dGpu, String> {
+        Self::new_with(dev, params, t)
+    }
+
+    /// [`Self::new`] on `card`'s own device (a batch makes a photo on each card at once).
+    pub fn new_on(card: Card, params: &Params, t: usize) -> Result<Bm3dGpu, String> {
+        Self::new_with(|| dev_on(card), params, t)
+    }
+
+    fn new_with(dev: impl FnOnce() -> Result<&'static Dev, String>, params: &Params, t: usize) -> Result<Bm3dGpu, String> {
         let _work = crate::exit::enter().ok_or(CLOSING)?;
         let Some(plan) = bm3d::plan(params, t, 0.0) else { return unsupported("the tile is smaller than a block") };
         let p = plan.params;
@@ -175,6 +184,11 @@ impl Bm3dGpu {
     /// The adapter this runs on.
     pub fn adapter(&self) -> String {
         format!("{} ({:?})", self.dev.info.name, self.dev.info.backend)
+    }
+
+    /// The card its device is on.
+    pub fn card(&self) -> Card {
+        self.dev.card
     }
 
     /// The parameters it was made for.
@@ -283,7 +297,8 @@ impl Bm3dGpu {
 
     /// Denoise four unit-noise planes of `t × t` cells as [`bm3d::filter`] does; `noise` as there.
     pub fn filter(&self, planes: &[Vec<f32>], t: usize, noise: f32) -> Result<Vec<Vec<f32>>, Error> {
-        if let Some(why) = crate::nn::broken_reason() {
+        let card = self.dev.card;
+        if let Some(why) = crate::nn::broken_reason_on(card) {
             return Err(Error::Runtime(format!("the GPU is not used any more: {why}")));
         }
         let Some(plan) = bm3d::plan(&self.requested, t, noise).filter(|_| t == self.t) else {
@@ -296,6 +311,7 @@ impl Bm3dGpu {
         // one tile is one piece of GPU work: a photo's worth would outlast any wait at exit
         let Some(_work) = crate::exit::enter() else { return Err(Error::Runtime(CLOSING.into())) };
         let w = self.take()?;
+        crate::nn::background_turn(card);
         let flat: Vec<f32> = y.concat();
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.execute(&w, &flat, &plan))) {
             Ok(Ok(out)) => {
@@ -310,7 +326,7 @@ impl Bm3dGpu {
             }
             Err(_) => {
                 // a panic inside wgpu: this workspace is not given back, and the GPU is not used again
-                mark_broken("a denoise tile panicked");
+                mark_broken(card, "a denoise tile panicked");
                 drop(w);
                 self.forget();
                 Err(Error::Runtime("the GPU runner gave up".into()))
@@ -381,11 +397,11 @@ impl Bm3dGpu {
             return Err(Error::Runtime(format!("the GPU ran out of memory: {e}")));
         }
         if let Some(e) = internal.or(validation) {
-            mark_broken(&format!("device error: {e}"));
+            mark_broken(d.card, &format!("device error: {e}"));
             return Err(Error::Runtime(format!("the GPU reported an error: {e}")));
         }
         if let Err(e) = waited {
-            mark_broken(&format!("the GPU did not finish a tile: {e}"));
+            mark_broken(d.card, &format!("the GPU did not finish a tile: {e}"));
             return Err(Error::Runtime(format!("the GPU did not finish: {e}")));
         }
         match rx.recv_timeout(Duration::from_secs(10)) {

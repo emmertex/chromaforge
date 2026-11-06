@@ -513,6 +513,10 @@ pub struct AppSettings {
     /// Exports sharing the GPU at once (0 = automatic).
     #[serde(deserialize_with = "lenient")]
     pub gpu_export_jobs: u32,
+    /// The graphics cards exports use when there is a second one (Settings ▸ Performance):
+    /// both (the default), the card for editing only, or the second card only (to measure it).
+    #[serde(deserialize_with = "lenient")]
+    pub export_cards: lcc_engine::export::ExportCards,
     /// The last "Test my machine" (Settings ▸ Performance): what it measured and chose.
     #[serde(deserialize_with = "lenient")]
     pub machine_test: Option<lcc_engine::machine_test::MachineReport>,
@@ -706,6 +710,7 @@ impl Default for AppSettings {
             export_cpu_only: false,
             gpu_export_mb: 0,
             gpu_export_jobs: 0,
+            export_cards: Default::default(),
             machine_test: None,
             film_names: true,
             film_badges: true,

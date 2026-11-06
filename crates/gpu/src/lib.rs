@@ -194,6 +194,32 @@ fn try_turn_on(helper: bool, bytes: u64) -> Option<BatchTurn> {
     gate::try_turn(bytes, vram, helper).map(|t| BatchTurn { _turn: Some(t), helper })
 }
 
+/// [`batch_turn_any`] on one card only: the second card (`helper`) or the card for editing, if it
+/// has a device and room now (an export told to use one card). `None`: no device there, or busy.
+pub fn try_batch_turn_on(helper: bool, src_px: usize, out_px: usize) -> Option<BatchTurn> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        try_turn_on(helper, turn_bytes(src_px, out_px))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (helper, src_px, out_px);
+        None
+    }
+}
+
+/// Whether the second graphics card is set up and takes work now. Never blocks.
+pub fn helper_ready() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        allowed() && helper::current().is_some()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
 /// A turn for a batch photo of `src_px` source and `out_px` output pixels on whichever card has
 /// room now and would finish it soonest: each card's photos running now plus this one, at the
 /// card's measured speed for batch work, so both cards work in proportion to their speed and a
@@ -992,6 +1018,27 @@ pub(crate) fn ai_adapter(instance: &wgpu::Instance, backends: wgpu::Backends) ->
             log::info!("gpu: AI models on {}", a.get_info().name);
             Ok(a)
         }
+        None => backend::pick_adapter(instance, backends),
+    }
+}
+
+/// The adapter for AI work on the second graphics card (`second`: `Err` when there is none, or it is
+/// turned off) or on the card for editing. AI Denoise keeps a device on each ([`nn::Card`]).
+#[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
+pub(crate) fn ai_adapter_on(instance: &wgpu::Instance, backends: wgpu::Backends, second: bool) -> Result<wgpu::Adapter, String> {
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    let entries = remember_adapters(&adapters);
+    let res = cards::resolve_card(&entries, backend::wanted_adapter().as_deref(), cards::card().as_ref());
+    let editing = EDITING_CARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let primary = editing.and_then(|k| entries.iter().position(|e| e.key == k)).or(res.index);
+    if second {
+        let pins = backend::wanted_adapter().is_some();
+        return cards::resolve_helper(&entries, primary, &cards::helper_choice(), pins)
+            .and_then(|i| adapters.into_iter().nth(i))
+            .ok_or_else(|| nn::NO_SECOND_CARD.to_string());
+    }
+    match primary.and_then(|i| adapters.into_iter().nth(i)) {
+        Some(a) => Ok(a),
         None => backend::pick_adapter(instance, backends),
     }
 }

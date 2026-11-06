@@ -41,8 +41,8 @@ impl TileRunner for Dim {
 }
 
 impl Model for Dim {
-    fn runner(&self, _: RunOn, threads: usize) -> (&dyn TileRunner, usize) {
-        (self, threads)
+    fn runner(&self, _: RunOn, threads: usize) -> (Box<dyn TileRunner + '_>, usize) {
+        (Box::new(crate::denoise::Lent(self)), threads)
     }
 
     fn self_test(&self, _: RunOn) -> Result<Value, String> {
@@ -536,8 +536,8 @@ fn files_that_cannot_be_denoised_fail_with_a_reason_and_never_a_panic() {
         }
     }
     impl Model for Wrong {
-        fn runner(&self, _: RunOn, threads: usize) -> (&dyn TileRunner, usize) {
-            (self, threads)
+        fn runner(&self, _: RunOn, threads: usize) -> (Box<dyn TileRunner + '_>, usize) {
+            (Box::new(crate::denoise::Lent(self)), threads)
         }
         fn self_test(&self, _: RunOn) -> Result<Value, String> {
             Err("no".into())
@@ -870,6 +870,82 @@ fn denoise_row_while_queue_is_busy() {
     let done = x.s.activity.finished();
     let last = done.last().expect("the batch leaves its summary");
     assert_eq!((last.kind, last.done, last.failed), ("denoise", 1, 0));
+    let _ = std::fs::remove_dir_all(&x.dir);
+}
+
+/// A model on two graphics cards ([`Model::lanes`] 2): the batch makes two photos at once, one per card (each in its
+/// own row under the batch row, both listed by `running.photos`), never more; one at a light pace.
+#[test]
+fn a_model_on_two_cards_makes_two_photos_at_once() {
+    use std::sync::{Condvar, Mutex};
+    /// [`Dim`] on "two cards", its tiles held until the test lets them go.
+    struct TwoCards {
+        dim: Dim,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+    impl TileRunner for TwoCards {
+        fn run(&self, input: &[f32]) -> Result<Vec<f32>, lcc_denoise::Error> {
+            let (open, wake) = &*self.gate;
+            let mut o = open.lock().unwrap();
+            while !*o {
+                o = wake.wait(o).unwrap();
+            }
+            drop(o);
+            self.dim.run(input)
+        }
+    }
+    impl Model for TwoCards {
+        fn runner(&self, _: RunOn, threads: usize) -> (Box<dyn TileRunner + '_>, usize) {
+            (Box::new(crate::denoise::Lent(self)), threads)
+        }
+        fn lanes(&self, _: RunOn) -> usize {
+            2
+        }
+        fn self_test(&self, _: RunOn) -> Result<Value, String> {
+            Ok(json!({"ok": true}))
+        }
+    }
+    let mut x = setup("twocards", false);
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (runs, g) = (x.runs.clone(), gate.clone());
+    x.s.denoise.loader = Arc::new(move |_, _| Ok(Arc::new(TwoCards { dim: Dim { runs: runs.clone() }, gate: g.clone() }) as Arc<dyn Model>));
+    let onnx = model_files(&x.dir, "stand-in");
+    x.s.execute("denoise.models.install", &json!({"path": onnx.to_string_lossy(), "acknowledged": true})).unwrap();
+    let originals = x.dir.join("originals");
+    let mut paths = Vec::new();
+    for i in 0..3 {
+        let path = originals.join(format!("two{i}.dng"));
+        std::fs::write(&path, ramp_dng(192 + 2 * (i + 1), 160, "RGGB")).unwrap();
+        paths.push(path.to_string_lossy().to_string());
+    }
+    x.s.execute("library.import", &json!({"paths": paths})).unwrap();
+    let ids: Vec<u64> = x.s.catalog.photos().map(|p| p.id.0).collect();
+    x.s.execute("library.select", &json!({"ids": ids, "active": ids[0]})).unwrap();
+    x.s.execute("develop.autoSync", &json!({"on": true})).unwrap();
+    x.s.execute("denoise.toggle", &json!({"enabled": true})).unwrap();
+    // the model installed (and loaded) says how many cards it runs on
+    assert_eq!(x.s.denoise_lanes(crate::denoise::Pace::Full), 2);
+    let rows = |s: &Session| s.activity.list().into_iter().filter(|t| t.kind == "denoise" && !t.batch).count();
+    let mut two = false;
+    for _ in 0..400 {
+        x.s.execute("denoise.pump", &json!({"pace": "full"})).unwrap();
+        let r = x.s.execute("denoise.status", &json!({})).unwrap();
+        let photos = r["running"]["photos"].as_array().map_or(0, Vec::len);
+        assert!(photos <= 2, "one photo per card: {r}");
+        if photos == 2 {
+            assert_eq!(rows(&x.s), 2, "a row for each photo being made");
+            two = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(two, "two photos never ran at once: {}", x.s.execute("denoise.status", &json!({})).unwrap());
+    assert_eq!(x.s.denoise_lanes(crate::denoise::Pace::Full), 2);
+    assert_eq!(x.s.denoise_lanes(crate::denoise::Pace::Light), 1, "the user is working: one photo");
+    // let them go: every photo is made
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    pump_until_ready(&mut x.s, ids.len() as u64);
     let _ = std::fs::remove_dir_all(&x.dir);
 }
 

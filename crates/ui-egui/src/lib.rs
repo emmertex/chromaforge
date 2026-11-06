@@ -947,7 +947,7 @@ pub struct LccApp {
     /// The window's size last frame: a resize asks the GPU's batch work (exports) to make room.
     last_screen: egui::Vec2,
     /// The export lanes, processor-only switch and GPU share last applied (install settings).
-    export_tuning_applied: Option<(u32, bool, u32, u32)>,
+    export_tuning_applied: Option<(u32, bool, u32, u32, lcc_engine::export::ExportCards)>,
     /// "Test my machine" while it runs (Settings ▸ Performance).
     pub machine: Option<machine_test::MachineTask>,
     /// The memory budget setting last applied (MB, 0 = automatic).
@@ -2438,7 +2438,7 @@ impl LccApp {
         self.memory_applied = Some(mb);
         // export lanes and the GPU's share for exports (Settings ▸ Performance, "Test my machine")
         let st = &self.ui.settings;
-        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs);
+        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs, st.export_cards);
         if self.export_tuning_applied != Some(tuning) {
             crate::machine_test::apply(st);
             self.export_tuning_applied = Some(tuning);
