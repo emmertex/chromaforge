@@ -185,6 +185,9 @@ icons! {
     MaskInvert,
     /// A minus sign (the counterpart of [`Icon::Plus`]).
     Minus,
+    /// The intersect sign ∩ (a mask component that keeps only where it overlaps the rest), drawn so
+    /// it never depends on a font having the glyph.
+    Intersect,
     /// Crop overlay: rule of thirds, in a 3:2 frame (the guides `crop_overlay` draws, our own).
     OverlayThirds,
     /// Crop overlay: a grid.
@@ -1029,6 +1032,16 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<
         }
         Minus => {
             pen.line(&[(4.0, 10.0), (16.0, 10.0)]);
+        }
+        Intersect => {
+            // ∩: two legs joined by a half circle over the top, open at the bottom (our own)
+            let mut pts = vec![(5.0, 16.0)];
+            pts.extend((0..=12).map(|i| {
+                let a = (180.0 + 180.0 * i as f32 / 12.0_f32).to_radians();
+                (10.0 + 5.0 * a.cos(), 10.0 + 5.0 * a.sin())
+            }));
+            pts.push((15.0, 16.0));
+            pen.line(&pts);
         }
         Play => {
             // Lucide `play`
