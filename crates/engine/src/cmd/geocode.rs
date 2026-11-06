@@ -116,6 +116,7 @@ fn fill(meta: &mut lcc_catalog::Meta, place: &lcc_geocode::Place, overwrite: boo
         (&mut meta.city, &place.city),
         (&mut meta.state, &place.state),
         (&mut meta.country, &place.country),
+        (&mut meta.country_code, &place.iso),
     ] {
         if !value.is_empty() && (overwrite || field.trim().is_empty()) {
             *field = value.clone();

@@ -306,7 +306,7 @@ fn a_drop_while_a_browse_scan_runs_is_refused_for_files_and_folders() {
     }
 }
 
-/// While a Lightroom catalog import is pending the drop is refused, and the card says so instead of
+/// While a catalog import is pending the drop is refused, and the card says so instead of
 /// promising a review.
 #[test]
 fn hovering_photos_while_a_lightroom_import_is_pending_says_they_will_be_refused() {
@@ -314,7 +314,7 @@ fn hovering_photos_while_a_lightroom_import_is_pending_says_they_will_be_refused
     let mut h = app(&dir);
     let _task = crate::lightroom_import::stall_import(&mut h.app);
     drop_files(&mut h, &[dir.path("trip")], true);
-    assert!(said(&h, "Finish Lightroom catalog import"), "{:?}", h.painted_text());
+    assert!(said(&h, "Finish the catalog import"), "{:?}", h.painted_text());
     assert!(!said(&h, "review"), "{:?}", h.painted_text());
     drop_files(&mut h, &[dir.path("trip")], false);
     assert!(h.app.ui.dialog.is_none(), "no review opened");

@@ -197,8 +197,14 @@ pub fn always(_: &Session) -> std::result::Result<(), String> {
 pub fn has_active(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no photo selected".into())
 }
+/// A selection of photos that are there: one whose photos an undo took away (they stay selected
+/// for the redo) is none, as [`Session::targets`] would be empty. What counts is what a command acts on
+/// ([`Session::selected`]): the active photo only stands in when nothing else is selected.
 pub fn has_selection(s: &Session) -> std::result::Result<(), String> {
-    if s.selection.ids.is_empty() && s.selection.active.is_none() { Err("no photos selected".into()) } else { Ok(()) }
+    // (the rule of `Session::selected`, without making its list: this is asked for every command, every frame)
+    let there = |id: &lcc_catalog::PhotoId| s.catalog.photo(*id).is_some();
+    let any = if s.selection.ids.is_empty() { s.selection.active.iter().any(there) } else { s.selection.ids.iter().any(there) };
+    if any { Ok(()) } else { Err("no photos selected".into()) }
 }
 /// Albums hold library photos: a selection of only browsed (Local) photos has nothing an album
 /// can take (issue #684; Add to My Photos first).
@@ -489,8 +495,13 @@ pub(crate) fn check_recipe(recipe: &[(String, f64)]) -> std::result::Result<(), 
     Ok(())
 }
 pub(crate) fn point(p: &Value, key: &str) -> Option<lcc_geom::Point> {
-    let a = p.get(key)?.as_array()?;
-    Some(lcc_geom::Point::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+    let v = p.get(key)?;
+    // `[x, y]`, or `{x, y}` as a Point serializes (the app sends those)
+    let (x, y) = match v.as_array() {
+        Some(a) => (a.first()?.as_f64()?, a.get(1)?.as_f64()?),
+        None => (v.get("x")?.as_f64()?, v.get("y")?.as_f64()?),
+    };
+    Some(lcc_geom::Point::new(x, y))
 }
 
 #[cfg(test)]
@@ -498,6 +509,25 @@ mod tests {
     use serde_json::json;
 
     use super::index_req;
+
+    /// OneSlips ea89acca3: a point reads as `[x, y]` and as `{x, y}` (how a Point serializes), so a mask drawn with
+    /// either lands where it was drawn, not at the default place.
+    #[test]
+    fn points_read_as_a_list_or_as_x_and_y() {
+        let at = |v: serde_json::Value| super::point(&json!({"center": v}), "center").map(|p| (p.x, p.y));
+        assert_eq!(at(json!([0.2, 0.7])), Some((0.2, 0.7)));
+        assert_eq!(at(json!({"x": 0.2, "y": 0.7})), Some((0.2, 0.7)));
+        for bad in [json!({"x": 0.2}), json!([0.2]), json!("0.2,0.7"), json!({"x": "a", "y": 1})] {
+            assert_eq!(at(bad.clone()), None, "{bad}");
+        }
+        let mut s = crate::Session::with_demo();
+        s.execute("mask.add", &json!({"kind": "radial", "center": {"x": 0.2, "y": 0.7}})).unwrap();
+        let id = s.active().unwrap();
+        let d = s.develop_of(id).unwrap();
+        let shape = &d.masks.last().unwrap().components[0].shape;
+        let lcc_develop::MaskShape::Radial { center, .. } = shape else { panic!("a radial: {shape:?}") };
+        assert_eq!((center.x, center.y), (0.2, 0.7), "where it was drawn");
+    }
 
     #[test]
     fn command_indices_preserve_integer_precision_and_check_usize_bounds() {

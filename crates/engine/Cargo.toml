@@ -67,13 +67,13 @@ lcc-tflite = { workspace = true, optional = true }
 # video clips: probe and poster frames (every call is `Unsupported` on wasm32)
 lcc-video = { workspace = true }
 lcc-audio-out = { workspace = true }
+# capture times: face recognition, and a Capture One catalog's offline originals (no clock: builds for wasm32 too)
+chrono = { workspace = true }
 
 # model downloads run natively only (the web build fetches no models)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lcc-fetch = { workspace = true }
 lcc-genfill = { workspace = true, features = ["cloud"] }
-# capture-time parsing for face recognition (native only)
-chrono = { workspace = true }
 # auto updates: the release feed, the download, and starting the install
 lcc-updater = { workspace = true }
 lcc-immich = { workspace = true }
@@ -106,6 +106,8 @@ audio-out = ["lcc-audio-out/audio-out"]
 sam = ["dep:lcc-segment", "dep:lcc-tflite"]
 denoise = ["dep:lcc-denoise", "lcc-denoise/runtime", "lcc-gpu/denoise"]
 rawnind-model = ["denoise", "lcc-denoise/rawnind-model", "lcc-denoise-core/rawnind-model"]
+# Product-policy switch, like `rawnind-model`: offers the pinned Real-ESRGAN upscaler download for Super Resolution.
+realesrgan-model = ["denoise", "lcc-denoise/realesrgan-model", "lcc-denoise-core/realesrgan-model"]
 # The upstream project's own denoise model offered as a download (MIT OR Apache-2.0 weights, CC0 training data).
 own-model = ["denoise", "lcc-denoise/own-model", "lcc-denoise-core/own-model"]
 # Tests of other crates only: `Updater::trust_test_key` (the UI's update dialog), so they can stand in
@@ -140,8 +142,8 @@ lcc-video = { workspace = true, features = ["test-util"] }
 # M14.4: the GPU playback LUT benchmark (bench_playback)
 wgpu = { workspace = true }
 pollster = { workspace = true }
-filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
-filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "cfaad0c7807452d526a7b6870ff59450ccf08106" }
+filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
+filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
 
 [target.'cfg(windows)'.dependencies]
 # free space on Windows (the Folders panel); its own unsafe FFI stays inside the crate

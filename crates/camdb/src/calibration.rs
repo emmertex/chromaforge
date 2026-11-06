@@ -758,6 +758,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn embedded_calibrations_have_sane_hue_shifts() {
+        for (name, text) in embedded_files() {
+            let c = Calibration::parse(text).unwrap();
+            if let Some(tables) = &c.camera.hue_sat_map {
+                for (i, t) in tables.iter().enumerate() {
+                    for entry in &t.data {
+                        assert!(entry[0].abs() <= 75.0, "{name} table {i}: extreme hue shift {:.1}° (must be <= 75°)", entry[0]);
+                        assert!(entry[1] <= 4.0, "{name} table {i}: extreme sat scale {:.2} (must be <= 4.0)", entry[1]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nikon_z6_3_calibration_has_no_extreme_hue_sat_map() {
+        let Some(cal) = embedded().iter().find(|c| c.model == "NIKON Z6_3") else {
+            panic!("the Nikon Z 6III calibration is embedded");
+        };
+        // The overfitted hue_sat_map caused purple discoloration in skies and cool shadows.
+        // It must either be absent or strictly bounded.
+        if let Some(tables) = &cal.camera.hue_sat_map {
+            for t in tables {
+                for entry in &t.data {
+                    assert!(entry[0].abs() < 45.0, "Z6_3 hue shift too large: {}", entry[0]);
+                }
+            }
+        }
+    }
+
     /// Issue #451 (Sony a1, in-camera tungsten white balance): the shipped a1 calibration carries
     /// both illuminants of its dual-illuminant pair, and an extreme (tungsten) as-shot white
     /// balance read through it — the ARW `WB_RGGBLevels` gains and the camera neutral they name —

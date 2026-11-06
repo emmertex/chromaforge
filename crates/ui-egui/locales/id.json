@@ -2162,7 +2162,10 @@
   "Will be restored": "Akan dipulihkan",
   "Window": "Jendela",
   "Winter Blue": "Biru Musim Dingin",
-  "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.": "Berfungsi untuk file raw dari kamera dengan sensor standar (Bayer). File lain tetap memakai pengurangan noise biasa.",
+  "Works on raw files from cameras with a standard (Bayer) sensor, and on JPEG, PNG, TIFF and other finished pictures with a model made for them. Other raw files keep their normal noise reduction.": "Berfungsi pada file raw dari kamera dengan sensor standar (Bayer), dan pada JPEG, PNG, TIFF, serta gambar jadi lainnya dengan model yang dibuat untuknya. File raw lainnya tetap memakai pengurangan noise biasa.",
+  "For JPEG and other finished pictures": "Untuk JPEG dan gambar jadi lainnya",
+  "For Super Resolution and AI Sharpen": "Untuk Resolusi Super dan Penajaman AI",
+  "For raw photos": "Untuk foto raw",
   "Write Waiting XMP Sidecars": "Tulis file sidecar XMP yang tertunda",
   "Wrote the XMP sidecars that were waiting": "File sidecar XMP yang tertunda telah ditulis",
   "XMP Sidecar Preferences": "Preferensi file sidecar XMP",
@@ -2377,5 +2380,9 @@
   "New album…": "Album baru…",
   "Albums": "Album",
   "This is the album you're editing": "Ini album yang sedang Anda edit",
-  "It tests this album, so testing it back would loop": "Album itu sudah menjadikan album ini sebagai syarat; menjadikannya syarat di sini akan menimbulkan perulangan"
+  "It tests this album, so testing it back would loop": "Album itu sudah menjadikan album ini sebagai syarat; menjadikannya syarat di sini akan menimbulkan perulangan",
+  "Import to This Folder…": "Impor ke folder ini…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Menyalin foto dari folder yang Anda pilih ke folder ini; di tinjauan Anda bisa mengubahnya",
+  "Add to My Photos…": "Tambahkan ke Foto saya…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Meninjau foto di folder ini, lalu menambahkannya ke pustaka di tempatnya; tidak ada berkas yang disentuh"
 }

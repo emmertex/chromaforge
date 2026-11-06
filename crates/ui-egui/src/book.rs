@@ -1087,25 +1087,20 @@ fn op(app: &mut LccApp, ctx: &egui::Context, id: &str, p: Value) {
 }
 
 fn center(ui: &mut egui::Ui, app: &mut LccApp) {
-    let t = Tokens::get(ui.ctx());
     let mut area = ui.available_rect_before_wrap();
     app.canvas_rect = Some(area);
     ui.allocate_rect(area, Sense::hover());
     if crate::module::edge_visible(app, Edge::Bottom) {
-        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - t.film_h), area.max);
+        let film = Rect::from_min_max(pos2(area.left(), area.bottom() - app.ui.film_height()), area.max);
         area.max.y = film.top();
         filmstrip(ui, app, film);
     }
     if app.ui.right_edge {
-        let w = 300.0f32.min(area.width() * 0.45);
-        let right = Rect::from_min_max(pos2(area.right() - w, area.top()), area.max);
-        area.max.x = right.left();
+        let right = crate::panels::split_side(ui, &mut area, false, "book:right", &mut app.ui.right_width, crate::state::RIGHT_WIDTH);
         ui.scope_builder(UiBuilder::new().max_rect(right), |ui| right_panels(ui, app, right));
     }
     if app.ui.left_panel {
-        let w = 210.0f32.min(area.width() * 0.3);
-        let left = Rect::from_min_max(area.min, pos2(area.left() + w, area.bottom()));
-        area.min.x = left.right();
+        let left = crate::panels::split_side(ui, &mut area, true, "book:left", &mut app.ui.left_width, crate::state::LEFT_WIDTH);
         ui.scope_builder(UiBuilder::new().max_rect(left), |ui| left_panels(ui, app, left));
     }
     let bar = Rect::from_min_max(pos2(area.left(), area.bottom() - 34.0), area.max);

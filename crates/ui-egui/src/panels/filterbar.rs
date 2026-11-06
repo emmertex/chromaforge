@@ -467,7 +467,7 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
 /// The Metadata columns' height (points), under the filter bar's rows: a column's field, its search box and its values.
 pub const COLUMNS_HEIGHT: f32 = 198.0;
 /// The fields a Metadata column can list (`library.facetPick`'s fields), with their headers.
-pub const COLUMN_FIELDS: [(&str, &str); 9] = [
+pub const COLUMN_FIELDS: [(&str, &str); 23] = [
     ("year", "Date"),
     ("camera", "Camera"),
     ("lens", "Lens"),
@@ -477,6 +477,20 @@ pub const COLUMN_FIELDS: [(&str, &str); 9] = [
     ("flag", "Flag"),
     ("rating", "Rating"),
     ("kind", "File Type"),
+    ("format", "File Format"),
+    ("iso", "ISO"),
+    ("focal", "Focal Length"),
+    ("aspect", "Aspect Ratio"),
+    ("title", "Title"),
+    ("headline", "Headline"),
+    ("caption", "Caption"),
+    ("creator", "Creator"),
+    ("copyright", "Copyright"),
+    ("location", "Location"),
+    ("city", "City"),
+    ("country", "Country"),
+    ("preset", "Develop Preset"),
+    ("ai", "AI Tools"),
 ];
 /// The columns first shown, as Lightroom Classic's Metadata filter starts.
 const DEFAULT_COLUMNS: [&str; 4] = ["year", "camera", "lens", "label"];
@@ -648,7 +662,7 @@ fn columns(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
     register(ui.ctx(), "filterColumns", area);
     // one search box per column, kept from frame to frame (a search survives the faceted counts changing with it)
     app.ui.filter_column_search.resize(fields.len(), String::new());
-    let mut picked: Option<(String, Value)> = None;
+    let mut picked: Option<Value> = None;
     let mut op_pick: Option<(String, Value)> = None;
     let mut retitle: Option<(usize, &'static str)> = None;
     for (i, field) in fields.iter().enumerate() {
@@ -710,9 +724,10 @@ fn columns(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
         }
         let data = &facets[field.as_str()];
         let chosen: Vec<&str> = data["chosen"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let none_on = data["noneChosen"].as_bool().unwrap_or(false);
         let all = format!("{} ({})", crate::i18n::tr("All"), data["distinct"].as_u64().unwrap_or(0));
-        if value_row(&mut c, format!("filterValue:{i}:0"), all, data["photos"].as_u64().unwrap_or(0), chosen.is_empty(), true) {
-            picked = Some((field.clone(), Value::Null));
+        if value_row(&mut c, format!("filterValue:{i}:0"), all, data["photos"].as_u64().unwrap_or(0), chosen.is_empty() && !none_on, true) {
+            picked = Some(json!({"field": field, "value": null}));
             // clearing the column also puts its operator back to OR, so the next pick doesn't start in AND
             if has_op {
                 op_pick = Some((format!("{field}Op"), json!("any")));
@@ -731,23 +746,24 @@ fn columns(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
                 }
                 shown += 1;
                 let on = chosen.iter().any(|c| c.eq_ignore_ascii_case(value));
-                // the filter has no "unrated only": a rating of 0 asks nothing
-                let clickable = !(field == "rating" && value == "0");
-                if value_row(ui, format!("filterValue:{i}:{}", n + 1), label, count, on, clickable) {
-                    picked = Some((field.clone(), json!(value)));
+                if value_row(ui, format!("filterValue:{i}:{}", n + 1), label, count, on, true) {
+                    picked = Some(json!({"field": field, "value": value}));
                 }
             }
             if shown == 0 && !query.trim().is_empty() {
                 ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr("No matches")).font(t.font(12.0)).color(t.text_dim)));
             }
             let none = data["none"].as_u64().unwrap_or(0);
-            if none > 0 {
-                value_row(ui, format!("filterValue:{i}:{}", values.len() + 1), crate::i18n::tr("Unknown").to_string(), none, false, false);
+            // photos without a value (no keyword, no capture date, no title…) can be picked too (issue #777)
+            if (none > 0 || none_on)
+                && value_row(ui, format!("filterValue:{i}:{}", values.len() + 1), crate::i18n::tr("Unknown").to_string(), none, none_on, true)
+            {
+                picked = Some(json!({"field": field, "none": true}));
             }
         });
     }
-    if let Some((field, value)) = picked {
-        let _ = app.run("library.facetPick", json!({"field": field, "value": value}));
+    if let Some(args) = picked {
+        let _ = app.run("library.facetPick", args);
     }
     if let Some((key, value)) = op_pick {
         filter(app, json!({key: value}));

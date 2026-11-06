@@ -16,6 +16,7 @@
 pub mod dates;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod db;
+pub mod facets;
 pub mod folders;
 pub mod incoming;
 mod index;
@@ -47,6 +48,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use dates::{DateRun, GroupBy};
+pub use facets::FacetPick;
 pub use folders::{FolderNode, FolderRecord};
 pub use journal::{Journal, LoadReport, PersistStats, SnapshotPolicy, SnapshotTiming};
 pub use keywords::KeywordNode;
@@ -631,15 +633,18 @@ impl Catalog {
         out
     }
 
-    /// A loop through `filter`'s own album field (not its rules): smart album `owner` filtered to
-    /// itself, or to an album that leads back to it.
+    /// What is wrong with `filter`'s own album field (not its rules): it names an album that is
+    /// gone (a view of an album, saved as a smart album, after that album was deleted), or, for
+    /// smart album `owner`, itself or an album that leads back to it.
     pub fn album_filter_problem(&self, filter: &Filter, owner: Option<AlbumId>) -> Option<rules::Problem> {
-        let (a, owner) = (filter.album?, owner?);
-        (a == owner || self.album_reaches(a, owner)).then(|| rules::Problem {
-            path: Vec::new(),
-            field: Some("album".into()),
-            issue: rules::Issue::AlbumLoop,
-            message: format!("its collection filter (collection {}) would make this collection include itself", a.0),
+        let a = filter.album?;
+        let problem = |issue, message| rules::Problem { path: Vec::new(), field: Some("album".into()), issue, message };
+        if !self.albums.contains_key(&a) {
+            return Some(problem(rules::Issue::NoSuchAlbum, format!("its collection filter names collection {}, which is gone", a.0)));
+        }
+        let owner = owner?;
+        (a == owner || self.album_reaches(a, owner)).then(|| {
+            problem(rules::Issue::AlbumLoop, format!("its collection filter (collection {}) would make this collection include itself", a.0))
         })
     }
 

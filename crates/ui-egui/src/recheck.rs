@@ -3,6 +3,9 @@
 //! `lcc_engine::cmd::recheck`). The probe runs on a worker thread, so opening never waits
 //! for it; the result is applied back here, unless another library was opened meanwhile.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use lcc_engine::cmd::recheck;
 
 use crate::LccApp;
@@ -23,7 +26,13 @@ pub fn tick(app: &mut LccApp) {
     if stale.is_empty() {
         return;
     }
-    let work = move || recheck::probe(&probe, stale);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let work = move |task: lcc_engine::activity::TaskHandle| {
+        let total = stale.len() as u64;
+        task.progress(0, total);
+        recheck::probe_cancellable_with_progress(&probe, stale, &worker_cancel, &|done| task.progress(done as u64, total))
+    };
     let done = move |app: &mut LccApp, ctx: &egui::Context, results| {
         if app.session.library_generation() != library {
             return;
@@ -40,7 +49,7 @@ pub fn tick(app: &mut LccApp) {
             Err(e) => log::warn!("recheck of preview-only raws: {e}"),
         }
     };
-    if let Err(e) = crate::tasks::spawn(app, LABEL, Some("recheck"), work, done) {
+    if let Err(e) = crate::tasks::spawn_tracked(app, LABEL, "recheck", cancel, work, done) {
         log::warn!("{e}");
     }
 }

@@ -82,6 +82,33 @@ fn default_crop(mn: Option<&makernote::MakerNote>, w: usize, h: usize) -> Rect {
     Rect::new(*x as usize, *y as usize, *width as usize, *height as usize)
 }
 
+/// Maker note `0x001b` (CropHiSpeed): where the stored frame sits on the full sensor. The tag's name, its type
+/// (seven `u16`) and its mode codes (2 DX, 3 5:4, 6 16:9, 11 FX uncropped, 17 FX 1:1) are from ExifTool's Nikon
+/// tag-name documentation; no ExifTool code or tables were used. That documentation doesn't give the order of the
+/// seven values; ours, `[mode, sensor width, sensor height, stored width, stored height, x, y]` in sensor pixels,
+/// comes from 20 Z 7 and Z 8 files (3:2 `11, 8288, 5520, 8288, 5520, 0, 0`; the Z 7's 5:4 `3, 8288, 5520, 6912,
+/// 5520, 688, 0`; the Z 8's 1:1, DX and 16:9 likewise): in every one the stored size is the decoded active area and
+/// the origin centres it on the sensor.
+const CROP_HI_SPEED: u16 = 0x001b;
+
+/// Where a NEF's stored frame sits on the full sensor ([`CROP_HI_SPEED`]): `(sensor size, origin, size)`, or `None`
+/// when the file has no such tag or its values don't describe a window inside the sensor.
+pub(crate) fn sensor_window(bytes: &[u8]) -> Option<([usize; 2], [usize; 2], [usize; 2])> {
+    let tiff = Tiff::parse(bytes).ok()?;
+    let make = tiff.ifds.first()?.string(t::MAKE).unwrap_or_default();
+    let e = tiff.exif()?.get(t::MAKER_NOTE)?;
+    let mn = makernote::parse_makernote(bytes, e.offset, e.count() as u64, tiff.order, &make)?;
+    window_from_crop_hi_speed(&mn.ifd.u64s(CROP_HI_SPEED)?)
+}
+
+fn window_from_crop_hi_speed(v: &[u64]) -> Option<([usize; 2], [usize; 2], [usize; 2])> {
+    let [_, sw, sh, cw, ch, cx, cy] = v else { return None };
+    let n = |v: &u64| usize::try_from(*v).ok();
+    let (sw, sh, cw, ch, cx, cy) = (n(sw)?, n(sh)?, n(cw)?, n(ch)?, n(cx)?, n(cy)?);
+    let inside = cw > 0 && ch > 0 && cx.checked_add(cw)? <= sw && cy.checked_add(ch)? <= sh;
+    inside.then_some(([sw, sh], [cx, cy], [cw, ch]))
+}
+
 /// A body that records no CropArea, measured on its own files: the image area inside the sensor data (where the
 /// camera's full-size JPEG sits when the two are aligned) and, when the data's own top would be wrong, the level
 /// where its channels clip.
@@ -791,6 +818,31 @@ mod tests {
 
     fn nef(compression: u16, bits: u16, strips: Vec<Vec<u8>>, w: u32, h: u32, rps: u32) -> Vec<u8> {
         nef_with_note(compression, bits, strips, w, h, rps, None)
+    }
+
+    #[test]
+    fn crop_hi_speed_places_the_stored_frame_on_the_sensor() {
+        let with = |v: Vec<u16>| {
+            let mut mn = IfdBuilder::new();
+            mn.set(CROP_HI_SPEED, Value::Short(v));
+            nef_with_note(t::compression::NONE, 16, vec![vec![0; 8 * 4 * 2]], 8, 4, 4, Some(mn))
+        };
+        // the Z 7's 5:4 image area, centred on its 8288 × 5520 sensor
+        assert_eq!(sensor_window(&with(vec![3, 8288, 5520, 6912, 5520, 688, 0])), Some(([8288, 5520], [688, 0], [6912, 5520])));
+        assert_eq!(sensor_window(&with(vec![11, 8288, 5520, 8288, 5520, 0, 0])), Some(([8288, 5520], [0, 0], [8288, 5520])));
+        // past the sensor, empty, short, absent: none (never a panic)
+        for bad in [vec![3, 8288, 5520, 6912, 5520, 1400, 0], vec![3, 8288, 5520, 0, 5520, 0, 0], vec![3, 8288, 5520], vec![]] {
+            assert_eq!(sensor_window(&with(bad.clone())), None, "{bad:?}");
+        }
+        assert_eq!(sensor_window(&nef(t::compression::NONE, 16, vec![vec![0; 64]], 8, 4, 4)), None);
+        assert_eq!(sensor_window(b"not a tiff"), None);
+        assert_eq!(window_from_crop_hi_speed(&[3, u64::MAX, 5520, u64::MAX, 5520, 1, 0]), None);
+        // the public reader gives a window only for an active area of its size
+        let bytes = with(vec![3, 8288, 5520, 6912, 5520, 688, 0]);
+        let w = crate::sensor_window(&bytes, [6912, 5520]).unwrap();
+        assert_eq!((w.sensor, w.origin, w.size), ([8288, 5520], [688, 0], [6912, 5520]));
+        assert_eq!(crate::sensor_window(&bytes, [6900, 5520]), None, "a stored frame that isn't the active area");
+        assert_eq!(crate::sensor_window(&bytes, [8288, 5520]), None);
     }
 
     /// [`nef`] with an optional maker note (`Nikon\0` v2 header + embedded big-endian TIFF holding `note`).

@@ -155,7 +155,7 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
             }
         }
         MaskShape::Prompt { text, .. } if background => {
-            s.segmenter.require_model()?;
+            s.segmenter.describe_model()?;
             if text.trim().is_empty() {
                 return Err(ai_err("describe what to select"));
             }
@@ -208,10 +208,11 @@ fn ai_err(msg: impl Into<String>) -> crate::EngineError {
     crate::EngineError::Other(msg.into())
 }
 
-/// A segmentation call: the model is checked first, so a missing one is [`crate::EngineError::ModelMissing`]
-/// (the segmenter's own errors are text).
+/// A Describe call: the models are checked first ([`crate::segment::Segmenter::describe_model`]: SAM 3, else the
+/// OWLv2 finder and SAM 2.1), so a missing one is [`crate::EngineError::ModelMissing`] (the segmenter's own errors
+/// are text).
 fn segment<T>(s: &mut Session, f: impl FnOnce(&mut Session) -> std::result::Result<T, String>) -> Result<T> {
-    s.segmenter.require_model()?;
+    s.segmenter.describe_model()?;
     f(s).map_err(ai_err)
 }
 
@@ -823,6 +824,26 @@ pub fn specs() -> Vec<CommandSpec> {
                 let exclude = bool_or(p, "exclude", false);
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
                 let mid = mask_id(p, s.active_mask, c)?;
+                // an old mask (on the corrected frame, as the click then is) goes onto the photo
+                // first, and the click with it: the model works on the photo before lens
+                // corrections, Upright and Transform, and reads every click there
+                let mut at = at;
+                if let Some(cur) = s.develop_of(id).filter(|d| d.masks.iter().any(|m| m.id == mid && !m.on_photo)) {
+                    if let Some(f) = s.mask_frame(id, &cur) {
+                        // a click on the corrected frame's blank space is off the photo, not on
+                        // its edge (a hair past it, from rounding, is on the edge)
+                        const EDGE: f64 = 1e-6;
+                        let n = f.for_mask(true).norm_to_mask(at);
+                        let on = |v: f64| v.is_finite() && (-EDGE..=1.0 + EDGE).contains(&v);
+                        if !(on(n.x) && on(n.y)) {
+                            return Err(bad(c, "the point is outside the photo"));
+                        }
+                        at = Point::new(n.x.clamp(0.0, 1.0), n.y.clamp(0.0, 1.0));
+                    }
+                    let mut on = (*cur).clone();
+                    s.attach_masks(id, &cur, &mut on);
+                    s.apply_silent(lcc_catalog::Op::SetDevelop { id, settings: std::sync::Arc::new(on), label: "Masks".into(), edited: None })?;
+                }
                 let comp = super::index_opt(p, "component", c)?;
                 let d = s.develop_of(id).unwrap_or_default();
                 let m = d.masks.iter().find(|m| m.id == mid).ok_or_else(|| bad(c, format!("no mask {mid}")))?;
@@ -872,7 +893,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Refine AI Mask Detail",
             [],
             None,
-            "{id?: maskId, component?} — a zoomed-in SAM 3 pass over an Object/Describe selection (default: the mask's last one): the photo around it is analyzed again at a higher resolution, in the background; the mask updates when it's done → {started}",
+            "{id?: maskId, component?} — a zoomed-in AI pass over an Object/Describe selection (default: the mask's last one): the photo around it is analyzed again at a higher resolution, in the background; the mask updates when it's done → {started}",
             has_active,
             |s, p| {
                 let c = "mask.refineDetail";
@@ -889,7 +910,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         .ok_or_else(|| bad(c, "the mask has no Object or Describe selection"))?,
                 };
                 if s.segmenter.require_object_model().is_err() {
-                    s.segmenter.require_model()?;
+                    s.segmenter.describe_model()?;
                 }
                 let started = s.segment_detail(id, mid, k).map_err(ai_err)?;
                 Ok(json!({"started": started}))
@@ -1082,7 +1103,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Object Mask Model",
             [],
             None,
-            "{model: auto|sam3|sam2} — which model computes Object (click) masks: auto (SAM 3 when installed, else SAM 2.1), SAM 3, or SAM 2.1 (Apache-2.0). Describe always uses SAM 3. Saved for next time → {objectModel, objectModelInUse}",
+            "{model: auto|sam3|sam2} — which model computes Object (click) masks: auto (SAM 3 when installed, else SAM 2.1), SAM 3, or SAM 2.1 (Apache-2.0). Describe uses SAM 3 when installed, else the OWLv2 object finder with SAM 2.1. Saved for next time → {objectModel, objectModelInUse}",
             super::always,
             |s, p| {
                 let c = "ai.models.setObjectModel";

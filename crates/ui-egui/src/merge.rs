@@ -38,6 +38,10 @@ pub struct MergeDialog {
     pub fill_edges: bool,
     /// HDR panorama: photos per bracket (0 = from EXIF).
     pub bracket: u32,
+    /// HDR: also write the aligned frames as a layered PSD (Merge to Layers).
+    pub layers: bool,
+    /// With `layers`: the merged result as the bottom layer.
+    pub include_merged: bool,
 }
 
 impl Default for MergeDialog {
@@ -54,6 +58,8 @@ impl Default for MergeDialog {
             auto_crop: true,
             fill_edges: false,
             bracket: 0,
+            layers: false,
+            include_merged: true,
         }
     }
 }
@@ -77,7 +83,14 @@ impl MergeDialog {
         matches!(self.command.as_str(), "merge.panorama" | "merge.hdrPanorama")
     }
     pub fn params(&self) -> Value {
-        serde_json::to_value(self).unwrap_or_default()
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        // Merge to Layers is for HDR merges only
+        if self.command != "merge.hdr"
+            && let Some(o) = v.as_object_mut()
+        {
+            o.remove("layers");
+        }
+        v
     }
 }
 
@@ -518,6 +531,8 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut MergeDialog) {
                 });
                 if opts.command == "merge.hdr" {
                     ui.add_enabled_ui(opts.deghost != "none", |ui| ui.checkbox(&mut opts.show_overlay, crate::i18n::tr("Show Deghost Overlay")));
+                    ui.checkbox(&mut opts.layers, crate::i18n::tr("Also Write Aligned Layers (PSD)"));
+                    ui.add_enabled_ui(opts.layers, |ui| ui.checkbox(&mut opts.include_merged, crate::i18n::tr("Include Merged Layer")));
                 }
                 if opts.command == "merge.hdrPanorama" {
                     let mut b = opts.bracket as f64;

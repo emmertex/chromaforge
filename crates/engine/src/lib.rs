@@ -9,6 +9,7 @@
 //! of decoded source proxies. Rendering is done by [`RenderJob`]s that are `Send` so frontends can
 //! run them off the UI thread.
 #![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 // Model/cache types remain available without linking the optional inference crate.
 #[cfg(not(feature = "denoise"))]
@@ -19,10 +20,12 @@ pub mod app_store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos;
 pub mod availability;
+mod background_merge;
 pub mod base64;
 pub mod bounded_read;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
+pub mod capture_one_catalog;
 pub mod change_report;
 pub mod chart_profiling;
 pub mod cmd;
@@ -60,6 +63,7 @@ mod faces_index;
 mod faces_worker;
 pub mod files;
 pub mod filter_plugins;
+pub mod finishing;
 #[cfg(not(target_arch = "wasm32"))]
 mod focus_scan;
 pub mod folder_watch;
@@ -87,9 +91,10 @@ pub mod machine_test;
 pub mod media;
 pub mod memory;
 pub mod merge;
+pub mod merge_layers;
 pub mod midi;
 /// The shared AI backend's queue and activity row (#491).
-mod ml;
+pub mod ml;
 mod model_download;
 pub mod open_path;
 pub mod originals;
@@ -468,6 +473,13 @@ pub struct Session {
     /// The camera profile each camera body starts with (`profile_bodies::key` → `dcp:…`, `cal:…` or `lc`),
     /// applied to that body's raws at import ([`profile_bodies`]).
     pub body_profiles: std::collections::BTreeMap<String, String>,
+    /// The Import panel's camera profile choice as it stands (Automatic / one for all / per body):
+    /// browsed photos preview it as the import will apply it ([`Session::browse_profile`]).
+    pub import_profile_choice: profile_bodies::ImportProfile,
+    /// Serial numbers read from raws catalogued without one ([`profile_bodies::FileSerials`]).
+    pub(crate) file_serials: profile_bodies::FileSerials,
+    /// Browsed photos as they render with their body's camera profile ([`Session::rendered_photo`]).
+    pub(crate) browse_renders: profile_bodies::BrowseRenders,
     /// The app-wide store of presets, profiles and habits shared by every library (`None`: each
     /// library keeps its own; see [`app_store`]).
     pub app_store: Option<app_store::AppStore>,
@@ -599,6 +611,17 @@ pub struct Session {
     pub genfill: genfill::GenfillState,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
+    /// Preparing photos in the background: settings (app-wide and this library's) and the build
+    /// it runs ([`prep`]).
+    pub prep: prep::PrepState,
+    /// The long edge (px) the loupe renders at on this screen, as the frontend last said (0: not
+    /// known). The background preparation builds standard previews at least this big, so the
+    /// loupe can use them.
+    pub loupe_edge: usize,
+    /// Finishing an import, kept in the library until it is done ([`finishing`]).
+    pub finishing: Option<finishing::Finishing>,
+    /// An unfinished plan the library kept, taken up by the next [`Session::finishing_tick`].
+    pub finish_pending: Option<finishing::FinishPlan>,
     /// The camera sensor map build or batch Remove Dust running in the background, or the last one.
     pub sensor_job: Option<std::sync::Arc<cmd::sensor::SensorJob>>,
     /// The preview cache drive's free space as last looked up: (when, cache folder, bytes).
@@ -775,6 +798,9 @@ impl Session {
             profile_hidden: Vec::new(),
             profile_edits: Default::default(),
             body_profiles: Default::default(),
+            import_profile_choice: Default::default(),
+            file_serials: Default::default(),
+            browse_renders: Default::default(),
             app_store: None,
             journal: Vec::new(),
             workflow: Default::default(),
@@ -831,6 +857,10 @@ impl Session {
             genfill: Default::default(),
             upright_jobs: Default::default(),
             preview_build: None,
+            prep: Default::default(),
+            loupe_edge: 0,
+            finishing: None,
+            finish_pending: None,
             cache_drive_free: std::sync::Mutex::new(None),
             slideshow_export: None,
             sensor_job: None,
@@ -931,6 +961,10 @@ impl Session {
             if r.is_ok() && !skip && self.xmp.auto_write && self.interaction.is_none() && self.pending_log.len() > log_start {
                 self.auto_write_sidecars_since(log_start);
             }
+        }
+        if self.depth == 0 {
+            // whatever the command changed, and however it ended: the view points at what is there
+            self.reconcile_view();
         }
         if self.depth == 0 && self.library.is_none() && self.app_store.is_some() {
             // no library (`run --shared-settings`): the store is saved after each command
@@ -1264,6 +1298,7 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        self.reconcile_view();
         let applied = e.op.clone();
         // AI masks still computing for what was undone stop
         self.segmenter.cancel_recompute(single_photo(&e.op, 0));
@@ -1309,6 +1344,7 @@ impl Session {
         };
         self.drop_gone_from_selection();
         self.show_undone(&e.op);
+        self.reconcile_view();
         let applied = e.op.clone();
         // a redone preset or paste computes the AI masks it brings again
         if let Some(id) = single_photo(&e.op, 0) {
@@ -1696,14 +1732,27 @@ impl Session {
     pub fn develop_op(&self, id: PhotoId, settings: DevelopSettings, label: &str) -> Option<Op> {
         let p = self.catalog.photo(id)?;
         let mut settings = settings;
-        // old masks (on the corrected frame) go onto the photo, from the frame they were drawn on
-        if settings.masks.iter().any(|m| !m.on_photo) {
-            let before = match &self.interaction {
-                Some(i) if i.photo == id => Some(i.original.clone()),
-                _ => self.develop_of(id),
-            };
-            if let Some(b) = before {
-                self.attach_masks(id, &b, &mut settings);
+        // old masks (on the corrected frame) go onto the photo, from the frame they were drawn on:
+        // masks this edit kept, under the photo's settings before it (a geometry edit then moves
+        // the photo, not them); masks it brought in (paste, sync, a preset, a history step, a
+        // sidecar), under the settings they came with, where they render now. Kept masks also
+        // turn with an orientation change the edit makes (a sync or paste of the Crop group).
+        let before = match &self.interaction {
+            Some(i) if i.photo == id => Some(i.original.clone()),
+            _ => self.develop_of(id),
+        };
+        let turn = before.as_ref().and_then(|b| orientation_change(b.orientation, settings.orientation));
+        if settings.masks.iter().any(|m| !m.on_photo) || turn.is_some() {
+            let kept_frame = before.as_ref().and_then(|b| self.mask_frame(id, b));
+            let new_frame = self.mask_frame(id, &settings);
+            for m in &mut settings.masks {
+                let kept = before.as_ref().is_some_and(|b| b.masks.contains(m));
+                if let Some(f) = if kept { kept_frame.as_ref() } else { new_frame.as_ref() } {
+                    lcc_pipeline::mask_space::attach(m, f);
+                }
+                if let (true, Some(t)) = (kept, turn) {
+                    lcc_pipeline::mask_space::turn(m, t);
+                }
             }
         }
         // a clip takes only the global grading controls and the crop: presets, paste and sync drop the rest
@@ -1745,17 +1794,23 @@ impl Session {
         if d.masks.iter().all(|m| m.on_photo) {
             return;
         }
-        let Some(p) = self.catalog.photo(id) else { return };
-        let frame = lcc_pipeline::geometry::Frame::with_lens(
-            p.width.max(1) as usize,
-            p.height.max(1) as usize,
-            &drawn.effective(),
-            false,
-            p.embedded_lens.as_deref(),
-        );
+        let Some(frame) = self.mask_frame(id, drawn) else { return };
         for m in &mut d.masks {
             lcc_pipeline::mask_space::attach(m, &frame);
         }
+    }
+
+    /// The uncropped frame of photo `id` under settings `d`, with its lens: where mask
+    /// coordinates go through its warp ([`lcc_pipeline::geometry::Frame::for_mask`]).
+    pub(crate) fn mask_frame(&self, id: PhotoId, d: &DevelopSettings) -> Option<lcc_pipeline::geometry::Frame> {
+        let p = self.catalog.photo(id)?;
+        Some(lcc_pipeline::geometry::Frame::with_lens(
+            p.width.max(1) as usize,
+            p.height.max(1) as usize,
+            &d.effective(),
+            false,
+            p.embedded_lens.as_deref(),
+        ))
     }
 
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
@@ -1878,8 +1933,31 @@ impl Session {
         self.shelved_filter.is_some()
     }
 
+    /// Makes the view show only albums the library holds: one that is gone is no longer the
+    /// source (All Photos is) or the filter's album. THE place this is checked: commands, undo
+    /// and redo, opening a library and every look at the grid run it, so whatever removed an
+    /// album (a command, an undo, a background task) or named one (a saved filter, a saved view)
+    /// need not know. Two lookups: it runs every time.
+    ///
+    /// An album that comes back (its deletion undone) is not shown again by itself, as after
+    /// `album.delete` and undo before: the grid stays where the person was put.
+    ///
+    /// What is only looked up when it is used is left as it is: the target album (a missing one
+    /// means the Quick Collection).
+    pub fn reconcile_view(&mut self) {
+        let cat = &self.catalog;
+        let gone = |a: &lcc_catalog::AlbumId| cat.album(*a).is_none();
+        if matches!(&self.source, LibrarySource::Album(a) if gone(a)) {
+            self.source = LibrarySource::All;
+        }
+        if self.filter.album.as_ref().is_some_and(gone) {
+            self.filter.album = None;
+        }
+    }
+
     /// Photos shown in the grid/filmstrip for the current source, filter and sort.
     pub fn visible(&mut self) -> &[PhotoId] {
+        self.reconcile_view();
         let mut key =
             (self.catalog.revision, format!("{:?}|{:?}|{:?}|{:?}|{:?}", self.source, self.filter, self.sort, self.browse, self.library_folder));
         // What a held view is told apart by: what is shown and how, and for a smart album its rules (rules that were
@@ -1926,11 +2004,12 @@ impl Session {
                 }
             });
             // Views whose order or photos are not the query's alone are worked out whole each time: an album in
-            // its own order, Recently Added (how far back it reaches moves with every import), Missing Photos.
+            // its own order, a semantic search (ordered by similarity rank), Recently Added (how far back it
+            // reaches moves with every import), Missing Photos.
             let own_order = matches!(self.source, LibrarySource::Album(a) if self.sort.key == lcc_catalog::SortKey::Custom
                 && self.filter == Filter::default()
                 && self.catalog.album(a).is_some_and(|al| !al.is_smart()));
-            let whole = own_order || matches!(self.source, LibrarySource::RecentlyAdded | LibrarySource::Missing);
+            let whole = own_order || self.filter.semantic.is_some() || matches!(self.source, LibrarySource::RecentlyAdded | LibrarySource::Missing);
             // A view that asks about "the last N days" (itself, or through a smart album it looks into) changes
             // with the clock as well as with edits: a photo nobody touched can stop matching. It is asked whole.
             let clocked = filter_depends_on_clock(&f, &self.catalog);
@@ -1981,6 +2060,27 @@ impl Session {
                 // only the photos the query kept (library photos, not Local browse records) are checked
                 let (cat, avail) = (&self.catalog, &self.media.availability);
                 visible.retain(|id| cmd::missing::is_missing(cat, avail, *id));
+            }
+            if self.filter.semantic.is_some() && !self.filter.only.is_empty() && self.source != LibrarySource::RecentlyAdded {
+                // Under the default sort (CaptureDate) a semantic search shows the closest matches first
+                // (their order in `self.filter.only`); under Rating it breaks rating ties by similarity.
+                let rank: std::collections::HashMap<PhotoId, usize> = self.filter.only.iter().copied().enumerate().map(|(i, id)| (id, i)).collect();
+                match self.sort.key {
+                    lcc_catalog::SortKey::CaptureDate => {
+                        visible.sort_by_key(|id| rank.get(id).copied().unwrap_or(usize::MAX));
+                    }
+                    lcc_catalog::SortKey::Rating => {
+                        let cat = &self.catalog;
+                        let asc = self.sort.ascending;
+                        visible.sort_by(|a, b| {
+                            let ra = cat.photo(*a).map_or(0, |p| p.rating);
+                            let rb = cat.photo(*b).map_or(0, |p| p.rating);
+                            let ord = if asc { ra.cmp(&rb) } else { rb.cmp(&ra) };
+                            ord.then_with(|| rank.get(a).copied().unwrap_or(usize::MAX).cmp(&rank.get(b).copied().unwrap_or(usize::MAX)))
+                        });
+                    }
+                    _ => {}
+                }
             }
             if self.source != LibrarySource::RecentlyDeleted {
                 visible = self.catalog.arrange_stacks(&visible);
@@ -2047,14 +2147,30 @@ impl Session {
             let b = self.browse.clone().unwrap_or_default();
             f.folder = Some(b.path);
             f.subfolders = b.subfolders;
+            // the Browse tab's quick filter on "Show Not Imported": only the files an import
+            // would take
+            if b.not_imported {
+                f.in_library = Some(false);
+            }
         }
         if source == LibrarySource::LibraryFolder {
             // no folder chosen: nothing (`.` names no folder)
             f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
         }
         if source == LibrarySource::PreviousExport {
-            f.only = self.previous_export_filter();
-            f.only_none = false;
+            let exported = self.previous_export_filter();
+            if f.only_none {
+                f.only.clear();
+            } else if !f.only.is_empty() {
+                let keep: std::collections::HashSet<PhotoId> = exported.into_iter().collect();
+                f.only.retain(|id| keep.contains(id));
+                if f.only.is_empty() {
+                    f.only_none = true;
+                }
+            } else {
+                f.only = exported;
+                f.only_none = false;
+            }
         }
         f
     }
@@ -2098,6 +2214,7 @@ impl Session {
     /// Photos in the current source (folder, album, …) before the filter bar and search narrow
     /// them; `None` where that is not a separate number (Missing Photos).
     pub fn source_total(&mut self) -> Option<usize> {
+        self.reconcile_view();
         if self.source == LibrarySource::Missing {
             return None;
         }
@@ -2126,6 +2243,9 @@ impl Session {
                 let b = self.browse.clone().unwrap_or_default();
                 f.folder = Some(b.path);
                 f.subfolders = b.subfolders;
+                if b.not_imported {
+                    f.in_library = Some(false);
+                }
             }
             if self.source == LibrarySource::LibraryFolder {
                 f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
@@ -2241,8 +2361,14 @@ impl Session {
     }
 
     /// The photos commands act on when a call names none: the selection, else the active photo.
+    /// As far as its photos are there.
     pub fn selected(&self) -> Vec<PhotoId> {
-        if self.selection.ids.is_empty() { self.selection.active.into_iter().collect() } else { self.selection.ids.clone() }
+        let there = |id: &PhotoId| self.catalog.photo(*id).is_some();
+        if self.selection.ids.is_empty() {
+            self.selection.active.into_iter().filter(there).collect()
+        } else {
+            self.selection.ids.iter().copied().filter(there).collect()
+        }
     }
 }
 
@@ -2322,6 +2448,12 @@ mod tests_autosync_preset;
 #[cfg(test)]
 mod tests_autosync_wb;
 #[cfg(test)]
+mod tests_background_merge;
+#[cfg(test)]
+mod tests_browse_profile;
+#[cfg(test)]
+mod tests_camera_layers;
+#[cfg(test)]
 mod tests_camera_profile_defaults;
 #[cfg(test)]
 mod tests_capture_sort;
@@ -2345,17 +2477,20 @@ mod tests_crop_aspect;
 mod tests_crop_aspects;
 #[cfg(test)]
 mod tests_denoise;
-#[cfg(all(test, feature = "denoise"))]
+#[cfg(test)]
+#[cfg(feature = "denoise")]
 mod tests_denoise_own;
 #[cfg(test)]
 mod tests_edit_in;
 #[cfg(test)]
 mod tests_edit_roundtrip;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_enhance;
 #[cfg(test)]
 mod tests_export;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_export_video;
 #[cfg(test)]
 mod tests_eye_store;
@@ -2371,9 +2506,11 @@ mod tests_face_tiles;
 mod tests_facets;
 #[cfg(test)]
 mod tests_filesystem_history;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_focus_scan;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_folder_metadata;
 #[cfg(test)]
 mod tests_folder_watch;
@@ -2407,7 +2544,8 @@ mod tests_import_move;
 mod tests_import_tab;
 #[cfg(test)]
 mod tests_keyword_list;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_lens_db;
 #[cfg(test)]
 mod tests_libops;
@@ -2427,7 +2565,8 @@ mod tests_mask_links;
 mod tests_mask_next;
 #[cfg(test)]
 mod tests_merge;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_ml;
 #[cfg(test)]
 mod tests_move_to_share;
@@ -2435,7 +2574,8 @@ mod tests_move_to_share;
 mod tests_naming;
 #[cfg(test)]
 mod tests_organize;
-#[cfg(all(test, feature = "sam"))]
+#[cfg(test)]
+#[cfg(feature = "sam")]
 mod tests_people_corpus;
 #[cfg(test)]
 mod tests_people_masks;
@@ -2443,7 +2583,8 @@ mod tests_people_masks;
 mod tests_persist;
 #[cfg(test)]
 mod tests_plugin_filters;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_plugin_library;
 #[cfg(test)]
 mod tests_prefs;
@@ -2453,6 +2594,8 @@ mod tests_preset_interop;
 mod tests_preset_marks;
 #[cfg(test)]
 mod tests_presets_scale;
+#[cfg(test)]
+mod tests_preview_prep;
 #[cfg(test)]
 mod tests_previews;
 #[cfg(test)]
@@ -2483,14 +2626,37 @@ mod tests_spots;
 mod tests_sync;
 #[cfg(test)]
 mod tests_target_params;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_timelapse;
 #[cfg(test)]
 mod tests_upright_jobs;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests_video_posters;
+/// The turn or flip that takes orientation `from` to `to` (`None` when they are the same): what the
+/// masks, on the oriented photo, must follow ([`lcc_pipeline::mask_space::turn`]).
+pub(crate) fn orientation_change(from: lcc_geom::Orientation, to: lcc_geom::Orientation) -> Option<lcc_geom::Orientation> {
+    use lcc_geom::Orientation;
+    if from == to {
+        return None;
+    }
+    let inv = from.inverse();
+    let probes = [(0.2, 0.3), (0.7, 0.1), (0.4, 0.9)];
+    let close = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9;
+    (0..8u8).map(|k| Orientation::from_parts(k >= 4, k % 4)).find(|t| {
+        probes.iter().all(|&(x, y)| {
+            let (rx, ry) = inv.map(x, y, 1.0, 1.0);
+            let (tx, ty) = from.map(rx, ry, 1.0, 1.0);
+            close(t.map(tx, ty, 1.0, 1.0), to.map(rx, ry, 1.0, 1.0))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests_view_follow;
+#[cfg(test)]
+mod tests_view_reconcile;
 #[cfg(test)]
 mod tests_xmp;
 

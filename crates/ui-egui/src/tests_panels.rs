@@ -221,6 +221,25 @@ fn a_narrow_window_shrinks_the_panels_without_forgetting_their_width() {
     assert_eq!(widget(&h, "panel:right_panel").width(), 480.0);
 }
 
+/// The modules that lay out their own sides (Web, Map, Print) resize them by the inner edge too,
+/// into the same right width the Library and Develop panels use (so it carries across modules).
+#[test]
+fn module_side_columns_resize_by_their_inner_edge_and_share_the_width() {
+    let mut h = demo([1400.0, 900.0], json!({}));
+    for (module, panel) in [("web", "panel:web:settings"), ("map", "panel:map:side"), ("print", "panel:print:right")] {
+        let r = h.request("engine.execute", json!({"command": "module.switch", "params": {"module": module}}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+        let before = h.app.ui.right_width;
+        let col = widget(&h, panel);
+        assert!((col.width() - before).abs() <= 1.0, "{module}: {col:?} vs {before}");
+        let grow = if before + 60.0 <= RIGHT_WIDTH.max { 60.0 } else { -60.0 };
+        drag(&mut h, col.left() + 1.0, -grow);
+        assert!((h.app.ui.right_width - (before + grow)).abs() <= 2.0, "{module}: {} after a drag from {before}", h.app.ui.right_width);
+        assert!((widget(&h, panel).width() - h.app.ui.right_width).abs() <= 1.0, "{module}");
+    }
+}
+
 /// The left sidebar's Albums, Local, By Date and Keywords headers fold their sections; the choice
 /// is part of the saved UI state.
 #[test]
@@ -2713,7 +2732,11 @@ fn local_photos_cannot_be_added_to_albums_until_they_join_my_photos() {
 
     // in My Photos: the menu entries come on, the submenu opens, and the album takes the photo
     h.app.run("photo.addToLibrary", json!({"ids": [local.0]})).unwrap();
-    h.step();
+    // the photo joined the library, so the quick filter's not-imported view would leave it out:
+    // Show All keeps it in the folder view for the rest of the test
+    let r = h.request("engine.execute", json!({"command": "library.browse", "params": {"path": dir.to_string_lossy(), "show": "all"}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
     let nodes = add_to_album(&h.app);
     assert!(!matches!(nodes.first(), Some(crate::menubar::MenuNode::Item { id, .. }) if id == "photo.addToLibrary"), "{nodes:?}");
     assert_eq!(enabled_of(&nodes, "album.addPhotos"), Some(true), "{nodes:?}");

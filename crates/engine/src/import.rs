@@ -1964,7 +1964,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 }
                 // the camera profile chosen for this import (a sidecar that sets develop settings keeps its own)
                 if sidecar.as_ref().is_none_or(|sc| sc.develop.is_none())
-                    && let Some(id) = opts.camera_profile.for_photo(&p)
+                    && let Some(id) = opts.camera_profile.for_photo(s, &p, true)
                     && p.develop.profile.camera != id
                 {
                     let mut d = (*p.develop).clone();
@@ -2091,16 +2091,17 @@ fn promote_ops(s: &Session, id: PhotoId, opts: &ImportOptions, now: &str, ops: &
     let Some(old) = s.catalog.photo(id) else { return };
     let mut p = (**old).clone();
     let history0 = p.history.len();
-    if old.edited.is_none() && p.develops_raw() {
-        // browsed before its body had the profile it has now (set in the Import panel, say), or
-        // with a choice made for this import: the profile as it is at import (OneSlips, LR-IMP-PROFILE)
-        if let Some(id) = opts.camera_profile.for_photo(&p).or_else(|| s.body_default(&p).map(str::to_string))
-            && p.develop.profile.camera != id
-        {
-            let mut d = (*p.develop).clone();
-            d.profile.camera = id;
-            p.develop = std::sync::Arc::new(d);
-        }
+    // browsed before the app kept serial numbers: the file's, so its body is known from now on
+    if let Some(serial) = s.missing_serial(&p, true) {
+        p.meta.camera_serial = serial;
+    }
+    // browsed before its body had the profile it has now (set in the Import panel, say), or with a
+    // choice made for this import: the profile as it is at import (OneSlips, LR-IMP-PROFILE), the
+    // one the Import tab showed it with ([`Session::browse_profile`])
+    if let Some(id) = s.import_profile_for(&p, &opts.camera_profile, true) {
+        let mut d = (*p.develop).clone();
+        d.profile.camera = id;
+        p.develop = std::sync::Arc::new(d);
     }
     apply_settings(s, &mut p, opts, now);
     if p.develop != old.develop {

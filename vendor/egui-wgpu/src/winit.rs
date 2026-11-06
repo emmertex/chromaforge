@@ -776,6 +776,10 @@ impl Painter {
             }
         }
 
+        let (output_scale, pq_output) = {
+            let r = render_state.renderer.read();
+            (r.output_scale(), r.pq_output())
+        };
         if let Some(capture_buffer) = capture_buffer
             && let Some(screen_capture_state) = &mut self.screen_capture_state
         {
@@ -785,6 +789,8 @@ impl Painter {
                 capture_data,
                 self.capture_tx.clone(),
                 viewport_id,
+                output_scale,
+                pq_output,
             );
         }
 

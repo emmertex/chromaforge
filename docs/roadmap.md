@@ -1,6 +1,6 @@
 # Roadmap: milestones, current focus and what's next
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (item 1: Lightroom-matched calibration tool, data rule amended); minor (M15 status: CMYK won't do, publish keys and tethering hardware blocking) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (M12 status: natural-language semantic search ✅, issue #487) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Forward-looking plan. The summary with the headline numbers is [ROADMAP.md](../ROADMAP.md); the
 ranked shortfalls are [gaps.md](gaps.md); the numbers come from [target-app-parity.md](target-app-parity.md).
@@ -74,7 +74,7 @@ calibration: M0–M13 took ≈ 25 active hours against an estimate of ≈ 110–
 | M9 | Presets, profiles, versions, sync | preset browser + amount, create/import presets, profile browser, versions, history, copy/paste/sync settings | 5–8 | ✅ |
 | M10 | Export & share | export dialog (JPEG/PNG/TIFF/DNG/AVIF/JXL/original), sizing, sharpening, metadata, watermark, naming, batch jobs, XMP sidecars, HDR export | 6–10 | 🚧 (all formats incl. DNG/original, sizing, presets, background jobs, HDR gain map JPEG / PQ AVIF ✅; JXL encode ⬜) |
 | M11 | RAW II | CR3, RAF (X-Trans), ORF, RW2, PEF, SRW, 3FR, IIQ + long tail; camera calibration DB; HEIC/AVIF/JXL import | 20–35 | 🚧 (RAF all, RW2 every format, PEF, ORF uncompressed and 12.8 bpp, SRW uncompressed, HEIC ✅; CR3 🟡 (3 bodies verified); **camera colour calibration** 🚧 (per-file JPEG fits, 5 bundled profiles, 52 spectral matrices; measured database missing); compressed ORF / SRW, HE NEF, IIQ, X3F ⬜) |
-| M12 | AI & smart features | subject/sky/background/people/object masks, semantic search, faces/People (permissively licensed models, pure-Rust inference) | 20–40 | 🚧 (faces: detection, recognition, People view ✅; Object / Describe masks via SAM 3 🟡; Subject / Sky / People masks, semantic search ⬜) |
+| M12 | AI & smart features | subject/sky/background/people/object masks, semantic search, faces/People (permissively licensed models, pure-Rust inference) | 20–40 | 🚧 (faces: detection, recognition, People view ✅; semantic search ✅; Object / Describe masks via SAM 3 🟡; Subject / Sky / People masks ⬜) |
 | M13 | Merge | HDR merge (deghost), panorama (projections, boundary warp, fill edges), HDR panorama | 10–15 | ✅ |
 | M14 | Video | import/playback/trim via FilmCraft crates, global edits + presets on video, video export | 6–10 | ⬜ |
 | M15 | Classic modules | Map, Book, Slideshow, Print, Web; smart collections, stacks, virtual copies, publish services, tethering | 25–40 | 🚧 (everything built: smart albums, stacks, virtual copies, compare/survey, Map, Book, Slideshow with sound, Print incl. IPP and the Windows spooler, Web, publish to Hard Drive / SFTP / Immich, native PTP tethering; CMYK printer profiles won't do (beyond parity); blocked: Flickr / SmugMug publish on API keys, tethering verification on real cameras) |
@@ -111,6 +111,7 @@ calibration: M0–M13 took ≈ 25 active hours against an estimate of ≈ 110–
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-05 | minor | M12 status: natural-language semantic search (`LR-FILT-SEARCH-AI`, issue #487) ✅ |
 | 2026-11-02 | patch | AI risks: a raw-denoise model with a licence we can ship exists (RawNIND, CC BY 4.0 as well as GPL-3.0, upstream #1760); sky segmentation still has none |
 | 2026-10-21 | minor | M15 status refreshed: every module built; CMYK printer profiles won't do; Flickr / SmugMug blocked on API keys, tethering on camera hardware |
 | 2026-10-10 | minor | Beta hours 340–600; full ready ~59% in the gate note |

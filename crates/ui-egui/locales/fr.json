@@ -1709,7 +1709,10 @@
   "Unknown licence": "Licence inconnue",
   "Use": "Utiliser",
   "Waiting to start…": "En attente de démarrage…",
-  "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.": "Fonctionne sur les fichiers RAW des appareils photo dotés d'un capteur standard (Bayer). Les autres fichiers conservent leur réduction de bruit normale.",
+  "Works on raw files from cameras with a standard (Bayer) sensor, and on JPEG, PNG, TIFF and other finished pictures with a model made for them. Other raw files keep their normal noise reduction.": "Fonctionne avec les fichiers RAW des appareils à capteur standard (Bayer) et, avec un modèle prévu pour elles, avec les JPEG, PNG, TIFF et autres images finies. Les autres fichiers RAW gardent leur réduction du bruit habituelle.",
+  "For JPEG and other finished pictures": "Pour les JPEG et autres images finies",
+  "For Super Resolution and AI Sharpen": "Pour la super résolution et la netteté IA",
+  "For raw photos": "Pour les photos RAW",
   "cached picture": "image en cache",
   "cached pictures": "images en cache",
   "commercial use allowed": "usage commercial autorisé",
@@ -4049,5 +4052,9 @@
   "No colour picked": "Aucune couleur prélevée",
   "Selecting the object…": "Sélection de l’objet…",
   "Settings for the next mask": "Réglages du prochain masque",
-  "Reset settings on new mask": "Réinitialiser les réglages pour chaque nouveau masque"
+  "Reset settings on new mask": "Réinitialiser les réglages pour chaque nouveau masque",
+  "Import to This Folder…": "Importer dans ce dossier…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Copie les photos d'un dossier que vous choisissez dans ce dossier ; la révision permet de le changer",
+  "Add to My Photos…": "Ajouter à Mes photos…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Passe en revue les photos de ce dossier, puis les ajoute à la bibliothèque là où elles sont ; aucun fichier n'est touché"
 }

@@ -262,7 +262,8 @@ fn run(spec: &Download, sources: &[String], staging: &Path, shared: &Shared) {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use lcc_denoise::hash::sha256_hex;

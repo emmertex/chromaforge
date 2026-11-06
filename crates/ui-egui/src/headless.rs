@@ -643,14 +643,19 @@ mod tests {
             h.view.painted_text().join("\n")
         };
         const PREVIEW: &str = "AI Denoise needs the raw sensor data, and this file opens as its embedded preview.";
+        // a finished picture (JPEG, PNG, TIFF) is denoised by a model made for it: without one installed it says so
+        const NEEDS_MODEL: &str = "AI Denoise needs a model for finished pictures: install one in Settings ▸ AI Denoise.";
         const RAW_ONLY: &str = "AI Denoise works on raw files only.";
         let text = shown(&mut h, he);
         assert!(text.contains(PREVIEW), "a preview-only raw says why: {text}");
         assert!(text.contains("Nikon High Efficiency NEF (JPEG XS) is not decoded yet."), "with the decoder's reason: {text}");
         let text = shown(&mut h, jpeg);
-        assert!(text.contains(RAW_ONLY) && !text.contains(PREVIEW), "a JPEG says raws only: {text}");
+        assert!(text.contains(NEEDS_MODEL) && !text.contains(PREVIEW), "a JPEG says it needs a finished-picture model: {text}");
         let text = shown(&mut h, raw);
-        assert!(!text.contains(RAW_ONLY) && !text.contains(PREVIEW), "a raw denoise applies to explains nothing: {text}");
+        assert!(
+            !text.contains(RAW_ONLY) && !text.contains(NEEDS_MODEL) && !text.contains(PREVIEW),
+            "a raw denoise applies to explains nothing: {text}"
+        );
     }
 
     /// Install from file… with a model the engine rejects says why in the AI Denoise section (#1381), instead of
@@ -4067,7 +4072,7 @@ mod tests {
             texts(&shape.shape, &mut painted);
         }
         assert!(painted.iter().any(|text| text == &format!("Ordner „{name}“ (und seine Unterordner)")), "{painted:?}");
-        for label in ["Quelle", "Übertragen", "Stichwörter", "Vorgabe"] {
+        for label in ["Quelle", "Übertragen", "Stichwörter", "Vorgaben"] {
             assert!(painted.iter().any(|text| text == label), "{label}: {painted:?}");
         }
         assert_eq!(h.request("engine.execute", json!({"command": "app.language.english"}), t)["ok"], true);
@@ -4082,8 +4087,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Switching Settings sections keeps the screen still: the rail and the rows' column stay where
-    /// they are, though the sections are of different heights.
+    /// Switching Settings tabs keeps the window still: the tab row and the page stay where they
+    /// are, though the tabs are of different heights (LR-PREF-WINDOW).
     #[test]
     fn settings_tabs_keep_the_window_in_place() {
         let mut h = demo([1300.0, 820.0]);
@@ -4092,20 +4097,16 @@ mod tests {
         let r = h.request("engine.execute", json!({"command": "app.settings", "params": {"tab": "general"}}), t);
         assert_eq!(r["ok"], true, "{r}");
         h.settle(SETTLE);
-        let (rows, rail) = (at(&h, "settings:rows"), at(&h, "settings:section:general"));
+        let (rows, rail) = (at(&h, "settings:rows"), at(&h, "button:settingsTab-general"));
         for tab in ["display", "import", "performance", "general", "interface", "display"] {
             h.request("ui.clickWidget", json!({"id": format!("button:settingsTab-{tab}")}), t);
             h.settle(SETTLE);
-            assert_eq!(
-                crate::settings_screen::section_of(match &h.app.ui.dialog {
-                    Some(crate::state::Dialog::Settings { tab }) => tab,
-                    other => panic!("{tab}: {other:?}"),
-                }),
-                crate::settings_screen::section_of(tab),
-                "{tab}"
-            );
-            assert_eq!(at(&h, "settings:rows"), rows, "{tab}: the rows' column moved");
-            assert_eq!(at(&h, "settings:section:general"), rail, "{tab}: the rail moved");
+            match &h.app.ui.dialog {
+                Some(crate::state::Dialog::Settings { tab: now }) => assert_eq!(now, tab),
+                other => panic!("{tab}: {other:?}"),
+            }
+            assert_eq!(at(&h, "settings:rows"), rows, "{tab}: the page moved");
+            assert_eq!(at(&h, "button:settingsTab-general"), rail, "{tab}: the tab row moved");
         }
     }
 
@@ -5674,6 +5675,9 @@ mod tests {
         assert!(h.app.ui.settings.confirm_delete);
         crate::settings_screen::reveal(&mut h, "button:settingsStartup-2");
         h.request("ui.clickWidget", json!({"id": "button:settingsStartup-2"}), t);
+        assert_eq!(h.app.ui.settings.startup_view, crate::state::StartupView::SquareGrid);
+        crate::settings_screen::reveal(&mut h, "button:settingsStartup-3");
+        h.request("ui.clickWidget", json!({"id": "button:settingsStartup-3"}), t);
         assert_eq!(h.app.ui.settings.startup_view, crate::state::StartupView::Detail);
         // Interface: filmstrip names off, grid badges always
         h.request("ui.clickWidget", json!({"id": "button:settingsTab-interface"}), t);
@@ -6000,7 +6004,7 @@ mod tests {
             ("", egui::CursorIcon::Grab),
             // the colour pickers hide the system pointer: the eyedropper is painted instead
             ("wbPicker", egui::CursorIcon::None),
-            ("colorRange", egui::CursorIcon::None),
+            // (Color Range is a mask tool: outside Masking it is put away, so it has no cursor to keep here)
             ("pointColor", egui::CursorIcon::None),
             ("tat:curve", egui::CursorIcon::ResizeVertical),
         ] {

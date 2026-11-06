@@ -1,0 +1,2 @@
+### Automatic RAW checks show progress and can be cancelled
+- When a newer version rechecks preview-only RAW files as a library opens, the activity stack shows the completed-file count and offers cancellation. Files that were read still update the catalog; files not started stay preview-only and are checked again later. Cancellation takes effect between files, and a cancelled check does not restart on its own.

@@ -2029,7 +2029,10 @@
   "Window": "Okno",
   "Winter Blue": "Zimní modř",
   "Wrote the XMP sidecars that were waiting": "Čekající přidružené soubory XMP byly zapsány",
-  "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.": "Funguje se soubory RAW z fotoaparátů se standardním snímačem (Bayer). Ostatní soubory si zachovají běžnou redukci šumu.",
+  "Works on raw files from cameras with a standard (Bayer) sensor, and on JPEG, PNG, TIFF and other finished pictures with a model made for them. Other raw files keep their normal noise reduction.": "Funguje se soubory RAW z fotoaparátů se standardním snímačem (Bayer) a s modelem pro hotové snímky také s JPEG, PNG, TIFF a dalšími hotovými snímky. Ostatní soubory RAW si ponechají běžnou redukci šumu.",
+  "For JPEG and other finished pictures": "Pro JPEG a další hotové snímky",
+  "For Super Resolution and AI Sharpen": "Pro super rozlišení a zaostření AI",
+  "For raw photos": "Pro fotografie RAW",
   "XMP Sidecar Preferences": "Předvolby přidružených souborů XMP",
   "XMP sidecars": "Přidružené soubory XMP",
   "Year": "Rok",
@@ -2609,5 +2612,9 @@
   "No colour picked": "Žádná vybraná barva",
   "Selecting the object…": "Vybírám předmět…",
   "Settings for the next mask": "Nastavení pro další masku",
-  "Reset settings on new mask": "U nové masky vynulovat nastavení"
+  "Reset settings on new mask": "U nové masky vynulovat nastavení",
+  "Import to This Folder…": "Importovat do této složky…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Zkopíruje fotografie ze zvolené složky do této složky; v kontrole to můžeš změnit",
+  "Add to My Photos…": "Přidat do mých fotografií…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Prohlédne fotografie v této složce a pak je přidá do knihovny tam, kde jsou; žádný soubor se nemění"
 }

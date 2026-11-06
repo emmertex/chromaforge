@@ -1,5 +1,7 @@
-//! AI masks: Object (clicks) and Describe (text) selections computed with SAM 3
-//! (`lcc-segment`, cargo feature `sam`; the desktop app enables it).
+//! AI masks: Object (clicks) and Describe (text) selections computed with SAM 3, or with the
+//! openly licensed models when it isn't installed (Object: SAM 2.1; Describe: the OWLv2 object
+//! finder's boxes segmented by SAM 2.1) (`lcc-segment`, cargo feature `sam`; the desktop app
+//! enables it).
 //!
 //! **Nothing requires the model.** It is not part of the app (SAM License); the user
 //! downloads it when they first use an AI mask and agree to (`segment.model.download`), or
@@ -154,6 +156,9 @@ pub struct Segmenter {
     /// Run requests in the background and apply them in [`Session::segment_poll`] (the
     /// desktop app); otherwise commands wait for their result (CLI, MCP, tests).
     pub background: bool,
+    /// Requests sent now are background work ([`worker::Job::low`]: the user's go first). Set while work the user
+    /// didn't ask for right now sends its photos' masks, skin and retouch parts (an import's finishing queue).
+    pub low_priority: bool,
     /// The Subject / Background model (BiRefNet).
     pub subject: subject::Subject,
     /// Where the openly licensed models (SAM 2.1, Depth Anything) live; `None`: next to SAM 3's folder.
@@ -195,6 +200,7 @@ impl Default for Segmenter {
             dir: None,
             mirrors_file: None,
             background: false,
+            low_priority: false,
             subject: subject::Subject::default(),
             models_root: None,
             object_model: models::ObjectModel::default(),
@@ -510,15 +516,23 @@ impl Session {
         reply: std::sync::mpsc::Sender<worker::Outcome>,
         region: Option<[f64; 4]>,
     ) -> Result<worker::Job, String> {
-        // Describe (text) needs SAM 3; Object clicks use the model the user chose
+        // Describe (text) runs on SAM 3, else on the OWLv2 finder with SAM 2.1; Object clicks use the model the user
+        // chose
         let text = matches!(&kind, worker::Kind::Text(_) | worker::Kind::Detail { prompt: Prompt::Text(_), .. });
         let concept = matches!(&kind, worker::Kind::Learn { .. } | worker::Kind::Find { .. });
+        let mut detector = None;
         let dir = if let worker::Kind::Faces { face, .. } | worker::Kind::People { face, .. } = &kind {
             face.clone()
         } else if concept {
             self.segmenter.require_sam2().map_err(|e| e.to_string())?
         } else if text {
-            self.segmenter.model_dir()?
+            match self.segmenter.describe_dir()? {
+                models::DescribeModel::Sam3(dir) => dir,
+                models::DescribeModel::Open { detector: d, sam2 } => {
+                    detector = Some(d);
+                    sam2
+                }
+            }
         } else {
             self.segmenter.object_dir()?
         };
@@ -549,7 +563,18 @@ impl Session {
                 job
             }
         };
-        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply, cancel: None })
+        Ok(worker::Job {
+            dir,
+            detector,
+            key: if region.is_some() { 0 } else { key },
+            render: Some(render),
+            missing,
+            kind,
+            tag,
+            reply,
+            cancel: None,
+            low: self.segmenter.low_priority,
+        })
     }
 
     /// Send a request and wait for its result (CLI, MCP, tests; or when not in background mode).
@@ -768,7 +793,7 @@ impl Session {
     /// Segment everything `text` describes on photo `id`, waiting for the model; `Ok(None)`
     /// when nothing matches.
     pub fn segment_text(&mut self, id: PhotoId, text: &str) -> Result<Option<SegMask>, String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.describe_dir()?;
         let text = text.trim();
         if text.is_empty() {
             return Err("describe what to select".into());
@@ -826,7 +851,7 @@ impl Session {
     /// Background mode: queue a Describe selection; the mask (or component, combined by `op`
     /// into mask `mask`) is created by [`Session::segment_poll`] when something matches.
     pub(crate) fn segment_text_later(&mut self, id: PhotoId, mask: Option<u32>, op: &str, name: Option<String>, text: &str) -> Result<(), String> {
-        self.segmenter.model_dir()?;
+        self.segmenter.describe_dir()?;
         let text = text.trim();
         if text.is_empty() {
             return Err("describe what to select".into());
@@ -850,7 +875,7 @@ impl Session {
     /// refine (no selection yet, or it is most of the photo) or a pass is running already.
     pub fn segment_detail(&mut self, id: PhotoId, mask: u32, comp: usize) -> Result<bool, String> {
         if self.segmenter.object_dir().is_err() {
-            self.segmenter.model_dir()?;
+            self.segmenter.describe_dir()?;
         }
         let d = self.develop_of(id).ok_or("no such photo")?;
         let shape = d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(comp)).map(|c| c.shape.clone()).ok_or("no such mask")?;
@@ -908,7 +933,11 @@ impl Session {
         if todo.is_empty() {
             return Ok(0);
         }
-        if todo.iter().any(|(_, _, sh)| !matches!(sh, MaskShape::People { .. })) {
+        // each kind needs its own models: Describe SAM 3 or the open pair, Object the model the user chose
+        if todo.iter().any(|(_, _, sh)| matches!(sh, MaskShape::Prompt { .. })) {
+            self.segmenter.describe_dir()?;
+        }
+        if todo.iter().any(|(_, _, sh)| !matches!(sh, MaskShape::People { .. } | MaskShape::Prompt { .. })) {
             self.segmenter.model_dir()?;
         }
         #[cfg(feature = "sam")]
@@ -1194,26 +1223,27 @@ impl Session {
         match (skipped, result) {
             (true, _) => {}
             (false, Ok(Some(seg))) => {
-                let applied = self.develop_of(photo).and_then(|d| {
-                    let mut d = (*d).clone();
-                    let c = d.masks.iter_mut().find(|m| m.id == mask)?.components.get_mut(comp)?;
+                // merged into the photo's settings as they are now (an edit made while it ran stays, OneSlips
+                // 1c785da00 note 18), and into its undo / redo / History steps: only into the selection it was
+                // computed for (undone or edited meanwhile, it takes none)
+                let fill = |d: &mut lcc_develop::DevelopSettings| {
+                    let Some(c) = d.masks.iter_mut().find(|m| m.id == mask).and_then(|m| m.components.get_mut(comp)) else { return false };
                     if c.shape != *shape {
-                        return None; // undone or edited meanwhile
+                        return false;
                     }
                     match &mut c.shape {
                         MaskShape::Object { seg: s, .. }
                         | MaskShape::Prompt { seg: s, .. }
                         | MaskShape::People { seg: s, .. }
-                        | MaskShape::Concept { seg: s, .. } => *s = Some(seg),
-                        _ => return None,
+                        | MaskShape::Concept { seg: s, .. } => *s = Some(seg.clone()),
+                        _ => return false,
                     }
-                    Some(d)
-                });
-                if let Some(op) = applied.and_then(|d| self.develop_op(photo, d, "AI Masks")) {
-                    match self.apply_unrecorded(op) {
-                        Ok(()) => polled.changed = true,
-                        Err(e) => polled.messages.push(e.to_string()),
-                    }
+                    true
+                };
+                match self.merge_background(photo, "AI Masks", true, &fill) {
+                    Ok(true) => polled.changed = true,
+                    Ok(false) => {}
+                    Err(e) => polled.messages.push(e.to_string()),
                 }
                 report(self, None);
             }

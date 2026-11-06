@@ -2169,7 +2169,10 @@
   "Will be restored": "Palautetaan",
   "Window": "Ikkuna",
   "Winter Blue": "Talvensininen",
-  "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.": "Toimii raw-tiedostoilla kameroista, joissa on tavallinen (Bayer) -anturi. Muut tiedostot säilyttävät tavallisen kohinanpoistonsa.",
+  "Works on raw files from cameras with a standard (Bayer) sensor, and on JPEG, PNG, TIFF and other finished pictures with a model made for them. Other raw files keep their normal noise reduction.": "Toimii raw-tiedostoilla kameroista, joissa on tavallinen (Bayer-) kenno, sekä niille tehdyllä mallilla JPEG-, PNG-, TIFF- ja muilla valmiilla kuvilla. Muut raw-tiedostot säilyttävät tavallisen kohinanpoistonsa.",
+  "For JPEG and other finished pictures": "JPEG- ja muille valmiille kuville",
+  "For Super Resolution and AI Sharpen": "Superresoluutioon ja tekoälyterävöintiin",
+  "For raw photos": "Raw-kuville",
   "Wrote the XMP sidecars that were waiting": "Odottaneet XMP-sivutiedostot kirjoitettu",
   "XMP Sidecar Preferences": "XMP-sivutiedostojen asetukset",
   "XMP sidecars": "XMP-sivutiedostot",
@@ -2365,5 +2368,9 @@
   "New album…": "Uusi albumi…",
   "Albums": "Albumit",
   "This is the album you're editing": "Tämä on albumi, jota muokkaat",
-  "It tests this album, so testing it back would loop": "Se testaa tätä albumia, joten sen testaaminen takaisin muodostaisi silmukan"
+  "It tests this album, so testing it back would loop": "Se testaa tätä albumia, joten sen testaaminen takaisin muodostaisi silmukan",
+  "Import to This Folder…": "Tuo tähän kansioon…",
+  "Copies the photos of a folder you choose into this folder; the review lets you change that": "Kopioi valitsemasi kansion kuvat tähän kansioon; tarkistuksessa voit muuttaa tätä",
+  "Add to My Photos…": "Lisää Omiin kuviin…",
+  "Reviews the photos in this folder, then adds them to the library where they are; no file is touched": "Näyttää tämän kansion kuvat tarkistettavaksi ja lisää ne sitten kirjastoon paikoilleen; tiedostoihin ei kosketa"
 }

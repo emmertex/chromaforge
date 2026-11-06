@@ -358,3 +358,40 @@ fn a_jpeg_bracket_through_a_known_gamma_merges_to_linear_radiance() {
     assert!((linear - 1.0).abs() < 0.05, "log-log slope with the recovered response: {linear}");
     assert!((as_decoded - 1.0).abs() > 0.1, "the bracket should be visibly non-linear without it: {as_decoded}");
 }
+
+/// Merge to Layers (#769): the frames the merge returns are aligned to the reference — divided by their exposure they
+/// match the reference wherever both are well exposed — and pixels the warp pulled from outside a frame are marked.
+#[test]
+fn aligned_frames_line_up_with_the_reference() {
+    let t = truth();
+    let shifts = [(3.25f32, -2.0f32), (0.0, 0.0), (-4.0, 1.5)];
+    let ks = [0.5f32, 1.0, 2.0];
+    let frames: Vec<lcc_merge::HdrFrame> = (0..3).map(|i| shoot(&t, ks[i], shifts[i].0, shifts[i].1, i as u64 + 1).into()).collect();
+    let (r, aligned) = lcc_merge::merge_hdr_frames_aligned(frames, &HdrOptions { align: true, deghost: Deghost::None }, &no_progress).unwrap();
+    assert_eq!(aligned.len(), 3);
+    assert!(aligned[r.reference].valid.is_none(), "the reference is not resampled");
+    let reference = aligned[r.reference].pixels.to_rgb32f();
+    for i in [0, 2] {
+        let f = &aligned[i];
+        let v = f.valid.as_ref().expect("a shifted frame is resampled");
+        // the frame's content moved by `shifts[i]`: the reference's edge on that side has nothing in the frame
+        let (col_out, col_in) = if shifts[i].0 > 0.0 { (W - 1, 0) } else { (0, W - 1) };
+        let mid = H / 2;
+        assert!(!v[mid * W + col_out] && v[mid * W + col_in], "frame {i}: the warp's empty edge is on the wrong side");
+        let img = f.pixels.to_rgb32f();
+        let k = 2f64.powf(r.ev[i]) as f32;
+        let mut errs = Vec::new();
+        for y in 12..H - 12 {
+            for x in 12..W - 12 {
+                let (a, b) = (img.get(x, y), reference.get(x, y));
+                let well = |p: [f32; 3], kk: f32| p.iter().all(|c| *c > 0.05 * kk && *c < 0.8);
+                if v[y * W + x] && well(a, k) && well(b, 1.0) {
+                    errs.push(log_err(a.map(|c| c / k), b));
+                }
+            }
+        }
+        assert!(errs.len() > 10_000, "frame {i}: too few well-exposed pixels");
+        let med = pct(errs, 0.5);
+        assert!(med < 0.12, "frame {i}: median log error {med} against the reference");
+    }
+}

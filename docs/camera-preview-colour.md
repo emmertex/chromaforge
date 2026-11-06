@@ -140,6 +140,21 @@ still has lens corrections removed, so the pipeline applies them once through En
 Corrections. Developing this proxy requires a full-resolution demosaic; files without such
 opcodes keep their binned proxy.
 
+## Embedded vignetting correction (Fujifilm RAF)
+
+The RAF decoder turns the maker note's vignetting data into a `FixVignetteRadial` correction, and the render applies
+it (Enable Profile Corrections). The camera applied the same correction to its JPEG. Every per-file fit
+(`fit_preview`, `monochrome_look`, the near-black tone fallback) therefore passes the file's embedded lens correction
+to `proxies`, which multiplies the sensor proxy by that gain as `fit_dng_tone` already did (`correct_vignetting`).
+Before `LOOK_VERSION` 21 the RAF fit saw the uncorrected sensor: the tone curve learned the JPEG's corrected
+brightness, and the render added the correction again. Lens-database corrections reach the fit the same way.
+`proxies` applies the gain before it moves the sensor into the JPEG's lens geometry, so each pixel gets the gain of the
+position it samples, as in the render. The choice between the warped and the plain sensor (`alignment`) leaves out the
+pixels the warp finds no sensor for; it used to read them as black, a false edge along the border.
+
+Adapted from upstream #3402, which measured 60 held-out X-S10 photos (mean dE00 against the camera JPEG 2.71 to
+2.55). Unmeasured on Chromaforge.
+
 ## Camera profiles (pooled per model)
 
 One photo can show too little of a colour for its own fit to learn it: in a second shot of the lime shirt only a few dozen proxy pixels show it, next to a hillside of foliage at the same hue that the camera renders differently, and the shirt stayed yellow (hue 68° against the JPEG's 82°; a 192-pixel proxy only reached 74°). `<cli> calibrate [--max N] [--out DIR] FOLDERS…` therefore pools the colour pairs of many ARWs, NEFs or RAFs per camera model — each against its own embedded JPEG, at a 192-pixel proxy, at most 4000 pairs per photo, files spread evenly over the folders — and fits one matrix (from white-balanced camera RGB, so no single photo's white point is baked in) and one hue/saturation/value table. Models need at least 5 usable photos.
