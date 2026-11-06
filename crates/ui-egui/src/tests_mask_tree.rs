@@ -42,11 +42,35 @@ fn count(h: &Headless, id: &str) -> usize {
 
 #[test]
 fn the_first_component_starts_the_mask_and_the_others_show_how_they_combine() {
+    use crate::icons::Icon;
     use crate::panels::masking::component_op_sign;
-    assert_eq!(component_op_sign(0, MaskOp::Subtract), "", "the first starts the mask");
-    assert_eq!(component_op_sign(1, MaskOp::Add), "+");
-    assert_eq!(component_op_sign(2, MaskOp::Subtract), "−");
-    assert_eq!(component_op_sign(3, MaskOp::Intersect), "∩");
+    assert_eq!(component_op_sign(0, MaskOp::Subtract), None, "the first starts the mask");
+    assert_eq!(component_op_sign(1, MaskOp::Add), Some(Icon::Plus));
+    assert_eq!(component_op_sign(2, MaskOp::Subtract), Some(Icon::Minus));
+    assert_eq!(component_op_sign(3, MaskOp::Intersect), Some(Icon::Intersect));
+}
+
+/// No bundled font has ∩, so the sign was painted as an empty box (a "tofu" glyph). It is drawn as a
+/// vector now: lit over the top and down both legs, open at the bottom, where a box would be closed.
+#[test]
+fn the_intersect_sign_is_drawn_open_at_the_bottom_not_as_a_missing_glyph_box() {
+    let mut h = masking();
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5]}));
+    exec(&mut h, "mask.addComponent", json!({"op": "intersect", "kind": "linear", "start": [0.5, 0.0], "end": [0.5, 0.4]}));
+    h.step();
+    let op = h.app.widgets.iter().find(|(w, _)| w == "componentOp:1").map(|(_, r)| *r).expect("the intersect sign");
+    let image = h.paint();
+    let w = image.size[0];
+    let lum = |x: f32, y: f32| {
+        let p = image.pixels[y.round() as usize * w + x.round() as usize];
+        (p.r() as u32 + p.g() as u32 + p.b() as u32) / 3
+    };
+    let bg = lum(op.left() + 0.5, op.bottom() - 0.5);
+    let lit = |x: f32, y0: f32, y1: f32| (y0.round() as i32..=y1.round() as i32).any(|y| lum(x, y as f32) > bg + 40);
+    let c = op.center();
+    assert!(lit(c.x, op.top(), c.y), "the arc over the top is drawn");
+    assert!(lit(c.x - 3.0, c.y, op.bottom() - 1.0) && lit(c.x + 3.0, c.y, op.bottom() - 1.0), "both legs are drawn");
+    assert!(!lit(c.x, c.y + 0.5, op.bottom() - 0.5), "open at the bottom: nothing between the legs below the arc");
 }
 
 #[test]

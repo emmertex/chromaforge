@@ -228,13 +228,14 @@ pub(crate) fn component_label(c: &lcc_develop::MaskComponent) -> String {
 }
 
 /// The sign before a component's row in the mask tree: + Add, − Subtract, ∩ Intersect; none on the
-/// first component, which starts the mask.
-pub(crate) fn component_op_sign(index: usize, op: lcc_develop::MaskOp) -> &'static str {
+/// first component, which starts the mask. Drawn as vector icons, so they never depend on a font
+/// having the glyph (no bundled face has ∩).
+pub(crate) fn component_op_sign(index: usize, op: lcc_develop::MaskOp) -> Option<Icon> {
     match op {
-        _ if index == 0 => "",
-        lcc_develop::MaskOp::Add => "+",
-        lcc_develop::MaskOp::Subtract => "−",
-        lcc_develop::MaskOp::Intersect => "∩",
+        _ if index == 0 => None,
+        lcc_develop::MaskOp::Add => Some(Icon::Plus),
+        lcc_develop::MaskOp::Subtract => Some(Icon::Minus),
+        lcc_develop::MaskOp::Intersect => Some(Icon::Intersect),
     }
 }
 
@@ -696,10 +697,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         ui.painter().line_segment([pos2(x0, r.center().y), pos2(r.left(), r.center().y)], branch);
                         // how the component combines, in a column of its own (the first one starts the mask)
                         let opr = Rect::from_center_size(pos2(r.left() + 11.0, r.center().y), vec2(14.0, 14.0));
-                        let op = component_op_sign(i, c.op);
-                        if !op.is_empty() {
+                        if let Some(op) = component_op_sign(i, c.op) {
                             register(ui.ctx(), format!("componentOp:{i}"), opr);
-                            ui.painter().text(opr.center(), Align2::CENTER_CENTER, op, t.semibold(13.0), t.text_label);
+                            paint(ui.painter(), opr.shrink(1.0), op, t.text_label);
                         }
                         let icon_r = Rect::from_min_size(pos2(opr.right() + 3.0, r.top() + 5.0), vec2(18.0, 18.0));
                         register(ui.ctx(), format!("componentIcon:{i}"), icon_r);
