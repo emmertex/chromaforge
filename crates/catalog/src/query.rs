@@ -42,6 +42,10 @@ pub struct Filter {
     /// `only` means "no constraint".
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub only_none: bool,
+    /// Natural-language (semantic) search query (`LR-FILT-SEARCH-AI`). The matching photo IDs
+    /// (in descending cosine-similarity order) are stored in `only` / `only_none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<String>,
     /// Any of these labels (the filter bar's multi-select); empty = no constraint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<ColorLabel>,
@@ -50,6 +54,9 @@ pub struct Filter {
     pub album: Option<AlbumId>,
     /// Show "Recently Deleted" instead of the library.
     pub deleted: bool,
+    /// Keep only the library's photos (`Some(true)`) or only the ones outside it — browsed
+    /// (Local), deleted or demo photos (`Some(false)`).
+    pub in_library: Option<bool>,
     /// Capture date prefix (`2026`, `2026-04`, `2026-04-12`).
     pub date: Option<String>,
     /// A folder the library's photos were imported from: those photos and the ones imported from
@@ -938,6 +945,9 @@ impl Filter {
         if !self.text.trim().is_empty() {
             v.push(format!("“{}”", self.text.trim()));
         }
+        if let Some(q) = self.semantic.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            v.push(format!("AI search “{q}”"));
+        }
         if let Some(rs) = self.rule_set.as_ref().filter(|r| !r.rules.is_empty()) {
             v.push(cat.map_or_else(|| rs.describe(), |c| rs.describe_with(c)));
         }
@@ -982,6 +992,9 @@ impl Filter {
     /// big library does that once, not once per photo.
     pub(crate) fn matches_in(&self, p: &Photo, cat: &Catalog, prepared: &Prepared) -> bool {
         if p.deleted != self.deleted {
+            return false;
+        }
+        if self.in_library.is_some_and(|want| p.in_library() != want) {
             return false;
         }
         match &self.folder {

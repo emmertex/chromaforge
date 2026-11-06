@@ -245,6 +245,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::RenamePhoto { .. } => "Rename Photo",
         Dialog::Rename { .. } => "Rename Photos",
         Dialog::Import { .. } => "Import Photos",
+        Dialog::LightroomResult { capture_one: true, .. } => "Capture One Catalog Import",
         Dialog::LightroomResult { .. } => "Lightroom Catalog Import",
         Dialog::LabelNames { .. } => "Edit Color Label Names",
         Dialog::CaptureTime { .. } => "Edit Capture Time",
@@ -286,6 +287,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::ConfirmPurge { .. } => "Delete Permanently",
         Dialog::MovePhotos { .. } => "Move Photos",
         Dialog::LightroomCatalog { .. } => "Lightroom Classic Catalog",
+        Dialog::LightroomDestination { catalog, .. } if crate::lightroom_import::is_capture_one(std::path::Path::new(catalog)) => {
+            "Import Capture One Catalog"
+        }
         Dialog::LightroomDestination { .. } => "Import Lightroom Catalog",
         Dialog::SaveEffect { .. } => "New Effect Preset",
         Dialog::ManageEffects { .. } => "Manage Effect Presets",
@@ -294,6 +298,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::DeleteEffects { names } if names.len() == 1 => "Delete Effect Preset",
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
         Dialog::DeleteRejected { .. } => "Delete Rejected Photos",
+        Dialog::StopWaiting { .. } => "Stop Waiting",
         Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Library",
         Dialog::RemoveFolder { .. } => "Remove Folder from Library",
         Dialog::SynchronizeFolder { .. } => "Synchronize Folder",
@@ -554,13 +559,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 }
                 Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::model_dialog(app, ui, &t, info, accepted),
                 Dialog::FaceModel { info, accepted, .. } => crate::panels::faces::model_dialog(app, ui, &t, info, accepted),
-                Dialog::LightroomResult { summary, library, details, .. } => {
+                Dialog::LightroomResult { summary, library, details, capture_one, .. } => {
                     ui.label(summary.as_str());
                     ui.add_space(8.0);
                     if let Some(library) = library {
                         ui.label(crate::i18n::tr("Destination library"));
                         ui.add(egui::Label::new(library.as_str()).wrap().selectable(true));
-                        ui.label(crate::i18n::tr("Lightroom catalogs import into the open library; no separate catalog folder is created."));
+                        ui.label(crate::i18n::tr(if *capture_one {
+                            "Capture One catalogs import into the open library; no separate catalog folder is created."
+                        } else {
+                            "Lightroom catalogs import into the open library; no separate catalog folder is created."
+                        }));
                     } else {
                         ui.label(crate::i18n::tr("These photos are only in memory. Open a library on disk and import the catalog again to save them."));
                     }
@@ -1258,6 +1267,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(what)).color(t.text_dim));
                 }
                 d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::body(app, ui, d),
+                Dialog::StopWaiting { task, warning, .. } => {
+                    ui.label(crate::i18n::tr_format!("Stop waiting: {task}?", task = task));
+                    crate::dialog_frame::note(ui, egui::RichText::new(warning.as_str()).color(t.text_dim));
+                }
                 Dialog::DeleteRejected { count, recycle } => {
                     ui.label(crate::i18n::tr_format!("Delete the {n} rejected photos of this view?", n = count));
                     ui.add_space(6.0);
@@ -1543,6 +1556,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::RemoveFolder { .. } => "Remove",
                     Dialog::DeleteRejected { recycle: true, .. } => "Move to Trash",
                     Dialog::DeleteRejected { .. } => "Remove",
+                    Dialog::StopWaiting { .. } => "Stop Waiting",
                     Dialog::LightroomCatalog { .. } => "Import Lightroom Catalog…",
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
@@ -2301,7 +2315,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             }
             Ok(json!({"moved": moved}))
         }
-        // the catalog found: no file dialog; none: File ▸ Import Lightroom Catalog… asks for it
+        // the catalog found: no file dialog; none: File ▸ Import Lightroom or Capture One Catalog… asks for it
         Dialog::LightroomCatalog { catalog, .. } => {
             app.run("file.importLightroom", catalog.as_ref().map_or_else(|| json!({}), |c| json!({"path": c})))
         }
@@ -2311,6 +2325,11 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::DeleteEffects { names } => app.run("mask.deleteEffect", json!({"names": names})),
         Dialog::RemoveFolder { path, disk, .. } => app.run("library.removeFolder", json!({"path": path, "disk": disk})),
+        Dialog::StopWaiting { id, .. } => {
+            // the task may have ended meanwhile: then there is nothing left to stop
+            crate::panels::activity::cancel(app, *id);
+            Ok(serde_json::Value::Null)
+        }
         Dialog::DeleteRejected { recycle, .. } => {
             let r = app.run("library.deleteRejected", json!({"files": if *recycle { "recycle" } else { "keep" }, "confirm": true}));
             if let Ok(v) = &r {
@@ -3981,7 +4000,8 @@ pub fn confirm_style(dlg: &Dialog) -> ConfirmStyle {
         | Dialog::DeleteKeyword { .. }
         | Dialog::DeleteEffects { .. }
         | Dialog::RemoveFolder { .. }
-        | Dialog::DeleteRejected { .. } => ConfirmStyle::Plain,
+        | Dialog::DeleteRejected { .. }
+        | Dialog::StopWaiting { .. } => ConfirmStyle::Plain,
         _ if only_shows(dlg) => ConfirmStyle::Plain,
         _ => ConfirmStyle::Primary,
     }

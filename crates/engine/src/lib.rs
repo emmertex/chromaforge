@@ -25,6 +25,7 @@ pub mod base64;
 pub mod bounded_read;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
+pub mod capture_one_catalog;
 pub mod change_report;
 pub mod chart_profiling;
 pub mod cmd;
@@ -93,7 +94,7 @@ pub mod merge;
 pub mod merge_layers;
 pub mod midi;
 /// The shared AI backend's queue and activity row (#491).
-mod ml;
+pub mod ml;
 mod model_download;
 pub mod open_path;
 pub mod originals;
@@ -2003,11 +2004,12 @@ impl Session {
                 }
             });
             // Views whose order or photos are not the query's alone are worked out whole each time: an album in
-            // its own order, Recently Added (how far back it reaches moves with every import), Missing Photos.
+            // its own order, a semantic search (ordered by similarity rank), Recently Added (how far back it
+            // reaches moves with every import), Missing Photos.
             let own_order = matches!(self.source, LibrarySource::Album(a) if self.sort.key == lcc_catalog::SortKey::Custom
                 && self.filter == Filter::default()
                 && self.catalog.album(a).is_some_and(|al| !al.is_smart()));
-            let whole = own_order || matches!(self.source, LibrarySource::RecentlyAdded | LibrarySource::Missing);
+            let whole = own_order || self.filter.semantic.is_some() || matches!(self.source, LibrarySource::RecentlyAdded | LibrarySource::Missing);
             // A view that asks about "the last N days" (itself, or through a smart album it looks into) changes
             // with the clock as well as with edits: a photo nobody touched can stop matching. It is asked whole.
             let clocked = filter_depends_on_clock(&f, &self.catalog);
@@ -2058,6 +2060,27 @@ impl Session {
                 // only the photos the query kept (library photos, not Local browse records) are checked
                 let (cat, avail) = (&self.catalog, &self.media.availability);
                 visible.retain(|id| cmd::missing::is_missing(cat, avail, *id));
+            }
+            if self.filter.semantic.is_some() && !self.filter.only.is_empty() && self.source != LibrarySource::RecentlyAdded {
+                // Under the default sort (CaptureDate) a semantic search shows the closest matches first
+                // (their order in `self.filter.only`); under Rating it breaks rating ties by similarity.
+                let rank: std::collections::HashMap<PhotoId, usize> = self.filter.only.iter().copied().enumerate().map(|(i, id)| (id, i)).collect();
+                match self.sort.key {
+                    lcc_catalog::SortKey::CaptureDate => {
+                        visible.sort_by_key(|id| rank.get(id).copied().unwrap_or(usize::MAX));
+                    }
+                    lcc_catalog::SortKey::Rating => {
+                        let cat = &self.catalog;
+                        let asc = self.sort.ascending;
+                        visible.sort_by(|a, b| {
+                            let ra = cat.photo(*a).map_or(0, |p| p.rating);
+                            let rb = cat.photo(*b).map_or(0, |p| p.rating);
+                            let ord = if asc { ra.cmp(&rb) } else { rb.cmp(&ra) };
+                            ord.then_with(|| rank.get(a).copied().unwrap_or(usize::MAX).cmp(&rank.get(b).copied().unwrap_or(usize::MAX)))
+                        });
+                    }
+                    _ => {}
+                }
             }
             if self.source != LibrarySource::RecentlyDeleted {
                 visible = self.catalog.arrange_stacks(&visible);
@@ -2124,14 +2147,30 @@ impl Session {
             let b = self.browse.clone().unwrap_or_default();
             f.folder = Some(b.path);
             f.subfolders = b.subfolders;
+            // the Browse tab's quick filter on "Show Not Imported": only the files an import
+            // would take
+            if b.not_imported {
+                f.in_library = Some(false);
+            }
         }
         if source == LibrarySource::LibraryFolder {
             // no folder chosen: nothing (`.` names no folder)
             f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
         }
         if source == LibrarySource::PreviousExport {
-            f.only = self.previous_export_filter();
-            f.only_none = false;
+            let exported = self.previous_export_filter();
+            if f.only_none {
+                f.only.clear();
+            } else if !f.only.is_empty() {
+                let keep: std::collections::HashSet<PhotoId> = exported.into_iter().collect();
+                f.only.retain(|id| keep.contains(id));
+                if f.only.is_empty() {
+                    f.only_none = true;
+                }
+            } else {
+                f.only = exported;
+                f.only_none = false;
+            }
         }
         f
     }
@@ -2204,6 +2243,9 @@ impl Session {
                 let b = self.browse.clone().unwrap_or_default();
                 f.folder = Some(b.path);
                 f.subfolders = b.subfolders;
+                if b.not_imported {
+                    f.in_library = Some(false);
+                }
             }
             if self.source == LibrarySource::LibraryFolder {
                 f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));

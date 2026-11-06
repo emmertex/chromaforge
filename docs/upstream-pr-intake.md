@@ -156,8 +156,9 @@ for `PENDING`.
 
 Every item below must pass, or the row becomes `PENDING`/`SKIP`:
 
-- **Clean-room and licence.** No GPL/LGPL/AGPL/MPL code or data, no Adobe material, no vendor binary. An upstream PR
-  built on a GPL source is `LEARN` at most; re-implement it from a public spec.
+- **Clean-room and licence.** Third-party code, weights and data follow `AGENTS.md`'s licence policy (2026-11-05):
+  allowed when the licence permits derivatives, sharing and commercial use (GPL, CC BY, public domain, MIT-style),
+  credited in `NOTICE` / `LICENSE` in the same commit. No Adobe material, no vendor binary.
 - **Brand.** `cargo xtask brand check`; no legacy name, no upstream product strings; text goes through `tr()`.
 - **Never crash.** No new `unwrap`/`expect`/`panic!`/indexing on input-derived values in non-test code; no new `unsafe`
   outside the crates `AGENTS.md` names. Hostile-input tests where the change parses anything.
