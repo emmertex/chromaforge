@@ -44,38 +44,9 @@ pub(crate) struct Dev {
     pub(crate) card: Card,
 }
 
-/// A graphics card AI Denoise runs on: each has a denoise device of its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Card {
-    /// The second graphics card (Settings ▸ Performance), when there is one: it doesn't draw the window.
-    Second,
-    /// The card for editing.
-    Editing,
-}
-
-impl Card {
-    /// `second` or `editing`.
-    pub fn id(self) -> &'static str {
-        match self {
-            Card::Second => "second",
-            Card::Editing => "editing",
-        }
-    }
-
-    fn index(self) -> usize {
-        match self {
-            Card::Second => 0,
-            Card::Editing => 1,
-        }
-    }
-}
-
-/// The cards in the order denoise photos take them: the second graphics card first, so the card for editing stays
-/// with the photo being edited.
-pub const CARDS: [Card; 2] = [Card::Second, Card::Editing];
-
-/// Why there is no denoise device on [`Card::Second`].
-pub const NO_SECOND_CARD: &str = "there is no second graphics card";
+/// The graphics cards AI Denoise runs on (shared with the face models: [`crate::ai`]); denoise photos take them in
+/// [`CARDS`] order, and [`NO_SECOND_CARD`] is why there is no device on [`Card::Second`].
+pub use crate::ai::{CARDS, Card, NO_SECOND_CARD};
 
 static DEVS: [OnceLock<Result<Dev, String>>; 2] = [const { OnceLock::new() }, const { OnceLock::new() }];
 static BROKEN: [AtomicBool; 2] = [const { AtomicBool::new(false) }, const { AtomicBool::new(false) }];
