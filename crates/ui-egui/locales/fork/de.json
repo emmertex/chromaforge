@@ -1700,7 +1700,6 @@
   "With Margins": "Mit Rändern",
   "With access to all files, folders on the device are read where they are instead of being copied.": "Mit Zugriff auf alle Dateien werden Ordner auf dem Gerät an Ort und Stelle gelesen statt kopiert.",
   "Working… (see Activity)": "In Arbeit… (siehe Aktivität)",
-  "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.": "Funktioniert mit Raw-Dateien von Kameras mit Standardsensor (Bayer). Andere Dateien behalten ihre normale Rauschreduzierung.",
   "Write XMP Sidecars": "XMP-Filialdateien schreiben",
   "Write XMP for Immich": "XMP für Immich schreiben",
   "Write photo metadata": "Foto-Metadaten schreiben",

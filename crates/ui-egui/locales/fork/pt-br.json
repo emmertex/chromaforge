@@ -1769,7 +1769,6 @@
   "With access to all files, folders on the device are read where they are instead of being copied.": "Com acesso a todos os arquivos, as pastas do dispositivo são lidas onde estão em vez de copiadas.",
   "Without Saving and Quit (issue #100). It no longer quietly starts a demo session that looked like a reset library and": "Sem salvar e Sair (issue #100). Não inicia mais em silêncio uma sessão de demonstração que parecia uma biblioteca redefinida e",
   "Working… (see Activity)": "Trabalhando… (veja Atividade)",
-  "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.": "Funciona com arquivos raw de câmeras com sensor padrão (Bayer). Os demais arquivos mantêm a redução de ruído normal.",
   "Write XMP Sidecars": "Gravar arquivos XMP auxiliares",
   "Write XMP for Immich": "Gravar XMP para o Immich",
   "Write photo metadata": "Gravar metadados de fotos",
