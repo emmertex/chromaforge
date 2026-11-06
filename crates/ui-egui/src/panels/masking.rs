@@ -790,7 +790,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         }
                         crate::widgets::context_menu(&resp, |ui| component_row_menu(app, ui, m.id, i, &label, cur_m.components.len()));
 
-                        range_controls(app, ui, i, &c.shape);
+                        // each component's sliders in a scope of its own: two radial components each have a
+                        // Feather slider, and without it both took the same egui id
+                        ui.push_id(("componentControls", m.id, i), |ui| range_controls(app, ui, i, &c.shape));
                         if comp_sel && let MaskShape::People { .. } = &c.shape {
                             who_picker(app, ui, id, i, &c.shape);
                         }
