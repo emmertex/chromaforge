@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::context::{CallContext, HostApi};
+use crate::context::{CallContext, HostApi, JobReporter, Unwatched};
 use crate::manifest::{Field, dialog_args, parse_version};
 use crate::permissions::Permissions;
 use crate::runtime::{Limits, Plugin};
@@ -40,8 +40,9 @@ pub struct Installed {
     store: Option<NamespaceStore>,
     /// Its settings and remembered dialog values (shared with a call running off the lock).
     settings: Arc<Mutex<SettingsStore>>,
-    /// A call is running off the manager's lock ([`Manager::begin`] … [`Manager::end`]): its store is lent to it.
-    busy: bool,
+    /// A call is running off the manager's lock ([`Manager::begin`] … [`Manager::end`]): its store
+    /// is lent to it. What it is, for the error other calls get meanwhile.
+    busy: Option<String>,
 }
 
 impl Installed {
@@ -90,6 +91,12 @@ pub struct SettingsView {
     pub error: Option<String>,
 }
 
+/// How [`Manager::begin_command`] went: the prepare step's message (nothing runs), or the call.
+pub enum Begun {
+    Message(String),
+    Call(Box<PendingCall>),
+}
+
 /// What a command's `prepare` step decided ([`Manager::prepare_command`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Prepared {
@@ -130,6 +137,9 @@ pub struct PendingCall {
     runs_root: Option<PathBuf>,
     /// A prepare step: its host calls may read, never write.
     read_only: bool,
+    /// A job ([`crate::CommandDecl::job`]), by its command's label: its `job.*` calls reach a
+    /// [`JobReporter`], and a reply `{continue: state}` calls it again.
+    job: Option<String>,
 }
 
 impl PendingCall {
@@ -138,8 +148,80 @@ impl PendingCall {
         &self.id
     }
 
-    /// Runs the call (the plug-in's code: possibly long, e.g. an upload).
+    /// Whether this call is a job ([`PendingCall::run_with`] reports its progress).
+    pub fn is_job(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// A job's command label (as the manifest gives it).
+    pub fn job_label(&self) -> Option<&str> {
+        self.job.as_deref()
+    }
+
+    /// The plug-in's display name (its manifest's `name`).
+    pub fn plugin_name(&self) -> &str {
+        &self.plugin.manifest().name
+    }
+
+    /// The command this call runs (`None`: a hook).
+    pub fn command(&self) -> Option<&str> {
+        self.request.get("command").and_then(Value::as_str)
+    }
+
+    /// Runs the call (the plug-in's code: possibly long, e.g. an upload). A job runs to its end
+    /// with nobody watching ([`Unwatched`]).
     pub fn run(&mut self, host: &mut dyn HostApi) -> crate::Outcome {
+        self.run_with(host, &Unwatched)
+    }
+
+    /// [`PendingCall::run`], a job reporting to `job`. Each reply `{continue: state}` calls the job
+    /// again, in a fresh instance under a fresh budget, with the request plus `state`, until a
+    /// reply without `continue`, an error, or a cancel (`job`): then no further call is made. A
+    /// state that makes the next request larger than the message cap fails the job. Between calls
+    /// the plug-in's namespace data is saved. A call that isn't a job ignores `job`.
+    pub fn run_with(&mut self, host: &mut dyn HostApi, job: &dyn JobReporter) -> crate::Outcome {
+        if self.job.is_none() {
+            return self.call_once(host, None);
+        }
+        let mut logs: Vec<String> = Vec::new();
+        loop {
+            let outcome = self.call_once(host, Some(job));
+            logs.extend(outcome.logs);
+            if logs.len() > MAX_LOG {
+                logs.drain(..logs.len() - MAX_LOG);
+            }
+            let value = match outcome.value {
+                // a call that failed after a cancel was stopped by it
+                Err(_) if job.cancelled() => Err(Error::Cancelled),
+                Ok(v) => match v.get("continue") {
+                    None => Ok(v),
+                    Some(_) if job.cancelled() => Err(Error::Cancelled),
+                    Some(state) => {
+                        // the next request carries the state: it must fit in a message
+                        let mut next = self.request.clone();
+                        next["state"] = state.clone();
+                        let (max, size) = (self.plugin.limits().max_message_bytes, serde_json::to_vec(&next).map_or(usize::MAX, |b| b.len()));
+                        if size > max {
+                            Err(Error::Limit(format!(
+                                "message size: with its continue state the next call would be {size} bytes, more than the {max} a message may have"
+                            )))
+                        } else if let Err(e) = self.store.save() {
+                            // what the calls so far wrote is kept now, so a quit or a crash
+                            // during the next call loses only that call's writes
+                            Err(e)
+                        } else {
+                            self.request = next;
+                            continue;
+                        }
+                    }
+                },
+                Err(e) => Err(e),
+            };
+            return crate::Outcome { value, logs };
+        }
+    }
+
+    fn call_once(&mut self, host: &mut dyn HostApi, job: Option<&dyn JobReporter>) -> crate::Outcome {
         let plugin = self.plugin.clone();
         let manifest = plugin.manifest();
         let mut ctx = CallContext {
@@ -156,6 +238,7 @@ impl PendingCall {
             settings: &self.settings,
             fields: &manifest.settings,
             read_only: self.read_only,
+            job,
         };
         let mut outcome = plugin.invoke(&self.request, &mut ctx);
         // what the host did on the plug-in's behalf that the user should see in its log
@@ -303,7 +386,7 @@ impl Manager {
             }
             let (settings, damaged) = m.open_settings(&id);
             log.extend(damaged);
-            m.plugins.insert(id, Installed { plugin: Arc::new(p), enabled, grant, log, store: None, settings, busy: false });
+            m.plugins.insert(id, Installed { plugin: Arc::new(p), enabled, grant, log, store: None, settings, busy: None });
         }
         Ok(m)
     }
@@ -494,7 +577,7 @@ impl Manager {
         if let Err(e) = pruned {
             log.push_back(format!("settings: {e}"));
         }
-        self.plugins.insert(id.clone(), Installed { plugin: Arc::new(plugin), enabled: true, grant, log, store: None, settings, busy: false });
+        self.plugins.insert(id.clone(), Installed { plugin: Arc::new(plugin), enabled: true, grant, log, store: None, settings, busy: None });
         self.save()?;
         self.plugins
             .get_mut(&id)
@@ -630,14 +713,20 @@ impl Manager {
 
     /// [`Manager::begin`] with folders lent to the call for reading.
     pub fn begin_with_dirs(&mut self, id: &str, request: Value, lent: Vec<PathBuf>, lent_dirs: Vec<PathBuf>) -> Result<PendingCall> {
+        self.begin_as(id, request, lent, lent_dirs, None)
+    }
+
+    /// [`Manager::begin_with_dirs`]; `job`: the call is a job with this label (named in the error
+    /// other calls of the plug-in get while it runs).
+    fn begin_as(&mut self, id: &str, request: Value, lent: Vec<PathBuf>, lent_dirs: Vec<PathBuf>, job: Option<&str>) -> Result<PendingCall> {
         let library = self.library.clone();
         let dir = self.dir.clone();
         let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
         if !p.enabled {
             return Err(Error::Disabled(id.into()));
         }
-        if p.busy {
-            return Err(Error::Busy(id.into()));
+        if let Some(why) = &p.busy {
+            return Err(Error::Busy(id.into(), why.clone()));
         }
         if p.store.is_none() {
             p.store = Some(match &dir {
@@ -652,10 +741,25 @@ impl Manager {
         let plugin = p.plugin.clone();
         let store = p.store.take().unwrap_or_default();
         let settings = p.settings.clone();
-        p.busy = true;
+        p.busy = Some(match job {
+            Some(label) => format!("its job \"{label}\" is running; wait for it to end, or stop it in the activity stack"),
+            None => "an earlier call of it is still running (an export's hooks, or a program's end)".into(),
+        });
         // the host builds every request, so a plug-in can't make its prepare step anything else
         let read_only = matches!(request.get("hook").and_then(Value::as_str), Some("command.prepare" | "settings.prepare"));
-        Ok(PendingCall { id: id.to_string(), plugin, perms, store, settings, request, lent, lent_dirs, runs_root: self.runs_root.clone(), read_only })
+        Ok(PendingCall {
+            id: id.to_string(),
+            plugin,
+            perms,
+            store,
+            settings,
+            request,
+            lent,
+            lent_dirs,
+            runs_root: self.runs_root.clone(),
+            read_only,
+            job: job.map(str::to_string),
+        })
     }
 
     /// The `program.end` call for a run of plug-in `id` ([`crate::programs`]): `{"hook": "program.end",
@@ -686,7 +790,7 @@ impl Manager {
             return outcome.map_or_else(|| Err(Error::NotFound(id.clone())), |o| o.value);
         };
         p.store = Some(store);
-        p.busy = false;
+        p.busy = None;
         let Some(outcome) = outcome else {
             saved?;
             return Err(Error::Failed("cancelled".into()));
@@ -695,8 +799,10 @@ impl Manager {
         for l in outcome.logs {
             p.push_log(l);
         }
-        if let Err(e) = &outcome.value {
-            p.push_log(format!("{what} failed: {e}"));
+        match &outcome.value {
+            Err(Error::Cancelled) => p.push_log(format!("{what} cancelled")),
+            Err(e) => p.push_log(format!("{what} failed: {e}")),
+            Ok(_) => {}
         }
         saved?;
         outcome.value
@@ -823,7 +929,8 @@ impl Manager {
     }
 
     /// [`Manager::run_command`] for a command started from `source` (see
-    /// [`Manager::prepare_command_from`]): its prepare step and the command get it.
+    /// [`Manager::prepare_command_from`]): its prepare step and the command get it. A job runs to
+    /// its end here, with nobody watching ([`Manager::begin_command`] runs one on a worker).
     pub fn run_command_from(
         &mut self,
         id: &str,
@@ -833,11 +940,34 @@ impl Manager {
         source: &Value,
         host: &mut dyn HostApi,
     ) -> Result<Value> {
+        match self.begin_command(id, command, args, selection, source, host)? {
+            Begun::Message(m) => Ok(json!({"message": m, "ran": false})),
+            Begun::Call(mut call) => {
+                let outcome = call.run(host);
+                self.end(*call, Some(outcome))
+            }
+        }
+    }
+
+    /// Prepares a run of plug-in `id`'s `command` as [`Manager::run_command_from`] does (its
+    /// prepare step runs here, through `host`), and hands back the call to run without the manager
+    /// ([`PendingCall::run_with`], e.g. a job on a worker), then [`Manager::end`]. A job is named
+    /// by its command's label in the error other calls of the plug-in get until then.
+    pub fn begin_command(
+        &mut self,
+        id: &str,
+        command: &str,
+        args: &Value,
+        selection: &[String],
+        source: &Value,
+        host: &mut dyn HostApi,
+    ) -> Result<Begun> {
         let p = self.plugins.get(id).ok_or_else(|| Error::NotFound(id.into()))?;
         let decl = p.plugin.manifest().command(command).ok_or_else(|| Error::Params(format!("plug-in {id} has no command {command:?}")))?;
         let declared = decl.dialog.clone();
+        let job = decl.job.then(|| decl.label.clone());
         let (fields, checked) = match self.prepare_command_from(id, command, selection, source, host)? {
-            Prepared::Message(m) => return Ok(json!({"message": m, "ran": false})),
+            Prepared::Message(m) => return Ok(Begun::Message(m)),
             Prepared::Run(given) if args.is_null() => (declared, given),
             Prepared::Run(_) => {
                 let a = dialog_args(&declared, args)?;
@@ -857,7 +987,7 @@ impl Manager {
         if !source.is_null() {
             req["source"] = source.clone();
         }
-        self.invoke(id, &req, host, &[])
+        self.begin_as(id, req, Vec::new(), Vec::new(), job.as_deref()).map(|c| Begun::Call(Box::new(c)))
     }
 
     /// Plug-in `id`'s settings fields and values: the manifest's fields, prepared by the
@@ -965,8 +1095,8 @@ impl Manager {
         let dir = self.dir.clone();
         let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
         // its data is lent to a call running elsewhere: opening it again would fork it
-        if p.busy {
-            return Err(Error::Busy(id.into()));
+        if let Some(why) = &p.busy {
+            return Err(Error::Busy(id.into(), why.clone()));
         }
         if p.store.is_none() {
             p.store = Some(match &dir {

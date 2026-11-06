@@ -315,6 +315,8 @@ mod tests_panels;
 #[cfg(test)]
 mod tests_pickers;
 #[cfg(test)]
+mod tests_plugin_jobs;
+#[cfg(test)]
 mod tests_preset_favorites;
 #[cfg(test)]
 mod tests_preset_folders;

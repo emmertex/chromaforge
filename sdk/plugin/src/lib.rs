@@ -145,6 +145,11 @@ impl Request {
     pub fn get(&self, key: &str) -> &Value {
         self.0.get(key).unwrap_or(&Value::Null)
     }
+    /// A job's state from its last reply (`hook == "command"` of a job, see [`job::continue_with`]):
+    /// null on its first call.
+    pub fn state(&self) -> &Value {
+        self.get("state")
+    }
     /// The run a `program.start` returned (`hook == "program.end"`).
     pub fn run(&self) -> &str {
         self.0.get("run").and_then(Value::as_str).unwrap_or("")
@@ -355,6 +360,69 @@ pub mod host {
     /// `{status, contentType, location, body}`.
     pub fn http(method: &str, url: &str, headers: Value, body: Option<&str>) -> Result<Value, String> {
         call("http.request", json!({"method": method, "url": url, "headers": headers, "body": body}))
+    }
+}
+
+/// A job's calls (a command with `"job": true`; needs `"jobs"` in `requires`): its row in the
+/// activity stack and its cancel. Outside a job they fail (`cancelled()` is then false).
+///
+/// A job keeps each call short and goes on with [`continue_with`]:
+///
+/// ```ignore
+/// fn handle(req: &Request) -> Result<Value, String> {
+///     let photos = req.selection();
+///     let mut next = req.state().as_u64().unwrap_or(0) as usize;
+///     for photo in photos.iter().skip(next).take(20) {
+///         if job::cancelled() {
+///             return Ok(json!({"message": format!("Stopped after {next} photos")}));
+///         }
+///         job::detail(photo);
+///         // … work on the photo …
+///         job::item_done();
+///         next += 1;
+///     }
+///     job::progress(next as u64, photos.len() as u64);
+///     if next < photos.len() { Ok(job::continue_with(json!(next))) } else { Ok(json!({"message": "Done"})) }
+/// }
+/// ```
+pub mod job {
+    use super::*;
+
+    /// `done` of `total` things (0 total: not known, the bar sweeps).
+    pub fn progress(done: u64, total: u64) {
+        let _ = host::call("job.progress", json!({"done": done, "total": total}));
+    }
+
+    /// [`progress`] in `unit`: `"count"`, `"bytes"` ("12 of 340 MB") or `"percent"`.
+    pub fn progress_in(done: u64, total: u64, unit: &str) -> Result<(), String> {
+        host::call("job.progress", json!({"done": done, "total": total, "unit": unit})).map(|_| ())
+    }
+
+    /// What the job is working on: a name (a file, a photo), not a sentence.
+    pub fn detail(text: &str) {
+        let _ = host::call("job.detail", json!({"text": text}));
+    }
+
+    /// One photo done: the row counts photos from now on, with the time left and a summary at the end.
+    pub fn item_done() {
+        let _ = host::call("job.itemDone", json!({}));
+    }
+
+    /// One photo failed; `why` names it and gives the reason (kept for the summary).
+    pub fn item_failed(why: &str) {
+        let _ = host::call("job.itemFailed", json!({"why": why}));
+    }
+
+    /// Whether the user stopped the job (✕). From then on every other host call fails with
+    /// "cancelled", and a reply asking to continue is not called again: stop, and say how far it got.
+    pub fn cancelled() -> bool {
+        host::call("job.cancelled", json!({})).ok().and_then(|v| v.as_bool()).unwrap_or(false)
+    }
+
+    /// The reply that calls the job again, in a fresh instance with a fresh budget, with `state` as
+    /// [`Request::state`](crate::Request::state). The next request must still fit in a message.
+    pub fn continue_with(state: Value) -> Value {
+        json!({"continue": state})
     }
 }
 

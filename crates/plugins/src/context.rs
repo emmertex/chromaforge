@@ -14,7 +14,11 @@
 //! | `fs.remove`           | a file below a writable root (never a lent file) | std::fs            |
 //! | `http.request`        | the URL's host in `network` | `lcc-net` (native only)                 |
 //! | `program.list`        | none (declared programs only) | [`HostApi::find_program`]             |
-//! | `program.start`       | the program in `programs`   | [`HostApi::start_program`] (native only) |
+//! | `program.start`       | the program in `programs`   | [`HostApi::start_program`] (native only; not in a job) |
+//! | `job.progress`, `job.detail`, `job.itemDone`, `job.itemFailed`, `job.cancelled` | a job only | [`JobReporter`] |
+//!
+//! In a job, writes to the catalog (`metadata.setStandard`, `library.add`) are refused, and once
+//! the job is cancelled every call but `job.cancelled` fails with "cancelled".
 
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
@@ -76,6 +80,43 @@ pub trait HostApi {
 pub struct NoHost;
 impl HostApi for NoHost {}
 
+/// How a job words its progress: "3 of 25", "12 of 340 MB", "40 %".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JobUnit {
+    #[default]
+    Count,
+    Bytes,
+    Percent,
+}
+
+/// Where a job's `job.*` host calls go: the app's activity row for it. Calls on the job's
+/// thread; the row may be read and cancelled from others.
+pub trait JobReporter {
+    /// `done` of `total` (0: not known, the bar sweeps).
+    fn progress(&self, done: u64, total: u64, unit: JobUnit);
+    /// What the job is working on (a name, not a sentence).
+    fn detail(&self, text: &str);
+    /// One item (photo) finished: the row counts as a batch from now on.
+    fn item_done(&self);
+    /// One item failed, `why` naming it and the reason.
+    fn item_failed(&self, why: &str);
+    /// Whether the user (or an agent) asked the job to stop.
+    fn cancelled(&self) -> bool;
+}
+
+/// A job nobody watches (a job run as a plain call: tests, [`crate::Manager::run_command`]): it
+/// reports nowhere and is never cancelled.
+pub struct Unwatched;
+impl JobReporter for Unwatched {
+    fn progress(&self, _: u64, _: u64, _: JobUnit) {}
+    fn detail(&self, _: &str) {}
+    fn item_done(&self) {}
+    fn item_failed(&self, _: &str) {}
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
 /// Everything one plug-in call may reach.
 pub(crate) struct CallContext<'a> {
     /// The plug-in's id.
@@ -102,6 +143,8 @@ pub(crate) struct CallContext<'a> {
     pub fields: &'a [Field],
     /// A prepare step (`command.prepare`, `settings.prepare`): it may read, never write.
     pub read_only: bool,
+    /// The job this call is part of (`None`: not a job; the `job.*` calls are refused).
+    pub job: Option<&'a dyn JobReporter>,
 }
 
 /// Whether host call `method` with `p` changes something: refused in a read-only call.
@@ -135,6 +178,20 @@ impl CallContext<'_> {
     pub fn dispatch(&mut self, method: &str, p: &Value) -> Result<Value, String> {
         if self.read_only && writes(method, p) {
             return Err(format!("{method}: a prepare step can only read"));
+        }
+        if method.starts_with("job.") {
+            return self.job_call(method, p);
+        }
+        if let Some(job) = self.job {
+            if job.cancelled() {
+                return Err("cancelled".into());
+            }
+            if matches!(method, "metadata.setStandard" | "library.add") {
+                return Err(format!("{method}: writes to the catalog aren't available in a job yet"));
+            }
+            if method == "program.start" {
+                return Err("program.start is not available in a job; start the program from a command that isn't a job".into());
+            }
         }
         match method {
             "catalog.query" | "photo.inspect" | "catalog.stats" | "keyword.list" => {
@@ -238,6 +295,40 @@ impl CallContext<'_> {
             }
             _ => Err(format!("unknown host method {method:?}")),
         }
+    }
+
+    /// A `job.*` call: reported to the job's row; refused outside a job.
+    fn job_call(&mut self, method: &str, p: &Value) -> Result<Value, String> {
+        let Some(job) = self.job else {
+            return Err(format!("{method}: only a command declared as a job (\"job\": true) can report progress"));
+        };
+        if method == "job.cancelled" {
+            return Ok(Value::from(job.cancelled()));
+        }
+        if job.cancelled() {
+            return Err("cancelled".into());
+        }
+        let count = |key: &str| p.get(key).and_then(Value::as_u64).ok_or_else(|| format!("{method} needs `{key}`, a whole number 0 or more"));
+        match method {
+            "job.progress" => {
+                let (done, total) = (count("done")?, count("total")?);
+                let unit = match p.get("unit") {
+                    None | Some(Value::Null) => JobUnit::Count,
+                    Some(u) => match u.as_str() {
+                        Some("count") => JobUnit::Count,
+                        Some("bytes") => JobUnit::Bytes,
+                        Some("percent") => JobUnit::Percent,
+                        _ => return Err(format!("job.progress: `unit` is {u}; it takes \"count\", \"bytes\" or \"percent\"")),
+                    },
+                };
+                job.progress(done, total, unit);
+            }
+            "job.detail" => job.detail(str_arg(p, "text")?),
+            "job.itemDone" => job.item_done(),
+            "job.itemFailed" => job.item_failed(str_arg(p, "why")?),
+            _ => return Err(format!("unknown host method {method:?}")),
+        }
+        Ok(Value::Null)
     }
 
     /// Each declared program: `{program, name, granted, installed: [{bundleId?, path?, version?}]}`,
