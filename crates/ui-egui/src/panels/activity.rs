@@ -110,7 +110,7 @@ pub fn label_text(t: &TaskInfo) -> String {
 fn detail_text(t: &TaskInfo) -> String {
     match &t.templates {
         Some(x) if !x.detail.is_empty() => fill(tr(&x.detail), &x.names),
-        // (a plain detail is a name, kept as it is, or one of the engine's few messages, such as what a batch waits for)
+        // a detail is a name, kept as it is, or one of the engine's few messages, such as what a batch waits for
         _ => tr(&t.detail).to_string(),
     }
 }

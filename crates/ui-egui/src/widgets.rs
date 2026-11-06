@@ -1561,10 +1561,8 @@ fn text_button_sized(ui: &mut Ui, id: &str, label: &str, active: bool, width: Op
     resp
 }
 
-/// A segmented choice: the options side by side in one rounded track, the chosen one raised on a
-/// soft highlight. Each option is a button registered `button:{id}-{i}`; returns the one clicked.
-/// Wraps onto further rows when the options don't fit. Own design.
-pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -> Option<usize> {
+/// The font, option height, track padding and each option's width of [`segments`] for `labels`.
+fn segment_metrics(ui: &Ui, labels: &[&str]) -> (egui::FontId, f32, f32, Vec<f32>) {
     let t = Tokens::get(ui.ctx());
     let finger = crate::dialog_frame::finger_sized(ui);
     let font = t.semibold(if finger { 13.5 } else { 11.5 });
@@ -1580,6 +1578,21 @@ pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -
         .iter()
         .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + if finger { 26.0 } else { 16.0 })
         .collect();
+    (font, h, pad, widths)
+}
+
+/// How wide [`segments`] draws `labels` on one row.
+pub fn segments_width(ui: &Ui, labels: &[&str]) -> f32 {
+    let (_, _, pad, widths) = segment_metrics(ui, labels);
+    widths.iter().sum::<f32>() + 2.0 * pad
+}
+
+/// A segmented choice: the options side by side in one rounded track, the chosen one raised on a
+/// soft highlight. Each option is a button registered `button:{id}-{i}`; returns the one clicked.
+/// Wraps onto further rows when the options don't fit. Own design.
+pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -> Option<usize> {
+    let t = Tokens::get(ui.ctx());
+    let (font, h, pad, widths) = segment_metrics(ui, labels);
     let total = widths.iter().sum::<f32>() + 2.0 * pad;
     let mut clicked = None;
     let one_row = total <= ui.available_width();
