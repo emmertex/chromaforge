@@ -242,8 +242,12 @@ pub fn load_dcp(path: &Path) -> Result<lcc_raw::dcp::Dcp, String> {
 
 /// The active `.dcp` files in [`dir`] and what they are (damaged ones skipped with a warning).
 pub fn active_dcps() -> Vec<(PathBuf, lcc_raw::dcp::Dcp)> {
-    let Some(d) = dir() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(&d) else { return Vec::new() };
+    dir().map(|d| active_dcps_in(&d)).unwrap_or_default()
+}
+
+/// [`active_dcps`] of camera-profiles folder `d`.
+pub fn active_dcps_in(d: &Path) -> Vec<(PathBuf, lcc_raw::dcp::Dcp)> {
+    let Ok(entries) = std::fs::read_dir(d) else { return Vec::new() };
     let mut paths: Vec<PathBuf> =
         entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dcp"))).collect();
     paths.sort();
@@ -261,8 +265,12 @@ pub fn active_dcps() -> Vec<(PathBuf, lcc_raw::dcp::Dcp)> {
 
 /// The imported `.dcp` files in [`dcp_library_dir`]: `(id, profile)`, the id being `dcp:<file stem>`.
 pub fn library_dcps() -> Vec<(String, lcc_raw::dcp::Dcp)> {
-    let Some(d) = dcp_library_dir() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(&d) else { return Vec::new() };
+    dcp_library_dir().map(|d| library_dcps_in(&d)).unwrap_or_default()
+}
+
+/// [`library_dcps`] of library folder `d`.
+pub fn library_dcps_in(d: &Path) -> Vec<(String, lcc_raw::dcp::Dcp)> {
+    let Ok(entries) = std::fs::read_dir(d) else { return Vec::new() };
     let mut paths: Vec<PathBuf> =
         entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dcp"))).collect();
     paths.sort();
