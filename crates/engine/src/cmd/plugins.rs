@@ -336,6 +336,24 @@ fn log(_: &mut Session, p: &Value) -> Result<Value> {
     with_manager(|m| m.get(id).map(|i| json!(i.log)).ok_or_else(|| bad(C, format!("no plug-in {id:?} is installed"))))
 }
 
+fn picture(_: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "plugin.picture";
+    let id = id_param(p, C)?;
+    let f = crate::filter_plugins::registry().get(id).ok_or_else(|| bad(C, format!("no filter plug-in {id:?} is installed")))?;
+    let dark = match str_param(p, "theme") {
+        None | Some("dark") => true,
+        Some("light") => false,
+        Some(t) => return Err(bad(C, format!("`theme` must be dark or light, not {t:?}"))),
+    };
+    let m = f.manifest();
+    let svg = match str_param(p, "picture") {
+        None | Some("header") => m.header.as_ref().map(|h| h.for_theme(dark).to_string()),
+        Some("icon") => m.icon.clone(),
+        Some(k) => return Err(bad(C, format!("`picture` must be header or icon, not {k:?}"))),
+    };
+    Ok(json!({"svg": svg}))
+}
+
 fn run(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.run";
     let id = id_param(p, C)?;
@@ -970,6 +988,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "plugin.uninstall", "Remove Plug-in", [], None, "{id} — removes the module and its data; also a plug-in listed under plugin.list → failed (by its id there)", always, uninstall),
         cmd!(query "plugin.enable", "Enable Plug-in", [], None, "{id, enabled?: bool = true}", always, enable),
         cmd!(query "plugin.grant", "Set Plug-in Permissions", [], None, "{id, grant} — replaces the grant (revokes what it leaves out, programs included; never more than requested). Granted `programs` may be repeated (kept) or left out (revoked), never added or widened: only the user allows those, in the Plug-in Manager (an error, nothing changes) → granted", always, set_grant),
+        cmd!(query "plugin.picture", "Plug-in Picture", [], None, "{id, picture?: header|icon (header), theme?: dark|light (dark)} — a filter plug-in's own picture: its header for that interface theme, or its icon (the manifest's `header` and `icon`) → {svg: SVG text | null}", always, picture),
         cmd!(query "plugin.log", "Plug-in Log", [], None, "{id} → [lines]", always, log),
         cmd!(query "plugin.commands", "Plug-in Commands", [], None, "{} → [{plugin, pluginName, command, label, menu, dialog, prepare, values: what the dialog opens with (the last-run values of fields that remember, else defaults)}] of enabled plug-ins", always, commands),
         cmd!(query "plugin.prepare", "Prepare Plug-in Command", [], None, "{plugin, command, ids?, source?: {kind: album|smartAlbum|folder|allPhotos|other, id?, name?, path?} (default: the Library source shown)} — asks a command with `prepare` how to run on ids / the selection (others: their dialog as declared) → {dialog: [field + value], error: why the plug-in's own options are missing | null} | {run: args} | {message}; runs nothing", always, prepare),

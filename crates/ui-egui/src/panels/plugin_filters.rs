@@ -23,6 +23,8 @@ pub(crate) struct FilterPlugin {
     /// Parameter names in the manifest's order (`paramOrder`); keys of `params` it misses follow.
     pub order: Vec<String>,
     pub analyze: bool,
+    /// The manifest has a header picture (`plugin.picture` gives it).
+    pub header: bool,
 }
 
 impl FilterPlugin {
@@ -58,6 +60,7 @@ pub(crate) fn filter_plugins(list: &Value) -> Vec<FilterPlugin> {
                     .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
                     .unwrap_or_default(),
                 analyze: p.get("analyze").and_then(Value::as_bool).unwrap_or(false),
+                header: p.get("header").and_then(Value::as_bool).unwrap_or(false),
             })
         })
         .collect()
@@ -106,6 +109,32 @@ pub(crate) fn pump(app: &mut LccApp, ctx: &egui::Context) {
 
 const WARN: Color32 = Color32::from_rgb(0xe0, 0xa0, 0x30);
 
+/// The box a header picture is rasterised into (pixels: twice the panel's width and the height
+/// it's shown at, for sharp HiDPI) and its height on screen (points).
+const HEADER_PIXELS: (u32, u32) = (640, 96);
+const HEADER_HEIGHT: f32 = 40.0;
+
+/// The header picture of `plugin` for the interface theme (dark or light), asked once per module
+/// and theme and kept as a texture; `None` when it has none, or it can't be drawn.
+fn header_texture(app: &mut LccApp, ctx: &egui::Context, plugin: &FilterPlugin, dark: bool) -> Option<egui::TextureHandle> {
+    if !plugin.header {
+        return None;
+    }
+    let key = egui::Id::new(("plugin-header", plugin.module_hash.clone(), dark));
+    if let Some(cached) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(key)) {
+        return cached;
+    }
+    let theme = if dark { "dark" } else { "light" };
+    let svg = app.session.execute("plugin.picture", &json!({"id": plugin.id, "picture": "header", "theme": theme})).ok();
+    let tex = svg
+        .as_ref()
+        .and_then(|r| r.get("svg").and_then(Value::as_str))
+        .and_then(|svg| crate::plate::rasterise_untrusted_svg(svg, HEADER_PIXELS.0, HEADER_PIXELS.1).ok())
+        .map(|img| ctx.load_texture("plugin-header", img, egui::TextureOptions::LINEAR));
+    ctx.data_mut(|d| d.insert_temp(key, tex.clone()));
+    tex
+}
+
 /// The inset of everything in the section that isn't a slider (sliders inset themselves).
 fn inset<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 2 }).show(ui, add).inner
@@ -118,6 +147,7 @@ struct RowState<'a> {
     measuring: bool,
     measure_error: Option<String>,
     warnings: Vec<&'a str>,
+    header: Option<egui::TextureHandle>,
 }
 
 fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
@@ -145,12 +175,16 @@ fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
                 *c = true;
             }
         }
+        let plugin = installed.iter().find(|p| p.id == f.plugin);
+        let dark = ui.visuals().dark_mode;
+        let header = plugin.and_then(|p| header_texture(app, ui.ctx(), p, dark));
         let st = RowState {
-            plugin: installed.iter().find(|p| p.id == f.plugin),
+            plugin,
             can_measure,
             measuring: photo.is_some_and(|p| app.session.plugin_analyzing(p, f.uid)),
             measure_error: photo.and_then(|p| app.session.plugin_analyze_error(p, f.uid)).map(str::to_string),
             warnings: mine,
+            header,
         };
         ui.push_id(("pluginFilter", f.uid), |ui| row(ui, f, i, n, &st, &mut actions));
         inset(ui, |ui| ui.separator());
@@ -202,7 +236,16 @@ fn row(ui: &mut egui::Ui, f: &PluginFilter, i: usize, n: usize, st: &RowState, o
             if r.changed() {
                 out.push(Action::Run("develop.pluginFilter.set", json!({"uid": uid, "enabled": on})));
             }
-            ui.label(RichText::new(&f.name).strong());
+            match &st.header {
+                // the plug-in's own header picture stands for its name
+                Some(tex) => {
+                    let r = ui.add(egui::Image::new(tex).max_height(HEADER_HEIGHT).max_width(ui.available_width())).on_hover_text(&f.name);
+                    crate::access::label(&r, &f.name);
+                }
+                None => {
+                    ui.label(RichText::new(&f.name).strong());
+                }
+            }
             if plugin.is_none() {
                 ui.label(RichText::new(format!("⚠ {}", tr("not installed"))).color(WARN))
                     .on_hover_text(tr("This filter's plug-in is not installed: it is skipped and its settings are kept."));

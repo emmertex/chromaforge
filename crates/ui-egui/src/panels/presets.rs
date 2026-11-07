@@ -190,7 +190,6 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
         }
         let active = app.session.active();
         let marked = AppliedByPhoto::of(ui.ctx(), &app.session, active);
-        let current = active.and_then(|id| app.session.develop_of(id)).map(|d| (*d).clone());
         let thumbs = app.ui.preset_thumbs && active.is_some();
         let row_h = if thumbs { 54.0 } else { 26.0 };
         let groups = grouped(ui.ctx(), &app.session, app.ui.settings.user_presets_first);
@@ -202,7 +201,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
             ui.spacing_mut().item_spacing.y = 0.0;
             let visible = ui.clip_rect().expand(row_h);
             for node in groups.iter() {
-                show_folder_node(app, ui, node, &all_user_folders, row_h, visible, &last, &marked, &current, thumbs, amt_id);
+                show_folder_node(app, ui, node, &all_user_folders, row_h, visible, &last, &marked, thumbs, amt_id);
             }
             let (space_r, space_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
             // (the empty space under the folders: a drop target and the create menu)
@@ -265,11 +264,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
         let pointer_in_scroll = ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|pos| scroll.inner_rect.contains(pos));
         if pointer_in_scroll {
             if app.hover_preview.is_none()
-                && let (Some(id), Some(curr)) = (active, current.as_ref())
+                && let Some(id) = active
                 && let Some((saved_id, saved_preset, saved_label)) = ui.data(|d| d.get_temp::<(lcc_catalog::PhotoId, Preset, String)>(last_hover_id))
                 && saved_id == id
+                && let Some(settings) = app.session.preset_applied(id, &saved_preset, 1.0)
             {
-                app.hover_preview = Some(HoverPreview { label: saved_label, settings: saved_preset.apply(curr, 1.0) });
+                app.hover_preview = Some(HoverPreview { label: saved_label, settings });
             }
         } else {
             ui.data_mut(|d| d.remove::<(lcc_catalog::PhotoId, Preset, String)>(last_hover_id));
@@ -315,7 +315,6 @@ fn show_folder_node(
     visible: Rect,
     last: &Option<AppliedPreset>,
     marked: &Option<String>,
-    current: &Option<lcc_develop::DevelopSettings>,
     thumbs: bool,
     amt_id: egui::Id,
 ) {
@@ -416,7 +415,7 @@ fn show_folder_node(
     }
 
     for child in &node.children {
-        show_folder_node(app, ui, child, all_user_folders, row_h, visible, last, marked, current, thumbs, amt_id);
+        show_folder_node(app, ui, child, all_user_folders, row_h, visible, last, marked, thumbs, amt_id);
     }
 
     let active = app.session.active();
@@ -452,7 +451,8 @@ fn show_folder_node(
         } else if resp.hovered() {
             ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.7));
         }
-        let look = if thumbs || resp.hovered() { current.as_ref().map(|d| pr.apply(d, 1.0)) } else { None };
+        // the preview is what a click commits: the same composition as `preset.apply` (`Session::preset_applied`)
+        let look = if thumbs || resp.hovered() { active.and_then(|id| app.session.preset_applied(id, &pr, 1.0)) } else { None };
         let mut text_x = r.left() + 40.0 + indent;
         if thumbs && let (Some(id), Some(s)) = (active, look.as_ref()) {
             let tr = Rect::from_min_size(pos2(r.left() + 36.0 + indent, r.top() + 5.0), vec2(66.0, row_h - 10.0));
@@ -869,10 +869,10 @@ pub fn picker_frame(app: &mut LccApp, ctx: &egui::Context) {
         return;
     }
     let Some(active) = app.session.active() else { return };
-    let (Some(preset), Some(now)) = (app.session.presets.iter().find(|p| p.id == pid).cloned(), app.session.develop_of(active)) else {
+    // what a click commits (`Session::preset_applied`, as `preset.apply`)
+    let Some(look) = app.session.presets.iter().find(|p| p.id == pid).and_then(|preset| app.session.preset_applied(active, preset, 1.0)) else {
         return;
     };
-    let look = preset.apply(&now, 1.0);
     let tex = app.session.variant_job(active, &look, PICKER_PREVIEW_EDGE).and_then(|job| app.renderer.variant(job)).map(|t| (t.id(), t.size));
     let t = Tokens::get(ctx);
     let side = 150.0;

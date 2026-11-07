@@ -32,6 +32,7 @@
   "Colour space of the TIFF": "TIFF-filens färgrymd",
   "Computing AI masks": "Beräknar AI-masker",
   "Copy recipe": "Kopiera recept",
+  "Cut Guides": "Skärlinjer",
   "Develop without Import": "Utveckla utan import",
   "Dismiss Message": "Stäng meddelandet",
   "Display P3 and Adobe RGB keep more saturated colours than sRGB. The preview is shown in sRGB.": "Display P3 och Adobe RGB behåller mer mättade färger än sRGB. Förhandsvisningen visas i sRGB.",
@@ -113,6 +114,7 @@
   "Show running tasks": "Visa pågående uppgifter",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Visar fotot som SDR-skärmar och SDR-exporter visar det, så att du kan justera dess SDR-version",
   "Sublocation": "Delplats",
+  "The aspect needs two positive numbers with a ratio between 1:20 and 20:1": "Bildförhållandet behöver två positiva tal med ett förhållande mellan 1:20 och 20:1",
   "The camera's own JPEG, shown until {app} has rendered the raw. Judge colour and tone on the rendered photo.": "Kamerans egen JPEG, visas tills {app} har renderat råfilen. Bedöm färg och ton på det renderade fotot.",
   "The mask's effect on / off": "Maskens effekt på / av",
   "The second graphics card is left free for previews and thumbnails.": "Det andra grafikkortet lämnas fritt för förhandsvisningar och miniatyrer.",
@@ -138,6 +140,8 @@
   "is in this year": "är detta år",
   "is today": "är idag",
   "is yesterday": "är igår",
+  "{m} camera profiles from an older install were added.": "{m} kameraprofiler från en äldre installation lades till.",
   "{n} photos": "{n} foton",
+  "{n} presets and {m} camera profiles from an older install were added.": "{n} förinställningar och {m} kameraprofiler från en äldre installation lades till.",
   "{n} presets from an older install were added.": "{n} förinställningar från en äldre installation lades till."
 }
