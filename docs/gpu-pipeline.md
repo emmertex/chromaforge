@@ -489,11 +489,13 @@ always its own. A headless `ui.screenshot` reads a GPU-drawn view back (`lcc_gpu
   own included) are logged and replace the render device (one of its own) instead of wgpu's
   default panic.
 
-AI models (the denoise network and AI masks' kernels in `nn.rs`, the face models in `faces.rs`)
+AI models (the denoise network in `nn.rs` and `bm3d.rs`, the face models in `faces.rs`)
 make their device on the second graphics card when one is chosen or found, else on the editing
-card (`lcc_gpu::ai_adapter`; `ai_card()` says which). Each AI device is made once and given up on
-alone. Models that arrive later (SAM 2.1 / EoMT masks, MediaPipe people) should make their device
-through `ai_adapter` too. Not ported from OneSlips' DUAL-GPU-5: one denoise photo per card at once.
+card (`lcc_gpu::ai_adapter_on`; `ai_card()` says which card the first goes to), and keep a device
+of their own on each card (`lcc_gpu::ai::Card`; below). Each AI device is made once and given up
+on alone. Models that arrive later (SAM 2.1 / EoMT masks, MediaPipe people) should make their
+devices per card the same way. (The AI masks and the MediaPipe face finder run through candle or
+on the processor, with no wgpu device.)
 
 ## Two graphics cards: who renders batch work
 
@@ -532,6 +534,17 @@ background preparation, the import's previews) take a **turn per photo** on eith
   While the second card works too, a tile for the editing card waits for an idle interface
   (`nn::background_turn`); with one card nothing waits. The second card's set-up marker is
   `gpu-setup-helper.marker` beside the editing card's.
+- The face recognition models keep a face device on each card too (`faces.rs`; `ai::Card`, shared
+  with denoise). A new model goes to the second card when there is one that works, else to the
+  card for editing (`faces::accelerator`; `accelerator_on` names a card), and keeps one copy of its
+  weights there: a face scan is mostly the processor's work (decoding, finding faces with the CPU
+  MediaPipe model), so a copy on each card would gain little. Each card is given up on alone
+  (`faces::broken_reason_on`); when the card a model ran on stops working, the scan offers the
+  model to the other card (checked against the CPU there as at first), else it stays on the CPU
+  (`face_detect::move_off_lost_card`; `faces.gpu` names the card as `recognition.card`). The
+  scan's pace holds the second card back only at a light pace (`faces::set_pace` gives it its own
+  share: all of its time at a normal or full pace); a model on the card for editing doesn't wait
+  for the interface, since the second card never has the same model's work.
 
 ## Open items
 - WebGPU in the browser build (async init, single device per canvas).
