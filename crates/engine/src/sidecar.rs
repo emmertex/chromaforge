@@ -220,6 +220,10 @@ pub struct SidecarData {
     /// [`merge_into`] puts boxes drawn on the photo as stored where the upright photo has them (#2674).
     pub regions_drawn_on: Option<(f64, f64)>,
     pub orientation: Option<lcc_meta::Orientation>,
+    /// The packet's `tiff:Orientation` when it carries another editor's develop settings (`crs:`): how that editor
+    /// turns the stored pixels upright, the file's own orientation and the user's rotation together. The import
+    /// turns the photo by what it adds to the file's orientation ([`SidecarData::turn_from`]).
+    pub turned_to: Option<lcc_meta::Orientation>,
     /// Capture time (ISO 8601) from `exif:DateTimeOriginal`, `photoshop:DateCreated` or
     /// `xmp:CreateDate` (first found). Used only when the file itself has no capture time.
     pub captured: Option<String>,
@@ -396,6 +400,9 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         }
         None => None,
     };
+    if matches!(out.develop, Some(DevelopPatch::Partial(_))) {
+        out.turned_to = m.orientation;
+    }
     Ok(out)
 }
 
@@ -515,6 +522,19 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
 }
 
 impl SidecarData {
+    /// The patch with the rotation [`SidecarData::turned_to`] adds to `file` (the orientation the photo file states,
+    /// which the decode applies): Lightroom writes a photo turned in it as the whole orientation. Only another
+    /// editor's settings take it; the app's own (`lc:settings`) carry their rotation already.
+    pub fn turn_from(mut self, file: Option<lcc_meta::Orientation>) -> Self {
+        if let (Some(to), Some(DevelopPatch::Partial(v))) = (self.turned_to, self.develop.as_mut())
+            && let Some(o) = v.as_object_mut()
+            && let Ok(turn) = serde_json::to_value(file.unwrap_or_default().inverse().then(to))
+        {
+            o.insert("orientation".into(), turn);
+        }
+        self
+    }
+
     /// Read the label through the catalog's label names: other editors write the label's name
     /// (a custom set's "To Do" as well as "Red"); unknown names clear the label.
     pub fn resolve_label(mut self, cat: &lcc_catalog::Catalog) -> Self {
