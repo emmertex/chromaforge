@@ -207,6 +207,8 @@ pub fn info(f: &Filter) -> Value {
         "analyzeArea": m.analyze_area,
         "baseTone": m.base_tone,
         "size": f.size(),
+        "header": m.header.is_some(),
+        "icon": m.icon.is_some(),
         "enabled": true,
     })
 }
