@@ -272,7 +272,7 @@ impl Frame {
     /// area, not per side, because a legitimate straightened crop can be wider than the photo
     /// itself while its corners still lie inside it — clamping a side would shrink a native render
     /// that fits.
-    fn pixel_ceiling(&self) -> f64 {
+    pub(crate) fn pixel_ceiling(&self) -> f64 {
         let (nw, nh) = self.native_size();
         (nw * nh).min(self.ow * self.oh).max(MAX_RENDER_PIXELS)
     }

@@ -319,7 +319,8 @@ impl RenderRequest {
         let fitted = frame.fit(self.max_w, self.max_h);
         let exact = (self.max_w.max(1), self.max_h.max(1));
         let near = |a: usize, b: usize| a.abs_diff(b) <= b / 64 + 1;
-        if self.exact_size && near(fitted.0, exact.0) && near(fitted.1, exact.1) { exact } else { fitted }
+        let under_ceiling = exact.0 as f64 * exact.1 as f64 <= frame.pixel_ceiling();
+        if self.exact_size && under_ceiling && near(fitted.0, exact.0) && near(fitted.1, exact.1) { exact } else { fitted }
     }
 }
 
@@ -1177,6 +1178,16 @@ fn plan_preserves_matching_box_size() {
     let preview = Rgb32f::from_fn(120, 100, |_, _| [0.5; 3]);
     let p = plan(&preview, &info, &s, &req);
     assert_eq!((p.w, p.h), (192, 160));
+}
+
+/// An exact box is still held to the render pixel ceiling: one just past it (here 512.3 MP, which
+/// the ceiling shrinks by less than the slack an exact box is allowed) comes back fitted under it.
+#[cfg(test)]
+#[test]
+fn an_exact_box_past_the_pixel_ceiling_is_shrunk() {
+    let s = DevelopSettings::default();
+    let (w, h) = output_size(3000, 2000, &s, &RenderRequest::exact(27_720, 18_480));
+    assert!(w as f64 * h as f64 <= geometry::MAX_RENDER_PIXELS, "{w}x{h} is past the render pixel ceiling");
 }
 
 #[cfg(test)]
