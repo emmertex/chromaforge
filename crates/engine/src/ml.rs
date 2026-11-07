@@ -356,21 +356,17 @@ fn gpu_probe() -> Result<String, String> {
         // Candle's `CandleDevice::new_metal(index)` indexes into Apple's `MTLCopyAllDevices()`.
         // We filter enumerated adapters to Metal adapters so the 0-based ordinal matches candle's
         // device indexing.
-        let metal_adapters: Vec<(usize, &lcc_gpu::cards::AdapterEntry)> = adapters
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| a.backend.eq_ignore_ascii_case("metal") || a.key.backend.eq_ignore_ascii_case("metal"))
-            .collect();
+        let metal_adapters: Vec<&lcc_gpu::cards::AdapterEntry> =
+            adapters.iter().filter(|a| a.backend.eq_ignore_ascii_case("metal") || a.key.backend.eq_ignore_ascii_case("metal")).collect();
 
         if let Some(ref card_key) = target_card
             && let Some(parsed) = lcc_gpu::cards::AdapterKey::parse(card_key)
         {
-            if let Some((m_idx, (_, entry))) =
-                metal_adapters.iter().enumerate().find(|(_, (_, a))| a.usable && (a.key == parsed || a.key.same_model(&parsed)))
+            if let Some((m_idx, entry)) = metal_adapters.iter().enumerate().find(|(_, a)| a.usable && (a.key == parsed || a.key.same_model(&parsed)))
             {
                 chosen_metal_index = m_idx;
                 chosen_name = entry.name.clone();
-            } else if let Some(entry) = adapters.iter().find(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed))) {
+            } else if adapters.iter().any(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed))) {
                 return Err("selected graphics card does not use Apple Metal".into());
             } else {
                 return Err("selected graphics card is not available or not usable".into());
@@ -382,14 +378,14 @@ fn gpu_probe() -> Result<String, String> {
             // use (ai_adapter / resolve_helper), preferring the second card when one is present to avoid
             // contending with interactive window rendering.
             if let Some(ai_entry) = lcc_gpu::ai_adapter_entry()
-                && let Some((m_idx, (_, entry))) =
-                    metal_adapters.iter().enumerate().find(|(_, (_, a))| a.usable && (a.key == ai_entry.key || a.key.same_model(&ai_entry.key)))
+                && let Some((m_idx, entry)) =
+                    metal_adapters.iter().enumerate().find(|(_, a)| a.usable && (a.key == ai_entry.key || a.key.same_model(&ai_entry.key)))
             {
                 chosen_metal_index = m_idx;
                 chosen_name = entry.name.clone();
             }
             if chosen_name.is_empty() {
-                if let Some((m_idx, (_, entry))) = metal_adapters.iter().enumerate().find(|(_, (_, a))| a.usable) {
+                if let Some((m_idx, entry)) = metal_adapters.iter().enumerate().find(|(_, a)| a.usable) {
                     chosen_metal_index = m_idx;
                     chosen_name = entry.name.clone();
                 } else if let Some(name) = lcc_gpu::adapter_name() {
