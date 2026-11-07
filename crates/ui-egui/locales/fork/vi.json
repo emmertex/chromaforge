@@ -114,6 +114,7 @@
   "Show running tasks": "Hiện các tác vụ đang chạy",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Hiển thị ảnh như màn hình SDR và bản xuất SDR hiển thị, để điều chỉnh phiên bản SDR của ảnh",
   "Sublocation": "Vị trí phụ",
+  "The aspect needs two positive numbers with a ratio between 1:20 and 20:1": "Tỷ lệ cần hai số dương với tỷ lệ từ 1:20 đến 20:1",
   "The camera's own JPEG, shown until {app} has rendered the raw. Judge colour and tone on the rendered photo.": "JPEG riêng của máy ảnh, hiển thị cho đến khi {app} dựng xong ảnh raw. Hãy đánh giá màu và tông trên ảnh đã dựng.",
   "The mask's effect on / off": "Bật / tắt hiệu ứng của mặt nạ",
   "The second graphics card is left free for previews and thumbnails.": "Card đồ họa thứ hai được để trống cho ảnh xem trước và hình thu nhỏ.",

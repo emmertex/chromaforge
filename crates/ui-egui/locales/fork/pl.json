@@ -187,6 +187,7 @@
   "Sliders": "Suwaki",
   "Sublocation": "Podlokalizacja",
   "Super Resolution": "Super rozdzielczość",
+  "The aspect needs two positive numbers with a ratio between 1:20 and 20:1": "Proporcje wymagają dwóch liczb dodatnich o stosunku od 1:20 do 20:1",
   "The camera's own JPEG, shown until {app} has rendered the raw. Judge colour and tone on the rendered photo.": "Własny JPEG aparatu, wyświetlany, dopóki {app} nie wyrenderuje pliku raw. Kolory i tony oceniaj na wyrenderowanym zdjęciu.",
   "The mask's effect on / off": "Efekt maski wł. / wył.",
   "The second graphics card is left free for previews and thumbnails.": "Druga karta graficzna pozostaje wolna dla podglądów i miniatur.",

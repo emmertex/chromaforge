@@ -114,6 +114,7 @@
   "Show running tasks": "Visa pågående uppgifter",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Visar fotot som SDR-skärmar och SDR-exporter visar det, så att du kan justera dess SDR-version",
   "Sublocation": "Delplats",
+  "The aspect needs two positive numbers with a ratio between 1:20 and 20:1": "Bildförhållandet behöver två positiva tal med ett förhållande mellan 1:20 och 20:1",
   "The camera's own JPEG, shown until {app} has rendered the raw. Judge colour and tone on the rendered photo.": "Kamerans egen JPEG, visas tills {app} har renderat råfilen. Bedöm färg och ton på det renderade fotot.",
   "The mask's effect on / off": "Maskens effekt på / av",
   "The second graphics card is left free for previews and thumbnails.": "Det andra grafikkortet lämnas fritt för förhandsvisningar och miniatyrer.",

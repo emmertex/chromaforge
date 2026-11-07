@@ -170,6 +170,7 @@
   "Sliders": "სლაიდერები",
   "Sublocation": "ქვემდებარეობა",
   "Super Resolution": "სუპერ გარჩევადობა",
+  "The aspect needs two positive numbers with a ratio between 1:20 and 20:1": "თანაფარდობას სჭირდება ორი დადებითი რიცხვი, რომელთა შეფარდებაა 1:20-სა და 20:1-ს შორის",
   "The camera's own JPEG, shown until {app} has rendered the raw. Judge colour and tone on the rendered photo.": "კამერის საკუთარი JPEG, ნაჩვენებია, სანამ {app} raw-ს არ დაამუშავებს. ფერი და ტონი დამუშავებულ ფოტოზე შეაფასეთ.",
   "The mask's effect on / off": "ნიღბის ეფექტი ჩართვა / გამორთვა",
   "The second graphics card is left free for previews and thumbnails.": "მეორე გრაფიკული ბარათი თავისუფალი რჩება გადახედვებისა და ესკიზებისთვის.",
