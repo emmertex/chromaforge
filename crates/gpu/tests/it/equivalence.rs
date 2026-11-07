@@ -47,6 +47,12 @@ fn camera_tone_and_relative_wb() {
     s.wb.mode = WbMode::Custom;
     s.wb.temp = 8000.0;
     check("camera tone edited", &src, &info, &s, &RenderRequest::fit(320, 240));
+    // each process's shoulder past the last knot, with highlights lifted into it (upstream #3783)
+    for p in Process::ALL {
+        let mut lifted = DevelopSettings { process: p.version(), ..DevelopSettings::default() };
+        lifted.light.exposure = 2.0;
+        check(&format!("camera tone {p:?} exposure +2"), &src, &info, &lifted, &RenderRequest::fit(320, 240));
+    }
     // a camera chroma curve: richer shadows, highlights bleached toward white
     let curve = curve.with_chroma([1.4, 1.3, 1.1, 1.0, 0.7, 0.4, 0.25, 0.2]).unwrap();
     let info = SourceInfo { camera_tone: Some(curve), ..info };
@@ -1808,8 +1814,13 @@ fn refine_edges_and_feather_match() {
         check(&format!("refine {refine} feather {feather}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
         let gpu = |s: &DevelopSettings| lcc_gpu::render(&src, &raw, s, &RenderRequest::fit(640, 640), None).expect("gpu render").image;
         let plain = DevelopSettings { masks: s.masks.iter().map(|m| Mask { refine: 0.0, feather: 0.0, ..m.clone() }).collect(), ..s.clone() };
-        // (a light refine barely moves a soft radial edge; a strong one or a feather visibly does)
-        assert!(refine < 50.0 && feather == 0.0 || diff(&gpu(&s), &gpu(&plain)).1 > 3, "refine {refine} / feather {feather} change the mask");
+        // (a light refine barely moves a soft radial edge; a strong one or a feather visibly does. On
+        // process V7: V8's highlight roll-off compresses the brightened highlights the change shows in)
+        let v7 = |x: &DevelopSettings| DevelopSettings { process: Process::V7.version(), ..x.clone() };
+        assert!(
+            refine < 50.0 && feather == 0.0 || diff(&gpu(&v7(&s)), &gpu(&v7(&plain))).1 > 3,
+            "refine {refine} / feather {feather} change the mask"
+        );
     }
 }
 
