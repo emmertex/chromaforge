@@ -2,8 +2,8 @@
 //! to compile egui's own shaders on DX12 — "The parameter is incorrect. (0x80070057)" in
 //! `egui_pipeline` — and wgpu's default error handler panicked, killing the app at start-up).
 //!
-//! - **Windows:** each renderer of [`backend::window_renderer_order`] (DX12, Vulkan, GL, then
-//!   eframe's glow) is *probed* before the window opens: a device is created with an error handler
+//! - **Windows:** each renderer of [`backend::window_renderer_order`] (DX12, GL, then eframe's
+//!   glow; Vulkan only when the environment asks for it) is *probed* before the window opens: a device is created with an error handler
 //!   that logs instead of panicking, and egui's pipeline is built inside error scopes. The first
 //!   that builds cleanly is handed to eframe as an existing device (so its error handler stays).
 //! - **Everywhere:** a marker file names the renderer being started and is removed once the
@@ -323,7 +323,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// #1624: a renderer skipped by the probe (DX12 → Vulkan) is no pop-up; a died start or a
+    /// #1624: a renderer skipped by the probe (here DX12 → Vulkan, as when Vulkan is forced) is no pop-up; a died start or a
     /// failed forced renderer still is.
     #[test]
     fn probe_fallback_is_silent() {
