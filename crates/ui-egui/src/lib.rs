@@ -2721,10 +2721,17 @@ impl LccApp {
         // an older install's presets (the app under an earlier name, on this computer) join too, once
         // each, with no step of the user's: File ▸ More Imports ▸ Import Presets from Older Installs
         // asks again
+        // (its camera profiles too, bound to the bodies the older install started with them)
         if let Ok(r) = self.run("store.importOlderInstalls", serde_json::json!({})) {
-            let n: u64 = r["merged"].as_array().into_iter().flatten().map(|m| m["presets"].as_u64().unwrap_or(0)).sum();
-            if n > 0 {
-                let msg = crate::i18n::tr_format!("{n} presets from an older install were added.", n = n);
+            let sum = |key: &str| -> u64 { r["merged"].as_array().into_iter().flatten().map(|m| m[key].as_u64().unwrap_or(0)).sum() };
+            let (n, m) = (sum("presets"), sum("cameraProfiles"));
+            let msg = match (n, m) {
+                (0, 0) => None,
+                (n, 0) => Some(crate::i18n::tr_format!("{n} presets from an older install were added.", n = n)),
+                (0, m) => Some(crate::i18n::tr_format!("{m} camera profiles from an older install were added.", m = m)),
+                (n, m) => Some(crate::i18n::tr_format!("{n} presets and {m} camera profiles from an older install were added.", n = n, m = m)),
+            };
+            if let Some(msg) = msg {
                 self.toast(ctx, msg);
             }
         }
