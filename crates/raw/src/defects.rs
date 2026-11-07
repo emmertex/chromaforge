@@ -170,11 +170,25 @@ impl<'a> View<'a> {
 
     #[inline]
     pub(crate) fn raw_at(&self, x: usize, y: usize, s: usize) -> f32 {
-        let i = (y * self.w + x) * self.cpp + s;
+        let Some(i) = self.index(x, y, s) else { return 0.0 };
         match &self.raw.data {
             RawData::U16(v) => v.get(i).map_or(0.0, |&v| f32::from(v)),
             RawData::F32(v) => v.get(i).copied().filter(|v| v.is_finite()).unwrap_or(0.0),
         }
+    }
+
+    /// The data index of sample `s` at `(x, y)` (checked: positions come from files and maps).
+    #[inline]
+    fn index(&self, x: usize, y: usize, s: usize) -> Option<usize> {
+        y.checked_mul(self.w)?.checked_add(x)?.checked_mul(self.cpp)?.checked_add(s)
+    }
+
+    /// `(x, y)` moved by `(dx, dy)`, if that lands inside the active area (neighbours outside it are skipped).
+    #[inline]
+    fn step(&self, x: usize, y: usize, dx: isize, dy: isize) -> Option<(usize, usize)> {
+        let (nx, ny) = (x.checked_add_signed(dx)?, y.checked_add_signed(dy)?);
+        let a = self.area;
+        (nx.checked_sub(a.x)? < a.width && ny.checked_sub(a.y)? < a.height).then_some((nx, ny))
     }
 
     #[inline]
@@ -196,15 +210,17 @@ impl<'a> View<'a> {
     #[inline]
     pub(crate) fn inner(&self, x: usize, y: usize) -> bool {
         let a = self.area;
-        x >= a.x + MARGIN && y >= a.y + MARGIN && x + MARGIN < a.x + a.width && y + MARGIN < a.y + a.height
+        let within = |p: usize, o: usize, len: usize| p.checked_sub(o).is_some_and(|d| d >= MARGIN && d < len.saturating_sub(MARGIN));
+        within(x, a.x, a.width) && within(y, a.y, a.height)
     }
 
     /// Values of the same-colour neighbours, sorted ascending, into `buf`.
     fn neighbours(&self, x: usize, y: usize, s: usize, buf: &mut Vec<f32>) {
         buf.clear();
         for &(dx, dy) in self.offsets(x, y) {
-            let (nx, ny) = ((x as isize + dx) as usize, (y as isize + dy) as usize);
-            buf.push(self.val(nx, ny, s));
+            if let Some((nx, ny)) = self.step(x, y, dx, dy) {
+                buf.push(self.val(nx, ny, s));
+            }
         }
         buf.sort_by(f32::total_cmp);
     }
@@ -299,7 +315,8 @@ impl<'a> View<'a> {
                 let v = self.val(nx, ny, s);
                 let mut edge = if dark { f32::MAX } else { f32::MIN };
                 for &(dx, dy) in near.iter().take(4) {
-                    let n = self.val((nx as isize + dx) as usize, (ny as isize + dy) as usize, s);
+                    let Some((mx, my)) = self.step(nx, ny, dx, dy) else { continue };
+                    let n = self.val(mx, my, s);
                     edge = if dark { edge.min(n) } else { edge.max(n) };
                 }
                 let stands_out = if dark { edge - v } else { v - edge };
@@ -323,7 +340,7 @@ impl<'a> View<'a> {
                 if dx.abs().max(dy.abs()) < 3 {
                     continue;
                 }
-                let (nx, ny) = ((x as isize + dx) as usize, (y as isize + dy) as usize);
+                let Some((nx, ny)) = self.step(x, y, dx, dy) else { continue };
                 for ns in 0..self.cpp {
                     if let Some(r) = ring.get_mut(self.colour(nx, ny, ns)) {
                         r.push(self.val(nx, ny, ns));
@@ -364,7 +381,7 @@ impl<'a> View<'a> {
         };
         for dy in -1isize..=1 {
             for dx in -1isize..=1 {
-                let (nx, ny) = ((x as isize + dx) as usize, (y as isize + dy) as usize);
+                let Some((nx, ny)) = self.step(x, y, dx, dy) else { continue };
                 for ns in 0..self.cpp {
                     // the candidate itself, and (three-sample data) the same channel of the adjacent pixels: those are
                     // its neighbours already
@@ -432,7 +449,8 @@ pub fn detect(raw: &RawImage, t: &Thresholds) -> Detection {
                     let v = view.raw_at(x, y, s);
                     let (mut mx, mut mn) = (f32::MIN, f32::MAX);
                     for &(dx, dy) in near.iter().take(4) {
-                        let n = view.raw_at((x as isize + dx) as usize, (y as isize + dy) as usize, s);
+                        let Some((nx, ny)) = view.step(x, y, dx, dy) else { continue };
+                        let n = view.raw_at(nx, ny, s);
                         mx = mx.max(n);
                         mn = mn.min(n);
                     }
@@ -486,7 +504,7 @@ pub fn grow(raw: &RawImage, seeds: &[Fix]) -> Vec<Fix> {
     let base = |x: usize, y: usize, s: usize, have: &std::collections::HashSet<(u32, u32, u8)>, buf: &mut Vec<f32>| {
         buf.clear();
         for &(dx, dy) in view.offsets(x, y) {
-            let (nx, ny) = ((x as isize + dx) as usize, (y as isize + dy) as usize);
+            let Some((nx, ny)) = view.step(x, y, dx, dy) else { continue };
             if !have.contains(&(nx as u32, ny as u32, s as u8)) {
                 buf.push(view.val(nx, ny, s));
             }
@@ -509,10 +527,9 @@ pub fn grow(raw: &RawImage, seeds: &[Fix]) -> Vec<Fix> {
         for (f, excess) in &frontier {
             for dy in -1isize..=1 {
                 for dx in -1isize..=1 {
-                    let (nx, ny) = ((f.x as isize + dx) as usize, (f.y as isize + dy) as usize);
-                    if !view.inner(nx, ny) {
+                    let Some((nx, ny)) = view.step(f.x as usize, f.y as usize, dx, dy).filter(|&(nx, ny)| view.inner(nx, ny)) else {
                         continue;
-                    }
+                    };
                     for ns in 0..view.cpp {
                         let key = (nx as u32, ny as u32, ns as u8);
                         if have.contains(&key) {
@@ -549,9 +566,8 @@ pub fn correct(raw: &mut RawImage, fixes: &[Fix]) -> usize {
     }
     let new: Vec<(usize, f32)> = {
         let Some(view) = View::new(raw) else { return 0 };
-        let index = |x: usize, y: usize, s: usize| (y * view.w + x) * view.cpp + s;
         let set: std::collections::HashSet<usize> =
-            fixes.iter().filter(|f| (f.s as usize) < view.cpp).map(|f| index(f.x as usize, f.y as usize, f.s as usize)).collect();
+            fixes.iter().filter(|f| (f.s as usize) < view.cpp).filter_map(|f| view.index(f.x as usize, f.y as usize, f.s as usize)).collect();
         let mut buf = Vec::with_capacity(8);
         fixes
             .iter()
@@ -562,8 +578,8 @@ pub fn correct(raw: &mut RawImage, fixes: &[Fix]) -> usize {
                 }
                 buf.clear();
                 for &(dx, dy) in view.offsets(x, y) {
-                    let (nx, ny) = ((x as isize + dx) as usize, (y as isize + dy) as usize);
-                    if !set.contains(&index(nx, ny, s)) {
+                    let Some((nx, ny)) = view.step(x, y, dx, dy) else { continue };
+                    if view.index(nx, ny, s).is_some_and(|i| !set.contains(&i)) {
                         buf.push(view.val(nx, ny, s));
                     }
                 }
@@ -574,7 +590,7 @@ pub fn correct(raw: &mut RawImage, fixes: &[Fix]) -> usize {
                 let m = buf.len();
                 let med = if m % 2 == 1 { buf.get(m / 2).copied()? } else { (buf.get(m / 2 - 1).copied()? + buf.get(m / 2).copied()?) * 0.5 };
                 let scale = view.scale.get(s).copied().unwrap_or(1.0);
-                Some((index(x, y, s), med / scale + view.black(x, y, s)))
+                Some((view.index(x, y, s)?, med / scale + view.black(x, y, s)))
             })
             .collect()
     };

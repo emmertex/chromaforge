@@ -214,7 +214,7 @@ const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// alone on Windows unless `<PREFIX>_GPU_BACKEND` / `WGPU_BACKEND` say otherwise (issue #136:
 /// with Vulkan in the set, wgpu loads the Vulkan driver even when it then picks DX12) — and DX12
 /// shaders compiled with FXC, never a stray `dxcompiler.dll` (issue #471).
-/// The fallback chain on top of it (DX12 → Vulkan → GL → glow) is in `window_gpu`.
+/// The fallback chain on top of it (DX12 → GL → glow; Vulkan only when asked for) is in `window_gpu`.
 #[cfg(test)]
 fn window_wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     window_gpu::base_options()

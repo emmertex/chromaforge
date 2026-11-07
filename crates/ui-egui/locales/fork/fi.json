@@ -32,6 +32,7 @@
   "Colour space of the TIFF": "TIFF-tiedoston väriavaruus",
   "Computing AI masks": "Lasketaan tekoälymaskeja",
   "Copy recipe": "Kopioi resepti",
+  "Cut Guides": "Leikkausohjaimet",
   "Develop without Import": "Kehitä ilman tuontia",
   "Dismiss Message": "Sulje viesti",
   "Display P3 and Adobe RGB keep more saturated colours than sRGB. The preview is shown in sRGB.": "Display P3 ja Adobe RGB säilyttävät kylläisempiä värejä kuin sRGB. Esikatselu näytetään sRGB:nä.",
@@ -111,6 +112,7 @@
   "Show running tasks": "Näytä käynnissä olevat tehtävät",
   "Show the photo as SDR displays and SDR exports show it, to adjust its SDR Rendition": "Näyttää kuvan niin kuin SDR-näytöt ja SDR-viennit sen näyttävät, jotta voit säätää sen SDR-versiota",
   "Sublocation": "Alisijainti",
+  "The aspect needs two positive numbers with a ratio between 1:20 and 20:1": "Kuvasuhde tarvitsee kaksi positiivista lukua, joiden suhde on välillä 1:20–20:1",
   "The camera's own JPEG, shown until {app} has rendered the raw. Judge colour and tone on the rendered photo.": "Kameran oma JPEG, näytetään kunnes {app} on renderöinyt raw-kuvan. Arvioi värit ja sävyt renderöidystä kuvasta.",
   "The mask's effect on / off": "Maskin vaikutus päälle / pois",
   "The second graphics card is left free for previews and thumbnails.": "Toinen näytönohjain jää vapaaksi esikatseluille ja pikkukuville.",
@@ -136,6 +138,8 @@
   "is in this year": "on tänä vuonna",
   "is today": "on tänään",
   "is yesterday": "on eilen",
+  "{m} camera profiles from an older install were added.": "Vanhemmasta asennuksesta lisättiin {m} kameraprofiilia.",
   "{n} photos": "{n} kuvaa",
+  "{n} presets and {m} camera profiles from an older install were added.": "Vanhemmasta asennuksesta lisättiin {n} esiasetusta ja {m} kameraprofiilia.",
   "{n} presets from an older install were added.": "Vanhemmasta asennuksesta lisättiin {n} esiasetusta."
 }

@@ -235,7 +235,7 @@ fn the_install_check_reports_what_would_stop_an_install() {
     let man =
         |v: &str, req: &[&str]| Manifest::parse(json!({"id": "t.c", "name": "C", "version": v, "requires": req}).to_string().as_bytes()).unwrap();
     assert_eq!(m.install_check(&man("1.5.0", &[])), (vec![], None, None));
-    assert_eq!(m.install_check(&man("1.3.0", &["jobs"])), (vec!["jobs".to_string()], None, Some("1.4.0".to_string())));
+    assert_eq!(m.install_check(&man("1.3.0", &["notYet"])), (vec!["notYet".to_string()], None, Some("1.4.0".to_string())));
     let (_, version, downgrade) = m.install_check(&man("1.3", &[]));
     assert!(version.is_some_and(|v| v.contains("MAJOR.MINOR.PATCH")) && downgrade.is_none());
 }
