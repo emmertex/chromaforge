@@ -134,14 +134,16 @@ fn pool_threads_for(cores: usize, pace: Pace, cap: Option<usize>) -> usize {
     cap.map_or(n, |c| n.min(c.max(1)))
 }
 
-/// How much of the GPU face models may take at `pace`: face model runs at once, and the share of the time it may be
-/// busy. Paused or light: one run at a time, busy a quarter of the time (the user is working, and the window renders
-/// on the same GPU); normal: two at once, busy most of the time; full: as fast as it goes.
-pub(crate) fn gpu_pace(pace: Pace) -> (usize, f32) {
+/// How much of the GPU face models may take at `pace`: face model runs at once, and the share of the time the card for
+/// editing and the second graphics card may be busy. Paused or light: one run at a time, busy a quarter of the time on
+/// either card (the user is working, and the window renders on the card for editing); normal: two at once, the card
+/// for editing busy most of the time and the second card, which draws no window, as much as it goes; full: as fast as
+/// it goes.
+pub(crate) fn gpu_pace(pace: Pace) -> (usize, f32, f32) {
     match pace {
-        Pace::Pause | Pace::Light => (1, 0.25),
-        Pace::Normal => (2, 0.75),
-        Pace::Full => (4, 1.0),
+        Pace::Pause | Pace::Light => (1, 0.25, 0.25),
+        Pace::Normal => (2, 0.75, 1.0),
+        Pace::Full => (4, 1.0, 1.0),
     }
 }
 
@@ -467,6 +469,14 @@ mod tests {
         assert!(memory_workers() >= 1);
         assert!(target_workers(Pace::Full) >= 1);
         assert_eq!(target_workers(Pace::Pause), 0);
+    }
+
+    /// The second graphics card draws no window: past a light pace its face runs are not held back; at a light pace
+    /// (the user working) both cards are held back as one card was.
+    #[test]
+    fn the_second_card_is_held_back_only_at_a_light_pace() {
+        use Pace::*;
+        assert_eq!([Pause, Light, Normal, Full].map(gpu_pace), [(1, 0.25, 0.25), (1, 0.25, 0.25), (2, 0.75, 1.0), (4, 1.0, 1.0)]);
     }
 
     #[test]

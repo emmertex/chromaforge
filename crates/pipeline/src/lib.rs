@@ -223,6 +223,9 @@ pub struct RenderRequest {
     /// larger) rather than allocated: see [`geometry::Frame::fit`].
     pub max_w: usize,
     pub max_h: usize,
+    /// The box is the final export size, already fitted against the full-resolution photo.
+    /// Reduced decode proxies must not fit it a second time.
+    pub exact_size: bool,
     pub quality: Quality,
     /// Show the crop frame's content only (true) or the whole uncropped image (crop tool active).
     pub apply_crop: bool,
@@ -290,6 +293,7 @@ impl RenderRequest {
         Self {
             max_w,
             max_h,
+            exact_size: false,
             quality: Quality::Full,
             apply_crop: true,
             overlay: Overlay::None,
@@ -301,6 +305,22 @@ impl RenderRequest {
             downscale: Downscale::Smooth,
             alpha: false,
         }
+    }
+
+    /// Render to a final size calculated from the original photo, even from a rounded proxy.
+    pub fn exact(width: usize, height: usize) -> Self {
+        Self { exact_size: true, ..Self::fit(width, height) }
+    }
+
+    /// The output size for `frame`. An exact box stands against a proxy that only rounds the photo's
+    /// shape differently; a source of another shape (a raw's embedded preview) is fitted, not
+    /// stretched, and a box the render pixel ceiling shrinks is shrunk.
+    fn size(&self, frame: &geometry::Frame) -> (usize, usize) {
+        let fitted = frame.fit(self.max_w, self.max_h);
+        let exact = (self.max_w.max(1), self.max_h.max(1));
+        let near = |a: usize, b: usize| a.abs_diff(b) <= b / 64 + 1;
+        let under_ceiling = exact.0 as f64 * exact.1 as f64 <= frame.pixel_ceiling();
+        if self.exact_size && under_ceiling && near(fitted.0, exact.0) && near(fitted.1, exact.1) { exact } else { fitted }
     }
 }
 
@@ -349,7 +369,7 @@ pub(crate) struct Prepared {
 
 /// Output size for a source of `src_w × src_h` under `s`, fitting `max_w × max_h`.
 pub fn output_size(src_w: usize, src_h: usize, s: &DevelopSettings, req: &RenderRequest) -> (usize, usize) {
-    geometry::Frame::new(src_w, src_h, s, req.apply_crop).fit(req.max_w, req.max_h)
+    req.size(&geometry::Frame::new(src_w, src_h, s, req.apply_crop))
 }
 
 /// Size of the cropped output of a `src_w × src_h` source under `s` at the source's own resolution
@@ -577,7 +597,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     }
     let s = &*settings;
     let mut frame = frame_for(src, info, s, req.apply_crop);
-    let (full_w, full_h) = frame.fit(req.max_w, req.max_h);
+    let (full_w, full_h) = req.size(&frame);
     let shrink = frame.crop.rect_px(frame.ow, frame.oh).width() / full_w.max(1) as f64;
     frame.downscale = req.downscale.filter_for(req.quality, shrink);
     let whole_frame = frame.clone();
@@ -1136,6 +1156,38 @@ pub fn timed<R>(what: &str, f: impl FnOnce() -> R) -> R {
 
 pub(crate) fn for_rows<T: Send>(data: &mut [T], w: usize, f: impl Fn(usize, &mut [T]) + Sync + Send) {
     par_rows(data, w, f)
+}
+
+/// `plan` must keep the output box the caller (export) already decided instead of
+/// re-fitting it: `Frame::fit` passes a box through unchanged only when it matches
+/// the *decoded* frame's aspect within rounding slack, so a reduced source whose aspect
+/// rounds differently (a 149 x 100 proxy of a 240 x 160 photo) makes `plan` return a size
+/// a pixel off from the box.
+#[cfg(test)]
+#[test]
+fn plan_preserves_matching_box_size() {
+    let src = Rgb32f::from_fn(149, 100, |_, _| [0.5; 3]);
+    let info = SourceInfo { native_long: Some(240), ..SourceInfo::default() };
+    let s = DevelopSettings::default();
+    let fitted = plan(&src, &info, &s, &RenderRequest::fit(240, 160));
+    assert_eq!((fitted.w, fitted.h), (238, 160));
+    let req = RenderRequest::exact(240, 160);
+    let p = plan(&src, &info, &s, &req);
+    assert_eq!((p.w, p.h), (240, 160));
+    // an embedded preview of another shape keeps its shape: an exact box must not stretch it
+    let preview = Rgb32f::from_fn(120, 100, |_, _| [0.5; 3]);
+    let p = plan(&preview, &info, &s, &req);
+    assert_eq!((p.w, p.h), (192, 160));
+}
+
+/// An exact box is still held to the render pixel ceiling: one just past it (here 512.3 MP, which
+/// the ceiling shrinks by less than the slack an exact box is allowed) comes back fitted under it.
+#[cfg(test)]
+#[test]
+fn an_exact_box_past_the_pixel_ceiling_is_shrunk() {
+    let s = DevelopSettings::default();
+    let (w, h) = output_size(3000, 2000, &s, &RenderRequest::exact(27_720, 18_480));
+    assert!(w as f64 * h as f64 <= geometry::MAX_RENDER_PIXELS, "{w}x{h} is past the render pixel ceiling");
 }
 
 #[cfg(test)]

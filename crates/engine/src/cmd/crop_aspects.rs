@@ -25,7 +25,8 @@ pub const BUILTIN_ASPECTS: [(&str, &str); 10] = [
 /// The longest name a saved ratio may have, in characters.
 pub const MAX_NAME_CHARS: usize = 64;
 
-/// A ratio the user saved under a name (`[width, height]`, any positive numbers).
+/// A ratio the user saved under a name (`[width, height]`): it passes [`valid_ratio`], as `crop.saveAspect` and
+/// [`CropAspects::sanitized`] check (finite, positive, 1:20 to 20:1, neither side rounding to zero hundredths).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CustomAspect {
@@ -37,8 +38,24 @@ pub struct CustomAspect {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CropAspects {
+    #[serde(deserialize_with = "each_that_reads")]
     pub custom: Vec<CustomAspect>,
+    #[serde(deserialize_with = "each_that_reads")]
     pub hidden: Vec<String>,
+}
+
+/// A list read entry by entry: one that doesn't read (a hand-edited prefs.json, a ratio that isn't two numbers) is
+/// left out instead of failing the whole file, which holds the other presets too. Not a list at all reads as empty.
+fn each_that_reads<'de, D, T>(d: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let v = <Value as serde::Deserialize>::deserialize(d)?;
+    Ok(match v {
+        Value::Array(items) => items.into_iter().filter_map(|i| serde_json::from_value(i).ok()).collect(),
+        _ => Vec::new(),
+    })
 }
 
 impl CropAspects {
@@ -66,16 +83,11 @@ impl CropAspects {
     }
 }
 
-/// A ratio `crop.aspect` takes as `[w, h]`: both positive and finite, at most 20:1 either way.
+/// A ratio `crop.aspect` takes as `[w, h]`: both positive and finite, at most 20:1 either way,
+/// and each at least 0.005 so it doesn't round to zero hundredths (what `crop.aspect` stores).
+/// The same check `crop.aspect` makes, so a ratio saved in the menu can always be applied.
 pub fn valid_ratio(w: f64, h: f64) -> bool {
-    let r = w / h;
-    w.is_finite()
-        && h.is_finite()
-        && w > 0.0
-        && h > 0.0
-        && w * 100.0 <= f64::from(u32::MAX)
-        && h * 100.0 <= f64::from(u32::MAX)
-        && (1.0 / lcc_geom::MAX_RATIO..=lcc_geom::MAX_RATIO).contains(&r)
+    super::develop::aspect_tuple("crop.aspect", w, h).is_ok()
 }
 
 /// A built-in ratio the menu may leave out (every one but Free and Original).
@@ -141,8 +153,19 @@ fn list(s: &Session) -> Value {
     json!({"aspects": v})
 }
 
+/// Write prefs.json after a change to the saved ratios, and the new list. When the write fails the
+/// change is undone (`before`), so the menu never shows a ratio prefs.json doesn't hold.
+fn persist(s: &mut Session, before: CropAspects) -> Result<Value> {
+    if let Err(e) = s.save_prefs() {
+        s.crop_aspects = before;
+        return Err(e);
+    }
+    Ok(list(s))
+}
+
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "crop.saveAspect";
+    let before = s.crop_aspects.clone();
     let name = name_param(p, C)?;
     check_name(&name).map_err(|e| bad(C, e))?;
     let aspect = ratio_param(p, C)?;
@@ -151,47 +174,50 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
         Some(a) => *a = entry,
         None => s.crop_aspects.custom.push(entry),
     }
-    s.save_prefs()?;
-    Ok(list(s))
+    persist(s, before)
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "crop.deleteAspect";
+    let before = s.crop_aspects.clone();
     let name = name_param(p, C)?;
     if is_builtin_name(&name) {
         return Err(bad(C, "built-in ratios can't be deleted (crop.hideAspect hides them)"));
     }
     let i = position(s, &name).ok_or_else(|| bad(C, format!("no saved ratio `{name}`")))?;
     s.crop_aspects.custom.remove(i);
-    s.save_prefs()?;
-    Ok(list(s))
+    persist(s, before)
 }
 
 fn move_to(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "crop.moveAspect";
+    let before = s.crop_aspects.clone();
     let name = name_param(p, C)?;
     let to = p.get("to").and_then(Value::as_u64).ok_or_else(|| bad(C, "missing `to` (a position from 0)"))?;
     let from = position(s, &name).ok_or_else(|| bad(C, format!("no saved ratio `{name}`")))?;
     let a = s.crop_aspects.custom.remove(from);
     let to = usize::try_from(to).unwrap_or(usize::MAX).min(s.crop_aspects.custom.len());
     s.crop_aspects.custom.insert(to, a);
-    s.save_prefs()?;
-    Ok(list(s))
+    persist(s, before)
 }
 
 fn hide(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "crop.hideAspect";
+    let before = s.crop_aspects.clone();
     let key = str_param(p, "aspect").ok_or_else(|| bad(C, "missing `aspect` (a built-in ratio's key, like \"4x5\")"))?;
     if !hideable(key) {
         return Err(bad(C, format!("`{key}` is not a built-in ratio that can be hidden (Free and Original always show)")));
     }
-    let hidden = p.get("hidden").and_then(Value::as_bool).unwrap_or(true);
+    let hidden = match p.get("hidden") {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(b)) => *b,
+        Some(other) => return Err(bad(C, format!("`hidden` must be true or false, not {other}"))),
+    };
     s.crop_aspects.hidden.retain(|k| k != key);
     if hidden {
         s.crop_aspects.hidden.push(key.to_string());
     }
-    s.save_prefs()?;
-    Ok(list(s))
+    persist(s, before)
 }
 
 pub fn specs() -> Vec<CommandSpec> {
