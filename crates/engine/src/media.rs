@@ -2773,6 +2773,7 @@ impl crate::Session {
 
     /// Synchronous render (CLI, MCP, tests).
     pub fn render_now(&mut self, id: PhotoId, max_w: usize, max_h: usize) -> Result<Rendered, String> {
+        lcc_pipeline::check_output_size(max_w, max_h)?;
         let job = self.render_job(id, max_w, max_h, false, true).ok_or("no such photo")?;
         let r = job.run();
         self.accept(&r);
