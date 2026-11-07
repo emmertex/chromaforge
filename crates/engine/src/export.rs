@@ -4626,6 +4626,8 @@ mod tests {
     fn distinct_levels(bytes: &[u8]) -> (usize, lcc_codecs::Decoded) {
         let d = lcc_codecs::decode(bytes, Default::default()).expect("decodes");
         let mut v: Vec<u32> = (0..d.image.width).map(|x| d.image.get(x, 1)[1].to_bits()).collect();
+        // sorted first: 8-bit output is dithered (process V8), so equal levels aren't all side by side
+        v.sort_unstable();
         v.dedup();
         (v.len(), d)
     }

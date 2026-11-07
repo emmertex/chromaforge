@@ -41,6 +41,9 @@ pub mod lut;
 pub mod mask_space;
 pub mod mask_tone;
 pub mod masks;
+pub mod nrc_joint;
+#[cfg(test)]
+mod nrc_joint_reference;
 pub mod optics;
 pub mod output;
 pub mod plugin_filters;
@@ -511,6 +514,8 @@ struct CacheEntry {
     /// The denoised image before Smooth Skin (the same buffer as `lin` when Smooth Skin is off): a
     /// Smooth Skin drag redoes only Smooth Skin.
     nr: Option<(u64, Arc<Rgb32f>)>,
+    /// The joint colour NR's noise model of the whole frame ([`colour_noise`]), keyed by [`Plan::noise_key`].
+    colour_noise: Option<(u64, nrc_joint::JointNoise)>,
     planes: local::Planes,
 }
 
@@ -549,6 +554,9 @@ pub struct Plan<'a> {
     /// [`Self::lin_key`] without the noise-reduction settings: draft renders reuse the smooth
     /// planes of an image that differs from this one only in its noise reduction.
     pub pre_nr_key: u64,
+    /// Key of the whole frame's noise model for the joint colour NR ([`colour_noise`]): what it is
+    /// measured after (everything before the colour NR), not the colour NR's own settings.
+    pub noise_key: u64,
     /// Red eye / pet eye corrections with their detected pupils, in output pixels.
     pub eyes: Vec<redeye::EyeK>,
     /// The whole frame's dehaze airlight, for a windowed render (which can't see the whole frame).
@@ -571,6 +579,8 @@ pub struct Plan<'a> {
     /// The whole output frame (before any window), at which pixel-scale Source filters run
     /// ([`source_stage`]).
     pub whole_frame: geometry::Frame,
+    /// The whole output frame's size (`full_w, full_h`; a windowed render is part of it).
+    pub full_size: (usize, usize),
 }
 
 /// Long edge of the small render a windowed render estimates the whole frame's airlight from.
@@ -603,6 +613,10 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     let whole_frame = frame.clone();
     // sizes and scale are those of the whole output; a window only narrows what is drawn
     let px_per_long = frame.px_per_long(full_w);
+    let src_long = src.width.max(src.height);
+    // (an original reported smaller than the source is the source)
+    let native_long = info.native_long.unwrap_or(0).max(src_long).max(1);
+    let detail_scale = local::detail_scale(px_per_long, native_long);
     let mut fixed_air = None;
     let mut keep = None;
     let mut origin = (0, 0);
@@ -620,6 +634,9 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
             let work = if req.depth == OutputDepth::U8 { grow_window(work, skin::reach(s, px_per_long), full_w, full_h) } else { work };
             // (the retouch of people's parts is per pixel: retouch::reach is 0)
             let work = if req.depth == OutputDepth::U8 { grow_window(work, retouch::reach(s, px_per_long), full_w, full_h) } else { work };
+            // The joint colour NR (process V8) reads a chain of neighbours across its scales: keep
+            // those reads outside the requested window too, at every depth (cut back below)
+            let work = grow_window(work, joint_nr_reach(s, detail_scale), full_w, full_h);
             if work != win {
                 keep = Some(PixelWindow { x: win.x - work.x, y: win.y - work.y, ..win });
             }
@@ -631,10 +648,6 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     let u = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
     let filter_frame = lcc_filters::FrameInfo { x: u(origin.0), y: u(origin.1), full_w: u(full_w), full_h: u(full_h) };
     let source_filters = Arc::new(plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Source));
-    let src_long = src.width.max(src.height);
-    // (an original reported smaller than the source is the source)
-    let native_long = info.native_long.unwrap_or(0).max(src_long).max(1);
-    let detail_scale = local::detail_scale(px_per_long, native_long);
     let geo = hash_of((format!("{frame:?}"), w, h));
     let (wb_t, wb_tint) = local::effective_wb(info, s);
     let eyes = redeye::resolve(src, &s.red_eye, s.orientation, &frame, w, h, px_per_long);
@@ -671,13 +684,18 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     ));
     let pre_nr_key = hash_of((pre_nr_key, shown, format!("{:?}", info.avoid)));
     // a draft's colour NR may take the half-resolution blur: its result is never a final render's
-    let draft_nr = req.quality == Quality::Draft && d.nr_color > 0.0;
+    // (the joint colour NR of V8 has no draft form)
+    let joint_nr = local::joint_colour_nr(s);
+    let draft_nr = req.quality == Quality::Draft && d.nr_color > 0.0 && !joint_nr;
     let nr_key = hash_of((
         pre_nr_key,
         [d.nr_luminance, d.nr_detail, d.nr_color, d.nr_color_detail, d.nr_color_smoothness].map(f64::to_bits),
         detail_scale.to_bits(),
         draft_nr,
+        // the process picks the colour filter (Update to Current Process, undo)
+        joint_nr,
     ));
+    let noise_key = hash_of((pre_nr_key, [d.nr_luminance, d.nr_detail].map(f64::to_bits), detail_scale.to_bits()));
     let lin_key = match (skin::key(s), retouch::key(s)) {
         (None, None) => nr_key,
         (k, r) => hash_of((nr_key, k, r)),
@@ -687,6 +705,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         [d.nr_luminance, d.nr_detail, d.nr_color, d.nr_color_detail, d.nr_color_smoothness].map(f64::to_bits),
         detail_scale.to_bits(),
         draft_nr,
+        joint_nr,
         skin::key(s),
         retouch::key(s),
     ));
@@ -712,6 +731,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         frame_lin_key,
         nr_key,
         pre_nr_key,
+        noise_key,
         eyes,
         fixed_air,
         mask_tone,
@@ -720,7 +740,61 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         source_filters,
         filter_frame,
         whole_frame,
+        full_size: (full_w, full_h),
     }
+}
+
+/// How far (px) the joint colour NR of `s` reads around a pixel at `detail_scale`
+/// ([`local::nrc_params`], [`nrc_joint::reach`]: the GPU's band halo): a window is grown by it and
+/// cut back. 0 when it is off.
+fn joint_nr_reach(s: &DevelopSettings, detail_scale: f32) -> f64 {
+    if !local::joint_colour_nr(s) {
+        return 0.0;
+    }
+    // the plan of an image larger than any window (a smaller one only stops the plan sooner)
+    local::nrc_params(s, detail_scale)
+        .and_then(|p| p.passes.last().map(|p| nrc_joint::reach(&nrc_joint::scale_plan(p.sigma, usize::MAX, usize::MAX)) as f64))
+        .unwrap_or(0.0)
+}
+
+/// The joint colour NR's noise model of the whole frame, measured on fixed tiles of it
+/// ([`nrc_joint::tiles`]) so that every window of it is filtered alike. The tiles are resampled,
+/// tone-mapped (the camera's local tone map), white-balanced and luminance-denoised like the frame;
+/// the retouching and defringing are left out. `None` when the joint colour NR is off, when the
+/// render is the whole frame and that is a single tile (the noise is then measured on the image
+/// itself, as the CPU and the GPU do), or when Source plug-in filters run (the tiles can't take
+/// them; the noise is measured on the rendered pixels).
+pub fn colour_noise(src: &Rgb32f, info: &SourceInfo, p: &Plan<'_>) -> Option<nrc_joint::JointNoise> {
+    let s = &*p.settings;
+    if !local::joint_colour_nr(s) || local::nrc_params(s, p.detail_scale).is_none() || !p.source_filters.is_empty() {
+        return None;
+    }
+    let full = &p.whole_frame;
+    let (fw, fh) = p.full_size;
+    let windows = nrc_joint::tiles(fw, fh);
+    if (p.w, p.h) == (fw, fh) && windows.len() == 1 {
+        return None;
+    }
+    let t = profiling().then(std::time::Instant::now);
+    let (lum, _) = local::nr_params(s, p.detail_scale);
+    // the source oriented and prefiltered once for all tiles
+    let sampled = full.sample_windows(src, fw, fh, &windows);
+    let tiles: Vec<Rgb32f> = windows
+        .into_iter()
+        .zip(sampled)
+        .map(|(t, mut img)| {
+            let frame = if (t.w, t.h) == (fw, fh) { full.clone() } else { full.window(fw, fh, t) };
+            local_tone::apply_frame(&mut img, info, s, &frame);
+            local::white_balance(&mut img, info, s);
+            local::apply_nr(&mut img, lum, None, false);
+            img
+        })
+        .collect();
+    let noise = nrc_joint::noise_of_tiles(&tiles);
+    if let Some(t) = t {
+        eprintln!("    nr colour noise model ({} tiles): {:.0} ms", tiles.len(), t.elapsed().as_secs_f64() * 1e3);
+    }
+    Some(noise)
 }
 
 /// `win` grown by `reach` pixels on every side, inside the `full_w × full_h` output.
@@ -857,10 +931,10 @@ pub fn render_alpha(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: &
     let rendition = settings_for(&effective, req);
     let plan = plan(src, info, &rendition, req);
     let a = plan.frame.sample_alpha(alpha, plan.w, plan.h);
-    // (only 8-bit renders are cut back to a window, as in `render_impl`)
+    // (a grown window is cut back to the request, as in `render_impl`)
     Some(match plan.keep {
-        Some(k) if req.depth == OutputDepth::U8 => a.crop(k.x, k.y, k.w, k.h),
-        _ => a,
+        Some(k) => a.crop(k.x, k.y, k.w, k.h),
+        None => a,
     })
 }
 
@@ -923,6 +997,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     let base = filtered.as_ref().map_or(&sampled, |(_, i)| i);
 
     let cached_nr = cached.as_ref().and_then(|e| e.nr.clone()).filter(|(k, _)| *k == nr_key);
+    let mut colour_noise = cached.as_ref().and_then(|e| e.colour_noise).filter(|(k, _)| *k == plan.noise_key);
     let (lin, nr) = match cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == lin_key) {
         Some((_, img)) => (img, cached_nr.map(|(_, n)| n)),
         None => {
@@ -932,7 +1007,10 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
                     // Without a cache (or filters) the resampled buffer is ours: work on it in place.
                     let mut img = if shared.is_some() || filtered.is_some() { (**base).clone() } else { Arc::unwrap_or_clone(sampled.clone()) };
                     lin_cpu(&mut img, info, &plan);
-                    local::denoise_with(&mut img, s, detail_scale, req.quality == Quality::Draft);
+                    if colour_noise.is_none() {
+                        colour_noise = self::colour_noise(src_img, info, &plan).map(|n| (plan.noise_key, n));
+                    }
+                    local::denoise_with(&mut img, s, detail_scale, req.quality == Quality::Draft, colour_noise.as_ref().map(|c| &c.1));
                     Arc::new(img)
                 }
             };
@@ -962,14 +1040,22 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     prep.mask_tone = plan.mask_tone.clone();
     lap("prepare", &mut t);
     if let Some((a, c)) = shared {
-        c.put(CacheEntry { src: a.clone(), geo, sampled, filtered, lin: Some((lin_key, lin)), nr: nr.map(|n| (nr_key, n)), planes });
+        c.put(CacheEntry { src: a.clone(), geo, sampled, filtered, lin: Some((lin_key, lin)), nr: nr.map(|n| (nr_key, n)), colour_noise, planes });
     }
     let display_filters = plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Display);
     let post = finish::Post { stack: &display_filters, frame: plan.filter_frame, warnings: std::cell::RefCell::new(&mut warnings) };
     if req.depth != OutputDepth::U8 {
         let deep = finish::finish_deep(&prep, s, frame, info, req.space, req.depth, req.proof, &post);
+        // (a window the joint colour NR grew is cut back to the request)
+        let deep = match plan.keep {
+            Some(k) => deep.crop(k.x, k.y, k.w, k.h),
+            None => deep,
+        };
         let image = deep.to_rgba8();
-        let coverage = frame.coverage(src_img.width, src_img.height, w, h).map(Arc::new);
+        let coverage = frame.coverage(src_img.width, src_img.height, w, h).map(|c| match plan.keep {
+            Some(k) => Arc::new(c.crop(k.x, k.y, k.w, k.h)),
+            None => Arc::new(c),
+        });
         let histogram = Histogram::of_srgb8_covered(&image, coverage.as_deref());
         lap("finish (deep)", &mut t);
         return Rendered { image, histogram, deep: Some(deep), warnings, coverage, alpha: None };
