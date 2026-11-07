@@ -469,15 +469,14 @@ mod tests {
         let mut core = WorkerCore::default();
         assert_eq!(core.needs_original(&wire), None, "demo scenes are generated");
         let a = core.render(&wire, None).unwrap();
-        let b = job.run().rendered.unwrap();
+        // The worker uses the CPU. A native thumbnail job may use an already initialized GPU,
+        // so exact serialization parity must use the engine's CPU reference, regardless of test
+        // order. The window tests separately check native CPU/GPU equivalence.
+        let source = job.source.load_source().unwrap();
+        let b = lcc_engine::pipeline::render(&source.image, &source.info_or(job.info), &job.settings, &job.request);
         assert_eq!((a.image.width, a.image.height), (b.image.width, b.image.height));
-        // the worker renders on the CPU; the engine job uses a GPU once another test in this process
-        // has set one up: within docs/gpu-pipeline.md's bound (≤ 3 LSB per channel), as for windows
-        let max = a.image.data.iter().zip(&b.image.data).flat_map(|(p, q)| (0..3).map(move |c| p[c].abs_diff(q[c]))).max();
-        assert!(max.is_some_and(|m| m <= 3), "max channel difference {max:?}");
-        if a.image.data == b.image.data {
-            assert_eq!(a.histogram, b.histogram);
-        }
+        assert_eq!(a.image.data, b.image.data);
+        assert_eq!(a.histogram, b.histogram);
     }
 
     #[test]
