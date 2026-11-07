@@ -1363,6 +1363,16 @@ impl LccApp {
         if let Ok(v) = &r {
             edit_in::after_command(self, id, v);
         }
+        if r.is_ok()
+            && id == "ml.status"
+            && let Some(dev) = params.get("device").and_then(Value::as_str)
+        {
+            let choice = if dev.eq_ignore_ascii_case("auto") { "" } else { dev.trim() };
+            if self.ui.settings.ml_device != choice {
+                self.ui.settings.ml_device = choice.to_string();
+            }
+            self.ml_device_applied = Some(choice.to_string());
+        }
         if r.is_ok() && matches!(id, "crop.aspect" | "crop.rotateAspect") {
             self.ui.crop_default_aspect = if id == "crop.aspect" && params.get("aspect").and_then(Value::as_str) == Some("original") {
                 Some(serde_json::json!("original"))
@@ -2414,16 +2424,14 @@ impl LccApp {
             self.gpu_cards_applied = Some(cards);
         }
         let ml_device = self.ui.settings.ml_device.clone();
-        if self.ml_device_applied.as_ref() != Some(&ml_device) {
+        if self.ml_device_applied.as_ref() != Some(&ml_device) && (!ml_device.is_empty() || self.ml_device_applied.is_some()) {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 lcc_engine::gpu::set_ml_device(Some(&ml_device));
             }
-            let pref = if ml_device.eq_ignore_ascii_case("cpu") { "cpu" } else { "auto" };
             let _ = self.session.execute(
                 "ml.status",
                 &serde_json::json!({
-                    "preference": pref,
                     "device": ml_device,
                 }),
             );

@@ -2,6 +2,8 @@
   " · {queued} waiting": " · 待機中 {queued}",
   ", ": "、",
   "A profile “{name}” is already there.": "プロファイル「{name}」は既に存在します。",
+  "Active: CPU · {why}": "アクティブ: CPU · {why}",
+  "Active: {name} (GPU accelerated)": "アクティブ: {name} (GPUアクセラレーション)",
   "Add {n} New Photos…": "新しい写真 {n} 枚を追加…",
   "Alternatives to {name}": "{name} の代替候補",
   "Apply to {n} Selected Photos": "選択した {n} 枚の写真に適用",

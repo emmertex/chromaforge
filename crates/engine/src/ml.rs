@@ -108,6 +108,7 @@ impl Pace {
 #[serde(rename_all = "camelCase", default)]
 struct MlSettings {
     embedder: Option<String>,
+    device: Option<String>,
 }
 
 fn read_settings(dir: &Path) -> MlSettings {
@@ -349,29 +350,56 @@ fn gpu_probe() -> Result<String, String> {
     {
         let adapters = lcc_gpu::adapters();
         let target_card = lcc_gpu::ml_device();
-        let mut chosen_index = 0usize;
+        let mut chosen_metal_index = 0usize;
         let mut chosen_name = String::new();
+
+        // Candle's `CandleDevice::new_metal(index)` indexes into Apple's `MTLCopyAllDevices()`.
+        // We filter enumerated adapters to Metal adapters so the 0-based ordinal matches candle's
+        // device indexing.
+        let metal_adapters: Vec<(usize, &lcc_gpu::cards::AdapterEntry)> = adapters
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.backend.eq_ignore_ascii_case("metal") || a.key.backend.eq_ignore_ascii_case("metal"))
+            .collect();
 
         if let Some(ref card_key) = target_card
             && let Some(parsed) = lcc_gpu::cards::AdapterKey::parse(card_key)
-            && let Some(pos) = adapters.iter().position(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed)))
         {
-            chosen_index = pos;
-            if let Some(entry) = adapters.get(pos) {
+            if let Some((m_idx, (_, entry))) =
+                metal_adapters.iter().enumerate().find(|(_, (_, a))| a.usable && (a.key == parsed || a.key.same_model(&parsed)))
+            {
+                chosen_metal_index = m_idx;
                 chosen_name = entry.name.clone();
-            }
-        }
-        if chosen_name.is_empty() {
-            if let Some((pos, entry)) = adapters.iter().enumerate().find(|(_, a)| a.usable) {
-                chosen_index = pos;
-                chosen_name = entry.name.clone();
-            } else if let Some(name) = lcc_gpu::adapter_name() {
-                chosen_name = name;
+            } else if let Some(entry) = adapters.iter().find(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed))) {
+                return Err("selected graphics card does not use Apple Metal".into());
             } else {
-                return Err(lcc_gpu::unavailable_reason().unwrap_or_else(|| "no usable GPU".into()));
+                return Err("selected graphics card is not available or not usable".into());
             }
         }
-        Ok(format!("{chosen_name}#{chosen_index}"))
+
+        if chosen_name.is_empty() {
+            // Automatic device selection: reuse the second-card policy that AI Denoise and face detection
+            // use (ai_adapter / resolve_helper), preferring the second card when one is present to avoid
+            // contending with interactive window rendering.
+            if let Some(ai_entry) = lcc_gpu::ai_adapter_entry()
+                && let Some((m_idx, (_, entry))) =
+                    metal_adapters.iter().enumerate().find(|(_, (_, a))| a.usable && (a.key == ai_entry.key || a.key.same_model(&ai_entry.key)))
+            {
+                chosen_metal_index = m_idx;
+                chosen_name = entry.name.clone();
+            }
+            if chosen_name.is_empty() {
+                if let Some((m_idx, (_, entry))) = metal_adapters.iter().enumerate().find(|(_, (_, a))| a.usable) {
+                    chosen_metal_index = m_idx;
+                    chosen_name = entry.name.clone();
+                } else if let Some(name) = lcc_gpu::adapter_name() {
+                    chosen_name = name;
+                } else {
+                    return Err(lcc_gpu::unavailable_reason().unwrap_or_else(|| "no usable GPU".into()));
+                }
+            }
+        }
+        Ok(format!("{chosen_name}#{chosen_metal_index}"))
     }
 }
 
@@ -527,8 +555,40 @@ impl Session {
 
     /// `ml.status {preference?, device?}`.
     pub(crate) fn ml_status(&mut self, p: &Value) -> crate::Result<Value> {
+        // Adopt saved device preference from MlSettings if unset in memory and not pinned by environment.
+        if self.ml.device_choice.is_none()
+            && env_preference() == Preference::Auto
+            && let Some(saved) = self.ml_models_dir.as_deref().and_then(|d| read_settings(d).device)
+        {
+            if saved.eq_ignore_ascii_case("cpu") {
+                self.ml.device_choice = Some("cpu".to_string());
+                self.ml.preference = Some(Preference::Cpu);
+                lcc_gpu::set_ml_device(Some("cpu"));
+                if let Some(q) = &self.ml.queue {
+                    q.set_preference(Preference::Cpu);
+                }
+                if let Some(qq) = &self.ml.query_queue {
+                    qq.set_preference(Preference::Cpu);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(parsed) = lcc_gpu::cards::AdapterKey::parse(&saved)
+                && lcc_gpu::adapters().iter().any(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed)))
+            {
+                self.ml.device_choice = Some(saved.clone());
+                self.ml.preference = Some(Preference::Auto);
+                lcc_gpu::set_ml_device(Some(&saved));
+                if let Some(q) = &self.ml.queue {
+                    q.set_preference(Preference::Auto);
+                }
+                if let Some(qq) = &self.ml.query_queue {
+                    qq.set_preference(Preference::Auto);
+                }
+            }
+        }
+
         if let Some(v) = p.get("device") {
-            let dev_str = v.as_str().unwrap_or("").trim();
+            let dev_str = v.as_str().ok_or_else(|| bad("ml.status", "`device` must be a string"))?.trim();
             if dev_str.eq_ignore_ascii_case("cpu") {
                 lcc_gpu::set_ml_device(Some("cpu"));
                 self.ml.device_choice = Some("cpu".to_string());
@@ -539,7 +599,11 @@ impl Session {
                 if let Some(qq) = &self.ml.query_queue {
                     qq.set_preference(Preference::Cpu);
                 }
-            } else if dev_str.is_empty() || dev_str.eq_ignore_ascii_case("auto") {
+            } else if dev_str.is_empty() {
+                // Empty string leaves preference alone (env variable or current preference intact)
+                lcc_gpu::set_ml_device(None);
+                self.ml.device_choice = None;
+            } else if dev_str.eq_ignore_ascii_case("auto") {
                 lcc_gpu::set_ml_device(None);
                 self.ml.device_choice = None;
                 self.ml.preference = Some(Preference::Auto);
@@ -550,15 +614,39 @@ impl Session {
                     qq.set_preference(Preference::Auto);
                 }
             } else {
-                lcc_gpu::set_ml_device(Some(dev_str));
-                self.ml.device_choice = Some(dev_str.to_string());
-                self.ml.preference = Some(Preference::Auto);
-                if let Some(q) = &self.ml.queue {
-                    q.set_preference(Preference::Auto);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let parsed = lcc_gpu::cards::AdapterKey::parse(dev_str).ok_or_else(|| bad("ml.status", format!("unknown device `{dev_str}`")))?;
+                    let adapters = lcc_gpu::adapters();
+                    let entry = adapters
+                        .iter()
+                        .find(|a| a.key == parsed || a.key.same_model(&parsed))
+                        .ok_or_else(|| bad("ml.status", format!("unknown graphics card `{dev_str}`")))?;
+                    if !entry.usable {
+                        let reason = entry.why_not.as_deref().unwrap_or("card is not usable");
+                        return Err(bad("ml.status", format!("graphics card `{dev_str}` is not usable: {reason}")));
+                    }
+                    lcc_gpu::set_ml_device(Some(dev_str));
+                    self.ml.device_choice = Some(dev_str.to_string());
+                    self.ml.preference = Some(Preference::Auto);
+                    if let Some(q) = &self.ml.queue {
+                        q.set_preference(Preference::Auto);
+                    }
+                    if let Some(qq) = &self.ml.query_queue {
+                        qq.set_preference(Preference::Auto);
+                    }
                 }
-                if let Some(qq) = &self.ml.query_queue {
-                    qq.set_preference(Preference::Auto);
+                #[cfg(target_arch = "wasm32")]
+                {
+                    return Err(bad("ml.status", "GPU devices are not supported on this platform"));
                 }
+            }
+
+            // Write back to saved setting so agent's choice sticks across restarts
+            if let Some(ref models_dir) = self.ml_models_dir {
+                let mut settings = read_settings(models_dir);
+                settings.device = if dev_str.is_empty() || dev_str.eq_ignore_ascii_case("auto") { None } else { Some(dev_str.to_string()) };
+                let _ = write_settings(models_dir, &settings);
             }
         } else if let Some(v) = p.get("preference") {
             let pref = v
@@ -569,9 +657,19 @@ impl Session {
             if pref == Preference::Cpu {
                 self.ml.device_choice = Some("cpu".to_string());
                 lcc_gpu::set_ml_device(Some("cpu"));
+                if let Some(ref models_dir) = self.ml_models_dir {
+                    let mut settings = read_settings(models_dir);
+                    settings.device = Some("cpu".to_string());
+                    let _ = write_settings(models_dir, &settings);
+                }
             } else if self.ml.device_choice.as_deref() == Some("cpu") {
                 self.ml.device_choice = None;
                 lcc_gpu::set_ml_device(None);
+                if let Some(ref models_dir) = self.ml_models_dir {
+                    let mut settings = read_settings(models_dir);
+                    settings.device = None;
+                    let _ = write_settings(models_dir, &settings);
+                }
             }
             if let Some(q) = &self.ml.queue {
                 q.set_preference(pref);

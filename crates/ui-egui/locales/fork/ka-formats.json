@@ -3,6 +3,8 @@
   "A profile “{name}” is already there.": "პროფილი „{name}“ უკვე არსებობს.",
   "About ${usd} · {requests} request(s), billed to your {name} account": "დაახლ. ${usd} · {requests} მოთხოვნა, ჩამოიჭრება თქვენი {name} ანგარიშიდან",
   "About ${usd}, billed to your {name} account.": "დაახლ. ${usd}, ჩამოიჭრება თქვენი {name} ანგარიშიდან.",
+  "Active: CPU · {why}": "აქტიური: CPU · {why}",
+  "Active: {name} (GPU accelerated)": "აქტიური: {name} (GPU აჩქარებული)",
   "Add your {} API key in Settings → Generative Fill first.": "ჯერ დაამატეთ {} API გასაღები: პარამეტრები → გენერაციული შევსება.",
   "Add your {} API key in Settings ▸ Generative Fill first.": "ჯერ დაამატეთ {} API გასაღები: პარამეტრები ▸ გენერაციული შევსება.",
   "Add {n} New Photos…": "{n} ახალი ფოტოს დამატება…",

@@ -2,6 +2,8 @@
   ", ": ", ",
   "A profile “{name}” is already there.": "Profil „{name}“ už existuje.",
   "About ${usd} · {requests} request(s), billed to your {name} account": "Asi ${usd} · požadavky: {requests}, účtováno na váš účet {name}",
+  "Active: CPU · {why}": "Aktivní: CPU · {why}",
+  "Active: {name} (GPU accelerated)": "Aktivní: {name} (akcelerováno GPU)",
   "Add your {} API key in Settings → Generative Fill first.": "Nejprve přidejte klíč API {} v Nastavení → Generativní výplň.",
   "Add your {} API key in Settings ▸ Generative Fill first.": "Nejprve přidejte klíč API {} v Nastavení ▸ Generativní výplň.",
   "Add {n} New Photos…": "Přidat nové fotky ({n})…",

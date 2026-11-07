@@ -76,7 +76,14 @@ pub fn ml_device_selector(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, statu
             gpu_cards.iter().find(|d| d["id"].as_str() == Some(setting)).and_then(|d| d["name"].as_str().map(str::to_string))
         }
     };
-    let current = name_of(&app.ui.settings.ml_device).unwrap_or_else(|| auto.clone());
+    let active_choice = status.get("deviceChoice").and_then(Value::as_str).unwrap_or("");
+    let current_setting = if app.ui.settings.ml_device.is_empty() && !active_choice.is_empty() && active_choice != "auto" {
+        active_choice
+    } else {
+        app.ui.settings.ml_device.as_str()
+    };
+    let current = name_of(current_setting).unwrap_or_else(|| auto.clone());
+    let before = app.ui.settings.ml_device.clone();
     super::settings::row(ui, t, crate::i18n::tr("AI embedding device"), |ui| {
         let combo = crate::widgets::combo_box("settingsMlDevice").selected_text(current).width(260.0).show_ui(ui, |ui| {
             let r = ui.selectable_value(&mut app.ui.settings.ml_device, String::new(), auto.as_str());
@@ -98,6 +105,9 @@ pub fn ml_device_selector(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, statu
         });
         register(ui.ctx(), "combo:settingsMlDevice", combo.response.rect);
     });
+    if before != app.ui.settings.ml_device {
+        let _ = app.run("ml.status", json!({"device": app.ui.settings.ml_device}));
+    }
 
     let readout = if let Some(dev) = status.get("device").filter(|d| !d.is_null()) {
         let kind = dev["kind"].as_str().unwrap_or("cpu");
@@ -111,9 +121,9 @@ pub fn ml_device_selector(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, statu
         }
     } else {
         #[cfg(not(target_os = "macos"))]
-        let note = "GPU acceleration for AI embeddings currently requires Metal on macOS; running on CPU (multithreaded)";
+        let note = tr("GPU acceleration for AI embeddings currently requires Metal on macOS; running on CPU (multithreaded)");
         #[cfg(target_os = "macos")]
-        let note = "Selected device initializes on first search";
+        let note = tr("Selected device initializes on first search");
         tr_format!("Active: CPU · {why}", why = note)
     };
     crate::dialog_frame::in_control_column(ui, |ui| {

@@ -2,6 +2,8 @@
   " · {queued} waiting": " · в очереди: {queued}",
   ", ": ", ",
   "A profile “{name}” is already there.": "Профиль «{name}» уже существует.",
+  "Active: CPU · {why}": "Активно: ЦП · {why}",
+  "Active: {name} (GPU accelerated)": "Активно: {name} (GPU-ускорение)",
   "Add {n} New Photos…": "Добавить новые фото ({n})…",
   "Alternatives to {name}": "Альтернативы для {name}",
   "Apply to {n} Selected Photos": "Применить к {n} выбранным фото",
