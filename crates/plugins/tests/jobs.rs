@@ -289,6 +289,7 @@ fn a_job_reads_the_catalog_but_never_writes_it() {
         r#"{"method":"metadata.setStandard","params":{"ids":["1"],"title":"x"}}"#,
         r#"{"method":"library.add","params":{"path":"/x/a.tif","from":"1"}}"#,
         r#"{"method":"develop.setCrop","params":{"photo":"1","rect":[0.1,0.1,0.9,0.9]}}"#,
+        r#"{"method":"photo.virtualCopy","params":{"photo":"1"}}"#,
         r#"{"method":"program.start","params":{"program":"p"}}"#,
     ] {
         let mut m = installed(&sequence(true, &[req], None), Limits::default());

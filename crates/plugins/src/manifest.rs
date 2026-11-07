@@ -47,6 +47,8 @@ pub const HOST_FEATURES: &[&str] = &[
     "pixels",
     // `crop` in the permissions and the `develop.setCrop` host call
     "crop",
+    // `virtualCopy` in the permissions and the `photo.virtualCopy` host call
+    "virtualCopy",
 ];
 
 /// The manifest a plug-in returns from `lcc_manifest`.

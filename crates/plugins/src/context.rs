@@ -8,6 +8,7 @@
 //! | `library.add`         | `libraryAdd`                | [`HostApi::library_add`]                |
 //! | `photo.pixels`        | `pixels`                    | [`HostApi::photo_pixels`]               |
 //! | `develop.setCrop`     | `crop`                      | [`HostApi::set_crop`]                   |
+//! | `photo.virtualCopy`   | `virtualCopy`               | [`HostApi::virtual_copy`]               |
 //! | `ns.get`, `ns.set`, `ns.photos` | always (own namespace) | [`NamespaceStore`]               |
 //! | `settings.get`, `settings.set` | always (own settings) | [`SettingsStore`], checked against the manifest's `settings` |
 //! | `fs.readText`, `fs.list`, `fs.exists` | a readable root | std::fs                           |
@@ -44,6 +45,8 @@ pub const PIXELS_DEFAULT_EDGE: u32 = 1024;
 /// as base64 stays well inside the 16 MiB message cap.
 pub const PIXELS_MIN_EDGE: u32 = 64;
 pub const PIXELS_MAX_EDGE: u32 = 1536;
+/// Longest name `photo.virtualCopy` takes for a copy, in characters.
+pub const MAX_COPY_NAME: usize = 256;
 
 /// Catalog access the application provides. The default methods refuse, so a host without a
 /// catalog (tests, the CLI before a library is open) only implements what it has.
@@ -82,6 +85,14 @@ pub trait HostApi {
     fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {
         let _ = (photo, rect, angle);
         Err("develop.setCrop: not available".into())
+    }
+    /// Makes a virtual copy of photo `photo`: a new catalog entry sharing its file, with a copy of
+    /// its settings and metadata, stacked right after it and in the albums that hold it, named
+    /// `name` or "Copy N". One History step; the selection stays as it was. → `{photo}`, the
+    /// copy's id as a decimal string.
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> Result<Value, String> {
+        let _ = (photo, name);
+        Err("photo.virtualCopy: not available".into())
     }
 
     /// Where `program` is installed on this system (none: not installed). Read-only; never
@@ -178,6 +189,7 @@ fn writes(method: &str, p: &Value) -> bool {
         "metadata.setStandard"
         | "library.add"
         | "develop.setCrop"
+        | "photo.virtualCopy"
         | "ns.set"
         | "settings.set"
         | "fs.writeText"
@@ -230,7 +242,7 @@ impl CallContext<'_> {
             if job.cancelled() {
                 return Err("cancelled".into());
             }
-            if matches!(method, "metadata.setStandard" | "library.add" | "develop.setCrop") {
+            if matches!(method, "metadata.setStandard" | "library.add" | "develop.setCrop" | "photo.virtualCopy") {
                 return Err(format!("{method}: writes to the catalog aren't available in a job yet"));
             }
             if method == "program.start" {
@@ -286,6 +298,18 @@ impl CallContext<'_> {
                     Some(v) => Some(v.as_f64().filter(|a| a.is_finite()).ok_or("develop.setCrop: `angle` must be a number of degrees")?),
                 };
                 self.host.set_crop(photo, rect, angle)
+            }
+            "photo.virtualCopy" => {
+                if !self.perms.virtual_copy {
+                    return Err(denied("virtualCopy"));
+                }
+                let photo = str_arg(p, "photo")?;
+                let name = match p.get("name") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(n)) if n.chars().count() <= MAX_COPY_NAME => Some(n.trim()).filter(|n| !n.is_empty()),
+                    Some(_) => return Err(format!("photo.virtualCopy: `name` must be text of at most {MAX_COPY_NAME} characters")),
+                };
+                self.host.virtual_copy(photo, name)
             }
             "ns.get" => Ok(self.store.get(str_arg(p, "photo")?)),
             "ns.set" => {

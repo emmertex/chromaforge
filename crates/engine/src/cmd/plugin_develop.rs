@@ -77,3 +77,15 @@ pub(super) fn set_crop(s: &mut Session, photo: &str, rect: [f64; 4], angle: Opti
     let g = super::develop::set_crop_of(s, id, M, Some(rect), Some(angle.unwrap_or(0.0))).map_err(|e| e.to_string())?;
     Ok(json!({"rect": [g.rect.x0, g.rect.y0, g.rect.x1, g.rect.y1], "angle": g.angle}))
 }
+
+/// `photo.virtualCopy`: a virtual copy of photo `photo`, as `photo.virtualCopy` makes one (stacked
+/// after it, in its albums, "Copy N" or `name`), without touching the selection. One History step.
+pub(super) fn virtual_copy(s: &mut Session, photo: &str, name: Option<&str>) -> Result<Value, String> {
+    const M: &str = "photo.virtualCopy";
+    let id = photo_of(s, photo, M)?;
+    if s.catalog.photo(id).is_some_and(|p| p.deleted) {
+        return Err(format!("{M}: photo {photo} is in Recently Deleted"));
+    }
+    let copy = super::organize::virtual_copy_one(s, id, name).map_err(|e| e.to_string())?.ok_or_else(|| format!("{M}: no photo {photo}"))?;
+    Ok(json!({"photo": copy.0.to_string()}))
+}

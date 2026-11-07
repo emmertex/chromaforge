@@ -111,6 +111,11 @@ impl HostApi for HookHost {
         self.0.ask_within(Relayed::SetCrop, &super::plugins::crop_params(photo, rect, angle), ANSWER_WAIT)
     }
 
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> Result<Value, String> {
+        self.reachable()?;
+        self.0.ask_within(Relayed::VirtualCopy, &super::plugins::copy_params(photo, name), ANSWER_WAIT)
+    }
+
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.0.find_program(program)
     }

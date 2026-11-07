@@ -296,7 +296,7 @@ fn begin_install(app: &mut LccApp, s: &mut State, path: &str) -> Result<Value, S
     let grant = if grant.is_object() {
         grant
     } else {
-        json!({"catalog": false, "metadataWrite": false, "libraryAdd": false, "pixels": false, "crop": false, "network": [], "fs": [], "programs": []})
+        json!({"catalog": false, "metadataWrite": false, "libraryAdd": false, "pixels": false, "crop": false, "virtualCopy": false, "network": [], "fs": [], "programs": []})
     };
     s.pending = Some(Pending { path: path.to_string(), info, grant });
     s.open = true;
@@ -1171,7 +1171,7 @@ enum Row {
 
 fn permission_rows(req: &Value) -> Vec<Row> {
     let mut v = Vec::new();
-    for k in ["catalog", "metadataWrite", "libraryAdd", "pixels", "crop"] {
+    for k in ["catalog", "metadataWrite", "libraryAdd", "pixels", "crop", "virtualCopy"] {
         if req[k].as_bool() == Some(true) {
             v.push(Row::Flag(k));
         }
@@ -1199,6 +1199,7 @@ impl Row {
             Row::Flag("libraryAdd") => tr("Add files made from photos to the library").to_string(),
             Row::Flag("pixels") => tr("Look at downsized copies of photos").to_string(),
             Row::Flag("crop") => tr("Change the crop of photos").to_string(),
+            Row::Flag("virtualCopy") => tr("Make virtual copies of photos").to_string(),
             Row::Flag(_) => tr("Write photo metadata").to_string(),
             Row::Host(h) => format!("{} {}", tr("Connect to"), h.as_str().unwrap_or("")),
             Row::Root(r) => {

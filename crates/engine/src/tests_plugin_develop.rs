@@ -150,3 +150,49 @@ fn from_a_worker_both_calls_go_through_the_session_thread() {
     assert_eq!(crop.unwrap()["rect"], json!([0.25, 0.25, 0.75, 0.75]));
     assert_eq!(f.crop().rect.x0, 0.25);
 }
+
+fn copy_id(r: &serde_json::Value) -> PhotoId {
+    PhotoId(r["photo"].as_str().unwrap().parse().unwrap())
+}
+
+/// `photo.virtualCopy` makes a copy stacked with its photo, named as the command names them, in
+/// one History step, leaving the selection alone; the copy's crop is its own.
+#[test]
+fn a_virtual_copy_is_stacked_with_its_photo_and_takes_its_own_crop() {
+    let mut f = Fixture::new("copy");
+    let id = f.id();
+    let selected = f.s.selection.ids.clone();
+    let copy = copy_id(&SessionHost(&mut f.s).virtual_copy(&id, None).unwrap());
+    let c = f.s.catalog.photo(copy).unwrap();
+    assert_eq!((c.copy_of, c.copy_name.as_deref()), (Some(f.photo), Some("Copy 1")));
+    assert!(f.s.catalog.stack_of(copy).is_some_and(|st| st.photos.contains(&f.photo)), "stacked with its photo");
+    assert_eq!(f.s.selection.ids, selected, "the selection stays as it was");
+    // a named second copy, with a crop of its own
+    let named = copy_id(&SessionHost(&mut f.s).virtual_copy(&id, Some("Frame 2")).unwrap());
+    assert_eq!(f.s.catalog.photo(named).unwrap().copy_name.as_deref(), Some("Frame 2"));
+    SessionHost(&mut f.s).set_crop(&named.0.to_string(), [0.5, 0.0, 1.0, 1.0], None).unwrap();
+    assert_eq!(f.s.develop_of(named).unwrap().crop.geometry.rect.x0, 0.5);
+    assert!(f.crop().is_identity(), "the original's crop is untouched");
+    // the crop, then the copy, each one History step
+    f.s.execute("edit.undo", &json!({})).unwrap();
+    f.s.execute("edit.undo", &json!({})).unwrap();
+    assert!(f.s.catalog.photo(named).is_none(), "the named copy is undone");
+    assert!(f.s.catalog.photo(copy).is_some(), "the first copy stays");
+    // bad ids change nothing
+    let n = f.s.catalog.photos().count();
+    assert!(SessionHost(&mut f.s).virtual_copy("999999", None).unwrap_err().contains("no photo"));
+    assert!(SessionHost(&mut f.s).virtual_copy("abc", None).unwrap_err().contains("not a photo id"));
+    assert_eq!(f.s.catalog.photos().count(), n);
+}
+
+/// From a worker, `photo.virtualCopy` goes through the session's thread too.
+#[test]
+fn from_a_worker_a_virtual_copy_goes_through_the_session_thread() {
+    let mut f = Fixture::new("copy-relay");
+    let id = f.id();
+    let (mut host, rx) = crate::cmd::plugins::relay_host(&f.s);
+    let worker = std::thread::spawn(move || host.virtual_copy(&id, Some("Frame 2")));
+    rx.recv().unwrap().answer(&mut f.s);
+    let copy = copy_id(&worker.join().unwrap().unwrap());
+    assert_eq!(f.s.catalog.photo(copy).unwrap().copy_of, Some(f.photo));
+}

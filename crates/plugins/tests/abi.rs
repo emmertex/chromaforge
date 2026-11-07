@@ -111,6 +111,7 @@ fn unrequested_capabilities_are_refused() {
         (r#"{"method":"library.add","params":{"path":"/x/a.tif","from":"1"}}"#, "libraryAdd"),
         (r#"{"method":"photo.pixels","params":{"photo":"1"}}"#, "`pixels`"),
         (r#"{"method":"develop.setCrop","params":{"photo":"1","rect":[0.1,0.1,0.9,0.9]}}"#, "`crop`"),
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"1"}}"#, "`virtualCopy`"),
         (r#"{"method":"http.request","params":{"url":"https://example.com/"}}"#, "network"),
         (read.as_str(), "not inside a folder"),
         (write.as_str(), "not inside a folder"),
@@ -677,4 +678,60 @@ fn pixels_and_crop_requests_are_checked_before_the_host_sees_them() {
     assert!(r.unwrap_err().to_string().contains("`crop`"));
     let (r, _) = call(r#"{"method":"photo.pixels","params":{"photo":"7"}}"#, Permissions { crop: true, ..Default::default() });
     assert!(r.unwrap_err().to_string().contains("`pixels`"));
+}
+
+const COPIES: &str = r#"{"id":"test.plugin","name":"Test","version":"1.0.0","requires":["virtualCopy"],"permissions":{"virtualCopy":true},"commands":[{"id":"go","label":"Go"}]}"#;
+
+/// The app's side of `photo.virtualCopy`: what reached it.
+#[derive(Default)]
+struct Copies(Vec<Value>);
+
+impl lcc_plugins::HostApi for Copies {
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> Result<Value, String> {
+        self.0.push(json!({"photo": photo, "name": name}));
+        Ok(json!({"photo": "8"}))
+    }
+}
+
+/// `photo.virtualCopy` reaches the host only with its permission and a photo; a name is trimmed,
+/// a blank one is none, and one that isn't text or is too long is refused.
+#[test]
+fn virtual_copy_requests_are_checked_before_the_host_sees_them() {
+    let call = |req: &str, grant: Permissions| -> (lcc_plugins::Result<Value>, Vec<Value>) {
+        let handle = format!(
+            "(local.set $n (call $call (i32.const 8192) (i32.const {len})))
+             (call $response (i32.const 16384))
+             (i64.or (i64.shl (i64.extend_i32_u (local.get $n)) (i64.const 32)) (i64.const 16384))",
+            len = req.len()
+        );
+        let mut m = Manager::in_memory();
+        m.install_bytes(&module(COPIES, 1, &handle, "", req), Some(grant), false).unwrap();
+        let mut host = Copies::default();
+        let r = m.run_command("test.plugin", "go", &json!({}), &[], &mut host);
+        (r, host.0)
+    };
+    let granted = Permissions { virtual_copy: true, ..Default::default() };
+    for (req, name) in [
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"7"}}"#, Value::Null),
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"7","name":"  Frame 2 "}}"#, json!("Frame 2")),
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"7","name":"   "}}"#, Value::Null),
+    ] {
+        let (r, seen) = call(req, granted.clone());
+        assert_eq!(r.unwrap()["photo"], "8", "{req}");
+        assert_eq!(seen, vec![json!({"photo": "7", "name": name})], "{req}");
+    }
+    let long = format!(r#"{{"method":"photo.virtualCopy","params":{{"photo":"7","name":"{}"}}}}"#, "x".repeat(257));
+    for (req, needle) in [
+        (r#"{"method":"photo.virtualCopy","params":{}}"#, "photo"),
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"7","name":3}}"#, "name"),
+        (long.as_str(), "name"),
+    ] {
+        let (r, seen) = call(req, granted.clone());
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains(needle), "{req}: {e}");
+        assert!(seen.is_empty(), "{req}: never reached the host");
+    }
+    let (r, seen) = call(r#"{"method":"photo.virtualCopy","params":{"photo":"7"}}"#, Permissions::default());
+    assert!(r.unwrap_err().to_string().contains("virtualCopy"));
+    assert!(seen.is_empty());
 }

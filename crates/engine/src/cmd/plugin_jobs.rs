@@ -139,6 +139,9 @@ impl HostApi for JobHost {
     fn set_crop(&mut self, _: &str, _: [f64; 4], _: Option<f64>) -> Result<Value, String> {
         Err(format!("develop.setCrop: {NO_WRITES}"))
     }
+    fn virtual_copy(&mut self, _: &str, _: Option<&str>) -> Result<Value, String> {
+        Err(format!("photo.virtualCopy: {NO_WRITES}"))
+    }
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.0.find_program(program)
     }

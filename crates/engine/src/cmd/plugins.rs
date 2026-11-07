@@ -154,6 +154,10 @@ impl HostApi for SessionHost<'_> {
         super::plugin_develop::set_crop(self.0, photo, rect, angle)
     }
 
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> std::result::Result<Value, String> {
+        super::plugin_develop::virtual_copy(self.0, photo, name)
+    }
+
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.0.desktop.find_program(program)
     }
@@ -662,8 +666,8 @@ impl ExportHooks {
 /// A catalog request a plug-in made from a worker thread ([`relay_host`]), answered on the thread that owns
 /// the session with [`HostRequest::answer`].
 pub struct HostRequest {
-    /// The host call: a catalog read, `metadata.setStandard`, `library.add`, `photo.pixels` or
-    /// `develop.setCrop`.
+    /// The host call: a catalog read, `metadata.setStandard`, `library.add`, `photo.pixels`,
+    /// `develop.setCrop` or `photo.virtualCopy`.
     method: Relayed,
     params: Value,
     reply: std::sync::mpsc::Sender<std::result::Result<Value, String>>,
@@ -687,6 +691,8 @@ pub(super) enum Relayed {
     Pixels(std::sync::Arc<std::sync::Mutex<Option<super::plugin_develop::PixelsSource>>>),
     /// `develop.setCrop`: `{photo, rect, angle}`, already checked.
     SetCrop,
+    /// `photo.virtualCopy`: `{photo, name}`, already checked.
+    VirtualCopy,
 }
 
 /// [`Relayed::Pixels`]'s parameters, and back.
@@ -697,6 +703,16 @@ pub(super) fn pixels_params(photo: &str, long_edge: u32) -> Value {
 /// [`Relayed::SetCrop`]'s parameters, and back.
 pub(super) fn crop_params(photo: &str, rect: [f64; 4], angle: Option<f64>) -> Value {
     json!({"photo": photo, "rect": rect, "angle": angle})
+}
+
+/// [`Relayed::VirtualCopy`]'s parameters, and back.
+pub(super) fn copy_params(photo: &str, name: Option<&str>) -> Value {
+    json!({"photo": photo, "name": name})
+}
+
+fn relayed_copy(host: &mut SessionHost<'_>, p: &Value) -> std::result::Result<Value, String> {
+    let photo = p["photo"].as_str().ok_or("photo.virtualCopy: missing photo")?;
+    host.virtual_copy(photo, p["name"].as_str())
 }
 
 fn relayed_pixels(
@@ -737,6 +753,7 @@ impl HostRequest {
             Relayed::LibraryAdd => host.library_add(&self.params),
             Relayed::Pixels(slot) => relayed_pixels(host.0, &self.params, slot),
             Relayed::SetCrop => relayed_crop(&mut host, &self.params),
+            Relayed::VirtualCopy => relayed_copy(&mut host, &self.params),
         };
         let _ = self.reply.send(r);
     }
@@ -818,6 +835,10 @@ impl HostApi for RelayHost {
         self.ask(Relayed::SetCrop, &crop_params(photo, rect, angle))
     }
 
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> std::result::Result<Value, String> {
+        self.ask(Relayed::VirtualCopy, &copy_params(photo, name))
+    }
+
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.1.find_program(program)
     }
@@ -857,6 +878,10 @@ impl HostApi for HookSession<'_> {
 
     fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
         self.0.set_crop(photo, rect, angle)
+    }
+
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> std::result::Result<Value, String> {
+        self.0.virtual_copy(photo, name)
     }
 
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {

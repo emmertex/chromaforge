@@ -88,6 +88,7 @@ are the granted permissions intersected with the requested ones.
 | `metadataWrite: true` | `metadata.setStandard {ids, title?, caption?, keywords?, addKeywords?, …}` |
 | `libraryAdd: true` | `library.add {path, from, stack?, album?}`: adds a file a tool made from a photo to the library, from that photo's folder only (see [Adding files to the library](#adding-files-to-the-library)). Requires `libraryAdd`. |
 | `pixels: true` | `photo.pixels {photo, longEdge?}`: a downsized copy of a photo, the whole uncropped frame (see [Pixels and crop](#pixels-and-crop)). Requires `pixels`. |
+| `virtualCopy: true` | `photo.virtualCopy {photo, name?}`: makes a virtual copy of a photo, stacked with it (see [Pixels and crop](#pixels-and-crop)). Requires `virtualCopy`. |
 | `crop: true` | `develop.setCrop {photo, rect, angle?}`: sets a photo's crop, one History step, editable afterwards like any crop (see [Pixels and crop](#pixels-and-crop)). Requires `crop`. |
 | `network: ["api.example.com", "*.example.org"]` | `http.request` to those hosts only. Redirects are not followed: the plug-in has to request the new URL itself, and that request is checked again. A binary body goes as `bodyBase64` (with `contentType`) instead of `body`. |
 | `fs: [{path: "/abs/dir", write?}]` | `fs.readText`, `fs.readBytes`, `fs.list`, `fs.exists` below each root, and `fs.writeText`, `fs.writeBytes`, `fs.remove` (files only) below writable roots. Bytes travel as base64 (`{path}` → base64 text; `{path, base64}`). `..` is rejected, and symbolic links are resolved so a link cannot lead out of a root. Files lent to a call (an export hook's or destination's exported files, a publish upload's rendered file) can be read and rewritten without any root, never removed. A program run's folder is lent to its `program.end` call for reading. |
@@ -289,7 +290,7 @@ manifest error.
 - **Reading, not writing:** a job may read the catalog (`catalog.query`, `photo.inspect`, …), and
   read and write its own namespace (`ns.set`) and settings, files and the network as granted. It
   may not change the catalog:
-  `metadata.setStandard` and `library.add` fail with "writes to the catalog aren't available in a
+  `metadata.setStandard`, `library.add`, `develop.setCrop` and `photo.virtualCopy` fail with "writes to the catalog aren't available in a
   job yet", and `program.start` fails too. The catalog reads are answered by the window between
   frames; a session with no window (headless CLI or MCP) refuses them, so run a job there with
   **`plugin.run {…, wait: true}`**: it runs to its end on the caller's thread and returns the
@@ -325,7 +326,16 @@ with a host feature of the same name (`"requires": ["pixels", "crop"]`):
   returns it as set; a rect smaller than the crop tool's smallest crop is refused. It writes, so
   prepare steps and jobs can't call it.
 
-From a hook running on a worker (an export hook, `program.end`) both are answered on the UI
+- **`photo.virtualCopy {photo, name?}`** (`virtualCopy`, with a host feature of the same name;
+  `host::virtual_copy(photo, name)`) → `{photo}`: a virtual copy, as *Create Virtual Copy*
+  makes one: a new catalog entry sharing the photo's file, with a copy of its settings and
+  metadata, stacked right after it and added to the albums that hold it, named `name` (at most
+  256 characters) or the next "Copy N". One History step; the user's selection stays as it was.
+  A photo in Recently Deleted is refused. It writes, so prepare steps and jobs can't call it. With
+  `develop.setCrop` it lets a plug-in split one capture into several photos: two half-frame
+  exposures in one 35 mm scan, say, the original cropped to one and a copy to the other.
+
+From a hook running on a worker (an export hook, `program.end`) all three are answered on the UI
 thread, and from a job `photo.pixels` is, like the catalog reads. Each call loads the photo's
 source at the smallest level that covers `longEdge` (the 512 px thumbnail level up to 520, the
 preview level above), as the library grid and the loupe do.
@@ -347,7 +357,7 @@ hook that's never called, a host call that fails as an unknown method).
 
 - **The host's list** is `lcc_plugins::HOST_FEATURES`, and `plugin.list` returns it as
   `host: {abi, features}`. Everything the host had when `requires` arrived is the baseline and
-  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels` and `crop` ([Pixels and crop](#pixels-and-crop)). Every manifest field, permission group or host call added
+  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)). Every manifest field, permission group or host call added
   from then on gets a name there in the change that adds it, and its documentation here says
   which name to require.
 - **Names** are `[A-Za-z0-9._-]{1,64}`, at most 64, none repeated; anything else is a manifest
@@ -516,6 +526,7 @@ The manifest fields:
 | `host::library_add(path, from, stack, album)` | `library.add {path, from, stack?, album?}` → `{photo, added, reloaded}` | `libraryAdd` |
 | `host::photo_pixels(photo, long_edge)` → `Pixels {width, height, rgb}` | `photo.pixels {photo, longEdge?}` | `pixels` |
 | `host::set_crop(photo, rect, angle)` | `develop.setCrop {photo, rect, angle?}` → `{rect, angle}` | `crop` |
+| `host::virtual_copy(photo, name)` → the copy's id | `photo.virtualCopy {photo, name?}` → `{photo}` | `virtualCopy` |
 | `host::ns_get(photo)`, `host::ns_set(photo, key, value)` | `ns.get`, `ns.set`, `ns.photos` | nothing (own namespace; also holds `metadataFields` values) |
 | `host::read_text`, `host::write_text`, `host::read_bytes`, `host::write_bytes`, `host::remove`, `host::exists` | `fs.*` | an `fs` root (or a lent file) |
 | `host::http(method, url, headers, body)`, `host::http_bytes(…)` | `http.request` → `{status, contentType, location, body}` | the URL's host in `network` |

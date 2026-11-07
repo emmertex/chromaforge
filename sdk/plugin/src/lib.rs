@@ -442,6 +442,14 @@ pub mod host {
         Ok(crate::Pixels { width, height, rgb })
     }
 
+    /// Makes a virtual copy of photo `photo` (`virtualCopy` permission): a new catalog entry
+    /// sharing its file, with a copy of its settings, stacked after it, named `name` or "Copy N".
+    /// → the copy's id. One History step; the selection stays as it was.
+    pub fn virtual_copy(photo: &str, name: Option<&str>) -> Result<String, String> {
+        let v = call("photo.virtualCopy", json!({"photo": photo, "name": name}))?;
+        v["photo"].as_str().map(str::to_string).ok_or_else(|| "photo.virtualCopy: no `photo` in the reply".into())
+    }
+
     /// Sets photo `photo`'s crop (`crop` permission): `rect` `[x0, y0, x1, y1]`, normalized (0..1)
     /// in the frame [`photo_pixels`] gives turned by `angle` (degrees, clockwise; `None` is 0) about
     /// its centre, so a box found in those pixels, turned to level them, is set as found. One
