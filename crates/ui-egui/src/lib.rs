@@ -928,6 +928,7 @@ pub struct LccApp {
     gpu_applied: Option<bool>,
     /// The graphics cards (for editing, second) last handed to the renderer.
     gpu_cards_applied: Option<(String, String)>,
+    ml_device_applied: Option<String>,
     /// Say once, when the GPU device has been tried, that no graphics processor was found
     /// ([`panels::notices::gpu_notice`]). The desktop app sets it; headless sessions and tests don't.
     pub gpu_notice: bool,
@@ -1205,6 +1206,7 @@ impl LccApp {
             preview_window: None,
             gpu_applied: None,
             gpu_cards_applied: None,
+            ml_device_applied: None,
             gpu_notice: false,
             startup_update_check: false,
             hdr_display_sdr: false,
@@ -2410,6 +2412,22 @@ impl LccApp {
                 lcc_engine::gpu::set_helper(&cards.1);
             }
             self.gpu_cards_applied = Some(cards);
+        }
+        let ml_device = self.ui.settings.ml_device.clone();
+        if self.ml_device_applied.as_ref() != Some(&ml_device) {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                lcc_engine::gpu::set_ml_device(Some(&ml_device));
+            }
+            let pref = if ml_device.eq_ignore_ascii_case("cpu") { "cpu" } else { "auto" };
+            let _ = self.session.execute(
+                "ml.status",
+                &serde_json::json!({
+                    "preference": pref,
+                    "device": ml_device,
+                }),
+            );
+            self.ml_device_applied = Some(ml_device);
         }
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);

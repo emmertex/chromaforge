@@ -145,6 +145,24 @@ fn ml_status_before_any_job_starts_nothing() {
 }
 
 #[test]
+fn ml_status_sets_device_and_reports_available_devices() {
+    let mut s = session();
+    let st = s.execute("ml.status", &json!({})).unwrap();
+    assert_eq!(st["deviceChoice"], "auto");
+    assert!(st["availableDevices"].is_array());
+    assert!(st["availableDevices"].as_array().unwrap().iter().any(|d| d["id"] == "auto"));
+    assert!(st["availableDevices"].as_array().unwrap().iter().any(|d| d["id"] == "cpu"));
+
+    let st = s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+    assert_eq!(st["deviceChoice"], "cpu");
+    assert_eq!(st["preference"], "cpu");
+
+    let st = s.execute("ml.status", &json!({"device": "auto"})).unwrap();
+    assert_eq!(st["deviceChoice"], "auto");
+    assert_eq!(st["preference"], "auto");
+}
+
+#[test]
 fn ml_status_sets_the_preference_and_refuses_junk() {
     let mut s = session();
     let st = s.execute("ml.status", &json!({"preference": "cpu"})).unwrap();

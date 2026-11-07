@@ -1050,6 +1050,30 @@ pub fn ai_card() -> Option<String> {
     ai_adapter(&ctx::instance(backends), backends).ok().map(|a| a.get_info().name)
 }
 
+/// The hardware device for AI semantic search vector embeddings (`None`: Automatic,
+/// `Some("cpu")`: force CPU, or a card's key).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn ml_device() -> Option<String> {
+    cards::ml_device()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn ml_device() -> Option<String> {
+    None
+}
+
+/// Set the hardware device for AI semantic search vector embeddings.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_ml_device(choice: Option<&str>) -> bool {
+    let val = choice.map(str::trim).filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto")).map(|s| s.to_string());
+    cards::set_ml_device(val)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_ml_device(_choice: Option<&str>) -> bool {
+    false
+}
+
 /// Batch work on the second card now: (renders running, device bytes they hold, renders waiting).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn helper_usage() -> (usize, u64, usize) {
