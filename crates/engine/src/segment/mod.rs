@@ -235,7 +235,35 @@ struct RecomputeRun {
     photos: Vec<PhotoId>,
     left: usize,
     total: usize,
+    /// The selections each photo still has on their way: the row counts photos, "1 of 3" (OneSlips 9bb601286).
+    per_photo: std::collections::HashMap<PhotoId, usize>,
 }
+
+/// An AI-mask batch row's progress and detail (OneSlips 9bb601286, test notes 2026-10-25 note 6): `done` of `total`
+/// photos have their masks. While one of its photos is at work it counts that one ("1 of 3", never "0 of 3"); before
+/// its first photo starts, an indeterminate bar (`0, 0`) and what it waits for: the import's background work, or other
+/// AI masks. → (done, total, detail).
+#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+pub(crate) fn batch_row(done: usize, total: usize, mine_running: bool, other_running: bool, other_is_background: bool) -> (u64, u64, &'static str) {
+    let n = |v: usize| u64::try_from(v).unwrap_or(u64::MAX);
+    if mine_running {
+        return (n(done.saturating_add(1).min(total)), n(total), "");
+    }
+    if done == 0 && total > 0 {
+        let what = match (other_running, other_is_background) {
+            (true, true) => WAITING_FOR_PREP,
+            (true, false) => WAITING_FOR_MASKS,
+            (false, _) => "",
+        };
+        return (0, 0, what);
+    }
+    (n(done.min(total)), n(total), "")
+}
+
+/// What an AI-mask batch row says while the worker finishes the import's background work first.
+pub const WAITING_FOR_PREP: &str = "Waiting for Getting photos ready";
+/// What an AI-mask batch row says while other AI masks run first.
+pub const WAITING_FOR_MASKS: &str = "Waiting for other AI masks";
 
 impl Segmenter {
     /// Whether a Recompute AI Masks batch is computing.
@@ -949,7 +977,15 @@ impl Session {
                 self.segmenter.run_seq = self.segmenter.run_seq.wrapping_add(1);
                 let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let guard = self.activity.start_batch("aiMasks", "Computing AI masks", crate::activity::Cancel::Flag(cancel.clone()));
-                self.segmenter.recompute = Some(RecomputeRun { id: self.segmenter.run_seq, cancel, guard, photos: Vec::new(), left: 0, total: 0 });
+                self.segmenter.recompute = Some(RecomputeRun {
+                    id: self.segmenter.run_seq,
+                    cancel,
+                    guard,
+                    photos: Vec::new(),
+                    left: 0,
+                    total: 0,
+                    per_photo: Default::default(),
+                });
             }
             let (run, cancel) = match &self.segmenter.recompute {
                 Some(r) => (r.id, r.cancel.clone()),
@@ -987,14 +1023,17 @@ impl Session {
             if let Some(r) = &mut self.segmenter.recompute {
                 r.left += queued;
                 r.total += queued;
-                if !r.photos.contains(&id) {
-                    r.photos.push(id);
+                if queued > 0 {
+                    if !r.photos.contains(&id) {
+                        r.photos.push(id);
+                    }
+                    *r.per_photo.entry(id).or_default() += queued;
                 }
-                r.guard.progress(u64::try_from(r.total - r.left).unwrap_or(0), u64::try_from(r.total).unwrap_or(0));
                 if r.left == 0 {
                     self.segmenter.recompute = None;
                 }
             }
+            self.update_recompute_row();
             Ok(queued)
         }
         #[cfg(not(feature = "sam"))]
@@ -1039,6 +1078,8 @@ impl Session {
                 // (nor is a batch whose replies were lost)
                 self.segmenter.recompute = None;
             }
+            // what the batch's row says follows the worker: its photo at work, or what it waits for
+            self.update_recompute_row();
         }
         polled
     }
@@ -1209,15 +1250,20 @@ impl Session {
     ) {
         let Some(r) = self.segmenter.recompute.as_mut().filter(|r| r.id == run) else { return };
         r.left = r.left.saturating_sub(1);
+        // the row counts photos: this one is done once its last selection is
+        if let Some(n) = r.per_photo.get_mut(&photo) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                r.per_photo.remove(&photo);
+            }
+        }
         let name = self.develop_of(photo).and_then(|d| d.masks.iter().find(|m| m.id == mask).map(|m| m.name.clone())).unwrap_or_default();
         let finished = self.segmenter.recompute.as_ref().is_some_and(|r| r.left == 0);
         let report = |s: &mut Session, why: Option<&str>| {
-            if let Some(r) = &s.segmenter.recompute {
-                match why {
-                    Some(w) => r.guard.item_failed(w),
-                    None => r.guard.item_done(),
-                }
+            if let (Some(r), Some(w)) = (&s.segmenter.recompute, why) {
+                r.guard.count_failed(w);
             }
+            s.update_recompute_row();
         };
         polled.messages.extend(notice);
         match (skipped, result) {
@@ -1257,13 +1303,88 @@ impl Session {
         }
         if finished {
             self.segmenter.recompute = None;
+        } else {
+            self.update_recompute_row();
         }
     }
+
+    /// The Recompute AI Masks row (OneSlips 9bb601286): the photos done of its photos, the one at work counted, and
+    /// before its first photo starts what it waits for ([`batch_row`]). Cheap: called as jobs are queued and finish,
+    /// and on every poll while the batch runs.
+    #[cfg(feature = "sam")]
+    fn update_recompute_row(&self) {
+        use std::sync::atomic::Ordering;
+        let Some(r) = &self.segmenter.recompute else { return };
+        let shared = &self.segmenter.worker.shared;
+        let running = shared.running.load(Ordering::SeqCst);
+        let low = shared.running_low.load(Ordering::SeqCst);
+        let total = r.photos.len();
+        let done = total.saturating_sub(r.per_photo.len());
+        let mine = running == worker::run_code(r.id);
+        let (d, t, what) = batch_row(done, total, mine, running != 0 && !mine, low);
+        r.guard.progress(d, t);
+        r.guard.detail(what);
+    }
+
+    #[cfg(not(feature = "sam"))]
+    #[allow(dead_code)]
+    fn update_recompute_row(&self) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// OneSlips 9bb601286 (test notes 2026-10-25 note 6): an AI-mask batch row counts photos, "1 of 3" while its
+    /// first is at work (never "0 of 3"); before its first photo starts it shows an indeterminate bar and says what it
+    /// waits for; hostile counts stay in range.
+    #[test]
+    fn a_batch_row_counts_photos_and_says_what_it_waits_for() {
+        assert_eq!(batch_row(0, 3, false, true, true), (0, 0, WAITING_FOR_PREP), "behind the import's background work");
+        assert_eq!(batch_row(0, 3, false, true, false), (0, 0, WAITING_FOR_MASKS), "behind other AI masks");
+        assert_eq!(batch_row(0, 3, false, false, false), (0, 0, ""), "about to start");
+        assert_eq!(batch_row(0, 3, true, false, false), (1, 3, ""), "its first photo at work: 1 of 3");
+        assert_eq!(batch_row(2, 3, true, false, false), (3, 3, ""));
+        assert_eq!(batch_row(1, 3, false, true, false), (1, 3, ""), "once a photo is done it counts, waiting or not");
+        assert_eq!(batch_row(3, 3, true, false, false), (3, 3, ""), "never past the total");
+        assert_eq!(batch_row(usize::MAX, 2, true, true, true), (2, 2, ""));
+        assert_eq!(batch_row(0, 0, false, true, true), (0, 0, ""));
+    }
+
+    /// The Recompute AI Masks row follows the worker (OneSlips 9bb601286): while another request runs it waits and
+    /// says for what; while one of its own runs it counts that photo; photos count once all their selections are done.
+    #[cfg(feature = "sam")]
+    #[test]
+    fn the_recompute_row_follows_the_worker() {
+        use std::sync::atomic::Ordering;
+        let mut s = Session::with_demo();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = s.activity.start_batch("aiMasks", "Computing AI masks", crate::activity::Cancel::Flag(cancel.clone()));
+        let photos: Vec<PhotoId> = (1..=3).map(PhotoId).collect();
+        let per_photo = [(photos[0], 2), (photos[1], 1), (photos[2], 1)].into_iter().collect();
+        s.segmenter.recompute = Some(RecomputeRun { id: 7, cancel, guard, photos: photos.clone(), left: 4, total: 4, per_photo });
+        let row = |s: &Session| s.activity.list().into_iter().find(|t| t.kind == "aiMasks").map(|t| (t.done, t.total, t.detail));
+        let shared = s.segmenter.worker.shared.clone();
+        shared.running.store(worker::RUN_OTHER, Ordering::SeqCst);
+        shared.running_low.store(true, Ordering::SeqCst);
+        s.update_recompute_row();
+        assert_eq!(row(&s), Some((0, 0, WAITING_FOR_PREP.to_string())));
+        shared.running_low.store(false, Ordering::SeqCst);
+        s.update_recompute_row();
+        assert_eq!(row(&s), Some((0, 0, WAITING_FOR_MASKS.to_string())));
+        shared.running.store(worker::run_code(7), Ordering::SeqCst);
+        s.update_recompute_row();
+        assert_eq!(row(&s), Some((1, 3, String::new())), "its first photo at work");
+        // the first photo's two selections done: 1 photo done, the next at work
+        if let Some(r) = &mut s.segmenter.recompute {
+            r.per_photo.remove(&photos[0]);
+        }
+        s.update_recompute_row();
+        assert_eq!(row(&s).map(|r| (r.0, r.1)), Some((2, 3)));
+        shared.running.store(0, Ordering::SeqCst);
+        s.update_recompute_row();
+        assert_eq!(row(&s).map(|r| (r.0, r.1)), Some((1, 3)), "between jobs it shows the photos done");
+    }
 
     #[cfg(feature = "sam")]
     #[test]

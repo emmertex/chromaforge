@@ -315,9 +315,26 @@ fn run_photo_jobs(jobs: Vec<RenderJob>) -> bool {
         // and the next. (Taken out of the job: it would only queue the write, and would serve a
         // smaller cached view.)
         let keep = j.view_cache.take().map(|v| (v, j.cache_generation));
+        // (and the photo's latest view / thumbnail, on disk before the photo counts as built: the
+        // picture an edited photo shows once its settings change again)
+        let latest = j.latest.take();
+        let thumb = j.cache.as_ref().map(|c| c.1);
+        let generation = j.cache_generation;
         let r = j.run();
-        if let (Some(((cache, key), generation)), Ok(img)) = (keep, r.rendered.as_ref()) {
-            cache.put_at(generation, key, Arc::new(img.image.clone()));
+        if let Ok(img) = r.rendered.as_ref() {
+            let img = Arc::new(img.image.clone());
+            let real = match keep {
+                Some(((cache, key), generation)) => {
+                    cache.put_at(generation, key, img.clone());
+                    Some(key)
+                }
+                None => thumb,
+            };
+            if let (Some((cache, alias)), Some(real)) = (latest, real)
+                && r.quick != Some(crate::media::QuickSource::Cached)
+            {
+                cache.put_latest_with(generation, alias, real, img, true, crate::media::placement_bytes(r.placement.as_ref()).as_deref());
+            }
         }
         ok &= r.rendered.is_ok();
         if decoded.is_none() {
@@ -582,12 +599,14 @@ type SmartJob = (lcc_catalog::PhotoId, std::path::PathBuf, Option<crate::media::
 
 /// DNG tone fits also go stale, although DNGs keep their own matrix and Kelvin white-balance scale.
 /// So do preview-only raws: their proxy is the embedded JPEG, read in the colour space the raw
-/// declares, which a look version bump can change too (#2654).
+/// declares, which a look version bump can change too (#2654). And so does a raw developed through a camera
+/// profile without a tone curve of its own: it keeps the tone fitted with the photo's own colour.
 #[cfg(not(target_arch = "wasm32"))]
 fn preview_fitted_look(photo: &lcc_catalog::Photo) -> bool {
     photo.fitted_look()
         || (photo.develops_raw() && photo.format.eq_ignore_ascii_case("DNG"))
         || (photo.kind == lcc_catalog::MediaKind::Raw && photo.preview_only.is_some())
+        || crate::camera_profiles::photo_profile(photo).is_some_and(|d| crate::camera_preview::keeps_photo_tone(&d))
 }
 
 /// Held while one proxy is checked and (re)written, so Build Smart Previews and the opening look

@@ -51,14 +51,27 @@ guard.detail(&file_name);
 - **Progress:** `progress(done, total)`. A `total` of 0 means the amount of work isn't known yet, and the bar sweeps.
   `set_unit(Unit::Bytes)` makes the count read "12 of 340 MB"; `Unit::Percent` reads "40 %". The default `Unit::Count`
   reads "3 of 25".
-- **Detail:** what the job is on (a file name, a model's name). Detail set by engine code is a name, never a sentence.
-  UI code may set translated text.
+- **Detail:** what the job is on (a file name, a model's name). Detail set by engine code is a name, never a sentence,
+  unless it is a translatable text with names (below). UI code may set translated text.
+- **Names in the text:** a label or detail that names something no catalog translates (a program, a plug-in) says
+  `{key}` where the name goes, and `guard.name(key, value)` gives the name: "Waiting for {program} to finish
+  ({plugin})". `activity.list` shows the English with the names in; the app translates the text as written and puts
+  the names in after (`TaskInfo::templates`, `activity::fill`). Add the text with its `{key}`s to every catalog.
+  Never `format!` a name into a label: the label then matches no catalog entry and is never translated.
+  Once a task has names, the app translates its detail too, so give it a text with `{key}`s, not a bare value such as
+  a file name. Batch end summaries don't carry names yet: a batch with names gets an untranslated summary.
 - **Cancel:**
   - `Cancel::Flag(Arc<AtomicBool>)` adopts the flag the job already checks. The row's ✕, `activity.cancel` and the
     job's own Cancel then all set the same atomic.
   - `Cancel::Yes`: the job polls `guard.is_cancelled()` itself.
   - `Cancel::No`: the job can't stop; it gets no ✕ and doesn't make Quit ask.
   - `set_cancellable(false)` for a phase that has to finish once started (a Lightroom import adding its photos).
+  - **A stop that throws work away:** `guard.warn_on_stop(text)` for a task that waits on something outside the app
+    and loses what it would still bring back when stopped (a plug-in's wait for a program: what the program makes
+    afterwards never comes back). The row then has no ✕ anywhere; the Classic list and the Modern card give it
+    "Stop Waiting…", which shows `text` (translated, names in) and asks first. `activity.list` reports it as
+    `stopWarning`, and `activity.cancel` and Quit Anyway still stop it at once. A job that stops between files
+    loses nothing already done and needs none.
 - **Quiet periodic work** shows no row: the auto-import folder listing runs every few seconds through
   `tasks::spawn(.., None, ..)`.
 

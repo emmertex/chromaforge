@@ -715,11 +715,14 @@ pub fn switch(app: &mut LccApp, to: ModuleId) -> Result<Value, String> {
     if app.ui.module == to {
         return Ok(json!({"module": to}));
     }
-    // The Import tab is not a module: leaving it for one hands the view back to the Library tab
-    // first, as the Classic module bar does. Without this a module switch while the tab is up
-    // (the Modern Develop pill, a shortcut, an agent) leaves the tab's sheet drawn under another
-    // module's chrome, with no way back.
+    // The Browse tab is not a module: a module switch while it is up (the Modern Develop pill, a
+    // shortcut, an agent) leaves it first, as the Classic module bar does — the tab's sheet must
+    // never end up drawn under another module's chrome. With a browsed photo active, Develop
+    // means "Develop without Import": the Library tab's Develop module on the photo in place.
     if crate::import_tab::showing(app) {
+        if to == ModuleId::Develop && app.session.source == lcc_engine::LibrarySource::Folder && app.session.active().is_some() {
+            return crate::import_tab::develop_without_import(app);
+        }
         let _ = crate::import_tab::switch(app, crate::import_tab::Tab::Library);
     }
     match to {

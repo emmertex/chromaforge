@@ -713,7 +713,7 @@ pub fn rescan_with_subfolders(app: &mut LccApp, d: &ImportDialog, subfolders: bo
 /// once, the folder is listed and read on a worker thread (a network share can take minutes),
 /// and the photos then join the view in small batches under a progress window. A browse already
 /// running is replaced; the import review's scan is not.
-pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<Value, String> {
+pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Option<&str>) -> Result<Value, String> {
     let dir = std::path::absolute(std::path::Path::new(path)).map_err(|e| e.to_string())?;
     if !dir.is_dir() {
         return Err(format!("{path}: not a folder"));
@@ -723,6 +723,15 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<
     }
     let dir_s = dir.to_string_lossy().trim_end_matches(['/', '\\']).to_string();
     let subfolders = subfolders.unwrap_or_else(|| app.session.browse.as_ref().is_some_and(|b| b.subfolders));
+    // the quick filter: given, it wins; left out, a re-browse of the same folder keeps the choice
+    // and a new folder starts on Show Not Imported (the engine's library.browse applies the same
+    // rule with the choice as it stands)
+    let not_imported = match show {
+        Some("all") => false,
+        Some("notImported") | Some(_) => true,
+        // same folder keeps the choice; a new folder starts on Show Not Imported
+        None => app.session.browse.as_ref().is_none_or(|b| if b.path == dir_s { b.not_imported } else { true }),
+    };
     let running = app.scan.as_ref().is_some_and(|t| t.browse) || app.import.as_ref().is_some_and(|t| t.browse);
     if running && app.session.browse.as_ref().is_some_and(|b| b.path == dir_s && b.subfolders == subfolders) {
         // already reading this folder: clicking it again must not restart the progress
@@ -734,7 +743,7 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<
         t.progress.cancel.store(true, Ordering::Relaxed);
     }
     app.import = None;
-    app.session.browse = Some(lcc_engine::Browse { path: dir_s.clone(), subfolders });
+    app.session.browse = Some(lcc_engine::Browse { path: dir_s.clone(), subfolders, not_imported });
     app.session.source = lcc_engine::LibrarySource::Folder;
     // the photos the library already knows from this folder show at once: keep or pick the active one
     app.session.keep_active_in_view();
@@ -1068,7 +1077,7 @@ fn dropped_import_params(app: &LccApp) -> Value {
 pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
     ctx.request_repaint();
     if app.lightroom.is_some() {
-        app.toast(ctx, crate::i18n::tr("Finish Lightroom catalog import before adding photos"));
+        app.toast(ctx, crate::i18n::tr("Finish the catalog import before adding photos"));
         return;
     }
     // an import (or a scan, a review waiting behind a dialog) stays the one that runs: a drop
@@ -1475,7 +1484,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             register(ui.ctx(), "label:importSource", r.rect);
         });
         ui.label(
-            egui::RichText::new(crate::i18n::tr("Importing scans the source for photos; it doesn't add the folder to Local (use Local → Browse Folder… to work in a folder without importing)."))
+            egui::RichText::new(crate::i18n::tr("Importing scans the source for photos; it doesn't add the folder to Favorites."))
                 .color(t.text_dim)
                 .small(),
         );

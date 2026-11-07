@@ -104,7 +104,7 @@ pub(crate) fn one_photo(originals: &Path, settings: &str) -> Vec<Table> {
         },
         Table {
             name: "Adobe_images",
-            columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, fileFormat NOT NULL DEFAULT 'unset', fileHeight, fileWidth, masterImage INTEGER, pick NOT NULL DEFAULT 0, rating, rootFile INTEGER NOT NULL DEFAULT 0",
+            columns: "id_local INTEGER PRIMARY KEY, id_global UNIQUE NOT NULL, fileFormat NOT NULL DEFAULT 'unset', fileHeight, fileWidth, masterImage INTEGER, pick NOT NULL DEFAULT 0, rating, rootFile INTEGER NOT NULL DEFAULT 0, touchTime NOT NULL DEFAULT 0",
             rows: vec![vec![
                 Field::Integer(1),
                 text("image-1"),
@@ -115,6 +115,7 @@ pub(crate) fn one_photo(originals: &Path, settings: &str) -> Vec<Table> {
                 Field::Integer(0),
                 Field::Null,
                 Field::Integer(1),
+                Field::Real(814_504_925.0),
             ]],
         },
         Table {

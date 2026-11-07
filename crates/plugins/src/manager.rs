@@ -144,6 +144,7 @@ impl PendingCall {
         let manifest = plugin.manifest();
         let mut ctx = CallContext {
             plugin: &self.id,
+            plugin_name: &manifest.name,
             requested: &manifest.permissions,
             perms: &self.perms,
             lent: &self.lent,

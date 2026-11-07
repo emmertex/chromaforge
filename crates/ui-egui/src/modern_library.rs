@@ -92,18 +92,30 @@ fn search(app: &mut LccApp, ui: &egui::Ui, area: Rect) {
         if chip(ui, "stars", "★ 3+", stars) {
             change = Some(if stars { json!({"rating": 0}) } else { json!({"rating": 3, "ratingOp": "atLeast"}) });
         }
+        let current = if app.ui.semantic_search { app.session.filter.semantic.clone().unwrap_or_default() } else { app.session.filter.text.clone() };
+        if chip(ui, "ai", "AI", app.ui.semantic_search) {
+            app.ui.semantic_search = !app.ui.semantic_search;
+            if !current.trim().is_empty() {
+                change = Some(if app.ui.semantic_search {
+                    json!({"text": "", "semantic": current})
+                } else {
+                    json!({"semantic": Value::Null, "text": current})
+                });
+            }
+        }
         // the text field between the icon and the chips
         let field = Rect::from_min_max(pos2(bg.left() + 32.0, bg.top() + 4.0), pos2(x - 2.0, bg.bottom() - 4.0));
-        let mut text = app.session.filter.text.clone();
+        let mut text = current.clone();
+        let hint = if app.ui.semantic_search { crate::i18n::tr("Describe photos…") } else { crate::i18n::tr("Search photos") };
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let r = crate::text_field::TextField::singleline("modernSearch", &mut text)
-            .hint(crate::i18n::tr("Search photos"))
+            .hint(hint)
             .width(field.width().max(40.0))
             .frame(false)
             .show(&mut child);
         crate::access::label(&r.response, "Search photos");
-        if text != app.session.filter.text && change.is_none() {
-            change = Some(json!({"text": text}));
+        if text != current && change.is_none() {
+            change = Some(if app.ui.semantic_search { json!({"semantic": text}) } else { json!({"text": text}) });
         }
         if let Some(p) = change
             && let Err(e) = app.run("library.filter", p)

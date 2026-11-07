@@ -22,6 +22,8 @@ pub fn report(bytes: &[u8], camera: &str) -> Result<Value, String> {
     };
     // the photo's camera profile (`.dcp` or calibrated look) replaces the file's colour model, as on opening
     let camera_profile = crate::camera_profiles::profile_for(&raw.color, &raw.metadata, camera);
+    // (a profile without a tone curve of its own keeps the tone the photo has without it, fitted with its own colour)
+    let own_colour = camera_profile.as_ref().filter(|d| crate::camera_preview::keeps_photo_tone(d)).map(|_| raw.color.clone());
     if let Some(d) = &camera_profile {
         d.apply(&mut raw.color);
     }
@@ -30,11 +32,25 @@ pub fn report(bytes: &[u8], camera: &str) -> Result<Value, String> {
         json!({"name": d.name, "model": d.model, "source": if calibrated.is_some() { "calibrated" } else { "dcp" }, "look": calibrated})
     });
     let info = raw.info();
-    let lens = crate::lens_profiles::resolve_raw(&info, || lcc_meta::extract(bytes), None);
+    let window = lcc_raw::sensor_window(bytes, [info.active_area.width, info.active_area.height]);
+    let lens = crate::lens_profiles::resolve_raw(&info, window, || lcc_meta::extract(bytes), None);
     let lens_geometry = crate::camera_preview::lens_geometry(&raw.opcodes.list3);
     raw.opcodes.list3.retain(|op| !op.is_lens_correction());
     let scale = crate::files::WbScaleOf::new(raw.format, &raw.color, raw.wb_multipliers, &raw.metadata);
     let profile = raw.color.profile.clone();
+    let mut kept_trace = StartTrace::default();
+    let kept = own_colour.and_then(|own| {
+        let embedded = lens.as_ref().map(|(l, _)| l);
+        crate::camera_preview::tone_without_profile(
+            &mut raw,
+            own,
+            bytes,
+            lens_geometry.as_ref(),
+            embedded,
+            lcc_develop::CameraColour::Auto,
+            &mut kept_trace,
+        )
+    });
     let mut trace = StartTrace::default();
     let (_, t, look) = crate::camera_preview::starting_colour_traced(
         &mut raw,
@@ -46,10 +62,16 @@ pub fn report(bytes: &[u8], camera: &str) -> Result<Value, String> {
         &mut trace,
     );
     // a look's tone curve wins over the file's own `ProfileToneCurve` (`files::load_bytes_now`)
+    // then the tone a profile without a curve of its own keeps (`keptTone`: where it came from)
     let tone = match trace.tone {
+        ToneSource::None if look.is_none() && kept.is_some() => json!("withoutProfile"),
         ToneSource::None if profile.tone_curve.is_some() => json!("dngProfileCurve"),
         other => json!(other),
     };
+    let kept_tone = kept.is_some().then(|| match kept_trace.tone {
+        ToneSource::None => json!("dngProfileCurve"),
+        other => json!(other),
+    });
     let lens = match &lens {
         None => json!({"source": "none"}),
         Some((l, applied)) => {
@@ -74,6 +96,7 @@ pub fn report(bytes: &[u8], camera: &str) -> Result<Value, String> {
         "matrixIsFallback": t.matrix_is_fallback,
         "look": look.as_ref().map(|l| json!({"hueSat": l.hue_sat.is_some()})),
         "tone": tone,
+        "keptTone": kept_tone,
         "whiteBalance": if scale.relative { "relative" } else { "absolute" },
         "dngProfile": {
             "toneCurve": profile.tone_curve.is_some(),

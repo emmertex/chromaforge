@@ -106,7 +106,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.beforeAfterSplit", "Before/After Split", Some("Shift+Y"), "View>Before/After"),
     ("view.beforeAfterTopBottom", "Before/After Top/Bottom", Some("Alt+Y"), "View>Before/After"),
     ("view.beforeAfterSplitTopBottom", "Before/After Split Top/Bottom", Some("Alt+Shift+Y"), "View>Before/After"),
-    ("view.showOriginal", "Show Original", Some("\\"), "View>Before/After"),
+    ("view.showOriginal", "Show Before", Some("\\"), "View>Before/After"),
     ("view.zoomFit", "Zoom to Fit", Some("Cmd+0"), "View>Zoom"),
     ("view.zoom100", "Zoom 100%", Some("Cmd+Alt+0"), "View>Zoom"),
     ("view.zoomToggle", "Toggle Zoom", Some("Z"), "View>Zoom"),
@@ -158,9 +158,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.back", "Back to Grid", Some("Escape"), ""),
     ("tool.done", "Done", Some("Enter"), ""),
     ("view.filterBar", "Filter Bar", Some("Shift+F"), "Library>Filters"),
-    ("local.addRoot", "Add Folder to Local", None, ""),
-    ("local.hide", "Remove from Local", None, ""),
-    ("local.restoreHidden", "Show Hidden Local Locations", None, ""),
+    ("local.addRoot", "Add Folder to Favorites", None, ""),
+    ("local.hide", "Remove from Favorites", None, ""),
+    ("local.restoreHidden", "Show Hidden Favorites", None, ""),
     ("view.fullScreenPreview", "Full Screen Preview", Some("F"), "Window>Screen Mode"),
     ("view.enterFullScreen", "Enter Full Screen", Some("Cmd+Shift+F"), "Window>Screen Mode"),
     ("view.infoOverlay", "Cycle Info Overlay", Some("Cmd+I"), "View>Loupe Info"),
@@ -206,6 +206,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.linear", "Linear Gradient", Some("L"), "Window>Tools"),
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
+    ("tool.object", "Object Selection", None, "Window>Tools"),
     ("tool.none", "No Tool", None, ""),
     // {id?, component}: the component edited on the photo (a Brush component arms the brush on it)
     ("mask.editComponent", "Edit Mask Component", None, ""),
@@ -311,10 +312,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("merge.focusStackLast", "Focus Stack with Last Settings", None, "Photo>Photo Merge"),
     ("file.addPhotos", "Import Photos…", None, "File"),
     // the workspace tabs (Settings ▸ Import ▸ Import as a tab; OneSlips LR-IMP-WINDOW)
-    ("view.importTab", "Import Tab", None, "Window>Modules"),
+    ("view.importTab", "Browse Tab", None, "Window>Modules"),
     ("view.libraryTab", "Library Tab", None, "Window>Modules"),
     // {what?: picks|selected|all}: the Import tab's big button
     ("import.start", "Import from the Import Tab", None, ""),
+    // the Browse tab's "Develop without Import": the Library tab's Develop module on the browsed
+    // folder's active photo, the edits to the XMP sidecar, the catalog untouched
+    ("import.develop", "Develop without Import", None, ""),
     // {take?, previews?, copy?, moveFiles?, destination?, organize?, rename?, preset?, presets?, keywords?, metadataPreset?, album?, newAlbum?…}
     ("import.configure", "Import Tab Settings", None, ""),
     ("import.settings", "Show Import Tab Settings", None, ""),
@@ -323,7 +327,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("file.addFolder", "Import from Folder…", None, "File"),
     // {path?, into?: open | new, name?, location?}: asks where the catalog goes unless `into` (or
     // Settings) says (#2672, `lightroom_destination`)
-    ("file.importLightroom", "Import Lightroom Catalog…", None, "File>More Imports"),
+    ("file.importLightroom", "Import Lightroom or Capture One Catalog…", None, "File>More Imports"),
     ("file.importImmich", "Import from Immich…", None, "File>More Imports"),
     ("immich.connections", "Immich Settings…", None, "Library>Immich"),
     ("file.addFromDevice", "Import from Device", None, ""),
@@ -368,6 +372,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.catalogSettings", "Catalog Settings…", None, "Edit"),
     ("dialog.exportCatalog", "Export as Catalog…", None, "File>Libraries"),
     ("dialog.importCatalog", "Import from Another Catalog…", None, "File>More Imports"),
+    crate::legacy::IMPORT_LIBRARY,
     ("app.recentLibraries", "Recent Libraries", None, ""),
     ("app.clearRecentLibraries", "Clear Recent Libraries", None, ""),
     // Settings ▸ Display
@@ -971,10 +976,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             } else if app.ui.fullscreen {
                 app.ui.fullscreen = false;
                 app.ui.slideshow = None;
-            } else if !app.ui.tool.is_empty() {
-                app.ui.tool.clear();
-                // a tool waiting for a new mask is put away with it (the mask selected before comes back)
-                app.ui.mask_new = None;
+            } else if !app.ui.tool.is_empty() || app.ui.mask_new.is_some() {
+                if app.ui.right == RightPanel::Masking {
+                    crate::panels::masking::disarm(app);
+                } else {
+                    app.ui.tool.clear();
+                    // a tool waiting for a new mask is put away with it (the mask selected before comes back)
+                    app.ui.mask_new = None;
+                }
             } else if app.ui.right == RightPanel::Crop && app.ui.view == ViewMode::Detail {
                 // Esc leaves the crop tool (the crop stays), as C does; the next Esc goes back
                 panel(app, &ctx, RightPanel::Crop, "Crop, Rotate, Geometry");
@@ -1522,7 +1531,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 None => cur.next(),
             };
             app.ui.mask_overlay_mode = next.name().into();
-            app.ui.mask_overlay = true;
+            // ⇧O shows the overlay in its new look; the overlay menu's choice of look (`show: false`) leaves it as it
+            // was, so picking a look never latches the overlay on (OneSlips 0c58de7ad: how it got stuck on)
+            if p.get("show").and_then(Value::as_bool) != Some(false) {
+                app.ui.mask_overlay = true;
+            }
             app.toast(&ctx, next.label());
             Ok(json!({"mode": next.name()}))
         }
@@ -1775,6 +1788,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 app.end_midi_interaction();
                 let _ = app.session.end_interaction();
                 app.ui.tool.clear();
+                if app.ui.right == RightPanel::Masking {
+                    crate::panels::masking::disarm(app);
+                }
                 // back to the panel shown before the tool (hidden if it was)
                 app.ui.right = app.ui.leave_tool();
             }
@@ -1809,7 +1825,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         s if s.starts_with("tool.") => {
             let tool = &s["tool.".len()..];
             match tool {
-                "none" => app.ui.tool.clear(),
+                "none" => {
+                    app.ui.tool.clear();
+                    if app.ui.right == RightPanel::Masking {
+                        crate::panels::masking::disarm(app);
+                    }
+                }
                 "guidedUpright" => {
                     // Crop & Geometry with Guided Upright on, ready to draw guides
                     app.ui.right = RightPanel::Crop;
@@ -1825,6 +1846,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "guidedUpright".into();
                 }
                 "brush" => {
+                    if p.get("toggle").and_then(Value::as_bool) == Some(true) && app.ui.tool == "brush" {
+                        crate::panels::masking::disarm(app);
+                        return Some(Ok(json!({"disarmed": "brush"})));
+                    }
                     // A new mask is armed: the first stroke makes it. Add/Subtract are selection
                     // operations, not the brush's Erase mode: paint positively into a new component.
                     if p.get("new").and_then(Value::as_bool) == Some(true) {
@@ -1852,8 +1877,29 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.tool = "brush".into();
                 }
                 "linear" | "radial" => {
+                    if p.get("toggle").and_then(Value::as_bool) == Some(true) && app.ui.tool == tool {
+                        crate::panels::masking::disarm(app);
+                        return Some(Ok(json!({"disarmed": tool})));
+                    }
                     // armed: a drag on the photo draws the gradient (a click places a default one)
                     return Some(crate::panels::masking::arm_new(app, tool));
+                }
+                "object" => {
+                    if p.get("toggle").and_then(Value::as_bool) == Some(true) && app.ui.tool == "object" {
+                        crate::panels::masking::disarm(app);
+                        return Some(Ok(json!({"disarmed": "object"})));
+                    }
+                    let r = if p.get("new").and_then(Value::as_bool) == Some(true) || app.session.active_mask.is_none() || app.ui.mask_new.is_some() {
+                        crate::panels::masking::arm_new(app, "object")
+                    } else if let Some(op) = p.get("op").and_then(Value::as_str) {
+                        app.run("mask.addComponent", json!({"kind": "object", "op": op}))
+                    } else {
+                        app.ui.right = RightPanel::Masking;
+                        app.ui.view = ViewMode::Detail;
+                        app.ui.tool = "object".into();
+                        Ok(json!({"armed": "object"}))
+                    };
+                    return Some(r);
                 }
                 // W again puts the selector away without sampling (OneSlips, test notes 2026-10-25 note 13)
                 "wbPicker" if app.ui.tool == "wbPicker" && p.get("sample").is_none() => app.ui.tool.clear(),
@@ -2277,7 +2323,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             // listed and read in the background (see `import::browse`)
             let path = p.get("path").and_then(Value::as_str)?;
-            crate::import::browse(app, path, p.get("subfolders").and_then(Value::as_bool))
+            let show = p.get("show").and_then(Value::as_str);
+            crate::import::browse(app, path, p.get("subfolders").and_then(Value::as_bool), show)
         }
         "dialog.import" => {
             if crate::lightroom_import::is_running(app) {
@@ -2337,8 +2384,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             let path = match p.get("path").and_then(Value::as_str).map(str::to_string) {
                 Some(path) => Some(path),
                 None => {
-                    let req =
-                        PickRequest::file(crate::i18n::tr("Import Lightroom Catalog"), crate::i18n::tr("Lightroom Classic Catalog"), &["lrcat"]);
+                    let req = PickRequest::file(
+                        crate::i18n::tr("Import Lightroom or Capture One Catalog"),
+                        crate::i18n::tr("Lightroom or Capture One Catalog"),
+                        &["lrcat", "cocatalogdb"],
+                    )
+                    .with_filter(crate::i18n::tr("Lightroom Classic Catalog"), &["lrcat"])
+                    .with_filter(crate::i18n::tr("Capture One Catalog"), &["cocatalogdb"]);
                     match crate::pick::ask(app, id, p, "path", req, |s| s.pick_lightroom_catalog.as_mut().and_then(|f| f()).map(|x| vec![x])) {
                         Picked::Now(v) => v.into_iter().next(),
                         Picked::Later | Picked::Unavailable => None,
@@ -2550,7 +2602,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             if crate::import_tab::enabled(app) && p.get("path").is_none() && p.get("album").is_none() {
                 let dcim = std::path::Path::new(&path).join("DCIM");
                 let at = if dcim.is_dir() { dcim.to_string_lossy().to_string() } else { path };
-                return Some(crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &at, None)));
+                return Some(
+                    crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &at, None, None)),
+                );
             }
             let r = crate::import::open(app, vec![path]);
             // only the scan just started (an error means another scan is running)
@@ -2576,7 +2630,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             match path {
                 // a folder picked here (not given by a script): the Import tab browses it
                 Some(path) if crate::import_tab::enabled(app) && p.get("path").is_none() && p.get("album").is_none() => {
-                    crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &path, None))
+                    crate::import_tab::switch(app, crate::import_tab::Tab::Import).and_then(|_| crate::import::browse(app, &path, None, None))
                 }
                 Some(path) => {
                     let subfolders = p.get("subfolders").and_then(Value::as_bool).unwrap_or(true);

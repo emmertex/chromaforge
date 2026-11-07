@@ -294,6 +294,67 @@ pub fn lookup_with(
     h: f64,
     orientation: lcc_geom::Orientation,
 ) -> Option<(EmbeddedLens, Applied)> {
+    lookup_framed(db, m, given, w, h, orientation, None)
+}
+
+/// Where a raw's developed picture sits on its camera's full sensor, when that is known and is not the camera's
+/// normal image area: a full-frame body's 5:4, 1:1, 16:9 or DX crop. A lens profile describes the lens over the
+/// camera's normal frame, so such a picture gets the part of it under its pixels ([`lookup_framed`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageArea {
+    /// The stored frame (the active area) on the sensor.
+    pub window: lcc_raw::SensorWindow,
+    /// The default crop within the active area: the developed picture.
+    pub crop: lcc_raw::Rect,
+}
+
+impl ImageArea {
+    /// The image area of a raw whose stored frame is at `window` (`lcc_raw::sensor_window`). `None` (the profile is
+    /// applied to the developed picture as a whole, as before) without a window, for the full sensor, or when the
+    /// window doesn't describe this raw's active area, and for non-square pixels (the developed picture is then
+    /// stretched, and isn't a plain part of the sensor).
+    pub fn of(raw: &lcc_raw::RawInfo, window: Option<lcc_raw::SensorWindow>) -> Option<ImageArea> {
+        ImageArea::new(window?, [raw.active_area.width, raw.active_area.height], raw.crop, raw.pixel_aspect)
+    }
+
+    /// [`Self::of`] from the parts: the stored frame's `window`, the `active` area's size, the default `crop` within
+    /// it (as `RawImage::develop_crop` takes it) and the pixel aspect.
+    pub fn new(window: lcc_raw::SensorWindow, active: [usize; 2], crop: lcc_raw::Rect, pixel_aspect: f32) -> Option<ImageArea> {
+        let [aw, ah] = active;
+        if !window.is_valid() || window.is_full() || window.size != active || pixel_aspect.is_nan() || (pixel_aspect - 1.0).abs() >= 0.01 {
+            return None;
+        }
+        let c = crop.clipped(aw, ah);
+        let crop = if c.width == 0 || c.height == 0 { lcc_raw::Rect::new(0, 0, aw, ah) } else { c };
+        let area = ImageArea { window, crop };
+        area.reference().map(|_| area)
+    }
+
+    /// The camera's normal frame the profile is evaluated for: the full sensor with this raw's own default-crop
+    /// margins (8256 × 5504 on a Z 7, exactly its 3:2 picture), `[w, h]`.
+    fn reference(&self) -> Option<[usize; 2]> {
+        let [sw, sh] = self.window.sensor;
+        let [aw, ah] = self.window.size;
+        let w = sw.checked_sub(aw.checked_sub(self.crop.width)?)?;
+        let h = sh.checked_sub(ah.checked_sub(self.crop.height)?)?;
+        (w >= 2 && h >= 2).then_some([w, h])
+    }
+}
+
+/// [`lookup_with`] for a picture at `area` on its sensor ([`ImageArea`]): the profile is evaluated for the camera's
+/// normal frame with the body's crop factor (a 35 mm equivalent focal length only rounds what the window says
+/// exactly), then re-expressed for this picture ([`lcc_pipeline::optics::reframe_lens`]), so each sensor position
+/// gets the correction it gets in a full-frame photo. Without an area, the profile spans the `w × h` picture, as it
+/// always has.
+pub fn lookup_framed(
+    db: &LensDb,
+    m: &lcc_meta::Metadata,
+    given: Option<&GivenLens>,
+    w: f64,
+    h: f64,
+    orientation: lcc_geom::Orientation,
+    area: Option<&ImageArea>,
+) -> Option<(EmbeddedLens, Applied)> {
     let valid = |f: f64| f.is_finite() && f > 0.0;
     let camera = db.find_camera(m.make.as_deref().unwrap_or_default(), m.model.as_deref().unwrap_or_default());
     let (lens, focal, aperture, applied) = match given {
@@ -319,10 +380,24 @@ pub fn lookup_with(
         }
     };
     let aperture = aperture.filter(|a| valid(*a));
-    // the crop factor: the camera's, else what the 35 mm equivalent focal length implies
-    let crop = frame_crop_factor(camera.and_then(|c| c.crop_factor), focal, m.focal_length_35mm);
-    let shot = Shot { focal, aperture, distance: None, crop_factor: crop, width: w, height: h };
-    let corr = lens.correction(&shot)?;
+    let reference = area.and_then(|a| Some((a, a.reference()?))).filter(|(a, _)| [a.crop.width as f64, a.crop.height as f64] == [w, h]);
+    let corr = match reference {
+        Some((a, [rw, rh])) => {
+            // the camera's normal frame, at the body's own crop factor; then the part of it under this picture,
+            // which sits as far into it as the stored frame sits into the sensor (both share the default-crop margins)
+            let (rw, rh) = (rw as f64, rh as f64);
+            let shot = Shot { focal, aperture, distance: None, crop_factor: camera.and_then(|c| c.crop_factor), width: rw, height: rh };
+            let full = lens.correction(&shot)?;
+            let origin = [a.window.origin[0] as f64, a.window.origin[1] as f64];
+            lcc_pipeline::optics::reframe_lens(&full, [rw, rh], [w, h], origin)
+        }
+        None => {
+            // the crop factor: the camera's, else what the 35 mm equivalent focal length implies
+            let crop = frame_crop_factor(camera.and_then(|c| c.crop_factor), focal, m.focal_length_35mm);
+            let shot = Shot { focal, aperture, distance: None, crop_factor: crop, width: w, height: h };
+            lens.correction(&shot)?
+        }
+    };
     Some((lcc_pipeline::optics::reorient_lens(&corr, orientation, w, h), applied))
 }
 
@@ -340,17 +415,24 @@ fn frame_crop_factor(camera: Option<f64>, focal: f64, focal_35mm: Option<f64>) -
 }
 
 /// [`crate::files::embedded_lens`], else the database profile ([`lookup`]) for a raw with metadata `meta`.
-pub fn for_raw(raw: &lcc_raw::RawInfo, meta: impl FnOnce() -> lcc_meta::Metadata) -> Option<EmbeddedLens> {
-    resolve_raw(raw, meta, None).map(|(l, _)| l)
+pub fn for_raw(raw: &lcc_raw::RawInfo, window: Option<lcc_raw::SensorWindow>, meta: impl FnOnce() -> lcc_meta::Metadata) -> Option<EmbeddedLens> {
+    resolve_raw(raw, window, meta, None).map(|(l, _)| l)
 }
 
 /// The lens correction for a raw and where it comes from, first that applies: the file's embedded correction,
 /// the lens `given` by the caller ([`GivenLens`]), the automatic match by the metadata's lens name; else `None`.
-pub fn resolve_raw(raw: &lcc_raw::RawInfo, meta: impl FnOnce() -> lcc_meta::Metadata, given: Option<&GivenLens>) -> Option<(EmbeddedLens, Applied)> {
+/// `window` is where the raw's stored frame sits on its sensor (`lcc_raw::sensor_window` of the file), for a
+/// database profile of a smaller image area ([`ImageArea`]).
+pub fn resolve_raw(
+    raw: &lcc_raw::RawInfo,
+    window: Option<lcc_raw::SensorWindow>,
+    meta: impl FnOnce() -> lcc_meta::Metadata,
+    given: Option<&GivenLens>,
+) -> Option<(EmbeddedLens, Applied)> {
     resolve(crate::files::embedded_lens(raw), || {
         let db = database()?;
         let (w, h) = raw.developed_size();
-        lookup_with(&db, &meta(), given, w as f64, h as f64, raw.orientation)
+        lookup_framed(&db, &meta(), given, w as f64, h as f64, raw.orientation, ImageArea::of(raw, window).as_ref())
     })
 }
 
@@ -359,6 +441,7 @@ pub fn resolve_raw(raw: &lcc_raw::RawInfo, meta: impl FnOnce() -> lcc_meta::Meta
 /// [`resolve_raw`] without a given lens. A picked lens the database lacks (or without a focal length) gives none.
 pub fn resolve_picked(
     raw: &lcc_raw::RawInfo,
+    window: Option<lcc_raw::SensorWindow>,
     meta: impl FnOnce() -> lcc_meta::Metadata,
     picked: Option<&GivenLens>,
 ) -> Option<(EmbeddedLens, Applied)> {
@@ -366,9 +449,9 @@ pub fn resolve_picked(
         Some(g) => {
             let db = database()?;
             let (w, h) = raw.developed_size();
-            lookup_with(&db, &meta(), Some(g), w as f64, h as f64, raw.orientation)
+            lookup_framed(&db, &meta(), Some(g), w as f64, h as f64, raw.orientation, ImageArea::of(raw, window).as_ref())
         }
-        None => resolve_raw(raw, meta, None),
+        None => resolve_raw(raw, window, meta, None),
     }
 }
 
@@ -788,3 +871,7 @@ mod tests {
         assert!(after < 1.0 && after < before / 8.0, "corrected line bent by {after} px (uncorrected {before})");
     }
 }
+
+#[cfg(test)]
+#[path = "tests_lens_crop.rs"]
+mod tests_crop;

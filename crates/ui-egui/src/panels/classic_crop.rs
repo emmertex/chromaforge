@@ -104,7 +104,7 @@ pub(crate) fn transform_body(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let video = crate::video_ui::photo_is_video(app, id);
     crate::video_ui::video_gate(ui, video, |ui| {
         padded(ui, |ui| {
-            ui.label(crate::i18n::tr("Upright"));
+            crate::widgets::row_caption(ui, "upright", "Upright");
             {
                 use lcc_develop::Upright;
                 let modes = [

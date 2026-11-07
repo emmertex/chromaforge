@@ -171,9 +171,14 @@ Plug-in Manager show which program it is, not how the plug-in will use it.
   reads and writes are answered on the UI thread, as for export hooks; a session with no UI
   (headless MCP, the CLI) refuses them. `program.list` works there; `program.start` doesn't (start
   programs from a command, where the user is).
-- **The activity stack** shows each run ("Waiting for a plug-in's program", kind `pluginProgram`;
-  detail: the program's name). ✕ ends the run (`program.end` with `cancelled`) but leaves the
-  program running: it belongs to the user now.
+- **The activity stack** shows each run, named after the program and the plug-in ("Waiting for
+  DxO PureRAW to finish (Edit in DxO PureRAW)", kind `pluginProgram`), with the detail "The results
+  come back when DxO PureRAW closes". A run has no ✕: stopping the wait throws its results away, so
+  the activity list (or the Modern layout's card) offers "Stop Waiting…", which asks first and says
+  that what the program makes from then on won't come back and that the program keeps running.
+  Confirming ends the run (`program.end` with `cancelled`) but leaves the program running: it
+  belongs to the user now. `activity.list` reports the run's `stopWarning`; `activity.cancel` and
+  Quit Anyway stop the wait without asking.
 - **The run's folder** is deleted once `program.end` has returned and the program has exited, also
   when the hook fails. If the app quits first, the folder is left for the program; the next start
   of the app removes run folders more than a day old, except those of runs another copy of the app

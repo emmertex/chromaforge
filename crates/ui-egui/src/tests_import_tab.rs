@@ -186,32 +186,34 @@ fn library_filters_dont_hide_the_browsed_folder() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A module switch while the Import tab is up leaves the tab first (the Classic module bar's rule,
+/// A module switch while the Browse tab is up leaves the tab first (the Classic module bar's rule,
 /// kept for the Modern Develop pill, shortcuts and agents too): the tab's sheet must never end up
-/// drawn under another module's chrome.
+/// drawn under another module's chrome. Develop with a browsed photo active is the exception that
+/// gives the rule a meaning: it develops the browsed photo without importing it.
 #[test]
-fn switching_modules_leaves_the_import_tab_first() {
+fn switching_modules_leaves_the_browse_tab_first() {
     for layout in ["classic", "modern"] {
         let mut h = app([1400.0, 900.0], layout);
         let dir = folder(&format!("switch-{layout}"), 2);
         exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
         assert_eq!(h.app.ui.tab, Tab::Import, "{layout}");
-        // a photo in the library, as in real use: Develop works on the library's photos, not on
-        // the browsed ones, so leaving Import for Develop hands the library view over
-        exec(&mut h, "import.configure", json!({"take": "all", "previews": "none"}));
-        exec(&mut h, "import.start", json!({}));
-        h.step_until(SETTLE, |h| h.app.import.is_none());
-        exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
-        assert_eq!(h.app.ui.tab, Tab::Import, "{layout}");
+        // Develop on the browsed photo, in place: the tab hands over and the edit adds no
+        // library photo
         exec(&mut h, "module.develop", json!({}));
         assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop, "{layout}");
-        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Import tab handed over");
+        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Browse tab handed over");
         h.settle(SETTLE);
-        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Import sheet under Develop");
-        // and the way back works
+        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Browse sheet under Develop");
+        assert!(h.app.session.catalog.photos().filter(|p| p.in_library()).count() == 0, "{layout}");
+        // and the way back works: the folder view is still on, so the Browse tab comes back
         exec(&mut h, "module.library", json!({}));
         assert_eq!(h.app.ui.module, crate::module::ModuleId::Library, "{layout}");
-        assert!(!matches!(h.app.session.source, lcc_engine::LibrarySource::Folder), "{layout}");
+        assert_eq!(h.app.ui.tab, Tab::Import, "{layout}: the folder view brings Browse back");
+        assert!(matches!(h.app.session.source, lcc_engine::LibrarySource::Folder), "{layout}");
+        // another module leaves the tab without developing anything
+        exec(&mut h, "module.map", json!({}));
+        assert_eq!(h.app.ui.tab, Tab::Library, "{layout}: the Browse tab handed over");
+        assert!(!has_widget(&mut h, "panel:importTab"), "{layout}: no Browse sheet under Map");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -360,6 +362,81 @@ fn the_review_imports_with_the_preset_stack_used_last_and_keeps_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// "Develop without Import" opens the browsed folder's active photo in the Library tab's Develop
+/// module without importing it: the browse stays on, an edit lands on the photo (the sidecar
+/// carries it, the catalog's library stays empty), and going back to the Browse tab brings the
+/// folder view back.
+#[test]
+fn develop_without_import_edits_a_browsed_photo_in_place() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.app.session = lcc_engine::Session::new().with_fs();
+    h.settle(SETTLE);
+    let dir = folder("develop-local", 2);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.session.visible_cloned().len(), 2);
+    let r = exec(&mut h, "import.develop", json!({}));
+    assert_eq!(r["module"], "develop");
+    assert_eq!(h.app.ui.tab, Tab::Library, "the Library tab shows the Develop module");
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop);
+    assert_eq!(h.app.session.source, lcc_engine::LibrarySource::Folder, "the folder view stays on");
+    // an edit on the browsed photo, without the photo joining the library
+    let active = h.app.session.active().expect("the browsed photo is active");
+    h.app.run("develop.set", json!({"control": "light.exposure", "value": 0.5})).unwrap();
+    let p = h.app.session.catalog.photo(active).expect("the photo is on record");
+    assert!((p.develop.light.exposure - 0.5).abs() < 1e-6, "the edit lands");
+    assert!(p.local && !p.in_library(), "browsed only: no library photo was added");
+    // the folder view comes back with the Browse tab
+    exec(&mut h, "view.importTab", json!({}));
+    assert_eq!(h.app.ui.tab, Tab::Import);
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Library);
+    assert_eq!(h.app.session.visible_cloned().len(), 2, "browsing again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// "Develop without Import" without a photo chosen refuses with a reason, and a library tab
+/// switch while not browsing refuses too.
+#[test]
+fn develop_without_import_needs_a_browse_and_a_photo() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.settle(SETTLE);
+    assert!(try_exec(&mut h, "import.develop", json!({}))["ok"] == false, "nothing browsed");
+    let dir = folder("develop-guard", 1);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    // the browse makes its first photo active; deselecting refuses
+    exec(&mut h, "library.select", json!({"ids": []}));
+    assert!(try_exec(&mut h, "import.develop", json!({}))["ok"] == false, "no photo chosen");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The browse quick filter: Show All / Show Not Imported in the bar — by default only the files
+/// an import would take, Show All adds the ones the library has already with an "In library"
+/// badge on their cells.
+#[test]
+fn browse_show_all_marks_photos_in_the_library() {
+    let mut h = app([1400.0, 900.0], "classic");
+    h.app.session = lcc_engine::Session::new().with_fs();
+    h.settle(SETTLE);
+    let dir = folder("show-all", 2);
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert!(has_widget(&mut h, "button:browseShow-0") && has_widget(&mut h, "button:browseShow-1"), "the quick filter is in the bar");
+    // the first photo joins the library, as Add to My Photos does
+    let first = h.app.session.visible_cloned()[0];
+    exec(&mut h, "photo.addToLibrary", json!({"ids": [first.0]}));
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy()}));
+    assert_eq!(h.app.session.visible_cloned().len(), 1, "not imported is the default");
+    // Show All: both files, the library one badged
+    exec(&mut h, "library.browse", json!({"path": dir.to_string_lossy(), "show": "all"}));
+    assert_eq!(h.app.session.visible_cloned().len(), 2);
+    let library_one = h.app.session.visible_cloned().into_iter().find(|id| h.app.session.catalog.photo(*id).is_some_and(|p| p.in_library()));
+    assert_eq!(library_one, Some(first), "the library photo shows");
+    h.step();
+    assert!(
+        library_one.is_some_and(|id| h.app.widgets.iter().any(|(n, _)| *n == format!("badge:inLibrary:{}", id.0))),
+        "the In library badge is on its cell"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn widget_rect(h: &Headless, id: &str) -> Option<egui::Rect> {
     h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r)
 }
@@ -438,6 +515,54 @@ fn open_add_preset(h: &mut Headless) {
     }
 }
 
+/// The import bar with main's Show All / Show Not Imported and Photo Grid / Grid / Detail segments and
+/// Develop without Import: the browsed folder's own name always shows whole (its parents fold into
+/// "…" first, then the segments go), and nothing of the bar runs over the panels beside it (at
+/// 1000 wide the segments wrapped and spilled over Import from).
+#[test]
+fn the_import_bar_keeps_the_folder_name_whole_and_stays_inside_its_row() {
+    let root = folder("barfit", 0);
+    let deep = root.join("Archive").join("2026").join("November").join("Demo Shoot").join("Ceremony Selects");
+    std::fs::create_dir_all(&deep).unwrap();
+    let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
+    let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 40, 255]);
+    std::fs::write(deep.join("p.png"), lcc_engine::export::encode_image(&img, &o).unwrap()).unwrap();
+    for size in [[1600.0, 1000.0], [1000.0, 800.0]] {
+        let mut h = app(size, "compact");
+        exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
+        assert!(has_widget(&mut h, "label:importWhere"), "{size:?}: the bar is up");
+        let bar = widget_rect(&h, "importBar").expect("the bar");
+        let label = widget_rect(&h, "label:importWhere").expect("the folder's label");
+        let name = h
+            .view
+            .ctx
+            .fonts_mut(|f| f.layout_no_wrap("Ceremony Selects".to_string(), egui::FontId::proportional(12.5), egui::Color32::WHITE).size().x);
+        assert!(label.width() + 0.5 >= name, "{size:?}: the folder's name shows whole ({} of {name})", label.width());
+        let items: Vec<(String, egui::Rect)> = h
+            .app
+            .widgets
+            .iter()
+            .filter(|(w, r)| {
+                (w.starts_with("button:browse")
+                    || w.starts_with("button:importTake-")
+                    || w.starts_with("importCrumb:")
+                    || w.contains("importGo")
+                    || w.contains("importDevelop"))
+                    && r.width() > 0.0
+            })
+            .cloned()
+            .collect();
+        assert!(items.iter().any(|(w, _)| w.contains("importGo")), "{size:?}: the Import button is on the bar");
+        for (w, r) in &items {
+            assert!(bar.expand(0.5).contains_rect(*r), "{size:?}: {w} {r:?} stays inside the bar {bar:?}");
+            if !w.starts_with("importCrumb:") {
+                assert!(r.left() >= label.right() - 0.5, "{size:?}: {w} {r:?} clears the folder's label {label:?}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn text_width(h: &Headless, text: &str) -> f32 {
     h.view.ctx.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), egui::Color32::WHITE).size().x)
 }
@@ -487,4 +612,47 @@ fn manage_presets_opens_the_presets_manager() {
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
     assert!(h.app.ui.dialog.is_some(), "a dialog is open: {:?}", h.app.ui.dialog);
+}
+
+/// The Import bar names the browsed folder after its parents as a breadcrumb (OneSlips LR-IMP-WINDOW 6e4fa44d0): the
+/// nearest parent opens with a click; on a narrow bar the parents that don't fit go under "…", whose menu lists them,
+/// and each one opens.
+#[test]
+fn the_import_bar_shows_the_folder_as_a_breadcrumb() {
+    let deep_root = folder("crumbs", 0);
+    let deep = deep_root.join("a").join("b").join("c").join("d").join("e");
+    std::fs::create_dir_all(&deep).unwrap();
+    let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
+    let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 40, 255]);
+    std::fs::write(deep.join("p.png"), lcc_engine::export::encode_image(&img, &o).unwrap()).unwrap();
+    let crumbs: Vec<String> = crate::panels::grid::crumbs(&deep.to_string_lossy()).into_iter().map(|(_, to)| to).collect();
+    let parent = crumbs.len() - 2;
+
+    // wide enough for the bar's Develop, View and Show controls to leave the breadcrumb room
+    let mut h = app([2400.0, 900.0], "compact");
+    exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
+    assert_eq!(h.app.ui.tab, Tab::Import);
+    let id = format!("importCrumb:{parent}");
+    assert!(has_widget(&mut h, &id), "the nearest parent {id} is in the bar");
+    assert!(!has_widget(&mut h, &format!("importCrumb:{}", crumbs.len() - 1)), "the folder itself is the bar's label");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": id}), T)["ok"], true);
+    h.settle(SETTLE);
+    let browsed = h.app.session.browse.as_ref().map(|b| std::path::PathBuf::from(&b.path));
+    assert_eq!(browsed.as_deref(), Some(deep.parent().unwrap()), "the parent opens");
+
+    // narrow: the top of the path hides under "…", and its menu opens a hidden folder
+    let mut h = app([900.0, 700.0], "compact");
+    exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
+    assert!(has_widget(&mut h, "importCrumb:more"), "the parents that don't fit are under …");
+    assert!(!has_widget(&mut h, "importCrumb:0"), "the first folder is hidden until the menu opens");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "importCrumb:more"}), T)["ok"], true);
+    assert!(has_widget(&mut h, "importCrumb:0"), "the menu lists it");
+    let top = crumbs.len() - 6;
+    let id = format!("importCrumb:{top}");
+    assert!(has_widget(&mut h, &id), "the menu lists {id}");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": id}), T)["ok"], true);
+    h.settle(SETTLE);
+    let browsed = h.app.session.browse.as_ref().map(|b| std::path::PathBuf::from(&b.path));
+    assert_eq!(browsed.as_deref(), Some(deep_root.as_path()), "the hidden folder opens");
+    let _ = std::fs::remove_dir_all(&deep_root);
 }

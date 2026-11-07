@@ -47,10 +47,12 @@ pub mod import;
 pub mod import_report;
 mod import_screen;
 pub mod import_tab;
+pub mod legacy;
 pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
+pub mod loupe_timing;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
@@ -124,6 +126,8 @@ mod tests_background_prep;
 mod tests_bar_buttons;
 #[cfg(test)]
 mod tests_before_after;
+#[cfg(test)]
+mod tests_bottom_bar_compact;
 #[cfg(test)]
 mod tests_breadcrumb_more;
 #[cfg(test)]
@@ -287,6 +291,8 @@ mod tests_mask_range_pick;
 #[cfg(test)]
 mod tests_mask_sections;
 #[cfg(test)]
+mod tests_mask_tree;
+#[cfg(test)]
 mod tests_masking;
 #[cfg(test)]
 mod tests_masking_layout;
@@ -308,6 +314,8 @@ mod tests_offline;
 mod tests_open_lightroom;
 #[cfg(test)]
 mod tests_osd;
+#[cfg(test)]
+mod tests_overlay_on;
 #[cfg(test)]
 mod tests_panel_restore;
 #[cfg(test)]
@@ -374,6 +382,8 @@ mod tests_solo_sections;
 mod tests_space_hand;
 #[cfg(test)]
 mod tests_space_hold;
+#[cfg(test)]
+mod tests_stand_in_crop;
 #[cfg(test)]
 mod tests_surface;
 #[cfg(test)]
@@ -816,6 +826,14 @@ pub struct LccApp {
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
     /// "thumb", "none").
     pub loupe_shown: Option<(lcc_catalog::PhotoId, &'static str)>,
+    /// When each photo stepped to in the loupe first showed (`ui.inspect` → `perf.loupeSteps`).
+    pub loupe_timing: loupe_timing::LoupeTiming,
+    /// How the loupe drew its picture last frame ([`panels::detail::LoupeDrawn`]): where the
+    /// picture's corners went and the rect it fills (tests check that no part of it is empty).
+    pub loupe_drawn: Option<panels::detail::LoupeDrawn>,
+    /// What the loupe's look-ahead was made for last (photo, stepping back, catalog revision,
+    /// edge), so it is worked out again only when one of them changes ([`panels::detail`]).
+    pub(crate) look_ahead_made_for: Option<(lcc_catalog::PhotoId, bool, u64, usize)>,
     /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked
     /// its first picture ([`LccApp::pictures_missing`]).
     pub pictures_missing_pass: Option<u64>,
@@ -1138,6 +1156,9 @@ impl LccApp {
             space_hand: None,
             brush_live: None,
             loupe_shown: None,
+            loupe_timing: Default::default(),
+            loupe_drawn: None,
+            look_ahead_made_for: None,
             pictures_missing_pass: None,
             prep_at: None,
             prep_backward: false,
@@ -1351,13 +1372,41 @@ impl LccApp {
             };
         }
         if r.is_ok() && id == "library.toggleFilters" {
-            // the search field shows the text filter: empty while the filters are off, back with them
-            self.ui.search = self.session.filter.text.clone();
+            // the search field shows the active text or semantic filter: empty while the filters are off, back with them
+            if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                self.ui.search = q.clone();
+            } else if !self.session.filter.text.is_empty() {
+                self.ui.semantic_search = false;
+                self.ui.search = self.session.filter.text.clone();
+            } else {
+                self.ui.search.clear();
+            }
         }
         if r.is_ok() && id == "library.clearFilter" {
             // the search field shows the text filter: cleared from anywhere (the loupe's pill, the
             // menu), it must not keep a search that no longer applies (issue #1648)
             self.ui.search.clear();
+        }
+        if r.is_ok() && id == "search.semantic" {
+            if params.get("clear").and_then(Value::as_bool) == Some(true) {
+                if self.ui.semantic_search {
+                    self.ui.search.clear();
+                }
+            } else if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                self.ui.search = q.clone();
+            }
+        }
+        if r.is_ok() && id == "library.filter" && params.get("semantic").is_some() {
+            if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                if self.ui.search.trim() != q {
+                    self.ui.search = q.clone();
+                }
+            } else if self.ui.semantic_search && params.get("semantic").is_some_and(Value::is_null) {
+                self.ui.search.clear();
+            }
         }
         if r.is_ok() && id == "mask.addComponent" && matches!(self.ui.tool.as_str(), "colorRange" | "brush" | "object") {
             // The eyedropper, the brush and the object tool take every press on the photo, so the handles of a
@@ -2669,6 +2718,16 @@ impl LccApp {
             let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
             self.toast(ctx, msg);
         }
+        // an older install's presets (the app under an earlier name, on this computer) join too, once
+        // each, with no step of the user's: File ▸ More Imports ▸ Import Presets from Older Installs
+        // asks again
+        if let Ok(r) = self.run("store.importOlderInstalls", serde_json::json!({})) {
+            let n: u64 = r["merged"].as_array().into_iter().flatten().map(|m| m["presets"].as_u64().unwrap_or(0)).sum();
+            if n > 0 {
+                let msg = crate::i18n::tr_format!("{n} presets from an older install were added.", n = n);
+                self.toast(ctx, msg);
+            }
+        }
     }
 
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).
@@ -3019,8 +3078,8 @@ pub struct Caches {
     keyword_groups: Option<(u64, u64, std::sync::Arc<Vec<panels::keywording::Group>>)>,
     /// The Keyword List's tick boxes, by library revision and selection.
     keyword_ticks: Option<(u64, u64, std::sync::Arc<panels::keyword_list::Ticks>)>,
-    /// The folder tree, made at a catalog revision and a disk folder listing generation.
-    folder_tree: Option<((u64, u64), std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
+    /// The folder tree, made at a catalog revision.
+    folder_tree: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     /// The catalog's part of the folder tree (before the disk folders are added), by catalog revision.
     folder_base: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     people: Option<(u64, lcc_catalog::Filter, std::sync::Arc<Vec<lcc_catalog::Person>>)>,
@@ -3160,32 +3219,25 @@ const READS_CAPTURED: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with
 const READS_FLAG: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with(lcc_catalog::Aspects::FLAG);
 
 impl Caches {
-    /// The folders the library's photos were imported from.
+    /// The folders the library's photos were imported from (only those: the Folders panel lists
+    /// where the library's photos live, not the disk around them).
     pub fn folder_tree(&mut self, cat: &lcc_catalog::Catalog) -> std::sync::Arc<Vec<lcc_catalog::FolderNode>> {
-        let key = (cat.revision, crate::panels::left::classic::disk_generation());
+        let key = cat.revision;
         if let Some((k, t)) = &self.folder_tree
             && *k == key
         {
             return t.clone();
         }
-        // a catalog change lists the disk folders again: a folder created, moved or removed changes no
-        // photo, so the catalog's own record of what changed can't tell
-        if self.folder_tree.as_ref().is_none_or(|((r, _), _)| *r != cat.revision) {
-            crate::panels::left::classic::invalidate_disk_folders();
-        }
-        // the catalog's part is made again only when a photo's file or presence changed
+        // the tree is made again only when a photo's file or presence changed
         let base = self.folder_base.take().filter(|(r, _)| still_right(cat, *r, READS_FILE)).map(|(_, b)| b);
         let base = base.unwrap_or_else(|| std::sync::Arc::new(crate::panels::left::sidebar_folders(cat.folder_tree())));
         self.folder_base = Some((cat.revision, base.clone()));
-        let t = std::sync::Arc::new(crate::panels::left::classic::with_disk_folders(base.as_ref().clone()));
-        self.folder_tree = Some((key, t.clone()));
-        t
+        self.folder_tree = Some((key, base.clone()));
+        base
     }
     /// The folder tree as last built, when it still holds (a read-only check cannot rebuild it).
     pub(crate) fn folder_tree_if_fresh(&self, cat: &lcc_catalog::Catalog) -> Option<std::sync::Arc<Vec<lcc_catalog::FolderNode>>> {
-        // (the fork's key also carries the disk folders' generation: a folder made on disk is a change too)
-        let disk = crate::panels::left::classic::disk_generation();
-        self.folder_tree.as_ref().filter(|((r, g), _)| *g == disk && still_right(cat, *r, READS_FILE)).map(|(_, t)| t.clone())
+        self.folder_tree.as_ref().filter(|(r, _)| still_right(cat, *r, READS_FILE)).map(|(_, t)| t.clone())
     }
     /// The library's keyword tree.
     pub fn keyword_tree(&mut self, cat: &lcc_catalog::Catalog) -> std::sync::Arc<Vec<lcc_catalog::KeywordNode>> {
@@ -3760,6 +3812,8 @@ mod cache_tests {
     }
 }
 
+#[cfg(test)]
+mod tests_display_truth;
 #[cfg(test)]
 mod tests_docking_acceptance;
 #[cfg(test)]

@@ -1469,3 +1469,31 @@ fn search_boolean_tokens_reject_invalid_values() {
     assert_eq!(q("edited:no").len(), 1, "unedited photo matches edited:no");
     assert!(q("edited:yes").is_empty());
 }
+
+/// Any photo can carry a Copy Name (a Lightroom catalog gives some a short title there): only a virtual copy is shown
+/// with its name as one, and Import from Catalog matches a photo that isn't a copy by its file alone.
+#[test]
+fn a_copy_name_on_a_photo_that_is_not_a_virtual_copy_does_not_make_it_one() {
+    let add = |c: &mut Catalog, name: Option<&str>, copy_of: Option<PhotoId>| {
+        let id = c.alloc_photo_id();
+        let mut p = Photo::new(id, Source::File { path: "/pics/trip/a.jpg".into() }, "a.jpg", "JPEG", 4, 3, "2026-01-01T00:00:00");
+        p.copy_name = name.map(str::to_string);
+        p.copy_of = copy_of;
+        c.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        id
+    };
+    let mut mine = Catalog::new();
+    let master = add(&mut mine, Some("Web title"), None);
+    let copy = add(&mut mine, Some("Mono"), Some(master));
+    assert_eq!(mine.photo(master).unwrap().virtual_copy_name(), None, "a master with a Copy Name is no virtual copy");
+    assert_eq!(mine.photo(copy).unwrap().virtual_copy_name(), Some("Mono"));
+    // the other library has the same file with no Copy Name (imported before it was kept), and the same copy
+    let mut other = Catalog::new();
+    let other_master = add(&mut other, None, None);
+    add(&mut other, Some("Mono"), Some(other_master));
+    let plan = transfer::plan_import(&mine, &other);
+    assert!(plan.new_photos.is_empty(), "the file and the copy match whatever the master's Copy Name: {plan:?}");
+    // a copy is still told apart by its name
+    add(&mut other, Some("Sepia"), Some(other_master));
+    assert_eq!(transfer::plan_import(&mine, &other).new_photos.len(), 1);
+}

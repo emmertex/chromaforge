@@ -106,6 +106,21 @@ impl lcc_ui_egui::render::ScreenTextures for WindowTextures {
     }
 }
 
+/// Whether the window's HDR swapchain keeps the GPU renderer off the window's device: where it stopped
+/// the window drawing (RADV on Wayland, 2026-11-03). Windows and macOS keep the zero-copy path on an
+/// HDR monitor (ported from OneSlips: there it always offers the device).
+const HDR_WINDOW_GUARD: bool = cfg!(not(any(windows, target_os = "macos", target_os = "android")));
+
+/// Whether the GPU renderer is offered the window's device: `<PREFIX>_GPU_WINDOW` (`env`) `0` never,
+/// `1` always; otherwise yes, except on an HDR window (`hdr`) where `guard` holds.
+fn offers_window_device(env: Option<&str>, hdr: bool, guard: bool) -> bool {
+    match env.map(str::trim) {
+        Some("0") => false,
+        Some("1") => true,
+        _ => !(hdr && guard),
+    }
+}
+
 /// Offer the window's device to the GPU renderer, so the loupe's drafts are drawn straight from the
 /// GPU (the kernels are built on it when the renderer warms up, off the UI thread); the textures
 /// they leave are shown through [`WindowTextures`] once it runs there. A device that doesn't suit
@@ -677,7 +692,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                         if let Some(t) = &req.title {
                             d = d.set_title(t);
                         }
-                        if let Some((name, exts)) = &req.filter {
+                        for (name, exts) in req.filters() {
                             d = d.add_filter_nocase(name.clone(), exts);
                         }
                         if let Some(n) = &req.file_name {
@@ -705,8 +720,10 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         log_file: log_file.map(|p| p.display().to_string()),
         pick_lightroom_catalog: picker!(|| {
             file_dialog()
-                .set_title(lcc_ui_egui::i18n::tr("Import Lightroom Catalog"))
+                .set_title(lcc_ui_egui::i18n::tr("Import Lightroom or Capture One Catalog"))
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom or Capture One Catalog"), &["lrcat", "cocatalogdb"])
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom Classic Catalog"), &["lrcat"])
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Capture One Catalog"), &["cocatalogdb"])
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
         }),
@@ -1582,14 +1599,11 @@ fn main() -> eframe::Result {
                 // the GPU renderer on the window's device, when GPU rendering is on
                 // (<PREFIX>_GPU_WINDOW=0: a device of its own, renders read back - for comparison or a
                 // driver that misbehaves with compute and drawing on one device)
-                // Not on an HDR window for now: with the renderer on the window's device, turning an
-                // edit's HDR on stopped the Wayland window drawing (RADV, 2026-11-03; fine with a
-                // device of its own). `<PREFIX>_GPU_WINDOW=1` offers it anyway, `0` never.
-                let window_device = match lcc_brand::env("GPU_WINDOW").as_deref().map(str::trim) {
-                    Some("0") => false,
-                    Some("1") => true,
-                    _ => !display.is_hdr(),
-                };
+                // Not on an HDR window under Linux / BSD for now: with the renderer on the window's
+                // device, turning an edit's HDR on stopped the Wayland window drawing (RADV,
+                // 2026-11-03; fine with a device of its own). `<PREFIX>_GPU_WINDOW=1` offers it
+                // anyway, `0` never.
+                let window_device = offers_window_device(lcc_brand::env("GPU_WINDOW").as_deref(), display.is_hdr(), HDR_WINDOW_GUARD);
                 let window_textures = cc.wgpu_render_state.as_ref().filter(|_| gpu_on && window_device).map(offer_window_device);
                 Ok(Box::new(App(
                     app,
@@ -1690,6 +1704,19 @@ fn startup_failed(error: &str, log_file: Option<&std::path::Path>) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The HDR window guard (ported from OneSlips): an HDR monitor keeps the window's device from the
+    /// renderer only where the guard holds (Linux / BSD); `<PREFIX>_GPU_WINDOW` decides over both.
+    #[test]
+    fn an_hdr_window_keeps_the_window_device_where_no_guard_is_needed() {
+        assert!(offers_window_device(None, true, false), "Windows / macOS: an HDR window still gets it");
+        assert!(!offers_window_device(None, true, true), "Linux / BSD: an HDR window doesn't");
+        assert!(offers_window_device(None, false, true), "an SDR window always does");
+        assert!(offers_window_device(Some(" 1 "), true, true), "1 offers it anyway");
+        assert!(!offers_window_device(Some("0"), false, false), "0 never");
+        assert!(offers_window_device(Some("yes"), false, true), "another value is no choice");
+        assert_eq!(HDR_WINDOW_GUARD, !cfg!(any(windows, target_os = "macos", target_os = "android")));
+    }
 
     /// Modal dimming must not expose the desktop through the compositor-capable window.
     #[test]
