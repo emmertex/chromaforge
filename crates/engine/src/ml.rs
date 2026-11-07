@@ -352,14 +352,13 @@ fn gpu_probe() -> Result<String, String> {
         let mut chosen_index = 0usize;
         let mut chosen_name = String::new();
 
-        if let Some(ref card_key) = target_card {
-            if let Some(parsed) = lcc_gpu::cards::AdapterKey::parse(card_key) {
-                if let Some(pos) = adapters.iter().position(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed))) {
-                    chosen_index = pos;
-                    if let Some(entry) = adapters.get(pos) {
-                        chosen_name = entry.name.clone();
-                    }
-                }
+        if let Some(ref card_key) = target_card
+            && let Some(parsed) = lcc_gpu::cards::AdapterKey::parse(card_key)
+            && let Some(pos) = adapters.iter().position(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed)))
+        {
+            chosen_index = pos;
+            if let Some(entry) = adapters.get(pos) {
+                chosen_name = entry.name.clone();
             }
         }
         if chosen_name.is_empty() {
