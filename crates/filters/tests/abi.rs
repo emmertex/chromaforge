@@ -351,7 +351,7 @@ fn pc_merge_is_optional_and_combines_measurements() {
     let plain = Filter::load(&ok_module(INVERT), Limits::default()).unwrap();
     assert!(!plain.has_merge());
     let one = json!({"base_r": 200});
-    assert!(plain.merge_analyses(&[one.clone()], &json!({}), &AtomicBool::new(false)).is_err());
+    assert!(plain.merge_analyses(std::slice::from_ref(&one), &json!({}), &AtomicBool::new(false)).is_err());
 
     let json = r#"{"base_r":150,"roll":true}"#;
     let extra = format!(
