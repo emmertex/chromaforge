@@ -535,6 +535,23 @@ impl SidecarData {
         self
     }
 
+    /// The patch with a Lightroom crop put in the app's frame: `crs:CropLeft` … `CropBottom` are two opposite corners
+    /// of the straightened crop on the stored image, before its orientation (the sidecar's whole orientation, else
+    /// the file's) and the straighten turn, as in a Lightroom catalog
+    /// ([`crate::lightroom_catalog::catalog_crop`]). `upright` is the photo's size turned by the file's orientation.
+    /// Only another editor's settings take it; the app's own (`lc:settings`) are in its frame already.
+    pub fn crop_from(mut self, file: Option<lcc_meta::Orientation>, upright: (u32, u32)) -> Self {
+        let file = file.unwrap_or_default();
+        let (w, h) = if file.swaps_axes() { (upright.1, upright.0) } else { upright };
+        if let Some(DevelopPatch::Partial(v)) = self.develop.as_mut()
+            && w > 0
+            && h > 0
+        {
+            crate::lightroom_catalog::catalog_crop(v, self.turned_to.unwrap_or(file), f64::from(w) / f64::from(h));
+        }
+        self
+    }
+
     /// Read the label through the catalog's label names: other editors write the label's name
     /// (a custom set's "To Do" as well as "Red"); unknown names clear the label.
     pub fn resolve_label(mut self, cat: &lcc_catalog::Catalog) -> Self {
