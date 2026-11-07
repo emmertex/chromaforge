@@ -901,6 +901,11 @@ impl<T> TileCache<T> {
         self.map.get(k).is_some_and(|e| !e.placeholder)
     }
 
+    /// Whether a rendered tile (not a placeholder) of `photo` is held.
+    pub fn has_render_of(&self, photo: lcc_catalog::PhotoId) -> bool {
+        self.map.iter().any(|(k, e)| k.photo == photo && !e.placeholder)
+    }
+
     /// Whether anything (render or placeholder) is held for `k`.
     pub fn contains(&self, k: &TileKey) -> bool {
         self.map.contains_key(k)

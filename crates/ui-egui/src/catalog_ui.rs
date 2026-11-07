@@ -154,7 +154,7 @@ fn str_of<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 /// Ask for a folder for `command` (answer under `key`).
-fn pick_folder(app: &mut LccApp, command: &str, p: &Value, key: &'static str, title: &str) -> Result<Option<String>, String> {
+pub(crate) fn pick_folder(app: &mut LccApp, command: &str, p: &Value, key: &'static str, title: &str) -> Result<Option<String>, String> {
     let req = crate::pick::PickRequest::folder(crate::i18n::tr(title));
     match crate::pick::ask(app, command, p, key, req, |s| s.pick_folder.as_mut().and_then(|f| f()).map(|x| vec![x])) {
         Picked::Now(v) => Ok(v.into_iter().next()),
@@ -213,6 +213,8 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
                 Some(CatalogDialog::ExportCatalog { parent, name: "Exported Catalog".into(), scope: scope.into(), originals: false, previews: true });
             Ok(Value::Null)
         }
+        // a library in the catalog format of this app's earlier name (`crate::legacy`)
+        crate::legacy::IMPORT_LIBRARY_ID => crate::legacy::import_library(app, id, p),
         "dialog.importCatalog" => match str_of(p, "path") {
             Some(path) => {
                 let plan = app.session.execute("catalog.import", &json!({"path": path, "preview": true})).map_err(|e| e.to_string());
@@ -281,7 +283,7 @@ pub fn enabled(app: &LccApp, id: &str) -> Option<bool> {
     let busy = crate::lightroom_import::is_running(app);
     Some(match id {
         "catalog.new" | "catalog.open" | "catalog.chooser" | "catalog.openRecent" | "catalog.welcome" => !busy,
-        "dialog.importCatalog" => !busy && app.services.pick_folder.is_some(),
+        "dialog.importCatalog" | crate::legacy::IMPORT_LIBRARY_ID => !busy && app.services.pick_folder.is_some(),
         "dialog.catalogSettings" => app.session.catalog_dir().is_some(),
         "dialog.exportCatalog" => !app.session.catalog.is_empty(),
         _ => return None,

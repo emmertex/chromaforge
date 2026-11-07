@@ -162,7 +162,7 @@ impl AiPlan {
             .thread_name(|i| format!("enhance-{i}"))
             .build()
             .map_err(|e| format!("could not start the worker threads: {e}"))?;
-        pool.install(|| upscale_rgb(image, runner, &params, &ctl, scales)).map_err(|e| e.to_string())
+        pool.install(|| upscale_rgb(image, &*runner, &params, &ctl, scales)).map_err(|e| e.to_string())
     }
 
     fn encode(&self, image: &Rgb32f) -> std::result::Result<Vec<u8>, String> {

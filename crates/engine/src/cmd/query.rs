@@ -301,7 +301,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 .collect();
             Ok(json!({"groups": groups, "cursor": ph.history_index(), "latest": ph.history_cursor.is_none()}))
         }),
-        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool, card?: string, helper?: string} — allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why), recoveries (lost devices replaced), events [{seq, kind: lost|recovered|gaveUp, text}] (what happened to the graphics card, in plain words), batch {jobs, bytes, waiting, limitBytes, limitJobs, waits, waitedMs} (exports' turns at the GPU), card {choice, inUse, switching} (the graphics card for editing: `card` takes a card's key or \"\" for Automatic), helper {state: off|starting|ready|failed|lost, detail, jobs, bytes, waiting} (the second graphics card: `helper` takes \"\" Automatic, \"off\" or a key), adapters [{key, name, kind, memory, backend, drivesScreen, usable, whyNot}]}", always, |_, p| {
+        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool, card?: string, helper?: string} — allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why), recoveries (lost devices replaced), events [{seq, kind: lost|recovered|gaveUp, text}] (what happened to the graphics card, in plain words), batch {jobs, bytes, waiting, limitBytes, limitJobs, waits, waitedMs, pauses, pausedMs (running batch renders that paused for the interface), cards (cards taking batch work now), rate {editing, helper} (each card's measured batch speed, bytes/s, null before any), renders {editingInteractive, editingBatch, helperInteractive, helperBatch} (GPU renders so far by card), interfaceBusy} (exports' and preview builds' turns at the cards), card {choice, inUse, switching} (the graphics card for editing: `card` takes a card's key or \"\" for Automatic), helper {state: off|starting|ready|failed|lost, detail, jobs, bytes, waiting} (the second graphics card: `helper` takes \"\" Automatic, \"off\" or a key), adapters [{key, name, kind, memory, backend, drivesScreen, usable, whyNot}]}", always, |_, p| {
             if let Some(on) = p.get("enabled").and_then(Value::as_bool) {
                 lcc_gpu::set_enabled(on);
             }
@@ -332,6 +332,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 "batch": {
                     "jobs": b.jobs, "bytes": b.bytes, "waiting": b.waiting, "limitBytes": b.limit_bytes,
                     "limitJobs": b.limit_jobs, "waits": b.waits, "waitedMs": b.waited_ms,
+                    "pauses": b.pauses, "pausedMs": b.paused_ms, "cards": lcc_gpu::batch_cards(),
+                    "rate": {"editing": lcc_gpu::batch_rate_of(false), "helper": lcc_gpu::batch_rate_of(true)},
+                    "renders": gpu_render_counts(), "interfaceBusy": lcc_gpu::interface_busy(),
                 },
                 "card": gpu_card(),
                 "helper": gpu_helper(),
@@ -363,6 +366,15 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Array(s.journal[start..].iter().map(|(c, p)| json!({"command": c, "params": p})).collect()))
         }),
     ]
+}
+
+/// GPU renders so far by card, for `app.gpu`.
+fn gpu_render_counts() -> Value {
+    let r = lcc_gpu::render_counts();
+    json!({
+        "editingInteractive": r.editing_interactive, "editingBatch": r.editing_batch,
+        "helperInteractive": r.helper_interactive, "helperBatch": r.helper_batch,
+    })
 }
 
 /// The graphics card for editing, for `app.gpu`.

@@ -285,7 +285,7 @@ pub fn apply(r: &MachineReport) {
     crate::gpu::set_batch_limits(None, Some(r.gpu_jobs).filter(|j| *j > 0));
 }
 
-/// What exports use now: `{lanes, lanesSetting, gpu, gpuJobs, gpuLimitMb, gpuMemoryMb}`.
+/// What exports use now: `{lanes, lanesSetting, gpu, mix, cards, gpuJobs, gpuLimitMb, gpuMemoryMb}`.
 pub fn tuning() -> serde_json::Value {
     let b = crate::gpu::batch_usage();
     serde_json::json!({
@@ -293,6 +293,7 @@ pub fn tuning() -> serde_json::Value {
         "lanesSetting": crate::export::export_lanes_override(),
         "gpu": crate::export::export_gpu(),
         "mix": crate::export::export_mix(),
+        "cards": crate::export::export_cards().name(),
         "gpuJobs": b.limit_jobs,
         "gpuLimitMb": b.limit_bytes >> 20,
         "gpuMemoryMb": crate::gpu::adapter_memory().map(|m| m >> 20),
@@ -328,7 +329,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             Ok(serde_json::to_value(&r).unwrap_or_default())
         }),
         cmd!(query "app.exportTuning", "Export Performance", [], None,
-        "{lanes?: number (0 = automatic), gpu?: bool, gpuJobs?: number (0 = automatic)} — photos exported side by side, the GPU for exports, exports sharing the GPU at once; returns what is in use",
+        "{lanes?: number (0 = automatic), gpu?: bool, gpuJobs?: number (0 = automatic), cards?: both | editing | second} — photos exported side by side, the GPU for exports, exports sharing the GPU at once, the graphics cards exports use with a second one (`second`: only it, to measure it); returns what is in use",
         always, |_, p| {
             const C: &str = "app.exportTuning";
             if let Some(v) = p.get("lanes") {
@@ -341,6 +342,10 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             if let Some(v) = p.get("gpuJobs") {
                 let n = v.as_u64().ok_or_else(|| bad(C, "gpuJobs must be a number"))?;
                 crate::gpu::set_batch_limits(None, Some(n as usize).filter(|n| *n > 0));
+            }
+            if let Some(v) = p.get("cards") {
+                let cards = v.as_str().and_then(crate::export::ExportCards::parse).ok_or_else(|| bad(C, "cards must be both, editing or second"))?;
+                crate::export::set_export_cards(cards);
             }
             Ok(tuning())
         }),
@@ -438,6 +443,20 @@ mod tests {
         assert_eq!(gpu_jobs_for(12 << 30, 1 << 30), 4, "at most 4");
         assert_eq!(gpu_jobs_for(0, 1 << 30), 1);
         assert_eq!(gpu_jobs_for(8 << 30, 0), 1);
+    }
+
+    /// `app.exportTuning {cards}` chooses the graphics cards exports use, reports it, and refuses
+    /// anything but both, editing or second.
+    #[test]
+    fn export_tuning_chooses_the_cards_for_exports() {
+        let mut s = crate::Session::new();
+        let r = s.execute("app.exportTuning", &serde_json::json!({"cards": "editing"})).expect("reply");
+        assert_eq!(r["cards"], "editing", "{r}");
+        assert_eq!(crate::export::export_cards(), crate::export::ExportCards::Editing);
+        assert!(s.execute("app.exportTuning", &serde_json::json!({"cards": "all of them"})).is_err());
+        assert!(s.execute("app.exportTuning", &serde_json::json!({"cards": 2})).is_err());
+        let r = s.execute("app.exportTuning", &serde_json::json!({"cards": "both"})).expect("reply");
+        assert_eq!(r["cards"], "both", "{r}");
     }
 
     /// The whole test on two demo photos (one lane setting): a report in plain words, the

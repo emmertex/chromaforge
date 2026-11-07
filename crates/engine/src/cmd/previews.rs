@@ -273,7 +273,35 @@ fn task_for(s: &Session, state: &PreviewBuild) -> TaskGuard {
 
 /// Render one photo's jobs in order. The source the first job decodes serves the ones after it
 /// (the grid thumbnail is made from the view's source instead of decoding the file again).
-pub(crate) fn run_photo(jobs: Vec<RenderJob>) -> bool {
+///
+/// Previews are made ahead, never for the photo on screen: batch work, on whichever graphics card
+/// has room ([`crate::media::background_photo`]: with a second card both cards get photos; the
+/// editing card only while the interface is idle). The source is decoded first, outside the
+/// photo's turn at a card (a raw's decode is a second or more of processor work; the card's turn
+/// is for the renders).
+pub(crate) fn run_photo(mut jobs: Vec<RenderJob>) -> bool {
+    let Some(first) = jobs.first() else { return true };
+    let decoded = match &first.source {
+        crate::media::SourceRef::Loaded(d) => (**d).clone(),
+        // (an unreadable photo fails here, as its jobs would)
+        source => match source.load_source_of(first.source_key) {
+            Ok(d) => d,
+            Err(e) => {
+                log::info!("building previews: {e}");
+                return false;
+            }
+        },
+    };
+    let src_px = decoded.image.width.saturating_mul(decoded.image.height);
+    let out_px = jobs.iter().map(|j| j.request.max_w.saturating_mul(j.request.max_h)).max().unwrap_or(0).min(src_px.max(1));
+    for j in &mut jobs {
+        j.source = crate::media::SourceRef::Loaded(Box::new(decoded.clone()));
+    }
+    crate::media::background_photo("building previews", src_px, out_px, || run_photo_jobs(jobs)).unwrap_or(false)
+}
+
+/// [`run_photo`]'s renders, inside the photo's turn.
+fn run_photo_jobs(jobs: Vec<RenderJob>) -> bool {
     let mut decoded: Option<crate::media::DecodedSource> = None;
     let mut ok = true;
     for mut j in jobs {
@@ -287,9 +315,26 @@ pub(crate) fn run_photo(jobs: Vec<RenderJob>) -> bool {
         // and the next. (Taken out of the job: it would only queue the write, and would serve a
         // smaller cached view.)
         let keep = j.view_cache.take().map(|v| (v, j.cache_generation));
+        // (and the photo's latest view / thumbnail, on disk before the photo counts as built: the
+        // picture an edited photo shows once its settings change again)
+        let latest = j.latest.take();
+        let thumb = j.cache.as_ref().map(|c| c.1);
+        let generation = j.cache_generation;
         let r = j.run();
-        if let (Some(((cache, key), generation)), Ok(img)) = (keep, r.rendered.as_ref()) {
-            cache.put_at(generation, key, Arc::new(img.image.clone()));
+        if let Ok(img) = r.rendered.as_ref() {
+            let img = Arc::new(img.image.clone());
+            let real = match keep {
+                Some(((cache, key), generation)) => {
+                    cache.put_at(generation, key, img.clone());
+                    Some(key)
+                }
+                None => thumb,
+            };
+            if let (Some((cache, alias)), Some(real)) = (latest, real)
+                && r.quick != Some(crate::media::QuickSource::Cached)
+            {
+                cache.put_latest_with(generation, alias, real, img, true, crate::media::placement_bytes(r.placement.as_ref()).as_deref());
+            }
         }
         ok &= r.rendered.is_ok();
         if decoded.is_none() {
@@ -300,11 +345,12 @@ pub(crate) fn run_photo(jobs: Vec<RenderJob>) -> bool {
 }
 
 /// How many photos render side by side: as many as an export batch for standard previews (each
-/// render spreads over the cores already; the others fill them while one decodes), two for 1:1
-/// previews (a full-size source each).
+/// render spreads over the cores already; the others fill them while one decodes), two per
+/// graphics card for 1:1 previews (a full-size source each; one card needs two to stay busy, and
+/// with a second card two more feed it), within the export's memory-bound count.
 fn lanes(n: usize, full: bool) -> usize {
     let l = crate::export::export_parallelism(n);
-    if full { l.min(2) } else { l }
+    if full { l.min(crate::gpu::batch_lanes_hint(2)) } else { l }
 }
 
 /// One photo's work in a build: its id and its render jobs ([`jobs_for`]).
@@ -553,12 +599,14 @@ type SmartJob = (lcc_catalog::PhotoId, std::path::PathBuf, Option<crate::media::
 
 /// DNG tone fits also go stale, although DNGs keep their own matrix and Kelvin white-balance scale.
 /// So do preview-only raws: their proxy is the embedded JPEG, read in the colour space the raw
-/// declares, which a look version bump can change too (#2654).
+/// declares, which a look version bump can change too (#2654). And so does a raw developed through a camera
+/// profile without a tone curve of its own: it keeps the tone fitted with the photo's own colour.
 #[cfg(not(target_arch = "wasm32"))]
 fn preview_fitted_look(photo: &lcc_catalog::Photo) -> bool {
     photo.fitted_look()
         || (photo.develops_raw() && photo.format.eq_ignore_ascii_case("DNG"))
         || (photo.kind == lcc_catalog::MediaKind::Raw && photo.preview_only.is_some())
+        || crate::camera_profiles::photo_profile(photo).is_some_and(|d| crate::camera_preview::keeps_photo_tone(&d))
 }
 
 /// Held while one proxy is checked and (re)written, so Build Smart Previews and the opening look
@@ -1027,5 +1075,48 @@ mod tests {
         assert_eq!(r["done"], json!(ids.len()), "{r}");
         assert_eq!(r["total"], json!(ids.len()));
         assert_eq!(r["failed"], json!(0));
+    }
+
+    // 1:1 previews run two photos per graphics card (two more feed a second card), never more than
+    // the memory-bound count; standard previews keep the export's count
+    #[test]
+    fn full_size_previews_run_two_photos_per_graphics_card() {
+        let hint = crate::gpu::batch_lanes_hint(2);
+        assert_eq!(hint, 2 * crate::gpu::batch_cards().max(1));
+        assert_eq!(super::lanes(64, true), crate::export::export_parallelism(64).min(hint));
+        assert_eq!(super::lanes(64, false), crate::export::export_parallelism(64));
+        assert!(super::lanes(1, true) >= 1);
+    }
+
+    // Given a photo, its preview build renders as batch work (a turn on whichever card has room,
+    // behind the photo on screen), never as the screen's interactive work; the thread is back to
+    // interactive work after it, also when the work panics
+    #[test]
+    fn preview_builds_are_batch_work() {
+        let mut s = Session::with_demo();
+        let id = s.active().unwrap();
+        let jobs = jobs_for(&mut s, id, Some(256));
+        let before = lcc_gpu::thread_render_counts();
+        assert!(run_photo(jobs));
+        let after = lcc_gpu::thread_render_counts();
+        assert_eq!(
+            (after.editing_interactive, after.helper_interactive),
+            (before.editing_interactive, before.helper_interactive),
+            "nothing of the build renders as the screen's work"
+        );
+        if !lcc_gpu::available() {
+            lcc_testkit::skip!(Gpu, "no GPU adapter: the build rendered on the processor");
+            return;
+        }
+        let batch = (after.editing_batch + after.helper_batch) - (before.editing_batch + before.helper_batch);
+        assert!(batch >= 1, "the build's renders are batch work on a card: {before:?} -> {after:?}");
+        let r: Result<(), String> = crate::media::background_photo("a test", 1, 1, || panic!("boom"));
+        assert!(r.unwrap_err().contains("a test"));
+        let mut job = s.loupe_job(id, 128, 128, true).unwrap();
+        let b = lcc_gpu::thread_render_counts();
+        (job.view_cache, job.cache) = (None, None);
+        job.run().rendered.unwrap();
+        let a = lcc_gpu::thread_render_counts();
+        assert_eq!((a.editing_batch, a.helper_batch), (b.editing_batch, b.helper_batch), "the loupe's render is the screen's work");
     }
 }

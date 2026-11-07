@@ -43,7 +43,10 @@ worst place and a thousandth on average (they differ by the rounding of the arit
 threshold falls either side of a tie change by about a tenth), and both are timed. Settings ▸ AI Denoise ▸ Run on chooses
 Automatic (the card where it is faster), Graphics card or Processor, and says where it runs; a set-up that crashed or ran out
 of time is not tried again until you choose (Try the graphics card again). A tile the card gets wrong is run on the
-processor, and three stop the card for the session. On an RTX 4080 SUPER a tile takes 22 ms on the card against 408 ms on one
+processor, and three stop the card for the session. With a second graphics card (Settings ▸ Performance) both cards are set up
+and checked on their own, and a batch makes one photo on each at once (the second card first; one photo while you work), each
+photo's tiles on its own card; a card that fails stops being used alone, and `denoise.status` lists both under `device.cards`
+and the photos being made under `running.photos`. On an RTX 4080 SUPER a tile takes 22 ms on the card against 408 ms on one
 processor thread, and the 1536 × 1024 benchmark crop 0.13 to 0.24 s against 1.0 to 2.1 s on four threads, with the very
 same scores. A change
 to the algorithm bumps `builtin::VERSION`, so cached pictures are made again. The id

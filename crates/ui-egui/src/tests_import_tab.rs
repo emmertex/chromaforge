@@ -515,6 +515,54 @@ fn open_add_preset(h: &mut Headless) {
     }
 }
 
+/// The import bar with main's Show All / Show Not Imported and Photo Grid / Grid / Detail segments and
+/// Develop without Import: the browsed folder's own name always shows whole (its parents fold into
+/// "…" first, then the segments go), and nothing of the bar runs over the panels beside it (at
+/// 1000 wide the segments wrapped and spilled over Import from).
+#[test]
+fn the_import_bar_keeps_the_folder_name_whole_and_stays_inside_its_row() {
+    let root = folder("barfit", 0);
+    let deep = root.join("Archive").join("2026").join("November").join("Demo Shoot").join("Ceremony Selects");
+    std::fs::create_dir_all(&deep).unwrap();
+    let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
+    let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 40, 255]);
+    std::fs::write(deep.join("p.png"), lcc_engine::export::encode_image(&img, &o).unwrap()).unwrap();
+    for size in [[1600.0, 1000.0], [1000.0, 800.0]] {
+        let mut h = app(size, "compact");
+        exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
+        assert!(has_widget(&mut h, "label:importWhere"), "{size:?}: the bar is up");
+        let bar = widget_rect(&h, "importBar").expect("the bar");
+        let label = widget_rect(&h, "label:importWhere").expect("the folder's label");
+        let name = h
+            .view
+            .ctx
+            .fonts_mut(|f| f.layout_no_wrap("Ceremony Selects".to_string(), egui::FontId::proportional(12.5), egui::Color32::WHITE).size().x);
+        assert!(label.width() + 0.5 >= name, "{size:?}: the folder's name shows whole ({} of {name})", label.width());
+        let items: Vec<(String, egui::Rect)> = h
+            .app
+            .widgets
+            .iter()
+            .filter(|(w, r)| {
+                (w.starts_with("button:browse")
+                    || w.starts_with("button:importTake-")
+                    || w.starts_with("importCrumb:")
+                    || w.contains("importGo")
+                    || w.contains("importDevelop"))
+                    && r.width() > 0.0
+            })
+            .cloned()
+            .collect();
+        assert!(items.iter().any(|(w, _)| w.contains("importGo")), "{size:?}: the Import button is on the bar");
+        for (w, r) in &items {
+            assert!(bar.expand(0.5).contains_rect(*r), "{size:?}: {w} {r:?} stays inside the bar {bar:?}");
+            if !w.starts_with("importCrumb:") {
+                assert!(r.left() >= label.right() - 0.5, "{size:?}: {w} {r:?} clears the folder's label {label:?}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn text_width(h: &Headless, text: &str) -> f32 {
     h.view.ctx.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), egui::Color32::WHITE).size().x)
 }
@@ -564,4 +612,47 @@ fn manage_presets_opens_the_presets_manager() {
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
     assert!(h.app.ui.dialog.is_some(), "a dialog is open: {:?}", h.app.ui.dialog);
+}
+
+/// The Import bar names the browsed folder after its parents as a breadcrumb (OneSlips LR-IMP-WINDOW 6e4fa44d0): the
+/// nearest parent opens with a click; on a narrow bar the parents that don't fit go under "…", whose menu lists them,
+/// and each one opens.
+#[test]
+fn the_import_bar_shows_the_folder_as_a_breadcrumb() {
+    let deep_root = folder("crumbs", 0);
+    let deep = deep_root.join("a").join("b").join("c").join("d").join("e");
+    std::fs::create_dir_all(&deep).unwrap();
+    let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
+    let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 40, 255]);
+    std::fs::write(deep.join("p.png"), lcc_engine::export::encode_image(&img, &o).unwrap()).unwrap();
+    let crumbs: Vec<String> = crate::panels::grid::crumbs(&deep.to_string_lossy()).into_iter().map(|(_, to)| to).collect();
+    let parent = crumbs.len() - 2;
+
+    // wide enough for the bar's Develop, View and Show controls to leave the breadcrumb room
+    let mut h = app([2400.0, 900.0], "compact");
+    exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
+    assert_eq!(h.app.ui.tab, Tab::Import);
+    let id = format!("importCrumb:{parent}");
+    assert!(has_widget(&mut h, &id), "the nearest parent {id} is in the bar");
+    assert!(!has_widget(&mut h, &format!("importCrumb:{}", crumbs.len() - 1)), "the folder itself is the bar's label");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": id}), T)["ok"], true);
+    h.settle(SETTLE);
+    let browsed = h.app.session.browse.as_ref().map(|b| std::path::PathBuf::from(&b.path));
+    assert_eq!(browsed.as_deref(), Some(deep.parent().unwrap()), "the parent opens");
+
+    // narrow: the top of the path hides under "…", and its menu opens a hidden folder
+    let mut h = app([900.0, 700.0], "compact");
+    exec(&mut h, "library.browse", json!({"path": deep.to_string_lossy()}));
+    assert!(has_widget(&mut h, "importCrumb:more"), "the parents that don't fit are under …");
+    assert!(!has_widget(&mut h, "importCrumb:0"), "the first folder is hidden until the menu opens");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "importCrumb:more"}), T)["ok"], true);
+    assert!(has_widget(&mut h, "importCrumb:0"), "the menu lists it");
+    let top = crumbs.len() - 6;
+    let id = format!("importCrumb:{top}");
+    assert!(has_widget(&mut h, &id), "the menu lists {id}");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": id}), T)["ok"], true);
+    h.settle(SETTLE);
+    let browsed = h.app.session.browse.as_ref().map(|b| std::path::PathBuf::from(&b.path));
+    assert_eq!(browsed.as_deref(), Some(deep_root.as_path()), "the hidden folder opens");
+    let _ = std::fs::remove_dir_all(&deep_root);
 }

@@ -103,8 +103,8 @@ fn the_shot_info_strip_stays_when_zoomed_in_and_hides_for_tools() {
 }
 
 #[test]
-fn shot_info_reads_the_metadata_in_order_and_film_cells_follow_the_height() {
-    use crate::panels::detail::{film_cell_width, film_thumb_px, shot_info, strip_width};
+fn shot_info_reads_the_metadata_in_order() {
+    use crate::panels::detail::shot_info;
     let m = lcc_catalog::Meta {
         aperture: Some(2.8),
         shutter: "1/250".into(),
@@ -116,6 +116,36 @@ fn shot_info_reads_the_metadata_in_order_and_film_cells_follow_the_height() {
     assert_eq!(shot_info(&m, [8192, 5464]), ["f/2.8", "1/250 s", "ISO 1600", "50 mm", "RF24-70mm F2.8 L IS USM", "8192 × 5464"]);
     let hostile = lcc_catalog::Meta { aperture: Some(f32::NAN), focal_mm: Some(-1.0), shutter: "8s".into(), ..Default::default() };
     assert_eq!(shot_info(&hostile, [1, 1]), ["8s"]);
+}
+
+/// The lens's focal range (OneSlips PERF-CULL-7): a lens name that already says it (`RF24-70mm`) stays as it is, one
+/// that doesn't gets it in brackets, a file without a lens name shows the range alone; a prime has one number; hostile
+/// ranges are left out.
+#[test]
+fn shot_info_adds_the_lens_range_a_lens_name_lacks() {
+    use crate::panels::detail::shot_info;
+    let lens = |name: &str, range: Option<(f32, f32)>| {
+        let m = lcc_catalog::Meta { lens: name.into(), lens_range: range, ..Default::default() };
+        shot_info(&m, [0, 0])
+    };
+    assert_eq!(lens("RF24-70mm F2.8 L IS USM", Some((24.0, 70.0))), ["RF24-70mm F2.8 L IS USM"]);
+    assert_eq!(lens("FE 85mm F1.4 GM", Some((85.0, 85.0))), ["FE 85mm F1.4 GM"]);
+    assert_eq!(lens("Art", Some((24.0, 70.0))), ["Art (24–70 mm)"]);
+    // a 7 inside 70 is not the range's 7
+    assert_eq!(lens("Lens 70", Some((7.0, 14.0))), ["Lens 70 (7–14 mm)"]);
+    assert_eq!(lens("", Some((85.0, 85.0))), ["(85 mm)"]);
+    assert_eq!(lens("", None), Vec::<String>::new());
+    for bad in [(f32::NAN, 70.0), (0.0, 70.0), (70.0, 24.0), (24.0, f32::INFINITY), (-5.0, 1e30)] {
+        assert_eq!(lens("Art", Some(bad)), ["Art"], "{bad:?}");
+    }
+    // the catalog JSON leaves an unknown range out, so older catalogs read unchanged
+    let json = serde_json::to_value(lcc_catalog::Meta::default()).expect("json");
+    assert!(json.get("lens_range").is_none());
+}
+
+#[test]
+fn strip_widths_and_film_cells_follow_the_height() {
+    use crate::panels::detail::{film_cell_width, film_thumb_px, strip_width};
     assert_eq!(strip_width(&[]), 0.0);
     assert_eq!(strip_width(&[40.0]), 40.0);
     assert_eq!(film_cell_width(142.0), 120.0);
