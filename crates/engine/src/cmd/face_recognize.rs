@@ -729,6 +729,13 @@ mod imp {
             return Ok(json!({"active": false}));
         };
         s.faces.retry_at = None;
+        // the card the model ran on stopped working mid-scan: the rest goes to the other card, or the CPU
+        {
+            let net = embedder.clone();
+            super::super::face_detect::move_off_lost_card(s, "recognition", embedder.net().accelerator().is_some(), move |gpu| {
+                net.accelerate(gpu, true).map_err(|e| e.to_string())
+            });
+        }
         let (embedded, _) = collect(s);
         if (s.faces.index.has_unsaved() || s.faces.scanned.has_unsaved()) && s.faces.saved_at.is_none_or(|t| t.elapsed() >= SAVE_EVERY) {
             if let Err(e) = s.faces.index.save() {
@@ -755,8 +762,8 @@ mod imp {
             w.allow(target, pace);
         }
         // the GPU is held back the same way: a light pace leaves it mostly free for the window's own renders
-        let (runs, share) = crate::faces_worker::gpu_pace(pace);
-        lcc_gpu::faces::set_pace(runs, share);
+        let (runs, share, second_share) = crate::faces_worker::gpu_pace(pace);
+        lcc_gpu::faces::set_pace(runs, share, second_share);
         while target > 0 && s.faces.in_flight.len() < target + PREFETCH {
             let Some(id) = s.faces.queue.pop() else { break };
             let Some(job) = prepare(s, id, true) else { continue };
