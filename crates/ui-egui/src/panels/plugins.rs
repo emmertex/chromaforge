@@ -825,6 +825,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
     let entries = entries(&list);
+    own_icons(app, ctx, &entries);
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
     if s.open {
         // a page on screen: the first entry's when none (or one just removed) was selected
@@ -1251,6 +1252,25 @@ fn button_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 30.0), egui::Layout::right_to_left(egui::Align::Center), add);
 }
 
+/// Loads the own icon of every filter whose manifest carries one (`plugin.picture`), once per
+/// module: the rows and pages then draw it in place of the identicon.
+fn own_icons(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
+    for e in entries.iter().filter(|e| e.filter && e.info["icon"].as_bool() == Some(true)) {
+        let hash = e.info["moduleHash"].as_str().unwrap_or("");
+        if super::plugin_icon::custom_is_current(ctx, &e.id, hash) {
+            continue;
+        }
+        let tex = app
+            .session
+            .execute("plugin.picture", &json!({"id": e.id, "picture": "icon"}))
+            .ok()
+            .and_then(|r| r["svg"].as_str().map(str::to_string))
+            .and_then(|svg| crate::plate::rasterise_untrusted_svg(&svg, 128, 128).ok())
+            .map(|img| ctx.load_texture("plugin-own-icon", img, egui::TextureOptions::LINEAR));
+        super::plugin_icon::keep_custom(ctx, &e.id, hash, tex);
+    }
+}
+
 /// The list: plug-ins, then pixel filters, each under its heading.
 fn list_ui(ui: &mut egui::Ui, entries: &[Entry], selected: Option<&str>, actions: &mut Vec<(&'static str, Value)>) {
     if entries.is_empty() {
@@ -1312,7 +1332,7 @@ fn entry_row(ui: &mut egui::Ui, e: &Entry, selected: bool) -> bool {
     };
     ui.painter().rect_filled(rect, 4.0, fill);
     let icon = egui::Rect::from_min_size(rect.min + egui::vec2(4.0, 4.0), egui::vec2(22.0, 22.0));
-    super::plugin_icon::paint(ui, icon, &super::plugin_icon::identicon(&e.id));
+    super::plugin_icon::paint_for(ui, icon, &e.id);
     let mark = egui::pos2(icon.right() + 10.0, rect.center().y);
     paint_mark(ui.painter(), mark, e.mark, &t);
     let font = egui::FontId::proportional(13.0);
