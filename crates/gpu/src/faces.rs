@@ -54,9 +54,16 @@ struct Ops {
     gemv: wgpu::ComputePipeline,
 }
 
-static DEV: OnceLock<Result<Dev, String>> = OnceLock::new();
+static DEV: OnceLock<&'static Dev> = OnceLock::new();
+static DEV_INIT_LOCK: Mutex<()> = Mutex::new(());
 static BROKEN: AtomicBool = AtomicBool::new(false);
 static BROKEN_WHY: Mutex<Option<String>> = Mutex::new(None);
+
+/// Clear broken device state so that a retry (or settings change) can attempt GPU initialization again.
+pub fn reset() {
+    BROKEN.store(false, Ordering::Relaxed);
+    *BROKEN_WHY.lock().unwrap_or_else(PoisonError::into_inner) = None;
+}
 
 fn mark_broken(why: &str) {
     let mut w = BROKEN_WHY.lock().unwrap_or_else(PoisonError::into_inner);
@@ -78,11 +85,18 @@ fn dev() -> Result<&'static Dev, String> {
     if let Some(why) = crate::switched_off() {
         return Err(why);
     }
-    let _work = match DEV.get() {
-        Some(_) => None,
-        None => Some(crate::exit::enter().ok_or("the app is closing")?),
-    };
-    DEV.get_or_init(create_device).as_ref().map_err(|e| e.clone())
+    if let Some(d) = DEV.get() {
+        return Ok(d);
+    }
+    let _guard = DEV_INIT_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(d) = DEV.get() {
+        return Ok(d);
+    }
+    let _work = crate::exit::enter().ok_or("the app is closing")?;
+    let device = create_device()?;
+    let leaked = Box::leak(Box::new(device));
+    let _ = DEV.set(leaked);
+    Ok(leaked)
 }
 
 fn create_device() -> Result<Dev, String> {

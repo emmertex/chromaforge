@@ -230,8 +230,11 @@ fn gpu(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             #[cfg(not(target_arch = "wasm32"))]
             {
+                lcc_gpu::faces::reset();
                 if let Some(e) = embedder {
                     offer_gpu(s, "recognition", move |gpu| e.accelerate(gpu, true).map_err(|e| e.to_string()));
+                } else {
+                    set_gpu_state("recognition", GpuState::default());
                 }
             }
         }
@@ -239,12 +242,60 @@ fn gpu(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(gpu_json(s))
 }
 
+/// Where face detection runs, for Settings ▸ Faces and `faces.gpu`.
+pub(crate) fn detection_gpu_state(s: &Session) -> GpuState {
+    if let Some(st) = gpu_state("detection")
+        && (st.device.is_some() || st.checking)
+    {
+        return st;
+    }
+    if !s.segmenter.open_model_installed("face") {
+        GpuState { checking: false, device: None, why: Some("Face detector model not installed".into()) }
+    } else {
+        GpuState { checking: false, device: None, why: Some("Face Landmarker runs multithreaded on the CPU".into()) }
+    }
+}
+
+/// Where face recognition runs, for Settings ▸ Faces and `faces.gpu`.
+pub(crate) fn recognition_gpu_state(s: &Session) -> GpuState {
+    if let Some(st) = gpu_state("recognition")
+        && (st.device.is_some() || st.checking || st.why.is_some())
+    {
+        return st;
+    }
+    if cpu_only(s) {
+        return GpuState { checking: false, device: None, why: Some("the CPU is chosen in Settings".into()) };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((_, e)) = &s.faces.embedder
+        && let Some(a) = e.net().accelerator()
+    {
+        return GpuState { checking: false, device: Some(a.device()), why: None };
+    }
+    let dir = s.face_models_dir.as_deref();
+    let has_embedder = dir.is_some_and(|d| super::face_models::read_settings(d).embedder.is_some());
+    if !has_embedder {
+        return GpuState { checking: false, device: None, why: Some("No recognition model chosen".into()) };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match lcc_gpu::faces::accelerator() {
+            Ok(gpu) => GpuState { checking: false, device: Some(lcc_faces::net::Accelerator::device(&*gpu)), why: None },
+            Err(why) => GpuState { checking: false, device: None, why: Some(why) },
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        GpuState { checking: false, device: None, why: Some("GPU acceleration is not supported on WebAssembly".into()) }
+    }
+}
+
 /// What `faces.gpu` and `faces.models.list` say about the GPU.
 pub(crate) fn gpu_json(s: &Session) -> Value {
     json!({
         "cpuOnly": cpu_only(s),
-        "detection": gpu_state("detection"),
-        "recognition": gpu_state("recognition"),
+        "detection": detection_gpu_state(s),
+        "recognition": recognition_gpu_state(s),
     })
 }
 

@@ -192,6 +192,10 @@ fn gpu_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, gpu: &Value) {
             (crate::i18n::tr("Checking the GPU…").to_string(), None)
         } else if let Some(device) = st["device"].as_str() {
             (device.to_string(), None)
+        } else if st["why"].as_str().is_some_and(|w| w.contains("not installed")) {
+            (crate::i18n::tr("Not installed").to_string(), st["why"].as_str())
+        } else if st["why"].as_str().is_some_and(|w| w.contains("No recognition model")) {
+            (crate::i18n::tr("Not chosen").to_string(), st["why"].as_str())
         } else {
             (crate::i18n::tr("CPU").to_string(), st["why"].as_str())
         };
