@@ -4365,7 +4365,9 @@ mod tests {
     /// style) was shot with DRO Auto, so its curve comes down to Sony's without DRO in the shadows the
     /// camera lifted; the ILCE-7M4 sample (DRO Auto, Vivid) has deeper shadows than that curve and
     /// keeps them, only its brighter highlights come down. Both keep the colour fitted to their
-    /// JPEGs. The ILCE-7M3 sample (DRO off) keeps its own fit.
+    /// JPEGs. The ILCE-7M3 sample (DRO off) keeps its own fit. Each is compared with its fit as the
+    /// app has it before the DRO step: compared with the unsmoothed fit, the ILCE-7M4's curve was
+    /// 0.0002 brighter near its first knot, where the smoothing lifts it, and the test failed.
     #[test]
     fn corpus_arw_with_dro_is_lowered_to_the_dro_off_tone() {
         let dir = lcc_brand::env_os("CORPUS")
@@ -4392,11 +4394,17 @@ mod tests {
             raw.opcodes.list3.retain(|op| !op.is_lens_correction());
             let transform = lcc_raw::color::camera_transform(&raw, lcc_raw::color::as_shot_white_xy(&raw));
             let look = fit_preview(&raw, &bytes, &transform, None, None).0.expect("a camera look");
-            // the look fitted to the JPEG, as before this change
+            // the look fitted to the JPEG as `fit_preview` has it before the DRO step: smoothed
+            // (`with_smooth_tone`, which can lift a curve slightly where it bends) and carried on past
+            // its last knot with the camera's pooled curve
             let (sensor, reference, clipped) = proxies(&raw, &bytes, &transform, PROXY, 0.0, None, None).unwrap();
             let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
             let colour = profile.as_ref().and_then(|p| Some((p.matrix().mul(&transform.matrix.inverse()?), p.hue_sat.clone())));
-            let fitted = fit_look(&sensor, &reference, &clipped, colour).unwrap();
+            let fitted = with_smooth_tone(fit_look(&sensor, &reference, &clipped, colour).unwrap());
+            let fitted = match profile.as_ref().and_then(|p| p.tone) {
+                Some(pooled) => CameraLook { tone: extend_tone(&fitted.tone, &pooled), ..fitted },
+                None => fitted,
+            };
             if dro {
                 assert_lowered(&fitted, &look, name);
                 // the Sony DRO samples' lowered curves stay below their fitted ones under V8 as well
