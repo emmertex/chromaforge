@@ -42,6 +42,13 @@ only what was added, and with the mask's Invert it gave the whole photo. Such ma
 first component, on every process. It landed in place as a bug fix: intersecting with nothing is not
 a look anyone chose.
 
+**AI mask edges** (Object and Describe selections stored as a model's grid) follow the photo's edges
+when they are enlarged to the output (upstream #3298): the plain enlargement spilled 1–2 px onto the background,
+which a raised Exposure turned into a bright outline around the subject in previews and exports.
+Existing AI masks become 1–2 px tighter at a subject's edges, on every process; their inside, their
+outside and edges without contrast in the photo are unchanged. It landed in place as a bug fix: the
+outline is output that is neither in the photo nor in the edit, not a look anyone chose.
+
 ## Adding a process
 
 1. Add a variant to `Process` (`V2`), append it to `Process::ALL` (oldest first), give it its number in

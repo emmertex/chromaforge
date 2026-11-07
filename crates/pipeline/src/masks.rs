@@ -305,7 +305,8 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
     // remembered object found on it
     if let MaskShape::People { seg: Some(seg), .. } | MaskShape::Concept { seg: Some(seg), .. } = shape {
         let mut out = Plane::new(w, h);
-        sample_seg(Some(seg), &[], 1.0, frame, w, h, &mut out);
+        // (plain enlargement: the edge-following filter is checked on Object and Describe grids only)
+        sample_seg(Some(seg), &[], 1.0, frame, w, h, None, &mut out);
         return out;
     }
     let fitting = mattes.map(|m| m.for_shape(shape)).unwrap_or_default();
@@ -390,7 +391,7 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
             // 2 % of the long edge, so previews and exports match)
             let e = (*edge / 100.0).clamp(-1.0, 1.0) as f32;
             let gain = if e < 0.0 { 1.0 - 7.0 * e } else { 1.0 };
-            sample_seg(seg.as_ref(), detail, gain, frame, w, h, &mut out);
+            sample_seg(seg.as_ref(), detail, gain, frame, w, h, Some(log_l), &mut out);
             if e > 0.0 {
                 smooth_plane(&mut out, e * 0.02 * frame_px(frame, w));
             }
@@ -472,13 +473,40 @@ impl SegGrid {
         let bot = at(x0, y0 + 1) * (1.0 - tx) + at(x0 + 1, y0 + 1) * tx;
         top * (1.0 - ty) + bot * ty
     }
+
+    /// Output pixels per grid cell (the longer side of a cell: the grid is square over a
+    /// rectangle).
+    fn cell_px(&self, frame: &Frame, w: usize) -> f64 {
+        let px = frame.px_per_long(w) / frame.ow.max(frame.oh).max(1e-9);
+        ((self.r[2] - self.r[0]) * frame.ow).max((self.r[3] - self.r[1]) * frame.oh) * px / self.side.max(1) as f64
+    }
 }
+
+/// [`sample_seg`]'s window, in grid cells (Gaussian sigma): the width of the band bilinear
+/// enlargement leaves uncertain, about a cell on either side of the contour.
+const SEG_WINDOW: f64 = 1.5;
+/// [`sample_seg`]'s guided-filter regularization (EV² of log luminance): an edge of ~0.1 EV
+/// contrast counts half.
+const SEG_EPS: f32 = 0.01;
 
 /// Stored model segmentations at each output pixel: the zoomed-in `detail` passes inside
 /// their rectangles (the highest of them where they overlap), the whole-photo `seg`
 /// elsewhere; the logit (times `gain`: > 1 is a harder edge) through a sigmoid. Damaged
 /// data selects nothing.
-fn sample_seg(seg: Option<&SegMask>, detail: &[SegMask], gain: f32, frame: &Frame, w: usize, h: usize, out: &mut Plane) {
+///
+/// A model's grid is much coarser than an export (a 288² grid has ~20 px cells on 24 MP), and
+/// its bilinear contour passes up to a cell from the photo's edge, so the mask spilled onto the
+/// background (a bright outline under a raised Exposure). With a `guide` (the photo's log
+/// luminance), where the grid is coarser than the output, the logits are guided-filtered by it
+/// ([`guided_cross_fast`]; a window of [`SEG_WINDOW`] cells, so previews and exports draw the same
+/// edge): near the contour the logit follows the photo's tones and its edge lands on the photo's.
+/// Filtering logits, not coverage, makes the confident side win (a strip at 0.3 between 1 and 0
+/// goes to 0, not 0.1), and leaves a linear ramp of logits, where the photo has no edge, as it
+/// was. Pixels whose window is all inside or all outside (|mean logit| ≥ 7, times `gain`) keep
+/// their sample exactly, as do those where the photo has no edge to follow. Refine Edges then
+/// works on the combined mask ([`evaluate_one`]) and finds these edges already in place.
+#[allow(clippy::too_many_arguments)]
+fn sample_seg(seg: Option<&SegMask>, detail: &[SegMask], gain: f32, frame: &Frame, w: usize, h: usize, guide: Option<&Plane>, out: &mut Plane) {
     let coarse = seg.and_then(SegGrid::new);
     // (capped: a hostile document can hold many)
     let patches: Vec<SegGrid> = detail.iter().take(lcc_develop::segmask::MAX_DETAIL).filter_map(SegGrid::new).collect();
@@ -490,10 +518,15 @@ fn sample_seg(seg: Option<&SegMask>, detail: &[SegMask], gain: f32, frame: &Fram
         for (x, v) in row.iter_mut().enumerate() {
             let n = m.apply(Point::new(x as f64 + 0.5, y as f64 + 0.5));
             let fine = patches.iter().filter(|p| p.contains(n)).map(|p| p.logit(n)).reduce(f32::max);
-            let l = fine.or_else(|| coarse.as_ref().map(|c| c.logit(n))).unwrap_or(-16.0);
-            *v = 1.0 / (1.0 + (-l * gain).exp());
+            *v = fine.or_else(|| coarse.as_ref().map(|c| c.logit(n))).unwrap_or(-16.0) * gain;
         }
     });
+    // (the coarsest grid sets the window: it leaves the widest uncertain band)
+    let cell = coarse.iter().chain(&patches).map(|g| g.cell_px(frame, w)).fold(0.0, f64::max);
+    if let Some(guide) = guide.filter(|_| cell >= 1.0) {
+        guided_cross_fast(guide, out, (SEG_WINDOW * cell) as f32, SEG_EPS, |mean| 1.0 - smooth(3.0 * gain, 7.0 * gain, mean.abs()));
+    }
+    out.map_in_place(|l| 1.0 / (1.0 + (-l).exp()));
 }
 
 fn frame_px(frame: &Frame, w: usize) -> f32 {
@@ -1033,9 +1066,20 @@ pub fn auto_stroke_key(bd: &BrushDabs, w: usize, h: usize) -> u64 {
     auto_stroke::stroke_key(bd, w, h, 0)
 }
 
-/// Guided filter of `p` steered by `guide` (He et al.), clamped to 0..1: `p`'s edges snap to the
-/// guide's.
-pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
+/// A guided filter's linear model at each pixel (`q = a · guide + b`, coefficients averaged over
+/// the windows that hold the pixel), the window mean of the filtered plane and, when asked for,
+/// how much of an edge the guide has there (`var / (var + eps)`, averaged like the coefficients:
+/// 0 where the guide is flat and the model is only a blur).
+struct Guided {
+    a: Plane,
+    b: Plane,
+    mean: Plane,
+    edge: Option<Plane>,
+}
+
+/// The guided filter (He, Sun and Tang) of `p` steered by `guide`, both the same size: Gaussian
+/// windows of `sigma` px, `eps` the regularization (in guide units squared).
+fn guided_coeffs(guide: &Plane, p: &Plane, sigma: f32, eps: f32, with_edge: bool) -> Guided {
     use lcc_raster::blur::gaussian;
     let mi = gaussian(guide, sigma);
     let mp = gaussian(p, sigma);
@@ -1043,18 +1087,68 @@ pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
     let cii = gaussian(&guide.map(|a| a * a), sigma);
     let mut a = Plane::new(p.width, p.height);
     let mut b = Plane::new(p.width, p.height);
+    let mut edge = Plane::new(if with_edge { p.width } else { 0 }, if with_edge { p.height } else { 0 });
     for i in 0..p.data.len() {
         let var = (cii.data[i] - mi.data[i] * mi.data[i]).max(0.0);
         let k = (cip.data[i] - mi.data[i] * mp.data[i]) / (var + eps);
         a.data[i] = k;
         b.data[i] = mp.data[i] - k * mi.data[i];
+        if let Some(e) = edge.data.get_mut(i) {
+            *e = var / (var + eps);
+        }
     }
-    let (ma, mb) = (gaussian(&a, sigma), gaussian(&b, sigma));
+    Guided { a: gaussian(&a, sigma), b: gaussian(&b, sigma), mean: mp, edge: with_edge.then(|| gaussian(&edge, sigma)) }
+}
+
+/// Guided filter of `p` steered by `guide` (He et al.), clamped to 0..1: `p`'s edges snap to the
+/// guide's.
+pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
+    let g = guided_coeffs(guide, p, sigma, eps, false);
     let mut q = Plane::new(p.width, p.height);
     for i in 0..q.data.len() {
-        q.data[i] = (ma.data[i] * guide.data[i] + mb.data[i]).clamp(0.0, 1.0);
+        q.data[i] = (g.a.data[i] * guide.data[i] + g.b.data[i]).clamp(0.0, 1.0);
     }
     q
+}
+
+/// [`guided_cross`] in its subsampled form (He and Sun, "Fast Guided Filter", 2015, as
+/// [`crate::local::guided_fast`] is of the self-guided filter, at its step), in place and
+/// unclamped, for a `p` that is smooth at the window's scale (a mask enlarged from a model's grid):
+/// the linear model is fitted on both planes box-reduced to about 3 px of window, sampled
+/// bilinearly and applied to the full-resolution guide, which is where the edge comes from. A
+/// pixel moves to the filtered value by `weight` of its window mean of `p` times how much of an
+/// edge the guide has there (0 keeps it exactly: where the photo is flat the filter could only
+/// blur `p`). Extra memory: the reduced planes only (the coefficients are sampled per pixel, not
+/// enlarged into planes).
+fn guided_cross_fast(guide: &Plane, p: &mut Plane, sigma: f32, eps: f32, weight: impl Fn(f32) -> f32 + Sync + Send) {
+    use lcc_raster::resample::{Filter, resize};
+    let (w, h) = (p.width, p.height);
+    if guide.width != w || guide.height != h || w == 0 || h == 0 || !sigma.is_finite() {
+        return;
+    }
+    // (a window past the whole frame fits one model to it all)
+    let sigma = sigma.clamp(0.5, w.max(h) as f32);
+    let s = crate::local::guided_fast_step(sigma);
+    let (lw, lh) = (w.div_ceil(s).max(1), h.div_ceil(s).max(1));
+    let g = guided_coeffs(&resize(guide, lw, lh, Filter::Box), &resize(p, lw, lh, Filter::Box), sigma / s as f32, eps, true);
+    let Some(edge) = &g.edge else {
+        return;
+    };
+    // (the reduced planes span the same frame: their pixel per full pixel)
+    let (kx, ky) = (lw as f32 / w as f32, lh as f32 / h as f32);
+    for_rows(&mut p.data, w, |y, row| {
+        let fy = (y as f32 + 0.5) * ky;
+        for (x, (v, i)) in row.iter_mut().zip(guide.row(y)).enumerate() {
+            let fx = (x as f32 + 0.5) * kx;
+            let k = weight(bilinear(&g.mean, fx, fy));
+            // (no edge in the photo: nothing to follow, keep the sample)
+            let k = if k > 0.0 { k * smooth(0.05, 1.0, bilinear(edge, fx, fy)) } else { 0.0 };
+            if k > 0.0 {
+                let q = bilinear(&g.a, fx, fy) * i + bilinear(&g.b, fx, fy);
+                *v += (q - *v) * k;
+            }
+        }
+    });
 }
 
 /// Rows per band of [`stamp_dabs`]: the bands are stamped in parallel, each with the dabs that
@@ -1432,6 +1526,116 @@ mod tests {
         assert!(hard < plain && plain < soft, "transition widths {hard} < {plain} < {soft}");
     }
 
+    /// A dark disc (radius 0.3 of the frame) on a light background, `n × n`: the photo and its log
+    /// luminance, and a model's view of it on a `side²` grid (each cell's logit from how much of the
+    /// cell the disc covers, as a low-resolution segmenter sees it).
+    fn disc_scene(n: usize, side: usize) -> (Rgb32f, Plane, SegMask) {
+        const R: f64 = 0.3;
+        let dark = |x: f64, y: f64| (x - 0.5).hypot(y - 0.5) < R;
+        let lum = |x: usize, y: usize| if dark((x as f64 + 0.5) / n as f64, (y as f64 + 0.5) / n as f64) { 0.05f32 } else { 0.6 };
+        let img = Rgb32f::from_fn(n, n, |x, y| [lum(x, y); 3]);
+        let log_l = img.map(crate::local::log_lum);
+        let logits: Vec<f32> = (0..side * side)
+            .map(|i| {
+                let (cx, cy) = (i % side, i / side);
+                let sub = 8;
+                let cover = (0..sub * sub)
+                    .filter(|k| {
+                        dark((cx as f64 + (k % sub) as f64 / sub as f64) / side as f64, (cy as f64 + (k / sub) as f64 / sub as f64) / side as f64)
+                    })
+                    .count() as f32
+                    / (sub * sub) as f32;
+                12.0 * (2.0 * cover - 1.0)
+            })
+            .collect();
+        (img, log_l, SegMask::from_logits(side, &logits))
+    }
+
+    /// Alpha along the disc's horizontal radius, `d` px outside (> 0) or inside (< 0) its edge.
+    fn across_disc_edge(a: &Plane, d: i32) -> f32 {
+        let n = a.width;
+        let edge = (0.8 * n as f64).round() as i32; // first background pixel on the right
+        let x = if d > 0 { edge + d - 1 } else { edge + d };
+        a.get(x as usize, n / 2)
+    }
+
+    /// A mask from a low-resolution model grid spilled 1–2 px onto the background (a bright
+    /// outline once its Exposure was raised). Enlarged along the photo's edges, it is ≈ 0 one and two
+    /// pixels outside the subject, ≈ 1 inside, and exactly what it was away from the edge.
+    #[test]
+    fn ai_masks_follow_the_photos_edge_when_enlarged() {
+        let (n, side) = (512, 32); // 16 px cells, as a 288² grid on a ~4600 px export
+        let (img, log_l, seg) = disc_scene(n, side);
+        let shape = MaskShape::Prompt { text: "disc".into(), seg: Some(seg), detail: vec![], edge: 0.0 };
+        let f = frame(n, n);
+        let a = shape_alpha(&shape, &f, n, n, &img, &log_l, 0.0, None);
+        for d in [1, 2] {
+            assert!(across_disc_edge(&a, d) < 0.05, "{d} px outside: {}", across_disc_edge(&a, d));
+            assert!(across_disc_edge(&a, -d) > 0.95, "{d} px inside: {}", across_disc_edge(&a, -d));
+        }
+        // all around the disc, not only along one row
+        let r_px = 0.3 * n as f64;
+        for k in 0..64 {
+            let t = k as f64 / 64.0 * std::f64::consts::TAU;
+            let at = |r: f64| a.get((256.0 + r * t.cos()) as usize, (256.0 + r * t.sin()) as usize);
+            assert!(at(r_px + 2.5) < 0.05 && at(r_px - 2.5) > 0.95, "at {t:.2} rad: {} / {}", at(r_px + 2.5), at(r_px - 2.5));
+        }
+        // away from the edge the selection is the plain sample of the grid, to the bit
+        let flat = Plane::new(n, n);
+        let plain = shape_alpha(&shape, &f, n, n, &img, &flat, 0.0, None);
+        for (x, y) in [(256, 256), (200, 300), (10, 10), (500, 256), (256, 505)] {
+            assert_eq!(a.get(x, y), plain.get(x, y), "({x}, {y})");
+        }
+    }
+
+    /// Refine Edges on top of an enlarged AI mask: the second filter finds the edge already in place, so
+    /// there is no second halo and the edge doesn't move inwards.
+    #[test]
+    fn refine_edges_on_an_enlarged_ai_mask_neither_halos_nor_tightens() {
+        let (n, side) = (512, 32);
+        let (img, log_l, seg) = disc_scene(n, side);
+        let f = frame(n, n);
+        let mask = |refine: f64| Mask {
+            components: vec![MaskComponent {
+                anchor: None,
+                name: None,
+                op: MaskOp::Add,
+                invert: false,
+                shape: MaskShape::Prompt { text: "disc".into(), seg: Some(seg.clone()), detail: vec![], edge: 0.0 },
+            }],
+            refine,
+            ..Default::default()
+        };
+        let crossing = |a: &Plane| (0..n).rev().find(|x| a.get(*x, n / 2) > 0.5).unwrap_or(0);
+        let plain = evaluate_one(&mask(0.0), &f, n, n, &img, &log_l, 0.0, None);
+        for refine in [50.0, 100.0] {
+            let a = evaluate_one(&mask(refine), &f, n, n, &img, &log_l, 0.0, None);
+            for d in [1, 2] {
+                assert!(across_disc_edge(&a, d) < 0.05, "refine {refine}, {d} px outside: {}", across_disc_edge(&a, d));
+                assert!(across_disc_edge(&a, -d) > 0.95, "refine {refine}, {d} px inside: {}", across_disc_edge(&a, -d));
+            }
+            assert!(crossing(&a).abs_diff(crossing(&plain)) <= 1, "refine {refine}: edge at {} vs {}", crossing(&a), crossing(&plain));
+        }
+    }
+
+    /// The window follows the grid, not the output: a preview and an export put the edge in the same
+    /// place of the photo (and on its edge).
+    #[test]
+    fn enlarged_ai_masks_put_the_edge_in_the_same_place_at_any_size() {
+        let side = 32;
+        let mut edges = Vec::new();
+        for n in [256, 512, 1024] {
+            let (img, log_l, seg) = disc_scene(n, side);
+            let shape = MaskShape::Prompt { text: "disc".into(), seg: Some(seg), detail: vec![], edge: 0.0 };
+            let a = shape_alpha(&shape, &frame(n, n), n, n, &img, &log_l, 0.0, None);
+            // the edge's sub-pixel position along the row: the integral of alpha past the centre
+            let covered: f32 = (n / 2..n).map(|x| a.get(x, n / 2)).sum();
+            edges.push((n / 2) as f64 + covered as f64);
+            let x = edges.last().copied().unwrap_or(0.0) / n as f64;
+            assert!((x - 0.8).abs() < 1.0 / n as f64, "{n} px: edge at {x:.4} of the width, the disc's at 0.8");
+        }
+    }
+
     #[test]
     fn ai_shapes_without_a_segmentation_select_nothing() {
         let f = frame(30, 30);
@@ -1764,10 +1968,8 @@ mod tests {
         let log_l = img.map(crate::local::log_lum);
         let f = Frame::new(w, h, &Default::default(), true);
         let shape = MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.2, ry: 0.2, angle: 0.0, feather: 20.0, invert: false };
-        let m = Mask {
-            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Intersect, invert: false, shape }],
-            ..Default::default()
-        };
+        let m =
+            Mask { components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Intersect, invert: false, shape }], ..Default::default() };
         let a = evaluate_one(&m, &f, w, h, &img, &log_l, 0.0, None);
         assert!(a.get(50, 50) > 0.99 && a.get(5, 5) < 0.01, "the radial's inside is selected, its outside not: {} {}", a.get(50, 50), a.get(5, 5));
     }
