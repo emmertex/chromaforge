@@ -223,7 +223,7 @@ pub fn register(frames: &[Frame], progress: &Progress) -> Result<(Vec<Option<Cam
         }
     }
     let long = sizes[ids[0]].0.max(sizes[ids[0]].1) as f64;
-    let exif_f = frames[ids[0]].metadata.focal_length_35mm.filter(|v| *v > 1.0).map(|f35| f35 / 36.0 * long);
+    let exif_f = exif_focal(&frames[ids[0]]);
     let hom_f = (!fs.is_empty()).then(|| median(fs.clone())).filter(|f| *f > 0.1 * long && *f < 20.0 * long);
     let f0 = exif_f.or(hom_f).unwrap_or(long * 1.07);
     let cams = camera::initial_cameras(&ids, &sizes, &pairs, f0);
@@ -233,6 +233,13 @@ pub fn register(frames: &[Frame], progress: &Progress) -> Result<(Vec<Option<Cam
     let mut cams = adj.cameras;
     camera::straighten(&mut cams);
     Ok((cams, adj.rms_before, adj.rms))
+}
+
+/// A frame's focal length in pixels, from EXIF's 35 mm equivalent. A value that isn't finite or
+/// is beyond 20 long edges (the bound the homography estimate gets) is no focal length at all.
+fn exif_focal(frame: &Frame) -> Option<f64> {
+    let long = frame.width().max(frame.height()) as f64;
+    frame.metadata.focal_length_35mm.filter(|v| *v > 1.0).map(|f35| f35 / 36.0 * long).filter(|f| f.is_finite() && *f < 20.0 * long)
 }
 
 /// Stitch `frames` (oriented, linear) into a panorama.
@@ -290,7 +297,14 @@ pub fn stitch_with_output_pixel_limit(
         let output_pixels = pw.checked_mul(ph)?;
         Some((cw, ch, levels, unit, pw, ph, output_pixels))
     };
-    let mut s = (max_px / ((bx1 - bx0) * (by1 - by0))).sqrt().min(MAX_EDGE / (bx1 - bx0).max(by1 - by0)).min(1.0);
+    let surface = (bx1 - bx0) * (by1 - by0);
+    // Bundle adjustment fits the focal length freely, and a few wide frames can settle it below the
+    // lens's: the canvas, sized from it, then holds fewer pixels than the photos do. The lens's own
+    // focal length, where EXIF gives it, sets the native scale instead: a canvas pixel at the centre
+    // of a frame is then one pixel of the photo, and nothing is upsampled past that.
+    let lens = used.iter().filter_map(|&i| exif_focal(&frames[i])).fold(0.0, f64::max);
+    let native = if fmed > 0.0 && (lens / fmed).is_finite() { (lens / fmed).max(1.0) } else { 1.0 };
+    let mut s = (max_px / surface).sqrt().min(MAX_EDGE / (bx1 - bx0).max(by1 - by0)).min(native);
     let Some((mut cw, mut ch, mut levels, mut unit, mut pw, mut ph, mut output_pixels)) = canvas_at_scale(s) else {
         return Err(MergeError::NoOverlap("the panorama output dimensions overflow".into()));
     };
@@ -500,7 +514,7 @@ pub fn stitch_with_output_pixel_limit(
         rms_before,
         rms,
         fov,
-        native_megapixels: (bx1 - bx0) * (by1 - by0) / 1e6,
+        native_megapixels: surface * native * native / 1e6,
         focal: f_out,
         origin: (ox, oy),
         color,

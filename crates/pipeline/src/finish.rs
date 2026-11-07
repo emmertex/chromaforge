@@ -310,6 +310,8 @@ pub struct FinishParams {
     /// Colours above the peak keep their hue and saturation ([`hue_clip`], process V5) instead of
     /// moving toward their luminance.
     pub hue_clip: bool,
+    /// 8-bit output is dithered with [`bayer_dither_offset`] (process V8) instead of rounded.
+    pub dither: bool,
     pub sharpen: f32,
     pub sharpen_mask: f32,
     /// Soft-clip limit (stops) of the sharpening detail term: small damps halos (Detail 0), large keeps all (100).
@@ -374,7 +376,7 @@ impl FinishParams {
             && out_to_norm.0.iter().all(|v| v.is_finite());
         let v7 = match s.process.process() {
             Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 => false,
-            Process::V7 => true,
+            Process::V7 | Process::V8 => true,
         };
         let particles = if effects && finite_frame && v7 { crate::grain::GrainParams::new(&s.grain, px_per_long) } else { None };
         let grain = (s.grain.amount > 0.0 && effects && finite_frame && !v7).then(|| {
@@ -411,6 +413,7 @@ impl FinishParams {
             dehaze_v3: s.process.process() >= lcc_develop::Process::V3,
             sharpen_v4: sharpen_v4(s),
             hue_clip: s.process.process() >= lcc_develop::Process::V5,
+            dither: s.process.process() >= lcc_develop::Process::V8,
             sharpen: (s.detail.sharpen_amount / 150.0) as f32,
             sharpen_mask: (s.detail.sharpen_masking / 100.0) as f32,
             sharpen_limit: sharpen_limit(s.detail.sharpen_detail),
@@ -467,7 +470,7 @@ fn base_tone_at(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
             && crate::plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Source).neutral_base_tone());
     match s.process.process() {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), V5 the over-range colours
-        // ([`hue_clip`]), not the tone map
+        // ([`hue_clip`]), V6 Denoise, V7 grain: not the tone map
         Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 => {
             match info.camera_tone.as_ref().filter(|_| raw) {
                 Some(curve) => ToneMap::camera_hdr(curve, l.contrast, l.whites, l.blacks, peak),
@@ -475,6 +478,13 @@ fn base_tone_at(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
                 None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
             }
         }
+        // a raw's tone curve rolls off into white in stops: a camera curve past its last knot, the
+        // generic curve from half a stop below its white point instead of clipping (upstream #3783)
+        Process::V8 => match info.camera_tone.as_ref().filter(|_| raw) {
+            Some(curve) => ToneMap::camera_rolloff_hdr(curve, l.contrast, l.whites, l.blacks, peak),
+            None if raw => ToneMap::rolloff_hdr(l.contrast, l.whites, l.blacks, peak),
+            None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
+        },
     }
 }
 
@@ -493,22 +503,30 @@ fn finish_post<T: Copy + Default + Send>(
     exact: bool,
     post: &Post<'_, '_>,
     linear: bool,
-    store: impl Fn([f32; 3]) -> T + Sync + Send,
+    store: impl Fn(usize, usize, [f32; 3]) -> T + Sync + Send,
 ) -> Vec<T> {
     if post.stack.is_empty() {
         return finish_with(p, fp, exact, store);
     }
     let (w, h) = (p.img.width, p.img.height);
-    let mut v = if linear { finish_with(p, fp, true, |e| e.map(srgb_to_linear_ext)) } else { finish_with(p, fp, exact, |e| e) };
+    let mut v = if linear { finish_with(p, fp, true, |_, _, e| e.map(srgb_to_linear_ext)) } else { finish_with(p, fp, exact, |_, _, e| e) };
     crate::plugin_filters::apply_display(post.stack, &mut v, w, h, post.frame, linear, &mut post.warnings.borrow_mut());
+    let (ox, oy) = view_origin(fp.view);
     let mut out = vec![T::default(); v.len()];
     for_rows(&mut out, w.max(1), |y, row| {
         for (x, o) in row.iter_mut().enumerate() {
             let e = v.get(y * w + x).copied().unwrap_or_default();
-            *o = store(if linear { e.map(linear_to_srgb_ext) } else { e });
+            *o = store(ox.wrapping_add(x), oy.wrapping_add(y), if linear { e.map(linear_to_srgb_ext) } else { e });
         }
     });
     out
+}
+
+/// Where the window being drawn starts in the whole output, in whole pixels (floored, as the GPU
+/// finish does): the ordered dither's pattern belongs to the whole output, so tiles line up.
+fn view_origin(view: [f32; 4]) -> (usize, usize) {
+    let at = |v: f64| if v.is_finite() && v > 0.0 { v.floor() as usize } else { 0 };
+    (at(view[0] as f64), at(view[1] as f64))
 }
 
 /// The sRGB curve extended to all values (odd), as the finish encodes HDR values above 1.
@@ -538,11 +556,15 @@ pub(crate) fn finish(
         fp.for_display(d, proof);
     }
     let trc = fp.out_trc;
-    let data = finish_post(p, &fp, false, post, false, |e| match trc {
-        OutputTrc::Srgb => [enc(e[0]), enc(e[1]), enc(e[2]), 255],
-        t => {
-            let x = e.map(|v| enc(t.encode(lcc_color::transfer::srgb_to_linear(v.clamp(0.0, 1.0)))));
-            [x[0], x[1], x[2], 255]
+    let dither = fp.dither;
+    let data = finish_post(p, &fp, false, post, false, |x, y, e| {
+        let d = if dither { bayer_dither_offset(x, y) } else { 0.5 };
+        match trc {
+            OutputTrc::Srgb => [enc(e[0], d), enc(e[1], d), enc(e[2], d), 255],
+            t => {
+                let c = e.map(|v| enc(t.encode(lcc_color::transfer::srgb_to_linear(v.clamp(0.0, 1.0))), d));
+                [c[0], c[1], c[2], 255]
+            }
         }
     });
     Rgba8 { width: w, height: h, data }
@@ -567,18 +589,18 @@ pub(crate) fn finish_deep(
     let trc = fp.out_trc;
     let samples = match depth {
         OutputDepth::F32Linear => {
-            let v = finish_post(p, &fp, true, post, false, |e| e.map(|v| srgb_to_linear(v.clamp(0.0, 1.0))));
+            let v = finish_post(p, &fp, true, post, false, |_, _, e| e.map(|v| srgb_to_linear(v.clamp(0.0, 1.0))));
             DeepSamples::F32(v.into_flattened())
         }
         OutputDepth::F32Hdr => {
             // the sRGB curve extended past 1 (it is unbounded), so values up to `peak` survive
             let peak = fp.peak;
-            let v = finish_post(p, &fp, true, post, true, |e| e.map(|v| srgb_to_linear(v.max(0.0)).clamp(0.0, peak)));
+            let v = finish_post(p, &fp, true, post, true, |_, _, e| e.map(|v| srgb_to_linear(v.max(0.0)).clamp(0.0, peak)));
             DeepSamples::F32(v.into_flattened())
         }
         _ => {
             let q = |v: f32| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
-            let v = finish_post(p, &fp, true, post, false, |e| match trc {
+            let v = finish_post(p, &fp, true, post, false, |_, _, e| match trc {
                 OutputTrc::Srgb => e.map(q),
                 t => e.map(|v| q(t.encode(srgb_to_linear(v.clamp(0.0, 1.0))))),
             });
@@ -590,12 +612,13 @@ pub(crate) fn finish_deep(
 
 /// The per-pixel stage: every output pixel's colour in the output primaries, encoded with the sRGB
 /// curve (tone curves and grain applied; not clamped), handed to `store` for the final encoding.
-/// `exact`: encode with the exact sRGB curve instead of the (8/10-bit accurate) table.
+/// `exact`: encode with the exact sRGB curve instead of the (8/10-bit accurate) table. `store` also
+/// gets the pixel's place in the whole output ([`view_origin`] plus its place in the window).
 pub(crate) fn finish_with<T: Copy + Default + Send>(
     p: &Prepared,
     fp: &FinishParams,
     exact: bool,
-    store: impl Fn([f32; 3]) -> T + Sync + Send,
+    store: impl Fn(usize, usize, [f32; 3]) -> T + Sync + Send,
 ) -> Vec<T> {
     let (w, h) = (p.img.width, p.img.height);
     let p_lut = fp.lut.clone();
@@ -639,6 +662,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let out_to_norm = fp.out_to_norm;
     let long = fp.ow.max(fp.oh);
     let [vx, vy, vw, vh] = fp.view;
+    let (ox, oy) = view_origin(fp.view);
     // the vignette belongs to the whole output frame, not to the window being drawn
     let aspect = vw / vh;
 
@@ -983,7 +1007,8 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 }
             }
         }
-        for (px, (e, warn)) in rows.iter_mut().zip(enc) {
+        for (q, (px, (e, warn))) in rows.iter_mut().zip(enc).enumerate() {
+            let (x, y) = (q % w.max(1), band * BAND + q / w.max(1));
             let e = match &p_lut {
                 Some((l, k)) if hdr => {
                     // the LUT sees SDR values; the part above SDR white is carried over
@@ -997,7 +1022,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 }
                 None => e,
             };
-            *px = store(warn.unwrap_or(e));
+            *px = store(ox.wrapping_add(x), oy.wrapping_add(y), warn.unwrap_or(e));
         }
     });
     out
@@ -1197,10 +1222,34 @@ fn encode_srgb(lut: &[f32; SRGB_LUT_N + 1], v: f32) -> f32 {
     lut[i] + (lut[i + 1] - lut[i]) * t
 }
 
+/// The 8×8 ordered (Bayer) dither matrix: every threshold 0–63 once, each spread as far as possible
+/// from its neighbours.
+#[rustfmt::skip]
+const BAYER_8X8: [u8; 64] = [
+     0, 32,  8, 40,  2, 34, 10, 42,
+    48, 16, 56, 24, 50, 18, 58, 26,
+    12, 44,  4, 36, 14, 46,  6, 38,
+    60, 28, 52, 20, 62, 30, 54, 22,
+     3, 35, 11, 43,  1, 33,  9, 41,
+    51, 19, 59, 27, 49, 17, 57, 25,
+    15, 47,  7, 39, 13, 45,  5, 37,
+    63, 31, 55, 23, 61, 29, 53, 21,
+];
+
+/// The ordered-dither offset (0 to 1, exclusive) added before truncating to 8 bits at output pixel
+/// (`x`, `y`): its mean is a half, so on average a level rounds as without dither.
 #[inline]
-fn enc(v: f32) -> u8 {
-    // `v` is already sRGB-encoded; round to 8 bits.
-    (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+pub(crate) fn bayer_dither_offset(x: usize, y: usize) -> f32 {
+    let t = BAYER_8X8.get((y & 7) * 8 + (x & 7)).copied().unwrap_or(32);
+    (f32::from(t) + 0.5) / 64.0
+}
+
+/// `v` (already sRGB-encoded) to 8 bits, adding `dither` (0 to 1; a half rounds) before truncating.
+/// Values within a tenth of a level of white stay white, so dithering never darkens it.
+#[inline]
+fn enc(v: f32, dither: f32) -> u8 {
+    let y = v.clamp(0.0, 1.0) * 255.0;
+    if y >= 254.9 { 255 } else { (y + dither).clamp(0.0, 255.0) as u8 }
 }
 
 #[cfg(test)]
@@ -1309,5 +1358,71 @@ mod tests {
         let r = lift_negatives([0.6, 0.2, -0.05], luma, 1.0);
         assert!(r[2].abs() < 1e-6 && r[0] < 0.6 && r[0] > r[1]);
         assert_eq!(lift_negatives([1.6, 0.2, 0.05], luma, 1.0), [1.6, 0.2, 0.05]);
+    }
+
+    /// Upstream #3509: the dither keeps black, white and every exact 8-bit level exact, and splits a
+    /// level half-way between two evenly over each 8×8 tile.
+    #[test]
+    fn bayer_dithering_preserves_extremes_and_dithers_smoothly() {
+        for y in 0..8 {
+            for x in 0..8 {
+                let d = bayer_dither_offset(x, y);
+                assert_eq!(enc(0.0, d), 0, "black stays black");
+                assert_eq!(enc(1.0, d), 255, "white stays white");
+                for k in 0..=255u8 {
+                    assert_eq!(enc(f32::from(k) / 255.0, d), k, "an exact level has no dither noise");
+                }
+            }
+        }
+        for (lo, hi) in [(128u8, 129u8), (254, 255)] {
+            let v = (f32::from(lo) + 0.5) / 255.0;
+            let mut n = [0usize; 2];
+            for y in 0..8 {
+                for x in 0..8 {
+                    let q = enc(v, bayer_dither_offset(x, y));
+                    assert!(q == lo || q == hi, "{q} is not {lo} or {hi}");
+                    n[usize::from(q == hi)] += 1;
+                }
+            }
+            assert_eq!(n, [32, 32], "half-way between {lo} and {hi} splits the tile evenly");
+        }
+    }
+
+    /// Without the dither (processes V1–V7) the encoding is the plain rounding it always was.
+    #[test]
+    fn a_half_offset_rounds_as_before() {
+        for i in -100..=1100 {
+            let v = i as f32 / 1000.0;
+            assert_eq!(enc(v, 0.5), (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8, "{v}");
+        }
+        assert_eq!(enc(f32::NAN, 0.5), 0);
+    }
+
+    /// The dither's phase comes from the view origin floored to whole pixels, as the GPU finish takes it
+    /// (`u32(max(floor(view), 0))` in `finish.wgsl`): a fractional origin dithers like the pixel it lies
+    /// in; a negative or non-finite one counts as 0.
+    #[test]
+    fn a_fractional_view_origin_takes_the_pixel_it_lies_in() {
+        assert_eq!(view_origin([77.0, 13.0, 512.0, 64.0]), (77, 13));
+        assert_eq!(view_origin([77.6, 13.99, 512.0, 64.0]), (77, 13));
+        assert_eq!(view_origin([-0.5, f32::NAN, 512.0, 64.0]), (0, 0));
+        assert_eq!(view_origin([f32::INFINITY, 0.25, 512.0, 64.0]), (0, 0));
+    }
+
+    /// The table holds every threshold once, and is the bit formula the GPU finish computes it with
+    /// (`bayer_dither` in `finish.wgsl`): CPU and GPU dither alike.
+    #[test]
+    fn the_bayer_table_is_the_gpu_formula() {
+        let mut seen = [false; 64];
+        for y in 0..8usize {
+            for x in 0..8usize {
+                let a = x ^ y;
+                let t = ((a & 1) << 5) | ((y & 1) << 4) | ((a & 2) << 2) | ((y & 2) << 1) | ((a & 4) >> 1) | ((y & 4) >> 2);
+                assert_eq!(usize::from(BAYER_8X8[y * 8 + x]), t, "({x}, {y})");
+                seen[t] = true;
+                assert_eq!(bayer_dither_offset(x + 8, y + 16), bayer_dither_offset(x, y), "the pattern tiles");
+            }
+        }
+        assert!(seen.iter().all(|s| *s), "every threshold once");
     }
 }

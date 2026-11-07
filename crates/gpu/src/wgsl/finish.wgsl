@@ -628,8 +628,21 @@ fn grain_apply(gx: f32, gy: f32, lum: f32) -> vec3<f32> {
     return vec3<f32>(m + rr, m + gg, m + bb);
 }
 
-fn enc8(v: f32) -> u32 {
-    return u32(clamp(v, 0.0, 1.0) * 255.0 + 0.5);
+// `finish::enc`: 8 bits, adding `d` (0 to 1; a half rounds) before truncating; white stays white.
+fn enc8(v: f32, d: f32) -> u32 {
+    let y = clamp(v, 0.0, 1.0) * 255.0;
+    if (y >= 254.9) {
+        return 255u;
+    }
+    return u32(clamp(y + d, 0.0, 255.0));
+}
+
+// `finish::bayer_dither_offset` at output pixel (`x`, `y`) of the whole output: the 8×8 Bayer
+// threshold is the bits of `x ^ y` and `y` interleaved, lowest first, read in reverse.
+fn bayer_dither(x: u32, y: u32) -> f32 {
+    let a = x ^ y;
+    let t = ((a & 1u) << 5u) | ((y & 1u) << 4u) | ((a & 2u) << 2u) | ((y & 2u) << 1u) | ((a & 4u) >> 1u) | ((y & 4u) >> 2u);
+    return (f32(t) + 0.5) / 64.0;
 }
 
 // sRGB-curve-encoded value → the output space's own curve (`OutputTrc`: 0 sRGB, 1 gamma, 2 Rec.709).
@@ -1097,7 +1110,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         e = vec3<f32>(lin_to_srgb(sdr.x), lin_to_srgb(sdr.y), lin_to_srgb(sdr.z));
     }
     e = vec3<f32>(out_encode(e.x), out_encode(e.y), out_encode(e.z));
-    out[i] = enc8(e.x) | (enc8(e.y) << 8u) | (enc8(e.z) << 16u) | (255u << 24u);
+    var dither8 = 0.5;
+    if (pu(F_DITHER) != 0u) {
+        let ox = u32(max(floor(pf(F_VIG_VIEW)), 0.0));
+        let oy = u32(max(floor(pf(F_VIG_VIEW + 1u)), 0.0));
+        dither8 = bayer_dither(ox + x, oy + y);
+    }
+    out[i] = enc8(e.x, dither8) | (enc8(e.y, dither8) << 8u) | (enc8(e.z, dither8) << 16u) | (255u << 24u);
 }
 
 // `Lut3d::apply` (trilinear) on the LUT profile's table in `aux` (red fastest).

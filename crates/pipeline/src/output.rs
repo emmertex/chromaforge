@@ -364,6 +364,27 @@ impl DeepImage {
         }
         out
     }
+
+    /// Crop to `[x0, x0+w) × [y0, y0+h)` (clamped to the image).
+    pub fn crop(&self, x0: usize, y0: usize, w: usize, h: usize) -> Self {
+        let x0 = x0.min(self.width);
+        let y0 = y0.min(self.height);
+        let w = w.min(self.width - x0);
+        let h = h.min(self.height - y0);
+        fn rows<T: Copy>(v: &[T], width: usize, x0: usize, y0: usize, w: usize, h: usize) -> Vec<T> {
+            let mut out = Vec::with_capacity(w.saturating_mul(h).saturating_mul(3));
+            for y in y0..y0 + h {
+                let at = y.saturating_mul(width).saturating_add(x0).saturating_mul(3);
+                out.extend_from_slice(v.get(at..at.saturating_add(3 * w)).unwrap_or_default());
+            }
+            out
+        }
+        let samples = match &self.samples {
+            DeepSamples::U16(v) => DeepSamples::U16(rows(v, self.width, x0, y0, w, h)),
+            DeepSamples::F32(v) => DeepSamples::F32(rows(v, self.width, x0, y0, w, h)),
+        };
+        Self { width: w, height: h, space: self.space, samples }
+    }
 }
 
 trait IntoRgba {

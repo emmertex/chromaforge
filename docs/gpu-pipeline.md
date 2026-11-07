@@ -61,8 +61,8 @@ Overrides (read once at launch):
 - Both `<PREFIX>_GPU=0` and `<PREFIX>_GPU_BACKEND=off` also keep AI Denoise, the face models
   and the AI mask model (SAM 3 on Metal) on the CPU.
 - `<PREFIX>_GPU_INIT_TIMEOUT=<seconds>` (whole seconds, 1–3600; default 30): how long creating a
-  compute device (rendering, AI Denoise, faces) and compiling its kernels may take. See *Device
-  creation time limit* below.
+  compute device (rendering, AI Denoise, faces) and compiling its kernels may go without building a
+  kernel (ten times that in all). See *Device creation time limit* below.
 
 **DX12 shader compiler (issue #471).** Every instance (window and compute) compiles DX12 shaders with
 FXC (`d3dcompiler_47.dll`, part of Windows; `lcc_gpu::backend::backend_options`). wgpu's
@@ -101,8 +101,13 @@ connection and never answers (a crash-looping WSLg compositor, a stale `WAYLAND_
 calls never returned, and every render waiting for the device, and every test that creates one, hung
 for good. wgpu's native calls are synchronous, so each compute device (rendering, denoise, faces) is
 now created, kernels included, on a thread of its own (`lc-gpu-device`, `crates/gpu/src/init.rs`), and
-the caller waits at most `<PREFIX>_GPU_INIT_TIMEOUT` seconds (default 30: a first run that compiles
-every kernel with FXC takes seconds). Past it that device is unavailable for the process, with the
+the caller waits until `<PREFIX>_GPU_INIT_TIMEOUT` seconds (default 30) pass with no progress. Each
+module prepared and each kernel built is progress (`init::Progress`, ticked by `ctx::build_kernels`),
+so a first start after an install or a driver update, when the driver's shader cache is empty and
+compiling every kernel takes 30 s on an RTX 4070 SUPER and an RTX 5070 under DX12, still ends on the
+GPU instead of falling back to the CPU; a creation is given up on at ten times the limit in all
+(`did not finish in 300 s (10 times …)`), or a limit after its last kernel (`stopped making progress
+for 30 s … after N kernels`). Past it that device is unavailable for the process, with the
 reason `GPU device creation did not finish in 30 s (<PREFIX>_GPU_INIT_TIMEOUT): …` reported like any
 other creation failure (`perf.gpuReason`, the no-GPU notice, the log), and the blocked thread is left
 behind. That thread, not the caller, holds what must last as long as the driver work does: its share
@@ -148,7 +153,8 @@ device and every kernel build; a crash while the window's renderer starts is avo
 or worked around with `<PREFIX>_GPU_BACKEND`.
 
 **The window's renderer and its fallback (Windows).** Before the window opens, each renderer is probed in
-order: DX12, Vulkan, GL, then eframe's OpenGL renderer (glow). A probe creates a device and builds egui's
+order: DX12, GL, then eframe's OpenGL renderer (glow); Vulkan only when `<PREFIX>_GPU_BACKEND=vulkan` asks for it,
+since a broken Vulkan driver can crash the process before any window. A probe creates a device and builds egui's
 pipeline inside wgpu error scopes, so a driver that cannot compile egui's shaders ("The parameter is
 incorrect. (0x80070057)" in `egui_pipeline`) is logged and skipped instead of killing the app; no pop-up
 unless that renderer was forced (#1624). The renderer

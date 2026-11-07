@@ -110,6 +110,51 @@ pub struct Manifest {
     /// is dropped (the menu stays flat).
     #[serde(skip)]
     pub groups: Vec<(String, Vec<String>)>,
+    /// A header picture the host may show at the top of the filter's controls (`"header": "<svg…>"`,
+    /// or `{"dark": "<svg…>", "light": "<svg…>"}` for dark and light interface themes). Read by
+    /// [`Manifest::parse`]; a picture that isn't an SVG document of at most [`MAX_HEADER_BYTES`]
+    /// is dropped (no header).
+    #[serde(skip)]
+    pub header: Option<Header>,
+    /// A square icon the host may show for the filter (`"icon": "<svg…>"`, drawn on the host's own
+    /// background, so it suits dark and light themes). Read by [`Manifest::parse`]; a picture that
+    /// isn't an SVG document of at most [`MAX_HEADER_BYTES`] is dropped (the host draws its own).
+    #[serde(skip)]
+    pub icon: Option<String>,
+}
+
+/// The largest header SVG kept (a logo drawn as paths is a few kilobytes).
+pub const MAX_HEADER_BYTES: usize = 24 * 1024;
+
+/// A filter's header picture (see [`Manifest::header`]): SVG documents for dark and light
+/// interface themes, at least one of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Header {
+    pub dark: Option<String>,
+    pub light: Option<String>,
+}
+
+/// `v` as an SVG document of at most [`MAX_HEADER_BYTES`] (a picture a filter carries), or `None`.
+fn svg_document(v: Option<&Value>) -> Option<String> {
+    let t = v?.as_str()?.trim();
+    (t.len() <= MAX_HEADER_BYTES && (t.starts_with("<svg") || t.starts_with("<?xml")) && t.contains("</svg>")).then(|| t.to_string())
+}
+
+impl Header {
+    fn parse(v: &Value) -> Option<Header> {
+        let h = match v {
+            Value::String(_) => Header { dark: svg_document(Some(v)), light: None },
+            _ => Header { dark: svg_document(v.get("dark")), light: svg_document(v.get("light")) },
+        };
+        (h.dark.is_some() || h.light.is_some()).then_some(h)
+    }
+
+    /// The picture for a dark (`true`) or light interface theme, or the other one when the
+    /// filter gives only one.
+    pub fn for_theme(&self, dark: bool) -> &str {
+        let (want, other) = if dark { (&self.dark, &self.light) } else { (&self.light, &self.dark) };
+        want.as_deref().or(other.as_deref()).unwrap_or_default()
+    }
 }
 
 /// The pipeline stage a filter asks for (see [`Manifest::stage`]).
@@ -188,6 +233,8 @@ impl Manifest {
         man.validate()?;
         // optional per-parameter labels (unknown keys to the parameter schema itself)
         let raw: Value = serde_json::from_str(text).map_err(|e| Error::Manifest(format!("manifest: {e}")))?;
+        man.header = raw.get("header").and_then(Header::parse);
+        man.icon = svg_document(raw.get("icon"));
         if let Some(ps) = raw.get("params").and_then(Value::as_object) {
             man.labels = man
                 .params
@@ -496,6 +543,28 @@ mod tests {
         assert_eq!(Manifest::parse(with(r#","analyzeArea":"crop""#).as_bytes()).unwrap().analyze_area, AnalyzeArea::Crop);
         assert_eq!(Manifest::parse(with(r#","analyzeArea":"somewhere""#).as_bytes()).unwrap().analyze_area, AnalyzeArea::Frame);
         assert_eq!(Manifest::parse(with(r#","analyzeArea":7"#).as_bytes()).unwrap().analyze_area, AnalyzeArea::Frame);
+    }
+
+    #[test]
+    fn a_filters_pictures_are_optional_and_must_be_svg_documents() {
+        let with = |v: &str| format!(r#"{{"id":"a.b","name":"A","kind":"filter"{v}}}"#);
+        let none = Manifest::parse(with("").as_bytes()).unwrap();
+        assert!(none.icon.is_none() && none.header.is_none());
+        let svg = r#"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'><rect width='8' height='8'/></svg>"#;
+        let m = Manifest::parse(with(&format!(r#","icon":"{svg}","header":"{svg}""#)).as_bytes()).unwrap();
+        assert_eq!(m.icon.as_deref(), Some(svg));
+        let h = m.header.unwrap();
+        assert_eq!(h.for_theme(true), svg);
+        assert_eq!(h.for_theme(false), svg, "one picture serves both themes");
+        let m = Manifest::parse(with(&format!(r#","header":{{"light":"{svg}"}}"#)).as_bytes()).unwrap();
+        assert_eq!(m.header.as_ref().map(|h| h.for_theme(true)), Some(svg));
+        // not an SVG document, too large, or the wrong type: dropped, the manifest still loads
+        for bad in [r#""icon":"<html></html>""#, r#""icon":7"#, r#""header":{"dark":"png bytes"}"#, r#""header":["<svg></svg>"]"#] {
+            let m = Manifest::parse(with(&format!(",{bad}")).as_bytes()).unwrap();
+            assert!(m.icon.is_none() && m.header.is_none(), "{bad}");
+        }
+        let huge = format!("<svg>{}</svg>", "x".repeat(MAX_HEADER_BYTES));
+        assert!(Manifest::parse(with(&format!(r#","icon":"{huge}""#)).as_bytes()).unwrap().icon.is_none());
     }
 
     #[test]
