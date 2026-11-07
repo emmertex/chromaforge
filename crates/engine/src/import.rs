@@ -342,6 +342,23 @@ pub fn has_import_look(p: &Photo) -> bool {
     *p.develop == p.camera_defaults()
 }
 
+/// [`has_import_look`], or the only change is the camera profile (colour calibration), such as the
+/// body's default profile picked for a photo browsed before import: the camera's JPEG then shows
+/// the photo as framed and exposed, a fair stand-in until the render arrives (labelled "Camera
+/// preview" in the loupe). Any other edit is never shown as the camera JPEG.
+pub fn looks_as_shot(p: &Photo) -> bool {
+    if has_import_look(p) {
+        return true;
+    }
+    let neutral = |d: &lcc_develop::DevelopSettings| {
+        let mut d = d.clone();
+        d.profile.camera.clear();
+        d.profile.id = lcc_develop::Profile::default().id;
+        d
+    };
+    neutral(&p.develop) == neutral(&p.camera_defaults())
+}
+
 /// The name `library.setImportDefault` saves its preset under when the caller doesn't name one
 /// (Develop ▸ Optics ▸ Save as… pre-fills it).
 pub const NEW_PHOTO_DEFAULT: &str = "Optics for new photos";
@@ -2209,6 +2226,8 @@ impl Session {
             display_fit: None,
             hdr_texels: None,
             superseded: None,
+            latest: None,
+            placement: None,
         };
         let embedded = match (&self.media.preview_loader, c.kind) {
             (Some(l), MediaKind::Raw) => Some((c.path.clone(), l.clone(), edge)),
@@ -2223,6 +2242,10 @@ impl Session {
             embedded_cache: None,
             embedded_on_disk: false,
             small: Some(Box::new(small)),
+            latest: Vec::new(),
+            fit: None,
+            draft: None,
+            want: None,
         })
     }
 

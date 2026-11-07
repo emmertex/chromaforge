@@ -199,6 +199,12 @@ pub fn export_catalog(cat: &Catalog, opts: &ExportOptions, parent: &Path, name: 
 /// store read-only, the log replayed in memory; a v3 library read from copies of its files.
 pub fn load_readonly(path: &Path) -> Result<Catalog> {
     let dir = library::resolve(path)?;
+    // a library in the catalog format of this app's earlier name (crate::legacy), converted as it is read
+    if crate::legacy::is_legacy(&dir) {
+        let (cat, report) = crate::legacy::load(&dir)?;
+        log::info!("older library {}: {report:?}", dir.display());
+        return Ok(cat);
+    }
     let db_path = dir.join(DB_FILE);
     if db_path.exists() {
         let mut db = CatalogDb::open(&db_path)?;
@@ -269,10 +275,10 @@ pub struct ImportPlan {
     pub extended_albums: Vec<String>,
 }
 
-/// How photos are matched: the file, and the virtual copy's name.
+/// How photos are matched: the file, and the virtual copy's name (a photo that isn't one may carry a Copy Name too).
 fn match_key(p: &Photo) -> Option<(String, Option<String>)> {
     match &p.source {
-        Source::File { path } => Some((crate::query::folder_key(path), p.copy_name.clone())),
+        Source::File { path } => Some((crate::query::folder_key(path), p.virtual_copy_name().map(str::to_string))),
         Source::Demo { .. } => None,
     }
 }

@@ -23,6 +23,8 @@ mod index;
 pub mod journal;
 pub mod keywords;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod legacy;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod library;
 pub mod local;
 pub mod lock;

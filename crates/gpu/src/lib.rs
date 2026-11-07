@@ -23,6 +23,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +32,8 @@ use lcc_develop::DevelopSettings;
 use lcc_pipeline::{RenderRequest, Rendered, SourceInfo, StageCache};
 use lcc_raster::Rgb32f;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ai;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod backend;
 #[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
@@ -85,6 +89,13 @@ pub fn as_batch<R>(f: impl FnOnce() -> R) -> R {
     }
 }
 
+/// Device bytes a batch photo of `src_px` source and `out_px` output pixels holds in its turn: its
+/// renders' own, plus an HDR rendition's float output.
+#[cfg(not(target_arch = "wasm32"))]
+fn turn_bytes(src_px: usize, out_px: usize) -> u64 {
+    gate::job_bytes(src_px, out_px).saturating_add((out_px as u64).saturating_mul(16))
+}
+
 /// Run `f`, several batch renders of one photo (an export's SDR and HDR renditions, `src_px`
 /// source and `out_px` output pixels), in one turn at the GPU: the stages the first leaves on the
 /// device for the second stay its own. Outside batch work, or without a device, it is just `f`.
@@ -92,7 +103,11 @@ pub fn in_one_turn<R>(src_px: usize, out_px: usize, f: impl FnOnce() -> R) -> R 
     #[cfg(not(target_arch = "wasm32"))]
     {
         // (the HDR rendition's float output on top of the renders' own memory)
-        let bytes = gate::job_bytes(src_px, out_px).saturating_add((out_px as u64).saturating_mul(16));
+        let bytes = turn_bytes(src_px, out_px);
+        // inside a photo's turn already taken (`wait_batch_turn_any` …): that card's, as it is
+        if gate::in_turn() {
+            return f();
+        }
         // batch work goes to the second card when there is one
         if let Some(h) = batch_helper() {
             let vram = h.vram.unwrap_or(h.max_buffer);
@@ -109,10 +124,34 @@ pub fn in_one_turn<R>(src_px: usize, out_px: usize, f: impl FnOnce() -> R) -> R 
     }
 }
 
-/// A photo's turn at the GPU taken by [`try_batch_turn`], held until dropped.
+/// A photo's turn at a card ([`try_batch_turn`], [`batch_turn_any`], [`wait_batch_turn_any`]),
+/// held until dropped. While it is held, this thread's renders go to that card and run in the
+/// turn.
 pub struct BatchTurn {
     #[cfg(not(target_arch = "wasm32"))]
     _turn: Option<gate::Turn>,
+    /// The turn is the second card's.
+    helper: bool,
+}
+
+impl BatchTurn {
+    /// Whether the photo renders on the second graphics card (else the editing card, or the
+    /// processor without a device).
+    pub fn on_helper(&self) -> bool {
+        self.helper
+    }
+
+    /// The name of the card the photo renders on (`None` without a device: the processor).
+    pub fn card_name(&self) -> Option<String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.helper { helper::current() } else { slot::current() }.map(|g| g.info.name.clone())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+    }
 }
 
 /// [`in_one_turn`]'s turn for a photo of `src_px` source and `out_px` output pixels, if it is free
@@ -123,22 +162,269 @@ pub struct BatchTurn {
 pub fn try_batch_turn(src_px: usize, out_px: usize) -> Option<BatchTurn> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let bytes = gate::job_bytes(src_px, out_px).saturating_add((out_px as u64).saturating_mul(16));
-        // the second card's turn first, then the editing card's: both cards export at once
-        if let Some(h) = batch_helper()
-            && let Some(t) = gate::try_turn(bytes, h.vram.unwrap_or(h.max_buffer), true)
+        let bytes = turn_bytes(src_px, out_px);
+        // the card that would finish it soonest first (`gate::order`), then the other: both
+        // cards export at once
+        if batch_helper().is_some()
+            && let Some(t) = gate::order(bytes, true).into_iter().find_map(|h| try_turn_on(h, bytes))
         {
-            return Some(BatchTurn { _turn: Some(t) });
+            return Some(t);
         }
-        let Some(g) = existing_device().filter(|_| enabled()) else { return Some(BatchTurn { _turn: None }) };
+        let Some(g) = existing_device().filter(|_| enabled()) else { return Some(BatchTurn { _turn: None, helper: false }) };
         let vram = g.vram.unwrap_or(g.max_buffer);
-        gate::try_turn(bytes, vram, false).map(|t| BatchTurn { _turn: Some(t) })
+        gate::try_turn(bytes, vram, false).map(|t| BatchTurn { _turn: Some(t), helper: false })
     }
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (src_px, out_px);
-        Some(BatchTurn {})
+        Some(BatchTurn { helper: false })
     }
+}
+
+/// A turn for the photo needing `bytes` on the second card (`helper`) or the editing card alone,
+/// if that card has a device and room now: this thread's renders go to it while the turn is held.
+/// `None`: no device there, or it is busy (or, on the editing card, the interface is).
+#[cfg(not(target_arch = "wasm32"))]
+fn try_turn_on(helper: bool, bytes: u64) -> Option<BatchTurn> {
+    if !allowed() || gate::cpu_only() {
+        return None;
+    }
+    // (the editing card's device is made here on first use, as a render would; the second card's
+    // only by its own set-up)
+    let g = if helper { helper::current()? } else { device()? };
+    let vram = g.vram.unwrap_or(g.max_buffer);
+    gate::try_turn(bytes, vram, helper).map(|t| BatchTurn { _turn: Some(t), helper })
+}
+
+/// [`batch_turn_any`] on one card only: the second card (`helper`) or the card for editing, if it
+/// has a device and room now (an export told to use one card). `None`: no device there, or busy.
+pub fn try_batch_turn_on(helper: bool, src_px: usize, out_px: usize) -> Option<BatchTurn> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        try_turn_on(helper, turn_bytes(src_px, out_px))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (helper, src_px, out_px);
+        None
+    }
+}
+
+/// Whether the second graphics card is set up and takes work now. Never blocks.
+pub fn helper_ready() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        allowed() && helper::current().is_some()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
+/// A turn for a batch photo of `src_px` source and `out_px` output pixels on whichever card has
+/// room now and would finish it soonest: each card's photos running now plus this one, at the
+/// card's measured speed for batch work, so both cards work in proportion to their speed and a
+/// build of two photos at a time puts one on each. While the desktop app tracks the interface
+/// ([`track_interaction`]) the second card takes a photo first whenever it has none, and the
+/// editing card hands out turns only while the interface is idle (one at a time). `None`: both are
+/// busy, or there is no GPU: the caller renders the photo on the processor. Take it inside
+/// [`as_batch`]; this thread's renders go to the card while the turn is held.
+pub fn batch_turn_any(src_px: usize, out_px: usize) -> Option<BatchTurn> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let bytes = turn_bytes(src_px, out_px);
+        let helper = allowed() && helper::current().is_some();
+        gate::order(bytes, helper).into_iter().find_map(|h| try_turn_on(h, bytes))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (src_px, out_px);
+        None
+    }
+}
+
+/// [`batch_turn_any`], waiting until one card has room (a GPU-only export, a preview build).
+/// `None` only when `stop()` says to give up (cancelled, the app closing), or at once when there
+/// is no GPU to wait for (render on the processor).
+pub fn wait_batch_turn_any(src_px: usize, out_px: usize, stop: &dyn Fn() -> bool) -> Option<BatchTurn> {
+    loop {
+        if let Some(t) = batch_turn_any(src_px, out_px) {
+            return Some(t);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let gpu = allowed() && !gate::cpu_only() && (slot::current().is_some() || helper::current().is_some());
+        #[cfg(target_arch = "wasm32")]
+        let gpu = false;
+        if !gpu || stop() || shutting_down() {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+}
+
+/// How many cards take batch work now: the editing card (when the GPU is used: its device made,
+/// or not tried yet) and the second card when it is ready. 0 without a GPU. Never blocks.
+pub fn batch_cards() -> usize {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if !allowed() {
+            return 0;
+        }
+        let editing = slot::current().is_some() || !slot::tried();
+        usize::from(editing) + usize::from(helper::current().is_some())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
+/// How many batch renders each card takes at once now: (the editing card's, the second card's; 0
+/// when it isn't ready). Never blocks.
+pub fn batch_jobs_per_card() -> (usize, usize) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let editing = existing_device().map_or(gate::MAX_JOBS, |g| gate::limits_of(false, g.vram.unwrap_or(g.max_buffer)).1);
+        let helper = helper::current().filter(|_| allowed()).map_or(0, |g| gate::limits_of(true, g.vram.unwrap_or(g.max_buffer)).1);
+        (editing, helper)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        (1, 0)
+    }
+}
+
+/// How many photos batch work should render side by side to keep every card busy, for a caller
+/// that runs `per_card` on one card: `per_card` times [`batch_cards`] (at least `per_card`, at
+/// least 1). Callers still cap it by host memory (decoded sources) as before.
+pub fn batch_lanes_hint(per_card: usize) -> usize {
+    per_card.max(1).saturating_mul(batch_cards().max(1))
+}
+
+/// The editing card's (or, `helper`, the second card's) measured speed for batch work, in device
+/// bytes of finished turns per second with batch work on it (`None` before it finished any): what
+/// [`batch_turn_any`] shares photos by.
+pub fn batch_rate_of(helper: bool) -> Option<f64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        gate::measured_rate(helper)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = helper;
+        None
+    }
+}
+
+/// GPU renders so far: `[interactive, batch]` on the editing card, then on the second card.
+#[cfg(not(target_arch = "wasm32"))]
+static RENDERS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// [`RENDERS`] of this thread only (tests run side by side).
+    static THREAD_RENDERS: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+
+/// Count one GPU render that made its image on the second card (`helper`) or the editing card.
+#[cfg(not(target_arch = "wasm32"))]
+fn count_render(helper: bool) {
+    let i = usize::from(gate::is_batch()) + if helper { 2 } else { 0 };
+    if let Some(n) = RENDERS.get(i) {
+        n.fetch_add(1, Ordering::Relaxed);
+    }
+    let _ = THREAD_RENDERS.try_with(|c| {
+        let mut n = c.get();
+        if let Some(k) = n.get_mut(i) {
+            *k = k.saturating_add(1);
+        }
+        c.set(n);
+    });
+}
+
+/// GPU renders since the process started, by card and kind of work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderCounts {
+    /// On the editing card: for what is on screen, and batch work (exports, preview builds).
+    pub editing_interactive: u64,
+    pub editing_batch: u64,
+    /// On the second graphics card (thumbnails sent there count as interactive).
+    pub helper_interactive: u64,
+    pub helper_batch: u64,
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl RenderCounts {
+    fn of(n: [u64; 4]) -> RenderCounts {
+        RenderCounts { editing_interactive: n[0], editing_batch: n[1], helper_interactive: n[2], helper_batch: n[3] }
+    }
+}
+
+/// See [`RenderCounts`] (the whole process).
+pub fn render_counts() -> RenderCounts {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        RenderCounts::of(RENDERS.each_ref().map(|n| n.load(Ordering::Relaxed)))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        RenderCounts::default()
+    }
+}
+
+/// [`render_counts`] of this thread only (tests).
+#[doc(hidden)]
+pub fn thread_render_counts() -> RenderCounts {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        RenderCounts::of(THREAD_RENDERS.try_with(std::cell::Cell::get).unwrap_or_default())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        RenderCounts::default()
+    }
+}
+
+/// The interface was touched (input, a slider, a brush, a pan, a photo change): batch work leaves
+/// the editing card to it for about a second (only once [`track_interaction`] is on). The desktop
+/// app calls it on every frame with input.
+pub fn note_interaction() {
+    #[cfg(not(target_arch = "wasm32"))]
+    gate::note_interaction();
+}
+
+/// Let batch work on the editing card yield to the interface: turns there only after ~1 s with no
+/// input and no view render, one job at a time while a second card works, and a running batch
+/// render pauses between submissions the moment interaction starts. Off by default (the CLI, MCP
+/// and tests behave as before); the desktop app turns it on.
+pub fn track_interaction(on: bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    gate::track(on);
+    #[cfg(target_arch = "wasm32")]
+    let _ = on;
+}
+
+/// Whether batch work would have to leave the editing card to the interface now (a view renders,
+/// or with [`track_interaction`] on, input or a view render within the last ~1 s).
+pub fn interface_busy() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        gate::interface_busy()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
+/// How long the interface must be untouched before batch work uses the editing card (tests).
+#[doc(hidden)]
+pub fn set_interaction_idle(d: std::time::Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    gate::set_idle(d);
+    #[cfg(target_arch = "wasm32")]
+    let _ = d;
 }
 
 /// Run `f` with this thread's renders on the CPU ([`try_render`] doesn't try the GPU): a photo
@@ -186,6 +472,10 @@ pub struct BatchUsage {
     /// Batch renders that had to wait so far, and their total wait (ms).
     pub waits: u64,
     pub waited_ms: u64,
+    /// Running batch renders on the editing card that paused for the interface so far, and their
+    /// total pause (ms).
+    pub pauses: u64,
+    pub paused_ms: u64,
 }
 
 /// See [`BatchUsage`] (zero without a device).
@@ -194,7 +484,8 @@ pub fn batch_usage() -> BatchUsage {
     {
         let (jobs, bytes, waiting, waits, waited_ms) = gate::usage();
         let (limit_bytes, limit_jobs) = gate::limits(adapter_memory().unwrap_or(0));
-        BatchUsage { jobs, bytes, waiting, limit_bytes, limit_jobs, waits, waited_ms }
+        let (pauses, paused_ms) = gate::pauses();
+        BatchUsage { jobs, bytes, waiting, limit_bytes, limit_jobs, waits, waited_ms, pauses, paused_ms }
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -710,11 +1001,10 @@ fn start_helper() {
     helper::restart(pick.and_then(|i| adapters.into_iter().nth(i)));
 }
 
-/// The card AI devices are made on (the denoise network and the AI masks' kernels in `nn.rs`, the
-/// face models in `faces.rs`; any later model's device should be made here too): the second
-/// graphics card when one is chosen or found, so models never take the editing card's memory or
-/// turns, else the editing card, else wgpu's high-performance pick. Each AI device is made once
-/// and given up on alone (its own `broken_reason`); the choice is read when it is made.
+/// The card the first AI device goes to (AI Denoise in `nn.rs`, the face models in `faces.rs`,
+/// which keep a device on each card through [`ai_adapter_on`]): the second graphics card when one
+/// is chosen or found, so models never take the editing card's memory or turns, else the editing
+/// card, else wgpu's high-performance pick.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ai_adapter(instance: &wgpu::Instance, backends: wgpu::Backends) -> Result<wgpu::Adapter, String> {
     let adapters = pollster::block_on(instance.enumerate_adapters(backends));
@@ -729,6 +1019,28 @@ pub(crate) fn ai_adapter(instance: &wgpu::Instance, backends: wgpu::Backends) ->
             log::info!("gpu: AI models on {}", a.get_info().name);
             Ok(a)
         }
+        None => backend::pick_adapter(instance, backends),
+    }
+}
+
+/// The adapter for AI work on the second graphics card (`second`: `Err` when there is none, or it is
+/// turned off) or on the card for editing. AI Denoise and the face models keep a device on each
+/// ([`ai::Card`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn ai_adapter_on(instance: &wgpu::Instance, backends: wgpu::Backends, second: bool) -> Result<wgpu::Adapter, String> {
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    let entries = remember_adapters(&adapters);
+    let res = cards::resolve_card(&entries, backend::wanted_adapter().as_deref(), cards::card().as_ref());
+    let editing = EDITING_CARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let primary = editing.and_then(|k| entries.iter().position(|e| e.key == k)).or(res.index);
+    if second {
+        let pins = backend::wanted_adapter().is_some();
+        return cards::resolve_helper(&entries, primary, &cards::helper_choice(), pins)
+            .and_then(|i| adapters.into_iter().nth(i))
+            .ok_or_else(|| ai::NO_SECOND_CARD.to_string());
+    }
+    match primary.and_then(|i| adapters.into_iter().nth(i)) {
+        Some(a) => Ok(a),
         None => backend::pick_adapter(instance, backends),
     }
 }
@@ -1342,6 +1654,7 @@ fn try_render_inner(
                 }
                 (Ok(Some(r)), None) => {
                     budget.succeeded();
+                    count_render(on_helper);
                     return Ok(r);
                 }
                 // every path of `render::render` that gives up records a failure first; should one

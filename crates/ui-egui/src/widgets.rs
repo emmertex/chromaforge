@@ -1325,6 +1325,19 @@ pub fn row_margin(ui: &Ui, classic: egui::Margin, top: i8, bottom: i8) -> egui::
     if crate::theme::compact(ui.ctx()) { egui::Margin { left: PAD_L as i8, right: PAD_R as i8, top, bottom } } else { classic }
 }
 
+/// A caption over a row of buttons (Upright, Adjust): Classic's body label as it always was; in the Compact layout a
+/// quiet one in the slider names' small type (`label:{id}`), so it reads below the section header and its buttons.
+pub fn row_caption(ui: &mut Ui, id: &str, text: &str) -> Response {
+    let r = if crate::theme::compact(ui.ctx()) {
+        let t = Tokens::get(ui.ctx());
+        ui.label(egui::RichText::new(crate::i18n::tr(text)).font(t.font(11.0)).color(t.text_dim))
+    } else {
+        ui.label(crate::i18n::tr(text))
+    };
+    register(ui.ctx(), format!("label:{id}"), r.rect);
+    r
+}
+
 /// Title size of a Compact section header (Basic, Detail…); sub-tool rows use [`SUB_TITLE`].
 pub(crate) const SECTION_TITLE: f32 = 13.0;
 /// Title size of a Compact sub-tool row (Defringe, SDR Rendition…): smaller and regular weight, so
@@ -1548,10 +1561,8 @@ fn text_button_sized(ui: &mut Ui, id: &str, label: &str, active: bool, width: Op
     resp
 }
 
-/// A segmented choice: the options side by side in one rounded track, the chosen one raised on a
-/// soft highlight. Each option is a button registered `button:{id}-{i}`; returns the one clicked.
-/// Wraps onto further rows when the options don't fit. Own design.
-pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -> Option<usize> {
+/// The font, option height, track padding and each option's width of [`segments`] for `labels`.
+fn segment_metrics(ui: &Ui, labels: &[&str]) -> (egui::FontId, f32, f32, Vec<f32>) {
     let t = Tokens::get(ui.ctx());
     let finger = crate::dialog_frame::finger_sized(ui);
     let font = t.semibold(if finger { 13.5 } else { 11.5 });
@@ -1567,6 +1578,21 @@ pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -
         .iter()
         .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + if finger { 26.0 } else { 16.0 })
         .collect();
+    (font, h, pad, widths)
+}
+
+/// How wide [`segments`] draws `labels` on one row.
+pub fn segments_width(ui: &Ui, labels: &[&str]) -> f32 {
+    let (_, _, pad, widths) = segment_metrics(ui, labels);
+    widths.iter().sum::<f32>() + 2.0 * pad
+}
+
+/// A segmented choice: the options side by side in one rounded track, the chosen one raised on a
+/// soft highlight. Each option is a button registered `button:{id}-{i}`; returns the one clicked.
+/// Wraps onto further rows when the options don't fit. Own design.
+pub fn segments(ui: &mut Ui, id: &str, labels: &[&str], chosen: Option<usize>) -> Option<usize> {
+    let t = Tokens::get(ui.ctx());
+    let (font, h, pad, widths) = segment_metrics(ui, labels);
     let total = widths.iter().sum::<f32>() + 2.0 * pad;
     let mut clicked = None;
     let one_row = total <= ui.available_width();

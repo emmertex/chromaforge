@@ -285,3 +285,107 @@ fn grid_sort_is_a_habit_and_backups_elsewhere_are_gathered() {
     assert!(s.export_presets.iter().any(|p| p.name == "Far Away"));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// An older install's store folder as the app wrote it under an earlier name (OneSlips): presets.json
+/// holds the user presets and favourites; shared.json the Presets Manager's `presetState` (hidden,
+/// At Import) and the local adjustment presets.
+fn older_store(dir: &Path, warm: &lcc_develop::Preset) {
+    std::fs::create_dir_all(dir).unwrap();
+    let bad = json!({"id": "user.broken", "name": 5});
+    let presets =
+        json!({"user": [warm, user_preset("user.cool", "Cool"), bad], "favorites": ["lc.warm-glow"], "profileFavorites": [], "profileRecent": []});
+    std::fs::write(dir.join("presets.json"), serde_json::to_vec(&presets).unwrap()).unwrap();
+    let shared = json!({
+        "version": 2,
+        "presetState": {"hidden": ["user.cool"], "removed": ["lc.warm-glow"], "names": {}, "groups": {}, "groupOrder": ["Mine"], "forImport": ["user.warm"]},
+        "maskEffects": [{"name": "Soft skin", "adjust": {"texture": -0.4}}],
+        "dcpProfiles": [{"id": "dcp:x", "file": "x.dcp"}],
+        "profiles": {"bodies": {}}
+    });
+    std::fs::write(dir.join("shared.json"), serde_json::to_vec(&shared).unwrap()).unwrap();
+}
+
+/// Wedding notes 2026-11-05 19:50: the presets of an older install (the app under an earlier name)
+/// come into the shared store with no files to pick: presets, favourites, hidden and At Import
+/// marks and local adjustment presets; a preset that doesn't read costs only itself; each folder
+/// once, and again on request without doubling anything; the folder is only read.
+#[test]
+fn an_older_installs_presets_join_the_store_once_read_only() {
+    let root = temp("older");
+    let (store, older) = (root.join("store"), root.join("Earlier").join(crate::app_store::DIR_NAME));
+    let warm = user_preset("user.warm", "Warm");
+    older_store(&older, &warm);
+    let before: Vec<(String, Vec<u8>)> =
+        ["presets.json", "shared.json"].iter().map(|f| (f.to_string(), std::fs::read(older.join(f)).unwrap())).collect();
+    // found among the settings folders of earlier names
+    assert_eq!(crate::app_store::stores_in(vec![root.join("Earlier"), root.join("Missing")]), vec![older.clone()]);
+
+    let mut s = Session::new().with_app_store(&store);
+    let r = s.execute("store.importOlderInstalls", &json!({"paths": [older.to_string_lossy()]})).unwrap();
+    let m = &r["merged"][0];
+    assert!(m["presets"].as_u64().unwrap() >= 2, "{r}");
+    assert_eq!(m["effects"], 1, "{r}");
+    assert!(m["problems"].as_array().unwrap().iter().any(|p| p.as_str().unwrap().contains("1 preset")), "the broken preset is named: {r}");
+    for id in ["user.warm", "user.cool"] {
+        assert!(s.presets.iter().any(|p| p.id == id), "{id} came in");
+    }
+    assert!(s.preset_hidden.contains(&"user.cool".to_string()));
+    assert!(s.preset_at_import.contains(&"user.warm".to_string()));
+    assert!(s.mask_effects.iter().any(|e| e.name == "Soft skin"));
+    let n = s.presets.iter().count();
+
+    // once: asking again skips it; forced, nothing doubles
+    let r = s.execute("store.importOlderInstalls", &json!({"paths": [older.to_string_lossy()]})).unwrap();
+    assert_eq!(r["merged"][0]["skipped"], true, "{r}");
+    s.execute("store.importOlderInstalls", &json!({"paths": [older.to_string_lossy()], "force": true})).unwrap();
+    assert_eq!(s.presets.iter().count(), n, "the same presets are kept once");
+    assert_eq!(s.mask_effects.iter().filter(|e| e.name == "Soft skin").count(), 1);
+    drop(s);
+    // kept with the store: the next session has them
+    let s = Session::new().with_app_store(&store);
+    assert!(s.presets.iter().any(|p| p.id == "user.warm"));
+    assert!(s.preset_hidden.contains(&"user.cool".to_string()));
+    for (f, b) in before {
+        assert_eq!(std::fs::read(older.join(&f)).unwrap(), b, "{f} in the older install is unchanged");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Hostile older stores: damaged files, a folder with neither file, the store itself: reported,
+/// never a panic, and nothing of the store lost.
+#[test]
+fn a_damaged_older_install_store_is_reported_never_a_panic() {
+    let root = temp("older-hostile");
+    let store = root.join("store");
+    let mut s = Session::new().with_app_store(&store);
+    s.presets.push(user_preset("user.keep", "Keep"));
+    s.save_app_store().unwrap();
+    let mut paths = Vec::new();
+    for (i, (presets, shared)) in [
+        (&b"{not json"[..], &b"[]"[..]),
+        (b"[1, 2]", b"{\"presetState\": 7, \"maskEffects\": \"x\"}"),
+        (b"{\"user\": 5}", b"\xff\xfe"),
+        (b"", b"{\"presetState\": {\"hidden\": [1, 2]}}"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let d = root.join(format!("older{i}"));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("presets.json"), presets).unwrap();
+        std::fs::write(d.join("shared.json"), shared).unwrap();
+        paths.push(d.to_string_lossy().to_string());
+    }
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    paths.push(empty.to_string_lossy().to_string());
+    paths.push(store.to_string_lossy().to_string());
+    let r = s.execute("store.importOlderInstalls", &json!({"paths": paths})).unwrap();
+    let merged = r["merged"].as_array().unwrap();
+    assert_eq!(merged.len(), 6, "{r}");
+    for m in merged {
+        assert!(!m["problems"].as_array().unwrap().is_empty(), "each says what was wrong: {m}");
+    }
+    assert!(s.presets.iter().any(|p| p.id == "user.keep"), "the store keeps its own");
+    let _ = std::fs::remove_dir_all(&root);
+}
