@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod accel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod clip;
 pub mod device;
@@ -32,6 +33,7 @@ pub mod tokenizer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod weights;
 
+pub use accel::{AccelFactory, Accelerator, BlockWeights, TowerWeights};
 #[cfg(not(target_arch = "wasm32"))]
 pub use clip::{Clip, ClipError};
 pub use device::{Device, Kind, Preference, Probe, select};
