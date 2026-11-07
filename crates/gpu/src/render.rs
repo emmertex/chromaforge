@@ -9,6 +9,7 @@ use lcc_geom::Orientation;
 use lcc_pipeline::finish::{FinishParams, MASK_TERMS, local_curve_luts, mask_terms};
 use lcc_pipeline::geometry::SampleMode;
 use lcc_pipeline::local::plane_at;
+use lcc_pipeline::nrc_joint::JointNoise;
 use lcc_pipeline::{Plan, RenderRequest, Rendered, SourceInfo, local};
 use lcc_raster::resample::Filter;
 use lcc_raster::{Histogram, Plane, Rgb32f, Rgba8};
@@ -37,6 +38,8 @@ struct Entry {
     geo: u64,
     sampled: Arc<Buf>,
     lin: Option<(u64, Arc<Buf>)>,
+    /// The joint colour NR's noise model of the whole frame, keyed by `Plan::noise_key`.
+    colour_noise: Option<(u64, JointNoise)>,
     planes: Planes,
 }
 
@@ -745,6 +748,7 @@ pub fn render(
     texels: Option<(f32, &mut Vec<u16>)>,
     display: Option<&mut Option<DisplayFrame>>,
 ) -> Option<Rendered> {
+    let _in_flight = InFlight::new();
     let mut t = profiling().then(std::time::Instant::now);
     // Each stage is submitted on its own; under `{ENV_PREFIX}_PROFILE` also waited for, so the
     // timings are real.
@@ -808,9 +812,15 @@ pub fn render(
     lap("sample", &mut t, &mut cx);
 
     // 2. white balance, defringe, spots, noise reduction
+    let mut colour_noise = cached.as_ref().and_then(|e| e.colour_noise).filter(|(k, _)| *k == plan.noise_key);
     let lin = match cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == plan.lin_key) {
         Some((_, b)) => b,
-        None => Arc::new(linear(&mut cx, &sampled, info, plan, &mut host)),
+        None => {
+            if colour_noise.is_none() {
+                colour_noise = lcc_pipeline::colour_noise(src, info, plan).map(|n| (plan.noise_key, n));
+            }
+            Arc::new(linear(&mut cx, &sampled, info, plan, &mut host, colour_noise.as_ref().map(|c| &c.1)))
+        }
     };
     lap("wb/nr", &mut t, &mut cx);
 
@@ -830,7 +840,7 @@ pub fn render(
     let (masks, terms, curves) = masks(&mut cx, src, &lin, &prep, plan, &mut host, &mut planes);
     lap("masks", &mut t, &mut cx);
     if let Some(c) = stages {
-        c.put(Entry { src: src.clone(), geo: plan.geo, sampled, lin: Some((plan.lin_key, lin.clone())), planes });
+        c.put(Entry { src: src.clone(), geo: plan.geo, sampled, lin: Some((plan.lin_key, lin.clone())), colour_noise, planes });
     }
 
     // 5. per-pixel stage
@@ -1013,6 +1023,11 @@ pub fn render(
     if let Some((_, out_texels)) = texels {
         out_texels.clear();
         out_texels.extend(tail.iter().flat_map(|b| [u16::from_le_bytes([b[0], b[1]]), u16::from_le_bytes([b[2], b[3]])]));
+        // a window the joint colour NR grew is cut back to the request (four texel values per pixel)
+        if let Some(k) = plan.keep.filter(|_| texel_words == 2 * n) {
+            let cut = crop_rows(out_texels, w, 4, k);
+            *out_texels = cut;
+        }
     }
     let hist_words: Vec<u32> = data.split_off(n.min(data.len())).into_iter().map(u32::from_le_bytes).collect();
     let image = Rgba8 { width: w, height: h, data };
@@ -1051,7 +1066,11 @@ pub fn render(
             fail(FailKind::Fatal, format!("the GPU returned an incomplete HDR texture ({texel_words} of {} words)", 2 * n));
             return None;
         }
-        // (the texture's texels went out above; no float samples come back)
+        // (the texture's texels went out above, cut back to a window the joint colour NR grew; no
+        // float samples come back)
+        if let Some(k) = plan.keep {
+            image = image.crop(k.x, k.y, k.w, k.h);
+        }
         return Some(Rendered { image, histogram, deep: None, warnings: Vec::new(), coverage, alpha: None });
     }
     if deep {
@@ -1061,6 +1080,11 @@ pub fn render(
         }
         // as on the CPU (`finish_deep`): the whole frame in the output space, no overlays
         let deep = lcc_pipeline::DeepImage { width: w, height: h, space: req.space, samples: lcc_pipeline::DeepSamples::F32(samples) };
+        // (a window the joint colour NR grew is cut back to the request, as on the CPU)
+        let (deep, image) = match plan.keep {
+            Some(k) => (deep.crop(k.x, k.y, k.w, k.h), image.crop(k.x, k.y, k.w, k.h)),
+            None => (deep, image),
+        };
         return Some(Rendered { image, histogram, deep: Some(deep), warnings: Vec::new(), coverage, alpha: None });
     }
     lcc_pipeline::visualize::apply(&mut image, req.overlay, plan, overlay_mask.as_ref(), all_overlay_alphas.as_deref());
@@ -1154,13 +1178,26 @@ fn to_texture(cx: &mut Cx<'_>, out: &Buf, w: usize, h: usize, coverage: Option<&
     Some((DisplayFrame { texture, width: w, height: h }, histogram))
 }
 
+/// The `k` window of an image `w` pixels wide stored as `per` values per pixel (clamped to the image).
+fn crop_rows<T: Copy>(v: &[T], w: usize, per: usize, k: lcc_pipeline::PixelWindow) -> Vec<T> {
+    let rows = v.len() / (w.max(1) * per.max(1));
+    let (x0, y0) = (k.x.min(w), k.y.min(rows));
+    let (cw, ch) = (k.w.min(w - x0), k.h.min(rows - y0));
+    let mut out = Vec::with_capacity(cw * ch * per);
+    for y in y0..y0 + ch {
+        let at = (y * w + x0) * per;
+        out.extend_from_slice(v.get(at..at + cw * per).unwrap_or_default());
+    }
+    out
+}
+
 /// Pixels whose alpha is not 255 (cheap: no early exit, so it vectorizes).
 fn unwritten(data: &[[u8; 4]]) -> usize {
     data.chunks(4096).filter(|c| c.iter().fold(255u8, |a, p| a & p[3]) != 255).map(|c| c.iter().filter(|p| p[3] != 255).count()).sum()
 }
 
-/// The white-balanced, retouched, denoised image.
-fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, host: &mut Host) -> Buf {
+/// The white-balanced, retouched, denoised image (`colour_noise`: see `denoise`).
+fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, host: &mut Host, colour_noise: Option<&JointNoise>) -> Buf {
     let (w, h) = (plan.w, plan.h);
     let n = w * h;
     let s = &*plan.settings;
@@ -1191,7 +1228,7 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
             eyed
         }
     };
-    let img = denoise(cx, img, plan);
+    let img = denoise(cx, img, plan, colour_noise);
     if !lcc_pipeline::skin_needs_cpu(s) {
         return img;
     }
@@ -1354,8 +1391,9 @@ fn auto_source(cx: &mut Cx<'_>, img: &Buf, w: usize, h: usize, target: (f32, f32
     spots::rank(&cands, &scores).first().copied().unwrap_or_else(|| spots::fallback_source(r))
 }
 
-/// Noise reduction (`local::denoise`).
-fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
+/// Noise reduction (`local::denoise`). `colour_noise`: the whole frame's noise model for the joint
+/// colour NR of process V8 (`lcc_pipeline::colour_noise`); `None`: measured on `img`.
+fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>, colour_noise: Option<&JointNoise>) -> Buf {
     let (w, h) = (plan.w, plan.h);
     let n = w * h;
     let (lum, col) = local::nr_params(&plan.settings, plan.detail_scale);
@@ -1367,6 +1405,20 @@ fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
         let out = cx.gpu.buffer(n * 3);
         map(cx, "nr_lum", n, &[nr.k.to_bits()], [Some(&img), Some(&l), Some(&f)], &out);
         img = out;
+    }
+    if col.is_some() && local::joint_colour_nr(&plan.settings) {
+        let Some(p) = local::nrc_params(&plan.settings, plan.detail_scale) else { return img };
+        let (detail, amount) = local::nrc_sliders(&plan.settings);
+        if let Some(out) = color_nr_joint(cx, &img, w, h, &p, detail, amount, colour_noise, None) {
+            return out;
+        }
+        // too small for the noise samples, not even one band fits the device, or a batch render holds
+        // the bands while this one is interactive: this step on the CPU
+        let mut host = cx.read_rgb(&img, w, h);
+        let mut d = (*plan.settings).clone();
+        d.detail.nr_luminance = 0.0;
+        local::denoise_with(&mut host, &d, plan.detail_scale, false, colour_noise);
+        return cx.gpu.upload(rgb_words(&host));
     }
     if let Some(nr) = col {
         // luminance-weighted chromaticity: blur max(rgb, 0), take rgb / Y of the blur, and pull
@@ -1382,6 +1434,291 @@ fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
         img = out;
     }
     img
+}
+
+/// Run a `nrcj.wgsl` kernel on `n` items with inputs `a`, `b` and output `out`.
+fn nrcj(cx: &mut Cx<'_>, k: &str, n: usize, p: &[u32], a: &Buf, b: Option<&Buf>, out: &Buf) {
+    cx.run(k, p, &[Some(a), b, Some(out)], groups1(n));
+}
+
+/// Device memory left aside when the joint NR plans its bands from the device's memory (the rest of
+/// the render, the display).
+const VRAM_RESERVE: u64 = 384 << 20;
+
+/// Band budget (bytes) when the device's memory is unknown.
+const FIXED_BAND_BUDGET: usize = 2048 << 20;
+
+/// Renders on the device right now ([`render`]). An export batch renders photos side by side: while one
+/// plans its noise reduction bands, each of the others may still allocate the buffers of its other stages.
+static RENDERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Held while a noise reduction plans its bands and runs them: two plans made at once from the same
+/// memory would together ask for more than there is.
+static BANDS: Bands = Bands::new();
+
+/// A lock that knows whether a batch render holds it ([`Bands::take`]).
+struct Bands {
+    /// `Some(batch)` while held, by a batch render or not.
+    held: Mutex<Option<bool>>,
+    freed: std::sync::Condvar,
+}
+
+/// [`BANDS`] held; dropping it lets the next render in.
+struct BandsGuard<'a>(&'a Bands);
+
+impl Bands {
+    const fn new() -> Self {
+        Bands { held: Mutex::new(None), freed: std::sync::Condvar::new() }
+    }
+
+    /// Wait for the bands and take them. An interactive render never waits for a batch render's bands
+    /// (`None`: it runs the step on the CPU): between submissions a batch render may yield to the
+    /// interface (`gate::throttle`) and wait for those interactive renders to finish, so both would hang.
+    /// (Even on the second card, which doesn't yield: whether a device is the second card changes when
+    /// the card is turned off or another is chosen, mid-render.) Batch renders wait for any holder;
+    /// interactive ones for another interactive one, which always finishes.
+    fn take(&self) -> Option<BandsGuard<'_>> {
+        self.take_as(crate::gate::is_batch())
+    }
+
+    /// [`Bands::take`] for a render that is `batch` or not.
+    fn take_as(&self, batch: bool) -> Option<BandsGuard<'_>> {
+        let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            match *held {
+                None => {
+                    *held = Some(batch);
+                    return Some(BandsGuard(self));
+                }
+                Some(true) if !batch => return None,
+                Some(_) => held = self.freed.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner),
+            }
+        }
+    }
+}
+
+impl Drop for BandsGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.0.freed.notify_all();
+    }
+}
+
+/// Counts a render in [`RENDERS`] while it lives.
+struct InFlight;
+
+impl InFlight {
+    fn new() -> Self {
+        RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        InFlight
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        RENDERS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The band budget from the device's memory `vram` (`lcc_gpumem`: what the backend says the device
+/// offers, not what is free right now), of which half is left to other programs and the display, less
+/// our own buffers in use (`allocated` minus the `pooled` ones we reuse) and [`VRAM_RESERVE`] for each
+/// render on the device (this one's other stages and every other render's).
+fn band_budget_from(vram: u64, allocated: u64, pooled: u64, renders: usize) -> usize {
+    let reserve = VRAM_RESERVE.saturating_mul(renders.max(1) as u64);
+    let in_use = allocated.saturating_sub(pooled);
+    usize::try_from((vram / 2).saturating_sub(in_use).saturating_sub(reserve)).unwrap_or(usize::MAX)
+}
+
+/// The joint colour noise reduction (`lcc_pipeline::nrc_joint`) on the GPU, the same steps as the
+/// CPU: only the noise samples are read back (the noise model is fitted on the CPU, by the same code).
+/// Large images are filtered in horizontal bands whose halo covers every step's reach, so each kept pixel
+/// gets the whole-image result; the noise model is the whole image's, or `frame_noise` (the whole frame's,
+/// for a window). `budget`: the bytes the bands may take (`None`: planned from the device). `None` when
+/// the image is too small for the noise samples, no band fits the device, or an interactive render finds
+/// a batch render holding the bands ([`Bands::take`]) (the caller runs this step on the CPU).
+#[allow(clippy::too_many_arguments)]
+fn color_nr_joint(
+    cx: &mut Cx<'_>,
+    img: &Buf,
+    w: usize,
+    h: usize,
+    p: &local::NrcParams,
+    detail: f32,
+    amount: f32,
+    frame_noise: Option<&JointNoise>,
+    budget: Option<usize>,
+) -> Option<Buf> {
+    use lcc_pipeline::nrc_joint;
+    let strength = nrc_joint::strength(amount);
+    let brake = nrc_joint::speck_brake(amount);
+    if w < 3 || h < 3 {
+        return None;
+    }
+    if strength <= 0.0 {
+        return Some(cx.copy(img));
+    }
+    let n = w.checked_mul(h)?;
+    // the kernels index with 32-bit words: 3 values per pixel must stay below that
+    if n.checked_mul(3).is_none_or(|v| u32::try_from(v).is_err()) {
+        return None;
+    }
+    // One band plan at a time (`BANDS`), held from the noise samples until the bands are done; an
+    // interactive render that finds it held by a batch render runs this step on the CPU
+    // (`Bands::take`), before it spends anything on the samples.
+    let Some(_bands) = BANDS.take() else {
+        if profiling() {
+            eprintln!("  gpu joint: bands in use by a batch render, colour NR on the CPU");
+        }
+        return None;
+    };
+    let started = profiling().then(std::time::Instant::now);
+    let mut noise = match frame_noise {
+        Some(noise) => *noise,
+        None => {
+            // noise samples of the whole image: same pixels as the CPU, fitted by the same code
+            let stride = nrc_joint::noise_sample_stride(n);
+            let count = n.div_ceil(stride);
+            let smp = cx.gpu.buffer(11 * count);
+            nrcj(cx, "nrcj_samples", count, &[count as u32, w as u32, h as u32, stride as u32], img, None, &smp);
+            let raw: Vec<f32> = cx.read(&smp, 11 * count);
+            drop(smp);
+            if let Some(t) = started {
+                eprintln!("  gpu joint samples + read: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+            }
+            let samples: Vec<nrc_joint::NoiseSample> = raw
+                .as_chunks::<11>()
+                .0
+                .iter()
+                .filter(|s| s[0] == 1.0 && s.iter().all(|v| v.is_finite()))
+                .map(|s| (s[1], [[s[2], s[3], s[4]], [s[5], s[6], s[7]], [s[8], s[9], s[10]]]))
+                .collect();
+            nrc_joint::noise_from_samples(samples)
+        }
+    };
+    noise.tolerance = nrc_joint::tolerance(detail);
+    if let Some(t) = started {
+        eprintln!("  gpu joint noise model: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+    }
+    let sigma = p.passes.last().map_or(0.0, |q| q.sigma);
+    let plan = nrc_joint::scale_plan(sigma, w, h);
+    // rows a kept pixel depends on (the same reach a CPU window is grown by)
+    let halo = nrc_joint::reach(&plan);
+    // Memory: the whole output (3 values per pixel) is held besides the input; a band then holds about
+    // 12 values per pixel (guide 3, two chroma buffers 2 + 2, paths 2, weights 2; up to 12 while the
+    // speck brake and the guide run). The budget for both together is `band_budget_from` the device's
+    // memory where its backend reports it (`lcc_gpumem`, `Gpu::vram`), else a fixed 2 GB;
+    // `<PREFIX>_NR_GPU_BAND_MB` overrides it.
+    let fixed = budget.or_else(|| lcc_brand::env("NR_GPU_BAND_MB").and_then(|v| v.trim().parse::<usize>().ok()).map(|mb| mb.saturating_mul(1 << 20)));
+    let renders = RENDERS.load(std::sync::atomic::Ordering::Relaxed);
+    let memory = crate::ctx::memory();
+    let measured = cx.gpu.vram.map(|vram| band_budget_from(vram, memory.allocated, memory.pooled, renders));
+    let budget = fixed.or(measured).unwrap_or(FIXED_BAND_BUDGET);
+    if profiling() {
+        eprintln!(
+            "  gpu joint budget: {} MB ({}, {renders} render(s) on the device)",
+            budget >> 20,
+            if fixed.is_some() {
+                "NR_GPU_BAND_MB"
+            } else if measured.is_some() {
+                "device memory"
+            } else {
+                "fixed default"
+            }
+        );
+    }
+    let out_bytes = 12 * n;
+    let per_row = 48 * w;
+    // no band may exceed the device's largest buffer either (3 values per pixel are the largest)
+    let limit_rows = (usize::try_from(cx.gpu.limit()).unwrap_or(usize::MAX) / (12 * w)).max(1);
+    let rows = (budget.saturating_sub(out_bytes) / per_row).min(limit_rows);
+    let core = if rows >= h {
+        h
+    } else if rows > 2 * halo {
+        rows - 2 * halo
+    } else {
+        // not even one band with its halo fits: this stage runs on the CPU (the rest of the render stays here)
+        return None;
+    };
+    let out = cx.gpu.buffer(3 * n);
+    let mut y0 = 0;
+    while y0 < h {
+        let y1 = (y0 + core).min(h);
+        let (b0, b1) = if core >= h { (0, h) } else { (y0.saturating_sub(halo), (y1 + halo).min(h)) };
+        let filtered = joint_band(cx, img, w, b0, b1 - b0, &noise, brake, &plan);
+        let kept = (y1 - y0) * w;
+        nrcj(cx, "nrcj_recon", kept, &[kept as u32, strength.to_bits(), (y0 * w) as u32, (b0 * w) as u32], img, Some(&filtered), &out);
+        drop(filtered);
+        // wait: the driver frees a dropped buffer only once the GPU is done with it, and a band's
+        // buffers are large (without waiting, freed memory piled up to the whole device's)
+        cx.sync();
+        y0 = y1;
+    }
+    Some(out)
+}
+
+/// The filtered chroma pairs of rows `b0 .. b0 + bh` of the image, treated as an image of their own.
+#[allow(clippy::too_many_arguments)]
+fn joint_band(
+    cx: &mut Cx<'_>,
+    img: &Buf,
+    w: usize,
+    b0: usize,
+    bh: usize,
+    noise: &lcc_pipeline::nrc_joint::JointNoise,
+    brake: lcc_pipeline::nrc_joint::SpeckBrake,
+    plan: &[(usize, f32)],
+) -> Buf {
+    let n = w * bh;
+    let mut np = vec![n as u32, w as u32, bh as u32];
+    np.extend(noise.model.alpha.iter().chain(&noise.model.beta).chain(&noise.ymax).map(|v| v.to_bits()));
+    np.push(noise.tolerance.to_bits());
+    let mut yuv = cx.gpu.buffer(3 * n);
+    nrcj(cx, "nrcj_yuv", n, &[n as u32, (b0 * w) as u32], img, None, &yuv);
+    if brake.share > 0.0 {
+        let mut sp = np.clone();
+        sp.extend([brake.threshold.to_bits(), brake.share.to_bits()]);
+        let despecked = cx.gpu.buffer(3 * n);
+        nrcj(cx, "nrcj_speck", n, &sp, &yuv, None, &despecked);
+        yuv = despecked;
+    }
+    let blurred = gaussian(cx, &yuv, w, bh, 3, 0.8);
+    let guide = cx.gpu.buffer(3 * n);
+    nrcj(cx, "nrcj_pilot", n, &np, &yuv, Some(&blurred), &guide);
+    drop(blurred);
+    let mut filtered = cx.gpu.buffer(2 * n);
+    nrcj(cx, "nrcj_uv", n, &[n as u32], &yuv, None, &filtered);
+    drop(yuv);
+    // dropped buffers only become reusable (and their memory free) once the GPU is done with them
+    cx.sync();
+    // paths (exp(−path), as on the CPU) and pair weights; the next scale's paths go to the scratch buffer,
+    // free after the diffusion steps, as on the CPU
+    let mut paths = cx.gpu.buffer(2 * n);
+    nrcj(cx, "nrcj_links1", n, &np, &guide, None, &paths);
+    let links = cx.gpu.buffer(2 * n);
+    let mut lp = np.clone();
+    lp.push(1);
+    nrcj(cx, "nrcj_links", n, &lp, &guide, Some(&paths), &links);
+    let mut scratch = cx.gpu.buffer(2 * n);
+    for (k, &(delta, rate)) in plan.iter().enumerate() {
+        let dp = [n as u32, w as u32, bh as u32, delta as u32, rate.to_bits()];
+        for _ in 0..2 {
+            nrcj(cx, "nrcj_dh", n, &dp, &filtered, Some(&links), &scratch);
+            std::mem::swap(&mut filtered, &mut scratch);
+            nrcj(cx, "nrcj_dv", n, &dp, &filtered, Some(&links), &scratch);
+            std::mem::swap(&mut filtered, &mut scratch);
+        }
+        if let Some(&(next, _)) = plan.get(k + 1) {
+            nrcj(cx, "nrcj_paths", n, &[n as u32, w as u32, bh as u32, delta as u32], &paths, None, &scratch);
+            std::mem::swap(&mut paths, &mut scratch);
+            let mut lp = np.clone();
+            lp.push(next as u32);
+            nrcj(cx, "nrcj_links", n, &lp, &guide, Some(&paths), &links);
+        }
+    }
+    drop((scratch, paths, links, guide));
+    cx.sync();
+    filtered
 }
 
 /// The planes the per-pixel stage reads.
@@ -1848,7 +2185,7 @@ fn mask_alpha(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, lin: &Buf, prep: &Prep, plan: 
         let mut first = true;
         for comp in &m.components {
             let op = match comp.op {
-                _ if first && comp.op != MaskOp::Intersect => 0u32,
+                _ if first => 0u32,
                 MaskOp::Add => 1,
                 MaskOp::Subtract => 2,
                 MaskOp::Intersect => 3,
@@ -2172,6 +2509,130 @@ mod tests {
                 assert!(p.chunk >= 1);
             }
         }
+    }
+
+    /// Two exports side by side: each band plan leaves room for the other render, and our own buffers in
+    /// use count against the device's memory (pooled ones are reused).
+    #[test]
+    fn band_budget_leaves_room_for_every_render_on_the_device() {
+        let vram = 8000u64 << 20;
+        let alone = band_budget_from(vram, 600 << 20, 200 << 20, 1);
+        assert_eq!(alone, (4000usize << 20) - (400 << 20) - VRAM_RESERVE as usize);
+        assert_eq!(band_budget_from(vram, 600 << 20, 200 << 20, 0), alone, "the render itself is always counted");
+        assert_eq!(band_budget_from(vram, 600 << 20, 200 << 20, 2), alone - VRAM_RESERVE as usize);
+        assert_eq!(band_budget_from(100 << 20, 0, 0, 3), 0, "nothing left: no band fits, the CPU runs the step");
+        assert_eq!(band_budget_from(vram, 0, 1 << 40, 1), (4000usize << 20) - VRAM_RESERVE as usize, "more pooled than allocated");
+    }
+
+    /// An interactive render never waits for the bands a batch render holds (that one may be waiting for
+    /// the interface to go quiet: both would hang); it runs the step on the CPU instead. It does wait
+    /// for another interactive render's, and a batch render waits for any.
+    #[test]
+    fn an_interactive_render_never_waits_for_a_batch_renders_bands() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        // a lock of its own: other tests here take `BANDS`
+        static TEST_BANDS: Bands = Bands::new();
+        let on = |batch: bool, f: Box<dyn FnOnce() + Send>| std::thread::spawn(move || if batch { crate::gate::as_batch(f) } else { f() });
+        let hold = |batch: bool| {
+            let (taken_tx, taken_rx) = channel();
+            let (release_tx, release_rx) = channel::<()>();
+            let holder = on(
+                batch,
+                Box::new(move || {
+                    let guard = TEST_BANDS.take();
+                    let _ = taken_tx.send(guard.is_some());
+                    let _ = release_rx.recv();
+                }),
+            );
+            assert_eq!(taken_rx.recv_timeout(Duration::from_secs(5)), Ok(true), "the first render takes the bands");
+            (holder, release_tx)
+        };
+        let ask = |batch: bool| {
+            let (tx, rx) = channel();
+            let asker = on(
+                batch,
+                Box::new(move || {
+                    let _ = tx.send(TEST_BANDS.take().is_some());
+                }),
+            );
+            (asker, rx)
+        };
+
+        // a batch render holds them: an interactive one goes on without, at once
+        let (holder, release) = hold(true);
+        let (asker, got) = ask(false);
+        let answer = got.recv_timeout(Duration::from_secs(5));
+        let _ = release.send(());
+        assert_eq!(answer, Ok(false), "the interactive render runs the step on the CPU");
+        assert!(asker.join().is_ok() && holder.join().is_ok());
+
+        // otherwise the asker waits its turn, then takes them
+        for (holder_batch, asker_batch) in [(false, false), (false, true), (true, true)] {
+            let (holder, release) = hold(holder_batch);
+            let (asker, got) = ask(asker_batch);
+            let case = format!("holder batch {holder_batch}, asker batch {asker_batch}");
+            assert!(got.recv_timeout(Duration::from_millis(200)).is_err(), "{case}: waits while they are held");
+            let _ = release.send(());
+            assert_eq!(got.recv_timeout(Duration::from_secs(5)), Ok(true), "{case}: takes them once free");
+            assert!(asker.join().is_ok() && holder.join().is_ok());
+        }
+    }
+
+    /// The joint colour NR on the device in bands of rows (a small budget) gives the result of one piece
+    /// and of the CPU; a budget too small for one band with its halo returns `None` (the CPU runs it).
+    #[test]
+    fn joint_colour_nr_bands_match_one_piece_and_the_cpu() {
+        let Some(gpu) = crate::device() else {
+            lcc_testkit::skip!(Gpu, "no GPU adapter");
+            return;
+        };
+        let _scope = crate::ctx::RenderScope::new(&gpu);
+        let (w, h) = (300usize, 700usize);
+        // colour regions with hashed chroma noise
+        let noise = |x: usize, y: usize, c: usize| {
+            let mut v = (x as u32).wrapping_mul(0x9e37_79b9) ^ (y as u32).wrapping_mul(0x85eb_ca6b) ^ (c as u32 + 1).wrapping_mul(0xc2b2_ae35) | 1;
+            v ^= v << 13;
+            v ^= v >> 17;
+            v ^= v << 5;
+            (v as f32 / u32::MAX as f32 - 0.5) * 0.01
+        };
+        let img = Rgb32f::from_fn(w, h, |x, y| {
+            let base = if x < 150 {
+                [0.05, 0.03, 0.02]
+            } else if y < 300 {
+                [0.02, 0.04, 0.06]
+            } else {
+                [0.03; 3]
+            };
+            [base[0] + noise(x, y, 0), base[1] + noise(x, y, 1), base[2] + noise(x, y, 2)]
+        });
+        let mut s = DevelopSettings { process: lcc_develop::Process::V8.version(), ..Default::default() };
+        s.detail.nr_color = 100.0;
+        s.detail.nr_color_smoothness = 0.0;
+        let p = local::nrc_params(&s, 1.0).expect("Color 100 has parameters");
+        let (detail, amount) = local::nrc_sliders(&s);
+        let mut cpu = img.clone();
+        local::denoise_with(&mut cpu, &s, 1.0, false, None);
+        let mut cx = Cx::new(&gpu);
+        let src = gpu.upload(rgb_words(&img));
+        let mut run = |budget: usize| color_nr_joint(&mut cx, &src, w, h, &p, detail, amount, None, Some(budget)).map(|b| cx.read_rgb(&b, w, h));
+        let whole = run(1 << 30).expect("one piece fits 1 GB");
+        // (the halo at Color 100 is 168 rows: a band of 420 rows holds 84 of its own, so 9 bands)
+        let banded = run(12 * w * h + 48 * w * 420).expect("bands of 420 rows fit");
+        assert!(run(12 * w * h + 48 * w * 8).is_none(), "8 rows can't hold a band and its halo");
+        let worst =
+            |a: &Rgb32f, b: &Rgb32f| a.data.iter().zip(&b.data).flat_map(|(p, q)| (0..3).map(move |c| (p[c] - q[c]).abs())).fold(0.0f32, f32::max);
+        assert!(worst(&whole, &banded) < 1e-3, "bands vs one piece: {}", worst(&whole, &banded));
+        assert!(worst(&whole, &cpu) < 1e-3, "GPU vs CPU: {}", worst(&whole, &cpu));
+        // where a loupe tile falls back to the CPU (`Bands::take`) it sits beside GPU tiles: no visible seam,
+        // at most one 8-bit level apart once encoded
+        let levels = |a: &Rgb32f, b: &Rgb32f| {
+            let enc = |v: f32| lcc_color::transfer::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0;
+            a.data.iter().zip(&b.data).flat_map(|(p, q)| (0..3).map(move |c| (enc(p[c]) - enc(q[c])).abs())).fold(0.0f32, f32::max)
+        };
+        eprintln!("GPU vs CPU: {} linear, {} 8-bit levels", worst(&whole, &cpu), levels(&whole, &cpu));
+        assert!(levels(&whole, &cpu) < 1.0, "GPU vs CPU: {} levels", levels(&whole, &cpu));
     }
 
     /// The blur against `lcc_raster::blur::gaussian`: widths that do and don't fill the last

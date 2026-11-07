@@ -6766,6 +6766,7 @@ mod tests {
             request: lcc_pipeline::RenderRequest {
                 max_w: 100,
                 max_h: 100,
+                exact_size: false,
                 quality: Default::default(),
                 apply_crop: false,
                 overlay: Default::default(),

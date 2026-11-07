@@ -98,7 +98,7 @@ pub struct PageStyle {
     pub page_numbers: bool,
     /// The print settings (sharpening, profile, resolution) at the bottom left of each page.
     pub page_info: bool,
-    /// Marks at the corners of each photo to cut along.
+    /// Marks at the corners of each photo to cut along (the packages' Cut Guides reuse this).
     pub crop_marks: bool,
 }
 
@@ -116,7 +116,8 @@ pub fn rec2020_from_srgb8(c: [u8; 3]) -> [u16; 3] {
 }
 
 /// Whether a layout style prints the Page Options (page numbers, page info, crop marks):
-/// Lightroom offers them for Single Image and Contact Sheet; its packages have Cut Guides instead.
+/// Lightroom offers them for Single Image and Contact Sheet. Its packages have Cut Guides
+/// instead, which print whatever this says ([`PageStyle::crop_marks`]).
 pub fn has_page_options(style: Style) -> bool {
     !style.is_package()
 }
@@ -441,6 +442,8 @@ struct Marks {
     crop: Option<(usize, usize, usize)>,
     numbers: bool,
     info: Option<String>,
+    /// Marks go at each cell's corners (a package's Cut Guides, outside any border), not the photo's.
+    around_cells: bool,
     ink: [u16; 3],
     text_px: f32,
     /// The printable area: the text sits in the margin below it, aligned with its sides.
@@ -453,9 +456,10 @@ impl Marks {
         let page = &settings.page;
         let px = |inches: f64| (inches * ppi).round() as usize;
         Marks {
-            crop: (on && page.crop_marks).then(|| (px(CROP_MARK_IN), px(CROP_MARK_GAP_IN), px(CROP_MARK_PT / 72.0).max(1))),
+            crop: page.crop_marks.then(|| (px(CROP_MARK_IN), px(CROP_MARK_GAP_IN), px(CROP_MARK_PT / 72.0).max(1))),
             numbers: on && page.page_numbers,
             info: (on && page.page_info).then(|| page_info_text(settings)),
+            around_cells: !on,
             ink: rec2020_from_srgb8(mark_ink(page.background)),
             text_px: (PAGE_TEXT_PT / 72.0 * ppi) as f32,
             area: settings.layout.printable().ok().and_then(|a| px_rect(&a, ppi, pw, ph)),
@@ -598,7 +602,9 @@ impl Prepared {
                     }
                 };
                 let photo = &cache.get(at).ok_or("render cache lost an entry")?.1;
-                placed.push(draw_cell(&mut page, photo, item.cell, &self.style).map_err(|e| format!("{}: {e}", item.name))?);
+                let cell = item.cell;
+                let drawn = draw_cell(&mut page, photo, cell, &self.style).map_err(|e| format!("{}: {e}", item.name))?;
+                placed.push(if self.marks.around_cells { cell } else { drawn });
             }
             self.marks.draw(&mut page, &placed, index + 1);
             out.push(PageRaster { width: w as u32, height: h as u32, ppi: self.ppi, rgb: page.rgb });
@@ -1030,12 +1036,18 @@ mod tests {
         for p in &info {
             assert!(inked(p, left.0, left.1, 550, 600) > 10, "the print settings line");
         }
-        // the packages have no Page Options in Lightroom: nothing is drawn
-        let all = PageStyle { page_numbers: true, page_info: true, crop_marks: true, ..Default::default() };
+        // the packages have no page numbers or page info in Lightroom: nothing is drawn
+        let all = PageStyle { page_numbers: true, page_info: true, ..Default::default() };
         let package = page_options_pages(&mut s, Style::PicturePackage, all);
         assert_eq!(package.len(), 2);
         for p in &package {
             assert_eq!(inked(p, 0, 400, 550, 600) + inked(p, 0, 400, 0, 50), 0);
+        }
+        // their Cut Guides are the crop marks, at each photo's corners
+        let guides = page_options_pages(&mut s, Style::PicturePackage, PageStyle { crop_marks: true, ..Default::default() });
+        assert_eq!(guides.len(), 2);
+        for (g, p) in guides.iter().zip(&package) {
+            assert!(inked(g, 0, 400, 0, 600) > inked(p, 0, 400, 0, 600), "the guides add ink");
         }
     }
 

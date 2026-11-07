@@ -130,6 +130,32 @@ fn a_filter_lists_its_size_and_cant_be_turned_off() {
 }
 
 #[test]
+fn a_filters_pictures_are_listed_and_served() {
+    let mut s = Session::with_demo();
+    let id = "test.engine.pictures";
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><circle cx='2' cy='2' r='2'/></svg>";
+    let light = svg.replace("circle", "ellipse rx='2' ry='1' ");
+    let manifest = format!(
+        r#"{{"id":"{id}","name":"P","version":"1","kind":"filter","icon":"{svg}","header":{{"dark":"{svg}","light":"{light}"}},"params":{{}}}}"#
+    );
+    let info = install_bytes(&mut s, id, &module(&manifest, None));
+    assert_eq!(info["icon"], true);
+    assert_eq!(info["header"], true);
+    let listed = s.execute("plugin.list", &json!({})).unwrap();
+    let row = listed["plugins"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap();
+    assert_eq!(row["icon"], true);
+    assert_eq!(s.execute("plugin.picture", &json!({"id": id, "picture": "icon"})).unwrap()["svg"], svg);
+    assert_eq!(s.execute("plugin.picture", &json!({"id": id})).unwrap()["svg"], svg, "the header, dark by default");
+    assert_eq!(s.execute("plugin.picture", &json!({"id": id, "theme": "light"})).unwrap()["svg"], light);
+    assert!(s.execute("plugin.picture", &json!({"id": id, "picture": "poster"})).is_err());
+    // a filter without pictures lists them as absent and serves none
+    let plain = install(&mut s, "test.engine.plain");
+    assert_eq!(plain["icon"], false);
+    assert_eq!(s.execute("plugin.picture", &json!({"id": "test.engine.plain", "picture": "icon"})).unwrap()["svg"], Value::Null);
+    assert!(s.execute("plugin.picture", &json!({"id": "test.engine.nowhere"})).is_err());
+}
+
+#[test]
 fn plugin_list_keeps_manifest_param_order_and_labels() {
     let mut s = Session::with_demo();
     let m = r#"{"id":"test.engine.order","name":"Order","kind":"filter","params":{"zeta":{"type":"number","min":0,"max":1,"default":0},"dynamic_range":{"type":"number","min":0,"max":1,"default":0},"alpha":{"type":"bool","label":"First letter"}}}"#;
