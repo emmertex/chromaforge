@@ -633,11 +633,8 @@ pub struct Hints {
 }
 
 /// Suggestions for `photo`'s unnamed faces from what is already indexed (nothing is embedded for this: the background
-/// indexer does that). `None` while recognition is off. Asked again only when the catalog or the index changed.
+/// indexer does that). Asked again only when the catalog or the index changed.
 pub fn hints_for(app: &mut LccApp, photo: u64) -> Option<std::sync::Arc<Hints>> {
-    if !app.caches.faces_active {
-        return None;
-    }
     let (rev, indexed) = (app.session.catalog.revision, app.caches.faces_indexed);
     if let Some((p, r, i, h)) = &app.caches.face_hints
         && (*p, *r, *i) == (photo, rev, indexed)

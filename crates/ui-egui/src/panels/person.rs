@@ -323,7 +323,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, name: &str) {
     let dismissed = &app.ui.dismissed_faces;
     let more: Vec<&Face> = page.more.iter().filter(|f| !dismissed.contains(&(f.photo, f.index))).collect();
     // what the "More" section says when it has no faces to show
-    let recognising = app.caches.faces_active || page.ready;
+    let recognising = app.caches.faces_active || !more.is_empty();
     // with a model installed the button switches recognition on; without one it opens Settings ▸ Faces
     let step = if recognising { super::faces::Setup::Running } else { super::faces::setup(app, ui.ctx()) };
     let note: Option<String> = if step == super::faces::Setup::TurnOn {

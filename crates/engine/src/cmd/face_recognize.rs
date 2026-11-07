@@ -716,7 +716,23 @@ mod imp {
         let enabled = s.face_models_dir.clone().is_some_and(|d| enabled_cached(s, &d));
         if !enabled {
             track(s, 0);
-            return Ok(json!({"active": false}));
+            let _ = current_with(s, C, false);
+            if (s.faces.index.has_unsaved() || s.faces.scanned.has_unsaved()) && s.faces.saved_at.is_none_or(|t| t.elapsed() >= SAVE_EVERY) {
+                if let Err(e) = s.faces.index.save() {
+                    log::warn!("could not save the face embeddings: {e}");
+                }
+                if let Err(e) = s.faces.scanned.save() {
+                    log::warn!("could not save the list of searched photos: {e}");
+                }
+                s.faces.saved_at = Some(Instant::now());
+            }
+            return Ok(json!({
+                "active": false,
+                "inFlight": 0,
+                "pendingPhotos": 0,
+                "peak": 0,
+                "indexedFaces": s.faces.index.len(),
+            }));
         }
         if s.faces.retry_at.is_some_and(|t| Instant::now() < t) {
             track(s, 0);
@@ -793,10 +809,7 @@ mod imp {
     /// found; `ready` says whether recognition is running at all.
     pub fn similar(s: &mut Session, key: &str, limit: usize) -> Similar {
         let none = Similar { items: Vec::new(), ready: false, pending: 0 };
-        let Some(dir) = s.face_models_dir.clone() else { return none };
-        if !enabled_cached(s, &dir) {
-            return none;
-        }
+        let Some(_) = s.face_models_dir.clone() else { return none };
         let Ok(embedder) = current_with(s, "faces.person", false) else { return none };
         let pending = s.faces.queue.len() + s.faces.in_flight.len();
         let (mut gallery, mut candidates): (Vec<Arc<[f32]>>, Vec<(u64, usize, Rect, Arc<[f32]>)>) = (Vec::new(), Vec::new());
@@ -872,10 +885,7 @@ mod imp {
     /// find a name for those the named faces recognise, for the first `limit` of them.
     pub fn arrange_unnamed(s: &mut Session, all: &mut Vec<(u64, usize, Rect)>, limit: usize) -> super::Arranged {
         let none = super::Arranged { ordered: false, ready: false, suggestions: Default::default() };
-        let Some(dir) = s.face_models_dir.clone() else { return none };
-        if !enabled_cached(s, &dir) {
-            return none;
-        }
+        let Some(_) = s.face_models_dir.clone() else { return none };
         let Ok(embedder) = current_with(s, "faces.unnamed", false) else { return none };
         let (mut embedded, mut plain) = (Vec::new(), Vec::new());
         for f in all.drain(..) {
