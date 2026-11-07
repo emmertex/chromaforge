@@ -85,7 +85,7 @@ pub(crate) fn rgb_preview(tiff: &Tiff, bytes: &[u8]) -> Option<Vec<u8>> {
                 // uncompressed: a preview larger than the whole file is not in it, and is passed over before any buffer
                 // is reserved (strips sharing one offset would otherwise copy a few bytes up to MAX_PREVIEW_BYTES); a
                 // smaller complete one elsewhere in the file is still taken
-                && (u64::from(i.width) * u64::from(i.height)).saturating_mul(3) <= MAX_PREVIEW_BYTES.min(bytes.len()) as u64
+                && u64::from(i.width).saturating_mul(u64::from(i.height)).saturating_mul(3) <= MAX_PREVIEW_BYTES.min(bytes.len()) as u64
         })
         .max_by_key(|i| u64::from(i.width).saturating_mul(u64::from(i.height)))?;
     let (w, h) = (info.width as usize, info.height as usize);
