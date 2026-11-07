@@ -258,3 +258,39 @@ fn importing_lightroom_export_preset_populates_export_dialog_and_lists_unsupport
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Importing presets from Library must not open the presets column: Develop draws that column in
+/// place of its Edit panel, and with no tool strip nothing on screen brings the panel back, so the
+/// next visit to Develop had the presets and no sliders (issue #875). The presets go to Develop's
+/// left column, unfolded, and Develop opens with its Edit panel.
+#[test]
+fn importing_presets_in_library_leaves_develop_its_edit_panel() {
+    let dir = temp_dir("library");
+    let xmp = dir.join("Soft.xmp");
+    std::fs::write(
+        &xmp,
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+         <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+           crs:PresetType="Normal" crs:Name="Soft" crs:UUID="AB12" crs:Exposure2012="0.5"/>
+         </rdf:RDF></x:xmpmeta>"#,
+    )
+    .unwrap();
+    let mut h = app();
+    h.request("engine.execute", json!({"command": "module.library"}), T);
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Library);
+    let r = import(&mut h, &[&xmp]);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(toast(&h).contains("Imported 1 preset"), "{}", toast(&h));
+    assert!(!h.app.ui.presets, "the presets column must not open from Library");
+    assert!(crate::panels::classic::is_open_with_key(&h.app, crate::panels::presets::IN_COLUMN_KEY), "Develop's Presets panel is unfolded");
+
+    h.request("engine.execute", json!({"command": "module.develop"}), T);
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop);
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit, "Develop opens with its Edit panel");
+    assert!(!h.app.ui.presets, "the presets column must not stand in for the Edit panel");
+    let w = h.request("ui.widgets", json!({"filter": "panelHeader:presets"}), T);
+    assert!(w["result"].as_array().is_none_or(Vec::is_empty), "no presets column: {w}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
