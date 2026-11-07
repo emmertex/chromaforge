@@ -58,6 +58,10 @@ fn type_into(h: &mut Headless, field: &str, text: &str) {
     h.step();
 }
 
+fn toast(h: &Headless) -> String {
+    h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default()
+}
+
 fn custom_names(h: &Headless) -> Vec<String> {
     h.app.session.crop_aspects.custom.iter().map(|a| a.name.clone()).collect()
 }
@@ -114,6 +118,31 @@ fn the_custom_row_saves_a_named_ratio_and_uses_it() {
     assert_eq!(custom_names(&h), ["Instagram"]);
 }
 
+/// A Save that can't be done says why and leaves the menu open, rather than closing as if it
+/// had worked: a ratio too small to apply, a built-in name (#1856 review).
+#[test]
+fn a_custom_save_that_fails_says_why_and_keeps_the_menu_open() {
+    let mut h = crop_panel();
+    let before = h.app.crop_tool_aspect();
+    open_menu(&mut h);
+    type_into(&mut h, "field:cropCustomW", "0.001");
+    type_into(&mut h, "field:cropCustomH", "0.001");
+    type_into(&mut h, "field:cropCustomName", "Tiny");
+    click(&mut h, "button:cropCustomSave");
+    assert!(custom_names(&h).is_empty(), "nothing saved");
+    assert_eq!(h.app.crop_tool_aspect(), before, "nor applied");
+    assert!(toast(&h).contains("aspect"), "the reason is shown: {:?}", toast(&h));
+    assert!(!widgets(&mut h, "cropAspectPreset:").is_empty(), "the menu stays open");
+    h.app.ui.toasts.clear();
+    type_into(&mut h, "field:cropCustomW", "3");
+    type_into(&mut h, "field:cropCustomH", "2");
+    type_into(&mut h, "field:cropCustomName", "Free");
+    click(&mut h, "button:cropCustomSave");
+    assert!(custom_names(&h).is_empty());
+    assert!(toast(&h).contains("built-in"), "{:?}", toast(&h));
+    assert!(!widgets(&mut h, "cropAspectPreset:").is_empty(), "the menu stays open");
+}
+
 #[test]
 fn edit_list_reorders_deletes_and_hides_without_closing_the_menu() {
     let mut h = crop_panel();
@@ -138,4 +167,16 @@ fn edit_list_reorders_deletes_and_hides_without_closing_the_menu() {
     let shown = widgets(&mut h, "cropAspectPreset:");
     assert!(!shown.iter().any(|w| w == "cropAspectPreset:4x5"), "{shown:?}");
     assert_eq!(widgets(&mut h, "cropAspectSaved:").len(), 2);
+}
+
+/// CodeRabbit on #3762: the button names the saved ratio whose rounded value is the lock, not
+/// the first one within the label's tolerance.
+#[test]
+fn the_aspect_button_names_the_exact_saved_ratio_first() {
+    let custom = [
+        lcc_engine::cmd::crop_aspects::CustomAspect { name: "Close".into(), aspect: [3.01, 2.0] },
+        lcc_engine::cmd::crop_aspects::CustomAspect { name: "Exact".into(), aspect: [1.5, 1.0] },
+    ];
+    assert_eq!(crate::panels::right::aspect_label(Some((150, 100)), None, &custom), "Exact");
+    assert_eq!(crate::panels::right::aspect_label(Some((100, 150)), None, &custom), "Exact", "either orientation");
 }

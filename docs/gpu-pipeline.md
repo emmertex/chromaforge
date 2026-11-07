@@ -148,7 +148,8 @@ device and every kernel build; a crash while the window's renderer starts is avo
 or worked around with `<PREFIX>_GPU_BACKEND`.
 
 **The window's renderer and its fallback (Windows).** Before the window opens, each renderer is probed in
-order: DX12, Vulkan, GL, then eframe's OpenGL renderer (glow). A probe creates a device and builds egui's
+order: DX12, GL, then eframe's OpenGL renderer (glow); Vulkan only when `<PREFIX>_GPU_BACKEND=vulkan` asks for it,
+since a broken Vulkan driver can crash the process before any window. A probe creates a device and builds egui's
 pipeline inside wgpu error scopes, so a driver that cannot compile egui's shaders ("The parameter is
 incorrect. (0x80070057)" in `egui_pipeline`) is logged and skipped instead of killing the app; no pop-up
 unless that renderer was forced (#1624). The renderer
