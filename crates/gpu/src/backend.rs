@@ -751,7 +751,8 @@ mod tests {
         let active = Mutex::new(0);
         let slot = Mutex::new(Some(m.clone()));
         with_marker_in(&slot, &active, "device creation", || {
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| with_marker_in(&slot, &active, "kernel compilation", || panic!("compile"))));
+            let r =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| with_marker_in(&slot, &active, "kernel compilation", || panic!("compile"))));
             assert!(r.is_err());
             assert!(m.exists(), "other driver work is still active after the inner panic");
             assert_eq!(*active.lock().unwrap(), 1);

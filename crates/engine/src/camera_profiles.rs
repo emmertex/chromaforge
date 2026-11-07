@@ -648,7 +648,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn file_names_are_safe() {
         assert_eq!(file_name("ILCE-7M4"), "ILCE-7M4.json");

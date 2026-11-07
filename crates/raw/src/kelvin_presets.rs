@@ -171,7 +171,8 @@ pub fn covers(make: Option<&str>, model: &str) -> bool {
         return true;
     }
     // A DxO demosaiced DNG keeps the Fujifilm model but carries DxO as its make.
-    let fuji = brand.is_none_or(|b| b.eq_ignore_ascii_case("FUJIFILM") || b.eq_ignore_ascii_case("DxO")) && FUJI_MODELS.iter().any(|m| m.eq_ignore_ascii_case(model));
+    let fuji = brand.is_none_or(|b| b.eq_ignore_ascii_case("FUJIFILM") || b.eq_ignore_ascii_case("DxO"))
+        && FUJI_MODELS.iter().any(|m| m.eq_ignore_ascii_case(model));
     if fuji {
         return true;
     }
