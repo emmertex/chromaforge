@@ -138,6 +138,8 @@
   "is in this year": "on tänä vuonna",
   "is today": "on tänään",
   "is yesterday": "on eilen",
+  "{m} camera profiles from an older install were added.": "Vanhemmasta asennuksesta lisättiin {m} kameraprofiilia.",
   "{n} photos": "{n} kuvaa",
+  "{n} presets and {m} camera profiles from an older install were added.": "Vanhemmasta asennuksesta lisättiin {n} esiasetusta ja {m} kameraprofiilia.",
   "{n} presets from an older install were added.": "Vanhemmasta asennuksesta lisättiin {n} esiasetusta."
 }

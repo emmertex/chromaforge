@@ -219,6 +219,8 @@
   "is yesterday": "è ieri",
   "{app} Export Presets": "Predefiniti di esportazione di {app}",
   "{app} Metadata Presets": "Predefiniti metadati di {app}",
+  "{m} camera profiles from an older install were added.": "Aggiunti {m} profili fotocamera da un'installazione precedente.",
   "{n} photos": "{n} foto",
+  "{n} presets and {m} camera profiles from an older install were added.": "Aggiunti {n} preset e {m} profili fotocamera da un'installazione precedente.",
   "{n} presets from an older install were added.": "Aggiunti {n} preset da un'installazione precedente."
 }

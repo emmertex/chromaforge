@@ -219,6 +219,8 @@
   "is yesterday": "je včera",
   "{app} Export Presets": "Předvolby exportu {app}",
   "{app} Metadata Presets": "Předvolby metadat {app}",
+  "{m} camera profiles from an older install were added.": "Přidané profily fotoaparátu ze starší instalace: {m}.",
   "{n} photos": "{n} fotografií",
+  "{n} presets and {m} camera profiles from an older install were added.": "Přidané předvolby ze starší instalace: {n}, profily fotoaparátu: {m}.",
   "{n} presets from an older install were added.": "Přidané předvolby ze starší instalace: {n}."
 }
