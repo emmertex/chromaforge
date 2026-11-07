@@ -275,6 +275,7 @@ pub struct FinishParams {
     /// A LUT profile and its amount (0..2), applied to the display-encoded colour.
     pub lut: Option<(std::sync::Arc<crate::lut::Lut3d>, f32)>,
     pub tone: ToneMap,
+    pub rgb_contrast: Option<crate::tone::RgbContrast>,
     pub ops: ColorOps,
     /// The masks' local Point Color samples, one list per evaluated mask (empty when none has any,
     /// [`crate::colorops::mask_point_ks`]).
@@ -387,11 +388,20 @@ impl FinishParams {
         });
         let calibration = s.section_enabled("calibration");
         let peak = s.hdr.peak();
+        let (tone, rgb_contrast) = if s.light.contrast_mode == lcc_develop::ContrastMode::Rgb && (s.light.contrast != 0.0 || s.light.blacks != 0.0) {
+            let base = base_tone_with_contrast_blacks(s, info, peak, 0.0, 0.0);
+            let full = base_tone(s, info, peak);
+            let rc = crate::tone::RgbContrast::new(&base, &full, s.light.blacks, peak);
+            (base, Some(rc))
+        } else {
+            (base_tone(s, info, peak), None)
+        };
         FinishParams {
             peak,
             calib: if calibration { crate::colorops::calibration_matrix(&s.calibration) } else { None },
             shadow_tint: if calibration { (s.calibration.shadows_tint / 100.0) as f32 } else { 0.0 },
-            tone: base_tone(s, info, peak),
+            tone,
+            rgb_contrast,
             lut: crate::lut::get(&s.profile.id).map(|l| (l, (s.profile.amount / 100.0).clamp(0.0, 2.0) as f32)),
             ops: ColorOps::new(s),
             local_points: crate::colorops::mask_point_ks(s),
@@ -449,16 +459,20 @@ impl FinishParams {
 /// every arm is the SDR tone map. An HDR render keeps the camera's look through the midtones and
 /// lifts its highlights past white ([`ToneMap::camera_hdr`]), so it matches the SDR render below them.
 pub fn base_tone(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
+    base_tone_with_contrast_blacks(s, info, peak, s.light.contrast, s.light.blacks)
+}
+
+pub fn base_tone_with_contrast_blacks(s: &DevelopSettings, info: &SourceInfo, peak: f32, contrast: f64, blacks: f64) -> ToneMap {
     // the SDR rendition of an HDR edit: the HDR curve, its highlights rolled off into SDR white
     // (issue #69); SDR edits never get here (their rolloff peak is 1)
     let rolloff = s.hdr.rolloff_peak();
     if peak <= 1.0 && rolloff > 1.0 {
-        return base_tone_at(s, info, rolloff).sdr_rolloff(rolloff);
+        return base_tone_at_with(s, info, rolloff, contrast, blacks).sdr_rolloff(rolloff);
     }
-    base_tone_at(s, info, peak)
+    base_tone_at_with(s, info, peak, contrast, blacks)
 }
 
-fn base_tone_at(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
+fn base_tone_at_with(s: &DevelopSettings, info: &SourceInfo, peak: f32, contrast: f64, blacks: f64) -> ToneMap {
     let l = &s.light;
     // a Source filter that renders a finished picture (a negative conversion) is shown as it is,
     // like a JPEG, not toned again as a raw
@@ -470,9 +484,9 @@ fn base_tone_at(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
         // ([`hue_clip`]), not the tone map
         Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 => {
             match info.camera_tone.as_ref().filter(|_| raw) {
-                Some(curve) => ToneMap::camera_hdr(curve, l.contrast, l.whites, l.blacks, peak),
-                None if raw => ToneMap::hdr(l.contrast, l.whites, l.blacks, peak),
-                None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
+                Some(curve) => ToneMap::camera_hdr(curve, contrast, l.whites, blacks, peak),
+                None if raw => ToneMap::hdr(contrast, l.whites, blacks, peak),
+                None => ToneMap::display_hdr(contrast, l.whites, blacks, peak),
             }
         }
     }
@@ -601,6 +615,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let p_lut = fp.lut.clone();
     let FinishParams {
         tone,
+        rgb_contrast,
         ops,
         curves,
         vig,
@@ -630,6 +645,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let (hl, sh, clar, tex, dehaze, sharpen, sharpen_mask, air, air_pre, gain, ev) =
         (*hl, *sh, *clar, *tex, *dehaze, *sharpen, *sharpen_mask, *air, *air_pre, *gain, *ev);
     let (sharpen_limit, sharpen_fade) = (*sharpen_limit, *sharpen_fade);
+    let rgb_contrast = rgb_contrast.as_ref();
     let mut terms: Vec<[f32; MASK_TERMS]> = p.masks.iter().map(|m| mask_terms(&m.adjust)).collect();
     with_tone(&mut terms, &p.mask_tone);
     // (only when it lines up with the evaluated masks, which it does unless a caller mixed settings)
@@ -833,11 +849,15 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
 
             // --- tone map on luminance, highlight desaturation
             let yl = luminance_2020(c);
-            let o = tone.apply(yl);
+            let mut o = tone.apply(yl);
             let mut d = if yl > 1e-9 { c.map(|v| v * o / yl) } else { [0.0; 3] };
             let k = tone.chroma_scale(o);
             if k != 1.0 {
                 d = d.map(|v| o + (v - o) * k);
+            }
+            if let Some(rc) = rgb_contrast {
+                d = d.map(|v| rc.apply(v));
+                o = rc.apply(o);
             }
             let mx = d[0].max(d[1]).max(d[2]);
             if mx > peak {
@@ -1309,5 +1329,37 @@ mod tests {
         let r = lift_negatives([0.6, 0.2, -0.05], luma, 1.0);
         assert!(r[2].abs() < 1e-6 && r[0] < 0.6 && r[0] > r[1]);
         assert_eq!(lift_negatives([1.6, 0.2, 0.05], luma, 1.0), [1.6, 0.2, 0.05]);
+    }
+
+    #[test]
+    fn rgb_contrast_mode_preserves_neutral_and_deepens_chromatic_contrast() {
+        use lcc_develop::{ContrastMode, DevelopSettings};
+        use lcc_raster::Rgb32f;
+        let mut s_lum = DevelopSettings::default();
+        s_lum.light.contrast = 40.0;
+        s_lum.light.blacks = -25.0;
+        s_lum.light.contrast_mode = ContrastMode::Luminance;
+
+        let mut s_rgb = s_lum.clone();
+        s_rgb.light.contrast_mode = ContrastMode::Rgb;
+
+        // Neutral image: luminance-based and RGB-based contrast produce nearly identical results
+        let neutral = Rgb32f::filled(8, 8, [0.18, 0.18, 0.18]);
+        let req = crate::RenderRequest::fit(8, 8);
+        let out_lum = crate::render(&neutral, &SourceInfo::default(), &s_lum, &req).image;
+        let out_rgb = crate::render(&neutral, &SourceInfo::default(), &s_rgb, &req).image;
+        for (a, b) in out_lum.data.iter().zip(&out_rgb.data) {
+            for c in 0..3 {
+                assert!((a[c] as i32 - b[c] as i32).abs() <= 1, "neutral channel {c}: lum {} vs rgb {}", a[c], b[c]);
+            }
+        }
+
+        // Chromatic image: RGB contrast shifts channels differently from pure luminance contrast
+        let chromatic = Rgb32f::filled(8, 8, [0.4, 0.1, 0.05]);
+        let chrom_lum = crate::render(&chromatic, &SourceInfo::default(), &s_lum, &req).image;
+        let chrom_rgb = crate::render(&chromatic, &SourceInfo::default(), &s_rgb, &req).image;
+        let diff =
+            (chrom_lum.data[0][0] as i32 - chrom_rgb.data[0][0] as i32).abs() + (chrom_lum.data[0][2] as i32 - chrom_rgb.data[0][2] as i32).abs();
+        assert!(diff > 1, "chromatic difference should be noticeable");
     }
 }

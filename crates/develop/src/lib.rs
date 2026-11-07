@@ -222,6 +222,7 @@ impl DevelopSettings {
             controls::set(self, c.id, c.default);
         }
         match section {
+            Section::Light => self.light.contrast_mode = ContrastMode::default(),
             Section::Curve => {
                 let d = ToneCurve::default();
                 self.curve = d;
@@ -306,6 +307,30 @@ mod tests {
         // a merge can set it back by name
         let back: Profile = serde_json::from_value(json!({"camera_colour": "auto"})).unwrap();
         assert!(back.camera_colour.is_auto());
+    }
+
+    /// `Light::contrast_mode` is omitted while `Luminance` (so existing settings keep their JSON and
+    /// hash), stored when `Rgb`, carried by `light.contrast` presets, and restored by a Light reset.
+    #[test]
+    fn contrast_mode_is_stored_only_when_it_is_rgb() {
+        let lum = DevelopSettings::default();
+        assert_eq!(lum.light.contrast_mode, ContrastMode::Luminance);
+        assert!(!lum.to_json().to_string().contains("contrast_mode"));
+        let mut rgb = lum.clone();
+        rgb.light.contrast = 35.0;
+        rgb.light.contrast_mode = ContrastMode::Rgb;
+        let v = rgb.to_json();
+        assert_eq!(v["light"]["contrast_mode"], json!("rgb"));
+        assert_eq!(DevelopSettings::from_json(&v).unwrap().light.contrast_mode, ContrastMode::Rgb);
+        assert_ne!(rgb.hash64(), lum.hash64());
+        let back = rgb.merged(&json!({"light": {"contrast_mode": "luminance"}})).unwrap();
+        assert_eq!(back.light.contrast_mode, ContrastMode::Luminance);
+        let pick = SettingsPick::from_ids(&["light.contrast"]);
+        let extracted = pick.extract(&rgb);
+        assert_eq!(apply_partial(&lum, &extracted, 1.0).light.contrast_mode, ContrastMode::Rgb);
+        let mut reset = rgb.clone();
+        reset.reset_section(Section::Light);
+        assert_eq!(reset.light.contrast_mode, ContrastMode::Luminance);
     }
 
     /// A preset or sync of the Profile group carries the Camera colour both ways: Colorimetric onto an Auto photo,
