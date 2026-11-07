@@ -30,17 +30,44 @@ pub fn load(path: &str) -> Result<egui::ColorImage, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn rasterise_svg(bytes: &[u8]) -> Result<egui::ColorImage, String> {
-    let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default()).map_err(|e| format!("not a usable SVG: {e}"))?;
+    rasterise_svg_fit(bytes, MAX_WIDTH, PIXEL_HEIGHT, &resvg::usvg::Options::default())
+}
+
+/// `bytes` rasterised as large as fits `max_w × max_h` pixels, keeping its aspect.
+#[cfg(not(target_arch = "wasm32"))]
+fn rasterise_svg_fit(bytes: &[u8], max_w: u32, max_h: u32, options: &resvg::usvg::Options) -> Result<egui::ColorImage, String> {
+    let tree = resvg::usvg::Tree::from_data(bytes, options).map_err(|e| format!("not a usable SVG: {e}"))?;
     let size = tree.size();
     let (w, h) = (size.width(), size.height());
     if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
         return Err("the SVG has no size".into());
     }
-    let scale = PIXEL_HEIGHT as f32 / h;
-    let pw = ((w * scale).round() as u32).clamp(1, MAX_WIDTH);
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(pw, PIXEL_HEIGHT).ok_or("can't allocate the plate")?;
+    let scale = (max_h as f32 / h).min(max_w as f32 / w);
+    let pw = ((w * scale).round() as u32).clamp(1, max_w);
+    let ph = ((h * scale).round() as u32).clamp(1, max_h);
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(pw, ph).ok_or("can't allocate the picture")?;
     resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    Ok(egui::ColorImage::from_rgba_premultiplied([pw as usize, PIXEL_HEIGHT as usize], pixmap.data()))
+    Ok(egui::ColorImage::from_rgba_premultiplied([pw as usize, ph as usize], pixmap.data()))
+}
+
+/// A plug-in's own picture (its manifest's icon or header SVG) rasterised to fit `max_w × max_h`:
+/// untrusted, so it draws only the shapes the document holds; an image it links to (a file on
+/// disk) is never read, and one it embeds (a `data:` URL) is not decoded either.
+pub fn rasterise_untrusted_svg(svg: &str, max_w: u32, max_h: u32) -> Result<egui::ColorImage, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (svg, max_w, max_h);
+        Err("plug-in pictures need the desktop app".into())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let options = resvg::usvg::Options {
+            resources_dir: None,
+            image_href_resolver: resvg::usvg::ImageHrefResolver { resolve_data: Box::new(|_, _, _| None), resolve_string: Box::new(|_, _| None) },
+            ..Default::default()
+        };
+        rasterise_svg_fit(svg.as_bytes(), max_w, max_h, &options)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -319,5 +346,40 @@ mod tests {
         assert!(rasterise_svg(br#"<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0"/>"#).is_err());
         assert!(decode_raster(b"\x89PNG garbage").is_err());
         assert!(load("/no/such/plate.svg").is_err());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_plugins_picture_draws_its_own_shapes_only() {
+        use super::rasterise_untrusted_svg;
+        // a red square plus images from a file and from embedded data: the square is drawn, the images never are
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10">
+                <rect width="10" height="10" fill="#f00"/>
+                <image xlink:href="file:///etc/hostname" width="10" height="10"/>
+                <image href="/etc/hostname" width="10" height="10"/>
+                <image href="data:image/png;base64,{png}" width="10" height="10"/></svg>"##
+        );
+        let img = rasterise_untrusted_svg(&svg, 64, 32).unwrap();
+        assert!(img.size[0] <= 64 && img.size[1] <= 32 && img.size[0] == img.size[1], "fits the box, keeps the aspect: {:?}", img.size);
+        assert!(img.pixels.iter().all(|p| p.r() > 200 && p.g() < 50 && p.b() < 50), "only the red square is drawn");
+        // hostile documents: an error, never a panic
+        for bad in [
+            "not svg",
+            "<svg",
+            r##"<svg xmlns="http://www.w3.org/2000/svg"/>"##,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 0 0"/>"##,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="-5" height="3"/>"##,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1e30 1e30"><rect width="1" height="1"/></svg>"##,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"><rect/></svg>"##,
+        ] {
+            let _ = rasterise_untrusted_svg(bad, 64, 64);
+        }
+        // a huge viewBox is only a scale: the picture still fits the box
+        let huge = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1e9 5e8"><rect width="1e9" height="5e8" fill="#00f"/></svg>"##;
+        if let Ok(img) = rasterise_untrusted_svg(huge, 64, 64) {
+            assert!(img.size[0] <= 64 && img.size[1] <= 64, "{:?}", img.size);
+        }
     }
 }

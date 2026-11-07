@@ -73,6 +73,23 @@ const MODULES: &[Module] = &[
         ],
     },
     Module {
+        src: include_str!("wgsl/nrcj.wgsl"),
+        bindings: &[("a", false, "f32"), ("b", false, "f32"), ("dst", true, "f32")],
+        entries: &[
+            "nrcj_yuv",
+            "nrcj_uv",
+            "nrcj_samples",
+            "nrcj_speck",
+            "nrcj_pilot",
+            "nrcj_links1",
+            "nrcj_paths",
+            "nrcj_links",
+            "nrcj_dh",
+            "nrcj_dv",
+            "nrcj_recon",
+        ],
+    },
+    Module {
         src: include_str!("wgsl/spot.wgsl"),
         bindings: &[("img", true, "f32"), ("pts", false, "f32"), ("al", true, "f32"), ("sp", true, "f32"), ("df", true, "f32"), ("wt", true, "f32")],
         entries: &["spot_prep", "spot_apply", "spot_score"],
@@ -1032,7 +1049,8 @@ pub(crate) fn read_texture(
     slice.map_async(wgpu::MapMode::Read, move |r| {
         let _ = tx.send(r);
     });
-    let wait = std::time::Duration::from_secs(10);
+    // (the render path's wait: queued work ahead of the copy can take that long too)
+    let wait = READBACK_TIMEOUT;
     device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(wait) }).map_err(|e| format!("{e}"))?;
     match rx.recv_timeout(wait) {
         Ok(Ok(())) => {}

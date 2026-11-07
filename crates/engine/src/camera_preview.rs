@@ -945,7 +945,10 @@ impl LogGrid {
 /// (`CameraTone::apply`): moving the second-last knot down steepens it, and the extended highlights
 /// would end up brighter than `own`'s. Raises `knots`' second-last knot until the rate is at most
 /// `own`'s, easing the raise into the knots below with a bell-shaped ramp (about a stop wide) so it
-/// doesn't bend the curve sharply either; no knot above `cap(x)`.
+/// doesn't bend the curve sharply either; no knot above `cap(x)`. The process V8 shoulder
+/// (`CameraTone::apply_rolloff`) is not part of this bound: V1 to V7 read the same curve, and a V8
+/// bound here would change their renders. It stays below `own`'s too when the last segment's slope
+/// over the squared gap to white is at most `own`'s (upstream #3783).
 fn ease_shoulder(knots: &mut [[f32; 2]; 32], own: &[[f32; 2]; 32], cap: impl Fn(f32) -> f32) {
     let [.., a, b] = *own;
     let [.., second_last, end] = *knots;
@@ -4137,6 +4140,30 @@ mod tests {
             let x = 0.001 * 1.005f32.powi(i);
             assert!(fixed.tone.apply(x) <= fitted.tone.apply(x) + 1e-5, "{what} at {x}: {} > {}", fixed.tone.apply(x), fitted.tone.apply(x));
         }
+        // The V8 shoulder stays below too whenever the lowered last segment's slope over its squared gap
+        // to white is at most the fitted one's (`dro_off` doesn't enforce it, so V1 to V7 keep their
+        // curve; upstream #3783)
+        if v8_bounded(&fixed.tone, &fitted.tone) {
+            assert!(v8_below(&fixed.tone, &fitted.tone), "{what}: brighter than the fitted curve under V8");
+        }
+    }
+
+    /// Whether the last segment of `a`, over its squared gap to white, is at most `b`'s: then `a`'s V8
+    /// shoulder ([`CameraTone::apply_rolloff`]) is nowhere above `b`'s (upstream #3783).
+    fn v8_bounded(a: &CameraTone, b: &CameraTone) -> bool {
+        let rate = |t: &CameraTone| {
+            let k = t.knots();
+            ((k[31][1] - k[30][1]) / (k[31][0] - k[30][0])).max(0.0) / (1.0 - k[31][1]).powi(2)
+        };
+        rate(a) <= rate(b)
+    }
+
+    /// Whether `a`'s V8 curve is nowhere brighter than `b`'s, from deep shadows to far past the last knot.
+    fn v8_below(a: &CameraTone, b: &CameraTone) -> bool {
+        (0..=2400).all(|i| {
+            let x = 0.001 * 1.005f32.powi(i);
+            a.apply_rolloff(x) <= b.apply_rolloff(x) + 1e-5
+        })
     }
 
     /// Issue #244: Sony's Dynamic Range Optimizer lifts the camera JPEG's shadows, not the raw's. A
@@ -4380,6 +4407,8 @@ mod tests {
             };
             if dro {
                 assert_lowered(&fitted, &look, name);
+                // the Sony DRO samples' lowered curves stay below their fitted ones under V8 as well
+                assert!(v8_below(&look.tone, &fitted.tone), "{name}: brighter than the fitted curve under V8");
                 for x in lowered {
                     assert!(look.tone.apply(x) < 0.95 * fitted.tone.apply(x), "{name} at {x}: {} vs {}", look.tone.apply(x), fitted.tone.apply(x));
                 }
