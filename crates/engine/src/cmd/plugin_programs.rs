@@ -101,6 +101,16 @@ impl HostApi for HookHost {
         self.0.ask_within(Relayed::LibraryAdd, params, ANSWER_WAIT)
     }
 
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> Result<Value, String> {
+        self.reachable()?;
+        self.0.ask_within(Relayed::Pixels, &super::plugins::pixels_params(photo, long_edge), ANSWER_WAIT)
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {
+        self.reachable()?;
+        self.0.ask_within(Relayed::SetCrop, &super::plugins::crop_params(photo, rect, angle), ANSWER_WAIT)
+    }
+
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.0.find_program(program)
     }

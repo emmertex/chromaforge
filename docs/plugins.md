@@ -87,6 +87,8 @@ are the granted permissions intersected with the requested ones.
 | `catalog: true` | `catalog.query`, `photo.inspect`, `catalog.stats`, `keyword.list` (read-only) |
 | `metadataWrite: true` | `metadata.setStandard {ids, title?, caption?, keywords?, addKeywords?, …}` |
 | `libraryAdd: true` | `library.add {path, from, stack?, album?}`: adds a file a tool made from a photo to the library, from that photo's folder only (see [Adding files to the library](#adding-files-to-the-library)). Requires `libraryAdd`. |
+| `pixels: true` | `photo.pixels {photo, longEdge?}`: a downsized copy of a photo, the whole uncropped frame (see [Pixels and crop](#pixels-and-crop)). Requires `pixels`. |
+| `crop: true` | `develop.setCrop {photo, rect, angle?}`: sets a photo's crop, one History step, editable afterwards like any crop (see [Pixels and crop](#pixels-and-crop)). Requires `crop`. |
 | `network: ["api.example.com", "*.example.org"]` | `http.request` to those hosts only. Redirects are not followed: the plug-in has to request the new URL itself, and that request is checked again. A binary body goes as `bodyBase64` (with `contentType`) instead of `body`. |
 | `fs: [{path: "/abs/dir", write?}]` | `fs.readText`, `fs.readBytes`, `fs.list`, `fs.exists` below each root, and `fs.writeText`, `fs.writeBytes`, `fs.remove` (files only) below writable roots. Bytes travel as base64 (`{path}` → base64 text; `{path, base64}`). `..` is rejected, and symbolic links are resolved so a link cannot lead out of a root. Files lent to a call (an export hook's or destination's exported files, a publish upload's rendered file) can be read and rewritten without any root, never removed. A program run's folder is lent to its `program.end` call for reading. |
 | `programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `program.start` of those programs, with the arguments the plug-in chooses on each run (see [Programs](#programs)); `program.list` needs nothing. Only the user grants one, by ticking it in the install dialog or the Plug-in Manager. `plugin.install` with `grant` and `plugin.grant`, whoever calls them (MCP, the control channel, an action, the command line), may repeat the programs already granted (they stay granted) or leave them out (revoked), and refuse a grant that names any other program or a wider entry than the granted one, changing nothing. The control channel's input requests (`ui.pointer`, `ui.clickWidget`, `ui.key`) work the dialog as the user's mouse and keyboard would, so a row ticked through them counts as the user's: give the control port only to agents you would let tick it. |
@@ -298,6 +300,31 @@ manifest error.
 
 The `job-tools` example works through the selected photos ten per call, reporting each one.
 
+## Pixels and crop
+
+A plug-in can look at a photo and set its crop: find a film frame's picture area inside its
+rebate, square up a scan, trim a border. The crop it sets is an ordinary one: one History step,
+undone with Undo, and adjusted afterwards in the crop tool like any other. Two permissions, each
+with a host feature of the same name (`"requires": ["pixels", "crop"]`):
+
+- **`photo.pixels {photo, longEdge?}`** (`pixels`; `host::photo_pixels(photo, long_edge)`) →
+  `{width, height, channels: 3, encoding: "srgb8", data}`: the photo as the crop tool shows it
+  before cropping (orientation, flips, lens corrections and perspective applied; no crop, no
+  straighten), downsized to a long edge of `longEdge` (default 1024, kept within 64..=1536, never
+  larger than the photo), as 8-bit sRGB, `data` the interleaved RGB rows, top to bottom, as base64.
+  The pixels are the decoded photo before tone and colour adjustments (a raw's are its linear
+  values with the sRGB curve on top, so they may look dark): enough to find edges, not a render.
+  It only reads, so a prepare step may call it.
+- **`develop.setCrop {photo, rect, angle?}`** (`crop`; `host::set_crop(photo, rect, angle)`) →
+  `{rect, angle}`: sets the crop as `crop.set` does. `rect` is `[x0, y0, x1, y1]`, normalized (0..1)
+  in the frame `photo.pixels` gives, so a box found in those pixels is set as it is; `angle` is the
+  straighten angle in degrees (clamped to ±45°; left out, the photo's is kept). The host fits the
+  crop inside the photo (a straightened crop may come out smaller) and returns it as set; a rect
+  smaller than the crop tool's smallest crop is refused. It writes, so prepare steps can't call it.
+
+From a hook running on a worker (an export hook, `program.end`), both are answered on the UI
+thread, like the catalog reads.
+
 ## Limits
 
 Each call runs in a fresh instance. It has an instruction budget, a wall-clock budget (time spent
@@ -315,7 +342,7 @@ hook that's never called, a host call that fails as an unknown method).
 
 - **The host's list** is `lcc_plugins::HOST_FEATURES`, and `plugin.list` returns it as
   `host: {abi, features}`. Everything the host had when `requires` arrived is the baseline and
-  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)). Every manifest field, permission group or host call added
+  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels` and `crop` ([Pixels and crop](#pixels-and-crop)). Every manifest field, permission group or host call added
   from then on gets a name there in the change that adds it, and its documentation here says
   which name to require.
 - **Names** are `[A-Za-z0-9._-]{1,64}`, at most 64, none repeated; anything else is a manifest
@@ -482,6 +509,8 @@ The manifest fields:
 | `host::query(params)` | `catalog.query` (also `photo.inspect`, `catalog.stats`, `keyword.list` via `call`) | `catalog` |
 | `host::call("metadata.setStandard", {ids, title?, caption?, keywords?, addKeywords?, …})` | writes standard fields | `metadataWrite` |
 | `host::library_add(path, from, stack, album)` | `library.add {path, from, stack?, album?}` → `{photo, added, reloaded}` | `libraryAdd` |
+| `host::photo_pixels(photo, long_edge)` → `Pixels {width, height, rgb}` | `photo.pixels {photo, longEdge?}` | `pixels` |
+| `host::set_crop(photo, rect, angle)` | `develop.setCrop {photo, rect, angle?}` → `{rect, angle}` | `crop` |
 | `host::ns_get(photo)`, `host::ns_set(photo, key, value)` | `ns.get`, `ns.set`, `ns.photos` | nothing (own namespace; also holds `metadataFields` values) |
 | `host::read_text`, `host::write_text`, `host::read_bytes`, `host::write_bytes`, `host::remove`, `host::exists` | `fs.*` | an `fs` root (or a lent file) |
 | `host::http(method, url, headers, body)`, `host::http_bytes(…)` | `http.request` → `{status, contentType, location, body}` | the URL's host in `network` |

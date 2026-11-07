@@ -365,6 +365,11 @@ impl lcc_plugins::HostApi for Writes {
         self.0.push(params.clone());
         Ok(json!({"photo": "2", "added": true, "reloaded": false}))
     }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {
+        self.0.push(json!({"photo": photo, "rect": rect, "angle": angle}));
+        Ok(json!({"rect": rect, "angle": angle.unwrap_or(0.0)}))
+    }
 }
 
 /// A prepare step only reads: whatever it is granted, a host call that writes (metadata, the library,
@@ -373,15 +378,22 @@ impl lcc_plugins::HostApi for Writes {
 /// from the command itself goes through.
 #[test]
 fn prepare_steps_can_only_read() {
-    let manifest = json!({"id": "test.readonly", "name": "Read only", "version": "1.0.0", "requires": ["settings", "libraryAdd"],
-        "permissions": {"metadataWrite": true, "libraryAdd": true, "network": ["example.invalid"]},
+    let manifest = json!({"id": "test.readonly", "name": "Read only", "version": "1.0.0", "requires": ["settings", "libraryAdd", "crop"],
+        "permissions": {"metadataWrite": true, "libraryAdd": true, "crop": true, "network": ["example.invalid"]},
         "settings": [{"key": "n", "label": "N", "type": "number", "min": 0, "max": 10, "default": 1, "prepare": true}],
         "commands": [{"id": "go", "label": "Go", "prepare": true, "dialog": [{"key": "b", "label": "B", "type": "bool"}]}]});
-    let grant = lcc_plugins::Permissions { metadata_write: true, library_add: true, network: vec!["example.invalid".into()], ..Default::default() };
+    let grant = lcc_plugins::Permissions {
+        metadata_write: true,
+        library_add: true,
+        crop: true,
+        network: vec!["example.invalid".into()],
+        ..Default::default()
+    };
     let id = "test.readonly";
     for (req, runs) in [
         (r#"{"method":"metadata.setStandard","params":{"ids":["1"],"title":"t"}}"#, true),
         (r#"{"method":"library.add","params":{"path":"/x/a.tif","from":"1"}}"#, true),
+        (r#"{"method":"develop.setCrop","params":{"photo":"1","rect":[0.1,0.1,0.9,0.9]}}"#, true),
         (r#"{"method":"ns.set","params":{"photo":"1","key":"k","value":1}}"#, true),
         (r#"{"method":"settings.set","params":{"key":"n","value":5}}"#, true),
         (r#"{"method":"http.request","params":{"method":"POST","url":"http://example.invalid/x","body":"{}"}}"#, false),

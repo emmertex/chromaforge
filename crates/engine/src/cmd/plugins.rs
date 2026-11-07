@@ -146,6 +146,14 @@ impl HostApi for SessionHost<'_> {
         super::plugin_library::add(self.0, params)
     }
 
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
+        super::plugin_develop::pixels(self.0, photo, long_edge)
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
+        super::plugin_develop::set_crop(self.0, photo, rect, angle)
+    }
+
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.0.desktop.find_program(program)
     }
@@ -654,7 +662,8 @@ impl ExportHooks {
 /// A catalog request a plug-in made from a worker thread ([`relay_host`]), answered on the thread that owns
 /// the session with [`HostRequest::answer`].
 pub struct HostRequest {
-    /// The host call: a catalog read, `metadata.setStandard` or `library.add`.
+    /// The host call: a catalog read, `metadata.setStandard`, `library.add`, `photo.pixels` or
+    /// `develop.setCrop`.
     method: Relayed,
     params: Value,
     reply: std::sync::mpsc::Sender<std::result::Result<Value, String>>,
@@ -673,6 +682,33 @@ pub(super) enum Relayed {
     SetMetadata,
     /// `library.add`.
     LibraryAdd,
+    /// `photo.pixels`: `{photo, longEdge}`, already checked.
+    Pixels,
+    /// `develop.setCrop`: `{photo, rect, angle}`, already checked.
+    SetCrop,
+}
+
+/// [`Relayed::Pixels`]'s parameters, and back.
+pub(super) fn pixels_params(photo: &str, long_edge: u32) -> Value {
+    json!({"photo": photo, "longEdge": long_edge})
+}
+
+/// [`Relayed::SetCrop`]'s parameters, and back.
+pub(super) fn crop_params(photo: &str, rect: [f64; 4], angle: Option<f64>) -> Value {
+    json!({"photo": photo, "rect": rect, "angle": angle})
+}
+
+fn relayed_pixels(host: &mut SessionHost<'_>, p: &Value) -> std::result::Result<Value, String> {
+    let photo = p["photo"].as_str().ok_or("photo.pixels: missing photo")?;
+    let edge = p["longEdge"].as_u64().and_then(|e| u32::try_from(e).ok()).ok_or("photo.pixels: missing longEdge")?;
+    host.photo_pixels(photo, edge)
+}
+
+fn relayed_crop(host: &mut SessionHost<'_>, p: &Value) -> std::result::Result<Value, String> {
+    let photo = p["photo"].as_str().ok_or("develop.setCrop: missing photo")?;
+    let v: Vec<f64> = p["rect"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
+    let rect: [f64; 4] = v.try_into().map_err(|_| "develop.setCrop: missing rect")?;
+    host.set_crop(photo, rect, p["angle"].as_f64())
 }
 
 const WAITING: u8 = 0;
@@ -692,6 +728,8 @@ impl HostRequest {
             Relayed::Catalog(m) => host.catalog(m, &self.params),
             Relayed::SetMetadata => host.set_metadata(&self.params),
             Relayed::LibraryAdd => host.library_add(&self.params),
+            Relayed::Pixels => relayed_pixels(&mut host, &self.params),
+            Relayed::SetCrop => relayed_crop(&mut host, &self.params),
         };
         let _ = self.reply.send(r);
     }
@@ -751,6 +789,14 @@ impl HostApi for RelayHost {
         self.ask(Relayed::LibraryAdd, params)
     }
 
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
+        self.ask(Relayed::Pixels, &pixels_params(photo, long_edge))
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
+        self.ask(Relayed::SetCrop, &crop_params(photo, rect, angle))
+    }
+
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.1.find_program(program)
     }
@@ -782,6 +828,14 @@ impl HostApi for HookSession<'_> {
 
     fn library_add(&mut self, params: &Value) -> std::result::Result<Value, String> {
         self.0.library_add(params)
+    }
+
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
+        self.0.photo_pixels(photo, long_edge)
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
+        self.0.set_crop(photo, rect, angle)
     }
 
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {

@@ -43,6 +43,10 @@ pub const HOST_FEATURES: &[&str] = &[
     "libraryAdd",
     // `job` on a command and the `job.*` host calls (progress, cancel, `{continue: state}`)
     "jobs",
+    // `pixels` in the permissions and the `photo.pixels` host call
+    "pixels",
+    // `crop` in the permissions and the `develop.setCrop` host call
+    "crop",
 ];
 
 /// The manifest a plug-in returns from `lcc_manifest`.
