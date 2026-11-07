@@ -8,7 +8,7 @@ plug-ins are not supported.
 
 | Contribution | Manifest | Request it receives |
 |---|---|---|
-| Menu commands, optionally with a dialog | `commands: [{id, label, menu, dialog, prepare?}]` | `{"hook":"command","command","args","selection","source"}`; with `prepare: true`, first `{"hook":"command.prepare","command","selection","source"}` (`source`: see [Adding files to the library](#adding-files-to-the-library); see [Settings, remembered values and prepare steps](#settings-remembered-values-and-prepare-steps)) |
+| Menu commands, optionally with a dialog | `commands: [{id, label, menu, dialog, prepare?, job?}]` (`job: true`: see [Jobs](#jobs-long-commands-with-progress)) | `{"hook":"command","command","args","selection","source"}`; with `prepare: true`, first `{"hook":"command.prepare","command","selection","source"}` (`source`: see [Adding files to the library](#adding-files-to-the-library); see [Settings, remembered values and prepare steps](#settings-remembered-values-and-prepare-steps)) |
 | Settings (the plug-in's page in the Plug-in Manager) | `settings: [{key, label, type, …, prepare?}]` | none, or `{"hook":"settings.prepare"}` when a field has `prepare: true`; the plug-in reads them with `settings.get` |
 | Export post-processing | `hooks.export: true` | `{"hook":"export","files":[{path, photo}]}`; the exported files are lent to the call for reading and writing |
 | Metadata and keyword suggestions | `hooks.metadata: true` | `{"hook":"metadata","photos":[photo.inspect JSON]}` → `{"suggestions":[{photo, fields?, keywords?}]}` |
@@ -17,7 +17,7 @@ plug-ins are not supported.
 | Programs it starts (an installed tool, such as a raw converter) | `permissions.programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `{"hook":"program.end","run","program","status","code","tmpDir"}` when a run ends (see [Programs](#programs)) |
 | Custom metadata fields (Metadata panel ▸ Plug-in fields) | `metadataFields: [{key, label, type, …, readOnly?}]` | none: the values are the plug-in's namespace entries under each field's `key` (`ns.set {photo, key, value}`); the user edits them in the panel on every selected photo (`plugin.setField {ids}`; differing values read `< mixed >`), read-only ones only the plug-in sets. The plug-in's data stays the source; the app keeps an in-memory index of it (`Photo.plugin_fields`, never saved with the catalog, so its format is unchanged: rebuilt when a library opens and after every plug-in command and export hook): Library filter text search finds the values (`key:value` for one field), smart-album and filter rules test them as `plugin:<id>/<key>` (Rules ▸ Plug-in Fields; text operators, number fields compare as numbers: is ≥, is between, …), and XMP sidecars carry them as `lcpf:fields` (a bag of `{lcpf:plugin, lcpf:key, lcpf:value}`, namespace `<homepage>/ns/plugin-fields/1.0/`, from `homepage` in `brand.toml`) when metadata is saved, and give them back to the plug-in's data on import, Synchronize Folder and Read Metadata from File (installed, enabled plug-ins only; read-only fields included; values the field doesn't take are skipped) |
 
-Commands appear under File ▸ Plug-ins and run as the engine command `plugin.run {plugin, command, args?, ids?, source?}`. The UI, CLI,
+Commands appear under File ▸ Plug-ins and run as the engine command `plugin.run {plugin, command, args?, ids?, source?, wait?}`. The UI, CLI,
 control channel and MCP all use this command. `plugin.commands` lists the commands so front
 ends can build menus and dialogs. Dialog fields are `{key, label, type}`, where `type` is one of
 `text` (`default`), `number` (`min`, `max`, `default`), `bool` (`default`) or `choice`
@@ -238,6 +238,66 @@ covers the permission, `library.add` and `source`.
 
 The `program-tools` example (below) does the whole round trip.
 
+## Jobs: long commands with progress
+
+A command that works through many photos, or waits on a server, runs as a **job**: on a worker of
+its own, with a row in the activity stack, so the window stays responsive. This needs the host
+feature **`jobs`**: a command with `"job": true` in a manifest without `"requires": ["jobs"]` is a
+manifest error.
+
+```json
+"requires": ["jobs"],
+"commands": [{"id": "check", "label": "Check Photos", "job": true}]
+```
+
+- **Starting:** from its menu item, a shortcut or `plugin.run`, a job returns at once. Its
+  prepare step and dialog work as for any command. Its row is named after the command and the
+  plug-in ("Check Photos (Job Tools)"), of kind `pluginJob`, and shows wherever the app shows
+  activity (`activity.list` for agents). `plugin.run` answers
+  `{job: <activity id>, running: true, plugin, command}`.
+- **Progress:** the job reports through host calls that only a job may make (anything else gets an
+  error saying so):
+
+  | Host call | SDK | Effect |
+  |---|---|---|
+  | `job.progress {done, total, unit?}` | `job::progress(done, total)`, `job::progress_in(done, total, unit)` | the bar and its count; `total` 0 makes the bar sweep; `unit` is `count` (default), `bytes` or `percent` |
+  | `job.detail {text}` | `job::detail(text)` | the detail line: what it is working on, a name, not a sentence (cut at 200 characters) |
+  | `job.itemDone` | `job::item_done()` | one photo done |
+  | `job.itemFailed {why}` | `job::item_failed(why)` | one photo failed; `why` names it and the reason |
+  | `job.cancelled` | `job::cancelled()` | `true` once the user stopped the job; never fails |
+
+  A job that counts photos (`itemDone`, `itemFailed`) gets a batch row: the time left, the
+  failures, and a summary when it ends ("Check Photos (Job Tools): 24 done, 1 failed"), as the
+  app's own batches do.
+- **Continuing:** every call of a job has the per-call budget ([Limits](#limits)). A job that needs
+  longer replies `{"continue": state}` (SDK: `job::continue_with(state)`): the host calls it again,
+  in a fresh instance with a fresh budget, under the same row, with the same request plus
+  `"state": state` (`req.state()`; null on the first call). The next request, state included, must
+  fit in a message (16 MiB), or the job fails saying so. Between calls the plug-in's namespace data
+  is saved, so a quit or a crash loses only what the call then running wrote.
+- **Stopping:** the row's ✕, `activity.cancel {id}` and Quit Anyway stop a job between calls.
+  From then on `job.cancelled` answers `true`, every other host call fails with "cancelled", and a
+  reply asking to continue is not called again. A plug-in that checks `job.cancelled` can stop
+  cleanly and say how far it got in its reply. Quit asks first while a job runs.
+- **Ending:** the row goes. The last reply's `message` is shown (a toast in the desktop app); an
+  error is shown and written to the plug-in's log, like any failed call. A stopped job shows
+  nothing and logs "command cancelled".
+- **Busy:** while a job runs, other calls of the same plug-in (its other commands, its hooks) are
+  refused with an error that names the job.
+- **Reading, not writing:** a job may read the catalog (`catalog.query`, `photo.inspect`, …), and
+  read and write its own namespace (`ns.set`) and settings, files and the network as granted. It
+  may not change the catalog:
+  `metadata.setStandard` and `library.add` fail with "writes to the catalog aren't available in a
+  job yet", and `program.start` fails too. The catalog reads are answered by the window between
+  frames; a session with no window (headless CLI or MCP) refuses them, so run a job there with
+  **`plugin.run {…, wait: true}`**: it runs to its end on the caller's thread and returns the
+  job's last reply (a stopped job is an error, "cancelled"). Without `wait`, a one-shot CLI run
+  returns the job's id and exits, which ends the job with it. Sent to the running app (its control
+  channel, `mcp --connect`), `wait` holds the window until the job ends, and its ✕ can't be
+  clicked meanwhile: leave `wait` out there and follow the row (`activity.list`).
+
+The `job-tools` example works through the selected photos ten per call, reporting each one.
+
 ## Limits
 
 Each call runs in a fresh instance. It has an instruction budget, a wall-clock budget (time spent
@@ -255,13 +315,13 @@ hook that's never called, a host call that fails as an unknown method).
 
 - **The host's list** is `lcc_plugins::HOST_FEATURES`, and `plugin.list` returns it as
   `host: {abi, features}`. Everything the host had when `requires` arrived is the baseline and
-  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)). Every manifest field, permission group or host call added
+  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)). Every manifest field, permission group or host call added
   from then on gets a name there in the change that adds it, and its documentation here says
   which name to require.
 - **Names** are `[A-Za-z0-9._-]{1,64}`, at most 64, none repeated; anything else is a manifest
   error. A name is a minimum, never a maximum.
 - **Installing** a plug-in that requires a name the host doesn't know is refused, naming each
-  missing feature ("needs `jobs`, which this version of the app doesn't have"), and nothing is
+  missing feature ("needs `cache`, which this version of the app doesn't have"), and nothing is
   written. `plugin.inspectFile` lists them as `missing`, and the install dialog shows them with
   no Install button.
 - **An installed plug-in** that requires a name the host no longer knows (the app was
@@ -309,7 +369,7 @@ Imports (module `host`):
 
 ## Writing one in Rust
 
-The guest SDK is `sdk/plugin` (`lcc-plugin-sdk`). Six examples, each a complete plug-in:
+The guest SDK is `sdk/plugin` (`lcc-plugin-sdk`). Seven examples, each a complete plug-in:
 
 | Example | Shows |
 |---|---|
@@ -319,6 +379,7 @@ The guest SDK is `sdk/plugin` (`lcc-plugin-sdk`). Six examples, each a complete 
 | `sdk/examples/publish-folder` | a **publish service** "Local Gallery": copies each rendered photo into a gallery folder (one writable `fs` root), keeps an `index.json`, replaces on re-publish and deletes on removal |
 | `sdk/examples/program-tools` | **programs and adding files** (`requires: ["programs", "libraryAdd"]`): *Send to Converter* writes the selected photos' ids and originals, and the album it was started from, into the run's folder and starts a granted program on that list (`host::program_start`); its **`program.end`** hook reads the program's `result.txt` and adds each result to the library, stacked on its photo and in that album (`host::library_add`), or logs the exit code when the program failed |
 | `sdk/examples/keyword-picker` | **settings, remembered values and a prepare step** (`requires: ["settings"]`): *Apply Keyword…* adds (or, with a switch that is never remembered, removes) one keyword on the selected photos, picked from the keywords in use. Its prepare step offers the keywords used on at least *n* photos (a setting), most used first or A to Z (another), runs at once when only one qualifies and explains when none does |
+| `sdk/examples/job-tools` | **a job** (`requires: ["jobs"]`): *Check Photos* works through the selected photos ten per call on a worker, reads each from the catalog, counts it done or failed (`job::item_done`, `job::item_failed`), shows the photo it is on (`job::detail`) and its progress, goes on with `job::continue_with(next)`, and stops cleanly when the row's ✕ is clicked (`job::cancelled`) |
 | `sdk/examples/custom-fields` | **custom metadata fields** Client / Job / Usage (editable in the Metadata panel) and Delivered (read-only), a *Set Job Fields…* command for the selection, an export hook that marks exported photos delivered, and a metadata provider that suggests the client as a keyword |
 
 ```sh
@@ -403,7 +464,7 @@ The manifest fields:
 
 | `req.hook()` | Fields (`req.get(…)`, helpers) | Reply |
 |---|---|---|
-| `command` | `req.command()`, `req.arg(key)`, `req.selection()` (photo ids as strings), `req.source()` | anything; `message` is shown |
+| `command` | `req.command()`, `req.arg(key)`, `req.selection()` (photo ids as strings), `req.source()`; a job also `req.state()` | anything; `message` is shown; a job may reply `job::continue_with(state)` |
 | `command.prepare` | `req.command()`, `req.selection()`, `req.source()` | exactly one of `{dialog: {<key>: {options?, default?}}}`, `{run: args}`, `{message}`; host calls may only read |
 | `settings.prepare` | | `{fields: {<key>: {options?, default?}}}`, for fields with `prepare: true`; host calls may only read |
 | `export` | `req.files()` → `(path, photo)` of the written files | anything |
@@ -428,14 +489,15 @@ The manifest fields:
 | `host::program_start(program, args, files, bundle_id)` | `program.start` → `{run, tmpDir}` | the program in `programs` (granted by the user) |
 | `host::settings()`, `host::setting(key)`, `host::set_setting(key, value)` | `settings.get`, `settings.set {key, value}` | nothing (own settings) |
 | `host::log(line)` | `host.log` | nothing; Plug-in Manager ▸ Log |
+| `job::progress`, `job::progress_in`, `job::detail`, `job::item_done`, `job::item_failed`, `job::cancelled` | `job.*` ([Jobs](#jobs-long-commands-with-progress)) | a command with `job: true` |
 | `lcc_plugin_sdk::base64::{encode, decode}` | | |
 
 ### 5. Rules the host enforces
 
 - Every call runs in a **fresh instance**: keep state in the namespace, not in statics.
 - **Budgets per call**: instructions (fuel), wall-clock time (network time counts), 256 MiB of
-  memory, call depth, 16 MiB per message, 10 000 host calls, 8 MiB per file or HTTP body. Batch
-  work in chunks the user can re-run rather than one huge call.
+  memory, call depth, 16 MiB per message, 10 000 host calls, 8 MiB per file or HTTP body. Long
+  work is a [job](#jobs-long-commands-with-progress) that goes on with `{continue: state}`.
 - Everything a plug-in returns is **checked**: dialog values are coerced to their fields before
   the plug-in sees them, `metadataFields` values that no longer fit the field show as empty, and a
   reply that is not JSON, too large or late is an error. Nothing a plug-in does can crash the app.
@@ -463,7 +525,7 @@ The manifest fields:
 `plugin.list`, `plugin.inspectFile {path}`, `plugin.install {path, grant?, allowDowngrade?}`,
 `plugin.uninstall {id}`, `plugin.enable {id, enabled}`, `plugin.grant {id, grant}`,
 `plugin.log {id}`, `plugin.commands`, `plugin.prepare {plugin, command, ids?, source?}`,
-`plugin.run {plugin, command, args?, ids?, source?}`, `plugin.settings {id}`, `plugin.setSettings {id, values}`,
+`plugin.run {plugin, command, args?, ids?, source?, wait?}` (a job: `{job}` at once, or its result with `wait`), `plugin.settings {id}`, `plugin.setSettings {id, values}`,
 `plugin.suggestMetadata {ids?}`, `plugin.postExport {files}`, `plugin.publishServices`,
 `plugin.exportDestinations`, `plugin.exportTo {plugin, destination, files, args?}`,
 `plugin.metadataFields {id?}`, `plugin.setField {plugin, field, value, id?}`.
@@ -609,7 +671,17 @@ filters turn it (long edge 2048, cached per photo and stack; a change of the sta
 
 ## Not done yet
 
-- A plug-in call that has started can't be interrupted (✕ takes effect between plug-ins), and one
+- Jobs can't change the catalog yet: writes held for the job and applied as one undo step when it
+  ends come later. `job.progress` moves only a job's row, not an export hook's or a program wait's.
+- A job that keeps replying `continue` runs until it is stopped; nothing caps the number of its
+  calls. With `wait` from the CLI, only ending the process stops it.
+- While a job holds its plug-in busy, a `program.end` hook of that plug-in waits up to ten
+  minutes, as for any busy plug-in; a job still running then drops the hook, with a warning in the
+  app's log.
+- Quit Anyway stops a job between calls but doesn't wait for the call then running: the app
+  exits, and what that call wrote to its namespace is lost.
+- A plug-in call that has started can't be interrupted (✕ takes effect between plug-ins, and
+  between a job's calls), and one
   export's hooks run at a time: hooks for an export that ends while the previous ones still run
   are skipped with a message.
 - Network and filesystem permissions are fixed in the manifest: a WebDAV destination for "any
