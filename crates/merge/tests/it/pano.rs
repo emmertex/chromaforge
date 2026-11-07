@@ -304,3 +304,28 @@ fn the_lens_focal_length_sets_the_native_scale() {
     let mp = (res.image.width * res.image.height) as f64 / 1e6;
     assert!((mp / res.native_megapixels - 1.0).abs() < 0.02, "canvas {mp} MP for {} MP native", res.native_megapixels);
 }
+
+/// EXIF's focal length is input: an infinite, NaN or absurd one is no focal length at all. The
+/// stitch keeps its fitted scale and reports finite numbers, never an infinite canvas.
+#[test]
+fn a_hostile_exif_focal_length_is_ignored() {
+    let e = env();
+    let shots = [
+        Shot { yaw: -20.0, pitch: 0.0, roll: 0.0, gain: 1.0 },
+        Shot { yaw: 0.0, pitch: 0.0, roll: 0.0, gain: 1.0 },
+        Shot { yaw: 20.0, pitch: 0.0, roll: 0.0, gain: 1.0 },
+    ];
+    let rs: Vec<M3> = shots.iter().map(|s| rot(s.yaw, s.pitch, s.roll)).collect();
+    let frames = || -> Vec<Frame> { shots.iter().zip(&rs).map(|(s, r)| shoot(&e, r, 800.0, 1200, 900, s.gain)).collect() };
+    let opts = PanoOptions { projection: Projection::Spherical, ..Default::default() };
+    let plain = stitch(frames(), &opts, &no_progress).unwrap();
+    for bad in [f64::INFINITY, f64::NAN, 1e300] {
+        let mut fs = frames();
+        for frame in &mut fs {
+            frame.metadata.focal_length_35mm = Some(bad);
+        }
+        let res = stitch(fs, &opts, &no_progress).unwrap();
+        assert!(res.native_megapixels.is_finite() && res.focal.is_finite(), "{bad}: {} MP, focal {}", res.native_megapixels, res.focal);
+        assert_eq!((res.image.width, res.image.height), (plain.image.width, plain.image.height), "{bad} is no focal length");
+    }
+}
