@@ -267,12 +267,54 @@ fn the_settings_round_trip_app_wide_and_per_library() {
     assert_eq!(s.prep_settings().ahead(Mode::Culling), 0);
     assert_eq!(s.prep.app.library.ahead, 10, "the app-wide ones kept in the store");
     assert_eq!(s.prep.app.library.eye_ahead, 3);
+    assert!(s.execute("prefs.setBackgroundPrep", &json!({"reset": true, "settings": {"culling": {"ahead": 3}}})).is_err());
+    assert_eq!(s.prep_settings().culling.ahead, 0, "reset with valid settings keeps the library setting");
+    assert!(s.execute("prefs.setBackgroundPrep", &json!({"reset": true, "settings": 3})).is_err());
+    assert_eq!(s.prep_settings().culling.ahead, 0, "invalid reset keeps the library setting");
     s.execute("prefs.setBackgroundPrep", &json!({"reset": true})).unwrap();
     assert!(s.prep.library.is_none());
     assert_eq!(s.prep_settings().culling.ahead, 5, "back to the app-wide settings");
     assert_eq!(s.prep_settings().library.ahead, 10);
     assert_eq!(s.prep_settings().scope(Mode::Library), Scope::All);
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// `library` and `reset` that aren't true or false, and an unknown setting, are errors that
+/// leave the app-wide and the library's own settings as they were.
+#[test]
+fn background_prep_flags_must_be_booleans() {
+    let root = temp_dir("flags");
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("lib"), false).unwrap();
+    s.execute("prefs.setBackgroundPrep", &json!({"settings": {"culling": {"ahead": 2}}})).unwrap();
+    s.execute("prefs.setBackgroundPrep", &json!({"library": true, "settings": {"culling": {"ahead": 1}}})).unwrap();
+    let before = s.execute("prefs.backgroundPrep", &json!({})).unwrap();
+    for p in [
+        json!({"library": "yes", "settings": {"culling": {"ahead": 4}}}),
+        json!({"library": 1, "settings": {"culling": {"ahead": 4}}}),
+        json!({"reset": "true"}),
+        json!({"reset": 1}),
+        json!({"settings": {"culling": {"ahead": 4}, "unknown": true}}),
+        json!({"library": true, "settings": {"develop": {"ahead": 0, "unknown": true}}}),
+    ] {
+        assert!(s.execute("prefs.setBackgroundPrep", &p).is_err(), "{p}");
+        let after = s.execute("prefs.backgroundPrep", &json!({})).unwrap();
+        assert_eq!(after["app"], before["app"], "{p} keeps the app-wide settings");
+        assert_eq!(after["library"], before["library"], "{p} keeps the library's own settings");
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Resetting a library's settings with no library open is an error and leaves the app-wide
+/// settings as they were.
+#[test]
+fn background_prep_reset_needs_an_open_library() {
+    let mut s = Session::new();
+    s.execute("prefs.setBackgroundPrep", &json!({"settings": {"culling": {"ahead": 2}}})).unwrap();
+    assert!(s.execute("prefs.setBackgroundPrep", &json!({"reset": true})).is_err());
+    let r = s.execute("prefs.backgroundPrep", &json!({})).unwrap();
+    assert_eq!(r["app"]["culling"]["ahead"], 2, "{r}");
+    assert_eq!(r["own"], false, "{r}");
 }
 
 /// Photos whose settings changed while they were not on screen (Auto Sync, Sync, paste, presets)
