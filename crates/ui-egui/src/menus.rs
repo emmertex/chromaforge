@@ -2814,12 +2814,20 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     parts.push(msg);
                 }
                 // Show the new presets: Develop's left column already lists them when it is shown,
-                // so they stay there, unfolded (issue #469); otherwise the presets column opens.
-                let in_left_column = app.ui.module == crate::module::ModuleId::Develop && crate::module::edge_visible(app, crate::module::Edge::Left);
+                // so they stay there, unfolded (issue #469); with that column hidden, the presets
+                // column opens. From another module the panel is unfolded for Develop's next visit
+                // and the column stays closed: Develop draws it in place of its Edit panel, and a
+                // visit that starts with it has the presets and no sliders (issue #875).
+                let in_develop = app.ui.module == crate::module::ModuleId::Develop;
+                let in_left_column = in_develop && crate::module::edge_visible(app, crate::module::Edge::Left);
                 if n > 0 && in_left_column {
                     crate::panels::classic::set_open_with_key(app, crate::module::PanelId::Presets, crate::panels::presets::IN_COLUMN_KEY, true);
-                } else if n > 0 {
+                } else if n > 0 && in_develop {
                     app.ui.presets = true;
+                } else if n > 0 && app.ui.sidebar_section_collapsed(crate::panels::presets::IN_COLUMN_KEY) {
+                    // unfolded directly: Solo Mode folds the other panels of the module on screen,
+                    // and this one is not among them
+                    app.ui.toggle_sidebar_section(crate::panels::presets::IN_COLUMN_KEY);
                 }
             }
             let mut msg = parts.join(" · ");
