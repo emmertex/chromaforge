@@ -108,7 +108,8 @@ fn sdr_rendition_rolls_highlights_off_instead_of_clipping() {
     };
     assert_eq!(distinct(&old), 1, "SDR edit: flat white past its clip point");
     assert!(distinct(&new) > 10, "HDR edit's SDR rendition keeps gradation: {:?}", &new[first_clip..]);
-    assert!(new.windows(2).all(|p| p[1] >= p[0]), "monotone");
+    // (up to the one level the 8-bit dither moves a pixel by)
+    assert!(new.windows(2).all(|p| u16::from(p[1]) + 1 >= u16::from(p[0])), "monotone");
     // SDR edits are untouched: no rolloff without HDR, whatever a damaged field says
     let mut damaged = sdr.clone();
     damaged.hdr.rolloff_peak = f32::NAN;

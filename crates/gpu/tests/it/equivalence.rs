@@ -2011,3 +2011,29 @@ fn cached_mask_planes_match_uncached() {
     s.masks[1].visible = false;
     step(&s, "hidden mask");
 }
+
+/// Process V8's 8-bit dither (adapted from upstream #3509) lands on the same pixels on both, also in
+/// a zoomed window off the 8×8 grid: out of phase, about half the pixels of a gradient would differ.
+#[test]
+fn dithered_gradients_match_in_phase() {
+    if !gpu() {
+        return;
+    }
+    let (w, h) = (512, 64);
+    let src = Arc::new(Rgb32f::from_fn(w, h, |x, _| {
+        let v = 0.16 + 0.03 * x as f32 / (w - 1) as f32;
+        [v, v, v]
+    }));
+    let s = DevelopSettings { process: Process::V8.version(), ..DevelopSettings::default() };
+    let window = lcc_pipeline::PixelWindow { x: 77, y: 13, w: 101, h: 37 };
+    for req in [RenderRequest::fit(w, h), RenderRequest { window: Some(window), ..RenderRequest::fit(w, h) }] {
+        let cpu = render(&src, &SourceInfo::default(), &s, &req).image;
+        let gpu =
+            lcc_gpu::render(&src, &SourceInfo::default(), &s, &req, None).unwrap_or_else(|| panic!("gpu render ({:?})", lcc_gpu::last_fallback()));
+        assert_eq!((cpu.width, cpu.height), (gpu.image.width, gpu.image.height));
+        let differ = cpu.data.iter().zip(&gpu.image.data).filter(|(a, b)| a[1] != b[1]).count();
+        let share = differ as f64 / cpu.data.len() as f64;
+        eprintln!("dithered gradient ({:?}): {:.2} % of pixels differ", req.window, share * 100.0);
+        assert!(share < 0.05, "{:.1} % of the pixels differ: the dither is out of phase", share * 100.0);
+    }
+}
