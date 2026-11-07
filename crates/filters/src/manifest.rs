@@ -116,11 +116,55 @@ pub struct Manifest {
     /// is dropped (no header).
     #[serde(skip)]
     pub header: Option<Header>,
+    /// Headings the host shows the parameters under (`"sections": [{"label": "Tone", "params":
+    /// ["exposure", …], "collapsed": false}, …]`, an ABI v1.1 proposal), in order. Read by
+    /// [`Manifest::parse`]; a section without a printable 1-64 character label or without a
+    /// parameter of the manifest is dropped, a parameter named twice stays in the first section,
+    /// and parameters in no section come first. Hosts without the field show a flat list.
+    #[serde(skip)]
+    pub sections: Vec<ParamSection>,
     /// A square icon the host may show for the filter (`"icon": "<svg…>"`, drawn on the host's own
     /// background, so it suits dark and light themes). Read by [`Manifest::parse`]; a picture that
     /// isn't an SVG document of at most [`MAX_HEADER_BYTES`] is dropped (the host draws its own).
     #[serde(skip)]
     pub icon: Option<String>,
+}
+
+/// Most parameter sections a manifest may declare (see [`Manifest::sections`]).
+pub const MAX_SECTIONS: usize = 16;
+
+/// A heading and the parameters under it (see [`Manifest::sections`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParamSection {
+    pub label: String,
+    pub params: Vec<String>,
+    /// Shown folded until the user opens it.
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
+/// `v` as the parameter sections of a manifest with parameters `params` (see [`Manifest::sections`]).
+fn param_sections(v: Option<&Value>, params: &[(String, ParamSpec)]) -> Vec<ParamSection> {
+    let Some(list) = v.and_then(Value::as_array) else { return Vec::new() };
+    let printable = |l: &str| l.chars().count() <= 64 && l.chars().all(|c| !c.is_control() && !hidden_format(c)) && l.chars().any(visible);
+    let mut placed: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for sec in list.iter().take(MAX_SECTIONS) {
+        let Some(label) = sec.get("label").and_then(Value::as_str).map(str::trim).filter(|l| printable(l)) else { continue };
+        let Some(names) = sec.get("params").and_then(Value::as_array) else { continue };
+        let mut mine = Vec::new();
+        for n in names.iter().filter_map(Value::as_str) {
+            if params.iter().any(|(k, _)| k == n) && !placed.contains(&n) {
+                placed.push(n);
+                mine.push(n.to_string());
+            }
+        }
+        if mine.is_empty() {
+            continue;
+        }
+        out.push(ParamSection { label: label.to_string(), params: mine, collapsed: sec.get("collapsed").and_then(Value::as_bool).unwrap_or(false) });
+    }
+    out
 }
 
 /// The largest header SVG kept (a logo drawn as paths is a few kilobytes).
@@ -235,6 +279,7 @@ impl Manifest {
         let raw: Value = serde_json::from_str(text).map_err(|e| Error::Manifest(format!("manifest: {e}")))?;
         man.header = raw.get("header").and_then(Header::parse);
         man.icon = svg_document(raw.get("icon"));
+        man.sections = param_sections(raw.get("sections"), &man.params);
         if let Some(ps) = raw.get("params").and_then(Value::as_object) {
             man.labels = man
                 .params
@@ -643,6 +688,26 @@ mod tests {
         }
         let odd = Manifest::parse(br#"{"id":"a.b","name":"N","kind":"filter","stage":7}"#).unwrap();
         assert_eq!(odd.stage, None, "an unknown stage is ignored, not an error");
+        assert!(odd.sections.is_empty());
+    }
+
+    #[test]
+    fn sections_group_known_parameters_once_and_drop_the_rest() {
+        let m = Manifest::parse(
+            br#"{"id":"a.b","name":"N","kind":"filter",
+                "params":{"a":{"type":"bool"},"b":{"type":"bool"},"c":{"type":"bool"},"d":{"type":"bool"}},
+                "sections":[{"label":"Tone","params":["a","b","nope"]},
+                            {"label":"Again","params":["b"]},
+                            {"label":"\u202Eevil","params":["c"]},
+                            {"label":"Colour","params":["c"],"collapsed":true},
+                            "junk", {"params":["d"]}, {"label":"Empty","params":[]}]}"#,
+        )
+        .unwrap();
+        let got: Vec<(&str, Vec<&str>, bool)> =
+            m.sections.iter().map(|s| (s.label.as_str(), s.params.iter().map(String::as_str).collect(), s.collapsed)).collect();
+        assert_eq!(got, vec![("Tone", vec!["a", "b"], false), ("Colour", vec!["c"], true)]);
+        let none = Manifest::parse(br#"{"id":"a.b","name":"N","kind":"filter","sections":{"label":"x"}}"#).unwrap();
+        assert!(none.sections.is_empty(), "not a list: no sections, not an error");
     }
 
     #[test]

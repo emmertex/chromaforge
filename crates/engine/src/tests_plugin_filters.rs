@@ -14,15 +14,21 @@ pub(crate) fn invert_module(id: &str) -> Vec<u8> {
 
 /// A filter module with `manifest`; `analysis`: it also exports `pc_analyze` returning that JSON.
 pub(crate) fn module(manifest: &str, analysis: Option<&str>) -> Vec<u8> {
-    let analyze = match analysis {
+    module_with_merge(manifest, analysis, None)
+}
+
+/// [`module`], and with `merged` it also exports `pc_merge` returning that JSON.
+pub(crate) fn module_with_merge(manifest: &str, analysis: Option<&str>, merged: Option<&str>) -> Vec<u8> {
+    let export = |name: &str, at: usize, json: Option<&str>| match json {
         Some(a) => format!(
-            r#"(data (i32.const 8192) "{a}")
-  (func (export "pc_analyze") (param i32 i32 i32 i32 i32 i32 i32 i32) (result i64) (i64.or (i64.shl (i64.const {len}) (i64.const 32)) (i64.const 8192)))"#,
+            r#"(data (i32.const {at}) "{a}")
+  (func (export "{name}") (param i32 i32 i32 i32 i32 i32 i32 i32) (result i64) (i64.or (i64.shl (i64.const {len}) (i64.const 32)) (i64.const {at})))"#,
             a = a.replace('"', "\\\""),
             len = a.len()
         ),
         None => String::new(),
     };
+    let analyze = format!("{}\n  {}", export("pc_analyze", 8192, analysis), export("pc_merge", 12288, merged));
     let src = format!(
         r#"(module
   (memory (export "memory") 1)
@@ -243,4 +249,86 @@ fn analyze_runs_in_the_background_and_lands_one_history_step() {
     let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": uid, "wait": true})).unwrap();
     assert_eq!(r["analysis"]["base"][0], 0.8);
     s.execute("plugin.uninstall", &json!({"id": "test.engine.measure"})).unwrap();
+}
+
+#[test]
+fn a_batch_measures_each_selected_photo_and_a_roll_shares_one_measurement() {
+    let mut s = Session::with_demo();
+    let m = r#"{"id":"test.engine.roll","name":"Roll","kind":"filter"}"#;
+    install_bytes(&mut s, "test.engine.roll", &module_with_merge(m, Some(r#"{"base":[0.8,0.5,0.3]}"#), Some(r#"{"base":[0.7,0.5,0.3]}"#)));
+    let info = s.execute("plugin.list", &json!({})).unwrap();
+    let me = info["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.engine.roll").unwrap().clone();
+    assert_eq!((me["analyze"].as_bool(), me["merge"].as_bool()), (Some(true), Some(true)));
+    let ids: Vec<u64> = s.catalog.photos().take(3).map(|p| p.id.0).collect();
+    assert_eq!(ids.len(), 3);
+    s.execute("library.select", &json!({"ids": ids})).unwrap();
+    let uid = s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.roll", "params": {}})).unwrap()["uid"].as_u64().unwrap();
+    let active = s.active().unwrap();
+    assert_eq!(active.0, ids[0]);
+
+    // the other photos have no entry yet: a batch names the first one missing
+    let err = s.execute("develop.pluginFilter.analyze", &json!({"uid": uid, "ids": ids, "wait": true})).unwrap_err().to_string();
+    assert!(err.contains(&format!("photo {}", ids[1])) && err.contains("applyTo"), "{err}");
+
+    // Apply to Selected: the entry (parameters, stage, on/off) lands on the others, one History step
+    s.execute("develop.pluginFilter.set", &json!({"uid": uid, "stage": "source", "enabled": false})).unwrap();
+    let u0 = s.undo.len();
+    let r = s.execute("develop.pluginFilter.applyTo", &json!({"uid": uid})).unwrap();
+    assert_eq!(r["changed"], 2);
+    assert_eq!(s.undo.len(), u0 + 1);
+    for id in &ids[1..] {
+        let d = s.develop_of(crate::catalog::PhotoId(*id)).unwrap();
+        let e = d.plugin_filters.iter().find(|f| f.plugin == "test.engine.roll").expect("applied");
+        assert!(!e.enabled && e.stage == lcc_develop::FilterStage::Source && e.analysis.is_none());
+    }
+    // applied again with a measurement: replaced in place, uid kept
+    s.execute("develop.pluginFilter.setAnalysis", &json!({"uid": uid, "analysis": {"base": [1, 1, 1]}})).unwrap();
+    s.execute("develop.pluginFilter.applyTo", &json!({"uid": uid, "ids": [ids[1]]})).unwrap();
+    let d1 = s.develop_of(crate::catalog::PhotoId(ids[1])).unwrap();
+    assert_eq!(d1.plugin_filters.len(), 1);
+    assert_eq!(d1.plugin_filters[0].analysis, Some(json!({"base": [1, 1, 1]})));
+    // …and without it, the photo's own measurement stays
+    s.execute("develop.pluginFilter.applyTo", &json!({"uid": uid, "ids": [ids[1]], "measurement": false})).unwrap();
+    let d1 = s.develop_of(crate::catalog::PhotoId(ids[1])).unwrap();
+    assert_eq!(d1.plugin_filters[0].analysis, Some(json!({"base": [1, 1, 1]})));
+
+    // a batch: each photo gets its own measurement (here the same module output)
+    let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": uid, "ids": ids})).unwrap();
+    assert_eq!(r["started"], true);
+    assert!(s.plugin_analyzing(crate::catalog::PhotoId(ids[2]), 1));
+    assert!(s.activity.list().iter().any(|t| t.kind == "pluginAnalyze" && t.label.contains("3 photos")), "{:?}", s.activity.list());
+    pump_until_idle(&mut s);
+    for id in &ids {
+        let d = s.develop_of(crate::catalog::PhotoId(*id)).unwrap();
+        assert_eq!(d.plugin_filters[0].analysis, Some(json!({"base": [0.8, 0.5, 0.3]})), "photo {id}");
+    }
+    assert!(s.plugin_analyze_error(crate::catalog::PhotoId(ids[2]), 1).is_none());
+
+    // a roll: one merged measurement on every photo, marked with how many it came from
+    let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": uid, "ids": ids, "roll": true, "wait": true})).unwrap();
+    assert_eq!(r["analysis"], json!({"base": [0.7, 0.5, 0.3], "_roll": 3}));
+    assert_eq!(r["analyses"].as_array().unwrap().len(), 3);
+    for id in &ids {
+        let d = s.develop_of(crate::catalog::PhotoId(*id)).unwrap();
+        assert_eq!(d.plugin_filters[0].analysis.as_ref().unwrap()["_roll"], 3, "photo {id}");
+    }
+    // a cancelled roll stores nothing new
+    s.execute("develop.pluginFilter.setAnalysis", &json!({"uid": uid, "analysis": null})).unwrap();
+    s.execute("develop.pluginFilter.analyze", &json!({"uid": uid, "ids": ids, "roll": true})).unwrap();
+    let task = s.activity.list().into_iter().find(|t| t.kind == "pluginAnalyze").unwrap();
+    s.activity.cancel(task.id).unwrap();
+    pump_until_idle(&mut s);
+    assert!(s.develop_of(active).unwrap().plugin_filters[0].analysis.is_none());
+
+    // a module without pc_merge can't do a roll
+    let m2 = r#"{"id":"test.engine.noroll","name":"NoRoll","kind":"filter"}"#;
+    install_bytes(&mut s, "test.engine.noroll", &module(m2, Some(r#"{"b":1}"#)));
+    let uid2 = s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.noroll"})).unwrap()["uid"].as_u64().unwrap();
+    let err = s.execute("develop.pluginFilter.analyze", &json!({"uid": uid2, "roll": true})).unwrap_err().to_string();
+    assert!(err.contains("unsupported"), "{err}");
+    // hostile: ids that aren't photos
+    assert!(s.execute("develop.pluginFilter.analyze", &json!({"uid": uid, "ids": [u64::MAX - 1]})).is_err());
+    assert!(s.execute("develop.pluginFilter.analyze", &json!({"uid": uid, "ids": "3"})).is_err());
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.roll"})).unwrap();
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.noroll"})).unwrap();
 }

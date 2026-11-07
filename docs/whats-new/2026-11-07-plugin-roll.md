@@ -1,0 +1,3 @@
+### Plug-in filters: a whole roll at once
+- Develop ▸ Plug-in Filters can put a filter on every selected photo (*Apply to N*, with its settings and measurement), measure the selected photos one after the other (Measure ▾), or measure them together as a roll when the plug-in can (*Measure N Selected as a Roll*): one measurement for the whole roll, so every frame is converted alike and keeps its own exposure. The line under the tools says whether the photo is measured, and as part of which roll.
+- A filter's controls can come under headings the plug-in declares (fold them with the arrow), and names of its menus and switches line up with the sliders'.

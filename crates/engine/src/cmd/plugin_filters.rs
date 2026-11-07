@@ -258,15 +258,18 @@ fn set_analysis(s: &mut Session, p: &Value) -> Result<Value> {
 /// Long edge of the whole frame `pc_analyze` measures.
 const ANALYZE_EDGE: usize = 1024;
 
-/// What a measurement thread sends back: the analysis, or why there is none.
+/// What a measurement thread sends back for one photo: the analysis, or why there is none.
 type Measured = std::result::Result<Value, String>;
 
-/// One measurement running in the background.
+/// A measurement job running in the background: one photo, or several (each measured on its own,
+/// or measured together as a roll: one merged measurement for all of them).
 pub(crate) struct Analysis {
-    photo: PhotoId,
-    uid: u32,
+    /// The entries measured, as (photo, uid).
+    photos: Vec<(PhotoId, u32)>,
+    /// How many of them have reported.
+    landed: usize,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    rx: std::sync::mpsc::Receiver<Measured>,
+    rx: std::sync::mpsc::Receiver<(PhotoId, u32, Measured)>,
     /// The activity row, kept while the job runs.
     _task: crate::activity::TaskGuard,
 }
@@ -299,6 +302,25 @@ fn measure(
     Ok(filter.analyze_rgb(&data, w, h, &params, cancel).map_err(|e| e.to_string())?.unwrap_or(Value::Null))
 }
 
+/// The key a roll measurement carries: how many photos it was made from (host-reserved, like `_analysis`).
+pub const ROLL_KEY: &str = "_roll";
+
+/// One measurement of `frames` (the plug-in's `pc_merge` of each one's analysis), marked with
+/// [`ROLL_KEY`] = their number. The parameters are the first entry's.
+fn merge(filter: &lcc_filters::Filter, entry: &PluginFilter, frames: &[Value], cancel: &std::sync::atomic::AtomicBool) -> Measured {
+    let mut entry = entry.clone();
+    entry.analysis = None;
+    let params = lcc_pipeline::plugin_filters::filter_params(&entry, "linear");
+    let merged = filter.merge_analyses(frames, &params, cancel).map_err(|e| e.to_string())?;
+    match merged {
+        Some(Value::Object(mut m)) => {
+            m.insert(ROLL_KEY.into(), json!(frames.len()));
+            Ok(Value::Object(m))
+        }
+        _ => Err("the plug-in made nothing of the roll".into()),
+    }
+}
+
 /// Stores `analysis` on entry `uid` of `photo` (one History step); false when the entry is gone.
 fn store_analysis(s: &mut Session, photo: PhotoId, uid: u32, analysis: Value) -> Result<bool> {
     let Some(d) = s.develop_of(photo) else { return Ok(false) };
@@ -310,6 +332,44 @@ fn store_analysis(s: &mut Session, photo: PhotoId, uid: u32, analysis: Value) ->
     Ok(true)
 }
 
+/// One photo of a measurement job: its entry (the plug-in's first), settings and source.
+struct Frame {
+    photo: PhotoId,
+    entry: PluginFilter,
+    settings: DevelopSettings,
+    source: crate::media::SourceRef,
+}
+
+/// The photos a measurement acts on: `ids` as given, else the active photo. Each must be in the
+/// library and carry an entry of plug-in `plugin`; a photo without one is an error that names it,
+/// so a roll isn't measured with a frame missing.
+fn frames(s: &mut Session, p: &Value, c: &str, active: PhotoId, plugin: &str, name: &str) -> Result<Vec<Frame>> {
+    let ids = super::photo_ids(p, c)?.unwrap_or_else(|| vec![active]);
+    if ids.is_empty() {
+        return Err(bad(c, "`ids` names no photo"));
+    }
+    if ids.len() > lcc_filters::MAX_MERGE {
+        return Err(bad(c, format!("at most {} photos at a time", lcc_filters::MAX_MERGE)));
+    }
+    let mut out: Vec<Frame> = Vec::with_capacity(ids.len());
+    for id in ids {
+        if out.iter().any(|f| f.photo == id) {
+            continue;
+        }
+        let photo = s.catalog.photo(id).cloned().ok_or_else(|| bad(c, format!("photo {} is not in the library", id.0)))?;
+        let settings = s.develop_of(id).map(|d| (*d).clone()).unwrap_or_default();
+        let entry = settings
+            .plugin_filters
+            .iter()
+            .find(|f| f.plugin == plugin)
+            .cloned()
+            .ok_or_else(|| bad(c, format!("photo {} has no {name} filter: apply it there first (develop.pluginFilter.applyTo)", id.0)))?;
+        let source = s.media.source_ref(&photo, crate::media::SourceLevel::Preview);
+        out.push(Frame { photo: id, entry, settings, source });
+    }
+    Ok(out)
+}
+
 fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "develop.pluginFilter.analyze";
     let u = uid(p, c)?;
@@ -319,55 +379,177 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     if !filter.has_analyze() {
         return Err(bad(c, format!("unsupported: plug-in {:?} has no whole-image measurement (pc_analyze)", f.plugin)));
     }
-    if s.filter_analyses.running.iter().any(|a| a.photo == id && a.uid == u) {
+    let roll = p.get("roll").and_then(Value::as_bool).unwrap_or(false);
+    if roll && !filter.has_merge() {
+        return Err(bad(c, format!("unsupported: plug-in {:?} can't measure a roll (no pc_merge)", f.plugin)));
+    }
+    let frames = frames(s, p, c, id, &f.plugin, &f.name)?;
+    let keys: Vec<(PhotoId, u32)> = frames.iter().map(|fr| (fr.photo, fr.entry.uid)).collect();
+    if keys.iter().any(|k| s.plugin_analyzing(k.0, k.1)) {
         return Ok(json!({ "started": false, "running": true }));
     }
-    s.filter_analyses.failed.retain(|(ph, x, _)| !(*ph == id && *x == u));
+    s.filter_analyses.failed.retain(|(ph, x, _)| !keys.contains(&(*ph, *x)));
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let task = s.activity.start("pluginAnalyze", &format!("Measuring {}", f.name), crate::activity::Cancel::Flag(cancel.clone()));
-    let photo = s.catalog.photo(id).cloned().ok_or_else(|| bad(c, "no active photo"))?;
-    let source = s.media.source_ref(&photo, crate::media::SourceLevel::Preview);
+    let label = match (frames.len(), roll) {
+        (1, _) => format!("Measuring {}", f.name),
+        (n, false) => format!("Measuring {} on {n} photos", f.name),
+        (n, true) => format!("Measuring {} as a roll of {n}", f.name),
+    };
+    let task = s.activity.start("pluginAnalyze", &label, crate::activity::Cancel::Flag(cancel.clone()));
+    let (tx, rx) = std::sync::mpsc::channel::<(PhotoId, u32, Measured)>();
     let job = {
-        let (filter, cancel) = (filter.clone(), cancel.clone());
-        move || -> Measured {
-            let src = source.load_source()?;
-            measure(&filter, &f, &src.image, &d, &cancel)
+        let (filter, cancel, tx) = (filter.clone(), cancel.clone(), tx.clone());
+        let progress = task.handle();
+        move || {
+            let total = frames.len() as u64;
+            let mut measured: Vec<Value> = Vec::with_capacity(frames.len());
+            for (i, fr) in frames.iter().enumerate() {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                let r = fr.source.load_source().and_then(|src| measure(&filter, &fr.entry, &src.image, &fr.settings, &cancel));
+                progress.progress(i as u64 + 1, total);
+                if !roll {
+                    let _ = tx.send((fr.photo, fr.entry.uid, r));
+                    continue;
+                }
+                match r {
+                    Ok(v) if v.is_object() => measured.push(v),
+                    Ok(_) => return fail_all(&tx, &frames, "the plug-in measured nothing on one photo".into()),
+                    Err(e) => return fail_all(&tx, &frames, e),
+                }
+            }
+            if roll {
+                let first = frames.first().map(|fr| &fr.entry);
+                let merged = first.map_or_else(|| Err("no photos".into()), |e| merge(&filter, e, &measured, &cancel));
+                for fr in &frames {
+                    let _ = tx.send((fr.photo, fr.entry.uid, merged.clone()));
+                }
+            }
         }
     };
     if wait {
-        let analysis = job().map_err(|e| bad(c, e))?;
+        job();
+        // the job's own sender goes with it: the receiver below ends once everything is read
+        drop(job);
+        drop(tx);
         drop(task);
-        store_analysis(s, id, u, analysis.clone())?;
-        return Ok(json!({ "analysis": analysis }));
+        let mut analysis = Value::Null;
+        let mut analyses = Vec::new();
+        for (photo, uid, r) in rx.iter() {
+            let v = r.map_err(|e| bad(c, e))?;
+            if photo == id {
+                analysis = v.clone();
+            }
+            store_analysis(s, photo, uid, v.clone())?;
+            analyses.push(json!({"photo": photo.0, "uid": uid, "analysis": v}));
+        }
+        return Ok(json!({ "analysis": analysis, "analyses": analyses }));
     }
-    let (tx, rx) = std::sync::mpsc::channel();
-    let spawned = std::thread::Builder::new().name("plugin-analyze".into()).spawn(move || {
-        let _ = tx.send(job());
-    });
+    let spawned = std::thread::Builder::new().name("plugin-analyze".into()).spawn(job);
     if let Err(e) = spawned {
         return Err(bad(c, format!("can't start the measurement: {e}")));
     }
-    s.filter_analyses.running.push(Analysis { photo: id, uid: u, cancel, rx, _task: task });
+    s.filter_analyses.running.push(Analysis { photos: keys, landed: 0, cancel, rx, _task: task });
     Ok(json!({ "started": true }))
+}
+
+/// Reports `error` for every frame of a roll: a roll with one frame unmeasured has no measurement.
+fn fail_all(tx: &std::sync::mpsc::Sender<(PhotoId, u32, Measured)>, frames: &[Frame], error: String) {
+    for fr in frames {
+        let _ = tx.send((fr.photo, fr.entry.uid, Err(error.clone())));
+    }
+}
+
+/// `develop.pluginFilter.applyTo {uid, ids?, measurement?: true}`: the active photo's entry `uid`
+/// (its parameters, stage, on/off and, unless `measurement: false`, its measurement) goes onto
+/// the other photos (`ids`, else the selection): a photo with an entry of the same plug-in gets
+/// that entry replaced in place (its uid kept), any other gets it appended. One History step.
+fn apply_to(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "develop.pluginFilter.applyTo";
+    let u = uid(p, c)?;
+    let (id, d) = active(s, c)?;
+    let f = d.plugin_filters.get(position(&d, u, c)?).cloned().ok_or_else(|| bad(c, "no such plug-in filter"))?;
+    let with_measurement = p.get("measurement").and_then(Value::as_bool).unwrap_or(true);
+    let ids = super::photo_ids(p, c)?.unwrap_or_else(|| s.selected());
+    let mut ops = Vec::new();
+    let mut seen: Vec<PhotoId> = Vec::new();
+    for x in ids.into_iter().filter(|x| *x != id) {
+        if seen.contains(&x) {
+            continue;
+        }
+        seen.push(x);
+        let Some(dd) = s.develop_of(x) else { continue };
+        let mut nd = (*dd).clone();
+        let mut entry = f.clone();
+        if !with_measurement {
+            entry.analysis = None;
+        }
+        match nd.plugin_filters.iter_mut().find(|e| e.plugin == f.plugin) {
+            Some(there) => {
+                entry.uid = there.uid;
+                if !with_measurement {
+                    entry.analysis = there.analysis.take();
+                }
+                *there = entry;
+            }
+            None => {
+                if nd.plugin_filters.len() >= MAX_PLUGIN_FILTERS {
+                    return Err(bad(c, format!("photo {} already has {MAX_PLUGIN_FILTERS} plug-in filters", x.0)));
+                }
+                entry.uid = match nd.plugin_filters.iter().map(|e| e.uid).max() {
+                    Some(m) => m.checked_add(1).ok_or_else(|| bad(c, "no free uid"))?,
+                    None => 1,
+                };
+                nd.plugin_filters.push(entry);
+            }
+        }
+        ops.extend(s.develop_op(x, nd, &label(&f.name)));
+    }
+    let n = ops.len();
+    if n > 0 {
+        s.commit(&format!("{} › Apply to {n} photos", label(&f.name)), lcc_catalog::Op::Batch { ops })?;
+    }
+    Ok(json!({ "changed": n }))
 }
 
 impl Session {
     /// Takes in finished plug-in filter measurements (each stored as one History step) and drops
-    /// cancelled ones (nothing is stored). Cheap; the app calls it every frame. True when any landed.
+    /// cancelled ones (nothing more is stored). Cheap; the app calls it every frame. True when any landed.
     pub fn plugin_analyze_pump(&mut self) -> bool {
         use std::sync::mpsc::TryRecvError;
         let mut landed = Vec::new();
         let jobs = std::mem::take(&mut self.filter_analyses.running);
-        for a in jobs {
+        for mut a in jobs {
             if a.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 continue;
             }
-            match a.rx.try_recv() {
-                Err(TryRecvError::Empty) => self.filter_analyses.running.push(a),
-                Err(TryRecvError::Disconnected) => self.filter_analyses.failed.push((a.photo, a.uid, "the measurement stopped".into())),
-                Ok(Err(e)) => self.filter_analyses.failed.push((a.photo, a.uid, e)),
-                Ok(Ok(v)) => landed.push((a.photo, a.uid, v)),
+            loop {
+                match a.rx.try_recv() {
+                    Err(TryRecvError::Empty) => {
+                        self.filter_analyses.running.push(a);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        // the thread is gone: whatever it didn't report stopped
+                        for (photo, uid) in a.photos.iter().skip(a.landed) {
+                            self.filter_analyses.failed.push((*photo, *uid, "the measurement stopped".into()));
+                        }
+                        break;
+                    }
+                    Ok((photo, uid, Err(e))) => {
+                        a.landed += 1;
+                        self.filter_analyses.failed.push((photo, uid, e));
+                    }
+                    Ok((photo, uid, Ok(v))) => {
+                        a.landed += 1;
+                        landed.push((photo, uid, v));
+                    }
+                }
+                if a.landed >= a.photos.len() {
+                    break;
+                }
             }
         }
         self.filter_analyses.failed.truncate(64);
@@ -387,7 +569,7 @@ impl Session {
 
     /// Whether entry `uid` of `photo` is being measured.
     pub fn plugin_analyzing(&self, photo: PhotoId, uid: u32) -> bool {
-        self.filter_analyses.running.iter().any(|a| a.photo == photo && a.uid == uid)
+        self.filter_analyses.running.iter().any(|a| a.photos.contains(&(photo, uid)))
     }
 
     /// Why the last measurement of entry `uid` of `photo` failed, if it did.
@@ -398,7 +580,8 @@ impl Session {
 
 fn pump(s: &mut Session, _p: &Value) -> Result<Value> {
     s.plugin_analyze_pump();
-    let running: Vec<Value> = s.filter_analyses.running.iter().map(|a| json!({"photo": a.photo.0, "uid": a.uid})).collect();
+    let running: Vec<Value> =
+        s.filter_analyses.running.iter().flat_map(|a| a.photos.iter().skip(a.landed).map(|(p, u)| json!({"photo": p.0, "uid": u}))).collect();
     let failed: Vec<Value> = s.filter_analyses.failed.iter().map(|(p, u, e)| json!({"photo": p.0, "uid": u, "error": e})).collect();
     Ok(json!({ "running": running, "failed": failed }))
 }
@@ -447,9 +630,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "Measure Plug-in Filter on Photo",
             [],
             None,
-            "{uid, wait?: false} — runs the plug-in's whole-image measurement (pc_analyze) on the photo in the background (an activity row; `develop.pluginFilter.pump` stores it as one History step when done) → {started}; `wait: true` measures before returning → {analysis}. An `unsupported` error when the plug-in has none",
+            "{uid, ids?: [photo], roll?: false, wait?: false} — runs the plug-in's whole-image measurement (pc_analyze) in the background (an activity row; `develop.pluginFilter.pump` stores each as one History step when done) → {started}: on the active photo, or on every photo of `ids` (each needs an entry of the same plug-in; measured one by one, each getting its own measurement); `roll: true` measures them together (the plug-in's pc_merge of all of them, stored on each with `_roll`: their number). `wait: true` measures before returning → {analysis (the active photo's), analyses: [{photo, uid, analysis}]}. An `unsupported` error when the plug-in has no pc_analyze (or, for a roll, no pc_merge)",
             has_active,
             analyze
+        ),
+        cmd!(
+            "develop.pluginFilter.applyTo",
+            "Apply Plug-in Filter to Photos",
+            [],
+            None,
+            "{uid, ids?: [photo] (the selection), measurement?: true} — copies the active photo's entry (parameters, stage, on/off and its measurement unless `measurement: false`) onto the other photos: one with an entry of the same plug-in gets it replaced, any other gets it added → {changed}",
+            has_active,
+            apply_to
         ),
         cmd!(
             query "develop.pluginFilter.pump",

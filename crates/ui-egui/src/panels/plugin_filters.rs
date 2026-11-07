@@ -23,8 +23,20 @@ pub(crate) struct FilterPlugin {
     /// Parameter names in the manifest's order (`paramOrder`); keys of `params` it misses follow.
     pub order: Vec<String>,
     pub analyze: bool,
+    /// The plug-in can make one measurement of a roll (`pc_merge`).
+    pub merge: bool,
     /// The manifest has a header picture (`plugin.picture` gives it).
     pub header: bool,
+    /// The manifest's `sections`: headings and the parameters under each.
+    pub sections: Vec<ParamSection>,
+}
+
+/// A heading of a plug-in's controls as `plugin.list` gives it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ParamSection {
+    pub label: String,
+    pub params: Vec<String>,
+    pub collapsed: bool,
 }
 
 impl FilterPlugin {
@@ -60,7 +72,21 @@ pub(crate) fn filter_plugins(list: &Value) -> Vec<FilterPlugin> {
                     .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
                     .unwrap_or_default(),
                 analyze: p.get("analyze").and_then(Value::as_bool).unwrap_or(false),
+                merge: p.get("merge").and_then(Value::as_bool).unwrap_or(false),
                 header: p.get("header").and_then(Value::as_bool).unwrap_or(false),
+                sections: p
+                    .get("sections")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|sec| {
+                                let label = sec.get("label")?.as_str()?.to_string();
+                                let params = sec.get("params")?.as_array()?.iter().filter_map(Value::as_str).map(str::to_string).collect();
+                                Some(ParamSection { label, params, collapsed: sec.get("collapsed").and_then(Value::as_bool).unwrap_or(false) })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
         })
         .collect()
@@ -148,6 +174,8 @@ struct RowState<'a> {
     measure_error: Option<String>,
     warnings: Vec<&'a str>,
     header: Option<egui::TextureHandle>,
+    /// This photo, then the others selected with it (what a batch acts on); empty when alone.
+    selected: Vec<u64>,
 }
 
 fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
@@ -185,6 +213,10 @@ fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
             measure_error: photo.and_then(|p| app.session.plugin_analyze_error(p, f.uid)).map(str::to_string),
             warnings: mine,
             header,
+            selected: photo
+                .filter(|p| app.session.selection.ids.iter().any(|x| x != p))
+                .map(|p| std::iter::once(p.0).chain(app.session.selection.ids.iter().map(|x| x.0).filter(|x| *x != p.0)).collect())
+                .unwrap_or_default(),
         };
         ui.push_id(("pluginFilter", f.uid), |ui| row(ui, f, i, n, &st, &mut actions));
         inset(ui, |ui| ui.separator());
@@ -228,7 +260,10 @@ fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 fn row(ui: &mut egui::Ui, f: &PluginFilter, i: usize, n: usize, st: &RowState, out: &mut Vec<Action>) {
     let uid = f.uid;
     let plugin = st.plugin;
+    let t = crate::theme::Tokens::get(ui.ctx());
     inset(ui, |ui| {
+        // the title line: on/off, the plug-in's header picture (or its name), and at the right the
+        // stack's order and removal
         ui.horizontal(|ui| {
             let mut on = f.enabled;
             let r = ui.checkbox(&mut on, "");
@@ -236,65 +271,128 @@ fn row(ui: &mut egui::Ui, f: &PluginFilter, i: usize, n: usize, st: &RowState, o
             if r.changed() {
                 out.push(Action::Run("develop.pluginFilter.set", json!({"uid": uid, "enabled": on})));
             }
-            match &st.header {
-                // the plug-in's own header picture stands for its name
-                Some(tex) => {
-                    let r = ui.add(egui::Image::new(tex).max_height(HEADER_HEIGHT).max_width(ui.available_width())).on_hover_text(&f.name);
-                    crate::access::label(&r, &f.name);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("×").on_hover_text(tr("Remove")).clicked() {
+                    out.push(Action::Run("develop.pluginFilter.remove", json!({"uid": uid})));
                 }
-                None => {
-                    ui.label(RichText::new(&f.name).strong());
+                if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).on_hover_text(tr("Move Down")).clicked() {
+                    out.push(Action::Run("develop.pluginFilter.move", json!({"uid": uid, "index": i + 1})));
                 }
-            }
-            if plugin.is_none() {
-                ui.label(RichText::new(format!("⚠ {}", tr("not installed"))).color(WARN))
-                    .on_hover_text(tr("This filter's plug-in is not installed: it is skipped and its settings are kept."));
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tr("Stage")).strong()).on_hover_text(tr(
-                "Source: on the decoded raw, before white balance and tone (e.g. negative conversion). Display: after the develop adjustments.",
-            ));
-            let name = |s: FilterStage| match s {
-                FilterStage::Source => tr("Source"),
-                FilterStage::Display => tr("Display"),
-            };
-            egui::ComboBox::from_id_salt("stage").width(76.0).selected_text(name(f.stage)).show_ui(ui, |ui| {
-                for (s, key) in [(FilterStage::Source, "source"), (FilterStage::Display, "display")] {
-                    if ui.selectable_label(f.stage == s, name(s)).clicked() && f.stage != s {
-                        out.push(Action::Run("develop.pluginFilter.set", json!({"uid": uid, "stage": key})));
+                if ui.add_enabled(i > 0, egui::Button::new("▲").small()).on_hover_text(tr("Move Up")).clicked() {
+                    out.push(Action::Run("develop.pluginFilter.move", json!({"uid": uid, "index": i.saturating_sub(1)})));
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| match &st.header {
+                    // the plug-in's own header picture stands for its name
+                    Some(tex) => {
+                        let r = ui.add(egui::Image::new(tex).max_height(HEADER_HEIGHT).max_width(ui.available_width())).on_hover_text(&f.name);
+                        crate::access::label(&r, &f.name);
                     }
-                }
+                    None => {
+                        ui.label(RichText::new(&f.name).strong());
+                    }
+                });
             });
-            if st.can_measure && plugin.is_some_and(|p| p.analyze) {
-                if st.measuring {
-                    ui.add(egui::Spinner::new().size(12.0));
-                    let r = ui.add_enabled(false, egui::Button::new(tr("Measuring…")));
-                    register(ui.ctx(), format!("pluginFilterMeasure:{uid}"), r.rect);
-                } else {
-                    let r = ui.button(tr("Measure"));
+        });
+        if plugin.is_none() {
+            ui.label(RichText::new(format!("⚠ {}", tr("not installed"))).color(WARN))
+                .on_hover_text(tr("This filter's plug-in is not installed: it is skipped and its settings are kept."));
+        }
+        // the tool line: measuring (this photo; with several selected, a menu: each of them, or all
+        // of them as a roll), and the entry's copy to the selection
+        ui.horizontal(|ui| {
+            let measures = st.can_measure && plugin.is_some_and(|p| p.analyze);
+            let others = st.selected.len().saturating_sub(1);
+            if measures && st.measuring {
+                ui.add(egui::Spinner::new().size(12.0));
+                let r = ui.add_enabled(false, egui::Button::new(tr("Measuring…")));
+                register(ui.ctx(), format!("pluginFilterMeasure:{uid}"), r.rect);
+            } else if measures && others == 0 {
+                let r =
+                    ui.button(tr("Measure")).on_hover_text(tr("Measure this photo: the conversion's reference points (film base, black and white)"));
+                register(ui.ctx(), format!("pluginFilterMeasure:{uid}"), r.rect);
+                if r.clicked() {
+                    out.push(Action::Run("develop.pluginFilter.analyze", json!({"uid": uid})));
+                }
+            } else if measures {
+                let all = st.selected.clone();
+                let roll = plugin.is_some_and(|p| p.merge);
+                let r = ui.menu_button(tr("Measure…"), |ui| {
+                    ui.set_min_width(200.0);
+                    let r = ui
+                        .button(tr("This Photo"))
+                        .on_hover_text(tr("Measure this photo: the conversion's reference points (film base, black and white)"));
                     register(ui.ctx(), format!("pluginFilterMeasure:{uid}"), r.rect);
                     if r.clicked() {
                         out.push(Action::Run("develop.pluginFilter.analyze", json!({"uid": uid})));
+                        ui.close();
                     }
+                    let r = ui
+                        .button(crate::i18n::tr_format!("{n} Selected, Each on Its Own", n = others + 1))
+                        .on_hover_text(tr("Each photo gets its own measurement"));
+                    register(ui.ctx(), format!("pluginFilterMeasureSelected:{uid}"), r.rect);
+                    if r.clicked() {
+                        out.push(Action::Run("develop.pluginFilter.analyze", json!({"uid": uid, "ids": all})));
+                        ui.close();
+                    }
+                    let r = ui
+                        .add_enabled(roll, egui::Button::new(crate::i18n::tr_format!("{n} Selected as a Roll", n = others + 1)))
+                        .on_hover_text(tr(
+                            "One measurement for the whole roll, from every photo: the frames keep their differences in exposure and colour",
+                        ))
+                        .on_disabled_hover_text(tr("This plug-in can't measure a roll"));
+                    register(ui.ctx(), format!("pluginFilterMeasureRoll:{uid}"), r.rect);
+                    if r.clicked() {
+                        out.push(Action::Run("develop.pluginFilter.analyze", json!({"uid": uid, "ids": all, "roll": true})));
+                        ui.close();
+                    }
+                });
+                register(ui.ctx(), format!("pluginFilterMeasureMenu:{uid}"), r.response.rect);
+            }
+            if others > 0 {
+                let r = ui
+                    .button(crate::i18n::tr_format!("Apply to {n} Selected", n = others))
+                    .on_hover_text(tr("Put this filter, with its settings and measurement, on the other selected photos"));
+                register(ui.ctx(), format!("pluginFilterApply:{uid}"), r.rect);
+                if r.clicked() {
+                    out.push(Action::Run("develop.pluginFilter.applyTo", json!({"uid": uid})));
                 }
             }
-            if ui.add_enabled(i > 0, egui::Button::new("▲").small()).on_hover_text(tr("Move Up")).clicked() {
-                out.push(Action::Run("develop.pluginFilter.move", json!({"uid": uid, "index": i.saturating_sub(1)})));
-            }
-            if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).on_hover_text(tr("Move Down")).clicked() {
-                out.push(Action::Run("develop.pluginFilter.move", json!({"uid": uid, "index": i + 1})));
-            }
-            if ui.small_button("×").on_hover_text(tr("Remove")).clicked() {
-                out.push(Action::Run("develop.pluginFilter.remove", json!({"uid": uid})));
-            }
         });
+        // the measurement's state, and what went wrong
+        if st.can_measure && plugin.is_some_and(|p| p.analyze) {
+            let status = match f.analysis.as_ref() {
+                None => tr("Not measured yet").to_string(),
+                Some(a) => match a.get(lcc_engine::ROLL_KEY).and_then(Value::as_u64) {
+                    Some(k) => crate::i18n::tr_format!("Measured as part of a roll of {n}", n = k).to_string(),
+                    None => tr("Measured").to_string(),
+                },
+            };
+            let r = ui.label(RichText::new(status).size(11.0).color(t.text_dim));
+            register(ui.ctx(), format!("pluginFilterStatus:{uid}"), r.rect);
+        }
         if let Some(e) = &st.measure_error {
             ui.label(RichText::new(format!("⚠ {}: {e}", tr("Measure"))).color(WARN));
         }
         for w in &st.warnings {
             ui.label(RichText::new(format!("⚠ {w}")).color(WARN));
         }
+    });
+    control_row(ui, tr("Stage"), |ui| {
+        let name = |s: FilterStage| match s {
+            FilterStage::Source => tr("Source"),
+            FilterStage::Display => tr("Display"),
+        };
+        let width = (ui.available_width() - 4.0).max(60.0);
+        let r = egui::ComboBox::from_id_salt("stage").width(width).selected_text(name(f.stage)).show_ui(ui, |ui| {
+            for (s, key) in [(FilterStage::Source, "source"), (FilterStage::Display, "display")] {
+                if ui.selectable_label(f.stage == s, name(s)).clicked() && f.stage != s {
+                    out.push(Action::Run("develop.pluginFilter.set", json!({"uid": uid, "stage": key})));
+                }
+            }
+        });
+        r.response.on_hover_text(tr(
+            "Source: on the decoded raw, before white balance and tone (e.g. negative conversion). Display: after the develop adjustments.",
+        ));
     });
     let Some(p) = plugin.filter(|p| p.params.is_some()) else {
         // no plug-in or no schema: values shown read-only
@@ -305,9 +403,52 @@ fn row(ui: &mut egui::Ui, f: &PluginFilter, i: usize, n: usize, st: &RowState, o
         });
         return;
     };
-    for (k, s) in p.ordered_params() {
-        param(ui, uid, &f.name, k, s, f.params.get(k), out);
+    let ordered = p.ordered_params();
+    let in_section = |k: &str| p.sections.iter().any(|sec| sec.params.iter().any(|x| x == k));
+    for (k, s) in ordered.iter().filter(|(k, _)| !in_section(k)) {
+        param(ui, uid, &f.name, k, s, f.params.get(*k), out);
     }
+    for sec in &p.sections {
+        let open_id = ui.id().with(("section", sec.label.as_str()));
+        let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(!sec.collapsed);
+        if section_heading(ui, uid, &sec.label, open) {
+            open = !open;
+            ui.data_mut(|d| d.insert_temp(open_id, open));
+        }
+        if !open {
+            continue;
+        }
+        for name in &sec.params {
+            if let Some((k, s)) = ordered.iter().find(|(k, _)| k == name) {
+                param(ui, uid, &f.name, k, s, f.params.get(*k), out);
+            }
+        }
+    }
+}
+
+/// A heading of a plug-in's controls (a manifest `sections` entry): its name with a fold
+/// arrow, over a thin line. True when clicked.
+fn section_heading(ui: &mut egui::Ui, uid: u32, label: &str, open: bool) -> bool {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let (pad, font) = crate::widgets::name_columns(ui).map_or((12.0, egui::FontId::proportional(11.5)), |(pad, _, _, font)| (pad, font));
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::click());
+    // the fold arrow, drawn (the UI font has no small triangles): right when folded, down when open
+    let (ax, ay, r) = (rect.left() + pad + 4.0, rect.center().y, 3.5);
+    let tri = if open {
+        vec![egui::pos2(ax - r, ay - r * 0.6), egui::pos2(ax + r, ay - r * 0.6), egui::pos2(ax, ay + r * 0.8)]
+    } else {
+        vec![egui::pos2(ax - r * 0.6, ay - r), egui::pos2(ax + r * 0.8, ay), egui::pos2(ax - r * 0.6, ay + r)]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(tri, t.text_label, egui::Stroke::NONE));
+    let galley = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::new(font.size + 1.0, font.family), t.text_label);
+    let y = rect.center().y - galley.size().y / 2.0;
+    ui.painter().galley(egui::pos2(ax + r + 7.0, y), galley, t.text_label);
+    let line_y = rect.bottom() - 1.0;
+    ui.painter().line_segment([egui::pos2(rect.left() + pad, line_y), egui::pos2(rect.right() - 12.0, line_y)], (1.0, t.divider));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, label.to_string()));
+    register(ui.ctx(), format!("pluginFilterSection:{uid}:{label}"), rect);
+    resp.clicked()
 }
 
 /// A parameter's label: the manifest's `label` (as `plugin.list` gives it), else the key humanised.
@@ -434,9 +575,11 @@ fn param(ui: &mut egui::Ui, uid: u32, name: &str, key: &str, s: &Value, cur: Opt
                 out.push(Action::End);
             }
         }
-        Some("bool") => inset(ui, |ui| {
+        Some("bool") => control_row(ui, &label, |ui| {
             let mut b = cur.and_then(Value::as_bool).or_else(|| s.get("default").and_then(Value::as_bool)).unwrap_or(false);
-            let r = ui.checkbox(&mut b, &label);
+            let r = ui.checkbox(&mut b, "");
+            crate::access::label(&r, &label);
+            register(ui.ctx(), format!("pluginFilterBool:{uid}:{key}"), r.rect);
             if r.changed() {
                 out.push(set(json!(b)));
             }
@@ -444,10 +587,10 @@ fn param(ui: &mut egui::Ui, uid: u32, name: &str, key: &str, s: &Value, cur: Opt
         Some("choice") => {
             let Some(opts) = s.get("options").and_then(Value::as_array) else { return };
             let now = cur.and_then(Value::as_str).or_else(|| s.get("default").and_then(Value::as_str)).unwrap_or("");
-            inset(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(&label);
-                    let r = egui::ComboBox::from_id_salt(("choice", key)).selected_text(now).show_ui(ui, |ui| {
+            control_row(ui, &label, |ui| {
+                {
+                    let width = (ui.available_width() - 4.0).max(60.0);
+                    let r = egui::ComboBox::from_id_salt(("choice", key)).width(width).selected_text(now).show_ui(ui, |ui| {
                         let mut pick = |ui: &mut egui::Ui, o: &str| {
                             if ui.selectable_label(o == now, o).clicked() && o != now {
                                 out.push(set(json!(o)));
@@ -475,10 +618,35 @@ fn param(ui: &mut egui::Ui, uid: u32, name: &str, key: &str, s: &Value, cur: Opt
                         }
                     });
                     register(ui.ctx(), format!("pluginFilterChoice:{uid}:{key}"), r.response.rect);
-                });
+                }
             });
         }
         _ => {}
+    }
+}
+
+/// A control row that isn't a slider: its name in the sliders' name column (right-aligned, as
+/// theirs), the control after it; with two-row sliders, name then control on one line.
+fn control_row(ui: &mut egui::Ui, label: &str, control: impl FnOnce(&mut egui::Ui)) {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    match crate::widgets::name_columns(ui) {
+        Some((pad, col, gap, font)) => {
+            let w = ui.available_width();
+            let (row, _) = ui.allocate_exact_size(egui::vec2(w, t.slider_row_h), egui::Sense::hover());
+            let name = egui::Rect::from_min_size(egui::pos2(row.left() + pad, row.top()), egui::vec2(col, row.height()));
+            let galley = ui.painter().layout_no_wrap(label.to_string(), font, t.text_label);
+            let (gw, gh) = (galley.size().x.min(col), galley.size().y);
+            ui.painter().with_clip_rect(name).galley(egui::pos2(name.right() - gw, name.center().y - gh / 2.0), galley, t.text_label);
+            let ctl = egui::Rect::from_min_max(egui::pos2(name.right() + gap, row.top()), egui::pos2(row.right() - 12.0, row.bottom()));
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(ctl).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            control(&mut child);
+        }
+        None => inset(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(label).color(t.text_label));
+                control(ui);
+            });
+        }),
     }
 }
 
