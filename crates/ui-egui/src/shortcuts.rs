@@ -32,10 +32,14 @@ pub struct Bindable {
     pub default: Option<&'static str>,
 }
 
-/// Every command that can have a shortcut: UI commands, then engine commands (one entry per id).
+/// Every command that can have a shortcut: UI commands, then engine commands (one entry per id),
+/// then one *Add <filter>* per installed filter plug-in ([`PLUGIN_ADD`]; its manifest's `shortcut`
+/// is the declared key). The list is rebuilt when the installed filters change (a plug-in
+/// installed or removed), and stays `'static` for the callers that keep references into it.
 pub fn bindable() -> &'static [Bindable] {
-    static ALL: OnceLock<Vec<Bindable>> = OnceLock::new();
-    ALL.get_or_init(|| {
+    static FIXED: OnceLock<Vec<Bindable>> = OnceLock::new();
+    static ALL: std::sync::Mutex<Option<(String, &'static [Bindable])>> = std::sync::Mutex::new(None);
+    let fixed = FIXED.get_or_init(|| {
         let mut v: Vec<Bindable> = Vec::new();
         for (id, label, sc, _) in crate::menus::ui_commands() {
             if !v.iter().any(|b| b.id == *id) {
@@ -51,7 +55,58 @@ pub fn bindable() -> &'static [Bindable] {
             v.push(Bindable { id: c.id, label: c.label, default });
         }
         v
-    })
+    });
+    // the installed filters, as (id, name, declared key), in id order: the list's fingerprint
+    let mut filters: Vec<(String, String, Option<String>)> = lcc_engine::filter_plugins::registry()
+        .list()
+        .iter()
+        .map(|f| (f.id().to_string(), f.manifest().name.clone(), f.manifest().shortcut.clone()))
+        .collect();
+    filters.sort();
+    let fingerprint = format!("{filters:?}");
+    let mut all = ALL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((fp, list)) = all.as_ref()
+        && *fp == fingerprint
+    {
+        return list;
+    }
+    let mut v = fixed.clone();
+    let fixed_keys: Vec<(Modifiers, Key)> = v.iter().filter_map(|b| b.default.and_then(parse)).collect();
+    for (id, name, sc) in &filters {
+        let bid = intern(&format!("{PLUGIN_ADD}{id}"));
+        if v.iter().any(|b| b.id == bid) {
+            continue;
+        }
+        // a declared key another command declares too stays with that command: the user may bind it
+        let default = sc.as_deref().filter(|sc| parse(sc).is_some_and(|k| !fixed_keys.contains(&k))).map(intern);
+        v.push(Bindable { id: bid, label: intern(&format!("Add {name}")), default });
+    }
+    // rebuilt only when a filter is installed or removed: a few leaked strings per change
+    let list: &'static [Bindable] = Box::leak(v.into_boxed_slice());
+    *all = Some((fingerprint, list));
+    list
+}
+
+/// The id family of the *Add <filter>* shortcuts: `pluginFilter.add:<plug-in id>`, which runs
+/// `develop.pluginFilter.addTo {plugin}` on the selection.
+pub const PLUGIN_ADD: &str = "pluginFilter.add:";
+
+/// A `'static` copy of `s`, shared with every earlier request for the same text (the filter
+/// bindables' ids and labels; at most [`MAX_INTERNED`] distinct strings, then the text leaks).
+fn intern(s: &str) -> &'static str {
+    use std::collections::HashMap;
+    const MAX_INTERNED: usize = 4096;
+    static POOL: std::sync::Mutex<Option<HashMap<String, &'static str>>> = std::sync::Mutex::new(None);
+    let mut g = POOL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pool = g.get_or_insert_with(HashMap::new);
+    if let Some(t) = pool.get(s) {
+        return t;
+    }
+    let t: &'static str = Box::leak(s.to_string().into_boxed_str());
+    if pool.len() < MAX_INTERNED {
+        pool.insert(s.to_string(), t);
+    }
+    t
 }
 
 pub fn find_bindable(id: &str) -> Option<&'static Bindable> {
@@ -615,7 +670,25 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             let _ = app.run(if f == "library.next" { "slideshow.next" } else { "slideshow.previous" }, json!({}));
             continue;
         }
-        if let Some(rest) = f.strip_prefix("rate:") {
+        if let Some(plugin) = f.strip_prefix(PLUGIN_ADD) {
+            // Add <filter>: on every selected photo that has none; the Develop panel's section opens
+            match app.run("develop.pluginFilter.addTo", json!({"plugin": plugin})) {
+                Ok(r) => {
+                    let (added, had) = (r["added"].as_u64().unwrap_or(0), r["had"].as_u64().unwrap_or(0));
+                    let name = find_bindable(&f).map_or(plugin, |b| b.label.strip_prefix("Add ").unwrap_or(b.label));
+                    let text = match (added, had) {
+                        (0, _) => crate::i18n::tr_format!("{name} is already on the selected photos", name = name),
+                        (1, 0) => crate::i18n::tr_format!("{name} added", name = name),
+                        (n, _) => crate::i18n::tr_format!("{name} added to {n} photos", name = name, n = n),
+                    };
+                    app.toast(ctx, text);
+                    if !app.ui.section_open(lcc_develop::PLUGIN_FILTERS_SECTION) {
+                        app.ui.toggle_section(lcc_develop::PLUGIN_FILTERS_SECTION);
+                    }
+                }
+                Err(e) => app.toast(ctx, e),
+            }
+        } else if let Some(rest) = f.strip_prefix("rate:") {
             let (n, adv) = rest.split_once(':').unwrap_or(("0", "0"));
             cull(app, "photo.rate", json!({"rating": n.parse::<u8>().unwrap_or(0)}), adv == "1");
             let label = if n == "0" {

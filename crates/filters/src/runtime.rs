@@ -464,5 +464,6 @@ fn placeholder_manifest() -> Manifest {
         header: None,
         icon: None,
         sections: Vec::new(),
+        shortcut: None,
     }
 }

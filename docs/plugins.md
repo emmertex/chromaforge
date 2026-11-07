@@ -543,7 +543,7 @@ Besides the plug-ins above, <app> runs **pixel filters** written for PhotoCraft'
 `memory`, `pc_abi_version`, `pc_manifest`, `pc_alloc` and `pc_filter`. They install the same way
 (File ▸ Plug-ins ▸ Plug-in Manager…, or `<cli> commands plugin.install '{"path": "film.wasm"}'`): the host
 sniffs the exports and keeps filter modules in the same folder, in a registry of their own.
-`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze, merge, sections, icon, header}`
+`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze, merge, sections, shortcut, icon, header}`
 (`params` is the manifest's spec); `plugin.uninstall` removes one. Filters ask for no permissions.
 
 A photo's filter stack is part of its develop settings (`develop.pluginFilter.add {plugin,
@@ -613,6 +613,16 @@ under it in the section's order; parameters in no section come first, in the man
 A section without a printable 1-64 character label or without a parameter of the manifest is
 dropped, a parameter named twice stays in the first section, and at most 16 sections are read.
 Hosts without the field show a flat list. `plugin.list` gives them as `sections`.
+
+**A key to add the filter (ABI v1.1 proposal).** A manifest may name a shortcut, `"shortcut":
+"Ctrl+Alt+N"` (`Cmd`, `Ctrl`, `Alt`, `Shift` and a key, joined with `+`; `Cmd` is ⌘ on macOS and
+Ctrl elsewhere, `Ctrl` the Control key everywhere). Every installed filter is a command *Add
+<name>* in Help ▸ Keyboard Shortcuts (id `pluginFilter.add:<plug-in id>`), with the manifest's
+key as its default when the key is free, else none; the user binds or changes it like any other.
+The key runs `develop.pluginFilter.addTo {plugin, ids?}`: a new entry of the plug-in (its
+defaults, its stage) on every selected photo that has none, in one History step, then opens
+Develop ▸ Plug-in Filters and says what it did. `plugin.list` shows the manifest's key as
+`shortcut`.
 
 **Base tone (ABI v1.1 proposal).** A raw is toned after the Source stage: by its camera's own
 curve when the file has one, else by the default raw curve. A Source filter whose output is

@@ -206,6 +206,7 @@ pub fn info(f: &Filter) -> Value {
         "analyze": f.has_analyze(),
         "merge": f.has_merge(),
         "sections": m.sections,
+        "shortcut": m.shortcut,
         "analyzeArea": m.analyze_area,
         "baseTone": m.base_tone,
         "size": f.size(),

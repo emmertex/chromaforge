@@ -123,6 +123,13 @@ pub struct Manifest {
     /// and parameters in no section come first. Hosts without the field show a flat list.
     #[serde(skip)]
     pub sections: Vec<ParamSection>,
+    /// The key the host may offer for adding the filter to the selected photos (`"shortcut":
+    /// "Ctrl+Alt+N"`, an ABI v1.1 proposal: modifiers `Cmd`, `Ctrl`, `Alt`, `Shift` and a key, joined
+    /// with `+`). Read by [`Manifest::parse`]; a value that isn't 1-32 printable characters is
+    /// dropped, and the host decides whether it can bind the key; the user may change it like any
+    /// shortcut. Hosts without the field ignore it.
+    #[serde(skip)]
+    pub shortcut: Option<String>,
     /// A square icon the host may show for the filter (`"icon": "<svg…>"`, drawn on the host's own
     /// background, so it suits dark and light themes). Read by [`Manifest::parse`]; a picture that
     /// isn't an SVG document of at most [`MAX_HEADER_BYTES`] is dropped (the host draws its own).
@@ -280,6 +287,12 @@ impl Manifest {
         man.header = raw.get("header").and_then(Header::parse);
         man.icon = svg_document(raw.get("icon"));
         man.sections = param_sections(raw.get("sections"), &man.params);
+        man.shortcut = raw
+            .get("shortcut")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && t.chars().count() <= 32 && t.chars().all(|c| !c.is_control() && !hidden_format(c)) && t.chars().any(visible))
+            .map(str::to_string);
         if let Some(ps) = raw.get("params").and_then(Value::as_object) {
             man.labels = man
                 .params
@@ -708,6 +721,17 @@ mod tests {
         assert_eq!(got, vec![("Tone", vec!["a", "b"], false), ("Colour", vec!["c"], true)]);
         let none = Manifest::parse(br#"{"id":"a.b","name":"N","kind":"filter","sections":{"label":"x"}}"#).unwrap();
         assert!(none.sections.is_empty(), "not a list: no sections, not an error");
+    }
+
+    #[test]
+    fn a_shortcut_is_kept_as_text_when_printable() {
+        let m = Manifest::parse(br#"{"id":"a.b","name":"N","kind":"filter","shortcut":" Ctrl+Alt+N "}"#).unwrap();
+        assert_eq!(m.shortcut.as_deref(), Some("Ctrl+Alt+N"));
+        for bad in [r#""shortcut":7"#, r#""shortcut":"""#, r#""shortcut":"\u202EN""#, r#""shortcut":"Ctrl+Alt+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN""#]
+        {
+            let m = Manifest::parse(format!(r#"{{"id":"a.b","name":"N","kind":"filter",{bad}}}"#).as_bytes()).unwrap();
+            assert_eq!(m.shortcut, None, "{bad}");
+        }
     }
 
     #[test]

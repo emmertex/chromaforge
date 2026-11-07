@@ -332,3 +332,36 @@ fn a_batch_measures_each_selected_photo_and_a_roll_shares_one_measurement() {
     s.execute("plugin.uninstall", &json!({"id": "test.engine.roll"})).unwrap();
     s.execute("plugin.uninstall", &json!({"id": "test.engine.noroll"})).unwrap();
 }
+
+#[test]
+fn add_to_puts_a_default_entry_on_the_selected_photos_that_lack_one() {
+    let mut s = Session::with_demo();
+    let m = r#"{"id":"test.engine.addto","name":"AddTo","kind":"filter","stage":"source","shortcut":"Ctrl+Alt+N","params":{"amount":{"type":"number","min":0,"max":1,"default":0.4}}}"#;
+    install_bytes(&mut s, "test.engine.addto", &module(m, None));
+    let info = s.execute("plugin.list", &json!({})).unwrap();
+    let me = info["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.engine.addto").unwrap().clone();
+    assert_eq!(me["shortcut"], "Ctrl+Alt+N");
+    let ids: Vec<u64> = s.catalog.photos().take(3).map(|p| p.id.0).collect();
+    s.execute("library.select", &json!({"ids": ids})).unwrap();
+    // the active photo has one already (with its own value): kept; the other two get the defaults
+    s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.addto", "params": {"amount": 0.9}})).unwrap();
+    let u0 = s.undo.len();
+    let r = s.execute("develop.pluginFilter.addTo", &json!({"plugin": "test.engine.addto"})).unwrap();
+    assert_eq!((r["added"].as_u64(), r["had"].as_u64()), (Some(2), Some(1)));
+    assert_eq!(s.undo.len(), u0 + 1, "one History step for the batch");
+    for (i, id) in ids.iter().enumerate() {
+        let d = s.develop_of(crate::catalog::PhotoId(*id)).unwrap();
+        let f = &d.plugin_filters[0];
+        assert_eq!(f.plugin, "test.engine.addto");
+        assert_eq!(f.stage, lcc_develop::FilterStage::Source);
+        assert_eq!(f.params["amount"], if i == 0 { json!(0.9) } else { json!(0.4) }, "photo {id}");
+    }
+    // again: nothing to add, no History step
+    let r = s.execute("develop.pluginFilter.addTo", &json!({"plugin": "test.engine.addto"})).unwrap();
+    assert_eq!((r["added"].as_u64(), r["had"].as_u64()), (Some(0), Some(3)));
+    assert_eq!(s.undo.len(), u0 + 1);
+    // hostile: an unknown plug-in, ids that aren't photos
+    assert!(s.execute("develop.pluginFilter.addTo", &json!({"plugin": "test.engine.nope"})).is_err());
+    assert!(s.execute("develop.pluginFilter.addTo", &json!({"plugin": "test.engine.addto", "ids": "3"})).is_err());
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.addto"})).unwrap();
+}

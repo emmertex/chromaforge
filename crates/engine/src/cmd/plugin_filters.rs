@@ -462,6 +462,58 @@ fn fail_all(tx: &std::sync::mpsc::Sender<(PhotoId, u32, Measured)>, frames: &[Fr
     }
 }
 
+/// `develop.pluginFilter.addTo {plugin, ids?}`: a new entry of `plugin` (its defaults, its own
+/// stage) on every photo of `ids` (else the selection) that has none yet; photos that have one are
+/// left as they are. One History step; `{added, had}` say how many got one and how many had one.
+fn add_to(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "develop.pluginFilter.addTo";
+    let plugin = text(p, "plugin", c)?;
+    let f = crate::filter_plugins::registry().get(&plugin).ok_or_else(|| bad(c, format!("plug-in {plugin:?} is not installed")))?;
+    let params = f.manifest().resolve_params(&json!({})).map_err(|e| bad(c, e.to_string()))?;
+    let stage = crate::filter_plugins::preferred_stage(&f);
+    let name = f.manifest().name.clone();
+    let ids = super::photo_ids(p, c)?.unwrap_or_else(|| s.selected());
+    if ids.len() > lcc_filters::MAX_MERGE {
+        return Err(bad(c, format!("at most {} photos at a time", lcc_filters::MAX_MERGE)));
+    }
+    let (mut ops, mut had, mut seen) = (Vec::new(), 0usize, Vec::<PhotoId>::new());
+    for x in ids {
+        if seen.contains(&x) {
+            continue;
+        }
+        seen.push(x);
+        let Some(dd) = s.develop_of(x) else { continue };
+        if dd.plugin_filters.iter().any(|e| e.plugin == plugin) {
+            had += 1;
+            continue;
+        }
+        let mut nd = (*dd).clone();
+        if nd.plugin_filters.len() >= MAX_PLUGIN_FILTERS {
+            return Err(bad(c, format!("photo {} already has {MAX_PLUGIN_FILTERS} plug-in filters", x.0)));
+        }
+        let uid = match nd.plugin_filters.iter().map(|e| e.uid).max() {
+            Some(m) => m.checked_add(1).ok_or_else(|| bad(c, "no free uid"))?,
+            None => 1,
+        };
+        nd.plugin_filters.push(PluginFilter {
+            uid,
+            plugin: plugin.clone(),
+            module_hash: f.module_hash().to_string(),
+            name: name.clone(),
+            params: params.clone(),
+            enabled: true,
+            stage,
+            analysis: None,
+        });
+        ops.extend(s.develop_op(x, nd, &label(&name)));
+    }
+    let added = ops.len();
+    if added > 0 {
+        s.commit(&label(&name), lcc_catalog::Op::Batch { ops })?;
+    }
+    Ok(json!({ "added": added, "had": had }))
+}
+
 /// `develop.pluginFilter.applyTo {uid, ids?, measurement?: true}`: the active photo's entry `uid`
 /// (its parameters, stage, on/off and, unless `measurement: false`, its measurement) goes onto
 /// the other photos (`ids`, else the selection): a photo with an entry of the same plug-in gets
@@ -633,6 +685,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{uid, ids?: [photo], roll?: false, wait?: false} — runs the plug-in's whole-image measurement (pc_analyze) in the background (an activity row; `develop.pluginFilter.pump` stores each as one History step when done) → {started}: on the active photo, or on every photo of `ids` (each needs an entry of the same plug-in; measured one by one, each getting its own measurement); `roll: true` measures them together (the plug-in's pc_merge of all of them, stored on each with `_roll`: their number). `wait: true` measures before returning → {analysis (the active photo's), analyses: [{photo, uid, analysis}]}. An `unsupported` error when the plug-in has no pc_analyze (or, for a roll, no pc_merge)",
             has_active,
             analyze
+        ),
+        cmd!(
+            "develop.pluginFilter.addTo",
+            "Add Plug-in Filter to Photos",
+            [],
+            None,
+            "{plugin, ids?: [photo] (the selection)} — a new entry of the installed plug-in (its defaults) on every photo that has none yet → {added, had}",
+            has_active,
+            add_to
         ),
         cmd!(
             "develop.pluginFilter.applyTo",
