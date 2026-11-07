@@ -599,8 +599,9 @@ document the Plug-in Manager shows in place of the icon it draws from the id, an
 SVG the Develop panel shows at the top of the filter's controls in place of its name (`"header":
 "<svg…>"`, or `{"dark": "<svg…>", "light": "<svg…>"}` for the dark and light interface themes;
 with one of the two the other theme gets it as well). Each is at most 24 KiB and is drawn as an
-untrusted document: only its own shapes, never an image it links to on disk; one that isn't an SVG
-document is dropped (the icon from the id, the name). Hosts without the fields ignore them.
+untrusted document: only its own shapes, never an image it links to (a file on disk) or embeds (a
+`data:` URL); a picture that isn't square is fitted into the icon's square with its aspect kept;
+one that isn't an SVG document is dropped (the icon from the id, the name). Hosts without the fields ignore them.
 `plugin.list` shows `icon` and `header` as booleans; `plugin.picture {id, picture?: header|icon,
 theme?: dark|light}` gives the SVG text.
 

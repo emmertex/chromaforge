@@ -122,8 +122,12 @@ pub fn keep_custom(ctx: &egui::Context, id: &str, module_hash: &str, texture: Op
 pub fn paint_for(ui: &Ui, rect: Rect, id: &str) {
     match custom(ui.ctx(), id) {
         Some(tex) => {
+            // fitted into the square with its aspect kept (a wide picture sits centred)
+            let size = tex.size_vec2();
+            let scale = (rect.width() / size.x.max(1.0)).min(rect.height() / size.y.max(1.0));
+            let fitted = Rect::from_center_size(rect.center(), size * scale);
             let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
+            ui.painter().image(tex.id(), fitted, uv, Color32::WHITE);
         }
         None => paint(ui, rect, &identicon(id)),
     }
