@@ -69,21 +69,28 @@ pub fn extras(app: &mut LccApp, ui: &egui::Ui, id: PhotoId, r: Rect, square: boo
         let g = ui.painter().text(at, align, (index + 1).to_string(), t.semibold(size), color);
         register(ui.ctx(), format!("cellIndex:{}", id.0), g);
     }
-    let Some(albums) = albums else { return };
     // on the photo itself, not the square around it (a portrait photo leaves bands at the sides)
     let img = if square { super::detail::fit_texture_rect(image_rect(app, r), shown_size(&p)) } else { r };
+    // the decorative badges follow the cell-badges setting (`albums` is what carries it); the
+    // In library badge is functional — a browsed file the library has already — and always shows
+    let cell_badges = albums.is_some();
     let mut badges: Vec<(&str, Icon, String, Color32)> = Vec::new();
-    if cropped(&p.develop) {
-        badges.push(("cropped", Icon::Crop, crate::i18n::tr("Cropped").to_string(), Color32::WHITE));
+    if cell_badges {
+        if cropped(&p.develop) {
+            badges.push(("cropped", Icon::Crop, crate::i18n::tr("Cropped").to_string(), Color32::WHITE));
+        }
+        if p.develop.orientation != lcc_geom::Orientation::Normal {
+            badges.push(("rotated", Icon::RotateRight, crate::i18n::tr("Rotated or flipped").to_string(), Color32::WHITE));
+        }
+        if !p.meta.keywords.is_empty() {
+            let names: Vec<&str> = p.meta.keywords.iter().map(|k| k.rsplit('|').next().unwrap_or(k)).collect();
+            badges.push(("keywords", Icon::Tag, format!("{}: {}", crate::i18n::tr("Keywords"), names.join(", ")), Color32::WHITE));
+        }
     }
-    if p.develop.orientation != lcc_geom::Orientation::Normal {
-        badges.push(("rotated", Icon::RotateRight, crate::i18n::tr("Rotated or flipped").to_string(), Color32::WHITE));
+    if app.session.source == lcc_engine::LibrarySource::Folder && p.in_library() {
+        badges.push(("inLibrary", Icon::Check, crate::i18n::tr("In library").to_string(), Color32::WHITE));
     }
-    if !p.meta.keywords.is_empty() {
-        let names: Vec<&str> = p.meta.keywords.iter().map(|k| k.rsplit('|').next().unwrap_or(k)).collect();
-        badges.push(("keywords", Icon::Tag, format!("{}: {}", crate::i18n::tr("Keywords"), names.join(", ")), Color32::WHITE));
-    }
-    if let Some(n) = albums.get(&id).copied().filter(|n| *n > 0) {
+    if let Some(n) = albums.and_then(|a| a.get(&id).copied()).filter(|n| *n > 0) {
         badges.push(("collections", Icon::Album, format!("{} {n}", crate::i18n::tr("Collections:")), Color32::WHITE));
     }
     if let Some(why) = xmp_badge(app, ui, &p) {
@@ -101,7 +108,7 @@ pub fn extras(app: &mut LccApp, ui: &egui::Ui, id: PhotoId, r: Rect, square: boo
     }
     // a row of small badges at the image's top right (below the virtual-copy tag)
     let size = 18.0;
-    let top = img.top() + if p.copy_name.is_some() { 30.0 } else { 6.0 };
+    let top = img.top() + if p.virtual_copy_name().is_some() { 30.0 } else { 6.0 };
     let mut x = img.right() - 6.0;
     for (key, icon, tip, color) in badges {
         let br = Rect::from_min_size(pos2(x - size, top), vec2(size, size));

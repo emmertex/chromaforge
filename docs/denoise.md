@@ -43,7 +43,10 @@ worst place and a thousandth on average (they differ by the rounding of the arit
 threshold falls either side of a tie change by about a tenth), and both are timed. Settings ▸ AI Denoise ▸ Run on chooses
 Automatic (the card where it is faster), Graphics card or Processor, and says where it runs; a set-up that crashed or ran out
 of time is not tried again until you choose (Try the graphics card again). A tile the card gets wrong is run on the
-processor, and three stop the card for the session. On an RTX 4080 SUPER a tile takes 22 ms on the card against 408 ms on one
+processor, and three stop the card for the session. With a second graphics card (Settings ▸ Performance) both cards are set up
+and checked on their own, and a batch makes one photo on each at once (the second card first; one photo while you work), each
+photo's tiles on its own card; a card that fails stops being used alone, and `denoise.status` lists both under `device.cards`
+and the photos being made under `running.photos`. On an RTX 4080 SUPER a tile takes 22 ms on the card against 408 ms on one
 processor thread, and the 1536 × 1024 benchmark crop 0.13 to 0.24 s against 1.0 to 2.1 s on four threads, with the very
 same scores. A change
 to the algorithm bumps `builtin::VERSION`, so cached pictures are made again. The id
@@ -225,6 +228,34 @@ An export with a nonzero effective Amount creates a missing product synchronousl
 It returns a clear error if it cannot produce the denoised result; it never silently
 exports the plain image instead. Unsupported sensor layouts retain manual noise
 reduction and report their limitation.
+
+## Finished pictures (JPEG, PNG, TIFF …)
+
+A photo that has no sensor data left (a JPEG, PNG, TIFF or other finished picture) takes a model of its own kind:
+`domain: "rgbToRgb"` in the manifest, three planes of gamma-encoded sRGB in 0 to 1, given back at the same size. The
+built-in denoiser is for raw photos only, so a finished picture is denoised only once such a model is installed.
+Raw photos and finished pictures each have their model in use (`model` and `rgbModel` in `settings.json`): installing
+or choosing a model fills the slot of its kind, so the two never replace each other, and each photo is denoised by the
+model of its kind. `denoise.models.select {id: null, kind: "rgb"}` switches finished pictures off and leaves raw
+photos as they are; without a model for finished pictures `denoise.toggle` says one is needed, and the photo's state
+(`denoise.status {id}`) is `failed` with `unsupported: true` and that reason.
+
+The picture is decoded at full size and unrotated, converted from its own colour space to sRGB (wider colours are
+clipped to sRGB; transparency is flattened onto white, as the plain picture is), denoised tile by tile and cached like a
+raw photo's product. A render reads it back to the size of the plain decode, converts it to the working space as the
+plain picture is, and the Amount mixes the two.
+
+The picture is cut into overlapping tiles over a margin mirrored out from its edges, and each tile's outer quarter of
+the overlap counts for nothing: models get the edge of their tile wrong, and those pixels never reach the picture.
+A model whose manifest has `gain: matchMean` drifts in colour or brightness: its fine detail is kept and the
+picture's coarse colour and brightness (blurred over 8 pixels, `RESTORE_SIGMA`) come from the input again, by at
+most `maxDeviation` on the 0 to 1 scale.
+
+The `rawnind-model` build knows darktable-ai's NIND U-Net (`denoise-nind.dtmodel`, GPL-3.0 weights, id `nind-rgb`,
+credited in `NOTICE`): 768-cell tiles, ReLU layers and a final sigmoid, which the pure-Rust runners execute on the CPU
+and the graphics card. Like every model it is downloaded only when the user asks and has accepted its terms.
+
+Adapted from upstream #3279.
 
 ## Pure-Rust CPU and GPU execution
 

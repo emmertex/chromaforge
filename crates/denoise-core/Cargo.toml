@@ -13,6 +13,7 @@ default = []
 rawnind-model = []
 # Offers the upstream project's own model for download (`known::own_bayer_url`, then `known::own_bayer_fallback_url`).
 own-model = []
+realesrgan-model = []
 
 [dependencies]
 lcc-brand = { workspace = true }

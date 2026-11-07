@@ -45,6 +45,24 @@ fn the_compact_bottom_bar_auto_sync_switch_turns_it_on_and_off() {
     }
 }
 
+/// The switch carries its name whenever the name fits next to the bar's other items (it needed a
+/// 1600-point bar before, the window less its side panels, so it never showed); on a bar with no
+/// room to spare, the switch alone.
+#[test]
+fn the_auto_sync_switch_shows_its_name_when_it_fits_on_the_bar() {
+    let bare = 22.0 + 14.0;
+    for view in ["photoGrid", "detail"] {
+        let h = library(view, true, [1600.0, 1000.0]);
+        let r = h.app.widgets.iter().find(|(w, _)| w == "toggle:autoSync").map(|(_, r)| *r).expect("the switch");
+        assert!(r.width() > bare + 30.0, "{view}: the switch has its name at 1600 wide ({r:?})");
+        assert!(h.painted_text().iter().any(|s| s == "Auto Sync"), "{view}: its name is painted");
+    }
+    let h = library("photoGrid", true, [900.0, 800.0]);
+    if let Some((_, r)) = h.app.widgets.iter().find(|(w, _)| w == "toggle:autoSync") {
+        assert!((r.width() - bare).abs() < 0.5, "a crowded bar keeps the switch alone ({r:?})");
+    }
+}
+
 /// Classic keeps its bottom bar: Auto Sync stays under the Edit panel only.
 #[test]
 fn the_classic_bottom_bar_has_no_auto_sync_switch() {

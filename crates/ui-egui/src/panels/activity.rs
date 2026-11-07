@@ -12,14 +12,19 @@
 //! A batch (AI Denoise or an export over many photos) is one row: "37 of 200 · about
 //! 6 min left · 2 failed". Its per-photo rows fold under it ("Show each photo"), and when it ends its summary shows
 //! once as a message ("AI Denoise: 198 done, 2 failed: why").
+//!
+//! A task whose stop throws work away (`stopWarning`: a plug-in's wait for a program) has no ✕ anywhere. The list and
+//! the Modern card give it "Stop Waiting…", which asks first ([`Dialog::StopWaiting`]); its confirm button runs
+//! `activity.cancel`.
 
 use egui::{Align, Layout, Margin, Rect, RichText, Sense, Stroke, pos2, vec2};
-use lcc_engine::activity::{BatchSummary, TaskInfo, Unit};
+use lcc_engine::activity::{BatchSummary, TaskInfo, Unit, fill};
 use serde_json::json;
 
 use crate::LccApp;
 use crate::i18n::{tr, tr_format};
 use crate::icons::{Icon, paint};
+use crate::state::Dialog;
 use crate::theme::Tokens;
 use crate::widgets::register;
 
@@ -92,6 +97,32 @@ pub(crate) fn detail_line_for_tests(t: &TaskInfo) -> String {
     detail_line(t)
 }
 
+/// The task's name, translated: a label with names ("Waiting for {program} to finish") is translated first and the
+/// names put in after.
+pub fn label_text(t: &TaskInfo) -> String {
+    match &t.templates {
+        Some(x) => fill(tr(&x.label), &x.names),
+        None => tr(&t.label).to_string(),
+    }
+}
+
+/// What the task is on: a name as given, or a text with names translated around them.
+fn detail_text(t: &TaskInfo) -> String {
+    match &t.templates {
+        Some(x) if !x.detail.is_empty() => fill(tr(&x.detail), &x.names),
+        // a detail is a name, kept as it is, or one of the engine's few messages, such as what a batch waits for
+        _ => tr(&t.detail).to_string(),
+    }
+}
+
+/// What stopping the task costs, translated, for a task whose stop throws work away.
+fn stop_warning_text(t: &TaskInfo) -> Option<String> {
+    match t.templates.as_ref().and_then(|x| x.stop_warning.as_ref().map(|w| (w, &x.names))) {
+        Some((w, names)) => Some(fill(tr(w), names)),
+        None => t.stop_warning.as_deref().map(|w| tr(w).to_string()),
+    }
+}
+
 /// The row's second line: "Stopping…" once cancelled, else the count and what is being worked on.
 fn detail_line(t: &TaskInfo) -> String {
     if t.cancelling {
@@ -106,10 +137,11 @@ fn detail_line(t: &TaskInfo) -> String {
             count += &format!(" · {}", tr_format!("{n} failed", n = t.failed));
         }
     }
-    match (count.is_empty(), t.detail.is_empty()) {
-        (false, false) => format!("{count} · {}", t.detail),
+    let detail = detail_text(t);
+    match (count.is_empty(), detail.is_empty()) {
+        (false, false) => format!("{count} · {detail}"),
         (false, true) => count,
-        (true, _) => t.detail.clone(),
+        (true, _) => detail,
     }
 }
 
@@ -121,6 +153,12 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let plate = app.activity_plate_drawn.take();
     app.activity_plate = plate;
     let all = app.session.activity.list();
+    // a Stop Waiting question about a task that has ended has nothing left to stop
+    if let Some(Dialog::StopWaiting { id, .. }) = &app.ui.dialog
+        && !all.iter().any(|t| t.id == *id)
+    {
+        app.ui.dialog = None;
+    }
     app.activity_bottom = None;
     if all.is_empty() {
         app.activity_expanded = false;
@@ -179,16 +217,23 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
 }
 
-/// What a click in the rows asked for: ✕ on a task, or a batch's photos opened or folded.
+/// What a click in the rows asked for: ✕ on a task, Stop Waiting… on one, or a batch's photos opened or folded.
 #[derive(Default)]
 struct Picked {
     cancel: Option<u64>,
+    stop: Option<(u64, String, String)>,
     fold: Option<u64>,
 }
 
 fn apply(app: &mut LccApp, picked: Picked) {
     if let Some(id) = picked.cancel {
         cancel(app, id);
+    }
+    // ask first; another dialog open (it takes the clicks anyway) is left alone
+    if let Some((id, task, warning)) = picked.stop
+        && app.ui.dialog.is_none()
+    {
+        app.ui.dialog = Some(Dialog::StopWaiting { id, task, warning });
     }
     if let Some(id) = picked.fold
         && !app.activity_open.remove(&id)
@@ -209,16 +254,21 @@ fn rows(ui: &mut egui::Ui, t: &Tokens, tasks: &[(&TaskInfo, u8, usize)], open: &
                 ui.add_space(6.0);
             }
             let indent = if *depth > 0 { INDENT } else { 0.0 };
-            let (x, f) = ui
+            let clicked = ui
                 .horizontal(|ui| {
                     ui.add_space(indent);
                     ui.vertical(|ui| row(ui, t, task, inner - indent, *kids, open.contains(&task.id))).inner
                 })
                 .inner;
-            if x {
+            if clicked.cross {
                 picked.cancel = Some(task.id);
             }
-            if f {
+            if clicked.stop
+                && let Some(warning) = stop_warning_text(task)
+            {
+                picked.stop = Some((task.id, label_text(task), warning));
+            }
+            if clicked.fold {
                 picked.fold = Some(task.id);
             }
         }
@@ -300,11 +350,12 @@ pub fn plate(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
             ui.add_space(((area.height() - 18.0 - 3.0 - 6.0) / 2.0).max(0.0));
             ui.horizontal(|ui| {
                 // the list, while open, has the task's ✕ (and its widget id)
-                let cross = task.cancellable && !task.cancelling && !list_open;
+                // a task whose stop throws work away is stopped from the list, after a question
+                let cross = task.cancellable && !task.cancelling && !list_open && task.stop_warning.is_none();
                 let label_w = if cross { width - CROSS - 6.0 } else { width };
                 ui.allocate_ui_with_layout(vec2(label_w, 18.0), Layout::left_to_right(Align::Center), |ui| {
                     ui.set_width(label_w);
-                    ui.add(egui::Label::new(RichText::new(tr(&task.label)).font(t.font(12.0)).color(t.text)).truncate().selectable(false));
+                    ui.add(egui::Label::new(RichText::new(label_text(task)).font(t.font(12.0)).color(t.text)).truncate().selectable(false));
                 });
                 if cross {
                     let (rect, r) = ui.allocate_exact_size(vec2(CROSS, CROSS), Sense::click());
@@ -329,7 +380,7 @@ pub fn plate(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
             for task in top.iter().take(n) {
                 let fraction = crate::progress::fraction_of(task.done, task.total);
                 let r = crate::progress::Progress::new(fraction).width(width).height(THIN).dimmed(task.cancelling).show(ui);
-                crate::widgets::screen_reader_name(ui.ctx(), r.id, tr(&task.label));
+                crate::widgets::screen_reader_name(ui.ctx(), r.id, &label_text(task));
                 register(ui.ctx(), format!("activity:bar:{}", task.id), r.rect);
             }
         }
@@ -387,20 +438,29 @@ pub(crate) fn cancel(app: &mut LccApp, id: u64) {
     let _ = app.session.execute("activity.cancel", &json!({"id": id}));
 }
 
-/// One task: name and ✕, the bar, the detail line, and for a batch with per-photo rows (`kids`) the line that
-/// opens or folds them. Whether ✕ was clicked, and whether the fold was.
-fn row(ui: &mut egui::Ui, t: &Tokens, task: &TaskInfo, width: f32, kids: usize, open: bool) -> (bool, bool) {
+/// What was clicked in a row.
+struct RowClicks {
+    cross: bool,
+    stop: bool,
+    fold: bool,
+}
+
+/// One task: name and ✕, the bar, the detail line, Stop Waiting… for a task whose stop throws work away (instead of
+/// ✕), and for a batch with per-photo rows (`kids`) the line that opens or folds them.
+fn row(ui: &mut egui::Ui, t: &Tokens, task: &TaskInfo, width: f32, kids: usize, open: bool) -> RowClicks {
     let mut clicked = false;
+    let mut stop = false;
     let mut fold = false;
+    let stoppable = task.cancellable && !task.cancelling;
     let r = ui.vertical(|ui| {
         ui.set_width(width);
         ui.horizontal(|ui| {
-            let cross = task.cancellable && !task.cancelling;
+            let cross = stoppable && task.stop_warning.is_none();
             let label_w = if cross { width - CROSS - 6.0 } else { width };
             ui.allocate_ui_with_layout(vec2(label_w, 18.0), Layout::left_to_right(Align::Center), |ui| {
                 // the whole width, so the cross lands at the right edge however short the name
                 ui.set_width(label_w);
-                ui.add(egui::Label::new(RichText::new(tr(&task.label)).font(t.font(12.5)).color(t.text)).truncate());
+                ui.add(egui::Label::new(RichText::new(label_text(task)).font(t.font(12.5)).color(t.text)).truncate());
             });
             if cross {
                 let (rect, resp) = ui.allocate_exact_size(vec2(CROSS, CROSS), Sense::click());
@@ -415,6 +475,12 @@ fn row(ui: &mut egui::Ui, t: &Tokens, task: &TaskInfo, width: f32, kids: usize, 
         if !line.is_empty() {
             ui.add(egui::Label::new(RichText::new(line).font(t.font(11.0)).color(t.text_dim)).truncate());
         }
+        if stoppable && task.stop_warning.is_some() {
+            let r = ui.add(egui::Label::new(RichText::new(tr("Stop Waiting…")).font(t.font(11.0)).color(t.accent)).sense(Sense::click()));
+            crate::widgets::announce(&r, tr("Stop Waiting…"));
+            register(ui.ctx(), format!("activity:stop:{}", task.id), r.rect);
+            stop = r.clicked();
+        }
         if kids > 0 {
             let text = if open { tr("Hide each photo").to_string() } else { tr_format!("Show each photo ({n})", n = kids) };
             let r = ui.add(egui::Label::new(RichText::new(text).font(t.font(11.0)).color(t.accent)).sense(Sense::click()));
@@ -423,7 +489,7 @@ fn row(ui: &mut egui::Ui, t: &Tokens, task: &TaskInfo, width: f32, kids: usize, 
         }
     });
     register(ui.ctx(), format!("activity:row:{}", task.id), r.response.rect);
-    (clicked, fold)
+    RowClicks { cross: clicked, stop, fold }
 }
 
 /// The progress bar, named after its task for screen readers; while the amount of work isn't
@@ -431,6 +497,6 @@ fn row(ui: &mut egui::Ui, t: &Tokens, task: &TaskInfo, width: f32, kids: usize, 
 pub(crate) fn bar(ui: &mut egui::Ui, task: &TaskInfo, width: f32) -> egui::Response {
     let fraction = (task.total > 0).then(|| (task.done as f64 / task.total as f64) as f32);
     let response = crate::progress::Progress::new(fraction).width(width).dimmed(task.cancelling).show(ui);
-    crate::widgets::screen_reader_name(ui.ctx(), response.id, tr(&task.label));
+    crate::widgets::screen_reader_name(ui.ctx(), response.id, &label_text(task));
     response
 }

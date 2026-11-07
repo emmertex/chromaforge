@@ -643,14 +643,19 @@ mod tests {
             h.view.painted_text().join("\n")
         };
         const PREVIEW: &str = "AI Denoise needs the raw sensor data, and this file opens as its embedded preview.";
+        // a finished picture (JPEG, PNG, TIFF) is denoised by a model made for it: without one installed it says so
+        const NEEDS_MODEL: &str = "AI Denoise needs a model for finished pictures: install one in Settings ▸ AI Denoise.";
         const RAW_ONLY: &str = "AI Denoise works on raw files only.";
         let text = shown(&mut h, he);
         assert!(text.contains(PREVIEW), "a preview-only raw says why: {text}");
         assert!(text.contains("Nikon High Efficiency NEF (JPEG XS) is not decoded yet."), "with the decoder's reason: {text}");
         let text = shown(&mut h, jpeg);
-        assert!(text.contains(RAW_ONLY) && !text.contains(PREVIEW), "a JPEG says raws only: {text}");
+        assert!(text.contains(NEEDS_MODEL) && !text.contains(PREVIEW), "a JPEG says it needs a finished-picture model: {text}");
         let text = shown(&mut h, raw);
-        assert!(!text.contains(RAW_ONLY) && !text.contains(PREVIEW), "a raw denoise applies to explains nothing: {text}");
+        assert!(
+            !text.contains(RAW_ONLY) && !text.contains(NEEDS_MODEL) && !text.contains(PREVIEW),
+            "a raw denoise applies to explains nothing: {text}"
+        );
     }
 
     /// Install from file… with a model the engine rejects says why in the AI Denoise section (#1381), instead of
@@ -5999,7 +6004,7 @@ mod tests {
             ("", egui::CursorIcon::Grab),
             // the colour pickers hide the system pointer: the eyedropper is painted instead
             ("wbPicker", egui::CursorIcon::None),
-            ("colorRange", egui::CursorIcon::None),
+            // (Color Range is a mask tool: outside Masking it is put away, so it has no cursor to keep here)
             ("pointColor", egui::CursorIcon::None),
             ("tat:curve", egui::CursorIcon::ResizeVertical),
         ] {

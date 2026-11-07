@@ -692,7 +692,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                         if let Some(t) = &req.title {
                             d = d.set_title(t);
                         }
-                        if let Some((name, exts)) = &req.filter {
+                        for (name, exts) in req.filters() {
                             d = d.add_filter_nocase(name.clone(), exts);
                         }
                         if let Some(n) = &req.file_name {
@@ -720,8 +720,10 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         log_file: log_file.map(|p| p.display().to_string()),
         pick_lightroom_catalog: picker!(|| {
             file_dialog()
-                .set_title(lcc_ui_egui::i18n::tr("Import Lightroom Catalog"))
+                .set_title(lcc_ui_egui::i18n::tr("Import Lightroom or Capture One Catalog"))
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom or Capture One Catalog"), &["lrcat", "cocatalogdb"])
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom Classic Catalog"), &["lrcat"])
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Capture One Catalog"), &["cocatalogdb"])
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
         }),
@@ -1404,6 +1406,9 @@ fn main() -> eframe::Result {
     }
     let gpu_on = prefs.as_ref().is_none_or(|u| u.settings.gpu) && gpu_crash.is_none();
     lcc_engine::gpu::set_enabled(gpu_on);
+    // batch work (exports, previews being built) leaves the editing card to the interface while it
+    // is used, and goes to a second graphics card first
+    lcc_engine::gpu::track_interaction(true);
     if let Some(u) = &prefs {
         lcc_engine::gpu::backend::set_compute_preference(u.settings.gpu_backend.name());
     }

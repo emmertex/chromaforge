@@ -513,6 +513,10 @@ pub struct AppSettings {
     /// Exports sharing the GPU at once (0 = automatic).
     #[serde(deserialize_with = "lenient")]
     pub gpu_export_jobs: u32,
+    /// The graphics cards exports use when there is a second one (Settings ▸ Performance):
+    /// both (the default), the card for editing only, or the second card only (to measure it).
+    #[serde(deserialize_with = "lenient")]
+    pub export_cards: lcc_engine::export::ExportCards,
     /// The last "Test my machine" (Settings ▸ Performance): what it measured and chose.
     #[serde(deserialize_with = "lenient")]
     pub machine_test: Option<lcc_engine::machine_test::MachineReport>,
@@ -586,7 +590,7 @@ pub struct AppSettings {
     /// View ▸ View Options: the lines the loupe's info overlay shows in Info 1 and Info 2.
     #[serde(deserialize_with = "lenient")]
     pub loupe_info: LoupeInfo,
-    /// File ▸ Import Lightroom Catalog…: ask whether the catalog merges into the open library or
+    /// File ▸ Import Lightroom or Capture One Catalog…: ask whether the catalog merges into the open library or
     /// gets a new one, or always merge (issue #2672; the window's "Don't ask again" picks that).
     #[serde(deserialize_with = "lenient")]
     pub lightroom_import: LightroomImport,
@@ -635,7 +639,7 @@ impl EditInMode {
     }
 }
 
-/// Where File ▸ Import Lightroom Catalog… puts a catalog (Settings ▸ General ▸ Library). Saved as
+/// Where File ▸ Import Lightroom or Capture One Catalog… puts a catalog (Settings ▸ General ▸ Library). Saved as
 /// `"ask"` / `"alwaysMerge"`; anything else in a hand-edited `ui.json` reads as [`Self::Ask`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -706,6 +710,7 @@ impl Default for AppSettings {
             export_cpu_only: false,
             gpu_export_mb: 0,
             gpu_export_jobs: 0,
+            export_cards: Default::default(),
             machine_test: None,
             film_names: true,
             film_badges: true,
@@ -1147,6 +1152,10 @@ pub struct UiState {
     /// The view showed a browsed folder last frame ([`crate::import_tab::keep_in_step`]).
     #[serde(skip)]
     pub import_was_browsing: bool,
+    /// Developing a browsed photo without importing it: the Library tab shows the Develop module
+    /// on the folder's active photo while the browse stays on ([`crate::import_tab::keep_in_step`]).
+    #[serde(skip)]
+    pub import_develop: bool,
     /// The library filter the Import tab put aside on entering it (the tab has no filter bar and a
     /// card's files must not hide behind a Library filter); restored when the Library tab returns.
     #[serde(skip)]
@@ -1304,6 +1313,10 @@ pub struct UiState {
     /// Mask IDs whose sub-actions are collapsed in the masking panel.
     #[serde(default)]
     pub collapsed_masks: std::collections::HashSet<u32>,
+    /// Masks other than the selected one whose components are shown all the same (the chevron):
+    /// only the selected mask's branch is open by itself.
+    #[serde(skip)]
+    pub expanded_masks: std::collections::HashSet<u32>,
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
@@ -1416,6 +1429,9 @@ pub struct UiState {
     #[serde(skip)]
     pub dragging_control: Option<String>,
     pub search: String,
+    /// Search box uses natural-language (semantic) search (`library.filter {"semantic": …}`) instead of text match.
+    #[serde(skip)]
+    pub semantic_search: bool,
     /// Focus the search field on the next frame (Edit → Find…).
     #[serde(skip)]
     pub focus_search: bool,
@@ -1799,6 +1815,8 @@ pub enum Dialog {
         library: Option<String>,
         details: Vec<String>,
         first: Option<u64>,
+        /// The catalog was Capture One's (the same import reads it); the title and note say so.
+        capture_one: bool,
     },
     /// File ▸ Print…: the Print module. Its state is the session's (`print.*`); the page on show
     /// and the selected cell are [`UiState::print`].
@@ -2074,7 +2092,7 @@ pub enum Dialog {
         folder: String,
         catalog: Option<String>,
     },
-    /// File ▸ Import Lightroom Catalog…: where the catalog at `catalog` goes (issue #2672, see
+    /// File ▸ Import Lightroom or Capture One Catalog…: where the catalog at `catalog` goes (issue #2672, see
     /// [`crate::lightroom_destination`]). Merge into the open library `library` (`photos` in it), or
     /// (`new_library`) create the library `name` in the folder `location`, switch to it and import
     /// there. `dont_ask`: merge from now on without asking. `generation`: the library the window
@@ -2142,6 +2160,13 @@ pub enum Dialog {
         index: usize,
         prompt: String,
         variations: u32,
+    },
+    /// Stop a task whose stop throws work away (a plug-in's wait for a program: "Stop Waiting…" in the activity list).
+    /// `task` and `warning` are shown as given (translated, names in); confirming runs `activity.cancel` for `id`.
+    StopWaiting {
+        id: u64,
+        task: String,
+        warning: String,
     },
     /// Confirm moving photos to Recently Deleted or deleting from disk.
     ConfirmDelete {
@@ -2296,12 +2321,14 @@ impl Default for UiState {
             mask_held: None,
             mask_drawing: None,
             collapsed_masks: Default::default(),
+            expanded_masks: Default::default(),
             view: ViewMode::Detail,
             grid_style: ViewMode::PhotoGrid,
             modern: crate::modern::ModernUi::default(),
             tab: Default::default(),
             library_source: None,
             import_was_browsing: false,
+            import_develop: false,
             import_shelved_filter: false,
             left_panel: false,
             left_width: LEFT_WIDTH.default,
@@ -2386,6 +2413,7 @@ impl Default for UiState {
             sidecars_waiting: 0,
             known_cards: None,
             search: String::new(),
+            semantic_search: false,
             focus_search: false,
             renaming_mask: None,
             describe: None,
@@ -2660,6 +2688,21 @@ impl UiState {
             self.collapsed_masks.remove(&id);
         } else {
             self.collapsed_masks.insert(id);
+        }
+    }
+
+    /// Whether a mask's components show under it in the Masking panel: the selected mask's unless
+    /// its chevron folded them, another mask's only when its chevron opened them.
+    pub fn mask_branch_open(&self, id: u32, selected: bool) -> bool {
+        if selected { !self.collapsed_masks.contains(&id) } else { self.expanded_masks.contains(&id) }
+    }
+
+    /// The chevron on a mask's row: folds or opens its components (see [`Self::mask_branch_open`]).
+    pub fn toggle_mask_branch(&mut self, id: u32, selected: bool) {
+        if selected {
+            self.toggle_mask_collapsed(id);
+        } else if !self.expanded_masks.remove(&id) {
+            self.expanded_masks.insert(id);
         }
     }
 

@@ -80,6 +80,8 @@ impl HostApi for NoHost {}
 pub(crate) struct CallContext<'a> {
     /// The plug-in's id.
     pub plugin: &'a str,
+    /// Its display name (the manifest's `name`).
+    pub plugin_name: &'a str,
     /// What its manifest asks for (`program.list` answers for declared programs).
     pub requested: &'a Permissions,
     /// What it may do (granted ∩ requested).
@@ -300,7 +302,8 @@ impl CallContext<'_> {
         let args = expand_args(p.get("args").unwrap_or(&Value::Null), dir.path())?;
         let tmp = dir.path().to_path_buf();
         let run_id = reservation.run().to_string();
-        let req = StartRequest { plugin: self.plugin.to_string(), program: decl, found, args, dir, reservation };
+        let req =
+            StartRequest { plugin: self.plugin.to_string(), plugin_name: self.plugin_name.to_string(), program: decl, found, args, dir, reservation };
         self.host.start_program(req)?;
         Ok(json!({"run": run_id, "tmpDir": tmp}))
     }

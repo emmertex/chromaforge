@@ -2215,6 +2215,196 @@ fn a_wheel_notch_resizes_the_brush_instead_of_zooming() {
     assert_ne!(h.app.ui.zoom, zoom0, "with the preference off the wheel zooms");
 }
 
+/// Issue #808: with the brush active, a trackpad two-finger vertical scroll over the photo resizes the brush
+/// instead of panning; holding Space bar lets the gesture move the frame around (pan).
+#[test]
+fn trackpad_scroll_resizes_brush_and_space_pans() {
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    pointer(&mut h, json!([{"kind": "move", "x": 0.5, "y": 0.5}]));
+    h.settle(SETTLE);
+
+    let scroll_trackpad = |h: &mut Headless, dy: f32| {
+        h.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        for _ in 0..10 {
+            h.step();
+        }
+    };
+
+    let (size0, zoom0) = (h.app.ui.brush_size, h.app.ui.zoom);
+    scroll_trackpad(&mut h, 50.0);
+    assert!(h.app.ui.brush_size > size0, "scrolling up on trackpad grows the brush: {size0} -> {}", h.app.ui.brush_size);
+    assert_eq!(h.app.ui.zoom, zoom0, "and does not zoom");
+    let size1 = h.app.ui.brush_size;
+    scroll_trackpad(&mut h, -50.0);
+    assert!(h.app.ui.brush_size < size1, "scrolling down shrinks it: {size1} -> {}", h.app.ui.brush_size);
+
+    // Zoom in so panning is possible
+    let r = h.app.run("view.navigate", json!({"zoom": {"percent": 200.0}, "pan": [0.5, 0.5]}));
+    assert!(r.is_ok(), "{r:?}");
+    for _ in 0..5 {
+        h.step();
+    }
+    let pan0 = h.app.ui.pan;
+    let size_before_space = h.app.ui.brush_size;
+
+    // Holding Space bar + scroll moves the frame around (pan) instead of resizing the brush
+    let r = h.request("ui.key", json!({"key": "Space", "action": "down"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    scroll_trackpad(&mut h, 50.0);
+    assert_eq!(h.app.ui.brush_size, size_before_space, "holding Space does not resize the brush");
+    assert_ne!(h.app.ui.pan, pan0, "holding Space moves the frame around (pans)");
+    let r = h.request("ui.key", json!({"key": "Space", "action": "up"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+
+    // With the preference off: trackpad scroll does not resize the brush
+    h.app.ui.settings.wheel_resizes_brush = false;
+    let size_off = h.app.ui.brush_size;
+    scroll_trackpad(&mut h, 50.0);
+    assert_eq!(h.app.ui.brush_size, size_off, "with preference off, trackpad scroll does not resize brush");
+}
+
+#[test]
+fn trackpad_scroll_resizes_remove_brush() {
+    let mut h = detail("panel.remove");
+    h.settle(SETTLE);
+    pointer(&mut h, json!([{"kind": "move", "x": 0.5, "y": 0.5}]));
+    h.settle(SETTLE);
+
+    let scroll_trackpad = |h: &mut Headless, dy: f32| {
+        h.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        for _ in 0..10 {
+            h.step();
+        }
+    };
+
+    let size0 = h.app.ui.remove_size;
+    scroll_trackpad(&mut h, 50.0);
+    assert!(h.app.ui.remove_size > size0, "trackpad scroll up grows remove brush: {size0} -> {}", h.app.ui.remove_size);
+    let size1 = h.app.ui.remove_size;
+    scroll_trackpad(&mut h, -50.0);
+    assert!(h.app.ui.remove_size < size1, "trackpad scroll down shrinks remove brush: {size1} -> {}", h.app.ui.remove_size);
+}
+
+#[test]
+fn mask_brush_toggles_and_disarms_with_tile_done_button_or_escape() {
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+
+    // 1. Clicking the Brush tile arms it
+    click(&mut h, "maskNew:brush");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "brush", "clicking Brush tile arms it");
+    assert!(h.app.ui.mask_new.is_some(), "armed for a new mask");
+
+    // 2. Clicking the active Brush tile again toggles it off
+    click(&mut h, "maskNew:brush");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "clicking active Brush tile disarms it");
+    assert!(h.app.ui.mask_new.is_none(), "mask_new cleared");
+
+    // 3. Re-arm and paint a stroke to make a mask
+    click(&mut h, "maskNew:brush");
+    h.settle(SETTLE);
+    pointer(&mut h, json!([{"kind": "down", "x": 0.5, "y": 0.5}, {"kind": "drag", "x": 0.55, "y": 0.55}, {"kind": "up", "x": 0.55, "y": 0.55}]));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "brush", "brush active on the new mask");
+    assert!(!develop(&h).masks.is_empty(), "mask was created");
+
+    // 4. Clicking the 'Done' button in the brush header disarms the brush
+    click(&mut h, "button:brushDone");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "clicking Done disarms the brush");
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Masking, "stays in Masking panel");
+
+    // 5. Re-arming via shortcut/command, then pressing Escape disarms it
+    exec(&mut h, "tool.brush", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "brush", "re-armed brush");
+    let r = h.request("ui.key", json!({"key": "Escape"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "Escape disarms the active brush");
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Masking, "stays in Masking panel on first Escape");
+}
+
+#[test]
+fn mask_object_toggles_and_disarms_with_tile_done_button_or_escape() {
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+
+    // 1. Clicking Object tile arms it
+    click(&mut h, "maskNew:object");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "object", "clicking Object tile arms it");
+
+    // 2. Clicking active Object tile toggles it off
+    click(&mut h, "maskNew:object");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "clicking active Object tile disarms it");
+
+    // 3. Re-arm via command, verify Done button disarms it
+    exec(&mut h, "tool.object", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "object", "armed object");
+    click(&mut h, "button:objectDone");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "clicking Done disarms object tool");
+
+    // 4. Re-arm and verify Escape disarms it
+    exec(&mut h, "tool.object", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "object", "armed object");
+    let r = h.request("ui.key", json!({"key": "Escape"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.tool, "", "Escape disarms object tool");
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Masking, "stays in Masking panel");
+}
+
+#[test]
+fn tool_commands_toggle_off_when_invoked_while_active() {
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+
+    // tool.brush toggle
+    exec(&mut h, "tool.brush", json!({}));
+    assert_eq!(h.app.ui.tool, "brush");
+    exec(&mut h, "tool.brush", json!({"toggle": true}));
+    assert_eq!(h.app.ui.tool, "", "tool.brush with toggle toggles off");
+
+    // tool.object toggle
+    exec(&mut h, "tool.object", json!({}));
+    assert_eq!(h.app.ui.tool, "object");
+    exec(&mut h, "tool.object", json!({"toggle": true}));
+    assert_eq!(h.app.ui.tool, "", "tool.object with toggle toggles off");
+
+    // tool.linear toggle
+    exec(&mut h, "tool.linear", json!({}));
+    assert_eq!(h.app.ui.tool, "linear");
+    exec(&mut h, "tool.linear", json!({"toggle": true}));
+    assert_eq!(h.app.ui.tool, "", "tool.linear with toggle toggles off");
+
+    // tool.radial toggle
+    exec(&mut h, "tool.radial", json!({}));
+    assert_eq!(h.app.ui.tool, "radial");
+    exec(&mut h, "tool.radial", json!({"toggle": true}));
+    assert_eq!(h.app.ui.tool, "", "tool.radial with toggle toggles off");
+}
+
 #[test]
 fn effect_dropdown_applies_saves_and_shows_the_matching_effect() {
     let mut h = detail("panel.masking");

@@ -196,6 +196,44 @@ pub struct Shared {
     pub encoding: AtomicBool,
     /// Requests running or queued as background work ([`Job::low`]).
     pub low_pending: AtomicUsize,
+    /// The request running now ([`running_code`]: 0 none, a Recompute AI Masks batch's code, or [`RUN_OTHER`]) and
+    /// whether it is background work: what a batch waiting behind it says (OneSlips 9bb601286).
+    pub running: std::sync::atomic::AtomicU64,
+    pub running_low: AtomicBool,
+}
+
+/// [`Shared::running`] for a request that isn't part of a Recompute AI Masks batch.
+pub const RUN_OTHER: u64 = u64::MAX;
+
+/// [`Shared::running`] for a request tagged `tag`: its Recompute AI Masks batch's code, or [`RUN_OTHER`].
+pub fn running_code(tag: &Tag) -> u64 {
+    match tag {
+        Tag::Recompute { run, .. } => run_code(*run),
+        _ => RUN_OTHER,
+    }
+}
+
+/// [`Shared::running`] while a job of Recompute AI Masks batch `run` runs (never 0 or [`RUN_OTHER`]).
+pub fn run_code(run: u64) -> u64 {
+    run.saturating_add(1).min(RUN_OTHER - 1)
+}
+
+/// Says which request runs while alive ([`Shared::running`]).
+struct Running<'a>(&'a Shared);
+
+impl<'a> Running<'a> {
+    fn start(shared: &'a Shared, job: &Job) -> Self {
+        shared.running.store(running_code(&job.tag), Ordering::SeqCst);
+        shared.running_low.store(job.low, Ordering::SeqCst);
+        Running(shared)
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.running.store(0, Ordering::SeqCst);
+        self.0.running_low.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Decrements a counter when dropped (also when unwinding).
@@ -374,6 +412,7 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
             let _ = job.reply.send(Outcome { tag: job.tag, result: Ok(None), superseded: true, notice: None, extra: None });
             continue;
         }
+        let running = Running::start(shared, &job);
         // what a retry on the CPU needs (running the job takes them)
         let retry = (placement == Placement::Gpu && remote::configured().is_none()).then(|| (job.kind.clone(), job.render.clone()));
         let mut result = attempt(&mut state, shared, &mut job, placement);
@@ -411,6 +450,7 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
         }
         shared.loaded.store(state.model.is_some() || state.sam2.is_some() || state.owl.is_some() || state.remote.is_some(), Ordering::SeqCst);
         drop(done);
+        drop(running);
         let _ = job.reply.send(Outcome { tag: job.tag, result, superseded: false, notice, extra });
     }
 }

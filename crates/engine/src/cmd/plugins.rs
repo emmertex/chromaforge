@@ -1690,9 +1690,17 @@ pub(crate) mod tests {
         );
         let rows: Vec<_> = s.activity.list().into_iter().filter(|t| t.kind == "pluginProgram").collect();
         assert_eq!(rows.len(), 1, "one row for the run");
-        assert_eq!(rows[0].detail, "Converter");
+        // the row names the program and the plug-in, says when the results come back, and warns that stopping
+        // throws them away (agents see the same in `activity.list`)
+        assert_eq!(rows[0].label, "Waiting for Converter to finish (Prog)");
+        assert_eq!(rows[0].detail, "The results come back when Converter closes");
+        let listed = s.execute("activity.list", &json!({})).unwrap();
+        let listed = listed["tasks"].as_array().into_iter().flatten().find(|t| t["kind"] == "pluginProgram").cloned().unwrap_or_default();
+        assert!(listed["stopWarning"].as_str().is_some_and(|w| w.contains("Converter keeps running")), "{listed}");
+        assert_eq!(listed["label"], "Waiting for Converter to finish (Prog)", "{listed}");
 
-        // ✕: the run ends (its hook runs once), the program and its folder stay
+        // activity.cancel (what ✕ was; the app now asks first): the run ends at once (its hook runs once), the
+        // program and its folder stay
         s.activity.cancel(rows[0].id).unwrap();
         eventually("the cancelled run's hook", || end_failures() == 1);
         eventually("the cancelled run's row to go", || s.activity.list().iter().all(|t| t.kind != "pluginProgram"));
@@ -1796,7 +1804,15 @@ pub(crate) mod tests {
             let folder = dir.path().to_path_buf();
             let found = host.find_program(&decl).remove(0);
             let reservation = lcc_plugins::Reservation::take("test.hook", "conv").unwrap();
-            let req = lcc_plugins::StartRequest { plugin: "test.hook".into(), program: decl.clone(), found, args: vec![], dir, reservation };
+            let req = lcc_plugins::StartRequest {
+                plugin: "test.hook".into(),
+                plugin_name: "Test hook".into(),
+                program: decl.clone(),
+                found,
+                args: vec![],
+                dir,
+                reservation,
+            };
             let e = host.start_program(req).unwrap_err();
             assert!(e.contains("from a command"), "{what}: {e}");
             assert!(!folder.exists(), "{what}: the refused run's folder is gone");

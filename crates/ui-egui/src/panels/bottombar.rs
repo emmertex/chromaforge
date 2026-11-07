@@ -19,9 +19,27 @@ const VIEW_MODES: &[(&str, Icon, ViewMode, &str)] = &[
     ("people", Icon::People, ViewMode::People, "People"),
 ];
 
-/// From this bar width the Compact Auto Sync switch carries its name; narrower, the switch alone
-/// (its tooltip names it), so the rest of the bar keeps its room.
-pub const LABELLED_SWITCH_WIDTH: f32 = 1600.0;
+/// Where the bar keeps the room it had last frame for the Compact Auto Sync switch's name: the
+/// points left over with every other item in its full form and the switch unlabelled.
+const SWITCH_ROOM: &str = "bottomBarAutoSyncRoom";
+
+/// Whether the Compact Auto Sync switch carries its name: when the name fits next to every other
+/// item of the bar in its full form (the room measured last frame, see [`SWITCH_ROOM`]); otherwise
+/// the switch alone (its tooltip names it), so the rest of the bar keeps its room.
+fn auto_sync_labelled(room: Option<f32>, label_extra: f32) -> bool {
+    room.is_some_and(|room| room.is_finite() && room >= label_extra)
+}
+
+/// How much wider the Auto Sync switch is with its name: the name, measured, and its padding.
+fn auto_sync_label_extra(ui: &egui::Ui, t: &Tokens) -> f32 {
+    let label = crate::i18n::tr("Auto Sync");
+    ui.painter().layout_no_wrap(label.to_string(), t.font(12.0), t.text_label).size().x + SWITCH_LABEL_PAD
+}
+
+/// The labelled switch is its name plus this much wider than the bare switch.
+const SWITCH_LABEL_PAD: f32 = 8.0;
+/// The switch box's corner radius, the bar's icon buttons' own.
+pub(crate) const SWITCH_RADIUS: f32 = 4.0;
 
 pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
@@ -31,7 +49,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             let full = ui.max_rect();
             let compact_zoom = full.width() < 360.0;
-            let right_start = right_side(app, ui, full, compact_zoom);
+            let room_id = egui::Id::new(SWITCH_ROOM);
+            let extra = auto_sync_label_extra(ui, &t);
+            let labelled = auto_sync_labelled(ui.ctx().data(|d| d.get_temp::<f32>(room_id)), extra);
+            let (right_start, label_drawn) = right_side(app, ui, full, compact_zoom, labelled);
+            // where the right group would start with the switch unlabelled
+            let right_start_bare = if label_drawn { right_start + extra } else { right_start };
             let left_rect = Rect::from_min_max(full.min, pos2((right_start - 12.0).max(full.left()), full.bottom()));
             let mut left_ui = ui.new_child(egui::UiBuilder::new().max_rect(left_rect));
             let left_end = left_ui
@@ -94,7 +117,31 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 .rect
                 .right();
             centre(app, ui, full, left_end + 12.0, right_start - 12.0);
+            // the room the switch's name would have next frame: what is left between the side groups,
+            // the switch unlabelled, once the left group and the centre have their full forms
+            let left_full = right_start_bare - 12.0 - full.left() >= if library_grid(app) { 520.0 } else { 270.0 };
+            let room = if left_full { right_start_bare - 12.0 - (left_end + 12.0) - centre_full_width(app, ui) } else { f32::NEG_INFINITY };
+            ui.ctx().data_mut(|d| d.insert_temp(room_id, room));
+            if auto_sync_labelled(Some(room), extra) != labelled {
+                ui.ctx().request_repaint();
+            }
         });
+}
+
+/// The centre's width in its full form: the rating/flag pill, then (outside the Library) the copy /
+/// paste settings buttons.
+fn centre_full_width(app: &LccApp, ui: &egui::Ui) -> f32 {
+    let (pill_w, copy) = centre_widths(app, ui);
+    if app.ui.module == crate::module::ModuleId::Library { pill_w } else { pill_w + copy }
+}
+
+/// The rating/flag pill's width and the copy / paste settings buttons' (with their gaps).
+fn centre_widths(app: &LccApp, ui: &egui::Ui) -> (f32, f32) {
+    let t = Tokens::get(ui.ctx());
+    let label = crate::i18n::tr(if app.session.clipboard.is_some() { "Paste Edit Settings" } else { "Copy Edit Settings" });
+    let copy_width = (ui.painter().layout_no_wrap(label.to_string(), t.font(13.0), t.text_label).size().x + 24.0).max(136.0);
+    let pill_w = if library_grid(app) { PILL_W + LABELS_W } else { PILL_W };
+    (pill_w, 10.0 + copy_width + 4.0 + 30.0)
 }
 
 /// Five 19-point stars, three 22-point flags, seven 3-point gaps, a 6-point group gap
@@ -130,10 +177,10 @@ fn centre(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, from: f32, to: f32) {
     let t = Tokens::get(ui.ctx());
     let has_clip = app.session.clipboard.is_some();
     let label = crate::i18n::tr(if has_clip { "Paste Edit Settings" } else { "Copy Edit Settings" });
-    let copy_width = (ui.painter().layout_no_wrap(label.to_string(), t.font(13.0), t.text_label).size().x + 24.0).max(136.0);
     let labels = library_grid(app);
-    let pill_w = if labels { PILL_W + LABELS_W } else { PILL_W };
-    let centre_width = pill_w + 10.0 + copy_width + 4.0 + 30.0;
+    let (pill_w, copy_w) = centre_widths(app, ui);
+    let copy_width = copy_w - 10.0 - 4.0 - 30.0;
+    let centre_width = pill_w + copy_w;
     let room = to - from;
     if room < pill_w {
         return;
@@ -240,8 +287,9 @@ fn centre(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, from: f32, to: f32) {
     }
 }
 
-/// The right-hand group (zoom, view toggles or thumbnail size); returns its left edge.
-fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: bool) -> f32 {
+/// The right-hand group (zoom, view toggles or thumbnail size), the Auto Sync switch named when
+/// `labelled`; returns its left edge and whether the switch was drawn with its name.
+fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: bool, labelled: bool) -> (f32, bool) {
     let t = Tokens::get(ui.ctx());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -253,11 +301,13 @@ fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: boo
     );
     child.spacing_mut().item_spacing.x = 6.0;
     // Compact: Auto Sync at the far right in the library, so one glance says whether an edit goes to
-    // every selected photo (gone on a very narrow bar, its name too on a narrow one: Edit ▸ Auto Sync
-    // and the switch under the Edit panel are always there)
+    // every selected photo (gone on a very narrow bar, its name too when it does not fit: Edit ▸ Auto
+    // Sync and the switch under the Edit panel are always there)
+    let mut label_drawn = false;
     if app.compact() && !app.importing() && full.width() >= 360.0 {
         let on = app.session.auto_sync;
-        if auto_sync_switch(&mut child, &t, on, full.width() >= LABELLED_SWITCH_WIDTH).clicked()
+        label_drawn = labelled;
+        if auto_sync_switch(&mut child, &t, on, labelled).clicked()
             && let Err(e) = app.run("develop.autoSync", json!({"on": !on}))
         {
             app.toast_error(child.ctx(), e);
@@ -349,7 +399,7 @@ fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: boo
             }
         }
     }
-    if child.min_rect().width() > 0.0 { child.min_rect().left() } else { full.right() }
+    (if child.min_rect().width() > 0.0 { child.min_rect().left() } else { full.right() }, label_drawn)
 }
 
 /// The Compact bottom bar's Auto Sync switch (widget `toggle:autoSync`): its name (when `labelled`)
@@ -359,7 +409,7 @@ fn auto_sync_switch(ui: &mut egui::Ui, t: &Tokens, on: bool, labelled: bool) -> 
     let text = if on { Color32::WHITE } else { t.text_label };
     let g = ui.painter().layout_no_wrap(if labelled { label.to_string() } else { String::new() }, t.font(12.0), text);
     let knob_w = 22.0;
-    let w = if labelled { g.size().x + knob_w + 22.0 } else { knob_w + 14.0 };
+    let w = if labelled { g.size().x + SWITCH_LABEL_PAD + knob_w + 14.0 } else { knob_w + 14.0 };
     let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, label));
     register(ui.ctx(), "toggle:autoSync", r);
@@ -371,8 +421,9 @@ fn auto_sync_switch(ui: &mut egui::Ui, t: &Tokens, on: bool, labelled: bool) -> 
     } else {
         t.button
     };
-    p.rect_filled(r, 0.0, fill);
-    p.rect_stroke(r, 0.0, Stroke::new(1.0, if on { t.accent } else { t.button_border }), StrokeKind::Inside);
+    // rounded as the bar's other buttons are (`icon_button`)
+    p.rect_filled(r, SWITCH_RADIUS, fill);
+    p.rect_stroke(r, SWITCH_RADIUS, Stroke::new(1.0, if on { t.accent } else { t.button_border }), StrokeKind::Inside);
     if labelled {
         p.galley(pos2(r.left() + 8.0, r.center().y - g.size().y / 2.0), g, text);
     }
