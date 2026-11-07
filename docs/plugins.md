@@ -543,7 +543,7 @@ Besides the plug-ins above, <app> runs **pixel filters** written for PhotoCraft'
 `memory`, `pc_abi_version`, `pc_manifest`, `pc_alloc` and `pc_filter`. They install the same way
 (File ▸ Plug-ins ▸ Plug-in Manager…, or `<cli> commands plugin.install '{"path": "film.wasm"}'`): the host
 sniffs the exports and keeps filter modules in the same folder, in a registry of their own.
-`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze}`
+`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze, icon, header}`
 (`params` is the manifest's spec); `plugin.uninstall` removes one. Filters ask for no permissions.
 
 A photo's filter stack is part of its develop settings (`develop.pluginFilter.add {plugin,
@@ -593,6 +593,17 @@ already a finished picture (a negative conversion with its own tone curve) may s
 shown as it is, as a JPEG would be, so the filter's tones aren't toned a second time. Contrast,
 Whites and Blacks still apply. Hosts without the field use their base tone. `plugin.list` shows it as
 `baseTone`.
+
+**A filter's own pictures (ABI v1.1 proposal).** A manifest may carry `"icon"`, a square SVG
+document the Plug-in Manager shows in place of the icon it draws from the id, and `"header"`, an
+SVG the Develop panel shows at the top of the filter's controls in place of its name (`"header":
+"<svg…>"`, or `{"dark": "<svg…>", "light": "<svg…>"}` for the dark and light interface themes;
+with one of the two the other theme gets it as well). Each is at most 24 KiB and is drawn as an
+untrusted document: only its own shapes, never an image it links to (a file on disk) or embeds (a
+`data:` URL); a picture that isn't square is fitted into the icon's square with its aspect kept;
+one that isn't an SVG document is dropped (the icon from the id, the name). Hosts without the fields ignore them.
+`plugin.list` shows `icon` and `header` as booleans; `plugin.picture {id, picture?: header|icon,
+theme?: dark|light}` gives the SVG text.
 
 **Pixel scale.** A Source filter that reads neighbours (manifest `overlap` > 0: an unsharp mask,
 grain, a blur) would look different at each render size, its kernel spanning more of the photo in

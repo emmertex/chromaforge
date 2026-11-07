@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-use lcc_develop::Preset;
+use lcc_catalog::PhotoId;
+use lcc_develop::{DevelopSettings, Preset};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -195,6 +196,39 @@ pub fn expand_preset_paths(paths: &[String]) -> Vec<String> {
 }
 
 impl Session {
+    /// The settings after applying `preset` to photo `id` at `amount` (1.0 = 100 %). Each setting the
+    /// preset names is blended from the photo's import look ([`lcc_catalog::Photo::import_defaults`])
+    /// when a default preset recorded one (`import_look`); a photo without one (its settings came from
+    /// an XMP sidecar or a catalog import, which record none) blends from its current settings, since
+    /// the camera defaults are not its import state. Either way the settings the preset does not name
+    /// keep the photo's values. A preset naming one white balance number is resolved on the photo's
+    /// scale first (issue #2910). The `preset.apply` command and the Presets panel's previews share
+    /// this, so hovering shows what a click commits (adapted from upstream #2207). `None` for an
+    /// unknown photo.
+    pub fn preset_applied(&self, id: PhotoId, preset: &Preset, amount: f64) -> Option<DevelopSettings> {
+        let current = self.develop_of(id)?;
+        let photo = self.catalog.photo(id)?;
+        // a hand-written preset may name one white balance number only, and then it means the same as
+        // a partial: bring the photo onto that scale first, with its own as-shot white, and put the
+        // result back on the scale the photo is edited on (issue #2910) — the merge `develop.merge` uses.
+        // (The source's facts are read only then: the panel asks for every visible row on every frame.)
+        let info = crate::cmd::develop::wb_partial_names_one_number(&preset.settings).then(|| self.source_info(id));
+        let prepare =
+            |d: &DevelopSettings| info.as_ref().and_then(|info| crate::cmd::develop::prepare_photo_for_wb_partial(d, &preset.settings, info));
+        let prepared = prepare(&current);
+        let base: &DevelopSettings = prepared.as_ref().unwrap_or(&current);
+        // the import look is read only below or above 100 %: at 100 % the preset's values apply as they are
+        let imported = (photo.import_look.is_some() && (amount - 1.0).abs() >= 1e-9).then(|| {
+            let d = photo.import_defaults();
+            prepare(&d).unwrap_or(d)
+        });
+        let mut next = preset.apply_on(base, imported.as_ref().unwrap_or(base), amount);
+        if let Some(info) = info.as_ref().filter(|i| prepared.is_some() && i.raw && !i.relative_wb) {
+            lcc_pipeline::local::normalize_wb(&mut next, info);
+        }
+        Some(next)
+    }
+
     /// Add imported presets. Identical presets (same name, group and settings) already present are
     /// skipped; id clashes get a fresh id. Returns the ids added.
     pub fn add_presets(&mut self, presets: Vec<Preset>) -> Vec<String> {
@@ -242,49 +276,49 @@ pub fn builtin() -> Vec<Preset> {
             "Color",
             "warm-glow",
             "Warm Glow",
-            json!({"wb": {"mode": "custom", "temp": 7200.0, "tint": 8.0}, "light": {"contrast": 8.0, "shadows": 12.0}, "color": {"vibrance": 18.0}}),
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 7200.0, "tint": 8.0}, "light": {"contrast": 8.0, "shadows": 12.0}, "color": {"vibrance": 18.0}}),
         ),
         p(
             "Color",
             "cool-morning",
             "Cool Morning",
-            json!({"wb": {"mode": "custom", "temp": 5600.0, "tint": -4.0}, "light": {"highlights": -20.0}, "color": {"vibrance": 10.0}, "grading": {"shadows": {"hue": 215.0, "sat": 12.0, "lum": 0.0}}}),
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 5600.0, "tint": -4.0}, "light": {"highlights": -20.0}, "color": {"vibrance": 10.0}, "grading": {"shadows": {"hue": 215.0, "sat": 12.0, "lum": 0.0}}}),
         ),
         p(
             "Color",
             "teal-orange",
             "Teal & Orange",
-            json!({"grading": {"shadows": {"hue": 195.0, "sat": 28.0, "lum": 0.0}, "highlights": {"hue": 35.0, "sat": 22.0, "lum": 0.0}, "balance": 10.0}, "color": {"vibrance": 12.0}, "light": {"contrast": 14.0}}),
+            json!({"treatment": "color", "grading": {"shadows": {"hue": 195.0, "sat": 28.0, "lum": 0.0}, "highlights": {"hue": 35.0, "sat": 22.0, "lum": 0.0}, "balance": 10.0}, "color": {"vibrance": 12.0}, "light": {"contrast": 14.0}}),
         ),
         p(
             "Color",
             "vivid-pop",
             "Vivid Pop",
-            json!({"color": {"vibrance": 40.0, "saturation": 8.0}, "light": {"contrast": 18.0, "whites": 10.0, "blacks": -10.0}, "effects": {"clarity": 12.0}}),
+            json!({"treatment": "color", "color": {"vibrance": 40.0, "saturation": 8.0}, "light": {"contrast": 18.0, "whites": 10.0, "blacks": -10.0}, "effects": {"clarity": 12.0}}),
         ),
         p(
             "Color",
             "soft-pastel",
             "Soft Pastel",
-            json!({"light": {"contrast": -25.0, "highlights": -30.0, "shadows": 35.0, "blacks": 20.0}, "color": {"saturation": -18.0, "vibrance": 10.0}, "curve": {"shadows": 25.0}}),
+            json!({"treatment": "color", "light": {"contrast": -25.0, "highlights": -30.0, "shadows": 35.0, "blacks": 20.0}, "color": {"saturation": -18.0, "vibrance": 10.0}, "curve": {"shadows": 25.0}}),
         ),
         p(
             "Film",
             "faded-matte",
             "Faded Matte",
-            json!({"curve": {"shadows": 40.0, "highlights": -15.0}, "light": {"contrast": -10.0}, "color": {"saturation": -12.0}, "grain": {"amount": 18.0, "size": 25.0, "roughness": 50.0}}),
+            json!({"treatment": "color", "curve": {"shadows": 40.0, "highlights": -15.0}, "light": {"contrast": -10.0}, "color": {"saturation": -12.0}, "grain": {"amount": 18.0, "size": 25.0, "roughness": 50.0}}),
         ),
         p(
             "Film",
             "warm-film",
             "Warm Film",
-            json!({"wb": {"mode": "custom", "temp": 6900.0, "tint": 5.0}, "curve": {"shadows": 22.0}, "grading": {"highlights": {"hue": 45.0, "sat": 15.0, "lum": 0.0}}, "grain": {"amount": 22.0, "size": 30.0, "roughness": 55.0}, "vignette": {"amount": -12.0}}),
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 6900.0, "tint": 5.0}, "curve": {"shadows": 22.0}, "grading": {"highlights": {"hue": 45.0, "sat": 15.0, "lum": 0.0}}, "grain": {"amount": 22.0, "size": 30.0, "roughness": 55.0}, "vignette": {"amount": -12.0}}),
         ),
         p(
             "Film",
             "muted-film",
             "Muted Film",
-            json!({"color": {"saturation": -25.0, "vibrance": 5.0}, "light": {"contrast": 10.0}, "curve": {"shadows": 18.0}, "grain": {"amount": 15.0}}),
+            json!({"treatment": "color", "color": {"saturation": -25.0, "vibrance": 5.0}, "light": {"contrast": 10.0}, "curve": {"shadows": 18.0}, "grain": {"amount": 15.0}}),
         ),
         p(
             "B&W",
@@ -303,181 +337,181 @@ pub fn builtin() -> Vec<Preset> {
             "Landscape",
             "crisp-landscape",
             "Crisp Landscape",
-            json!({"light": {"highlights": -45.0, "shadows": 30.0, "contrast": 12.0}, "effects": {"clarity": 22.0, "dehaze": 12.0, "texture": 15.0}, "color": {"vibrance": 25.0}}),
+            json!({"treatment": "color", "light": {"highlights": -45.0, "shadows": 30.0, "contrast": 12.0}, "effects": {"clarity": 22.0, "dehaze": 12.0, "texture": 15.0}, "color": {"vibrance": 25.0}}),
         ),
         p(
             "Landscape",
             "golden-hour",
             "Golden Hour",
-            json!({"wb": {"mode": "custom", "temp": 7600.0, "tint": 12.0}, "light": {"highlights": -35.0, "shadows": 20.0}, "grading": {"highlights": {"hue": 38.0, "sat": 25.0, "lum": 5.0}}, "vignette": {"amount": -15.0}}),
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 7600.0, "tint": 12.0}, "light": {"highlights": -35.0, "shadows": 20.0}, "grading": {"highlights": {"hue": 38.0, "sat": 25.0, "lum": 5.0}}, "vignette": {"amount": -15.0}}),
         ),
         p(
             "Landscape",
             "blue-hour",
             "Blue Hour Boost",
-            json!({"wb": {"mode": "custom", "temp": 5200.0, "tint": 6.0}, "light": {"shadows": 25.0, "exposure": 0.2}, "mixer": {"blue": {"hue": 0.0, "sat": 25.0, "lum": 0.0}, "purple": {"hue": 0.0, "sat": 15.0, "lum": 0.0}}}),
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 5200.0, "tint": 6.0}, "light": {"shadows": 25.0, "exposure": 0.2}, "mixer": {"blue": {"hue": 0.0, "sat": 25.0, "lum": 0.0}, "purple": {"hue": 0.0, "sat": 15.0, "lum": 0.0}}}),
         ),
         p(
             "Portrait",
             "soft-skin",
             "Soft Skin",
-            json!({"effects": {"texture": -25.0, "clarity": -10.0}, "light": {"contrast": -5.0, "shadows": 15.0}, "mixer": {"orange": {"hue": 0.0, "sat": -8.0, "lum": 10.0}}}),
+            json!({"treatment": "color", "effects": {"texture": -25.0, "clarity": -10.0}, "light": {"contrast": -5.0, "shadows": 15.0}, "mixer": {"orange": {"hue": 0.0, "sat": -8.0, "lum": 10.0}}}),
         ),
         p(
             "Portrait",
             "bright-airy",
             "Bright & Airy",
-            json!({"light": {"exposure": 0.45, "contrast": -15.0, "highlights": -40.0, "shadows": 40.0, "whites": 15.0}, "color": {"vibrance": 8.0, "saturation": -8.0}}),
+            json!({"treatment": "color", "light": {"exposure": 0.45, "contrast": -15.0, "highlights": -40.0, "shadows": 40.0, "whites": 15.0}, "color": {"vibrance": 8.0, "saturation": -8.0}}),
         ),
         p(
             "Style",
             "moody",
             "Moody",
-            json!({"light": {"exposure": -0.3, "contrast": 20.0, "highlights": -30.0, "blacks": -15.0}, "color": {"saturation": -20.0}, "grading": {"shadows": {"hue": 200.0, "sat": 15.0, "lum": -5.0}}, "vignette": {"amount": -30.0}}),
+            json!({"treatment": "color", "light": {"exposure": -0.3, "contrast": 20.0, "highlights": -30.0, "blacks": -15.0}, "color": {"saturation": -20.0}, "grading": {"shadows": {"hue": 200.0, "sat": 15.0, "lum": -5.0}}, "vignette": {"amount": -30.0}}),
         ),
         p(
             "Style",
             "cinematic",
             "Cinematic",
-            json!({"curve": {"shadows": 20.0, "highlights": -10.0}, "grading": {"shadows": {"hue": 190.0, "sat": 25.0, "lum": 0.0}, "highlights": {"hue": 30.0, "sat": 18.0, "lum": 0.0}}, "light": {"contrast": 15.0}, "vignette": {"amount": -20.0}}),
+            json!({"treatment": "color", "curve": {"shadows": 20.0, "highlights": -10.0}, "grading": {"shadows": {"hue": 190.0, "sat": 25.0, "lum": 0.0}, "highlights": {"hue": 30.0, "sat": 18.0, "lum": 0.0}}, "light": {"contrast": 15.0}, "vignette": {"amount": -20.0}}),
         ),
         // ---- Portrait
         p(
             "Portrait",
             "moody-portrait",
             "Moody Portrait",
-            json!({"light": {"exposure": -0.25, "contrast": 20.0, "highlights": -30.0, "blacks": -12.0}, "color": {"saturation": -15.0}, "vignette": {"amount": -25.0, "midpoint": 40.0}, "mixer": {"orange": {"sat": 6.0}}}),
+            json!({"treatment": "color", "light": {"exposure": -0.25, "contrast": 20.0, "highlights": -30.0, "blacks": -12.0}, "color": {"saturation": -15.0}, "vignette": {"amount": -25.0, "midpoint": 40.0}, "mixer": {"orange": {"sat": 6.0}}}),
         ),
         p(
             "Portrait",
             "golden-glow",
             "Golden Glow",
-            json!({"grading": {"highlights": {"hue": 40.0, "sat": 18.0, "lum": 0.0}, "midtones": {"hue": 35.0, "sat": 8.0, "lum": 0.0}}, "light": {"shadows": 15.0}, "effects": {"clarity": -8.0}}),
+            json!({"treatment": "color", "grading": {"highlights": {"hue": 40.0, "sat": 18.0, "lum": 0.0}, "midtones": {"hue": 35.0, "sat": 8.0, "lum": 0.0}}, "light": {"shadows": 15.0}, "effects": {"clarity": -8.0}}),
         ),
         p(
             "Portrait",
             "clean-studio",
             "Clean Studio",
-            json!({"light": {"contrast": 10.0, "whites": 15.0, "blacks": -8.0}, "effects": {"texture": -10.0}, "color": {"vibrance": 5.0}}),
+            json!({"treatment": "color", "light": {"contrast": 10.0, "whites": 15.0, "blacks": -8.0}, "effects": {"texture": -10.0}, "color": {"vibrance": 5.0}}),
         ),
         // ---- Landscape
         p(
             "Landscape",
             "crisp-vista",
             "Crisp Vista",
-            json!({"effects": {"dehaze": 15.0, "clarity": 18.0, "texture": 12.0}, "light": {"contrast": 12.0, "highlights": -25.0, "shadows": 18.0}, "color": {"vibrance": 20.0}}),
+            json!({"treatment": "color", "effects": {"dehaze": 15.0, "clarity": 18.0, "texture": 12.0}, "light": {"contrast": 12.0, "highlights": -25.0, "shadows": 18.0}, "color": {"vibrance": 20.0}}),
         ),
         p(
             "Landscape",
             "deep-sky",
             "Deep Sky",
-            json!({"mixer": {"blue": {"lum": -25.0, "sat": 15.0}, "aqua": {"lum": -10.0}}, "light": {"highlights": -30.0}, "effects": {"dehaze": 10.0}}),
+            json!({"treatment": "color", "mixer": {"blue": {"lum": -25.0, "sat": 15.0}, "aqua": {"lum": -10.0}}, "light": {"highlights": -30.0}, "effects": {"dehaze": 10.0}}),
         ),
         p(
             "Landscape",
             "lush-greens",
             "Lush Greens",
-            json!({"mixer": {"green": {"hue": 12.0, "sat": 18.0, "lum": 8.0}, "yellow": {"hue": 10.0, "sat": 10.0}}, "color": {"vibrance": 12.0}, "effects": {"clarity": 8.0}}),
+            json!({"treatment": "color", "mixer": {"green": {"hue": 12.0, "sat": 18.0, "lum": 8.0}, "yellow": {"hue": 10.0, "sat": 10.0}}, "color": {"vibrance": 12.0}, "effects": {"clarity": 8.0}}),
         ),
         p(
             "Landscape",
             "desert-warmth",
             "Desert Warmth",
-            json!({"mixer": {"orange": {"sat": 15.0, "lum": 5.0}, "yellow": {"hue": -8.0, "sat": 10.0}, "blue": {"sat": -10.0}}, "grading": {"highlights": {"hue": 38.0, "sat": 12.0, "lum": 0.0}}, "light": {"contrast": 10.0}}),
+            json!({"treatment": "color", "mixer": {"orange": {"sat": 15.0, "lum": 5.0}, "yellow": {"hue": -8.0, "sat": 10.0}, "blue": {"sat": -10.0}}, "grading": {"highlights": {"hue": 38.0, "sat": 12.0, "lum": 0.0}}, "light": {"contrast": 10.0}}),
         ),
         p(
             "Landscape",
             "misty-morning",
             "Misty Morning",
-            json!({"effects": {"dehaze": -18.0, "clarity": -12.0}, "light": {"contrast": -18.0, "highlights": -10.0}, "grading": {"shadows": {"hue": 210.0, "sat": 10.0, "lum": 0.0}}, "color": {"saturation": -10.0}}),
+            json!({"treatment": "color", "effects": {"dehaze": -18.0, "clarity": -12.0}, "light": {"contrast": -18.0, "highlights": -10.0}, "grading": {"shadows": {"hue": 210.0, "sat": 10.0, "lum": 0.0}}, "color": {"saturation": -10.0}}),
         ),
         // ---- Urban
         p(
             "Urban",
             "gritty-street",
             "Gritty Street",
-            json!({"effects": {"clarity": 35.0, "texture": 20.0}, "light": {"contrast": 25.0, "blacks": -15.0}, "color": {"saturation": -30.0}, "vignette": {"amount": -18.0}}),
+            json!({"treatment": "color", "effects": {"clarity": 35.0, "texture": 20.0}, "light": {"contrast": 25.0, "blacks": -15.0}, "color": {"saturation": -30.0}, "vignette": {"amount": -18.0}}),
         ),
         p(
             "Urban",
             "neon-night",
             "Neon Night",
-            json!({"mixer": {"magenta": {"sat": 20.0}, "purple": {"sat": 18.0}, "blue": {"sat": 12.0}, "aqua": {"sat": 15.0}}, "light": {"contrast": 18.0, "blacks": -12.0}, "color": {"vibrance": 15.0}, "grading": {"shadows": {"hue": 250.0, "sat": 15.0, "lum": 0.0}}}),
+            json!({"treatment": "color", "mixer": {"magenta": {"sat": 20.0}, "purple": {"sat": 18.0}, "blue": {"sat": 12.0}, "aqua": {"sat": 15.0}}, "light": {"contrast": 18.0, "blacks": -12.0}, "color": {"vibrance": 15.0}, "grading": {"shadows": {"hue": 250.0, "sat": 15.0, "lum": 0.0}}}),
         ),
         p(
             "Urban",
             "concrete-cool",
             "Concrete Cool",
-            json!({"grading": {"shadows": {"hue": 205.0, "sat": 14.0, "lum": 0.0}, "highlights": {"hue": 200.0, "sat": 6.0, "lum": 0.0}}, "color": {"saturation": -20.0}, "light": {"contrast": 12.0}, "effects": {"clarity": 15.0}}),
+            json!({"treatment": "color", "grading": {"shadows": {"hue": 205.0, "sat": 14.0, "lum": 0.0}, "highlights": {"hue": 200.0, "sat": 6.0, "lum": 0.0}}, "color": {"saturation": -20.0}, "light": {"contrast": 12.0}, "effects": {"clarity": 15.0}}),
         ),
         p(
             "Urban",
             "faded-urban",
             "Faded Urban",
-            json!({"curve": {"shadows": 30.0}, "color": {"saturation": -22.0}, "light": {"contrast": -8.0}, "grain": {"amount": 12.0, "size": 25.0, "roughness": 45.0}}),
+            json!({"treatment": "color", "curve": {"shadows": 30.0}, "color": {"saturation": -22.0}, "light": {"contrast": -8.0}, "grain": {"amount": 12.0, "size": 25.0, "roughness": 45.0}}),
         ),
         // ---- Food
         p(
             "Food",
             "fresh-bright",
             "Fresh & Bright",
-            json!({"light": {"exposure": 0.25, "shadows": 20.0, "whites": 10.0}, "color": {"vibrance": 22.0}, "effects": {"texture": 15.0}}),
+            json!({"treatment": "color", "light": {"exposure": 0.25, "shadows": 20.0, "whites": 10.0}, "color": {"vibrance": 22.0}, "effects": {"texture": 15.0}}),
         ),
         p(
             "Food",
             "warm-table",
             "Warm Table",
-            json!({"grading": {"midtones": {"hue": 32.0, "sat": 10.0, "lum": 0.0}}, "mixer": {"orange": {"sat": 10.0}, "red": {"sat": 8.0}}, "light": {"contrast": 8.0}}),
+            json!({"treatment": "color", "grading": {"midtones": {"hue": 32.0, "sat": 10.0, "lum": 0.0}}, "mixer": {"orange": {"sat": 10.0}, "red": {"sat": 8.0}}, "light": {"contrast": 8.0}}),
         ),
         p(
             "Food",
             "dark-moody-food",
             "Dark & Moody",
-            json!({"light": {"exposure": -0.3, "contrast": 22.0, "highlights": -20.0, "blacks": -15.0}, "effects": {"texture": 18.0}, "vignette": {"amount": -22.0}}),
+            json!({"treatment": "color", "light": {"exposure": -0.3, "contrast": 22.0, "highlights": -20.0, "blacks": -15.0}, "effects": {"texture": 18.0}, "vignette": {"amount": -22.0}}),
         ),
         // ---- Seasons
         p(
             "Seasons",
             "autumn-gold",
             "Autumn Gold",
-            json!({"mixer": {"green": {"hue": -30.0, "sat": -10.0}, "yellow": {"hue": -15.0, "sat": 15.0}, "orange": {"sat": 18.0}}, "grading": {"highlights": {"hue": 40.0, "sat": 10.0, "lum": 0.0}}}),
+            json!({"treatment": "color", "mixer": {"green": {"hue": -30.0, "sat": -10.0}, "yellow": {"hue": -15.0, "sat": 15.0}, "orange": {"sat": 18.0}}, "grading": {"highlights": {"hue": 40.0, "sat": 10.0, "lum": 0.0}}}),
         ),
         p(
             "Seasons",
             "winter-blue",
             "Winter Blue",
-            json!({"grading": {"shadows": {"hue": 215.0, "sat": 18.0, "lum": 0.0}, "highlights": {"hue": 205.0, "sat": 8.0, "lum": 0.0}}, "color": {"saturation": -12.0}, "light": {"whites": 12.0}}),
+            json!({"treatment": "color", "grading": {"shadows": {"hue": 215.0, "sat": 18.0, "lum": 0.0}, "highlights": {"hue": 205.0, "sat": 8.0, "lum": 0.0}}, "color": {"saturation": -12.0}, "light": {"whites": 12.0}}),
         ),
         p(
             "Seasons",
             "spring-fresh",
             "Spring Fresh",
-            json!({"mixer": {"green": {"hue": 10.0, "sat": 12.0, "lum": 10.0}, "magenta": {"sat": 10.0}}, "light": {"shadows": 15.0}, "color": {"vibrance": 15.0}}),
+            json!({"treatment": "color", "mixer": {"green": {"hue": 10.0, "sat": 12.0, "lum": 10.0}, "magenta": {"sat": 10.0}}, "light": {"shadows": 15.0}, "color": {"vibrance": 15.0}}),
         ),
         p(
             "Seasons",
             "summer-haze",
             "Summer Haze",
-            json!({"effects": {"dehaze": -12.0}, "curve": {"shadows": 18.0}, "grading": {"highlights": {"hue": 45.0, "sat": 14.0, "lum": 0.0}}, "light": {"contrast": -10.0}}),
+            json!({"treatment": "color", "effects": {"dehaze": -12.0}, "curve": {"shadows": 18.0}, "grading": {"highlights": {"hue": 45.0, "sat": 14.0, "lum": 0.0}}, "light": {"contrast": -10.0}}),
         ),
         // ---- Vintage
         p(
             "Vintage",
             "instant-70s",
             "Instant ’70s",
-            json!({"curve": {"shadows": 28.0, "highlights": -18.0}, "grading": {"shadows": {"hue": 170.0, "sat": 14.0, "lum": 0.0}, "highlights": {"hue": 45.0, "sat": 18.0, "lum": 0.0}}, "color": {"saturation": -10.0}, "vignette": {"amount": -15.0}, "grain": {"amount": 20.0, "size": 30.0, "roughness": 55.0}}),
+            json!({"treatment": "color", "curve": {"shadows": 28.0, "highlights": -18.0}, "grading": {"shadows": {"hue": 170.0, "sat": 14.0, "lum": 0.0}, "highlights": {"hue": 45.0, "sat": 18.0, "lum": 0.0}}, "color": {"saturation": -10.0}, "vignette": {"amount": -15.0}, "grain": {"amount": 20.0, "size": 30.0, "roughness": 55.0}}),
         ),
         p(
             "Vintage",
             "cross-process",
             "Cross Process",
-            json!({"grading": {"shadows": {"hue": 230.0, "sat": 25.0, "lum": 0.0}, "highlights": {"hue": 60.0, "sat": 25.0, "lum": 0.0}}, "light": {"contrast": 22.0}, "color": {"saturation": 10.0}}),
+            json!({"treatment": "color", "grading": {"shadows": {"hue": 230.0, "sat": 25.0, "lum": 0.0}, "highlights": {"hue": 60.0, "sat": 25.0, "lum": 0.0}}, "light": {"contrast": 22.0}, "color": {"saturation": 10.0}}),
         ),
         p(
             "Vintage",
             "bleach-bypass",
             "Bleach Bypass",
-            json!({"color": {"saturation": -40.0}, "light": {"contrast": 35.0, "highlights": -15.0}, "effects": {"clarity": 15.0}}),
+            json!({"treatment": "color", "color": {"saturation": -40.0}, "light": {"contrast": 35.0, "highlights": -15.0}, "effects": {"clarity": 15.0}}),
         ),
         // ---- B&W toners
         p(
