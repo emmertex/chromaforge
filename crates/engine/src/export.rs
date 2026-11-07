@@ -2247,12 +2247,21 @@ fn prepare_guarded(
         let gain_map = o.hdr_output() && o.format == ExportFormat::Jpeg;
         // (HDR files are written without alpha: their transparent areas stay on white)
         let alpha = o.format.keeps_alpha() && !o.hdr_output();
-        let job = session.export_job_with_alpha(id, w, h, o.effective_space(), o.effective_depth(), alpha)?;
+        let mut job = session.export_job_with_alpha(id, w, h, o.effective_space(), o.effective_depth(), alpha)?;
+        job.request.exact_size = true;
+        job.key ^= EXACT_SIZE_KEY;
         let weight = render_weight(full_px, long, job.level, w.saturating_mul(h));
         if let Some(why) = too_big_for_memory((w, h), native_px, weight, crate::memory::total_ram()) {
             return Err(format!("{label}: {why}"));
         }
-        let hdr_job = if gain_map { Some(session.export_job(id, w, h, o.effective_space(), OutputDepth::F32Hdr)?) } else { None };
+        let hdr_job = if gain_map {
+            let mut hdr = session.export_job(id, w, h, o.effective_space(), OutputDepth::F32Hdr)?;
+            hdr.request.exact_size = true;
+            hdr.key ^= EXACT_SIZE_KEY;
+            Some(hdr)
+        } else {
+            None
+        };
         // a gain map also holds the HDR rendition (float), the SDR one in linear light and the
         // stages the two renders share
         let weight = if gain_map { weight.saturating_add(w.saturating_mul(h).saturating_mul(GAIN_MAP_BYTES_PER_PX)) } else { weight };
@@ -3047,6 +3056,8 @@ pub fn export_mix() -> bool {
 /// Working memory a gain map JPEG adds per output pixel ([`encode_gain_map_jpeg`]): the float HDR
 /// rendition (12 B), the SDR one in linear light (12 B) and the stages its two renders share.
 const GAIN_MAP_BYTES_PER_PX: usize = 48;
+/// Mixed into an export job's key: its exact-size request renders differently from a fitted one.
+const EXACT_SIZE_KEY: u64 = 0x86e2_fadc_0917_b435;
 
 /// [`run_batch`] with `lanes` photos in flight. Without `cancel` the calling thread is one of the
 /// lanes; with it the lanes are threads of their own and this one only places the files, looking
