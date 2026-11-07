@@ -33,10 +33,15 @@ pub fn enabled(info: &SourceInfo, s: &DevelopSettings) -> bool {
 /// Multiply the resampled, not yet white-balanced source `img` (the output frame of `p`) by the
 /// local tone gain at each pixel. Blank canvas (outside a lens / perspective warp) is left alone.
 pub fn apply(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
-    let Some(lt) = info.local_tone.as_deref().filter(|_| enabled(info, &p.settings)) else { return };
+    apply_frame(img, info, &p.settings, &p.frame);
+}
+
+/// [`apply`] for an image that is the output of `frame` under the settings `s` (a part of a plan's
+/// frame, such as the noise tiles of `crate::colour_noise`).
+pub fn apply_frame(img: &mut Rgb32f, info: &SourceInfo, s: &DevelopSettings, frame: &crate::geometry::Frame) {
+    let Some(lt) = info.local_tone.as_deref().filter(|_| enabled(info, s)) else { return };
     let Some(eval) = lt.map.evaluator() else { return };
     let (w, h) = (img.width, img.height);
-    let frame = &p.frame;
     let (ow, oh) = (frame.ow.max(1e-9), frame.oh.max(1e-9));
     let o2t = frame.out_to_oriented(w, h);
     let user = frame.orient.inverse();

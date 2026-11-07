@@ -239,7 +239,9 @@ pub enum Process {
     V7,
     /// 8-bit output is dithered with an 8×8 ordered (Bayer) pattern before it is rounded, so smooth
     /// gradients (skies, vignettes) show no banding; black and white stay exact. Adapted from
-    /// upstream #3509.
+    /// upstream #3509. Colour noise reduction filters the linear colour differences R−Y and B−Y
+    /// jointly, leaving Y alone, with edge-aware weights from a denoised guide and a brake for
+    /// isolated colour specks (adapted from upstream #1348).
     V8,
 }
 

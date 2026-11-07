@@ -145,6 +145,45 @@ fn preview_noise_reduction_matches() {
     }
 }
 
+/// The joint colour noise reduction of process V8 (upstream #1348) on the device: the same kernels'
+/// result as the CPU's at the raw default and at 100, on a noisy raw scene, a preview level of a large
+/// original (the whole frame's noise model from tiles) and a zoomed window; V7 keeps the blurred
+/// chromaticity on both.
+#[test]
+fn joint_colour_noise_reduction_matches() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(3, 640, 480);
+    let info = SourceInfo { raw: true, ..Default::default() };
+    for p in [Process::V7, Process::V8] {
+        for (color, detail, smooth) in [(25.0, 50.0, 50.0), (100.0, 0.0, 100.0)] {
+            let mut s = DevelopSettings { process: p.version(), ..Default::default() };
+            s.detail.nr_luminance = 20.0;
+            s.detail.nr_color = color;
+            s.detail.nr_color_detail = detail;
+            s.detail.nr_color_smoothness = smooth;
+            check(&format!("colour NR {color} {p:?}"), &src, &info, &s, &RenderRequest::fit(640, 480));
+        }
+    }
+    let mut s = DevelopSettings { process: Process::V8.version(), ..Default::default() };
+    s.detail.nr_color = 60.0;
+    // a 1600-px frame: many noise tiles; the window is grown by the filter's reach and cut back
+    let big = scene(3, 1600, 1200);
+    let preview = SourceInfo { raw: true, native_long: Some(6000), ..Default::default() };
+    check("joint colour NR 1600 of 6000", &big, &preview, &s, &RenderRequest::fit(1600, 1200));
+    let win = lcc_pipeline::PixelWindow { x: 700, y: 400, w: 320, h: 240 };
+    check("joint colour NR window", &big, &info, &s, &RenderRequest { window: Some(win), ..RenderRequest::fit(1600, 1200) });
+    // an HDR window: grown by the filter's reach and cut back, floats and texels alike
+    s.hdr.enabled = true;
+    s.light.exposure = 1.5;
+    let req = RenderRequest { window: Some(win), depth: lcc_pipeline::OutputDepth::F32Hdr, ..RenderRequest::fit(1600, 1200) };
+    check_hdr_req("joint colour NR HDR window", &big, &info, &s, &req);
+    let (r, texels) = lcc_gpu::try_render_hdr_texels(&big, &info, &s, &req, None, 4.0).expect("the GPU renders HDR texels");
+    assert_eq!((r.image.width, r.image.height), (win.w, win.h), "the HDR window's own size");
+    assert_eq!(texels.len(), 4 * win.w * win.h, "four texel values per pixel of the window");
+}
+
 /// A render big enough for the per-pixel stage to run in several bands of rows (and the render
 /// in many submissions), with grain (position-dependent) and masks.
 #[test]
@@ -1815,7 +1854,7 @@ fn refine_edges_and_feather_match() {
         let gpu = |s: &DevelopSettings| lcc_gpu::render(&src, &raw, s, &RenderRequest::fit(640, 640), None).expect("gpu render").image;
         let plain = DevelopSettings { masks: s.masks.iter().map(|m| Mask { refine: 0.0, feather: 0.0, ..m.clone() }).collect(), ..s.clone() };
         // (a light refine barely moves a soft radial edge; a strong one or a feather visibly does. On
-        // process V7: V8's highlight roll-off compresses the brightened highlights the change shows in)
+        // process V7: the V8 highlight roll-off compresses the brightened highlights the change shows in)
         let v7 = |x: &DevelopSettings| DevelopSettings { process: Process::V7.version(), ..x.clone() };
         assert!(
             refine < 50.0 && feather == 0.0 || diff(&gpu(&v7(&s)), &gpu(&v7(&plain))).1 > 3,
@@ -2023,7 +2062,7 @@ fn cached_mask_planes_match_uncached() {
     step(&s, "hidden mask");
 }
 
-/// Process V8's 8-bit dither (adapted from upstream #3509) lands on the same pixels on both, also in
+/// The 8-bit dither of process V8 (adapted from upstream #3509) lands on the same pixels on both, also in
 /// a zoomed window off the 8×8 grid: out of phase, about half the pixels of a gradient would differ.
 #[test]
 fn dithered_gradients_match_in_phase() {

@@ -3,7 +3,7 @@
 
 use crate::local::{denoise, log_lum, nr_params};
 use crate::{RenderRequest, SourceInfo, plan, render};
-use lcc_develop::DevelopSettings;
+use lcc_develop::{DevelopSettings, Process};
 use lcc_raster::resample::{Filter, resize};
 use lcc_raster::{Rgb32f, Rgba8};
 
@@ -106,7 +106,8 @@ fn luminance_nr_preview_matches_full_size_scaled_down() {
 
 #[test]
 fn colour_nr_preview_matches_full_size_scaled_down() {
-    let mut s = DevelopSettings::default();
+    // the blurred chromaticity of process V1 to V7 (V8: `joint_colour_nr_preview_matches_full_size_scaled_down`)
+    let mut s = DevelopSettings { process: Process::V7.version(), ..Default::default() };
     s.detail.nr_luminance = 0.0;
     s.detail.nr_color = 50.0;
     s.detail.nr_color_detail = 50.0;
@@ -117,6 +118,26 @@ fn colour_nr_preview_matches_full_size_scaled_down() {
         // before #960: 0.00020 (0.31 of NR off) at 0.167, 0.00022 (0.75) at 0.1. The speckle
         // pull-in of #679 decides per pixel on a 3 × 3 median, which a resampled preview sees a
         // little differently, so the bound rose from 1.2e-4 (still 0.02 of NR off at worst).
+        assert!(err <= 1.6e-4, "preview at {k} is {err} off");
+        if k >= 0.1 {
+            assert!(ratio <= 0.4, "preview at {k}: {ratio}");
+        }
+    }
+}
+
+/// The joint colour NR of process V8 takes its reach in the original's pixels too: a preview's
+/// colour is close to the full-size render's scaled down.
+#[test]
+fn joint_colour_nr_preview_matches_full_size_scaled_down() {
+    let mut s = DevelopSettings { process: Process::V8.version(), ..Default::default() };
+    s.detail.nr_luminance = 0.0;
+    s.detail.nr_color = 50.0;
+    s.detail.nr_color_detail = 50.0;
+    s.detail.nr_color_smoothness = 50.0;
+    for (k, err, off) in preview_error(&s, &SCALES, rms_chroma) {
+        let ratio = err / off;
+        eprintln!("joint colour NR, preview at {k}: {err:.6} from the full-size render scaled down ({ratio:.2} of NR off)");
+        // (measured: at most 1.1e-4, at 0.5; the blurred chromaticity's bound above)
         assert!(err <= 1.6e-4, "preview at {k} is {err} off");
         if k >= 0.1 {
             assert!(ratio <= 0.4, "preview at {k}: {ratio}");
@@ -208,10 +229,11 @@ fn colour_nr_keeps_neutral_pixels_next_to_noisy_black_neutral() {
                 img.set(x, y, v);
             }
         }
-        let mut s = DevelopSettings::default();
+        // (the blurred chromaticity of V1 to V7, whose drafts may blur at half resolution)
+        let mut s = DevelopSettings { process: Process::V7.version(), ..Default::default() };
         s.detail.nr_color = 100.0;
         s.detail.nr_luminance = 0.0;
-        crate::local::denoise_with(&mut img, &s, 1.0, half_res);
+        crate::local::denoise_with(&mut img, &s, 1.0, half_res, None);
         for y in 0..h {
             for x in w / 2..w {
                 let p = img.get(x, y);
@@ -248,10 +270,11 @@ fn colour_nr_pulls_in_chroma_speckle() {
         })
     };
     let mut img = Rgb32f::from_fn(w, h, |x, y| if speck(x, y) { [0.10, 0.34, 0.10] } else { [0.18; 3] });
-    let mut s = DevelopSettings::default();
+    // (the speckle median of V1 to V7; the joint colour NR of V8 has a speck brake of its own)
+    let mut s = DevelopSettings { process: Process::V7.version(), ..Default::default() };
     s.detail.nr_color = 25.0; // the raw default
     s.detail.nr_luminance = 0.0;
-    crate::local::denoise_with(&mut img, &s, 1.0, false);
+    crate::local::denoise_with(&mut img, &s, 1.0, false, None);
     let mut speck_worst = 0.0f32;
     let mut plain_worst = 0.0f32;
     for y in 0..h {
@@ -277,10 +300,10 @@ fn colour_nr_pulls_in_chroma_speckle() {
 fn colour_nr_speckle_pull_keeps_a_hue_edge() {
     let (w, h) = (96, 64);
     let mut img = Rgb32f::from_fn(w, h, |x, _| if x < w / 2 { [0.30, 0.09, 0.09] } else { [0.18; 3] });
-    let mut s = DevelopSettings::default();
+    let mut s = DevelopSettings { process: Process::V7.version(), ..Default::default() };
     s.detail.nr_color = 25.0;
     s.detail.nr_luminance = 0.0;
-    crate::local::denoise_with(&mut img, &s, 1.0, false);
+    crate::local::denoise_with(&mut img, &s, 1.0, false, None);
     let red_excess = |x: usize, y: usize| {
         let p = img.get(x, y);
         let yl = (p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722).max(1e-6);
