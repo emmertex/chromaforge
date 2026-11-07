@@ -206,6 +206,8 @@ pub(crate) struct State {
     query_queue: Option<Queue<Output>>,
     /// Set by `ml.status {preference}` before the queue exists.
     preference: Option<Preference>,
+    /// Chosen hardware device (None: auto, Some("cpu"): cpu, or adapter key).
+    pub device_choice: Option<String>,
     /// Whether background indexing is enabled (`ml.enable`).
     pub enabled: bool,
     /// Set when the user clicks ✕ on the `mlIndex` activity row; cleared on library change, import, or `ml.index`.
@@ -243,6 +245,7 @@ impl Default for State {
             queue: None,
             query_queue: None,
             preference: None,
+            device_choice: None,
             enabled: true,
             paused_by_user: false,
             epoch: 1,
@@ -333,7 +336,44 @@ fn gpu_probe() -> Result<String, String> {
     if !lcc_gpu::enabled() {
         return Err("disabled by the GPU rendering preference (app.gpu)".into());
     }
-    lcc_gpu::adapter_name().ok_or_else(|| lcc_gpu::unavailable_reason().unwrap_or_else(|| "no usable GPU".into()))
+    if let Some(pref) = lcc_gpu::ml_device()
+        && pref.eq_ignore_ascii_case("cpu")
+    {
+        return Err("the AI device preference is the CPU".into());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("GPU acceleration for AI embeddings currently requires Metal on macOS; running on CPU (multithreaded)".into())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let adapters = lcc_gpu::adapters();
+        let target_card = lcc_gpu::ml_device();
+        let mut chosen_index = 0usize;
+        let mut chosen_name = String::new();
+
+        if let Some(ref card_key) = target_card {
+            if let Some(parsed) = lcc_gpu::cards::AdapterKey::parse(card_key) {
+                if let Some(pos) = adapters.iter().position(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed))) {
+                    chosen_index = pos;
+                    if let Some(entry) = adapters.get(pos) {
+                        chosen_name = entry.name.clone();
+                    }
+                }
+            }
+        }
+        if chosen_name.is_empty() {
+            if let Some((pos, entry)) = adapters.iter().enumerate().find(|(_, a)| a.usable) {
+                chosen_index = pos;
+                chosen_name = entry.name.clone();
+            } else if let Some(name) = lcc_gpu::adapter_name() {
+                chosen_name = name;
+            } else {
+                return Err(lcc_gpu::unavailable_reason().unwrap_or_else(|| "no usable GPU".into()));
+            }
+        }
+        Ok(format!("{chosen_name}#{chosen_index}"))
+    }
 }
 
 struct ActivityRows(Activity);
@@ -486,14 +526,54 @@ impl Session {
         self.ml.query_queue.get_or_insert_with(|| Queue::new(Config { preference, ..Config::default() }, Box::new(gpu_probe), None))
     }
 
-    /// `ml.status {preference?}`.
+    /// `ml.status {preference?, device?}`.
     pub(crate) fn ml_status(&mut self, p: &Value) -> crate::Result<Value> {
-        if let Some(v) = p.get("preference") {
+        if let Some(v) = p.get("device") {
+            let dev_str = v.as_str().unwrap_or("").trim();
+            if dev_str.eq_ignore_ascii_case("cpu") {
+                lcc_gpu::set_ml_device(Some("cpu"));
+                self.ml.device_choice = Some("cpu".to_string());
+                self.ml.preference = Some(Preference::Cpu);
+                if let Some(q) = &self.ml.queue {
+                    q.set_preference(Preference::Cpu);
+                }
+                if let Some(qq) = &self.ml.query_queue {
+                    qq.set_preference(Preference::Cpu);
+                }
+            } else if dev_str.is_empty() || dev_str.eq_ignore_ascii_case("auto") {
+                lcc_gpu::set_ml_device(None);
+                self.ml.device_choice = None;
+                self.ml.preference = Some(Preference::Auto);
+                if let Some(q) = &self.ml.queue {
+                    q.set_preference(Preference::Auto);
+                }
+                if let Some(qq) = &self.ml.query_queue {
+                    qq.set_preference(Preference::Auto);
+                }
+            } else {
+                lcc_gpu::set_ml_device(Some(dev_str));
+                self.ml.device_choice = Some(dev_str.to_string());
+                self.ml.preference = Some(Preference::Auto);
+                if let Some(q) = &self.ml.queue {
+                    q.set_preference(Preference::Auto);
+                }
+                if let Some(qq) = &self.ml.query_queue {
+                    qq.set_preference(Preference::Auto);
+                }
+            }
+        } else if let Some(v) = p.get("preference") {
             let pref = v
                 .as_str()
                 .and_then(Preference::parse)
                 .ok_or_else(|| bad("ml.status", "preference is `auto` (the GPU when there is one) or `cpu`"))?;
             self.ml.preference = Some(pref);
+            if pref == Preference::Cpu {
+                self.ml.device_choice = Some("cpu".to_string());
+                lcc_gpu::set_ml_device(Some("cpu"));
+            } else if self.ml.device_choice.as_deref() == Some("cpu") {
+                self.ml.device_choice = None;
+                lcc_gpu::set_ml_device(None);
+            }
             if let Some(q) = &self.ml.queue {
                 q.set_preference(pref);
             }
@@ -521,12 +601,54 @@ impl Session {
         }
         let indexed = self.ml.store.as_ref().map_or(0, Store::len);
         let unindexed = self.unindexed_photo_count();
+        #[cfg(not(target_arch = "wasm32"))]
+        let gpu_devices: Vec<Value> = {
+            let cards = lcc_gpu::adapters();
+            cards
+                .iter()
+                .map(|a| {
+                    let mut name = a.name.clone();
+                    if cards.iter().filter(|c| c.key.same_model(&a.key)).count() > 1 {
+                        name = format!("{name} #{}", a.key.index);
+                    }
+                    if a.drives_screen {
+                        name = format!("{name} (screen)");
+                    }
+                    json!({
+                        "id": a.key.to_string(),
+                        "name": name,
+                        "backend": a.backend,
+                        "kind": "gpu",
+                        "usable": a.usable,
+                        "whyNot": a.why_not,
+                    })
+                })
+                .collect()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let gpu_devices: Vec<Value> = Vec::new();
+
+        let available_devices: Vec<Value> = std::iter::once(json!({
+            "id": "auto",
+            "name": "Automatic",
+            "kind": "auto",
+        }))
+        .chain(std::iter::once(json!({
+            "id": "cpu",
+            "name": "CPU",
+            "kind": "cpu",
+        })))
+        .chain(gpu_devices)
+        .collect();
+
         if let Some(obj) = base.as_object_mut() {
             obj.insert("enabled".into(), Value::Bool(self.ml.enabled));
             obj.insert("modelId".into(), model_id.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null));
             obj.insert("modelInstalled".into(), Value::Bool(model_id.is_some()));
             obj.insert("indexedPhotos".into(), json!(indexed));
             obj.insert("unindexedPhotos".into(), json!(unindexed));
+            obj.insert("deviceChoice".into(), json!(self.ml.device_choice.as_deref().unwrap_or("auto")));
+            obj.insert("availableDevices".into(), Value::Array(available_devices));
         }
         Ok(base)
     }

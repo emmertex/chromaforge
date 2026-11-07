@@ -45,6 +45,7 @@ pub fn models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if check(ui, "mlEnable", &mut enabled, "Index photos in the background for natural-language search") {
         let _ = app.run("ml.enable", json!({"enabled": enabled}));
     }
+    ml_device_selector(app, ui, t, &status);
     if enabled && list["selected"].is_string() {
         let indexed = status["indexedPhotos"].as_u64().unwrap_or(0);
         let unindexed = status["unindexedPhotos"].as_u64().unwrap_or(0);
@@ -56,6 +57,68 @@ pub fn models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         model_row(app, ui, t, m, dl);
     }
     crate::dialog_frame::group_end(ui);
+}
+
+/// The hardware device selector dropdown and active device readout for AI embeddings.
+pub fn ml_device_selector(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, status: &Value) {
+    let auto = tr("Automatic").to_string();
+    let cpu = tr("CPU").to_string();
+    let empty_vec = Vec::new();
+    let dev_list = status.get("availableDevices").and_then(Value::as_array).unwrap_or(&empty_vec);
+    let gpu_cards: Vec<&Value> = dev_list.iter().filter(|d| d["kind"].as_str() == Some("gpu")).collect();
+
+    let name_of = |setting: &str| {
+        if setting.is_empty() || setting.eq_ignore_ascii_case("auto") {
+            Some(auto.clone())
+        } else if setting.eq_ignore_ascii_case("cpu") {
+            Some(cpu.clone())
+        } else {
+            gpu_cards.iter().find(|d| d["id"].as_str() == Some(setting)).and_then(|d| d["name"].as_str().map(str::to_string))
+        }
+    };
+    let current = name_of(&app.ui.settings.ml_device).unwrap_or_else(|| auto.clone());
+    super::settings::row(ui, t, crate::i18n::tr("AI embedding device"), |ui| {
+        let combo = crate::widgets::combo_box("settingsMlDevice").selected_text(current).width(260.0).show_ui(ui, |ui| {
+            let r = ui.selectable_value(&mut app.ui.settings.ml_device, String::new(), auto.as_str());
+            register(ui.ctx(), "button:settingsMlDevice-auto", r.rect);
+            let r = ui.selectable_value(&mut app.ui.settings.ml_device, "cpu".to_string(), cpu.as_str());
+            register(ui.ctx(), "button:settingsMlDevice-cpu", r.rect);
+            for (i, d) in gpu_cards.iter().enumerate() {
+                let id = d["id"].as_str().unwrap_or("");
+                let name = d["name"].as_str().unwrap_or(id);
+                let usable = d["usable"].as_bool().unwrap_or(true);
+                let why_not = d["whyNot"].as_str();
+                let r = ui.add_enabled_ui(usable, |ui| ui.selectable_value(&mut app.ui.settings.ml_device, id.to_string(), name)).inner;
+                let r = match why_not {
+                    Some(why) => r.on_disabled_hover_text(why),
+                    None => r,
+                };
+                register(ui.ctx(), format!("button:settingsMlDevice-{i}"), r.rect);
+            }
+        });
+        register(ui.ctx(), "combo:settingsMlDevice", combo.response.rect);
+    });
+
+    let readout = if let Some(dev) = status.get("device").filter(|d| !d.is_null()) {
+        let kind = dev["kind"].as_str().unwrap_or("cpu");
+        let name = dev["name"].as_str().unwrap_or("CPU");
+        if kind == "gpu" {
+            tr_format!("Active: {name} (GPU accelerated)", name = name)
+        } else if let Some(why) = dev["whyCpu"].as_str().filter(|w| !w.is_empty()) {
+            tr_format!("Active: CPU · {why}", why = why)
+        } else {
+            tr("Active: CPU").to_string()
+        }
+    } else {
+        #[cfg(not(target_os = "macos"))]
+        let note = "GPU acceleration for AI embeddings currently requires Metal on macOS; running on CPU (multithreaded)";
+        #[cfg(target_os = "macos")]
+        let note = "Selected device initializes on first search";
+        tr_format!("Active: CPU · {why}", why = note)
+    };
+    crate::dialog_frame::in_control_column(ui, |ui| {
+        ui.add(egui::Label::new(egui::RichText::new(&readout).size(11.0).color(t.text_dim)).truncate()).on_hover_text(&readout);
+    });
 }
 
 fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Option<&Value>) {

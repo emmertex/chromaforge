@@ -395,7 +395,7 @@ pub struct Clip {
     tokenizer: Tokenizer,
     cpu_vision: Mutex<Option<Arc<VisionTower>>>,
     cpu_text: Mutex<Option<Arc<TextTower>>>,
-    gpu: Mutex<Option<DeviceTowers>>,
+    gpu: Mutex<Option<(usize, DeviceTowers)>>,
 }
 
 impl Clip {
@@ -581,12 +581,12 @@ impl Clip {
     }
 
     #[cfg(target_os = "macos")]
-    fn ensure_gpu_towers(&self) -> Result<(), JobError> {
+    fn ensure_gpu_towers(&self, device_index: usize) -> Result<(), JobError> {
         let mut guard = self.gpu.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.is_none() {
-            let dev = CandleDevice::new_metal(0).map_err(|e| JobError::Device(e.to_string()))?;
+        if guard.as_ref().map_or(true, |(idx, _)| *idx != device_index) {
+            let dev = CandleDevice::new_metal(device_index).map_err(|e| JobError::Device(e.to_string()))?;
             let towers = load_towers(&self.weights_path, self.arch, dev).map_err(|e| JobError::Device(e.to_string()))?;
-            *guard = Some(towers);
+            *guard = Some((device_index, towers));
         }
         Ok(())
     }
@@ -806,9 +806,9 @@ impl Encoder for Clip {
     fn encode_images(&self, batch: &[RgbImage], ctx: &Ctx) -> Result<Vec<Vec<f32>>, JobError> {
         #[cfg(target_os = "macos")]
         if ctx.device().is_gpu() {
-            self.ensure_gpu_towers()?;
+            self.ensure_gpu_towers(ctx.device().index)?;
             let guard = self.gpu.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(gpu_towers) = guard.as_ref() {
+            if let Some((_, gpu_towers)) = guard.as_ref() {
                 return self.forward_images_on(&gpu_towers.vision, batch, ctx);
             }
         }
@@ -820,9 +820,9 @@ impl Encoder for Clip {
     fn encode_text(&self, text: &str, ctx: &Ctx) -> Result<Vec<f32>, JobError> {
         #[cfg(target_os = "macos")]
         if ctx.device().is_gpu() {
-            self.ensure_gpu_towers()?;
+            self.ensure_gpu_towers(ctx.device().index)?;
             let guard = self.gpu.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(gpu_towers) = guard.as_ref() {
+            if let Some((_, gpu_towers)) = guard.as_ref() {
                 return self.forward_text_on(&gpu_towers.text, text, ctx);
             }
         }

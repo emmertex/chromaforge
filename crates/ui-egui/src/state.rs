@@ -473,6 +473,10 @@ pub struct AppSettings {
     /// card when there is one), `off`, or a card's key.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub gpu_helper: String,
+    /// Hardware device for AI semantic search vector embeddings (Settings ▸ Performance / Settings ▸ AI Models):
+    /// empty or "auto" for Automatic, "cpu" for CPU, or a card's key.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub ml_device: String,
     /// Windows DirectComposition to prevent VRR flicker; opt-in, applies at next launch.
     pub compose_window: bool,
     /// An HDR (extended-range) window where the display offers one; off: always an SDR window.
@@ -696,6 +700,7 @@ impl Default for AppSettings {
             gpu_backend: GpuBackend::Auto,
             gpu_card: String::new(),
             gpu_helper: String::new(),
+            ml_device: String::new(),
             compose_window: false,
             hdr_display: true,
             preview_limit: 0,

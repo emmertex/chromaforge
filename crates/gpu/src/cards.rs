@@ -342,9 +342,12 @@ struct State {
     listed: Option<Vec<AdapterEntry>>,
     /// Saved cards already reported missing in this session (once each).
     told_missing: Vec<AdapterKey>,
+    /// Hardware device for AI semantic search embeddings (`None`: Automatic, `Some("cpu")`: CPU, or adapter key).
+    ml_device: Option<String>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { card: None, helper: HelperChoice::Auto, screen: None, listed: None, told_missing: Vec::new() });
+static STATE: Mutex<State> =
+    Mutex::new(State { card: None, helper: HelperChoice::Auto, screen: None, listed: None, told_missing: Vec::new(), ml_device: None });
 
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -419,6 +422,19 @@ pub(crate) fn first_report_of_missing(key: &AdapterKey) -> bool {
     }
     s.told_missing.push(key.clone());
     true
+}
+
+/// The setting for ML/embedding device (`None`: Automatic, `Some("cpu")`: CPU, or an `AdapterKey` string).
+pub(crate) fn ml_device() -> Option<String> {
+    state().ml_device.clone()
+}
+
+/// Set the ML/embedding device setting.
+pub(crate) fn set_ml_device(choice: Option<String>) -> bool {
+    let mut s = state();
+    let changed = s.ml_device != choice;
+    s.ml_device = choice;
+    changed
 }
 
 #[cfg(test)]
@@ -575,5 +591,15 @@ mod tests {
         assert_eq!(HelperChoice::parse_variable("same"), Some(HelperChoice::Same));
         assert_eq!(HelperChoice::parse_variable("4070"), Some(HelperChoice::Named("4070".into())));
         assert_eq!(HelperChoice::parse_variable("OFF"), Some(HelperChoice::Off));
+    }
+
+    #[test]
+    fn ml_device_setting_round_trips() {
+        assert_eq!(ml_device(), None);
+        assert!(set_ml_device(Some("cpu".into())));
+        assert_eq!(ml_device(), Some("cpu".into()));
+        assert!(!set_ml_device(Some("cpu".into())));
+        assert!(set_ml_device(None));
+        assert_eq!(ml_device(), None);
     }
 }
