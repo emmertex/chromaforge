@@ -1300,9 +1300,9 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
             p.circle(pos2(right - 12.0, bar.center().y), 5.0, label_color(l), Stroke::new(1.0, Color32::from_black_alpha(120)));
         }
     }
-    if let Some(name) = &photo.copy_name {
+    if let Some(name) = photo.virtual_copy_name() {
         // virtual copy: a folded-corner tag at the top right
-        let g = p.layout_no_wrap(name.clone(), t.semibold(10.5), Color32::WHITE);
+        let g = p.layout_no_wrap(name.to_string(), t.semibold(10.5), Color32::WHITE);
         let tr = if square { img_rect.right_top() + vec2(-6.0, 6.0) } else { img_rect.right_top() + vec2(-5.0, 5.0) };
         let br = Rect::from_min_max(pos2(tr.x - g.size().x - 26.0, tr.y), pos2(tr.x, tr.y + 20.0));
         p.rect_filled(br, 10.0, Color32::from_black_alpha(165));

@@ -360,7 +360,8 @@ pub struct Photo {
     /// settings, metadata and history).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_of: Option<PhotoId>,
-    /// Virtual copies' name ("Copy 1").
+    /// Copy Name: a virtual copy's name ("Copy 1"), or any photo's that a Lightroom catalog gave one (some people
+    /// use it as a short title). Whether a photo is a virtual copy is [`Photo::copy_of`], not this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_name: Option<String>,
     /// The settings import gave the photo when a user default (a raw/JPEG default preset, see
@@ -749,6 +750,11 @@ impl Photo {
             defaults.wb = self.develop.wb;
         }
         *self.develop != defaults && !self.develop.is_unedited()
+    }
+    /// The name a virtual copy is shown with (its Copy Name), and `None` for a photo that isn't one, whatever Copy
+    /// Name it carries.
+    pub fn virtual_copy_name(&self) -> Option<&str> {
+        self.copy_of.and(self.copy_name.as_deref())
     }
     /// Capture time if known, else import time (sort key).
     pub fn date(&self) -> &str {

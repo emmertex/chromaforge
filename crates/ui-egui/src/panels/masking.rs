@@ -2165,7 +2165,7 @@ fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
                     let _ = app.run("brush.preset", json!({"slot": label.to_ascii_lowercase()}));
                 }
             }
-            ui.add_space(8.0);
+            // (no extra space before Done: a space that ends the row widens the panel past its minimum)
             if text_button(ui, "brushDone", crate::i18n::tr("Done"), false).clicked() {
                 disarm(app);
             }

@@ -275,10 +275,10 @@ pub struct ImportPlan {
     pub extended_albums: Vec<String>,
 }
 
-/// How photos are matched: the file, and the virtual copy's name.
+/// How photos are matched: the file, and the virtual copy's name (a photo that isn't one may carry a Copy Name too).
 fn match_key(p: &Photo) -> Option<(String, Option<String>)> {
     match &p.source {
-        Source::File { path } => Some((crate::query::folder_key(path), p.copy_name.clone())),
+        Source::File { path } => Some((crate::query::folder_key(path), p.virtual_copy_name().map(str::to_string))),
         Source::Demo { .. } => None,
     }
 }
