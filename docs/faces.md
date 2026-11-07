@@ -168,12 +168,14 @@ every output is within 1e-3 of the CPU's (relative to the output's largest value
 and whenever the GPU is switched off (`<PREFIX>_GPU=0`, `<PREFIX>_GPU_BACKEND=off`, the GPU preference, or **Settings ▸
 Faces ▸ Run face models on the CPU only**), missing, wrong or slower, the model runs on the CPU. The first GPU error,
 or a result of the wrong size or with values that are not finite, drops it for that model. Settings ▸ Faces shows
-which device each model runs on (`faces.gpu`). The weights stay on a device of the scan's own (separate from the
-editor's) while the model is loaded, at most 768 MB per model.
+which device each model runs on (`faces.gpu`, with `card`: `second` or `editing`). The weights stay on a device of the
+scan's own (separate from the editor's) while the model is loaded, at most 768 MB per model: on the second graphics card
+(Settings ▸ Performance) when there is one, else on the card for editing. When that card stops working (a device error
+or loss), the scan offers the model to the other card, checked as at first, and runs on the CPU when that fails too.
 
 The background scan's pace also limits the GPU: paused or light, one model run at a time and the GPU busy at most a
-quarter of the time (the editor renders on the same GPU); normal, two at once and three quarters; full, as fast as it
-goes.
+quarter of the time (the editor renders on the same GPU); normal, two at once and three quarters (the second graphics
+card, which draws no window, as much as it goes); full, as fast as it goes.
 
 Measured on Linux with a Radeon (Vulkan) and a 32-thread CPU, one call at a time, machine under very heavy load from
 other jobs (load average 100–250, so the absolute numbers are noisy):

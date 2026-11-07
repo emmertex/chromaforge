@@ -33,6 +33,8 @@ use lcc_pipeline::{RenderRequest, Rendered, SourceInfo, StageCache};
 use lcc_raster::Rgb32f;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod ai;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod backend;
 #[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
 pub mod bm3d;
@@ -999,11 +1001,10 @@ fn start_helper() {
     helper::restart(pick.and_then(|i| adapters.into_iter().nth(i)));
 }
 
-/// The card AI devices are made on (the denoise network and the AI masks' kernels in `nn.rs`, the
-/// face models in `faces.rs`; any later model's device should be made here too): the second
-/// graphics card when one is chosen or found, so models never take the editing card's memory or
-/// turns, else the editing card, else wgpu's high-performance pick. Each AI device is made once
-/// and given up on alone (its own `broken_reason`); the choice is read when it is made.
+/// The card the first AI device goes to (AI Denoise in `nn.rs`, the face models in `faces.rs`,
+/// which keep a device on each card through [`ai_adapter_on`]): the second graphics card when one
+/// is chosen or found, so models never take the editing card's memory or turns, else the editing
+/// card, else wgpu's high-performance pick.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ai_adapter(instance: &wgpu::Instance, backends: wgpu::Backends) -> Result<wgpu::Adapter, String> {
     let adapters = pollster::block_on(instance.enumerate_adapters(backends));
@@ -1023,8 +1024,9 @@ pub(crate) fn ai_adapter(instance: &wgpu::Instance, backends: wgpu::Backends) ->
 }
 
 /// The adapter for AI work on the second graphics card (`second`: `Err` when there is none, or it is
-/// turned off) or on the card for editing. AI Denoise keeps a device on each ([`nn::Card`]).
-#[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
+/// turned off) or on the card for editing. AI Denoise and the face models keep a device on each
+/// ([`ai::Card`]).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ai_adapter_on(instance: &wgpu::Instance, backends: wgpu::Backends, second: bool) -> Result<wgpu::Adapter, String> {
     let adapters = pollster::block_on(instance.enumerate_adapters(backends));
     let entries = remember_adapters(&adapters);
@@ -1035,7 +1037,7 @@ pub(crate) fn ai_adapter_on(instance: &wgpu::Instance, backends: wgpu::Backends,
         let pins = backend::wanted_adapter().is_some();
         return cards::resolve_helper(&entries, primary, &cards::helper_choice(), pins)
             .and_then(|i| adapters.into_iter().nth(i))
-            .ok_or_else(|| nn::NO_SECOND_CARD.to_string());
+            .ok_or_else(|| ai::NO_SECOND_CARD.to_string());
     }
     match primary.and_then(|i| adapters.into_iter().nth(i)) {
         Some(a) => Ok(a),
