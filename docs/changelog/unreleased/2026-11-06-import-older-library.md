@@ -1,3 +1,0 @@
-## Library
-
-- **Import a library in the earlier catalog format:** a new File ▸ More Imports command reads a library in the catalog format this app had under its earlier name (format v10 and older, still written by the fork of that name) and merges its photos, edits, masks, picks, ratings, labels and collections through the Import from Catalog preview. The records are converted as they are read; the library itself is only read, never locked, upgraded or changed. A mask of a kind this app doesn't know is left out, with the rest of the photo's edits kept. The command and the format names live in the `legacy` files (`crates/catalog/src/legacy.rs`, `crates/ui-egui/src/legacy.rs`).
