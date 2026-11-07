@@ -258,6 +258,9 @@ pub struct ImportReport {
     pub kept: Vec<Kept>,
     /// (path, error)
     pub failed: Vec<(String, String)>,
+    /// Files skipped as still being copied in (`lcc_catalog::incoming`): a later scan or import picks them up.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub still_copying: Vec<String>,
     /// Files found after expanding folders.
     pub scanned: usize,
     /// Photos whose metadata/develop settings were read from an XMP sidecar (or embedded XMP).
@@ -1201,6 +1204,8 @@ enum PreparedItem {
         hash: Option<String>,
     },
     Failed(String, String),
+    /// Still being copied in: left for a later scan.
+    Copying(String),
     Kept(Kept),
     Ready(Box<ReadyFile>),
 }
@@ -1474,6 +1479,7 @@ impl ImportJob {
                 Err(e) if lcc_catalog::incoming::is_still_being_written(&e) => {
                     log::info!("import: skipped {e}");
                     self.done.fetch_add(1, Relaxed);
+                    plan.slots.push(Slot::Item(PreparedItem::Copying(path)));
                     continue;
                 }
                 Err(e) => {
@@ -1905,6 +1911,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 }
             }
             PreparedItem::Failed(path, e) => report.failed.push((path, e)),
+            PreparedItem::Copying(path) => report.still_copying.push(path),
             PreparedItem::Kept(k) => report.kept.push(k),
             PreparedItem::Ready(r) if r.promote.is_some_and(|id| s.catalog.photo(id).is_some_and(|p| p.local)) => {
                 // a browsed photo copied or moved: its record follows the file into the library,
