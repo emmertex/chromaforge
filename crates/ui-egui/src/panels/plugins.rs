@@ -567,10 +567,13 @@ pub fn export_hooks_running() -> bool {
 /// Per frame: answer the running export hooks' catalog requests, keep their activity row up to
 /// date and, when they finish, report how they went.
 pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
-    // a plug-in's program.end hook asks for the catalog from its own thread
+    // a plug-in's program.end hook, or a job, asks for the catalog from its own thread
     lcc_engine::cmd::plugin_programs::answer_requests(&mut app.session);
-    if lcc_engine::cmd::plugin_programs::hooks_running() {
+    if lcc_engine::cmd::plugin_programs::hooks_running() || lcc_engine::cmd::plugin_jobs::running() {
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    }
+    for ended in lcc_engine::cmd::plugin_jobs::take_finished(&mut app.session) {
+        job_ended(app, ctx, &ended);
     }
     let mut g = task_lock();
     let Some(task) = g.as_mut() else { return };
@@ -592,6 +595,17 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
     *g = None;
     drop(g);
     report(app, ctx, &results);
+}
+
+/// A plug-in job ended (`plugin_jobs::take_finished`): its last reply's `message` as a toast, or
+/// its error; a cancelled job says nothing (its row was stopped on purpose).
+fn job_ended(app: &mut LccApp, ctx: &egui::Context, ended: &Value) {
+    if let Some(e) = ended["error"].as_str() {
+        let label = ended["label"].as_str().unwrap_or("");
+        app.toast_error(ctx, format!("{} {label}: {e}", tr("Plug-in command failed:")));
+    } else if let Some(m) = ended["ok"]["message"].as_str() {
+        app.toast(ctx, m.to_string());
+    }
 }
 
 fn report(app: &mut LccApp, ctx: &egui::Context, results: &[Value]) {
@@ -992,6 +1006,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
 }
 
 fn toast_result(app: &mut LccApp, ctx: &egui::Context, s: &mut State, v: &Value) {
+    // a job started: its row shows it, and its message comes when it ends
+    if v["running"] == true && v["job"].is_u64() {
+        return;
+    }
     s.message = v.get("message").and_then(Value::as_str).map_or_else(|| v.to_string(), str::to_string);
     app.toast(ctx, s.message.clone());
 }

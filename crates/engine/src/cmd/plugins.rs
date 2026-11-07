@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use lcc_plugins::{HostApi, Manager, Permissions};
+use lcc_plugins::{Begun, HostApi, Manager, Permissions};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, bad, bool_or, cmd, str_param};
@@ -359,11 +359,22 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let id = id_param(p, C)?;
     let command = str_param(p, "command").ok_or_else(|| bad(C, "missing `command`"))?;
     let args = p.get("args").cloned().unwrap_or(Value::Null);
+    let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
     let selection: Vec<String> = s.targets(p)?.iter().map(|i| i.0.to_string()).collect();
     let source = source_param(s, p, C)?;
     let lib = s.plugin_library.clone();
-    let mut host = SessionHost(s);
-    let r = with_library(&lib, |m| m.run_command_from(id, command, &args, &selection, &source, &mut host).map_err(|e| plugin_err(C, e)));
+    let begun = {
+        let mut host = SessionHost(s);
+        with_library(&lib, |m| m.begin_command(id, command, &args, &selection, &source, &mut host).map_err(|e| plugin_err(C, e)))?
+    };
+    let r = match begun {
+        Begun::Message(m) => return Ok(json!({"message": m, "ran": false})),
+        Begun::Call(call) if call.is_job() => return super::plugin_jobs::run(s, *call, wait).map_err(|e| plugin_err(C, e)),
+        Begun::Call(mut call) => {
+            let outcome = call.run(&mut SessionHost(s));
+            with_library(&lib, |m| m.end(*call, Some(outcome)).map_err(|e| plugin_err(C, e)))
+        }
+    };
     // the command may have written the plug-in's own fields
     sync_fields(s);
     r
@@ -992,7 +1003,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "plugin.log", "Plug-in Log", [], None, "{id} → [lines]", always, log),
         cmd!(query "plugin.commands", "Plug-in Commands", [], None, "{} → [{plugin, pluginName, command, label, menu, dialog, prepare, values: what the dialog opens with (the last-run values of fields that remember, else defaults)}] of enabled plug-ins", always, commands),
         cmd!(query "plugin.prepare", "Prepare Plug-in Command", [], None, "{plugin, command, ids?, source?: {kind: album|smartAlbum|folder|allPhotos|other, id?, name?, path?} (default: the Library source shown)} — asks a command with `prepare` how to run on ids / the selection (others: their dialog as declared) → {dialog: [field + value], error: why the plug-in's own options are missing | null} | {run: args} | {message}; runs nothing", always, prepare),
-        cmd!(query "plugin.run", "Run Plug-in Command", [], None, "{plugin, command, args?: dialog values, ids?, source?: as plugin.prepare} — runs a plug-in menu command on ids / the selection, telling it the Library source it was started from (`source`, default: the one shown) → its result; args given are remembered for its dialog. A command with `prepare` is asked first: a message → {message, ran: false} and nothing runs; its own args are used when `args` is missing; args are checked against its dialog as prepared", always, run),
+        cmd!(query "plugin.run", "Run Plug-in Command", [], None, "{plugin, command, args?: dialog values, ids?, source?: as plugin.prepare, wait?: a job runs to its end} — runs a plug-in menu command on ids / the selection, telling it the Library source it was started from (`source`, default: the one shown) → its result; args given are remembered for its dialog. A command with `prepare` is asked first: a message → {message, ran: false} and nothing runs; its own args are used when `args` is missing; args are checked against its dialog as prepared. A job (a command with `job`) runs on a worker with a row in the activity stack and returns at once → {job: its activity id (activity.list, activity.cancel), running: true, plugin, command}; with `wait: true` it runs here to its end → its result (a cancelled job is an error). Headless sessions answer a job's catalog reads only with `wait`", always, run),
         cmd!(query "plugin.settings", "Plug-in Settings", [], None, "{id} → {id, fields: [field + value], values: {key: value}, error: why the plug-in's own options are missing | null}; kept for the whole app, defaults for what was never set", always, settings),
         cmd!(query "plugin.setSettings", "Set Plug-in Settings", [], None, "{id, values: {key: value (null: the default)}} — each value checked against its field (numbers clamped); an unknown key or a value that doesn't fit changes nothing → {id, values}", always, set_settings),
         cmd!(query "plugin.suggestMetadata", "Suggest Metadata (Plug-ins)", [], None, "{ids?} — asks metadata providers about the photos → [{plugin, ok: {suggestions}} | {plugin, error}]; writes nothing", always, suggest),
