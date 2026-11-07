@@ -46,6 +46,18 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "store.importOlderInstalls",
+            "Import Presets from Older Installs",
+            ["File", "More Imports"],
+            None,
+            "{paths?: [store folders], force?: bool} — the presets an older install of this app kept under one of its earlier names (each earlier settings folder's Library Store; `paths`: those store folders instead) join the shared store, each folder once unless `force`: develop presets with their favourites and At Import / hidden marks, local adjustment presets, LUT profiles, import defaults and export presets; the same preset twice is kept once, the same name with other content as \"name 2\"; nothing in those folders is written → {merged: [{library, presets, profiles, effects, problems, skipped}]}",
+            always,
+            |s: &mut Session, p: &Value| -> Result<Value> {
+                let reports = s.merge_older_installs(&paths(p), force(p)).map_err(|e| bad("store.importOlderInstalls", e.to_string()))?;
+                Ok(json!({"merged": reports}))
+            }
+        ),
+        cmd!(
             "store.useLibrary",
             "Store Presets and Profiles with This Library",
             [],

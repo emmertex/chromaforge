@@ -547,6 +547,54 @@ fn gradient_png(path: &std::path::Path) {
     std::fs::write(path, png).unwrap();
 }
 
+/// PERF-CULL-5: `bench-cull` times a folder end to end and writes nothing next to the photos.
+#[test]
+fn bench_cull_times_a_folder_and_leaves_it_untouched() {
+    let dir = tmp("bench-cull-src");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (seed, name) in ["a.png", "b.png", "c.png"].iter().enumerate() {
+        // three different pictures (the same bytes would import as one photo)
+        let img = lcc_raster::Rgba8::from_fn(120, 80, |x, y| [(x * 2) as u8, (y * 3) as u8, (seed * 80) as u8, 255]);
+        let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap();
+        std::fs::write(dir.join(name), png).unwrap();
+    }
+    let listing = |d: &std::path::Path| {
+        let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        v.sort();
+        v
+    };
+    let before = listing(&dir);
+    let work = tmp("bench-cull-work");
+    let json_out = tmp("bench-cull.json");
+    let r = Command::new(BIN)
+        .env(lcc_brand::env_var("NO_PREFS"), "1")
+        .env(lcc_brand::env_var("GPU"), "0")
+        .arg("bench-cull")
+        .arg(&dir)
+        .args(["--n", "3", "--copy", "1", "--work"])
+        .arg(&work)
+        .arg("--json")
+        .arg(&json_out)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    assert!(r.status.success(), "{stdout}{}", String::from_utf8_lossy(&r.stderr));
+    assert!(stdout.contains("browse 3 photos") && stdout.contains("ms wall"), "{stdout}");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&json_out).unwrap()).unwrap();
+    assert_eq!(v["browse"]["photos"], 3);
+    assert_eq!(v["importAdd"]["photos"], 3);
+    assert_eq!(v["importCopy"]["photos"], 1);
+    assert_eq!(v["rate"]["n"], 3);
+    assert_eq!(listing(&dir), before, "nothing written next to the photos");
+    // a sample of the folder, no import
+    let r = Command::new(BIN).arg("bench-cull").arg(&dir).args(["--files", "2", "--n", "0", "--work"]).arg(&work).output().unwrap();
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    assert!(r.status.success() && stdout.contains("browse 2 photos (first files)") && !stdout.contains("import"), "{stdout}");
+    // a bad folder is an error, not a panic
+    let r = Command::new(BIN).args(["bench-cull", "/no/such/folder"]).output().unwrap();
+    assert!(!r.status.success() && String::from_utf8_lossy(&r.stderr).contains("not a folder"));
+}
+
 #[test]
 fn calibrate_reads_raf_inputs_and_reports_bad_files() {
     let input = tmp("invalid.RAF");
@@ -1547,9 +1595,13 @@ fn shared_settings_gathers_presets_without_a_library() {
     std::fs::create_dir_all(&backup).unwrap();
     let prefs = br#"{"exportPresets": [{"name": "Archive", "params": {}}]}"#;
     std::fs::write(backup.join("prefs.json"), prefs).unwrap();
-    let o = Command::new(BIN)
+    let mut cmd = Command::new(BIN);
+    // an inherited NO_PREFS under any prefix, the legacy ones included, turns the shared store off
+    for prefix in std::iter::once(lcc_brand::ENV_PREFIX).chain(lcc_brand::LEGACY_ENV_PREFIXES.iter().copied()) {
+        cmd.env_remove(format!("{prefix}_NO_PREFS"));
+    }
+    let o = cmd
         .env(lcc_brand::env_var("CONFIG_DIR"), &config)
-        .env_remove(lcc_brand::env_var("NO_PREFS"))
         .args(["run", "--shared-settings", "store.gatherPresets", &serde_json::json!({"paths": [old.to_string_lossy()]}).to_string()])
         .output()
         .unwrap();

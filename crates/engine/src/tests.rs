@@ -503,6 +503,12 @@ fn command_sweep() {
         if c.id == "metadata.downloadPlaceNames" {
             continue;
         }
+        // empty params run the whole machine test: full-size exports of the demo photos at up to one
+        // lane per core (past 5 GB on a 32-core machine), and it applies its result to every later
+        // export of the test process; its own tests run it small (`machine_test.rs`)
+        if c.id == "app.testMachine" {
+            continue;
+        }
         let _ = s.execute(c.id, &Value::Null);
     }
     // empty params must never start a download from the internet

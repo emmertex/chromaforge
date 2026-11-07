@@ -265,7 +265,9 @@ original took: `colour.kind` is `file` (1), `measuredDatabase` (2), `cameraJpeg`
 profile for the model was offered to the fit, not whether its colour was kept), `cameraProfile` (the profile's colour
 kept when no look fits, above), `database` (5, with the entry's provenance), `spectralStandIn` (an ARW of a Sony body
 outside the table: another Sony sensor's matrices) or `neutralFallback` (6), and `tone` where the starting tone curve
-came from (`profilePooled` and `default` for a kept profile colour). It also reports whether the sensor data or the
+came from (`profilePooled` and `default` for a kept profile colour; `withoutProfile` for a camera profile without a
+tone curve of its own, which keeps the tone the photo has without it, with `keptTone` saying where that came from:
+`dngProfileCurve`, `cameraJpeg`, `dngToneFit` and so on). It also reports whether the sensor data or the
 embedded preview is shown, the file's own DNG look tags, Sony's DRO flag and the lens correction that applies by
 itself (`embedded`, or a database profile `found` by the lens name). Every value comes from the same code that opens
 the photo, decoding the file again.

@@ -505,6 +505,128 @@ pub(crate) fn read_library(dir: &Path) -> std::result::Result<Content, String> {
     Ok(Content::from_files(prefs, presets))
 }
 
+/// Whether `dir` holds an app store: an older install's `Library Store`, with its develop presets or
+/// its shared file.
+pub fn is_store_folder(dir: &Path) -> bool {
+    dir.join(PRESETS).is_file() || dir.join(SHARED).is_file()
+}
+
+/// The stores of this computer's older installs, under the app's earlier names: each earlier settings
+/// folder's `Library Store` that holds one (`[legacy] settings_dirs` in `brand.toml`).
+pub fn older_install_stores() -> Vec<PathBuf> {
+    stores_in(lcc_brand::legacy_settings_dirs())
+}
+
+/// The `Library Store` folders of `settings_dirs` that hold a store.
+pub(crate) fn stores_in(settings_dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    settings_dirs.into_iter().map(|d| d.join(DIR_NAME)).filter(|d| is_store_folder(d)).collect()
+}
+
+/// `v` as a `T`, the parts that read: a key `T` can't take is left out and named in `problems`, so one
+/// list another build wrote differently costs only itself.
+fn lenient<T: DeserializeOwned + Default>(v: &Value, what: &str, problems: &mut Vec<String>) -> T {
+    if let Ok(t) = serde_json::from_value::<T>(v.clone()) {
+        return t;
+    }
+    let Some(o) = v.as_object() else {
+        if !v.is_null() {
+            problems.push(format!("{what}: not an object; left out"));
+        }
+        return T::default();
+    };
+    let mut kept = serde_json::Map::new();
+    for (k, x) in o {
+        let one: serde_json::Map<String, Value> = std::iter::once((k.clone(), x.clone())).collect();
+        if serde_json::from_value::<T>(Value::Object(one)).is_ok() {
+            kept.insert(k.clone(), x.clone());
+        } else {
+            problems.push(format!("{what}: {k} couldn't be read; left out"));
+        }
+    }
+    serde_json::from_value(Value::Object(kept)).unwrap_or_default()
+}
+
+/// A JSON file of at most `max` bytes (`Null` when missing); one that can't be read or parsed is named
+/// in `problems`.
+fn json_file(path: &Path, max: u64, problems: &mut Vec<String>) -> Value {
+    match read_capped(path, max) {
+        Ok(Some(b)) => serde_json::from_slice(&b).unwrap_or_else(|e| {
+            problems.push(format!("{}: {e}", path.display()));
+            Value::Null
+        }),
+        Ok(None) => Value::Null,
+        Err(e) => {
+            problems.push(e);
+            Value::Null
+        }
+    }
+}
+
+/// The Presets Manager's choices as an older install's store keeps them (`presetState` in its
+/// `shared.json`).
+#[derive(Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct OlderPresetState {
+    hidden: Vec<String>,
+    names: BTreeMap<String, String>,
+    groups: BTreeMap<String, String>,
+    for_import: Vec<String>,
+}
+
+/// An older install's store folder `dir`, read only: its develop presets with their favourites and
+/// At Import / hidden marks, local adjustment presets, LUT profiles, import defaults and habits. What
+/// can't be read is left out and named in `problems` (a preset that doesn't read costs only itself).
+pub(crate) fn read_store_folder(dir: &Path, problems: &mut Vec<String>) -> Content {
+    let shared = json_file(&dir.join(SHARED), MAX_PREFS_FILE, problems);
+    let prefs: LibraryPrefs = lenient(&shared, SHARED, problems);
+    let mut presets = match json_file(&dir.join(PRESETS), MAX_PRESETS_FILE, problems) {
+        Value::Object(mut o) => {
+            let user = o.remove("user");
+            let mut file: PresetsFile = lenient(&Value::Object(o), PRESETS, problems);
+            let mut unread = 0usize;
+            let items = match user {
+                Some(Value::Array(a)) => a,
+                _ => Vec::new(),
+            };
+            for item in items {
+                match serde_json::from_value::<Preset>(item) {
+                    Ok(p) => file.user.push(p),
+                    Err(_) => unread += 1,
+                }
+            }
+            if unread > 0 {
+                problems.push(format!("{PRESETS}: {unread} preset(s) couldn't be read; left out"));
+            }
+            file
+        }
+        Value::Null => PresetsFile::default(),
+        _ => {
+            problems.push(format!("{PRESETS}: not an object; left out"));
+            PresetsFile::default()
+        }
+    };
+    // the marks: in `presetMarks` (this app's store), or in `presetState` (an older install's Presets Manager)
+    let marks: PresetMarks = shared.get("presetMarks").map(|v| lenient(v, "presetMarks", problems)).unwrap_or_default();
+    let state: OlderPresetState = shared.get("presetState").map(|v| lenient(v, "presetState", problems)).unwrap_or_default();
+    for id in marks.at_import.into_iter().chain(state.for_import) {
+        if !presets.at_import.contains(&id) {
+            presets.at_import.push(id);
+        }
+    }
+    for id in marks.hidden.into_iter().chain(state.hidden) {
+        if !presets.hidden.contains(&id) {
+            presets.hidden.push(id);
+        }
+    }
+    for (id, n) in marks.names.into_iter().chain(state.names) {
+        presets.builtin_names.entry(id).or_insert(n);
+    }
+    for (id, g) in marks.groups.into_iter().chain(state.groups) {
+        presets.builtin_groups.entry(id).or_insert(g);
+    }
+    Content::from_files(prefs, Some(presets))
+}
+
 /// A free id: `base`, else `base-2`, `base-3`…
 fn free_id(base: &str, taken: impl Fn(&str) -> bool) -> String {
     let mut id = base.to_string();
@@ -1088,6 +1210,48 @@ impl Session {
         self.set_content(mine);
         crate::profile_refs::refresh(self);
         self.apply_store_remap();
+        self.save_app_store()?;
+        Ok(out)
+    }
+
+    /// `store.importOlderInstalls`: the presets of older installs' stores (`dirs`; none given: every one
+    /// on this computer, [`older_install_stores`]) join the shared store, each folder once unless
+    /// `force`: develop presets with their favourites and At Import / hidden marks, local adjustment
+    /// presets, LUT profiles, import defaults and habits. The same preset twice is kept once. Reads
+    /// the folders only; saves the store.
+    pub fn merge_older_installs(&mut self, dirs: &[PathBuf], force: bool) -> Result<Vec<MergeReport>> {
+        self.check_store()?;
+        let dirs = if dirs.is_empty() { older_install_stores() } else { dirs.to_vec() };
+        if dirs.is_empty() {
+            let looked: Vec<String> = lcc_brand::legacy_settings_dirs().iter().map(|d| d.join(DIR_NAME).display().to_string()).collect();
+            return Err(EngineError::Other(format!("no older install's presets on this computer (looked in {})", looked.join(", "))));
+        }
+        let own = self.app_store.as_ref().map(|s| s.dir.clone());
+        let mut mine = self.content();
+        let store_profiles = self.app_store.as_ref().map(AppStore::profiles_dir);
+        let mut out = Vec::new();
+        for dir in &dirs {
+            let mut r = MergeReport { library: dir.display().to_string(), ..Default::default() };
+            if own.as_deref().is_some_and(|o| same_path(o, dir)) {
+                r.problems.push(format!("{} is this app's own store", dir.display()));
+            } else if !force && self.app_store.as_ref().is_some_and(|s| s.has_merged(dir)) {
+                r.skipped = true;
+            } else if !is_store_folder(dir) {
+                r.problems.push(format!("{} holds no presets ({PRESETS} or {SHARED})", dir.display()));
+            } else {
+                let mut problems = Vec::new();
+                let theirs = read_store_folder(dir, &mut problems);
+                let (mut rr, remap) = merge_content(&mut mine, theirs, Some(&dir.join(PROFILES_DIR)), store_profiles.as_deref());
+                problems.append(&mut rr.problems);
+                rr.problems = problems;
+                rr.library = r.library.clone();
+                self.record_merge(dir, &rr, remap);
+                r = rr;
+            }
+            out.push(r);
+        }
+        self.set_content(mine);
+        crate::profile_refs::refresh(self);
         self.save_app_store()?;
         Ok(out)
     }
