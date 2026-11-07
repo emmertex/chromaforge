@@ -583,7 +583,7 @@ impl Clip {
     #[cfg(target_os = "macos")]
     fn ensure_gpu_towers(&self, device_index: usize) -> Result<(), JobError> {
         let mut guard = self.gpu.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.as_ref().map_or(true, |(idx, _)| *idx != device_index) {
+        if guard.as_ref().is_none_or(|(idx, _)| *idx != device_index) {
             let dev = CandleDevice::new_metal(device_index).map_err(|e| JobError::Device(e.to_string()))?;
             let towers = load_towers(&self.weights_path, self.arch, dev).map_err(|e| JobError::Device(e.to_string()))?;
             *guard = Some((device_index, towers));
