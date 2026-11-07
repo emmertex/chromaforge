@@ -1,6 +1,7 @@
 //! Jobs (`"job": true` commands) against hand-written modules: the `job.*` host calls reach the
 //! reporter, items make a batch, a cancel stops the job between calls, `{continue: state}` calls
-//! it again with a fresh budget, and catalog writes are refused in a job.
+//! it again with a fresh budget, catalog writes are refused in a job, and a revoke made while a
+//! job runs reaches its next call.
 
 use std::cell::{Cell, RefCell};
 
@@ -370,4 +371,68 @@ fn what_a_job_wrote_is_saved_before_its_next_call() {
     assert_eq!(e, Error::Cancelled);
     assert_eq!(*peek.seen.borrow(), vec![false, true], "the first call's write is on disk before the second call runs");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A change made to the manager while a job runs.
+type Change<'a> = Box<dyn FnMut(&mut Manager) + 'a>;
+
+/// Answers catalog calls, making `change` to the manager at the first (a revoke, a disable, …).
+struct Changer<'a> {
+    m: &'a mut Manager,
+    change: Change<'a>,
+    calls: u32,
+}
+
+impl HostApi for Changer<'_> {
+    fn catalog(&mut self, _: &str, _: &Value) -> Result<Value, String> {
+        self.calls += 1;
+        if self.calls == 1 {
+            (self.change)(self.m);
+        }
+        Ok(json!({"photos": 3}))
+    }
+}
+
+#[test]
+fn a_change_made_while_a_job_runs_reaches_its_next_call() {
+    // each call reads the catalog; the first asks to go on, the second replies with what it got
+    let (stats, s1, c1) = (r#"{"method":"catalog.stats","params":{}}"#, r#""state":1"#, r#"{"ok":{"continue":1}}"#);
+    let body = format!(
+        "(local.set $n (call $call (i32.const 8192) (i32.const {sl})))
+         (if (call $has (local.get $ptr) (local.get $len) (i32.const 7424) (i32.const {l1}))
+           (then (call $response (i32.const 32768))
+                 (return (i64.or (i64.shl (i64.extend_i32_u (local.get $n)) (i64.const 32)) (i64.const 32768)))))
+         {c1}",
+        sl = stats.len(),
+        l1 = s1.len(),
+        c1 = ret(6144, c1),
+    );
+    let bytes = module(&manifest(true), &[(8192, stats), (7424, s1), (6144, c1)], &body);
+    let less = Permissions { metadata_write: true, ..Default::default() };
+    let changes: Vec<(&str, Change)> = vec![
+        (
+            "revoked",
+            Box::new(|m: &mut Manager| {
+                m.set_grant("test.job", less.clone()).unwrap();
+            }),
+        ),
+        ("disabled", Box::new(|m: &mut Manager| m.set_enabled("test.job", false).unwrap())),
+        ("uninstalled", Box::new(|m: &mut Manager| m.uninstall("test.job").unwrap())),
+        (
+            "updated with less granted",
+            Box::new(|m: &mut Manager| {
+                m.install_bytes(&bytes, Some(less.clone()), false).unwrap();
+            }),
+        ),
+    ];
+    for (what, change) in changes {
+        let mut m = installed(&bytes, Limits::default());
+        let Begun::Call(mut call) = m.begin_command("test.job", "go", &json!({}), &[], &Value::Null, &mut NoHost).unwrap() else { panic!() };
+        let mut host = Changer { m: &mut m, change, calls: 0 };
+        let outcome = call.run_with(&mut host, &Rec::default());
+        assert_eq!(host.calls, 1, "{what}: the second call's catalog read never reached the host");
+        drop(host);
+        let e = m.end(*call, Some(outcome)).unwrap_err().to_string();
+        assert!(e.contains("not granted"), "{what} during the first call: the job's next call has no catalog permission: {e}");
+    }
 }

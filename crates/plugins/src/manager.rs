@@ -43,12 +43,23 @@ pub struct Installed {
     /// A call is running off the manager's lock ([`Manager::begin`] … [`Manager::end`]): its store
     /// is lent to it. What it is, for the error other calls get meanwhile.
     busy: Option<String>,
+    /// [`Installed::effective`] as of the last grant change (nothing while disabled or once
+    /// uninstalled), shared with a call running off the lock, so a job's next `{continue}` call
+    /// gets a revoke, a disable or a removal made while it runs.
+    live: Arc<Mutex<Permissions>>,
 }
 
 impl Installed {
     /// The capabilities calls actually get.
     pub fn effective(&self) -> Permissions {
         self.grant.intersect(&self.plugin.manifest().permissions)
+    }
+
+    /// Hands [`Installed::effective`] (nothing while disabled) to calls running now: their next
+    /// call gets it.
+    fn share_effective(&self) {
+        let perms = if self.enabled { self.effective() } else { Permissions::default() };
+        *self.live.lock().unwrap_or_else(PoisonError::into_inner) = perms;
     }
 
     fn push_log(&mut self, line: String) {
@@ -126,7 +137,8 @@ struct Entry {
 pub struct PendingCall {
     id: String,
     plugin: Arc<Plugin>,
-    perms: Permissions,
+    /// The plug-in's capabilities, read afresh for each call a job makes ([`Installed::live`]).
+    perms: Arc<Mutex<Permissions>>,
     store: NamespaceStore,
     settings: Arc<Mutex<SettingsStore>>,
     request: Value,
@@ -224,11 +236,14 @@ impl PendingCall {
     fn call_once(&mut self, host: &mut dyn HostApi, job: Option<&dyn JobReporter>) -> crate::Outcome {
         let plugin = self.plugin.clone();
         let manifest = plugin.manifest();
+        // never more than this module's own manifest asks for: after an update the cell holds the
+        // new version's grant, while a job still runs the old code
+        let perms = self.perms.lock().unwrap_or_else(PoisonError::into_inner).intersect(&manifest.permissions);
         let mut ctx = CallContext {
             plugin: &self.id,
             plugin_name: &manifest.name,
             requested: &manifest.permissions,
-            perms: &self.perms,
+            perms: &perms,
             lent: &self.lent,
             lent_dirs: &self.lent_dirs,
             runs_root: self.runs_root.as_deref(),
@@ -386,7 +401,10 @@ impl Manager {
             }
             let (settings, damaged) = m.open_settings(&id);
             log.extend(damaged);
-            m.plugins.insert(id, Installed { plugin: Arc::new(p), enabled, grant, log, store: None, settings, busy: None });
+            let live = Arc::new(Mutex::new(Permissions::default()));
+            let installed = Installed { plugin: Arc::new(p), enabled, grant, log, store: None, settings, busy: None, live };
+            installed.share_effective();
+            m.plugins.insert(id, installed);
         }
         Ok(m)
     }
@@ -560,6 +578,8 @@ impl Manager {
         self.unloaded.remove(&id);
         let old = self.plugins.remove(&id);
         let mut log = old.as_ref().map(|i| i.log.clone()).unwrap_or_default();
+        // a call still running keeps the cell, and gets the new version's grant on its next call
+        let live = old.as_ref().map_or_else(|| Arc::new(Mutex::new(Permissions::default())), |i| i.live.clone());
         let settings = match old.map(|i| i.settings) {
             Some(s) => s,
             None => {
@@ -577,7 +597,9 @@ impl Manager {
         if let Err(e) = pruned {
             log.push_back(format!("settings: {e}"));
         }
-        self.plugins.insert(id.clone(), Installed { plugin: Arc::new(plugin), enabled: true, grant, log, store: None, settings, busy: None });
+        let installed = Installed { plugin: Arc::new(plugin), enabled: true, grant, log, store: None, settings, busy: None, live };
+        installed.share_effective();
+        self.plugins.insert(id.clone(), installed);
         self.save()?;
         self.plugins
             .get_mut(&id)
@@ -643,7 +665,10 @@ impl Manager {
             s.forget();
         }
         drop(store);
-        self.plugins.remove(id);
+        // a job still running gets nothing more from its next call
+        if let Some(p) = self.plugins.remove(id) {
+            *p.live.lock().unwrap_or_else(PoisonError::into_inner) = Permissions::default();
+        }
         self.failed.retain(|f| !is_failed(f));
         self.kept.remove(id);
         self.unloaded.remove(id);
@@ -653,6 +678,7 @@ impl Manager {
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
         let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
         p.enabled = enabled;
+        p.share_effective();
         p.push_log(if enabled { "enabled".into() } else { "disabled".into() });
         self.save()
     }
@@ -672,6 +698,7 @@ impl Manager {
     pub fn set_grant_by_user(&mut self, id: &str, grant: Permissions) -> Result<Permissions> {
         let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
         p.grant = grant.intersect(&p.plugin.manifest().permissions);
+        p.share_effective();
         let e = p.effective();
         p.push_log(format!("permissions set to {}", serde_json::to_string(&e).unwrap_or_default()));
         self.save()?;
@@ -737,7 +764,8 @@ impl Manager {
         if let Some(store) = p.store.as_mut() {
             scope(store, &library);
         }
-        let perms = p.effective();
+        p.share_effective();
+        let perms = p.live.clone();
         let plugin = p.plugin.clone();
         let store = p.store.take().unwrap_or_default();
         let settings = p.settings.clone();
