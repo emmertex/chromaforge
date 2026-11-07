@@ -45,6 +45,8 @@ const FIELDS: &[(&str, usize)] = &[
     ("SHARPEN_V4", 1),
     // process V5: over-range colours keep hue and saturation (`lcc_pipeline::finish::hue_clip`)
     ("HUE_CLIP", 1),
+    // process V8: 8-bit output is ordered-dithered (`lcc_pipeline::finish::bayer_dither_offset`)
+    ("DITHER", 1),
     ("SHARPEN", 1),
     ("SHARPEN_MASK", 1),
     ("SHARPEN_LIMIT", 1),
@@ -313,6 +315,7 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     p.b("DEHAZE_V3", fp.dehaze_v3);
     p.b("SHARPEN_V4", fp.sharpen_v4);
     p.b("HUE_CLIP", fp.hue_clip);
+    p.b("DITHER", fp.dither);
     p.f("SHARPEN", fp.sharpen);
     p.f("SHARPEN_MASK", fp.sharpen_mask);
     p.f("SHARPEN_LIMIT", fp.sharpen_limit);
@@ -347,6 +350,8 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     p.f("SKIN", ops.skin);
     p.fs("BANDH", lcc_pipeline::colorops::band_hues());
 
+    // also the dither's place in the whole output
+    p.fs("VIG_VIEW", &fp.view);
     if let Some(v) = &fp.vig {
         p.b("VIG", true);
         p.f("VIG_AMOUNT", v.amount);
@@ -355,7 +360,6 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         p.f("VIG_ASPECT_MIX", v.aspect_mix);
         p.f("VIG_POWER", v.power);
         p.f("VIG_HL", v.highlights);
-        p.fs("VIG_VIEW", &fp.view);
         p.u(
             "VIG_STYLE",
             match v.style {

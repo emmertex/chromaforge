@@ -105,6 +105,7 @@ pub mod peer_exchange;
 pub mod peers;
 mod people_smart;
 pub mod people_store;
+pub mod placement;
 pub mod prep;
 pub mod preset_import;
 pub mod preset_luminar;
@@ -2592,6 +2593,8 @@ mod tests_prefs;
 mod tests_preset_interop;
 #[cfg(test)]
 mod tests_preset_marks;
+#[cfg(test)]
+mod tests_presets_named;
 #[cfg(test)]
 mod tests_presets_scale;
 #[cfg(test)]

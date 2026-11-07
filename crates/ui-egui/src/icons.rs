@@ -60,6 +60,17 @@ icons! {
     /// outlined [`Icon::FlagPick`] stays for buttons and filters.
     FlagPickFilled,
     FlagReject,
+    /// The Compact cells' flag marks (OneSlips LR-FLAGS cff75fcf5): one shape for all three, a pole
+    /// and a notched banner, so pick and reject differ in shape, not only colour. Picked: the banner
+    /// solid.
+    FlagMarkPick,
+    /// Rejected: the solid flag with a bold cross below its banner.
+    FlagMarkReject,
+    /// Unflagged: the flag's outline.
+    FlagMarkNone,
+    /// The mask overlay switch (OneSlips 0c58de7ad): a frame with a soft tinted area in it, so it isn't the
+    /// Masking tool's icon.
+    MaskOverlay,
     Gear,
     Filmstrip,
     BeforeAfter,
@@ -174,6 +185,9 @@ icons! {
     MaskInvert,
     /// A minus sign (the counterpart of [`Icon::Plus`]).
     Minus,
+    /// The intersect sign ∩ (a mask component that keeps only where it overlaps the rest), drawn so
+    /// it never depends on a font having the glyph.
+    Intersect,
     /// Crop overlay: rule of thirds, in a 3:2 frame (the guides `crop_overlay` draws, our own).
     OverlayThirds,
     /// Crop overlay: a grid.
@@ -202,6 +216,22 @@ icons! {
     Stamp,
     /// Content-aware fill / remove: a sparkle.
     Sparkle,
+}
+
+/// The Compact flag marks' pole and notched banner ([`Icon::FlagMarkPick`]), the banner filled (`solid`) or outlined.
+fn flag_mark(pen: &Pen, color: Color32, solid: bool) {
+    let pole = Stroke::new((1.9 * pen.k).max(1.2), color);
+    pen.p.line_segment([pen.pt(4.5, 18.0), pen.pt(4.5, 2.2)], pole);
+    let (a, b, n, c, d) = ((4.5, 2.5), (16.5, 2.5), (13.2, 6.4), (16.5, 10.3), (4.5, 10.3));
+    if solid {
+        // concave: three convex triangles
+        for tri in [[a, b, n], [a, n, d], [d, n, c]] {
+            let v: Vec<Pos2> = tri.iter().map(|&(x, y)| pen.pt(x, y)).collect();
+            pen.p.add(Shape::convex_polygon(v, color, Stroke::NONE));
+        }
+    } else {
+        pen.closed(&[a, b, n, c, d]);
+    }
 }
 
 struct Pen<'a> {
@@ -547,6 +577,27 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<
         FlagReject => {
             // the flag struck through (Lucide `flag-off`)
             lucide!(pen, ["M8 2c3 0 5 2 8 2s4-1 4-1v11", "M4 22V4", "M4 15s1-1 4-1 5 2 8 2", "m2 2 20 20"]);
+        }
+        MaskOverlay => {
+            pen.closed(&[(2.5, 3.5), (17.5, 3.5), (17.5, 16.5), (2.5, 16.5)]);
+            // the tinted area: a soft blob, filled faint, outlined
+            let blob: Vec<(f32, f32)> = (0..20)
+                .map(|i| {
+                    let a = (i as f32 / 20.0 * 360.0).to_radians();
+                    (11.0 + 4.6 * a.cos(), 10.5 + 3.6 * a.sin())
+                })
+                .collect();
+            let v: Vec<Pos2> = blob.iter().map(|&(x, y)| pen.pt(x, y)).collect();
+            pen.p.add(Shape::convex_polygon(v, color.gamma_multiply(0.45), Stroke::NONE));
+            pen.closed(&blob);
+        }
+        FlagMarkPick => flag_mark(&pen, color, true),
+        FlagMarkNone => flag_mark(&pen, color, false),
+        FlagMarkReject => {
+            flag_mark(&pen, color, true);
+            let bold = Stroke::new((2.1 * pen.k).max(1.3), color);
+            pen.p.line_segment([pen.pt(10.8, 12.3), pen.pt(16.3, 17.8)], bold);
+            pen.p.line_segment([pen.pt(16.3, 12.3), pen.pt(10.8, 17.8)], bold);
         }
         Gear => {
             // a toothed cog (Lucide `settings`), so it no longer reads as a sun
@@ -981,6 +1032,16 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<
         }
         Minus => {
             pen.line(&[(4.0, 10.0), (16.0, 10.0)]);
+        }
+        Intersect => {
+            // ∩: two legs joined by a half circle over the top, open at the bottom (our own)
+            let mut pts = vec![(5.0, 16.0)];
+            pts.extend((0..=12).map(|i| {
+                let a = (180.0 + 180.0 * i as f32 / 12.0_f32).to_radians();
+                (10.0 + 5.0 * a.cos(), 10.0 + 5.0 * a.sin())
+            }));
+            pts.push((15.0, 16.0));
+            pen.line(&pts);
         }
         Play => {
             // Lucide `play`

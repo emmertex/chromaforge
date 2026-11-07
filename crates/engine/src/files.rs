@@ -30,6 +30,7 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
         aperture: m.f_number.map(|f| f as f32),
         shutter,
         iso: m.iso,
+        lens_range: m.lens_spec.map(|s| (s[0] as f32, s[1] as f32)).filter(|(a, b)| a.is_finite() && b.is_finite() && *a > 0.0 && *b >= *a),
         location: m.sublocation.clone().unwrap_or_default(),
         city: m.city.clone().unwrap_or_default(),
         state: m.state.clone().unwrap_or_default(),
@@ -753,7 +754,12 @@ fn load_bytes_now(
             }
         }
         // the photo's camera profile (`.dcp`), or its camera's default one, replaces the file's colour model
-        // (its own look, tone curve and look table, only "As profile": under one of the app's looks its calibration only)
+        // (its own look, tone curve and look table, only "As profile": under one of the app's looks its calibration only).
+        // A profile without a tone curve of its own (most chart-made ones) keeps the tone the photo has without it,
+        // fitted below with the file's own colour (`own_colour`), whichever look sits on top.
+        let own_colour = crate::camera_profiles::profile_for(&raw.color, &raw.metadata, &options.camera)
+            .filter(|d| crate::camera_preview::keeps_photo_tone(d))
+            .map(|_| raw.color.clone());
         let dcp = crate::camera_profiles::apply_choice_with(&mut raw.color, &raw.metadata, &options.camera, options.camera_look).is_some();
         // Embedded lens corrections are applied by the pipeline ("Enable Profile Corrections"), not baked in
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
@@ -773,16 +779,20 @@ fn load_bytes_now(
         // (whether the photo's Profile option can start from measured colour: decided before the colour is chosen)
         let colorimetric = crate::camera_preview::colorimetric_camera(&raw).is_some();
         // the source's segmentation mattes (DNG semantic masks), read while the starting colour is fitted
-        let ((xy, t, camera_look), mattes) = rayon::join(
+        let (((xy, t, camera_look), kept_tone), mattes) = rayon::join(
             || {
                 let removed = dng_lens_ops.map(|ops| std::mem::replace(&mut raw.opcodes.list3, ops));
                 // With the opcodes restored, the proxy already includes vignetting; do not apply it twice.
                 let embedded = if removed.is_some() { None } else { lens.as_ref() };
+                let kept_tone = own_colour.and_then(|own| {
+                    let mut trace = crate::camera_preview::StartTrace::default();
+                    crate::camera_preview::tone_without_profile(&mut raw, own, &bytes, lens_geometry.as_ref(), embedded, options.colour, &mut trace)
+                });
                 let colour = crate::camera_preview::starting_colour(&mut raw, &bytes, lens_geometry.as_ref(), embedded, options.colour, dcp);
                 if let Some(ops) = removed {
                     raw.opcodes.list3 = ops;
                 }
-                colour
+                (colour, kept_tone)
             },
             || dng_mattes(&bytes, &info),
         );
@@ -860,7 +870,9 @@ fn load_bytes_now(
                 let tags = lcc_raw::ColorData { profile: Default::default(), ..raw.color.clone() };
                 Arc::new(lcc_pipeline::CameraColor { tags, developed_for: xy })
             });
-        let camera_tone = camera_look.as_ref().map(|p| p.tone).or_else(|| raw.color.profile.tone_curve.as_ref().and_then(dng_tone_curve));
+        // a fitted look's tone, else the tone a profile without a curve of its own keeps, else the file's (or profile's) curve
+        let camera_tone =
+            camera_look.as_ref().map(|p| p.tone).or(kept_tone).or_else(|| raw.color.profile.tone_curve.as_ref().and_then(dng_tone_curve));
         let local_tone = local_tone(&raw);
         let (temp, tint) = scale.as_shot(xy);
         return Ok((
@@ -3357,14 +3369,40 @@ pub(crate) mod tests {
         assert_eq!((q.quick, q.key), (Some(QuickSource::Embedded), job.key));
         drop(job.clone().run());
         assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Cached));
-        // an edited raw: the embedded preview is still its first picture, but only a stand-in (the
-        // grid renders the real thumbnail behind it: never an empty cell)
+        // an edited raw never shows its camera JPEG (unedited, uncropped), nor a render made as
+        // shot: the fast draft with its settings…
         s.execute("library.select", &serde_json::json!({"ids": [id.0]})).unwrap();
-        s.execute("develop.set", &serde_json::json!({"control": "light.exposure", "value": 1.0})).unwrap();
+        s.execute("develop.set", &serde_json::json!({"control": "light.exposure", "value": 0.3})).unwrap();
         let job = s.thumb_job(id, 128).unwrap();
-        assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Embedded));
+        assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Draft));
         assert!(!s.embedded_thumb_is_final(s.catalog.photo(id).unwrap()));
-        assert_eq!(s.quick_view_job(id, 1600, true).unwrap().run().quick, Some(QuickSource::Embedded));
+        // …and once an edit of it is rendered, that render, with the settings before the next edit
+        drop(job.clone().run());
+        let full = s.loupe_job(id, 48, 32, true).unwrap().run();
+        assert!(full.rendered.is_ok());
+        s.execute("develop.set", &serde_json::json!({"control": "light.exposure", "value": 0.6})).unwrap();
+        let job = s.thumb_job(id, 128).unwrap();
+        assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Last));
+        let q = s.quick_view_job(id, 1600, true).unwrap().run();
+        assert_eq!(q.quick, Some(QuickSource::Last));
+        assert_eq!(q.rendered.unwrap().image.width, 48, "the loupe's last render");
+        s.execute("develop.set", &serde_json::json!({"control": "light.exposure", "value": 3.0})).unwrap();
+        let far = s.thumb_job(id, 128).unwrap();
+        assert_eq!(s.quick_thumb_job(&far).unwrap().run().quick, Some(QuickSource::Draft), "a look far from the last render");
+        s.execute("develop.set", &serde_json::json!({"control": "light.exposure", "value": 0.6})).unwrap();
+        // a raw edited before anything of it was rendered: a fast draft with its settings from the
+        // camera JPEG, in the grid and the loupe (cropped as edited, never the camera JPEG itself)
+        s.media.rendered.clear();
+        let q = s.quick_thumb_job(&job).unwrap().run();
+        assert_eq!((q.quick, q.key), (Some(QuickSource::Draft), job.key));
+        assert!(q.rendered.is_ok());
+        let mut d = (*s.catalog.photo(id).unwrap().develop).clone();
+        d.crop.geometry.rect = lcc_geom::Rect { x0: 0.0, y0: 0.0, x1: 0.5, y1: 1.0 };
+        s.set_develop(id, d, "Crop").unwrap();
+        let q = s.quick_view_job(id, 1600, true).unwrap().run();
+        assert_eq!(q.quick, Some(QuickSource::Draft));
+        let img = q.rendered.unwrap().image;
+        assert!(img.width * 2 < img.height * 2 && img.width > 0, "the crop applied: {}x{}", img.width, img.height);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3495,6 +3533,38 @@ pub(crate) mod tests {
         assert!(!s.catalog.photo(old).unwrap().is_edited(), "still as imported");
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Upstream #3783: a DNG's `ProfileToneCurve` is the finish stage's camera curve, so process V8
+    /// extends it past its last point (the sensor's white, scene 1.0) with the stop roll-off as well. A
+    /// curve that reaches white there renders as under V7 up to it and white past it; one that ends
+    /// below white (here 0.9) keeps what Exposure lifts past the sensor's white apart instead of
+    /// reaching 8-bit 255 within a stop.
+    #[test]
+    fn v8_extends_a_dng_tone_curve_past_white_in_stops() {
+        use lcc_color::transfer::linear_to_srgb;
+        use lcc_develop::{DevelopSettings, Process};
+        use lcc_pipeline::SourceInfo;
+        let code = |curve: &[f64], process: Process, y: f32| {
+            let tone = lcc_raw::profile::ToneCurve::from_tag(curve).and_then(|c| super::dng_tone_curve(&c));
+            let info = SourceInfo { raw: true, camera_tone: Some(tone.expect("a valid curve")), ..SourceInfo::default() };
+            let s = DevelopSettings { process: process.version(), ..DevelopSettings::default() };
+            let o = lcc_pipeline::finish::base_tone(&s, &info, 1.0).apply(y);
+            (linear_to_srgb(o.clamp(0.0, 1.0)) * 255.0).round()
+        };
+        let to_white = [0.0, 0.0, 0.03, 0.09, 0.18, 0.4, 0.5, 0.78, 1.0, 1.0];
+        for y in [0.01, 0.05, 0.18, 0.5, 0.9] {
+            assert_eq!(code(&to_white, Process::V8, y), code(&to_white, Process::V7, y), "{y}");
+        }
+        for y in [1.0, 2.0, 4.0] {
+            assert_eq!((code(&to_white, Process::V7, y), code(&to_white, Process::V8, y)), (255.0, 255.0), "{y}");
+        }
+        let below_white = [0.0, 0.0, 0.03, 0.09, 0.18, 0.4, 0.5, 0.72, 1.0, 0.9];
+        let at = |process, ev: f32| code(&below_white, process, ev.exp2());
+        assert_eq!(at(Process::V8, 0.0), at(Process::V7, 0.0));
+        assert_eq!(at(Process::V7, 1.0), 255.0, "V7 is frozen");
+        let (white, beyond) = (at(Process::V8, 0.0), at(Process::V8, 1.0));
+        assert!(beyond < 254.0 && beyond - white >= 3.0, "{white} then {beyond} a stop past the sensor's white");
     }
 
     /// An ILCE-7CR frame at ISO 50 (the sensor at ISO 100 with a stop more light) develops at half the level of the
