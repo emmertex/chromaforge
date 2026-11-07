@@ -1,3 +1,0 @@
-## Improvements
-
-- **Import with a stack of presets:** the Import tab, the import review and its form list the develop presets an import applies, in order: add as many as you like, move one earlier or later, or take it off. Each preset sets its settings on top of the one before, as its own History step, and each raw keeps its camera body's profile through them unless "Presets may change the camera profile" is on. The stack and the camera profile chosen per body are kept for the next import, in the tab and the review alike. The single `preset` param of `library.import` still works, applied before `presets`. Thanks @OneSlips.

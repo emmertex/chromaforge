@@ -982,7 +982,7 @@ fn local_rows(app: &mut LccApp, ui: &mut egui::Ui, now: &LocalNow) {
     if hidden > 0 {
         let label = crate::i18n::tr_format!("Show {hidden} hidden location{}", if hidden == 1 { "" } else { "s" }, hidden = hidden);
         let resp = row(app, ui, "local:restoreHidden", Icon::Folder, &label, None, false, 0.0)
-            .on_hover_text(crate::i18n::tr("Put the locations you removed from Local back (no files change)"));
+            .on_hover_text(crate::i18n::tr("Put the folders you removed from Favorites back (no files change)"));
         if let [(_, only)] = now.hidden.as_slice() {
             if resp.clicked() {
                 let _ = app.run("local.restoreHidden", json!({"path": only}));
@@ -2632,9 +2632,9 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             };
             // a place already kept at the top of Local has nothing to add
             let r = ui
-                .add_enabled(!top || transient, egui::Button::new(crate::i18n::tr(if top { "Keep in Local" } else { "Add to Local" })))
-                .on_hover_text(crate::i18n::tr("List this folder in Local from now on"))
-                .on_disabled_hover_text(crate::i18n::tr("This place is kept in Local already"));
+                .add_enabled(!top || transient, egui::Button::new(crate::i18n::tr(if top { "Keep in Favorites" } else { "Add to Favorites" })))
+                .on_hover_text(crate::i18n::tr("List this folder in Favorites from now on"))
+                .on_disabled_hover_text(crate::i18n::tr("This folder is kept in Favorites already"));
             register(ui.ctx(), "folderKeepInLocal", r.rect);
             if r.clicked() {
                 if let Err(e) = app.run("local.addRoot", json!({"path": path})) {
@@ -2646,9 +2646,9 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
         FolderItem::RemoveFromLocal => {
             let top = matches!(row, FolderRow::Local { top: true, .. });
             let r = ui
-                .add_enabled(top, egui::Button::new(crate::i18n::tr("Remove from Local")))
+                .add_enabled(top, egui::Button::new(crate::i18n::tr("Remove from Favorites")))
                 .on_hover_text(crate::i18n::tr("Hides this shortcut only; the folder and its photos stay as they are"))
-                .on_disabled_hover_text(crate::i18n::tr("Only a place at the top of Local can be removed from it"));
+                .on_disabled_hover_text(crate::i18n::tr("Only a folder at the top of Favorites can be removed from it"));
             register(ui.ctx(), "folderRemoveFromLocal", r.rect);
             if r.clicked() {
                 if let Err(e) = app.run("local.hide", json!({"path": path})) {

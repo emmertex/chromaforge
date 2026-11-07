@@ -1,0 +1,4 @@
+## Compact layout
+
+- **Flags, overlay and shot info:** the Compact strip marks a pick with a solid flag and a reject with the same flag and a bold cross; the Masking panel's overlay switch is a button with its own icon, and the photo says "Overlay on · O" while it is on (not while a slider adjusts); choosing how the overlay looks no longer turns it on for good. The shot info adds a zoom lens's range when its name lacks it, the Import bar shows the browsed folder's parents as a breadcrumb, and the Upright caption matches the slider names.
+- **AI-mask batch rows count photos:** an AI-mask batch row reads "1 of 3" while its first photo is at work, and says what it waits for ("Waiting for other AI masks") before it starts.

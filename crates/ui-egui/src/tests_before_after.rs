@@ -322,3 +322,15 @@ fn show_original_does_not_light_the_before_after_button() {
     assert_eq!(h.request("ui.clickWidget", json!({"id": "icon:beforeAfter"}), T)["ok"], true);
     assert_eq!(h.app.ui.before_after, BeforeAfter::Off, "a second click closes it");
 }
+
+/// `\` is named Show Before (ported from OneSlips, LR-VIEW-BEFOREAFTER): it always showed the Before
+/// in place (the settings Set Before keeps, not the bare file), and the name now says so, in every
+/// language.
+#[test]
+fn backslash_is_named_show_before_in_every_language() {
+    let c = crate::menus::UI_COMMANDS.iter().find(|c| c.0 == "view.showOriginal").expect("the command");
+    assert_eq!((c.1, c.2, c.3), ("Show Before", Some("\\"), "View>Before/After"));
+    for l in crate::i18n::Locale::ALL.iter().filter(|l| **l != crate::i18n::Locale::En) {
+        assert_ne!(l.tr("Show Before"), "Show Before", "{l:?} has a translation");
+    }
+}

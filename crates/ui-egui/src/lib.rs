@@ -47,10 +47,12 @@ pub mod import;
 pub mod import_report;
 mod import_screen;
 pub mod import_tab;
+pub mod legacy;
 pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
+pub mod loupe_timing;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
@@ -124,6 +126,8 @@ mod tests_background_prep;
 mod tests_bar_buttons;
 #[cfg(test)]
 mod tests_before_after;
+#[cfg(test)]
+mod tests_bottom_bar_compact;
 #[cfg(test)]
 mod tests_breadcrumb_more;
 #[cfg(test)]
@@ -287,6 +291,8 @@ mod tests_mask_range_pick;
 #[cfg(test)]
 mod tests_mask_sections;
 #[cfg(test)]
+mod tests_mask_tree;
+#[cfg(test)]
 mod tests_masking;
 #[cfg(test)]
 mod tests_masking_layout;
@@ -308,6 +314,8 @@ mod tests_offline;
 mod tests_open_lightroom;
 #[cfg(test)]
 mod tests_osd;
+#[cfg(test)]
+mod tests_overlay_on;
 #[cfg(test)]
 mod tests_panel_restore;
 #[cfg(test)]
@@ -376,6 +384,8 @@ mod tests_solo_sections;
 mod tests_space_hand;
 #[cfg(test)]
 mod tests_space_hold;
+#[cfg(test)]
+mod tests_stand_in_crop;
 #[cfg(test)]
 mod tests_surface;
 #[cfg(test)]
@@ -818,6 +828,14 @@ pub struct LccApp {
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
     /// "thumb", "none").
     pub loupe_shown: Option<(lcc_catalog::PhotoId, &'static str)>,
+    /// When each photo stepped to in the loupe first showed (`ui.inspect` → `perf.loupeSteps`).
+    pub loupe_timing: loupe_timing::LoupeTiming,
+    /// How the loupe drew its picture last frame ([`panels::detail::LoupeDrawn`]): where the
+    /// picture's corners went and the rect it fills (tests check that no part of it is empty).
+    pub loupe_drawn: Option<panels::detail::LoupeDrawn>,
+    /// What the loupe's look-ahead was made for last (photo, stepping back, catalog revision,
+    /// edge), so it is worked out again only when one of them changes ([`panels::detail`]).
+    pub(crate) look_ahead_made_for: Option<(lcc_catalog::PhotoId, bool, u64, usize)>,
     /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked
     /// its first picture ([`LccApp::pictures_missing`]).
     pub pictures_missing_pass: Option<u64>,
@@ -931,7 +949,7 @@ pub struct LccApp {
     /// The window's size last frame: a resize asks the GPU's batch work (exports) to make room.
     last_screen: egui::Vec2,
     /// The export lanes, processor-only switch and GPU share last applied (install settings).
-    export_tuning_applied: Option<(u32, bool, u32, u32)>,
+    export_tuning_applied: Option<(u32, bool, u32, u32, lcc_engine::export::ExportCards)>,
     /// "Test my machine" while it runs (Settings ▸ Performance).
     pub machine: Option<machine_test::MachineTask>,
     /// The memory budget setting last applied (MB, 0 = automatic).
@@ -1140,6 +1158,9 @@ impl LccApp {
             space_hand: None,
             brush_live: None,
             loupe_shown: None,
+            loupe_timing: Default::default(),
+            loupe_drawn: None,
+            look_ahead_made_for: None,
             pictures_missing_pass: None,
             prep_at: None,
             prep_backward: false,
@@ -2133,6 +2154,11 @@ impl LccApp {
             surface::tick(self, ctx);
         }
         self.apply_settings(ctx);
+        // input this frame: batch work leaves the editing card to the interface for a moment
+        // (only where the app tracks it: `gpu::track_interaction`)
+        if ctx.input(|i| !i.events.is_empty() || i.pointer.any_down()) {
+            lcc_engine::gpu::note_interaction();
+        }
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         }
@@ -2414,7 +2440,7 @@ impl LccApp {
         self.memory_applied = Some(mb);
         // export lanes and the GPU's share for exports (Settings ▸ Performance, "Test my machine")
         let st = &self.ui.settings;
-        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs);
+        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs, st.export_cards);
         if self.export_tuning_applied != Some(tuning) {
             crate::machine_test::apply(st);
             self.export_tuning_applied = Some(tuning);
@@ -2693,6 +2719,16 @@ impl LccApp {
         if n > 0 {
             let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
             self.toast(ctx, msg);
+        }
+        // an older install's presets (the app under an earlier name, on this computer) join too, once
+        // each, with no step of the user's: File ▸ More Imports ▸ Import Presets from Older Installs
+        // asks again
+        if let Ok(r) = self.run("store.importOlderInstalls", serde_json::json!({})) {
+            let n: u64 = r["merged"].as_array().into_iter().flatten().map(|m| m["presets"].as_u64().unwrap_or(0)).sum();
+            if n > 0 {
+                let msg = crate::i18n::tr_format!("{n} presets from an older install were added.", n = n);
+                self.toast(ctx, msg);
+            }
         }
     }
 
@@ -3778,6 +3814,8 @@ mod cache_tests {
     }
 }
 
+#[cfg(test)]
+mod tests_display_truth;
 #[cfg(test)]
 mod tests_docking_acceptance;
 #[cfg(test)]

@@ -95,7 +95,7 @@ Alternative keymap set. Keys that work without a menu item (ratings `0`–`5`, l
 | `Shift+Y` | Before/After Split |  | `view.beforeAfterSplit` |
 | `Alt+Y` | Before/After Top/Bottom |  | `view.beforeAfterTopBottom` |
 | `Alt+Shift+Y` | Before/After Split Top/Bottom |  | `view.beforeAfterSplitTopBottom` |
-| `\` | Show Original |  | `view.showOriginal` |
+| `\` | Show Before |  | `view.showOriginal` |
 | `Cmd+0` | Zoom to Fit |  | `view.zoomFit` |
 | `Cmd+Alt+0` | Zoom 100% |  | `view.zoom100` |
 | `Z` | Toggle Zoom |  | `view.zoomToggle` |

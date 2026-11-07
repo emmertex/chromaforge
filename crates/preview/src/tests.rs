@@ -1151,3 +1151,53 @@ fn background_jobs_leave_workers_free() {
     drop(release);
     p.shutdown(Duration::from_secs(5));
 }
+
+/// A photo's latest picture is found by its alias whatever settings it was made with, from memory
+/// (kept once) or, in the next session, from its own file, with the record kept beside it.
+#[test]
+fn the_latest_picture_is_found_by_its_alias_in_memory_and_next_session_on_disk() {
+    let dir = temp_dir("latest");
+    let cache = Arc::new(PreviewCache::with_disk(1 << 20, &dir, 1 << 30));
+    let (real, alias) = (hash_bytes(b"view for exposure +1"), hash_bytes(b"photo 7: latest view"));
+    let img = Arc::new(gradient(16, 8, 3));
+    assert!(!cache.has(alias) && cache.get_latest(alias).is_none());
+    let g = cache.generation();
+    cache.put_at(g, real, img.clone());
+    cache.put_latest_with(g, alias, real, img.clone(), true, Some(b"where"));
+    assert!(cache.has(alias) && cache.has(real));
+    let (_, bytes) = cache.mem_usage();
+    assert!(bytes < 2 * (16 * 8 * 4 + 64), "kept once in memory: {bytes}");
+    let (got, meta) = cache.get_latest_with(alias).unwrap();
+    assert!(Arc::ptr_eq(&got, &img), "from memory, the same picture");
+    assert_eq!(meta.as_deref(), Some(&b"where"[..]));
+    // the next session: only the files
+    let next = PreviewCache::with_disk(1 << 20, &dir, 1 << 30);
+    assert!(next.has(alias));
+    let (got, meta) = next.get_latest_with(alias).unwrap();
+    assert_eq!((got.width, got.height), (16, 8));
+    assert_eq!(meta.as_deref(), Some(&b"where"[..]));
+    // cleared: gone everywhere
+    next.clear();
+    assert!(!next.has(alias) && next.get_latest(alias).is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A full cache lets the edited photos' latest previews go only after everything else.
+#[test]
+fn a_full_cache_prunes_the_pictures_kept_last_after_everything_else() {
+    let dir = temp_dir("keep-last");
+    let disk = DiskCache::new(&dir, 1 << 30);
+    let keys: Vec<Hash128> = (0..10u8).map(|i| hash_bytes(&[i])).collect();
+    for (i, k) in keys.iter().enumerate() {
+        disk.put(*k, &gradient(32, 32, i as u8));
+    }
+    // the oldest file is the one to keep
+    disk.keep_last([keys[0]]);
+    let one = disk.size() / 10;
+    disk.set_budget(one * 4);
+    disk.prune();
+    assert!(disk.modified(keys[0]).is_some(), "the picture to keep last stays");
+    let others = keys[1..].iter().filter(|k| disk.modified(**k).is_some()).count();
+    assert!(others <= 3, "the others went first: {others} of 9 left");
+    let _ = std::fs::remove_dir_all(dir);
+}

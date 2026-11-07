@@ -20,10 +20,11 @@ pub struct MachineTask {
     _guard: TaskGuard,
 }
 
-/// Make the export settings take effect (lanes, the GPU for exports, the GPU's share).
+/// Make the export settings take effect (lanes, the GPU for exports, its cards, the GPU's share).
 pub fn apply(st: &AppSettings) {
     lcc_engine::export::set_export_lanes(lanes(st));
     lcc_engine::export::set_export_gpu(!st.export_cpu_only);
+    lcc_engine::export::set_export_cards(st.export_cards);
     // (the GPU and the processor at once when the last test found it faster)
     lcc_engine::export::set_export_mix(!st.export_cpu_only && st.machine_test.as_ref().is_some_and(|m| m.mix));
     lcc_engine::gpu::set_batch_limits(Some(u64::from(st.gpu_export_mb) << 20).filter(|b| *b > 0), gpu_jobs(st));
@@ -168,5 +169,15 @@ mod tests {
         assert_eq!(lanes(&back), Some(4));
         let old: AppSettings = serde_json::from_value(serde_json::json!({"gpu": true, "machineTest": "garbage", "exportLanes": "x"})).unwrap();
         assert_eq!((old.export_lanes, old.machine_test.is_none()), (0, true));
+        // the graphics cards for exports: saved, read leniently, and applied to the exports
+        st.export_cards = lcc_engine::export::ExportCards::Second;
+        let back: AppSettings = serde_json::from_value(serde_json::to_value(&st).unwrap()).unwrap();
+        assert_eq!(back.export_cards, lcc_engine::export::ExportCards::Second);
+        let old: AppSettings = serde_json::from_value(serde_json::json!({"exportCards": "nonsense"})).unwrap();
+        assert_eq!(old.export_cards, lcc_engine::export::ExportCards::Both);
+        apply(&back);
+        assert_eq!(lcc_engine::export::export_cards(), lcc_engine::export::ExportCards::Second);
+        apply(&AppSettings::default());
+        assert_eq!(lcc_engine::export::export_cards(), lcc_engine::export::ExportCards::Both);
     }
 }
