@@ -36,6 +36,12 @@ Blacks at 0) is the identity up to white: the SDR shoulder no longer pulls 1.0 d
 255 to 254, issue #1945). It landed in place as a bug fix, since the tone map promised identity at
 neutral settings; edited curves keep the shoulder and their V1 look.
 
+**A mask whose first component is Intersect** starts from that component, on the CPU and the GPU
+(upstream #3854). It used to start from nothing, so alone it selected nothing, with a later Add it gave
+only what was added, and with the mask's Invert it gave the whole photo. Such masks now include the
+first component, on every process. It landed in place as a bug fix: intersecting with nothing is not
+a look anyone chose.
+
 ## Adding a process
 
 1. Add a variant to `Process` (`V2`), append it to `Process::ALL` (oldest first), give it its number in

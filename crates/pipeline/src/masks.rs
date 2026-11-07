@@ -234,7 +234,7 @@ pub fn evaluate_one(m: &Mask, frame: &Frame, w: usize, h: usize, img: &Rgb32f, l
         if comp.invert {
             c.data.iter_mut().for_each(|v| *v = 1.0 - *v);
         }
-        if first && comp.op != MaskOp::Intersect {
+        if first {
             alpha = c;
             first = false;
             continue;
@@ -1753,6 +1753,23 @@ mod tests {
         let (x0, y0) = extents(0.0);
         let (x1, y1) = extents(100.0);
         assert!((x1 - x0).abs() <= 3.0 && (y1 - y0).abs() <= 3.0, "contour moved: {x0}x{y0} -> {x1}x{y1}");
+    }
+
+    /// A mask whose first component is Intersect starts from that component (upstream #3854): it
+    /// used to start from nothing, so alone it selected nothing.
+    #[test]
+    fn a_mask_starting_with_intersect_selects_its_first_shape() {
+        let (w, h) = (100, 100);
+        let img = Rgb32f::from_fn(w, h, |_, _| [0.2; 3]);
+        let log_l = img.map(crate::local::log_lum);
+        let f = Frame::new(w, h, &Default::default(), true);
+        let shape = MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.2, ry: 0.2, angle: 0.0, feather: 20.0, invert: false };
+        let m = Mask {
+            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Intersect, invert: false, shape }],
+            ..Default::default()
+        };
+        let a = evaluate_one(&m, &f, w, h, &img, &log_l, 0.0, None);
+        assert!(a.get(50, 50) > 0.99 && a.get(5, 5) < 0.01, "the radial's inside is selected, its outside not: {} {}", a.get(50, 50), a.get(5, 5));
     }
 
     /// A half-resolution matte selecting the left `frac` of a `w × h` source.
