@@ -184,18 +184,22 @@ fn wb_mode_ignores_its_numbers(mode: WbMode, info: &lcc_pipeline::SourceInfo) ->
     mode == WbMode::AsShot || (info.raw && !info.relative_wb && mode.preset().is_some())
 }
 
+/// Whether `partial`'s white balance names one of the two numbers, and not both or neither: the only partial
+/// [`prepare_photo_for_wb_partial`] prepares a photo for (so callers can skip reading the source's facts otherwise).
+pub(crate) fn wb_partial_names_one_number(partial: &Value) -> bool {
+    partial.get("wb").and_then(Value::as_object).is_some_and(|wb| wb.contains_key("temp") != wb.contains_key("tint"))
+}
+
 /// Bring a photo's settings onto the scale and mode a white balance partial names, so a one-field partial means
 /// what it says (issue #2910, and its review). `None` when the partial needs no such preparation: it names both
 /// numbers, neither, or a mode of its own. [`merge_settings_for_photo`] and `preset.apply` both start here, and
 /// both finish with `normalize_wb` so the photo ends on the scale it is edited on.
 pub(crate) fn prepare_photo_for_wb_partial(d: &DevelopSettings, partial: &Value, info: &lcc_pipeline::SourceInfo) -> Option<DevelopSettings> {
-    let mut d = (*d).clone();
-    let wb = partial.get("wb").and_then(Value::as_object);
-    // the partial names one of the two numbers, and not both or neither
-    let one_field = wb.is_some_and(|wb| wb.contains_key("temp") != wb.contains_key("tint"));
-    if !one_field {
+    if !wb_partial_names_one_number(partial) {
         return None;
     }
+    let mut d = (*d).clone();
+    let wb = partial.get("wb").and_then(Value::as_object);
     // a photo whose source is edited in Kelvin is the one with two scales to trip over
     let kelvin_source = info.raw && !info.relative_wb;
     // the scale the partial's numbers are written on: an unmentioned scale means the relative scale, as `merged` reads it
@@ -1489,18 +1493,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let mut ops = Vec::new();
                 for id in ids {
-                    let Some(d) = s.develop_of(id) else { continue };
-                    // a hand-written preset may name one white balance number only, and then it means the same as
-                    // a partial: bring the photo onto that scale first, with its own as-shot white, and put the
-                    // result back on the scale the photo is edited on (issue #2910) — the merge `develop.merge` uses
-                    let info = s.source_info(id);
-                    let prepared = prepare_photo_for_wb_partial(&d, &preset.settings, &info);
-                    let on_kelvin_scale = prepared.is_some() && info.raw && !info.relative_wb;
-                    let base: &DevelopSettings = prepared.as_ref().unwrap_or(&d);
-                    let mut next = preset.apply(base, amount);
-                    if on_kelvin_scale {
-                        lcc_pipeline::local::normalize_wb(&mut next, &info);
-                    }
+                    // the same composition the Presets panel previews (`Session::preset_applied`)
+                    let Some(mut next) = s.preset_applied(id, &preset, amount) else { continue };
                     let own = |m: &&mut lcc_develop::Mask| m.preset.as_deref() == Some(preset.id.as_str());
                     for (m, l) in next.masks.iter_mut().filter(own).zip(&links) {
                         m.link = l.clone();

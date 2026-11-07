@@ -2594,6 +2594,8 @@ mod tests_preset_interop;
 #[cfg(test)]
 mod tests_preset_marks;
 #[cfg(test)]
+mod tests_presets_named;
+#[cfg(test)]
 mod tests_presets_scale;
 #[cfg(test)]
 mod tests_preview_prep;
