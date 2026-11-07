@@ -182,6 +182,7 @@ impl Plugin {
         }
         let mut config = Config::default();
         config.consume_fuel(true).enforced_limits(EnforcedLimits::strict()).set_max_recursion_depth(limits.max_recursion_depth.max(16));
+        config.compilation_mode(wasmi::CompilationMode::Eager);
         let engine = Engine::new(&config);
         let module = Module::new(&engine, bytes).map_err(|e| Error::Module(e.to_string()))?;
         if let Some(imp) = module.imports().find(|i| i.module() != "host" || !IMPORTS.contains(&i.name())) {
