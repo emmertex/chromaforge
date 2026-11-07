@@ -381,7 +381,7 @@ pub const DEHAZE_PATCH_MAX: usize = 64;
 pub fn dehaze_patch_radius(s: &DevelopSettings, px_per_long: f64) -> usize {
     match s.process.process() {
         Process::V1 | Process::V2 => 0,
-        Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 => {
+        Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 | Process::V8 => {
             ((DEHAZE_PATCH * px_per_long).round().max(1.0) as usize).min(DEHAZE_PATCH_MAX)
         }
     }
@@ -440,7 +440,7 @@ pub fn base_detail_radius(px_per_long: f64) -> usize {
 pub fn tone_base_detail(s: &DevelopSettings, px_per_long: f64) -> usize {
     match s.process.process() {
         Process::V1 => 0,
-        Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 => base_detail_radius(px_per_long),
+        Process::V2 | Process::V3 | Process::V4 | Process::V5 | Process::V6 | Process::V7 | Process::V8 => base_detail_radius(px_per_long),
     }
 }
 
@@ -527,19 +527,128 @@ pub fn nr_params(s: &DevelopSettings, scale: f32) -> (Option<NrLum>, Option<NrCo
 }
 
 /// Noise reduction at output resolution: luminance via an edge-aware self-guided filter on
-/// log-luminance, colour by blurring chromaticity (rgb / Y) and re-applying the original luminance.
-/// `scale`: output pixels per pixel of the original ([`nr_params`]). A full-quality render
-/// ([`denoise_with`] for a draft).
+/// log-luminance, colour by blurring chromaticity (rgb / Y) and re-applying the original luminance
+/// (process V1 to V7), or from V8 by the joint filter of the linear colour differences
+/// ([`joint_colour_nr`], `crate::nrc_joint`). `scale`: output pixels per pixel of the original
+/// ([`nr_params`]). A full-quality render whose joint colour NR measures the noise on `img`
+/// ([`denoise_with`] for a draft or the whole frame's noise model).
 pub fn denoise(img: &mut Rgb32f, s: &DevelopSettings, scale: f32) {
-    denoise_with(img, s, scale, false);
+    denoise_with(img, s, scale, false, None);
 }
 
 /// [`denoise`] for a render that may be a draft. `draft`: a draft render (a slider drag) may blur
 /// the chromaticity at half resolution ([`HALF_RES_NR_SIGMA`]); a full-quality render always takes
-/// the full-resolution blur, so it matches the GPU path and the look the photo always had.
-pub fn denoise_with(img: &mut Rgb32f, s: &DevelopSettings, scale: f32, draft: bool) {
+/// the full-resolution blur, so it matches the GPU path and the look the photo always had (the
+/// joint colour NR of V8 has no draft form). `colour_noise`: the whole frame's noise model for the
+/// joint colour NR ([`crate::colour_noise`]); `None` measures it on `img`.
+pub fn denoise_with(img: &mut Rgb32f, s: &DevelopSettings, scale: f32, draft: bool, colour_noise: Option<&crate::nrc_joint::JointNoise>) {
     let (lum, col) = nr_params(s, scale);
+    if col.is_some() && joint_colour_nr(s) {
+        apply_nr(img, lum, None, draft);
+        if let Some(p) = nrc_params(s, scale) {
+            let _t = crate::profiling().then(std::time::Instant::now);
+            let (detail, amount) = nrc_sliders(s);
+            crate::nrc_joint::denoise(img, &p, detail, amount, colour_noise);
+            if let Some(t) = _t {
+                eprintln!("    nr colour (joint): {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+            }
+        }
+        return;
+    }
     apply_nr(img, lum, col, draft);
+}
+
+/// Whether `s` gets the joint colour noise reduction (`crate::nrc_joint`, process V8 on); V1 to V7
+/// keep the blurred chromaticity with its speckle median ([`SPECKLE_LO`]).
+pub fn joint_colour_nr(s: &DevelopSettings) -> bool {
+    s.process.process() >= lcc_develop::Process::V8
+}
+
+/// Color Detail and Color as fractions (0..=1) for the joint colour NR; a value that is not a
+/// number counts as 0.
+pub fn nrc_sliders(s: &DevelopSettings) -> (f32, f32) {
+    let unit = |v: f64| {
+        let v = (v / 100.0) as f32;
+        if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+    };
+    (unit(s.detail.nr_color_detail), unit(s.detail.nr_color))
+}
+
+/// Most samples the noise level of the joint colour noise reduction is measured from. The CPU and
+/// the GPU sample the same pixels (see `nrc_joint::noise_sample_stride`).
+pub const NRC_SAMPLES: usize = 131_072;
+
+/// One pass of the joint colour noise reduction's reach: Gaussian windows of `sigma` px (the joint
+/// filter takes the last, coarse pass's `sigma`); `step`, `k` and `pct` are kept from the pass
+/// layout it was built with (`crate::nrc_joint`'s test reference reads `step`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NrcPass {
+    pub sigma: f32,
+    pub step: usize,
+    pub k: f32,
+    pub pct: f32,
+}
+
+/// Parameters of the joint colour noise reduction: `off` (unused by the joint filter) and the
+/// passes (fine, then coarse).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NrcParams {
+    pub off: f32,
+    pub passes: Vec<NrcPass>,
+}
+
+/// The joint colour noise reduction's parameters at `scale` output pixels per pixel of the original
+/// ([`crate::Plan::detail_scale`]), `None` when Color is 0 (or not a number).
+pub fn nrc_params(s: &DevelopSettings, scale: f32) -> Option<NrcParams> {
+    let (detail, amount) = nrc_sliders(s);
+    if amount <= 0.0 {
+        return None;
+    }
+    let smooth = (s.detail.nr_color_smoothness / 100.0) as f32;
+    let smooth = 1.0 + if smooth.is_finite() { smooth.clamp(0.0, 1.0) } else { 0.0 };
+    let scale = if scale.is_finite() { scale.clamp(0.05, 1.0) } else { 1.0 };
+    let sigma = (2.0 + 10.0 * amount) * smooth * scale;
+    let k = 64.0 * amount * (1.5 - detail);
+    // the coefficients vary over about sigma: a grid of sigma / 2 holds them
+    let pass = |sigma: f32| NrcPass { sigma, step: (sigma / 2.0).floor().clamp(1.0, 16.0) as usize, k, pct: 0.2 };
+    // fine, then coarse (three times wider); the joint method takes the coarse one's reach
+    Some(NrcParams { off: 0.003, passes: vec![pass(sigma), pass(sigma * 3.0)] })
+}
+
+/// Chroma noise variance per channel as a function of the local luminance: `α · Y + β` (shot plus read noise).
+#[derive(Clone, Copy, Debug)]
+pub struct NrcNoise {
+    pub alpha: [f32; 3],
+    pub beta: [f32; 3],
+}
+
+impl NrcNoise {
+    /// The variance of channel `i` (0 to 2; another index gives the smallest variance) at luminance `y`.
+    #[inline]
+    pub fn var(&self, i: usize, y: f32) -> f32 {
+        let (a, b) = (self.alpha.get(i).copied().unwrap_or(0.0), self.beta.get(i).copied().unwrap_or(0.0));
+        (a * y.max(0.0) + b).max(1e-14)
+    }
+}
+
+/// Weighted least squares `v = a · l + b` over `(l, v, weight)` with `a, b ≥ 0`: the free fit if both come out
+/// non-negative, else the better of the line through the origin (`b = 0`) and the constant (`a = 0`).
+pub fn fit_nonneg_line(pts: &[(f64, f64, f64)]) -> (f64, f64) {
+    let sw: f64 = pts.iter().map(|p| p.2).sum::<f64>().max(1e-300);
+    let (ml, mv) = (pts.iter().map(|p| p.2 * p.0).sum::<f64>() / sw, pts.iter().map(|p| p.2 * p.1).sum::<f64>() / sw);
+    let (cov, vl) = pts.iter().fold((0.0, 0.0), |(c, v), p| (c + p.2 * (p.0 - ml) * (p.1 - mv), v + p.2 * (p.0 - ml) * (p.0 - ml)));
+    if vl > 0.0 {
+        let a = cov / vl;
+        let b = mv - a * ml;
+        if a >= 0.0 && b >= 0.0 {
+            return (a, b);
+        }
+    }
+    let sse = |a: f64, b: f64| pts.iter().map(|p| p.2 * (p.1 - a * p.0 - b).powi(2)).sum::<f64>();
+    let ll: f64 = pts.iter().map(|p| p.2 * p.0 * p.0).sum();
+    let origin = if ll > 0.0 { (pts.iter().map(|p| p.2 * p.0 * p.1).sum::<f64>() / ll).max(0.0) } else { 0.0 };
+    let constant = mv.max(0.0);
+    if sse(origin, 0.0) < sse(0.0, constant) { (origin, 0.0) } else { (0.0, constant) }
 }
 
 /// Noise reduction with explicit parameters (see [`denoise`]; `draft` as there).
@@ -1269,5 +1378,165 @@ mod fast_tests {
         let b = guided_fast(&p, 12.0, 0.3);
         let err: f32 = a.data.iter().zip(&b.data).map(|(u, v)| (u - v).abs()).sum::<f32>() / a.len() as f32;
         assert!(err < 0.08, "{err}");
+    }
+}
+
+#[cfg(test)]
+mod nrc_tests {
+    use super::*;
+    use lcc_develop::{DevelopSettings, Process};
+
+    fn noisy_halves(w: usize, h: usize) -> Rgb32f {
+        Rgb32f::from_fn(w, h, |x, y| {
+            let n = |c: u32| {
+                let mut v = (x as u32).wrapping_mul(0x9e37_79b9) ^ (y as u32).wrapping_mul(0x85eb_ca6b) ^ c.wrapping_mul(0xc2b2_ae35) | 1;
+                v ^= v << 13;
+                v ^= v >> 17;
+                v ^= v << 5;
+                (v as f32 / u32::MAX as f32 - 0.5) * 0.02
+            };
+            let base = if x < w / 2 { [0.06, 0.03, 0.02] } else { [0.02, 0.04, 0.06] };
+            [base[0] + n(1), base[1] + n(2), base[2] + n(3)]
+        })
+    }
+
+    /// Edits saved under V1 to V7 keep the blurred chromaticity with its speckle median (the colour NR
+    /// they always had); V8 gets the joint method of `nrc_joint`.
+    #[test]
+    fn colour_nr_follows_the_process() {
+        let img = noisy_halves(96, 64);
+        let run = |p: Process| {
+            let mut s = DevelopSettings { process: p.version(), ..Default::default() };
+            s.detail.nr_color = 50.0;
+            let mut o = img.clone();
+            denoise(&mut o, &s, 1.0);
+            o
+        };
+        // the colour NR V1 to V7 had before the joint method: `apply_nr` with the blurred chromaticity
+        let mut s = DevelopSettings { process: Process::V7.version(), ..Default::default() };
+        s.detail.nr_color = 50.0;
+        let (lum, col) = nr_params(&s, 1.0);
+        let mut before = img.clone();
+        apply_nr(&mut before, lum, col, false);
+        for p in Process::ALL.into_iter().filter(|p| *p < Process::V8) {
+            assert!(run(p).data == before.data, "{p:?} keeps the blurred chromaticity");
+        }
+        let v8 = run(Process::V8);
+        assert!(v8.data != before.data, "V8 takes the joint colour NR");
+        s.process = Process::V8.version();
+        let mut joint = img.clone();
+        let p = nrc_params(&s, 1.0).expect("Color 50 has parameters");
+        crate::nrc_joint::denoise(&mut joint, &p, (s.detail.nr_color_detail / 100.0) as f32, 0.5, None);
+        assert!(joint.data == v8.data, "V8 is the joint method");
+        // the joint method keeps each pixel's luminance
+        for (a, b) in img.data.iter().zip(&v8.data) {
+            assert!((luminance_2020(*a) - luminance_2020(*b)).abs() < 1e-6);
+        }
+    }
+
+    /// Hostile sizes, slider values and pixels: the joint colour NR returns without a panic, keeps the
+    /// image's size, and leaves finite pixels finite where its input was finite throughout.
+    #[test]
+    fn joint_colour_nr_survives_hostile_input() {
+        let sizes = [(0usize, 0usize), (1, 1), (2, 3), (3, 2), (1, 40), (40, 1), (5, 5), (17, 9)];
+        let colours = [0.0, 25.0, 100.0, 1e30, -50.0, f64::NAN, f64::INFINITY];
+        for (w, h) in sizes {
+            let clean = noisy_halves(w, h);
+            let mut with_nan = clean.clone();
+            if let Some(p) = with_nan.data.get_mut(w * h / 2) {
+                *p = [f32::NAN, f32::INFINITY, -f32::INFINITY];
+            }
+            for colour in colours {
+                for detail in [0.0, 50.0, 100.0, f64::NAN] {
+                    for smoothness in [0.0, 100.0, -1e9, f64::NAN] {
+                        let mut s = DevelopSettings { process: Process::V8.version(), ..Default::default() };
+                        s.detail.nr_color = colour;
+                        s.detail.nr_color_detail = detail;
+                        s.detail.nr_color_smoothness = smoothness;
+                        for scale in [1.0, 0.25, 0.0, f32::NAN] {
+                            let mut a = clean.clone();
+                            denoise(&mut a, &s, scale);
+                            assert_eq!((a.width, a.height, a.data.len()), (w, h, w * h));
+                            assert!(
+                                a.data.iter().flatten().all(|v| v.is_finite()),
+                                "{w}x{h} Color {colour} detail {detail} smoothness {smoothness} scale {scale}"
+                            );
+                            let mut b = with_nan.clone();
+                            denoise(&mut b, &s, scale);
+                            assert_eq!((b.width, b.height, b.data.len()), (w, h, w * h));
+                        }
+                    }
+                }
+            }
+        }
+        // an odd window (one tile of a frame, cut anywhere) and an empty set of tiles
+        let tiles = [noisy_halves(3, 129), Rgb32f::new(0, 0), noisy_halves(2, 2)];
+        let noise = crate::nrc_joint::noise_of_tiles(&tiles);
+        assert!(noise.model.alpha.iter().chain(&noise.model.beta).all(|v| v.is_finite()));
+        let _ = crate::nrc_joint::noise_of_tiles(&[]);
+        for (w, h) in [(0, 0), (1, 1), (255, 300), (usize::MAX / 2, 3)] {
+            let _ = crate::nrc_joint::tiles(w, h);
+        }
+    }
+
+    #[test]
+    fn nrc_noise_fit_is_non_negative() {
+        // a falling cloud would give a negative slope: the constant fits instead
+        let (a, b) = fit_nonneg_line(&[(0.0, 4.0, 1.0), (1.0, 3.0, 1.0), (2.0, 2.0, 1.0)]);
+        assert!(a == 0.0 && (b - 3.0).abs() < 1e-9);
+        // a line through a negative intercept: refitted through the origin
+        let (a, b) = fit_nonneg_line(&[(1.0, 1.0, 1.0), (2.0, 3.0, 1.0), (3.0, 5.0, 1.0)]);
+        assert!(a > 0.0 && b == 0.0);
+        // an exact shot + read noise line is found as it is
+        let (a, b) = fit_nonneg_line(&[(0.0, 2.0, 1.0), (1.0, 5.0, 1.0), (2.0, 8.0, 1.0)]);
+        assert!((a - 3.0).abs() < 1e-9 && (b - 2.0).abs() < 1e-9);
+    }
+
+    /// PROBE (ignored): float mean of a flat, noisy dark patch over three noise realisations under the
+    /// joint colour NR; asserts the means stay put.
+    #[test]
+    #[ignore]
+    fn probe_nrc_mean_drift() {
+        let (w, h) = (768usize, 768usize);
+        let mut worst = 0.0f64;
+        for seed0 in [0x2545_f491_4f6c_dd1du64, 0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def1] {
+            let mut seed = seed0;
+            let mut gauss = || {
+                (0..4)
+                    .map(|_| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
+                        (seed >> 11) as f32 / (1u64 << 53) as f32 - 0.5
+                    })
+                    .sum::<f32>()
+                    * 1.732
+            };
+            for (name, base, sigma) in [
+                ("dark warm, blue near 0", [0.006f32, 0.004, 0.0008], [0.002f32, 0.0015, 0.003]),
+                ("dark, red near 0", [0.0015, 0.004, 0.009], [0.004, 0.003, 0.005]),
+            ] {
+                let mut img = Rgb32f::new(w, h);
+                for p in img.data.iter_mut() {
+                    *p = [0, 1, 2].map(|i| base[i] + sigma[i] * gauss());
+                }
+                let mean = |im: &Rgb32f| {
+                    let n = im.data.len() as f64;
+                    [0, 1, 2].map(|i| im.data.iter().map(|p| p[i] as f64).sum::<f64>() / n)
+                };
+                let m0 = mean(&img);
+                for nr in [25.0, 100.0] {
+                    let mut s = DevelopSettings { process: Process::V8.version(), ..Default::default() };
+                    s.detail.nr_color = nr;
+                    let mut a = img.clone();
+                    denoise(&mut a, &s, 1.0);
+                    let m = mean(&a);
+                    worst = worst.max([0, 1, 2].iter().map(|&i| (m[i] / m0[i] - 1.0).abs()).fold(0.0, f64::max));
+                    println!("{name} NR {nr}: mean {m0:.5?} -> {m:.5?}");
+                }
+            }
+        }
+        println!("worst mean deviation {:.4} %", 100.0 * worst);
+        assert!(worst < 0.0005, "the joint colour NR moved a channel's mean by {:.3} %", 100.0 * worst);
     }
 }

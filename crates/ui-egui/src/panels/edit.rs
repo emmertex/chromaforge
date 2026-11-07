@@ -478,7 +478,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         sub_title(ui, crate::i18n::tr("Grain"));
         // process V7's particle grain has its own controls (OneSlips); earlier processes render the
         // value-noise grain, which only reads Amount, Size and Roughness
-        let particles = d.process.process() == lcc_develop::Process::V7;
+        let particles = d.process.process() >= lcc_develop::Process::V7;
         let grain: &[&str] = if particles {
             &["grain.amount", "grain.size", "grain.sizeVariation", "grain.roughness", "grain.clumping", "grain.color", "grain.response", "grain.seed"]
         } else {

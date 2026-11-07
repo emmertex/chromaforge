@@ -62,7 +62,7 @@ impl SettingsHashes {
 }
 
 /// Bump when the pipeline's output changes, to invalidate cached thumbnails.
-pub const RENDER_CACHE_VERSION: u64 = 78;
+pub const RENDER_CACHE_VERSION: u64 = 79;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];
@@ -353,8 +353,8 @@ impl DecodedSource {
 pub enum SourceRef {
     Loaded(Box<DecodedSource>),
     /// A larger decoded source of the photo, fitted to `max_edge` by the worker: the thumbnail of
-    /// the photo open in the loupe is cut from its preview-level source instead of decoding the
-    /// file again (a second or more for a 64 MP raw).
+    /// the photo open in the loupe is cut from its preview- or full-level source instead of decoding
+    /// the file again (a second or more for a 64 MP raw).
     Fit {
         from: Box<DecodedSource>,
         max_edge: usize,
@@ -1017,13 +1017,13 @@ impl MediaCache {
             let max_edge = level.max_edge().min(p.width.max(p.height).max(1) as usize);
             return SourceRef::Video { path: path.clone(), time: p.video.as_ref().and_then(|v| v.poster_time), max_edge };
         }
-        // a thumbnail of a photo whose preview is decoded (the one in the loupe) is cut from it; not
-        // with a denoised picture, which the thumbnail would lose
+        // a thumbnail of a photo whose preview or full source is decoded (the one in the loupe) is
+        // cut from it; not with a denoised picture, which the thumbnail would lose
         if cached
             && level == SourceLevel::Thumb
             && self.denoise.spec(p.id).is_none()
-            && let Some(big) = self.get_source(p.id, SourceLevel::Preview)
-            && big.serves(wanted)
+            && let Some(big) =
+                [SourceLevel::Preview, SourceLevel::Full].into_iter().find_map(|level| self.get_source(p.id, level).filter(|b| b.serves(wanted)))
         {
             return SourceRef::Fit { from: Box::new(big), max_edge: level.max_edge() };
         }
@@ -2773,6 +2773,7 @@ impl crate::Session {
 
     /// Synchronous render (CLI, MCP, tests).
     pub fn render_now(&mut self, id: PhotoId, max_w: usize, max_h: usize) -> Result<Rendered, String> {
+        lcc_pipeline::check_output_size(max_w, max_h)?;
         let job = self.render_job(id, max_w, max_h, false, true).ok_or("no such photo")?;
         let r = job.run();
         self.accept(&r);
@@ -4036,6 +4037,24 @@ mod tests {
         s.accept(&r);
         let cached = s.media.get(p.id, SourceLevel::Thumb).unwrap();
         assert_eq!((cached.width, cached.height), (512, 341), "a thumbnail-sized source is kept, not the preview");
+    }
+
+    /// In Detail and the loupe the source is held at the full level: the thumbnail, which every
+    /// edit queues again, is cut from it too instead of decoding the original again.
+    #[test]
+    fn a_thumbnail_is_cut_from_the_decoded_full_source() {
+        let mut s = crate::Session::new();
+        let p = Photo::new(PhotoId(1), Source::File { path: "/nowhere/a.ARW".into() }, "a.ARW", "ARW", 2400, 1600, "");
+        s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p.clone()) }).unwrap();
+        s.media.insert(p.id, SourceLevel::Full, Arc::new(Rgb32f::from_fn(2400, 1600, |x, _| [x as f32 / 2400.0, 0.5, 0.25])));
+        let job = s.thumb_job(p.id, 512).unwrap();
+        assert!(matches!(job.source, SourceRef::Fit { .. }), "cut from the full source, not decoded from the file");
+        let r = job.run();
+        let thumb = r.rendered.as_ref().unwrap();
+        assert_eq!((thumb.image.width, thumb.image.height), (512, 341));
+        s.accept(&r);
+        let cached = s.media.get(p.id, SourceLevel::Thumb).unwrap();
+        assert_eq!((cached.width, cached.height), (512, 341), "a thumbnail-sized source is kept, not the full source");
     }
 
     #[test]

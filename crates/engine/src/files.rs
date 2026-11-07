@@ -3535,6 +3535,38 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Upstream #3783: a DNG's `ProfileToneCurve` is the finish stage's camera curve, so process V8
+    /// extends it past its last point (the sensor's white, scene 1.0) with the stop roll-off as well. A
+    /// curve that reaches white there renders as under V7 up to it and white past it; one that ends
+    /// below white (here 0.9) keeps what Exposure lifts past the sensor's white apart instead of
+    /// reaching 8-bit 255 within a stop.
+    #[test]
+    fn v8_extends_a_dng_tone_curve_past_white_in_stops() {
+        use lcc_color::transfer::linear_to_srgb;
+        use lcc_develop::{DevelopSettings, Process};
+        use lcc_pipeline::SourceInfo;
+        let code = |curve: &[f64], process: Process, y: f32| {
+            let tone = lcc_raw::profile::ToneCurve::from_tag(curve).and_then(|c| super::dng_tone_curve(&c));
+            let info = SourceInfo { raw: true, camera_tone: Some(tone.expect("a valid curve")), ..SourceInfo::default() };
+            let s = DevelopSettings { process: process.version(), ..DevelopSettings::default() };
+            let o = lcc_pipeline::finish::base_tone(&s, &info, 1.0).apply(y);
+            (linear_to_srgb(o.clamp(0.0, 1.0)) * 255.0).round()
+        };
+        let to_white = [0.0, 0.0, 0.03, 0.09, 0.18, 0.4, 0.5, 0.78, 1.0, 1.0];
+        for y in [0.01, 0.05, 0.18, 0.5, 0.9] {
+            assert_eq!(code(&to_white, Process::V8, y), code(&to_white, Process::V7, y), "{y}");
+        }
+        for y in [1.0, 2.0, 4.0] {
+            assert_eq!((code(&to_white, Process::V7, y), code(&to_white, Process::V8, y)), (255.0, 255.0), "{y}");
+        }
+        let below_white = [0.0, 0.0, 0.03, 0.09, 0.18, 0.4, 0.5, 0.72, 1.0, 0.9];
+        let at = |process, ev: f32| code(&below_white, process, ev.exp2());
+        assert_eq!(at(Process::V8, 0.0), at(Process::V7, 0.0));
+        assert_eq!(at(Process::V7, 1.0), 255.0, "V7 is frozen");
+        let (white, beyond) = (at(Process::V8, 0.0), at(Process::V8, 1.0));
+        assert!(beyond < 254.0 && beyond - white >= 3.0, "{white} then {beyond} a stop past the sensor's white");
+    }
+
     /// An ILCE-7CR frame at ISO 50 (the sensor at ISO 100 with a stop more light) develops at half the level of the
     /// same sensor data at ISO 100: the decoder's baseline exposure reaches the render.
     #[test]

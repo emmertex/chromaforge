@@ -307,6 +307,37 @@ fn hostile_inputs_never_panic() {
     let _ = sample_fingerprint(&r);
 }
 
+/// A candidate right inside the margin of an active area that touches the frame's edge: the checks around it read
+/// further out than the margin (the isolation guard's ring is 4 pixels wide), and must skip what is outside the frame
+/// or the area instead of forming an index past it.
+#[test]
+fn candidates_at_the_edge_of_the_frame_never_panic() {
+    let layouts: [(Option<Cfa>, usize); 5] = [(Cfa::bayer("RGGB"), 1), (Cfa::bayer("GBRG"), 1), (Some(Cfa::xtrans()), 1), (None, 3), (None, 1)];
+    for (cfa, cpp) in layouts {
+        for inset in [0usize, 1, 2] {
+            let (w, h) = (48 + 2 * inset, 36 + 2 * inset);
+            let mut raw = mosaic(w, h, cfa.clone(), cpp, 0.002, sky);
+            raw.active_area = Rect::new(inset, inset, w - 2 * inset, h - 2 * inset);
+            let (lo, hix, hiy) = (inset + MARGIN, w - inset - MARGIN - 1, h - inset - MARGIN - 1);
+            let corners = [(lo, lo), (hix, lo), (lo, hiy), (hix, hiy), (lo, h / 2), (w / 2, lo)];
+            for &(x, y) in &corners {
+                set(&mut raw, x, y, 0, 1.0);
+            }
+            let found = detect(&raw, &Thresholds::LEARN);
+            let _ = detect(&raw, &Thresholds::CORRECT);
+            let _ = refine(&raw, &found, &Thresholds::CORRECT);
+            let seeds: Vec<Fix> = corners.iter().map(|&(x, y)| Fix { x: x as u32, y: y as u32, s: 0 }).collect();
+            let _ = grow(&raw, &seeds);
+            let edge = [Fix { x: 0, y: 0, s: 0 }, Fix { x: u32::MAX, y: u32::MAX, s: 0 }, Fix { x: w as u32, y: 0, s: 0 }];
+            let _ = correct(&mut raw, &[seeds.as_slice(), &edge].concat());
+        }
+    }
+    // the smallest area the checks take: one pixel past twice the margin each way
+    let mut raw = mosaic(2 * MARGIN + 2, 2 * MARGIN + 2, Cfa::bayer("RGGB"), 1, 0.0, sky);
+    set(&mut raw, MARGIN, MARGIN, 0, 1.0);
+    let _ = detect(&raw, &Thresholds::LEARN);
+}
+
 #[test]
 fn dark_frames_list_hot_pixels_and_noise() {
     let mut raw = mosaic(200, 150, Cfa::bayer("RGGB"), 1, 0.0015, |_, _| [0.006, 0.006, 0.006]);
