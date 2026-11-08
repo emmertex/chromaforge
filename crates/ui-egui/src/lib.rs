@@ -1363,11 +1363,12 @@ impl LccApp {
         if let Ok(v) = &r {
             edit_in::after_command(self, id, v);
         }
-        if r.is_ok()
+        if let Ok(v) = &r
             && id == "ml.status"
-            && let Some(dev) = params.get("device").and_then(Value::as_str)
+            && (params.get("device").is_some() || params.get("preference").is_some())
+            && let Some(dev_choice) = v.get("deviceChoice").and_then(Value::as_str)
         {
-            let choice = if dev.eq_ignore_ascii_case("auto") { "" } else { dev.trim() };
+            let choice = if dev_choice.eq_ignore_ascii_case("auto") { "" } else { dev_choice.trim() };
             if self.ui.settings.ml_device != choice {
                 self.ui.settings.ml_device = choice.to_string();
             }
@@ -2424,18 +2425,33 @@ impl LccApp {
             self.gpu_cards_applied = Some(cards);
         }
         let ml_device = self.ui.settings.ml_device.clone();
-        if self.ml_device_applied.as_ref() != Some(&ml_device) && (!ml_device.is_empty() || self.ml_device_applied.is_some()) {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                lcc_engine::gpu::set_ml_device(Some(&ml_device));
+        if self.ml_device_applied.is_none() && ml_device.is_empty() {
+            if let Ok(st) = self.session.execute("ml.status", &serde_json::json!({})) {
+                let adopted = st
+                    .get("deviceChoice")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"))
+                    .unwrap_or("")
+                    .to_string();
+                if !adopted.is_empty() {
+                    self.ui.settings.ml_device = adopted.clone();
+                }
+                self.ml_device_applied = Some(adopted);
             }
-            let _ = self.session.execute(
-                "ml.status",
-                &serde_json::json!({
-                    "device": ml_device,
-                }),
-            );
-            self.ml_device_applied = Some(ml_device);
+        } else if self.ml_device_applied.as_ref() != Some(&ml_device) {
+            if self
+                .session
+                .execute(
+                    "ml.status",
+                    &serde_json::json!({
+                        "device": ml_device,
+                    }),
+                )
+                .is_ok()
+            {
+                self.ml_device_applied = Some(ml_device);
+            }
         }
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);

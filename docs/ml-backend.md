@@ -46,8 +46,8 @@ embedding cache store.
 **The engine** (`crates/engine/src/ml.rs`, `crates/engine/src/cmd/ml.rs`) integrates `lcc-ml` into `Session`:
 
 - its GPU probe follows the rendering GPU's switches (`<PREFIX>_GPU`, `<PREFIX>_GPU_BACKEND`, `app.gpu`) and the ML device
-  setting (`AppSettings::ml_device`, `lcc_gpu::ml_device()`, `ml.status {device}`); on macOS, it selects the specific Metal
-  device index matching the chosen GPU; on other platforms, it truthfully reports multithreaded CPU execution with `whyCpu`
+  setting (`AppSettings::ml_device`, `ml.status {device}`); on macOS, it selects the specific Metal
+  device index matching the chosen GPU (or the rendering GPU under `Automatic`); on other platforms, it truthfully reports multithreaded CPU execution with `whyCpu`
   explaining that Metal is currently required for GPU inference;
 - `<PREFIX>_ML_DEVICE=cpu` keeps the AI jobs on the CPU (`auto` is the default);
 - its row in the activity stack is a batch: kind `mlIndex`, label "Indexing photos" ("Indexing photos · 37 of 200 ·

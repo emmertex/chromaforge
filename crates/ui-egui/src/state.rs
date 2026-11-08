@@ -2948,6 +2948,16 @@ mod loupe_info_tests {
         let read: AppSettings = serde_json::from_value(saved).unwrap();
         assert!(!read.loupe_messages);
     }
+
+    #[test]
+    fn ml_device_setting_round_trips() {
+        assert_eq!(AppSettings::default().ml_device, "");
+        let settings = AppSettings { ml_device: "cpu".into(), ..AppSettings::default() };
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(saved["mlDevice"], "cpu");
+        let read: AppSettings = serde_json::from_value(saved).unwrap();
+        assert_eq!(read.ml_device, "cpu");
+    }
 }
 
 #[cfg(test)]

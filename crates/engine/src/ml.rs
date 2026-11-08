@@ -207,8 +207,14 @@ pub(crate) struct State {
     query_queue: Option<Queue<Output>>,
     /// Set by `ml.status {preference}` before the queue exists.
     preference: Option<Preference>,
-    /// Chosen hardware device (None: auto, Some("cpu"): cpu, or adapter key).
-    pub device_choice: Option<String>,
+    /// Chosen hardware device (`None`: auto, `Some("cpu")`: cpu, or adapter key), shared with the session's GPU probe.
+    device_choice: Arc<Mutex<Option<String>>>,
+    /// `ml_models_dir` for which saved `MlSettings.device` was already checked.
+    device_adopted_dir: Option<PathBuf>,
+    /// Cached `settings.json` for `ml_models_dir`, so `ml.status` does not read the disk on every frame.
+    settings_cache: Option<(PathBuf, MlSettings)>,
+    /// Cached installed manifests and active embedder id (`(dir, at, installed, active_id)`).
+    models_cache: Option<(PathBuf, web_time::Instant, Vec<ModelManifest>, Option<String>)>,
     /// Whether background indexing is enabled (`ml.enable`).
     pub enabled: bool,
     /// Set when the user clicks ✕ on the `mlIndex` activity row; cleared on library change, import, or `ml.index`.
@@ -246,7 +252,10 @@ impl Default for State {
             queue: None,
             query_queue: None,
             preference: None,
-            device_choice: None,
+            device_choice: Arc::new(Mutex::new(None)),
+            device_adopted_dir: None,
+            settings_cache: None,
+            models_cache: None,
             enabled: true,
             paused_by_user: false,
             epoch: 1,
@@ -267,6 +276,47 @@ impl Default for State {
 }
 
 impl State {
+    pub(crate) fn chosen_device(&self) -> Option<String> {
+        self.device_choice.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    pub(crate) fn set_chosen_device(&self, choice: Option<String>) {
+        *self.device_choice.lock().unwrap_or_else(PoisonError::into_inner) = choice;
+    }
+
+    fn cached_settings(&mut self, dir: &Path) -> MlSettings {
+        if let Some((cached_dir, settings)) = &self.settings_cache
+            && cached_dir == dir
+        {
+            return settings.clone();
+        }
+        let settings = read_settings(dir);
+        self.settings_cache = Some((dir.to_path_buf(), settings.clone()));
+        settings
+    }
+
+    fn save_settings(&mut self, dir: &Path, settings: MlSettings) -> Result<(), String> {
+        write_settings(dir, &settings)?;
+        self.settings_cache = Some((dir.to_path_buf(), settings));
+        self.models_cache = None;
+        Ok(())
+    }
+
+    fn cached_models(&mut self, dir: &Path) -> (Vec<ModelManifest>, Option<String>) {
+        let now = web_time::Instant::now();
+        if let Some((cached_dir, at, installed, active)) = &self.models_cache
+            && cached_dir == dir
+            && now.saturating_duration_since(*at) < MODEL_RECHECK
+        {
+            return (installed.clone(), active.clone());
+        }
+        let installed = installed_manifests(dir);
+        let settings = self.cached_settings(dir);
+        let active = resolve_active_embedder(&installed, &settings);
+        self.models_cache = Some((dir.to_path_buf(), now, installed.clone(), active.clone()));
+        (installed, active)
+    }
+
     /// Flush dirty embeddings and reset per-library indexing state when opening or closing a library.
     pub fn library_changed(&mut self) {
         self.save_store_now();
@@ -330,14 +380,14 @@ pub fn write_synthetic_clip_dir(dir: &std::path::Path, id: &str) -> crate::Resul
 }
 
 /// The GPU the AI jobs may use, or why not: the rendering GPU's switches apply.
-fn gpu_probe() -> Result<String, String> {
+fn gpu_probe_for(target_card: Option<String>) -> Result<String, String> {
     if let Some(why) = lcc_gpu::env_off_reason() {
         return Err(why);
     }
     if !lcc_gpu::enabled() {
         return Err("disabled by the GPU rendering preference (app.gpu)".into());
     }
-    if let Some(pref) = lcc_gpu::ml_device()
+    if let Some(ref pref) = target_card
         && pref.eq_ignore_ascii_case("cpu")
     {
         return Err("the AI device preference is the CPU".into());
@@ -348,14 +398,16 @@ fn gpu_probe() -> Result<String, String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let adapters = lcc_gpu::adapters();
-        let target_card = lcc_gpu::ml_device();
+        let mut adapters = lcc_gpu::adapters();
+        if adapters.is_empty() {
+            adapters = lcc_gpu::refresh_adapters();
+        }
         let mut chosen_metal_index = 0usize;
         let mut chosen_name = String::new();
 
-        // Candle's `CandleDevice::new_metal(index)` indexes into Apple's `MTLCopyAllDevices()`.
-        // We filter enumerated adapters to Metal adapters so the 0-based ordinal matches candle's
-        // device indexing.
+        // Both wgpu's Metal backend (`Instance::enumerate_adapters`) and candle's
+        // `CandleDevice::new_metal(index)` enumerate Apple's `MTLCopyAllDevices()` in order.
+        // Filtering to Metal adapters preserves that 0-based ordinal.
         let metal_adapters: Vec<&lcc_gpu::cards::AdapterEntry> =
             adapters.iter().filter(|a| a.backend.eq_ignore_ascii_case("metal") || a.key.backend.eq_ignore_ascii_case("metal")).collect();
 
@@ -374,22 +426,31 @@ fn gpu_probe() -> Result<String, String> {
         }
 
         if chosen_name.is_empty() {
-            // Automatic device selection: reuse the second-card policy that AI Denoise and face detection
-            // use (ai_adapter / resolve_helper), preferring the second card when one is present to avoid
-            // contending with interactive window rendering.
-            if let Some(ai_entry) = lcc_gpu::ai_adapter_entry()
-                && let Some((m_idx, entry)) =
-                    metal_adapters.iter().enumerate().find(|(_, a)| a.usable && (a.key == ai_entry.key || a.key.same_model(&ai_entry.key)))
+            // Automatic device selection follows the rendering/editing GPU (`card_status` / `adapter_name`),
+            // matching `docs/ml-backend.md` so two-GPU Macs do not fall back to an integrated card.
+            let (saved_card, in_use_card, _) = lcc_gpu::card_status();
+            let editing_key = in_use_card.or(saved_card).and_then(|k| lcc_gpu::cards::AdapterKey::parse(&k));
+            if let Some(ref ek) = editing_key
+                && let Some((m_idx, entry)) = metal_adapters.iter().enumerate().find(|(_, a)| a.usable && (a.key == *ek || a.key.same_model(ek)))
             {
                 chosen_metal_index = m_idx;
                 chosen_name = entry.name.clone();
+            }
+            if chosen_name.is_empty()
+                && let Some(render_name) = lcc_gpu::adapter_name()
+            {
+                let base_name = render_name.rsplit_once(" (").map(|(n, _)| n.trim()).unwrap_or(render_name.trim());
+                if let Some((m_idx, entry)) = metal_adapters.iter().enumerate().find(|(_, a)| a.usable && a.name.eq_ignore_ascii_case(base_name)) {
+                    chosen_metal_index = m_idx;
+                    chosen_name = entry.name.clone();
+                } else {
+                    chosen_name = render_name;
+                }
             }
             if chosen_name.is_empty() {
                 if let Some((m_idx, entry)) = metal_adapters.iter().enumerate().find(|(_, a)| a.usable) {
                     chosen_metal_index = m_idx;
                     chosen_name = entry.name.clone();
-                } else if let Some(name) = lcc_gpu::adapter_name() {
-                    chosen_name = name;
                 } else {
                     return Err(lcc_gpu::unavailable_reason().unwrap_or_else(|| "no usable GPU".into()));
                 }
@@ -397,6 +458,13 @@ fn gpu_probe() -> Result<String, String> {
         }
         Ok(format!("{chosen_name}#{chosen_metal_index}"))
     }
+}
+
+fn make_gpu_probe(device_choice: Arc<Mutex<Option<String>>>) -> Probe {
+    Box::new(move || {
+        let target = device_choice.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        gpu_probe_for(target)
+    })
 }
 
 struct ActivityRows(Activity);
@@ -472,18 +540,22 @@ fn installed_manifests(models_dir: &Path) -> Vec<ModelManifest> {
     out
 }
 
-fn active_embedder_id(models_dir: &Path) -> Option<String> {
-    let installed = installed_manifests(models_dir);
-    let settings = read_settings(models_dir);
-    if let Some(chosen) = settings.embedder
-        && installed.iter().any(|m| m.id == chosen && m.role == Role::Embedder)
+fn resolve_active_embedder(installed: &[ModelManifest], settings: &MlSettings) -> Option<String> {
+    if let Some(ref chosen) = settings.embedder
+        && installed.iter().any(|m| &m.id == chosen && m.role == Role::Embedder)
     {
-        return Some(chosen);
+        return Some(chosen.clone());
     }
     if installed.iter().any(|m| m.id == CLIP_VIT_B32_ID && m.role == Role::Embedder) {
         return Some(CLIP_VIT_B32_ID.to_string());
     }
-    installed.into_iter().find(|m| m.role == Role::Embedder).map(|m| m.id)
+    installed.iter().find(|m| m.role == Role::Embedder).map(|m| m.id.clone())
+}
+
+fn active_embedder_id(models_dir: &Path) -> Option<String> {
+    let installed = installed_manifests(models_dir);
+    let settings = read_settings(models_dir);
+    resolve_active_embedder(&installed, &settings)
 }
 
 fn manifest_json(m: &ModelManifest, installed: bool, selected: bool, dl: Option<&DownloadState>) -> Value {
@@ -519,14 +591,22 @@ fn manifest_json(m: &ModelManifest, installed: bool, selected: bool, dl: Option<
 impl Session {
     /// Active installed semantic search model id, if any (`None` when none is installed).
     pub fn selected_ml_model(&self) -> Option<String> {
-        self.ml_models_dir.as_deref().and_then(active_embedder_id)
+        let dir = self.ml_models_dir.as_deref()?;
+        if let Some((cached_dir, at, _, active)) = &self.ml.models_cache
+            && cached_dir == dir
+            && web_time::Instant::now().saturating_duration_since(*at) < MODEL_RECHECK
+        {
+            return active.clone();
+        }
+        active_embedder_id(dir)
     }
 
     /// The queue, made on first use with the engine's GPU probe and activity row.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn ml_queue(&mut self) -> &Queue<Output> {
         let preference = self.ml.preference.unwrap_or_else(env_preference);
-        self.ml_queue_with(Config { preference, ..Config::default() }, Box::new(gpu_probe))
+        let probe = make_gpu_probe(Arc::clone(&self.ml.device_choice));
+        self.ml_queue_with(Config { preference, ..Config::default() }, probe)
     }
 
     /// The queue, made with `probe` and `config` if it doesn't exist yet (tests pick the GPU this way).
@@ -546,39 +626,44 @@ impl Session {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn ml_query_queue(&mut self) -> &Queue<Output> {
         let preference = self.ml.preference.unwrap_or_else(env_preference);
-        self.ml.query_queue.get_or_insert_with(|| Queue::new(Config { preference, ..Config::default() }, Box::new(gpu_probe), None))
+        let probe = make_gpu_probe(Arc::clone(&self.ml.device_choice));
+        self.ml.query_queue.get_or_insert_with(|| Queue::new(Config { preference, ..Config::default() }, probe, None))
     }
 
     /// `ml.status {preference?, device?}`.
     pub(crate) fn ml_status(&mut self, p: &Value) -> crate::Result<Value> {
-        // Adopt saved device preference from MlSettings if unset in memory and not pinned by environment.
-        if self.ml.device_choice.is_none()
-            && env_preference() == Preference::Auto
-            && let Some(saved) = self.ml_models_dir.as_deref().and_then(|d| read_settings(d).device)
+        // Adopt saved device preference from MlSettings once per models dir if unset in memory and not pinned by environment.
+        if let Some(models_dir) = self.ml_models_dir.clone()
+            && self.ml.device_adopted_dir.as_deref() != Some(models_dir.as_path())
         {
-            if saved.eq_ignore_ascii_case("cpu") {
-                self.ml.device_choice = Some("cpu".to_string());
-                self.ml.preference = Some(Preference::Cpu);
-                lcc_gpu::set_ml_device(Some("cpu"));
-                if let Some(q) = &self.ml.queue {
-                    q.set_preference(Preference::Cpu);
-                }
-                if let Some(qq) = &self.ml.query_queue {
-                    qq.set_preference(Preference::Cpu);
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(parsed) = lcc_gpu::cards::AdapterKey::parse(&saved)
-                && lcc_gpu::adapters().iter().any(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed)))
+            self.ml.device_adopted_dir = Some(models_dir.clone());
+            if self.ml.chosen_device().is_none()
+                && self.ml.preference.is_none()
+                && env_preference() == Preference::Auto
+                && let Some(saved) = self.ml.cached_settings(&models_dir).device
             {
-                self.ml.device_choice = Some(saved.clone());
-                self.ml.preference = Some(Preference::Auto);
-                lcc_gpu::set_ml_device(Some(&saved));
-                if let Some(q) = &self.ml.queue {
-                    q.set_preference(Preference::Auto);
+                if saved.eq_ignore_ascii_case("cpu") {
+                    self.ml.set_chosen_device(Some("cpu".to_string()));
+                    self.ml.preference = Some(Preference::Cpu);
+                    if let Some(q) = &self.ml.queue {
+                        q.set_preference(Preference::Cpu);
+                    }
+                    if let Some(qq) = &self.ml.query_queue {
+                        qq.set_preference(Preference::Cpu);
+                    }
                 }
-                if let Some(qq) = &self.ml.query_queue {
-                    qq.set_preference(Preference::Auto);
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(parsed) = lcc_gpu::cards::AdapterKey::parse(&saved)
+                    && lcc_gpu::adapters().iter().any(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed)))
+                {
+                    self.ml.set_chosen_device(Some(saved));
+                    self.ml.preference = Some(Preference::Auto);
+                    if let Some(q) = &self.ml.queue {
+                        q.set_preference(Preference::Auto);
+                    }
+                    if let Some(qq) = &self.ml.query_queue {
+                        qq.set_preference(Preference::Auto);
+                    }
                 }
             }
         }
@@ -586,8 +671,7 @@ impl Session {
         if let Some(v) = p.get("device") {
             let dev_str = v.as_str().ok_or_else(|| bad("ml.status", "`device` must be a string"))?.trim();
             if dev_str.eq_ignore_ascii_case("cpu") {
-                lcc_gpu::set_ml_device(Some("cpu"));
-                self.ml.device_choice = Some("cpu".to_string());
+                self.ml.set_chosen_device(Some("cpu".to_string()));
                 self.ml.preference = Some(Preference::Cpu);
                 if let Some(q) = &self.ml.queue {
                     q.set_preference(Preference::Cpu);
@@ -596,12 +680,18 @@ impl Session {
                     qq.set_preference(Preference::Cpu);
                 }
             } else if dev_str.is_empty() {
-                // Empty string leaves preference alone (env variable or current preference intact)
-                lcc_gpu::set_ml_device(None);
-                self.ml.device_choice = None;
+                // Empty string resets the saved device choice and restores the environment preference (`auto` when unset).
+                let pref = env_preference();
+                self.ml.set_chosen_device(None);
+                self.ml.preference = None;
+                if let Some(q) = &self.ml.queue {
+                    q.set_preference(pref);
+                }
+                if let Some(qq) = &self.ml.query_queue {
+                    qq.set_preference(pref);
+                }
             } else if dev_str.eq_ignore_ascii_case("auto") {
-                lcc_gpu::set_ml_device(None);
-                self.ml.device_choice = None;
+                self.ml.set_chosen_device(None);
                 self.ml.preference = Some(Preference::Auto);
                 if let Some(q) = &self.ml.queue {
                     q.set_preference(Preference::Auto);
@@ -622,8 +712,7 @@ impl Session {
                         let reason = entry.why_not.as_deref().unwrap_or("card is not usable");
                         return Err(bad("ml.status", format!("graphics card `{dev_str}` is not usable: {reason}")));
                     }
-                    lcc_gpu::set_ml_device(Some(dev_str));
-                    self.ml.device_choice = Some(dev_str.to_string());
+                    self.ml.set_chosen_device(Some(dev_str.to_string()));
                     self.ml.preference = Some(Preference::Auto);
                     if let Some(q) = &self.ml.queue {
                         q.set_preference(Preference::Auto);
@@ -638,34 +727,23 @@ impl Session {
                 }
             }
 
-            // Write back to saved setting so agent's choice sticks across restarts
-            if let Some(ref models_dir) = self.ml_models_dir {
-                let mut settings = read_settings(models_dir);
+            // Write back to saved setting so the explicit `device` choice sticks across restarts.
+            if let Some(models_dir) = self.ml_models_dir.clone() {
+                let mut settings = self.ml.cached_settings(&models_dir);
                 settings.device = if dev_str.is_empty() || dev_str.eq_ignore_ascii_case("auto") { None } else { Some(dev_str.to_string()) };
-                let _ = write_settings(models_dir, &settings);
+                let _ = self.ml.save_settings(&models_dir, settings);
             }
         } else if let Some(v) = p.get("preference") {
+            // `preference` is session-only (does not write `settings.json`).
             let pref = v
                 .as_str()
                 .and_then(Preference::parse)
                 .ok_or_else(|| bad("ml.status", "preference is `auto` (the GPU when there is one) or `cpu`"))?;
             self.ml.preference = Some(pref);
             if pref == Preference::Cpu {
-                self.ml.device_choice = Some("cpu".to_string());
-                lcc_gpu::set_ml_device(Some("cpu"));
-                if let Some(ref models_dir) = self.ml_models_dir {
-                    let mut settings = read_settings(models_dir);
-                    settings.device = Some("cpu".to_string());
-                    let _ = write_settings(models_dir, &settings);
-                }
-            } else if self.ml.device_choice.as_deref() == Some("cpu") {
-                self.ml.device_choice = None;
-                lcc_gpu::set_ml_device(None);
-                if let Some(ref models_dir) = self.ml_models_dir {
-                    let mut settings = read_settings(models_dir);
-                    settings.device = None;
-                    let _ = write_settings(models_dir, &settings);
-                }
+                self.ml.set_chosen_device(Some("cpu".to_string()));
+            } else if self.ml.chosen_device().as_deref() == Some("cpu") {
+                self.ml.set_chosen_device(None);
             }
             if let Some(q) = &self.ml.queue {
                 q.set_preference(pref);
@@ -687,7 +765,7 @@ impl Session {
                 threaded: false,
             }),
         };
-        let model_id = self.ml_models_dir.as_deref().and_then(active_embedder_id);
+        let model_id = self.ml_models_dir.clone().and_then(|d| self.ml.cached_models(&d).1);
         #[cfg(not(target_arch = "wasm32"))]
         if model_id.is_some() && self.ml.store.is_none() {
             let _ = self.ensure_ml_encoder(false);
@@ -734,13 +812,14 @@ impl Session {
         .chain(gpu_devices)
         .collect();
 
+        let device_choice = self.ml.chosen_device();
         if let Some(obj) = base.as_object_mut() {
             obj.insert("enabled".into(), Value::Bool(self.ml.enabled));
             obj.insert("modelId".into(), model_id.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null));
             obj.insert("modelInstalled".into(), Value::Bool(model_id.is_some()));
             obj.insert("indexedPhotos".into(), json!(indexed));
             obj.insert("unindexedPhotos".into(), json!(unindexed));
-            obj.insert("deviceChoice".into(), json!(self.ml.device_choice.as_deref().unwrap_or("auto")));
+            obj.insert("deviceChoice".into(), json!(device_choice.as_deref().unwrap_or("auto")));
             obj.insert("availableDevices".into(), Value::Array(available_devices));
         }
         Ok(base)
@@ -772,8 +851,14 @@ impl Session {
 
     /// `ml.models.list {}`.
     pub(crate) fn ml_models_list(&mut self, _p: &Value) -> crate::Result<Value> {
-        let installed = self.ml_models_dir.as_deref().map(installed_manifests).unwrap_or_default();
-        let selected = self.ml_models_dir.as_deref().and_then(active_embedder_id);
+        if self.ml.downloads.snapshot().iter().any(|(_, state)| *state == DownloadState::Installed) {
+            self.ml.models_cache = None;
+            self.ml.settings_cache = None;
+        }
+        let (installed, selected) = match self.ml_models_dir.clone() {
+            Some(dir) => self.ml.cached_models(&dir),
+            None => (Vec::new(), None),
+        };
         let mut models = Vec::new();
         let mut seen = HashSet::new();
 
@@ -848,14 +933,15 @@ impl Session {
             })?;
         }
 
+        self.ml.models_cache = None;
         if select && manifest.role == Role::Embedder {
-            let mut settings = read_settings(&models_dir);
+            let mut settings = self.ml.cached_settings(&models_dir);
             settings.embedder = Some(manifest.id.clone());
-            write_settings(&models_dir, &settings).map_err(|e| bad(C, e))?;
+            self.ml.save_settings(&models_dir, settings).map_err(|e| bad(C, e))?;
             self.ml.last_checked = None;
             self.ml.paused_by_user = false;
         }
-        let selected_id = active_embedder_id(&models_dir);
+        let selected_id = self.ml.cached_models(&models_dir).1;
         let selected = selected_id.as_deref() == Some(manifest.id.as_str());
         let info = manifest_json(&manifest, true, selected, None);
         Ok(json!({
@@ -882,9 +968,9 @@ impl Session {
                 return Err(bad(C, format!("embedder model {chosen:?} is not installed")));
             }
         }
-        let mut settings = read_settings(&models_dir);
+        let mut settings = self.ml.cached_settings(&models_dir);
         settings.embedder = id.clone();
-        write_settings(&models_dir, &settings).map_err(|e| bad(C, e))?;
+        self.ml.save_settings(&models_dir, settings).map_err(|e| bad(C, e))?;
         self.ml.last_checked = None;
         self.ml.paused_by_user = false;
         Ok(json!({"selectedEmbedder": id}))
@@ -905,10 +991,11 @@ impl Session {
         } else {
             false
         };
-        let mut settings = read_settings(&models_dir);
+        self.ml.models_cache = None;
+        let mut settings = self.ml.cached_settings(&models_dir);
         if settings.embedder.as_deref() == Some(id) {
             settings.embedder = None;
-            let _ = write_settings(&models_dir, &settings);
+            let _ = self.ml.save_settings(&models_dir, settings);
         }
         #[cfg(not(target_arch = "wasm32"))]
         if self.ml.encoder.as_ref().is_some_and(|(_, e)| e.manifest().id == id) {
@@ -960,10 +1047,12 @@ impl Session {
 
     /// `ml.models.downloads {}`.
     pub(crate) fn ml_models_downloads(&mut self, _p: &Value) -> crate::Result<Value> {
-        let list: Vec<Value> = self
-            .ml
-            .downloads
-            .snapshot()
+        let snap = self.ml.downloads.snapshot();
+        if snap.iter().any(|(_, state)| *state == DownloadState::Installed) {
+            self.ml.models_cache = None;
+            self.ml.settings_cache = None;
+        }
+        let list: Vec<Value> = snap
             .into_iter()
             .map(|(id, state)| match state {
                 DownloadState::Running { bytes, total } => {
@@ -1083,12 +1172,20 @@ impl Session {
         {
             return Ok(Arc::clone(enc));
         }
+        if fresh {
+            self.ml.models_cache = None;
+            self.ml.settings_cache = None;
+        }
         let models_dir = self.ml_models_dir.clone().ok_or_else(|| "no ML models folder is configured".to_string())?;
-        let id = active_embedder_id(&models_dir).ok_or_else(|| {
+        let (installed, id_opt) = self.ml.cached_models(&models_dir);
+        let id = id_opt.ok_or_else(|| {
             "no AI embedding model is installed (install or download one with `ml.models.install` or `ml.models.download`)".to_string()
         })?;
         let model_dir = models_dir.join(&id);
-        let manifest = ModelManifest::read_dir(&model_dir).map_err(|e| e.to_string())?;
+        let manifest = match installed.into_iter().find(|m| m.id == id) {
+            Some(m) => m,
+            None => ModelManifest::read_dir(&model_dir).map_err(|e| e.to_string())?,
+        };
         let tag = manifest.tag();
         self.ml.last_checked = Some(web_time::Instant::now());
 

@@ -1052,46 +1052,6 @@ pub fn ai_card() -> Option<String> {
     ai_adapter(&ctx::instance(backends), backends).ok().map(|a| a.get_info().name)
 }
 
-/// The adapter entry chosen for AI workloads ([`ai_adapter`]) following the second-card policy:
-/// the second graphics card when one is chosen or found, else the editing card.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn ai_adapter_entry() -> Option<cards::AdapterEntry> {
-    let backends = backend::compute_backends()?;
-    let instance = ctx::instance(backends);
-    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
-    let entries = remember_adapters(&adapters);
-    let res = cards::resolve_card(&entries, backend::wanted_adapter().as_deref(), cards::card().as_ref());
-    let editing = EDITING_CARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-    let primary = editing.and_then(|k| entries.iter().position(|e| e.key == k)).or(res.index);
-    let pins = backend::wanted_adapter().is_some();
-    let pick = cards::resolve_helper(&entries, primary, &cards::helper_choice(), pins).or(primary);
-    pick.and_then(|i| entries.get(i).cloned())
-}
-
-/// The hardware device for AI semantic search vector embeddings (`None`: Automatic,
-/// `Some("cpu")`: force CPU, or a card's key).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn ml_device() -> Option<String> {
-    cards::ml_device()
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn ml_device() -> Option<String> {
-    None
-}
-
-/// Set the hardware device for AI semantic search vector embeddings.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn set_ml_device(choice: Option<&str>) -> bool {
-    let val = choice.map(str::trim).filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto")).map(|s| s.to_string());
-    cards::set_ml_device(val)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn set_ml_device(_choice: Option<&str>) -> bool {
-    false
-}
-
 /// Batch work on the second card now: (renders running, device bytes they hold, renders waiting).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn helper_usage() -> (usize, u64, usize) {

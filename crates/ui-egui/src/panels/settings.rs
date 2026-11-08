@@ -1505,7 +1505,7 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     gpu_card_rows(app, ui, t);
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let ml_status = app.session.execute("ml.status", &serde_json::json!({})).unwrap_or(serde_json::Value::Null);
+        let ml_status = crate::panels::ml_models::cached_status(app, ui.ctx());
         crate::panels::ml_models::ml_device_selector(app, ui, t, &ml_status);
     }
     check(ui, "settings.hdrDisplay", &mut app.ui.settings.hdr_display, "HDR display where the screen supports it (applies at next launch)");

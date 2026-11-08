@@ -27,16 +27,81 @@ fn licence_line(m: &Value) -> String {
     }
 }
 
+/// How long a read of `ml.status`, `ml.models.list`, or `ml.models.downloads` is reused across frames.
+const REFRESH_SECS: f64 = 1.0;
+
+fn status_cache_id() -> egui::Id {
+    egui::Id::new("ml-status-cache")
+}
+
+fn list_cache_id() -> egui::Id {
+    egui::Id::new("ml-models-list-cache")
+}
+
+fn downloads_cache_id() -> egui::Id {
+    egui::Id::new("ml-models-downloads-cache")
+}
+
+fn invalidate_ml_caches(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        d.remove::<(f64, String, Value)>(status_cache_id());
+        d.remove::<(f64, Value)>(list_cache_id());
+        d.remove::<(f64, Vec<Value>)>(downloads_cache_id());
+    });
+}
+
+/// The engine's `ml.status`, re-read at most every [`REFRESH_SECS`] or immediately after a device/enable change.
+pub fn cached_status(app: &mut LccApp, ctx: &egui::Context) -> Value {
+    let now = ctx.input(|i| i.time);
+    let dev = app.ui.settings.ml_device.clone();
+    if let Some((at, ref cached_dev, ref v)) = ctx.data(|d| d.get_temp::<(f64, String, Value)>(status_cache_id()))
+        && *cached_dev == dev
+        && now - at < REFRESH_SECS
+    {
+        return v.clone();
+    }
+    let v = app.session.execute("ml.status", &json!({})).unwrap_or(Value::Null);
+    ctx.data_mut(|d| d.insert_temp(status_cache_id(), (now, dev, v.clone())));
+    v
+}
+
+fn cached_list(app: &mut LccApp, ctx: &egui::Context) -> Value {
+    let now = ctx.input(|i| i.time);
+    if let Some((at, v)) = ctx.data(|d| d.get_temp::<(f64, Value)>(list_cache_id()))
+        && now - at < REFRESH_SECS
+    {
+        return v;
+    }
+    let v = app.session.execute("ml.models.list", &json!({})).unwrap_or(Value::Null);
+    ctx.data_mut(|d| d.insert_temp(list_cache_id(), (now, v.clone())));
+    v
+}
+
+fn cached_downloads(app: &mut LccApp, ctx: &egui::Context) -> Vec<Value> {
+    let now = ctx.input(|i| i.time);
+    if let Some((at, v)) = ctx.data(|d| d.get_temp::<(f64, Vec<Value>)>(downloads_cache_id())) {
+        let running = v.iter().any(|dl| dl["state"].as_str() == Some("running"));
+        let ttl = if running { 0.2 } else { REFRESH_SECS };
+        if now - at < ttl {
+            return v;
+        }
+    }
+    let v =
+        app.session.execute("ml.models.downloads", &json!({})).map(|v| v["downloads"].as_array().cloned().unwrap_or_default()).unwrap_or_default();
+    ctx.data_mut(|d| d.insert_temp(downloads_cache_id(), (now, v.clone())));
+    v
+}
+
 /// The AI Models dialog's Semantic search group.
 pub fn models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
-    let list = app.session.execute("ml.models.list", &json!({})).unwrap_or(Value::Null);
+    let ctx = ui.ctx().clone();
+    let list = cached_list(app, &ctx);
     let models: Vec<Value> = list["models"].as_array().cloned().unwrap_or_default();
     if list["dir"].is_null() || models.is_empty() {
         return;
     }
-    let status = app.session.execute("ml.status", &json!({})).unwrap_or(Value::Null);
-    let downloads =
-        app.session.execute("ml.models.downloads", &json!({})).map(|v| v["downloads"].as_array().cloned().unwrap_or_default()).unwrap_or_default();
+    let status = cached_status(app, &ctx);
+    let downloads = cached_downloads(app, &ctx);
     crate::dialog_frame::group_begin(ui, Some("Semantic search"));
     ui.label(tr(
         "Searches the library by description (for example “moody studio portraits”) using image-text embeddings computed in the background.",
@@ -44,6 +109,7 @@ pub fn models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let mut enabled = status["enabled"].as_bool() == Some(true);
     if check(ui, "mlEnable", &mut enabled, "Index photos in the background for natural-language search") {
         let _ = app.run("ml.enable", json!({"enabled": enabled}));
+        invalidate_ml_caches(&ctx);
     }
     ml_device_selector(app, ui, t, &status);
     if enabled && list["selected"].is_string() {
@@ -77,25 +143,26 @@ pub fn ml_device_selector(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, statu
         }
     };
     let active_choice = status.get("deviceChoice").and_then(Value::as_str).unwrap_or("");
-    let current_setting = if app.ui.settings.ml_device.is_empty() && !active_choice.is_empty() && active_choice != "auto" {
+    let raw_setting = if app.ui.settings.ml_device.is_empty() && !active_choice.is_empty() && !active_choice.eq_ignore_ascii_case("auto") {
         active_choice
     } else {
         app.ui.settings.ml_device.as_str()
     };
-    let current = name_of(current_setting).unwrap_or_else(|| auto.clone());
-    let before = app.ui.settings.ml_device.clone();
+    let normalized_before = if raw_setting.eq_ignore_ascii_case("auto") { String::new() } else { raw_setting.to_string() };
+    let current = name_of(&normalized_before).unwrap_or_else(|| auto.clone());
+    let mut selected = normalized_before.clone();
     super::settings::row(ui, t, crate::i18n::tr("AI embedding device"), |ui| {
         let combo = crate::widgets::combo_box("settingsMlDevice").selected_text(current).width(260.0).show_ui(ui, |ui| {
-            let r = ui.selectable_value(&mut app.ui.settings.ml_device, String::new(), auto.as_str());
+            let r = ui.selectable_value(&mut selected, String::new(), auto.as_str());
             register(ui.ctx(), "button:settingsMlDevice-auto", r.rect);
-            let r = ui.selectable_value(&mut app.ui.settings.ml_device, "cpu".to_string(), cpu.as_str());
+            let r = ui.selectable_value(&mut selected, "cpu".to_string(), cpu.as_str());
             register(ui.ctx(), "button:settingsMlDevice-cpu", r.rect);
             for (i, d) in gpu_cards.iter().enumerate() {
                 let id = d["id"].as_str().unwrap_or("");
                 let name = d["name"].as_str().unwrap_or(id);
                 let usable = d["usable"].as_bool().unwrap_or(true);
                 let why_not = d["whyNot"].as_str();
-                let r = ui.add_enabled_ui(usable, |ui| ui.selectable_value(&mut app.ui.settings.ml_device, id.to_string(), name)).inner;
+                let r = ui.add_enabled_ui(usable, |ui| ui.selectable_value(&mut selected, id.to_string(), name)).inner;
                 let r = match why_not {
                     Some(why) => r.on_disabled_hover_text(why),
                     None => r,
@@ -105,8 +172,10 @@ pub fn ml_device_selector(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, statu
         });
         register(ui.ctx(), "combo:settingsMlDevice", combo.response.rect);
     });
-    if before != app.ui.settings.ml_device {
-        let _ = app.run("ml.status", json!({"device": app.ui.settings.ml_device}));
+    if selected != normalized_before {
+        app.ui.settings.ml_device = selected.clone();
+        let _ = app.run("ml.status", json!({"device": selected}));
+        invalidate_ml_caches(ui.ctx());
     }
 
     let readout = if let Some(dev) = status.get("device").filter(|d| !d.is_null()) {
@@ -190,12 +259,14 @@ fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Opt
                     register(ui.ctx(), format!("ml:remove:{id}"), r.rect);
                     if r.clicked() {
                         let _ = app.run("ml.models.remove", json!({"id": id}));
+                        invalidate_ml_caches(ui.ctx());
                     }
                     if !selected {
                         let r = ui.button(tr("Use"));
                         register(ui.ctx(), format!("ml:use:{id}"), r.rect);
                         if r.clicked() {
                             let _ = app.run("ml.models.select", json!({"id": id}));
+                            invalidate_ml_caches(ui.ctx());
                         }
                     }
                 } else {
@@ -205,6 +276,7 @@ fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Opt
                             register(ui.ctx(), format!("ml:cancelDownload:{id}"), r.rect);
                             if r.clicked() {
                                 let _ = app.run("ml.models.downloadCancel", json!({"id": id}));
+                                invalidate_ml_caches(ui.ctx());
                             }
                         }
                         Some("done" | "installing") => {}
@@ -212,10 +284,11 @@ fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Opt
                             let label = if dl_state == Some("failed") { "Try again" } else { "Download" };
                             let r = ui.button(tr(label));
                             register(ui.ctx(), format!("ml:download:{id}"), r.rect);
-                            if r.clicked()
-                                && let Err(e) = app.run("ml.models.download", json!({"id": id, "acceptLicence": true, "acknowledged": true}))
-                            {
-                                app.toast_error(ui.ctx(), e);
+                            if r.clicked() {
+                                match app.run("ml.models.download", json!({"id": id, "acceptLicence": true, "acknowledged": true})) {
+                                    Ok(_) => invalidate_ml_caches(ui.ctx()),
+                                    Err(e) => app.toast_error(ui.ctx(), e),
+                                }
                             }
                         }
                         _ => {}
