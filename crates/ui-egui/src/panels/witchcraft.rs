@@ -247,6 +247,22 @@ pub(crate) fn hsl_curves(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSetting
     let channel = if CURVES.iter().any(|(_, k)| *k == app.ui.hsl_curve) { app.ui.hsl_curve.clone() } else { "hue".into() };
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }, 3, 2)).show(ui, |ui| {
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            // pick a colour on the photo: its hue becomes a point on the shown curve
+            let pick = app.ui.tool == "hslPick";
+            if crate::widgets::icon_button(
+                ui,
+                "hslPick",
+                crate::icons::Icon::Picker,
+                vec2(26.0, 26.0),
+                pick,
+                true,
+                crate::i18n::tr("Pick a colour from the photo to add its hue to the curve"),
+            )
+            .clicked()
+            {
+                app.ui.tool = if pick { String::new() } else { "hslPick".into() };
+            }
             let active = CURVES.iter().position(|(_, k)| *k == channel);
             if let Some((_, k)) = crate::widgets::segmented(ui, "hslCurves", &CURVES, active, 3).and_then(|i| CURVES.get(i)) {
                 app.ui.hsl_curve = k.to_string();

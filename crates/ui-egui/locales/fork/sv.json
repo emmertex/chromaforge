@@ -118,6 +118,7 @@
   "Opens the original file itself; saving it updates this photo. Your edits here are not visible there.": "Öppnar själva originalfilen; när den sparas uppdateras det här fotot. Dina justeringar här syns inte där.",
   "Overlay always on: O turns it off": "Överlägg alltid på: O stänger av det",
   "Overlay on · O": "Överlägg på · O",
+  "Pick a colour from the photo to add its hue to the curve": "Välj en färg i fotot för att lägga dess nyans på kurvan.",
   "Pick the object on this photo: click it with the Object tool.": "Välj objektet i det här fotot: klicka på det med objektverktyget.",
   "Preview for SDR Display": "Förhandsvisa för SDR-skärm",
   "Primaries": "Primärfärger",

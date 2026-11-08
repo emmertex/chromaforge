@@ -1212,6 +1212,7 @@
   "Photos whose metadata file another program changed: saving replaces those changes with the catalog's.": "Fotos cuyo archivo de metadatos cambió otro programa: al guardar, esos cambios se sustituyen por los del catálogo.",
   "Photos whose metadata file another program changed: saving replaces those changes with the library's.": "Fotos cuyo archivo de metadatos cambió otro programa: al guardar, esos cambios se sustituyen por los de la biblioteca.",
   "Photos); importing (also by drag and drop), Find Missing Photos, Build / Discard Smart Previews, the Rename preview,": "Fotos); la importación (también arrastrando y soltando), Buscar fotos ausentes, Crear / Descartar vistas previas inteligentes, la vista previa de Cambiar nombre,",
+  "Pick a colour from the photo to add its hue to the curve": "Elige un color de la foto para añadir su tono a la curva.",
   "Pick the object on this photo: click it with the Object tool.": "Elija el objeto en esta foto: haga clic en él con la herramienta Objeto.",
   "Picks only": "Solo seleccionadas",
   "Picture Package": "Paquete de imágenes",

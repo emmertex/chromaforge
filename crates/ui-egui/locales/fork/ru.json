@@ -1294,6 +1294,7 @@
   "Photos whose metadata file another program changed: saving replaces those changes with the library's.": "Фото, файл метаданных которых изменила другая программа: при сохранении эти изменения заменяются данными библиотеки.",
   "Photos); importing (also by drag and drop), Find Missing Photos, Build / Discard Smart Previews, the Rename preview,": "Фото); импорт (в том числе перетаскиванием), Найти отсутствующие фото, Создать / Удалить смарт-превью, предпросмотр переименования,",
   "Pick Flag": "Флажок отбора",
+  "Pick a colour from the photo to add its hue to the curve": "Пипетка берёт цвет с фото и добавляет его оттенок точкой на кривую.",
   "Pick the object on this photo: click it with the Object tool.": "Выберите объект на этом фото: щёлкните по нему инструментом «Объект».",
   "Picks only": "Только выбранные",
   "Picture Package": "Пакет снимков",

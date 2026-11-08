@@ -116,6 +116,7 @@
   "Opens the original file itself; saving it updates this photo. Your edits here are not visible there.": "Membuka file aslinya sendiri; menyimpannya memperbarui foto ini. Penyesuaian Anda di sini tidak terlihat di sana.",
   "Overlay always on: O turns it off": "Overlay selalu aktif: O mematikannya",
   "Overlay on · O": "Overlay aktif · O",
+  "Pick a colour from the photo to add its hue to the curve": "Pilih warna dari foto untuk menambahkan rona warnanya ke kurva.",
   "Pick the object on this photo: click it with the Object tool.": "Pilih objek di foto ini: klik dengan alat Objek.",
   "Preview for SDR Display": "Pratinjau untuk Layar SDR",
   "Primaries": "Warna primer",

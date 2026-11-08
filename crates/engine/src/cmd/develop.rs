@@ -1143,6 +1143,34 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "develop.hslPick",
+            "Pick an HSL Curve Point",
+            [],
+            None,
+            "{channel: hue|sat|lum, x, y (normalized image coords)} — samples the photo's colour there and adds that hue to the channel's HSL curve, at the curve's current height there → {x}",
+            has_active,
+            |s, p| {
+                let c = "develop.hslPick";
+                let ch = str_param(p, "channel").ok_or_else(|| bad(c, "missing channel"))?.to_string();
+                let (x, y) = (super::f64_req(p, "x", c)?, super::f64_req(p, "y", c)?);
+                // the hue the curve receives: the photo with the curves themselves neutral (and
+                // everything after the mixer, as Point Color reads it)
+                let [_, _, h] = super::color::encoded_to_oklch(super::color::probe(s, c, x, y, |d| {
+                    d.hsl_curves = Default::default();
+                    super::color::after_mixer_neutral(d);
+                })?);
+                let hue_x = (h as f64 / std::f64::consts::TAU).rem_euclid(1.0);
+                edit(s, c, "HSL Curves", |d| {
+                    let pts = d.hsl_curves.channel_mut(&ch).ok_or_else(|| bad(c, format!("unknown channel `{ch}`")))?;
+                    let at = lcc_pipeline::colorops::hsl_curve_at(pts, hue_x);
+                    pts.push(Point::new(hue_x, at));
+                    pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                    Ok(())
+                })?;
+                Ok(json!({"channel": ch, "x": hue_x}))
+            }
+        ),
+        cmd!(
             "develop.hslCurves",
             "Set HSL Curve",
             [],

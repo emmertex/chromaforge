@@ -116,6 +116,7 @@
   "Opens the original file itself; saving it updates this photo. Your edits here are not visible there.": "Mở chính tệp gốc; lưu tệp sẽ cập nhật ảnh này. Điều chỉnh của bạn ở đây không hiện ở đó.",
   "Overlay always on: O turns it off": "Lớp phủ luôn bật: O để tắt",
   "Overlay on · O": "Lớp phủ bật · O",
+  "Pick a colour from the photo to add its hue to the curve": "Chọn một màu trên ảnh để thêm sắc độ của nó vào đường cong.",
   "Pick the object on this photo: click it with the Object tool.": "Chọn đối tượng trên ảnh này: nhấp vào nó bằng công cụ Đối tượng.",
   "Preview for SDR Display": "Xem trước cho màn hình SDR",
   "Primaries": "Màu cơ bản",

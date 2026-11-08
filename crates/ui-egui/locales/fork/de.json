@@ -1163,6 +1163,7 @@
   "Photos exported as a library": "Als Bibliothek exportierte Fotos",
   "Photos whose metadata file another program changed: saving replaces those changes with the catalog's.": "Fotos, deren Metadatendatei ein anderes Programm geändert hat: Speichern ersetzt diese Änderungen durch die des Katalogs.",
   "Photos whose metadata file another program changed: saving replaces those changes with the library's.": "Fotos, deren Metadatendatei ein anderes Programm geändert hat: Speichern ersetzt diese Änderungen durch die der Bibliothek.",
+  "Pick a colour from the photo to add its hue to the curve": "Wählen Sie eine Farbe auf dem Foto; ihr Farbton wird der Kurve hinzugefügt.",
   "Pick the object on this photo: click it with the Object tool.": "Wählen Sie das Objekt auf diesem Foto: Klicken Sie es mit dem Objekt-Werkzeug an.",
   "Picks only": "Nur ausgewählte Fotos",
   "Picture Package": "Bildpaket",

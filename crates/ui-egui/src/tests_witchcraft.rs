@@ -158,6 +158,24 @@ fn the_node_strip_lists_the_photo_masks() {
 }
 
 #[test]
+fn picking_a_colour_plants_a_point_on_the_curve() {
+    let mut h = demo();
+    h.app.ui.solo_section("hsl");
+    h.settle(SETTLE);
+    assert!(has(&h, "icon:hslPick") || h.app.widgets.iter().any(|(w, _)| w.contains("hslPick")), "the picker button");
+    // the picker arms, and the engine command plants the picked hue on the shown curve
+    h.app.ui.hsl_curve = "sat".into();
+    let r = run(&mut h, "develop.hslPick", json!({"channel": "sat", "x": 0.5, "y": 0.5}));
+    let x = r["x"].as_f64().expect("the picked hue position");
+    assert!((0.0..=1.0).contains(&x), "{r}");
+    let id = h.app.session.active().unwrap();
+    let c = &h.app.session.develop_of(id).unwrap_or_default().hsl_curves;
+    assert_eq!(c.sat.len(), 1);
+    assert!((c.sat[0].x - x).abs() < 1e-9);
+    assert!(c.sat[0].y.abs() < 1e-9, "a point plants at the curve's current height: {:?}", c.sat[0]);
+}
+
+#[test]
 fn the_wheels_write_the_primaries_controls_and_the_eye_switches_the_palette_off() {
     let mut h = demo();
     run(&mut h, "develop.set", json!({"control": "primaries.lift.hue", "value": 220.0}));

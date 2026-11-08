@@ -1210,6 +1210,7 @@
   "Photos whose metadata file another program changed: saving replaces those changes with the catalog's.": "中繼資料檔案被其他程式變更過的照片：儲存會以目錄中的內容取代這些變更。",
   "Photos whose metadata file another program changed: saving replaces those changes with the library's.": "中繼資料檔案被其他程式變更過的照片：儲存會以照片庫中的內容取代這些變更。",
   "Photos); importing (also by drag and drop), Find Missing Photos, Build / Discard Smart Previews, the Rename preview,": "照片）；匯入（也可拖放）、尋找遺失的照片、生成 / 丟棄智能預覽、重新命名預覽、",
+  "Pick a colour from the photo to add its hue to the curve": "從照片上取色，將其色相加到曲線上。",
   "Pick the object on this photo: click it with the Object tool.": "請在這張相片上選取物件：用「物件」工具點按它。",
   "Picks only": "僅精選照片",
   "Picture Package": "圖片包",

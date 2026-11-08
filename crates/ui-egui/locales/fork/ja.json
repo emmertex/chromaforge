@@ -1213,6 +1213,7 @@
   "Photos whose metadata file another program changed: saving replaces those changes with the catalog's.": "別のプログラムがメタデータファイルを変更した写真：保存すると、その変更はカタログの内容で置き換えられます。",
   "Photos whose metadata file another program changed: saving replaces those changes with the library's.": "別のプログラムがメタデータファイルを変更した写真：保存すると、その変更はライブラリの内容で置き換えられます。",
   "Photos); importing (also by drag and drop), Find Missing Photos, Build / Discard Smart Previews, the Rename preview,": "写真)、読み込み(ドラッグ&ドロップも)、見つからない写真を検索、スマートプレビューの作成 / 破棄、名前変更のプレビュー、",
+  "Pick a colour from the photo to add its hue to the curve": "写真から色を拾うと、その色相がカーブに点として追加されます。",
   "Pick the object on this photo: click it with the Object tool.": "この写真でオブジェクトを選んでください：オブジェクトツールでクリックします。",
   "Picks only": "採用した写真のみ",
   "Picture Package": "ピクチャーパッケージ",
