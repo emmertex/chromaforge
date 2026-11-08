@@ -3343,6 +3343,39 @@ fn raw_with_lightroom_sidecar_imports_rating_label_crop_and_develop() {
     }
 }
 
+/// A raw cut short, as one still being copied in: its TIFF header declares one strip of 4000 bytes at 64, only 100 there.
+fn short_raw() -> Vec<u8> {
+    let mut b = vec![0u8; 64];
+    b[0..4].copy_from_slice(b"II*\0");
+    b[4..8].copy_from_slice(&8u32.to_le_bytes());
+    b[8..10].copy_from_slice(&2u16.to_le_bytes());
+    for (at, tag, v) in [(10usize, 0x0111u16, 64u32), (22, 0x0117, 4000)] {
+        b[at..at + 2].copy_from_slice(&tag.to_le_bytes());
+        b[at + 2..at + 4].copy_from_slice(&4u16.to_le_bytes());
+        b[at + 4..at + 8].copy_from_slice(&1u32.to_le_bytes());
+        b[at + 8..at + 12].copy_from_slice(&v.to_le_bytes());
+    }
+    b.extend([0u8; 100]);
+    b
+}
+
+/// A file skipped as still being copied in is named in the import's result (`still_copying`), not left out silently,
+/// so the caller can say so instead of calling it unreadable.
+#[test]
+fn an_import_names_the_files_it_left_as_still_being_copied() {
+    let dir = temp_dir("still-copying");
+    let raw = dir.join("IMG_0001.NEF");
+    std::fs::write(&raw, short_raw()).unwrap();
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [raw.to_string_lossy()]})).unwrap();
+    assert_eq!(ids(&r, "imported"), 0, "{r}");
+    let copying = r["still_copying"].as_array().unwrap();
+    assert_eq!(copying.len(), 1, "{r}");
+    assert!(copying[0].as_str().unwrap().ends_with("IMG_0001.NEF"), "{r}");
+    assert!(r["failed"].as_array().unwrap().is_empty(), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A photo turned in Lightroom comes in turned: Lightroom writes the whole orientation as the sidecar's
 /// `tiff:Orientation`, and the photo takes what it adds to the file's own (none here, so a half turn for 3).
 #[test]
