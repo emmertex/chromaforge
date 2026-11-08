@@ -61,7 +61,7 @@ pub struct Doc {
 
 fn is_row_id(s: &str) -> bool {
     let Some((prefix, rest)) = s.split_once('-') else { return false };
-    matches!(prefix, "LR" | "LRC" | "MENU" | "KEY" | "KEYC" | "IMM")
+    matches!(prefix, "LR" | "LRC" | "MENU" | "KEY" | "KEYC" | "IMM" | "CF")
         && !rest.is_empty()
         && rest.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
 }
@@ -144,7 +144,16 @@ pub fn parse(md: &str) -> Doc {
 /// commands live in their own table, which the Language menu builds from the i18n language list.
 pub fn ui_command_ids(menus_rs: &str) -> Vec<String> {
     let mut ids = Vec::new();
-    for table in ["pub const UI_COMMANDS", "pub const LANGUAGE_COMMANDS", "pub const SHELL_COMMANDS", "pub const COMMANDS"] {
+    for table in [
+        "pub const UI_COMMANDS",
+        "pub const LANGUAGE_COMMANDS",
+        "pub const SHELL_COMMANDS",
+        "pub const COMMANDS",
+        // the fork's tables (menus_fork.rs): the grading modes and its Edit sections
+        "const GRADING_COMMANDS",
+        "const EDIT_SECTIONS",
+        "const PLUGIN_COMMANDS",
+    ] {
         let Some(start) = menus_rs.find(table) else { continue };
         let body = &menus_rs[start..];
         let body = &body[..body.find("];").unwrap_or(body.len())];
@@ -348,6 +357,9 @@ pub fn run(root: &Path, write: bool) -> Result<(), String> {
     for f in ["crates/ui-egui/src/print_ui.rs", "crates/ui-egui/src/creations_ui.rs"] {
         commands.extend(ui_command_ids(&std::fs::read_to_string(root.join(f)).map_err(|e| format!("{f}: {e}"))?));
     }
+    // the fork's own UI commands (grading modes, its Edit sections)
+    let fork = std::fs::read_to_string(root.join("crates/ui-egui/src/menus_fork.rs")).map_err(|e| format!("menus_fork.rs: {e}"))?;
+    commands.extend(ui_command_ids(&fork));
     let controls = registry(cli.as_deref(), "controls")?;
     let mut problems = check(&doc, &commands, &controls, |p| {
         let full = root.join(p);

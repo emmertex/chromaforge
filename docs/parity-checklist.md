@@ -31,7 +31,7 @@ cited here still exists. Formerly docs/parity.md.
 | C. Views & navigation (VIEW) | 18 | 2 | 0 | 0 | 9/9 (100%) | 5/5 (100%) |
 | D. Search & filter (FILT) | 12 | 1 | 0 | 0 | 4/4 (100%) | 4/4 (100%) |
 | E. Metadata (META) | 5 | 1 | 0 | 0 | 2/2 (100%) | 2/2 (100%) |
-| F. Edit panel — global adjustments (EDIT) | 44 | 5 | 1 | 1 | 28/28 (100%) | 13/15 (87%) |
+| F. Edit panel — global adjustments (EDIT) | 44 | 6 | 1 | 0 | 28/28 (100%) | 13/15 (87%) |
 | G. Profiles (PROF) | 8 | 5 | 3 | 0 | 3/4 (75%) | 3/4 (75%) |
 | H. Crop & rotate (CROP) | 10 | 1 | 0 | 1 | 8/8 (100%) | 2/3 (67%) |
 | I. Remove / healing (REM) | 10 | 2 | 2 | 1 | 4/4 (100%) | 2/3 (67%) |
@@ -53,10 +53,11 @@ cited here still exists. Formerly docs/parity.md.
 | Y. Menus | 88 | 0 | 2 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 77 | 5 | 2 | 1 | 48/52 (92%) | 24/26 (92%) |
 | Lightroom Classic extras | 105 | 20 | 3 | 0 | — | 36/40 (90%) |
+| BEYOND. Beyond the reference app | 3 | 0 | 0 | 0 | — | — |
 | IMM. Immich integration | 11 | 0 | 0 | 0 | — | 7/7 (100%) |
-| **Total** | 517 | 76 | 26 | 26 | 195/203 (96%) | 172/191 (90%) |
+| **Total** | 520 | 77 | 26 | 25 | 195/203 (96%) | 172/191 (90%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.7%** of 619 in-scope rows — P0 98.0% of 203 · P1 94.8% of 191 · P2 77.8% of 221.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **89.6%** of 623 in-scope rows — P0 98.0% of 203 · P1 94.8% of 191 · P2 78.1% of 224.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -924,6 +925,18 @@ dialog offers Horizontal/Vertical and multiline text. Japanese glyphs fall back 
 Mincho faces (BIZ UDMincho; on the web build, BIZ UDPGothic) when built with `CRAFT_FONTS_DIR`. Vertical lettering uses upright em cells and right-to-left newline columns;
 Latin stays upright. Advanced Japanese composition remains open. Regression coverage:
 `export::tests::japanese_watermarks_support_vertical_columns`, `japanese_watermark_options_and_legacy_defaults`, `watermarks_work_without_craft_fonts`.
+
+## BEYOND. Beyond the reference app
+
+Features with no Lightroom counterpart, tracked like the rest (one row each; `CF-` ids). Wheel semantics read as prose
+from Blackmagic Design's *The Colorist Guide to DaVinci Resolve 18* (reference only — no code or assets); the maths
+is Chromaforge's own.
+
+| Id | Feature | Tier | Status | Evidence | Missing / notes |
+|---|---|---|---|---|---|
+| CF-GRADE-MODE | Grading modes: Eboda and Witchcraft | P2 | ✅ | `cmd:view.gradingMode`, `cmd:section.primaries`, `cmd:section.hsl`, `crates/ui-egui/src/panels/witchcraft.rs`, `crates/ui-egui/src/tests_grading_mode.rs`, `crates/ui-egui/src/tests_witchcraft.rs` | The Edit panel's Grading Mode switch (header, Window ▸ Grading Mode, Ctrl+Shift+G; app-level like the Compact layout) picks **Eboda** (the Lightroom Classic panels, the default) or **Witchcraft** (the Resolve-style layout below). One recipe, two presentations: presets, history, XMP and scopes are shared. Witchcraft leads with a **node strip** of the grade's stages (Balance, Primaries, HSL Curves, Curve, Colour, Grade, the photo's masks by name, Effects, Output): a click opens the node's panel, the number badge bypasses the stage (the section's eye or `mask.visible`; the node dims; presentation only — the pipeline's order stays the renderer's), and a long mask name ends in an ellipsis. Under it a Waveform / RGB Parade / Vectorscope switch on the histogram (`view.histogram.mode`). Follow-ups, not built: parallel/layer mixers, shared nodes, gallery/stills à la PowerGrades, Primaries Bars |
+| CF-GRADE-PRIMARIES | Colourist primaries: Lift / Gamma / Gain / Offset wheels, Color and Log variants | P2 | ✅ | `ctl:primaries.*`, `cmd:develop.primaries`, `crates/pipeline/src/colorops.rs` (`PrimariesK`, `primary_zones`), `crates/gpu/src/wgsl/finish.wgsl` (`primaries`), `crates/gpu/tests/it/equivalence.rs` | Four wheels (hue/saturation puck, luminance master wheel) with the Color Grading wheels' drag holds (Shift keeps hue, Cmd/Ctrl saturation, Alt fine, double-click reset). Applied per channel on display-linear values after the tone map, before the colour tools (balance before look): lift and gamma tilt their range additively, gain scales the highlights, offset moves everything; neutral wheels skip the per-pixel maths and are not written to settings (JSON and `hash64` stable). The palette's switch picks **Color** (wide overlap) or **Log** (Shadows/Midtones/Highlights with `primaries.low`/`high` boundaries; `develop.primaries {log}`, one undo step); the Log variant shares the wheels' values. CPU and GPU equivalence-tested; copy/paste/preset group and history group ("grading") included; `lc:settings` XMP only (no `crs:` counterpart). Follow-ups, not built: Primaries Bars view, HDR zone wheels |
+| CF-GRADE-HSL-CURVES | HSL curves over the colour mixer's bands | P2 | ✅ | `crates/ui-egui/src/panels/witchcraft.rs` (`hsl_curves`), `ctl:mixer.*`, `crates/ui-egui/src/tests_witchcraft.rs` | Hue vs Hue / Hue vs Sat / Hue vs Lum ("the first word prompts the selection, and the second word affects the change") drawn as the smooth response the mixer's 8 bands give between their centres, each band a dot in its colour over a hue strip. A drag writes the band under the pointer through the mixer's own controls (one undo step), a double-click resets that band, and the tabs are the mixer's own hue/saturation/luminance choice, so the Color Mixer panel agrees. Colour photos only (the B&W mix has its own panel). Follow-ups, not built: point-based curves, Sat vs Sat, Lum vs Sat |
 
 ## IMM. Immich integration
 
