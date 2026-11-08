@@ -1442,9 +1442,7 @@ impl ImportJob {
             .iter()
             .map(|f| {
                 // (the web's files are not std::fs files: kept as probed)
-                self.cache
-                    .remove(f)
-                    .filter(|info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info))
+                self.cache.remove(f).filter(|info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info))
             })
             .collect();
         let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
