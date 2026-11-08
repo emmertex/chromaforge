@@ -20,6 +20,32 @@ use crate::widgets::register;
 const WHEELS: [(&str, &str, &str); 4] =
     [("lift", "Lift", "Shadows"), ("gamma", "Gamma", "Midtones"), ("gain", "Gain", "Highlights"), ("offset", "Offset", "Offset")];
 
+/// The scope switch at the head of the Witchcraft panel: the histogram above it is the colorist's
+/// instrument panel, so its mode — Waveform, RGB Parade or Vectorscope — is one click away
+/// (the histogram's own `view.histogram.mode`, not a state of this mode).
+pub(crate) fn scopes_row(app: &mut LccApp, ui: &mut egui::Ui) {
+    let modes: [(lcc_raster::HistogramMode, &str); 3] = [
+        (lcc_raster::HistogramMode::Waveform, "Waveform"),
+        (lcc_raster::HistogramMode::Parade, "RGB Parade"),
+        (lcc_raster::HistogramMode::Vectorscope, "Vectorscope"),
+    ];
+    let current = lcc_raster::HistogramMode::parse(&app.ui.histogram_mode).unwrap_or_default();
+    let active = modes.iter().position(|(m, _)| *m == current);
+    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }, 3, 2)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            if let Some(i) = crate::widgets::segmented(
+                ui,
+                "witchScopes",
+                &[("Waveform", "waveform"), ("RGB Parade", "parade"), ("Vectorscope", "vectorscope")],
+                active,
+                3,
+            ) {
+                let _ = app.run("view.histogram.mode", json!({"mode": modes[i].0.name()}));
+            }
+        });
+    });
+}
+
 /// The Primaries palette: the Color | Log variant switch, the four wheels in two rows, the master
 /// wheel of each under its column, and the Log variant's range boundaries.
 pub(crate) fn primaries(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {

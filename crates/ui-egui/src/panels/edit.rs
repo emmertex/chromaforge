@@ -252,7 +252,12 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
-    // Witchcraft's own palette leads the panels (Resolve's Primaries); in Eboda it stays away —
+    // Witchcraft: the scope switch leads the panels (the histogram above is the colorist's
+    // instrument panel); in Eboda the histogram's own mode menu is Lightroom's way
+    if only.is_none() && app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
+        super::witchcraft::scopes_row(app, ui);
+    }
+    // Witchcraft's own palette comes next of the panels (Resolve's Primaries); in Eboda it stays away —
     // Lightroom's own panels end with the Color Grading wheels
     if shows("primaries") && app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
         section_with(app, ui, &d, "primaries", "Primaries", true, |app, ui, d| {
