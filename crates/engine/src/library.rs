@@ -669,6 +669,8 @@ impl Session {
             self.pending_sidecar_repairs.append(&mut entry.retry_sidecars);
         }
         self.undo.clear();
+        // a run of the old library no longer holds the new one's history
+        self.undo_hold = std::sync::Weak::new();
         self.redo.clear();
         self.interaction = None;
         self.pending_log.clear();
