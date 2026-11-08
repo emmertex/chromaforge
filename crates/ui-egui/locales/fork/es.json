@@ -498,7 +498,6 @@
   "Each photo goes to the card that will finish it sooner.": "Cada foto va a la tarjeta que la terminará antes.",
   "Each photo with its own edits, in the order shown. No audio.": "Cada foto con sus propios ajustes, en el orden mostrado. Sin audio.",
   "Eboda": "Eboda",
-  "Eboda shows the Lightroom Classic panels; Witchcraft the DaVinci Resolve style colour-grading palettes. Both edit the same photo.": "Eboda muestra los paneles de Lightroom Classic; Witchcraft, las paletas de etalonaje al estilo de DaVinci Resolve. Ambos modos editan la misma foto.",
   "Edge setting, and get a sharper zoomed-in pass in the background. The model runs inside {app} in pure Rust": "Ajuste de borde, y obtén una pasada más nítida al ampliar en segundo plano. El modelo se ejecuta dentro de {app} en Rust puro",
   "Edit Color Range Sample": "Editar muestra de rango de color",
   "Edit In": "Editar en",

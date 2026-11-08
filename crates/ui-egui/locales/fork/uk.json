@@ -445,7 +445,6 @@
   "Each photo goes to the card that will finish it sooner.": "Кожне фото йде на ту відеокарту, яка закінчить його раніше.",
   "Each photo with its own edits, in the order shown. No audio.": "Кожне фото зі своїми правками, у показаному порядку. Без звуку.",
   "Eboda": "Eboda",
-  "Eboda shows the Lightroom Classic panels; Witchcraft the DaVinci Resolve style colour-grading palettes. Both edit the same photo.": "Eboda показує панелі Lightroom Classic; Witchcraft — палітри кольорокорекції в стилі DaVinci Resolve. Обидва режими редагують те саме фото.",
   "Edge setting, and get a sharper zoomed-in pass in the background. The model runs inside {app} in pure Rust": "налаштування краю й отримують чіткіший збільшений результат у фоні. Модель працює всередині {app} на чистому Rust",
   "Edit Color Range Sample": "Змінити зразок колірного діапазону",
   "Edit In": "Редагувати в",

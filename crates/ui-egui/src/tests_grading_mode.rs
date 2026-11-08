@@ -46,14 +46,19 @@ fn the_command_cycles_selects_and_rejects_unknown_modes() {
 }
 
 #[test]
-fn the_header_segmented_control_switches_modes() {
+fn the_settings_row_switches_modes_and_the_edit_header_stays_clear() {
     let mut h = demo();
-    let r = h.request("ui.clickWidget", json!({"id": "button:gradingMode-witchcraft"}), T);
+    // the switch lives in Settings ▸ General, not on the Edit panel's face
+    assert!(!h.app.widgets.iter().any(|(w, _)| w.starts_with("button:gradingMode-")), "no header toggle");
+    h.app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "general".into() });
+    h.settle(SETTLE);
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "button:settingsGradingMode-1"), "the Settings row");
+    let r = h.request("ui.clickWidget", json!({"id": "button:settingsGradingMode-1"}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.step();
     h.step();
     assert_eq!(h.app.ui.settings.grading_mode, GradingMode::Witchcraft);
-    let r = h.request("ui.clickWidget", json!({"id": "button:gradingMode-eboda"}), T);
+    let r = h.request("ui.clickWidget", json!({"id": "button:settingsGradingMode-0"}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.step();
     h.step();

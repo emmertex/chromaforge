@@ -498,7 +498,6 @@
   "Each photo goes to the card that will finish it sooner.": "每張照片交給能更快完成它的顯示卡。",
   "Each photo with its own edits, in the order shown. No audio.": "每張照片使用各自的編輯，依顯示順序排列。無音訊。",
   "Eboda": "Eboda",
-  "Eboda shows the Lightroom Classic panels; Witchcraft the DaVinci Resolve style colour-grading palettes. Both edit the same photo.": "Eboda 顯示 Lightroom Classic 風格的面板；Witchcraft 顯示 DaVinci Resolve 風格的調色板。兩者編輯的是同一張照片。",
   "Edge setting, and get a sharper zoomed-in pass in the background. The model runs inside {app} in pure Rust": "邊緣設定，並在後台獲得更清晰的放大處理。模型以純 Rust 在 {app} 內運行",
   "Edit Color Range Sample": "編輯顏色範圍樣本",
   "Edit In": "在其他應用程式中編輯",
