@@ -460,7 +460,7 @@ struct Listed {
 
 /// Whether the disk is asked about `name` whatever the listing holds: a name Windows takes for
 /// a device (`NUL`, `aux.jpg`: there in every folder, or not openable where it is listed).
-fn asks_the_disk(name: &str) -> bool {
+pub(crate) fn asks_the_disk(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_lowercase();
     // (`COM` and `LPT` with any one digit, the superscript ones Windows also takes among them)
     let numbered = ["com", "lpt"].iter().any(|port| {
@@ -473,7 +473,7 @@ fn asks_the_disk(name: &str) -> bool {
 /// Whether `name` can only be found under itself in some case: ASCII, and nothing in it that a
 /// file system resolves another way (a short name with `~`, a stream after `:`, dots or spaces
 /// at its end, which Windows drops).
-fn plain_name(name: &str) -> bool {
+pub(crate) fn plain_name(name: &str) -> bool {
     name.is_ascii() && !name.contains(['~', ':']) && !name.ends_with(['.', ' ']) && !name.is_empty()
 }
 
@@ -700,12 +700,17 @@ pub struct SyncCommit {
     /// The library the run was readied for: steps never land in another one (File › Open
     /// Library while the work runs), whose photo ids name other photos.
     library: Arc<()>,
-    /// The run's own undo steps so far, and the history's length after the last of them: they
-    /// are merged only while nothing else came in between (an Undo or an edit made meanwhile
-    /// stays its own step, and the run's parts stay theirs).
+    /// The run's own undo steps so far, and the history's length and the session's commit count
+    /// after the last of them: they are merged only while nothing else came in between (an Undo
+    /// or an edit made meanwhile stays its own step, and the run's parts stay theirs). The count
+    /// sees an edit that left the length as it was (the history was full and dropped its oldest).
     own: usize,
-    after_last: Option<usize>,
+    after_last: Option<(usize, u64)>,
     interleaved: bool,
+    /// Keeps the history from dropping the run's first steps before [`SyncCommit::finish`] folds
+    /// them (a big folder makes more steps than it holds). Let go once the steps can't be folded
+    /// (another library, an edit in between) and at the end.
+    hold: Option<Arc<()>>,
     report: SyncReport,
 }
 
@@ -774,6 +779,7 @@ impl SyncJob {
             own: 0,
             after_last: None,
             interleaved: false,
+            hold: Some(s.hold_undo()),
             report: SyncReport::default(),
         };
         Ok((work, commit))
@@ -800,7 +806,12 @@ impl SyncWork {
                     return;
                 }
                 let prepared = job.prepare_files(chunk.to_vec(), cancel);
-                step(chunk.len());
+                // (a batch Cancel cut short left files undone: it is not counted, so the count
+                // says whether everything was done; its files that were ready are still sent. A
+                // Cancel after its last file was prepared cut nothing: the batch says so itself)
+                if !prepared.cut_short {
+                    step(chunk.len());
+                }
                 // (the files are added in place: a batch nobody takes leaves nothing behind on disk)
                 if !send(SyncStep::Import(prepared)) {
                     return;
@@ -856,17 +867,27 @@ impl SyncCommit {
     /// end, and the rest is still done.
     pub fn apply(&mut self, s: &mut Session, step: SyncStep) {
         if !Arc::ptr_eq(&self.library, &s.library_identity) {
+            self.hold = None;
             self.report.failed.push((String::new(), "another library was opened: the rest of the synchronize was dropped".into()));
             return;
         }
         let commits = s.commits();
-        if self.after_last.is_some_and(|n| n != s.undo.len()) {
+        if self.after_last.is_none() {
+            // not stepped yet: an edit that ended the hold this run shared with one that had stepped
+            // (that one can't fold around it) is not an edit between this run's own steps
+            if self.hold.is_some() {
+                self.hold = Some(s.hold_undo());
+            }
+        } else if self.after_last != Some((s.undo.len(), commits)) {
             self.interleaved = true;
+            self.hold = None;
+            // (a step that commits nothing, a failed batch, would leave the history uncut)
+            s.trim_undo();
         }
-        self.apply_step(s, step);
+        s.run_step(|s| self.apply_step(s, step));
         if s.commits() != commits {
             self.own += usize::try_from(s.commits().wrapping_sub(commits)).unwrap_or(0);
-            self.after_last = Some(s.undo.len());
+            self.after_last = Some((s.undo.len(), s.commits()));
         }
     }
 
@@ -934,9 +955,11 @@ impl SyncCommit {
     pub fn finish(mut self, s: &mut Session) -> SyncReport {
         // a report line once, however many steps came after a library switch
         self.report.failed.dedup();
-        let ours = Arc::ptr_eq(&self.library, &s.library_identity) && !self.interleaved && self.after_last == Some(s.undo.len());
+        self.hold = None;
+        let ours = Arc::ptr_eq(&self.library, &s.library_identity) && !self.interleaved && self.after_last == Some((s.undo.len(), s.commits()));
         let steps = if ours { self.own.min(s.undo.len()) } else { 0 };
         s.merge_undo(steps, "Synchronize Folder");
+        s.trim_undo();
         if let Some(last) = s.undo.last_mut().filter(|_| steps == 1) {
             last.label = "Synchronize Folder".into();
         }
