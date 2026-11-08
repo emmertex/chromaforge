@@ -458,8 +458,11 @@ pub const PRIMARY_GAIN_MASTER: f32 = 0.3;
 
 /// How much stronger each Log wheel reads — tuned by eye on rendered photos (the Color wheels
 /// above now carry the CDL reaches): shadows halved (they stack on the Color lift), midtones as
-/// tuned, the narrow highlights barely showed without ×10. (shadow, midtone, highlight, offset.)
-pub const LOG_STRENGTH: [f32; 4] = [0.5, 1.0, 10.0, 0.5];
+/// tuned, the highlight ×3 — it *multiplies* its zone, so the full master pull lands at ×1.9 and
+/// the full push at ×0.1 without ever clamping to black or leaping to white (×10 read as a
+/// blow-out: ×4 at full throw, over after a few pixels of drag). (shadow, midtone, highlight,
+/// offset.)
+pub const LOG_STRENGTH: [f32; 4] = [0.5, 1.0, 3.0, 0.5];
 
 /// The colourist primaries resolved once per render: the Color wheels (lift, gamma, gain, offset —
 /// wide tonal overlap) and the Log wheels (shadow, midtone, highlight, offset — narrow ranges
@@ -871,7 +874,8 @@ mod tests {
 
     #[test]
     fn the_log_wheels_carry_their_own_strengths() {
-        // the Log set's calibration: shadows halved, midtones as tuned, highlights ×10
+        // the Log set's calibration: shadows halved, midtones as tuned, highlights ×3 (a multiply,
+        // kept under the cliff — a full pull never clamps its zone to black)
         let full = lcc_develop::Wheel { hue: 0.0, sat: 100.0, lum: 100.0 };
         let fl = LOG_STRENGTH;
         let s = lcc_develop::Primaries {
@@ -886,6 +890,15 @@ mod tests {
             let out = k.apply(c);
             assert!(out.iter().all(|v| v.is_finite()), "{c:?} -> {out:?}");
         }
+        // the highlight wheel alone is a graded reach, never a blow-out: a full pull on a bright
+        // pixel stays above black (the multiplier keeps 1 − reach positive), a full push under ×2
+        let mut s = lcc_develop::Primaries::default();
+        s.log_wheels.highlight = lcc_develop::Wheel { hue: 0.0, sat: 0.0, lum: -100.0 };
+        let down = PrimariesK::new(&s).unwrap();
+        assert!(down.apply([0.95, 0.95, 0.95]).iter().all(|v| *v > 0.0), "no clamp to black");
+        s.log_wheels.highlight = lcc_develop::Wheel { hue: 0.0, sat: 0.0, lum: 100.0 };
+        let up = PrimariesK::new(&s).unwrap();
+        assert!(up.apply([0.95, 0.95, 0.95]).iter().all(|v| *v < 2.0), "no leap to white");
     }
 
     #[test]
